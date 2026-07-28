@@ -125,6 +125,19 @@ const VUEPLAYERCORE = (() => {
       searchedPeers: null,    // null = never fetched; 0 = network still warming up
       newArtistsOnly: (() => { try { return localStorage.getItem('discoverNewArtistsOnly') === 'true'; } catch (_) { return false; } })(),
     },
+    // "From your peers" (discovery over federation): live similarity answers
+    // from the servers this one is PAIRED with. Same reveal contract — the
+    // ping response's federationDiscovery flag, never a probe. Leads for now
+    // (playable once the federation stream proxy lands). Shares the p2p
+    // section's newArtistsOnly toggle: one semantic, one knob.
+    fed: {
+      available: false,
+      disabled: false,        // server said 403 — stop asking
+      tracks: [],
+      searchedPeers: null,    // null = never fetched; 0 = nobody answered
+      unreachable: 0,         // peers that timed out/failed on the last ask
+      mismatched: 0,          // peers on a different embedding model
+    },
   };
   let discoverDebounce = null;
   let discoverReqId = 0;
@@ -248,6 +261,18 @@ const VUEPLAYERCORE = (() => {
           this.discover.seedTitle = '';
           return;
         }
+        // A federated track is playing: its path lives in the PEER's vpath
+        // namespace, so local seed resolution can't work. Clear rather than
+        // show the previous song's results as if they belonged here.
+        if (song.federation) {
+          this.discover.tracks = [];
+          this.discover.artists = [];
+          this.discover.p2p.tracks = [];
+          this.discover.fed.tracks = [];
+          this.discover.notAnalyzed = false;
+          this.discover.seedTitle = (song.metadata && song.metadata.title) || '';
+          return;
+        }
         // Keep it lean: no discovery traffic while the panel is collapsed.
         // Remember there's something new to fetch for when it opens.
         if (this.discover.collapsed) {
@@ -260,10 +285,12 @@ const VUEPLAYERCORE = (() => {
         this.discover.loading = true;
 
         const wantP2p = this.discover.p2p.available && !this.discover.p2p.disabled;
-        const [similar, artists, p2p] = await Promise.all([
+        const wantFed = this.discover.fed.available && !this.discover.fed.disabled;
+        const [similar, artists, p2p, fed] = await Promise.all([
           MSTREAMAPI.discoverySimilar(seedPath, 5),
           this.meta.artist ? MSTREAMAPI.discoverySimilarArtists(this.meta.artist, 3) : Promise.resolve(null),
           wantP2p ? MSTREAMAPI.discoveryP2pSimilar(seedPath, 5, this.discover.p2p.newArtistsOnly) : Promise.resolve(null),
+          wantFed ? MSTREAMAPI.discoveryFederationSimilar(seedPath, 5, this.discover.p2p.newArtistsOnly) : Promise.resolve(null),
         ]);
         if (reqId !== discoverReqId) { return; }   // a newer song superseded this refresh
         this.discover.loading = false;
@@ -298,6 +325,32 @@ const VUEPLAYERCORE = (() => {
             this.discover.p2p.tracks = [];
           }
         }
+
+        if (wantFed) {
+          if (fed && fed.disabled) {
+            // 403 — federation turned off; stop asking for the session.
+            this.discover.fed.disabled = true;
+          } else if (fed) {
+            this.discover.fed.tracks = fed.results || [];
+            this.discover.fed.searchedPeers = (fed.searched && fed.searched.peers) || 0;
+            this.discover.fed.unreachable = (fed.searched && fed.searched.unreachable) || 0;
+            this.discover.fed.mismatched = (fed.searched && fed.searched.mismatched) || 0;
+          } else {
+            // Same null semantics as the p2p leg above.
+            this.discover.fed.tracks = [];
+          }
+        }
+      },
+      // ── "From your peers" rows ─────────────────────────────────────
+      // Playable since phase 4: the row queues through the federation
+      // stream proxy. Lite metadata comes straight off the fed result so
+      // the queue + now-playing card render without any local lookup.
+      queueDiscoverFed: function (ft) {
+        mstreamModule.addFederationSongWizard(ft.peer, ft.filepath, {
+          title: ft.title || '',
+          artist: ft.artist || '',
+          duration: ft.duration || null,
+        }, true);
       },
       // ── "From the network" rows ────────────────────────────────────
       // Not playable (the track lives on someone else's server) — clicking
@@ -414,6 +467,13 @@ const VUEPLAYERCORE = (() => {
         link.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
       },
       createPopper: function (event) {
+        // Peer tracks can't be rated: ratings live in user_metadata keyed by
+        // LOCAL track hashes, so the server would just 404 the remote path.
+        // Say so up front instead of opening a rater that fails on submit.
+        if (this.song.federation) {
+          iziToast.info({ title: t('discover.peers.noRating'), position: 'topCenter', timeout: 2500 });
+          return;
+        }
         if (currentPopperSongIndex === this.index) {
           currentPopperSongIndex = false;
           document.getElementById("pop").style.visibility = "hidden";
@@ -755,20 +815,56 @@ const VUEPLAYERCORE = (() => {
     }
   });
 
-  // Change spacebar behavior to Play/Pause
+  // Player hotkeys — bindings come from MSTREAMPLAYER.hotkeys, configurable
+  // under Layout > Keyboard Shortcuts (persisted in localStorage).
+  function hotkeyAdjustVolume(delta) {
+    let newVol = Math.round(MSTREAMPLAYER.playerStats.volume) + delta;
+    if (newVol > 100) { newVol = 100; }
+    if (newVol < 0) { newVol = 0; }
+    MSTREAMPLAYER.changeVolume(newVol);
+    if (typeof(Storage) !== "undefined") {
+      localStorage.setItem("volume", newVol);
+    }
+  }
+
+  function hotkeyStepPlaybackRate(delta) {
+    // Same range as the speed modal (0.25x - 4x)
+    let newRate = Math.round((MSTREAMPLAYER.playerStats.playbackRate + delta) * 100) / 100;
+    if (newRate > 4) { newRate = 4; }
+    if (newRate < 0.25) { newRate = 0.25; }
+    MSTREAMPLAYER.changePlaybackRate(newRate);
+  }
+
   window.addEventListener("keydown", (event) => {
     // Use default behavior if user is in a form or editable element
     const element = event.target.tagName.toLowerCase();
-    if (element === 'input' || element === 'textarea' || event.target.isContentEditable) {
+    if (element === 'input' || element === 'textarea' || element === 'select' || event.target.isContentEditable) {
       return;
     }
 
-    // Check the key
-    switch (event.key) {
-      case " ": //SpaceBar
-        event.preventDefault();
+    const action = MSTREAMPLAYER.hotkeys.resolve(event);
+    if (!action) { return; }
+    event.preventDefault();
+
+    switch (action) {
+      case 'playPause':
+      case 'playPauseAlt':
         MSTREAMPLAYER.playPause();
         break;
+      case 'seekBack': MSTREAMPLAYER.goBackSeek(5); break;
+      case 'seekForward': MSTREAMPLAYER.goForwardSeek(5); break;
+      case 'bigSeekBack': MSTREAMPLAYER.goBackSeek(30); break;
+      case 'bigSeekForward': MSTREAMPLAYER.goForwardSeek(30); break;
+      case 'prevTrack': MSTREAMPLAYER.previousSong(); break;
+      case 'nextTrack': MSTREAMPLAYER.nextSong(); break;
+      case 'volumeUp': hotkeyAdjustVolume(5); break;
+      case 'volumeDown': hotkeyAdjustVolume(-5); break;
+      case 'mute': playerVue.toggleMute(); break;
+      case 'shuffle': MSTREAMPLAYER.toggleShuffle(); break;
+      case 'repeat': MSTREAMPLAYER.toggleRepeat(); break;
+      case 'speedUp': hotkeyStepPlaybackRate(0.25); break;
+      case 'speedDown': hotkeyStepPlaybackRate(-0.25); break;
+      case 'percentSeek': MSTREAMPLAYER.seekByPercentage(parseInt(event.key, 10) * 10); break;
     }
   }, false);
 
@@ -790,6 +886,13 @@ const VUEPLAYERCORE = (() => {
       done();
     }
   });
+
+  // Song-capture slot (the Sonic Path panel's pickers). Consumed by
+  // onFileClick (m.js) — the SINGLE-row click dispatch — so any browsing
+  // view can feed a picker while bulk actions (Add All To Queue, recursive
+  // adds) go straight to addSongWizard and never trip an armed picker.
+  // One-shot: the consumer clears it on first capture / cancel.
+  mstreamModule.songCapture = null;
 
   mstreamModule.addSongWizard = async (filepath, metadata, lookupMetadata, position, livePlaylist, autoPlayOff) => {
     // Escape filepath
@@ -861,6 +964,29 @@ const VUEPLAYERCORE = (() => {
     }
   };
 
+  // Queue a track that lives on a FEDERATED PEER. It plays through this
+  // server's stream proxy (/api/v1/federation/peers/:id/stream/…), so the
+  // browser needs nothing but its normal token. Deliberately NOT routed
+  // through addSongWizard: no transcode rerouting, no waveform prefetch,
+  // no live-playlist save, no metadata lookup — every one of those
+  // resolves paths against the LOCAL library, and this path lives in the
+  // peer's vpath namespace. The `federation` marker on the song object is
+  // what the degrade guards key on (waveform skip, Discover clear).
+  mstreamModule.addFederationSongWizard = (peer, remotePath, metadata, autoPlayOff) => {
+    let escaped = remotePath.replace(/\%/g, '%25').replace(/\#/g, '%23').replace(/\?/g, '%3F');
+    if (escaped.charAt(0) === '/') { escaped = escaped.substr(1); }
+    let url = `${MSTREAMAPI.currentServer.host}api/v1/federation/peers/${peer.id}/stream/${escaped}?`;
+    if (MSTREAMAPI.currentServer.token) { url += 'token=' + MSTREAMAPI.currentServer.token; }
+    MSTREAMPLAYER.addSong({
+      url: url,
+      rawFilePath: remotePath,
+      filepath: remotePath,
+      metadata: metadata || {},
+      authToken: MSTREAMAPI.currentServer.token,
+      federation: { peerId: peer.id, peerName: peer.name || 'peer' },
+    }, autoPlayOff);
+  };
+
   mstreamModule.clearQueue = async() => {
     MSTREAMPLAYER.clearPlaylist();
     if (mstreamModule.livePlaylist.name) {
@@ -921,8 +1047,11 @@ const VUEPLAYERCORE = (() => {
   }
 
   async function _fetchWaveform(filepath) {
-    // Skip radio/external streams and empty paths
-    if (!filepath || /^https?:\/\//i.test(filepath)) {
+    // Skip radio/external streams, federated tracks, and empty paths — a
+    // peer's filepath means nothing to the local waveform API (it resolves
+    // against OUR libraries), so treat it like an external stream.
+    const cur = MSTREAMPLAYER.getCurrentSong();
+    if (!filepath || /^https?:\/\//i.test(filepath) || (cur && cur.federation)) {
       _waveformData = null;
       _waveformFp = null;
       _setWaveformReady(false);
@@ -1127,6 +1256,13 @@ const VUEPLAYERCORE = (() => {
   // network without local analysis (rare) or vice versa (common).
   mstreamModule.setDiscoveryP2pAvailable = (available) => {
     discoverState.p2p.available = available === true;
+  };
+
+  // Ping's federationDiscovery flag — reveals the "From your peers" section.
+  // True only when federation is on, local embeddings exist, and at least
+  // one paired peer is opted into discovery queries.
+  mstreamModule.setFederationDiscoveryAvailable = (available) => {
+    discoverState.fed.available = available === true;
   };
 
   return mstreamModule;

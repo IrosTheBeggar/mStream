@@ -18,10 +18,12 @@ import path from 'node:path';
 export const NUM_BARS = 800;
 
 // On-disk cache format: raw byte array, exactly NUM_BARS bytes, one per bar.
-// Files are keyed by track content hash.
+// Files are keyed by track content hash. Exported (with failedMarkerPath
+// below) so the naming scheme has ONE owner — the V60 hash-transition
+// applier renames these artifacts when a track's canonical hash changes.
 const CACHE_EXT = '.bin';
 
-function cacheFilePath(dir, fileHash) {
+export function cacheFilePath(dir, fileHash) {
   return path.join(dir, fileHash + CACHE_EXT);
 }
 
@@ -68,7 +70,7 @@ export async function writeCachedWaveform(dir, fileHash, bars) {
 // symphonia can't — Opus — so a symphonia failure must not block us).
 // A successful generation deletes the marker.
 
-function failedMarkerPath(dir, fileHash) {
+export function failedMarkerPath(dir, fileHash) {
   return path.join(dir, fileHash + '.failed');
 }
 

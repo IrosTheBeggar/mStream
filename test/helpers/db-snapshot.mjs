@@ -62,6 +62,9 @@ function snapTracks(db) {
       t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
       t.lyrics_embedded, t.lyrics_synced_lrc, t.lyrics_lang,
       t.lyrics_sidecar_mtime,
+      -- V59: derived at each scanner's write site (lrcToSearchText /
+      -- lrc_to_search_text) — byte-parity between engines is the contract.
+      t.lyrics_search_text,
       t.bpm, t.musical_key, t.bpm_source,
       -- V55: external-service IDs the scanner sources from tags. acoustid_id
       -- is excluded — the scanner never writes it (Phase 2 fingerprint pass

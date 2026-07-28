@@ -220,6 +220,15 @@ function runMigrations() {
   winston.info(`Database schema v${currentVersion} → v${SCHEMA_VERSION}`);
 
   let needsRescan = false;
+  // Epoch flavor: a migration whose rescan is generation-scoped (V60's
+  // hash re-key) names its stable epoch id via rescanEpochId. If EVERY
+  // rescan-requiring migration in this upgrade agrees on one id, the
+  // marker carries it — task-queue then runs the epoch in hashEpoch mode
+  // (only below-generation rows re-parse) and re-arms RESUME the same
+  // epoch. Any full-force migration in the mix (or disagreement) falls
+  // back to the empty marker → a full 'rescan-*' epoch, which subsumes
+  // the scoped work.
+  const epochIds = new Set();
   for (const migration of MIGRATIONS) {
     if (migration.version > currentVersion) {
       winston.info(`Applying migration v${migration.version}...`);
@@ -241,6 +250,14 @@ function runMigrations() {
       db.exec('BEGIN IMMEDIATE');
       try {
         db.exec(migration.sql);
+        // Optional per-migration JS hook (first used by V59): computation
+        // SQL can't express, e.g. deriving a column via a JS parser. Runs
+        // INSIDE the same transaction — a hook that throws rolls the whole
+        // version back, exactly like a failing SQL statement. Hooks must
+        // stick to prepare/all/run/exec so both node:sqlite and the Bun
+        // driver shim satisfy them. Mirrored in
+        // test/helpers/apply-migrations.mjs.
+        if (migration.js) { migration.js(db); }
         setSchemaVersion(migration.version);
         db.exec('COMMIT');
       } catch (err) {
@@ -250,17 +267,33 @@ function runMigrations() {
       }
       if (migration.rescanRequired) {
         needsRescan = true;
+        epochIds.add(migration.rescanEpochId ?? '');
       }
     }
   }
 
-  // Write marker file if any migration requires a force rescan
+  // Write marker file if any migration requires a rescan. Content is the
+  // agreed epoch id when every rescan-requiring migration is
+  // generation-scoped (see epochIds above), else empty → full force. A
+  // 'hashgen-*' marker from a convergence re-arm is overwritten (a real
+  // migration epoch outranks it) — but an in-flight FULL epoch's marker
+  // ('' or 'rescan-*') is left untouched: its resume id must survive,
+  // and a full re-parse subsumes any generation-scoped work.
   if (needsRescan) {
     const markerPath = path.join(config.program.storage.dbDirectory, '.rescan-pending');
-    try {
-      fs.writeFileSync(markerPath, '');
-      winston.info('Migration requires force rescan — will run on next boot scan');
-    } catch (_) {}
+    const epochId = epochIds.size === 1 ? [...epochIds][0] : '';
+    let existing = null;
+    try { existing = fs.readFileSync(markerPath, 'utf8').trim(); } catch (_) { /* absent */ }
+    if (existing !== null && !existing.startsWith('hashgen-')) {
+      winston.info('Migration rescan folds into the already-pending full rescan epoch');
+    } else {
+      try {
+        fs.writeFileSync(markerPath, epochId ? `${epochId}\n` : '');
+        winston.info(epochId
+          ? `Migration requires a generation-scoped rescan — epoch '${epochId}' will run on next boot scan`
+          : 'Migration requires force rescan — will run on next boot scan');
+      } catch (_) {}
+    }
   }
 }
 
@@ -470,6 +503,13 @@ export function getAllLibraries() {
 }
 
 export function getUserLibraryIds(user) {
+  // Explicit grant override — federation keys (api/federation-auth.js) build
+  // a synthetic user with id=null and the granted library ids attached.
+  // Checked BEFORE the public-mode branch: isPublicMode(null id) is true, so
+  // without this ordering a federation caller would silently see EVERY
+  // library on a no-users server. Nothing else sets libraryIds, so this is
+  // inert for regular users and the sentinel.
+  if (user && Array.isArray(user.libraryIds)) { return user.libraryIds; }
   // Public mode (no user, or pinned to the anonymous sentinel by auth.js)
   // — every library is visible. Without this branch, the sentinel id (a
   // real integer with zero rows in user_libraries) would fall through to
@@ -627,12 +667,29 @@ export function replaceTrackGenres(trackId, genreStr) {
 // ── Backup destinations + history (V26) ─────────────────────────────────────
 
 // Defaults applied when a destination's exclude_globs column is NULL.
-// Picked to match the OS detritus most music libraries pick up when
-// browsed via Explorer / Finder / indexer services. Lives here (rather
-// than in the API or worker) because both api/backup.js and the task-
-// queue's runBackupTask need to agree on the effective list, and db/
-// manager.js is the only module both already import.
-export const DEFAULT_BACKUP_EXCLUDE_GLOBS = ['Thumbs.db', 'desktop.ini', '.DS_Store', '._*'];
+// Two groups. First, the OS detritus most music libraries pick up from
+// being browsed via Explorer / Finder / indexer services. Second,
+// in-flight temp files: mStream's own writers drop these inside the
+// library while a backup may be walking it (album-art embed's
+// *.tmp_art*, yt-dlp remux's *.tmp.*, generic *.tmp), and torrent
+// clients keep in-progress downloads as *.part / *.!qb — mirroring
+// those meant every pass copied half-written files and then trashed
+// them as orphans on the next pass (churn that compounds on seedboxes,
+// where each completed torrent triggers an after-scan backup while its
+// neighbours are still downloading). Exclusion is symmetric
+// (source AND dest), so previously-mirrored temp junk simply stops
+// being maintained rather than being swept.
+//
+// Lives here (rather than in the API or worker) because both
+// api/backup.js and the task-queue's runBackupTask need to agree on
+// the effective list, and db/manager.js is the only module both
+// already import. NULL-column destinations pick the new list up
+// automatically; rows with custom patterns keep exactly what the
+// operator saved.
+export const DEFAULT_BACKUP_EXCLUDE_GLOBS = [
+  'Thumbs.db', 'desktop.ini', '.DS_Store', '._*',
+  '*.tmp', '*.tmp.*', '*.tmp_art*', '*.part', '*.!qb', '*.crdownload',
+];
 
 // Resolve a backup_destinations row's exclude_globs column into a
 // concrete string array. NULL in storage → defaults; JSON array →
@@ -649,9 +706,15 @@ export function getEffectiveExcludeGlobs(dest) {
 }
 
 
+// All destination getters join libraries for name/root_path AND the
+// per-library follow_symlinks flag — runBackupTask forwards it to the
+// backup worker as followSymlinks. If the flag is missing from the
+// SELECT, dest.follow_symlinks reads undefined → false, and symlinked
+// library content is silently omitted from every backup.
 export function getBackupDestinations() {
   return db.prepare(`
-    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path,
+           l.follow_symlinks AS follow_symlinks
       FROM backup_destinations d
       JOIN libraries l ON l.id = d.library_id
      ORDER BY l.name, d.dest_path
@@ -660,7 +723,8 @@ export function getBackupDestinations() {
 
 export function getBackupDestinationById(id) {
   return db.prepare(`
-    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path,
+           l.follow_symlinks AS follow_symlinks
       FROM backup_destinations d
       JOIN libraries l ON l.id = d.library_id
      WHERE d.id = ?
@@ -669,7 +733,8 @@ export function getBackupDestinationById(id) {
 
 export function getBackupDestinationsByLibrary(libraryId, { triggerType, enabledOnly = true } = {}) {
   let sql = `
-    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path,
+           l.follow_symlinks AS follow_symlinks
       FROM backup_destinations d
       JOIN libraries l ON l.id = d.library_id
      WHERE d.library_id = ?
@@ -682,7 +747,8 @@ export function getBackupDestinationsByLibrary(libraryId, { triggerType, enabled
 
 export function getBackupDestinationsByTrigger(triggerType) {
   return db.prepare(`
-    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path
+    SELECT d.*, l.name AS library_name, l.root_path AS library_root_path,
+           l.follow_symlinks AS follow_symlinks
       FROM backup_destinations d
       JOIN libraries l ON l.id = d.library_id
      WHERE d.trigger_type = ? AND d.enabled = 1
@@ -739,13 +805,50 @@ export function deleteBackupDestination(id) {
 // updates counts via updateBackupRunProgress as it goes, and the manager
 // finalises the row with finishBackupRunRow when the worker exits.
 export function createBackupRunRow({ destinationId, triggerReason, status = 'running', errorMessage = null }) {
-  const finishedAt = status === 'running' ? null : new Date().toISOString();
+  // finished_at must use the same datetime('now') form as started_at and
+  // finishBackupRunRow ('YYYY-MM-DD HH:MM:SS', UTC). A JS
+  // new Date().toISOString() here produced a second, incompatible format
+  // for rows created already-finished (skipped / disabled-before-start):
+  // consumers normalise these timestamps with `s.replace(' ','T') + 'Z'`
+  // (sqliteUtcToLocalDateKey, the admin UI's formatTime), and an ISO
+  // value run through that gains a trailing 'ZZ' and parses to an
+  // Invalid Date. The interpolated branch is a fixed SQL literal —
+  // status is an internal enum, never user text.
+  const finishedSql = status === 'running' ? 'NULL' : "datetime('now')";
   const result = db.prepare(`
     INSERT INTO backup_history
       (destination_id, started_at, finished_at, status, trigger_reason, error_message)
-    VALUES (?, datetime('now'), ?, ?, ?, ?)
-  `).run(destinationId, finishedAt, status, triggerReason, errorMessage);
+    VALUES (?, datetime('now'), ${finishedSql}, ?, ?, ?)
+  `).run(destinationId, status, triggerReason, errorMessage);
+  pruneBackupHistory(destinationId);
   return Number(result.lastInsertRowid);
+}
+
+// Keep at most this many history rows per destination. Without a cap the
+// table grows one row per run forever (after-scan triggers alone can add
+// dozens a day); 500 matches the history endpoint's maximum page size,
+// so pruning never removes anything the UI could still request. Called
+// on every row insert — the DELETE is a no-op until the cap is reached.
+//
+// A 'running' row is NEVER pruned: it belongs to a live worker that will
+// finalise it (finishBackupRunRow) and whose progress the status
+// endpoint reads back by id. Deleting it mid-run would turn those
+// updates into silent no-ops. In practice the newest row is the running
+// one so it sits safely at the top of the keep-window, but the explicit
+// guard makes that independent of how many rows pile in behind it.
+const BACKUP_HISTORY_MAX_ROWS = 500;
+export function pruneBackupHistory(destinationId) {
+  db.prepare(`
+    DELETE FROM backup_history
+     WHERE destination_id = ?
+       AND status != 'running'
+       AND id NOT IN (
+         SELECT id FROM backup_history
+          WHERE destination_id = ?
+          ORDER BY id DESC
+          LIMIT ${BACKUP_HISTORY_MAX_ROWS}
+       )
+  `).run(destinationId, destinationId);
 }
 
 export function updateBackupRunProgress(historyId, { filesCopied, filesUnchanged, filesTrashed, bytesCopied }) {
@@ -813,6 +916,12 @@ export function markStaleBackupRunsFailed(excludeHistoryId = null) {
   return result.changes;
 }
 
+// "Last fully-clean run" — no production caller since the scheduler
+// moved to getLastBackupAttempt and progress estimation to
+// getLastCountedBackupBefore. Kept (and pinned by tests) because the
+// success-only semantic is the natural next UI surface ("last verified
+// good backup: <date>") and its absence is what the 'partial' status
+// exists to make visible.
 export function getLastSuccessfulBackup(destinationId) {
   return db.prepare(`
     SELECT * FROM backup_history
@@ -831,6 +940,24 @@ export function getLastBackupRun(destinationId) {
   `).get(destinationId);
 }
 
+// The most recent row that represents an actual ATTEMPT to run —
+// everything except 'skipped'. Skip rows record a dedup NO-OP ("you
+// clicked Run Now while a run was in flight"), and the daily scheduler
+// must not let one consume the day's window: a manual click at 23:05
+// while an after-scan run from 22:50 was still active would otherwise
+// silently suppress a daily_at_hour=23 backup (the active run itself
+// doesn't block — its 22:xx start is before the scheduled hour — but
+// the skip row's 23:05 stamp does). The UI's last-run cell keeps using
+// getLastBackupRun above, where showing the skip IS the point.
+export function getLastBackupAttempt(destinationId) {
+  return db.prepare(`
+    SELECT * FROM backup_history
+     WHERE destination_id = ? AND status != 'skipped'
+     ORDER BY started_at DESC, id DESC
+     LIMIT 1
+  `).get(destinationId);
+}
+
 // Look up a single history row by primary key. Used by the live-status
 // endpoint to fetch the active run's most recent counts (the worker
 // updates the row on every progress event via updateBackupRunProgress,
@@ -839,18 +966,22 @@ export function getBackupHistoryRowById(historyId) {
   return db.prepare('SELECT * FROM backup_history WHERE id = ?').get(historyId);
 }
 
-// Find the most recent SUCCESS-status history row for `destinationId`
-// strictly before `beforeHistoryId`. Used by the live-status endpoint
-// to estimate total work for the in-flight run: a steady-state
-// backup processes roughly the same total `(copied + unchanged +
-// trashed)` count as the previous successful run, so that figure is
-// our best zero-cost denominator for a progress bar. Returns null on
-// the first-ever run for a destination (UI then renders an
-// indeterminate spinner).
-export function getLastSuccessfulBackupBefore(destinationId, beforeHistoryId) {
+// Find the most recent COUNTED run for `destinationId` strictly before
+// `beforeHistoryId`, for the live-status progress denominator: a
+// steady-state backup processes roughly the same total
+// `(copied + unchanged + trashed)` count as its previous run, so that
+// figure is our best zero-cost estimate. 'partial' runs count here
+// (they processed nearly the whole library — a few per-file errors
+// barely move the denominator) even though they're excluded from
+// getLastSuccessfulBackup: without them, a destination with ONE
+// perpetually-failing file (a name illegal on the backup FS, a locked
+// track) would be 'partial' on every run and show an indeterminate
+// spinner forever. Returns null on the first-ever run (UI then renders
+// the spinner, correctly).
+export function getLastCountedBackupBefore(destinationId, beforeHistoryId) {
   return db.prepare(`
     SELECT * FROM backup_history
-     WHERE destination_id = ? AND status = 'success' AND id < ?
+     WHERE destination_id = ? AND status IN ('success', 'partial') AND id < ?
      ORDER BY started_at DESC, id DESC
      LIMIT 1
   `).get(destinationId, beforeHistoryId);

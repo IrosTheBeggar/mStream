@@ -11,10 +11,12 @@ import Joi from 'joi';
 import { Jimp } from 'jimp';
 import { migrateHashReferences as migrateHashRefsShared } from './hash-migration.js';
 import { extractLyrics, sidecarMtimeCached } from './lyrics-extraction.js';
-import { computeHashes } from './audio-hash.js';
+import { lrcToSearchText } from '../api/subsonic/lrc-parser.js';
+import { computeHashes, HASH_GENERATION, SAMPLE_THRESHOLD_DEFAULT } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars, migrateArtistStars, migrateAlbumArtState } from './album-migration.js';
 import { cleanupOrphans, cleanupStaleArt, reconcileAlbumArt, deleteStaleTracks, VARIOUS_ARTISTS_MBZ_ID } from './orphan-cleanup.js';
+import { isIgnoredDirName, isDotEntry } from './scan-ignore.js';
 import { detectSource } from './source-detect.js';
 
 // ── Parse CLI input ─────────────────────────────────────────────────────────
@@ -59,6 +61,25 @@ const schema = Joi.object({
   // (follows symlinks to their target, matching pre-v6.5 JS-scanner
   // behaviour). Resolved in task-queue.js from `library.follow_symlinks`.
   followSymlinks: Joi.boolean().default(false),
+  // Dot-entry ignore flags (scanOptions.ignoreDotFiles/ignoreDotFolders).
+  // Default FALSE (opt-in via the admin toggles) — and the use sites
+  // treat an ABSENT field as false too (`=== true`), because this
+  // validate() call only checks, it doesn't apply Joi defaults back
+  // onto loadJson. The hardcoded directory blocklist
+  // (src/db/scan-ignore.js) is always on, no field for it.
+  ignoreDotFiles: Joi.boolean().default(false),
+  ignoreDotFolders: Joi.boolean().default(false),
+  // Test-only override for the sampled-hash threshold (bytes). Absent in
+  // production configs — audio-hash.js's compiled default (25MB)
+  // applies. Mirror field in rust-parser/src/main.rs.
+  hashSampleThreshold: Joi.number().integer().min(1).optional(),
+  // Hash-generation convergence epoch (V60). Unlike forceRescan
+  // (re-parse EVERYTHING — manual force-rescans and tag-backfill
+  // migrations depend on that), hashEpoch only disables the mtime
+  // fast-path for rows stamped BELOW the current HASH_GENERATION, so a
+  // convergence epoch costs the stale-generation minority instead of a
+  // whole-library re-parse. Mirror field in rust-parser/src/main.rs.
+  hashEpoch: Joi.boolean().default(false),
   // Accepted but ignored by the JS fallback scanner — stratum-dsp
   // is a Rust crate, only the Rust scanner runs the BPM/key
   // analysis. Listed here so task-queue.js can pass the same
@@ -67,9 +88,10 @@ const schema = Joi.object({
   analyzeBpm: Joi.boolean().default(true),
   // Optional vpath-relative subtree to scan instead of the whole library.
   // Default empty string = legacy whole-vpath behaviour. When set, the
-  // scan walks {directory}/{subtree} and SKIPS the stale-cleanup pass
-  // (tracks outside the subtree would otherwise be deleted as "not
-  // seen this scan"). See the matching field in rust-parser/src/main.rs.
+  // scan walks {directory}/{subtree} and the stale sweep runs SCOPED to
+  // that prefix: rows under the subtree whose files are verifiably gone
+  // are deleted (with move re-homing), rows outside it are never
+  // candidates. See the matching field in rust-parser/src/main.rs.
   subtree: Joi.string().allow('').default(''),
   // Rust-only: directory the Rust scanner writes waveform .bin files to.
   // task-queue.js sends this to BOTH scanners (it stopped sending the
@@ -155,7 +177,7 @@ const stmts = {
   // survive; the V49 forced rescan would wipe every skipImg user's art).
   getTrack: db.prepare(
     `SELECT id, modified, file_hash, audio_hash, album_id, artist_id, lyrics_sidecar_mtime, scan_id,
-            album_art_file, album_art_source
+            album_art_file, album_art_source, hash_v
        FROM tracks WHERE filepath = ? AND library_id = ?`
   ),
   findArtist: db.prepare(
@@ -234,11 +256,11 @@ const stmts = {
      disc_number, year, duration, format, file_hash, audio_hash, album_art_file, album_art_source,
      replaygain_track_db, sample_rate, channels, bit_depth, bitrate, file_size,
      track_total, disc_total,
-     lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime, lyrics_source,
+     lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime, lyrics_source, lyrics_search_text,
      bpm, musical_key, bpm_source,
      modified, scan_id, source,
-     mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source, hash_v)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(filepath, library_id) DO UPDATE SET
        title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
        track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
@@ -254,11 +276,13 @@ const stmts = {
        lyrics_synced_lrc=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_synced_lrc ELSE excluded.lyrics_synced_lrc END,
        lyrics_lang=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_lang ELSE excluded.lyrics_lang END,
        lyrics_source=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_source ELSE excluded.lyrics_source END,
+       lyrics_search_text=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_search_text ELSE excluded.lyrics_search_text END,
        lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
        bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
        modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source,
        mbz_recording_id=excluded.mbz_recording_id, mbz_release_track_id=excluded.mbz_release_track_id,
-       isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source
+       isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source,
+       hash_v=excluded.hash_v
      RETURNING id`
   ),
   // V17: M2M artist-link maintenance. Album-artists use INSERT OR IGNORE
@@ -316,6 +340,12 @@ const stmts = {
   // the id whether the row is new or pre-existing. content_hash/byte_size
   // (V50) ride on the insert; healArt fills them on the OR IGNORE no-op
   // path for pre-V50 rows (IS-NULL guarded → zero WAL churn once filled).
+  // V60: transition ledger — old→new canonical identity, recorded when a
+  // re-parse re-keys a row so task-queue can re-key discovery.db after
+  // the scan. See hash_transitions in schema.js.
+  recordHashTransition: db.prepare(
+    'INSERT OR REPLACE INTO hash_transitions (old_hash, new_hash) VALUES (?, ?)'
+  ),
   insertArtCached: db.prepare(
     "INSERT OR IGNORE INTO art_files (kind, cache_file, content_hash, byte_size) VALUES ('cached', ?, ?, ?)"
   ),
@@ -390,9 +420,9 @@ const knownRefHashes = new Map(
 // ── User-data hash migration ───────────────────────────────────────────────
 // Delegates to the shared helper in ./hash-migration.js so the same logic
 // is exercised by the unit test there without needing a scanner subprocess.
-// See that file for the rationale.
-function migrateHashReferences(oldHash, newHash) {
-  migrateHashRefsShared(db, oldHash, newHash);
+// See that file for the rationale (incl. the schemeRekey discriminator).
+function migrateHashReferences(oldHash, newHash, opts) {
+  migrateHashRefsShared(db, oldHash, newHash, opts);
 }
 
 // ── Artist / Album helpers ──────────────────────────────────────────────────
@@ -554,6 +584,139 @@ function listFolderImages(absDir, relDir) {
   });
   folderImagesByDir[absDir] = imgs;
   return imgs;
+}
+
+// Folder-art drift: link NEW folder images that appeared in directories
+// whose tracks all rode the mtime fast-path. Art capture normally runs
+// only while a track is (re)parsed, so a cover.jpg dropped beside
+// unchanged audio was never picked up by ordinary scans (the reap half
+// of that asymmetry — deleted images — is cleanupStaleArt's job).
+//
+// Scope is deliberately ADD-only and NEW-only: an image whose relPath
+// the scan-start reference snapshot (knownRefHashes) already knows was
+// linked when its tracks last (re)parsed, and re-linking could
+// resurrect state a later user action removed. Per new image, mirror
+// insertTrack's linking: a reference art_files row + track_art /
+// album_art junctions (source 'folder') for every direct-child track
+// and its album. When a track has NO default at all and the dir's
+// first sorted image is one of the new ones, mirror the parse-time
+// election too: cache it (defaults are always cache files), thumbnail
+// it, and fill album_art_file/source on tracks and albums under the
+// same fill-NULL-only guards the parse uses. One short transaction per
+// scan; every statement is the idempotent INSERT OR IGNORE / guarded
+// UPDATE shape the parse path uses, so a re-run heals rather than
+// duplicates. Returns the number of newly linked images. Mirrors
+// link_folder_art_drift in rust-parser/src/main.rs.
+async function linkFolderArtDrift(preScanRows) {
+  if (loadJson.skipImg === true || fastpathDirs.size === 0) { return 0; }
+  const dirs = [...fastpathDirs].sort();
+  const trackMeta = db.prepare('SELECT album_id, album_art_file FROM tracks WHERE id = ?');
+  const fillTrack = db.prepare(
+    "UPDATE tracks SET album_art_file = ?, album_art_source = 'folder' WHERE id = ? AND album_art_file IS NULL");
+
+  let linked = 0;
+  let txnOpen = false;
+  try {
+    for (const relDir of dirs) {
+      const absDir = relDir === '' ? loadJson.directory : path.join(loadJson.directory, relDir);
+      const imgs = listFolderImages(absDir, relDir);
+      if (!imgs.some((f) => !knownRefHashes.has(f.relPath))) { continue; }
+
+      // Direct children from the sweep snapshot (subtree-scoped when the
+      // scan is); album/default columns read fresh per id — fast-pathed
+      // rows are unmodified, so this is one cheap indexed probe each.
+      const tracks = [];
+      for (const r of preScanRows) {
+        const i = r.filepath.lastIndexOf('/');
+        const parent = i === -1 ? '' : r.filepath.slice(0, i);
+        if (parent !== relDir) { continue; }
+        const meta = trackMeta.get(r.id);
+        if (meta) {
+          tracks.push({ id: r.id, filepath: r.filepath, albumId: meta.album_id, aaFile: meta.album_art_file });
+        }
+      }
+      if (tracks.length === 0) { continue; }
+      tracks.sort((a, b) => (a.filepath < b.filepath ? -1 : a.filepath > b.filepath ? 1 : 0));
+
+      // Parse-parity default election: only when a track has no default
+      // AND the dir's first sorted image is NEW. (A NULL default
+      // alongside pre-existing folder art can't normally happen — the
+      // parse would have elected it — so an old imgs[0] skips the fill.)
+      const needsDefault = tracks.some((t) => t.aaFile === null);
+      const first = imgs[0];
+      let promoted = null; // { cacheFile, relPath }
+      if (needsDefault && first && !knownRefHashes.has(first.relPath)) {
+        try {
+          const buf = fs.readFileSync(path.join(absDir, first.fileName));
+          const hash = crypto.createHash('md5').update(buf).digest('hex');
+          const cacheFile = hash + '.' + getFileType(first.fileName).toLowerCase();
+          const p = path.join(loadJson.albumArtDirectory, cacheFile);
+          let ok = fs.existsSync(p);
+          if (!ok) { try { fs.writeFileSync(p, buf); ok = true; } catch (_e) { /* fall through */ } }
+          if (ok) {
+            if (loadJson.compressImage) { await compressAlbumArt(buf, cacheFile); }
+            promoted = { cacheFile, relPath: first.relPath };
+          }
+        } catch (_e) { /* read failure — no promotion; references still link */ }
+      }
+
+      if (!txnOpen) { db.exec('BEGIN IMMEDIATE'); txnOpen = true; }
+      for (let i = 0; i < imgs.length; i++) {
+        const f = imgs[i];
+        if (knownRefHashes.has(f.relPath)) { continue; }
+        // Every statement is an idempotent OR-IGNORE / guarded UPDATE,
+        // so `changed` counts REAL mutations only and a fully-converged
+        // dir reports zero.
+        let changed = 0;
+        // A promoted default lives as a CACHED row keyed by its
+        // content-addressed filename — it never enters the reference
+        // snapshot, so on later scans the same cover would otherwise be
+        // re-classified as new and minted a duplicate reference row.
+        // Election is stateless at parse time; here the cache probe is
+        // the stateless equivalent: bytes we already hold as a cached
+        // row are linked to that row, never re-added.
+        let cacheProbe = null; // { cacheFile, id }
+        if (f.contentHash) {
+          const cf = `${f.contentHash}.${getFileType(f.fileName).toLowerCase()}`;
+          const hit = stmts.findArtCached.get(cf);
+          if (hit) { cacheProbe = { cacheFile: cf, id: hit.id }; }
+        }
+        const isPromoted = promoted !== null && promoted.relPath === f.relPath;
+        let artId = null;
+        if (cacheProbe !== null) {
+          artId = cacheProbe.id;
+        } else if (isPromoted) {
+          changed += stmts.insertArtCached.run(promoted.cacheFile, f.contentHash, f.byteSize).changes;
+          artId = stmts.findArtCached.get(promoted.cacheFile)?.id ?? null;
+        } else {
+          changed += stmts.insertArtRef.run(loadJson.libraryId, f.relPath, f.contentHash, f.byteSize).changes;
+          artId = stmts.findArtRef.get(loadJson.libraryId, f.relPath)?.id ?? null;
+        }
+        if (artId === null) { continue; }
+        for (const t of tracks) {
+          changed += stmts.insertTrackArt.run(t.id, artId, 'folder', f.type, i).changes;
+          if (t.albumId !== null) { changed += stmts.insertAlbumArt.run(t.albumId, artId, 'folder', f.type, i).changes; }
+        }
+        // A cache hit also restores default-fill behaviour for tracks
+        // still missing one (same guarded no-op otherwise).
+        const fillCf = cacheProbe !== null ? cacheProbe.cacheFile
+          : (isPromoted ? promoted.cacheFile : null);
+        if (fillCf !== null) {
+          for (const t of tracks) {
+            changed += fillTrack.run(fillCf, t.id).changes;
+            if (t.albumId !== null) { changed += stmts.updateAlbumArt.run(fillCf, 'folder', t.albumId).changes; }
+          }
+        }
+        if (changed > 0) { linked++; }
+      }
+    }
+    if (txnOpen) { db.exec('COMMIT'); }
+  } catch (e) {
+    if (txnOpen) { try { db.exec('ROLLBACK'); } catch (_) {} }
+    throw e;
+  }
+  if (linked > 0) { console.log(`Linked ${linked} new folder image(s) beside unchanged tracks`); }
+  return linked;
 }
 
 async function getAlbumArt(songInfo) {
@@ -847,12 +1010,14 @@ async function parseMyFile(absolutePath, modified) {
   songInfo.modified = modified;
   songInfo.filePath = path.relative(loadJson.directory, absolutePath).replace(/\\/g, '/');
   songInfo.format = getFileType(absolutePath);
-  // Compute both hashes in one pass. file_hash is whole-file MD5 (stable
-  // identity for a specific byte sequence); audio_hash strips tag regions
+  // Compute both hashes in one pass. file_hash covers the whole file
+  // (full MD5 below the 25MB sampling threshold, sampled scheme above —
+  // see audio-hash.js); audio_hash strips tag regions
   // so stars / bookmarks / play-queue entries survive tag-only edits. For
   // formats the extractor doesn't cover (ogg, opus, m4a, wav, aac)
   // audioHash is null and user_* callers fall back to file_hash.
-  const { fileHash, audioHash } = await computeHashes(absolutePath);
+  const { fileHash, audioHash } = await computeHashes(absolutePath,
+    { sampleThreshold: loadJson.hashSampleThreshold });
   songInfo.hash = fileHash;
   songInfo.audioHash = audioHash;
   await getAlbumArt(songInfo);
@@ -947,6 +1112,10 @@ function insertTrack(song) {
     // rescans. Mirrors the Rust scanner.
     (li.lyricsSidecarMtime != null ? 'sidecar'
       : (li.lyricsEmbedded || li.lyricsSyncedLrc) ? 'embedded' : null),
+    // V59: the timestamp-stripped search rendition of the synced LRC —
+    // derived at the write site (not in extractLyrics, keeping the
+    // lyrics-parity CLI/test surface untouched). Mirrors the Rust scanner.
+    lrcToSearchText(li.lyricsSyncedLrc),
     song.bpm ?? null,
     song.musicalKey ?? null,
     song.bpmSource ?? null,
@@ -956,7 +1125,8 @@ function insertTrack(song) {
     song.mbzRecordingId ?? null,
     song.mbzReleaseTrackId ?? null,
     song.isrc ?? null,
-    song.mbzIdSource ?? null
+    song.mbzIdSource ?? null,
+    HASH_GENERATION
   );
   const trackId = Number(row.id);
 
@@ -1047,6 +1217,13 @@ const COMMIT_INTERVAL = loadJson.scanCommitInterval || 25;
 // keeps them — same outcome as the old unstamped-row path, warning
 // included.
 const seenPaths = new Set();
+// Rel directories ('' = library root) whose tracks rode the mtime
+// fast-path this scan. Folder-art discovery only runs while a track is
+// (re)parsed, so a NEW cover.jpg dropped beside unchanged audio was
+// invisible to normal scans forever — linkFolderArtDrift reconciles
+// exactly these directories after the walk. Mirrors fastpath_dirs in
+// rust-parser/src/main.rs.
+const fastpathDirs = new Set();
 
 // Re-home hops recorded during the scan, replayed after the stale-track
 // sweep. The per-file hops run with doomed sibling rows (files deleted
@@ -1095,6 +1272,12 @@ const dirListingCache = new Map();
 const statForWalk = loadJson.followSymlinks
   ? fs.statSync
   : fs.lstatSync;
+
+// Dot-entry ignore flags: absent fields mean FALSE (the rules are
+// opt-in; older task-queue payloads predate them), matching serde's
+// bool default in rust-parser. Only an explicit true enables the rule.
+const ignoreDotFiles = loadJson.ignoreDotFiles === true;
+const ignoreDotFolders = loadJson.ignoreDotFolders === true;
 
 // Real directory paths already visited — used ONLY when following
 // symlinks, to break cycles (dir A → symlink → dir B → symlink → dir A).
@@ -1156,8 +1339,17 @@ function collectFiles(dir, out) {
     // silently skipped — no-follow by default.
     try { stat = statForWalk(filepath); } catch (_e) { continue; }
     if (stat.isDirectory()) {
+      // Prune ignored directories: the hardcoded NAS-recycle/system
+      // blocklist always, dot-named dirs per flag (src/db/scan-ignore.js).
+      // Only entries BELOW the walk root pass through here — the root
+      // itself is the initial collectFiles argument, so a library (or
+      // subtree scan) deliberately rooted at a dot-folder still scans.
+      // The stale sweep applies the same rules (isIgnoredRelPath), so
+      // rows indexed before a rule applied converge out of the index.
+      if (isIgnoredDirName(file) || (ignoreDotFolders && isDotEntry(file))) { continue; }
       collectFiles(filepath, out);
     } else if (stat.isFile() && loadJson.supportedFiles[getFileType(file).toLowerCase()]) {
+      if (ignoreDotFiles && isDotEntry(file)) { continue; }
       // Math.trunc(mtimeMs), NOT stat.mtime.getTime(): Node builds the
       // Date by ROUNDING the fractional ms (dateFromMs adds 0.5) while
       // the Rust scanner's as_millis() TRUNCATES — so getTime() disagrees
@@ -1211,12 +1403,25 @@ async function processFile(filepath, fileMtime) {
       ? false
       : (existing?.lyrics_sidecar_mtime || null) !== (sidecarMtimeCached(filepath, dirListingCache) || null);
 
-    if (existing && (alreadyThisEpoch || (existing.modified === fileMtime && !loadJson.forceRescan && !sidecarDrifted))) {
+    // hashEpoch: an unchanged file still re-parses when its row was
+    // stamped by an older hashing generation — that re-key is the whole
+    // point of the convergence epoch. Rows already at the current
+    // generation keep the fast-path. (< not !==: a downgraded server
+    // must not re-key rows back to an older scheme.)
+    const genStale = loadJson.hashEpoch === true
+      && existing != null && existing.hash_v < HASH_GENERATION;
+
+    if (existing && (alreadyThisEpoch
+        || (existing.modified === fileMtime && !loadJson.forceRescan && !sidecarDrifted && !genStale))) {
       // Unchanged (mtime fast-path) or already re-parsed this epoch — no
       // DB write at all: seen-ness lives in the in-memory set the stale
       // sweep consults, so a no-op rescan never takes the writer lock
       // except for the periodic progress updates below.
       seenPaths.add(relativePath);
+      {
+        const di = relativePath.lastIndexOf('/');
+        fastpathDirs.add(di === -1 ? '' : relativePath.slice(0, di));
+      }
     } else {
       // New or modified file. Capture the prior identity before the slow
       // parse below — which runs with no transaction open, so a
@@ -1237,6 +1442,34 @@ async function processFile(filepath, fileMtime) {
       const oldArtistId  = existing ? existing.artist_id  : null;
 
       const songInfo = await parseMyFile(filepath, fileMtime);   // no txn held
+
+      // V60 epoch move-bridge. A >=threshold file MOVED across the
+      // upgrade has an old row holding v1 FULL hashes at a path that no
+      // longer exists — no hash can ever match it to this new-path row's
+      // SAMPLED hashes, so its stars/plays/bookmarks would orphan
+      // forever (pre-V60, a pure move never changed hashes at all).
+      // During the epoch only, also compute what the OLD scheme would
+      // have called this file and ledger fullCanon→sampledCanon: the
+      // stale sweep consults the ledger before orphaning an unmatched
+      // candidate and re-homes through it. One extra full read per
+      // NEW-PATH big file, epoch-only; a genuinely new (not moved) file
+      // leaves an inert ledger row the drain applier no-ops. Computed
+      // HERE — outside the write transaction — because it reads the
+      // whole file. Mirrors main.rs.
+      let epochOldCanon = null;
+      if (loadJson.hashEpoch === true && !existing
+          && (songInfo.fileSize ?? 0) >= (loadJson.hashSampleThreshold || SAMPLE_THRESHOLD_DEFAULT)) {
+        try {
+          const full = await computeHashes(filepath, { sampleThreshold: Number.MAX_SAFE_INTEGER });
+          const fullCanon = full.audioHash || full.fileHash;
+          const sampledCanon = songInfo.audioHash || songInfo.hash;
+          if (fullCanon && sampledCanon && fullCanon !== sampledCanon) {
+            epochOldCanon = fullCanon;
+          }
+        } catch (err) {
+          console.warn(`Warning: epoch move-bridge hash failed for ${filepath}: ${err.message}`);
+        }
+      }
 
       // V48: under skipImg the parse collects no art — preserve the row's
       // current default rather than letting the UPSERT refresh it to NULL
@@ -1266,7 +1499,35 @@ async function processFile(filepath, fileMtime) {
         const oldCanon = oldAudioHash || oldFileHash;
         const newCanon = songInfo.audioHash || songInfo.hash;
         if (oldCanon && newCanon && oldCanon !== newCanon) {
-          migrateHashReferences(oldCanon, newCanon);
+          // Scheme re-key vs content change: a row stamped below the
+          // current generation re-keys because the HASH SCHEME changed
+          // (same bytes); a same-generation row's canon only changes
+          // when the BYTES changed. Content-derived state (the acoustid
+          // and BPM/key cooldown ledgers, and — via the transition
+          // ledger — discovery embeddings and the on-disk waveform
+          // cache) follows only the former: carrying the old audio's
+          // derivations onto genuinely new audio would permanently serve
+          // the replaced content's waveform/similarity and suppress
+          // fingerprinting of audio never attempted. Master orphaned all
+          // of these on content change; that stays the behavior.
+          const schemeRekey = (existing.hash_v ?? 1) < HASH_GENERATION;
+          migrateHashReferences(oldCanon, newCanon, { schemeRekey });
+          if (schemeRekey) {
+            // Record the transition for keyspaces the scanner must NOT
+            // touch mid-transaction: task-queue applies the ledger to
+            // discovery.db AND renames the on-disk waveform cache when
+            // the queue drains — after this transaction has committed,
+            // so a rollback can never strand an artifact at an identity
+            // the DB never adopted. OR REPLACE: a chain step replaces
+            // cleanly; the applier collapses chains. Mirrors main.rs.
+            stmts.recordHashTransition.run(oldCanon, newCanon);
+          }
+        }
+        // Epoch move-bridge ledger entry (see the computation above the
+        // transaction): lets the stale sweep re-home a moved big file's
+        // v1-keyed user state to this row's sampled identity.
+        if (epochOldCanon) {
+          stmts.recordHashTransition.run(epochOldCanon, songInfo.audioHash || songInfo.hash);
         }
         // Re-home user state from rows this re-parse is killing (all
         // unreferenced-guarded inside the helpers — nothing moves while
@@ -1346,9 +1607,12 @@ async function run() {
   // zero files, and the stale-cleanup DELETE below would then wipe every
   // track for this library — cascading through albums, artists, and
   // user_album_stars. Bail before any destructive write. We check the
-  // library root (not the subtree), exactly like the Rust scanner: a
-  // missing subtree under a healthy root is harmless because subtree
-  // scans never run the cleanup pass.
+  // library root (not the subtree), exactly like the Rust scanner. A
+  // missing subtree under a healthy root needs no guard of its own:
+  // that is exactly what a deleted folder looks like, and the scoped
+  // sweep's verify-absence converges its rows — while an UNREADABLE
+  // subtree (outage, not deletion) records a failed-walk prefix that
+  // shields them.
   if (!isAccessibleDir(loadJson.directory)) {
     console.error(`Scan failed: library directory not accessible: ${loadJson.directory}`);
     try { db.close(); } catch (_) {}
@@ -1370,6 +1634,13 @@ async function run() {
     } else {
       console.log(`Scanning ${loadJson.directory}...`);
     }
+    // DB-side subtree prefix (forward slashes, trailing '/') for scoping
+    // the sweep snapshot. Rebuilt from segments so callers may pass
+    // either separator; tracks.filepath is always a library-relative
+    // forward-slash path.
+    const subtreePrefix = subtreeMode
+      ? `${loadJson.subtree.split(/[/\\]/).filter(Boolean).join('/')}/`
+      : null;
 
     // Scan-start snapshot for the stale sweep: every (id, filepath) this
     // library had BEFORE the walk. Sweep candidates are the snapshot
@@ -1382,13 +1653,18 @@ async function run() {
     // leaked in the DB forever — they now converge out like ordinary
     // rows once verify-absence proves the file gone.) Tens of bytes of
     // RAM per track; the Rust scanner already holds a strictly larger
-    // per-row snapshot for its mtime fast-path. Subtree scans never
-    // sweep, so they skip the snapshot.
-    const preScanRows = subtreeMode
-      ? []
-      : db.prepare(
-          'SELECT id, filepath FROM tracks WHERE library_id = ? ORDER BY id'
-        ).all(loadJson.libraryId);
+    // per-row snapshot for its mtime fast-path. Subtree scans sweep
+    // too, but only within their own boundary: the snapshot is scoped
+    // to the subtree prefix, so rows outside the walked area can never
+    // become candidates — the invariant that used to require skipping
+    // the sweep entirely.
+    // Hashes ride along so the sweep can pair a verified-gone row with
+    // its moved/renamed twin and re-home path-keyed user references
+    // (see deleteStaleTracks's move re-homing).
+    const preScanRows = db.prepare(
+        'SELECT id, filepath, audio_hash, file_hash FROM tracks WHERE library_id = ? ORDER BY id'
+      ).all(loadJson.libraryId)
+      .filter((r) => subtreePrefix === null || r.filepath.startsWith(subtreePrefix));
 
     // Single walk: collect supported files (with walk-time mtime) so we
     // don't stat the whole tree twice. files.length is the progress-bar
@@ -1414,7 +1690,7 @@ async function run() {
     // not 600 coincidentally-corrupt files. Nothing landed in the
     // seen-set, so the stale sweep would treat the entire library as
     // candidates. Skip all cleanup and mark the scan failed.
-    if (!subtreeMode && files.length > 0 && totalProcessed === 0) {
+    if (files.length > 0 && totalProcessed === 0) {
       console.error(
         `Error: walk found ${files.length} files but every one failed to ` +
         'process — skipping stale-track cleanup; scan marked failed.');
@@ -1427,8 +1703,12 @@ async function run() {
     // vanished mid-scan. Re-check: gone → skip cleanup (outage); still
     // accessible → the user genuinely emptied the directory, so fall
     // through and let the stale-cleanup run. Mirrors rust-parser's
-    // run_scan. SKIPPED in subtree mode (it never deletes anything).
-    if (!subtreeMode && totalProcessed === 0) {
+    // run_scan. The LIBRARY-root check stays correct in subtree mode
+    // (an emptied subtree under a healthy root is a real deletion; a
+    // vanished mount kills the root check either way), and priorCount
+    // is deliberately the whole-library count — it is only the "there
+    // was data to lose" signal.
+    if (totalProcessed === 0) {
       const priorCount = stmts.countLibraryTracks.get(loadJson.libraryId)?.n || 0;
       if (priorCount > 0 && !isAccessibleDir(loadJson.directory)) {
         console.error(
@@ -1439,6 +1719,7 @@ async function run() {
         console.log(JSON.stringify({
           event: 'scanComplete',
           filesProcessed: 0, filesUnchanged: 0, filesScanned: 0, staleEntriesRemoved: 0,
+          movedTracksRehomed: 0, movedRefsRehomed: 0, folderArtLinked: 0,
         }));
         return;
       }
@@ -1466,17 +1747,24 @@ async function run() {
     // individually, and its listing-based presence check fails closed
     // for everything else — so one permanently unreadable directory
     // can't freeze cleanup for the rest of the library forever.
-    if (walkErrors > 0 && !subtreeMode) {
+    if (walkErrors > 0) {
       console.error(
         `Warning: ${walkErrors} directory enumeration error(s) during the walk — ` +
         'rows under the affected subtrees are shielded from this scan\'s cleanup');
     }
 
+    // Folder-art drift: NEW images beside fast-pathed tracks (a dropped
+    // cover.jpg) get their reference rows / junctions / NULL-default
+    // fills now — parse-time capture never sees these directories.
+    // Behind the schema guard like every other post-walk write; runs in
+    // subtree mode too (the dir set is scoped by the walk).
+    const folderArtLinked = await linkFolderArtDrift(preScanRows);
+
     // Remove tracks that weren't seen in this scan (deleted files).
-    // SKIPPED in subtree mode — tracks outside the subtree share the
-    // library_id but were never walked (absent from the seen-set), and
-    // wiping them would be a data-loss bug. Stale cleanup runs only when
-    // we've actually walked the whole library.
+    // In subtree mode the candidate snapshot was scoped to the subtree
+    // prefix above, so "unseen" regains its real meaning — the row was
+    // inside the walked area and its file wasn't found. Rows outside
+    // the subtree share the library_id but can never be candidates.
     // Candidates = snapshot rows the walk did not account for, already
     // in id order (the snapshot SELECT orders by id) so chunk boundaries
     // are deterministic. On a no-op rescan of a stable library this set
@@ -1488,12 +1776,12 @@ async function run() {
     // failedWalkPrefixes feed the verify-absence check: only rows whose
     // file is provably gone get deleted; unseen-but-alive rows are kept;
     // unverifiable rows are left untouched.
-    const deleted = subtreeMode
-      ? { changes: 0 }
-      : { changes: deleteStaleTracks(db,
-          preScanRows.filter((r) => !seenPaths.has(r.filepath)), schemaVersionAtOpen,
-          { libraryRoot: loadJson.directory, followSymlinks: !!loadJson.followSymlinks,
-            failedWalkPrefixes, supportedFiles: loadJson.supportedFiles }) };
+    const sweep = deleteStaleTracks(db,
+        preScanRows.filter((r) => !seenPaths.has(r.filepath)), schemaVersionAtOpen,
+        { libraryRoot: loadJson.directory, followSymlinks: !!loadJson.followSymlinks,
+          failedWalkPrefixes, supportedFiles: loadJson.supportedFiles,
+          ignoreDotFiles, ignoreDotFolders,
+          moveRehome: { libraryId: loadJson.libraryId } });
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
     // to run the waveform post-processor and to print a human-readable summary.
     // Field shapes mirror the rust-parser's emitter:
@@ -1503,6 +1791,10 @@ async function run() {
     //   filesScanned         Total supported files visited (processed +
     //                        unchanged + per-file errors).
     //   staleEntriesRemoved  Tracks deleted because the file disappeared.
+    //   movedTracksRehomed   Deleted rows whose content hash matched a
+    //                        live row (a move/rename); their playlist /
+    //                        cue / play-event references were rewritten.
+    //   movedRefsRehomed     Total reference rows rewritten that way.
     console.log(JSON.stringify({
       event: 'scanComplete',
       filesProcessed: fileCount,
@@ -1511,16 +1803,22 @@ async function run() {
       // as the Rust emitter, whose total_processed increments on the Err
       // arm too.
       filesScanned: totalProcessed + errorCount,
-      staleEntriesRemoved: deleted.changes,
+      staleEntriesRemoved: sweep.removed,
+      movedTracksRehomed: sweep.movedTracks,
+      movedRefsRehomed: sweep.movedRefs,
+      folderArtLinked,
       // Subtrees the scan could not see (their rows were shielded from
       // cleanup) — surfaced so a permanently unreadable directory is
       // operator-visible in the scan summary, not just a stderr line.
       walkErrors
     }));
 
-    // Clean up orphaned artists, albums, and genres. SKIPPED in
-    // subtree mode (we didn't delete any tracks, so nothing newly
-    // orphaned). Whole-library scans still perform this cleanup.
+    // Clean up orphaned artists, albums, and genres. Runs on every
+    // whole-library scan, and on subtree scans that DELETED rows —
+    // sweeping the last track of an album must reap the album now, not
+    // at the next full scan. The orphan probes are global NOT EXISTS
+    // queries, correct to run at any scope; a delete-less subtree scan
+    // still skips them (nothing can be newly orphaned).
     // yieldBetweenChunks: we are a dedicated scanner process, so the
     // inter-chunk sleep costs nothing and gives concurrent server
     // writes a real window during big cleanups.
@@ -1528,7 +1826,7 @@ async function run() {
     // windows of the whole scan (three chunked DELETEs with 10-20ms
     // yields) — re-verify per chunk for the same reason the stale sweep
     // does.
-    if (!subtreeMode) {
+    if (!subtreeMode || sweep.removed > 0) {
       // Replay recorded re-home hops now that the stale sweep has
       // removed the doomed rows that masked their guards mid-scan —
       // BEFORE the orphan sweep decides what's a ghost.
@@ -1537,6 +1835,12 @@ async function run() {
         yieldBetweenChunks: true,
         expectedSchemaVersion: schemaVersionAtOpen,
       });
+    }
+    // Art passes stay whole-library-only: both walk disk truth for the
+    // entire library (or cache dir), a cost a targeted subtree scan
+    // shouldn't pay — and a swept track's art junction rows already
+    // cascaded with its row.
+    if (!subtreeMode) {
       // V48 multi-art: reap art_files rows whose image is verifiably gone
       // from disk (disk is truth — an unlinked image that still exists is
       // KEPT). Runs regardless of skipImg: reaping is about rows whose

@@ -12,10 +12,6 @@ import * as vpathAccessCache from '../torrent/vpath-access-cache.js';
 import * as managedTorrents from '../torrent/managed-torrents.js';
 import { sweepVpathsForActiveClient } from '../torrent/vpath-sweep.js';
 import winston from 'winston';
-// syncthing import disabled — federation feature is being rebuilt
-// around the local-backup story (see src/server.js). Restore this
-// import when re-enabling enableFederation() below.
-// import * as syncthing from '../state/syncthing.js';
 import * as dlnaSsdp from '../dlna/ssdp.js';
 import * as dlnaServer from '../dlna/dlna-server.js';
 import * as subsonicServer from '../subsonic/subsonic-server.js';
@@ -114,8 +110,29 @@ export async function removeDirectory(vpath) {
   const library = db.getLibraryByName(vpath);
   if (!library) { throw new Error(`'${vpath}' not found`); }
 
+  // Cancel this library's backups BEFORE the cascade below destroys
+  // their backup_destinations rows. Without this, an in-flight backup
+  // worker became a phantom: it kept mirroring for hours, held the
+  // strictly-serial queue slot (blocking the rescan an admin typically
+  // runs right after re-adding a library), and was fully invisible —
+  // the status endpoint reports idle once the destination row is gone
+  // and the worker's history updates land on a cascade-deleted row.
+  // Same failure mode the destination-DELETE route guards against;
+  // this is the second path to it.
+  try {
+    for (const dest of db.getBackupDestinationsByLibrary(library.id, { enabledOnly: false })) {
+      const killed = dbQueue.cancelBackupsForDestination(dest.id);
+      if (killed) {
+        winston.info(`Backup: library '${vpath}' deleted with a run in flight for destination #${dest.id} — worker killed`);
+      }
+    }
+  } catch (err) {
+    winston.error(`Backup: failed to cancel backups for deleted library '${vpath}'`, { stack: err });
+  }
+
   const d = db.getDB();
   // CASCADE will delete tracks and user_libraries entries
+  // (and backup_destinations + their backup_history).
   d.prepare('DELETE FROM libraries WHERE id = ?').run(library.id);
 
   // Clean up orphan albums / artists / genres left over after the
@@ -446,6 +463,39 @@ export async function editAnalyzeBpm(val) {
   config.program.scanOptions.analyzeBpm = val;
 }
 
+// Dot-entry ignore toggles (scanOptions.ignoreDotFiles/ignoreDotFolders,
+// default false). Same live pattern: task-queue reads config.program
+// when it builds each scan's jsonLoad, so a flip takes effect on the
+// next scan with no reboot — and the sweep's convergence rule then
+// removes (or a rescan re-adds) the affected rows.
+export async function editIgnoreDotFiles(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.ignoreDotFiles = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.ignoreDotFiles = val;
+}
+
+export async function editIgnoreDotFolders(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.ignoreDotFolders = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.ignoreDotFolders = val;
+}
+
+// Filesystem-watcher toggle. Persist + in-memory like the others; the
+// API route starts/stops the watchers through dbQueue so the flip is
+// live (no reboot). watcherWait stays config-file-only for now and is
+// read when the watchers (re)start.
+export async function editWatcherEnabled(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.watcherEnabled = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.watcherEnabled = val;
+}
+
 // Tracks analysed per essentia pass. Same live-update pattern as
 // editAutoAlbumArtPerRun — the worker reads it fresh when task-queue builds
 // the pass's jsonLoad, so a change takes effect on the next pass with no reboot.
@@ -547,6 +597,51 @@ export async function editMaxPeerDbStorageMb(val) {
   loadConfig.discoveryP2p.maxPeerDbStorageMb = val;
   await saveFile(loadConfig, config.configFile);
   config.program.discoveryP2p.maxPeerDbStorageMb = val;
+}
+
+// Append a bootstrap peer (deduplicated) so a friend joined through the
+// UI survives restarts — the join RPC itself is session-only.
+export async function editAddBootstrapPeer(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.discoveryP2p) { loadConfig.discoveryP2p = {}; }
+  const list = loadConfig.discoveryP2p.bootstrapPeers || [];
+  if (!list.includes(val)) { list.push(val); }
+  loadConfig.discoveryP2p.bootstrapPeers = list;
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryP2p.bootstrapPeers = list;
+}
+
+// The abuse lever, runtime edition. Live everywhere it matters: record()
+// checks the list per announcement, fetch/holds paths per call, and the
+// hourly prune drops any lingering entry — no restart, no stack bounce.
+export async function editAddBlockedPeer(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.discoveryP2p) { loadConfig.discoveryP2p = {}; }
+  const list = loadConfig.discoveryP2p.blockedPeers || [];
+  if (!list.includes(val)) { list.push(val); }
+  loadConfig.discoveryP2p.blockedPeers = list;
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryP2p.blockedPeers = list;
+}
+
+export async function editRemoveBlockedPeer(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.discoveryP2p) { loadConfig.discoveryP2p = {}; }
+  const list = (loadConfig.discoveryP2p.blockedPeers || []).filter((p) => p !== val);
+  loadConfig.discoveryP2p.blockedPeers = list;
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryP2p.blockedPeers = list;
+}
+
+// Days a silent catalog peer is kept before the hourly prune pass forgets
+// it (0 = keep forever). Live: pruneStalePeers reads the config fresh on
+// every pass, so the next pass honors the new value — no restart.
+export async function editPeerRetentionDays(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.discoveryP2p) { loadConfig.discoveryP2p = {}; }
+  loadConfig.discoveryP2p.peerRetentionDays = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryP2p.peerRetentionDays = val;
 }
 
 // The p2p master switch. Persisting the flag is all this does — the api
@@ -759,7 +854,7 @@ export async function editAdminAccess({ mode, whitelist }) {
   config.program.adminAccess.mode = mode;
   if (whitelist !== undefined) { config.program.adminAccess.whitelist = whitelist; }
   // Keep the derived legacy flag in lockstep — every reader of lockAdmin
-  // (auth.js, server.js, admin.js, federation.js) depends on this.
+  // (auth.js, server.js, admin.js) depends on this.
   config.program.lockAdmin = (mode === 'none');
   // The whitelist BlockList is cached in admin-network.js; rebuild it.
   invalidateWhitelistCache();
@@ -880,18 +975,6 @@ export async function enableSubsonic(mode, port) {
   subsonicServer.stop();
   if (mode === 'separate-port') { subsonicServer.start(); }
 }
-
-// Federation toggle disabled — see the syncthing import above.
-// Re-enable along with the syncthing import + the API endpoint in
-// src/api/admin.js when federation comes back.
-// export async function enableFederation(val) {
-//   const loadConfig = await loadFile(config.configFile);
-//   if (!loadConfig.federation) { loadConfig.federation = {}; }
-//   loadConfig.federation.enabled = val;
-//   await saveFile(loadConfig, config.configFile);
-//   config.program.federation.enabled = val;
-//   syncthing.setup();
-// }
 
 export async function removeSSL() {
   const loadConfig = await loadFile(config.configFile);

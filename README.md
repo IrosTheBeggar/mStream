@@ -136,7 +136,6 @@ mStream is built on top of some great open-source libraries:
 * [Lofty](https://github.com/Serial-ATA/lofty-rs) - Audio tag reader powering the Rust scanner
 * [Symphonia](https://github.com/pdeljanov/Symphonia) - Pure-Rust audio decoder used to render waveform previews during a scan
 * [Butterchurn](https://github.com/jberg/butterchurn) - A clone of Milkdrop Visualizer written in JavaScript
-* [Syncthing](https://syncthing.net/) - Powers federation between mStream servers
 * [LRCLib](https://lrclib.net/) - Optional source for synced lyrics
 
 And thanks to the [LinuxServer.io](https://www.linuxserver.io/) group for maintaining the Docker image!

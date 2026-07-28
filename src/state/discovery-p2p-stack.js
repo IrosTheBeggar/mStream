@@ -54,6 +54,10 @@ export async function startDiscoveryP2pStack() {
     // logged, never fatal.
     const peerDbs = await import('./discovery-peer-dbs.js');
     peerDbs.startAutoFetch();
+    // Retention pruning: forget catalog peers not heard from in
+    // discoveryP2p.peerRetentionDays. The shelf is the pin-set — a peer
+    // whose snapshot we hold stays listed however long it's been silent.
+    catalog.startPruning(() => new Set(peerDbs.list().map((e) => e.endpointId)));
     running = true;
   })();
   try { await starting; } finally { starting = null; }
@@ -65,8 +69,10 @@ export async function startDiscoveryP2pStack() {
 export async function stopDiscoveryP2pStack() {
   const seeds = await import('./discovery-seeds.js');
   const peerDbs = await import('./discovery-peer-dbs.js');
+  const catalog = await import('./discovery-catalog.js');
   seeds.stopMeshHealthWatch();
   peerDbs.stopAutoFetch();
+  catalog.stopPruning();
   const p2p = await import('./discovery-p2p.js');
   await p2p.stop();
   running = false;

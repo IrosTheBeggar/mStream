@@ -171,6 +171,16 @@ describe('buildBpmKeyFilter', () => {
     assert.deepEqual(clauses, []);
   });
 
+  test('Camelot codes are case-insensitive', () => {
+    // '8a' from a hand-typed or third-party client must not silently
+    // drop the filter — it expands identically to '8A'.
+    assert.deepEqual(
+      expandCamelotCodes(['8a', '12b']).sort(),
+      expandCamelotCodes(['8A', '12B']).sort(),
+    );
+    assert.ok(expandCamelotCodes(['8a']).includes('A minor'));
+  });
+
   test('requireMusicalKey adds IS NOT NULL guard', () => {
     const { clauses } = buildBpmKeyFilter({ requireMusicalKey: true });
     assert.deepEqual(clauses, ['t.musical_key IS NOT NULL']);
@@ -363,7 +373,6 @@ async function bootMstream(tmpDir, musicDir) {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),
       dbDirectory:         path.join(tmpDir, 'db'),
       logsDirectory:       path.join(tmpDir, 'logs'),
-      syncConfigDirectory: path.join(tmpDir, 'sync'),
     },
     scanOptions: { bootScanDelay: 9999, scanInterval: 0, autoAlbumArt: false },
   };
@@ -522,6 +531,123 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     assert.ok(r.body.ignoreList[0] >= 0);
   });
 
+  // ── ignoreList = track ids (bounded-pool rework) ──────────────────
+  //
+  // The round-tripped list holds the last-served TRACK IDS (newest
+  // last, capped at 50). Simple mode excludes them in SQL inside a
+  // bounded ORDER BY RANDOM() pool; the waterfall and sonic paths
+  // filter by id in finalisePick. Stale values (deleted tracks or a
+  // pre-rework index-based list) match nothing and age out via the cap.
+
+  function trackIdsByTitle() {
+    const sdb = new DatabaseSync(path.join(tmpDir, 'db', 'mstream.db'), { readOnly: true });
+    const map = {};
+    for (const r of sdb.prepare("SELECT id, title FROM tracks WHERE scan_id = 'seed'").all()) {
+      map[r.title] = r.id;
+    }
+    sdb.close();
+    return map;
+  }
+
+  test('ignoreList entries are the picked track ids', async () => {
+    const ids = trackIdsByTitle();
+    const r = await randomReq(server.baseUrl, { ignoreList: [] });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ignoreList.length, 1);
+    assert.equal(r.body.ignoreList[0], ids[pickedTitle(r)],
+      'returned ignoreList entry is the picked track id');
+  });
+
+  test('fed-back ids are excluded from subsequent simple-mode picks', async () => {
+    const ids = trackIdsByTitle();
+    // Cool down everything except t4 — every pick must be t4.
+    const ignore = Object.entries(ids).filter(([t]) => t !== 't4').map(([, id]) => id);
+    for (let i = 0; i < 12; i++) {
+      const r = await randomReq(server.baseUrl, { ignoreList: ignore });
+      assert.equal(r.status, 200);
+      assert.equal(pickedTitle(r), 't4', `pick ${i} ignored the cooldown`);
+    }
+  });
+
+  test('waterfall path also respects the id cooldown', async () => {
+    const ids = trackIdsByTitle();
+    // bpm 124-125 narrows to {t1, t2, t7}; cool down t1+t2 → always t7.
+    const ignore = [ids.t1, ids.t2];
+    for (let i = 0; i < 12; i++) {
+      const r = await randomReq(server.baseUrl, {
+        bpmRanges: [{ min: 124, max: 125 }], ignoreList: ignore,
+      });
+      assert.equal(r.status, 200);
+      assert.equal(pickedTitle(r), 't7', `pick ${i} ignored the waterfall cooldown`);
+    }
+  });
+
+  test('cooldown covering the whole pool falls back to repeats (no 400)', async () => {
+    const ids = trackIdsByTitle();
+    const all = Object.values(ids);
+    const r = await randomReq(server.baseUrl, { ignoreList: all });
+    assert.equal(r.status, 200);
+    // Move-to-end: the picked id appears exactly once, at the end, and
+    // the list does not grow.
+    const picked = ids[pickedTitle(r)];
+    assert.equal(r.body.ignoreList.at(-1), picked);
+    assert.equal(r.body.ignoreList.filter((x) => x === picked).length, 1);
+    assert.equal(r.body.ignoreList.length, all.length);
+  });
+
+  test('stale ids are inert and retained until capped out', async () => {
+    const r = await randomReq(server.baseUrl, { ignoreList: [999991, 999992] });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ignoreList.length, 3);
+    assert.deepEqual(r.body.ignoreList.slice(0, 2), [999991, 999992]);
+  });
+
+  test('returned list is capped at 50, newest last', async () => {
+    const ids = trackIdsByTitle();
+    const fifty = Array.from({ length: 50 }, (_, i) => 900000 + i);
+    const r = await randomReq(server.baseUrl, { ignoreList: fifty });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ignoreList.length, 50);
+    assert.equal(r.body.ignoreList.at(-1), ids[pickedTitle(r)], 'picked id lands at the end');
+    assert.equal(r.body.ignoreList[0], 900001, 'oldest entry shifted out');
+  });
+
+  // ── Bounded waterfall (no-BPM/key sessions) ───────────────────────
+  //
+  // Real alpha DJ sessions send ignoreArtists from pick #2 onward, so
+  // they route through the waterfall even with every BPM/key feature
+  // off. With no BPM/key on the request the tier filter is inert and
+  // the steps are bounded like simple mode: id cooldown excluded in
+  // SQL, then a same-step retry without it so exhaustion falls back to
+  // repeats WITHIN the step instead of advancing the waterfall.
+
+  test('artist-cooldown-only session respects the id cooldown (bounded waterfall)', async () => {
+    const ids = trackIdsByTitle();
+    // ignoreArtists forces the waterfall path; the name matches no
+    // seeded artist so it excludes nothing. Cool down all but t4.
+    const ignore = Object.entries(ids).filter(([t]) => t !== 't4').map(([, id]) => id);
+    for (let i = 0; i < 12; i++) {
+      const r = await randomReq(server.baseUrl, {
+        ignoreArtists: ['No Such Artist'], ignoreList: ignore,
+      });
+      assert.equal(r.status, 200);
+      assert.equal(pickedTitle(r), 't4', `pick ${i} ignored the waterfall id cooldown`);
+    }
+  });
+
+  test('artist-cooldown-only session falls back to repeats when the id cooldown covers everything', async () => {
+    const ids = trackIdsByTitle();
+    const all = Object.values(ids);
+    const r = await randomReq(server.baseUrl, {
+      ignoreArtists: ['No Such Artist'], ignoreList: all,
+    });
+    assert.equal(r.status, 200);
+    const picked = ids[pickedTitle(r)];
+    assert.ok(picked, 'picked a real seeded track');
+    assert.equal(r.body.ignoreList.at(-1), picked);
+    assert.equal(r.body.ignoreList.length, all.length, 'move-to-end keeps the list from growing');
+  });
+
   // ── PR-E0: bpm + musical-key fields exposed in metadata response ──
   //
   // Field name is `musical-key` (kebab-case) on the wire to match
@@ -594,10 +720,33 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     assert.equal(meta['musical-key'], null);
   });
 
+  test('lowercase Camelot codes work end-to-end', async () => {
+    // Same narrowing as the round-trip test above, but with '8a' —
+    // case-folding means the filter still pins to t1 (124, "A minor").
+    const r = await randomReq(server.baseUrl, {
+      bpmRanges: [{ min: 124, max: 124 }],
+      musicalKeys: ['8a'],
+    });
+    assert.equal(r.status, 200);
+    const meta = r.body.songs[0].metadata;
+    assert.equal(meta.bpm, 124);
+    assert.equal(meta['musical-key'], 'A minor');
+  });
+
   // ── Joi validation ────────────────────────────────────────────────
 
   test('bpmRanges item missing min → 400', async () => {
     const r = await randomReq(server.baseUrl, { bpmRanges: [{ max: 130 }] });
+    assert.equal(r.status, 400);
+  });
+
+  test('bpmRanges with negative min → 400', async () => {
+    const r = await randomReq(server.baseUrl, { bpmRanges: [{ min: -5, max: 130 }] });
+    assert.equal(r.status, 400);
+  });
+
+  test('bpmRanges with absurd max → 400', async () => {
+    const r = await randomReq(server.baseUrl, { bpmRanges: [{ min: 100, max: 5000 }] });
     assert.equal(r.status, 400);
   });
 
@@ -1162,5 +1311,183 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     assert.equal(r.status, 200);
     assert.equal(pickedTitle(r), 't8');
     assert.deepEqual(r.body.songs[0].metadata.genres, []);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Artist cooldown vs artistless rows — dedicated fixture.
+//
+// Tracks with no artist credits trivially survive the ignoreArtists
+// exclusion. Before the artistless-rows rule (see runRandomSongs), a
+// cooldown covering every artist in scope left artistless rows as the
+// only survivors of the 'unrestricted' step — which, being non-empty,
+// blocked the drop-cooldown fallback and pinned the session to those
+// rows forever. Reproduced live with an .m3u indexed as a track
+// (artist-less AND unplayable). Own server + seed: two real artists,
+// two artistless audio tracks, a NULL-format track, and an m3u row.
+// ─────────────────────────────────────────────────────────────────────
+
+describe('random-songs — artist cooldown vs artistless rows', () => {
+  let tmpDir;
+  let server;
+
+  function seedCooldownDB(dbPath) {
+    const db = new DatabaseSync(dbPath);
+    db.exec('PRAGMA foreign_keys = ON');
+    const lib = db.prepare("SELECT id FROM libraries WHERE name = 'testlib'").get().id;
+    const a1 = Number(db.prepare("INSERT INTO artists (name) VALUES ('Artist Uno')").run().lastInsertRowid);
+    const a2 = Number(db.prepare("INSERT INTO artists (name) VALUES ('Artist Dos')").run().lastInsertRowid);
+    const insT = db.prepare(`
+      INSERT INTO tracks (filepath, library_id, title, artist_id, format,
+                          file_hash, audio_hash, modified, scan_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'cd-seed')
+    `);
+    let ts = 1700000000000;
+    // [filepath, title, artist_id, format]
+    const rows = [
+      ['uno.flac',       'Uno Song',        a1,   'flac'],
+      ['dos.flac',       'Dos Song',        a2,   'flac'],
+      ['untagged1.flac', 'Untagged One',    null, 'flac'],
+      ['untagged2.flac', 'Untagged Two',    null, 'flac'],
+      ['formatless',     'Formatless Song', null, null],   // legacy NULL format — still a candidate
+      ['mix.m3u',        'Mixtape',         null, 'm3u'],  // playlist-as-track — never a candidate
+    ];
+    for (let i = 0; i < rows.length; i++) {
+      const [fp, title, aid, format] = rows[i];
+      insT.run(fp, lib, title, aid, format, `cfh${i}`, `cah${i}`, ts++);
+    }
+    db.close();
+  }
+
+  function idsByTitle() {
+    const sdb = new DatabaseSync(path.join(tmpDir, 'db', 'mstream.db'), { readOnly: true });
+    const map = {};
+    for (const r of sdb.prepare("SELECT id, title FROM tracks WHERE scan_id = 'cd-seed'").all()) {
+      map[r.title] = r.id;
+    }
+    sdb.close();
+    return map;
+  }
+
+  const ARTISTLESS = ['Untagged One', 'Untagged Two', 'Formatless Song'];
+  const REAL_ARTIST_TRACKS = ['Uno Song', 'Dos Song'];
+  const BOTH_ARTISTS = ['Artist Uno', 'Artist Dos'];
+
+  before(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-random-cd-'));
+    const musicDir = path.join(tmpDir, 'music');
+    await fs.mkdir(musicDir, { recursive: true });
+    server = await bootMstream(tmpDir, musicDir);
+    await killProc(server.proc);
+    await sleep(200);
+    seedCooldownDB(path.join(tmpDir, 'db', 'mstream.db'));
+    server = await bootMstream(tmpDir, musicDir);
+  });
+
+  after(async () => {
+    if (server?.proc) await killProc(server.proc);
+    if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  test('m3u rows are never DJ candidates (simple mode)', async () => {
+    const seen = new Set();
+    for (let i = 0; i < 40; i++) {
+      const r = await randomReq(server.baseUrl, {});
+      assert.equal(r.status, 200);
+      seen.add(pickedTitle(r));
+    }
+    assert.ok(!seen.has('Mixtape'), 'unplayable .m3u row surfaced as a DJ pick');
+    // The other five (incl. the NULL-format legacy row) all remain
+    // candidates. 40 draws over a 5-pool misses a given row with
+    // P ~ 2e-4; assert >=4 distinct so one unlucky miss cannot flake CI,
+    // and require the NULL-format row unless it was the single miss.
+    assert.ok(seen.size >= 4, `expected >=4 distinct picks, saw ${[...seen].join(',')}`);
+    assert.ok(seen.has('Formatless Song') || seen.size === 5,
+      'NULL-format row should stay a candidate');
+  });
+
+  test('m3u rows are excluded from the drop-cooldown step too', async () => {
+    // Cool down both artists AND id-cool every artistless row: the
+    // enforcing step is rejected (all survivors id-cooled), and the
+    // drop-cooldown pool must still exclude the m3u.
+    const ids = idsByTitle();
+    for (let i = 0; i < 15; i++) {
+      const r = await randomReq(server.baseUrl, {
+        ignoreArtists: BOTH_ARTISTS,
+        ignoreList: ARTISTLESS.map((t) => ids[t]),
+      });
+      assert.equal(r.status, 200);
+      assert.notEqual(pickedTitle(r), 'Mixtape', `pick ${i} served the .m3u`);
+    }
+  });
+
+  test('cooldown covering every artist: session escapes artistless pinning', async () => {
+    // The live-repro walk. Feed the returned ignoreList back each pick
+    // with both artists cooled. Picks drain the id-fresh artistless
+    // rows first (they legitimately satisfy the cooldown); once those
+    // are id-cooled the enforcing step is rejected and the
+    // drop-cooldown step must surface REAL-artist tracks. Previously
+    // impossible: the session pinned to the artistless rows forever.
+    let ignoreList = [];
+    const picks = [];
+    for (let i = 0; i < 6; i++) {
+      const r = await randomReq(server.baseUrl, {
+        ignoreArtists: BOTH_ARTISTS, ignoreList,
+      });
+      assert.equal(r.status, 200);
+      picks.push(pickedTitle(r));
+      ignoreList = r.body.ignoreList;
+    }
+    // First three picks: the artistless rows, no repeats among them.
+    assert.deepEqual([...picks.slice(0, 3)].sort(), [...ARTISTLESS].sort(),
+      `expected the three artistless rows first, got ${picks.join(' | ')}`);
+    // Picks 4-5: the real-artist tracks — the escape. (They are id-fresh
+    // in the drop-cooldown pool, so no repeats until they too are cooled.)
+    assert.deepEqual([...picks.slice(3, 5)].sort(), [...REAL_ARTIST_TRACKS].sort(),
+      `expected the real-artist tracks after the escape, got ${picks.join(' | ')}`);
+  });
+
+  test('same escape through the requireBpm (unbounded) path', async () => {
+    // The live repro ran with bpmContinuity on and no anchor, i.e.
+    // requireBpm: true. Every row here has NULL bpm, so the BPM steps
+    // are empty and the cooldown-enforcing 'unrestricted' step decides
+    // — same pinning, different (unbounded) code path.
+    const ids = idsByTitle();
+    const r = await randomReq(server.baseUrl, {
+      requireBpm: true,
+      ignoreArtists: BOTH_ARTISTS,
+      ignoreList: ARTISTLESS.map((t) => ids[t]),
+    });
+    assert.equal(r.status, 200);
+    assert.ok(REAL_ARTIST_TRACKS.includes(pickedTitle(r)),
+      `expected a real-artist track, got ${pickedTitle(r)}`);
+  });
+
+  test('partial cooldown is unaffected while id-fresh survivors exist', async () => {
+    // Only Artist Uno cooled: the enforcing step keeps id-fresh
+    // survivors (Dos Song + the artistless rows), so it still wins and
+    // Uno Song never surfaces.
+    const seen = new Set();
+    for (let i = 0; i < 30; i++) {
+      const r = await randomReq(server.baseUrl, { ignoreArtists: ['Artist Uno'] });
+      assert.equal(r.status, 200);
+      seen.add(pickedTitle(r));
+    }
+    assert.ok(!seen.has('Uno Song'), 'artist cooldown leaked a cooled artist');
+    assert.ok(!seen.has('Mixtape'));
+    assert.ok(seen.size >= 3, `expected >=3 distinct picks, saw ${[...seen].join(',')}`);
+  });
+
+  test('tiny library fully id-cooled still never stalls (repeats from drop-cooldown pool)', async () => {
+    const ids = idsByTitle();
+    const all = Object.entries(ids)
+      .filter(([t]) => t !== 'Mixtape')
+      .map(([, id]) => id);
+    const r = await randomReq(server.baseUrl, {
+      ignoreArtists: BOTH_ARTISTS, ignoreList: all,
+    });
+    assert.equal(r.status, 200);
+    assert.notEqual(pickedTitle(r), 'Mixtape');
+    assert.equal(r.body.ignoreList.length, all.length, 'move-to-end keeps the list from growing');
   });
 });

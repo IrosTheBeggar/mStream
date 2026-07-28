@@ -8,23 +8,72 @@ import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
 import { CLIENT_TYPE, ENABLED_FOR } from '../torrent/constants.js';
 import { EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL } from '../db/discovery-features-lib.js';
 
+const DEFAULT_DB_DIRECTORY = path.join(appRoot, 'save/db');
+
+/**
+ * Default for storage.modelCacheDirectory when the config doesn't set it:
+ * a SIBLING of the (resolved or default) dbDirectory. The previous default,
+ * appRoot/model-cache, broke every container image whose config template
+ * points storage at a writable mount but predates this key — the app dir is
+ * root-owned there (e.g. linuxserver.io's /app/mstream under PUID), so the
+ * first embed run died with EACCES. dbDirectory is writable by construction
+ * (the server can't boot otherwise), and container templates keep all
+ * storage dirs siblings under one mount (/config/db, /config/album-art,
+ * ...), so its parent is the right home: /config/db → /config/model-cache.
+ * There is deliberately NO migration from the old default: the cache holds
+ * only sha256-pinned re-downloadable weights (~18 MB EffNet) — embeddings
+ * live in discovery.db, keyed by model, so nothing is rebuilt. The next
+ * pass re-fetches into the derived location; a leftover appRoot/model-cache
+ * is unused and safe to delete.
+ * Exported for tests.
+ */
+export function deriveModelCacheDirectory(dbDirectory) {
+  return path.join(path.dirname(dbDirectory || DEFAULT_DB_DIRECTORY), 'model-cache');
+}
+
 const storageJoi = Joi.object({
   albumArtDirectory: Joi.string().default(path.join(appRoot, 'image-cache')),
-  dbDirectory: Joi.string().default(path.join(appRoot, 'save/db')),
+  dbDirectory: Joi.string().default(DEFAULT_DB_DIRECTORY),
   logsDirectory: Joi.string().default(path.join(appRoot, 'save/logs')),
-  syncConfigDirectory:  Joi.string().default(path.join(appRoot, 'save/sync')),
   waveformCacheDirectory: Joi.string().default(path.join(appRoot, 'waveform-cache')),
   // Where ML model weights download/cache (currently: the discovery
-  // embedding model, ~hundreds of MB on first use). Deliberately OUTSIDE
-  // node_modules — transformers.js's default cache lands in there and every
-  // update/reinstall would silently re-download.
-  modelCacheDirectory: Joi.string().default(path.join(appRoot, 'model-cache')),
+  // embedding model, ~18 MB EffNet; CLAP is far larger). Deliberately
+  // OUTSIDE node_modules — transformers.js's default cache lands in there
+  // and every update/reinstall would silently re-download. Defaults next to
+  // dbDirectory (see deriveModelCacheDirectory above).
+  modelCacheDirectory: Joi.string().default((parent) => deriveModelCacheDirectory(parent && parent.dbDirectory)),
 });
 
 const scanOptions = Joi.object({
   skipImg: Joi.boolean().default(false),
   scanInterval: Joi.number().min(0).default(24),
   bootScanDelay: Joi.number().default(3),
+  // Skip dot-hidden entries during the scan walk: ignoreDotFiles covers
+  // files (.hidden.mp3), ignoreDotFolders covers directories
+  // (.hiddenalbum/). "Dot-hidden" means a SINGLE leading dot — names
+  // starting with '..' ('..WeirdAlbum') are ordinary names that stay
+  // indexed. Separate from these flags, both scanners ALWAYS prune a
+  // hardcoded NAS-recycle/system-dir blocklist ($RECYCLE.BIN, #recycle,
+  // @Recycle, #snapshot, .git, System Volume Information, ...) — see
+  // src/db/scan-ignore.js. The stale sweep applies the same predicate,
+  // so flipping a flag converges already-indexed rows out of (or a
+  // rescan brings them back into) the index on the next scan.
+  // Default OFF: an upgrade must not silently delete dot-named tracks
+  // users already have indexed — opting in is an admin toggle
+  // (/api/v1/admin/db/params/ignore-dot-*).
+  ignoreDotFiles: Joi.boolean().default(false),
+  ignoreDotFolders: Joi.boolean().default(false),
+  // Filesystem watcher: near-instant targeted scans when library files
+  // change (src/util/library-watcher.js). Default OFF (opt-in): change
+  // events don't fire on most CIFS/NFS mounts, so the scanInterval loop
+  // stays the delivery mechanism there — the watcher is an accelerator
+  // for local disks, never a replacement. watcherWait is the debounce in
+  // seconds: events coalesce until the library has been quiet that long
+  // (a torrent writing 200 files becomes one subtree scan), tripled
+  // while a scan is already running. Applied when the watcher (re)starts
+  // — boot, reboot, or the admin toggle.
+  watcherEnabled: Joi.boolean().default(false),
+  watcherWait: Joi.number().integer().min(1).max(600).default(10),
   compressImage: Joi.boolean().default(true),
   // Tracks scanned per SQLite COMMIT — also gates how often the scanner
   // emits progress updates. Lower = more responsive UI + shorter
@@ -123,9 +172,10 @@ const scanOptions = Joi.object({
   // local recommendation features without ever exposing its library. The
   // pass is CPU-heavy but bounded (discoveryPerRun tracks per batch,
   // re-enqueued while a backlog remains) and downloads its model weights
-  // once (~18 MB EffNet). Where the ML runtime is unavailable (e.g. the
-  // glibc-only onnxruntime on musl/Alpine) the worker degrades once,
-  // loudly, and stops. Set false to skip discovery collection entirely.
+  // once (~18 MB EffNet). Where the ML runtime is unavailable (onnxruntime
+  // missing, or a musl system without a working glibc compat layer) the
+  // worker degrades once, loudly, and stops. Set false to skip discovery
+  // collection entirely.
   collectDiscoveryData: Joi.boolean().default(true),
   // Which embedding engine the discovery pass runs — a key into the model
   // registry in src/db/discovery-features-lib.js. Deliberately swappable:
@@ -221,8 +271,8 @@ const compressionOptions = Joi.object({
 //                 405 on the admin API, /admin page disabled, public-mode
 //                 write perms demoted. config.program.lockAdmin is DERIVED
 //                 from this value in setup() so every existing reader of
-//                 lockAdmin (auth.js, server.js, admin.js, federation.js)
-//                 keeps working unchanged.
+//                 lockAdmin (auth.js, server.js, admin.js) keeps working
+//                 unchanged.
 //   'localhost' — reachable only from loopback IPs (127.0.0.0/8 + ::1).
 //   'whitelist' — reachable only from IPs/CIDRs in `whitelist`.
 // `whitelist` accepts single IPs ('127.0.0.1') or CIDRs ('192.168.0.0/16');
@@ -281,12 +331,6 @@ const discogsOptions = Joi.object({
   apiSecret: Joi.string().allow('').default(''),
 });
 
-const federationOptions = Joi.object({
-  enabled: Joi.boolean().default(false),
-  folder: Joi.string().optional(),
-  federateUsersMode: Joi.boolean().default(false),
-});
-
 // Iroh P2P remote-access tunnel. When enabled, mStream binds an Iroh endpoint
 // that proxies incoming QUIC connections to the local HTTP server, so a paired
 // device can reach the server from anywhere by dialing its EndpointId — no
@@ -314,6 +358,24 @@ const irohOptions = Joi.object({
   // connection. Still sits behind the auth wall, so a private server with users
   // only exposes it to logged-in users.
   shareCodePublic: Joi.boolean().default(false),
+});
+
+// Federation: ticket-paired read-only library sharing between mStream servers
+// over a dedicated iroh endpoint (ALPN mstream/federation/1). A THIRD iroh
+// persona, independent of the `iroh` tunnel above and the discovery sidecar —
+// its own secretKey, so the three EndpointIds stay unlinkable and each feature
+// toggles on its own. No discovery/gossip: pairing is ticket-swap only.
+//   secretKey  — base64 of 32 random bytes; the federation endpoint's identity.
+//                Auto-generated once and persisted (same precedent as the
+//                iroh block). Losing it changes the EndpointId and breaks
+//                every previously-issued federation ticket.
+//   serverName — display name embedded in minted tickets so the friend's
+//                add-peer UI can label this server; '' falls back to
+//                os.hostname() at mint time.
+const federationOptions = Joi.object({
+  enabled: Joi.boolean().default(false),
+  secretKey: Joi.string().optional(),
+  serverName: Joi.string().max(64).allow('').default(''),
 });
 
 // The music-discovery P2P layer (p2p-sidecar: iroh-blobs snapshot sharing
@@ -346,6 +408,11 @@ const discoveryP2pOptions = Joi.object({
   autoFetch: Joi.boolean().default(true),
   autoFetchCount: Joi.number().integer().min(0).max(50).default(3),
   maxPeerDbStorageMb: Joi.number().integer().min(10).max(100000).default(500),
+  // Auto-forget: drop a catalog entry once the peer hasn't been heard from in
+  // this many days (0 = keep forever). Peers whose snapshot is on the local
+  // shelf are exempt — forgetting them would orphan the downloaded file
+  // invisibly. See discovery-catalog.pruneStalePeers for the guardrails.
+  peerRetentionDays: Joi.number().integer().min(0).max(3650).default(30),
   // Endpoint ids whose announcements are ignored and whose snapshots are
   // never fetched — the v1 spam/abuse lever.
   blockedPeers: Joi.array().items(Joi.string().hex().length(64)).default([]),
@@ -381,6 +448,23 @@ const dlnaOptions = Joi.object({
 const subsonicOptions = Joi.object({
   mode: Joi.string().valid('disabled', 'same-port', 'separate-port').default('disabled'),
   port: Joi.number().integer().min(1).max(65535).default(3012),
+});
+
+// LAN service discovery. Advertises the API as a `_mstream._tcp` mDNS/DNS-SD
+// service so zero-config clients (the portable mStream player) can find the
+// server without typing an IP. Advertise-only: it exposes metadata, not the
+// library, and touches no routes or auth.
+//   name       — friendly instance name shown to clients. Empty => os.hostname().
+//   instanceId — stable id (dedupe across IP changes, device-registry later).
+//                Auto-generated + persisted on first boot, like dlna.uuid.
+const mdnsOptions = Joi.object({
+  enabled: Joi.boolean().default(true),
+  name: Joi.string().allow('').default(''),
+  instanceId: Joi.string().optional(),
+});
+
+const discoveryOptions = Joi.object({
+  mdns: mdnsOptions.default(mdnsOptions.validate({}).value),
 });
 
 // Torrent client integration. v1 supports exactly two states for
@@ -599,11 +683,12 @@ const schema = Joi.object({
     key: Joi.string().allow('').optional(),
     cert: Joi.string().allow('').optional()
   }).optional(),
-  federation: federationOptions.default(federationOptions.validate({}).value),
   iroh: irohOptions.default(irohOptions.validate({}).value),
+  federation: federationOptions.default(federationOptions.validate({}).value),
   discoveryP2p: discoveryP2pOptions.default(discoveryP2pOptions.validate({}).value),
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
   subsonic: subsonicOptions.default(subsonicOptions.validate({}).value),
+  discovery: discoveryOptions.default(discoveryOptions.validate({}).value),
   torrent: torrentOptions.default(torrentOptions.validate({}).value),
   autoBootServerAudio: Joi.boolean().default(false),
   rustPlayerPort: Joi.number().integer().min(1).max(65535).default(3333),
@@ -679,6 +764,16 @@ export async function setup(configFileArg) {
     await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
   }
 
+  // Federation endpoint identity — same generate-and-persist pattern as the
+  // iroh tunnel above, and deliberately a DIFFERENT key so the tunnel and
+  // federation EndpointIds stay unlinkable personas.
+  if (!programData.federation) { programData.federation = {}; }
+  if (!programData.federation.secretKey) {
+    winston.info('Config file missing federation secret. Generating and saving');
+    programData.federation.secretKey = await asyncRandom(32);
+    await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
+  }
+
   // Back-compat migration for the lockAdmin -> adminAccess rename. A config
   // file that predates adminAccess and had lockAdmin=true meant "admin
   // disabled", which is now adminAccess.mode='none'. Coerce + persist before
@@ -713,7 +808,7 @@ export async function setup(configFileArg) {
 
   // Derive the legacy lockAdmin flag from adminAccess.mode. Every existing
   // reader of config.program.lockAdmin (auth.js, server.js page guards,
-  // admin.js guard, federation.js) keeps behaving correctly off this value;
+  // admin.js guard) keeps behaving correctly off this value;
   // only mode='none' fully disables the admin surface, the other three modes
   // are application-level IP gates layered on top via util/admin-network.js.
   program.lockAdmin = (program.adminAccess.mode === 'none');
@@ -767,11 +862,39 @@ export async function setup(configFileArg) {
     program.storage.dbDirectory,
     program.storage.albumArtDirectory,
     program.storage.logsDirectory,
-    program.storage.syncConfigDirectory,
     program.storage.waveformCacheDirectory,
     program.transcode.ffmpegDirectory,
   ]) {
     if (dir) { await fs.mkdir(dir, { recursive: true }); }
+  }
+
+  // The model cache is created best-effort, OUTSIDE the fatal loop above: a
+  // server that can't write model weights must still boot and stream music
+  // (the discovery pass degrades on its own). But surface the problem NOW,
+  // at boot, with the key that fixes it — otherwise the first symptom is a
+  // bare EACCES from the embedding worker, mid-pass, hours later.
+  try {
+    if (program.storage.modelCacheDirectory) {
+      await fs.mkdir(program.storage.modelCacheDirectory, { recursive: true });
+    }
+  } catch (err) {
+    winston.warn(
+      `[config] storage.modelCacheDirectory '${program.storage.modelCacheDirectory}' is not creatable `
+      + `(${err.code || err.message}). The discovery-embedding pass cannot download model weights until `
+      + `it points at a writable path (on Docker, somewhere under your writable config mount, `
+      + `e.g. '/config/model-cache').`);
+  }
+
+  // Persist a stable mDNS instance id so discovery clients can dedupe the
+  // server across IP/interface changes and restarts. Same generate-and-persist
+  // pattern as dlna.uuid above.
+  if (!program.discovery.mdns.instanceId) {
+    program.discovery.mdns.instanceId = crypto.randomUUID();
+    const rawConfig = JSON.parse(await fs.readFile(configFileArg, 'utf8'));
+    if (!rawConfig.discovery) { rawConfig.discovery = {}; }
+    if (!rawConfig.discovery.mdns) { rawConfig.discovery.mdns = {}; }
+    rawConfig.discovery.mdns.instanceId = program.discovery.mdns.instanceId;
+    await fs.writeFile(configFileArg, JSON.stringify(rawConfig, null, 2), 'utf8');
   }
 }
 

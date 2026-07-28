@@ -167,6 +167,23 @@ jobs:
             echo "No binary changes to commit"
           else
             git commit -m "ci: update pre-built rust-parser binaries"
-            git pull --rebase origin ${{ github.ref_name }}
-            git push
+            # Sibling binary workflows can land on the same push (the
+            # glibc + musl pairs share path triggers, and one commit can
+            # match several families) and their commit jobs race: a
+            # sibling pushing between our rebase and our push gets this
+            # push rejected — run 29967087650's glibc leg lost exactly
+            # that race and needed a manual rerun. Rebase-and-retry until
+            # it lands: each workflow writes a disjoint file set, so the
+            # rebase is always clean and a few attempts always converge.
+            # (A shared concurrency group would be WRONG here — GitHub
+            # keeps only one pending run per group and cancels the rest,
+            # silently dropping a sibling's binary update.)
+            for attempt in 1 2 3 4 5; do
+              git pull --rebase origin ${{ github.ref_name }}
+              if git push; then exit 0; fi
+              echo "push rejected (attempt $attempt) — a sibling workflow pushed; retrying"
+              sleep $(( (RANDOM % 5) + 2 ))
+            done
+            echo "::error::binary push failed after 5 attempts"
+            exit 1
           fi

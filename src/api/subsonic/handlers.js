@@ -1073,7 +1073,12 @@ function normalizeQueryFragment(q) {
   // tokenizes case-insensitively. We DO NOT strip * or " here any more
   // — buildFtsExpression handles them safely via escapeFts, and the FTS
   // parser's syntax doesn't expose them to user input directly.
-  return String(q || '').trim().replace(/[%_]/g, '').toLowerCase();
+  //
+  // The 512 cap mirrors the /api/v1/db/search Joi cap. Subsonic queries
+  // ride the URL (node's ~16KB header ceiling bounds them anyway), and
+  // Subsonic clients expect lenient handling, so over-length input is
+  // truncated rather than rejected.
+  return String(q || '').trim().slice(0, 512).replace(/[%_]/g, '').toLowerCase();
 }
 
 // Latch + log so a misconfigured server (FTS5 not compiled in) doesn't

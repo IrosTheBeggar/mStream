@@ -347,3 +347,110 @@ describe('similarity index invalidation', () => {
       'freshly embedded track (cos 0.99) tops the ranking — index rebuilt');
   });
 });
+
+// ── /discovery/local/path ────────────────────────────────────────────────────
+
+describe('POST /api/v1/discovery/local/path', () => {
+  const startPath = 'testlib/Icarus/Be Somebody/01 - Be Somebody.mp3';
+  let neonPath;
+
+  before(async () => {
+    // The index-invalidation test above embedded 'Orbit' (cos 0.99); remove
+    // it so this suite runs against the original handcrafted 5-vector fan —
+    // and so Orbit is again scanned-but-unembedded for the notAnalyzed case.
+    const ddb = openDiscovery();
+    try {
+      ddb.prepare("DELETE FROM discovery_tracks WHERE title = 'Orbit'").run();
+      ddb.prepare("UPDATE discovery_meta SET value = '100' WHERE key = 'row_seq'").run();
+    } finally { ddb.close(); }
+
+    // Resolve Neon's request path from the API rather than hardcoding the
+    // fixture layout.
+    const { body } = await api('/api/v1/discovery/local/similar/tracks', { filePath: startPath });
+    neonPath = body.results.find((r) => r.metadata.title === 'Neon').filepath;
+  });
+
+  test('403 while discovery is disabled', async () => {
+    const r = await fetch(`${offServer.baseUrl}/api/v1/discovery/local/path`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ startFilePath: 'testlib/x.mp3', endFilePath: 'testlib/y.mp3' }),
+    });
+    assert.equal(r.status, 403);
+  });
+
+  test('validation: both seeds required', async () => {
+    assert.equal((await api('/api/v1/discovery/local/path', { startFilePath: startPath })).status, 400);
+  });
+
+  test('ping advertises discoveryPath on this server, not the disabled one', async () => {
+    // This suite's main server has users — ping sits behind the auth wall.
+    const authed = await fetch(`${server.baseUrl}/api/v1/ping`, {
+      headers: { 'x-access-token': tokens.admin },
+    });
+    assert.equal(authed.status, 200);
+    assert.equal((await authed.json()).discoveryPath, true);
+    // The off server runs userless/open — a bare ping answers.
+    assert.equal((await (await fetch(`${offServer.baseUrl}/api/v1/ping`)).json()).discoveryPath, false);
+  });
+
+  test('walks the arc: seed → Rise → Lib2 → Highway → Neon at length 5', async () => {
+    // Waypoints land at 15°/30°/45° on the 0°→60° arc; nearest embedded
+    // tracks by the handcrafted angles: Rise (18.2°), Lib2 Song (25.8°),
+    // Highway (36.9°). Exact, no ML.
+    const { status, body } = await api('/api/v1/discovery/local/path',
+      { startFilePath: startPath, endFilePath: neonPath, length: 5 });
+    assert.equal(status, 200);
+    assert.deepEqual(body.notAnalyzed, { start: false, end: false });
+    assert.equal(body.model.id, 'test-fake');
+    assert.deepEqual(body.results.map((r) => r.metadata.title),
+      ['Be Somebody', 'Rise', 'Lib2 Song', 'Highway', 'Neon']);
+    assert.deepEqual(body.results.map((r) => r.t), [0, 0.25, 0.5, 0.75, 1]);
+    assert.equal(body.results[0].similarity, 1, 'seed rows carry similarity 1');
+    assert.equal(body.results[4].similarity, 1);
+    for (const r of body.results.slice(1, 4)) {
+      assert.ok(r.similarity > 0.98 && r.similarity < 1, `waypoint hugs the arc: ${r.similarity}`);
+    }
+    // Standard envelope: lite metadata + top-level model tags, playable paths.
+    const highway = body.results[3];
+    assert.ok('album-art' in highway.metadata);
+    assert.deepEqual(highway.genreTags, ['Test---StyleC']);
+    assert.ok(highway.filepath.startsWith('testlib/'));
+  });
+
+  test('a shorter path skips the detour: length 4 has no Lib2 stop', async () => {
+    const { body } = await api('/api/v1/discovery/local/path',
+      { startFilePath: startPath, endFilePath: neonPath, length: 4 });
+    assert.deepEqual(body.results.map((r) => r.metadata.title),
+      ['Be Somebody', 'Rise', 'Highway', 'Neon']);
+    assert.deepEqual(body.results.map((r) => r.t), [0, 1 / 3, 2 / 3, 1].map((t) => Math.round(t * 10000) / 10000));
+  });
+
+  test('library access: bob\'s path never routes through lib2, and shortens when dry', async () => {
+    const { body } = await api('/api/v1/discovery/local/path',
+      { startFilePath: startPath, endFilePath: neonPath, length: 5 }, 'bob');
+    assert.deepEqual(body.results.map((r) => r.metadata.title),
+      ['Be Somebody', 'Rise', 'Highway', 'Neon'],
+      'lib2 invisible to bob; the third waypoint finds an empty pool and the path shortens');
+  });
+
+  test('unembedded seed → notAnalyzed flags which end, empty results', async () => {
+    const { status, body } = await api('/api/v1/discovery/local/path',
+      { startFilePath: 'testlib/Icarus/Be Somebody/03 - Orbit.mp3', endFilePath: neonPath });
+    assert.equal(status, 200);
+    assert.deepEqual(body.notAnalyzed, { start: true, end: false });
+    assert.deepEqual(body.results, []);
+    assert.equal(body.start.metadata.title, 'Orbit');
+  });
+
+  test('same canonical seed on both ends → just the two seed rows', async () => {
+    const { body } = await api('/api/v1/discovery/local/path',
+      { startFilePath: startPath, endFilePath: startPath, length: 8 });
+    assert.deepEqual(body.results.map((r) => r.t), [0, 1]);
+    assert.equal(body.results.length, 2);
+  });
+
+  test('unknown seed → uniform 404', async () => {
+    assert.equal((await api('/api/v1/discovery/local/path',
+      { startFilePath: 'testlib/nope/missing.mp3', endFilePath: neonPath })).status, 404);
+  });
+});

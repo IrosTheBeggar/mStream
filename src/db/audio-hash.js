@@ -1,9 +1,15 @@
 /**
  * Dual-hash computation for the scanner.
  *
- *   file_hash  — MD5 of the whole file. Changes on any byte change.
- *   audio_hash — MD5 of just the audio payload region (tag regions
- *                stripped). Stable across tag edits.
+ *   file_hash  — content hash of the whole file. Below the 25MB
+ *                sampling threshold: MD5 of every byte (changes on any
+ *                byte change). At/above it: a domain-prefixed sampled
+ *                MD5 (three windows + length — see the threshold-hybrid
+ *                comment below), so mid-file byte flips OUTSIDE the
+ *                windows do not change it. NOT a whole-file integrity
+ *                checksum for big files.
+ *   audio_hash — same scheme over just the audio payload region (tag
+ *                regions stripped). Stable across tag edits.
  *
  * audio_hash is the preferred identity key for user-facing state
  * (stars, play counts, bookmarks, play queue). It is NULL for formats
@@ -73,6 +79,106 @@ async function hashRanges(filepath, ranges) {
 
 export function fileHashOf(filepath) {
   return hashStream(filepath, 0, null);
+}
+
+// ── Sampled hashing (threshold hybrid) ────────────────────────────────────
+//
+// Above the threshold, hashing switches from full-content MD5 to a
+// sampled MD5 over three windows — 256KB at the start, 512KB centred on
+// the middle (the entropy-dense region: intros/outros are where silence
+// and fades live), 256KB at the end — plus the total length, all fed
+// through a domain prefix that ENCODES the window spec, so any future
+// window change can never silently collide with this generation's
+// hashes. For audio_hash the windows are positioned in the LOGICAL
+// tag-stripped audio stream (the concatenated ranges), which is what
+// preserves tag-edit stability: an ID3 resize shifts file offsets but
+// not positions within the audio payload. For file_hash the "stream"
+// is simply the whole file (one range).
+//
+// The threshold keys on the hashed stream's OWN length — audio_hash by
+// audio-payload length (tag edits can't flip it), file_hash by file
+// size — so the scheme choice is deterministic per content. Below the
+// threshold nothing changes: full MD5s, byte-identical with every
+// existing row. Collision surface above the threshold is the honest
+// trade for size-independent scans: ~1MB of sampled content + length,
+// with the full-hash floor keeping short (collision-prone) content
+// byte-exact. tracks.hash_v stamps which generation a row's hashes
+// belong to; equality comparisons are only meaningful within a
+// generation.
+//
+// MUST stay byte-identical with rust-parser/src/main.rs (same windows,
+// same domain string, same decimal length encoding) — enforced by
+// test/scanner/sampled-hash-vectors.test.mjs and the parity suite.
+//
+// THE FIVE CONSTANTS BELOW ARE ONE UNIT, pinned to HASH_GENERATION = 2.
+// Changing ANY of them (threshold included — it selects which scheme a
+// given content gets, so a tune silently splits identities inside a
+// generation with no convergence signal) means: bump HASH_GENERATION,
+// ship a migration with a rescanEpochId, add a replacement partial
+// index (WHERE hash_v < N), and mirror it all in main.rs. Never tune in
+// place.
+export const SAMPLE_THRESHOLD_DEFAULT = 25 * 1024 * 1024;
+export const HASH_GENERATION = 2;
+const W_START = 256 * 1024;
+const W_MID = 512 * 1024;
+const W_END = 256 * 1024;
+const SAMPLE_DOMAIN = 'mstream-sampled-v2:256:512:256:';
+
+// Window placement in the logical stream. Integer math only (floor
+// division) so Rust u64 arithmetic produces identical offsets. When the
+// stream is no larger than the window sum (possible only via a lowered
+// threshold — tests use tiny ones), the "sample" is the whole stream in
+// one window: still domain-separated from the full scheme, still
+// deterministic, and offsets can never go negative or overlap. Above
+// the sum, totalLen > W_START+W_MID+W_END guarantees the three windows
+// are ordered and disjoint.
+function sampleWindows(totalLen) {
+  if (totalLen <= W_START + W_MID + W_END) { return [[0, totalLen]]; }
+  return [
+    [0, W_START],
+    [Math.floor(totalLen / 2) - W_MID / 2, W_MID],
+    [totalLen - W_END, W_END],
+  ];
+}
+
+// Feed md5 with `len` bytes starting at `logicalOff` of the
+// concatenated ranges' content. Short reads (file truncated mid-scan)
+// end the span early — the next scan recomputes and heals. `buf` is
+// the caller's scratch buffer, shared across a hash's windows.
+async function readLogicalSpan(fd, ranges, logicalOff, len, md5, buf) {
+  let skip = logicalOff;
+  let remaining = len;
+  for (const [start, end] of ranges) {
+    if (remaining <= 0) { break; }
+    const rlen = end - start;
+    if (rlen <= 0) { continue; }
+    if (skip >= rlen) { skip -= rlen; continue; }
+    let fileOff = start + skip;
+    let avail = end - fileOff;
+    skip = 0;
+    while (avail > 0 && remaining > 0) {
+      const n = Math.min(buf.length, avail, remaining);
+      const { bytesRead } = await fd.read(buf, 0, n, fileOff);
+      if (bytesRead <= 0) { return; }
+      md5.update(buf.subarray(0, bytesRead));
+      fileOff += bytesRead;
+      avail -= bytesRead;
+      remaining -= bytesRead;
+    }
+  }
+}
+
+// `fd` is opened (and closed) by computeHashes so both sampled hashes
+// share one descriptor — a second open/close is a full round-trip on
+// the network mounts big libraries usually live on.
+async function sampledHashOverRanges(fd, ranges, totalLen) {
+  const md5 = crypto.createHash('md5');
+  md5.update(`${SAMPLE_DOMAIN}${totalLen}:`);
+  const scratch = Buffer.alloc(64 * 1024);
+  for (const [off, len] of sampleWindows(totalLen)) {
+    await readLogicalSpan(fd, ranges, off, len, md5, scratch);
+  }
+  return md5.digest('hex');
 }
 
 // ── Extractors: each returns an array of [start, end) ranges, or null
@@ -328,25 +434,54 @@ const EXTRACTORS = {
  * @param {string} filepath
  * @returns {Promise<{fileHash: string, audioHash: string|null, format: string|null}>}
  */
-export async function computeHashes(filepath) {
+export async function computeHashes(filepath, { sampleThreshold = SAMPLE_THRESHOLD_DEFAULT } = {}) {
+  // Clamp to >= 1: a zero threshold would sample EVERY file. The scan
+  // payload's Joi schema rejects 0 outright, and the Rust engine clamps
+  // identically (ScanConfig::sample_threshold) — the engines must never
+  // diverge on the same config.
+  const threshold = Math.max(1, sampleThreshold);
   const stat = await fsp.stat(filepath);
   const fileSize = stat.size;
-  const fileHash = await hashStream(filepath, 0, null);
 
+  // Ranges first — every extractor reads only headers, so this is cheap
+  // and lets BOTH hashes decide full-vs-sampled before any payload read.
   const ext = path.extname(filepath).slice(1).toLowerCase();
   const extractor = EXTRACTORS[ext];
-  if (!extractor) {
-    return { fileHash, audioHash: null, format: null };
+  let ranges = null;
+  let extractorFailed = false;
+  if (extractor) {
+    try { ranges = await extractor(filepath, fileSize); }
+    catch { extractorFailed = true; }
+    if (ranges && !ranges.length) { ranges = null; }
   }
 
-  let ranges;
-  try { ranges = await extractor(filepath, fileSize); }
-  catch { return { fileHash, audioHash: null, format: ext }; }
+  // Per-hash independent thresholds: file_hash by file size, audio_hash
+  // by audio-payload length (see the sampled-hashing comment above). A
+  // huge-tag file can therefore sample one and not the other — each
+  // hash's choice is deterministic for its own content. When either
+  // hash samples, ONE descriptor is opened here and shared by both
+  // sampled reads (each open is a round-trip on network mounts).
+  const audioLen = ranges
+    ? ranges.reduce((sum, [start, end]) => sum + Math.max(0, end - start), 0)
+    : 0;
+  const fileSampled = fileSize >= threshold;
+  const audioSampled = audioLen >= threshold;
+  const fd = (fileSampled || audioSampled) ? await fsp.open(filepath, 'r') : null;
+  try {
+    const fileHash = fileSampled
+      ? await sampledHashOverRanges(fd, [[0, fileSize]], fileSize)
+      : await hashStream(filepath, 0, null);
 
-  if (!ranges || !ranges.length) { return { fileHash, audioHash: null, format: ext }; }
+    if (!extractor) { return { fileHash, audioHash: null, format: null }; }
+    if (extractorFailed || !ranges) { return { fileHash, audioHash: null, format: ext }; }
 
-  const audioHash = await hashRanges(filepath, ranges);
-  return { fileHash, audioHash, format: ext };
+    const audioHash = audioSampled
+      ? await sampledHashOverRanges(fd, ranges, audioLen)
+      : await hashRanges(filepath, ranges);
+    return { fileHash, audioHash, format: ext };
+  } finally {
+    if (fd) { await fd.close(); }
+  }
 }
 
 /**

@@ -225,10 +225,18 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    tokio::runtime::Builder::new_multi_thread()
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?
-        .block_on(run(data_dir))
+        .build()?;
+    let result = rt.block_on(run(data_dir));
+    // tokio's stdin is an uncancellable blocking read on a pool thread, and
+    // plain Drop waits for in-flight blocking work: after an explicit
+    // `shutdown` command (stdin still open) that wait would hang until the
+    // parent next wrote a line. Bounded shutdown keeps the no-orphan promise
+    // on every exit path; on the EOF path no read is pending and this is
+    // instant.
+    rt.shutdown_timeout(Duration::from_secs(1));
+    result
 }
 
 async fn run(data_dir: PathBuf) -> Result<()> {
@@ -268,9 +276,15 @@ async fn run(data_dir: PathBuf) -> Result<()> {
     // Single writer task owns stdout; handlers post JSON values to it. Keeps
     // concurrent responses from interleaving mid-line.
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
+    // The writer exits on a JSON `null` sentinel, NOT on channel close: a
+    // sender clone lives inside the Arc<Node> (shared with the gossip loops,
+    // which never finish), so the channel can never close — awaiting that
+    // was exactly the shutdown hang this replaced. Handlers only ever send
+    // objects, so `null` is unambiguous.
     let writer = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
         while let Some(v) = out_rx.recv().await {
+            if v.is_null() { break; }
             let mut line = v.to_string();
             line.push('\n');
             if stdout.write_all(line.as_bytes()).await.is_err() { break; }
@@ -335,11 +349,20 @@ async fn run(data_dir: PathBuf) -> Result<()> {
         }
     }
 
+    // Cleanup is bounded end to end: the no-orphan promise in the header
+    // outranks graceful network goodbyes, and the parent SIGKILLs 5s after
+    // closing stdin anyway (discovery-p2p.js stop()), so everything here
+    // must finish well inside that.
     eprintln!("[p2p-sidecar] shutting down");
-    let _ = node.router.shutdown().await;
-    node.endpoint.close().await;
-    drop(out_tx);
-    let _ = writer.await;
+    let _ = tokio::time::timeout(Duration::from_secs(3), async {
+        let _ = node.router.shutdown().await;
+        node.endpoint.close().await;
+    })
+    .await;
+    // Drain stdout (the channel is FIFO, so everything queued ahead of the
+    // sentinel — including the `shutdown` response — is flushed), then exit.
+    let _ = out_tx.send(Value::Null);
+    let _ = tokio::time::timeout(Duration::from_secs(1), writer).await;
     Ok(())
 }
 

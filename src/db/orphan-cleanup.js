@@ -28,6 +28,8 @@
 
 import fs from 'fs';
 import path from 'path';
+import { isIgnoredRelPath } from './scan-ignore.js';
+import { migrateHashReferences } from './hash-migration.js';
 
 // Per-chunk row cap. Balances per-chunk lock duration (well under
 // SQLite's 5s busy_timeout) against per-iteration overhead — each
@@ -155,11 +157,12 @@ const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM
 // emptied library) that can run past the 5s busy_timeout and stall
 // concurrent API writes from the main server. Same cooperate-with-writers
 // pattern as chunkedDelete above; ORPHAN_CHUNK_SIZE (500) keeps each chunk
-// well under busy_timeout. Returns the total rows deleted so the caller's
-// scanComplete count stays accurate. Mirrors chunked_delete_stale_tracks
-// in rust-parser/src/main.rs.
+// well under busy_timeout. Returns { removed, movedTracks, movedRefs } so
+// the caller's scanComplete counts stay accurate. Mirrors
+// chunked_delete_stale_tracks in rust-parser/src/main.rs.
 //
-// `candidates` is an array of {id, filepath} rows the caller computed as
+// `candidates` is an array of {id, filepath} rows (plus audio_hash /
+// file_hash when the caller wants move re-homing) computed as
 // (rows that existed when the scan started) − (rows the walk accounted
 // for), sorted by id — the scanner's in-memory seen tracking replaced the
 // old per-row `UPDATE tracks SET scan_id = ?` marker (one row rewrite per
@@ -210,9 +213,30 @@ const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM
 // the library. Mirrors chunked_delete_stale_tracks in
 // rust-parser/src/main.rs. With libraryRoot null (no caller does this
 // today) the sweep degrades to deleting every candidate unverified.
+//
+// MOVE RE-HOMING (`moveRehome: { libraryId }`): a doomed candidate whose
+// content hash matches a LIVE row is a moved/renamed file, and the
+// path-keyed user references that would otherwise dangle forever —
+// playlist_tracks ("<vpath>/<rel>", see the Subsonic playlist join),
+// cue_points and play_events (rel + library_id) — are rewritten to the
+// survivor's path BEFORE the chunk's DELETE. That ordering is the crash
+// safety: dying between rewrite and delete leaves references pointing at
+// the live file and the old row still sweepable next scan (the rewrites
+// then no-op). Targets are every tracks row NOT itself a candidate: rows
+// the walk accounted for, rows inserted mid-scan, and rows of OTHER
+// libraries (a cross-library move heals when the destination library was
+// scanned first). Lookup tries audio_hash first (survives tag edits),
+// then file_hash (covers pre-audio_hash rows); ties resolve
+// deterministically — same library, then same basename, then lowest
+// (library_id, filepath) — so both scanners converge on one answer, and
+// for byte-identical duplicates any winner plays the same audio. The
+// target map is built lazily on the first doomed row (no-op and
+// pure-addition scans never pay for it) and targets are NOT consumed:
+// several deleted duplicates re-pointing at one survivor is correct.
 export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
   { libraryRoot = null, followSymlinks = false, failedWalkPrefixes = [],
-    supportedFiles = null } = {}) {
+    supportedFiles = null, ignoreDotFiles = false, ignoreDotFolders = false,
+    moveRehome = null } = {}) {
   const versionStmt = db.prepare('PRAGMA user_version');
   const KIND_FILE = 1; const KIND_SYMLINK = 2; const KIND_OTHER = 3;
   const listings = new Map(); // relDir -> Map(name -> kind) | null (unreadable)
@@ -264,6 +288,162 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
     try { return fs.statSync(libraryRoot).isDirectory(); } catch (_err) { return false; }
   };
 
+  const rehome = moveRehome === null ? null : {
+    libraryId: moveRehome.libraryId,
+    candidateIds: new Set(candidates.map(c => c.id)),
+    candidateHashes: new Set(candidates.flatMap(
+      c => [c.audio_hash, c.file_hash].filter(Boolean))),
+    targets: null,   // content hash -> [{id, filepath, library_id}]
+    vpathById: null, // library_id -> libraries.name (playlist path prefix)
+  };
+  let movedTracks = 0;
+  let movedRefs = 0;
+  const buildTargets = () => {
+    if (rehome.targets !== null) { return; }
+    rehome.targets = new Map();
+    rehome.vpathById = new Map(db.prepare('SELECT id, name FROM libraries')
+      .all().map(r => [r.id, r.name]));
+    if (rehome.candidateHashes.size === 0) { return; }
+    // One pass over tracks, kept only for hashes a candidate actually
+    // carries — a mass deletion with no surviving twins stays cheap.
+    for (const row of db.prepare(
+      'SELECT id, filepath, library_id, audio_hash, file_hash FROM tracks').all()) {
+      if (rehome.candidateIds.has(row.id)) { continue; }
+      for (const h of [row.audio_hash, row.file_hash]) {
+        if (!h || !rehome.candidateHashes.has(h)) { continue; }
+        const list = rehome.targets.get(h);
+        if (list) { list.push(row); } else { rehome.targets.set(h, [row]); }
+      }
+    }
+  };
+  const basename = (p) => p.slice(p.lastIndexOf('/') + 1);
+  // NOTE: no generation filter here. Equal hash strings across
+  // generations can only mean equal bytes — below the sampling
+  // threshold the v1 and v2 schemes are byte-identical by design, and
+  // above it a v1 full hash and a v2 domain-prefixed sampled hash of
+  // ANY bytes can never collide as strings short of an MD5 break — so
+  // filtering by hash_v would only ever refuse CORRECT re-homings
+  // during the upgrade window (moved sub-threshold files whose stale
+  // row is still stamped v1).
+  const bestOf = (c, list) => {
+    const oldBase = basename(c.filepath);
+    let best = null;
+    let bestKey = null;
+    for (const t of list) {
+      // Positional tuple compare; number/string positions align between
+      // keys so plain < is safe. (String order is UTF-16 code units vs
+      // the Rust scanner's UTF-8 bytes — they diverge only beyond the
+      // BMP, and only among same-hash ties with such names.)
+      const key = [
+        t.library_id === rehome.libraryId ? 0 : 1,
+        basename(t.filepath) === oldBase ? 0 : 1,
+        t.library_id, t.filepath,
+      ];
+      let less = best === null;
+      for (let i = 0; !less && bestKey && i < key.length; i++) {
+        if (key[i] < bestKey[i]) { less = true; }
+        else if (key[i] > bestKey[i]) { break; }
+      }
+      if (less) { best = t; bestKey = key; }
+    }
+    return best;
+  };
+  const pickTarget = (c) => {
+    const list = (c.audio_hash && rehome.targets.get(c.audio_hash))
+      || (c.file_hash && rehome.targets.get(c.file_hash)) || null;
+    return list && list.length > 0 ? bestOf(c, list) : null;
+  };
+  // Second pairing tier (V60 epoch move-bridge): a >=threshold file
+  // moved across the generation upgrade leaves a stale row whose v1
+  // FULL hashes can never string-match its re-parsed twin's v2 SAMPLED
+  // hashes. The epoch's new-path parses ledger fullCanon→sampledCanon
+  // into hash_transitions (see scanner.mjs / main.rs), so before
+  // orphaning an unmatched candidate, follow its canonical hash through
+  // the ledger and pair with the row now holding the mapped identity.
+  // The ledger is same-library-scan-lifetime state (drained by
+  // task-queue after the queue empties), so this tier naturally only
+  // fires while a re-key epoch is in flight; cross-library moves and
+  // moves discovered only after the drain remain out of reach.
+  let ledger = null;
+  const ledgerMappedCanon = (c) => {
+    if (ledger === null) {
+      ledger = new Map(db.prepare('SELECT old_hash, new_hash FROM hash_transitions').all()
+        .map((r) => [r.old_hash, r.new_hash]));
+    }
+    let cur = c.audio_hash || c.file_hash;
+    if (!cur || !ledger.has(cur)) { return null; }
+    const seen = new Set([cur]);
+    while (ledger.has(cur)) {
+      const n = ledger.get(cur);
+      if (seen.has(n)) { return null; } // cycle — the drain applier owns those
+      seen.add(n);
+      cur = n;
+    }
+    return cur;
+  };
+  const pickLedgerTarget = (c) => {
+    const mapped = ledgerMappedCanon(c);
+    if (!mapped) { return null; }
+    const rows = db.prepare(
+      `SELECT id, filepath, library_id, audio_hash, file_hash FROM tracks
+        WHERE audio_hash = ? OR file_hash = ?`).all(mapped, mapped)
+      .filter((r) => !rehome.candidateIds.has(r.id)
+        && (r.audio_hash || r.file_hash) === mapped);
+    return rows.length > 0 ? bestOf(c, rows) : null;
+  };
+  const rewriteMovedRefs = (pairs) => {
+    // Earliest created_at wins so a moved file doesn't re-enter the V43
+    // "recently added" sort. The dying row is still present (this runs
+    // pre-DELETE) for the correlated read; MIN over the TEXT
+    // 'YYYY-MM-DD HH:MM:SS' format is chronological, and COALESCE keeps
+    // the target's own value when either side is NULL.
+    const keepCreated = db.prepare(
+      `UPDATE tracks SET created_at = COALESCE(
+         MIN(created_at, (SELECT created_at FROM tracks WHERE id = ?)),
+         created_at) WHERE id = ?`);
+    for (const { c, t } of pairs) { keepCreated.run(c.id, t.id); }
+
+    // playlist_tracks needs a libraries.name prefix on both sides; a
+    // pair whose library row vanished mid-scan is skipped, not guessed.
+    const plPairs = [];
+    const scannedVpath = rehome.vpathById.get(rehome.libraryId);
+    if (scannedVpath !== undefined) {
+      for (const { c, t } of pairs) {
+        const targetVpath = rehome.vpathById.get(t.library_id);
+        if (targetVpath === undefined) { continue; }
+        plPairs.push([`${scannedVpath}/${c.filepath}`, `${targetVpath}/${t.filepath}`]);
+      }
+    }
+    if (plPairs.length > 0) {
+      const r = db.prepare(
+        `UPDATE playlist_tracks SET filepath = CASE filepath ${
+          plPairs.map(() => 'WHEN ? THEN ?').join(' ')} ELSE filepath END
+         WHERE filepath IN (${plPairs.map(() => '?').join(',')})`)
+        .run(...plPairs.flat(), ...plPairs.map(p => p[0]));
+      movedRefs += r.changes;
+    }
+
+    // cue_points / play_events key on (filepath, library_id). Every SET
+    // expression sees the PRE-update row, so both CASEs key off the
+    // original filepath value; batched per chunk so each table is
+    // scanned once, not once per pair (play_events has no filepath
+    // index and can be large).
+    for (const table of ['cue_points', 'play_events']) {
+      const r = db.prepare(
+        `UPDATE ${table} SET filepath = CASE filepath ${
+          pairs.map(() => 'WHEN ? THEN ?').join(' ')} ELSE filepath END,
+           library_id = CASE filepath ${
+          pairs.map(() => 'WHEN ? THEN ?').join(' ')} ELSE library_id END
+         WHERE library_id = ? AND filepath IN (${pairs.map(() => '?').join(',')})`)
+        .run(
+          ...pairs.flatMap(({ c, t }) => [c.filepath, t.filepath]),
+          ...pairs.flatMap(({ c, t }) => [c.filepath, t.library_id]),
+          rehome.libraryId,
+          ...pairs.map(({ c }) => c.filepath));
+      movedRefs += r.changes;
+    }
+  };
+
   let total = 0;
   let skipped = 0;
   for (let offset = 0; offset < candidates.length; offset += ORPHAN_CHUNK_SIZE) {
@@ -303,6 +483,15 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
         doomed.push(c);
         continue;
       }
+      // Walk-faithful presence also applies the walk's IGNORE rules
+      // (src/db/scan-ignore.js): a row under a pruned directory (NAS
+      // recycle/system names, always) or a dot-hidden segment/filename
+      // (flag-dependent) would never be indexed by the walk again — it
+      // converges out of the index exactly like an unsupported extension.
+      if (isIgnoredRelPath(c.filepath, { ignoreDotFiles, ignoreDotFolders })) {
+        doomed.push(c);
+        continue;
+      }
       const kind = listing.get(name);
       if (kind === KIND_FILE) {
         survivors++;
@@ -333,6 +522,30 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
         'disk — keeping them; a swallowed per-file error likely occurred');
     }
     if (doomed.length > 0) {
+      if (rehome !== null) {
+        buildTargets();
+        const pairs = [];
+        const ledgerPairs = [];
+        for (const c of doomed) {
+          const t = pickTarget(c);
+          if (t) { pairs.push({ c, t }); continue; }
+          const lt = pickLedgerTarget(c);
+          if (lt) { ledgerPairs.push({ c, t: lt }); }
+        }
+        if (pairs.length + ledgerPairs.length > 0) {
+          movedTracks += pairs.length + ledgerPairs.length;
+          rewriteMovedRefs([...pairs, ...ledgerPairs]);
+        }
+        // Ledger pairs bridge DIFFERENT identities (v1 full → v2
+        // sampled of the same bytes), so hash-keyed user state must
+        // follow too — a scheme re-key by definition, content-derived
+        // ledgers included. Exact-hash pairs need none of this: equal
+        // hashes mean the state already points at the right identity.
+        for (const { c, t } of ledgerPairs) {
+          migrateHashReferences(db, c.audio_hash || c.file_hash,
+            t.audio_hash || t.file_hash, { schemeRekey: true });
+        }
+      }
       // Row-value guard (id AND filepath, both from the scan-start
       // snapshot): the absence check ran against the snapshot path, so a
       // row whose filepath were ever rewritten mid-scan by some future
@@ -354,7 +567,7 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
       `Warning: ${skipped} stale-candidate row(s) left untouched because their ` +
       'subtree could not be verified this scan (walk errors or unreadable directories)');
   }
-  return total;
+  return { removed: total, movedTracks, movedRefs };
 }
 
 // Run all three orphan DELETEs in sequence. Order matters: albums first,

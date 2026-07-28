@@ -58,6 +58,25 @@ export function findRustParser() {
   return null;
 }
 
+// The hashing generation a binary stamps (its `--hash-generation`
+// answer), or null for pre-probe builds — the shared capability check
+// for suites that need sampled-hash support. One cheap spawnSync
+// replaces the per-suite scan-based feature probes (which cost two full
+// scans each and could disagree between files). Production's gate lives
+// in task-queue.js probeHashGeneration; this mirrors it for tests.
+export function rustParserHashGeneration(bin) {
+  if (!bin) { return null; }
+  try {
+    const r = spawnSync(bin, ['--hash-generation'],
+      { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 });
+    if (r.status !== 0) { return null; }
+    const gen = parseInt((r.stdout || '').toString().trim(), 10);
+    return Number.isInteger(gen) ? gen : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 export const FFMPEG = process.platform === 'win32'
   ? path.join(REPO_ROOT, 'bin', 'ffmpeg', 'ffmpeg.exe')
   : path.join(REPO_ROOT, 'bin', 'ffmpeg', 'ffmpeg');

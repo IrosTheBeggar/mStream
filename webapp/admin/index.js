@@ -38,11 +38,6 @@ const ADMINDATA = (() => {
   // shared playlists
   module.sharedPlaylists = [];
   module.sharedPlaylistUpdated = { ts: 0 };
-  // federation
-  module.federationEnabled = { val: false };
-  module.federationParams = {};
-  module.federationParamsUpdated = { ts: 0 };
-  module.federationInviteToken = { val: null };
   // dlna
   module.dlnaParams = {};
   module.dlnaParamsUpdated = { ts: 0 };
@@ -52,6 +47,11 @@ const ADMINDATA = (() => {
 
   module.irohParams = {};
   module.irohParamsUpdated = { ts: 0 };
+  // federation
+  module.federationParams = {};
+  module.federationParamsUpdated = { ts: 0 };
+  module.federationKeys = { list: [] };
+  module.federationPeers = { list: [] };
   // torrent (UX-layer settings — client + whitelist gating)
   module.torrentParams = {
     client:       'disabled',
@@ -249,23 +249,6 @@ const ADMINDATA = (() => {
     module.transcodeParamsUpdated.ts = Date.now();
   }
 
-  module.getFederationParams = async () => {
-    try {
-      const res = await API.axios({
-        method: 'GET',
-        url: `${API.url()}/api/v1/federation/stats`
-      });
-  
-      module.federationEnabled.val = true;
-
-      Object.keys(res.data).forEach(key=>{
-        module.federationParams[key] = res.data[key];
-      });
-    }catch (err) {}
-
-    module.federationParamsUpdated.ts = Date.now();
-  }
-
   module.getDlnaParams = async () => {
     try {
       const res = await API.axios({
@@ -297,6 +280,37 @@ const ADMINDATA = (() => {
       Object.keys(res.data).forEach(key => { module.irohParams[key] = res.data[key]; });
     } catch (err) {}
     module.irohParamsUpdated.ts = Date.now();
+  }
+
+  module.getFederation = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/federation`
+      });
+      Object.keys(res.data).forEach(key => { module.federationParams[key] = res.data[key]; });
+    } catch (err) {}
+    module.federationParamsUpdated.ts = Date.now();
+  }
+
+  module.getFederationKeys = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/federation/keys`
+      });
+      module.federationKeys.list = res.data;
+    } catch (err) {}
+  }
+
+  module.getFederationPeers = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/federation/peers`
+      });
+      module.federationPeers.list = res.data;
+    } catch (err) {}
   }
 
   module.getTorrentParams = async () => {
@@ -516,7 +530,10 @@ const ADMINDATA = (() => {
   module.backupDestinations = [];
   module.backupDestinationsUpdated = { ts: 0 };
   module.backupStatus = { active: null, queueLength: 0 };
-  module.backupPlatform = { value: null, homedir: null };
+  // defaultExcludes is declared here (not added later) so Vue 2's
+  // observer picks it up — properties added after observation aren't
+  // reactive, and the add form watches this to seed its patterns field.
+  module.backupPlatform = { value: null, homedir: null, defaultExcludes: null };
   // Hand-off slot for backup-history-modal: the main view stashes the
   // destination row here when "History" is clicked, the modal reads it
   // on creation. Mirrors the selectedUser / sharedSelect pattern.
@@ -553,6 +570,7 @@ const ADMINDATA = (() => {
       });
       module.backupPlatform.value = res.data.platform;
       module.backupPlatform.homedir = res.data.homedir;
+      module.backupPlatform.defaultExcludes = res.data.defaultExcludes || null;
     } catch (_err) {}
   };
 
@@ -566,7 +584,6 @@ ADMINDATA.getUsers();
 ADMINDATA.getDbParams();
 ADMINDATA.getServerParams();
 ADMINDATA.getServerAudioInfo();
-ADMINDATA.getFederationParams();
 ADMINDATA.getDlnaParams();
 ADMINDATA.getSubsonicParams();
 ADMINDATA.getIroh();
@@ -721,7 +738,7 @@ const P2PIDENTITY = { serverName: '', serverDescription: '' };
 // Same shared-object pattern (and the same must-be-hoisted TDZ rule) for
 // the editable p2p settings: the Discovery card fills it from the status
 // route, the max-storage modal edits it.
-const P2PSETTINGS = { maxPeerDbStorageMb: 500 };
+const P2PSETTINGS = { maxPeerDbStorageMb: 500, peerRetentionDays: 30 };
 
 const foldersView = Vue.component('folders-view', {
   data() {
@@ -1957,6 +1974,24 @@ const dbView = Vue.component('db-view', {
                       </td>
                     </tr>
                     <tr>
+                      <td><b>Ignore dot-hidden files (.name.mp3) when scanning:</b> {{dbParams.ignoreDotFiles}}</td>
+                      <td>
+                        [<a v-on:click="toggleIgnoreDotFiles()">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b>Ignore dot-hidden folders (.name/) when scanning:</b> {{dbParams.ignoreDotFolders}}</td>
+                      <td>
+                        [<a v-on:click="toggleIgnoreDotFolders()">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b>Watch libraries for changes (instant scans, local disks):</b> {{dbParams.watcherEnabled}}</td>
+                      <td>
+                        [<a v-on:click="toggleWatcherEnabled()">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
                       <td><b>Tracks identified per AcoustID pass:</b> {{dbParams.acoustidPerRun}}</td>
                       <td>
                         [<a v-on:click="openModal('edit-acoustid-per-run-modal')">{{ t('admin.settings.edit') }}</a>]
@@ -2403,6 +2438,103 @@ const dbView = Vue.component('db-view', {
               data: { generateWaveforms: !this.dbParams.generateWaveforms }
             }).then(() => {
               Vue.set(ADMINDATA.dbParams, 'generateWaveforms', !this.dbParams.generateWaveforms);
+              iziToast.success({
+                title: t('admin.settings.updated'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }).catch(() => {
+              iziToast.error({
+                title: t('admin.settings.failed'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            });
+          }, true],
+          [`<button>${t('admin.folders.goBack')}</button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    // Dot-entry ignore toggles. Applied on the NEXT scan: enabling
+    // removes already-indexed dot-hidden entries (the sweep converges
+    // them out); disabling brings them back on the next scan. Names
+    // starting with '..' are never treated as hidden.
+    toggleIgnoreDot: function(field, route, noun) {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>${this.dbParams[field] === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} ignoring dot-hidden ${noun}?</b>`,
+        message: 'Takes effect on the next scan; already-indexed matching entries are removed (or re-added) then.',
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.dbParams[field] === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')}</b></button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            API.axios({
+              method: 'POST',
+              url: `${API.url()}/api/v1/admin/db/params/${route}`,
+              data: { [field]: !this.dbParams[field] }
+            }).then(() => {
+              Vue.set(ADMINDATA.dbParams, field, !this.dbParams[field]);
+              iziToast.success({
+                title: t('admin.settings.updated'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            }).catch(() => {
+              iziToast.error({
+                title: t('admin.settings.failed'),
+                position: 'topCenter',
+                timeout: 3500
+              });
+            });
+          }, true],
+          [`<button>${t('admin.folders.goBack')}</button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ]
+      });
+    },
+    toggleIgnoreDotFiles: function() {
+      this.toggleIgnoreDot('ignoreDotFiles', 'ignore-dot-files', 'files');
+    },
+    toggleIgnoreDotFolders: function() {
+      this.toggleIgnoreDot('ignoreDotFolders', 'ignore-dot-folders', 'folders');
+    },
+    // Filesystem-watcher toggle. Live: the server starts/stops the
+    // watchers on POST — no reboot. Same confirm-toast pattern as the
+    // other boolean scan params.
+    toggleWatcherEnabled: function() {
+      iziToast.question({
+        timeout: 20000,
+        close: false,
+        overlayClose: true,
+        overlay: true,
+        displayMode: 'once',
+        id: 'question',
+        zindex: 99999,
+        layout: 2,
+        maxWidth: 600,
+        title: `<b>${this.dbParams.watcherEnabled === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')} watching libraries for changes?</b>`,
+        message: 'Changed files trigger a targeted scan within seconds. Network mounts (NAS shares) usually emit no change events — the scheduled scan interval still covers those.',
+        position: 'center',
+        buttons: [
+          [`<button><b>${this.dbParams.watcherEnabled === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')}</b></button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            API.axios({
+              method: 'POST',
+              url: `${API.url()}/api/v1/admin/db/params/watcher-enabled`,
+              data: { watcherEnabled: !this.dbParams.watcherEnabled }
+            }).then(() => {
+              Vue.set(ADMINDATA.dbParams, 'watcherEnabled', !this.dbParams.watcherEnabled);
               iziToast.success({
                 title: t('admin.settings.updated'),
                 position: 'topCenter',
@@ -3127,342 +3259,275 @@ const transcodeView = Vue.component('transcode-view', {
   }
 });
 
-// ── Federation tab placeholder ──────────────────────────────────────
-//
-// The full federation UI is disabled while the feature is being rebuilt
-// around the new local-backup story (see src/server.js for the matching
-// server-side disable). The original `federationMainPanel` (two-tab
-// Federation/Syncthing UI with embedded syncthing iframe) and the
-// original feature-aware `federationView` are preserved below as a
-// block comment so they're easy to restore later. The
-// `federation-generate-invite-modal` definition + its registration
-// further down in this file are similarly preserved-and-disabled.
-//
-// While disabled, the Federation entry in the admin sidebar renders
-// the Coming Soon component defined directly below.
+// ── Federation ──────────────────────────────────────────────────────
+// Ticket-paired read-only library sharing between mStream servers over
+// a dedicated iroh endpoint. Three cards: status/toggle, keys this
+// server minted (with their swap-ready tickets), and peers this server
+// can read. Same hardcoded-English style as the iroh Quick Connect
+// panel above.
 const federationView = Vue.component('federation-view', {
-  template: `
-    <div class="row">
-      <div class="container">
-        <div class="card">
-          <div class="card-content center-align">
-            <i class="material-icons large" style="margin-top: 16px;">cloud_sync</i>
-            <h4 style="margin-top: 8px;">Coming Soon &mdash; Federation</h4>
-            <p style="font-size: 1.1rem; margin: 16px auto; max-width: 560px;">
-              This feature will allow easy backups across multiple machines.
-            </p>
-            <p style="margin-top: 24px; opacity: 0.7;">
-              <em>Powered by Syncthing</em>
-            </p>
-          </div>
-        </div>
-      </div>
-    </div>`,
-});
-
-// ── Disabled: original federationMainPanel + federationView ─────────
-// Restore both Vue.component(...) calls (and re-enable the federation/
-// syncthing wiring on the server side) when bringing federation back.
-// The block is wrapped in /* */ so the file still parses; the only
-// edit to the verbatim original is renaming federationView → 
-// federationView_disabled inside the comment so accidentally
-// uncommenting can't silently re-register the `federation-view`
-// name and shadow the Coming Soon component above.
-/*
-const federationMainPanel = Vue.component('federation-main-panel', {
   data() {
     return {
-      params: ADMINDATA.federationParams,
-      paramsTS: ADMINDATA.federationParamsUpdated,
-      enabled: ADMINDATA.federationEnabled,
-      syncthingUrl: "",
-      tabs: null,
-      enablePending: false,
-
-      currentToken: '',
-      parsedTokenData: null,
-      submitPending: false
+      fedTS: ADMINDATA.federationParamsUpdated,
+      fed: ADMINDATA.federationParams,
+      keys: ADMINDATA.federationKeys,
+      peers: ADMINDATA.federationPeers,
+      togglePending: false,
+      // Add-peer form state
+      peerTicket: '',
+      peerName: '',
+      addPeerPending: false,
+      // Per-row pending flags (Vue.set'd by id)
+      rowPending: {},
     };
   },
-  template: `
-    <div>
-      <ul id="syncthing-tabs" class="tabs tabs-fixed-width">
-        <li class="tab"><a class="active" href="#sync-tab-1">{{ t('admin.federation.tabFederation') }}</a></li>
-        <li v-on:click="setSyncthingUrl()" class="tab"><a href="#sync-tab-2">{{ t('admin.federation.tabSyncthing') }}</a></li>
-      </ul>
-      <div id="sync-tab-1">
-        <div class="container">
-          <div class="row">
-            <div class="col s12">
-              <div class="card">
-                <div class="card-content">
-                  <span class="card-title">{{ t('admin.federation.title') }}</span>
-                  <table>
-                    <tbody>
-                      <tr>
-                        <td><b>{{ t('admin.federation.deviceId') }}</b> {{params.deviceId}}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <p v-on:click="openFederationGenerateInviteModal()">{{ t('admin.modal.generateInvite') }}</p>
-                </div>
-                <div class="card-action flow-root">
-                  <a v-on:click="enableFederation()" v-bind:class="{ 'red': enabled.val }" class="waves-effect waves-light btn right">{{ t('admin.federation.disableAction') }}</a>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="big-container">
-          <div class="row">
-            <div class="col s12">
-              <div class="card">
-                <div class="card-content">
-                  <span class="card-title">{{ t('admin.federation.acceptInvite') }}</span>
-                  <div class="row">
-                    <div class="col s12 m12 l6">
-                      <div class="row">
-                        <div class="col s12">
-                          <label for="fed-invite-token">{{ t('admin.federation.tokenLabel') }}</label>
-                          <textarea id="fed-invite-token" v-model="currentToken" style="height: auto;" rows="4" cols="60" :placeholder="t('admin.federation.tokenPlaceholder')"></textarea>
-                        </div>
-                      </div>
-                      <div class="row">
-                        <div class="input-field col s12">
-                          <input id="fed-invite-url" required type="text" class="validate">
-                          <label for="fed-invite-url">{{ t('admin.federation.serverURL') }}</label>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="col s12 m12 l6">
-                      <form @submit.prevent="acceptInvite" v-if="parsedTokenData !== null">
-                        <p>{{ t('admin.federation.selectFolders') }}</p>
-                        <div v-for="(item, key, index) in parsedTokenData.vPaths">
-                          <label>
-                            <input type="checkbox" checked/>
-                            <span>{{key}}</span>
-                          </label>
-                        </div>
-                        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
-                          {{ submitPending === false ? t('admin.federation.acceptInviteButton') : t('admin.federation.working') }}
-                        </button>
-                      </form>
-                      <div v-else>
-                        <p>{{ t('admin.federation.pasteTokenHint') }}</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div id="sync-tab-2">
-        <iframe id="syncthing-iframe" :src="syncthingUrl"></iframe>
-      </div>
-    </div>`,
-  watch: {
-    'currentToken': function(val, preVal) {
+  computed: {
+    // Client-side preview of a pasted ticket: decode mstrfed1:<base64url(JSON)>
+    // just enough to show who/what before the admin commits. Parse errors
+    // return null and the UI shows a gentle "doesn't look right" hint.
+    peerPreview() {
+      const s = this.peerTicket.trim();
+      if (!s) { return null; }
+      const m = s.match(/^mstrfed(\d+):(.*)$/s);
+      if (!m) { return { error: true }; }
       try {
-        if (!val) { 
-          return this.parsedTokenData = null;
-        }
-
-        const decoded = jwt_decode(val);
-        this.parsedTokenData = decoded;
-      } catch(err) {
-        console.log(err)
-        this.parsedTokenData = null;
+        const b64 = m[2].replace(/-/g, '+').replace(/_/g, '/');
+        const payload = JSON.parse(atob(b64));
+        if (typeof payload.t !== 'string' || typeof payload.k !== 'string') { return { error: true }; }
+        return {
+          error: false,
+          name: typeof payload.n === 'string' ? payload.n : '(unnamed server)',
+          libraries: Array.isArray(payload.l) ? payload.l : [],
+        };
+      } catch (e) {
+        return { error: true };
       }
-    }
-  },
-  mounted: function () {
-    this.tabs = M.Tabs.init(document.getElementById('syncthing-tabs'), {});
-    this.tabs.select('test1')
-  },
-  beforeDestroy: function() {
-    this.tabs.destroy();
+    },
   },
   methods: {
-    editName: async function() {
-
+    refresh() {
+      ADMINDATA.getFederation();
+      ADMINDATA.getFederationKeys();
+      ADMINDATA.getFederationPeers();
     },
-    acceptInvite: async function() {
+    setRowPending(id, val) { Vue.set(this.rowPending, id, val); },
+    async toggle() {
+      this.togglePending = true;
       try {
-        const postData = {
-          invite: this.currentToken,
-          paths: {}
-        };
-    
-        const res = await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/federation/invite/accept`,
-          data: postData
-        });
-      } catch (err) {
-        iziToast.error({
-          title: t('admin.federation.acceptFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/federation`, data: { enabled: !this.fed.enabled } });
+        await ADMINDATA.getFederation();
+        await ADMINDATA.getFederationKeys(); // tickets appear/disappear with the endpoint
+        if (this.fed.enabled && this.fed.available === false) {
+          iziToast.warning({ title: 'Unavailable', message: 'Iroh has no prebuilt binary for this server’s platform; the federation endpoint could not start.' });
+        }
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: 'Failed to update the federation setting.' });
       }
-
-  //   var folderNames = {};
-
-  //   var decoded = jwt_decode($('#federation-invitation-code').val());
-  //   Object.keys(decoded.vPaths).forEach(function(key) {
-  //     if($("input[type=checkbox][value="+decoded.vPaths[key]+"]").is(":checked")){
-  //       folderNames[key] = $("#" + decoded.vPaths[key]).val();
-  //     }
-  //   });
-
-  //   if (Object.keys(folderNames).length === 0) {
-  //     iziToast.error({
-  //       title: 'No directories selected',
-  //       position: 'topCenter',
-  //       timeout: 3500
-  //     });
-  //   }
-
-    // var sendThis = {
-    //   invite: $('#federation-invitation-code').val(),
-    //   paths: folderNames
-    // };
-
-  //   MSTREAMAPI.acceptFederationInvite(sendThis, function(res, err){
-  //     if (err !== false) {
-  //       boilerplateFailure(res, err);
-  //       return;
-  //     }
-
-  //     iziToast.success({
-  //       title: 'Federation Successful!',
-  //       position: 'topCenter',
-  //       timeout: 3500
-  //     });
-  //   });
+      this.togglePending = false;
     },
-    setSyncthingUrl: function() {
-      if (this.syncthingUrl !== '') { return; }
-      this.syncthingUrl = '/api/v1/syncthing-proxy/?token=' + API.token();
-    },
-    openFederationGenerateInviteModal: function() {
-      modVM.currentViewModal = 'federation-generate-invite-modal';
+    openNewTicketModal() {
+      modVM.currentViewModal = 'federation-new-ticket-modal';
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
     },
-    enableFederation: function() {
-      iziToast.question({
-        timeout: 20000,
-        close: false,
-        overlayClose: true,
-        overlay: true,
-        displayMode: 'once',
-        id: 'question',
-        zindex: 99999,
-        layout: 2,
-        maxWidth: 600,
-        title: `${this.enabled.val === true ? t('admin.federation.disableTitle') : t('admin.federation.enableTitle')}`,
-        position: 'center',
-        buttons: [
-          [`<button><b>${this.enabled.val === true ? t('admin.settings.disableButton') : t('admin.settings.enableButton')}</b></button>`, async (instance, toast) => {
-            try {
-              this.enablePending = true;
-
-              await API.axios({
-                method: 'POST',
-                url: `${API.url()}/api/v1/admin/federation/enable`,
-                data: {
-                  enable: !this.enabled.val,
-                }
-              });
-
-              // update fronted data
-              Vue.set(ADMINDATA.federationEnabled, 'val', !this.enabled.val);
-
-              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-
-              iziToast.success({
-                title: `Syncthing ${this.enabled.val === true ? t('admin.settings.enabled') : t('admin.settings.disabled')}`,
-                position: 'topCenter',
-                timeout: 3500
-              });
-            } catch(err) {
-              iziToast.error({
-                title: t('admin.federation.toggleFailed'),
-                position: 'topCenter',
-                timeout: 3500
-              });
-            }finally {
-              this.enablePending = false;
-            }
-          }, true],
-          [`<button>${t('admin.folders.goBack')}</button>`, (instance, toast) => {
-            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-          }],
-        ]
-      });
-    }
-  }
-});
-
-const federationView_disabled = Vue.component('federation-view-disabled', {
-  data() {
-    return {
-      paramsTS: ADMINDATA.federationParamsUpdated,
-      enabled: ADMINDATA.federationEnabled,
-      enablePending: false,
-    };
-  },
-  template: `
-    <div v-if="paramsTS.ts === 0" class="row">
-      <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
-    </div>
-    <div v-else-if="enabled.val === false" class="row">
-      <div class="container">
-        <div class="row logo-row">
-          <h4>{{ t('admin.federation.poweredBy') }}</h4>
-          <svg xmlns="http://www.w3.org/2000/svg" max-width="200px" viewBox="0 0 429 117.3"><linearGradient id="a" gradientUnits="userSpaceOnUse" x1="58.666" y1="117.332" x2="58.666" y2="0"><stop offset="0" stop-color="#0882c8"/><stop offset="1" stop-color="#26b6db"/></linearGradient><circle fill="url(#a)" cx="58.7" cy="58.7" r="58.7"/><circle fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" cx="58.7" cy="58.5" r="43.7"/><path fill="#FFF" d="M94.7 47.8c4.7 1.6 9.8-.9 11.4-5.6 1.6-4.7-.9-9.8-5.6-11.4-4.7-1.6-9.8.9-11.4 5.6-1.6 4.7.9 9.8 5.6 11.4z"/><path fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" d="M97.6 39.4l-30.1 25"/><path fill="#FFF" d="M77.6 91c-.4 4.9 3.2 9.3 8.2 9.8 5 .4 9.3-3.2 9.8-8.2.4-4.9-3.2-9.3-8.2-9.8-5-.4-9.4 3.2-9.8 8.2z"/><path fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" d="M86.5 91.8l-19-27.4"/><path fill="#FFF" d="M60 69.3c2.7 4.2 8.3 5.4 12.4 2.7 4.2-2.7 5.4-8.3 2.7-12.4-2.7-4.2-8.3-5.4-12.4-2.7-4.2 2.6-5.4 8.2-2.7 12.4z"/><g><path fill="#FFF" d="M21.2 61.4c-4.3-2.5-9.8-1.1-12.3 3.1-2.5 4.3-1.1 9.8 3.1 12.3 4.3 2.5 9.8 1.1 12.3-3.1s1.1-9.7-3.1-12.3z"/><path fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" d="M16.6 69.1l50.9-4.7"/></g><g fill="#0891D1"><path d="M163.8 50.2c-.6-.7-6.3-4.1-11.4-4.1-3.4 0-5.2 1.2-5.2 3.5 0 2.9 3.2 3.7 8.9 5.2 8.2 2.2 13.3 5 13.3 12.9 0 9.7-7.8 13-16 13-6.2 0-13.1-2-18.2-5.3l4.3-8.6c.8.8 7.5 5 14 5 3.5 0 5.2-1.1 5.2-3.2 0-3.2-4.4-4-10.3-5.8-7.9-2.4-11.5-5.3-11.5-11.8 0-9 7.2-13.9 15.7-13.9 6.1 0 11.6 2.5 15.4 4.7l-4.2 8.4zM175 85.1c1.7.5 3.3.8 4.4.8 2 0 3.3-1.5 4.2-5.5l-11.9-31.5h9.8l7.4 23.3 6.3-23.3h8.9L192 85.5c-1.7 5.3-6.2 8.7-11.8 8.8-1.7 0-3.5-.2-5.3-.9v-8.3zM239.3 80.3h-9.6V62.6c0-4.1-1.7-5.9-4.3-5.9-2.6 0-5.8 2.3-7 5.6v18.1h-9.6V48.8h8.6v5.3c2.3-3.7 6.8-5.9 12.2-5.9 8.2 0 9.5 6.7 9.5 11.9v20.2zM261.6 48.2c7.2 0 12.3 3.4 14.8 8.3l-9.4 2.8c-1.2-1.9-3.1-3-5.5-3-4 0-7 3.2-7 8.2 0 5 3.1 8.3 7 8.3 2.4 0 4.6-1.3 5.5-3.1l9.4 2.9c-2.3 4.9-7.6 8.3-14.8 8.3-10.6 0-16.9-7.7-16.9-16.4s6.2-16.3 16.9-16.3zM302.1 78.7c-2.6 1.1-6.2 2.3-9.7 2.3-4.7 0-8.8-2.3-8.8-8.4V56.1h-4v-7.3h4v-10h9.6v10h6.4v7.3h-6.4v13.1c0 2.1 1.2 2.9 2.8 2.9 1.4 0 3-.6 4.2-1.1l1.9 7.7zM337.2 80.3h-9.6V62.6c0-4.1-1.8-5.9-4.6-5.9-2.3 0-5.5 2.2-6.7 5.6v18.1h-9.6V36.5h9.6v17.6c2.3-3.7 6.3-5.9 10.9-5.9 8.5 0 9.9 6.5 9.9 11.9v20.2zM343.4 45.2v-8.7h9.6v8.7h-9.6zm0 35.1V48.8h9.6v31.5h-9.6zM389.9 80.3h-9.6V62.6c0-4.1-1.7-5.9-4.3-5.9-2.6 0-5.8 2.3-7 5.6v18.1h-9.6V48.8h8.6v5.3c2.3-3.7 6.8-5.9 12.2-5.9 8.2 0 9.5 6.7 9.5 11.9v20.2zM395.5 64.6c0-9.2 6-16.3 14.6-16.3 4.7 0 8.4 2.2 10.6 5.8v-5.2h8.3v29.3c0 9.6-7.5 15.5-18.2 15.5-6.8 0-11.5-2.3-15-6.3l5.1-5.2c2.3 2.6 6 4.3 9.9 4.3 4.6 0 8.6-2.4 8.6-8.3v-3.1c-1.9 3.5-5.9 5.3-10 5.3-8.3.1-13.9-7.1-13.9-15.8zm23.9 3.9v-6.6c-1.3-3.3-4.2-5.5-7.1-5.5-4.1 0-7 4-7 8.4 0 4.6 3.2 8 7.5 8 2.9 0 5.3-1.8 6.6-4.3z"/></g></svg>
-        </div>
-        <a v-on:click="enableFederation()" class="waves-effect waves-light btn-large">{{ t('admin.federation.enableButton') }}</a>
-      </div>
-    </div>
-    <federation-main-panel v-else>
-    </federation-main-panel>`,
-  methods: {
-    enableFederation: async function() {
+    async revokeKey(key) {
+      this.setRowPending(key.id, true);
       try {
-        this.enablePending = true;
-
+        await API.axios({ method: 'DELETE', url: `${API.url()}/api/v1/admin/federation/keys/${key.id}` });
+        await ADMINDATA.getFederationKeys();
+        iziToast.success({ title: 'Revoked', message: `'${key.name}' can no longer read this server.`, position: 'topCenter', timeout: 3500 });
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: 'Failed to revoke the key.' });
+      }
+      this.setRowPending(key.id, false);
+    },
+    async resetBinding(key) {
+      this.setRowPending(key.id, true);
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/federation/keys/${key.id}/reset-binding` });
+        await ADMINDATA.getFederationKeys();
+        iziToast.success({ title: 'Binding reset', message: 'The next server to redeem this ticket claims it again.', position: 'topCenter', timeout: 3500 });
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: 'Failed to reset the binding.' });
+      }
+      this.setRowPending(key.id, false);
+    },
+    async addPeer() {
+      this.addPeerPending = true;
+      try {
+        const data = { ticket: this.peerTicket.trim() };
+        if (this.peerName.trim()) { data.name = this.peerName.trim(); }
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/federation/peers`, data });
+        this.peerTicket = '';
+        this.peerName = '';
+        await ADMINDATA.getFederationPeers();
+        iziToast.success({ title: 'Peer added', message: 'Testing the connection in the background…', position: 'topCenter', timeout: 3500 });
+        // The async first health check lands a moment later; refresh the dots.
+        setTimeout(() => ADMINDATA.getFederationPeers(), 4000);
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: (e.response && e.response.data && e.response.data.error) || 'Failed to add the peer.' });
+      }
+      this.addPeerPending = false;
+    },
+    async testPeer(peer) {
+      this.setRowPending(peer.id, true);
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/federation/peers/${peer.id}/test` });
+        await ADMINDATA.getFederationPeers();
+        if (res.data.ok) {
+          iziToast.success({ title: 'Connected', message: `'${peer.name}' shares: ${res.data.health.libraries.join(', ') || '(nothing)'}`, position: 'topCenter', timeout: 3500 });
+        } else {
+          iziToast.warning({ title: 'Unreachable', message: res.data.error, position: 'topCenter', timeout: 3500 });
+        }
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: 'Test failed.' });
+      }
+      this.setRowPending(peer.id, false);
+    },
+    async removePeer(peer) {
+      this.setRowPending(peer.id, true);
+      try {
+        await API.axios({ method: 'DELETE', url: `${API.url()}/api/v1/admin/federation/peers/${peer.id}` });
+        await ADMINDATA.getFederationPeers();
+        iziToast.success({ title: 'Removed', message: `'${peer.name}' forgotten.`, position: 'topCenter', timeout: 3500 });
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: 'Failed to remove the peer.' });
+      }
+      this.setRowPending(peer.id, false);
+    },
+    async toggleDiscovery(peer) {
+      this.setRowPending(peer.id, true);
+      try {
         await API.axios({
           method: 'POST',
-          url: `${API.url()}/api/v1/admin/federation/enable`,
-          data: {
-            enable: !this.enabled.val,
-          }
+          url: `${API.url()}/api/v1/admin/federation/peers/${peer.id}/discovery`,
+          data: { enabled: peer.use_discovery !== 1 },
         });
-
-        // update fronted data
-        Vue.set(ADMINDATA.federationEnabled, 'val', !this.enabled.val);
-  
-        iziToast.success({
-          title: `Syncthing ${this.enabled.val === true ? t('admin.settings.enabled') : t('admin.settings.disabled')}`,
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } catch(err) {
-        iziToast.error({
-          title: t('admin.federation.toggleFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }finally {
-        this.enablePending = false;
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: 'Failed to update the peer.' });
       }
-    }
-  }
+      // Refresh either way so the checkbox always mirrors the server's truth.
+      await ADMINDATA.getFederationPeers();
+      this.setRowPending(peer.id, false);
+    },
+    statusDot(peer) {
+      if (peer.last_status === 'ok') { return '#2e7d32'; }
+      if (peer.last_status) { return '#c62828'; }
+      return '#9e9e9e';
+    },
+    fmtDate(s) { return s ? s.replace('T', ' ').slice(0, 16) : '—'; },
+  },
+  mounted() { this.refresh(); },
+  template: `
+    <div v-if="fedTS.ts === 0" class="row">
+      <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+    </div>
+    <div v-else class="container">
+      <div class="row" style="margin-top:24px">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Federation</span>
+              <p>Pair with a friend's mStream server to share libraries <b>read-only</b>, peer-to-peer and end-to-end encrypted — no port-forwarding or DNS. You mint a ticket for the libraries you want to share; your friend pastes it into their Peers list (and mints one for you if the sharing is mutual). Distributed backups between paired servers build on this.</p>
+              <div v-if="fed.available === false" class="card-panel orange lighten-4" style="margin-top:16px">
+                <p><b>Not available on this platform.</b> The Iroh native component has no prebuilt binary for this server’s OS/CPU, so the federation endpoint can’t run here.</p>
+              </div>
+              <p><b>Tickets are credentials.</b> Anyone holding an unredeemed ticket can read the libraries it grants — send tickets over a private channel. The first server to use a ticket claims it; revoke a ticket at any time to cut access.</p>
+              <p style="margin-top:8px" v-if="fed.enabled && fed.running"><b>Status:</b>
+                <span style="color:#2e7d32">On{{ fed.online ? ' · connected to relay' : ' · connecting…' }}</span>
+                <span style="word-break:break-all;font-family:monospace;font-size:0.8em;display:block">{{ fed.endpointId }}</span>
+              </p>
+            </div>
+            <div class="card-action flow-root">
+              <a v-on:click="toggle()" :class="{disabled: togglePending}" class="waves-effect waves-light btn right">
+                {{ fed.enabled ? 'Turn Off' : 'Turn On' }}
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="fed.enabled" class="row">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Shared Libraries — Tickets You Minted</span>
+              <p style="font-size:0.9em;color:#777">Each ticket is a read-only grant for the libraries you picked. Copy it and send it to the friend it's for.</p>
+              <table v-if="keys.list.length > 0" class="striped">
+                <thead><tr><th>Name</th><th>Libraries</th><th>Last used</th><th>Redeemed</th><th style="width:280px"></th></tr></thead>
+                <tbody>
+                  <tr v-for="k in keys.list" :key="k.id">
+                    <td>{{ k.name }}</td>
+                    <td>{{ k.library_names.join(', ') }}</td>
+                    <td>{{ fmtDate(k.last_used) }}</td>
+                    <td>
+                      <span v-if="k.bound_endpoint_id" style="color:#2e7d32">✔ claimed</span>
+                      <span v-else style="color:#9e9e9e">not yet</span>
+                    </td>
+                    <td class="right-align">
+                      <a v-if="k.ticket" class="btn-flat btn-small waves-effect fed-copy-button" :data-clipboard-text="k.ticket" title="Copy the ticket to send to your friend">Copy ticket</a>
+                      <a v-if="k.bound_endpoint_id" class="btn-flat btn-small waves-effect" :class="{disabled: rowPending[k.id]}" v-on:click="resetBinding(k)" title="Friend reinstalled? Let the ticket be claimed again.">Reset</a>
+                      <a class="btn-small red lighten-1 waves-effect" :class="{disabled: rowPending[k.id]}" v-on:click="revokeKey(k)">Revoke</a>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-else style="color:#777">No tickets yet.</p>
+            </div>
+            <div class="card-action flow-root">
+              <a v-on:click="openNewTicketModal()" class="waves-effect waves-light btn right">New Ticket</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="fed.enabled" class="row">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Peers — Servers You Can Read</span>
+              <table v-if="peers.list.length > 0" class="striped">
+                <thead><tr><th></th><th>Name</th><th>Status</th><th>Last seen</th><th>Discovery</th><th style="width:200px"></th></tr></thead>
+                <tbody>
+                  <tr v-for="p in peers.list" :key="p.id">
+                    <td><span :style="{color: statusDot(p)}" style="font-size:1.4em">●</span></td>
+                    <td>{{ p.name }}</td>
+                    <td style="font-size:0.85em">{{ p.last_status || 'never tested' }}</td>
+                    <td>{{ fmtDate(p.last_seen) }}</td>
+                    <td>
+                      <label title="Let the Discover panel ask this peer for similar music. Queries reveal what you're listening to — to this peer only.">
+                        <input type="checkbox" :checked="p.use_discovery === 1" :disabled="rowPending[p.id]" v-on:change="toggleDiscovery(p)"/>
+                        <span></span>
+                      </label>
+                    </td>
+                    <td class="right-align">
+                      <a class="btn-flat btn-small waves-effect" :class="{disabled: rowPending[p.id]}" v-on:click="testPeer(p)">Test</a>
+                      <a class="btn-small red lighten-1 waves-effect" :class="{disabled: rowPending[p.id]}" v-on:click="removePeer(p)">Remove</a>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-else style="color:#777">No peers yet — paste a friend's ticket below.</p>
+              <div style="margin-top:16px">
+                <div class="input-field">
+                  <textarea id="fed-peer-ticket" class="materialize-textarea" v-model="peerTicket" placeholder="Paste a federation ticket (mstrfed1:…)"></textarea>
+                </div>
+                <div v-if="peerPreview && peerPreview.error" style="color:#c62828;font-size:0.9em">That doesn't look like a federation ticket.</div>
+                <div v-if="peerPreview && !peerPreview.error" class="card-panel green lighten-5" style="padding:10px">
+                  <b>{{ peerPreview.name }}</b>
+                  <span v-if="peerPreview.libraries.length"> — shares: {{ peerPreview.libraries.join(', ') }}</span>
+                </div>
+                <div class="input-field" style="max-width:320px">
+                  <input id="fed-peer-name" type="text" v-model="peerName" placeholder="Optional display name"/>
+                </div>
+                <a v-on:click="addPeer()" :class="{disabled: addPeerPending || !peerPreview || peerPreview.error}" class="waves-effect waves-light btn">Add Peer</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`,
 });
-*/
+
 
 
 const logsView = Vue.component('logs-view', {
@@ -6372,11 +6437,15 @@ const backupView = Vue.component('backup-view', {
       triggerType: 'after-scan',
       dailyAtHour: 3,                 // 3am — quiet hour, picked when trigger=daily
       retentionDays: 30,
-      // Comma-separated patterns the user can edit. Pre-populated with the
-      // server's default list so a fresh form looks like a fresh destination
-      // would behave (omitting excludeGlobs at create time → server applies
-      // the same defaults).
-      excludePatternsCsv: 'Thumbs.db, desktop.ini, .DS_Store, ._*',
+      // Comma-separated patterns the user can edit. Seeded from the
+      // server's default list (GET /backup/platform) so a fresh form
+      // shows what a fresh destination would actually exclude; when the
+      // user leaves it untouched, submitForm omits excludeGlobs so the
+      // row stores NULL and tracks future default changes. The platform
+      // fetch fires at page load, so it has normally landed long before
+      // this view mounts — the serverDefaultExcludes watcher below
+      // covers the race when it hasn't.
+      excludePatternsCsv: (ADMINDATA.backupPlatform.defaultExcludes || []).join(', '),
       // 0 = no throttle. The form helper text frames "200ms" as a
       // sensible value for users who want to keep streaming smooth
       // during a backup; we don't pre-fill that as a default because
@@ -6502,13 +6571,13 @@ const backupView = Vue.component('backup-view', {
 
                   <div class="row">
                     <div class="input-field col s6 m3" v-if="triggerType === 'daily'">
-                      <input v-model.number="dailyAtHour" id="backup-daily-hour" type="number" min="0" max="23" class="validate">
+                      <input v-model.number="dailyAtHour" id="backup-daily-hour" required type="number" min="0" max="23" class="validate">
                       <label for="backup-daily-hour" class="active">Hour (0–23)</label>
                     </div>
                     <div class="input-field col s6 m3">
                       <input v-model.number="retentionDays" id="backup-retention" type="number" min="0" class="validate">
                       <label for="backup-retention" class="active">Retention (days)</label>
-                      <span class="helper-text">0 = hard delete</span>
+                      <span class="helper-text">Days deleted/changed files stay recoverable in the backup's trash. 0 = no trash: old copies are deleted immediately and unrecoverably.</span>
                     </div>
                     <div class="input-field col s6 m3">
                       <input v-model.number="interFileDelayMs" id="backup-throttle" type="number" min="0" max="60000" class="validate">
@@ -6552,7 +6621,7 @@ const backupView = Vue.component('backup-view', {
 
                   <div class="row">
                     <button class="btn green waves-effect waves-light col m4 s12" type="submit"
-                            :disabled="submitPending || checkPending || checkErrors.length > 0 || !libraryName || !destPath">
+                            :disabled="submitPending || checkPending || checkErrors.length > 0 || !libraryName || !destPath || !numbersValid">
                       {{ submitPending ? 'Adding…' : 'Add destination' }}
                     </button>
                   </div>
@@ -6594,7 +6663,7 @@ const backupView = Vue.component('backup-view', {
                 <td>
                   <input type="number" min="0" max="60000"
                          :value="d.inter_file_delay_ms || 0"
-                         @change="setThrottle(d, Number($event.target.value))"
+                         @change="setThrottle(d, $event)"
                          style="margin:0;display:inline-block;width:70px;height:28px;font-size:13px;padding:0 4px"
                          :title="(d.inter_file_delay_ms || 0) === 0 ? 'No throttle' : (d.inter_file_delay_ms + 'ms between files')">
                   <span class="grey-text" style="font-size:11px">ms</span>
@@ -6608,12 +6677,14 @@ const backupView = Vue.component('backup-view', {
                   <span v-else-if="!d.lastRun" class="grey-text">never</span>
                   <span v-else :title="d.lastRun.error_message || ''" :style="{ color: statusColor(d.lastRun.status) }">
                     {{ d.lastRun.status }}
-                    <span class="grey-text" style="font-size:11px">({{ formatRunSummary(d.lastRun) }})</span>
+                    <!-- failed/skipped rows have zero counts → empty summary;
+                         suppress the parens rather than render "failed ()" -->
+                    <span v-if="formatRunSummary(d.lastRun)" class="grey-text" style="font-size:11px">({{ formatRunSummary(d.lastRun) }})</span>
                   </span>
                 </td>
                 <td>
                   <select :value="d.enabled ? 'true' : 'false'"
-                          v-on:change="setEnabled(d, $event.target.value === 'true')"
+                          v-on:change="setEnabled(d, $event)"
                           style="margin:0;display:inline-block;width:auto;height:28px;font-size:13px">
                     <option value="true">on</option>
                     <option value="false">off</option>
@@ -6621,7 +6692,9 @@ const backupView = Vue.component('backup-view', {
                 </td>
                 <td>
                   [<a v-on:click="showEditDestination(d)">Edit</a>]
-                  [<a v-on:click="runNow(d)">Run now</a>]
+                  <!-- A disabled destination always 400s on /run — grey the
+                       link out instead of offering a dead button. -->
+                  [<a v-if="d.enabled" v-on:click="runNow(d)">Run now</a><span v-else class="grey-text" style="cursor:default" title="Destination is disabled — set Enabled to 'on' to run it">Run now</span>]
                   [<a v-on:click="showHistory(d)">History</a>]
                   [<a v-on:click="removeDestination(d)" style="color:#c62828">Delete</a>]
                 </td>
@@ -6634,16 +6707,30 @@ const backupView = Vue.component('backup-view', {
   `,
   watch: {
     // sharedSelect is mutated by fileExplorerModal when the user picks a path.
-    // We watch it to populate the form, and immediately re-validate.
+    // We watch it to populate the form. (No scheduleCheck here — setting
+    // destPath fires the destPath watcher below; a second call would
+    // just reset the same debounce timer.)
     'sharedSelect.value': function (newVal) {
       if (newVal) {
         this.destPath = newVal;
-        this.scheduleCheck();
       }
     },
+    // Re-validate on ANY path change — picked via the dialog or typed/
+    // edited by hand. Without this, manual edits left checkErrors stale
+    // in both directions: a fixed path never re-enabled the submit
+    // button, and a broken path kept it enabled until the server 400'd.
+    destPath: function () { this.scheduleCheck(); },
     // Re-check when library changes — sameDrive detection depends on the
     // source path which comes from the selected library.
     libraryName: function () { this.scheduleCheck(); },
+    // Late-arriving platform data (view mounted before the boot-time
+    // fetch landed): seed the patterns field, but only if the user
+    // hasn't already typed into it.
+    serverDefaultExcludes: function (newVal, oldVal) {
+      if (this.excludePatternsCsv === (oldVal || []).join(', ')) {
+        this.excludePatternsCsv = (newVal || []).join(', ');
+      }
+    },
   },
   created: function () {
     // Reset the shared select so a stale value from another view doesn't
@@ -6668,6 +6755,23 @@ const backupView = Vue.component('backup-view', {
     if (this.checkDebounceTimer) { clearTimeout(this.checkDebounceTimer); }
   },
   computed: {
+    // The live default exclude list, from GET /backup/platform. Null
+    // until that fetch lands (see the watcher that handles the race).
+    serverDefaultExcludes() {
+      return this.platform.defaultExcludes;
+    },
+    // Client-side mirror of the server's numeric constraints so the
+    // form catches them inline instead of round-tripping to a Joi 400
+    // toast. v-model.number yields '' for a cleared field, which
+    // Number.isInteger correctly rejects.
+    numbersValid() {
+      const hourOk = this.triggerType !== 'daily'
+        || (Number.isInteger(this.dailyAtHour) && this.dailyAtHour >= 0 && this.dailyAtHour <= 23);
+      const retentionOk = Number.isInteger(this.retentionDays) && this.retentionDays >= 0;
+      const throttleOk = Number.isInteger(this.interFileDelayMs)
+        && this.interFileDelayMs >= 0 && this.interFileDelayMs <= 60000;
+      return hourOk && retentionOk && throttleOk;
+    },
     // Sum of all entries the active run has processed so far. Lines
     // up with the denominator (status.active.expectedFiles), which is
     // the previous successful run's copied+unchanged+trashed total.
@@ -6728,6 +6832,7 @@ const backupView = Vue.component('backup-view', {
     statusColor(status) {
       return status === 'success' ? '#2e7d32'
            : status === 'failed' ? '#c62828'
+           : status === 'partial' ? '#e65100'
            : status === 'skipped' ? '#f57f17'
            : '#1976d2';
     },
@@ -6738,8 +6843,12 @@ const backupView = Vue.component('backup-view', {
     },
     // Debounce path checks so we don't fire one per keystroke. 400ms feels
     // responsive without being chatty — most users either click "Browse"
-    // (one event) or type once and stop.
+    // (one event) or type once and stop. checkPending is raised HERE, not
+    // in checkPath, so the submit gate blocks for the whole debounce
+    // window — otherwise an edit followed by a quick submit would race
+    // the timer and go out against the previous path's stale results.
     scheduleCheck() {
+      this.checkPending = true;
       if (this.checkDebounceTimer) { clearTimeout(this.checkDebounceTimer); }
       this.checkDebounceTimer = setTimeout(() => this.checkPath(), 400);
     },
@@ -6748,18 +6857,19 @@ const backupView = Vue.component('backup-view', {
         this.checkErrors = [];
         this.checkWarnings = [];
         this.checkInfo = null;
+        this.checkPending = false;
         return;
       }
       const lib = this.folders[this.libraryName];
-      if (!lib) { return; }
       // Match by name → id via the libraries cache. Backend endpoints take
-      // numeric library ids; the UI uses the vpath name as the key.
-      const libraryId = lib.id;
-      if (!libraryId) {
-        // ADMINDATA.folders structure may not include id — fall back to
-        // skipping live check; submit will still validate server-side.
+      // numeric library ids; the UI uses the vpath name as the key. If the
+      // cache has no id (structure drift), skip the live check; submit
+      // still validates server-side.
+      if (!lib || !lib.id) {
+        this.checkPending = false;
         return;
       }
+      const libraryId = lib.id;
       try {
         this.checkPending = true;
         const res = await API.axios({
@@ -6788,6 +6898,20 @@ const backupView = Vue.component('backup-view', {
     async submitForm() {
       const lib = this.folders[this.libraryName];
       if (!lib) { return; }
+      // An untouched patterns field means "the defaults" — OMIT
+      // excludeGlobs so the row stores NULL and tracks future default
+      // changes (the API's three-state semantics: omitted → NULL →
+      // defaults at read time; [] → exclude nothing; array → pinned).
+      // Sending the parsed copy instead would pin today's snapshot,
+      // which the edit modal's "Reset patterns to defaults" button
+      // exists to undo. undefined keys drop out of the JSON body.
+      const parsedExcludes = this.parseExcludeCsv(this.excludePatternsCsv);
+      // If the platform fetch never landed the field seeded empty — treat
+      // blank as untouched there too (omit → defaults): pinning "exclude
+      // nothing" should require having SEEN the defaults and cleared them.
+      const isDefaultExcludes = this.serverDefaultExcludes
+        ? JSON.stringify(parsedExcludes) === JSON.stringify(this.serverDefaultExcludes)
+        : parsedExcludes.length === 0;
       try {
         this.submitPending = true;
         await API.axios({
@@ -6800,7 +6924,7 @@ const backupView = Vue.component('backup-view', {
             dailyAtHour: this.triggerType === 'daily' ? this.dailyAtHour : undefined,
             retentionDays: this.retentionDays,
             enabled: true,
-            excludeGlobs: this.parseExcludeCsv(this.excludePatternsCsv),
+            excludeGlobs: isDefaultExcludes ? undefined : parsedExcludes,
             interFileDelayMs: this.interFileDelayMs,
           },
         });
@@ -6811,7 +6935,7 @@ const backupView = Vue.component('backup-view', {
         this.dailyAtHour = 3;
         this.retentionDays = 30;
         this.interFileDelayMs = 0;
-        this.excludePatternsCsv = 'Thumbs.db, desktop.ini, .DS_Store, ._*';
+        this.excludePatternsCsv = (this.serverDefaultExcludes || []).join(', ');
         this.checkErrors = [];
         this.checkWarnings = [];
         await ADMINDATA.getBackupDestinations();
@@ -6830,7 +6954,8 @@ const backupView = Vue.component('backup-view', {
       modVM.currentViewModal = 'backup-edit-modal';
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
     },
-    async setEnabled(dest, enabled) {
+    async setEnabled(dest, event) {
+      const enabled = event.target.value === 'true';
       try {
         await API.axios({
           method: 'PATCH',
@@ -6840,13 +6965,18 @@ const backupView = Vue.component('backup-view', {
         // Reflect locally without waiting for refetch, so the toggle stays in sync.
         Vue.set(dest, 'enabled', enabled ? 1 : 0);
       } catch (err) {
-        iziToast.error({ title: 'Toggle failed', position: 'topCenter', timeout: 3000 });
+        // Snap the <select> back: it's :value-bound, so a rejected change
+        // isn't reverted by Vue (the underlying data never moved and the
+        // vdom sees nothing to patch) — without this the UI keeps showing
+        // a state the server refused.
+        event.target.value = dest.enabled ? 'true' : 'false';
+        iziToast.error({ title: err.response?.data?.error || 'Toggle failed', position: 'topCenter', timeout: 3000 });
       }
     },
-    async setThrottle(dest, ms) {
+    async setThrottle(dest, event) {
       // Clamp client-side to keep an obviously-bad value from round-tripping
       // to the server only to be 400'd back. The server still re-validates.
-      const clamped = Math.max(0, Math.min(60000, Math.round(ms || 0)));
+      const clamped = Math.max(0, Math.min(60000, Math.round(Number(event.target.value) || 0)));
       try {
         await API.axios({
           method: 'PATCH',
@@ -6854,8 +6984,13 @@ const backupView = Vue.component('backup-view', {
           data: { interFileDelayMs: clamped },
         });
         Vue.set(dest, 'inter_file_delay_ms', clamped);
+        // Show the value that was actually saved. Vue can't be relied on
+        // to patch the :value-bound input when the clamp lands on the
+        // value the data already held (typed 99999 over a stored 60000).
+        event.target.value = clamped;
       } catch (err) {
-        iziToast.error({ title: 'Throttle update failed', position: 'topCenter', timeout: 3000 });
+        event.target.value = dest.inter_file_delay_ms || 0;
+        iziToast.error({ title: err.response?.data?.error || 'Throttle update failed', position: 'topCenter', timeout: 3000 });
       }
     },
     async runNow(dest) {
@@ -6873,13 +7008,22 @@ const backupView = Vue.component('backup-view', {
         // without waiting for the next 2s tick.
         ADMINDATA.getBackupStatus();
       } catch (err) {
-        iziToast.error({ title: 'Run failed', position: 'topCenter', timeout: 3000 });
+        iziToast.error({ title: err.response?.data?.error || 'Run failed', position: 'topCenter', timeout: 3000 });
       }
     },
     async showHistory(dest) {
       ADMINDATA.selectedBackupDest = dest;
       modVM.currentViewModal = 'backup-history-modal';
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    // iziToast renders message as HTML (the <br> tags below rely on it),
+    // so anything user-controlled must be escaped before interpolation —
+    // dest_path is admin-entered and round-trips verbatim through the API.
+    // Stored self-XSS only (admins set these values), but this is the one
+    // spot in the backup UI where API data bypasses Vue's auto-escaping.
+    escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g,
+        (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     },
     removeDestination(dest) {
       iziToast.question({
@@ -6891,7 +7035,7 @@ const backupView = Vue.component('backup-view', {
         layout: 2,
         maxWidth: 600,
         title: `Delete backup destination?`,
-        message: `${dest.library_name} → ${dest.dest_path}<br><br>The destination's existing files on disk are NOT deleted; only the schedule + history record are removed. You can re-add the same path later.`,
+        message: `${this.escapeHtml(dest.library_name)} → ${this.escapeHtml(dest.dest_path)}<br><br>The destination's existing files on disk are NOT deleted; only the schedule + history record are removed. You can re-add the same path later.`,
         position: 'center',
         buttons: [
           [`<button><b>Delete</b></button>`, async (instance, toast) => {
@@ -6904,7 +7048,7 @@ const backupView = Vue.component('backup-view', {
               await ADMINDATA.getBackupDestinations();
               iziToast.success({ title: 'Deleted', position: 'topCenter', timeout: 2000 });
             } catch (err) {
-              iziToast.error({ title: 'Delete failed', position: 'topCenter', timeout: 3000 });
+              iziToast.error({ title: err.response?.data?.error || 'Delete failed', position: 'topCenter', timeout: 3000 });
             }
           }, true],
           [`<button>Cancel</button>`, (instance, toast) => {
@@ -6926,7 +7070,9 @@ const discoveryView = Vue.component('discovery-view', {
       discoveryP2p: { loaded: false, status: null, peers: [], storage: null, autoFetch: false },
       p2pIdentity: P2PIDENTITY,
       p2pToggling: false,
-      peerFilter: ''
+      peerFilter: '',
+      friendTicket: '',
+      joinPending: false
     };
   },
   template: `
@@ -6980,15 +7126,30 @@ const discoveryView = Vue.component('discovery-view', {
                     <div class="progress" style="margin: 4px 0 6px 0;"><div class="indeterminate"></div></div>
                     <span style="color: #757575; font-size: 0.85em;">searching for peers — this page updates itself every few seconds</span>
                   </div>
-                  <p v-if="discoveryP2p.status.ticket"><b>Your ticket</b> — a friend pastes this into their
-                  <code>discoveryP2p.bootstrapPeers</code> to befriend this server:<br>
+                  <p v-if="discoveryP2p.status.ticket" style="margin-bottom: 4px;"><b>Your ticket</b> — a friend pastes this
+                  into the box below on <i>their</i> Discovery page to befriend this server:<br>
                     <textarea readonly rows="2" style="width:100%; font-size: 0.8em;" onclick="this.select()">{{ discoveryP2p.status.ticket }}</textarea>
                   </p>
+                  <p style="margin: 8px 0 2px 0;"><b>Befriend a server</b> — paste the ticket from a friend's Discovery page
+                  (saved to your config, so the friendship survives restarts):</p>
+                  <div style="display: flex; gap: 8px; max-width: 640px; align-items: center; margin-bottom: 8px;">
+                    <input v-model="friendTicket" id="p2p-friend-ticket" type="text" placeholder="endpoint…"
+                      style="flex: 1; margin: 0;" v-on:keyup.enter="discoveryJoinPeer()">
+                    <a v-on:click="discoveryJoinPeer()" :class="{disabled: joinPending || !friendTicket.trim()}"
+                      class="waves-effect waves-light btn green" style="flex-shrink: 0;">
+                      {{ joinPending ? 'Joining…' : 'Join' }}</a>
+                  </div>
                   <p v-if="discoveryP2p.storage"><b>Peer snapshots:</b>
                     {{ discoveryBytes(discoveryP2p.storage.usedBytes) }} of {{ discoveryBytes(discoveryP2p.storage.capBytes) }} used
                     [<a v-on:click="openModal('edit-p2p-max-storage-modal')">{{ t('admin.settings.edit') }}</a>]
                     — auto-fetch {{ discoveryP2p.autoFetch ? 'on' : 'off' }}
                     — community seeds {{ discoveryP2p.status.communitySeeds ? 'on (public network)' : 'off (friends only)' }}
+                  </p>
+                  <p><b>Forget offline servers:</b>
+                    {{ discoveryP2p.status.peerRetentionDays > 0
+                      ? 'after ' + discoveryP2p.status.peerRetentionDays + ' days of silence'
+                      : 'never (offline servers stay listed forever)' }}
+                    [<a v-on:click="openModal('edit-p2p-peer-retention-modal')">{{ t('admin.settings.edit') }}</a>]
                   </p>
                   <div v-if="discoveryP2p.peers.length > 5" class="input-field" style="max-width: 360px; margin: 4px 0 0 0;">
                     <input v-model="peerFilter" id="p2p-peer-filter" type="text" placeholder="Search servers — name or description">
@@ -7006,20 +7167,28 @@ const discoveryView = Vue.component('discovery-view', {
                         </td>
                         <td>{{ peer.payload.rowCount }}</td>
                         <td>{{ peer.seeders }}</td>
-                        <td>{{ peer.online ? 'online' : 'offline' }}</td>
+                        <td :title="peer.updatedAt">{{ peer.online ? 'online' : 'offline' + discoveryAge(peer.updatedAt) }}</td>
                         <td>{{ peer.compatible === null ? 'unknown' : (peer.compatible ? 'compatible' : 'incompatible') }}</td>
                         <td>{{ peer.fetched ? (peer.fetched.stale ? 'update available' : 'yes') : 'no' }}</td>
                         <td>
                           [<a v-on:click="discoveryFetchPeer(peer.from)">{{ peer.fetched ? 'Update' : 'Download' }}</a>]
                           <span v-if="peer.fetched">[<a v-on:click="discoveryRemovePeer(peer.from)">Remove</a>]</span>
+                          <span v-if="!peer.online && !peer.fetched">[<a v-on:click="discoveryForgetPeer(peer.from)">Forget</a>]</span>
+                          [<a v-on:click="discoveryBlockPeer(peer.from)" style="color: #b71c1c;">Block</a>]
                         </td>
                       </tr>
                     </tbody>
                   </table>
                   <p v-else-if="discoveryP2p.peers.length > 0">No servers match
                     &ldquo;{{ peerFilter }}&rdquo; — [<a v-on:click="peerFilter = ''">clear</a>]</p>
-                  <p v-else>No peers heard yet — add a friend's ticket to <code>discoveryP2p.bootstrapPeers</code>
-                  (or POST it to the join endpoint) and give gossip a minute.</p>
+                  <p v-else>No servers heard yet — paste a friend's ticket above and give gossip a minute.</p>
+                  <p v-if="discoveryP2p.status.blockedPeers && discoveryP2p.status.blockedPeers.length > 0"
+                    style="color: #757575; font-size: 0.9em;">
+                    <b>Blocked servers</b> — announcements ignored, snapshots never fetched:<br>
+                    <span v-for="id in discoveryP2p.status.blockedPeers" :key="id" style="margin-right: 12px; white-space: nowrap;">
+                      <code>{{ id.slice(0, 12) }}…</code> [<a v-on:click="discoveryUnblockPeer(id)">Unblock</a>]
+                    </span>
+                  </p>
                   <p>[<a v-on:click="loadDiscoveryP2p()">Refresh</a>]
                   [<a v-on:click="disableP2p()" style="color: #b71c1c;">Disable</a>]</p>
                 </div>
@@ -7175,6 +7344,8 @@ const discoveryView = Vue.component('discovery-view', {
         P2PIDENTITY.serverName = status.serverName || '';
         P2PIDENTITY.serverDescription = status.serverDescription || '';
         if (status.maxPeerDbStorageMb) { P2PSETTINGS.maxPeerDbStorageMb = status.maxPeerDbStorageMb; }
+        // 0 (= never forget) is a valid value — don't truthiness-check it away.
+        if (typeof status.peerRetentionDays === 'number') { P2PSETTINGS.peerRetentionDays = status.peerRetentionDays; }
         if (status.enabled === true) {
           const cat = (await API.axios({
             method: 'GET', url: `${API.url()}/api/v1/admin/discovery/p2p/catalog`
@@ -7220,11 +7391,106 @@ const discoveryView = Vue.component('discovery-view', {
       }
       this.loadDiscoveryP2p();
     },
+    // The befriend box: join the mesh through the pasted ticket AND persist
+    // it to bootstrapPeers (persist: true) so the friendship survives a
+    // restart. Gossip does the rest — their server shows up in the catalog
+    // within a minute or so of both being online.
+    discoveryJoinPeer: async function() {
+      const peer = this.friendTicket.trim();
+      if (!peer || this.joinPending) { return; }
+      try {
+        this.joinPending = true;
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/join`,
+          data: { peer, persist: true }
+        });
+        this.friendTicket = '';
+        iziToast.success({ title: 'Joined — their server appears in the list within a minute or so', position: 'topCenter', timeout: 4000 });
+      } catch (err) {
+        iziToast.error({
+          title: 'Join failed',
+          message: err.response?.data?.error || '',
+          position: 'topCenter', timeout: 4000
+        });
+      } finally {
+        this.joinPending = false;
+      }
+      this.loadDiscoveryP2p(true);
+    },
+    // Block = "make this server not exist": config blocklist + snapshot +
+    // catalog row all in one server-side action. Undo lives in the
+    // blocked-servers list below the table.
+    discoveryBlockPeer: async function(endpointId) {
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/block`,
+          data: { endpointId }
+        });
+        iziToast.success({ title: 'Server blocked — its announcements and snapshots are now ignored', position: 'topCenter', timeout: 3500 });
+      } catch (err) {
+        iziToast.error({
+          title: 'Block failed',
+          message: err.response?.data?.error || '',
+          position: 'topCenter', timeout: 4000
+        });
+      }
+      this.loadDiscoveryP2p();
+    },
+    discoveryUnblockPeer: async function(endpointId) {
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/unblock`,
+          data: { endpointId }
+        });
+        iziToast.success({ title: 'Server unblocked — it reappears on its next announcement', position: 'topCenter', timeout: 3500 });
+      } catch (err) {
+        iziToast.error({
+          title: 'Unblock failed',
+          message: err.response?.data?.error || '',
+          position: 'topCenter', timeout: 4000
+        });
+      }
+      this.loadDiscoveryP2p();
+    },
+    // Drop a dead server from the list right now instead of waiting out
+    // the retention window. Harmless by construction: it reappears on its
+    // next announcement if it ever comes back.
+    discoveryForgetPeer: async function(endpointId) {
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/forget`,
+          data: { endpointId }
+        });
+        iziToast.success({ title: 'Server forgotten — it reappears if it comes back online', position: 'topCenter', timeout: 3500 });
+      } catch (err) {
+        iziToast.error({
+          title: 'Forget failed',
+          message: err.response?.data?.error || '',
+          position: 'topCenter', timeout: 4000
+        });
+      }
+      this.loadDiscoveryP2p();
+    },
     discoveryBytes: function(n) {
       if (typeof n !== 'number' || !isFinite(n)) { return '?'; }
       if (n >= 1073741824) { return (n / 1073741824).toFixed(1) + ' GB'; }
       if (n >= 1048576) { return (n / 1048576).toFixed(1) + ' MB'; }
       return Math.ceil(n / 1024) + ' KB';
+    },
+    // How long ago a peer was last heard, as a table-cell suffix
+    // (' · 3d'). An offline row that's been silent for weeks should read
+    // differently from one that dropped off five minutes ago.
+    discoveryAge: function(iso) {
+      const ms = Date.now() - Date.parse(iso);
+      if (!isFinite(ms) || ms < 0) { return ''; }
+      const mins = Math.floor(ms / 60000);
+      if (mins < 60) { return ' · ' + Math.max(mins, 1) + 'm'; }
+      if (mins < 48 * 60) { return ' · ' + Math.floor(mins / 60) + 'h'; }
+      return ' · ' + Math.floor(mins / (24 * 60)) + 'd';
     }
   }
 });
@@ -8324,6 +8590,71 @@ const editP2pMaxStorageView = Vue.component('edit-p2p-max-storage-modal', {
   }
 });
 
+// Retention for the peer catalog: how many days a server may stay silent
+// before it's forgotten (0 = never). Applies from the very next hourly
+// prune pass — no restart. Downloaded snapshots pin their peer in the list
+// regardless, so this can't invisibly orphan storage.
+const editP2pPeerRetentionView = Vue.component('edit-p2p-peer-retention-modal', {
+  data() {
+    return {
+      submitPending: false,
+      editValue: P2PSETTINGS.peerRetentionDays
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Forget offline servers</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-p2p-peer-retention" required type="number" min="0" max="3650">
+          <label for="edit-p2p-peer-retention">Days of silence before a server is forgotten</label>
+          <span class="helper-text">A server that hasn't announced itself in this many days is dropped from the list automatically — it reappears the moment it comes back online. Servers whose snapshot you've downloaded are never forgotten; remove the snapshot first. 0 keeps every server forever.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/peer-retention`,
+          data: { peerRetentionDays: Number(this.editValue) }
+        });
+
+        P2PSETTINGS.peerRetentionDays = Number(this.editValue);
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.modal.updateFailed'),
+          message: err.response?.data?.error || '',
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
 const editP2pIdentityView = Vue.component('edit-p2p-identity-modal', {
   data() {
     return {
@@ -8767,98 +9098,68 @@ const lastFMModal = Vue.component('lastfm-modal', {
   }
 });
 
-// Disabled: federation-generate-invite-modal goes with the disabled
-// Federation tab — see the block comment around the Federation tab
-// placeholder above. Restore both this definition and its registration
-// in the modal-component map at the bottom of this file when bringing
-// the federation feature back.
-/*
-const federationGenerateInvite = Vue.component('federation-generate-invite-modal', {
+
+
+// New-ticket modal for the Federation tab: name the grant, tick the
+// libraries it covers, mint, and copy the resulting mstrfed1: ticket.
+const federationNewTicketModal = Vue.component('federation-new-ticket-modal', {
   data() {
     return {
-      submitPending: false,
-      selectInstance: null,
       directories: ADMINDATA.folders,
-      federationInviteToken: ADMINDATA.federationInviteToken
+      name: '',
+      selected: [],
+      submitPending: false,
+      mintedTicket: null,
     };
   },
   template: `
-    <div class="modal-content">
-      <div class="row">
-        <div class="col s12 m12 l6">
-          <h4>{{ t('admin.modal.generateInvite') }}</h4>
-          <form @submit.prevent="generateToken">
-            <div class="row">
-              <div class="input-field col s12">
-                <select class="material-select" :disabled="Object.keys(directories).length === 0" id="fed-invite-dirs" multiple>
-                  <option disabled selected value="" v-if="Object.keys(directories).length === 0">{{ t('admin.users.noDirsWarning') }}</option>
-                  <option selected v-for="(key, value) in directories" :value="value">{{ value }}</option>
-                </select>
-                <label for="fed-invite-dirs">{{ t('admin.modal.dirsToShare') }}</label>
-              </div>
-            </div>
-            <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
-              {{ submitPending === false ? t('admin.modal.createInvite') : t('admin.modal.creating') }}
-            </button>
-          </form>
+    <form @submit.prevent="mint">
+      <div class="modal-content">
+        <h4>New Federation Ticket</h4>
+        <div v-if="mintedTicket === null">
+          <div class="input-field">
+            <input id="fed-ticket-name" type="text" v-model="name" placeholder="Who is this for? (e.g. Bob's NAS)" maxlength="64"/>
+          </div>
+          <p style="margin-bottom:4px"><b>Libraries this ticket can read:</b></p>
+          <p v-for="(cfg, vpath) in directories" :key="vpath" style="margin:4px 0">
+            <label><input type="checkbox" v-model="selected" :value="vpath"/><span>{{ vpath }}</span></label>
+          </p>
         </div>
-        <div class="col s12 m12 l6">
-          <blockquote>
-            {{ t('admin.modal.inviteExpiry') }}
-          </blockquote>
-          <textarea v-model="federationInviteToken.val" id="fed-textarea" style="height: auto;" rows="6" cols="60" :placeholder="t('admin.modal.invitePlaceholder')" readonly="readonly"></textarea>
-          <a href="#" class="fed-copy-button" data-clipboard-target="#fed-textarea">{{ t('admin.modal.copyClipboard') }}</a>
+        <div v-else>
+          <p><b>Ticket for '{{ name }}'</b> — copy it and send it to your friend over a private channel. Anyone holding it can read the granted libraries until it's claimed or revoked.</p>
+          <textarea readonly rows="6" cols="60" style="height:auto" :value="mintedTicket"></textarea>
         </div>
       </div>
-    </div>`,
-  mounted: function () {
-    this.selectInstance = M.FormSelect.init(document.querySelectorAll(".material-select"));
-  },
-  beforeDestroy: function() {
-    this.selectInstance[0].destroy();
-  },
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect btn-flat">{{ mintedTicket === null ? 'Cancel' : 'Done' }}</a>
+        <a v-if="mintedTicket !== null" class="btn green waves-effect waves-light fed-copy-button" :data-clipboard-text="mintedTicket">Copy Ticket</a>
+        <button v-else class="btn green waves-effect waves-light" type="submit" :disabled="submitPending || !name.trim() || selected.length === 0">
+          {{ submitPending ? 'Minting…' : 'Mint Ticket' }}
+        </button>
+      </div>
+    </form>`,
   methods: {
-    generateToken: async function() {
+    mint: async function() {
+      this.submitPending = true;
       try {
-        this.submitPending = true;
-        const selectedDirs = Array.from(document.querySelectorAll('#fed-invite-dirs option:checked')).map(el => el.value);
-
-        if(selectedDirs.length === 0) {
-          iziToast.warning({
-            title: t('admin.modal.nothingToFederate'),
-            position: 'topCenter',
-            timeout: 3500
-          });
-          return;
-        }
-
-        const postData =  { vpaths: selectedDirs };
-        if (window.location.protocol === 'https') {
-          postData.url = window.location.origin;
-        }
-
         const res = await API.axios({
           method: 'POST',
-          url: `${API.url()}/api/v1/federation/invite/generate`,
-          data: postData
+          url: `${API.url()}/api/v1/admin/federation/keys`,
+          data: { name: this.name.trim(), vpaths: this.selected },
         });
-
-        this.federationInviteToken.val = res.data.token;
+        this.mintedTicket = res.data.ticket || res.data.key;
+        if (!res.data.ticket) {
+          iziToast.warning({ title: 'Endpoint not running', message: 'Minted the key, but there is no full ticket — turn federation on and re-open the key list.', position: 'topCenter', timeout: 5000 });
+        }
+        await ADMINDATA.getFederationKeys();
       } catch (err) {
-        console.log(err)
-        iziToast.error({
-          title: t('admin.modal.inviteFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
+        iziToast.error({ title: 'Failed to mint the ticket', position: 'topCenter', timeout: 3500 });
       } finally {
         this.submitPending = false;
       }
-    }
-  }
+    },
+  },
 });
-*/
-
 
 const nullModal = Vue.component('null-modal', {
   template: '<div>NULL MODAL ERROR: How did you get here?</div>'
@@ -9073,7 +9374,7 @@ const backupHistoryModal = Vue.component('backup-history-modal', {
           </thead>
           <tbody>
             <tr v-for="run in history" :key="run.id">
-              <td>{{ formatTime(run.started_at) }}</td>
+              <td :title="run.started_at + ' UTC'">{{ formatTime(run.started_at) }}</td>
               <td :style="{ color: statusColor(run.status) }">{{ run.status }}</td>
               <td>{{ run.trigger_reason }}</td>
               <td>{{ run.files_copied }}</td>
@@ -9120,6 +9421,7 @@ const backupHistoryModal = Vue.component('backup-history-modal', {
     statusColor(status) {
       return status === 'success' ? '#2e7d32'
            : status === 'failed' ? '#c62828'
+           : status === 'partial' ? '#e65100'
            : status === 'skipped' ? '#f57f17'
            : '#1976d2';
     },
@@ -9193,16 +9495,16 @@ const backupEditModal = Vue.component('backup-edit-modal', {
           </select>
         </div>
         <div class="input-field col s4 m2" v-if="triggerType === 'daily'">
-          <input v-model.number="dailyAtHour" id="backup-edit-hour" type="number" min="0" max="23">
+          <input v-model.number="dailyAtHour" id="backup-edit-hour" required type="number" min="0" max="23" class="validate">
           <label for="backup-edit-hour" class="active">Hour (0–23)</label>
         </div>
         <div class="input-field col s4 m2">
-          <input v-model.number="retentionDays" id="backup-edit-retention" type="number" min="0">
+          <input v-model.number="retentionDays" id="backup-edit-retention" type="number" min="0" class="validate">
           <label for="backup-edit-retention" class="active">Retention (days)</label>
-          <span class="helper-text" style="font-size:11px">0 = hard delete</span>
+          <span class="helper-text" style="font-size:11px" title="Days deleted/changed files stay recoverable in the backup's trash before being purged">0 = no trash, deletes are immediate + permanent</span>
         </div>
         <div class="input-field col s4 m2">
-          <input v-model.number="interFileDelayMs" id="backup-edit-throttle" type="number" min="0" max="60000">
+          <input v-model.number="interFileDelayMs" id="backup-edit-throttle" type="number" min="0" max="60000" class="validate">
           <label for="backup-edit-throttle" class="active">Throttle (ms/file)</label>
           <span class="helper-text" style="font-size:11px">0 = off</span>
         </div>
@@ -9239,7 +9541,7 @@ const backupEditModal = Vue.component('backup-edit-modal', {
 
       <div class="row">
         <button class="btn green waves-effect waves-light col m3 s12"
-                @click="save" :disabled="submitPending || checkPending || checkErrors.length > 0 || !destPath">
+                @click="save" :disabled="submitPending || checkPending || checkErrors.length > 0 || !destPath || !numbersValid">
           {{ submitPending ? 'Saving…' : 'Save' }}
         </button>
         <button class="btn grey waves-effect waves-light col m4 s12 offset-m1"
@@ -9256,6 +9558,19 @@ const backupEditModal = Vue.component('backup-edit-modal', {
   `,
   watch: {
     destPath: function () { this.scheduleCheck(); },
+  },
+  computed: {
+    // Same client-side mirror of the server's numeric constraints as the
+    // add form — Save is a plain @click (no <form>), so the min/max
+    // attributes alone are never enforced by the browser.
+    numbersValid() {
+      const hourOk = this.triggerType !== 'daily'
+        || (Number.isInteger(this.dailyAtHour) && this.dailyAtHour >= 0 && this.dailyAtHour <= 23);
+      const retentionOk = Number.isInteger(this.retentionDays) && this.retentionDays >= 0;
+      const throttleOk = Number.isInteger(this.interFileDelayMs)
+        && this.interFileDelayMs >= 0 && this.interFileDelayMs <= 60000;
+      return hourOk && retentionOk && throttleOk;
+    },
   },
   created() {
     // Run an initial validation so warnings (same-drive etc.) show on
@@ -9275,13 +9590,17 @@ const backupEditModal = Vue.component('backup-edit-modal', {
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
     },
+    // checkPending raised here (not in checkPath) so Save is blocked for
+    // the whole debounce window — see the add form's scheduleCheck.
     scheduleCheck() {
+      this.checkPending = true;
       if (this.checkDebounceTimer) { clearTimeout(this.checkDebounceTimer); }
       this.checkDebounceTimer = setTimeout(() => this.checkPath(), 400);
     },
     async checkPath() {
       if (!this.destPath || !this.destination?.library_id) {
         this.checkErrors = []; this.checkWarnings = [];
+        this.checkPending = false;
         return;
       }
       try {
@@ -9289,7 +9608,14 @@ const backupEditModal = Vue.component('backup-edit-modal', {
         const res = await API.axios({
           method: 'POST',
           url: `${API.url()}/api/v1/admin/backup/check-path`,
-          data: { libraryId: this.destination.library_id, destPath: this.destPath },
+          data: {
+            libraryId: this.destination.library_id,
+            destPath: this.destPath,
+            // Self-exclude, exactly like the PATCH this dialog submits —
+            // otherwise previewing the destination's own unchanged path
+            // reports "already uses this path" and Save never enables.
+            excludeDestId: this.destination.id,
+          },
         });
         this.checkErrors = res.data.errors || [];
         this.checkWarnings = res.data.warnings || [];
@@ -9409,9 +9735,7 @@ const modVM = new Vue({
     'edit-transcode-bitrate-modal': editTranscodeDefaultBitrate,
     'edit-ssl-modal': editSslModal,
     'lastfm-modal': lastFMModal,
-    // Disabled along with the federation tab — see the disabled-block
-    // comment around the federationGenerateInvite definition above.
-    // 'federation-generate-invite-modal': federationGenerateInvite,
+    'federation-new-ticket-modal': federationNewTicketModal,
     'edit-rust-player-port-modal': editRustPlayerPortModal,
     'edit-album-art-services-modal': editAlbumArtServicesModal,
     'edit-log-buffer-size-modal': editLogBufferSizeModal,

@@ -128,6 +128,14 @@ jobs:
             echo "No binary changes to commit"
           else
             git commit -m "ci: update pre-built rust-server-audio binaries"
-            git pull --rebase origin ${{ github.ref_name }}
-            git push
+            # Rebase-and-retry: sibling binary workflows race this push —
+            # see build-rust-parser.yml's commit step for the rationale.
+            for attempt in 1 2 3 4 5; do
+              git pull --rebase origin ${{ github.ref_name }}
+              if git push; then exit 0; fi
+              echo "push rejected (attempt $attempt) — a sibling workflow pushed; retrying"
+              sleep $(( (RANDOM % 5) + 2 ))
+            done
+            echo "::error::binary push failed after 5 attempts"
+            exit 1
           fi

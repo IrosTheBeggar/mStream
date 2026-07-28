@@ -25,7 +25,8 @@ info:
     - **Admin tokens** have `admin: true` in the payload and are required for every `/api/v1/admin/*` endpoint.
     - **Jukebox tokens** (`jukebox: true`) are short-lived and bound to an active remote-control session.
     - **Shared-playlist tokens** (`shareToken: true`) restrict file access to the tracks in one specific shared playlist.
-    - **Federation invite tokens** (`invite: true`) can only call `POST /api/v1/federation/invite/exchange`.
+    - **Federation keys** (`x-federation-key: fedk_…` header, not a JWT) authenticate a paired peer server as a
+      synthetic read-only user scoped to the key's granted libraries, limited to a read-route allowlist.
 
     ## Errors
 
@@ -156,7 +157,14 @@ tags:
       attempts log, per-user API-key minting, lyrics-cache (LRCLib) config +
       stats.
   - name: Federation
-    description: Mesh-sync between mStream instances via Syncthing.
+    description: |
+      Ticket-paired read-only library sharing between mStream servers over a
+      dedicated iroh endpoint (ALPN `mstream/federation/1`). Admins mint
+      read-only keys scoped to selected libraries; the swap-ready
+      `mstrfed1:` ticket (see docs/federation-ticket.md) carries this
+      server's endpoint address plus the key. A peer authenticates every
+      HTTP request with the `x-federation-key` header and is restricted to a
+      read-route allowlist within the granted libraries.
   - name: Torrent
     description: |
       User-facing torrent feature. Operators upload `.torrent` files or
@@ -338,7 +346,9 @@ components:
               description: |
                 V14 audio-payload hash — the preferred stable track identity
                 (survives tag edits, album-art changes, ReplayGain rewrites),
-                unlike `hash` (whole-file MD5). DB column `audio_hash`.
+                unlike `hash` (whole-file coverage). Both are full MD5s for
+                files under 25MB and sampled digests above (V60) — content
+                identities, not byte-exact checksums. DB column `audio_hash`.
             created-at:
               type: string
               nullable: true
@@ -583,8 +593,11 @@ components:
           nullable: true
           description: |
             The matching lyric excerpt from FTS5 `snippet()` (the
-            half-remembered line). `null` on the LIKE path (`basic`
-            algorithm), which has no snippet support.
+            half-remembered line). Plain text — LRC `[mm:ss.xx]` stamps
+            and header tags are stripped from the indexed rendition
+            (schema V59), so excerpts contain lyric words only. `null` on
+            the LIKE path (`basic` algorithm), which has no snippet
+            support.
 
     ScanOptions:
       type: object
@@ -1048,6 +1061,106 @@ paths:
                   locked:
                     type: boolean
                     description: True while a scan is in progress.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/scan/status:
+    get:
+      tags: [Library]
+      summary: Enrichment scan status
+      description: >
+        One snapshot of every post-scan enrichment pass (waveforms, album-art
+        download, lyrics backfill, BPM/key analysis, discovery embeddings,
+        AcoustID identification): whether it is enabled (and why not), its
+        live queue state and progress, a summary of its last run, and durable
+        done/remaining/outcome coverage counts. Track- and album-scoped
+        coverage is filtered to the caller's accessible libraries; hash-keyed
+        passes (waveform, discovery) report scope 'global'.
+      responses:
+        "200":
+          description: Queue snapshot plus one entry per enrichment pass.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  queue:
+                    type: object
+                    properties:
+                      scanning:
+                        type: boolean
+                        description: True while a scan or backup holds the task slot (same semantic as /db/status `locked`).
+                      activeTask:
+                        type: string
+                        nullable: true
+                        description: Kind of the running task (scan / backup / an enrichment kind), or null when idle.
+                      queued:
+                        type: array
+                        items: { type: string }
+                        description: Kinds of the queued tasks, in queue order.
+                  totals:
+                    type: object
+                    nullable: true
+                    properties:
+                      tracks: { type: integer }
+                  enrichment:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        pass:
+                          type: string
+                          enum: [waveform, albumart, lyrics, audioanalysis, discovery, acoustid]
+                        enabled: { type: boolean }
+                        disabledReason:
+                          type: string
+                          nullable: true
+                          enum: [config, no-ffmpeg, no-api-key, no-binary, binary-unsupported, runtime-unavailable, null]
+                        state:
+                          type: string
+                          enum: [idle, queued, running, disabled]
+                        progress:
+                          type: object
+                          nullable: true
+                          description: Live progress of the running pass, from the worker's own progress events.
+                          properties:
+                            attempted: { type: integer }
+                            total: { type: integer, nullable: true }
+                        lastRun:
+                          type: object
+                          nullable: true
+                          description: Summary of the pass's last run this server lifetime.
+                          properties:
+                            finishedAt: { type: integer, description: Epoch ms. }
+                            outcome:
+                              type: string
+                              enum: [completed, failed, killed]
+                            hitCap:
+                              type: boolean
+                              description: True when the run stopped at its per-run cap with more work remaining.
+                            counts:
+                              type: object
+                              nullable: true
+                              description: The worker's completion counters (per-pass vocabulary, e.g. generated/updated/analyzed/matched, notFound, errors).
+                              additionalProperties: { type: integer }
+                        coverage:
+                          type: object
+                          nullable: true
+                          description: Durable library-wide counts (null when the pass's data source does not exist yet, e.g. discovery.db before first enable).
+                          properties:
+                            scope:
+                              type: string
+                              enum: [library, global]
+                            unit:
+                              type: string
+                              enum: [tracks, albums]
+                            done: { type: integer }
+                            remaining:
+                              type: integer
+                              description: Items the pass's worker would still select today, ignoring retry cooldowns.
+                            outcomes:
+                              type: object
+                              description: Attempt-ledger counts by outcome (per-pass vocabulary, e.g. notfound/error, nomatch/lowconf/undecodable).
+                              additionalProperties: { type: integer }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/v1/db/metadata:
@@ -5739,103 +5852,363 @@ paths:
 
   # ── Federation ───────────────────────────────────────────────────────────
 
-  /api/v1/admin/federation/enable:
-    post:
-      tags: [Federation]
-      summary: Enable/disable federation
-      description: Rebuilds the Syncthing config with a 5s debounce.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [enable]
-              properties:
-                enable: { type: boolean }
-      responses:
-        "200": { $ref: "#/components/responses/EmptySuccess" }
-        "405": { $ref: "#/components/responses/AdminLocked" }
-
-  /api/v1/federation/invite/accept:
-    post:
-      tags: [Federation]
-      summary: Accept a federation invite
-      description: Stub — not yet implemented.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [url, vpaths, invite, accessAll]
-              properties:
-                url: { type: string, format: uri }
-                vpaths:
-                  type: array
-                  items: { type: string }
-                invite: { type: string }
-                accessAll: { type: boolean }
-      responses:
-        "200": { $ref: "#/components/responses/EmptySuccess" }
-
-  /api/v1/federation/invite/generate:
-    post:
-      tags: [Federation]
-      summary: Generate a federation invite token
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                vpaths:
-                  type: array
-                  items: { type: string }
-                url: { type: string, format: uri }
-      responses:
-        "200":
-          description: Invite token.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  token: { type: string }
-
-  /api/v1/federation/stats:
+  /api/v1/federation/health:
     get:
       tags: [Federation]
-      summary: Federation device info
+      summary: Peer health / identity probe
+      description: |
+        The test-connection target a federated peer hits (with its
+        `x-federation-key` header) to verify the pairing and learn its live
+        grant list. Regular authenticated users can also call it and see
+        their own libraries.
       responses:
         "200":
-          description: Device + UI address.
+          description: Server identity + the caller's visible libraries.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  deviceId: { type: string }
-                  uiAddress: { type: string }
+                  server: { type: string, description: mStream version }
+                  name: { type: string, description: Display name (federation.serverName or hostname) }
+                  libraries:
+                    type: array
+                    items: { type: string }
+                  discovery:
+                    type: object
+                    nullable: true
+                    description: |
+                      Discovery-over-federation capability. `null` when this
+                      server cannot answer vector similarity queries (data
+                      collection off, or nothing embedded yet). Otherwise it
+                      names the model space the peer's query vectors must
+                      live in.
+                    properties:
+                      modelId: { type: string, description: Active embedding model id }
+                      modelVersion: { type: string, nullable: true }
+                      dim: { type: integer, description: Embedding dimension (float32 count per vector) }
+                      analyzedCount: { type: integer, description: Embedded tracks in the index }
 
-  /api/v1/syncthing-proxy/{path}:
-    parameters:
-      - name: path
-        in: path
-        required: true
-        schema: { type: string }
-        description: Passed through. Use an empty string to address the Syncthing root.
-    get: &syncProxy
+  /api/v1/federation/discovery/similar:
+    post:
       tags: [Federation]
-      summary: Proxy to Syncthing UI
-      description: Any HTTP method is accepted and passed through to the bundled Syncthing instance.
+      summary: Vector-seed similarity query (machine-facing)
+      description: |
+        Discovery-over-federation, peer side: the caller (a federated peer)
+        sends the embedding vector of one of ITS OWN tracks and this server
+        answers with its most similar tracks, scoped to the caller's granted
+        libraries. No novelty filtering happens here — the caller drops
+        tracks it already owns. A model-id mismatch is a soft 200 with
+        `modelMismatch: true` (vectors from different models are
+        incomparable), so a fan-out caller can skip the peer gracefully.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [embedding, modelId]
+              properties:
+                embedding:
+                  type: string
+                  format: byte
+                  description: |
+                    Base64 of `dim` × float32 little-endian (see the
+                    /federation/health discovery block for `dim`). Should be
+                    L2-normalized; the server re-normalizes defensively.
+                modelId: { type: string, description: The caller's embedding model id — must match this server's }
+                limit: { type: integer, default: 25, maximum: 100 }
       responses:
-        "200": { description: Proxied response. }
-    post: *syncProxy
-    put: *syncProxy
-    delete: *syncProxy
-    patch: *syncProxy
+        "200":
+          description: Ranked similar tracks within the granted libraries, or a modelMismatch soft answer.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  model:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      version: { type: string, nullable: true }
+                  modelMismatch: { type: boolean, description: Present (true) only when the declared model differs }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        filepath: { type: string, description: "vpath-form path within a granted library (streamable via /media)" }
+                        artist: { type: string, nullable: true }
+                        title: { type: string, nullable: true }
+                        duration: { type: number, nullable: true }
+                        similarity: { type: number, description: "Cosine vs the query vector, 4 decimals" }
+                        genreTags:
+                          type: array
+                          nullable: true
+                          items: { type: string }
+                        recordingMbid: { type: string, nullable: true }
+        "400":
+          description: Malformed vector (wrong length for the model space, non-finite values, zero vector, bad base64).
+        "403":
+          description: Discovery data collection is disabled on this server.
+
+  /api/v1/federation/peers/{id}/stream/{path}:
+    get:
+      tags: [Federation]
+      summary: Stream a peer's track through this server
+      description: |
+        Plays a track that lives on a FEDERATED PEER — what makes the
+        Discover panel's "From your peers" rows playable. A thin byte pipe
+        over the federation bridge: range and conditional request headers
+        are forwarded to the peer's `/media/<path>`, the streaming response
+        headers are copied back, and the body is piped (with teardown when
+        the player disconnects). Authenticates like any audio URL (the
+        usual token headers or the `?token=` query). NOT callable with a
+        federation key, so a peer can never chain proxies through this
+        server. The PEER's auth wall and key grants decide whether the
+        path is readable — it lives in the peer's vpath namespace, not
+        this server's.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer }, description: Peer row id }
+        - name: path
+          in: path
+          required: true
+          schema: { type: string }
+          description: "vpath-form path on the PEER; spans multiple segments (e.g. music/album/track.mp3)"
+        - name: range
+          in: header
+          required: false
+          schema: { type: string }
+          description: "Forwarded to the peer verbatim — seeking works end-to-end"
+      responses:
+        "200":
+          description: Full-body audio stream from the peer.
+        "206":
+          description: "Partial content for a range request; content-range is copied from the peer."
+        "403":
+          description: Federation is disabled on this server.
+        "404":
+          description: "Unknown peer id, or the peer answered 404 (unknown or ungranted path there)."
+        "502":
+          description: "Peer unreachable — the dial + response-header deadline (15s) was exceeded."
+
+  /api/v1/admin/federation:
+    get:
+      tags: [Federation]
+      summary: Federation endpoint status
+      responses:
+        "200":
+          description: Enabled flag + live endpoint state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  available: { type: boolean, description: false when the iroh native binary is missing on this platform }
+                  running: { type: boolean }
+                  endpointId: { type: string, nullable: true }
+                  online: { type: boolean }
+                  relayUrl: { type: string, nullable: true }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+    post:
+      tags: [Federation]
+      summary: Enable/disable the federation endpoint (live, no reboot)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: New state; `available:false` when the native binary is missing.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  available: { type: boolean }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/keys:
+    get:
+      tags: [Federation]
+      summary: List minted read-only keys
+      description: Each entry carries its granted library names and, when the endpoint is running, the swap-ready `mstrfed1:` ticket.
+      responses:
+        "200":
+          description: Minted keys.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: integer }
+                    name: { type: string }
+                    key: { type: string }
+                    created_at: { type: string }
+                    last_used: { type: string, nullable: true }
+                    bound_endpoint_id: { type: string, nullable: true, description: TOFU binding — set on first redemption }
+                    library_names:
+                      type: array
+                      items: { type: string }
+                    ticket: { type: string, nullable: true }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+    post:
+      tags: [Federation]
+      summary: Mint a read-only key for selected libraries
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, vpaths]
+              properties:
+                name: { type: string, maxLength: 64 }
+                vpaths:
+                  type: array
+                  items: { type: string }
+                  minItems: 1
+      responses:
+        "200":
+          description: The minted key + swap-ready ticket (null when the endpoint isn't running).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  name: { type: string }
+                  key: { type: string }
+                  ticket: { type: string, nullable: true }
+        "400": { description: Validation failure. }
+        "404": { description: Unknown library name. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/keys/{id}:
+    delete:
+      tags: [Federation]
+      summary: Revoke a key
+      description: Kills the pipe handshake, every HTTP request, and any live connections riding the key.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404": { description: Key not found. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/keys/{id}/reset-binding:
+    post:
+      tags: [Federation]
+      summary: Clear a key's TOFU endpoint binding
+      description: The "friend reinstalled" escape hatch — the next successful handshake re-binds the key.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404": { description: Key not found. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/peers:
+    get:
+      tags: [Federation]
+      summary: List peers (servers this one can read)
+      responses:
+        "200":
+          description: Peer rows with cached health status.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: integer }
+                    name: { type: string }
+                    endpoint_ticket: { type: string }
+                    api_key: { type: string }
+                    added_at: { type: string }
+                    last_seen: { type: string, nullable: true }
+                    last_status: { type: string, nullable: true }
+                    use_discovery: { type: integer, description: "1 = the Discover panel may send this peer similarity queries (outbound discovery-over-federation); 0 = opted out" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+    post:
+      tags: [Federation]
+      summary: Add a peer from a pasted ticket
+      description: Parses the `mstrfed1:` ticket, stores the peer, and fires an async first health check.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ticket]
+              properties:
+                ticket: { type: string }
+                name: { type: string, maxLength: 64, description: Overrides the display name embedded in the ticket }
+      responses:
+        "200":
+          description: The stored peer row plus the ticket's informational library list.
+        "400": { description: Unparseable ticket or duplicate peer. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/peers/{id}:
+    delete:
+      tags: [Federation]
+      summary: Remove a peer
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404": { description: Peer not found. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/peers/{id}/discovery:
+    post:
+      tags: [Federation]
+      summary: Toggle outbound discovery queries for one peer
+      description: |
+        Sets `use_discovery` — whether this server's Discover panel may send
+        the peer similarity queries (seed-track embedding vectors). Outbound
+        only; answering the peer's inbound queries is governed by the
+        libraries its key was granted, not by this flag.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: The updated peer row.
+        "404": { description: Peer not found. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/peers/{id}/test:
+    post:
+      tags: [Federation]
+      summary: Test the connection to a peer
+      description: Dials the peer's health endpoint over iroh and caches the outcome on the peer row.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: "`{ ok, health?, error?, peer }` — remote failures are reported in-band, not as HTTP errors."
+        "404": { description: Peer not found. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
 
   # ── Velvet stubs (not yet implemented) ───────────────────────────────────
 

@@ -19,26 +19,21 @@
 // search filters peer rows to the query track's model_id, so a network mid
 // model-migration degrades to fewer results, never to garbage rankings.
 //
-// The novelty filter (the point of the feature) is a chain, because no
-// single identity signal covers every library:
-//   1. recording MBID match        exact, when both sides are tagged
-//   2. normalized artist+title     the pragmatic fallback
-//   3. near-duplicate embedding    cosine ≥ NEAR_DUP vs the QUERY track
-//                                  catches untagged re-encodes of it
-// plus opt-in `newArtistsOnly`, which drops every artist the local library
-// already knows — the "introduce me to someone new" mode.
+// The novelty filter (the point of the feature) lives in
+// src/db/discovery-novelty.js — shared with the discovery-over-federation
+// aggregator (api/discovery-federation.js), which runs the exact same
+// caller-side chain over live peer answers instead of fetched snapshots.
 
 import Joi from 'joi';
 import winston from 'winston';
 import * as config from '../state/config.js';
-import * as db from '../db/manager.js';
 import * as discoveryDb from '../db/discovery-db.js';
 import * as peerDbs from '../state/discovery-peer-dbs.js';
+import { localIdentitySets, isNovel } from '../db/discovery-novelty.js';
 import { resolveSeedTrack } from './discovery.js';
 import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 
-const NEAR_DUP = 0.99;
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 
@@ -46,37 +41,6 @@ function requireP2p() {
   if (!config.program.discoveryP2p.enabled) {
     throw new WebError('discovery P2P is disabled (config: discoveryP2p.enabled)', 403);
   }
-}
-
-// "The Beatles" / "beatles" / "The  Beatles!" all collide — good enough for
-// an exclusion filter (false positives here just hide a result, never rank
-// a wrong one).
-function norm(s) {
-  return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-}
-
-// The local library's identity sets for the novelty filter. Built per
-// request — two indexed scans over a 10k-track library are a few ms, and a
-// live cache would need scanner invalidation hooks for marginal gain.
-function localIdentitySets() {
-  const sets = { mbids: new Set(), artistTitles: new Set(), artists: new Set() };
-  const rows = db.getDB().prepare(`
-    SELECT a.name AS artist, t.title AS title
-    FROM tracks t LEFT JOIN artists a ON a.id = t.artist_id
-  `).all();
-  for (const r of rows) {
-    const artist = norm(r.artist);
-    if (artist) { sets.artists.add(artist); }
-    sets.artistTitles.add(`${artist} ${norm(r.title)}`);
-  }
-  // MBIDs live in discovery.db (populated by tagging/analysis passes).
-  if (discoveryDb.openDiscoveryDbIfExists()) {
-    const mbids = discoveryDb.getDiscoveryDb().prepare(
-      'SELECT recording_mbid FROM discovery_tracks WHERE recording_mbid IS NOT NULL'
-    ).all();
-    for (const r of mbids) { sets.mbids.add(r.recording_mbid); }
-  }
-  return sets;
 }
 
 export function setup(mstream) {
@@ -134,11 +98,12 @@ export function setup(mstream) {
         const off = i * dim;
         for (let k = 0; k < dim; k++) { dot += q[k] * space.matrix[off + k]; }
 
-        if (dot >= NEAR_DUP) { continue; } // same recording, different encode
-        const artist = norm(space.artists[i]);
-        if (space.mbids[i] && exclude.mbids.has(space.mbids[i])) { continue; }
-        if (exclude.artistTitles.has(`${artist} ${norm(space.titles[i])}`)) { continue; }
-        if (newArtistsOnly && artist && exclude.artists.has(artist)) { continue; }
+        if (!isNovel(exclude, {
+          artist: space.artists[i],
+          title: space.titles[i],
+          recordingMbid: space.mbids[i],
+          similarityVsSeed: dot,
+        }, { newArtistsOnly })) { continue; }
 
         results.push({
           artist: space.artists[i],

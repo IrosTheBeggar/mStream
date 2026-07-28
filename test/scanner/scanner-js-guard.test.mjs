@@ -168,7 +168,12 @@ describe('JS fallback scanner — config parity + data-loss guard', () => {
     assert.equal(trackCount(dbPath, libraryId), 2, 'both tracks still present after the rescan');
   });
 
-  test('accessible but empty library: scan runs and sweeps stale tracks', { timeout: 30_000 }, async () => {
+  // 90s, not 30s: each test forks the JS scanner cold, and a slow CI
+  // runner's process spawn + module load once ate a full 30s budget
+  // (35s observed on windows-latest, PR #767 run 29923417061 — passed
+  // on rerun). Labeled full-ci failures block merges, so the budget
+  // needs headroom over the worst runner, not the typical one.
+  test('accessible but empty library: scan runs and sweeps stale tracks', { timeout: 90_000 }, async () => {
     const emptyDir = path.join(workDir, 'empty-lib');
     await fsp.mkdir(emptyDir, { recursive: true });
     const { dbPath, libraryId } = seedDbWithTrack('empty', emptyDir);
@@ -188,7 +193,8 @@ describe('JS fallback scanner — config parity + data-loss guard', () => {
       'stale track should be removed when the library is accessibly empty');
   });
 
-  test('inaccessible library directory: scan aborts without deleting tracks', { timeout: 30_000 }, async () => {
+  // Same 90s budget as above — same per-test scanner fork.
+  test('inaccessible library directory: scan aborts without deleting tracks', { timeout: 90_000 }, async () => {
     const missingDir = path.join(workDir, 'does-not-exist', 'library');
     const { dbPath, libraryId } = seedDbWithTrack('missing', missingDir);
 

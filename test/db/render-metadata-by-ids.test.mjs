@@ -35,7 +35,6 @@ before(async () => {
       dbDirectory:         path.join(tmpDir, 'db'),
       albumArtDirectory:   path.join(tmpDir, 'art'),
       logsDirectory:       path.join(tmpDir, 'logs'),
-      syncConfigDirectory: path.join(tmpDir, 'sync'),
     },
     port: 0,
   }, null, 2));

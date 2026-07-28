@@ -84,6 +84,32 @@ struct ScanConfig {
     // changed to match in this release.
     #[serde(rename = "followSymlinks", default)]
     follow_symlinks: bool,
+    // Dot-entry ignore flags (scanOptions.ignoreDotFiles/ignoreDotFolders):
+    // skip dot-hidden files / directories during the walk, and treat
+    // matching rows as stale in the sweep so a flag flip converges the
+    // index on the next scan. Default FALSE when absent (bool default) —
+    // the rules are opt-in via the admin toggles, and config JSONs from
+    // older servers predate the fields. The hardcoded directory
+    // blocklist (IGNORED_DIR_NAMES below) is always on, independent of
+    // these. Mirror fields exist in src/db/scanner.mjs.
+    #[serde(rename = "ignoreDotFiles", default)]
+    ignore_dot_files: bool,
+    #[serde(rename = "ignoreDotFolders", default)]
+    ignore_dot_folders: bool,
+    // Test-only override for the sampled-hash threshold (bytes). Absent
+    // in production configs — the compiled default (25MB) applies. Lets
+    // the parity/vector tests exercise the sampled path with tiny
+    // fixtures instead of 25MB files. Mirror field in src/db/scanner.mjs.
+    #[serde(rename = "hashSampleThreshold", default)]
+    hash_sample_threshold: Option<u64>,
+    // Hash-generation convergence epoch (V60). Unlike force_rescan
+    // (re-parse EVERYTHING — manual force-rescans and tag-backfill
+    // migrations depend on that), hashEpoch only disables the mtime
+    // fast-path for rows stamped BELOW the current HASH_GENERATION, so
+    // a convergence epoch costs the stale-generation minority instead
+    // of a whole-library re-parse. Mirror field in src/db/scanner.mjs.
+    #[serde(rename = "hashEpoch", default)]
+    hash_epoch: bool,
     // Accepted-but-ignored: BPM/key ANALYSIS left the scanner with the
     // waveform/stratum decode pass (it returns as the future essentia
     // enrichment scanner). Tag-sourced BPM/key still land during the
@@ -99,12 +125,14 @@ struct ScanConfig {
     //
     // When set, the scan:
     //   - Walks {directory}/{subtree} instead of {directory}
-    //   - SKIPS the "remove tracks not seen in this scan" cleanup pass
-    //     because tracks outside the subtree were never walked (so they
-    //     are absent from the seen-set) but are still on disk — wiping
-    //     them would be a data-loss bug
-    //   - SKIPS the orphan artists/albums/genres cleanup for the same
-    //     reason (no tracks were deleted, so nothing newly orphaned)
+    //   - Runs the stale sweep SCOPED to the subtree prefix: candidate
+    //     rows come only from under the subtree, so "unseen" really
+    //     means "was in the walked area and its file wasn't found" —
+    //     rows outside the subtree can never be candidates
+    //   - Runs the orphan artists/albums/genres cleanup only when the
+    //     scoped sweep deleted rows (the probes are global NOT EXISTS
+    //     queries, correct at any scope); art passes stay
+    //     whole-library-only
     //
     // Relative path is joined onto `directory`; no validation here
     // beyond what walkdir does — the caller (task-queue.js) is
@@ -131,9 +159,92 @@ struct ScanConfig {
     album_art_priority: String,
 }
 
+impl ScanConfig {
+    fn sample_threshold(&self) -> u64 {
+        // .max(1): a zero threshold would sample EVERY file (u64 >= 0 is
+        // always true) — the JS scanner's Joi schema rejects 0 outright,
+        // and the engines must never diverge on the same config.
+        self.hash_sample_threshold.unwrap_or(SAMPLE_THRESHOLD_DEFAULT).max(1)
+    }
+}
+
 fn default_commit_interval() -> u64 { 25 }
 fn default_true() -> bool { true }
 fn default_art_priority() -> String { "metadata".to_string() }
+
+// ── Walk/sweep ignore rules ─────────────────────────────────────────────────
+// MUST stay in lockstep with src/db/scan-ignore.js: the JS scanner walks
+// and sweeps with the identical rules, and the sweep applies the same
+// predicate as the walk so rows indexed before a rule existed converge
+// OUT of the index instead of surviving as "still on disk" candidates.
+
+// Hardcoded directory blocklist — always on, no config, matched
+// case-insensitively against each directory NAME. NAS recycle bins
+// ($RECYCLE.BIN, #recycle, @Recycle), NAS snapshot dirs
+// (@Recently-Snapshot, #snapshot), VCS/sync metadata (.git, .stfolder,
+// .stversions) and OS artifacts (lost+found, System Volume Information)
+// hold deleted/duplicate/system files, never library music.
+const IGNORED_DIR_NAMES: [&str; 10] = [
+    "$recycle.bin",
+    "#recycle",
+    "@recycle",
+    "@recently-snapshot",
+    "#snapshot",
+    ".git",
+    "lost+found",
+    ".stfolder",
+    ".stversions",
+    "system volume information",
+];
+
+fn is_ignored_dir_name(name: &str) -> bool {
+    IGNORED_DIR_NAMES.iter().any(|d| name.eq_ignore_ascii_case(d))
+}
+
+// A "dot entry" is hidden-by-convention: a SINGLE leading dot. Names
+// starting with ".." ("..WeirdAlbum", "...Trilogy") are ordinary names —
+// albums really do start with ellipses. Mirrors Navidrome's isDotEntry.
+fn is_dot_entry(name: &str) -> bool {
+    name.starts_with('.') && !name.starts_with("..")
+}
+
+// filter_entry predicate for the walk: prune blocklisted / dot-hidden
+// directories (never descend), skip dot-hidden files. The blocklist is a
+// directory rule only — a FILE named "#recycle" is walked like any other
+// (its extension decides). Under follow_links, file_type() is the link
+// TARGET's type, so a symlink to a directory prunes by its link name.
+// Callers must exempt depth 0: the scan root itself is never pruned — a
+// library (or subtree scan) deliberately rooted at a dot-folder still
+// scans; rules apply to entries BELOW the root.
+fn is_ignored_walk_entry(
+    entry: &walkdir::DirEntry, ignore_dot_files: bool, ignore_dot_folders: bool,
+) -> bool {
+    let name = entry.file_name().to_string_lossy();
+    if entry.file_type().is_dir() {
+        is_ignored_dir_name(&name) || (ignore_dot_folders && is_dot_entry(&name))
+    } else {
+        ignore_dot_files && is_dot_entry(&name)
+    }
+}
+
+// Sweep-side arm of the same rules, applied to a DB row's library-relative
+// path (forward slashes, as normalized at insert): ignored when ANY
+// directory segment is blocklisted or (flag-dependent) dot-hidden, or the
+// filename is dot-hidden — every segment counts, because the walk prunes
+// whole subtrees. Rel paths never contain the scan root itself, so the
+// never-prune-the-root rule holds here by construction.
+fn is_ignored_rel_path(rel: &str, ignore_dot_files: bool, ignore_dot_folders: bool) -> bool {
+    let mut segs = rel.split('/').filter(|s| !s.is_empty()).peekable();
+    while let Some(seg) = segs.next() {
+        if segs.peek().is_none() {
+            return ignore_dot_files && is_dot_entry(seg);
+        }
+        if is_ignored_dir_name(seg) || (ignore_dot_folders && is_dot_entry(seg)) {
+            return true;
+        }
+    }
+    false
+}
 
 // Snapshot of a row in the `tracks` table, pre-fetched in bulk at scan
 // start so the per-file fast-path check doesn't hit SQLite. For a
@@ -163,6 +274,10 @@ struct ExistingTrack {
     // forced rescan wiping every default for skipImg users.
     album_art_file: Option<String>,
     album_art_source: Option<String>,
+    // Hashing generation the row's file_hash/audio_hash were computed
+    // under (tracks.hash_v). Carried into sweep candidates so move
+    // re-homing only pairs same-generation hashes.
+    hash_v: i64,
 }
 
 // Extract → Commit handoff. Workers (extract_track) own the I/O- and
@@ -261,6 +376,18 @@ struct ExtractedTrack {
     old_audio_hash: Option<String>,
     old_album_id: Option<i64>,
     old_artist_id: Option<i64>,
+    // The prior row's hashing generation (None for a brand-new file).
+    // commit_track uses it to tell a SCHEME re-key (old generation —
+    // same bytes, new hashing scheme: derived state follows) from a
+    // CONTENT change (current generation — new bytes: derived state is
+    // left behind to regenerate). Mirrors existing.hash_v in scanner.mjs.
+    old_hash_v: Option<i64>,
+    // V60 epoch move-bridge: what the OLD (full) scheme would call this
+    // file, when the epoch parsed it as a NEW >=threshold path. Ledgered
+    // by commit_track so the stale sweep can pair a moved file's v1 row
+    // with this one. None outside the epoch / for sub-threshold files /
+    // when the schemes agree.
+    epoch_old_canon: Option<String>,
     // The prior tracks-row id (None for a brand-new file). The writer
     // adds it to the in-memory seen-set on a successful commit so the
     // stale sweep knows this pre-existing row was accounted for — the
@@ -401,7 +528,7 @@ fn load_existing_tracks(
 ) -> Result<HashMap<String, ExistingTrack>, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT filepath, id, modified, file_hash, audio_hash, album_id, artist_id, lyrics_sidecar_mtime, scan_id,
-                album_art_file, album_art_source
+                album_art_file, album_art_source, hash_v
            FROM tracks
           WHERE library_id = ?",
     )?;
@@ -432,6 +559,9 @@ fn load_existing_tracks(
                 scan_id: row.get::<_, Option<String>>(8)?,
                 album_art_file: row.get::<_, Option<String>>(9)?,
                 album_art_source: row.get::<_, Option<String>>(10)?,
+                // Generation of the row's hashes (V60; DEFAULT 1 covers
+                // pre-upgrade rows). Tolerant read like `modified` above.
+                hash_v: row.get::<_, Option<i64>>(11)?.unwrap_or(1),
             },
         ))
     })?;
@@ -473,8 +603,9 @@ fn main() {
 
     // Hidden developer/test subcommand that uses the buffered scan path
     // (whole file into RAM → md5 from slice). Exercises the same
-    // `compute_hashes_from_bytes` the scanner uses, so a side-by-side
-    // diff vs. `--audio-hash` below proves the streaming and buffered
+    // `compute_hashes_from_bytes` the scanner uses for sub-threshold
+    // files (its only mode — full hashes), so a side-by-side diff vs.
+    // `--audio-hash` below proves the streaming and buffered full
     // paths are byte-identical.
     if args.len() == 3 && args[1] == "--audio-hash-buffered" {
         let p = Path::new(&args[2]);
@@ -493,13 +624,30 @@ fn main() {
         }
     }
 
+    // Capability probe: `rust-parser --hash-generation` prints the
+    // hashing generation this binary stamps into tracks.hash_v and
+    // exits 0. task-queue.js's findRustParser runs it before every
+    // first use of a binary and REJECTS one whose generation doesn't
+    // match the server's (JS scanner runs instead): a stale binary
+    // would otherwise loop the V60 convergence epoch forever (it can
+    // never stamp the current generation) or, worse, overwrite an
+    // already-stamped row's hashes with old-scheme values through the
+    // UPSERT's DO UPDATE while hash_v silently keeps its stamp — a
+    // mislabel no later boot can detect. Pre-probe binaries fall into
+    // the main JSON-input path and exit non-zero, which reads as
+    // "incapable" — exactly right.
+    if args.len() == 2 && args[1] == "--hash-generation" {
+        println!("{}", HASH_GENERATION);
+        return;
+    }
+
     // Hidden developer/test subcommand: `rust-parser --audio-hash <path>`
     // prints the dual-hash result as JSON on stdout and exits. Used by
     // test/audio-hash-parity.test.mjs to compare against the JS impl.
     if args.len() == 3 && args[1] == "--audio-hash" {
         let p = Path::new(&args[2]);
         let ext = file_ext(p).to_lowercase();
-        match compute_hashes(p, &ext) {
+        match compute_hashes(p, &ext, SAMPLE_THRESHOLD_DEFAULT) {
             Ok((fh, ah)) => {
                 // Null-safe JSON serialization without pulling in serde for a
                 // one-line output: quote strings, use "null" for None.
@@ -530,11 +678,13 @@ fn main() {
         match extract_lyrics_for_cli(p) {
             Ok((embedded, synced, lang, sidecar_mtime)) => {
                 // Manual JSON serialisation (same reason as --audio-hash:
-                // one-line output, no serde dance). All four fields emit
-                // as `null` when absent so the consumer can JSON.parse
-                // and compare with ===.
+                // one-line output, no serde dance). All fields emit as
+                // `null` when absent so the consumer can JSON.parse and
+                // compare with ===. \t matters: raw tabs are control
+                // chars — invalid inside a JSON string literal — and
+                // real-world .lrc files do contain them.
                 let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"")
-                    .replace('\n', "\\n").replace('\r', "\\r");
+                    .replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t");
                 let j = |v: &Option<String>| match v {
                     Some(s) => format!("\"{}\"", esc(s)),
                     None    => "null".to_string(),
@@ -543,8 +693,12 @@ fn main() {
                     Some(n) => format!("{}", n),
                     None    => "null".to_string(),
                 };
-                println!("{{\"lyricsEmbedded\":{},\"lyricsSyncedLrc\":{},\"lyricsLang\":{},\"lyricsSidecarMtime\":{}}}",
-                    j(&embedded), j(&synced), j(&lang), mtime_json);
+                // V59: also emit the derived search text so the parity test
+                // byte-compares lrc_to_search_text against the JS
+                // lrcToSearchText over the same fixture matrix.
+                let search_text = lrc_to_search_text(synced.as_deref());
+                println!("{{\"lyricsEmbedded\":{},\"lyricsSyncedLrc\":{},\"lyricsLang\":{},\"lyricsSidecarMtime\":{},\"lyricsSearchText\":{}}}",
+                    j(&embedded), j(&synced), j(&lang), mtime_json, j(&search_text));
                 return;
             }
             Err(e) => {
@@ -901,6 +1055,264 @@ fn chunk_yield() {
     std::thread::sleep(Duration::from_millis(WRITER_YIELD_MIN_MS + jitter));
 }
 
+// A stale-sweep candidate: a scan-start snapshot row the walk did not
+// account for. Hashes ride along so the sweep can pair a verified-gone
+// row with its moved/renamed twin (see rewrite_moved_refs).
+struct StaleCandidate {
+    id: i64,
+    rel: String,
+    audio_hash: Option<String>,
+    file_hash: Option<String>,
+}
+
+// Counters chunked_delete_stale_tracks returns for the scanComplete
+// event. Mirrors deleteStaleTracks's return shape in
+// src/db/orphan-cleanup.js.
+struct SweepOutcome {
+    deleted: usize,
+    moved_tracks: usize,
+    moved_refs: usize,
+}
+
+// A live row a doomed candidate can re-home its path-keyed references
+// to. `rel` is the vpath-relative forward-slash path, like
+// tracks.filepath.
+struct MoveTarget {
+    id: i64,
+    library_id: i64,
+    rel: String,
+}
+
+// Lazy per-sweep state for move re-homing: every live row whose content
+// hash a candidate carries (indexed under BOTH its hashes), plus the
+// libraries.name map needed to compose playlist_tracks'
+// "<vpath>/<rel>" paths. Targets are rows NOT themselves candidates —
+// i.e. rows the walk accounted for, rows inserted mid-scan, and rows of
+// OTHER libraries (a cross-library move heals when the destination
+// library was scanned first). Mirrors buildTargets in
+// src/db/orphan-cleanup.js.
+struct RehomeState {
+    targets: HashMap<String, Vec<MoveTarget>>,
+    vpath_by_id: HashMap<i64, String>,
+}
+
+fn build_rehome_state(
+    conn: &Connection, candidates: &[StaleCandidate],
+) -> Result<RehomeState, rusqlite::Error> {
+    let candidate_ids: std::collections::HashSet<i64> =
+        candidates.iter().map(|c| c.id).collect();
+    let mut candidate_hashes: std::collections::HashSet<&str> =
+        std::collections::HashSet::new();
+    for c in candidates {
+        if let Some(h) = c.audio_hash.as_deref() { candidate_hashes.insert(h); }
+        if let Some(h) = c.file_hash.as_deref() { candidate_hashes.insert(h); }
+    }
+    let mut vpath_by_id = HashMap::new();
+    {
+        let mut stmt = conn.prepare("SELECT id, name FROM libraries")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, name) = row?;
+            vpath_by_id.insert(id, name);
+        }
+    }
+    // One pass over tracks, kept only for hashes a candidate actually
+    // carries — a mass deletion with no surviving twins stays cheap.
+    let mut targets: HashMap<String, Vec<MoveTarget>> = HashMap::new();
+    if !candidate_hashes.is_empty() {
+        let mut stmt = conn.prepare(
+            "SELECT id, filepath, library_id, audio_hash, file_hash FROM tracks")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, rel, library_id, audio_hash, file_hash) = row?;
+            if candidate_ids.contains(&id) { continue; }
+            for h in [audio_hash.as_deref(), file_hash.as_deref()].into_iter().flatten() {
+                if candidate_hashes.contains(h) {
+                    targets.entry(h.to_string()).or_default()
+                        .push(MoveTarget { id, library_id, rel: rel.clone() });
+                }
+            }
+        }
+    }
+    Ok(RehomeState { targets, vpath_by_id })
+}
+
+// Lookup tries audio_hash first (survives tag edits), then file_hash
+// (covers pre-audio_hash rows). Ties resolve deterministically — same
+// library, then same basename, then lowest (library_id, filepath) — so
+// both scanners converge on one answer; for byte-identical duplicates
+// any winner plays the same audio. (String order here is UTF-8 bytes vs
+// the JS scanner's UTF-16 code units — they diverge only beyond the BMP,
+// and only among same-hash ties with such names.)
+fn pick_target<'a>(
+    state: &'a RehomeState, c: &StaleCandidate, scanned_library_id: i64,
+) -> Option<&'a MoveTarget> {
+    // NOTE: no generation filter. Equal hash strings across generations
+    // can only mean equal bytes — below the sampling threshold the v1
+    // and v2 schemes are byte-identical by design, and above it a full
+    // hash and a domain-prefixed sampled hash can never collide as
+    // strings short of an MD5 break — so filtering by hash_v would only
+    // refuse CORRECT re-homings during the upgrade window. Mirrors
+    // pickTarget in src/db/orphan-cleanup.js.
+    let list = c.audio_hash.as_deref().and_then(|h| state.targets.get(h))
+        .or_else(|| c.file_hash.as_deref().and_then(|h| state.targets.get(h)))?;
+    best_of(c, list.iter(), scanned_library_id)
+}
+
+// The tie-break scoring shared by the exact-hash tier (pick_target) and
+// the epoch move-bridge tier (pick_ledger_target below).
+fn best_of<'a>(
+    c: &StaleCandidate, list: impl Iterator<Item = &'a MoveTarget>,
+    scanned_library_id: i64,
+) -> Option<&'a MoveTarget> {
+    let old_base = c.rel.rsplit('/').next().unwrap_or("");
+    let key = |t: &MoveTarget| (
+        (t.library_id != scanned_library_id) as u8,
+        (t.rel.rsplit('/').next().unwrap_or("") != old_base) as u8,
+        t.library_id,
+    );
+    list.min_by(|a, b| key(a).cmp(&key(b)).then_with(|| a.rel.cmp(&b.rel)))
+}
+
+// Epoch move-bridge tier (V60): a >=threshold file moved across the
+// generation upgrade leaves a stale row whose v1 FULL hashes can never
+// string-match its re-parsed twin's v2 SAMPLED hashes. The epoch's
+// new-path parses ledger fullCanon→sampledCanon into hash_transitions,
+// so before orphaning an unmatched candidate, follow its canonical hash
+// through the ledger and pair with the row now holding the mapped
+// identity. The ledger drains at queue drain, so this tier naturally
+// only fires while a re-key epoch is in flight; cross-library moves and
+// moves discovered only after the drain remain out of reach. Returns
+// the (owned) target plus the mapped canonical hash so the caller can
+// migrate hash-keyed user state across the identity bridge. Mirrors
+// pickLedgerTarget in src/db/orphan-cleanup.js.
+fn pick_ledger_target(
+    conn: &Connection, ledger: &HashMap<String, String>, c: &StaleCandidate,
+    candidate_ids: &std::collections::HashSet<i64>, scanned_library_id: i64,
+) -> Result<Option<(MoveTarget, String)>, rusqlite::Error> {
+    let start = match c.audio_hash.as_deref().or(c.file_hash.as_deref()) {
+        Some(h) if ledger.contains_key(h) => h,
+        _ => return Ok(None),
+    };
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    seen.insert(start);
+    let mut cur = start;
+    while let Some(n) = ledger.get(cur) {
+        if seen.contains(n.as_str()) { return Ok(None); } // cycle — the drain applier owns those
+        seen.insert(n);
+        cur = n;
+    }
+    let mapped = cur.to_string();
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, filepath, library_id, audio_hash, file_hash FROM tracks
+          WHERE audio_hash = ?1 OR file_hash = ?1")?;
+    let rows: Vec<MoveTarget> = stmt
+        .query_map([&mapped], |r| Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, Option<String>>(4)?,
+        )))?
+        .filter_map(|row| {
+            let (id, rel, library_id, ah, fh) = row.ok()?;
+            if candidate_ids.contains(&id) { return None; }
+            // The mapped hash must be the row's CANONICAL identity, not
+            // an incidental file_hash under a live audio_hash.
+            if ah.as_deref().or(fh.as_deref()) != Some(mapped.as_str()) { return None; }
+            Some(MoveTarget { id, library_id, rel })
+        })
+        .collect();
+    Ok(best_of(c, rows.iter(), scanned_library_id)
+        .map(|t| (MoveTarget { id: t.id, library_id: t.library_id, rel: t.rel.clone() },
+                  mapped.clone())))
+}
+
+// Rewrite the path-keyed user references of doomed candidates that
+// paired with a live twin, BEFORE the chunk's DELETE. That ordering is
+// the crash safety: dying between rewrite and delete leaves references
+// pointing at the live file and the old row still sweepable next scan
+// (the rewrites then no-op). Batched CASE per table so each is scanned
+// once per chunk, not once per pair (play_events has no filepath index
+// and can be large). Every SET expression sees the PRE-update row, so
+// both CASEs key off the original filepath value. Returns rows
+// rewritten. Mirrors rewriteMovedRefs in src/db/orphan-cleanup.js.
+fn rewrite_moved_refs(
+    conn: &Connection, state: &RehomeState, scanned_library_id: i64,
+    pairs: &[(&StaleCandidate, &MoveTarget)],
+) -> Result<usize, rusqlite::Error> {
+    let mut refs = 0usize;
+    // Earliest created_at wins so a moved file doesn't re-enter the V43
+    // "recently added" sort. The dying row is still present (pre-DELETE)
+    // for the correlated read; MIN over the TEXT 'YYYY-MM-DD HH:MM:SS'
+    // format is chronological, and COALESCE keeps the target's own
+    // value when either side is NULL.
+    {
+        let mut keep_created = conn.prepare_cached(
+            "UPDATE tracks SET created_at = COALESCE(
+               MIN(created_at, (SELECT created_at FROM tracks WHERE id = ?1)),
+               created_at) WHERE id = ?2")?;
+        for (c, t) in pairs {
+            keep_created.execute(rusqlite::params![c.id, t.id])?;
+        }
+    }
+    // playlist_tracks needs a libraries.name prefix on both sides; a
+    // pair whose library row vanished mid-scan is skipped, not guessed.
+    let mut pl_pairs: Vec<(String, String)> = Vec::new();
+    if let Some(scanned_vpath) = state.vpath_by_id.get(&scanned_library_id) {
+        for (c, t) in pairs {
+            if let Some(tv) = state.vpath_by_id.get(&t.library_id) {
+                pl_pairs.push((
+                    format!("{}/{}", scanned_vpath, c.rel),
+                    format!("{}/{}", tv, t.rel),
+                ));
+            }
+        }
+    }
+    if !pl_pairs.is_empty() {
+        let arms = vec!["WHEN ? THEN ?"; pl_pairs.len()].join(" ");
+        let in_ph = vec!["?"; pl_pairs.len()].join(",");
+        let sql = format!(
+            "UPDATE playlist_tracks SET filepath = CASE filepath {} ELSE filepath END \
+             WHERE filepath IN ({})",
+            arms, in_ph,
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> =
+            Vec::with_capacity(pl_pairs.len() * 3);
+        for (old, new) in &pl_pairs { params.push(old); params.push(new); }
+        for (old, _) in &pl_pairs { params.push(old); }
+        refs += conn.prepare(&sql)?.execute(params.as_slice())?;
+    }
+    for table in ["cue_points", "play_events"] {
+        let arms = vec!["WHEN ? THEN ?"; pairs.len()].join(" ");
+        let in_ph = vec!["?"; pairs.len()].join(",");
+        let sql = format!(
+            "UPDATE {t} SET filepath = CASE filepath {a} ELSE filepath END, \
+             library_id = CASE filepath {a} ELSE library_id END \
+             WHERE library_id = ? AND filepath IN ({i})",
+            t = table, a = arms, i = in_ph,
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> =
+            Vec::with_capacity(pairs.len() * 5 + 1);
+        for (c, t) in pairs { params.push(&c.rel); params.push(&t.rel); }
+        for (c, t) in pairs { params.push(&c.rel); params.push(&t.library_id); }
+        params.push(&scanned_library_id);
+        for (c, _) in pairs { params.push(&c.rel); }
+        refs += conn.prepare(&sql)?.execute(params.as_slice())?;
+    }
+    Ok(refs)
+}
+
 // Per-chunk row cap for the end-of-scan stale-track sweep. Same value as
 // ORPHAN_CHUNK_SIZE: each deleted tracks row is heavier than an orphan
 // (it fires the FTS5 AFTER DELETE trigger and cascades to track_genres /
@@ -916,8 +1328,8 @@ const STALE_TRACK_CHUNK_SIZE: usize = 500;
 // migration force-rescan) that can run past the 5s busy_timeout and
 // stall concurrent API writes from the main server. Chunking is the same
 // cooperate-with-writers pattern chunked_orphan_delete already uses.
-// Returns the total rows deleted (sum across chunks) so the scanComplete
-// count stays accurate.
+// Returns a SweepOutcome (rows deleted + move re-home counters, summed
+// across chunks) so the scanComplete counts stay accurate.
 //
 // `candidates` is computed by the caller as (rows that existed when the
 // scan started) − (rows the walk accounted for), sorted by id — the
@@ -972,10 +1384,11 @@ const STALE_TRACK_CHUNK_SIZE: usize = 500;
 // would happily erase the library — the root check aborts instead
 // (matching the vanished-mount walk guard).
 fn chunked_delete_stale_tracks(
-    conn: &Connection, candidates: &[(i64, String)], expected_schema_version: i64,
+    conn: &Connection, candidates: &[StaleCandidate], expected_schema_version: i64,
     library_root: &str, follow_symlinks: bool, failed_walk_prefixes: &[String],
     supported_files: &HashMap<String, bool>,
-) -> Result<usize, Box<dyn std::error::Error>> {
+    ignore_dot_files: bool, ignore_dot_folders: bool, library_id: i64,
+) -> Result<SweepOutcome, Box<dyn std::error::Error>> {
     let root = Path::new(library_root);
 
     // Per-sweep listing cache: rel dir (fwd slashes) → Some(name → kind)
@@ -1040,6 +1453,12 @@ fn chunked_delete_stale_tracks(
 
     let mut total = 0usize;
     let mut skipped = 0usize;
+    let mut rehome: Option<RehomeState> = None;
+    // Lazy per-sweep copy of hash_transitions for the epoch move-bridge
+    // pairing tier (empty outside a re-key epoch — one tiny SELECT).
+    let mut ledger: Option<HashMap<String, String>> = None;
+    let mut moved_tracks = 0usize;
+    let mut moved_refs = 0usize;
     for chunk in candidates.chunks(STALE_TRACK_CHUNK_SIZE) {
         let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if v != expected_schema_version {
@@ -1059,16 +1478,17 @@ fn chunked_delete_stale_tracks(
         }
         let full_chunk = chunk.len() == STALE_TRACK_CHUNK_SIZE;
 
-        let mut doomed: Vec<(i64, &str)> = Vec::new();
+        let mut doomed: Vec<&StaleCandidate> = Vec::new();
         let mut survivors = 0usize;
-        for (id, rel) in chunk {
+        for cand in chunk {
+            let rel = cand.rel.as_str();
             // A failed prefix shields its exact path and everything below
             // it (slash boundary — "Artist/Bad" must not shield
             // "Artist/Bad2"). The empty prefix (unattributable error)
             // shields everything.
             let shielded = failed_walk_prefixes.iter().any(|p| {
                 p.is_empty()
-                    || rel == p
+                    || rel == p.as_str()
                     || (rel.len() > p.len()
                         && rel.starts_with(p.as_str())
                         && rel.as_bytes()[p.len()] == b'/')
@@ -1079,7 +1499,7 @@ fn chunked_delete_stale_tracks(
             }
             let (dir_rel, name) = match rel.rfind('/') {
                 Some(i) => (&rel[..i], &rel[i + 1..]),
-                None => ("", rel.as_str()),
+                None => ("", rel),
             };
             let listing = listings.entry(dir_rel.to_string()).or_insert_with(|| {
                 build_listing(root, dir_rel, follow_symlinks)
@@ -1096,7 +1516,16 @@ fn chunked_delete_stale_tracks(
                 .unwrap_or(false);
             match listing {
                 None => { skipped += 1; }
-                Some(_) if !ext_supported => doomed.push((*id, rel.as_str())),
+                Some(_) if !ext_supported => doomed.push(cand),
+                // Walk-faithful presence also applies the walk's IGNORE
+                // rules: a row under a pruned directory (blocklist, always)
+                // or with a dot-hidden segment/filename (flag-dependent)
+                // would never be indexed by the walk again — it converges
+                // out of the index exactly like an unsupported extension.
+                // Such rows still flow through the move re-home pairing:
+                // if a live twin exists, path-keyed references follow it.
+                Some(_) if is_ignored_rel_path(rel, ignore_dot_files, ignore_dot_folders) =>
+                    doomed.push(cand),
                 Some(names) => match names.get(name) {
                     Some(Kind::RegularFile) => survivors += 1,
                     Some(Kind::Unknown) => { skipped += 1; } // DT_UNKNOWN — unverifiable
@@ -1106,18 +1535,18 @@ fn chunked_delete_stale_tracks(
                         // resolves to a regular file right now.
                         match fs::metadata(root.join(rel)) {
                             Ok(m) if m.is_file() => survivors += 1,
-                            Ok(_) => doomed.push((*id, rel.as_str())),
+                            Ok(_) => doomed.push(cand),
                             Err(e) if matches!(
                                 e.kind(),
                                 std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                            ) => doomed.push((*id, rel.as_str())),
+                            ) => doomed.push(cand),
                             Err(_) => { skipped += 1; }
                         }
                     }
                     // Exact-case name missing, a non-file, or a symlink the
                     // no-follow walk would not index — the walk's reality
                     // says this row's file is gone.
-                    _ => doomed.push((*id, rel.as_str())),
+                    _ => doomed.push(cand),
                 },
             }
         }
@@ -1133,6 +1562,68 @@ fn chunked_delete_stale_tracks(
             );
         }
         if !doomed.is_empty() {
+            // Move re-homing: pair verified-gone rows with a live twin by
+            // content hash and rewrite their path-keyed references before
+            // the DELETE below. The target map is built lazily on the
+            // first doomed row (no-op and pure-addition scans never pay
+            // for it) and targets are NOT consumed: several deleted
+            // duplicates re-pointing at one survivor is correct.
+            if rehome.is_none() {
+                rehome = Some(build_rehome_state(conn, candidates)?);
+            }
+            let state = rehome.as_ref().unwrap();
+            let mut pairs: Vec<(&StaleCandidate, &MoveTarget)> = Vec::new();
+            let mut unmatched: Vec<&StaleCandidate> = Vec::new();
+            for c in doomed.iter() {
+                match pick_target(state, c, library_id) {
+                    Some(t) => pairs.push((*c, t)),
+                    None => unmatched.push(*c),
+                }
+            }
+            // Epoch move-bridge tier — see pick_ledger_target. Owned
+            // targets live in ledger_pairs so refs into them can join
+            // the borrowed exact-tier pairs for one rewrite pass.
+            let mut ledger_pairs: Vec<(&StaleCandidate, MoveTarget, String)> = Vec::new();
+            if !unmatched.is_empty() {
+                if ledger.is_none() {
+                    let mut m: HashMap<String, String> = HashMap::new();
+                    let mut stmt = conn.prepare(
+                        "SELECT old_hash, new_hash FROM hash_transitions")?;
+                    let rows = stmt.query_map([], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    })?;
+                    for row in rows { let (o, n) = row?; m.insert(o, n); }
+                    ledger = Some(m);
+                }
+                let lmap = ledger.as_ref().unwrap();
+                if !lmap.is_empty() {
+                    let candidate_ids: std::collections::HashSet<i64> =
+                        candidates.iter().map(|c| c.id).collect();
+                    for c in unmatched {
+                        if let Some((t, mapped)) =
+                            pick_ledger_target(conn, lmap, c, &candidate_ids, library_id)? {
+                            ledger_pairs.push((c, t, mapped));
+                        }
+                    }
+                }
+            }
+            for (c, t, _) in &ledger_pairs { pairs.push((c, t)); }
+            if !pairs.is_empty() {
+                moved_tracks += pairs.len();
+                moved_refs += rewrite_moved_refs(conn, state, library_id, &pairs)?;
+            }
+            // Ledger pairs bridge DIFFERENT identities (v1 full → v2
+            // sampled of the same bytes), so hash-keyed user state must
+            // follow too — a scheme re-key by definition. Exact-hash
+            // pairs need none of this: equal hashes mean the state
+            // already points at the right identity.
+            for (c, _, mapped) in &ledger_pairs {
+                let old_canon = c.audio_hash.as_deref()
+                    .or(c.file_hash.as_deref()).unwrap_or("");
+                if !old_canon.is_empty() {
+                    migrate_hash_references(conn, old_canon, mapped, true)?;
+                }
+            }
             // Row-value guard (id AND filepath, both from the scan-start
             // snapshot): the absence check ran against the snapshot path,
             // so a row whose filepath were ever rewritten mid-scan by
@@ -1148,9 +1639,9 @@ fn chunked_delete_stale_tracks(
             );
             let mut params: Vec<&dyn rusqlite::ToSql> =
                 Vec::with_capacity(doomed.len() * 2);
-            for (id, rel) in &doomed {
-                params.push(id);
-                params.push(rel);
+            for c in &doomed {
+                params.push(&c.id);
+                params.push(&c.rel);
             }
             total += conn.prepare(&del_sql)?.execute(params.as_slice())?;
         }
@@ -1163,7 +1654,7 @@ fn chunked_delete_stale_tracks(
             skipped,
         );
     }
-    Ok(total)
+    Ok(SweepOutcome { deleted: total, moved_tracks, moved_refs })
 }
 
 // Parallel-writer batch tuning. The greedy-drain writer holds the single
@@ -1269,6 +1760,24 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             ).into());
         }
     }
+    // BINARY-vs-DB guard, independent of the config check above (which
+    // only compares the SERVER's expectation — an older server driving
+    // this newer binary passes it and would then die mid-scan on a raw
+    // 'no such column: hash_v' with no fallback). This binary reads AND
+    // writes tracks.hash_v (V60), so refuse a pre-V60 database with a
+    // clear versioned message through the same exit-3 mapping.
+    let has_hash_v: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('tracks') WHERE name = 'hash_v'",
+        [], |row| row.get(0))?;
+    if has_hash_v == 0 {
+        return Err(format!(
+            "{}this scanner stamps hashing generation {} and needs tracks.hash_v \
+             (schema V60+), but this database is at V{} — run the matching mStream \
+             server so its migrations bring the DB current, or use the scanner that \
+             shipped with this server version.",
+            SCHEMA_GUARD_ERROR_PREFIX, HASH_GENERATION, schema_version_at_open,
+        ).into());
+    }
 
     // Per-directory folder-image listing cache. Each entry is a OnceLock so
     // the first worker to hit a directory does the read_dir exactly once and
@@ -1362,6 +1871,18 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     let entries: Vec<(walkdir::DirEntry, String)> = WalkDir::new(&scan_root)
         .follow_links(config.follow_symlinks)
         .into_iter()
+        // Prune ignored entries during the walk: blocklisted NAS-recycle/
+        // system dirs always, dot-hidden entries per the ignore flags (see
+        // is_ignored_walk_entry). A pruned directory is never descended
+        // into or read, so it can produce neither entries nor walk errors.
+        // filter_entry sees the scan root itself at depth 0 — exempt it,
+        // so a library deliberately rooted at a dot-folder still scans.
+        // Errors pass through the predicate untouched; the error handling
+        // and failed_walk_prefixes logic below are unaffected.
+        .filter_entry(|e| {
+            e.depth() == 0
+                || !is_ignored_walk_entry(e, config.ignore_dot_files, config.ignore_dot_folders)
+        })
         .filter_map(|e| match e {
             Ok(entry) => Some(entry),
             Err(err) => {
@@ -1430,6 +1951,13 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // verify-absence check finds the file on disk and keeps them — same
     // outcome as the old unstamped-row path, warning included.
     let mut seen_ids: HashSet<i64> = HashSet::with_capacity(existing_tracks.len());
+    // Rel directories (fwd slash, '' = library root) whose tracks rode the
+    // mtime fast-path this scan. Folder-art discovery only runs while a
+    // track is (re)parsed, so a NEW cover.jpg dropped beside unchanged
+    // audio was invisible to normal scans forever — link_folder_art_drift
+    // reconciles exactly these directories after the walk. (Re)parsed
+    // tracks already link art inline in commit_track.
+    let mut fastpath_dirs: HashSet<String> = HashSet::new();
     // Commit cadence: doubles as progress-update cadence and write-lock release.
     // Lower = more responsive API writes during scans but more COMMIT/BEGIN overhead.
     // Admin-configurable via scanCommitInterval; default (25) is a balanced starting point.
@@ -1485,6 +2013,13 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                     // A no-op rescan on this path never takes the writer
                     // lock except for the periodic progress updates below.
                     seen_ids.insert(existing_id);
+                    if let Ok(rel) = entry.path().strip_prefix(&config.directory) {
+                        let rel = rel.to_string_lossy().replace('\\', "/");
+                        fastpath_dirs.insert(match rel.rfind('/') {
+                            Some(i) => rel[..i].to_string(),
+                            None => String::new(),
+                        });
+                    }
                 }
                 ExtractResult::Extracted(et) => {
                     // Tight per-song transaction around just the DB write.
@@ -1698,6 +2233,10 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                             // rescan, one row rewrite + index maintenance
                             // per unchanged file through the WAL writer.)
                             seen_ids.insert(existing_id);
+                            fastpath_dirs.insert(match rel.rfind('/') {
+                                Some(i) => rel[..i].to_string(),
+                                None => String::new(),
+                            });
                         }
                         Ok(ExtractResult::Extracted(et)) => {
                             // First write of this batch opens its
@@ -1896,7 +2435,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             config.directory, existing_tracks.len(),
         );
         println!(
-            "{{\"event\":\"scanComplete\",\"filesProcessed\":0,\"filesUnchanged\":0,\"filesScanned\":0,\"staleEntriesRemoved\":0}}"
+            "{{\"event\":\"scanComplete\",\"filesProcessed\":0,\"filesUnchanged\":0,\"filesScanned\":0,\"staleEntriesRemoved\":0,\"movedTracksRehomed\":0,\"movedRefsRehomed\":0,\"folderArtLinked\":0}}"
         );
         return Ok(());
     }
@@ -1916,18 +2455,29 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         ).into());
     }
 
-    // Remove tracks not seen in this scan (deleted files). SKIPPED in
-    // subtree mode: tracks OUTSIDE the subtree were never walked (absent
-    // from the seen-set) but are still on disk; the cleanup would wipe
-    // them. A subtree scan can ONLY add/update tracks under its root,
-    // never delete anything outside it. Stale-track cleanup for the rest
-    // of the library will run on the next whole-library scan.
+    // Folder-art drift: NEW images beside fast-pathed tracks (a dropped
+    // cover.jpg) get their reference rows / junctions / NULL-default
+    // fills now — parse-time capture never sees these directories.
+    // Behind the schema guard like every other post-walk write; runs in
+    // subtree mode too (the dir set is scoped by the walk).
+    let folder_art_linked = link_folder_art_drift(
+        &conn, config, &dir_art_cache, &known_ref_hashes,
+        &existing_tracks, &fastpath_dirs,
+    )?;
+
+    // Remove tracks not seen in this scan (deleted files). In subtree
+    // mode the candidate snapshot is scoped to the subtree prefix
+    // below, so "unseen" regains its real meaning — the row was inside
+    // the walked area and its file wasn't found. Rows OUTSIDE the
+    // subtree share the library_id but can never be candidates;
+    // stale-track cleanup for the rest of the library still runs on the
+    // next whole-library scan.
     // Walk errors no longer veto the whole destructive phase: the sweep
     // shields candidates under the failed-walk prefixes individually and
     // its listing-based presence check fails closed for everything else,
     // so a permanently unreadable #recycle dir can't freeze cleanup for
     // the rest of the library forever.
-    if walk_errors > 0 && !subtree_mode {
+    if walk_errors > 0 {
         eprintln!(
             "Warning: {} directory enumeration error(s) during the walk — rows under \
              the affected subtrees are shielded from this scan's cleanup",
@@ -1935,9 +2485,21 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let deleted = if subtree_mode {
-        0
+    // DB-side subtree prefix (forward slashes, trailing '/') for scoping
+    // the sweep snapshot. Rebuilt from segments so callers may pass
+    // either separator; tracks.filepath is always a library-relative
+    // forward-slash path.
+    let subtree_prefix: Option<String> = if subtree_mode {
+        let rel: String = config.subtree
+            .split(|c| c == '/' || c == '\\')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("/");
+        Some(format!("{}/", rel))
     } else {
+        None
+    };
+    let sweep = {
         // Sweep candidates = (rows that existed when the scan started) −
         // (rows the walk accounted for), in id order so chunk boundaries
         // are deterministic. On a no-op rescan of a stable library this
@@ -1946,12 +2508,26 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         // fresh scan_id just so a `scan_id != ?` DELETE could find the
         // leftovers. Rows other writers insert mid-scan (ytdl) are not in
         // the scan-start snapshot, so they can never be candidates.
-        let mut candidates: Vec<(i64, String)> = existing_tracks
+        // In subtree mode candidates are additionally scoped to the
+        // subtree prefix, so rows outside the walked boundary can never
+        // be candidates — the invariant that used to require skipping
+        // the sweep entirely.
+        let mut candidates: Vec<StaleCandidate> = existing_tracks
             .iter()
-            .filter(|(_, t)| !seen_ids.contains(&t.id))
-            .map(|(path, t)| (t.id, path.clone()))
+            .filter(|(path, t)| {
+                !seen_ids.contains(&t.id)
+                    && subtree_prefix
+                        .as_deref()
+                        .map_or(true, |p| path.starts_with(p))
+            })
+            .map(|(path, t)| StaleCandidate {
+                id: t.id,
+                rel: path.clone(),
+                audio_hash: t.audio_hash.clone(),
+                file_hash: t.file_hash.clone(),
+            })
             .collect();
-        candidates.sort_unstable_by_key(|&(id, _)| id);
+        candidates.sort_unstable_by_key(|c| c.id);
         // CHUNKED, not one big DELETE: the stale-track sweep cascades to
         // track_genres / track_artists and fires the per-row FTS5 AFTER
         // DELETE trigger, so on a large-deletion scan a single statement
@@ -1962,6 +2538,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             &conn, &candidates, schema_version_at_open,
             &config.directory, config.follow_symlinks, &failed_walk_prefixes,
             &config.supported_files,
+            config.ignore_dot_files, config.ignore_dot_folders, config.library_id,
         )?
     };
 
@@ -1983,9 +2560,11 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // SQLITE_BUSY. chunked_orphan_delete releases the writer between
     // batches so other processes can squeeze in.
     //
-    // SKIPPED in subtree mode: we didn't delete any tracks, so nothing
-    // can newly orphan an artist/album/genre. Whole-library scans still
-    // perform this cleanup.
+    // Runs on every whole-library scan, and on subtree scans that
+    // DELETED rows — sweeping the last track of an album must reap the
+    // album now, not at the next full scan. The orphan probes are
+    // global NOT EXISTS queries, correct at any scope; a delete-less
+    // subtree scan still skips them (nothing can be newly orphaned).
     //
     // NOT EXISTS (correlated) rather than NOT IN (… SELECT DISTINCT …): a
     // per-row indexed probe against idx_tracks_artist / idx_albums_artist /
@@ -1993,7 +2572,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // materialising a DISTINCT set — faster, and no IS-NOT-NULL guard needed
     // (a NULL fk just doesn't match). Semantically identical; mirrors
     // src/db/orphan-cleanup.js.
-    if !subtree_mode {
+    if !subtree_mode || sweep.deleted > 0 {
         // Replay recorded re-home hops now that the stale sweep removed
         // the doomed rows that masked their guards mid-scan — BEFORE the
         // orphan sweep decides what's a ghost. Guards make already-done
@@ -2040,7 +2619,13 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         chunked_orphan_delete(&conn, "genres",
             "SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM track_genres WHERE track_genres.genre_id = genres.id)",
             schema_version_at_open)?;
+    }
 
+    // Art passes stay whole-library-only: both walk disk truth for the
+    // entire library (or cache dir), a cost a targeted subtree scan
+    // shouldn't pay — and a swept track's art junction rows already
+    // cascaded with its row.
+    if !subtree_mode {
         // V48 multi-art: reap art_files rows whose image is verifiably gone
         // from disk. Disk is truth, like the track sweep — an UNLINKED image
         // that still exists is KEPT (re-derivable / re-linkable for free),
@@ -2081,8 +2666,9 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         .saturating_sub(file_count)
         .saturating_sub(error_count);
     println!(
-        "{{\"event\":\"scanComplete\",\"filesProcessed\":{},\"filesUnchanged\":{},\"filesScanned\":{},\"staleEntriesRemoved\":{},\"walkErrors\":{}}}",
-        file_count, unchanged, total_processed, deleted, walk_errors
+        "{{\"event\":\"scanComplete\",\"filesProcessed\":{},\"filesUnchanged\":{},\"filesScanned\":{},\"staleEntriesRemoved\":{},\"movedTracksRehomed\":{},\"movedRefsRehomed\":{},\"folderArtLinked\":{},\"walkErrors\":{}}}",
+        file_count, unchanged, total_processed, sweep.deleted, sweep.moved_tracks,
+        sweep.moved_refs, folder_art_linked, walk_errors
     );
     Ok(())
 }
@@ -2171,12 +2757,20 @@ fn extract_track(
     // cascade) and runs only once extraction has produced a complete
     // result — until then no write touches the row at all.
     let existing_id = existing.map(|e| e.id);
+    let old_hash_v: Option<i64> = existing.map(|e| e.hash_v);
     let (old_hash, old_audio_hash, old_album_id, old_artist_id):
         (Option<String>, Option<String>, Option<i64>, Option<i64>) =
         if let Some(e) = existing {
             let audio_unchanged = e.modified == mod_time;
             let sidecar_drifted = e.lyrics_sidecar_mtime != current_sidecar_mtime;
-            if audio_unchanged && !config.force_rescan && !sidecar_drifted {
+            // hashEpoch: an unchanged file still re-parses when its row
+            // was stamped by an older hashing generation — that re-key
+            // is the whole point of the convergence epoch. Rows already
+            // at the current generation keep the fast-path. (> never
+            // re-parses: a downgraded server must not re-key rows back
+            // to an older scheme.)
+            let gen_stale = config.hash_epoch && e.hash_v < HASH_GENERATION;
+            if audio_unchanged && !config.force_rescan && !sidecar_drifted && !gen_stale {
                 return Ok(ExtractResult::Unchanged { existing_id: e.id });
             }
             (
@@ -2257,8 +2851,19 @@ fn extract_track(
     // of ms per new/modified file; on CIFS or spinning disk they're
     // dominant. A size threshold keeps memory bounded so a pathological
     // 2 GB WAV doesn't blow out the process.
+    //
+    // Files at/above the SAMPLING threshold are deliberately NOT
+    // buffered: sampled hashing reads ~1MB of windows, and lofty's
+    // streaming Probe::open reads only tag/header regions — so the
+    // streaming arm costs a couple of MB of I/O where a buffered read
+    // would still pull the whole file over the wire and erase the
+    // entire point of sampling for the 25MB–256MB band. (This is also
+    // why every sampled hash goes through ONE implementation — the
+    // seek-based file path — instead of a buffered twin that must stay
+    // byte-identical with it.)
     const MAX_BUFFERED_FILE: u64 = 256 * 1024 * 1024;
-    let buf: Option<Vec<u8>> = if file_size <= MAX_BUFFERED_FILE {
+    let buf: Option<Vec<u8>> = if file_size <= MAX_BUFFERED_FILE
+        && file_size < config.sample_threshold() {
         match fs::read(filepath) {
             Ok(b) => Some(b),
             Err(e) => {
@@ -2557,9 +3162,44 @@ fn extract_track(
     }
 
     let (file_hash, audio_hash) = match buf.as_deref() {
+        // Buffered = below the sampling threshold by the gate above, so
+        // the bytes path only ever computes FULL hashes.
         Some(bytes) => compute_hashes_from_bytes(bytes, ext),
-        None => compute_hashes(filepath, ext)?,
+        None => compute_hashes(filepath, ext, config.sample_threshold())?,
     };
+
+    // V60 epoch move-bridge. A >=threshold file MOVED across the
+    // upgrade has an old row holding v1 FULL hashes at a path that no
+    // longer exists — no hash can ever match it to this new-path row's
+    // SAMPLED hashes, so its stars/plays/bookmarks would orphan forever
+    // (pre-V60, a pure move never changed hashes at all). During the
+    // epoch only, also compute what the OLD scheme would have called
+    // this file; commit_track ledgers fullCanon→sampledCanon and the
+    // stale sweep consults the ledger before orphaning an unmatched
+    // candidate. Costs one full streaming read per NEW-PATH big file
+    // (>=threshold files are never buffered) — the deliberate one-time
+    // epoch cost. A genuinely new (not moved) file leaves an inert
+    // ledger row the drain applier no-ops. Mirrors scanner.mjs.
+    let epoch_old_canon: Option<String> =
+        if config.hash_epoch && existing.is_none() && file_size >= config.sample_threshold() {
+            let (full_file, full_audio) = match compute_hashes(filepath, ext, u64::MAX) {
+                Ok(pair) => pair,
+                Err(e) => {
+                    eprintln!("Warning: epoch move-bridge hash failed for {}: {}",
+                        filepath.display(), e);
+                    (String::new(), None)
+                }
+            };
+            let full_canon = full_audio.unwrap_or(full_file);
+            let sampled_canon = audio_hash.as_deref().unwrap_or(file_hash.as_str());
+            if !full_canon.is_empty() && full_canon != sampled_canon {
+                Some(full_canon)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
     // No decode happens in the scan anymore: waveforms are generated by
     // the post-scan `--waveform-scan` pass (keyed by these hashes), and
@@ -2615,6 +3255,8 @@ fn extract_track(
         old_audio_hash,
         old_album_id,
         old_artist_id,
+        old_hash_v,
+        epoch_old_canon,
         existing_id,
     })))
 }
@@ -2726,11 +3368,11 @@ fn commit_track(
          disc_number, year, duration, format, file_hash, audio_hash, album_art_file, album_art_source,
          replaygain_track_db, sample_rate, channels, bit_depth, bitrate, file_size,
          track_total, disc_total,
-         lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime, lyrics_source,
+         lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime, lyrics_source, lyrics_search_text,
          bpm, musical_key, bpm_source,
          modified, scan_id, source,
-         mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source, hash_v)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(filepath, library_id) DO UPDATE SET
            title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
            track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
@@ -2746,11 +3388,13 @@ fn commit_track(
            lyrics_synced_lrc=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_synced_lrc ELSE excluded.lyrics_synced_lrc END,
            lyrics_lang=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_lang ELSE excluded.lyrics_lang END,
            lyrics_source=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_source ELSE excluded.lyrics_source END,
+           lyrics_search_text=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_search_text ELSE excluded.lyrics_search_text END,
            lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
            bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
            modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source,
            mbz_recording_id=excluded.mbz_recording_id, mbz_release_track_id=excluded.mbz_release_track_id,
-           isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source
+           isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source,
+           hash_v=excluded.hash_v
          RETURNING id",
     )?.query_row(rusqlite::params![
         et.rel_path, config.library_id, et.title, primary_track_artist_id, album_id,
@@ -2763,9 +3407,13 @@ fn commit_track(
         if et.current_sidecar_mtime.is_some() { Some("sidecar") }
         else if et.lyrics_embedded.is_some() || et.lyrics_synced_lrc.is_some() { Some("embedded") }
         else { None::<&str> },
+        // V59: timestamp-stripped search rendition of the synced LRC —
+        // derived at the write site, mirroring scanner.mjs.
+        lrc_to_search_text(et.lyrics_synced_lrc.as_deref()),
         et.bpm, et.musical_key, et.bpm_source,
         et.mod_time, config.scan_id, et.source,
-        et.mbz_recording_id, et.mbz_release_track_id, et.isrc, et.mbz_id_source
+        et.mbz_recording_id, et.mbz_release_track_id, et.isrc, et.mbz_id_source,
+        HASH_GENERATION
     ], |row| row.get(0))?;
 
     // Clear track_genres first. Under the old INSERT OR REPLACE the row's
@@ -2888,7 +3536,33 @@ fn commit_track(
     let old_canon: &str = et.old_audio_hash.as_deref()
         .unwrap_or(et.old_hash.as_deref().unwrap_or(""));
     if !old_canon.is_empty() && old_canon != new_canon {
-        migrate_hash_references(conn, old_canon, new_canon)?;
+        // Scheme re-key vs content change — see ExtractedTrack.old_hash_v
+        // and the schemeRekey rationale in src/db/hash-migration.js.
+        let scheme_rekey = et.old_hash_v.unwrap_or(1) < HASH_GENERATION;
+        migrate_hash_references(conn, old_canon, new_canon, scheme_rekey)?;
+        if scheme_rekey {
+            // Record the transition for keyspaces the scanner must NOT
+            // touch mid-transaction: task-queue applies the ledger to
+            // discovery.db AND renames the on-disk waveform cache when
+            // the queue drains — after this transaction has committed,
+            // so a rollback can never strand an artifact at an identity
+            // the DB never adopted. Content changes are NOT recorded:
+            // the old audio's embedding/waveform must orphan and
+            // regenerate, not follow bytes they don't describe.
+            // OR REPLACE: a chain step (A→B recorded, then B→C) replaces
+            // cleanly; the applier collapses chains before applying.
+            conn.prepare_cached(
+                "INSERT OR REPLACE INTO hash_transitions (old_hash, new_hash) VALUES (?, ?)")?
+                .execute(rusqlite::params![old_canon, new_canon])?;
+        }
+    }
+    // Epoch move-bridge ledger entry (see ExtractedTrack.epoch_old_canon):
+    // lets the stale sweep re-home a moved big file's v1-keyed user state
+    // to this row's sampled identity.
+    if let Some(epoch_old) = et.epoch_old_canon.as_deref() {
+        conn.prepare_cached(
+            "INSERT OR REPLACE INTO hash_transitions (old_hash, new_hash) VALUES (?, ?)")?
+            .execute(rusqlite::params![epoch_old, new_canon])?;
     }
 
     // Re-home user state from rows this re-parse is killing (all
@@ -2945,7 +3619,11 @@ fn commit_track(
 
 /// Update user-facing rows that key off `file_hash` when a file's content
 /// hash changes without a path change. Mirrors `migrateHashReferences` in
-/// src/db/hash-migration.js — see the comment there for the rationale.
+/// src/db/hash-migration.js — see the comment there for the rationale,
+/// including `scheme_rekey`: user state and lyrics follow on EVERY canon
+/// change; the content-derived cooldown ledgers (acoustid_lookups,
+/// audio_analysis_lookups) follow only a hashing-scheme re-key of
+/// unchanged bytes, never a content change.
 ///
 /// MERGE, not bare UPDATE: a user can hold rows under BOTH identities
 /// (the pre-V52 scrobble bug keyed plays on file_hash while star/rating
@@ -2955,7 +3633,7 @@ fn commit_track(
 /// sums, starred_at keeps the earliest, last_played the latest, rating
 /// prefers the target row's. Bookmarks: most recently changed wins.
 fn migrate_hash_references(
-    conn: &Connection, old_hash: &str, new_hash: &str,
+    conn: &Connection, old_hash: &str, new_hash: &str, scheme_rekey: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     type UmRow = (i64, Option<i64>, Option<String>, Option<String>, Option<i64>);
     let olds: Vec<UmRow> = conn
@@ -3048,18 +3726,31 @@ fn migrate_hash_references(
         }
     }
 
-    // lyrics_cache keys on the same canonical hash (its audio_hash column
-    // stores COALESCE(audio_hash, file_hash)). Canonical row wins.
-    let lyrics_target: Option<i64> = conn
-        .prepare_cached("SELECT 1 FROM lyrics_cache WHERE audio_hash = ?")?
-        .query_row([new_hash], |r| r.get(0))
-        .optional()?;
-    if lyrics_target.is_some() {
-        conn.execute("DELETE FROM lyrics_cache WHERE audio_hash = ?", [old_hash])?;
+    // Canonical-hash-keyed sibling tables, one shared policy: the row
+    // already AT the new identity wins; the old-keyed row re-keys only
+    // when no canonical row exists. lyrics_cache follows on EVERY canon
+    // change (long-standing behavior); the acoustid_lookups (V56) and
+    // audio_analysis_lookups (V54) failure-cooldown ledgers are derived
+    // from the BYTES and follow only a scheme re-key — carried across a
+    // content change they would suppress fingerprinting/analysis of
+    // audio never attempted. Mirrors hash-migration.js.
+    let canon_tables: &[&str] = if scheme_rekey {
+        &["lyrics_cache", "acoustid_lookups", "audio_analysis_lookups"]
     } else {
-        conn.execute(
-            "UPDATE lyrics_cache SET audio_hash = ? WHERE audio_hash = ?",
-            rusqlite::params![new_hash, old_hash])?;
+        &["lyrics_cache"]
+    };
+    for table in canon_tables {
+        let target: Option<i64> = conn
+            .prepare_cached(&format!("SELECT 1 FROM {} WHERE audio_hash = ?", table))?
+            .query_row([new_hash], |r| r.get(0))
+            .optional()?;
+        if target.is_some() {
+            conn.execute(&format!("DELETE FROM {} WHERE audio_hash = ?", table), [old_hash])?;
+        } else {
+            conn.execute(
+                &format!("UPDATE {} SET audio_hash = ? WHERE audio_hash = ?", table),
+                rusqlite::params![new_hash, old_hash])?;
+        }
     }
 
     // user_play_queue stores the queue as a JSON array of hashes. Pull
@@ -3582,6 +4273,115 @@ fn looks_like_lrc(text: &str) -> bool {
         if ss_digits >= 1 { return true; }
     }
     false
+}
+
+// ── V59: lyrics_search_text derivation ──────────────────────────────────────
+//
+// MIRROR of lrcToSearchText in src/api/subsonic/lrc-parser.js. The two
+// scanners must emit byte-identical values for the same input (the parity
+// suite deep-compares full DB snapshots), so any behavioural change must
+// land in both places simultaneously.
+//
+// Per (trimmed) line: drop LRC metadata-tag-only lines ([ar:…],
+// [offset:+500], …), peel every leading `[mm:ss(.xx)]` stamp, blank inline
+// `<mm:ss.xx>` word stamps (enhanced LRC), collapse space/tab runs, and
+// keep whatever survives in original line order. None when nothing does.
+
+// Key list is META_TAG_RE's alternation, verbatim.
+const LRC_META_KEYS: [&str; 11] =
+    ["ar", "ti", "al", "au", "by", "re", "ve", "length", "offset", "lang", "tool"];
+
+// `[key:body-without-]]` spanning the whole line, key case-insensitive —
+// the JS side's /^\[(ar|ti|…):[^\]]*\]$/i.
+fn is_lrc_meta_tag_line(line: &str) -> bool {
+    let after = match line.strip_prefix('[') { Some(a) => a, None => return false };
+    let colon = match after.find(':') { Some(i) => i, None => return false };
+    let key = after[..colon].to_ascii_lowercase();
+    if !LRC_META_KEYS.contains(&key.as_str()) { return false; }
+    let body = &after[colon + 1..];
+    body.ends_with(']') && !body[..body.len() - 1].contains(']')
+}
+
+// Peel one leading `<open>mm:ss(.xx)<close>` stamp; Some(rest after the
+// close delimiter) or None. Digit-run semantics match the JS
+// /^\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/ exactly: every boundary
+// (':', '.', close) is a non-digit, so regex backtracking can never
+// shorten a digit run — each run must sit fully within range with the
+// boundary char immediately after. "[1234:56]", "[12:345]" and
+// "[12:34.5678]" are therefore NOT stamps, on both sides.
+fn peel_lrc_stamp(line: &str, open: char, close: char) -> Option<&str> {
+    let after = line.strip_prefix(open)?;
+    let b = after.as_bytes();
+    let close_b = close as u8;
+    let mm = b.iter().take_while(|c| c.is_ascii_digit()).count();
+    if mm == 0 || mm > 3 || b.get(mm) != Some(&b':') { return None; }
+    let ss_start = mm + 1;
+    let ss = b[ss_start..].iter().take_while(|c| c.is_ascii_digit()).count();
+    if ss == 0 || ss > 2 { return None; }
+    let mut idx = ss_start + ss;
+    match b.get(idx) {
+        Some(&c) if c == close_b => { idx += 1; }
+        Some(&c) if c == b'.' || c == b':' => {
+            let frac = b[idx + 1..].iter().take_while(|d| d.is_ascii_digit()).count();
+            if frac == 0 || frac > 3 || b.get(idx + 1 + frac) != Some(&close_b) { return None; }
+            idx += 1 + frac + 1;
+        }
+        _ => return None,
+    }
+    Some(&after[idx..])
+}
+
+// Inline `<mm:ss.xx>` stamps become one space each (JS: replace(RE, ' ')),
+// then space/tab runs of length ≥ 2 collapse to a single space (JS:
+// replace(/[ \t]{2,}/g, ' ') — note a SOLO tab survives as a tab), then
+// trim. Non-stamp '<' passes through verbatim.
+fn strip_inline_stamps(line: &str) -> String {
+    let mut replaced = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(pos) = rest.find('<') {
+        let (head, tail) = rest.split_at(pos);
+        replaced.push_str(head);
+        match peel_lrc_stamp(tail, '<', '>') {
+            Some(after) => { replaced.push(' '); rest = after; }
+            None => { replaced.push('<'); rest = &tail[1..]; }
+        }
+    }
+    replaced.push_str(rest);
+
+    let mut out = String::with_capacity(replaced.len());
+    let mut iter = replaced.chars().peekable();
+    while let Some(ch) = iter.next() {
+        if ch == ' ' || ch == '\t' {
+            let mut run = 1usize;
+            while matches!(iter.peek(), Some(&c) if c == ' ' || c == '\t') {
+                iter.next();
+                run += 1;
+            }
+            out.push(if run >= 2 { ' ' } else { ch });
+        } else {
+            out.push(ch);
+        }
+    }
+    out.trim().to_string()
+}
+
+fn lrc_to_search_text(lrc: Option<&str>) -> Option<String> {
+    let lrc = lrc?;
+    let text = lrc.strip_prefix('\u{FEFF}').unwrap_or(lrc);
+    let mut out: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        let mut line = raw.trim();
+        if line.is_empty() { continue; }
+        if is_lrc_meta_tag_line(line) { continue; }
+        // Peel leading stamp(s); trim between peels so
+        // "[00:01.00] [00:02.00]text" spacing doesn't stop the loop.
+        while let Some(rest) = peel_lrc_stamp(line, '[', ']') {
+            line = rest.trim_start();
+        }
+        let cleaned = strip_inline_stamps(line);
+        if !cleaned.is_empty() { out.push(cleaned); }
+    }
+    if out.is_empty() { None } else { Some(out.join("\n")) }
 }
 
 // Newest mtime across `<base>.lrc`, `<base>.<lang>.lrc`, `<base>.txt`
@@ -4665,6 +5465,129 @@ fn fingerprint_from_file(path: &Path, ext: &str) -> Option<FingerprintOutput> {
 // re-reading ~0.95×buf bytes from RAM. Single-pass cuts that second
 // read entirely. On a typical 14 MB track that's ~13 MB of memory
 // bandwidth saved per file — small but cumulative across a library.
+// ── Sampled hashing (threshold hybrid) ──────────────────────────────────────
+//
+// Above the threshold, hashing switches from full-content MD5 to a
+// sampled MD5 over three windows — 256KB at the start, 512KB centred on
+// the middle (the entropy-dense region: intros/outros are where silence
+// and fades live), 256KB at the end — plus the total length, all fed
+// through a domain prefix that ENCODES the window spec, so any future
+// window change can never silently collide with this generation's
+// hashes. For audio_hash the windows are positioned in the LOGICAL
+// tag-stripped audio stream (the concatenated ranges), which preserves
+// tag-edit stability; for file_hash the stream is the whole file (one
+// range). Thresholds are per-hash on the hashed stream's OWN length, so
+// the scheme choice is deterministic per content and a tag edit can
+// never flip audio_hash across it. Below the threshold nothing changes:
+// the existing full-hash code runs untouched, byte-identical with every
+// existing row. MUST stay byte-identical with src/db/audio-hash.js.
+//
+// THE CONSTANTS BELOW ARE ONE UNIT, pinned to HASH_GENERATION = 2 —
+// threshold included (it selects which scheme a given content gets, so
+// a tune silently splits identities inside a generation with no
+// convergence signal). Changing any of them means a generation bump +
+// migration with rescanEpochId + replacement partial index, mirrored in
+// audio-hash.js. Never tune in place.
+const SAMPLE_THRESHOLD_DEFAULT: u64 = 25 * 1024 * 1024;
+// Hashing generation stamped into tracks.hash_v: rows written by this
+// scanner carry 2 (threshold-hybrid); pre-V60 rows carry 1 (full-only).
+// Hash EQUALITY is only meaningful within one generation — the move
+// re-homing pairing guard enforces it, and task-queue's boot check
+// re-arms the force-rescan epoch while any row remains below this.
+const HASH_GENERATION: i64 = 2;
+const SAMPLE_W_START: u64 = 256 * 1024;
+const SAMPLE_W_MID: u64 = 512 * 1024;
+const SAMPLE_W_END: u64 = 256 * 1024;
+const SAMPLE_DOMAIN: &str = "mstream-sampled-v2:256:512:256:";
+
+// Window placement in the logical stream. Integer (floor) division so
+// the JS twin's Math.floor arithmetic produces identical offsets. When
+// the stream is no larger than the window sum (possible only via a
+// lowered threshold — tests use tiny ones), the "sample" is the whole
+// stream in one window: still domain-separated from the full scheme,
+// still deterministic, and offsets can never underflow or overlap.
+// Above the sum, total_len > start+mid+end guarantees the three windows
+// are ordered and disjoint.
+fn sample_windows(total_len: u64) -> Vec<(u64, u64)> {
+    if total_len <= SAMPLE_W_START + SAMPLE_W_MID + SAMPLE_W_END {
+        return vec![(0, total_len)];
+    }
+    vec![
+        (0, SAMPLE_W_START),
+        (total_len / 2 - SAMPLE_W_MID / 2, SAMPLE_W_MID),
+        (total_len - SAMPLE_W_END, SAMPLE_W_END),
+    ]
+}
+
+// Feed `md5` with `len` bytes starting at `logical_off` of the
+// concatenated ranges' content, via seek+read. Short reads (file
+// truncated mid-scan) end the span early — the next scan heals.
+fn read_logical_span_file(
+    file: &mut fs::File, ranges: &[(u64, u64)], logical_off: u64, len: u64, md5: &mut Md5,
+) -> Result<(), std::io::Error> {
+    let mut skip = logical_off;
+    let mut remaining = len;
+    let mut buf = [0u8; 65536];
+    for &(start, end) in ranges {
+        if remaining == 0 { break; }
+        let rlen = end.saturating_sub(start);
+        if rlen == 0 { continue; }
+        if skip >= rlen { skip -= rlen; continue; }
+        let file_off = start + skip;
+        let mut avail = end - file_off;
+        skip = 0;
+        // Sequential reads advance the cursor on their own — one seek
+        // positions the whole span.
+        file.seek(SeekFrom::Start(file_off))?;
+        while avail > 0 && remaining > 0 {
+            let want = (buf.len() as u64).min(avail).min(remaining) as usize;
+            let n = file.read(&mut buf[..want])?;
+            if n == 0 { return Ok(()); }
+            md5.update(&buf[..n]);
+            avail -= n as u64;
+            remaining -= n as u64;
+        }
+    }
+    Ok(())
+}
+
+fn sampled_hash_file(
+    file: &mut fs::File, ranges: &[(u64, u64)], total_len: u64,
+) -> Result<String, std::io::Error> {
+    let mut md5 = Md5::new();
+    md5.update(format!("{}{}:", SAMPLE_DOMAIN, total_len).as_bytes());
+    for (off, len) in sample_windows(total_len) {
+        read_logical_span_file(file, ranges, off, len, &mut md5)?;
+    }
+    Ok(hex_lower(md5.finalize()))
+}
+
+// Full-content helper for the mixed combo (file above threshold, audio
+// below — a huge-tag file): a single-purpose read whose byte order is
+// identical to the JS full path.
+fn full_ranges_hash(file: &mut fs::File, ranges: &[(u64, u64)]) -> Result<String, std::io::Error> {
+    let mut md5 = Md5::new();
+    let mut buf = [0u8; 65536];
+    for &(start, end) in ranges {
+        if end <= start { continue; }
+        file.seek(SeekFrom::Start(start))?;
+        let mut remaining = end - start;
+        while remaining > 0 {
+            let want = (buf.len() as u64).min(remaining) as usize;
+            let n = file.read(&mut buf[..want])?;
+            if n == 0 { break; }
+            md5.update(&buf[..n]);
+            remaining -= n as u64;
+        }
+    }
+    Ok(hex_lower(md5.finalize()))
+}
+
+// FULL hashes only, by construction: the scan's buffered arm is gated
+// on file_size < sample_threshold (and the audio payload can never
+// exceed the file), so sampled hashing has exactly ONE implementation —
+// the seek-based path in compute_hashes — with no buffered twin to
+// drift from it.
 fn compute_hashes_from_bytes(buf: &[u8], ext: &str) -> (String, Option<String>) {
     // audio_ranges_for_ext still needs a Read + Seek to walk headers;
     // a Cursor over the slice satisfies that without copying.
@@ -4712,7 +5635,7 @@ fn compute_hashes_from_bytes(buf: &[u8], ext: &str) -> (String, Option<String>) 
 }
 
 fn compute_hashes(
-    filepath: &Path, ext: &str,
+    filepath: &Path, ext: &str, sample_threshold: u64,
 ) -> Result<(String, Option<String>), Box<dyn std::error::Error>> {
     let mut file = fs::File::open(filepath)?;
     let file_size = file.metadata()?.len();
@@ -4728,6 +5651,28 @@ fn compute_hashes(
     let ranges: Vec<(u64, u64)> = audio_ranges_for_ext(&mut file, ext, file_size)
         .unwrap_or_default();
     let has_ranges = !ranges.is_empty();
+
+    // Sampled pre-branch (see the threshold-hybrid comment above): the
+    // single-pass full-hash code below runs untouched when both hashes
+    // stay full, preserving byte parity with every existing row.
+    // Gated on file_sampled ALONE: extractor ranges are in-file and
+    // disjoint, so audio_len <= file_size always — the audio hash can
+    // never cross the threshold without the file hash crossing it too
+    // (the reverse — huge-tag files — is the real mixed combo below).
+    let audio_len: u64 = ranges.iter().map(|(s, e)| e.saturating_sub(*s)).sum();
+    let file_sampled = file_size >= sample_threshold;
+    let audio_sampled = has_ranges && audio_len >= sample_threshold;
+    if file_sampled {
+        let file_hash = sampled_hash_file(&mut file, &[(0, file_size)], file_size)?;
+        let audio_hash = if !has_ranges {
+            None
+        } else if audio_sampled {
+            Some(sampled_hash_file(&mut file, &ranges, audio_len)?)
+        } else {
+            Some(full_ranges_hash(&mut file, &ranges)?)
+        };
+        return Ok((file_hash, audio_hash));
+    }
 
     // Single-pass hash. Every byte is fed into `file_ctx`; bytes whose
     // file offset falls inside an audio range are also fed into
@@ -4840,6 +5785,176 @@ fn normalize_pic_type(pt: PictureType) -> Option<&'static str> {
 // art). Same per-directory single-init concurrency story as the old
 // directory-art cache: the map lock is held only for the entry lookup, never
 // across I/O.
+// Folder-art drift: link NEW folder images that appeared in directories
+// whose tracks all rode the mtime fast-path. Art capture normally runs
+// only while a track is (re)parsed, so a cover.jpg dropped beside
+// unchanged audio was never picked up by ordinary scans (the reap half
+// of that asymmetry — deleted images — is cleanup_stale_art's job).
+//
+// Scope is deliberately ADD-only and NEW-only: an image whose rel_path
+// the scan-start reference snapshot already knows was linked when its
+// tracks last (re)parsed, and re-linking could resurrect state a later
+// user action removed. Per new image, mirror commit_track's linking:
+// a reference art_files row + track_art/album_art junctions (source
+// 'folder') for every direct-child track and its album. When a track
+// has NO default at all and the dir's first sorted image is one of the
+// new ones, mirror the parse-time election too: cache it (defaults are
+// always cache files), thumbnail it, and fill album_art_file/source on
+// tracks and albums under the same fill-NULL-only guards the parse
+// uses. Runs inside one short transaction per scan; every statement is
+// the same idempotent INSERT OR IGNORE / guarded UPDATE shape the
+// parse path uses, so a re-run heals rather than duplicates. Returns
+// the number of newly linked images. Mirrors linkFolderArtDrift in
+// src/db/scanner.mjs.
+fn link_folder_art_drift(
+    conn: &Connection,
+    config: &ScanConfig,
+    dir_art_cache: &Mutex<HashMap<String, Arc<OnceLock<Arc<Vec<FolderImage>>>>>>,
+    known_ref_hashes: &HashMap<String, Option<String>>,
+    existing_tracks: &HashMap<String, ExistingTrack>,
+    fastpath_dirs: &HashSet<String>,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    if config.skip_img || fastpath_dirs.is_empty() { return Ok(0); }
+
+    let mut dirs: Vec<&String> = fastpath_dirs.iter().collect();
+    dirs.sort(); // deterministic processing order across runs/engines
+
+    let mut linked = 0usize;
+    let mut txn_open = false;
+    for rel_dir in dirs {
+        let abs_dir = if rel_dir.is_empty() {
+            PathBuf::from(&config.directory)
+        } else {
+            Path::new(&config.directory).join(rel_dir.as_str())
+        };
+        let imgs = list_folder_images_dir(&abs_dir, config, dir_art_cache, known_ref_hashes);
+        let new_rel: HashSet<&str> = imgs.iter()
+            .filter(|fi| !known_ref_hashes.contains_key(&fi.rel_path))
+            .map(|fi| fi.rel_path.as_str())
+            .collect();
+        if new_rel.is_empty() { continue; }
+
+        // Direct children from the scan-start snapshot: fast-pathed rows
+        // are by definition unmodified, so its album/default columns are
+        // current. Sorted for deterministic junction ordering.
+        let mut tracks: Vec<(&String, &ExistingTrack)> = existing_tracks.iter()
+            .filter(|(path, _)| match path.rfind('/') {
+                Some(i) => &path[..i] == rel_dir.as_str(),
+                None => rel_dir.is_empty(),
+            })
+            .collect();
+        if tracks.is_empty() { continue; }
+        tracks.sort_by(|a, b| a.0.cmp(b.0));
+
+        // Parse-parity default election: only when a track has no default
+        // AND the dir's first sorted image is NEW. (NULL default alongside
+        // pre-existing folder art can't normally happen — parse would have
+        // elected it — so an old imgs[0] simply skips the fill.)
+        let needs_default = tracks.iter().any(|(_, t)| t.album_art_file.is_none());
+        let mut promoted: Option<(String, &FolderImage)> = None; // (cache_file, img)
+        if needs_default {
+            if let Some(fi) = imgs.first() {
+                if new_rel.contains(fi.rel_path.as_str()) {
+                    if let Ok(data) = fs::read(&fi.path) {
+                        if let Some((cf, _hash)) = cache_art_bytes(
+                            &data, &file_ext(&fi.path).to_ascii_lowercase(), config,
+                        ) {
+                            if config.compress_image {
+                                compress_album_art(&data, &cf, &config.album_art_directory);
+                            }
+                            promoted = Some((cf, fi));
+                        }
+                    }
+                }
+            }
+        }
+
+        if !txn_open {
+            conn.execute("BEGIN IMMEDIATE", [])?;
+            txn_open = true;
+        }
+
+        let mut ins_cached = conn.prepare_cached("INSERT OR IGNORE INTO art_files (kind, cache_file, content_hash, byte_size) VALUES ('cached', ?, ?, ?)")?;
+        let mut sel_cached = conn.prepare_cached("SELECT id FROM art_files WHERE kind = 'cached' AND cache_file = ?")?;
+        let mut ins_ref = conn.prepare_cached("INSERT OR IGNORE INTO art_files (kind, library_id, rel_path, content_hash, byte_size) VALUES ('reference', ?, ?, ?, ?)")?;
+        let mut sel_ref = conn.prepare_cached("SELECT id FROM art_files WHERE kind = 'reference' AND library_id = ? AND rel_path = ?")?;
+        let mut ins_ta = conn.prepare_cached("INSERT OR IGNORE INTO track_art (track_id, art_id, source, picture_type, position) VALUES (?, ?, 'folder', ?, ?)")?;
+        let mut ins_aa = conn.prepare_cached("INSERT OR IGNORE INTO album_art (album_id, art_id, source, picture_type, position) VALUES (?, ?, 'folder', ?, ?)")?;
+        let mut fill_track = conn.prepare_cached(
+            "UPDATE tracks SET album_art_file = ?, album_art_source = 'folder'
+              WHERE id = ? AND album_art_file IS NULL")?;
+        let mut fill_album = conn.prepare_cached(
+            "UPDATE albums SET album_art_file = ?, album_art_source = 'folder'
+              WHERE id = ? AND album_art_file IS NULL")?;
+
+        for (i, fi) in imgs.iter().enumerate() {
+            if !new_rel.contains(fi.rel_path.as_str()) { continue; }
+            // Every statement is an idempotent OR-IGNORE / guarded
+            // UPDATE, so `changed` counts REAL mutations only and a
+            // fully-converged dir reports zero.
+            let mut changed = 0usize;
+            // A promoted default lives as a CACHED row keyed by its
+            // content-addressed filename — it never enters the reference
+            // snapshot, so on later scans the same cover would otherwise
+            // be re-classified as new and minted a duplicate reference
+            // row. Election is stateless at parse time; here the cache
+            // probe is the stateless equivalent: bytes we already hold
+            // as a cached row are linked to that row, never re-added.
+            let cache_probe: Option<(String, i64)> = fi.content_hash.as_deref().map(|h| {
+                let cf = format!("{}.{}", h, file_ext(&fi.path).to_ascii_lowercase());
+                let id = sel_cached.query_row(rusqlite::params![cf], |r| r.get(0))
+                    .optional().unwrap_or(None);
+                (cf, id.unwrap_or(-1))
+            }).filter(|(_, id)| *id >= 0);
+            let is_promoted = matches!(&promoted, Some((_, p)) if p.rel_path == fi.rel_path);
+            let art_id: Option<i64> = if let Some((_, id)) = &cache_probe {
+                Some(*id)
+            } else if is_promoted {
+                let (cf, _) = promoted.as_ref().unwrap();
+                changed += ins_cached.execute(rusqlite::params![cf, fi.content_hash, fi.byte_size])?;
+                sel_cached.query_row(rusqlite::params![cf], |r| r.get(0)).optional()?
+            } else {
+                changed += ins_ref.execute(rusqlite::params![
+                    config.library_id, fi.rel_path, fi.content_hash, fi.byte_size])?;
+                sel_ref.query_row(
+                    rusqlite::params![config.library_id, fi.rel_path], |r| r.get(0)).optional()?
+            };
+            let Some(art_id) = art_id else { continue; };
+            // A cache hit also restores default-fill behaviour for
+            // tracks still missing one (same guarded no-op otherwise).
+            let fill_cf: Option<&str> = if let Some((cf, _)) = &cache_probe {
+                Some(cf.as_str())
+            } else if is_promoted {
+                promoted.as_ref().map(|(cf, _)| cf.as_str())
+            } else {
+                None
+            };
+            for (_, t) in &tracks {
+                changed += ins_ta.execute(rusqlite::params![t.id, art_id, fi.ptype, i as i64])?;
+                if let Some(aid) = t.album_id {
+                    changed += ins_aa.execute(rusqlite::params![aid, art_id, fi.ptype, i as i64])?;
+                }
+            }
+            if let Some(cf) = fill_cf {
+                for (_, t) in &tracks {
+                    changed += fill_track.execute(rusqlite::params![cf, t.id])?;
+                    if let Some(aid) = t.album_id {
+                        changed += fill_album.execute(rusqlite::params![cf, aid])?;
+                    }
+                }
+            }
+            if changed > 0 { linked += 1; }
+        }
+    }
+    if txn_open {
+        conn.execute("COMMIT", [])?;
+    }
+    if linked > 0 {
+        println!("Linked {} new folder image(s) beside unchanged tracks", linked);
+    }
+    Ok(linked)
+}
+
 fn list_folder_images(
     filepath: &Path,
     config: &ScanConfig,
@@ -4847,6 +5962,18 @@ fn list_folder_images(
     known_ref_hashes: &HashMap<String, Option<String>>,
 ) -> Arc<Vec<FolderImage>> {
     let Some(dir) = filepath.parent() else { return Arc::new(Vec::new()); };
+    list_folder_images_dir(dir, config, cache, known_ref_hashes)
+}
+
+// Directory-keyed core of list_folder_images — also used by the
+// folder-art drift pass, which starts from a directory rather than a
+// track path. Same cache, same ordering contract.
+fn list_folder_images_dir(
+    dir: &Path,
+    config: &ScanConfig,
+    cache: &Mutex<HashMap<String, Arc<OnceLock<Arc<Vec<FolderImage>>>>>>,
+    known_ref_hashes: &HashMap<String, Option<String>>,
+) -> Arc<Vec<FolderImage>> {
     let dir_key = dir.to_string_lossy().to_string();
     let cell = {
         let mut guard = cache.lock().unwrap();

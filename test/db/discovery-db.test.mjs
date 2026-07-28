@@ -31,6 +31,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   initDiscoveryDb, closeDiscoveryDb, isDiscoveryDbOpen, getDiscoveryDb,
   upsertDiscoveryTrack, exportIdFor, getMeta, setMeta,
+  applyHashTransitionGroups,
   DISCOVERY_SCHEMA_VERSION, EMBEDDING_DTYPE, EMBEDDING_NORMALIZATION,
 } from '../../src/db/discovery-db.js';
 import {
@@ -269,5 +270,62 @@ describe('export snapshot', () => {
     } finally {
       snap.close();
     }
+  });
+});
+
+describe('applyHashTransitionGroups', () => {
+  // Uses the suite's shared open DB; hashes here are namespaced 'rk-*'
+  // so they can't collide with the other describes' rows.
+  test('moving a row re-derives export_id and bumps the rowversion', () => {
+    upsertDiscoveryTrack({ audioHash: 'rk-old', artist: 'A', embedding: embeddingBlob([1, 2]) });
+    const before = getDiscoveryDb().prepare(
+      'SELECT export_id, updated_at FROM discovery_tracks WHERE audio_hash = ?').get('rk-old');
+
+    const out = applyHashTransitionGroups([{ target: 'rk-new', sources: ['rk-old'] }]);
+    assert.deepEqual(out, { moved: 1, dropped: 0 });
+
+    const row = getDiscoveryDb().prepare(
+      `SELECT export_id, updated_at, embedding FROM discovery_tracks
+        WHERE audio_hash = ?`).get('rk-new');
+    assert.ok(row, 'row moved to the new identity');
+    assert.equal(row.export_id, exportIdFor(null, 'rk-new'),
+      'anon export_id re-derived from the NEW hash — a raw UPDATE would leave the old one');
+    assert.notEqual(row.export_id, before.export_id);
+    assert.ok(row.updated_at > before.updated_at, 'rowversion bumped for incremental consumers');
+    assert.deepEqual(blobToFloats(row.embedding), [1, 2], 'payload travels intact');
+  });
+
+  test('a row already at the target wins; sources are dropped, not applied over it', () => {
+    upsertDiscoveryTrack({ audioHash: 'rk-t', artist: 'target-fresh' });
+    upsertDiscoveryTrack({ audioHash: 'rk-s1', artist: 'stale' });
+    const out = applyHashTransitionGroups([{ target: 'rk-t', sources: ['rk-s1'] }]);
+    assert.deepEqual(out, { moved: 0, dropped: 1 });
+    const rows = getDiscoveryDb().prepare(
+      "SELECT audio_hash, artist FROM discovery_tracks WHERE audio_hash LIKE 'rk-%' AND audio_hash IN ('rk-t','rk-s1')").all();
+    assert.deepEqual(rows.map((r) => ({ ...r })), [{ audio_hash: 'rk-t', artist: 'target-fresh' }]);
+  });
+
+  test('several sources collapsing to one terminal: the freshest wins regardless of order', () => {
+    upsertDiscoveryTrack({ audioHash: 'rk-a', artist: 'older' });   // lower rowversion
+    upsertDiscoveryTrack({ audioHash: 'rk-b', artist: 'newer' });   // higher rowversion
+    // Sources listed stale-last to prove order doesn't decide.
+    const out = applyHashTransitionGroups([{ target: 'rk-c', sources: ['rk-b', 'rk-a'] }]);
+    assert.deepEqual(out, { moved: 1, dropped: 1 });
+    const c = getDiscoveryDb().prepare(
+      'SELECT artist FROM discovery_tracks WHERE audio_hash = ?').get('rk-c');
+    assert.equal(c.artist, 'newer');
+    const gone = getDiscoveryDb().prepare(
+      "SELECT COUNT(*) AS n FROM discovery_tracks WHERE audio_hash IN ('rk-a','rk-b')").get();
+    assert.equal(gone.n, 0);
+  });
+
+  test('discovery_lookups follow the same policy keyed on last_attempt_at', () => {
+    const ddb = getDiscoveryDb();
+    ddb.prepare(`INSERT INTO discovery_lookups (audio_hash, last_attempt_at, outcome)
+                 VALUES ('rk-l1', 100, 'error'), ('rk-l2', 200, 'nomatch')`).run();
+    applyHashTransitionGroups([{ target: 'rk-l3', sources: ['rk-l1', 'rk-l2'] }]);
+    const rows = ddb.prepare(
+      "SELECT audio_hash, outcome FROM discovery_lookups WHERE audio_hash LIKE 'rk-l%'").all();
+    assert.deepEqual(rows.map((r) => ({ ...r })), [{ audio_hash: 'rk-l3', outcome: 'nomatch' }]);
   });
 });

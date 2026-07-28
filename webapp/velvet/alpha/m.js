@@ -1637,7 +1637,10 @@ function setupSearchPanel(searchTerm) {
   programState = [{ state: 'searchPanel' }];
 
   let valString = '';
-  if (searchTerm) { valString = `value="${searchTerm}"`; }
+  // escapeHtml matters: searchTerm is the user's PREVIOUS query replayed
+  // on back-navigation — a quote in it would otherwise break out of the
+  // value attribute (broken input at best, self-XSS at worst).
+  if (searchTerm) { valString = `value="${escapeHtml(searchTerm)}"`; }
 
   document.getElementById('filelist').innerHTML = 
     `<div>

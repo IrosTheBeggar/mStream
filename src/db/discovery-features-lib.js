@@ -176,6 +176,22 @@ function sha256OfFile(filePath) {
   return hash.digest('hex');
 }
 
+// A permission-class failure on the cache dir means the OPERATOR pointed (or
+// defaulted) storage.modelCacheDirectory somewhere the server can't write —
+// e.g. a Docker image whose config template predates the key, leaving it at
+// the read-only app directory. The raw EACCES names a path but not the
+// config key that controls it; say both, or the error is undebuggable from
+// the log alone.
+function rethrowIfCacheDirUnwritable(err, modelCacheDir) {
+  if (err.code === 'EACCES' || err.code === 'EPERM' || err.code === 'EROFS') {
+    throw new Error(
+      `model cache directory '${modelCacheDir}' is not writable — point storage.modelCacheDirectory `
+      + `at a writable path (on Docker, somewhere under your writable config mount, `
+      + `e.g. '/config/model-cache') and restart (${err.message})`);
+  }
+  throw err;
+}
+
 /**
  * Ensure a pinned model file exists in `modelCacheDir`, downloading it (once)
  * from the project-controlled mirror when absent. The sha256 pin is the
@@ -191,18 +207,28 @@ export async function ensureModelFile({ filename, url, sha256 }, modelCacheDir) 
   if (fs.existsSync(dest)) {
     if (sha256OfFile(dest) === sha256) { return dest; }
     // Corrupt / partial from a previous crash — refetch below.
-    fs.rmSync(dest, { force: true });
+    try { fs.rmSync(dest, { force: true }); }
+    catch (err) { rethrowIfCacheDirUnwritable(err, modelCacheDir); }
   }
 
-  fs.mkdirSync(modelCacheDir, { recursive: true });
   const tmp = `${dest}.downloading`;
-  fs.rmSync(tmp, { force: true });
+  try {
+    fs.mkdirSync(modelCacheDir, { recursive: true });
+    fs.rmSync(tmp, { force: true });
+  } catch (err) { rethrowIfCacheDirUnwritable(err, modelCacheDir); }
 
   const res = await fetch(url, { redirect: 'follow' });
   if (!res.ok || !res.body) {
     throw new Error(`model download failed: HTTP ${res.status} for ${url}`);
   }
-  await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(tmp));
+  try {
+    await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(tmp));
+  } catch (err) {
+    // The dir can exist but be unwritable (created under a different uid —
+    // the Docker PUID-remap case); the open() inside createWriteStream is
+    // where that surfaces.
+    rethrowIfCacheDirUnwritable(err, modelCacheDir);
+  }
 
   const actual = sha256OfFile(tmp);
   if (actual !== sha256) {
@@ -238,11 +264,14 @@ async function createEffnetEmbedder(spec, { modelCacheDir } = {}) {
     ort = (await import('onnxruntime-node')).default;
   } catch (err) {
     // Distinguish "the package isn't there" from "it's there but this OS
-    // can't load it" — the latter is the Alpine/musl case (onnxruntime
-    // ships glibc-only binaries; gcompat doesn't cover its fortified
-    // symbols), where the only fix is a glibc-based image.
+    // can't load it". onnxruntime ships glibc-only binaries; on musl they
+    // load through a glibc compat layer, and a modern one genuinely works —
+    // verified 2026-07 on Alpine 3.24 + gcompat (the linuxserver.io image,
+    // x64 and arm64): loads AND runs inference. The dlopen-failure hint
+    // below is for systems that still can't — no compat layer, or one too
+    // old to cover onnxruntime's fortified symbols.
     const muslHint = /ld-linux|Error relocating|ERR_DLOPEN/i.test(`${err.message} ${err.code || ''}`)
-      ? ' — this system cannot load onnxruntime’s glibc binaries (musl/Alpine containers are not supported; use a glibc-based image such as Debian/Ubuntu)'
+      ? ' — this system cannot load onnxruntime’s glibc binaries (on musl/Alpine, install or update the gcompat package; otherwise use a glibc-based image such as Debian/Ubuntu)'
       : '';
     const e = new Error(`onnxruntime-node is not available — the '${spec.weights.filename}' embedding model cannot run${muslHint} (${err.message})`);
     e.dependencyMissing = true;

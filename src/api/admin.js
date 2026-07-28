@@ -32,6 +32,8 @@ import * as nowPlaying from './subsonic/now-playing.js';
 // setup() below, after the admin guard is registered, so the torrent
 // routes inherit the same auth checks as every other /admin/* path.
 import * as adminTorrent from './admin-torrent.js';
+// Federation admin endpoints, same split (see admin-federation.js).
+import * as adminFederation from './admin-federation.js';
 
 import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
 
@@ -316,6 +318,47 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // Dot-entry ignore toggles (default OFF). Live: the next scan of any
+  // vpath picks the flags up from config.program, skips matching entries
+  // in the walk, and converges already-indexed matching rows out via the
+  // sweep (flipping OFF brings them back on the next scan). No immediate
+  // scan is enqueued — the change is about what future scans index.
+  mstream.post("/api/v1/admin/db/params/ignore-dot-files", async (req, res) => {
+    const schema = Joi.object({
+      ignoreDotFiles: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editIgnoreDotFiles(req.body.ignoreDotFiles);
+    res.json({});
+  });
+
+  mstream.post("/api/v1/admin/db/params/ignore-dot-folders", async (req, res) => {
+    const schema = Joi.object({
+      ignoreDotFolders: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editIgnoreDotFolders(req.body.ignoreDotFolders);
+    res.json({});
+  });
+
+  // Live toggle for the filesystem watcher: persists, then starts or
+  // stops the watchers in-process — no reboot. Watchers only ever
+  // ENQUEUE scans (through the same task-queue dedup as every other
+  // trigger), so flipping this is always safe.
+  mstream.post("/api/v1/admin/db/params/watcher-enabled", async (req, res) => {
+    const schema = Joi.object({
+      watcherEnabled: Joi.boolean().required()
+    });
+    joiValidate(schema, req.body);
+
+    await admin.editWatcherEnabled(req.body.watcherEnabled);
+    if (req.body.watcherEnabled === true) { dbQueue.startLibraryWatchers(); }
+    else { dbQueue.stopLibraryWatchers(); }
+    res.json({});
+  });
+
   // Tracks analysed per essentia pass (bounds how long one batch holds the
   // serial task slot; the worker also caps wall-clock and re-enqueues a
   // backlog). Mirrors auto-album-art-per-run; takes effect on the next pass.
@@ -492,6 +535,8 @@ export function setup(mstream) {
       serverName: config.program.discoveryP2p.serverName,
       serverDescription: config.program.discoveryP2p.serverDescription,
       maxPeerDbStorageMb: config.program.discoveryP2p.maxPeerDbStorageMb,
+      peerRetentionDays: config.program.discoveryP2p.peerRetentionDays,
+      blockedPeers: config.program.discoveryP2p.blockedPeers,
     });
   });
 
@@ -558,6 +603,53 @@ export function setup(mstream) {
     if (!discoveryPeerDbs.removePeerDb(req.body.endpointId)) {
       throw new WebError('no fetched snapshot for that peer', 404);
     }
+    res.json({});
+  });
+
+  // Forget a catalog peer right now instead of waiting out the retention
+  // window. Same pin rule as the automatic prune: a peer whose snapshot is
+  // on the local shelf stays — forgetting it would orphan the downloaded
+  // file invisibly (remove the snapshot first, then forget). Reversible by
+  // nature: the peer re-enters the catalog on its next announcement.
+  mstream.post("/api/v1/admin/discovery/p2p/forget", (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({ endpointId: Joi.string().hex().length(64).required() });
+    joiValidate(schema, req.body);
+    if (discoveryPeerDbs.get(req.body.endpointId)) {
+      throw new WebError('peer has a downloaded snapshot — remove the snapshot first', 409);
+    }
+    if (!discoveryCatalog.forget(req.body.endpointId)) {
+      throw new WebError('unknown peer — not in the catalog', 404);
+    }
+    res.json({});
+  });
+
+  // Block a peer — the abuse lever, previously config-file-only. Blocked
+  // means "doesn't exist": future announcements are refused (see
+  // discovery-catalog.record), holds beacons ignored, snapshots never
+  // fetched — and this route makes the present match by dropping any
+  // downloaded snapshot (re-fetchable after an unblock) and the catalog
+  // row in the same action.
+  mstream.post("/api/v1/admin/discovery/p2p/block", async (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({ endpointId: Joi.string().hex().length(64).required() });
+    joiValidate(schema, req.body);
+    if (req.body.endpointId === discoveryP2p.getEndpointId()) {
+      throw new WebError('cannot block this server itself', 400);
+    }
+    await admin.editAddBlockedPeer(req.body.endpointId);
+    discoveryPeerDbs.removePeerDb(req.body.endpointId);
+    discoveryCatalog.forget(req.body.endpointId);
+    res.json({});
+  });
+
+  // Unblock: the peer re-enters the catalog on its next announcement
+  // (~15s while it's online); nothing to restore proactively.
+  mstream.post("/api/v1/admin/discovery/p2p/unblock", async (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({ endpointId: Joi.string().hex().length(64).required() });
+    joiValidate(schema, req.body);
+    await admin.editRemoveBlockedPeer(req.body.endpointId);
     res.json({});
   });
 
@@ -639,6 +731,21 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // How long a silent peer stays in the catalog before the hourly prune
+  // pass forgets it (0 = forever). Live: the pass reads the config fresh, so
+  // no restart and no stack bounce. Bounds mirror the config Joi
+  // (discoveryP2pOptions.peerRetentionDays). Peers whose snapshot is on the
+  // local shelf are never pruned regardless of this value.
+  mstream.post("/api/v1/admin/discovery/p2p/peer-retention", async (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({
+      peerRetentionDays: Joi.number().integer().min(0).max(3650).required(),
+    });
+    joiValidate(schema, req.body);
+    await admin.editPeerRetentionDays(req.body.peerRetentionDays);
+    res.json({});
+  });
+
   // The display name peers see next to the description. Same save +
   // re-announce contract as the description route below; the catalog treats
   // a name edit under an unchanged snapshotSeq as news (discovery-catalog
@@ -696,17 +803,22 @@ export function setup(mstream) {
 
   // Join the catalog topic at runtime with an extra bootstrap peer (an
   // endpoint ticket or bare endpoint id — e.g. pasted from a friend's
-  // status route). Non-persistent: add it to config discoveryP2p.bootstrapPeers
-  // to survive restarts.
+  // Discovery page). Session-only by default; persist=true (what the UI's
+  // befriend box sends) also appends it to config discoveryP2p.bootstrapPeers
+  // — only after the sidecar accepted it, so a malformed ticket is never
+  // saved.
   mstream.post("/api/v1/admin/discovery/p2p/join", async (req, res) => {
     requireP2pEnabled();
     const schema = Joi.object({
       peer: Joi.string().min(16).max(4096).required(),
+      persist: Joi.boolean().default(false),
     });
     joiValidate(schema, req.body);
     try {
       discoveryCatalog.subscribe();
-      res.json(await discoveryP2p.join([req.body.peer]));
+      const result = await discoveryP2p.join([req.body.peer]);
+      if (req.body.persist === true) { await admin.editAddBootstrapPeer(req.body.peer); }
+      res.json(result);
     } catch (err) {
       winston.warn(`discovery P2P join failed for admin '${req.user?.username}' (peer ${req.body.peer.slice(0, 32)}…): ${err.message}`);
       throw new WebError(`join failed: ${err.message}`, 500);
@@ -917,6 +1029,8 @@ export function setup(mstream) {
     }catch (err) {
       winston.error('/api/v1/admin/directory failed to add ', { stack: err });
     }
+    // Watched set tracks the library list (no-op while disabled).
+    dbQueue.refreshLibraryWatchers();
   });
 
   mstream.delete("/api/v1/admin/directory", async (req, res) => {
@@ -927,6 +1041,7 @@ export function setup(mstream) {
 
     await admin.removeDirectory(req.body.vpath);
     res.json({});
+    dbQueue.refreshLibraryWatchers();
   });
 
   // V21: per-library followSymlinks flag. Takes effect on the next
@@ -1469,36 +1584,6 @@ export function setup(mstream) {
     res.json({});
   });
 
-  // Stub: federation toggle is unavailable while the feature is being
-  // rebuilt around the new local-backup story (see src/server.js for
-  // why the syncthing+federation modules are no longer wired up). The
-  // route stays mounted so old admin clients hitting it get a clear,
-  // structured "feature is disabled" response instead of a 404 that
-  // they might mistake for a transient routing issue. The original
-  // implementation is preserved below — restore it (and the
-  // enableFederation helper in src/util/admin.js, plus the syncthing
-  // import in src/server.js) when federation comes back.
-  mstream.post('/api/v1/admin/federation/enable', (req, res) => {
-    res.status(410).json({
-      error: 'Federation is being rebuilt and is currently unavailable. See the Federation tab for status.',
-    });
-  });
-  // let enableFederationDebouncer = false;
-  // mstream.post('/api/v1/admin/federation/enable', async (req, res) => {
-  //   const schema = Joi.object({ enable: Joi.boolean().required() });
-  //   joiValidate(schema, req.body);
-  //
-  //   if (enableFederationDebouncer === true) { throw new Error('Debouncer Enabled'); }
-  //   await admin.enableFederation(req.body.enable);
-  //
-  //   enableFederationDebouncer = true;
-  //   setTimeout(() => {
-  //     enableFederationDebouncer = false;
-  //   }, 5000);
-  //
-  //   res.json({});
-  // });
-
   mstream.delete("/api/v1/admin/ssl", async (req, res) => {
     // DELETE on a cert that isn't configured — there's nothing to remove.
     // `ssl` is optional config, so guard the access too (it was an unguarded
@@ -1807,6 +1892,7 @@ export function setup(mstream) {
   // file, so they inherit the lockAdmin / admin-only checks at the
   // top of this function.
   adminTorrent.register(mstream);
+  adminFederation.register(mstream);
 
 
   mstream.post("/api/v1/admin/ssl", async (req, res) => {

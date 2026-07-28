@@ -20,6 +20,7 @@ import * as downloadApi from './api/download.js';
 import * as adminApi from './api/admin.js';
 import * as irohApi from './api/iroh.js';
 import * as discoveryP2pApi from './api/discovery-p2p.js';
+import * as discoveryFederationApi from './api/discovery-federation.js';
 import * as remoteApi from './api/remote.js';
 import * as sharedApi from './api/shared.js';
 import * as scrobblerApi from './api/scrobbler.js';
@@ -29,21 +30,16 @@ import * as transcode from './api/transcode.js';
 import * as dbManager from './db/manager.js';
 import * as discoveryDb from './db/discovery-db.js';
 import { reapOrphanedScanner } from './db/scan-pidfile.js';
-// Federation + syncthing are disabled while the feature is rebuilt
-// around the new local-backup story. The source files in
-// src/state/syncthing.js and src/api/federation.js stay on disk for
-// the eventual revival but aren't wired up — no syncthing process is
-// spawned, no /api/v1/federation/* routes are mounted. The admin UI
-// shows a "Coming Soon" placeholder where the Federation tab used
-// to be.
-// import * as syncthing from './state/syncthing.js';
-// import * as federationApi from './api/federation.js';
 // scanner.js removed — parser now writes directly to SQLite
+import * as federationApi from './api/federation.js';
+import * as federationDiscoveryApi from './api/federation-discovery.js';
+import * as federationStreamApi from './api/federation-stream.js';
 import * as ytdlApi from './api/ytdl.js';
 import * as torrentApi from './api/torrent.js';
 import * as dlnaApi from './api/dlna.js';
 import * as dlnaSsdp from './dlna/ssdp.js';
 import * as dlnaServer from './dlna/dlna-server.js';
+import * as mdns from './discovery/mdns.js';
 import * as subsonicApi from './api/subsonic/index.js';
 import * as subsonicServer from './subsonic/subsonic-server.js';
 import * as userApiKeysApi from './api/user-api-keys.js';
@@ -308,6 +304,7 @@ export async function serveIt(configFile) {
   irohApi.setup(mstream);
   discoveryApi.setup(mstream);
   discoveryP2pApi.setup(mstream);
+  discoveryFederationApi.setup(mstream);
   dbApi.setup(mstream);
   searchApi.setup(mstream);
   randomApi.setup(mstream);
@@ -318,10 +315,9 @@ export async function serveIt(configFile) {
   scrobblerApi.setup(mstream);
   remoteApi.setupAfterAuth(mstream, server);
   sharedApi.setupAfterSecurity(mstream);
-  // Federation/syncthing intentionally not set up — see disabled
-  // imports near the top of this file.
-  // syncthing.setup();
-  // federationApi.setup(mstream);
+  federationApi.setup(mstream);
+  federationDiscoveryApi.setup(mstream);
+  federationStreamApi.setup(mstream);
   ytdlApi.setup(mstream);
   torrentApi.setup(mstream);
   albumArtApi.setup(mstream);
@@ -483,6 +479,22 @@ export async function serveIt(configFile) {
       }
     }
 
+    // Federation endpoint (opt-in; default off) — the third iroh persona,
+    // independent of the tunnel above and the discovery sidecar below. Same
+    // lazy-load contract: a platform without the native binary just logs and
+    // leaves the feature off.
+    if (config.program.federation.enabled) {
+      try {
+        const federation = await import('./state/federation.js');
+        await federation.start({
+          targetPort: config.program.port,
+          secretKey: config.program.federation.secretKey,
+        });
+      } catch (err) {
+        winston.error('[federation] endpoint unavailable on this platform — feature disabled', { stack: err });
+      }
+    }
+
     // Discovery-network gossip catalog (opt-in; default off, and also
     // toggleable at runtime through the admin Discovery page — both paths
     // run the SAME stack in state/discovery-p2p-stack.js). Detached +
@@ -500,6 +512,13 @@ export async function serveIt(configFile) {
       })();
     }
 
+    // Advertise the API over mDNS/DNS-SD so LAN clients (the portable player)
+    // discover us without an IP. Advertise-only; safe to start unconditionally
+    // (it self-disables via config and never throws on the boot path).
+    if (config.program.discovery.mdns.enabled) {
+      mdns.start();
+    }
+
     // Boot server audio (Rust preferred, CLI fallback) — runs CLI detection
     // eagerly so the admin endpoint has fresh data by the time it's called.
     serverPlaybackApi.bootRustPlayer().catch(() => {});
@@ -513,23 +532,31 @@ export function reboot() {
     scrobblerApi.reset();
     transcode.reset();
 
-    // Federation/syncthing kill-on-reboot disabled — the syncthing
-    // process is never spawned while the feature is rebuilt.
     dlnaSsdp.stop();
     dlnaServer.stop();
     subsonicServer.stop();
+    mdns.stop();
     serverPlaybackApi.killRustPlayer();
     // Tear down the /remote WebSocket server — any open WS client
     // otherwise keeps the HTTP server alive and server.close() below
     // never fires its callback, leaving the user with "server stopped
     // but never rebooted".
     remoteApi.stop();
+    // Pause the backup scheduler's timers (intervals + one-shot boot
+    // ticks). serveIt below re-runs backupManager.init(), which re-arms
+    // them — without this, each reboot left the old boot timeouts
+    // pending alongside the new ones.
+    backupManager.shutdown();
 
     // Tear down the Iroh tunnel. It binds its own UDP socket independent of the
     // HTTP server, so it doesn't block server.close(); we stop it to free the
     // socket + relay connection. Lazy-imported to match the boot path and to
     // stay a no-op when the native module was never loaded.
     import('./state/iroh.js').then((m) => m.stop()).catch(() => {});
+    // Same for the federation endpoint — its own UDP socket + relay conn.
+    // Peer bridges (loopback servers + outbound conns) go down with it.
+    import('./state/federation-client.js').then((m) => m.stopAll()).catch(() => {});
+    import('./state/federation.js').then((m) => m.stop()).catch(() => {});
 
     // Close the server. server.close() waits for every in-flight HTTP
     // request AND every idle keep-alive socket to drain. The admin

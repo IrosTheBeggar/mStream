@@ -82,7 +82,6 @@ async function bootMstream(tmpDir, musicDir, port) {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),
       dbDirectory:         path.join(tmpDir, 'db'),
       logsDirectory:       path.join(tmpDir, 'logs'),
-      syncConfigDirectory: path.join(tmpDir, 'sync'),
     },
     scanOptions: { bootScanDelay: 9999, scanInterval: 0, autoAlbumArt: false },
   };
@@ -398,6 +397,20 @@ describe('Subsonic search3/search2 with FTS5 (PR3)', () => {
   });
 
   // ── musicFolderId scope ───────────────────────────────────────────
+
+  test('search3 truncates an over-length query instead of erroring', async () => {
+    // normalizeQueryFragment caps at 512 chars (mirror of the
+    // /api/v1/db/search Joi cap). Subsonic clients expect lenient
+    // handling, so a huge query degrades to its first 512 chars and the
+    // request still succeeds. The pad is the SAME token repeated ~1200
+    // times: every token surviving the cut (including a clipped 'pi' /
+    // 'pin' tail) still prefix-matches Pink Floyd, so the all-words AND
+    // stays satisfiable and the truncation itself is what's under test.
+    const env = await call(server.baseUrl, 'search3', { query: 'pink '.repeat(1200) });
+    assert.equal(env.status, 'ok', 'over-length query must not error');
+    assert.ok(env.searchResult3.artist?.some(a => a.name === 'Pink Floyd'),
+      'the in-cap prefix still searches');
+  });
 
   test('search3 with unknown musicFolderId returns empty envelope (no crash)', async () => {
     // Encoded folder id that doesn't match any library the user can see.

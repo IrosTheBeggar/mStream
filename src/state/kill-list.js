@@ -28,7 +28,7 @@ process.on('exit', _code => {
 // path). A signal with default disposition terminates the process WITHOUT
 // emitting 'exit' — `kill <pid>` / systemd SIGTERM, a closed terminal's
 // SIGHUP, Ctrl+Break's SIGBREAK — so every child registered here (scanner,
-// backup worker, server playback, syncthing) was orphaned by a
+// backup worker, server playback) was orphaned by a
 // signal-driven shutdown. An orphaned scanner keeps writing to the DB and
 // lock-fights the next server instance, including its boot migrations.
 //

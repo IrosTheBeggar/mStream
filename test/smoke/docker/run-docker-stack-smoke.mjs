@@ -71,7 +71,6 @@ async function writeConfig() {
       dbDirectory:         '/config/db',
       albumArtDirectory:   '/config/image-cache',
       logsDirectory:       '/config/logs',
-      syncConfigDirectory: '/config/sync',
     },
     dlna:   { mode: 'disabled' },
     discogs:{ enabled: false },
