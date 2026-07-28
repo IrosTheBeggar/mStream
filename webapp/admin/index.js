@@ -1907,10 +1907,8 @@ const dbView = Vue.component('db-view', {
   data() {
     return {
       dbParams: ADMINDATA.dbParams,
-      dbStats: '',
       sharedPlaylists: ADMINDATA.sharedPlaylists,
       sharedPlaylistsTS: ADMINDATA.sharedPlaylistUpdated,
-      isPullingStats: false,
       isPullingShared: false,
       // Latest GET /api/v1/scan/status payload (queue + per-pass
       // enrichment status + coverage). Null until the first poll lands;
@@ -2093,13 +2091,6 @@ const dbView = Vue.component('db-view', {
                 </div>
                 <a v-on:click="scanDB" class="waves-effect waves-light btn">{{ t('admin.db.startScan') }}</a>
                 <a v-on:click="forceRescan" class="waves-effect waves-light btn orange">{{ t('admin.db.forceRescan') }}</a>
-                <a v-on:click="pullStats" class="waves-effect waves-light btn">{{ t('admin.db.pullStats') }}</a>
-                <div v-if="isPullingStats === true">
-                  <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
-                </div>
-                <pre v-else>
-                  {{dbStats}}
-                </pre>
               </div>
             </div>
           </div>
@@ -2204,25 +2195,6 @@ const dbView = Vue.component('db-view', {
       </div>
     </div>`,
   methods: {
-    pullStats: async function() {
-      try {
-        this.isPullingStats = true;
-        const res = await API.axios({
-          method: 'GET',
-          url: `${API.url()}/api/v1/admin/db/scan/stats`
-        });
-
-        this.dbStats = res.data
-      } catch (err) {
-        iziToast.error({
-          title: t('admin.db.pullDataFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } finally {
-        this.isPullingStats = false;
-      }
-    },
     loadShared: async function() {
       try {
         this.isPullingShared = true;
