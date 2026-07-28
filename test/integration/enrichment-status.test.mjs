@@ -139,9 +139,10 @@ describe('enrichment status: initial snapshot and gates', () => {
         waveform:      [true,  null,        'idle'],
         albumart:      [true,  null,        'idle'],
         lyrics:        [false, 'config',    'disabled'],
-        audioanalysis: [false, 'config',    'disabled'],
-        // collectDiscoveryData defaults ON, but ensureFfmpeg never ran in
-        // this process — the environment reason must win over 'idle'.
+        // analyzeBpm and collectDiscoveryData default ON, but ensureFfmpeg
+        // never ran in this process — the environment reason must win
+        // over 'idle'.
+        audioanalysis: [false, 'no-ffmpeg', 'disabled'],
         discovery:     [false, 'no-ffmpeg', 'disabled'],
         acoustid:      [false, 'config',    'disabled'],
       });
