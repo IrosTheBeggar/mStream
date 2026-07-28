@@ -49,7 +49,15 @@ const CONNECT_TIMEOUT_MS = 25000;
 // (scripted retry loops, not offline attacks on a 256-bit key).
 const BACKOFF_THRESHOLD = 5;
 const BACKOFF_MS = 60 * 1000;
-const failedHandshakes = new Map(); // remoteId -> { fails, blockedUntil }
+// The map is keyed by remote EndpointId, and minting a fresh identity is free
+// — so a flood of one-shot failures from throwaway endpoints would otherwise
+// accrete entries that nothing ever revisits (only the SAME remote returning
+// clears its own). Entries idle past the TTL are swept, with a hard cap as
+// the backstop against a flood outrunning the sweep. Dropping an entry only
+// forgives backoff, which the reboot-forgives note above already accepts.
+const HANDSHAKE_ENTRY_TTL_MS = 10 * 60 * 1000;
+const FAILED_HANDSHAKE_MAX = 4096;
+const failedHandshakes = new Map(); // remoteId -> { fails, blockedUntil, touched }
 
 // Server state
 let irohMod = null;
@@ -115,11 +123,28 @@ function isBackedOff(remote) {
   return false;
 }
 
+// Drop entries nobody has touched for a while, skipping any remote still
+// serving a live backoff. If a flood is still outrunning that, evict oldest-
+// first (Map iterates in insertion order) until we're back under the cap.
+function sweepFailedHandshakes(now) {
+  for (const [remote, entry] of failedHandshakes) {
+    if (entry.blockedUntil > now) { continue; }
+    if (now - entry.touched > HANDSHAKE_ENTRY_TTL_MS) { failedHandshakes.delete(remote); }
+  }
+  for (const remote of failedHandshakes.keys()) {
+    if (failedHandshakes.size <= FAILED_HANDSHAKE_MAX) { break; }
+    failedHandshakes.delete(remote);
+  }
+}
+
 function recordHandshakeFailure(remote) {
-  const entry = failedHandshakes.get(remote) || { fails: 0, blockedUntil: 0 };
+  const now = Date.now();
+  if (failedHandshakes.size >= FAILED_HANDSHAKE_MAX) { sweepFailedHandshakes(now); }
+  const entry = failedHandshakes.get(remote) || { fails: 0, blockedUntil: 0, touched: now };
   entry.fails += 1;
+  entry.touched = now;
   if (entry.fails >= BACKOFF_THRESHOLD) {
-    entry.blockedUntil = Date.now() + BACKOFF_MS;
+    entry.blockedUntil = now + BACKOFF_MS;
     winston.warn(`[federation] backing off ${remote} for ${BACKOFF_MS / 1000}s after ${entry.fails} failed handshakes`);
   }
   failedHandshakes.set(remote, entry);

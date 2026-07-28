@@ -372,10 +372,20 @@ const irohOptions = Joi.object({
 //   serverName — display name embedded in minted tickets so the friend's
 //                add-peer UI can label this server; '' falls back to
 //                os.hostname() at mint time.
+//   allowPublicMode — let a server with NO user accounts consume peer content
+//                (the Discover panel's federated rows and the stream proxy).
+//                A peer grants its libraries to THIS SERVER's operator; in
+//                public mode the auth wall hands every request the anonymous
+//                sentinel, so leaving this on would re-publish a peer's music
+//                to anyone who can reach the port — a grant its admin never
+//                made and cannot see being used. Off by default; the 403 that
+//                results names this flag. Same shape as `shareCodePublic`
+//                above: the feature keeps working for servers WITH users.
 const federationOptions = Joi.object({
   enabled: Joi.boolean().default(false),
   secretKey: Joi.string().optional(),
   serverName: Joi.string().max(64).allow('').default(''),
+  allowPublicMode: Joi.boolean().default(false),
 });
 
 // The music-discovery P2P layer (p2p-sidecar: iroh-blobs snapshot sharing

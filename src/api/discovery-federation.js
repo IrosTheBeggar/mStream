@@ -25,6 +25,7 @@ import * as config from '../state/config.js';
 import * as discoveryDb from '../db/discovery-db.js';
 import * as fedDb from '../db/federation.js';
 import { localIdentitySets, isNovel, norm } from '../db/discovery-novelty.js';
+import { assertPeerContentAllowed } from './federation-auth.js';
 import { resolveSeedTrack } from './discovery.js';
 import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
@@ -69,6 +70,7 @@ export function setup(mstream) {
     if (config.program.federation.enabled !== true) {
       throw new WebError('federation is disabled (config: federation.enabled)', 403);
     }
+    assertPeerContentAllowed(req);
     const schema = Joi.object({
       filePath: Joi.string().required(),
       limit: Joi.number().integer().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),

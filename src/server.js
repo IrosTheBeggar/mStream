@@ -431,6 +431,16 @@ export async function serveIt(configFile) {
       return res.status(error.status).json({ error: error.message });
     }
 
+    // The body-parsing stack (express.json/urlencoded) rejects malformed,
+    // oversized or wrongly-encoded payloads BEFORE any handler runs, tagging
+    // the error with a `type` and a 4xx status. Those are client errors, but
+    // being neither a Joi nor a WebError they fell through to a generic 500 —
+    // so every route answered bad JSON with "Server Error".
+    const bodyStatus = error?.status ?? error?.statusCode;
+    if (error?.type && Number.isInteger(bodyStatus) && bodyStatus >= 400 && bodyStatus < 500) {
+      return res.status(bodyStatus).json({ error: 'Malformed request body' });
+    }
+
     res.status(500).json({ error: 'Server Error' });
   });
 

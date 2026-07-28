@@ -26,6 +26,7 @@
 import winston from 'winston';
 import WebError from '../util/web-error.js';
 import * as config from '../state/config.js';
+import * as db from '../db/manager.js';
 import * as fedDb from '../db/federation.js';
 
 // Read routes a federation key may call. Exact "METHOD path" matches plus
@@ -62,6 +63,33 @@ export function isFederationPathAllowed(req) {
   if (ALLOWED_EXACT.has(`${req.method} ${req.path}`)) { return true; }
   if (req.method === 'GET' && ALLOWED_GET_PREFIXES.some((p) => req.path.startsWith(p))) { return true; }
   return false;
+}
+
+// The OUTBOUND counterpart to the inbound policy above: guards the two routes
+// that serve a PEER's content to a local requester (the Discover panel's
+// federated rows in api/discovery-federation.js and the stream proxy in
+// api/federation-stream.js).
+//
+// A peer grants its libraries to this server's OPERATOR. isPublicMode is true
+// both on a no-users server (every request gets the anonymous sentinel, with
+// every library attached) and for the federation key's synthetic user (id
+// null) — and neither may consume peer content by default:
+//   - a public-mode server would otherwise re-publish a peer's music to anyone
+//     who can reach the port, a grant its admin never made and can't observe;
+//   - a federation key must never chain through us to a THIRD server. The
+//     allowlist already omits both routes, so that half is defense in depth.
+// The public-mode half is escapable per-server (federation.allowPublicMode)
+// for operators who really do want an open relay; the chaining half is not.
+export function assertPeerContentAllowed(req) {
+  if (!db.isPublicMode(req.user)) { return; }
+  if (req.user?.federation === true) {
+    winston.warn(`[federation] blocked peer-content request from federation key '${req.user.username}' on ${req.path} (no proxy chaining)`);
+    throw new WebError('Forbidden', 403);
+  }
+  if (config.program.federation.allowPublicMode !== true) {
+    winston.warn(`[federation] blocked peer-content request from ${req.ip} on ${req.path}: this server has no user accounts`);
+    throw new WebError('Federated peer content is not served on a server with no user accounts — a peer granted its libraries to this server, not to the public. Set federation.allowPublicMode to override.', 403);
+  }
 }
 
 // Validate a presented key and build the synthetic read-only req.user.

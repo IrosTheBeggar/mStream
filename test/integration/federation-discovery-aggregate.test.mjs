@@ -139,7 +139,11 @@ describe('discovery federation aggregate (B queries A over iroh)', { skip: avail
       startServer({
         dlnaMode: 'disabled',
         extraConfig: {
-          federation: { enabled: true },
+          // B is the CONSUMER here, and this harness runs no-users servers —
+          // which the peer-content gate refuses by default (a peer granted
+          // its libraries to the operator, not to anonymous callers). Opt in
+          // explicitly; the gate itself is covered in test/unit.
+          federation: { enabled: true, allowPublicMode: true },
           scanOptions: { collectDiscoveryData: true, discoveryModel: 'test-fake' },
         },
       }),
