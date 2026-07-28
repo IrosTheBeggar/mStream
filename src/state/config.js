@@ -410,6 +410,13 @@ const discoveryP2pOptions = Joi.object({
   autoFetch: Joi.boolean().default(true),
   autoFetchCount: Joi.number().integer().min(0).max(50).default(6),
   maxPeerDbStorageMb: Joi.number().integer().min(10).max(100000).default(500),
+  // Rotation: once a full shelf's snapshot has been held this many days,
+  // the hourly pass may SWAP it (never just drop it) for a catalog peer we
+  // don't hold yet, so network suggestions cycle instead of freezing on
+  // the first peers ever heard. 0 = off. Pinned entries (admin manual
+  // downloads, or the per-peer Pin action) are never rotated. Live-editable
+  // (POST /api/v1/admin/discovery/p2p/rotation).
+  rotationDays: Joi.number().integer().min(0).max(3650).default(7),
   // Auto-forget: drop a catalog entry once the peer hasn't been heard from in
   // this many days (0 = keep forever). Peers whose snapshot is on the local
   // shelf are exempt — forgetting them would orphan the downloaded file

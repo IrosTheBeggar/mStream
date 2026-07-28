@@ -607,6 +607,14 @@ export async function editAutoFetchCount(val) {
   config.program.discoveryP2p.autoFetchCount = val;
 }
 
+export async function editRotationDays(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.discoveryP2p) { loadConfig.discoveryP2p = {}; }
+  loadConfig.discoveryP2p.rotationDays = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryP2p.rotationDays = val;
+}
+
 // Append a bootstrap peer (deduplicated) so a friend joined through the
 // UI survives restarts — the join RPC itself is session-only.
 export async function editAddBootstrapPeer(val) {

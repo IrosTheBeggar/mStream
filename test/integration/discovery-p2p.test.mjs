@@ -792,6 +792,150 @@ describe('discovery p2p — similarity search + novelty filter', () => {
   });
 });
 
+// ── Shelf rotation: membership cycles instead of freezing ───────────────────
+// A FULL shelf (registry pre-crafted with two long-held snapshots, count=2)
+// must SWAP its oldest unpinned entry for a newly announced peer — the
+// count-capped top-up alone can never do this (room is 0). The registry is
+// crafted BEFORE the server boots by pointing extraConfig.storage at a
+// pre-seeded state dir, so ensureLoaded's first read sees the aged shelf —
+// no load-order races. Rotation policy details are unit-tested
+// (test/unit/discovery-peer-rotation.test.mjs); this proves the wiring:
+// timer → plan → fetch → evict → ledger, live over real gossip.
+(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — shelf rotation', () => {
+  let server;
+  let peer;
+  let dir;
+  let dbDir;
+  const AGED_ID = 'a'.repeat(64);
+  const PINNED_ID = 'b'.repeat(64);
+
+  const shelfIds = async () => {
+    const s = await (await fetch(`${server.baseUrl}/api/v1/discovery/p2p/peer-dbs`)).json();
+    return s.peerDbs.map((p) => p.endpointId);
+  };
+
+  before(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-p2p-rot-'));
+    const stateDir = path.join(dir, 'state');
+    dbDir = path.join(stateDir, 'db');
+
+    // Craft the shelf: two valid snapshot files + a registry that says both
+    // have been held for 10 days. One is pinned — rotation must not touch it.
+    const agedDb = makeSnapshotFile(path.join(dbDir, 'discovery-peers', 'aged.db'), {
+      modelId: 'test-model',
+      tracks: [{ artist: 'Aged Artist', title: 'Old Song', vec: [1, 0, 0, 0] }],
+    });
+    const pinnedDb = makeSnapshotFile(path.join(dbDir, 'discovery-peers', 'pinned.db'), {
+      modelId: 'test-model',
+      tracks: [{ artist: 'Pinned Artist', title: 'Kept Song', vec: [0, 1, 0, 0] }],
+    });
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+    const entry = (endpointId, hash, filePath, name, pinned) => ({
+      endpointId, hash, path: filePath, snapshotSeq: 1,
+      modelId: 'test-model', modelVersion: '1', rowCount: 1,
+      sizeBytes: fs.statSync(filePath).size, name,
+      fetchedAt: tenDaysAgo, firstFetchedAt: tenDaysAgo, pinned,
+    });
+    fs.mkdirSync(path.join(dbDir, 'discovery-p2p'), { recursive: true });
+    fs.writeFileSync(path.join(dbDir, 'discovery-p2p', 'peer-dbs.json'), JSON.stringify([
+      entry(AGED_ID, 'd'.repeat(64), agedDb, 'Aged Peer', false),
+      entry(PINNED_ID, 'e'.repeat(64), pinnedDb, 'Pinned Peer', true),
+    ], null, 2));
+
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: false,
+      env: {
+        MSTREAM_TEST_DISCOVERY_DEBOUNCE_MS: '750',
+        MSTREAM_TEST_DISCOVERY_ROTATE_MS: '2000',
+      },
+      extraConfig: {
+        // Wholesale storage override (the helper's spread replaces the
+        // object) — every key must be present or state leaks to defaults.
+        storage: {
+          albumArtDirectory: path.join(stateDir, 'image-cache'),
+          dbDirectory: dbDir,
+          logsDirectory: path.join(stateDir, 'logs'),
+          syncConfigDirectory: path.join(stateDir, 'sync'),
+          waveformCacheDirectory: path.join(stateDir, 'waveform-cache'),
+        },
+        // count=2 with 2 held: the top-up has NO room — only rotation can
+        // bring the new peer in. rotationDays=1 << the crafted 10-day age.
+        discoveryP2p: { enabled: true, autoFetchCount: 2, rotationDays: 1 },
+      },
+    });
+    peer = new RawSidecar(SIDECAR_BIN, path.join(dir, 'sidecar'));
+    await peer.ready;
+  });
+  after(async () => {
+    if (peer) { await peer.stop(); }
+    if (server) { await server.stop(); }
+    if (dir) { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('a full shelf swaps its oldest unpinned snapshot for a new peer; pinned survives', async () => {
+    // The crafted registry is live: both pre-seeded snapshots on the shelf.
+    assert.deepEqual((await shelfIds()).sort(), [AGED_ID, PINNED_ID]);
+
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+      return s.running && s.ticket ? s : null;
+    }, { what: 'server sidecar to boot' });
+    await peer.rpc('join', { bootstrap: [status.ticket] });
+    await peer.waitForEvent('neighbor', (e) => e.up === true);
+
+    const snap = makeSnapshotFile(path.join(dir, 'fresh.db'), {
+      modelId: 'test-model',
+      tracks: [{ artist: 'Fresh Artist', title: 'New Song', vec: [0, 0, 1, 0] }],
+    });
+    const pub = await peer.rpc('publish', { path: snap });
+    await peer.rpc('announce', {
+      payload: { hash: pub.hash, size: pub.size, rowCount: 1,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 1, name: 'Fresh Peer' },
+    });
+
+    // The hourly pass runs every 2s here: swap in the fresh peer, evict the
+    // aged unpinned one, keep the shelf at exactly autoFetchCount.
+    await pollUntil(async () => {
+      const ids = await shelfIds();
+      return ids.includes(peer.endpointId) && !ids.includes(AGED_ID) ? ids : null;
+    }, { timeoutMs: 30000, what: 'rotation to swap the aged snapshot for the fresh peer' });
+
+    const ids = await shelfIds();
+    assert.equal(ids.length, 2, 'rotation must swap, never grow or shrink the shelf');
+    assert.ok(ids.includes(PINNED_ID), 'the pinned snapshot must survive rotation');
+
+    // The eviction is remembered (novelty preference for future passes)…
+    const ledger = JSON.parse(fs.readFileSync(
+      path.join(dbDir, 'discovery-p2p', 'rotation.json'), 'utf8'));
+    assert.ok(ledger[AGED_ID], 'rotation must record the eviction in the ledger');
+    // …and the evicted snapshot file is actually gone.
+    assert.ok(!fs.existsSync(path.join(dbDir, 'discovery-peers', 'aged.db')));
+  });
+
+  test('pin route flips rotation immunity live; unknown peer is 404', async () => {
+    const pinUrl = `${server.baseUrl}/api/v1/admin/discovery/p2p/peer-dbs/pin`;
+    const post = (body) => fetch(pinUrl, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const fetchedRow = async () => {
+      const cat = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/catalog`)).json();
+      return cat.peers.find((p) => p.from === peer.endpointId)?.fetched;
+    };
+
+    // The rotation-fetched peer arrives unpinned (automatic download).
+    assert.equal((await fetchedRow())?.pinned, false);
+
+    assert.equal((await post({ endpointId: peer.endpointId, pinned: true })).status, 200);
+    assert.equal((await fetchedRow())?.pinned, true);
+    assert.equal((await post({ endpointId: peer.endpointId, pinned: false })).status, 200);
+    assert.equal((await fetchedRow())?.pinned, false);
+
+    assert.equal((await post({ endpointId: 'f'.repeat(64), pinned: true })).status, 404,
+      'pinning needs a downloaded snapshot');
+  });
+});
+
 // ── Community seeds: merge logic (pure, no server) ──────────────────────────
 describe('discovery seeds — mergeSeedLists', () => {
   const T = (n) => `endpointticket${'x'.repeat(16)}${n}`;
@@ -1394,6 +1538,26 @@ describe('discovery seeds — unreachable list degrades gracefully', () => {
       assert.equal(rej.status, 400, `${JSON.stringify(bad)} should be 400`);
     }
     assert.equal((await (await fetch(api('status'))).json()).autoFetchCount, 0,
+      'rejections must not clobber the saved value');
+  });
+
+  test('rotation saves live, persists, and validates (0 = off is legal)', async () => {
+    const r = await post('rotation', { rotationDays: 21 });
+    assert.equal(r.status, 200);
+
+    const status = await (await fetch(api('status'))).json();
+    assert.equal(status.rotationDays, 21);
+    assert.equal(readConfig().discoveryP2p.rotationDays, 21);
+
+    // 0 turns rotation off — a real setting, not a rejection.
+    assert.equal((await post('rotation', { rotationDays: 0 })).status, 200);
+    assert.equal((await (await fetch(api('status'))).json()).rotationDays, 0);
+
+    for (const bad of [-1, 3651, 1.5, 'week', null]) {
+      const rej = await post('rotation', { rotationDays: bad });
+      assert.equal(rej.status, 400, `${JSON.stringify(bad)} should be 400`);
+    }
+    assert.equal((await (await fetch(api('status'))).json()).rotationDays, 0,
       'rejections must not clobber the saved value');
   });
 
