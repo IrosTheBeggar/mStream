@@ -732,7 +732,12 @@ describe('discovery seeds — mergeSeedLists', () => {
       extraConfig: {
         // useCommunitySeeds must be re-enabled explicitly: the test helper
         // forces it off so ordinary suites can never join the real network
-        // through the baked seed list.
+        // through the baked seed list. Re-enabling it here is safe ONLY
+        // because the helper also spawns every server with
+        // MSTREAM_TEST_BAKED_SEEDS='[]' — resolveBootstrap unions baked +
+        // fetched, so without that env guard this suite would join the real
+        // seeds alongside the stub and bridge its fake announcement into
+        // real users' catalogs (the 2026-07-27 "Stranger" ghost peers).
         discoveryP2p: { enabled: true, serverName: 'Seed Test Server', seedListUrl: listUrl, useCommunitySeeds: true },
         scanOptions: { collectDiscoveryData: true },
       },
@@ -776,6 +781,15 @@ describe('discovery seeds — mergeSeedLists', () => {
     // The status route surfaces the community-seeds mode for the admin UI.
     const status = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
     assert.equal(status.communitySeeds, true);
+
+    // Hermeticity tripwire: this island is seedNode + peerNode and nothing
+    // else, so the server can never have more than 2 mesh neighbors. If the
+    // baked-seeds env guard regresses, resolveBootstrap hands it the real
+    // seed-au-1/seed-eu-1 tickets too and the neighbor set outgrows the
+    // island — the exact path that leaked "Stranger" test announcements
+    // into real catalogs.
+    assert.ok(status.neighbors <= 2,
+      `server meshed beyond the test island (${status.neighbors} neighbors) — baked-seeds guard regressed?`);
   });
 });
 

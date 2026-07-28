@@ -184,15 +184,22 @@ export async function startServer(opts = {}) {
     // audio-analysis suites drive that worker directly / opt in explicitly.
     ...extraConfig,
     scanOptions: { autoAlbumArt: false, collectDiscoveryData: false, analyzeBpm: false, ...(extraConfig.scanOptions || {}) },
-    // Same guard idea for the discovery network's community seeds — TWO
-    // layers, both load-bearing:
+    // Same guard idea for the discovery network's community seeds — THREE
+    // layers, all load-bearing:
     //  - seedListUrl → dead local port, so no test fetches GitHub;
     //  - useCommunitySeeds → false, so no test falls back to the BAKED
     //    seed list. Without this, every suite that enables discoveryP2p
     //    would join the REAL public network through the shipped seeds and
     //    broadcast its fake test announcements into real users' catalogs.
-    // A test that specifically exercises the seed mechanics overrides both
-    // and brings its own stub list server.
+    //  - MSTREAM_TEST_BAKED_SEEDS='[]' (spawn env below) → empties the
+    //    baked list itself. resolveBootstrap() UNIONS baked + fetched
+    //    rather than picking one, so a seed-mechanics suite that re-enables
+    //    useCommunitySeeds for its stub list still joined the real seeds
+    //    through the first two guards — that union put the suite's fake
+    //    "Stranger" announcements into real users' catalogs (2026-07-27).
+    // A test that specifically exercises the seed mechanics overrides the
+    // two config keys and brings its own stub list server; the env layer
+    // stays, so the stub list is the entire seed universe it can reach.
     discoveryP2p: {
       seedListUrl: 'http://127.0.0.1:9/discovery-seeds.json',
       useCommunitySeeds: false,
@@ -214,7 +221,7 @@ export async function startServer(opts = {}) {
     {
       cwd: REPO_ROOT,
       stdio: captureLogs ? 'inherit' : ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, NODE_ENV: 'test', ...env },
+      env: { ...process.env, NODE_ENV: 'test', MSTREAM_TEST_BAKED_SEEDS: '[]', ...env },
     },
   );
 
