@@ -14,11 +14,9 @@ Main|Shared|Admin
 
 #### [Website](https://mstream.io)
 
-## Why mStream?
+## Notable Features
 
 mStream has some unique features other server's don't have
-
-## Notable Features
 
 #### Album Art Lookup
 
