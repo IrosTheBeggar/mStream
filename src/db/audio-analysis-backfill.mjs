@@ -29,13 +29,14 @@
 // CLI input — single argv entry, JSON-encoded (built in task-queue.js):
 //   { dbPath, ffmpegPath, maxPerRun, expectedSchemaVersion,
 //     minDurationSec, maxDurationSec, maxAnalyzeSeconds,
+//     bpmMethod, windowSec,
 //     minBpmConfidence, minKeyStrength,
 //     analyzedCooldownSec, lowconfCooldownSec, errorCooldownSec,
 //     runBudgetSec, skipGenres }
 //
 // stdout protocol — line-buffered single-line JSON events:
 //   { event: 'audioAnalysisProgress', attempted, total }
-//   { event: 'audioAnalysisComplete', attempted, analyzed, lowconf, errors, hitCap }
+//   { event: 'audioAnalysisComplete', attempted, analyzed, lowconf, errors, hitCap, avgMsPerTrack }
 //   { event: 'error', message }     ← always followed by exit 1
 //
 // Exit codes: 0 completed (per-track failures recorded, not fatal);
@@ -44,9 +45,13 @@
 import path from 'node:path';
 import { DatabaseSync } from './sqlite-driver.js';
 import Joi from 'joi';
-import { decodePcmF32, analyzeSignal, getEssentia } from './audio-analysis-lib.js';
+import { decodePcmF32, analyzeSignal, getEssentia, ANALYSIS_SAMPLE_RATE } from './audio-analysis-lib.js';
 
 const SCHEMA_GUARD_EXIT = 3;
+
+// A seeked window that decodes to less than this is treated as "duration was
+// stale, -ss landed in the tail" and re-decoded from the top (see run loop).
+const MIN_WINDOW_SAMPLES = 5 * ANALYSIS_SAMPLE_RATE;
 
 // ── Parse + validate CLI input ───────────────────────────────────────────────
 
@@ -71,9 +76,22 @@ const schema = Joi.object({
   // is meaningless and the decode is enormous.
   minDurationSec: Joi.number().min(0).default(30),
   maxDurationSec: Joi.number().min(1).default(30 * 60),
-  // Hard cap on the decoded span fed to essentia (memory/time guard) — BPM/key
-  // are stable enough across a track that the head is representative.
+  // Hard cap on the decoded span fed to essentia (memory/time guard). With
+  // windowSec=0 this is the whole-file (head) span; with a window it caps the
+  // window length defensively.
   maxAnalyzeSeconds: Joi.number().integer().min(10).default(600),
+  // RhythmExtractor2013 method. 'multifeature' (default): committee estimator,
+  // most accurate, emits the ~0–5.32 confidence minBpmConfidence gates on.
+  // 'degara': ~6× faster, but its confidence output is always 0 (documented
+  // essentia behaviour) — the confidence floor is skipped for it and the
+  // in-range check is the whole gate.
+  bpmMethod: Joi.string().valid('multifeature', 'degara').default('multifeature'),
+  // Analysis window (seconds) decoded from the MIDDLE of the track; BPM and
+  // key both run on it (one seeked decode replaces the whole-file decode).
+  // Tempo/key benchmarks run on 30 s excerpts, so a 60 s mid-track window is
+  // the evaluated regime — and it skips intros/outros. 0 = legacy whole-file
+  // mode (head up to maxAnalyzeSeconds).
+  windowSec: Joi.number().integer().min(0).default(60),
   // Confidence floors. RhythmExtractor2013 confidence is ~0–5.32; KeyExtractor
   // strength is 0–1. Below the floor the estimate is recorded as 'lowconf'
   // (long cooldown) instead of being written.
@@ -159,6 +177,7 @@ function selectEligibleTracks(nowSec) {
     SELECT MIN(t.id) AS track_id,
            COALESCE(t.audio_hash, t.file_hash) AS canon_hash,
            t.filepath AS filepath,
+           t.duration AS duration,
            lib.root_path AS root
       FROM tracks t
       JOIN libraries lib ON lib.id = t.library_id
@@ -228,7 +247,7 @@ async function run() {
   const tracks = selectEligibleTracks(nowSec);
 
   if (tracks.length === 0) {
-    emit({ event: 'audioAnalysisComplete', attempted: 0, analyzed: 0, lowconf: 0, errors: 0, hitCap: false });
+    emit({ event: 'audioAnalysisComplete', attempted: 0, analyzed: 0, lowconf: 0, errors: 0, hitCap: false, avgMsPerTrack: 0 });
     return;
   }
 
@@ -248,7 +267,7 @@ async function run() {
     // tracks stay eligible; the hitCap re-enqueue resumes them next pass.
     if (Date.now() - startMs > cfg.runBudgetSec * 1000) { hitBudget = true; break; }
 
-    const { canon_hash: canonHash, filepath, root } = tracks[i];
+    const { canon_hash: canonHash, filepath, root, duration } = tracks[i];
     attempted++;
     const attemptSec = Math.floor(Date.now() / 1000);
     let outcome = 'error';
@@ -256,10 +275,38 @@ async function run() {
 
     try {
       const absPath = path.join(root, filepath);
-      const signal = await decodePcmF32(absPath, cfg.ffmpegPath, { maxSeconds: cfg.maxAnalyzeSeconds });
-      const r = analyzeSignal(signal, essentia);
+      // Windowed decode: seek to the middle of the track and analyse windowSec
+      // seconds. Fast container-level -ss seek, so long files cost the same as
+      // short ones; mid-track skips intros/outros. duration comes from the
+      // scanner and can overstate a truncated file — handled below.
+      let decodeOpts = { maxSeconds: cfg.maxAnalyzeSeconds };
+      if (cfg.windowSec > 0) {
+        const win = Math.min(cfg.windowSec, cfg.maxAnalyzeSeconds);
+        const seekSec = duration > win ? Math.floor((duration - win) / 2) : 0;
+        decodeOpts = seekSec > 0 ? { maxSeconds: win, seekSec } : { maxSeconds: win };
+      }
+      let signal;
+      try {
+        signal = await decodePcmF32(absPath, cfg.ffmpegPath, decodeOpts);
+      } catch (e) {
+        if (!decodeOpts.seekSec || e.transient) { throw e; }
+        signal = null;   // fall through to the un-seeked retry below
+      }
+      // A seeked decode that failed outright — or came back with almost no
+      // samples — means the stored duration overstates the real file
+      // (stale/estimated header) and -ss landed at/near EOF. Retry once from
+      // the top before recording an error. Transient failures (spawn error,
+      // timeout) skip the retry — the short 'error' cooldown covers those.
+      if (decodeOpts.seekSec && (signal == null || signal.length < MIN_WINDOW_SAMPLES)) {
+        signal = await decodePcmF32(absPath, cfg.ffmpegPath, { maxSeconds: decodeOpts.maxSeconds });
+      }
+      const r = analyzeSignal(signal, essentia, { bpmMethod: cfg.bpmMethod });
 
-      const bpmUsable = r.bpm != null && r.bpmConfidence >= cfg.minBpmConfidence;
+      // minBpmConfidence gates multifeature's ~0–5.32 confidence. degara's
+      // confidence output is always 0 (documented essentia behaviour, not a
+      // quality signal), so for it the in-range check is the whole gate.
+      const bpmUsable = r.bpm != null
+        && (cfg.bpmMethod === 'degara' || r.bpmConfidence >= cfg.minBpmConfidence);
       const keyUsable = r.musicalKey != null && r.keyStrength >= cfg.minKeyStrength;
 
       if (bpmUsable || keyUsable) {
@@ -298,6 +345,9 @@ async function run() {
     // More work probably remains (full batch or budget cut). persisted>0 breaks
     // the would-be infinite re-enqueue when NOTHING could be recorded.
     hitCap: (tracks.length === cfg.maxPerRun || hitBudget) && persisted > 0,
+    // Decode+analysis wall-clock per attempted track — the number the window /
+    // method tuning knobs exist to move; surfaced in the task-queue log line.
+    avgMsPerTrack: attempted > 0 ? Math.round((Date.now() - startMs) / attempted) : 0,
   });
 }
 

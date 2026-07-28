@@ -507,6 +507,27 @@ export async function editAnalyzeBpmPerRun(val) {
   config.program.scanOptions.analyzeBpmPerRun = val;
 }
 
+// BPM estimation method ('multifeature' | 'degara') for the analysis pass.
+// Same live-update pattern as editAnalyzeBpmPerRun — task-queue reads it when
+// it builds the pass's jsonLoad, so it applies on the next pass, no reboot.
+export async function editAnalyzeBpmMethod(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.analyzeBpmMethod = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.analyzeBpmMethod = val;
+}
+
+// Mid-track analysis window in seconds (0 = whole file) for the analysis
+// pass. Same live-update pattern as editAnalyzeBpmPerRun.
+export async function editAnalyzeBpmWindowSec(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.analyzeBpmWindowSec = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.analyzeBpmWindowSec = val;
+}
+
 // Toggle the AcoustID identification pass (fingerprint → MusicBrainz
 // recording MBID for tag-less tracks). Same live-update pattern as
 // editAnalyzeBpm; the api route enqueues an immediate pass when this

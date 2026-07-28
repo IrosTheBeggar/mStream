@@ -163,6 +163,60 @@ describe('POST /api/v1/admin/db/params/analyze-bpm-per-run', () => {
   });
 });
 
+// ── POST /db/params/analyze-bpm-method ────────────────────────────────────
+
+describe('POST /api/v1/admin/db/params/analyze-bpm-method', () => {
+  test('sets method + reflects; rejects junk; 405 non-admin', async () => {
+    const r1 = await adminPost('/api/v1/admin/db/params/analyze-bpm-method',
+      { analyzeBpmMethod: 'degara' });
+    assert.equal(r1.status, 200);
+    assert.deepEqual(await r1.json(), {}, 'happy-path response is the empty object {}');
+    assert.equal((await (await adminGet('/api/v1/admin/db/params')).json()).analyzeBpmMethod, 'degara');
+
+    // Restore the default so later tests start in a known state.
+    await adminPost('/api/v1/admin/db/params/analyze-bpm-method',
+      { analyzeBpmMethod: 'multifeature' });
+    assert.equal((await (await adminGet('/api/v1/admin/db/params')).json()).analyzeBpmMethod, 'multifeature');
+
+    for (const bad of [{ analyzeBpmMethod: 'percival' }, { analyzeBpmMethod: 1 },
+      { analyzeBpmMethod: true }, {}]) {
+      const r = await adminPost('/api/v1/admin/db/params/analyze-bpm-method', bad);
+      assert.equal(r.status, 400, `expected rejection for ${JSON.stringify(bad)}`);
+    }
+    assert.equal((await adminPost('/api/v1/admin/db/params/analyze-bpm-method',
+      { analyzeBpmMethod: 'degara' }, userJwt)).status, 405);
+  });
+});
+
+// ── POST /db/params/analyze-bpm-window-sec ────────────────────────────────
+
+describe('POST /api/v1/admin/db/params/analyze-bpm-window-sec', () => {
+  test('sets window (incl. 0) + reflects; rejects 1–29 / out-of-range; 405 non-admin', async () => {
+    const r1 = await adminPost('/api/v1/admin/db/params/analyze-bpm-window-sec',
+      { analyzeBpmWindowSec: 120 });
+    assert.equal(r1.status, 200);
+    assert.deepEqual(await r1.json(), {}, 'happy-path response is the empty object {}');
+    assert.equal((await (await adminGet('/api/v1/admin/db/params')).json()).analyzeBpmWindowSec, 120);
+
+    // 0 = whole-file mode is explicitly allowed (the alternatives() branch).
+    assert.equal((await adminPost('/api/v1/admin/db/params/analyze-bpm-window-sec',
+      { analyzeBpmWindowSec: 0 })).status, 200);
+    assert.equal((await (await adminGet('/api/v1/admin/db/params')).json()).analyzeBpmWindowSec, 0);
+
+    // Restore the default so later tests start in a known state.
+    await adminPost('/api/v1/admin/db/params/analyze-bpm-window-sec', { analyzeBpmWindowSec: 60 });
+
+    for (const bad of [{ analyzeBpmWindowSec: 15 }, { analyzeBpmWindowSec: 601 },
+      { analyzeBpmWindowSec: -1 }, { analyzeBpmWindowSec: 45.5 },
+      { analyzeBpmWindowSec: 'abc' }, {}]) {
+      const r = await adminPost('/api/v1/admin/db/params/analyze-bpm-window-sec', bad);
+      assert.equal(r.status, 400, `expected rejection for ${JSON.stringify(bad)}`);
+    }
+    assert.equal((await adminPost('/api/v1/admin/db/params/analyze-bpm-window-sec',
+      { analyzeBpmWindowSec: 60 }, userJwt)).status, 405);
+  });
+});
+
 // ── POST /db/params/ignore-dot-* (dot-entry ignore toggles) ───────────────
 //
 // Same four-part pattern as analyze-bpm: GET defaults, happy-path flip +

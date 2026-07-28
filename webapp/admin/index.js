@@ -2000,6 +2000,18 @@ const dbView = Vue.component('db-view', {
                       </td>
                     </tr>
                     <tr>
+                      <td><b>BPM estimation method:</b> {{dbParams.analyzeBpmMethod}}</td>
+                      <td>
+                        [<a v-on:click="openModal('edit-analyze-bpm-method-modal')">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
+                      <td><b>BPM/key analysis window (seconds, 0 = whole file):</b> {{dbParams.analyzeBpmWindowSec}}</td>
+                      <td>
+                        [<a v-on:click="openModal('edit-analyze-bpm-window-sec-modal')">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
+                    <tr>
                       <td><b>Ignore dot-hidden files (.name.mp3) when scanning:</b> {{dbParams.ignoreDotFiles}}</td>
                       <td>
                         [<a v-on:click="toggleIgnoreDotFiles()">{{ t('admin.settings.edit') }}</a>]
@@ -8661,6 +8673,136 @@ const editAutoAlbumArtPerRunView = Vue.component('edit-auto-album-art-per-run-mo
           timeout: 3500
         });
       }finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+const editAnalyzeBpmMethodView = Vue.component('edit-analyze-bpm-method-modal', {
+  data() {
+    return {
+      params: ADMINDATA.dbParams,
+      submitPending: false,
+      editValue: ADMINDATA.dbParams.analyzeBpmMethod
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>BPM estimation method</h4>
+        <div class="input-field">
+          <select v-model="editValue" id="edit-analyze-bpm-method" class="browser-default">
+            <option value="multifeature">multifeature — most accurate, confidence-gated (slow)</option>
+            <option value="degara">degara — ~6× faster, no confidence gate</option>
+          </select>
+          <span class="helper-text">multifeature can skip uncertain tracks (low-confidence estimates are not written); degara writes every plausible estimate and suits large libraries or weak hardware. Applies from the next analysis pass.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/db/params/analyze-bpm-method`,
+          data: { analyzeBpmMethod: this.editValue }
+        });
+
+        Vue.set(ADMINDATA.dbParams, 'analyzeBpmMethod', this.editValue);
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.modal.updateFailed'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+const editAnalyzeBpmWindowSecView = Vue.component('edit-analyze-bpm-window-sec-modal', {
+  data() {
+    return {
+      params: ADMINDATA.dbParams,
+      submitPending: false,
+      editValue: ADMINDATA.dbParams.analyzeBpmWindowSec
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>BPM/key analysis window</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-analyze-bpm-window-sec" required type="number" min="0" max="600">
+          <label for="edit-analyze-bpm-window-sec">Seconds (0 = whole file, otherwise 30–600)</label>
+          <span class="helper-text">Seconds of audio analysed per track, taken from the middle of the file. The 60 s default matches how BPM/key detectors are benchmarked and is several times faster than whole-file analysis. Applies from the next analysis pass.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      const val = Number(this.editValue);
+      if (val !== 0 && (val < 30 || val > 600)) {
+        iziToast.error({
+          title: 'Window must be 0 (whole file) or 30–600 seconds',
+          position: 'topCenter',
+          timeout: 3500
+        });
+        return;
+      }
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/db/params/analyze-bpm-window-sec`,
+          data: { analyzeBpmWindowSec: val }
+        });
+
+        Vue.set(ADMINDATA.dbParams, 'analyzeBpmWindowSec', val);
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.modal.updateFailed'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
         this.submitPending = false;
       }
     }

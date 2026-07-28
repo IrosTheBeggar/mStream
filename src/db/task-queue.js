@@ -1500,6 +1500,11 @@ function runAudioAnalysisTask(taskObj) {
     dbPath: path.join(config.program.storage.dbDirectory, 'mstream.db'),
     ffmpegPath: ffPath,
     maxPerRun: config.program.scanOptions.analyzeBpmPerRun || 200,
+    // Speed knobs (admin-editable, applied on the next pass): BPM method and
+    // the mid-track analysis window. undefined falls through to the worker
+    // defaults (JSON.stringify drops the key).
+    bpmMethod: config.program.scanOptions.analyzeBpmMethod,
+    windowSec: config.program.scanOptions.analyzeBpmWindowSec,
     expectedSchemaVersion: SCHEMA_VERSION,
     // Duration window / confidence floors / cooldowns use the worker defaults.
   };
@@ -1532,8 +1537,9 @@ function runAudioAnalysisTask(taskObj) {
           observers.hitCap = !!evt.hitCap;
           observers.completeEvt = evt;
           if (evt.attempted > 0) {
+            const pace = evt.avgMsPerTrack > 0 ? `, ~${evt.avgMsPerTrack} ms/track` : '';
             winston.info(`Audio-analysis pass complete: ${evt.analyzed} analysed, `
-              + `${evt.lowconf} low-confidence, ${evt.errors} error(s) (${evt.attempted} attempted)`);
+              + `${evt.lowconf} low-confidence, ${evt.errors} error(s) (${evt.attempted} attempted${pace})`);
           }
           return;
         }
