@@ -35,7 +35,7 @@ let dbManager;
 let taskQueue;
 let libId;
 
-const KINDS = ['waveform', 'albumart', 'lyrics', 'audioanalysis', 'discovery', 'acoustid'];
+const KINDS = ['waveform', 'albumart', 'lyrics', 'discovery', 'audioanalysis', 'acoustid'];
 
 function statusOf(kind) {
   const entry = taskQueue.getEnrichmentStatus().find((p) => p.pass === kind);
