@@ -31,6 +31,11 @@ function findFreePort() {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// How much of the child's stderr to keep when logs aren't captured. Big
+// enough for a full ERR_MODULE_NOT_FOUND / Joi stack, small enough that a
+// chatty server can't grow test-process memory.
+const STDERR_TAIL_BYTES = 4096;
+
 // The timeout is a ceiling, not a wait: healthy boots return as soon as the
 // API answers, and a crashed boot bails immediately via getExitError. 90s
 // because heavy discovery suites (onnxruntime + iroh sidecar init) have blown
@@ -225,11 +230,39 @@ export async function startServer(opts = {}) {
     },
   );
 
-  // Drain output so the buffer doesn't back up even when not captured.
+  // Drain output so the buffer doesn't back up even when not captured — but
+  // keep a rolling tail of stderr. A boot crash used to surface as a bare
+  // "server exited with code 1" with the real cause (e.g. a missing package
+  // taking every integration suite down) discarded here.
+  const stderrChunks = [];
+  let stderrTailLen = 0;
   if (!captureLogs) {
     proc.stdout.on('data', () => {});
-    proc.stderr.on('data', () => {});
+    proc.stderr.on('data', chunk => {
+      stderrChunks.push(chunk);
+      stderrTailLen += chunk.length;
+      while (stderrTailLen > STDERR_TAIL_BYTES) {
+        const excess = stderrTailLen - STDERR_TAIL_BYTES;
+        if (stderrChunks[0].length <= excess) {
+          stderrTailLen -= stderrChunks.shift().length;
+        } else {
+          stderrChunks[0] = stderrChunks[0].subarray(excess);
+          stderrTailLen -= excess;
+        }
+      }
+    });
   }
+  // Empty when captureLogs is true (stdio inherited — the crash already
+  // printed to the test's own console) or when the child wrote nothing.
+  const stderrTail = () => {
+    const text = Buffer.concat(stderrChunks).toString('utf8').trim();
+    return text ? `\n--- server stderr (tail) ---\n${text}` : '';
+  };
+  // 'exit' can fire while stderr data is still in the pipe; before building
+  // an error message from the tail, wait (capped — a surviving scanner
+  // grandchild can hold the pipe open) for the child's stdio to close.
+  const procClosed = new Promise(r => proc.once('close', r));
+  const flushStderr = () => Promise.race([procClosed, sleep(250)]);
 
   const baseUrl = `http://127.0.0.1:${port}`;
   let exitedEarly = null;
@@ -241,8 +274,9 @@ export async function startServer(opts = {}) {
     await waitForReady(baseUrl, { getExitError: () => exitedEarly });
   } catch (err) {
     try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+    if (exitedEarly) { await flushStderr(); }
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    throw exitedEarly ? new Error(exitedEarly) : err;
+    throw exitedEarly ? new Error(exitedEarly + stderrTail()) : err;
   }
 
   if (waitForScan) {
@@ -283,8 +317,9 @@ export async function startServer(opts = {}) {
     if (!r.ok) {
       const msg = await r.text();
       try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+      await flushStderr();
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-      throw new Error(`failed to create user "${u.username}": ${r.status} ${msg}`);
+      throw new Error(`failed to create user "${u.username}": ${r.status} ${msg}${stderrTail()}`);
     }
   }
 
