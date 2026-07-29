@@ -216,9 +216,39 @@ describe('createShare + updateShare description and expiry', () => {
     const songIds = await randomSongIds(1);
     const created = await call('createShare', { id: songIds });
     const id = created.shares.share[0].id;
-    const u = await call('updateShare', { id, expires: Date.now() - 1 });
+    // A wide margin, not -1ms: Date.now() in the spawned server process can
+    // read a few ms behind this process's (per-process clock interpolation
+    // on Windows), so a barely-past timestamp lands in the server's future
+    // and gets accepted. Mirrors the createShare test above.
+    const u = await call('updateShare', { id, expires: Date.now() - 60000 });
     assert.equal(u.status, 'failed');
     assert.equal(u.error.code, 10);
+    await call('deleteShare', { id });
+  });
+
+  test('expires within the current server second returns error 10', async () => {
+    const songIds = await randomSongIds(1);
+    const created = await call('createShare', { id: songIds });
+    const id = created.shares.share[0].id;
+
+    // The column stores whole seconds, so a timestamp inside the current
+    // second is born expired and must be rejected. Derive the probe from
+    // the SERVER's clock (HTTP Date header, whole seconds) rather than
+    // ours: the end of a server-reported second can never be in a later
+    // second than the server's clock at processing time, so this stays
+    // deterministic under cross-process clock skew (see the test above).
+    const ping = await fetch(url('ping'));
+    const serverSec = Math.floor(new Date(ping.headers.get('date')).getTime() / 1000);
+    const endOfServerSecond = serverSec * 1000 + 999;
+
+    const u = await call('updateShare', { id, expires: endOfServerSecond });
+    assert.equal(u.status, 'failed');
+    assert.equal(u.error.code, 10);
+
+    const c = await call('createShare', { id: songIds, expires: endOfServerSecond });
+    assert.equal(c.status, 'failed');
+    assert.equal(c.error.code, 10);
+
     await call('deleteShare', { id });
   });
 });

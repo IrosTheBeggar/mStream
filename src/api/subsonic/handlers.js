@@ -2785,15 +2785,18 @@ export function createShare(req, res) {
   const filepaths = songIds.map(id => fpById.get(id)).filter(Boolean);
   if (!filepaths.length) { return SubErr.NOT_FOUND(req, res, 'Song'); }
 
-  // Subsonic sends `expires` as ms-since-epoch. Reject past timestamps —
-  // an already-expired share is a client bug we'd rather surface than
-  // silently store. Null/missing/zero = no expiry.
+  // Subsonic sends `expires` as ms-since-epoch, but the column stores whole
+  // seconds — so validate at storage granularity: the stored second must be
+  // strictly after the current one, else the share is born expired (the
+  // share-viewer's jwt.verify and the cleanup DELETEs both treat the
+  // current second as dead). An already-expired share is a client bug we'd
+  // rather surface than silently store. Null/missing/zero = no expiry.
   const expiresMs = parseInt(req.query.expires, 10);
-  if (Number.isFinite(expiresMs) && expiresMs > 0 && expiresMs <= Date.now()) {
+  const expires = Number.isFinite(expiresMs) && expiresMs > 0 ? Math.floor(expiresMs / 1000) : null;
+  if (expires !== null && expires <= Math.floor(Date.now() / 1000)) {
     return SubErr.GENERIC_CODE(req, res, 10, '`expires` must be in the future');
   }
-  const hasExpiry = Number.isFinite(expiresMs) && expiresMs > Date.now();
-  const expires = hasExpiry ? Math.floor(expiresMs / 1000) : null;
+  const hasExpiry = expires !== null;
   const description = req.query.description ? String(req.query.description) : null;
   const shareId = nanoid(10);
 
@@ -2807,7 +2810,7 @@ export function createShare(req, res) {
     username:   req.user.username,
   };
   const jwtOptions = hasExpiry
-    ? { expiresIn: Math.max(1, Math.floor((expiresMs - Date.now()) / 1000)) }
+    ? { expiresIn: Math.max(1, expires - Math.floor(Date.now() / 1000)) }
     : {};
   const token = jwt.sign(tokenData, config.program.secret, jwtOptions);
 
@@ -2836,11 +2839,13 @@ export function updateShare(req, res) {
   if (row.user_id !== req.user.id && !req.user.admin) { return SubErr.NOT_AUTHORIZED(req, res); }
 
   if ('expires' in req.query) {
+    // Same storage-granularity rule as createShare: the stored second must
+    // be strictly in the future. Zero/invalid clears the expiry.
     const ms = parseInt(req.query.expires, 10);
-    if (Number.isFinite(ms) && ms > 0 && ms <= Date.now()) {
+    const expires = Number.isFinite(ms) && ms > 0 ? Math.floor(ms / 1000) : null;
+    if (expires !== null && expires <= Math.floor(Date.now() / 1000)) {
       return SubErr.GENERIC_CODE(req, res, 10, '`expires` must be in the future');
     }
-    const expires = Number.isFinite(ms) && ms > 0 ? Math.floor(ms / 1000) : null;
     db.getDB().prepare('UPDATE shared_playlists SET expires = ? WHERE share_id = ?').run(expires, shareId);
   }
   // V15 added the `description` column — persist what the client sent.
