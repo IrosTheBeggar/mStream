@@ -91,7 +91,7 @@ describe('GET /api/v1/scan/status', () => {
 
     assert.deepEqual(
       body.enrichment.map((p) => p.pass),
-      ['waveform', 'albumart', 'lyrics', 'audioanalysis', 'discovery', 'acoustid']);
+      ['waveform', 'albumart', 'lyrics', 'discovery', 'audioanalysis', 'acoustid']);
     for (const p of body.enrichment) {
       for (const key of ['enabled', 'disabledReason', 'state', 'progress', 'lastRun', 'coverage']) {
         assert.ok(key in p, `'${p.pass}' entry must carry '${key}'`);

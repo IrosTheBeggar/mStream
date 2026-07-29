@@ -367,7 +367,7 @@ function nextTask() {
 // queue makes a decision: they don't count against "drained" (the side
 // effects below are about the SCAN batch), they don't surface as `locked`
 // (isScanning), and they run strictly serial like everything else.
-const ENRICHMENT_KINDS = ['waveform', 'albumart', 'lyrics', 'audioanalysis', 'discovery', 'acoustid'];
+const ENRICHMENT_KINDS = ['waveform', 'albumart', 'lyrics', 'discovery', 'audioanalysis', 'acoustid'];
 
 // ── Enrichment status registry ──────────────────────────────────────────────
 //
@@ -609,23 +609,24 @@ function checkQueueDrainedSideEffectsInner() {
     maybeEnqueueLyrics();
   }
 
-  // Likewise hand off to the essentia BPM/key analysis pass. Separate flag +
-  // enqueue so it runs once per batch alongside (and serialised behind) the
-  // art pass; maybeEnqueueAudioAnalysis re-checks config + eligibility + ffmpeg
+  // Then the discovery-embedding pass (separate discovery.db) — ahead of the
+  // BPM/key pass: its embeddings feed the user-visible Discover panel and
+  // Auto-DJ sonic mode, and since the BPM/key pass went windowed it is no
+  // longer the cheaper of the two. maybeEnqueueDiscovery re-checks config +
+  // ffmpeg + whether anything actually lacks a current-model embedding
+  // before forking.
+  if (discoveryEnqueuePending) {
+    discoveryEnqueuePending = false;
+    maybeEnqueueDiscovery();
+  }
+
+  // Then the essentia BPM/key analysis pass. Separate flag + enqueue so it
+  // runs once per batch, serialised behind the passes above;
+  // maybeEnqueueAudioAnalysis re-checks config + eligibility + ffmpeg
   // before forking.
   if (audioAnalysisEnqueuePending) {
     audioAnalysisEnqueuePending = false;
     maybeEnqueueAudioAnalysis();
-  }
-
-  // And finally the discovery-embedding pass (separate discovery.db) —
-  // last in the chain: it's the most CPU-expensive per track, so every
-  // cheaper pass gets its results in first. maybeEnqueueDiscovery re-checks
-  // config + ffmpeg + whether anything actually lacks a current-model
-  // embedding before forking.
-  if (discoveryEnqueuePending) {
-    discoveryEnqueuePending = false;
-    maybeEnqueueDiscovery();
   }
 
   // AcoustID identification (network-bound, cheap CPU): fingerprints
