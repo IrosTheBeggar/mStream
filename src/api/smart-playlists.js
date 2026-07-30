@@ -3,7 +3,7 @@
 // as SQL queries against the tracks/artists/albums/genres tables.
 
 import * as db from '../db/manager.js';
-import { renderMetadataObj, libraryFilter, trackQuery } from './db.js';
+import { renderMetadataObj, libraryFilter, trackQuery, enrichRowsWithGenres } from './db.js';
 
 const d = () => db.getDB();
 
@@ -98,8 +98,12 @@ function runSmartQuery(filters, sort, limit, userId, user) {
     ? 'JOIN track_genres tg ON tg.track_id = t.id JOIN genres g ON g.id = tg.genre_id'
     : '';
 
+  // includeGenres:false: the default tg_agg join materialises the WHOLE
+  // track_genres table per query (cost scales with the library, not this
+  // playlist) — genres are batch-enriched onto just the returned rows
+  // below. `genreJoin` is unrelated: it joins the M2M for FILTERING.
   const sql = `
-    ${trackQuery(userId)}
+    ${trackQuery(userId, { includeGenres: false })}
     ${genreJoin}
     WHERE ${conditions.join(' AND ')}
     ORDER BY ${buildSortClause(sort)}
@@ -107,7 +111,7 @@ function runSmartQuery(filters, sort, limit, userId, user) {
   `;
 
   const allParams = [...userIdParams, ...params, Math.min(limit || 50, 1000)];
-  return d().prepare(sql).all(...allParams);
+  return enrichRowsWithGenres(d(), d().prepare(sql).all(...allParams));
 }
 
 function countSmartQuery(filters, userId, user) {

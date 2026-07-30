@@ -183,26 +183,20 @@ export function libraryFilter(user, ignoreVPaths) {
 // user_metadata, and (when `includeGenres` is set) a track_genres
 // aggregation.
 //
-// `includeGenres` controls whether the `tg_agg` LEFT JOIN runs:
-//
-//   • true (default) — adds a GROUP_CONCAT subquery over track_genres
-//     so `renderMetadataObj` can emit `metadata.genres: string[]`
-//     without per-row follow-ups. Use this for response-shaped queries
-//     (velvet-stubs list endpoints, smart-playlists, pullMetaData).
-//
-//   • false — skip the join. Use for candidate-set queries where only
-//     ONE row will actually be rendered (the random-songs picker
-//     loads the candidate pool, picks one index, then enriches just
-//     that row via fetchGenresForTrack below). SQLite has to
-//     MATERIALIZE tg_agg before applying the WHERE clause, so the
-//     cost scales with the full tracks table, not the filtered
-//     candidate set — skipping it cuts the picker's SQL time by ~80%
-//     on a smoke-sized DB and avoids ~460ms of overhead extrapolated
-//     to a 100k-track library.
+// `includeGenres` controls whether the `tg_agg` LEFT JOIN runs — and it
+// DEFAULTS TO FALSE. The join materialises a GROUP_CONCAT over the ENTIRE
+// track_genres table before the WHERE applies, so its cost scales with the
+// library, not the query (~460ms extrapolated at 100k tracks, paid per
+// request). Every caller in the tree was converted off it (2026-07 audit):
+// render your rows first, then attach genres to JUST those rows via
+// enrichRowsWithGenres (lists) or fetchGenresForTrack (single row) below.
+// includeGenres:true survives only for a hypothetical caller that truly
+// wants the whole-table aggregation inline — as of the conversion there are
+// none, and new code should not become the first without measuring.
 //
 // char(31) (ASCII unit separator) is the join delimiter so no legal
 // genre name can collide with it.
-export function trackQuery(userId, { includeGenres = true } = {}) {
+export function trackQuery(userId, { includeGenres = false } = {}) {
   const aggJoin = includeGenres ? `
     LEFT JOIN (
       SELECT tg.track_id, GROUP_CONCAT(g.name, char(31)) AS genres_concat
@@ -257,6 +251,32 @@ function fetchGenresForTracks(d, ids) {
   `).all(...ids);
   for (const r of rows) { out.set(r.track_id, r.genres_concat); }
   return out;
+}
+
+// Enrich trackQuery({ includeGenres: false }) rows with their genre
+// aggregation in ONE indexed batch, in place — the companion every
+// response-shaped list endpoint uses instead of the default tg_agg join
+// (which materialises over the ENTIRE track_genres table, so a list
+// endpoint's cost scaled with the library, not the response — see
+// trackQuery's note). Returns `rows` with genres_concat set,
+// renderMetadataObj-ready. Exported for the trackQuery callers that live
+// outside this file (smart-playlists, velvet-stubs).
+export function enrichRowsWithGenres(d, rows) {
+  // Chunked like renderMetadataByIds/pullMetaDataBatch above: one IN() per
+  // 500 ids keeps huge responses (whole-genre / whole-decade listings) under
+  // SQLite's bound-variable limit — an unchunked list threw 'too many SQL
+  // variables' past ~32k rows. Ids are de-duped first: join-shaped callers
+  // (the smart-playlist genre filter) can hand the same track twice.
+  const uniq = [...new Set(rows.map((r) => r.id))];
+  const genres = new Map();
+  const CHUNK = 500;
+  for (let i = 0; i < uniq.length; i += CHUNK) {
+    for (const [id, gc] of fetchGenresForTracks(d, uniq.slice(i, i + CHUNK))) {
+      genres.set(id, gc);
+    }
+  }
+  for (const row of rows) { row.genres_concat = genres.get(row.id) || null; }
+  return rows;
 }
 
 // Batched metadata render keyed on track id. Returns Map<id, { filepath, metadata }>
@@ -319,12 +339,18 @@ export function pullMetaData(filepath, user) {
   const lib = db.getLibraryByName(pathInfo.vpath);
   if (!lib) { return { filepath: filepath, metadata: null }; }
 
+  // includeGenres:false + point enrichment: the default tg_agg join
+  // materialises the whole track_genres table to fetch ONE row (~69 ms at
+  // 25k tracks) — and the no-login shared-playlist page fires this once per
+  // track. Same conversion pullMetaDataBatch made long ago; this was the
+  // single-row straggler.
   const row = d.prepare(`
-    ${trackQuery(user?.id)}
+    ${trackQuery(user?.id, { includeGenres: false })}
     WHERE t.filepath = ? AND t.library_id = ?
   `).get(...(user?.id ? [user.id] : []), pathInfo.relativePath, lib.id);
 
   if (!row) { return { filepath: filepath, metadata: null }; }
+  row.genres_concat = fetchGenresForTrack(d, row.id).genres_concat ?? null;
   return renderMetadataObj(row);
 }
 
@@ -552,23 +578,34 @@ export function setup(mstream) {
 
   mstream.post('/api/v1/db/genre-songs', (req, res) => {
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
-    const allParams = req.user?.id
-      ? [req.user.id, String(req.body.genre), ...filter.params]
-      : [String(req.body.genre), ...filter.params];
 
     // V34: case-insensitive name match — uniform with the post-V34
     // case-folded vocabulary getGenres now returns. Pre-V34 this
     // would silently miss "Jazz" vs "jazz" if the M2M had both rows
     // (the "1247 jazz tracks shown but only 800 returned" bug).
+    //
+    // Name → id(s) resolved FIRST so the M2M probe drives
+    // idx_track_genres_genre instead of walking every track_genres row
+    // (the name-join form scanned the whole M2M regardless of how small
+    // the genre was). NOCASE can hit multiple vocabulary rows on
+    // pre-V34-shaped data; joining every matched id reproduces the old
+    // name-join's row multiplicity exactly.
+    const genreIds = d().prepare('SELECT id FROM genres WHERE name COLLATE NOCASE = ?')
+      .all(String(req.body.genre)).map((r) => r.id);
+    if (genreIds.length === 0) { return res.json([]); }
+    const idPh = genreIds.map(() => '?').join(',');
+    const allParams = req.user?.id
+      ? [req.user.id, ...genreIds, ...filter.params]
+      : [...genreIds, ...filter.params];
+
     const rows = d().prepare(`
-      ${trackQuery(req.user?.id)}
-      JOIN track_genres tg ON tg.track_id = t.id
-      JOIN genres g ON g.id = tg.genre_id
-      WHERE g.name COLLATE NOCASE = ? AND ${filter.clause}
+      ${trackQuery(req.user?.id, { includeGenres: false })}
+      JOIN track_genres tg ON tg.track_id = t.id AND tg.genre_id IN (${idPh})
+      WHERE ${filter.clause}
       ORDER BY a.name COLLATE NOCASE, al.name COLLATE NOCASE, t.disc_number, t.track_number
     `).all(...allParams);
 
-    res.json(rows.map(renderMetadataObj));
+    res.json(enrichRowsWithGenres(d(), rows).map(renderMetadataObj));
   });
 
   // ── Album Songs ─────────────────────────────────────────────────────────
@@ -599,12 +636,12 @@ export function setup(mstream) {
     const allParams = req.user?.id ? [req.user.id, ...params] : params;
 
     const rows = d().prepare(`
-      ${trackQuery(req.user?.id)}
+      ${trackQuery(req.user?.id, { includeGenres: false })}
       WHERE ${conditions.join(' AND ')}
       ORDER BY t.disc_number, t.track_number, t.filepath
     `).all(...allParams);
 
-    res.json(rows.map(renderMetadataObj));
+    res.json(enrichRowsWithGenres(d(), rows).map(renderMetadataObj));
   });
 
   // ── Search ──────────────────────────────────────────────────────────────
@@ -716,13 +753,13 @@ export function setup(mstream) {
     const allParams = req.user?.id ? [req.user.id, ...filter.params] : filter.params;
 
     const rows = d().prepare(`
-      ${trackQuery(req.user?.id)}
+      ${trackQuery(req.user?.id, { includeGenres: false })}
       WHERE ${filter.clause}
       ORDER BY t.created_at DESC, t.id DESC
       LIMIT ?
     `).all(...allParams, req.body.limit);
 
-    res.json(rows.map(renderMetadataObj));
+    res.json(enrichRowsWithGenres(d(), rows).map(renderMetadataObj));
   });
 
   // ── Recently Played ─────────────────────────────────────────────────────
