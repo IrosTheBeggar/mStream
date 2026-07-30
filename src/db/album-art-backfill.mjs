@@ -72,6 +72,10 @@ try {
 const schema = Joi.object({
   dbPath: Joi.string().required(),
   albumArtDirectory: Joi.string().required(),
+  // Resolved by the parent (this child has no config state). Absent => the
+  // pass still runs, it just doesn't produce thumbnail variants.
+  ffmpegPath: Joi.string().optional(),
+  ffprobePath: Joi.string().optional(),
   // Emit the zl-/zs- thumbnail variants alongside the cached cover.
   compressImage: Joi.boolean().default(true),
   // Services to query, in order — first to return a usable image wins.
@@ -269,7 +273,8 @@ async function resolveArtRow(buf, hash) {
     }
     return { artId: existing.id, filename: existing.cache_file };
   }
-  const { filename } = await saveImageToCache(buf, cfg.albumArtDirectory, cfg.compressImage);
+  const { filename } = await saveImageToCache(buf, cfg.albumArtDirectory, cfg.compressImage,
+    { ffmpegPath: cfg.ffmpegPath, ffprobePath: cfg.ffprobePath });
   insertCachedArt.run(filename, hash, buf.length);
   const id = findCachedByFile.get(filename)?.id;
   return { artId: id, filename };
