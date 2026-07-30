@@ -29,10 +29,36 @@ import * as db from '../db/manager.js';
 import * as sim from '../db/discovery-similarity.js';
 import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
-import { renderMetadataObj, toLiteMetadata, trackQuery, libraryFilter } from './db.js';
+import { renderMetadataObj, toLiteMetadata, trackQuery, libraryFilter, fetchGenresForTrack } from './db.js';
 import { getVPathInfo } from '../util/vpath.js';
 
 const d = () => db.getDB();
+
+// Prepared-statement memo: per DB handle (the handle is replaced on e.g. a
+// backup restore, and a WeakMap lets the old handle's statements be
+// collected with it), then per SQL text. The text varies only with uid
+// presence and the caller's library-filter shape (grant-count IN-list
+// length) — a handful of variants per process, so the inner Map stays
+// small. Re-preparing per candidate was measured at ~75–80% of the probe
+// cost: a full 25k-index visibility walk is ~6 s re-preparing vs ~0.3 s
+// prepared once.
+const stmtCache = new WeakMap();
+function prep(sql) {
+  const handle = d();
+  let bySql = stmtCache.get(handle);
+  if (!bySql) { bySql = new Map(); stmtCache.set(handle, bySql); }
+  let stmt = bySql.get(sql);
+  if (!stmt) { stmt = handle.prepare(sql); bySql.set(sql, stmt); }
+  return stmt;
+}
+
+// Bounded candidate consideration for the ranked loops below. Rankings are
+// similarity-ordered, so entries thousands deep are dissimilar noise —
+// walking them buys latency, not relevance. Results may legitimately come
+// up short for users who can see few of the ranked tracks; responses carry
+// `capped: true` when that happened so clients can tell "short because the
+// pool ran out" from "short because we stopped looking".
+const considerBudget = (limit) => Math.max(limit * 50, 2000);
 
 // Feature gate + index. 403 when the feature is off; 403 (generic) when the
 // store is unavailable despite the flag (boot init failed) — same status so
@@ -64,12 +90,16 @@ export function resolveSeedTrack(req, filePath, routeTag) {
   if (!lib) { throw new WebError('Track not found', 404); }
   const uid = req.user?.id;
   const seedParams = uid ? [uid, info.relativePath, lib.id] : [info.relativePath, lib.id];
-  const seedRow = d().prepare(`
-    ${trackQuery(uid)}
+  // includeGenres:false + single-track enrichment: the default tg_agg join
+  // materialises a GROUP_CONCAT over the whole track_genres table to fetch
+  // ONE row (~70 ms at 25k tracks, per request). Same trap as resolveVisible.
+  const seedRow = prep(`
+    ${trackQuery(uid, { includeGenres: false })}
     WHERE t.filepath = ? AND t.library_id = ?
     LIMIT 1
   `).get(...seedParams);
   if (!seedRow) { throw new WebError('Track not found', 404); }
+  Object.assign(seedRow, fetchGenresForTrack(d(), seedRow.id));
   return seedRow;
 }
 
@@ -77,13 +107,41 @@ export function resolveSeedTrack(req, filePath, routeTag) {
 // when every copy of that audio lives outside the user's libraries.
 // Exported for the federation vector-seed route (api/federation-discovery.js),
 // which scopes a peer's results the same way.
-export function resolveVisible(uid, filter, canonHash) {
-  const params = uid ? [uid, canonHash, ...filter.params] : [canonHash, ...filter.params];
-  return d().prepare(`
-    ${trackQuery(uid)}
-    WHERE COALESCE(t.audio_hash, t.file_hash) = ? AND ${filter.clause}
+//
+// This runs once per RANKED CANDIDATE inside the routes' loops, so its cost
+// is the whole feature's cost. Two traps, both measured on a 25k-track DB
+// (2026-07 audit — the same planner failure class as the scan/status
+// incident):
+//   • The probe must NOT be phrased `COALESCE(t.audio_hash, t.file_hash) = ?`
+//     — an expression, so neither hash index applies and SQLite (no ANALYZE
+//     stats) falls back to idx_tracks_library = a full library scan per
+//     candidate (~74 ms; minutes per request under filter starvation). The
+//     flat OR rewrite (`t.audio_hash = ? OR ...`) does NOT fix the plan
+//     either; the UNION ALL id-subquery below does (~0.07 ms, ~1000×).
+//   • trackQuery's default includeGenres:true materialises a GROUP_CONCAT
+//     over the ENTIRE track_genres table per call. Resolved rows instead get
+//     the indexed single-track lookup, preserving metadata.genres for every
+//     caller (renderMetadataObj reads genres_concat).
+export function resolveVisible(uid, filter, canonHash, { withGenres = true } = {}) {
+  const params = uid
+    ? [uid, canonHash, canonHash, ...filter.params]
+    : [canonHash, canonHash, ...filter.params];
+  const row = prep(`
+    ${trackQuery(uid, { includeGenres: false })}
+    WHERE t.id IN (
+            SELECT id FROM tracks WHERE audio_hash = ?
+            UNION ALL
+            SELECT id FROM tracks WHERE file_hash = ? AND audio_hash IS NULL
+          )
+      AND ${filter.clause}
     LIMIT 1
   `).get(...params);
+  // withGenres:false for callers that post-filter or never render genres
+  // (similar/tracks rejects on bpm/artist AFTER resolving; federation's
+  // response carries no track genres) — they enrich accepted rows
+  // themselves, so rejected candidates never pay the lookup.
+  if (row && withGenres) { Object.assign(row, fetchGenresForTrack(d(), row.id)); }
+  return row;
 }
 
 function modelBlock(index) {
@@ -124,15 +182,22 @@ export function setup(mstream) {
     const filter = libraryFilter(req.user);
     const ranked = sim.rankTracks(index, seedEntry.vec, canonHash);
     const results = [];
+    const maxConsidered = considerBudget(body.limit);
+    let considered = 0;
+    let capped = false;
     for (const { entry, similarity } of ranked) {
       if (results.length >= body.limit) { break; }
-      const row = resolveVisible(uid, filter, entry.hash);
+      if (++considered > maxConsidered) { capped = true; break; }
+      const row = resolveVisible(uid, filter, entry.hash, { withGenres: false });
       if (!row) { continue; }   // no copy visible to this user
       if (body.excludeSameArtist && row.artist_name && row.artist_name === seedRow.artist_name) { continue; }
       if (body.excludeSameAlbum && row.album_name && row.album_name === seedRow.album_name
         && row.artist_name === seedRow.artist_name) { continue; }
       if (body.bpmRange && !(row.bpm >= body.bpmRange[0] && row.bpm <= body.bpmRange[1])) { continue; }
 
+      // Enrich only rows that survived the filters — rejected candidates
+      // never pay the genre lookup.
+      Object.assign(row, fetchGenresForTrack(d(), row.id));
       const rendered = renderMetadataObj(row);
       results.push({
         filepath: rendered.filepath,
@@ -142,7 +207,7 @@ export function setup(mstream) {
       });
     }
 
-    res.json({ seed, model: modelBlock(index), notAnalyzed: false, results });
+    res.json({ seed, model: modelBlock(index), notAnalyzed: false, capped, results });
   });
 
   // A smooth "journey" between two tracks: `length - 2` waypoints evenly
@@ -275,15 +340,25 @@ export function setup(mstream) {
 
     const ranked = sim.rankArtists(index, body.artist);
     const results = [];
+    // Same bounded-consideration rule as similar/tracks: a user who can see
+    // none of the ranked artists must not walk the whole ranking.
+    const maxConsidered = considerBudget(body.limit);
+    let considered = 0;
+    let capped = false;
     for (const cand of ranked) {
       if (results.length >= body.limit) { break; }
+      if (++considered > maxConsidered) { capped = true; break; }
       if (!artistVisible.get(cand.artist, ...filter.params)) { continue; }
 
       // Entry points: the candidate's tracks closest to the SEED's sound —
       // playable doorways that continue the vibe the user came from.
+      // Bounded too: an artist with a large embedded-but-invisible catalog
+      // shouldn't cost hundreds of probes for two doorways. 200 cached-
+      // statement probes ≈ single-digit ms; real artists exhaust well first.
       const entryPoints = [];
+      let epConsidered = 0;
       for (const { entry } of sim.rankArtistTracks(index, cand.artist, seedCentroid.vec)) {
-        if (entryPoints.length >= 2) { break; }
+        if (entryPoints.length >= 2 || ++epConsidered > 200) { break; }
         const row = resolveVisible(uid, filter, entry.hash);
         if (!row) { continue; }
         const rendered = renderMetadataObj(row);
@@ -299,6 +374,6 @@ export function setup(mstream) {
       });
     }
 
-    res.json({ seed, model: modelBlock(index), notAnalyzed: false, results });
+    res.json({ seed, model: modelBlock(index), notAnalyzed: false, capped, results });
   });
 }

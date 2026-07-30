@@ -454,3 +454,57 @@ describe('POST /api/v1/discovery/local/path', () => {
       { startFilePath: 'testlib/nope/missing.mp3', endFilePath: neonPath })).status, 404);
   });
 });
+
+// ── resolveVisible probe semantics (2026-07 perf rewrite regression pins) ────
+//
+// The COALESCE-expression probe was rewritten as a UNION ALL id-subquery
+// (planner trap: expression probes fall back to idx_tracks_library — see
+// resolveVisible's comment). These pin the two semantics the rewrite must
+// preserve: file_hash-keyed tracks (audio_hash NULL) stay resolvable, and
+// metadata.genres survives the includeGenres:false + point-lookup split.
+// Deliberately LAST in the file: the hash flip below mutates live rows.
+describe('resolveVisible probe semantics', () => {
+  const seedPath = 'testlib/Icarus/Be Somebody/01 - Be Somebody.mp3';
+
+  test('genres reach results via the single-track enrichment path', async () => {
+    const mdb = new DatabaseSync(path.join(server.tmpDir, 'db', 'mstream.db'));
+    try {
+      mdb.exec('PRAGMA busy_timeout = 5000');
+      mdb.prepare("INSERT OR IGNORE INTO genres (name) VALUES ('Probe Genre')").run();
+      const gid = mdb.prepare("SELECT id FROM genres WHERE name = 'Probe Genre'").get().id;
+      const rise = mdb.prepare("SELECT id FROM tracks WHERE title = 'Rise'").get();
+      mdb.prepare('INSERT OR IGNORE INTO track_genres (track_id, genre_id) VALUES (?, ?)').run(rise.id, gid);
+    } finally { mdb.close(); }
+
+    const { body } = await api('/api/v1/discovery/local/similar/tracks', { filePath: seedPath });
+    const riseRes = body.results.find((r) => r.metadata.title === 'Rise');
+    assert.ok(riseRes, 'Rise must rank');
+    assert.ok(Array.isArray(riseRes.metadata.genres) && riseRes.metadata.genres.includes('Probe Genre'),
+      `metadata.genres must carry the live genre row, got ${JSON.stringify(riseRes.metadata.genres)}`);
+  });
+
+  test('a file_hash-keyed track (audio_hash NULL) still resolves', async () => {
+    // Move Neon's canonical hash from audio_hash to file_hash — the canonical
+    // value is unchanged, so its discovery row still matches; only the probe's
+    // second UNION arm can find it now. Scanned rows carry BOTH hashes
+    // (audio-hash.js always writes file_hash), so stash the originals and
+    // restore them explicitly — deriving the restore from the mutated row
+    // would permanently NULL the scanner's whole-file hash.
+    const mdb = new DatabaseSync(path.join(server.tmpDir, 'db', 'mstream.db'));
+    try {
+      mdb.exec('PRAGMA busy_timeout = 5000');
+      const orig = mdb.prepare("SELECT id, audio_hash, file_hash FROM tracks WHERE title = 'Neon'").get();
+      assert.ok(orig?.audio_hash, 'fixture must have a Neon row with an audio_hash');
+      try {
+        mdb.prepare('UPDATE tracks SET file_hash = audio_hash, audio_hash = NULL WHERE id = ?').run(orig.id);
+
+        const { body } = await api('/api/v1/discovery/local/similar/tracks', { filePath: seedPath });
+        const neon = body.results.find((r) => r.metadata.title === 'Neon');
+        assert.ok(neon, `file_hash-keyed Neon must still resolve; got ${JSON.stringify(body.results.map((r) => r.metadata.title))}`);
+      } finally {
+        mdb.prepare('UPDATE tracks SET audio_hash = ?, file_hash = ? WHERE id = ?')
+          .run(orig.audio_hash, orig.file_hash, orig.id);
+      }
+    } finally { mdb.close(); }
+  });
+});

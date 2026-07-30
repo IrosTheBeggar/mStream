@@ -85,9 +85,18 @@ export function setup(mstream) {
     const mbidStmt = ddb ? ddb.prepare('SELECT recording_mbid FROM discovery_tracks WHERE audio_hash = ?') : null;
 
     const results = [];
+    // Bounded like the local similarity routes (2026-07 review): a starved
+    // grant (key scoped to a library with few embedded tracks) would
+    // otherwise walk the ENTIRE ranking — a full-index visibility sweep of
+    // synchronous main-thread SQL per request, on a machine-facing route.
+    // withGenres:false — this response never renders track genres.
+    const maxConsidered = Math.max(body.limit * 50, 2000);
+    let considered = 0;
+    let capped = false;
     for (const { entry, similarity } of sim.rankTracks(index, q, null)) {
       if (results.length >= body.limit) { break; }
-      const row = resolveVisible(uid, filter, entry.hash);
+      if (++considered > maxConsidered) { capped = true; break; }
+      const row = resolveVisible(uid, filter, entry.hash, { withGenres: false });
       if (!row) { continue; }   // no copy inside the caller's granted libraries
       results.push({
         filepath: renderMetadataObj(row).filepath,
@@ -100,6 +109,6 @@ export function setup(mstream) {
       });
     }
 
-    res.json({ model, results });
+    res.json({ model, capped, results });
   });
 }
