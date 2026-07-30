@@ -96,6 +96,23 @@ jobs:
           out2="$("$bin" --print-id --data-dir selftest-data)"
           [ "$out" = "$out2" ] \
             || { echo "::error::self-test: identity did not persist between runs"; exit 1; }
+          # Real-run smoke: --print-id never opens a socket, so it misses
+          # runtime breakage in the QUIC/UDP layer — noq-udp 1.1.0's musl
+          # cmsg-alignment assert (2026-07, SIGABRT at endpoint bind on the
+          # Alpine Docker image) sailed straight through the identity checks
+          # above. Run the sidecar for real: with stdin at EOF it emits the
+          # 'ready' event (right after the endpoint binds — no relay
+          # round-trip) and then exits cleanly on its own.
+          set +e
+          real_out="$(timeout 30 "$bin" --data-dir smoke-data </dev/null 2>&1)"
+          real_code=$?
+          set -e
+          echo "  real-run exit=$real_code"
+          echo "$real_out" | head -3
+          echo "$real_out" | grep -q '"event":"ready"' \
+            || { echo "::error::real-run smoke: no ready event before exit"; exit 1; }
+          [ "$real_code" -eq 0 ] \
+            || { echo "::error::real-run smoke: sidecar exited $real_code (expected clean EOF shutdown)"; exit 1; }
           echo "self-test passed: ${{ matrix.binary_name }}"
 
       - name: Upload binary
