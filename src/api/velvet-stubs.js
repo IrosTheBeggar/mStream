@@ -3,7 +3,7 @@
 // stubs for features that aren't implemented yet.
 
 import * as db from '../db/manager.js';
-import { renderMetadataObj, libraryFilter, trackQuery } from './db.js';
+import { renderMetadataObj, libraryFilter, trackQuery, enrichRowsWithGenres } from './db.js';
 import { warmScrobbleUser } from './scrobbler.js';
 import { getVPathInfo } from '../util/vpath.js';
 
@@ -51,11 +51,11 @@ export function setup(mstream) {
     if (isNaN(decade)) return res.json([]);
     const f = libraryFilter(req.user);
     const rows = d().prepare(`
-      ${trackQuery(req.user?.id)}
+      ${trackQuery(req.user?.id, { includeGenres: false })}
       WHERE t.year >= ? AND t.year < ? AND ${f.clause}
       ORDER BY a.name COLLATE NOCASE, al.name COLLATE NOCASE, t.track_number
     `).all(...(req.user?.id ? [req.user.id] : []), decade, decade + 10, ...f.params);
-    res.json(rows.map(renderMetadataObj));
+    res.json(enrichRowsWithGenres(d(), rows).map(renderMetadataObj));
   });
 
   // ── Genre groups ─────────────────────────────────────────────
@@ -98,14 +98,19 @@ export function setup(mstream) {
     const genre = req.body.genre;
     if (!genre) return res.json([]);
     const f = libraryFilter(req.user);
+    // Name -> id(s) first so the M2M probe drives idx_track_genres_genre
+    // instead of walking the whole table; mirrors /api/v1/db/genre-songs.
+    const genreIds = d().prepare('SELECT id FROM genres WHERE name COLLATE NOCASE = ?')
+      .all(String(genre)).map((r) => r.id);
+    if (genreIds.length === 0) return res.json([]);
+    const idPh = genreIds.map(() => '?').join(',');
     const rows = d().prepare(`
-      ${trackQuery(req.user?.id)}
-      JOIN track_genres tg ON tg.track_id = t.id
-      JOIN genres g ON g.id = tg.genre_id
-      WHERE g.name COLLATE NOCASE = ? AND ${f.clause}
+      ${trackQuery(req.user?.id, { includeGenres: false })}
+      JOIN track_genres tg ON tg.track_id = t.id AND tg.genre_id IN (${idPh})
+      WHERE ${f.clause}
       ORDER BY a.name COLLATE NOCASE, al.name COLLATE NOCASE, t.track_number
-    `).all(...(req.user?.id ? [req.user.id] : []), genre, ...f.params);
-    res.json(rows.map(renderMetadataObj));
+    `).all(...(req.user?.id ? [req.user.id] : []), ...genreIds, ...f.params);
+    res.json(enrichRowsWithGenres(d(), rows).map(renderMetadataObj));
   });
 
   // ── Album library browse ─────────────────────────────────────
@@ -161,12 +166,12 @@ export function setup(mstream) {
     const f = libraryFilter(req.user);
     const placeholders = artists.map(() => '?').join(',');
     const rows = d().prepare(`
-      ${trackQuery(req.user?.id)}
+      ${trackQuery(req.user?.id, { includeGenres: false })}
       WHERE a.name COLLATE NOCASE IN (${placeholders}) AND ${f.clause}
       ORDER BY RANDOM()
       LIMIT ?
     `).all(...(req.user?.id ? [req.user.id] : []), ...artists, ...f.params, limit);
-    res.json(rows.map(renderMetadataObj));
+    res.json(enrichRowsWithGenres(d(), rows).map(renderMetadataObj));
   });
 
   // ── Play logging ─────────────────────────────────────────────
