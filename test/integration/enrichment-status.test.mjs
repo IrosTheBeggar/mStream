@@ -240,3 +240,61 @@ describe('enrichment status: lifecycle through the real queue', () => {
     assert.equal(b.lastRun.counts.generated, 0, 'nested counts must be insulated');
   });
 });
+
+// ── Coverage: hash-ledger outcome visibility ────────────────────────────────
+//
+// Pins the semantics of outcomesForHashLedger (enrichment-status-lib.js):
+// a ledger row counts iff its hash is some visible track's CANONICAL hash —
+// COALESCE(audio_hash, file_hash), the same key every enrichment worker
+// writes. Guards the 2026-07 rewrite of that query (the correlated-EXISTS
+// form planned via idx_tracks_library and cost ~22 s/poll on a 19k-track
+// prod library, pinning the server at 100% while an admin tab was open).
+describe('coverage outcomes: hash-ledger visibility', () => {
+  test('audio_hash- and file_hash-keyed rows count; orphans and other libraries do not', async () => {
+    const { getEnrichmentCoverage, invalidateCoverageCache } =
+      await import('../../src/db/enrichment-status-lib.js');
+    const d = dbManager.getDB();
+
+    d.prepare(
+      `INSERT INTO libraries (name, root_path, type, follow_symlinks) VALUES ('other-lib', ?, 'music', 0)`
+    ).run(path.join(testRoot, 'other-lib'));
+    dbManager.invalidateCache();
+    const otherId = dbManager.getLibraryByName('other-lib').id;
+
+    const ins = d.prepare(
+      'INSERT INTO tracks (filepath, library_id, title, duration, audio_hash, file_hash) VALUES (?, ?, ?, 200, ?, ?)'
+    );
+    ins.run('cov-a.mp3', libId, 'A', 'cov-hash-audio', null);   // canonical = audio_hash
+    ins.run('cov-b.mp3', libId, 'B', null, 'cov-hash-file');    // canonical = file_hash
+    ins.run('cov-c.mp3', otherId, 'C', 'cov-hash-other', null); // other library only
+
+    const led = d.prepare(
+      'INSERT INTO audio_analysis_lookups (audio_hash, last_attempt_at, outcome, attempts) VALUES (?, ?, ?, 1)'
+    );
+    const now = Math.floor(Date.now() / 1000);
+    led.run('cov-hash-audio', now, 'analyzed');
+    led.run('cov-hash-file', now, 'lowconf');
+    led.run('cov-hash-other', now, 'analyzed');
+    led.run('cov-hash-orphan', now, 'error');   // no matching track anywhere
+
+    try {
+      invalidateCoverageCache();
+      assert.deepEqual(
+        getEnrichmentCoverage([libId]).passes.audioanalysis.outcomes,
+        { analyzed: 1, lowconf: 1 },
+        'one-library view: file_hash-keyed row visible, orphan + other-library rows excluded');
+
+      invalidateCoverageCache();
+      assert.deepEqual(
+        getEnrichmentCoverage([libId, otherId]).passes.audioanalysis.outcomes,
+        { analyzed: 2, lowconf: 1 },
+        'both-libraries view picks up the other-library row; orphan still excluded');
+    } finally {
+      d.prepare("DELETE FROM audio_analysis_lookups WHERE audio_hash LIKE 'cov-hash-%'").run();
+      d.prepare("DELETE FROM tracks WHERE filepath LIKE 'cov-%.mp3'").run();
+      d.prepare('DELETE FROM libraries WHERE id = ?').run(otherId);
+      dbManager.invalidateCache();
+      invalidateCoverageCache();
+    }
+  });
+});

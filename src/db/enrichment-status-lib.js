@@ -40,7 +40,11 @@ const ANALYSIS_MAX_DURATION_SEC = 30 * 60;
 const ACOUSTID_MIN_DURATION_SEC = 10;
 const ACOUSTID_MAX_DURATION_SEC = 2 * 60 * 60;
 
-const CACHE_TTL_MS = 5_000;
+// Above the admin page's 4 s poll on purpose: with a 5 s TTL every poll
+// recomputed the whole snapshot. Freshness at pass/scan boundaries comes
+// from invalidateCoverageCache(), not the TTL — this only bounds staleness
+// of mid-pass counts.
+const CACHE_TTL_MS = 15_000;
 const WAVEFORM_FS_TTL_MS = 60_000;
 
 // key = sorted libIds signature → { at, data }. Bounded: a burst of
@@ -77,14 +81,28 @@ function libClause(column, libIds) {
 // (idx_tracks_audio_hash / idx_tracks_hash).
 function outcomesForHashLedger(d, table, outcomeCol, libIds) {
   const lib = libClause('t.library_id', libIds);
+  // Ledger rows are keyed by the CANONICAL hash — COALESCE(audio_hash,
+  // file_hash), exactly how every enrichment worker keys them — so
+  // visibility is "the hash belongs to some visible track". Phrased as
+  // IN (materialised subquery): one pass over tracks builds the hash set,
+  // then each ledger row is a single probe.
+  //
+  // ⚠ Do NOT rewrite this as a correlated EXISTS with the coalesce spelled
+  // out as an OR (t.audio_hash = l.audio_hash OR (t.audio_hash IS NULL AND
+  // t.file_hash = l.audio_hash)): without ANALYZE stats SQLite plans that
+  // probe via idx_tracks_library instead of the hash indexes — effectively
+  // ledger-rows × library-rows. On a 19k-track library with an 18.5k-row
+  // audio_analysis ledger that was ~22 SECONDS of synchronous main-thread
+  // CPU per status poll (measured on prod, 2026-07-30, admin page pinned
+  // the server at 100%); this form is ~20 ms on the same data.
   const rows = d.prepare(`
     SELECT l.${outcomeCol} AS outcome, COUNT(*) AS n
       FROM ${table} l
-     WHERE EXISTS (
-             SELECT 1 FROM tracks t
-              WHERE (t.audio_hash = l.audio_hash
-                     OR (t.audio_hash IS NULL AND t.file_hash = l.audio_hash))
-                AND ${lib.clause}
+     WHERE l.audio_hash IN (
+             SELECT COALESCE(t.audio_hash, t.file_hash)
+               FROM tracks t
+              WHERE ${lib.clause}
+                AND COALESCE(t.audio_hash, t.file_hash) IS NOT NULL
            )
      GROUP BY l.${outcomeCol}
   `).all(...lib.params);
