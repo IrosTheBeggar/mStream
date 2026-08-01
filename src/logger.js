@@ -219,6 +219,18 @@ export function setBufferCapacity(n) {
   }
 }
 
+// Out-of-band breadcrumb from the stdio guard (src/util/stdio-guard.js): a
+// console write just failed, so this one event CANNOT be logged through
+// winston — the Console transport would write to the very stream that broke.
+// Push straight into the ring so the admin live-log viewer still records why
+// console output stopped. (The on-disk file transport is deliberately not
+// invoked: this path stays free of anything that could itself fail.)
+export function noteStreamFailure(streamName, code) {
+  pushEntry('warn',
+    `[stdio] ${streamName} write failed (${code || 'unknown error'}) — ` +
+    'console output is no longer being delivered; live/file logging continues');
+}
+
 // Read recent log entries for the admin live-log viewer. `sinceSeq` is the
 // highest seq the client has already seen; entries newer than it are returned
 // (oldest→newest) along with the current `lastSeq` cursor and the buffer

@@ -57,5 +57,12 @@ describe('stdio EPIPE survival (orphaned server)', () => {
     assert.equal(proc.exitCode, null,
       'server process died after its stdio pipes broke');
     assert.equal((await fetch(`${baseUrl}/api/v1/ping`)).status, 200);
+
+    // The guard leaves one breadcrumb in the live-log ring so the admin
+    // viewer records why console output stopped (public mode → no token).
+    const logs = await (await fetch(`${baseUrl}/api/v1/admin/logs/recent?since=0`)).json();
+    assert.ok(
+      logs.entries.some(e => e.message.startsWith('[stdio] ') && e.message.includes('write failed')),
+      'expected a [stdio] breadcrumb in the live-log ring');
   });
 });

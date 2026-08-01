@@ -16,14 +16,39 @@
 // take the server down. Swallow write errors on the two std streams; the
 // file and in-memory ring transports keep logging either way. Imported for
 // its side effect as the FIRST import of cli-boot-wrapper.js, so the guard is
-// installed before any other module can write (covers Bun self-dispatched
-// workers too, which re-enter the wrapper).
+// installed before any other module can write.
 
-function guard(stream) {
-  if (stream && typeof stream.on === 'function') {
-    stream.on('error', () => { /* see above — console loss is never fatal */ });
-  }
+// One breadcrumb per process: the first failed write drops a note into the
+// live-log ring so the admin viewer records that console output stopped.
+let noted = false;
+
+function guard(stream, name) {
+  if (!stream || typeof stream.on !== 'function') { return; }
+  stream.on('error', err => {
+    // Console loss is never fatal (see header). The note is routed straight
+    // into the ring — NOT through winston, whose Console transport would
+    // write to the very stream that just broke. Lazy import keeps this
+    // module dependency-free at load time; by the time a write can fail,
+    // logger.js is long since cached.
+    if (noted) { return; }
+    noted = true;
+    import('../logger.js')
+      .then(l => l.noteStreamFailure(name, err && err.code))
+      .catch(() => { /* logging must never throw */ });
+  });
 }
 
-guard(process.stdout);
-guard(process.stderr);
+// Workers keep fail-fast stdio. A worker's stdout is not a console — it's the
+// line-protocol IPC channel to the server that spawned it, and that pipe's
+// read end can only die with the server itself. EPIPE there means "your
+// consumer is gone", and dying on it is the correct teardown (it also matches
+// Node-mode workers, which fork loose scripts and never load this module —
+// only Bun self-dispatched workers re-enter the wrapper). The flag literal
+// mirrors WORKER_FLAG_PREFIX in worker-process.js; kept inline because this
+// module must import nothing.
+const isWorker = process.argv.some(a => a.startsWith('--mstream-worker='));
+
+if (!isWorker) {
+  guard(process.stdout, 'stdout');
+  guard(process.stderr, 'stderr');
+}
