@@ -4,7 +4,10 @@ use std::io::BufReader;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
+// rodio 0.22 renamed Sink to Player; aliased back so the rest of this file
+// reads the same, and so it doesn't collide with the local Player struct.
+use rodio::mixer::Mixer;
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player as Sink};
 use serde::{Deserialize, Serialize};
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
@@ -111,20 +114,25 @@ struct SharedState {
     stopped: bool,
     shuffle: bool,
     loop_mode: LoopMode,
+    /// Desired volume, kept here because a new sink is built for every track
+    /// and starts at full volume otherwise.
+    volume: f32,
 }
 
 struct Player {
-    _stream: OutputStream,
-    stream_handle: OutputStreamHandle,
+    // Field order matters for drop: the sinks inside `shared` must go before
+    // the device that owns the output stream.
     shared: Arc<Mutex<SharedState>>,
+    device: MixerDeviceSink,
 }
 
 impl Player {
-    fn new() -> Self {
-        let (stream, stream_handle) = OutputStream::try_default()
-            .expect("Failed to open audio output device");
-        let sink = Sink::try_new(&stream_handle)
-            .expect("Failed to create audio sink");
+    fn new() -> Result<Self, String> {
+        let mut device = DeviceSinkBuilder::open_default_sink()
+            .map_err(|e| format!("Failed to open audio output device: {}", e))?;
+        // We manage the lifetime; the default drop warning is just noise.
+        device.log_on_drop(false);
+        let sink = Sink::connect_new(device.mixer());
 
         let shared = Arc::new(Mutex::new(SharedState {
             sink,
@@ -135,13 +143,14 @@ impl Player {
             stopped: true,
             shuffle: false,
             loop_mode: LoopMode::None,
+            volume: 1.0,
         }));
 
-        Player { _stream: stream, stream_handle, shared }
+        Ok(Player { shared, device })
     }
 }
 
-fn play_current(state: &mut SharedState, stream_handle: &OutputStreamHandle) -> bool {
+fn play_current(state: &mut SharedState, mixer: &Mixer) -> bool {
     if state.queue_index >= state.queue.len() {
         return false;
     }
@@ -151,8 +160,16 @@ fn play_current(state: &mut SharedState, stream_handle: &OutputStreamHandle) -> 
         Ok(f) => f,
         Err(_) => return false,
     };
-    let reader = BufReader::new(file);
-    let source = match Decoder::new(reader) {
+    // Hand the decoder the file length. Symphonia needs it to binary-search
+    // for a seek point in files without a seek table — notably FLACs written
+    // without a SEEKTABLE block, which were previously unseekable because
+    // rodio's decoder reported byte_len as None.
+    let byte_len = file.metadata().ok().map(|m| m.len());
+    let mut builder = Decoder::builder().with_data(BufReader::new(file)).with_seekable(true);
+    if let Some(len) = byte_len {
+        builder = builder.with_byte_len(len);
+    }
+    let source = match builder.build() {
         Ok(s) => s,
         Err(_) => return false,
     };
@@ -160,7 +177,8 @@ fn play_current(state: &mut SharedState, stream_handle: &OutputStreamHandle) -> 
     let duration = get_file_duration(&path);
 
     state.sink.stop();
-    state.sink = Sink::try_new(stream_handle).expect("Failed to create audio sink");
+    state.sink = Sink::connect_new(mixer);
+    state.sink.set_volume(state.volume);
     state.sink.append(source);
     state.current_file = path;
     state.duration = duration;
@@ -168,30 +186,26 @@ fn play_current(state: &mut SharedState, stream_handle: &OutputStreamHandle) -> 
     true
 }
 
-/// Pick the next index based on shuffle/loop settings
-fn pick_next_index(state: &SharedState) -> Option<usize> {
+/// Pick the next index based on shuffle/loop settings.
+///
+/// `manual` marks a user-pressed skip. Those honour shuffle and loop-all, but
+/// are never held on the same track by loop-one — otherwise pressing next
+/// during loop-one replays the current track forever with no way out.
+fn pick_next_index(state: &SharedState, manual: bool) -> Option<usize> {
     if state.queue.is_empty() {
         return None;
     }
 
-    if state.loop_mode == LoopMode::One {
+    if !manual && state.loop_mode == LoopMode::One {
         return Some(state.queue_index);
     }
 
     if state.shuffle {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        use std::time::SystemTime;
-        // Simple pseudo-random: hash the current time
-        let mut hasher = DefaultHasher::new();
-        SystemTime::now().hash(&mut hasher);
-        state.queue_index.hash(&mut hasher);
-        let rand = hasher.finish() as usize;
         if state.queue.len() <= 1 {
             return Some(0);
         }
         // Pick a different index than current
-        let offset = (rand % (state.queue.len() - 1)) + 1;
+        let offset = fastrand::usize(1..state.queue.len());
         return Some((state.queue_index + offset) % state.queue.len());
     }
 
@@ -272,7 +286,7 @@ fn ok_resp() -> Response<std::io::Cursor<Vec<u8>>> {
 type State = Arc<Mutex<SharedState>>;
 type Resp = Response<std::io::Cursor<Vec<u8>>>;
 
-fn handle_play(state: &State, sh: &OutputStreamHandle, body: &str) -> Resp {
+fn handle_play(state: &State, sh: &Mixer, body: &str) -> Resp {
     let req: PlayRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => return error_response(&format!("Invalid JSON: {}", e)),
@@ -308,6 +322,12 @@ fn handle_seek(state: &State, body: &str) -> Resp {
         Ok(r) => r,
         Err(e) => return error_response(&format!("Invalid JSON: {}", e)),
     };
+    // Duration::from_secs_f64 panics on negative or non-finite input, and a
+    // panic while holding this mutex poisons it — every later request would
+    // then fail. Validate before converting.
+    if !req.position.is_finite() || req.position < 0.0 {
+        return error_response("Seek failed: position must be a non-negative number");
+    }
     let s = state.lock().unwrap();
     match s.sink.try_seek(Duration::from_secs_f64(req.position)) {
         Ok(_) => ok_resp(),
@@ -320,7 +340,10 @@ fn handle_volume(state: &State, body: &str) -> Resp {
         Ok(r) => r,
         Err(e) => return error_response(&format!("Invalid JSON: {}", e)),
     };
-    state.lock().unwrap().sink.set_volume(req.volume.clamp(0.0, 1.0));
+    let mut s = state.lock().unwrap();
+    let volume = req.volume.clamp(0.0, 1.0);
+    s.volume = volume;
+    s.sink.set_volume(volume);
     ok_resp()
 }
 
@@ -330,7 +353,10 @@ fn handle_status(state: &State) -> Resp {
     let is_paused = s.sink.is_paused();
 
     json_response(&StatusResponse {
-        playing: !is_empty && !is_paused,
+        // `stopped` is set synchronously by /stop, while sink.empty() only
+        // flips on the next audio callback — without it, /status reports
+        // playing:true for a few ms after a stop.
+        playing: !is_empty && !is_paused && !s.stopped,
         paused: is_paused,
         position: s.sink.get_pos().as_secs_f64(),
         duration: s.duration,
@@ -343,9 +369,9 @@ fn handle_status(state: &State) -> Resp {
     })
 }
 
-fn handle_next(state: &State, sh: &OutputStreamHandle) -> Resp {
+fn handle_next(state: &State, sh: &Mixer) -> Resp {
     let mut s = state.lock().unwrap();
-    match pick_next_index(&s) {
+    match pick_next_index(&s, true) {
         Some(idx) => {
             s.queue_index = idx;
             if play_current(&mut s, sh) { ok_resp() } else { error_response("Failed to play next track") }
@@ -354,7 +380,7 @@ fn handle_next(state: &State, sh: &OutputStreamHandle) -> Resp {
     }
 }
 
-fn handle_previous(state: &State, sh: &OutputStreamHandle) -> Resp {
+fn handle_previous(state: &State, sh: &Mixer) -> Resp {
     let mut s = state.lock().unwrap();
     if s.queue_index == 0 {
         if s.loop_mode == LoopMode::All && !s.queue.is_empty() {
@@ -387,7 +413,7 @@ fn handle_loop(state: &State) -> Resp {
 
 // ── Queue handlers ──────────────────────────────────────────────────────────
 
-fn handle_queue_add(state: &State, sh: &OutputStreamHandle, body: &str) -> Resp {
+fn handle_queue_add(state: &State, sh: &Mixer, body: &str) -> Resp {
     let req: PlayRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => return error_response(&format!("Invalid JSON: {}", e)),
@@ -402,7 +428,7 @@ fn handle_queue_add(state: &State, sh: &OutputStreamHandle, body: &str) -> Resp 
     ok_resp()
 }
 
-fn handle_queue_add_many(state: &State, sh: &OutputStreamHandle, body: &str) -> Resp {
+fn handle_queue_add_many(state: &State, sh: &Mixer, body: &str) -> Resp {
     let req: AddManyRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => return error_response(&format!("Invalid JSON: {}", e)),
@@ -417,7 +443,7 @@ fn handle_queue_add_many(state: &State, sh: &OutputStreamHandle, body: &str) -> 
     ok_resp()
 }
 
-fn handle_queue_play_index(state: &State, sh: &OutputStreamHandle, body: &str) -> Resp {
+fn handle_queue_play_index(state: &State, sh: &Mixer, body: &str) -> Resp {
     let req: IndexRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => return error_response(&format!("Invalid JSON: {}", e)),
@@ -428,7 +454,7 @@ fn handle_queue_play_index(state: &State, sh: &OutputStreamHandle, body: &str) -
     if play_current(&mut s, sh) { ok_resp() } else { error_response("Failed to play track at index") }
 }
 
-fn handle_queue_remove(state: &State, sh: &OutputStreamHandle, body: &str) -> Resp {
+fn handle_queue_remove(state: &State, sh: &Mixer, body: &str) -> Resp {
     let req: IndexRequest = match serde_json::from_str(body) {
         Ok(r) => r,
         Err(e) => return error_response(&format!("Invalid JSON: {}", e)),
@@ -447,7 +473,11 @@ fn handle_queue_remove(state: &State, sh: &OutputStreamHandle, body: &str) -> Re
         s.queue_index -= 1;
     } else if req.index == s.queue_index {
         if s.queue_index >= s.queue.len() { s.queue_index = s.queue.len() - 1; }
-        play_current(&mut s, sh);
+        // Only resume if something was actually playing; removing a queue
+        // entry while stopped shouldn't start audio as a side effect.
+        if !s.stopped {
+            play_current(&mut s, sh);
+        }
     }
     ok_resp()
 }
@@ -473,28 +503,44 @@ fn handle_queue_get(state: &State) -> Resp {
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut port: u16 = 3333;
+    // Loopback by default: this API has no authentication, and it can play
+    // any local file path and report whether it exists. mStream only ever
+    // connects over 127.0.0.1. Pass --host 0.0.0.0 to restore the old
+    // listen-on-everything behaviour.
+    let mut host = String::from("127.0.0.1");
 
     let mut i = 1;
     while i < args.len() {
         if args[i] == "--port" && i + 1 < args.len() {
             port = args[i + 1].parse().unwrap_or(3333);
             i += 2;
+        } else if args[i] == "--host" && i + 1 < args.len() {
+            host = args[i + 1].clone();
+            i += 2;
         } else {
             i += 1;
         }
     }
 
-    let player = Player::new();
+    // A missing or busy audio device is a normal condition on a headless box;
+    // report it and exit instead of panicking with a backtrace.
+    let player = match Player::new() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
     let state = Arc::clone(&player.shared);
-    let stream_handle = player.stream_handle;
+    let mixer = player.device.mixer();
 
-    let addr = format!("0.0.0.0:{}", port);
+    let addr = format!("{}:{}", host, port);
     let server = Server::http(&addr).unwrap_or_else(|e| {
         eprintln!("Failed to start server on {}: {}", addr, e);
         std::process::exit(1);
     });
 
-    println!("rust-server-audio listening on http://0.0.0.0:{}", port);
+    println!("rust-server-audio listening on http://{}", addr);
 
     loop {
         // Auto-advance: check if sink emptied and advance to next track
@@ -503,10 +549,10 @@ fn main() {
             if s.sink.empty() && !s.stopped && !s.queue.is_empty() {
                 let mut attempts = 0;
                 loop {
-                    match pick_next_index(&s) {
+                    match pick_next_index(&s, false) {
                         Some(idx) => {
                             s.queue_index = idx;
-                            if play_current(&mut s, &stream_handle) {
+                            if play_current(&mut s, mixer) {
                                 break; // successfully started playing
                             }
                             // Failed to decode — try next track
@@ -542,22 +588,22 @@ fn main() {
         let body = read_body(&mut request);
 
         let response = match (method, path.as_str()) {
-            (Method::Post, "/play") => match body { Some(b) => handle_play(&state, &stream_handle, &b), None => error_response("Missing request body") },
+            (Method::Post, "/play") => match body { Some(b) => handle_play(&state, mixer, &b), None => error_response("Missing request body") },
             (Method::Post, "/pause")    => handle_pause(&state),
             (Method::Post, "/resume")   => handle_resume(&state),
             (Method::Post, "/stop")     => handle_stop(&state),
-            (Method::Post, "/next")     => handle_next(&state, &stream_handle),
-            (Method::Post, "/previous") => handle_previous(&state, &stream_handle),
+            (Method::Post, "/next")     => handle_next(&state, mixer),
+            (Method::Post, "/previous") => handle_previous(&state, mixer),
             (Method::Post, "/seek")     => match body { Some(b) => handle_seek(&state, &b), None => error_response("Missing request body") },
             (Method::Post, "/volume")   => match body { Some(b) => handle_volume(&state, &b), None => error_response("Missing request body") },
             (Method::Post, "/shuffle")  => match body { Some(b) => handle_shuffle(&state, &b), None => error_response("Missing request body") },
             (Method::Post, "/loop")     => handle_loop(&state),
             (Method::Get, "/status")    => handle_status(&state),
 
-            (Method::Post, "/queue/add")        => match body { Some(b) => handle_queue_add(&state, &stream_handle, &b), None => error_response("Missing request body") },
-            (Method::Post, "/queue/add-many")   => match body { Some(b) => handle_queue_add_many(&state, &stream_handle, &b), None => error_response("Missing request body") },
-            (Method::Post, "/queue/play-index") => match body { Some(b) => handle_queue_play_index(&state, &stream_handle, &b), None => error_response("Missing request body") },
-            (Method::Post, "/queue/remove")     => match body { Some(b) => handle_queue_remove(&state, &stream_handle, &b), None => error_response("Missing request body") },
+            (Method::Post, "/queue/add")        => match body { Some(b) => handle_queue_add(&state, mixer, &b), None => error_response("Missing request body") },
+            (Method::Post, "/queue/add-many")   => match body { Some(b) => handle_queue_add_many(&state, mixer, &b), None => error_response("Missing request body") },
+            (Method::Post, "/queue/play-index") => match body { Some(b) => handle_queue_play_index(&state, mixer, &b), None => error_response("Missing request body") },
+            (Method::Post, "/queue/remove")     => match body { Some(b) => handle_queue_remove(&state, mixer, &b), None => error_response("Missing request body") },
             (Method::Post, "/queue/clear")      => handle_queue_clear(&state),
             (Method::Get, "/queue")             => handle_queue_get(&state),
 
