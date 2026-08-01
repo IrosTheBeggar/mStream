@@ -337,5 +337,7 @@ export async function startServer(opts = {}) {
     ? `http://127.0.0.1:${sPort}`
     : baseUrl;
 
-  return { baseUrl, port, tmpDir, musicDir, subsonicBaseUrl, subsonicPort: sPort, stop };
+  // `proc` is the raw child handle, for tests that exercise process-level
+  // behavior (e.g. stdio-epipe-orphan.test.mjs destroys its pipe read ends).
+  return { baseUrl, port, tmpDir, musicDir, subsonicBaseUrl, subsonicPort: sPort, proc, stop };
 }

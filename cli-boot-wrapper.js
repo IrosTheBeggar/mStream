@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+// Must stay the first import: installs the stdout/stderr error guards before
+// any other module can write to the console (see src/util/stdio-guard.js).
+import './src/util/stdio-guard.js';
 import { join } from 'path';
 import { maybeRunWorker } from './src/util/worker-process.js';
 import { appRoot } from './src/util/esm-helpers.js';
