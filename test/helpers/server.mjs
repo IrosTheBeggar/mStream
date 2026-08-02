@@ -86,6 +86,14 @@ async function waitForScanComplete(baseUrl, timeoutMs = 90_000) {
  * @param {number} [opts.subsonicPort]             Port for Subsonic separate-port mode
  * @param {boolean} [opts.waitForScan=true]        Block until the initial scan finishes
  * @param {boolean} [opts.captureLogs=false]       Pipe stdout/stderr to the test process
+ * @param {string[]} [opts.extraArgs]              Extra CLI args after `-j <config>`
+ *                                                 (e.g. ['--supervised'])
+ * @param {string}  [opts.stdin='ignore']          stdio mode for the child's stdin;
+ *                                                 'pipe' lets a test hold it open and
+ *                                                 close it (the supervision suite)
+ * @param {string}  [opts.execPath]                Runtime to spawn the server with
+ *                                                 (default: this Node). The supervision
+ *                                                 suite's bun legs pass 'bun'.
  * @param {number}  [opts.rustPlayerPort]          Override config.rustPlayerPort so tests
  *                                                 can point the server-playback proxy
  *                                                 (and Subsonic jukeboxControl) at a stub.
@@ -103,6 +111,9 @@ export async function startServer(opts = {}) {
     rustPlayerPort,
     waitForScan   = true,
     captureLogs   = false,
+    extraArgs     = [],
+    stdin         = 'ignore',
+    execPath      = process.execPath,
     users         = [],
     // Additional library mounts beyond the default `testlib` fixtures.
     // Shape: { vpathName: '/absolute/dir', ... }. Each entry is added
@@ -221,11 +232,11 @@ export async function startServer(opts = {}) {
   }
 
   const proc = spawn(
-    process.execPath,
-    ['cli-boot-wrapper.js', '-j', configPath],
+    execPath,
+    ['cli-boot-wrapper.js', '-j', configPath, ...extraArgs],
     {
       cwd: REPO_ROOT,
-      stdio: captureLogs ? 'inherit' : ['ignore', 'pipe', 'pipe'],
+      stdio: captureLogs ? 'inherit' : [stdin, 'pipe', 'pipe'],
       env: { ...process.env, NODE_ENV: 'test', MSTREAM_TEST_BAKED_SEEDS: '[]', ...env },
     },
   );
@@ -337,5 +348,7 @@ export async function startServer(opts = {}) {
     ? `http://127.0.0.1:${sPort}`
     : baseUrl;
 
-  return { baseUrl, port, tmpDir, musicDir, subsonicBaseUrl, subsonicPort: sPort, stop };
+  // `proc` is the raw child handle, for tests that exercise process-level
+  // behavior (the supervision suite destroys its pipes / closes its stdin).
+  return { baseUrl, port, tmpDir, musicDir, subsonicBaseUrl, subsonicPort: sPort, proc, stop };
 }

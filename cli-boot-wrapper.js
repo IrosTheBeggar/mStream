@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+// Must stay the first import: arms the console-loss watcher (see
+// src/util/supervision.js) before any other module can write.
+import { watchSupervisorStdin } from './src/util/supervision.js';
 import { join } from 'path';
 import { maybeRunWorker } from './src/util/worker-process.js';
 import { appRoot } from './src/util/esm-helpers.js';
@@ -18,7 +21,10 @@ if (await maybeRunWorker()) {
   // binary's own directory under a Bun standalone build (appRoot resolves both).
   // MSTREAM_CONFIG overrides the default; an explicit -j/--json overrides that.
   const defaultJson = process.env.MSTREAM_CONFIG || join(appRoot, 'save/conf/default.json');
-  const { json } = parseArgs(process.argv.slice(2), defaultJson);
+  const { json, supervised } = parseArgs(process.argv.slice(2), defaultJson);
+
+  // Armed before the banner so a supervisor that died mid-boot still stops us.
+  if (supervised) { watchSupervisorStdin(); }
 
   console.clear();
   console.log(`
@@ -40,6 +46,7 @@ if (await maybeRunWorker()) {
 
 function parseArgs(args, defaultJson) {
   let json = defaultJson;
+  let supervised = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '-V' || arg === '--version') {
@@ -52,8 +59,15 @@ function parseArgs(args, defaultJson) {
 Options:
   -V, --version        output the version number
   -j, --json <json>    Specify JSON Boot File (default: ${defaultJson})
+  --supervised         exit when the launching process closes stdin (for
+                       supervisors that run mStream as a managed child and
+                       hold its stdin pipe open)
   -h, --help           display help for command`);
       process.exit(0);
+    }
+    if (arg === '--supervised') {
+      supervised = true;
+      continue;
     }
     if (arg === '-j' || arg === '--json') {
       json = args[++i];
@@ -70,5 +84,5 @@ Options:
     console.error(`error: unknown option '${arg}'`);
     process.exit(1);
   }
-  return { json };
+  return { json, supervised };
 }
