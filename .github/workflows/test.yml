@@ -44,6 +44,13 @@ jobs:
           node-version: 24
           cache: npm
 
+      # Bun runtime, for the supervision suite's bun legs — the shipped
+      # standalone binaries are Bun builds, so the lost-supervision behavior
+      # (test/integration/supervision-shutdown.test.mjs) is asserted on that
+      # runtime too. Those legs skip wherever bun is absent.
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
       # ffmpeg sources differ per OS: version-pinned, checksum-verified static
       # builds fetched from GitHub-CDN mirrors on Linux (BtbN) and Windows
       # (gyan.dev); Homebrew on macOS (arm64 runner — handled separately
