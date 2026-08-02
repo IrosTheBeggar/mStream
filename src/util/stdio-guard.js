@@ -1,4 +1,4 @@
-// Keep console breakage from killing the server.
+// Keep console breakage from killing the server — Bun runtime only.
 //
 // stdout/stderr are pipes whenever a supervisor spawned us — the desktop app,
 // Docker, npm, a service manager. If that parent dies without reaping us
@@ -17,6 +17,19 @@
 // file and in-memory ring transports keep logging either way. Imported for
 // its side effect as the FIRST import of cli-boot-wrapper.js, so the guard is
 // installed before any other module can write.
+//
+// SCOPE — Bun only, by decision rather than necessity. The underlying bug is
+// runtime-agnostic (Node dies the exact same way; the regression test pins
+// that), but the shipped standalone binaries are Bun builds, and they are
+// what supervisors spawn and orphan — so the guard covers the packaged
+// distribution and leaves node/npm installs with Node's stock fail-fast
+// stdio semantics, unchanged from every released version. If the crash class
+// ever matters for Node deployments (e.g. systemd units whose journald
+// restarts), widening this gate is the one-line change. Detection is
+// process.versions.bun (any Bun, never Node) rather than esm-helpers'
+// isBunStandalone: this module must import nothing, and a runtime gate —
+// unlike a compiled-binary gate — is exercisable by tests without building
+// a binary first.
 
 // One breadcrumb per process: the first failed write drops a note into the
 // live-log ring so the admin viewer records that console output stopped.
@@ -38,17 +51,19 @@ function guard(stream, name) {
   });
 }
 
-// Workers keep fail-fast stdio. A worker's stdout is not a console — it's the
-// line-protocol IPC channel to the server that spawned it, and that pipe's
-// read end can only die with the server itself. EPIPE there means "your
-// consumer is gone", and dying on it is the correct teardown (it also matches
-// Node-mode workers, which fork loose scripts and never load this module —
-// only Bun self-dispatched workers re-enter the wrapper). The flag literal
-// mirrors WORKER_FLAG_PREFIX in worker-process.js; kept inline because this
-// module must import nothing.
+const isBunRuntime = typeof process.versions.bun === 'string';
+
+// Workers keep fail-fast stdio even under Bun. A worker's stdout is not a
+// console — it's the line-protocol IPC channel to the server that spawned it,
+// and that pipe's read end can only die with the server itself. EPIPE there
+// means "your consumer is gone", and dying on it is the correct teardown (it
+// also matches Node-mode workers, which fork loose scripts and never load
+// this module — only Bun self-dispatched workers re-enter the wrapper). The
+// flag literal mirrors WORKER_FLAG_PREFIX in worker-process.js; kept inline
+// because this module must import nothing.
 const isWorker = process.argv.some(a => a.startsWith('--mstream-worker='));
 
-if (!isWorker) {
+if (isBunRuntime && !isWorker) {
   guard(process.stdout, 'stdout');
   guard(process.stderr, 'stderr');
 }

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-// Must stay the first import: installs the stdout/stderr error guards before
-// any other module can write to the console (see src/util/stdio-guard.js).
+// Must stay the first import: installs the stdout/stderr error guards (Bun
+// runtime only — see src/util/stdio-guard.js) before any other module can
+// write to the console.
 import './src/util/stdio-guard.js';
 import { join } from 'path';
 import { maybeRunWorker } from './src/util/worker-process.js';

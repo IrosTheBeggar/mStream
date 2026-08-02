@@ -86,6 +86,9 @@ async function waitForScanComplete(baseUrl, timeoutMs = 90_000) {
  * @param {number} [opts.subsonicPort]             Port for Subsonic separate-port mode
  * @param {boolean} [opts.waitForScan=true]        Block until the initial scan finishes
  * @param {boolean} [opts.captureLogs=false]       Pipe stdout/stderr to the test process
+ * @param {string}  [opts.execPath]                Runtime to spawn the server with
+ *                                                 (default: this Node). The stdio-guard
+ *                                                 suite boots under `bun` with it.
  * @param {number}  [opts.rustPlayerPort]          Override config.rustPlayerPort so tests
  *                                                 can point the server-playback proxy
  *                                                 (and Subsonic jukeboxControl) at a stub.
@@ -103,6 +106,7 @@ export async function startServer(opts = {}) {
     rustPlayerPort,
     waitForScan   = true,
     captureLogs   = false,
+    execPath      = process.execPath,
     users         = [],
     // Additional library mounts beyond the default `testlib` fixtures.
     // Shape: { vpathName: '/absolute/dir', ... }. Each entry is added
@@ -221,7 +225,7 @@ export async function startServer(opts = {}) {
   }
 
   const proc = spawn(
-    process.execPath,
+    execPath,
     ['cli-boot-wrapper.js', '-j', configPath],
     {
       cwd: REPO_ROOT,
