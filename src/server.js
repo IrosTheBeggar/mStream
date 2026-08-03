@@ -62,7 +62,13 @@ import packageJson from '../package.json' with { type: 'json' };
 let mstream;
 let server;
 
-export async function serveIt(configFile) {
+// `relisten: true` marks a reboot()'s re-serve of a port THIS process just
+// released. Windows doesn't grant the immediate same-process rebind unix
+// does — close()'s callback can fire before the OS frees the port — so a
+// relisten briefly retries EADDRINUSE instead of treating it as fatal.
+// First boots never retry: there the squatter is a real foreign process and
+// the fail-fast path (log / probe / alert) is the right answer.
+export async function serveIt(configFile, { relisten = false } = {}) {
   mstream = express();
 
   try {
@@ -449,7 +455,17 @@ export async function serveIt(configFile) {
   // terminal, and under a Finder launch pure silence. Log it properly; on an
   // app launch the port squatter is usually an earlier mStream instance, in
   // which case this launch is redundant rather than failed (exit 0).
+  let relistenRetries = relisten ? 20 : 0;   // 20 × 250ms = 5s budget
   server.on('error', async (err) => {
+    if (err.code === 'EADDRINUSE' && relistenRetries > 0) {
+      relistenRetries--;
+      winston.warn(`Port ${config.program.port} not released yet after reboot — retrying listen (${relistenRetries} left)`);
+      // Bare listen(): the 'listening' handler is registered once below —
+      // passing a callback here would stack one stale once-listener per
+      // failed attempt, all firing together on the eventual success.
+      setTimeout(() => server.listen(config.program.port, config.program.address), 250);
+      return;
+    }
     if (err.code === 'EADDRINUSE') {
       winston.error(`Unable to start mStream: port ${config.program.port} is already in use`);
     } else {
@@ -458,7 +474,7 @@ export async function serveIt(configFile) {
     const alreadyRunning = await macAppLaunch.handleListenError(err, protocol, config.program.port, config.program.address);
     process.exit(alreadyRunning ? 0 : 1);
   });
-  server.listen(config.program.port, config.program.address, async () => {
+  const onListening = async () => {
     winston.info(`Access mStream locally: ${protocol}://localhost:${config.program.port}`);
     // Finder launch (macOS .app): surface the UI — nothing else is visible.
     macAppLaunch.announceReady(protocol, config.program.port, config.program.address);
@@ -545,7 +561,9 @@ export async function serveIt(configFile) {
     // Boot server audio (Rust preferred, CLI fallback) — runs CLI detection
     // eagerly so the admin endpoint has fresh data by the time it's called.
     serverPlaybackApi.bootRustPlayer().catch(() => {});
-  });
+  };
+  server.once('listening', onListening);
+  server.listen(config.program.port, config.program.address);
 }
 
 export function reboot() {
@@ -590,7 +608,7 @@ export function reboot() {
     // in-flight writes get a chance to finish but stragglers don't
     // block the restart.
     server.close(() => {
-      serveIt(config.configFile);
+      serveIt(config.configFile, { relisten: true });
     });
     // Capture the OLD instance for the delayed sweep: serveIt above reassigns
     // the module-level `server` to the NEW one before this timer fires. Under
