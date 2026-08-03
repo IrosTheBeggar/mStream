@@ -212,21 +212,36 @@ jobs:
             if curl -sf -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; then UP=1; break; fi
           done
           if [ "$UP" != "1" ]; then echo "FAIL: detached child never served — the app-launch hand-off is broken"; cat "$RUN/applaunch.log"; exit 1; fi
-          # The detached child must be a DIFFERENT process than the one we ran.
           CHILD=$(pgrep -f "applaunch-config.json" | head -1)
           echo "ok: launcher exited 0, detached child $CHILD serving on 3401"
-          # Relaunching while it runs must exit 0 (redundant, not failed) and
-          # leave exactly one server alive — the nonce probe proving identity.
+
+          # Relaunch, full Finder path: detaches again, and the detached copy is
+          # the one that probes. Its stdio is /dev/null by design, so the only
+          # observable contract here is "exit 0 and don't disturb the running
+          # server" — asserting on its log would test nothing (that mistake is
+          # why this step first shipped red).
           __CFBundleIdentifier=io.mstream.server "$BIN" -j "$RUN/applaunch-config.json" > "$RUN/applaunch2.log" 2>&1
           RC2=$?
-          sleep 2
+          sleep 4
+          COUNT=$(pgrep -f "applaunch-config.json" | wc -l | tr -d ' ')
+          curl -sf -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; STILL=$?
+          if [ "$RC2" != "0" ]; then echo "FAIL: relaunch exited $RC2, expected 0"; cat "$RUN/applaunch2.log"; pkill -f applaunch-config.json; exit 1; fi
+          if [ "$COUNT" != "1" ] || [ "$STILL" != "0" ]; then echo "FAIL: relaunch disturbed the running server (count=$COUNT alive=$STILL)"; pkill -f applaunch-config.json; exit 1; fi
+          echo "ok: redundant relaunch exited 0 and left the running server alone"
+
+          # Relaunch with the detach already done (MSTREAM_MAC_APP_DETACHED=1 is
+          # what the detached copy itself carries), so the probe runs in THIS
+          # process where its result is observable. This is the assertion that
+          # actually covers the nonce identity check.
+          __CFBundleIdentifier=io.mstream.server MSTREAM_MAC_APP_DETACHED=1 "$BIN" -j "$RUN/applaunch-config.json" > "$RUN/applaunch3.log" 2>&1
+          RC3=$?
           COUNT=$(pgrep -f "applaunch-config.json" | wc -l | tr -d ' ')
           curl -sf -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; STILL=$?
           pkill -f "applaunch-config.json" 2>/dev/null
-          if [ "$RC2" != "0" ]; then echo "FAIL: relaunch against a running instance exited $RC2, expected 0"; cat "$RUN/applaunch2.log"; exit 1; fi
-          grep -q "already running" "$RUN/applaunch2.log" || { echo "FAIL: relaunch did not recognize the running instance (nonce probe failed)"; cat "$RUN/applaunch2.log"; exit 1; }
+          if [ "$RC3" != "0" ]; then echo "FAIL: in-process relaunch exited $RC3, expected 0 (redundant, not failed)"; cat "$RUN/applaunch3.log"; exit 1; fi
+          grep -q "already running" "$RUN/applaunch3.log" || { echo "FAIL: the nonce probe did not recognize our own running instance"; cat "$RUN/applaunch3.log"; exit 1; }
           if [ "$COUNT" != "1" ] || [ "$STILL" != "0" ]; then echo "FAIL: relaunch disturbed the running server (count=$COUNT alive=$STILL)"; exit 1; fi
-          echo "SMOKE OK: app-launch detach, serve, and redundant-relaunch all behave"
+          echo "SMOKE OK: app-launch detach, serve, redundant relaunch, and nonce probe all behave"
 
       - name: Smoke test iroh native binding
         # Proves the standalone binary can dlopen the bundled @number0/iroh .node
