@@ -592,9 +592,17 @@ export function reboot() {
     server.close(() => {
       serveIt(config.configFile);
     });
+    // Capture the OLD instance for the delayed sweep: serveIt above reassigns
+    // the module-level `server` to the NEW one before this timer fires. Under
+    // Node the mistargeted call was survivable (closeAllConnections only
+    // destroys sockets), but under Bun closeAllConnections stops the server
+    // outright (listening=false + Bun.serve stop(true)) — every standalone
+    // binary lost its listener ~1s after any admin-triggered reboot, leaving
+    // a live process serving nothing.
+    const closingServer = server;
     setTimeout(() => {
-      if (typeof server.closeAllConnections === 'function') {
-        try { server.closeAllConnections(); } catch (_) {}
+      if (typeof closingServer.closeAllConnections === 'function') {
+        try { closingServer.closeAllConnections(); } catch (_) { /* already gone */ }
       }
     }, 1000);
   } catch (err) {

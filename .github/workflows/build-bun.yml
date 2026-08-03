@@ -122,11 +122,29 @@ jobs:
           CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3399/api/v1/ping" 2>/dev/null)
           echo "HTTP up=$UP after ~${i}s ; /api/v1/ping -> ${CODE:-000}"
           grep -iE "scan started|scan complete" "$RUN/boot.log"
+
+          # (4) soft reboot must survive under the BUN runtime. Node's test
+          # suite can't catch this class: reboot()'s delayed sweep once hit
+          # the NEW server, and Bun's closeAllConnections (unlike Node's)
+          # stops the listener outright — the binary kept running with no
+          # port. Trigger a reboot-requiring config change, require the
+          # server back up, then require it STILL up after the ~1s sweep.
+          REBOOT_OK=0
+          if [ "$CODE" = "200" ]; then
+            curl -s -X POST -H 'Content-Type: application/json' -d '{"trustProxy":true}' "http://127.0.0.1:3399/api/v1/admin/config/trust-proxy" > /dev/null 2>&1
+            for i in $(seq 1 20); do
+              sleep 1
+              if curl -sf -o /dev/null "http://127.0.0.1:3399/api/v1/ping"; then REBOOT_OK=1; break; fi
+            done
+            sleep 3   # outlive the close-grace sweep, which used to kill the new listener
+            curl -sf -o /dev/null "http://127.0.0.1:3399/api/v1/ping" || REBOOT_OK=0
+          fi
           kill "$SRV" 2>/dev/null
 
           if [ "$CODE" != "200" ]; then echo "FAIL: server did not serve 200"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; fi
           grep -q "Scan complete" "$RUN/boot.log" || { echo "FAIL: scan did not complete"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; }
-          echo "SMOKE OK: $BIN booted, served 200, and completed a scan"
+          if [ "$REBOOT_OK" != "1" ]; then echo "FAIL: server did not survive a soft reboot (admin config change)"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; fi
+          echo "SMOKE OK: $BIN booted, served 200, completed a scan, and survived a soft reboot"
 
       - name: Smoke test iroh native binding
         # Proves the standalone binary can dlopen the bundled @number0/iroh .node
