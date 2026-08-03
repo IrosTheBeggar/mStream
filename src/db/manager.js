@@ -54,6 +54,14 @@ let _userLibrariesCache = null;   // Map<userId, [libraryId, ...]>
 
 export function initDB() {
   const dbPath = path.join(config.program.storage.dbDirectory, 'mstream.db');
+  // A soft reboot re-runs this. Without closing first, every admin-triggered
+  // reboot leaked the previous connection — its file descriptors and its
+  // native page cache (up to the 64 MB budget below), neither of which the
+  // JS heap knows to reclaim. discovery-db.js already guards the same way.
+  if (db) {
+    try { db.close(); } catch (err) { winston.warn(`Could not close the previous database handle: ${err.message}`); }
+    db = null;
+  }
   db = new DatabaseSync(dbPath);
 
   // Enable WAL mode for better concurrent read/write performance

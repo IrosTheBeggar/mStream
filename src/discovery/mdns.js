@@ -296,9 +296,14 @@ export function start() {
   if (!config.program.discovery || !config.program.discovery.mdns.enabled) { return; }
 
   const opts = { type: 'udp4', reuseAddr: true };
-  // SO_REUSEPORT lets us share 5353 with the OS responder where it exists;
-  // it's unsupported on Windows, where SO_REUSEADDR already allows sharing.
-  if (process.platform !== 'win32') { opts.reusePort = true; }
+  // SO_REUSEPORT lets us share 5353 with the OS responder. libuv implements
+  // UV_UDP_REUSEPORT only on Linux and FreeBSD — everywhere else Node's bind
+  // fails outright with ENOTSUP, which silently disabled discovery for the
+  // whole process on macOS (Bun's own socket layer sets SO_REUSEPORT directly
+  // and binds fine, so shipped binaries hid it). darwin doesn't need the flag
+  // anyway: there reuseAddr already maps to SO_REUSEPORT, and Windows shares
+  // via SO_REUSEADDR.
+  if (process.platform === 'linux' || process.platform === 'freebsd') { opts.reusePort = true; }
 
   let sock;
   try {

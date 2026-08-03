@@ -58,6 +58,12 @@ async function buildBridge(peer) {
 
   const entry = { port: 0, baseUrl: '', server: null, conn, activeSockets: 0, idleTimer: null };
   entry.server = net.createServer((socket) => {
+    // Attached before the async openBi() below: bridge() installs the real
+    // handler only once the QUIC stream resolves, and a reset inside that
+    // window would otherwise be an unhandled socket 'error'.
+    socket.on('error', (err) => {
+      winston.debug(`[federation] bridge socket error (${err?.message})`);
+    });
     entry.activeSockets += 1;
     clearTimeout(entry.idleTimer);
     socket.once('close', () => {
