@@ -211,6 +211,20 @@ console.log(`Done: dist/${bundleName}.zip`);
 
 // macOS .app Info.plist — points CFBundleIconFile at the staged mStream.icns
 // and CFBundleExecutable at the inner binary.
+//
+// LSUIElement is load-bearing (#802): the executable is a faceless CLI server
+// that never connects to the WindowServer, and without this key LaunchServices
+// treats a Finder launch as a regular GUI app — the Dock icon bounces, times
+// out, and the app is branded "Application Not Responding" forever even though
+// the server is up and serving. As a UIElement/agent app it gets no Dock
+// presence at all; the visible launch feedback is the browser open in
+// src/util/mac-app-launch.js, which keys off CFBundleIdentifier below (the two
+// must stay in sync).
+//
+// The NSLocalNetwork/NSBonjour keys caption macOS 15+'s Local Network consent
+// prompt, which fires on first launch because mDNS advertising
+// (_mstream._tcp, src/discovery/mdns.js) is on by default — without them the
+// prompt shows no explanation of why a music server wants LAN access.
 function macInfoPlist(version) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -225,6 +239,12 @@ function macInfoPlist(version) {
   <key>CFBundleIconFile</key><string>mStream.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSLocalNetworkUsageDescription</key><string>mStream advertises itself over Bonjour so players on your local network can find your music library.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_mstream._tcp</string>
+  </array>
 </dict>
 </plist>
 `;

@@ -55,6 +55,7 @@ import * as backupManager from './backup/manager.js';
 // Velvet UI modules — dynamically imported only when ui='velvet' is active
 import WebError from './util/web-error.js';
 import { isAdminAllowed } from './util/admin-network.js';
+import * as macAppLaunch from './util/mac-app-launch.js';
 
 import packageJson from '../package.json' with { type: 'json' };
 
@@ -68,6 +69,8 @@ export async function serveIt(configFile) {
     await config.setup(configFile);
   } catch (err) {
     winston.error('Failed to validate config file', { stack: err });
+    // A Finder-launched app has no console to print to — raise a dialog.
+    macAppLaunch.announceBootFailure(`mStream could not start — error in the config file:\n${configFile}\n\n${err.message}`);
     process.exit(1);
   }
 
@@ -116,6 +119,10 @@ export async function serveIt(configFile) {
       'Access-Control-Allow-Headers',
       'Origin, X-Requested-With, Content-Type, Accept'
     );
+    // Identity marker on every response, auth-independent: lets a second
+    // .app launch recognize that the port squatter is an existing mStream
+    // and reopen the browser at it (see src/util/mac-app-launch.js).
+    res.header('X-Mstream', 'true');
     next();
   });
   // Trust Proxy
@@ -435,10 +442,26 @@ export async function serveIt(configFile) {
   });
 
   // Start the server!
+  const protocol = config.program.ssl && config.program.ssl.cert && config.program.ssl.key ? 'https' : 'http';
   server.on('request', mstream);
+  // Without this handler a failed listen() — port already taken being the
+  // canonical case — dies as an uncaught 'error' event: a raw stack in a
+  // terminal, and under a Finder launch pure silence. Log it properly; on an
+  // app launch the port squatter is usually an earlier mStream instance, in
+  // which case this launch is redundant rather than failed (exit 0).
+  server.on('error', async (err) => {
+    if (err.code === 'EADDRINUSE') {
+      winston.error(`Unable to start mStream: port ${config.program.port} is already in use`);
+    } else {
+      winston.error(`Server error: ${err.message}`, { stack: err });
+    }
+    const alreadyRunning = await macAppLaunch.handleListenError(err, protocol, config.program.port, config.program.address);
+    process.exit(alreadyRunning ? 0 : 1);
+  });
   server.listen(config.program.port, config.program.address, async () => {
-    const protocol = config.program.ssl && config.program.ssl.cert && config.program.ssl.key ? 'https' : 'http';
     winston.info(`Access mStream locally: ${protocol}://localhost:${config.program.port}`);
+    // Finder launch (macOS .app): surface the UI — nothing else is visible.
+    macAppLaunch.announceReady(protocol, config.program.port, config.program.address);
 
     const taskQueue = await import('./db/task-queue.js');
     taskQueue.runAfterBoot();

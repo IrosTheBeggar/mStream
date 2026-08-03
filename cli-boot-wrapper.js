@@ -5,6 +5,7 @@
 import { watchSupervisorStdin } from './src/util/supervision.js';
 import { join } from 'path';
 import { maybeRunWorker } from './src/util/worker-process.js';
+import { detachForFinderLaunch } from './src/util/mac-app-launch.js';
 import { appRoot } from './src/util/esm-helpers.js';
 import pkg from './package.json' with { type: 'json' };
 
@@ -23,6 +24,14 @@ if (await maybeRunWorker()) {
   const defaultJson = process.env.MSTREAM_CONFIG || join(appRoot, 'save/conf/default.json');
   const { json, supervised } = parseArgs(process.argv.slice(2), defaultJson);
 
+  // Finder double-click (macOS .app only — a no-op everywhere else): hand
+  // the real boot to a detached copy and exit, so LaunchServices doesn't
+  // pin this process as "the app" and swallow later double-clicks. See
+  // src/util/mac-app-launch.js for the whole desktop-launch story.
+  if (detachForFinderLaunch()) {
+    process.exit(0);
+  }
+
   // Armed before the banner so a supervisor that died mid-boot still stops us.
   if (supervised) { watchSupervisorStdin(); }
 
@@ -39,9 +48,20 @@ if (await maybeRunWorker()) {
   console.log('https://discord.gg/AM896Rr');
   console.log();
 
-  // Boot the server
+  // Boot the server. serveIt can reject before the listen handler exists
+  // (bad SSL certs, unexpected setup errors); without this catch that's an
+  // unhandled rejection — a raw stack in a terminal, and total silence when
+  // Finder launched the macOS .app (stdout is /dev/null there). Surface it,
+  // and as a dialog on an app launch (see src/util/mac-app-launch.js).
   const server = await import("./src/server.js");
-  server.serveIt(json);
+  server.serveIt(json).catch(async (err) => {
+    console.error('mStream failed to start:', err);
+    try {
+      const { announceBootFailure } = await import('./src/util/mac-app-launch.js');
+      announceBootFailure(`mStream could not start: ${err.message}`);
+    } catch (_err) { /* feedback is best-effort — still exit nonzero */ }
+    process.exit(1);
+  });
 }
 
 function parseArgs(args, defaultJson) {

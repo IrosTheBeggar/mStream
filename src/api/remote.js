@@ -78,6 +78,15 @@ export function setupAfterAuth(mstream, server) {
     }
   }});
 
+  // ws forwards the wrapped HTTP server's 'error' events onto the wss (and
+  // adds its own). With no listener here, that re-emit throws mid-dispatch —
+  // killing the process before server.js's own 'error' handler (registered
+  // after this setup runs) ever sees the original event. Log only: fatal
+  // server errors are the HTTP handler's job.
+  wss.on('error', (err) => {
+    winston.error(`WebSocket server error: ${err.message}`);
+  });
+
   wss.on('connection', (connection, req) => {
     const code = nanoid(8);
     winston.info(`Websocket Connection Accepted With Code: ${code}`);
