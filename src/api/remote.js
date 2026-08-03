@@ -89,6 +89,15 @@ export function setupAfterAuth(mstream, server) {
 
   wss.on('connection', (connection, req) => {
     const code = nanoid(8);
+    // MUST be attached before anything else can throw: ws raises protocol and
+    // socket failures (a malformed frame, a reset mid-message) on the
+    // individual connection, never on the wss above — and an unhandled
+    // EventEmitter 'error' takes the whole server down. Under Node that made
+    // one 6-byte bad frame from any client that completed the upgrade a remote
+    // process kill; on a fresh install, verifyClient skips auth entirely.
+    connection.on('error', (err) => {
+      winston.warn(`Websocket connection error (${code}): ${err.message}`);
+    });
     winston.info(`Websocket Connection Accepted With Code: ${code}`);
     clients[code] = connection;
 

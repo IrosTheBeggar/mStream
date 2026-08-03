@@ -2,6 +2,7 @@ import winston from 'winston';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import Joi from 'joi';
 import cookieParser from 'cookie-parser';
 import { compression } from './util/compression.js';
@@ -61,6 +62,42 @@ import packageJson from '../package.json' with { type: 'json' };
 
 let mstream;
 let server;
+// Live sockets of the CURRENT server, for reboot()'s forced drain. Tracked by
+// hand because closeAllConnections() is unusable under Bun: its shim nulls the
+// internal handle synchronously inside close(), so any sweep scheduled after
+// close() early-returns and does nothing (Node's, by contrast, still destroys
+// sockets). Without a working sweep a reboot during an active transfer — a
+// transcode, a big download — never fires its close callback and the server
+// never comes back. 'connection' fires on both runtimes, so this does.
+let liveSockets = new Set();
+// Per-boot identity secret for the macOS relaunch probe (see
+// src/util/mac-app-launch.js). Published only to loopback callers and mirrored
+// into a 0600 file at listen time, so a second .app launch can prove the port
+// holder is really our own running instance before redirecting the user's
+// browser at it. Regenerated every boot: a stale file can then only fail
+// closed.
+const instanceNonce = crypto.randomBytes(18).toString('base64url');
+const INSTANCE_NONCE_FILE = '.instance-nonce';
+
+function instanceNoncePath() {
+  return path.join(config.program.storage.dbDirectory, INSTANCE_NONCE_FILE);
+}
+
+// Loopback-only gate for the nonce header. req.socket.remoteAddress is the
+// real peer — deliberately NOT req.ip, which honors X-Forwarded-For under
+// trustProxy and would let a remote client spoof its way to the nonce.
+function isLoopbackRequest(req) {
+  const addr = req.socket && req.socket.remoteAddress;
+  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+}
+
+// True from the start of a reboot until its re-served instance is listening.
+// Guards against overlapping reboots (two quick admin saves, two admin tabs):
+// a second server.close() on an already-closing server still runs its callback,
+// which would start a SECOND serveIt racing the first for the port — and the
+// loser would exhaust the relisten budget and process.exit() the whole process,
+// killing the healthy winner with it.
+let rebootInFlight = false;
 
 // `relisten: true` marks a reboot()'s re-serve of a port THIS process just
 // released. Windows doesn't grant the immediate same-process rebind unix
@@ -129,6 +166,11 @@ export async function serveIt(configFile, { relisten = false } = {}) {
     // .app launch recognize that the port squatter is an existing mStream
     // and reopen the browser at it (see src/util/mac-app-launch.js).
     res.header('X-Mstream', 'true');
+    // The per-boot instance nonce PROVES that identity, and only to callers
+    // on this machine — a marker anyone can copy would let a local squatter
+    // redirect the user's browser to itself. Loopback-only so it never
+    // travels the LAN.
+    if (isLoopbackRequest(req)) { res.header('X-Mstream-Instance', instanceNonce); }
     next();
   });
   // Trust Proxy
@@ -455,15 +497,31 @@ export async function serveIt(configFile, { relisten = false } = {}) {
   // terminal, and under a Finder launch pure silence. Log it properly; on an
   // app launch the port squatter is usually an earlier mStream instance, in
   // which case this launch is redundant rather than failed (exit 0).
+  // Track live sockets for reboot()'s drain (see liveSockets above).
+  const mySockets = new Set();
+  liveSockets = mySockets;
+  server.on('connection', (socket) => {
+    mySockets.add(socket);
+    socket.on('close', () => mySockets.delete(socket));
+  });
+  const thisServer = server;
   let relistenRetries = relisten ? 20 : 0;   // 20 × 250ms = 5s budget
   server.on('error', async (err) => {
+    // Only the CURRENT server may act on its errors. A superseded instance
+    // (an overlapping reboot's loser) must never run the exit paths below —
+    // it would take the healthy live server down with it.
+    if (thisServer !== server) {
+      winston.warn(`Ignoring '${err.code || err.message}' from a superseded server instance`);
+      try { thisServer.close(); } catch (_) { /* already closed */ }
+      return;
+    }
     if (err.code === 'EADDRINUSE' && relistenRetries > 0) {
       relistenRetries--;
       winston.warn(`Port ${config.program.port} not released yet after reboot — retrying listen (${relistenRetries} left)`);
       // Bare listen(): the 'listening' handler is registered once below —
       // passing a callback here would stack one stale once-listener per
       // failed attempt, all firing together on the eventual success.
-      setTimeout(() => server.listen(config.program.port, config.program.address), 250);
+      setTimeout(() => { if (thisServer === server) { thisServer.listen(config.program.port, config.program.address); } }, 250);
       return;
     }
     if (err.code === 'EADDRINUSE') {
@@ -471,10 +529,27 @@ export async function serveIt(configFile, { relisten = false } = {}) {
     } else {
       winston.error(`Server error: ${err.message}`, { stack: err });
     }
-    const alreadyRunning = await macAppLaunch.handleListenError(err, protocol, config.program.port, config.program.address);
+    // Fatal diagnostics go to fd 2 directly as well: process.exit() below beats
+    // winston's File transport, whose boot-time backlog means the on-disk log
+    // of a writeLogs install otherwise just stops mid-boot with no reason.
+    try { fs.writeSync(2, `mStream fatal: ${err.code === 'EADDRINUSE' ? `port ${config.program.port} already in use` : err.message}\n`); } catch (_) { /* stderr gone too */ }
+    // The running instance's nonce, if any — the only proof that the port
+    // holder is our own server and not a local impostor.
+    let runningNonce;
+    try { runningNonce = fs.readFileSync(instanceNoncePath(), 'utf8').trim(); } catch (_) { /* none: probe fails closed */ }
+    const alreadyRunning = await macAppLaunch.handleListenError(err, protocol, config.program.port, config.program.address, runningNonce);
     process.exit(alreadyRunning ? 0 : 1);
   });
   const onListening = async () => {
+    rebootInFlight = false;   // a reboot's re-serve is complete
+    // Publish the instance nonce only once we actually OWN the port — a
+    // process that failed to listen must never overwrite the running
+    // instance's file, or the relaunch probe would stop recognizing it.
+    try {
+      fs.writeFileSync(instanceNoncePath(), instanceNonce, { mode: 0o600 });
+    } catch (err) {
+      winston.warn(`Could not write the instance nonce file: ${err.message}`);
+    }
     winston.info(`Access mStream locally: ${protocol}://localhost:${config.program.port}`);
     // Finder launch (macOS .app): surface the UI — nothing else is visible.
     macAppLaunch.announceReady(protocol, config.program.port, config.program.address);
@@ -568,6 +643,17 @@ export async function serveIt(configFile, { relisten = false } = {}) {
 
 export function reboot() {
   try {
+    // Overlapping reboots are a hard outage, not a slow restart: a second
+    // close() on an already-closing server still runs its callback, so two
+    // serveIt()s race for the port and the loser's exhausted relisten budget
+    // exits the process out from under the winner. Two quick admin saves is
+    // all it takes. Coalesce instead — the in-flight reboot already re-reads
+    // the config from disk, so it picks up both changes.
+    if (rebootInFlight) {
+      winston.warn('Reboot already in progress — skipping the duplicate request');
+      return;
+    }
+    rebootInFlight = true;
     winston.info('Rebooting Server');
     logger.reset();
     scrobblerApi.reset();
@@ -607,23 +693,43 @@ export function reboot() {
     // callback fires. Force the close after a short grace period so
     // in-flight writes get a chance to finish but stragglers don't
     // block the restart.
-    server.close(() => {
-      serveIt(config.configFile, { relisten: true });
-    });
-    // Capture the OLD instance for the delayed sweep: serveIt above reassigns
-    // the module-level `server` to the NEW one before this timer fires. Under
-    // Node the mistargeted call was survivable (closeAllConnections only
-    // destroys sockets), but under Bun closeAllConnections stops the server
-    // outright (listening=false + Bun.serve stop(true)) — every standalone
-    // binary lost its listener ~1s after any admin-triggered reboot, leaving
-    // a live process serving nothing.
-    const closingServer = server;
-    setTimeout(() => {
-      if (typeof closingServer.closeAllConnections === 'function') {
-        try { closingServer.closeAllConnections(); } catch (_) { /* already gone */ }
+    server.close((err) => {
+      // An already-closed server reports ERR_SERVER_NOT_RUNNING here; re-serving
+      // on that would mean two live instances fighting for the port.
+      if (err) {
+        winston.warn(`Reboot: server was already closed (${err.code || err.message}) — not re-serving`);
+        rebootInFlight = false;
+        return;
       }
+      // serveIt can reject before its listen handler exists (bad SSL certs are
+      // the classic: config.setup re-reads the file every reboot, so a rotated
+      // cert first fails HERE). Unhandled, that's a raw unhandled rejection
+      // with the old server already town down — the silent death this PR set
+      // out to eliminate, just moved to the reboot path.
+      serveIt(config.configFile, { relisten: true }).catch((rebootErr) => {
+        rebootInFlight = false;
+        winston.error('Reboot failed to restart the server', { stack: rebootErr });
+        try { fs.writeSync(2, `mStream fatal: reboot failed to restart the server: ${rebootErr.message}\n`); } catch (_) { /* stderr gone */ }
+        macAppLaunch.announceBootFailure(`mStream stopped: the server could not restart after a settings change.\n\n${rebootErr.message}`);
+        process.exit(1);
+      });
+    });
+    // Force the drain after a grace period. Sweeps the sockets WE tracked
+    // rather than calling closeAllConnections(): under Bun that method is a
+    // guaranteed no-op once close() has run (its shim nulls the internal
+    // handle synchronously inside close()), so an active transfer would hold
+    // the close callback — and therefore the whole restart — open forever.
+    // Destroying the old server's sockets is safe for the new one: `mySockets`
+    // is per-instance, and serveIt rebinds `liveSockets` to the new set.
+    const closingSockets = liveSockets;
+    setTimeout(() => {
+      for (const socket of closingSockets) {
+        try { socket.destroy(); } catch (_) { /* already gone */ }
+      }
+      closingSockets.clear();
     }, 1000);
   } catch (err) {
+    rebootInFlight = false;
     winston.error('Reboot Failed', { stack: err });
     process.exit(1);
   }

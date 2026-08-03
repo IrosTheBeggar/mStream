@@ -129,22 +129,104 @@ jobs:
           # stops the listener outright — the binary kept running with no
           # port. Trigger a reboot-requiring config change, require the
           # server back up, then require it STILL up after the ~1s sweep.
+          # Fail closed: assert the TRIGGER worked (a 400 from a renamed key or
+          # an auth wall would otherwise leave the server up and pass this step
+          # having rebooted nothing), and require a SECOND "Access mStream
+          # locally" line as positive proof a re-serve actually happened.
           REBOOT_OK=0
           if [ "$CODE" = "200" ]; then
-            curl -s -X POST -H 'Content-Type: application/json' -d '{"trustProxy":true}' "http://127.0.0.1:3399/api/v1/admin/config/trust-proxy" > /dev/null 2>&1
+            BOOTS_BEFORE=$(grep -c "Access mStream locally" "$RUN/boot.log")
+            TRIG=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"trustProxy":true}' "http://127.0.0.1:3399/api/v1/admin/config/trust-proxy")
+            if [ "$TRIG" != "200" ]; then
+              echo "FAIL: reboot trigger POST returned ${TRIG:-000}, not 200 — the smoke would have passed without rebooting anything"
+              cat "$RUN/boot.log"; kill "$SRV" 2>/dev/null; exit 1
+            fi
             for i in $(seq 1 20); do
               sleep 1
               if curl -sf -o /dev/null "http://127.0.0.1:3399/api/v1/ping"; then REBOOT_OK=1; break; fi
             done
             sleep 3   # outlive the close-grace sweep, which used to kill the new listener
             curl -sf -o /dev/null "http://127.0.0.1:3399/api/v1/ping" || REBOOT_OK=0
+            BOOTS_AFTER=$(grep -c "Access mStream locally" "$RUN/boot.log")
+            if [ "$BOOTS_AFTER" -le "$BOOTS_BEFORE" ]; then
+              echo "FAIL: no re-serve observed (boot lines ${BOOTS_BEFORE} -> ${BOOTS_AFTER}) — the reboot never happened"
+              REBOOT_OK=0
+            fi
+
+            # (5) overlapping reboots must not kill the process. Two rapid admin
+            # saves used to start two serveIt()s racing for the port; the loser
+            # exhausted the relisten budget and process.exit()ed the healthy
+            # winner. /config/address is the right trigger: unlike trust-proxy
+            # and most others it has NO unchanged-value short-circuit, so both
+            # POSTs really do reboot (with a no-op second POST this test passes
+            # against the bug). Bind stays reachable at 127.0.0.1.
+            curl -s -o /dev/null --max-time 5 -X POST -H 'Content-Type: application/json' -d '{"address":"127.0.0.1"}' "http://127.0.0.1:3399/api/v1/admin/config/address" &
+            C1=$!
+            curl -s -o /dev/null --max-time 5 -X POST -H 'Content-Type: application/json' -d '{"address":"127.0.0.1"}' "http://127.0.0.1:3399/api/v1/admin/config/address" &
+            C2=$!
+            wait $C1 $C2
+            CONCURRENT_OK=0
+            for i in $(seq 1 25); do
+              sleep 1
+              if curl -sf -o /dev/null "http://127.0.0.1:3399/api/v1/ping"; then CONCURRENT_OK=1; break; fi
+            done
+            # Must outlive a losing sibling's FULL relisten budget (20 x 250ms):
+            # the process.exit lands ~5s in, and a shorter wait passes against
+            # the very bug this guards.
+            sleep 10
+            curl -sf -o /dev/null "http://127.0.0.1:3399/api/v1/ping" || CONCURRENT_OK=0
+            kill -0 "$SRV" 2>/dev/null || CONCURRENT_OK=0
           fi
           kill "$SRV" 2>/dev/null
 
           if [ "$CODE" != "200" ]; then echo "FAIL: server did not serve 200"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; fi
           grep -q "Scan complete" "$RUN/boot.log" || { echo "FAIL: scan did not complete"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; }
           if [ "$REBOOT_OK" != "1" ]; then echo "FAIL: server did not survive a soft reboot (admin config change)"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; fi
-          echo "SMOKE OK: $BIN booted, served 200, completed a scan, and survived a soft reboot"
+          if [ "$CONCURRENT_OK" != "1" ]; then echo "FAIL: server did not survive two overlapping reboots"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; fi
+          echo "SMOKE OK: $BIN booted, served 200, completed a scan, and survived both a soft reboot and overlapping reboots"
+
+      - name: Smoke test macOS app-launch flow (detach + serve)
+        # The .app double-click path (src/util/mac-app-launch.js) is gated on
+        # __CFBundleIdentifier, which nothing in CI sets — so the headline flow
+        # of the desktop fix had zero coverage, and LSUIElement means a
+        # regression is INVISIBLE to users (no Dock icon, no window, no console).
+        # Setting the marker by hand reproduces a LaunchServices launch closely
+        # enough to prove the two compiled-binary-only behaviors: the argv slice
+        # in detachForFinderLaunch (whose shape exists only in a Bun standalone)
+        # and the detached hand-off. announceReady's browser spawn is
+        # stdio-ignored and detached, so it's harmless on a runner.
+        if: matrix.key == 'darwin-arm64'
+        shell: bash
+        run: |
+          set +e
+          D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
+          BIN="$D/mStream.app/Contents/MacOS/mStream"
+          RUN=$(dirname "$BIN")
+          printf '{"port":3401}' > "$RUN/applaunch-config.json"
+          __CFBundleIdentifier=io.mstream.server "$BIN" -j "$RUN/applaunch-config.json" > "$RUN/applaunch.log" 2>&1
+          LAUNCHER_RC=$?
+          if [ "$LAUNCHER_RC" != "0" ]; then echo "FAIL: app-mode launcher exited $LAUNCHER_RC (expected 0 after handing off)"; cat "$RUN/applaunch.log"; exit 1; fi
+          UP=0
+          for i in $(seq 1 30); do
+            sleep 1
+            if curl -sf -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; then UP=1; break; fi
+          done
+          if [ "$UP" != "1" ]; then echo "FAIL: detached child never served — the app-launch hand-off is broken"; cat "$RUN/applaunch.log"; exit 1; fi
+          # The detached child must be a DIFFERENT process than the one we ran.
+          CHILD=$(pgrep -f "applaunch-config.json" | head -1)
+          echo "ok: launcher exited 0, detached child $CHILD serving on 3401"
+          # Relaunching while it runs must exit 0 (redundant, not failed) and
+          # leave exactly one server alive — the nonce probe proving identity.
+          __CFBundleIdentifier=io.mstream.server "$BIN" -j "$RUN/applaunch-config.json" > "$RUN/applaunch2.log" 2>&1
+          RC2=$?
+          sleep 2
+          COUNT=$(pgrep -f "applaunch-config.json" | wc -l | tr -d ' ')
+          curl -sf -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; STILL=$?
+          pkill -f "applaunch-config.json" 2>/dev/null
+          if [ "$RC2" != "0" ]; then echo "FAIL: relaunch against a running instance exited $RC2, expected 0"; cat "$RUN/applaunch2.log"; exit 1; fi
+          grep -q "already running" "$RUN/applaunch2.log" || { echo "FAIL: relaunch did not recognize the running instance (nonce probe failed)"; cat "$RUN/applaunch2.log"; exit 1; }
+          if [ "$COUNT" != "1" ] || [ "$STILL" != "0" ]; then echo "FAIL: relaunch disturbed the running server (count=$COUNT alive=$STILL)"; exit 1; fi
+          echo "SMOKE OK: app-launch detach, serve, and redundant-relaunch all behave"
 
       - name: Smoke test iroh native binding
         # Proves the standalone binary can dlopen the bundled @number0/iroh .node

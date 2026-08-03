@@ -98,13 +98,22 @@ export function announceBootFailure(message) {
   alert(message);
 }
 
-// Ask whatever is already on the port whether it's an mStream. Every mStream
-// response carries the X-Mstream marker header (set in server.js's global
-// middleware), so this works regardless of auth mode or configured UI. TLS
-// verification is off — the point is identifying a local port squatter, and
-// a self-signed cert is the norm for a home server's ssl config.
-function probeExistingServer(protocol, port, address) {
+// Ask whatever is already on the port whether it is OUR mStream.
+//
+// The X-Mstream marker alone can't answer that: it's on every response, so any
+// local process can set it, and a "yes" here makes us open the user's browser
+// at that port and exit 0 — handing a squatter the real UI's origin, where the
+// web client keeps its token in localStorage. So identity rests on
+// `expectedNonce`: a per-boot random value the running instance publishes only
+// to loopback callers and mirrors into a 0600 file only we can read (written by
+// server.js). No nonce, or a mismatch, means "not provably ours" → the caller
+// alerts instead of redirecting. TLS verification stays off: a self-signed cert
+// is normal for a home server, and the nonce — not the cert — is the proof.
+function probeExistingServer(protocol, port, address, expectedNonce) {
   return new Promise((resolve) => {
+    if (!expectedNonce) { resolve(false); return; }
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     import(protocol === 'https' ? 'https' : 'http').then(({ default: mod }) => {
       const req = mod.get({
         host: urlHost(address).replace(/^\[|\]$/g, ''),
@@ -114,11 +123,17 @@ function probeExistingServer(protocol, port, address) {
         rejectUnauthorized: false,
       }, (res) => {
         res.resume();
-        resolve(res.headers['x-mstream'] !== undefined);
+        done(res.headers['x-mstream-instance'] === expectedNonce);
       });
       req.on('timeout', () => { req.destroy(); });
-      req.on('error', () => resolve(false));
-    }).catch(() => resolve(false));
+      // 'close' is the only settle signal Bun guarantees here: its
+      // ClientRequest.destroy(err) emits no 'error', so a squatter that
+      // accepts the connection and then stalls would hang this promise
+      // forever — and with it the caller's exit path, leaving a
+      // double-click with no browser, no alert, and no exit at all.
+      req.on('close', () => done(false));
+      req.on('error', () => done(false));
+    }).catch(() => done(false));
   });
 }
 
@@ -128,9 +143,9 @@ function probeExistingServer(protocol, port, address) {
 // the situation that way (caller should exit 0 — this process is redundant,
 // not failed); false means the caller should treat it as the fatal error it
 // is (an alert has been shown when app-launched).
-export async function handleListenError(err, protocol, port, address) {
+export async function handleListenError(err, protocol, port, address, expectedNonce) {
   if (!isMacAppLaunch) { return false; }
-  if (err.code === 'EADDRINUSE' && await probeExistingServer(protocol, port, address)) {
+  if (err.code === 'EADDRINUSE' && await probeExistingServer(protocol, port, address, expectedNonce)) {
     winston.info(`mStream already running on port ${port} — opening the browser at the existing instance`);
     openInBrowser(`${protocol}://${urlHost(address)}:${port}`);
     return true;

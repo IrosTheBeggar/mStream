@@ -1,6 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { detectMacAppLaunch, urlHost, MAC_BUNDLE_ID } from '../../src/util/mac-app-launch.js';
+
+// The bundle id lives in two places that must agree: the Info.plist the build
+// script stages into mStream.app, and MAC_BUNDLE_ID here (what LaunchServices
+// puts in __CFBundleIdentifier at launch). If they drift, every desktop
+// affordance silently switches off — and with LSUIElement set there is no
+// window and no Dock icon, so the failure is completely invisible.
+test('the staged Info.plist bundle id matches MAC_BUNDLE_ID', () => {
+  const buildScript = readFileSync(new URL('../../scripts/build-bun.mjs', import.meta.url), 'utf8');
+  const match = buildScript.match(/<key>CFBundleIdentifier<\/key><string>([^<]+)<\/string>/);
+  assert.ok(match, 'CFBundleIdentifier not found in scripts/build-bun.mjs');
+  assert.equal(match[1], MAC_BUNDLE_ID);
+});
+
+test('the staged Info.plist marks the app LSUIElement', () => {
+  const buildScript = readFileSync(new URL('../../scripts/build-bun.mjs', import.meta.url), 'utf8');
+  // Without this key macOS expects a window-server checkin the faceless
+  // server never makes: Dock bounce, then "Application Not Responding".
+  assert.match(buildScript, /<key>LSUIElement<\/key><true\/>/);
+});
 
 // The gate that keeps every desktop affordance (browser open, osascript
 // alerts) away from terminal runs, CI, and other platforms. LaunchServices
