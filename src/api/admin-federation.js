@@ -23,6 +23,25 @@ import * as config from '../state/config.js';
 import * as admin from '../util/admin.js';
 import * as db from '../db/manager.js';
 import * as fedDb from '../db/federation.js';
+import * as fedLimits from './federation-limits.js';
+
+// Per-key bandwidth caps (0 = unlimited). Optional at mint time — absent
+// fields fall back to config.federation.limits, which is also what the UI
+// pre-fills, so "just hit Mint" applies the configured defaults.
+const limitsSchema = {
+  streamKbps: Joi.number().integer().min(0).max(10000000),
+  dailyMb: Joi.number().integer().min(0).max(100000000),
+  maxStreams: Joi.number().integer().min(0).max(1000),
+};
+
+function resolveLimits(body) {
+  const defaults = config.program.federation.limits;
+  return {
+    streamKbps: body.streamKbps ?? defaults.streamKbps,
+    dailyMb: body.dailyMb ?? defaults.dailyMb,
+    maxStreams: body.maxStreams ?? defaults.maxStreams,
+  };
+}
 
 // Build the swap-ready ticket for a minted key, or null when the endpoint
 // isn't running (native module missing / feature off).
@@ -58,7 +77,12 @@ export function register(mstream) {
     } catch (_err) {
       available = false; // native binary not present on this platform
     }
-    res.json({ enabled, available, running: endpointId !== null, endpointId, online: relayUrl !== null, relayUrl });
+    res.json({
+      enabled, available, running: endpointId !== null, endpointId,
+      online: relayUrl !== null, relayUrl,
+      // What the mint dialog pre-fills; per-key values live on the key rows.
+      limitDefaults: config.program.federation.limits,
+    });
   });
 
   mstream.post('/api/v1/admin/federation', async (req, res) => {
@@ -96,6 +120,9 @@ export function register(mstream) {
     const keys = fedDb.getFederationKeys();
     for (const k of keys) {
       k.ticket = await ticketForKey(k);
+      // Live figure: DB baseline plus the accumulator's unflushed remainder,
+      // so the UI never lags the flush interval.
+      k.usage_today_bytes = fedLimits.usedTodayBytes(k.id);
     }
     res.json(keys);
   });
@@ -104,6 +131,7 @@ export function register(mstream) {
     const schema = Joi.object({
       name: Joi.string().min(1).max(64).required(),
       vpaths: Joi.array().items(Joi.string()).min(1).unique().required(),
+      ...limitsSchema,
     });
     joiValidate(schema, req.body);
 
@@ -115,10 +143,32 @@ export function register(mstream) {
       return lib.id;
     });
 
-    const minted = fedDb.createFederationKey(req.body.name, libraryIds);
-    winston.info(`[federation] ${req.user.username} minted key '${minted.name}' for libraries [${req.body.vpaths.join(', ')}]`);
+    const limits = resolveLimits(req.body);
+    const minted = fedDb.createFederationKey(req.body.name, libraryIds, limits);
+    winston.info(`[federation] ${req.user.username} minted key '${minted.name}' for libraries [${req.body.vpaths.join(', ')}] `
+      + `(limits: ${limits.streamKbps} kbps, ${limits.dailyMb} MB/day, ${limits.maxStreams} streams)`);
     const ticket = await ticketForKey({ ...minted, library_names: req.body.vpaths });
-    res.json({ id: minted.id, name: minted.name, key: minted.key, ticket });
+    res.json({ id: minted.id, name: minted.name, key: minted.key, ticket, ...limits });
+  });
+
+  // Live per-key limit edit — applies from the next request on. A stream
+  // that is already open keeps the rate it started with (the wrapper
+  // captured it); revoking the key remains the hard stop.
+  mstream.post('/api/v1/admin/federation/keys/:id/limits', (req, res) => {
+    joiValidate(Joi.object({ id: Joi.number().integer().min(1).required() }), req.params);
+    joiValidate(Joi.object({
+      streamKbps: limitsSchema.streamKbps.required(),
+      dailyMb: limitsSchema.dailyMb.required(),
+      maxStreams: limitsSchema.maxStreams.required(),
+    }), req.body);
+
+    const id = Number(req.params.id);
+    if (!fedDb.setFederationKeyLimits(id, req.body)) {
+      throw new WebError('Key not found', 404);
+    }
+    winston.info(`[federation] ${req.user.username} set limits on key id=${id}: `
+      + `${req.body.streamKbps} kbps, ${req.body.dailyMb} MB/day, ${req.body.maxStreams} streams`);
+    res.json(fedDb.getFederationKeyById(id));
   });
 
   mstream.delete('/api/v1/admin/federation/keys/:id', async (req, res) => {

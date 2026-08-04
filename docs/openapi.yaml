@@ -6010,6 +6010,13 @@ paths:
                   endpointId: { type: string, nullable: true }
                   online: { type: boolean }
                   relayUrl: { type: string, nullable: true }
+                  limitDefaults:
+                    type: object
+                    description: Config defaults (federation.limits) that pre-fill the mint dialog. 0 = unlimited.
+                    properties:
+                      streamKbps: { type: integer }
+                      dailyMb: { type: integer }
+                      maxStreams: { type: integer }
         "405": { $ref: "#/components/responses/AdminLocked" }
     post:
       tags: [Federation]
@@ -6060,10 +6067,15 @@ paths:
                       type: array
                       items: { type: string }
                     ticket: { type: string, nullable: true }
+                    stream_kbps: { type: integer, description: Rate cap on /media responses, shared across the key's streams. 0 = unlimited. }
+                    daily_mb: { type: integer, description: Per-UTC-day transfer quota. 0 = unlimited. }
+                    max_streams: { type: integer, description: Concurrent /media response cap. 0 = unlimited. }
+                    usage_today_bytes: { type: integer, description: Bytes served to this key today (UTC), live — includes traffic not yet flushed to the DB. }
         "405": { $ref: "#/components/responses/AdminLocked" }
     post:
       tags: [Federation]
       summary: Mint a read-only key for selected libraries
+      description: Omitted limit fields fall back to the config defaults (federation.limits). A federated reader over a cap gets 429 on the byte-heavy routes (media); browse and health keep answering.
       requestBody:
         required: true
         content:
@@ -6077,6 +6089,9 @@ paths:
                   type: array
                   items: { type: string }
                   minItems: 1
+                streamKbps: { type: integer, minimum: 0, description: Rate cap in kbps. 0 = unlimited. Default from config. }
+                dailyMb: { type: integer, minimum: 0, description: Daily quota in MB. 0 = unlimited. Default from config. }
+                maxStreams: { type: integer, minimum: 0, description: Concurrent stream cap. 0 = unlimited. Default from config. }
       responses:
         "200":
           description: The minted key + swap-ready ticket (null when the endpoint isn't running).
@@ -6089,6 +6104,9 @@ paths:
                   name: { type: string }
                   key: { type: string }
                   ticket: { type: string, nullable: true }
+                  streamKbps: { type: integer }
+                  dailyMb: { type: integer }
+                  maxStreams: { type: integer }
         "400": { description: Validation failure. }
         "404": { description: Unknown library name. }
         "405": { $ref: "#/components/responses/AdminLocked" }
@@ -6102,6 +6120,31 @@ paths:
         - { name: id, in: path, required: true, schema: { type: integer } }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404": { description: Key not found. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/keys/{id}/limits:
+    post:
+      tags: [Federation]
+      summary: Edit a key's bandwidth limits (live)
+      description: Applies from the key's next request; an already-open stream keeps the rate it started with. 0 = unlimited on any field.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [streamKbps, dailyMb, maxStreams]
+              properties:
+                streamKbps: { type: integer, minimum: 0 }
+                dailyMb: { type: integer, minimum: 0 }
+                maxStreams: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: The updated key row.
+        "400": { description: Validation failure. }
         "404": { description: Key not found. }
         "405": { $ref: "#/components/responses/AdminLocked" }
 

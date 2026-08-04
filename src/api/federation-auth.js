@@ -95,6 +95,13 @@ export function authenticateFederationKey(key, req) {
     username: `federation:${row.name}`,
     federation: true,
     federationKeyId: row.id,
+    // Bandwidth caps ride along so the limits middleware (registered right
+    // after this wall) never needs a second key lookup. 0 = unlimited.
+    federationLimits: {
+      streamKbps: row.stream_kbps || 0,
+      dailyMb: row.daily_mb || 0,
+      maxStreams: row.max_streams || 0,
+    },
     admin: false,
     vpaths: grants.map((g) => g.name),
     libraryIds: grants.map((g) => g.id),

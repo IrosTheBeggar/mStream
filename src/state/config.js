@@ -387,10 +387,23 @@ const irohOptions = Joi.object({
 //   serverName — display name embedded in minted tickets so the friend's
 //                add-peer UI can label this server; '' falls back to
 //                os.hostname() at mint time.
+// Default bandwidth limits for newly minted federation keys (0 = unlimited).
+// These only PRE-FILL the mint dialog — the actual limits live per key in
+// federation_keys, so editing these never changes an already-minted key.
+// Defaults are sized for "a friend streaming music": 8 Mbps is comfortable
+// FLAC + seeking headroom, 2 GB/day and 3 concurrent streams are hostile to
+// bulk mirroring without getting in the way of listening.
+const federationLimitsOptions = Joi.object({
+  streamKbps: Joi.number().integer().min(0).max(10000000).default(8000),
+  dailyMb: Joi.number().integer().min(0).max(100000000).default(2048),
+  maxStreams: Joi.number().integer().min(0).max(1000).default(3),
+});
+
 const federationOptions = Joi.object({
   enabled: Joi.boolean().default(false),
   secretKey: Joi.string().optional(),
   serverName: Joi.string().max(64).allow('').default(''),
+  limits: federationLimitsOptions.default(federationLimitsOptions.validate({}).value),
 });
 
 // The music-discovery P2P layer (p2p-sidecar: iroh-blobs snapshot sharing

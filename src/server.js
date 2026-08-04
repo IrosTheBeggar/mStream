@@ -33,6 +33,7 @@ import { reapOrphanedScanner } from './db/scan-pidfile.js';
 // scanner.js removed — parser now writes directly to SQLite
 import * as federationApi from './api/federation.js';
 import * as federationDiscoveryApi from './api/federation-discovery.js';
+import * as federationLimitsApi from './api/federation-limits.js';
 import * as federationStreamApi from './api/federation-stream.js';
 import * as ytdlApi from './api/ytdl.js';
 import * as torrentApi from './api/torrent.js';
@@ -299,6 +300,11 @@ export async function serveIt(configFile) {
 
   // Everything below this line requires authentication
   authApi.setup(mstream);
+
+  // Bandwidth caps for federated readers — must sit right after the wall
+  // (needs req.user.federation) and before every route/static mount whose
+  // responses it meters.
+  federationLimitsApi.setup(mstream);
 
   adminApi.setup(mstream);
   irohApi.setup(mstream);
