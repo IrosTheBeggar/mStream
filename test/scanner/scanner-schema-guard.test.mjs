@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { MIGRATIONS, SCHEMA_VERSION } from '../../src/db/schema.js';
 import {
   writeScannerPidfile, clearScannerPidfile, reapOrphanedScanner,
+  looksLikeScanner,
 } from '../../src/db/scan-pidfile.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -475,14 +476,19 @@ describe('orphan reaper (scan-pidfile.js)', () => {
     }
   });
 
-  test('live orphaned JS scanner is killed', { timeout: 60000 }, async () => {
+  test('live orphaned JS scanner is killed', { timeout: 90000 }, async () => {
     const tmp = makeTmp('orphan');
     // A real "orphan": a node process running a file named scanner.mjs,
     // which is what the identity check requires before killing a
     // node-image pid. The recording server process is dead, so the file
-    // is written by hand with a foreign ppid. (The command-line probe
-    // shells out — on Windows via PowerShell CIM — hence the generous
-    // timeout.)
+    // is written by hand with a foreign ppid.
+    //
+    // Timing: reapOrphanedScanner is fully synchronous, and for a js
+    // record on Windows it shells out twice (tasklist ≤5s, then the
+    // PowerShell CIM command-line query ≤30s) — up to ~35s on a loaded
+    // runner before it even decides to kill. Only once it returns can
+    // the event loop deliver the child's exit, so the wait below must be
+    // generous too; the declared timeout has to cover reap + wait.
     const fakeScanner = path.join(tmp, 'scanner.mjs');
     fs.writeFileSync(fakeScanner, 'setInterval(() => {}, 1000);\n');
     const p = child.spawn(process.execPath, [fakeScanner], { stdio: 'ignore' });
@@ -496,12 +502,88 @@ describe('orphan reaper (scan-pidfile.js)', () => {
         startedAt: 'x',
       }));
       reapOrphanedScanner(tmp);
-      const died = await waitFor(() => p.exitCode !== null || p.signalCode !== null, 10000);
+      const died = await waitFor(() => p.exitCode !== null || p.signalCode !== null, 45000);
       assert.ok(died, 'orphaned scanner should be terminated by the reaper');
       assert.ok(!fs.existsSync(path.join(tmp, '.scanner.pid.json')));
     } finally {
       try { p.kill(); } catch (_) { /* already dead */ }
     }
+  });
+});
+
+// ── looksLikeScanner verdict table ──────────────────────────────────────────
+// The tri-state is the reaper's safety contract: it kills ONLY on
+// 'scanner', drops the record only on 'stranger' (provably recycled pid),
+// and keeps the record on 'unknown' so a later boot retries instead of
+// forgetting a live orphan. The verdicts are truthy STRINGS — a caller
+// using them as booleans would treat 'stranger' as a kill license — so
+// these tests pin the exact values, with hand-built probes (no process
+// spawning, no shell-outs).
+describe('looksLikeScanner verdicts (kill only on provable identity)', () => {
+  const rustImage = 'rust-parser-win32-x64.exe';
+
+  test('rust: image match with the rust-parser prefix → scanner', () => {
+    assert.strictEqual(looksLikeScanner(
+      { image: rustImage, cmdline: null },
+      { kind: 'rust', image: rustImage }), 'scanner');
+  });
+
+  test('rust: recycled pid (different image) → stranger', () => {
+    assert.strictEqual(looksLikeScanner(
+      { image: 'node.exe', cmdline: null },
+      { kind: 'rust', image: rustImage }), 'stranger');
+  });
+
+  test('rust: matching but non-rust-parser image (corrupt record) → stranger, never scanner', () => {
+    assert.strictEqual(looksLikeScanner(
+      { image: 'node.exe', cmdline: null },
+      { kind: 'rust', image: 'node.exe' }), 'stranger');
+  });
+
+  test('waveform follows the rust rule', () => {
+    assert.strictEqual(looksLikeScanner(
+      { image: rustImage, cmdline: null },
+      { kind: 'waveform', image: rustImage }), 'scanner');
+  });
+
+  test('js: matching image + marker in the command line → scanner', () => {
+    assert.strictEqual(looksLikeScanner(
+      { image: 'node.exe', cmdline: '"C:\\node.exe" C:\\app\\src\\db\\scanner.mjs {"dbPath":"x"}' },
+      { kind: 'js', image: 'node.exe', marker: 'C:\\app\\src\\db\\scanner.mjs' }), 'scanner');
+  });
+
+  test('js: pre-marker record falls back to the bare scanner.mjs needle', () => {
+    assert.strictEqual(looksLikeScanner(
+      { image: 'node', cmdline: 'node /srv/mstream/src/db/scanner.mjs payload' },
+      { kind: 'js', image: 'node' }), 'scanner');
+  });
+
+  test('js: image mismatch → stranger, even when the cmdline mentions the marker', () => {
+    assert.strictEqual(looksLikeScanner(
+      { image: 'python.exe', cmdline: 'python watch.py scanner.mjs' },
+      { kind: 'js', image: 'node.exe', marker: 'scanner.mjs' }), 'stranger');
+  });
+
+  test('js: matching image but NO readable command line → unknown (keep + retry, never kill)', () => {
+    // The 2026-08-04 CI failure mode: PowerShell CIM timed out, cmdline
+    // came back null, and the old boolean collapse dropped the record —
+    // permanently forgetting a live orphan. 'unknown' is what makes the
+    // reaper retry on the next boot instead.
+    assert.strictEqual(looksLikeScanner(
+      { image: 'node.exe', cmdline: null },
+      { kind: 'js', image: 'node.exe', marker: 'scanner.mjs' }), 'unknown');
+  });
+
+  test('js: matching image, unrelated command line → stranger', () => {
+    assert.strictEqual(looksLikeScanner(
+      { image: 'node.exe', cmdline: '"C:\\node.exe" C:\\somewhere\\server.js' },
+      { kind: 'js', image: 'node.exe', marker: 'scanner.mjs' }), 'stranger');
+  });
+
+  test('unrecognized kind can never be verified → stranger', () => {
+    assert.strictEqual(looksLikeScanner(
+      { image: 'node.exe', cmdline: 'node scanner.mjs' },
+      { kind: 'zig', image: 'node.exe' }), 'stranger');
   });
 });
 
