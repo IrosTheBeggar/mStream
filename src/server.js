@@ -179,12 +179,26 @@ export async function serveIt(configFile) {
       return next();
     }
 
+    let decoded;
     try {
-      jwt.verify(req.cookies['x-access-token'], config.program.secret);
-      next();
+      decoded = jwt.verify(req.cookies['x-access-token'], config.program.secret);
     } catch (_err) {
       return res.redirect(302, '/login');
     }
+
+    // A valid token is NOT enough — verify the ROLE too. Every /api/v1/admin/*
+    // call the panel makes is gated on req.user.admin, so serving the panel to
+    // a non-admin handed them a shell in which every request fails. Send them
+    // to the player instead; bouncing to /login would be wrong (their session
+    // is fine) and would loop, since logging back in returns the same user.
+    const user = decoded.username ? dbManager.getUserByUsername(decoded.username) : null;
+    if (!user) { return res.redirect(302, '/login'); }
+    if (user.is_admin !== 1) {
+      winston.warn(`Non-admin user '${decoded.username}' from ${req.ip} requested the admin panel`);
+      return res.redirect(302, '/');
+    }
+
+    next();
   });
 
   // Gate the entire admin asset tree (index.html, index.js, index.css, …),

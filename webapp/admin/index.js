@@ -161,29 +161,39 @@ const ADMINDATA = (() => {
     }
   };
 
+  // The `.ts` stamp is what the view's spinner gates on, so it has to land
+  // even when the request fails — otherwise a failed load is indistinguishable
+  // from a slow one and the spinner runs forever. Same idiom as getDlnaParams
+  // and friends below.
   module.getFolders = async () => {
-    const res = await API.axios({
-      method: 'GET',
-      url: `${API.url()}/api/v1/admin/directories`
-    });
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/directories`
+      });
 
-    Object.keys(res.data).forEach(key=>{
-      module.folders[key] = res.data[key];
-    });
-
+      Object.keys(res.data).forEach(key=>{
+        module.folders[key] = res.data[key];
+      });
+    } catch (err) {
+      console.error('failed to load directories', err);
+    }
     module.foldersUpdated.ts = Date.now();
   };
 
   module.getUsers = async () => {
-    const res = await API.axios({
-      method: 'GET',
-      url: `${API.url()}/api/v1/admin/users`
-    });
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/users`
+      });
 
-    Object.keys(res.data).forEach(key=>{
-      module.users[key] = res.data[key];
-    });
-
+      Object.keys(res.data).forEach(key=>{
+        module.users[key] = res.data[key];
+      });
+    } catch (err) {
+      console.error('failed to load users', err);
+    }
     module.usersUpdated.ts = Date.now();
   };
 
@@ -214,15 +224,18 @@ const ADMINDATA = (() => {
   }
 
   module.getServerParams = async () => {
-    const res = await API.axios({
-      method: 'GET',
-      url: `${API.url()}/api/v1/admin/config`
-    });
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/config`
+      });
 
-    Object.keys(res.data).forEach(key=>{
-      module.serverParams[key] = res.data[key];
-    });
-
+      Object.keys(res.data).forEach(key=>{
+        module.serverParams[key] = res.data[key];
+      });
+    } catch (err) {
+      console.error('failed to load server config', err);
+    }
     module.serverParamsUpdated.ts = Date.now();
   }
 
@@ -251,15 +264,18 @@ const ADMINDATA = (() => {
   }
 
   module.getTranscodeParams = async () => {
-    const res = await API.axios({
-      method: 'GET',
-      url: `${API.url()}/api/v1/admin/transcode`
-    });
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/transcode`
+      });
 
-    Object.keys(res.data).forEach(key=>{
-      module.transcodeParams[key] = res.data[key];
-    });
-
+      Object.keys(res.data).forEach(key=>{
+        module.transcodeParams[key] = res.data[key];
+      });
+    } catch (err) {
+      console.error('failed to load transcode params', err);
+    }
     module.transcodeParamsUpdated.ts = Date.now();
   }
 

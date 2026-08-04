@@ -114,11 +114,11 @@ describe('POST /api/v1/admin/users/lastfm', () => {
     }
   });
 
-  test('rejects non-admin callers with 405 (outer admin guard)', async () => {
+  test('rejects non-admin callers with 403 (outer admin guard)', async () => {
     const r = await post('/api/v1/admin/users/lastfm', {
       username: 'bob', lastfmUser: 'bob-fm', lastfmPassword: 'hunter2',
     }, userJwt);
-    assert.equal(r.status, 405);
+    assert.equal(r.status, 403);
   });
 
   test('unknown target user surfaces the helper\'s thrown error (500)', async () => {
