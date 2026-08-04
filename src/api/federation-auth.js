@@ -86,12 +86,18 @@ export function authenticateFederationKey(key, req) {
     winston.warn(`[federation] rejected expired key '${row.name}' from ${req.ip} on ${req.path}`);
     // Lazy severing: an iroh pipe opened before the cutoff would otherwise
     // coast on keep-alives (each request inside it dies here anyway, but
-    // the connection itself should go too). Fire-and-forget — the module
-    // is import-safe without the native binary, and the reply must not
-    // wait on it.
-    import('../state/federation.js')
-      .then((federation) => federation.closeConnectionsForKey(row.id))
-      .catch(() => { /* native binary absent — nothing live to sever */ });
+    // the connection itself should go too). DELAYED a beat on purpose:
+    // severing in-line races this 401 through the bridge — the pipe died
+    // under the in-flight response and the peer saw "unreachable" instead
+    // of the clean auth error (caught by the two-server live smoke). Two
+    // seconds lets the rejection flush; anything the peer sends in the
+    // window still dies at this wall.
+    const sever = setTimeout(() => {
+      import('../state/federation.js')
+        .then((federation) => federation.closeConnectionsForKey(row.id))
+        .catch(() => { /* native binary absent — nothing live to sever */ });
+    }, 2000);
+    if (sever.unref) { sever.unref(); }
     throw new WebError('Authentication Error', 401);
   }
 
