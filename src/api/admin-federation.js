@@ -43,7 +43,7 @@ function resolveLimits(body) {
   };
 }
 
-// Key expiry (V63): ISO datetime, must be in the future (renewing an
+// Key expiry (V62): ISO datetime, must be in the future (renewing an
 // expired key means picking a new future date), null = never. joiValidate
 // doesn't write Joi's converted value back into req.body, so routes
 // normalize the accepted string themselves.

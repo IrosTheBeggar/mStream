@@ -1,11 +1,14 @@
 /**
- * V62 schema semantics for the federation bandwidth limits:
- *  - the three limit columns default to 0 (= unlimited) for fresh inserts
- *    AND for rows that predate the migration (the ALTER default);
+ * V62 schema semantics for the federation bandwidth limits + key expiry:
+ *  - the three limit columns default to 0 (= unlimited) and expires_at to
+ *    NULL (= never), for fresh inserts AND for rows that predate the
+ *    migration (the ALTER defaults);
  *  - federation_key_usage's (key_id, day) primary key supports the
  *    accumulate-on-conflict UPSERT the flusher uses;
  *  - usage rows die with their key (ON DELETE CASCADE — manager.js runs
- *    with PRAGMA foreign_keys = ON).
+ *    with PRAGMA foreign_keys = ON);
+ *  - the `expired` computation (the expression db/federation.js appends to
+ *    every key read) follows datetime('now') and normalized ISO input.
  */
 
 import { describe, test } from 'node:test';
@@ -21,6 +24,9 @@ const UPSERT = `
                                           requests = requests + excluded.requests
 `;
 
+// The same expression db/federation.js computes on every key read.
+const EXPIRED = `(expires_at IS NOT NULL AND expires_at <= datetime('now')) AS expired`;
+
 function freshDb() {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON'); // matches src/db/manager.js:61
@@ -28,23 +34,24 @@ function freshDb() {
   return db;
 }
 
-describe('V62 federation bandwidth limits schema', () => {
-  test('limit columns default to 0 on fresh inserts', () => {
+describe('V62 federation bandwidth limits + expiry schema', () => {
+  test('limit columns default to 0 and expires_at to NULL on fresh inserts', () => {
     const db = freshDb();
     db.prepare(`INSERT INTO federation_keys (key, name) VALUES ('fedk_test', 'Bob')`).run();
-    const row = db.prepare(`SELECT stream_kbps, daily_mb, max_streams FROM federation_keys`).get();
-    assert.deepEqual({ ...row }, { stream_kbps: 0, daily_mb: 0, max_streams: 0 });
+    const row = db.prepare(`SELECT stream_kbps, daily_mb, max_streams, expires_at FROM federation_keys`).get();
+    assert.deepEqual({ ...row }, { stream_kbps: 0, daily_mb: 0, max_streams: 0, expires_at: null });
   });
 
-  test('keys minted before V62 come out of the upgrade unlimited', () => {
+  test('keys minted before V62 come out of the upgrade unlimited and never-expiring', () => {
     const db = new DatabaseSync(':memory:');
     db.exec('PRAGMA foreign_keys = ON');
     applyAllMigrations(db, { upToVersion: 61 });
     db.prepare(`INSERT INTO federation_keys (key, name) VALUES ('fedk_old', 'pre-upgrade')`).run();
 
     applyAllMigrations(db, { fromVersion: 61 });
-    const row = db.prepare(`SELECT stream_kbps, daily_mb, max_streams FROM federation_keys`).get();
-    assert.deepEqual({ ...row }, { stream_kbps: 0, daily_mb: 0, max_streams: 0 });
+    const row = db.prepare(`SELECT stream_kbps, daily_mb, max_streams, expires_at, ${EXPIRED} FROM federation_keys`).get();
+    assert.deepEqual({ ...row },
+      { stream_kbps: 0, daily_mb: 0, max_streams: 0, expires_at: null, expired: 0 });
   });
 
   test('usage UPSERT accumulates within a (key, day) and separates days', () => {
@@ -69,26 +76,6 @@ describe('V62 federation bandwidth limits schema', () => {
     db.prepare(`DELETE FROM federation_keys WHERE id = 7`).run();
     const left = db.prepare(`SELECT COUNT(*) AS n FROM federation_key_usage`).get();
     assert.equal(left.n, 0);
-  });
-});
-
-describe('V63 federation key expiry schema', () => {
-  // The same expression db/federation.js computes on every key read.
-  const EXPIRED = `(expires_at IS NOT NULL AND expires_at <= datetime('now')) AS expired`;
-
-  test('expires_at defaults NULL (never) for fresh inserts and pre-V63 rows', () => {
-    const db = freshDb();
-    db.prepare(`INSERT INTO federation_keys (key, name) VALUES ('fedk_a', 'fresh')`).run();
-    assert.equal(db.prepare(`SELECT expires_at FROM federation_keys`).get().expires_at, null);
-
-    const old = new DatabaseSync(':memory:');
-    old.exec('PRAGMA foreign_keys = ON');
-    applyAllMigrations(old, { upToVersion: 62 });
-    old.prepare(`INSERT INTO federation_keys (key, name) VALUES ('fedk_b', 'pre-upgrade')`).run();
-    applyAllMigrations(old, { fromVersion: 62 });
-    const row = old.prepare(`SELECT expires_at, ${EXPIRED} FROM federation_keys`).get();
-    assert.equal(row.expires_at, null);
-    assert.equal(row.expired, 0);
   });
 
   test('the expired computation follows datetime(now) and ISO input normalizes', () => {

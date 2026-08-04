@@ -22,8 +22,8 @@ export function generateFederationKey() {
 // and its grants are one transaction so a failed grant can't leave a key with
 // access to nothing (or worse, everything a later bug assumes).
 // `limits` are the V62 bandwidth caps; 0 (the default) means unlimited.
-// `expiresAt` (V63) is an ISO datetime or null (= never); datetime(?)
-// normalizes it to SQLite's canonical UTC form so the stored value compares
+// `expiresAt` is an ISO datetime or null (= never); datetime(?) normalizes
+// it to SQLite's canonical UTC form so the stored value compares
 // lexicographically against datetime('now').
 export function createFederationKey(name, libraryIds, limits = {}, expiresAt = null) {
   const db = getDB();
