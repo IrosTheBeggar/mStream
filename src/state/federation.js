@@ -67,6 +67,9 @@ const liveConns = new Map(); // keyId -> Set<conn>
 //   n  (optional) server display name, for the friend's add-peer preview
 //   l  (optional) granted vpath names — informational; the health endpoint
 //                 is the live source of truth after pairing
+//   e  (optional) ISO expiry of the key — informational, for the friend's
+//                 add-peer preview; the minting server's row is the truth
+//                 and enforcement never reads the ticket
 // Unknown fields are ignored (forward compat). Spec: docs/federation-ticket.md.
 // Unlike the tunnel QR, this carries a STANDING credential — swap it over a
 // private channel; TOFU burn-on-redeem + per-key revocation are the backstops.
@@ -75,10 +78,11 @@ const liveConns = new Map(); // keyId -> Set<conn>
 export const FEDERATION_TICKET_PREFIX = 'mstrfed';
 export const FEDERATION_TICKET_VERSION = 1;
 
-export function buildFederationTicket({ endpointTicket, key, serverName, libraries }) {
+export function buildFederationTicket({ endpointTicket, key, serverName, libraries, expiresAt }) {
   const payload = { t: endpointTicket, k: key };
   if (serverName) { payload.n = serverName; }
   if (Array.isArray(libraries) && libraries.length > 0) { payload.l = libraries; }
+  if (typeof expiresAt === 'string' && expiresAt) { payload.e = expiresAt; }
   return buildEnvelope(FEDERATION_TICKET_PREFIX, FEDERATION_TICKET_VERSION, payload);
 }
 
@@ -100,6 +104,7 @@ export function parseFederationTicket(str) {
     apiKey: payload.k,
     name: typeof payload.n === 'string' ? payload.n : null,
     libraries: Array.isArray(payload.l) ? payload.l.filter((x) => typeof x === 'string') : [],
+    expiresAt: typeof payload.e === 'string' ? payload.e : null,
   };
 }
 
@@ -140,6 +145,11 @@ async function authenticateConnection(conn, remote, onAuthorized) {
   let ok = false;
   if (!keyRow) {
     winston.warn(`[federation] rejected connection from ${remote}: unknown key`);
+  } else if (keyRow.expired) {
+    // Checked BEFORE the TOFU block: an expired-but-unredeemed ticket must
+    // die without ever binding. The admin renewing the date re-arms it.
+    winston.warn(`[federation] rejected expired key '${keyRow.name}' from ${remote}`);
+    keyRow = null;
   } else {
     if (keyRow.bound_endpoint_id === null) {
       // TOFU: first redemption binds the key to this dialer. The guarded
@@ -150,7 +160,7 @@ async function authenticateConnection(conn, remote, onAuthorized) {
       }
       keyRow = fedDb.getFederationKeyById(keyRow.id);
     }
-    ok = Boolean(keyRow && keyRow.bound_endpoint_id === remote);
+    ok = Boolean(keyRow && !keyRow.expired && keyRow.bound_endpoint_id === remote);
     if (keyRow && !ok) {
       // The one log line that matters most: a KNOWN key from the WRONG
       // endpoint means the ticket leaked (or the friend reinstalled — the

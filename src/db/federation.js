@@ -22,15 +22,18 @@ export function generateFederationKey() {
 // and its grants are one transaction so a failed grant can't leave a key with
 // access to nothing (or worse, everything a later bug assumes).
 // `limits` are the V62 bandwidth caps; 0 (the default) means unlimited.
-export function createFederationKey(name, libraryIds, limits = {}) {
+// `expiresAt` (V63) is an ISO datetime or null (= never); datetime(?)
+// normalizes it to SQLite's canonical UTC form so the stored value compares
+// lexicographically against datetime('now').
+export function createFederationKey(name, libraryIds, limits = {}, expiresAt = null) {
   const db = getDB();
   const key = generateFederationKey();
   db.exec('BEGIN');
   try {
     const result = db.prepare(`
-      INSERT INTO federation_keys (key, name, stream_kbps, daily_mb, max_streams)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(key, name, limits.streamKbps || 0, limits.dailyMb || 0, limits.maxStreams || 0);
+      INSERT INTO federation_keys (key, name, stream_kbps, daily_mb, max_streams, expires_at)
+      VALUES (?, ?, ?, ?, ?, datetime(?))
+    `).run(key, name, limits.streamKbps || 0, limits.dailyMb || 0, limits.maxStreams || 0, expiresAt);
     const keyId = Number(result.lastInsertRowid);
     const grant = db.prepare('INSERT INTO federation_key_libraries (key_id, library_id) VALUES (?, ?)');
     for (const libId of libraryIds) { grant.run(keyId, libId); }
@@ -48,10 +51,24 @@ export function setFederationKeyLimits(id, { streamKbps, dailyMb, maxStreams }) 
   `).run(streamKbps || 0, dailyMb || 0, maxStreams || 0, id).changes > 0;
 }
 
+// Set or clear (null = never) a key's expiry. Setting a future date on an
+// already-expired key is the renewal path — nothing else needs resetting.
+export function setFederationKeyExpiry(id, expiresAt) {
+  return getDB().prepare(`
+    UPDATE federation_keys SET expires_at = datetime(?) WHERE id = ?
+  `).run(expiresAt ?? null, id).changes > 0;
+}
+
+// Every key read carries a computed `expired` (0/1). The comparison lives
+// in SQL on purpose: both sides are datetime('now')-format UTC strings, so
+// it's chronologically correct — JS Date.parse would read the stored
+// format as LOCAL time and drift the cutoff by the machine's UTC offset.
+const EXPIRED_SQL = `(expires_at IS NOT NULL AND expires_at <= datetime('now')) AS expired`;
+
 // All minted keys with their granted library names aggregated (UI listing).
 export function getFederationKeys() {
   return getDB().prepare(`
-    SELECT k.*,
+    SELECT k.*, ${EXPIRED_SQL},
            (SELECT json_group_array(l.name)
               FROM federation_key_libraries kl
               JOIN libraries l ON l.id = kl.library_id
@@ -65,12 +82,12 @@ export function getFederationKeys() {
 }
 
 export function getFederationKeyById(id) {
-  return getDB().prepare('SELECT * FROM federation_keys WHERE id = ?').get(id);
+  return getDB().prepare(`SELECT *, ${EXPIRED_SQL} FROM federation_keys WHERE id = ?`).get(id);
 }
 
 // Auth-wall lookup: the presented credential -> the key row, or undefined.
 export function getFederationKeyByKey(key) {
-  return getDB().prepare('SELECT * FROM federation_keys WHERE key = ?').get(key);
+  return getDB().prepare(`SELECT *, ${EXPIRED_SQL} FROM federation_keys WHERE key = ?`).get(key);
 }
 
 // The libraries a key grants, as [{ id, name }] (auth wall + UI).

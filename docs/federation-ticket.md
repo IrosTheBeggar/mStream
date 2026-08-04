@@ -34,10 +34,16 @@ mstrfed<V>:<base64url(JSON payload)>
   "k": "fedk_…",           // REQUIRED — the minted read-only API key
                            // ('fedk_' + 32 random bytes base64url)
   "n": "Paul's mStream",   // optional — display name for the add-peer UI
-  "l": ["Music", "Vinyl"]  // optional — granted library (vpath) names.
+  "l": ["Music", "Vinyl"], // optional — granted library (vpath) names.
                            // Informational preview only: the live grant
                            // list comes from GET /api/v1/federation/health
                            // after pairing.
+  "e": "2026-09-03T12:00:00Z" // optional — ISO expiry of the key.
+                           // Informational preview only: the minting
+                           // server's row is the truth, and an expired key
+                           // fails its auth wall + pipe handshake
+                           // regardless of what the ticket says. Absent =
+                           // never expires.
 }
 ```
 
@@ -78,6 +84,13 @@ payload missing `t` or `k`.
   every HTTP request, and any live connections. Rotating the server's
   `federation.secretKey` changes its EndpointId and invalidates the `t` in
   every issued ticket (peers must re-add).
+- **Expiry** is per-key and server-side (`federation_keys.expires_at`,
+  NULL = never): past the cutoff the key fails both the auth wall and new
+  pipe handshakes, and a pipe that was already open is severed on the
+  key's next request. An expired-but-never-redeemed ticket can no longer
+  TOFU-bind, which quietly retires lost tickets. The admin can renew
+  (set a new future date) or clear the expiry at any time — the key row
+  and its usage history survive expiry.
 - **"Friend reinstalled" case:** their endpoint identity changed, so TOFU
   rejects them. The admin UI's reset-binding action clears the binding
   without re-minting; the next successful handshake re-binds.

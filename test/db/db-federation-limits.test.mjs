@@ -71,3 +71,35 @@ describe('V62 federation bandwidth limits schema', () => {
     assert.equal(left.n, 0);
   });
 });
+
+describe('V63 federation key expiry schema', () => {
+  // The same expression db/federation.js computes on every key read.
+  const EXPIRED = `(expires_at IS NOT NULL AND expires_at <= datetime('now')) AS expired`;
+
+  test('expires_at defaults NULL (never) for fresh inserts and pre-V63 rows', () => {
+    const db = freshDb();
+    db.prepare(`INSERT INTO federation_keys (key, name) VALUES ('fedk_a', 'fresh')`).run();
+    assert.equal(db.prepare(`SELECT expires_at FROM federation_keys`).get().expires_at, null);
+
+    const old = new DatabaseSync(':memory:');
+    old.exec('PRAGMA foreign_keys = ON');
+    applyAllMigrations(old, { upToVersion: 62 });
+    old.prepare(`INSERT INTO federation_keys (key, name) VALUES ('fedk_b', 'pre-upgrade')`).run();
+    applyAllMigrations(old, { fromVersion: 62 });
+    const row = old.prepare(`SELECT expires_at, ${EXPIRED} FROM federation_keys`).get();
+    assert.equal(row.expires_at, null);
+    assert.equal(row.expired, 0);
+  });
+
+  test('the expired computation follows datetime(now) and ISO input normalizes', () => {
+    const db = freshDb();
+    db.prepare(`INSERT INTO federation_keys (id, key, name, expires_at) VALUES (1, 'fedk_past', 'past', datetime('now', '-1 hour'))`).run();
+    db.prepare(`INSERT INTO federation_keys (id, key, name, expires_at) VALUES (2, 'fedk_future', 'future', datetime('now', '+1 hour'))`).run();
+    // The write path stores datetime(?) of an ISO string (Z suffix) — the
+    // stored form must compare correctly against datetime('now').
+    db.prepare(`INSERT INTO federation_keys (id, key, name, expires_at) VALUES (3, 'fedk_iso', 'iso', datetime('2020-01-01T00:00:00.000Z'))`).run();
+
+    const rows = db.prepare(`SELECT id, ${EXPIRED} FROM federation_keys ORDER BY id`).all();
+    assert.deepEqual(rows.map((r) => r.expired), [1, 0, 1]);
+  });
+});

@@ -26,6 +26,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { startServer } from '../helpers/server.mjs';
+import { parseFederationTicket } from '../../src/state/federation.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const fedHeaders = (key) => ({ 'x-federation-key': key, 'Content-Type': 'application/json' });
@@ -220,6 +221,59 @@ describe('federation bandwidth limits e2e', () => {
       if (cStatus === 200) { await c.arrayBuffer(); }
     }
     assert.equal(cStatus, 200);
+  });
+
+  test('expiry: rejected in the past, enforced wall-wide, renewable, clearable', async () => {
+    // A past date never mints.
+    const past = await fetch(`${srv.baseUrl}/api/v1/admin/federation/keys`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-access-token': adminToken },
+      body: JSON.stringify({ name: 'past', vpaths: ['shared'], expiresAt: new Date(Date.now() - 60_000).toISOString() }),
+    });
+    assert.equal(past.status, 400);
+
+    // Mint a key that dies in ~2s (skew between this process and the
+    // spawned server is millisecond-scale; the margins here are seconds).
+    const iso = new Date(Date.now() + 2000).toISOString();
+    const k = await mintKey('shortlived', { streamKbps: 0, dailyMb: 0, maxStreams: 0, expiresAt: iso });
+    // Stored form drops sub-seconds; response and ticket both carry it.
+    const expectIso = `${iso.slice(0, 19)}Z`;
+    assert.equal(k.expiresAt, expectIso);
+    assert.equal(parseFederationTicket(k.ticket).expiresAt, expectIso);
+
+    // Alive before the cutoff…
+    const alive = await fetch(`${srv.baseUrl}/api/v1/federation/health`, { headers: fedHeaders(k.key) });
+    assert.equal(alive.status, 200);
+
+    // …dead everywhere after it: the light surface too, not just media.
+    await sleep(4000);
+    const deadHealth = await fetch(`${srv.baseUrl}/api/v1/federation/health`, { headers: fedHeaders(k.key) });
+    assert.equal(deadHealth.status, 401);
+    const deadMedia = await fetch(`${srv.baseUrl}/media/shared/q.bin`, { headers: fedHeaders(k.key) });
+    assert.equal(deadMedia.status, 401);
+    const row = (await listKeys()).find((r) => r.id === k.id);
+    assert.equal(row.expired, 1);
+
+    // Renewal: a new future date through the limits route re-arms the key.
+    const renew = await fetch(`${srv.baseUrl}/api/v1/admin/federation/keys/${k.id}/limits`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-access-token': adminToken },
+      body: JSON.stringify({ streamKbps: 0, dailyMb: 0, maxStreams: 0, expiresAt: new Date(Date.now() + 3600_000).toISOString() }),
+    });
+    assert.equal(renew.status, 200);
+    const renewed = await fetch(`${srv.baseUrl}/api/v1/federation/health`, { headers: fedHeaders(k.key) });
+    assert.equal(renewed.status, 200);
+
+    // Clearing to null = never; omitting the field leaves expiry alone.
+    const clear = await fetch(`${srv.baseUrl}/api/v1/admin/federation/keys/${k.id}/limits`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-access-token': adminToken },
+      body: JSON.stringify({ streamKbps: 0, dailyMb: 0, maxStreams: 0, expiresAt: null }),
+    });
+    assert.equal(clear.status, 200);
+    const cleared = (await listKeys()).find((r) => r.id === k.id);
+    assert.equal(cleared.expires_at, null);
+    assert.equal(cleared.expired, 0);
   });
 
   test('streamKbps paces the download without corrupting it', async () => {

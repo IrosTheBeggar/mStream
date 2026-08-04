@@ -43,6 +43,22 @@ function resolveLimits(body) {
   };
 }
 
+// Key expiry (V63): ISO datetime, must be in the future (renewing an
+// expired key means picking a new future date), null = never. joiValidate
+// doesn't write Joi's converted value back into req.body, so routes
+// normalize the accepted string themselves.
+const expirySchema = Joi.date().iso().greater('now').allow(null);
+
+function normalizeExpiry(bodyValue) {
+  return bodyValue ? new Date(bodyValue).toISOString() : null;
+}
+
+// Rows store SQLite's canonical UTC 'YYYY-MM-DD HH:MM:SS'; tickets and API
+// consumers get real ISO.
+function sqliteUtcToIso(s) {
+  return s ? `${s.replace(' ', 'T')}Z` : null;
+}
+
 // Build the swap-ready ticket for a minted key, or null when the endpoint
 // isn't running (native module missing / feature off).
 async function ticketForKey(keyRow) {
@@ -55,6 +71,7 @@ async function ticketForKey(keyRow) {
       key: keyRow.key,
       serverName: config.program.federation.serverName || os.hostname(),
       libraries: keyRow.library_names,
+      expiresAt: sqliteUtcToIso(keyRow.expires_at),
     });
   } catch (_err) {
     return null; // native binary not present on this platform
@@ -132,6 +149,7 @@ export function register(mstream) {
       name: Joi.string().min(1).max(64).required(),
       vpaths: Joi.array().items(Joi.string()).min(1).unique().required(),
       ...limitsSchema,
+      expiresAt: expirySchema,
     });
     joiValidate(schema, req.body);
 
@@ -144,30 +162,47 @@ export function register(mstream) {
     });
 
     const limits = resolveLimits(req.body);
-    const minted = fedDb.createFederationKey(req.body.name, libraryIds, limits);
+    const expiresAt = normalizeExpiry(req.body.expiresAt);
+    const minted = fedDb.createFederationKey(req.body.name, libraryIds, limits, expiresAt);
     winston.info(`[federation] ${req.user.username} minted key '${minted.name}' for libraries [${req.body.vpaths.join(', ')}] `
-      + `(limits: ${limits.streamKbps} kbps, ${limits.dailyMb} MB/day, ${limits.maxStreams} streams)`);
-    const ticket = await ticketForKey({ ...minted, library_names: req.body.vpaths });
-    res.json({ id: minted.id, name: minted.name, key: minted.key, ticket, ...limits });
+      + `(limits: ${limits.streamKbps} kbps, ${limits.dailyMb} MB/day, ${limits.maxStreams} streams; `
+      + `expires: ${expiresAt || 'never'})`);
+    // Re-read for the stored (normalized) expiry so the ticket's `e` field
+    // matches the row exactly.
+    const fresh = fedDb.getFederationKeyById(minted.id);
+    const ticket = await ticketForKey({ ...fresh, library_names: req.body.vpaths });
+    res.json({
+      id: minted.id, name: minted.name, key: minted.key, ticket, ...limits,
+      expiresAt: sqliteUtcToIso(fresh.expires_at),
+    });
   });
 
   // Live per-key limit edit — applies from the next request on. A stream
   // that is already open keeps the rate it started with (the wrapper
-  // captured it); revoking the key remains the hard stop.
+  // captured it); revoking the key remains the hard stop. `expiresAt` is
+  // tri-state: absent = unchanged, null = never, ISO = new future cutoff
+  // (which is also how an expired key gets renewed).
   mstream.post('/api/v1/admin/federation/keys/:id/limits', (req, res) => {
     joiValidate(Joi.object({ id: Joi.number().integer().min(1).required() }), req.params);
     joiValidate(Joi.object({
       streamKbps: limitsSchema.streamKbps.required(),
       dailyMb: limitsSchema.dailyMb.required(),
       maxStreams: limitsSchema.maxStreams.required(),
+      expiresAt: expirySchema,
     }), req.body);
 
     const id = Number(req.params.id);
     if (!fedDb.setFederationKeyLimits(id, req.body)) {
       throw new WebError('Key not found', 404);
     }
+    let expiryNote = '';
+    if ('expiresAt' in req.body) {
+      const expiresAt = normalizeExpiry(req.body.expiresAt);
+      fedDb.setFederationKeyExpiry(id, expiresAt);
+      expiryNote = `; expires: ${expiresAt || 'never'}`;
+    }
     winston.info(`[federation] ${req.user.username} set limits on key id=${id}: `
-      + `${req.body.streamKbps} kbps, ${req.body.dailyMb} MB/day, ${req.body.maxStreams} streams`);
+      + `${req.body.streamKbps} kbps, ${req.body.dailyMb} MB/day, ${req.body.maxStreams} streams${expiryNote}`);
     res.json(fedDb.getFederationKeyById(id));
   });
 

@@ -6071,6 +6071,8 @@ paths:
                     daily_mb: { type: integer, description: Per-UTC-day transfer quota. 0 = unlimited. }
                     max_streams: { type: integer, description: Concurrent /media response cap. 0 = unlimited. }
                     usage_today_bytes: { type: integer, description: Bytes served to this key today (UTC), live — includes traffic not yet flushed to the DB. }
+                    expires_at: { type: string, nullable: true, description: "UTC cutoff ('YYYY-MM-DD HH:MM:SS'); null = never. Past it the key fails the auth wall and the pipe handshake." }
+                    expired: { type: integer, description: 1 when expires_at has passed. The row survives expiry so the key can be renewed. }
         "405": { $ref: "#/components/responses/AdminLocked" }
     post:
       tags: [Federation]
@@ -6092,6 +6094,7 @@ paths:
                 streamKbps: { type: integer, minimum: 0, description: Rate cap in kbps. 0 = unlimited. Default from config. }
                 dailyMb: { type: integer, minimum: 0, description: Daily quota in MB. 0 = unlimited. Default from config. }
                 maxStreams: { type: integer, minimum: 0, description: Concurrent stream cap. 0 = unlimited. Default from config. }
+                expiresAt: { type: string, format: date-time, nullable: true, description: ISO 8601 expiry, must be in the future. Absent/null = never. Also rides the ticket as the informational `e` field. }
       responses:
         "200":
           description: The minted key + swap-ready ticket (null when the endpoint isn't running).
@@ -6107,6 +6110,7 @@ paths:
                   streamKbps: { type: integer }
                   dailyMb: { type: integer }
                   maxStreams: { type: integer }
+                  expiresAt: { type: string, nullable: true, description: ISO 8601, as stored (normalized to UTC). }
         "400": { description: Validation failure. }
         "404": { description: Unknown library name. }
         "405": { $ref: "#/components/responses/AdminLocked" }
@@ -6126,8 +6130,8 @@ paths:
   /api/v1/admin/federation/keys/{id}/limits:
     post:
       tags: [Federation]
-      summary: Edit a key's bandwidth limits (live)
-      description: Applies from the key's next request; an already-open stream keeps the rate it started with. 0 = unlimited on any field.
+      summary: Edit a key's bandwidth limits and expiry (live)
+      description: Applies from the key's next request; an already-open stream keeps the rate it started with. 0 = unlimited on any bandwidth field. `expiresAt` is tri-state — absent = unchanged, null = never, a future ISO date sets (or renews) the cutoff.
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       requestBody:
@@ -6141,6 +6145,7 @@ paths:
                 streamKbps: { type: integer, minimum: 0 }
                 dailyMb: { type: integer, minimum: 0 }
                 maxStreams: { type: integer, minimum: 0 }
+                expiresAt: { type: string, format: date-time, nullable: true, description: Absent = unchanged; null = never; future ISO date = new cutoff. }
       responses:
         "200":
           description: The updated key row.

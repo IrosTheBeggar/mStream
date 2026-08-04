@@ -78,7 +78,10 @@ import { HASH_GENERATION } from './audio-hash.js';
 // daily_mb / max_streams, 0 = unlimited) and the federation_key_usage
 // per-day byte/request counters that back the daily quota and the admin
 // usage readout. See SCHEMA_V62.
-export const SCHEMA_VERSION = 62;
+// V63 adds federation_keys.expires_at (NULL = never) — time-boxed keys.
+// Deliberately NOT folded into V62: that migration shipped on the same PR
+// branch and may already be stamped into dev DBs. See SCHEMA_V63.
+export const SCHEMA_VERSION = 63;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2325,6 +2328,24 @@ export const SCHEMA_V62 = `
   );
 `;
 
+// ── Federation key expiry ────────────────────────────────────────────────────
+//
+// expires_at is a hard cutoff for the whole credential: past it, the key
+// fails the auth wall AND the iroh pipe handshake (shared `expired` check
+// computed in SQL — db/federation.js). NULL = never expires, which is what
+// every pre-V63 key gets. One semantic on purpose: it time-boxes a friend's
+// access AND quietly kills a ticket that was never redeemed, without a
+// second "redeem-by" concept. The row survives expiry so the admin can
+// renew (edit the date) or revoke; usage history stays intact.
+//
+// Stored in SQLite's canonical UTC 'YYYY-MM-DD HH:MM:SS' via datetime(?),
+// so lexicographic comparison against datetime('now') is chronological —
+// the check never round-trips through JS Date parsing (which reads that
+// format as LOCAL time).
+export const SCHEMA_V63 = `
+  ALTER TABLE federation_keys ADD COLUMN expires_at TEXT;
+`;
+
 export const SCHEMA_V58 = `
   ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
 `;
@@ -2696,4 +2717,7 @@ export const MIGRATIONS = [
   // counters behind the daily quota. Additive columns + a new empty
   // table — no rescan needed. See SCHEMA_V62.
   { version: 62, sql: SCHEMA_V62 },
+  // V63 adds federation_keys.expires_at (NULL = never, so existing keys
+  // are untouched). Additive column — no rescan needed. See SCHEMA_V63.
+  { version: 63, sql: SCHEMA_V63 },
 ];

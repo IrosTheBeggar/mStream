@@ -82,6 +82,19 @@ export function authenticateFederationKey(key, req) {
     throw new WebError('Authentication Error', 401);
   }
 
+  if (row.expired) {
+    winston.warn(`[federation] rejected expired key '${row.name}' from ${req.ip} on ${req.path}`);
+    // Lazy severing: an iroh pipe opened before the cutoff would otherwise
+    // coast on keep-alives (each request inside it dies here anyway, but
+    // the connection itself should go too). Fire-and-forget — the module
+    // is import-safe without the native binary, and the reply must not
+    // wait on it.
+    import('../state/federation.js')
+      .then((federation) => federation.closeConnectionsForKey(row.id))
+      .catch(() => { /* native binary absent — nothing live to sever */ });
+    throw new WebError('Authentication Error', 401);
+  }
+
   if (!isFederationPathAllowed(req)) {
     winston.warn(`[federation] key '${row.name}' denied off-allowlist route ${req.method} ${req.path} from ${req.ip}`);
     throw new WebError('Forbidden', 403);
