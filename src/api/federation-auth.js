@@ -82,6 +82,25 @@ export function authenticateFederationKey(key, req) {
     throw new WebError('Authentication Error', 401);
   }
 
+  if (row.expired) {
+    winston.warn(`[federation] rejected expired key '${row.name}' from ${req.ip} on ${req.path}`);
+    // Lazy severing: an iroh pipe opened before the cutoff would otherwise
+    // coast on keep-alives (each request inside it dies here anyway, but
+    // the connection itself should go too). DELAYED a beat on purpose:
+    // severing in-line races this 401 through the bridge — the pipe died
+    // under the in-flight response and the peer saw "unreachable" instead
+    // of the clean auth error (caught by the two-server live smoke). Two
+    // seconds lets the rejection flush; anything the peer sends in the
+    // window still dies at this wall.
+    const sever = setTimeout(() => {
+      import('../state/federation.js')
+        .then((federation) => federation.closeConnectionsForKey(row.id))
+        .catch(() => { /* native binary absent — nothing live to sever */ });
+    }, 2000);
+    if (sever.unref) { sever.unref(); }
+    throw new WebError('Authentication Error', 401);
+  }
+
   if (!isFederationPathAllowed(req)) {
     winston.warn(`[federation] key '${row.name}' denied off-allowlist route ${req.method} ${req.path} from ${req.ip}`);
     throw new WebError('Forbidden', 403);
@@ -95,6 +114,13 @@ export function authenticateFederationKey(key, req) {
     username: `federation:${row.name}`,
     federation: true,
     federationKeyId: row.id,
+    // Bandwidth caps ride along so the limits middleware (registered right
+    // after this wall) never needs a second key lookup. 0 = unlimited.
+    federationLimits: {
+      streamKbps: row.stream_kbps || 0,
+      dailyMb: row.daily_mb || 0,
+      maxStreams: row.max_streams || 0,
+    },
     admin: false,
     vpaths: grants.map((g) => g.name),
     libraryIds: grants.map((g) => g.id),

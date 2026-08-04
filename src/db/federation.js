@@ -21,12 +21,19 @@ export function generateFederationKey() {
 // Mint a key granting read-only access to the given library ids. The insert
 // and its grants are one transaction so a failed grant can't leave a key with
 // access to nothing (or worse, everything a later bug assumes).
-export function createFederationKey(name, libraryIds) {
+// `limits` are the V62 bandwidth caps; 0 (the default) means unlimited.
+// `expiresAt` is an ISO datetime or null (= never); datetime(?) normalizes
+// it to SQLite's canonical UTC form so the stored value compares
+// lexicographically against datetime('now').
+export function createFederationKey(name, libraryIds, limits = {}, expiresAt = null) {
   const db = getDB();
   const key = generateFederationKey();
   db.exec('BEGIN');
   try {
-    const result = db.prepare('INSERT INTO federation_keys (key, name) VALUES (?, ?)').run(key, name);
+    const result = db.prepare(`
+      INSERT INTO federation_keys (key, name, stream_kbps, daily_mb, max_streams, expires_at)
+      VALUES (?, ?, ?, ?, ?, datetime(?))
+    `).run(key, name, limits.streamKbps || 0, limits.dailyMb || 0, limits.maxStreams || 0, expiresAt);
     const keyId = Number(result.lastInsertRowid);
     const grant = db.prepare('INSERT INTO federation_key_libraries (key_id, library_id) VALUES (?, ?)');
     for (const libId of libraryIds) { grant.run(keyId, libId); }
@@ -38,10 +45,30 @@ export function createFederationKey(name, libraryIds) {
   }
 }
 
+export function setFederationKeyLimits(id, { streamKbps, dailyMb, maxStreams }) {
+  return getDB().prepare(`
+    UPDATE federation_keys SET stream_kbps = ?, daily_mb = ?, max_streams = ? WHERE id = ?
+  `).run(streamKbps || 0, dailyMb || 0, maxStreams || 0, id).changes > 0;
+}
+
+// Set or clear (null = never) a key's expiry. Setting a future date on an
+// already-expired key is the renewal path — nothing else needs resetting.
+export function setFederationKeyExpiry(id, expiresAt) {
+  return getDB().prepare(`
+    UPDATE federation_keys SET expires_at = datetime(?) WHERE id = ?
+  `).run(expiresAt ?? null, id).changes > 0;
+}
+
+// Every key read carries a computed `expired` (0/1). The comparison lives
+// in SQL on purpose: both sides are datetime('now')-format UTC strings, so
+// it's chronologically correct — JS Date.parse would read the stored
+// format as LOCAL time and drift the cutoff by the machine's UTC offset.
+const EXPIRED_SQL = `(expires_at IS NOT NULL AND expires_at <= datetime('now')) AS expired`;
+
 // All minted keys with their granted library names aggregated (UI listing).
 export function getFederationKeys() {
   return getDB().prepare(`
-    SELECT k.*,
+    SELECT k.*, ${EXPIRED_SQL},
            (SELECT json_group_array(l.name)
               FROM federation_key_libraries kl
               JOIN libraries l ON l.id = kl.library_id
@@ -55,12 +82,12 @@ export function getFederationKeys() {
 }
 
 export function getFederationKeyById(id) {
-  return getDB().prepare('SELECT * FROM federation_keys WHERE id = ?').get(id);
+  return getDB().prepare(`SELECT *, ${EXPIRED_SQL} FROM federation_keys WHERE id = ?`).get(id);
 }
 
 // Auth-wall lookup: the presented credential -> the key row, or undefined.
 export function getFederationKeyByKey(key) {
-  return getDB().prepare('SELECT * FROM federation_keys WHERE key = ?').get(key);
+  return getDB().prepare(`SELECT *, ${EXPIRED_SQL} FROM federation_keys WHERE key = ?`).get(key);
 }
 
 // The libraries a key grants, as [{ id, name }] (auth wall + UI).
@@ -110,6 +137,40 @@ export function touchFederationKeyLastUsed(id) {
   if (prev !== undefined && now - prev < LAST_USED_THROTTLE_MS) { return; }
   lastTouched.set(id, now);
   getDB().prepare(`UPDATE federation_keys SET last_used = datetime('now') WHERE id = ?`).run(id);
+}
+
+// ── Usage counters (per key, per UTC day) ────────────────────────────────────
+// Written by api/federation-limits.js's throttled accumulator, never per
+// request. `day` is 'YYYY-MM-DD' (UTC) everywhere.
+
+export function recordFederationKeyUsage(keyId, day, bytes, requests) {
+  getDB().prepare(`
+    INSERT INTO federation_key_usage (key_id, day, bytes, requests) VALUES (?, ?, ?, ?)
+    ON CONFLICT (key_id, day) DO UPDATE SET bytes = bytes + excluded.bytes,
+                                            requests = requests + excluded.requests
+  `).run(keyId, day, bytes, requests);
+}
+
+export function getFederationKeyUsage(keyId, day) {
+  return getDB().prepare(`
+    SELECT bytes, requests FROM federation_key_usage WHERE key_id = ? AND day = ?
+  `).get(keyId, day) || { bytes: 0, requests: 0 };
+}
+
+// One day's usage for every key at once (admin key-list decoration).
+export function getFederationUsageForDay(day) {
+  const rows = getDB().prepare(`
+    SELECT key_id, bytes, requests FROM federation_key_usage WHERE day = ?
+  `).all(day);
+  return new Map(rows.map((r) => [r.key_id, { bytes: r.bytes, requests: r.requests }]));
+}
+
+// Quota history has no value past the admin's "recent traffic" window; the
+// flusher calls this at most once a day.
+export function pruneFederationKeyUsage(keepDays = 90) {
+  return getDB().prepare(`
+    DELETE FROM federation_key_usage WHERE day < date('now', ?)
+  `).run(`-${keepDays} days`).changes;
 }
 
 // ── Peers (outbound: servers we can read) ────────────────────────────────────

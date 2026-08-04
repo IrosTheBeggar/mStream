@@ -134,6 +134,21 @@ describe('federation endpoint handshake', { skip: available ? false : 'no @numbe
     assert.notEqual(resp, 'OK');
   });
 
+  test('an expired key is rejected before TOFU can bind; renewal re-arms it', async () => {
+    const expired = fedDb.createFederationKey('expired-peer', [], {},
+      new Date(Date.now() - 60_000).toISOString());
+    const { resp } = await dial(expired.key);
+    assert.notEqual(resp, 'OK');
+    // The expiry check runs BEFORE the TOFU block: a dead ticket must not
+    // claim a binding on its way out.
+    assert.equal(fedDb.getFederationKeyById(expired.id).bound_endpoint_id, null);
+
+    // Renewal (a new future date) is all it takes — same key, same ticket.
+    fedDb.setFederationKeyExpiry(expired.id, new Date(Date.now() + 3600_000).toISOString());
+    const again = await dial(expired.key);
+    assert.equal(again.resp, 'OK');
+  });
+
   test('closeConnectionsForKey severs a live authorized pipe', async () => {
     const fresh = fedDb.createFederationKey('sever-me', []);
     const { conn, resp } = await dial(fresh.key);

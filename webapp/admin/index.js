@@ -63,6 +63,9 @@ const ADMINDATA = (() => {
   module.federationParamsUpdated = { ts: 0 };
   module.federationKeys = { list: [] };
   module.federationPeers = { list: [] };
+  // The key row the edit-limits modal is acting on (modals are global
+  // components, so per-row context rides shared state, not props).
+  module.federationLimitsTarget = { key: null };
   // torrent (UX-layer settings — client + whitelist gating)
   module.torrentParams = {
     client:       'disabled',
@@ -3501,6 +3504,7 @@ const federationView = Vue.component('federation-view', {
           error: false,
           name: typeof payload.n === 'string' ? payload.n : '(unnamed server)',
           libraries: Array.isArray(payload.l) ? payload.l : [],
+          expires: typeof payload.e === 'string' ? payload.e.slice(0, 10) : null,
         };
       } catch (e) {
         return { error: true };
@@ -3531,6 +3535,31 @@ const federationView = Vue.component('federation-view', {
     openNewTicketModal() {
       modVM.currentViewModal = 'federation-new-ticket-modal';
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    openLimitsModal(key) {
+      ADMINDATA.federationLimitsTarget.key = key;
+      modVM.currentViewModal = 'federation-edit-limits-modal';
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    fmtLimits(k) {
+      const parts = [];
+      if (k.stream_kbps > 0) { parts.push(k.stream_kbps >= 1000 ? `${+(k.stream_kbps / 1000).toFixed(1)} Mbps` : `${k.stream_kbps} kbps`); }
+      if (k.daily_mb > 0) { parts.push(k.daily_mb >= 1024 ? `${+(k.daily_mb / 1024).toFixed(1)} GB/day` : `${k.daily_mb} MB/day`); }
+      if (k.max_streams > 0) { parts.push(`${k.max_streams} stream${k.max_streams === 1 ? '' : 's'}`); }
+      return parts.length ? parts.join(' · ') : 'unlimited';
+    },
+    fmtBytes(n) {
+      if (!n) { return '0 B'; }
+      if (n >= 1024 * 1024 * 1024) { return `${+(n / (1024 * 1024 * 1024)).toFixed(2)} GB`; }
+      if (n >= 1024 * 1024) { return `${+(n / (1024 * 1024)).toFixed(1)} MB`; }
+      if (n >= 1024) { return `${+(n / 1024).toFixed(1)} KB`; }
+      return `${n} B`;
+    },
+    // Rows carry SQLite UTC 'YYYY-MM-DD HH:MM:SS' — brand it UTC before
+    // parsing or the browser reads it as local time.
+    fmtExpiry(s) {
+      const days = Math.ceil((Date.parse(`${s.replace(' ', 'T')}Z`) - Date.now()) / 86400000);
+      return days <= 1 ? 'expires today' : `expires in ${days}d`;
     },
     async revokeKey(key) {
       this.setRowPending(key.id, true);
@@ -3659,11 +3688,17 @@ const federationView = Vue.component('federation-view', {
               <span class="card-title">Shared Libraries — Tickets You Minted</span>
               <p style="font-size:0.9em;color:#777">Each ticket is a read-only grant for the libraries you picked. Copy it and send it to the friend it's for.</p>
               <table v-if="keys.list.length > 0" class="striped">
-                <thead><tr><th>Name</th><th>Libraries</th><th>Last used</th><th>Redeemed</th><th style="width:280px"></th></tr></thead>
+                <thead><tr><th>Name</th><th>Libraries</th><th>Limits</th><th>Today</th><th>Last used</th><th>Redeemed</th><th style="width:280px"></th></tr></thead>
                 <tbody>
                   <tr v-for="k in keys.list" :key="k.id">
                     <td>{{ k.name }}</td>
                     <td>{{ k.library_names.join(', ') }}</td>
+                    <td style="font-size:0.85em">
+                      <a v-on:click="openLimitsModal(k)" style="cursor:pointer" title="Edit this key's bandwidth limits and expiry">{{ fmtLimits(k) }}</a>
+                      <div v-if="k.expired" style="color:#c62828">expired</div>
+                      <div v-else-if="k.expires_at" style="color:#777">{{ fmtExpiry(k.expires_at) }}</div>
+                    </td>
+                    <td style="font-size:0.85em" title="Bytes served to this key today (UTC)">{{ fmtBytes(k.usage_today_bytes) }}</td>
                     <td>{{ fmtDate(k.last_used) }}</td>
                     <td>
                       <span v-if="k.bound_endpoint_id" style="color:#2e7d32">✔ claimed</span>
@@ -3721,6 +3756,7 @@ const federationView = Vue.component('federation-view', {
                 <div v-if="peerPreview && !peerPreview.error" class="card-panel green lighten-5" style="padding:10px">
                   <b>{{ peerPreview.name }}</b>
                   <span v-if="peerPreview.libraries.length"> — shares: {{ peerPreview.libraries.join(', ') }}</span>
+                  <span v-if="peerPreview.expires"> · valid until {{ peerPreview.expires }}</span>
                 </div>
                 <div class="input-field" style="max-width:320px">
                   <input id="fed-peer-name" type="text" v-model="peerName" placeholder="Optional display name"/>
@@ -9641,10 +9677,17 @@ const lastFMModal = Vue.component('lastfm-modal', {
 // libraries it covers, mint, and copy the resulting mstrfed1: ticket.
 const federationNewTicketModal = Vue.component('federation-new-ticket-modal', {
   data() {
+    // Pre-fill the caps from config (federation.limits via the status
+    // route); the admin tunes or zeroes them per key right here.
+    const d = ADMINDATA.federationParams.limitDefaults || { streamKbps: 8000, dailyMb: 2048, maxStreams: 3 };
     return {
       directories: ADMINDATA.folders,
       name: '',
       selected: [],
+      streamKbps: d.streamKbps,
+      dailyMb: d.dailyMb,
+      maxStreams: d.maxStreams,
+      expireDays: 0,
       submitPending: false,
       mintedTicket: null,
     };
@@ -9661,6 +9704,25 @@ const federationNewTicketModal = Vue.component('federation-new-ticket-modal', {
           <p v-for="(cfg, vpath) in directories" :key="vpath" style="margin:4px 0">
             <label><input type="checkbox" v-model="selected" :value="vpath"/><span>{{ vpath }}</span></label>
           </p>
+          <p style="margin:16px 0 4px"><b>Bandwidth limits</b> <span style="color:#777;font-size:0.85em">— 0 means unlimited</span></p>
+          <div class="row" style="margin-bottom:0">
+            <div class="input-field col s3">
+              <input id="fed-limit-kbps" type="number" min="0" v-model.number="streamKbps"/>
+              <label for="fed-limit-kbps" class="active">Stream rate (kbps)</label>
+            </div>
+            <div class="input-field col s3">
+              <input id="fed-limit-daily" type="number" min="0" v-model.number="dailyMb"/>
+              <label for="fed-limit-daily" class="active">Daily quota (MB)</label>
+            </div>
+            <div class="input-field col s3">
+              <input id="fed-limit-streams" type="number" min="0" v-model.number="maxStreams"/>
+              <label for="fed-limit-streams" class="active">Max streams</label>
+            </div>
+            <div class="input-field col s3">
+              <input id="fed-limit-expire" type="number" min="0" v-model.number="expireDays"/>
+              <label for="fed-limit-expire" class="active">Expires (days)</label>
+            </div>
+          </div>
         </div>
         <div v-else>
           <p><b>Ticket for '{{ name }}'</b> — copy it and send it to your friend over a private channel. Anyone holding it can read the granted libraries until it's claimed or revoked.</p>
@@ -9679,10 +9741,18 @@ const federationNewTicketModal = Vue.component('federation-new-ticket-modal', {
     mint: async function() {
       this.submitPending = true;
       try {
+        const data = {
+          name: this.name.trim(), vpaths: this.selected,
+          streamKbps: Number(this.streamKbps) || 0,
+          dailyMb: Number(this.dailyMb) || 0,
+          maxStreams: Number(this.maxStreams) || 0,
+        };
+        const days = Number(this.expireDays) || 0;
+        if (days > 0) { data.expiresAt = new Date(Date.now() + days * 86400000).toISOString(); }
         const res = await API.axios({
           method: 'POST',
           url: `${API.url()}/api/v1/admin/federation/keys`,
-          data: { name: this.name.trim(), vpaths: this.selected },
+          data,
         });
         this.mintedTicket = res.data.ticket || res.data.key;
         if (!res.data.ticket) {
@@ -9691,6 +9761,91 @@ const federationNewTicketModal = Vue.component('federation-new-ticket-modal', {
         await ADMINDATA.getFederationKeys();
       } catch (err) {
         iziToast.error({ title: 'Failed to mint the ticket', position: 'topCenter', timeout: 3500 });
+      } finally {
+        this.submitPending = false;
+      }
+    },
+  },
+});
+
+const federationEditLimitsModal = Vue.component('federation-edit-limits-modal', {
+  data() {
+    const k = ADMINDATA.federationLimitsTarget.key || {};
+    return {
+      target: k,
+      streamKbps: k.stream_kbps || 0,
+      dailyMb: k.daily_mb || 0,
+      maxStreams: k.max_streams || 0,
+      // Tri-state, so saving limit tweaks can't silently restart an expiry
+      // clock: '' = leave expiry as it is, 0 = never, N = N days from now.
+      expireDays: '',
+      submitPending: false,
+    };
+  },
+  computed: {
+    currentExpiry() {
+      if (this.target.expired) { return 'expired'; }
+      if (!this.target.expires_at) { return 'never'; }
+      return `${this.target.expires_at.slice(0, 10)} (UTC)`;
+    },
+  },
+  template: `
+    <form @submit.prevent="save">
+      <div class="modal-content">
+        <h4>Limits for '{{ target.name }}'</h4>
+        <p style="color:#777;font-size:0.9em">Applies from this key's next request. 0 means unlimited.</p>
+        <div class="row" style="margin-bottom:0">
+          <div class="input-field col s4">
+            <input id="fed-edit-kbps" type="number" min="0" v-model.number="streamKbps"/>
+            <label for="fed-edit-kbps" class="active">Stream rate (kbps)</label>
+          </div>
+          <div class="input-field col s4">
+            <input id="fed-edit-daily" type="number" min="0" v-model.number="dailyMb"/>
+            <label for="fed-edit-daily" class="active">Daily quota (MB)</label>
+          </div>
+          <div class="input-field col s4">
+            <input id="fed-edit-streams" type="number" min="0" v-model.number="maxStreams"/>
+            <label for="fed-edit-streams" class="active">Max streams</label>
+          </div>
+        </div>
+        <p style="margin:8px 0 4px"><b>Expiry</b> <span :style="{color: target.expired ? '#c62828' : '#777'}" style="font-size:0.85em">— currently: {{ currentExpiry }}</span></p>
+        <div class="row" style="margin-bottom:0">
+          <div class="input-field col s6">
+            <input id="fed-edit-expire" type="number" min="0" v-model="expireDays" placeholder="leave blank to keep"/>
+            <label for="fed-edit-expire" class="active">New expiry (days from now, 0 = never)</label>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect btn-flat">Cancel</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending">
+          {{ submitPending ? 'Saving…' : 'Save' }}
+        </button>
+      </div>
+    </form>`,
+  methods: {
+    save: async function() {
+      this.submitPending = true;
+      try {
+        const data = {
+          streamKbps: Number(this.streamKbps) || 0,
+          dailyMb: Number(this.dailyMb) || 0,
+          maxStreams: Number(this.maxStreams) || 0,
+        };
+        if (String(this.expireDays).trim() !== '') {
+          const days = Number(this.expireDays) || 0;
+          data.expiresAt = days > 0 ? new Date(Date.now() + days * 86400000).toISOString() : null;
+        }
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/federation/keys/${this.target.id}/limits`,
+          data,
+        });
+        await ADMINDATA.getFederationKeys();
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+        iziToast.success({ title: 'Limits updated', position: 'topCenter', timeout: 3500 });
+      } catch (err) {
+        iziToast.error({ title: 'Failed to update the limits', position: 'topCenter', timeout: 3500 });
       } finally {
         this.submitPending = false;
       }
@@ -10273,6 +10428,7 @@ const modVM = new Vue({
     'edit-ssl-modal': editSslModal,
     'lastfm-modal': lastFMModal,
     'federation-new-ticket-modal': federationNewTicketModal,
+    'federation-edit-limits-modal': federationEditLimitsModal,
     'edit-rust-player-port-modal': editRustPlayerPortModal,
     'edit-album-art-services-modal': editAlbumArtServicesModal,
     'edit-log-buffer-size-modal': editLogBufferSizeModal,

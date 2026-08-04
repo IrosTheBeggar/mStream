@@ -74,7 +74,11 @@ import { HASH_GENERATION } from './audio-hash.js';
 // See SCHEMA_V60.
 // V61 adds composite (user_id, <stat>) indexes on user_metadata so the
 // homepage-stats endpoints seek instead of scanning tracks. See SCHEMA_V61.
-export const SCHEMA_VERSION = 61;
+// V62 adds per-key bandwidth limits + expiry on federation_keys
+// (stream_kbps / daily_mb / max_streams, 0 = unlimited; expires_at, NULL =
+// never) and the federation_key_usage per-day byte/request counters that
+// back the daily quota and the admin usage readout. See SCHEMA_V62.
+export const SCHEMA_VERSION = 62;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2289,6 +2293,51 @@ export const SCHEMA_V61 = `
   CREATE INDEX IF NOT EXISTS idx_user_metadata_user_rating     ON user_metadata(user_id, rating);
 `;
 
+// ── Federation bandwidth limits + expiry (per minted key) ──────────────────
+//
+// Abuse control for federated readers: every response to an x-federation-key
+// request is metered (api/federation-limits.js), and the three limit columns
+// bound what one key may pull. 0 means unlimited on all three — existing
+// keys get 0 via the ALTER defaults, so upgrades change nothing until an
+// admin sets a limit.
+//
+//   stream_kbps — token-bucket rate cap shared across the key's concurrent
+//                 /media streams;
+//   daily_mb    — per-UTC-day transfer quota. Enforced with a 429 on the
+//                 byte-heavy routes only, so browse/health keep answering
+//                 and the peer's UI can say WHY playback stopped;
+//   max_streams — concurrent /media response cap.
+//
+// expires_at is a hard cutoff for the whole credential: past it, the key
+// fails the auth wall AND the iroh pipe handshake (shared `expired` check
+// computed in SQL — db/federation.js). NULL = never expires, which is what
+// every pre-V62 key gets. One semantic on purpose: it time-boxes a friend's
+// access AND quietly kills a ticket that was never redeemed, without a
+// second "redeem-by" concept. The row survives expiry so the admin can
+// renew (edit the date) or revoke; usage history stays intact. Stored in
+// SQLite's canonical UTC 'YYYY-MM-DD HH:MM:SS' via datetime(?), so
+// lexicographic comparison against datetime('now') is chronological — the
+// check never round-trips through JS Date parsing (which reads that format
+// as LOCAL time).
+//
+// federation_key_usage is the quota's memory: one row per key per UTC day,
+// written by a throttled in-process accumulator (not per request). Rows
+// older than ~90 days are pruned opportunistically by the same flusher.
+export const SCHEMA_V62 = `
+  ALTER TABLE federation_keys ADD COLUMN stream_kbps INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE federation_keys ADD COLUMN daily_mb INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE federation_keys ADD COLUMN max_streams INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE federation_keys ADD COLUMN expires_at TEXT;
+
+  CREATE TABLE IF NOT EXISTS federation_key_usage (
+    key_id INTEGER NOT NULL REFERENCES federation_keys(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    bytes INTEGER NOT NULL DEFAULT 0,
+    requests INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (key_id, day)
+  );
+`;
+
 export const SCHEMA_V58 = `
   ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
 `;
@@ -2655,4 +2704,9 @@ export const MIGRATIONS = [
   // user_metadata so the homepage-stats endpoints can be served from
   // user_metadata instead of a full tracks scan. Index-only, no rescan.
   { version: 61, sql: SCHEMA_V61 },
+  // V62 adds the per-key federation bandwidth limits (0 = unlimited) and
+  // expiry (NULL = never) — existing keys are untouched by both — plus the
+  // federation_key_usage per-day counters behind the daily quota. Additive
+  // columns + a new empty table — no rescan needed. See SCHEMA_V62.
+  { version: 62, sql: SCHEMA_V62 },
 ];
