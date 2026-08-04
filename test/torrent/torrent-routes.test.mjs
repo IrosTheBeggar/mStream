@@ -85,17 +85,17 @@ function jdel(path, jwt) {
 // Admin guard — non-admins must NOT reach /api/v1/admin/* torrent routes
 // ────────────────────────────────────────────────────────────────────
 describe('admin guard on torrent admin routes', () => {
-  test('GET /admin/torrent: bob denied with 405 (Admin API Disabled)', async () => {
+  test('GET /admin/torrent: bob denied with 403 (Admin access required)', async () => {
     const r = await jget('/api/v1/admin/torrent', userJwt);
-    assert.equal(r.status, 405);
+    assert.equal(r.status, 403);
   });
-  test('PUT /admin/torrent/path-templates/testlib: bob denied with 405', async () => {
+  test('PUT /admin/torrent/path-templates/testlib: bob denied with 403', async () => {
     const r = await jput('/api/v1/admin/torrent/path-templates/testlib', { template: '{{ARTIST}}' }, userJwt);
-    assert.equal(r.status, 405);
+    assert.equal(r.status, 403);
   });
-  test('DELETE /admin/torrent/{hash}: bob denied with 405', async () => {
+  test('DELETE /admin/torrent/{hash}: bob denied with 403', async () => {
     const r = await jdel('/api/v1/admin/torrent/' + 'a'.repeat(40), userJwt);
-    assert.equal(r.status, 405);
+    assert.equal(r.status, 403);
   });
 });
 
@@ -234,7 +234,7 @@ describe('POST /api/v1/admin/torrent/seed-existing', () => {
     return Buffer.from(`d4:infod4:name${name.length}:${name}6:lengthi${length}eee`);
   }
 
-  test('admin-only: non-admin denied with 405', async () => {
+  test('admin-only: non-admin denied with 403', async () => {
     const fd = new FormData();
     fd.append('torrentFile', new Blob([makeTorrentBuf()]), 'x.torrent');
     const r = await fetch(`${server.baseUrl}/api/v1/admin/torrent/seed-existing`, {
@@ -242,7 +242,7 @@ describe('POST /api/v1/admin/torrent/seed-existing', () => {
       headers: { 'x-access-token': userJwt },
       body: fd,
     });
-    assert.equal(r.status, 405);
+    assert.equal(r.status, 403);
   });
 
   test('no active client: 412 no_active_client', async () => {
@@ -404,10 +404,14 @@ describe('POST /api/v1/torrent/seed-existing — user-facing', () => {
 
   test('non-admin gets through the admin guard (route exists for users)', async () => {
     // The big regression we're guarding against: an accidental
-    // /api/v1/admin/* mount that would 405 non-admins. Bob is a
+    // /api/v1/admin/* mount that would reject non-admins. Bob is a
     // non-admin; with no client configured, `_checkUserPermissions`
-    // short-circuits to `feature_disabled` — but the response is from
-    // OUR route, not the admin-guard 405.
+    // short-circuits to `feature_disabled` — but the response must come
+    // from OUR route, not the admin guard.
+    //
+    // The admin guard now answers 403 too (it used to be 405), so status
+    // alone no longer tells the two apart — assert on the BODY, which is
+    // the only thing that still distinguishes them.
     await jpost('/api/v1/admin/torrent/client', { client: 'disabled' }, adminJwt);
     const fd = new FormData();
     fd.append('torrentFile', new Blob([makeTorrentBuf()]), 'x.torrent');
@@ -416,9 +420,10 @@ describe('POST /api/v1/torrent/seed-existing — user-facing', () => {
       headers: { 'x-access-token': userJwt },
       body: fd,
     });
-    assert.notEqual(r.status, 405, 'must not be admin-guarded');
     assert.equal(r.status, 403);
     const body = await r.json();
+    assert.notEqual(body.error, 'Admin access required', 'must not be admin-guarded');
+    assert.notEqual(body.error, 'Admin API Disabled', 'must not be admin-guarded');
     assert.equal(body.ok, false);
     assert.equal(body.error, 'feature_disabled');
   });
@@ -448,6 +453,9 @@ describe('POST /api/v1/torrent/seed-existing — user-facing', () => {
     assert.notEqual(r.status, 404);
     assert.notEqual(r.status, 405);
     const body = await r.json().catch(() => ({}));
+    // Body check, not status: the admin guard answers 403 now, so a
+    // status assertion can no longer prove this wasn't admin-guarded.
+    assert.notEqual(body.error, 'Admin access required', 'must not be admin-guarded');
     assert.equal(body.ok, false);
   });
 

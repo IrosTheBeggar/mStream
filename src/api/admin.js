@@ -40,10 +40,14 @@ import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
 export function setup(mstream) {
   mstream.all('/api/v1/admin/{*path}', (req, res, next) => {
     if (config.program.lockAdmin === true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
-    if (req.user.admin !== true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
+    // A non-admin caller is authenticated fine — they just lack the role. That
+    // is 403, not 405, and it is NOT "Admin API Disabled": the API is up, this
+    // user simply isn't allowed. The old 405 + shared message made a role
+    // failure indistinguishable from the whole API being switched off.
+    if (req.user.admin !== true) { return res.status(403).json({ error: 'Admin access required' }); }
     // Application-level IP gate (adminAccess.mode = all|none|localhost|whitelist).
     // 'none' is already caught by the lockAdmin check above; localhost/whitelist
-    // are enforced here. Ordering: none-check(405) -> admin-role(405) -> network(403).
+    // are enforced here. Ordering: none-check(405) -> admin-role(403) -> network(403).
     if (!isAdminAllowed(req)) { return res.status(403).json({ error: 'Admin access restricted to local network' }); }
     next();
   });

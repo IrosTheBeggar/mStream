@@ -36,9 +36,9 @@ info:
     |------|---------|
     | 400  | Bad request (invalid input) |
     | 401  | Unauthenticated |
-    | 403  | Forbidden (Joi validation error, missing permission) |
+    | 403  | Forbidden (Joi validation error, missing permission, non-admin caller on an admin route, or admin request from outside the allowed network) |
     | 404  | Resource not found |
-    | 405  | Admin API locked |
+    | 405  | Admin API locked by configuration (adminAccess.mode = 'none') |
     | 500  | Server error |
     | 503  | External dependency unavailable (ffmpeg, rust audio server) |
 
@@ -893,7 +893,11 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     AdminLocked:
-      description: Admin API disabled (either by configuration or because the user is not an admin).
+      description: >-
+        Admin API disabled by configuration (adminAccess.mode = 'none', formerly
+        lockAdmin). A caller who is authenticated but simply lacks the admin role
+        gets 403 `Admin access required` instead — that case used to share this
+        405 and is no longer reported here.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
