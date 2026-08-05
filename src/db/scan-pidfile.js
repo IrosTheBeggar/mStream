@@ -21,7 +21,8 @@
 // means a reboot() re-entry or a second server instance whose scan is
 // healthy and managed), AND verifiably a scanner (image/command-line
 // check — a reused pid must never get an innocent process killed), it is
-// terminated.
+// terminated. An identity that can't be established either way keeps the
+// record for a later boot: never kill blind, never forget a live orphan.
 //
 // Everything here is synchronous on purpose: it runs once, at boot,
 // before anything else touches the DB.
@@ -89,8 +90,12 @@ function sleepSync(ms) {
 // { image: <lowercased executable basename>, cmdline: <string|null> }
 // or null when the process can't be inspected (caller keeps the record
 // and retries on a later boot rather than killing blind).
+// `needCmdline` gates the command-line lookup: only js-kind records need
+// it (rust/waveform verdicts are image-only), and on Windows it is a
+// PowerShell CIM query whose cold start can take double-digit seconds on
+// a loaded machine — the preferred rust scanner should never pay that.
 // `pid` is integer-validated by the caller, so interpolation is safe.
-function probeProcess(pid) {
+function probeProcess(pid, needCmdline) {
   try {
     if (process.platform === 'win32') {
       const r = child.spawnSync('tasklist',
@@ -101,14 +106,20 @@ function probeProcess(pid) {
       const image = line.split('","')[0].replace(/^"/, '').toLowerCase();
       // The command line needs a CIM query (tasklist doesn't expose it).
       // Only required to vet generic images like node.exe; a failure
-      // leaves cmdline null and the caller refuses to kill on it.
+      // leaves cmdline null and the caller refuses to kill on it. The
+      // budget is deliberately generous: PowerShell's cold start blew an
+      // 8s cap on a loaded CI runner (2026-08-04), and a timeout here
+      // demotes a real orphan to "unverifiable" — alive until a later
+      // boot manages to inspect it.
       let cmdline = null;
-      const ps = child.spawnSync('powershell',
-        ['-NoProfile', '-NonInteractive', '-Command',
-          `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`],
-        { timeout: 8000 });
-      if (ps.status === 0) {
-        cmdline = (ps.stdout || '').toString().trim() || null;
+      if (needCmdline) {
+        const ps = child.spawnSync('powershell',
+          ['-NoProfile', '-NonInteractive', '-Command',
+            `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`],
+          { timeout: 30000 });
+        if (ps.status === 0) {
+          cmdline = (ps.stdout || '').toString().trim() || null;
+        }
       }
       return { image, cmdline };
     }
@@ -124,40 +135,59 @@ function probeProcess(pid) {
     const comm = (child.spawnSync('ps', ['-p', String(pid), '-o', 'comm='], { timeout: 5000 })
       .stdout || '').toString().trim();
     if (!comm) { return null; }
-    const args = (child.spawnSync('ps', ['-p', String(pid), '-o', 'args='], { timeout: 5000 })
-      .stdout || '').toString().trim();
-    return { image: path.basename(comm).toLowerCase(), cmdline: args || null };
+    let cmdline = null;
+    if (needCmdline) {
+      const args = (child.spawnSync('ps', ['-p', String(pid), '-o', 'args='], { timeout: 5000 })
+        .stdout || '').toString().trim();
+      cmdline = args || null;
+    }
+    return { image: path.basename(comm).toLowerCase(), cmdline };
   } catch (_err) {
     return null;
   }
 }
 
 // A reused pid must NEVER get an innocent process killed, so the bar is
-// "provably a scanner", not "probably":
+// "provably a scanner", not "probably". Three verdicts, and the caller
+// must compare them EXPLICITLY — they are truthy strings, so a boolean
+// test would treat 'stranger' as a kill license:
+//  - 'scanner':  provably the recorded scanner — the only kill verdict.
+//  - 'stranger': provably NOT a scanner — the pid was recycled by an
+//    unrelated process; the record is permanently stale, safe to drop.
+//  - 'unknown':  identity could not be established either way (generic
+//    image, no readable command line). Neither kill nor forget: the
+//    caller keeps the record so a later boot retries.
+// Rules:
 //  - rust: the image must match what we recorded AND carry the
 //    distinctive rust-parser prefix (rust-parser-<platform>-<arch>[.exe]
-//    prebuilt, rust-parser[.exe] local build).
+//    prebuilt, rust-parser[.exe] local build). The image comes from a
+//    successful tasklist/ps probe, so a mismatch is definitive.
 //  - js: the image (node/electron) is far too generic on its own —
 //    require the command line to reference the recorded scanner.mjs path
 //    too (falling back to the bare filename for records that predate the
-//    marker field). If the platform can't produce a command line,
-//    refuse: a leaked scanner is less dangerous than killing an
-//    unrelated node process.
-function looksLikeScanner(probe, rec) {
+//    marker field). If the platform can't produce a command line, the
+//    verdict is 'unknown': a leaked scanner is less dangerous than
+//    killing an unrelated node process — but forgetting a live orphan
+//    is a real cost too, so the record must survive for a retry.
+// Exported for unit tests: the verdict table IS the safety contract.
+export function looksLikeScanner(probe, rec) {
   const expectedImage = String(rec.image || '').toLowerCase();
   if (rec.kind === 'rust' || rec.kind === 'waveform') {
     // 'waveform' is the post-scan enrichment pass — same rust-parser
     // binary, same provability rule. (It never holds a DB handle while
     // decoding, so reaping it is about CPU hygiene, not lock safety.)
-    return probe.image === expectedImage && probe.image.startsWith('rust-parser');
+    return probe.image === expectedImage && probe.image.startsWith('rust-parser')
+      ? 'scanner' : 'stranger';
   }
   if (rec.kind === 'js') {
-    if (probe.image !== expectedImage) { return false; }
-    if (typeof probe.cmdline !== 'string') { return false; }
+    if (probe.image !== expectedImage) { return 'stranger'; }
+    if (typeof probe.cmdline !== 'string') { return 'unknown'; }
     const needle = typeof rec.marker === 'string' && rec.marker ? rec.marker : 'scanner.mjs';
-    return probe.cmdline.includes(needle);
+    return probe.cmdline.includes(needle) ? 'scanner' : 'stranger';
   }
-  return false;
+  // Unrecognized kind: the record can never be verified — treat it as
+  // permanently stale rather than retrying forever.
+  return 'stranger';
 }
 
 // Boot-time reap. Call BEFORE dbManager.initDB() — the entire point is
@@ -204,7 +234,8 @@ export function reapOrphanedScanner(dbDirectory) {
       '(another mStream instance on this DB?) — leaving it alone.');
     return;
   }
-  const probe = probeProcess(pid);
+  const needCmdline = rec.kind === 'js';
+  const probe = probeProcess(pid, needCmdline);
   if (!probe) {
     // Couldn't inspect the process (constrained PowerShell, exotic
     // platform). Keep the record so a later boot can retry rather than
@@ -214,15 +245,30 @@ export function reapOrphanedScanner(dbDirectory) {
       'inspected — leaving it alone; will retry next boot.');
     return;
   }
-  if (!looksLikeScanner(probe, rec)) {
-    // Live, inspectable, but not a scanner: the pid was recycled by an
-    // unrelated process. The record is permanently stale — drop it.
+  const verdict = looksLikeScanner(probe, rec);
+  if (verdict === 'unknown') {
+    // Live and wearing the right image, but the command line could not
+    // be read, so a recycled pid can't be ruled out — and killing blind
+    // is forbidden. Keep the record: it clears itself once the pid dies,
+    // and until then a later boot retries the inspection.
+    winston.warn(
+      `Scanner pidfile points at live pid ${pid} (${probe.image}) whose ` +
+      'command line could not be read to confirm it is a scanner — ' +
+      'leaving it alone; will retry next boot.');
+    return;
+  }
+  if (verdict === 'stranger') {
+    // Live, inspectable, and provably not a scanner: the pid was
+    // recycled by an unrelated process. The record is permanently
+    // stale — drop it.
     winston.warn(
       `Scanner pidfile pointed at live pid ${pid} (${probe.image}), ` +
       'which is not a scanner — pid was recycled; dropping the stale record.');
     clearScannerPidfile(dbDirectory);
     return;
   }
+  // verdict === 'scanner': provably ours. This is the ONLY verdict that
+  // may reach the kill below — never use these strings as booleans.
 
   winston.warn(
     `Found orphaned ${rec.kind} scanner from a previous run ` +
@@ -235,8 +281,8 @@ export function reapOrphanedScanner(dbDirectory) {
   // SIGKILL must never hit a stranger.
   for (let i = 0; i < 20 && isAlive(pid); i++) { sleepSync(100); }
   if (isAlive(pid)) {
-    const recheck = probeProcess(pid);
-    if (recheck && looksLikeScanner(recheck, rec)) {
+    const recheck = probeProcess(pid, needCmdline);
+    if (recheck && looksLikeScanner(recheck, rec) === 'scanner') {
       try { process.kill(pid, 'SIGKILL'); } catch (_err) { /* gone */ }
       for (let i = 0; i < 10 && isAlive(pid); i++) { sleepSync(100); }
     }
