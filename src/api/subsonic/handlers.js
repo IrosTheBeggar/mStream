@@ -420,16 +420,33 @@ function enrichSongsWithUserMeta(req, songs) {
 // string here instead of touching the app-wide parser setting.
 // URLSearchParams has no parameter cap; the practical bound is Node's
 // header-size limit, which the transport enforces before we ever run.
-function arrayParam(req, name) {
+function _rawQuery(req) {
   if (req._rawQueryParams === undefined) {
     const u = req.originalUrl || req.url || '';
     const qi = u.indexOf('?');
     req._rawQueryParams = qi === -1 ? null : new URLSearchParams(u.slice(qi + 1));
   }
-  if (req._rawQueryParams) { return req._rawQueryParams.getAll(name); }
+  return req._rawQueryParams;
+}
+
+function arrayParam(req, name) {
+  const raw = _rawQuery(req);
+  if (raw) { return raw.getAll(name); }
   const v = req.query[name];
   if (v == null) { return []; }
   return Array.isArray(v) ? v : [v];
+}
+
+// Scalar sibling of arrayParam, for routes that ALSO accept big repeated
+// lists: any scalar that arrives after the thousandth parameter is past the
+// qs cliff and reads as undefined from req.query — savePlayQueue's `current`
+// landed after 1,500 `id` params and the restored queue silently lost its
+// position. Returns undefined when absent, first occurrence otherwise.
+function qparam(req, name) {
+  const raw = _rawQuery(req);
+  if (raw) { const v = raw.get(name); return v === null ? undefined : v; }
+  const v = req.query[name];
+  return Array.isArray(v) ? v[0] : v;
 }
 
 // Build a Subsonic Song object from a DB row. The query supplying `row` must
@@ -1647,7 +1664,9 @@ export function scrobble(req, res) {
   if (!songIds.length) { return SubErr.NOT_FOUND(req, res, 'Song'); }
 
   const times = arrayParam(req, 'time').map(v => parseInt(v, 10));
-  const submission = req.query.submission !== 'false';
+  // qparam: a bulk scrobble's `submission` flag can trail a long id list
+  // past the qs parsing cliff. Absent still means true.
+  const submission = qparam(req, 'submission') !== 'false';
 
   // submission=false (now-playing): Subsonic spec says a scrobble without
   // submission shouldn't register more than one track. We honour the
@@ -2363,8 +2382,11 @@ function addSongsToPlaylist(playlistId, songIds, startPosition) {
 }
 
 export function createPlaylist(req, res) {
-  const name = String(req.query.name || '').trim();
-  const updatePlaylistId = decodePlaylistId(req.query.playlistId);
+  // qparam for the scalars: `name`/`playlistId` can trail a 1,000+-song
+  // songId list past the qs parsing cliff, and req.query then drops them —
+  // a big "save as playlist" would MISSING_PARAM on a name that was sent.
+  const name = String(qparam(req, 'name') || '').trim();
+  const updatePlaylistId = decodePlaylistId(qparam(req, 'playlistId'));
   const songIds = arrayParam(req, 'songId').map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
   const d = db.getDB();
 
@@ -2383,6 +2405,9 @@ export function createPlaylist(req, res) {
       addSongsToPlaylist(updatePlaylistId, songIds, 0);
       if (name) { d.prepare('UPDATE playlists SET name = ? WHERE id = ?').run(name, updatePlaylistId); }
     });
+    // Synthetic-query handoff: getPlaylist must keep reading req.query.id
+    // DIRECTLY — the spread carries the cached raw-query params of the
+    // ORIGINAL url, so qparam/arrayParam would not see this synthetic id.
     return getPlaylist({ ...req, query: { ...req.query, id: `pl-${updatePlaylistId}` } }, res);
   }
 
@@ -2397,8 +2422,10 @@ export function createPlaylist(req, res) {
 }
 
 export function updatePlaylist(req, res) {
-  if (req.query.playlistId == null) { return SubErr.MISSING_PARAM(req, res, 'playlistId'); }
-  const id = decodePlaylistId(req.query.playlistId);
+  // qparam throughout: every scalar here can trail a big songIdToAdd /
+  // songIndexToRemove list past the qs parsing cliff.
+  if (qparam(req, 'playlistId') == null) { return SubErr.MISSING_PARAM(req, res, 'playlistId'); }
+  const id = decodePlaylistId(qparam(req, 'playlistId'));
   if (id == null) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
   const meta = playlistMeta(id, req.user.id);
   if (!meta) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
@@ -2410,11 +2437,13 @@ export function updatePlaylist(req, res) {
   // transaction so the playlist is never observed half-updated and the append
   // loop costs a single fsync.
   db.transaction(() => {
-    if (req.query.name) { d.prepare('UPDATE playlists SET name = ? WHERE id = ?').run(String(req.query.name), id); }
+    const newName = qparam(req, 'name');
+    if (newName) { d.prepare('UPDATE playlists SET name = ? WHERE id = ?').run(String(newName), id); }
     // V15 added the `public` column — honour the flag. Subsonic `comment`
     // is still accepted but dropped (no column for it).
-    if ('public' in req.query) {
-      const pub = req.query.public === 'true' ? 1 : 0;
+    const pubRaw = qparam(req, 'public');
+    if (pubRaw !== undefined) {
+      const pub = pubRaw === 'true' ? 1 : 0;
       d.prepare('UPDATE playlists SET public = ? WHERE id = ?').run(pub, id);
     }
 
@@ -3302,16 +3331,20 @@ export function getPlayQueue(req, res) {
 
 export function savePlayQueue(req, res) {
   const songIds = arrayParam(req, 'id').map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
-  const currentId = decodeId(req.query.current, 'song')?.id;
+  // qparam, not req.query: clients put `current` / `position` / `c` AFTER
+  // the id list, and with a 1,000+-track queue that is past the qs parsing
+  // cliff — the queue saved but its position silently vanished.
+  const currentId = decodeId(qparam(req, 'current'), 'song')?.id;
   // Resolve every queue id (plus the optional current id) to its canonical hash
   // in one batched query instead of a SELECT per id.
   const hashById = trackHashesByIds(currentId ? [...songIds, currentId] : songIds);
   const canonOf = (id) => { const hr = hashById.get(id); return hr ? (hr.audio_hash || hr.file_hash) : undefined; };
   const hashes = songIds.map(canonOf).filter(Boolean);
   const currentHash = currentId ? canonOf(currentId) : null;
-  const position = parseInt(req.query.position, 10);
+  const position = parseInt(qparam(req, 'position'), 10);
   const posMs = Number.isFinite(position) && position >= 0 ? position : null;
-  const changedBy = req.query.c ? String(req.query.c) : null;
+  const changedByRaw = qparam(req, 'c');
+  const changedBy = changedByRaw ? String(changedByRaw) : null;
 
   db.getDB().prepare(`
     INSERT INTO user_play_queue

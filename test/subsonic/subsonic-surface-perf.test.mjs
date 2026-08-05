@@ -276,7 +276,9 @@ describe('getPlayQueue / getBookmarks (pin + raw params)', () => {
     const ids = withDb((d) =>
       d.prepare("SELECT id FROM tracks WHERE filepath LIKE 'perf%' ORDER BY id").all().map((r) => r.id));
     assert.ok(ids.length >= N_TRACKS);
-    const save = await fetch(url(keyAll, 'savePlayQueue', { id: ids, current: ids[0], position: 1234 }));
+    // `current`/`position` are appended AFTER the id list — the shape real
+    // clients send, and exactly what put them past the qs parsing cliff.
+    const save = await fetch(url(keyAll, 'savePlayQueue', { id: ids, current: ids[42], position: 1234 }));
     assert.equal((await save.json())['subsonic-response'].status, 'ok');
 
     const r = await call(keyAll, 'getPlayQueue');
@@ -285,6 +287,9 @@ describe('getPlayQueue / getBookmarks (pin + raw params)', () => {
     // Stored order preserved end to end, including the tail.
     assert.equal(String(r.playQueue.entry[0].id), String(ids[0]));
     assert.equal(String(r.playQueue.entry.at(-1).id), String(ids.at(-1)));
+    assert.equal(String(r.playQueue.current), String(ids[42]),
+      'scalars trailing the id list survive too (qparam)');
+    assert.equal(r.playQueue.position, 1234);
   });
 
   test('the scoped user cannot restore hidden-library entries', async () => {
