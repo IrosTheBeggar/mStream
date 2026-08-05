@@ -13,9 +13,13 @@
 //     requireBpm / requireMusicalKey set) — runs a fallback waterfall
 //     that progressively relaxes the BPM/key constraints until at least
 //     one track matches, then applies a tier filter so an in-range pick
-//     wins over an unknown-tag pick wins over a known-wrong pick. The
-//     waterfall keeps its full candidate sets — the tier filter needs
-//     every row to classify, and the filters already bound the set.
+//     wins over an unknown-tag pick wins over a known-wrong pick. Every
+//     step's query is bounded the same way simple mode is: the SQL ORDER
+//     BY sorts by a tier expression mirroring the JS classifier before
+//     the RANDOM() tiebreak, so the small pool always contains the best
+//     tier present in scope and the tier filter keeps its authority
+//     (audit M5 — any BPM/key param used to disable bounding, and the
+//     terminal step then materialised the whole library per pick).
 //
 // The `ignoreList` the client round-trips holds the last-served TRACK
 // IDS (newest last). Pre-rework lists held candidate-set INDICES, which
@@ -330,6 +334,52 @@ export function applyTierFilter(rows, opts) {
   return tier2;
 }
 
+// SQL twin of classifyRow, built against the ORIGINAL request constraints
+// (exactly what the JS applyTierFilter call at the end of runRandomSongs
+// classifies with — tight ranges + expanded key names). Used as the leading
+// ORDER BY term of every bounded waterfall query: rows sort best-tier-first
+// before the RANDOM() tiebreak, so a LIMIT-sized pool provably contains the
+// best tier present in scope and sampling can't starve the tier filter.
+// The JS filter stays the authority — this only shapes what gets sampled.
+//
+// Emission order matters: params are pushed by the emit* helpers as the
+// template literal evaluates left-to-right, keeping placeholder order and
+// bind order in lockstep by construction. BPM bounds are Joi-validated
+// numbers (0-1000, min<=max) and are inlined as literals; key names are
+// strings and stay parameterised.
+//
+// Exported for tests.
+export function buildTierOrderExpr(body) {
+  const haveBpm = Array.isArray(body.bpmRanges) && body.bpmRanges.length > 0;
+  const haveKey = Array.isArray(body.musicalKeys) && body.musicalKeys.length > 0;
+  if (!haveBpm && !haveKey) { return null; }
+
+  const params = [];
+  const ranges = haveBpm
+    ? body.bpmRanges.map((r) => `(t.bpm BETWEEN ${Number(r.min)} AND ${Number(r.max)})`).join(' OR ')
+    : null;
+  const keys = haveKey ? expandCamelotCodes(body.musicalKeys) : null;
+  const keyPh = haveKey ? keys.map(() => '?').join(',') : null;
+
+  // 'good' = present AND inside the set; 'wrong' = present AND outside.
+  // A missing dimension is neither (classifyRow's 'na').
+  const bpm = (negate) => {
+    if (!haveBpm) { return '0'; }
+    return `(t.bpm IS NOT NULL AND ${negate ? 'NOT ' : ''}(${ranges}))`;
+  };
+  const key = (negate) => {
+    if (!haveKey) { return '0'; }
+    params.push(...keys);
+    return `(t.musical_key IS NOT NULL AND t.musical_key ${negate ? 'NOT ' : ''}IN (${keyPh}))`;
+  };
+
+  const expr = `CASE
+    WHEN (${bpm(false)} AND NOT ${key(true)}) OR (${key(false)} AND NOT ${bpm(true)}) THEN 0
+    WHEN NOT ${bpm(true)} AND NOT ${key(true)} THEN 1
+    ELSE 2 END`;
+  return { expr, params };
+}
+
 // ── Waterfall ───────────────────────────────────────────────────────────────
 //
 // Returns the first non-empty result-set encountered while progressively
@@ -365,14 +415,15 @@ function runWaterfallQuery(d, baseSql, baseParams, filterOpts, bounded) {
   const sql = clauses.length > 0
     ? `${baseSql} AND ${clauses.join(' AND ')}`
     : baseSql;
-  if (!bounded) { return d.prepare(sql).all(...baseParams, ...params); }
 
-  // Bounded step (request has no BPM/key constraints, no sonic pool —
-  // see runRandomSongs): sample a small random pool instead of
-  // materialising every match. The id cooldown is excluded in SQL
-  // first; when that alone empties the step, retry the SAME step
-  // without it, so cooldown exhaustion falls back to repeats WITHIN
-  // this step's constraints (matching finalisePick's fallback).
+  // Every step samples a small pool instead of materialising every match
+  // (audit M5 — the terminal step used to ship the entire in-scope library
+  // to JS per pick). When the request carries BPM/key constraints,
+  // `tierOrder` leads the ORDER BY so the pool always contains the best
+  // tier present (see buildTierOrderExpr); the id cooldown is excluded in
+  // SQL first, and when that alone empties the step, the SAME step retries
+  // without it so cooldown exhaustion falls back to repeats WITHIN this
+  // step's constraints (matching finalisePick's fallback).
   //
   // The retry is skipped for artist-cooldown-ENFORCING steps
   // (allowRepeatRetry false): their all-cooled rows would be rejected
@@ -380,13 +431,17 @@ function runWaterfallQuery(d, baseSql, baseParams, filterOpts, bounded) {
   // returning empty lets the waterfall advance toward the
   // drop-cooldown step without paying for a query whose result is
   // discarded.
-  const { ignoreIds, allowRepeatRetry } = bounded;
+  const { ignoreIds, allowRepeatRetry, tierOrder } = bounded;
+  const orderBy = tierOrder
+    ? `ORDER BY ${tierOrder.expr}, RANDOM()`
+    : 'ORDER BY RANDOM()';
+  const tierParams = tierOrder ? tierOrder.params : [];
   const attempt = (excludeIgnored) => {
     const exclude = excludeIgnored && ignoreIds.length > 0
       ? ` AND t.id NOT IN (${ignoreIds.map(() => '?').join(',')})`
       : '';
-    return d.prepare(`${sql}${exclude} ORDER BY RANDOM() LIMIT ${SIMPLE_POOL_LIMIT}`)
-      .all(...baseParams, ...params, ...(exclude ? ignoreIds : []));
+    return d.prepare(`${sql}${exclude} ${orderBy} LIMIT ${SIMPLE_POOL_LIMIT}`)
+      .all(...baseParams, ...params, ...(exclude ? ignoreIds : []), ...tierParams);
   };
   const rows = attempt(true);
   if (rows.length > 0 || ignoreIds.length === 0 || !allowRepeatRetry) { return rows; }
@@ -416,6 +471,17 @@ function runWaterfallQuery(d, baseSql, baseParams, filterOpts, bounded) {
 // (requireIndex), 404 unknown/forbidden seed path (resolveSeedTrack),
 // 400 with a distinct message for a seed that exists but has no embedding
 // yet (transient — the client can toast "pick a different seed").
+// Computed pools cached per (index identity, seed set, threshold). A
+// locked-anchor session and the client's queue-ahead calls repeat the exact
+// same key on every pick, so the full-index dot scan (audit H8's third leg)
+// runs once per anchor instead of once per pick; the rolling anchor changes
+// its seed set each pick and recomputes — one pass over the (now
+// contiguous) matrix, cheap. WeakMap on the index: a rebuilt index drops
+// every cached pool with it. Entries are shared by reference and must be
+// treated as immutable by callers.
+const sonicPoolCache = new WeakMap();   // index -> Map<key, {seedVec, allowed, json}>
+const SONIC_POOL_CACHE_MAX = 8;
+
 function buildSonicPool(req, body) {
   const index = requireIndex();
 
@@ -432,13 +498,30 @@ function buildSonicPool(req, body) {
     seedHashes.push(canonHash);
   }
 
+  const cacheKey = `${[...seedHashes].sort().join('|')}@${body.minSimilarity}`;
+  let perIndex = sonicPoolCache.get(index);
+  if (!perIndex) { perIndex = new Map(); sonicPoolCache.set(index, perIndex); }
+  const hit = perIndex.get(cacheKey);
+  if (hit) {
+    perIndex.delete(cacheKey); perIndex.set(cacheKey, hit);   // LRU touch
+    return { index, ...hit };
+  }
+
   const seedVec = sim.centroidOf(vecs);
   const allowed = sim.hashesWithinThreshold(index, seedVec, body.minSimilarity);
   // The seeds are the session's recent picks (rolling anchor) or the
   // currently-playing song (locked anchor) — Auto-DJ must never answer
   // "what's next" with "the song you just played".
   for (const h of seedHashes) { allowed.delete(h); }
-  return { index, seedVec, allowed };
+  // The JSON form is what the SQL pool constraint binds (json_each) —
+  // stringified once here so locked-anchor picks don't re-serialize a
+  // potentially many-thousand-hash set every request.
+  const entry = { seedVec, allowed, json: JSON.stringify([...allowed]) };
+  perIndex.set(cacheKey, entry);
+  while (perIndex.size > SONIC_POOL_CACHE_MAX) {
+    perIndex.delete(perIndex.keys().next().value);
+  }
+  return { index, ...entry };
 }
 
 // Server-side cooldown ceiling for the round-tripped ignoreList. Deep
@@ -469,9 +552,6 @@ export function runRandomSongs(req, body) {
   const sonic = (Array.isArray(body.similarTo) && body.similarTo.length > 0)
     ? buildSonicPool(req, body)
     : null;
-  const sonicFilter = sonic
-    ? (rows) => rows.filter((r) => sonic.allowed.has(r.audio_hash || r.file_hash))
-    : (rows) => rows;
 
   const filter = libraryFilter(req.user, body.ignoreVPaths);
   const baseConditions = [filter.clause];
@@ -500,6 +580,23 @@ export function runRandomSongs(req, body) {
   // step loop below). COALESCE keeps legacy NULL-format rows as candidates.
   baseConditions.push("COALESCE(t.format, '') <> 'm3u'");
 
+  // Sonic pool as a BASE condition, enforced in SQL: the allowed hashes
+  // bind as one JSON array through json_each, so every candidate query can
+  // stay a bounded random sample. The old shape materialised the entire
+  // in-scope library into JS per pick just to intersect it with the Set
+  // (audit H8 — 420-640 ms per pick at 25k tracks), because sampling
+  // BEFORE intersecting could empty a pool that had matches; intersecting
+  // IN the query dissolves that objection. Same relaxation contract as
+  // before: the waterfall relaxes BPM/key/artist constraints WITHIN the
+  // pool and never the pool itself. (COALESCE is an expression, so no
+  // tracks index applies to this clause — but the ephemeral json_each
+  // table gets the index, and the bounded scan was already paying the
+  // library walk; measured as the cheap side of the trade.)
+  if (sonic) {
+    baseConditions.push('COALESCE(t.audio_hash, t.file_hash) IN (SELECT value FROM json_each(?))');
+    baseParams.push(sonic.json);
+  }
+
   // Skip the trackQuery `tg_agg` aggregation for the candidate-set
   // query — only the picked row's genres survive to the response, and
   // SQLite MATERIALIZEs the aggregation over the full tracks table
@@ -525,38 +622,30 @@ export function runRandomSongs(req, body) {
   // step-5b "drop cooldown" fallback if the user pruned themselves
   // into an empty pool.)
   if (!hasBpm && !hasBpmWide && !hasKey && !hasArtists && !hasIgnoreArtists) {
-    if (!sonic) {
-      // Bounded pick: exclude the cooldown ids in SQL and let SQLite keep
-      // only a small random pool — the whole in-scope library is never
-      // materialised into JS. (Sonic mode below still needs the full
-      // in-scope set: the allowed-hash intersection happens in JS, and
-      // sampling before intersecting could empty a pool that actually
-      // has matches.)
-      const ignoreIds = ignoreIdsFrom(body);
-      const bounded = (excludeIgnored) => {
-        const exclude = excludeIgnored && ignoreIds.length > 0
-          ? ` AND t.id NOT IN (${ignoreIds.map(() => '?').join(',')})`
-          : '';
-        return d.prepare(
-          `${baseSql}${exclude} ORDER BY RANDOM() LIMIT ${SIMPLE_POOL_LIMIT}`
-        ).all(...baseParams, ...(exclude ? ignoreIds : []));
-      };
-      let rows = bounded(true);
-      if (rows.length === 0 && ignoreIds.length > 0) {
-        // Cooldown covers everything in scope — allow repeats rather
-        // than stalling the session (same contract as the waterfall's
-        // drop-cooldown steps).
-        rows = bounded(false);
-      }
-      if (rows.length === 0) {
-        throw new WebError('No songs that match criteria', 400);
-      }
-      return finalisePick(rows, body, null);
+    // Bounded pick — sonic or not: the pool constraint (when present) is
+    // already a base condition above, so both shapes exclude the cooldown
+    // ids in SQL and let SQLite keep only a small random pool. The whole
+    // in-scope library is never materialised into JS.
+    const ignoreIds = ignoreIdsFrom(body);
+    const bounded = (excludeIgnored) => {
+      const exclude = excludeIgnored && ignoreIds.length > 0
+        ? ` AND t.id NOT IN (${ignoreIds.map(() => '?').join(',')})`
+        : '';
+      return d.prepare(
+        `${baseSql}${exclude} ORDER BY RANDOM() LIMIT ${SIMPLE_POOL_LIMIT}`
+      ).all(...baseParams, ...(exclude ? ignoreIds : []));
+    };
+    let rows = bounded(true);
+    if (rows.length === 0 && ignoreIds.length > 0) {
+      // Cooldown covers everything in scope — allow repeats rather
+      // than stalling the session (same contract as the waterfall's
+      // drop-cooldown steps).
+      rows = bounded(false);
     }
-
-    const rows = sonicFilter(d.prepare(baseSql).all(...baseParams));
     if (rows.length === 0) {
-      throw new WebError('No songs within the similarity range match criteria', 400);
+      throw new WebError(sonic
+        ? 'No songs within the similarity range match criteria'
+        : 'No songs that match criteria', 400);
     }
     return finalisePick(rows, body, sonic);
   }
@@ -701,14 +790,12 @@ export function runRandomSongs(req, body) {
     });
   }
 
-  // With no BPM/key constraints anywhere on the request, the post-chain
-  // tier filter has nothing to classify, and without sonic there is no
-  // JS-side pool intersection — so every step's query can be bounded the
-  // same way simple mode is. This is the shape real alpha DJ sessions
-  // take: the client sends ignoreArtists from pick #2 onward (artist
-  // cooldown has no off switch), which routes them through the waterfall
-  // even when BPM/key/similar features are all disabled.
-  const boundedMode = !hasBpm && !hasBpmWide && !hasKey && !sonic;
+  // Every step's query is bounded the same way simple mode is. The two
+  // reasons bounding used to switch off are both gone: the sonic pool is
+  // now a SQL base condition (no JS-side intersection to starve), and BPM/
+  // key requests lead the ORDER BY with a tier expression so the pool
+  // provably contains the best tier present (buildTierOrderExpr above).
+  const tierOrder = (hasBpm || hasKey) ? buildTierOrderExpr(body) : null;
   const ignoreIds = ignoreIdsFrom(body);
   const ignoreSet = new Set(ignoreIds);
 
@@ -730,14 +817,14 @@ export function runRandomSongs(req, body) {
     // all-cooled rows (finalisePick then repeats), so the session
     // still never stalls.
     const enforcesCooldown = Array.isArray(opts.ignoreArtists) && opts.ignoreArtists.length > 0;
-    // The sonic pool intersects EVERY step's result before the emptiness
-    // check that drives relaxation — the waterfall relaxes BPM/key/artist
-    // constraints WITHIN the pool and never relaxes the pool itself
-    // (including the final unrestricted step).
-    const candidate = sonicFilter(runWaterfallQuery(
+    // The sonic pool constrains EVERY step via the base conditions — the
+    // waterfall relaxes BPM/key/artist constraints WITHIN the pool and
+    // never relaxes the pool itself (including the final unrestricted
+    // step).
+    const candidate = runWaterfallQuery(
       d, baseSql, baseParams, opts,
-      boundedMode ? { ignoreIds, allowRepeatRetry: !enforcesCooldown } : null,
-    ));
+      { ignoreIds, allowRepeatRetry: !enforcesCooldown, tierOrder },
+    );
     if (candidate.length === 0) { continue; }
     if (enforcesCooldown && candidate.every((r) => ignoreSet.has(r.id))) { continue; }
     rows = candidate;

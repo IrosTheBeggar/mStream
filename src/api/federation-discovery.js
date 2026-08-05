@@ -93,7 +93,8 @@ export function setup(mstream) {
     const maxConsidered = Math.max(body.limit * 50, 2000);
     let considered = 0;
     let capped = false;
-    for (const { entry, similarity } of sim.rankTracks(index, q, null)) {
+    // topK = the walk's cap (see the local similar/tracks route — audit M9).
+    for (const { entry, similarity } of sim.rankTracks(index, q, null, maxConsidered)) {
       if (results.length >= body.limit) { break; }
       if (++considered > maxConsidered) { capped = true; break; }
       const row = resolveVisible(uid, filter, entry.hash, { withGenres: false });
