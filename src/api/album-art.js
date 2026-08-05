@@ -27,50 +27,71 @@ import { generateThumbnails, tooManyPixels, isSupportedImage } from '../util/ima
 // lies about (or omits) its length can't balloon memory before the caller's
 // size check runs — /album-art/set-from-url fetches an ATTACKER-CHOSEN URL.
 // The 15s inactivity timeout is wired to an actual destroy (on its own,
-// 'timeout' only fires an event and the request hangs until the peer closes).
+// 'timeout' only fires an event and the request hangs until the peer closes)
+// PLUS a 60s overall deadline: a trickling server resets the inactivity
+// timer with every byte, so the inactivity timeout alone never fires and
+// the request (and its socket) would stay open indefinitely. The deadline
+// destroys the in-flight request too — settling the promise on its own
+// would leave the trickle connection buffering in the background.
 // This mirrors the hardened twin in src/db/album-art-lib.js.
 export function httpGet(url, { maxBytes = 10 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
+    let activeReq = null;
+    const deadline = setTimeout(() => {
+      reject(new Error('Request deadline exceeded'));
+      if (activeReq) { activeReq.destroy(); }
+    }, 60_000);
+    const done = (err, value) => {
+      clearTimeout(deadline);
+      if (err) { reject(err); } else { resolve(value); }
+    };
     const follow = (u, redirects = 0) => {
-      if (redirects > 5) return reject(new Error('Too many redirects'));
+      if (redirects > 5) return done(new Error('Too many redirects'));
       const mod = u.startsWith('https') ? https : http;
-      const req = mod.get(u, {
-        headers: { 'User-Agent': 'mStream/6.0 (https://mstream.io)' },
-        timeout: 15000
-      }, res => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          res.resume();
-          // Resolve + protocol-check INSIDE the handler: a relative or
-          // malformed Location threw out of this callback (uncaught → the
-          // whole process died), and a file:/data: target would have been
-          // handed to http.get. Same hardening as the album-art-lib twin.
-          let next;
-          try { next = new URL(res.headers.location, u); }
-          catch (_e) { return reject(new Error('Malformed redirect Location')); }
-          if (next.protocol !== 'http:' && next.protocol !== 'https:') {
-            return reject(new Error(`Refusing redirect to ${next.protocol} URL`));
+      let req;
+      try {
+        req = mod.get(u, {
+          headers: { 'User-Agent': 'mStream/6.0 (https://mstream.io)' },
+          timeout: 15000
+        }, res => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            res.resume();
+            // Resolve + protocol-check INSIDE the handler: a relative or
+            // malformed Location threw out of this callback (uncaught → the
+            // whole process died), and a file:/data: target would have been
+            // handed to http.get. Same hardening as the album-art-lib twin.
+            let next;
+            try { next = new URL(res.headers.location, u); }
+            catch (_e) { return done(new Error('Malformed redirect Location')); }
+            if (next.protocol !== 'http:' && next.protocol !== 'https:') {
+              return done(new Error(`Refusing redirect to ${next.protocol} URL`));
+            }
+            return follow(next.href, redirects + 1);
           }
-          return follow(next.href, redirects + 1);
-        }
-        if (res.statusCode !== 200) {
-          res.resume();
-          return reject(new Error(`HTTP ${res.statusCode}`));
-        }
-        const chunks = [];
-        let received = 0;
-        res.on('data', c => {
-          received += c.length;
-          if (received > maxBytes) {
-            res.destroy();
-            return reject(new Error(`Response exceeded ${maxBytes} bytes`));
+          if (res.statusCode !== 200) {
+            res.resume();
+            return done(new Error(`HTTP ${res.statusCode}`));
           }
-          chunks.push(c);
+          const chunks = [];
+          let received = 0;
+          res.on('data', c => {
+            received += c.length;
+            if (received > maxBytes) {
+              res.destroy();
+              return done(new Error(`Response exceeded ${maxBytes} bytes`));
+            }
+            chunks.push(c);
+          });
+          res.on('end', () => done(null, Buffer.concat(chunks)));
+          res.on('error', e => done(e));
         });
-        res.on('end', () => resolve(Buffer.concat(chunks)));
-        res.on('error', reject);
-      });
+      } catch (e) {
+        // e.g. a sync throw from a poisoned URL handed to http.get.
+        return done(e);
+      }
+      activeReq = req;
       req.on('timeout', function () { this.destroy(new Error('Request timeout')); })
-        .on('error', reject);
+        .on('error', e => done(e));
     };
     follow(url);
   });

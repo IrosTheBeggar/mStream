@@ -41,8 +41,12 @@ const DEEZER_BASE = process.env.MSTREAM_DEEZER_BASE || 'https://api.deezer.com';
 // response event callback (which would kill the whole worker process).
 export function httpGet(url, { maxBytes = 10 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
+    let activeReq = null;
     const deadline = setTimeout(() => {
       reject(new Error('Request deadline exceeded'));
+      // Settling the promise is not enough: without the destroy the
+      // trickling connection would keep buffering in the background.
+      if (activeReq) { activeReq.destroy(); }
     }, 60_000);
     const done = (err, value) => {
       clearTimeout(deadline);
@@ -88,6 +92,7 @@ export function httpGet(url, { maxBytes = 10 * 1024 * 1024 } = {}) {
         // e.g. ERR_INVALID_PROTOCOL from a poisoned initial URL.
         return done(e);
       }
+      activeReq = req;
       req.on('timeout', function () {
         // 'timeout' does NOT destroy the socket by itself — without this
         // the request would hang until the server closed it.

@@ -269,7 +269,10 @@ async function resolveArtRow(buf, hash) {
     const p = path.join(cfg.albumArtDirectory, existing.cache_file);
     if (!fs.existsSync(p)) {
       await fs.promises.writeFile(p, buf);
-      if (cfg.compressImage) { await generateThumbnails(buf, cfg.albumArtDirectory, existing.cache_file); }
+      if (cfg.compressImage) {
+        await generateThumbnails(buf, cfg.albumArtDirectory, existing.cache_file,
+          { ffmpegPath: cfg.ffmpegPath, ffprobePath: cfg.ffprobePath });
+      }
     }
     return { artId: existing.id, filename: existing.cache_file };
   }
