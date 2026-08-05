@@ -74,6 +74,10 @@
     "@number0/iroh": "^1.0.0",
     "onnxruntime-node": "^1.24.3"
   },
+  "overrides": {
+    "sharp": "^0.35.0",
+    "adm-zip": "^0.6.0"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@redocly/cli": "^2.35.1",
