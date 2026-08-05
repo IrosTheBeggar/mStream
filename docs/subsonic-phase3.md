@@ -1,5 +1,10 @@
 # Subsonic API — Phase 3 (shipped) + future work
 
+> **⚠ Deprecated (2026-08):** the Subsonic API is deprecated and the surface
+> is frozen — crash and security fixes only. The "future work" items below
+> are historical record, not a roadmap. See
+> [subsonic-deprecation.md](subsonic-deprecation.md).
+
 > **Status:** Phase 3 landed. This document now doubles as a record of what
 > shipped vs. what was intentionally deferred. Remaining items are in the
 > "Deferred / out of scope" section at the bottom.

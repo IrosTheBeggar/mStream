@@ -80,7 +80,7 @@ The iOS app is currently in review. You can get early access to it here: https:/
 * DLNA Support
 * Automatic Backup Feature - Backup your music to any drive connected to your server
 * Transcoding
-* Subsonic API support
+* Subsonic API support - *deprecated: removal planned once the first-party apps ship — [details](docs/subsonic-deprecation.md)*
 * Auto DJ - Automatically queue up songs
 * Lyrics Support - includes being able to search by lyrics
 * Jukebox Mode - Control your browser remotely

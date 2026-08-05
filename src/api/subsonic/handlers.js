@@ -26,6 +26,7 @@ import * as dbQueue from '../../db/task-queue.js';
 import * as adminUtil from '../../util/admin.js';
 import { ffmpegBin, getResolvedSource } from '../../util/ffmpeg-bootstrap.js';
 import { serveAlbumArtFile } from '../album-art.js';
+import { getSystemUpdateID } from '../dlna.js';
 import * as serverPlayback from '../server-playback.js';
 import { sendOk, sendError, SubErr } from './response.js';
 import * as nowPlaying from './now-playing.js';
@@ -228,11 +229,22 @@ function contentTypeFor(suffix) {
 // fragment + its params, ready to concat into a larger query.
 function libraryScope(req) {
   const vpaths = req.user?.vpaths || [];
-  if (vpaths.length === 0) { return { clause: '1=0', params: [] }; }
+  if (vpaths.length === 0) { return { clause: '1=0', demotedClause: '1=0', params: [] }; }
   const libs = db.getAllLibraries().filter(l => vpaths.includes(l.name));
-  if (libs.length === 0) { return { clause: '1=0', params: [] }; }
+  if (libs.length === 0) { return { clause: '1=0', demotedClause: '1=0', params: [] }; }
   const placeholders = libs.map(() => '?').join(',');
-  return { clause: `t.library_id IN (${placeholders})`, params: libs.map(l => l.id) };
+  return {
+    clause: `t.library_id IN (${placeholders})`,
+    // `+t.library_id` — unary plus makes the term ineligible as an index
+    // driver. For the hash-probe queries (getBookmarks / getPlayQueue) the
+    // planner otherwise abandons the OR-optimization over the two hash
+    // indexes and scans idx_tracks_library across the whole visible set
+    // per chunk — the 2026-06 prod-incident shape (measured 640×). Only
+    // the hash probes use this; everywhere else the library index is a
+    // legitimate driver.
+    demotedClause: `+t.library_id IN (${placeholders})`,
+    params: libs.map(l => l.id)
+  };
 }
 
 // Look up a user's metadata row for a given track. Used by star/rating/
@@ -277,6 +289,19 @@ function chunkedHashes(hashes) {
   return out;
 }
 
+// Single-bind cousin of chunkedHashes for queries that bind each id ONCE.
+// 900 stays far under every build's SQLITE_MAX_VARIABLE_NUMBER; before this,
+// enrichSongsWithUserMeta bound one variable per song and a whole-library
+// search3 response on a >32,766-track library was a guaranteed 500 (audit M4).
+const ID_BIND_CHUNK = 900;
+function chunkedIds(ids) {
+  const out = [];
+  for (let i = 0; i < ids.length; i += ID_BIND_CHUNK) {
+    out.push(ids.slice(i, i + ID_BIND_CHUNK));
+  }
+  return out;
+}
+
 // Upsert a user_metadata row, setting the supplied fields. Leaves other
 // fields untouched — clients that only call setRating shouldn't clobber
 // starred_at, and vice versa.
@@ -299,12 +324,14 @@ function upsertUserMeta(userId, trackHash, fields) {
 // don't fire one SELECT per id. Returns Map<id, { file_hash, audio_hash }>.
 function trackHashesByIds(ids) {
   const uniq = [...new Set(ids)];
-  if (!uniq.length) { return new Map(); }
-  const ph = uniq.map(() => '?').join(',');
-  const rows = db.getDB().prepare(
-    `SELECT id, file_hash, audio_hash FROM tracks WHERE id IN (${ph})`
-  ).all(...uniq);
-  return new Map(rows.map(r => [r.id, r]));
+  const out = new Map();
+  for (const chunk of chunkedIds(uniq)) {
+    const ph = chunk.map(() => '?').join(',');
+    for (const r of db.getDB().prepare(
+      `SELECT id, file_hash, audio_hash FROM tracks WHERE id IN (${ph})`
+    ).all(...chunk)) { out.set(r.id, r); }
+  }
+  return out;
 }
 
 // Look up the star-timestamp for a set of album or artist ids for the caller.
@@ -338,30 +365,35 @@ function enrichSongsWithUserMeta(req, songs) {
     .filter(Number.isFinite);
   if (!trackIds.length) { return songs; }
 
-  const placeholders = trackIds.map(() => '?').join(',');
-  const rows = db.getDB().prepare(`
-    SELECT t.id, um.starred_at, um.rating, um.play_count
-    FROM tracks t
-    LEFT JOIN user_metadata um
-      ON um.track_hash = COALESCE(t.audio_hash, t.file_hash) AND um.user_id = ?
-    WHERE t.id IN (${placeholders})
-  `).all(req.user.id, ...trackIds);
-
-  const meta = new Map(rows.map(r => [r.id, r]));
-
-  // OpenSubsonic: batch-fetch per-track artist arrays (V17). One query,
-  // fan into a Map<track_id, [{id, name}, ...]>.
-  const artistRows = db.getDB().prepare(`
-    SELECT ta.track_id, ta.position, a.id, a.name
-    FROM track_artists ta
-    JOIN artists a ON a.id = ta.artist_id
-    WHERE ta.track_id IN (${placeholders})
-    ORDER BY ta.track_id, ta.position
-  `).all(...trackIds);
+  // Chunked: both queries bind one variable per song id, and callers can
+  // legitimately hand us big lists (playqueue restores, capped-but-large
+  // search pages). Uncapped, a whole-library list past 32,766 tracks threw
+  // "too many SQL variables" and 500'd the request (audit M4).
+  const meta = new Map();
   const artistsByTrack = new Map();
-  for (const r of artistRows) {
-    if (!artistsByTrack.has(r.track_id)) { artistsByTrack.set(r.track_id, []); }
-    artistsByTrack.get(r.track_id).push({ id: encArtist(r.id), name: r.name });
+  for (const chunk of chunkedIds(trackIds)) {
+    const placeholders = chunk.map(() => '?').join(',');
+    for (const r of db.getDB().prepare(`
+      SELECT t.id, um.starred_at, um.rating, um.play_count
+      FROM tracks t
+      LEFT JOIN user_metadata um
+        ON um.track_hash = COALESCE(t.audio_hash, t.file_hash) AND um.user_id = ?
+      WHERE t.id IN (${placeholders})
+    `).all(req.user.id, ...chunk)) { meta.set(r.id, r); }
+
+    // OpenSubsonic: batch-fetch per-track artist arrays (V17), fanned into
+    // Map<track_id, [{id, name}, ...]>. ORDER BY position within the chunk —
+    // per-track ordering only needs the track's own rows adjacent.
+    for (const r of db.getDB().prepare(`
+      SELECT ta.track_id, ta.position, a.id, a.name
+      FROM track_artists ta
+      JOIN artists a ON a.id = ta.artist_id
+      WHERE ta.track_id IN (${placeholders})
+      ORDER BY ta.track_id, ta.position
+    `).all(...chunk)) {
+      if (!artistsByTrack.has(r.track_id)) { artistsByTrack.set(r.track_id, []); }
+      artistsByTrack.get(r.track_id).push({ id: encArtist(r.id), name: r.name });
+    }
   }
 
   for (const song of songs) {
@@ -378,12 +410,43 @@ function enrichSongsWithUserMeta(req, songs) {
   return songs;
 }
 
-// Normalise a repeated query param — Express gives us an Array when it's
-// passed multiple times (`id=1&id=2`) or a string when it's passed once.
-// Always returns an Array (possibly empty).
-function arrayParam(v) {
+// Collect every occurrence of a repeated query param (`id=1&id=2`) for the
+// given request. NOT read from `req.query`: Express's default query parser
+// (qs) silently stops parsing after 1000 parameters, so a savePlayQueue with
+// a 2,000-track queue arrived as ~997 ids and the tail was DROPPED — the
+// queue truncation survived the round-trip and the client's next restore
+// made it permanent. Subsonic is the one surface where thousand-param GETs
+// are normal (savePlayQueue, star, updatePlaylist), so parse the raw query
+// string here instead of touching the app-wide parser setting.
+// URLSearchParams has no parameter cap; the practical bound is Node's
+// header-size limit, which the transport enforces before we ever run.
+function _rawQuery(req) {
+  if (req._rawQueryParams === undefined) {
+    const u = req.originalUrl || req.url || '';
+    const qi = u.indexOf('?');
+    req._rawQueryParams = qi === -1 ? null : new URLSearchParams(u.slice(qi + 1));
+  }
+  return req._rawQueryParams;
+}
+
+function arrayParam(req, name) {
+  const raw = _rawQuery(req);
+  if (raw) { return raw.getAll(name); }
+  const v = req.query[name];
   if (v == null) { return []; }
   return Array.isArray(v) ? v : [v];
+}
+
+// Scalar sibling of arrayParam, for routes that ALSO accept big repeated
+// lists: any scalar that arrives after the thousandth parameter is past the
+// qs cliff and reads as undefined from req.query — savePlayQueue's `current`
+// landed after 1,500 `id` params and the restored queue silently lost its
+// position. Returns undefined when absent, first occurrence otherwise.
+function qparam(req, name) {
+  const raw = _rawQuery(req);
+  if (raw) { const v = raw.get(name); return v === null ? undefined : v; }
+  const v = req.query[name];
+  return Array.isArray(v) ? v[0] : v;
 }
 
 // Build a Subsonic Song object from a DB row. The query supplying `row` must
@@ -483,8 +546,53 @@ function indexLetter(name) {
 // up even though no track has it as its primary track-artist. Album
 // count per artist = distinct albums where the artist appears on any
 // role.
+//
+// Memoised per (visible-library set, content epoch): clients call
+// getArtists/getIndexes on every connect and refresh, the query walks two
+// tracks-scaled UNION arms (~50 ms at 33k tracks), and the result only
+// changes when library content does. The epoch is DLNA's SystemUpdateID —
+// task-queue bumps it after every scan batch that changed the DB, DLNA
+// enabled or not. The TTL is a safety net for content changes that bypass
+// the scanner (hand-edits, hash-transition applies), same stance as the
+// DLNA browse memo.
+const ARTISTS_MEMO_TTL_MS = 60_000;
+const ARTISTS_MEMO_MAX_ENTRIES = 16;   // distinct library-grant shapes
+const artistsMemo = new Map();         // key → { rows, epoch, at, lastModifiedMs }
+
+// The `lastModified` getIndexes advertises. One timestamp per observed
+// epoch transition: stable across calls within an epoch (so conditional
+// fetches can actually hit), fresh the first time a new epoch is seen.
+let lastSeenEpoch = null;
+let lastModifiedMs = Date.now();
+
+function contentEpoch() {
+  const epoch = getSystemUpdateID();
+  if (epoch !== lastSeenEpoch) {
+    lastSeenEpoch = epoch;
+    lastModifiedMs = Date.now();
+  }
+  return epoch;
+}
+
 function getArtistsCore(req) {
   const { clause, params } = libraryScope(req);
+  const epoch = contentEpoch();
+  const key = params.join(',');
+  const hit = artistsMemo.get(key);
+  if (hit && hit.epoch === epoch && Date.now() - hit.at < ARTISTS_MEMO_TTL_MS) {
+    artistsMemo.delete(key); artistsMemo.set(key, hit);   // LRU touch
+    return hit.rows;
+  }
+  const rows = _getArtistsRows(clause, params);
+  artistsMemo.delete(key);
+  artistsMemo.set(key, { rows, epoch, at: Date.now() });
+  while (artistsMemo.size > ARTISTS_MEMO_MAX_ENTRIES) {
+    artistsMemo.delete(artistsMemo.keys().next().value);
+  }
+  return rows;
+}
+
+function _getArtistsRows(clause, params) {
   return db.getDB().prepare(`
     SELECT a.id, a.name,
            COUNT(DISTINCT al.id) AS albumCount,
@@ -530,6 +638,21 @@ export function getArtists(req, res) {
 
 // Legacy getIndexes — older clients use this instead of getArtists.
 export function getIndexes(req, res) {
+  // `lastModified` is the content-epoch timestamp, NOT Date.now() — a
+  // value that changes on every call tells the client its cache is always
+  // stale and defeats the conditional-fetch protocol this field exists
+  // for (2026-07 audit M15).
+  contentEpoch();
+  // Spec: "If specified, only return a result if the artist collection has
+  // changed since the given time." Unchanged → envelope without `index`,
+  // so clients that pass ifModifiedSince keep their cache; clients that
+  // don't are unaffected.
+  const ims = parseInt(req.query.ifModifiedSince, 10);
+  if (Number.isFinite(ims) && lastModifiedMs <= ims) {
+    return sendOk(req, res, {
+      indexes: { ignoredArticles: IGNORED_ARTICLES, lastModified: lastModifiedMs },
+    });
+  }
   const artists = getArtistsCore(req);
   const buckets = new Map();
   for (const a of artists) {
@@ -542,7 +665,7 @@ export function getIndexes(req, res) {
   sendOk(req, res, {
     indexes: {
       ignoredArticles: IGNORED_ARTICLES,
-      lastModified: Date.now(),
+      lastModified: lastModifiedMs,
       index,
     },
   });
@@ -1131,9 +1254,19 @@ function _searchScope(req) {
 // albumCount, songCount) `0` is a meaningful "return zero of these"
 // signal — Navidrome and other reference servers respect it — so we
 // need an explicit NaN check.
-function parseCount(value, defaultValue) {
+// `max` caps COUNT params only — never pass it for offsets, which must
+// range over the whole library for paging. 500 matches the caps
+// getRandomSongs / getSongsByGenre / buildAlbumListQuery already enforce;
+// before the cap, `search3?query=&songCount=100000` returned the entire
+// library in one response (~750 ms, 12 MB at 33k tracks) and past 32,766
+// tracks it didn't even do that — enrichSongsWithUserMeta blew SQLite's
+// per-statement bound-variable limit and the request 500'd (2026-07 audit
+// M4). Clients page with songOffset, so a cap loses nothing.
+const MAX_COUNT = 500;
+function parseCount(value, defaultValue, max = Infinity) {
   const n = parseInt(value, 10);
-  return Number.isFinite(n) && n >= 0 ? n : defaultValue;
+  const v = Number.isFinite(n) && n >= 0 ? n : defaultValue;
+  return Math.min(v, max);
 }
 
 // Empty-query OpenSubsonic listing — search3 only. Returns the same
@@ -1142,9 +1275,9 @@ function parseCount(value, defaultValue) {
 // The spec says "A blank query will return everything"; we paginate
 // via the existing artistCount/albumCount/songCount/Offset params.
 function _buildEmptyListingPayload(req) {
-  const artistCount  = parseCount(req.query.artistCount,  20);
-  const albumCount   = parseCount(req.query.albumCount,   20);
-  const songCount    = parseCount(req.query.songCount,    20);
+  const artistCount  = parseCount(req.query.artistCount,  20, MAX_COUNT);
+  const albumCount   = parseCount(req.query.albumCount,   20, MAX_COUNT);
+  const songCount    = parseCount(req.query.songCount,    20, MAX_COUNT);
   const artistOffset = parseCount(req.query.artistOffset,  0);
   const albumOffset  = parseCount(req.query.albumOffset,   0);
   const songOffset   = parseCount(req.query.songOffset,    0);
@@ -1172,25 +1305,41 @@ function _buildEmptyListingPayload(req) {
   // Qualify artist_id in each subquery: track_artists and album_artists
   // and tracks all have an artist_id column, so SQLite errors with
   // "ambiguous column name: artist_id" if the qualifier is dropped.
+  // Every section pages with a TOTAL order — `name/title NOCASE, id` — on
+  // both the inner id-page and the outer projection. ORDER BY name alone
+  // left tie order to the plan, and OFFSET paging over a non-total order
+  // can duplicate or drop rows when a tie straddles a page boundary — for
+  // a full-library sync client that means silently missing tracks.
+  //
+  // EXISTS probes replace the IN-materialisations / whole-library joins:
+  // the IN form built the entire visible track set before paging could
+  // narrow anything (audit M7), and the songs query sorted WIDE rows —
+  // per-row correlated genre subqueries included — in a temp b-tree just
+  // to keep 500 of them. Page ids first, project only the page.
   const artists = d.prepare(`
-    SELECT DISTINCT a.id, a.name
+    SELECT a.id, a.name
     FROM artists a
-    WHERE a.id IN (SELECT ta.artist_id FROM track_artists ta JOIN tracks t ON t.id = ta.track_id WHERE ${scope.clause})
-       OR a.id IN (SELECT aa.artist_id FROM album_artists aa JOIN albums al ON al.id = aa.album_id JOIN tracks t ON t.album_id = al.id WHERE ${scope.clause})
-    ORDER BY a.name COLLATE NOCASE
+    WHERE EXISTS (SELECT 1 FROM track_artists ta JOIN tracks t ON t.id = ta.track_id
+                  WHERE ta.artist_id = a.id AND ${scope.clause})
+       OR EXISTS (SELECT 1 FROM album_artists aa JOIN albums al ON al.id = aa.album_id
+                  JOIN tracks t ON t.album_id = al.id
+                  WHERE aa.artist_id = a.id AND ${scope.clause})
+    ORDER BY a.name COLLATE NOCASE, a.id
     LIMIT ? OFFSET ?
   `).all(...scope.params, ...scope.params, artistCount, artistOffset);
 
   const albums = d.prepare(`
-    SELECT DISTINCT al.id, al.name, al.year, al.album_art_file, al.artist_id,
-                    a.name AS artist_name
-    FROM albums al
+    SELECT al.id, al.name, al.year, al.album_art_file, al.artist_id,
+           a.name AS artist_name
+    FROM (
+      SELECT al2.id FROM albums al2
+      WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al2.id AND ${scope.clause})
+      ORDER BY al2.name COLLATE NOCASE, al2.id
+      LIMIT ? OFFSET ?
+    ) page
+    JOIN albums al ON al.id = page.id
     LEFT JOIN artists a ON a.id = al.artist_id
-    JOIN tracks t ON t.album_id = al.id
-    WHERE ${scope.clause}
-    GROUP BY al.id
-    ORDER BY al.name COLLATE NOCASE
-    LIMIT ? OFFSET ?
+    ORDER BY al.name COLLATE NOCASE, al.id
   `).all(...scope.params, albumCount, albumOffset);
 
   const songs = d.prepare(`
@@ -1200,12 +1349,16 @@ function _buildEmptyListingPayload(req) {
            t.replaygain_track_db, t.sample_rate, t.channels, t.bit_depth,
            a.id AS artist_id, a.name AS artist_name,
            al.id AS album_id, al.name AS album_name
-    FROM tracks t
+    FROM (
+      SELECT t2.id FROM tracks t2
+      WHERE ${scope.clause.replaceAll('t.', 't2.')}
+      ORDER BY t2.title COLLATE NOCASE, t2.id
+      LIMIT ? OFFSET ?
+    ) page
+    JOIN tracks t ON t.id = page.id
     LEFT JOIN artists a  ON a.id = t.artist_id
     LEFT JOIN albums  al ON al.id = t.album_id
-    WHERE ${scope.clause}
-    ORDER BY t.title COLLATE NOCASE
-    LIMIT ? OFFSET ?
+    ORDER BY t.title COLLATE NOCASE, t.id
   `).all(...scope.params, songCount, songOffset);
 
   return _shapePayload(req, artists, albums, songs);
@@ -1246,9 +1399,9 @@ function _shapePayload(req, artists, albums, songs) {
 // pre-PR3 behaviour: empty query → empty envelope.
 function buildSearchPayload(req, { listOnEmpty = false } = {}) {
   const q = normalizeQueryFragment(req.query.query);
-  const artistCount  = parseCount(req.query.artistCount,  20);
-  const albumCount   = parseCount(req.query.albumCount,   20);
-  const songCount    = parseCount(req.query.songCount,    20);
+  const artistCount  = parseCount(req.query.artistCount,  20, MAX_COUNT);
+  const albumCount   = parseCount(req.query.albumCount,   20, MAX_COUNT);
+  const songCount    = parseCount(req.query.songCount,    20, MAX_COUNT);
   const artistOffset = parseCount(req.query.artistOffset,  0);
   const albumOffset  = parseCount(req.query.albumOffset,   0);
   const songOffset   = parseCount(req.query.songOffset,    0);
@@ -1502,7 +1655,7 @@ export function scrobble(req, res) {
   // `time` is shorter than `id` (or missing entirely), unmatched entries
   // fall back to "now". submission=false is the "now playing" hint and
   // never bumps play counts.
-  const rawIds = arrayParam(req.query.id);
+  const rawIds = arrayParam(req, 'id');
   if (!rawIds.length) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const songIds = rawIds.map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
   // All ids were present but none decoded to an mStream song — same
@@ -1510,8 +1663,10 @@ export function scrobble(req, res) {
   // not found vs param absent).
   if (!songIds.length) { return SubErr.NOT_FOUND(req, res, 'Song'); }
 
-  const times = arrayParam(req.query.time).map(v => parseInt(v, 10));
-  const submission = req.query.submission !== 'false';
+  const times = arrayParam(req, 'time').map(v => parseInt(v, 10));
+  // qparam: a bulk scrobble's `submission` flag can trail a long id list
+  // past the qs parsing cliff. Absent still means true.
+  const submission = qparam(req, 'submission') !== 'false';
 
   // submission=false (now-playing): Subsonic spec says a scrobble without
   // submission shouldn't register more than one track. We honour the
@@ -1572,9 +1727,9 @@ export function scrobble(req, res) {
 
 function collectIds(req) {
   return {
-    songIds:   arrayParam(req.query.id).map(v => decodeId(v, 'song')?.id).filter(Number.isFinite),
-    albumIds:  arrayParam(req.query.albumId).map(v => decodeId(v, 'album')?.id).filter(Number.isFinite),
-    artistIds: arrayParam(req.query.artistId).map(v => decodeId(v, 'artist')?.id).filter(Number.isFinite),
+    songIds:   arrayParam(req, 'id').map(v => decodeId(v, 'song')?.id).filter(Number.isFinite),
+    albumIds:  arrayParam(req, 'albumId').map(v => decodeId(v, 'album')?.id).filter(Number.isFinite),
+    artistIds: arrayParam(req, 'artistId').map(v => decodeId(v, 'artist')?.id).filter(Number.isFinite),
   };
 }
 
@@ -1642,9 +1797,9 @@ function unstarArtists(userId, artistIds) {
 // "client called us with no ids" (MISSING_PARAM) from "client gave
 // us ids but none decoded" (NOT_FOUND).
 function noIdParamsPresent(req) {
-  return !arrayParam(req.query.id).length
-      && !arrayParam(req.query.albumId).length
-      && !arrayParam(req.query.artistId).length;
+  return !arrayParam(req, 'id').length
+      && !arrayParam(req, 'albumId').length
+      && !arrayParam(req, 'artistId').length;
 }
 
 export function star(req, res) {
@@ -1783,18 +1938,183 @@ export function getStarred(req, res) {
 
 // ── Album lists ────────────────────────────────────────────────────────────
 
-// Shared album-list query: returns albums ordered by the given SQL tail
-// (ORDER BY + LIMIT/OFFSET), scoped to the caller's libraries. `type` decides
-// which ordering we synthesize.
-function buildAlbumListQuery(req, type, params = {}) {
+// Album lists are built in two steps (2026-07 audit M12). The old shape
+// aggregated EVERY visible album — whole-library tracks join, a um COALESCE
+// probe per track, GROUP BY all albums — and only then applied LIMIT 20, so
+// each home-screen list call cost 80–140 ms at 33k tracks and clients fire
+// 3–5 of them at once.
+//
+//   Step 1 (albumListPageIds): the cheapest query that can decide the PAGE —
+//     ids only, per-type filter and order, LIMIT/OFFSET pushed down.
+//   Step 2 (albumListRowsByIds): the full projection (track aggregates, um,
+//     stars, genres) for JUST the page's albums, re-ordered to the page.
+//
+// The um-driven types (recent / frequent / highest) still aggregate um over
+// the visible library in step 1 — that IS their order key and there is no
+// smaller driving set (the um-side rewrite was refuted in the DLNA round:
+// um is only ~3× smaller than tracks and the COALESCE join direction can't
+// use the hash indexes) — but they now group narrow (album_id, aggregate)
+// rows instead of wide ones, and step 2 does the expensive projection for 20
+// albums, not 2,200.
+//
+// Every ORDER BY carries an `al.id` / `t.album_id` tiebreak: OFFSET paging
+// over a non-total order can duplicate or drop a row when a tie straddles a
+// page boundary (the PR #813 lesson — plan-dependent tie order is also why
+// two calls could disagree).
+function albumListPageIds(req, type, params = {}) {
   const size   = Math.min(Math.max(parseInt(params.size, 10) || 10, 1), 500);
   const offset = Math.max(0, parseInt(params.offset, 10) || 0);
   const { clause, params: libParams } = libraryScope(req);
+  const d = db.getDB();
+  // An album is in scope iff it has ≥1 visible track — the two-step twin of
+  // the old `JOIN tracks … WHERE ${clause} … HAVING songCount > 0`.
+  const VIS = `EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${clause})`;
 
-  // Base select + join schema used by every type. user_album_stars is joined
-  // at the album level so the `starred` column reflects proper album-level
-  // star state (not "any one track is starred" — fixed in Phase 3).
-  const base = `
+  let sql, args;
+  switch (type) {
+    case 'newest':
+      // Order key = first-scanned VISIBLE track, matching the old
+      // MIN(t.created_at) over the scoped join. Correlated per candidate
+      // album on idx_tracks_album — album-count-sized, not track-count.
+      sql = `SELECT al.id FROM albums al WHERE ${VIS}
+             ORDER BY (SELECT MIN(t.created_at) FROM tracks t
+                       WHERE t.album_id = al.id AND ${clause}) DESC, al.id
+             LIMIT ? OFFSET ?`;
+      args = [...libParams, ...libParams, size, offset];
+      break;
+    // The three um-driven types share one shape: um rows carrying the
+    // signal, resolved to visible tracks, grouped per album. The COALESCE
+    // hash match is decomposed into TWO UNION ALL arms — one per hash
+    // column — because each arm is then a plain equality join the planner
+    // drives off a single index in every build. The obvious one-query
+    // forms are traps: joining on COALESCE(...) can use no index at all,
+    // and an OR join needs the OR-optimization, which the planner refused
+    // on a stats-less DB for the play_count variant and fell to a
+    // per-row table scan — 36 SECONDS per call at 33k tracks, measured
+    // while building this. Same OR→UNION ALL move as artists-albums
+    // (PR #813). A track cannot enter both arms (arm 2 requires
+    // audio_hash IS NULL), so UNION ALL duplicates nothing.
+    //
+    // The WHERE pre-filters are equivalent to the old LEFT JOIN + HAVING
+    // forms: play_count is never negative, MAX ignores no non-NULL, and
+    // any album the old HAVING kept has ≥1 signal-bearing um row.
+    case 'recent':
+      sql = `SELECT id FROM (
+               SELECT t.album_id AS id, um.last_played AS lp
+               FROM user_metadata um JOIN tracks t ON t.audio_hash = um.track_hash
+               WHERE um.user_id = ? AND um.last_played IS NOT NULL
+                 AND ${clause} AND t.album_id IS NOT NULL
+               UNION ALL
+               SELECT t.album_id, um.last_played
+               FROM user_metadata um JOIN tracks t ON t.file_hash = um.track_hash
+               WHERE t.audio_hash IS NULL AND um.user_id = ? AND um.last_played IS NOT NULL
+                 AND ${clause} AND t.album_id IS NOT NULL
+             )
+             GROUP BY id ORDER BY MAX(lp) DESC, id
+             LIMIT ? OFFSET ?`;
+      args = [req.user.id, ...libParams, req.user.id, ...libParams, size, offset];
+      break;
+    case 'frequent':
+      sql = `SELECT id FROM (
+               SELECT t.album_id AS id, um.play_count AS pc
+               FROM user_metadata um JOIN tracks t ON t.audio_hash = um.track_hash
+               WHERE um.user_id = ? AND um.play_count > 0
+                 AND ${clause} AND t.album_id IS NOT NULL
+               UNION ALL
+               SELECT t.album_id, um.play_count
+               FROM user_metadata um JOIN tracks t ON t.file_hash = um.track_hash
+               WHERE t.audio_hash IS NULL AND um.user_id = ? AND um.play_count > 0
+                 AND ${clause} AND t.album_id IS NOT NULL
+             )
+             GROUP BY id ORDER BY SUM(pc) DESC, id
+             LIMIT ? OFFSET ?`;
+      args = [req.user.id, ...libParams, req.user.id, ...libParams, size, offset];
+      break;
+    case 'highest':
+      sql = `SELECT id FROM (
+               SELECT t.album_id AS id, um.rating AS rt
+               FROM user_metadata um JOIN tracks t ON t.audio_hash = um.track_hash
+               WHERE um.user_id = ? AND um.rating IS NOT NULL
+                 AND ${clause} AND t.album_id IS NOT NULL
+               UNION ALL
+               SELECT t.album_id, um.rating
+               FROM user_metadata um JOIN tracks t ON t.file_hash = um.track_hash
+               WHERE t.audio_hash IS NULL AND um.user_id = ? AND um.rating IS NOT NULL
+                 AND ${clause} AND t.album_id IS NOT NULL
+             )
+             GROUP BY id ORDER BY MAX(rt) DESC, id
+             LIMIT ? OFFSET ?`;
+      args = [req.user.id, ...libParams, req.user.id, ...libParams, size, offset];
+      break;
+    case 'starred':
+      sql = `SELECT al.id FROM user_album_stars uas
+             JOIN albums al ON al.id = uas.album_id
+             WHERE uas.user_id = ? AND ${VIS}
+             ORDER BY uas.starred_at DESC, al.id
+             LIMIT ? OFFSET ?`;
+      args = [req.user.id, ...libParams, size, offset];
+      break;
+    case 'random':
+      sql = `SELECT al.id FROM albums al WHERE ${VIS} ORDER BY RANDOM() LIMIT ? OFFSET ?`;
+      args = [...libParams, size, offset];
+      break;
+    case 'byYear': {
+      const from = parseInt(params.fromYear, 10);
+      const to   = parseInt(params.toYear, 10);
+      if (!Number.isFinite(from) || !Number.isFinite(to)) { return null; }
+      const order = from <= to ? 'al.year ASC' : 'al.year DESC';
+      sql = `SELECT al.id FROM albums al
+             WHERE al.year BETWEEN ? AND ? AND ${VIS}
+             ORDER BY ${order}, al.name COLLATE NOCASE, al.id
+             LIMIT ? OFFSET ?`;
+      args = [Math.min(from, to), Math.max(from, to), ...libParams, size, offset];
+      break;
+    }
+    case 'byGenre': {
+      if (!params.genre) { return null; }
+      // V34 semantics preserved: the album qualifies via a VISIBLE track
+      // carrying the genre (case-insensitive M2M match).
+      sql = `SELECT al.id FROM albums al
+             WHERE EXISTS (
+               SELECT 1 FROM tracks t
+               JOIN track_genres tg ON tg.track_id = t.id
+               JOIN genres g ON g.id = tg.genre_id
+               WHERE t.album_id = al.id AND ${clause} AND g.name COLLATE NOCASE = ?
+             )
+             ORDER BY al.name COLLATE NOCASE, al.id
+             LIMIT ? OFFSET ?`;
+      args = [...libParams, params.genre, size, offset];
+      break;
+    }
+    case 'alphabeticalByArtist':
+      sql = `SELECT al.id FROM albums al
+             LEFT JOIN artists a ON a.id = al.artist_id
+             WHERE ${VIS}
+             ORDER BY a.name COLLATE NOCASE, al.name COLLATE NOCASE, al.id
+             LIMIT ? OFFSET ?`;
+      args = [...libParams, size, offset];
+      break;
+    case 'alphabeticalByName':
+    default:
+      sql = `SELECT al.id FROM albums al WHERE ${VIS}
+             ORDER BY al.name COLLATE NOCASE, al.id
+             LIMIT ? OFFSET ?`;
+      args = [...libParams, size, offset];
+  }
+  return { ids: d.prepare(sql).all(...args).map(r => r.id) };
+}
+
+// Step 2: full projection for a page of album ids, in page order. Column
+// set matches the old base select exactly, so albumFromListRow — and the
+// wire shape — are unchanged. user_album_stars is joined at the album level
+// so `starred` reflects proper album-level star state (not "any one track
+// is starred" — fixed in Phase 3). The scope clause is kept so songCount /
+// duration count only VISIBLE tracks.
+function albumListRowsByIds(req, ids) {
+  if (!ids.length) { return []; }
+  const { clause, params: libParams } = libraryScope(req);
+  const ph = ids.map(() => '?').join(',');
+  const rows = db.getDB().prepare(`
     SELECT al.id, al.name, al.year, al.album_art_file, al.artist_id,
            a.name AS artist_name,
            COUNT(t.id) AS songCount, SUM(t.duration) AS duration,
@@ -1808,57 +2128,11 @@ function buildAlbumListQuery(req, type, params = {}) {
     JOIN tracks t ON t.album_id = al.id
     LEFT JOIN user_metadata um ON um.track_hash = COALESCE(t.audio_hash, t.file_hash) AND um.user_id = ?
     LEFT JOIN user_album_stars uas ON uas.album_id = al.id AND uas.user_id = ?
-    WHERE ${clause}
-  `;
-  const tailParams = [req.user.id, req.user.id, ...libParams];
-
-  let where   = '';           // row-level filter (WHERE clause tail)
-  let having  = 'songCount > 0'; // group-level filter (HAVING clause)
-  let order   = 'al.name COLLATE NOCASE';
-
-  switch (type) {
-    case 'newest':    order = 'MIN(t.created_at) DESC'; break;
-    case 'recent':    having += ' AND MAX(um.last_played) IS NOT NULL'; order = 'MAX(um.last_played) DESC'; break;
-    case 'frequent':  having += ' AND plays > 0';                        order = 'plays DESC'; break;
-    case 'highest':   having += ' AND rating_max IS NOT NULL';           order = 'rating_max DESC'; break;
-    case 'starred':   having += ' AND uas.starred_at IS NOT NULL';       order = 'uas.starred_at DESC'; break;
-    case 'random':    order = 'RANDOM()'; break;
-    case 'byYear': {
-      const from = parseInt(params.fromYear, 10);
-      const to   = parseInt(params.toYear, 10);
-      if (!Number.isFinite(from) || !Number.isFinite(to)) { return null; }
-      where = 'AND al.year BETWEEN ? AND ?';
-      tailParams.push(Math.min(from, to), Math.max(from, to));
-      order = from <= to ? 'al.year ASC' : 'al.year DESC';
-      break;
-    }
-    case 'byGenre': {
-      if (!params.genre) { return null; }
-      // V34: filter via M2M with case-insensitive comparison. Folds in
-      // the case-sensitivity fix flagged in the genre scout — pre-V34
-      // this query rejected case-mismatched names (Subsonic clients
-      // pass back exactly what they got from getGenres, so this was
-      // mostly cosmetic, but the fix makes the surface uniform).
-      where = `AND EXISTS (
-        SELECT 1 FROM track_genres tg
-        JOIN genres g ON g.id = tg.genre_id
-        WHERE tg.track_id = t.id AND g.name COLLATE NOCASE = ?
-      )`;
-      tailParams.push(params.genre);
-      // order stays at the default alphabetical
-      break;
-    }
-    case 'alphabeticalByArtist': order = 'a.name COLLATE NOCASE, al.name COLLATE NOCASE'; break;
-    case 'alphabeticalByName':
-    default:
-      order = 'al.name COLLATE NOCASE';
-  }
-
-  tailParams.push(size, offset);
-  return {
-    sql: `${base} ${where} GROUP BY al.id HAVING ${having} ORDER BY ${order} LIMIT ? OFFSET ?`,
-    params: tailParams,
-  };
+    WHERE al.id IN (${ph}) AND ${clause}
+    GROUP BY al.id
+  `).all(req.user.id, req.user.id, ...ids, ...libParams);
+  const byId = new Map(rows.map(r => [r.id, r]));
+  return ids.map(id => byId.get(id)).filter(Boolean);
 }
 
 function albumFromListRow(al) {
@@ -1886,18 +2160,18 @@ function albumFromListRow(al) {
 
 export function getAlbumList2(req, res) {
   const type = String(req.query.type || 'alphabeticalByName');
-  const query = buildAlbumListQuery(req, type, req.query);
-  if (!query) { return SubErr.MISSING_PARAM(req, res, type === 'byYear' ? 'fromYear/toYear' : 'genre'); }
-  const rows = db.getDB().prepare(query.sql).all(...query.params);
+  const page = albumListPageIds(req, type, req.query);
+  if (!page) { return SubErr.MISSING_PARAM(req, res, type === 'byYear' ? 'fromYear/toYear' : 'genre'); }
+  const rows = albumListRowsByIds(req, page.ids);
   sendOk(req, res, { albumList2: { album: rows.map(albumFromListRow) } });
 }
 
 // v1 client path. Same payload under the older tag.
 export function getAlbumList(req, res) {
   const type = String(req.query.type || 'alphabeticalByName');
-  const query = buildAlbumListQuery(req, type, req.query);
-  if (!query) { return SubErr.MISSING_PARAM(req, res, type === 'byYear' ? 'fromYear/toYear' : 'genre'); }
-  const rows = db.getDB().prepare(query.sql).all(...query.params);
+  const page = albumListPageIds(req, type, req.query);
+  if (!page) { return SubErr.MISSING_PARAM(req, res, type === 'byYear' ? 'fromYear/toYear' : 'genre'); }
+  const rows = albumListRowsByIds(req, page.ids);
   sendOk(req, res, { albumList: { album: rows.map(albumFromListRow) } });
 }
 
@@ -2108,9 +2382,12 @@ function addSongsToPlaylist(playlistId, songIds, startPosition) {
 }
 
 export function createPlaylist(req, res) {
-  const name = String(req.query.name || '').trim();
-  const updatePlaylistId = decodePlaylistId(req.query.playlistId);
-  const songIds = arrayParam(req.query.songId).map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
+  // qparam for the scalars: `name`/`playlistId` can trail a 1,000+-song
+  // songId list past the qs parsing cliff, and req.query then drops them —
+  // a big "save as playlist" would MISSING_PARAM on a name that was sent.
+  const name = String(qparam(req, 'name') || '').trim();
+  const updatePlaylistId = decodePlaylistId(qparam(req, 'playlistId'));
+  const songIds = arrayParam(req, 'songId').map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
   const d = db.getDB();
 
   if (updatePlaylistId != null) {
@@ -2128,6 +2405,9 @@ export function createPlaylist(req, res) {
       addSongsToPlaylist(updatePlaylistId, songIds, 0);
       if (name) { d.prepare('UPDATE playlists SET name = ? WHERE id = ?').run(name, updatePlaylistId); }
     });
+    // Synthetic-query handoff: getPlaylist must keep reading req.query.id
+    // DIRECTLY — the spread carries the cached raw-query params of the
+    // ORIGINAL url, so qparam/arrayParam would not see this synthetic id.
     return getPlaylist({ ...req, query: { ...req.query, id: `pl-${updatePlaylistId}` } }, res);
   }
 
@@ -2142,8 +2422,10 @@ export function createPlaylist(req, res) {
 }
 
 export function updatePlaylist(req, res) {
-  if (req.query.playlistId == null) { return SubErr.MISSING_PARAM(req, res, 'playlistId'); }
-  const id = decodePlaylistId(req.query.playlistId);
+  // qparam throughout: every scalar here can trail a big songIdToAdd /
+  // songIndexToRemove list past the qs parsing cliff.
+  if (qparam(req, 'playlistId') == null) { return SubErr.MISSING_PARAM(req, res, 'playlistId'); }
+  const id = decodePlaylistId(qparam(req, 'playlistId'));
   if (id == null) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
   const meta = playlistMeta(id, req.user.id);
   if (!meta) { return SubErr.NOT_FOUND(req, res, 'Playlist'); }
@@ -2155,16 +2437,18 @@ export function updatePlaylist(req, res) {
   // transaction so the playlist is never observed half-updated and the append
   // loop costs a single fsync.
   db.transaction(() => {
-    if (req.query.name) { d.prepare('UPDATE playlists SET name = ? WHERE id = ?').run(String(req.query.name), id); }
+    const newName = qparam(req, 'name');
+    if (newName) { d.prepare('UPDATE playlists SET name = ? WHERE id = ?').run(String(newName), id); }
     // V15 added the `public` column — honour the flag. Subsonic `comment`
     // is still accepted but dropped (no column for it).
-    if ('public' in req.query) {
-      const pub = req.query.public === 'true' ? 1 : 0;
+    const pubRaw = qparam(req, 'public');
+    if (pubRaw !== undefined) {
+      const pub = pubRaw === 'true' ? 1 : 0;
       d.prepare('UPDATE playlists SET public = ? WHERE id = ?').run(pub, id);
     }
 
     // Remove entries by zero-based index (into current sorted position list).
-    const removeIdx = arrayParam(req.query.songIndexToRemove).map(v => parseInt(v, 10)).filter(Number.isFinite);
+    const removeIdx = arrayParam(req, 'songIndexToRemove').map(v => parseInt(v, 10)).filter(Number.isFinite);
     if (removeIdx.length) {
       const rows = d.prepare('SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position').all(id);
       const toDelete = removeIdx.filter(i => i >= 0 && i < rows.length).map(i => rows[i].id);
@@ -2175,7 +2459,7 @@ export function updatePlaylist(req, res) {
     }
 
     // Append new songs at the end.
-    const toAdd = arrayParam(req.query.songIdToAdd).map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
+    const toAdd = arrayParam(req, 'songIdToAdd').map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
     if (toAdd.length) {
       const maxPos = d.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM playlist_tracks WHERE playlist_id = ?').get(id).p;
       addSongsToPlaylist(id, toAdd, maxPos);
@@ -2297,7 +2581,7 @@ export async function createUser(req, res) {
   const adminRole    = req.query.adminRole === 'true';
   const uploadRole   = req.query.uploadRole !== 'false';
   // Subsonic's `musicFolderId` is repeatable — map each id back to a vpath.
-  const folderIds = arrayParam(req.query.musicFolderId)
+  const folderIds = arrayParam(req, 'musicFolderId')
     .map(v => decodeId(v, 'folder')?.id)
     .filter(Number.isFinite);
   const libs = db.getAllLibraries();
@@ -2338,7 +2622,7 @@ export async function updateUser(req, res) {
     row.allow_file_modify == null ? true : !!row.allow_file_modify);
 
   if ('musicFolderId' in req.query) {
-    const folderIds = arrayParam(req.query.musicFolderId)
+    const folderIds = arrayParam(req, 'musicFolderId')
       .map(v => decodeId(v, 'folder')?.id)
       .filter(Number.isFinite);
     const libs = db.getAllLibraries();
@@ -2776,7 +3060,7 @@ export function createShare(req, res) {
   // Same two-stage check as scrobble/star/unstar: distinguish "no id
   // params at all" from "ids given but none decoded" so clients see
   // the right Subsonic error code.
-  const rawIds = arrayParam(req.query.id);
+  const rawIds = arrayParam(req, 'id');
   if (!rawIds.length) { return SubErr.MISSING_PARAM(req, res, 'id'); }
   const songIds = rawIds.map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
   if (!songIds.length) { return SubErr.NOT_FOUND(req, res, 'Song'); }
@@ -2901,13 +3185,16 @@ export function getBookmarks(req, res) {
   // here are by hash value, not a join, so match both columns. Chunked:
   // each hash binds twice, and big bookmark lists can pass the
   // per-statement variable cap.
-  const { clause, params } = libraryScope(req);
+  const { demotedClause, params } = libraryScope(req);
   let songRows = [];
   for (const chunk of chunkedHashes(hashes)) {
     const ph = chunk.map(() => '?').join(',');
+    // demotedClause: keep the planner on the two hash-index probes —
+    // bounded by chunk size (≤400×2) regardless of library size, so there
+    // is no shape where the library-index plan wins. See libraryScope.
     songRows = songRows.concat(db.getDB().prepare(`
       ${songQueryBase()}
-      WHERE (t.audio_hash IN (${ph}) OR t.file_hash IN (${ph})) AND ${clause}
+      WHERE (t.audio_hash IN (${ph}) OR t.file_hash IN (${ph})) AND ${demotedClause}
     `).all(...chunk, ...chunk, ...params));
   }
   // Songs don't expose hashes in songQueryBase — resolve all matched rows'
@@ -2995,8 +3282,9 @@ export function getPlayQueue(req, res) {
   // or file_hash (legacy rows / formats without audio-region parsing).
   // Chunked: each hash binds twice, and Subsonic clients save queues of
   // arbitrary length — a big queue can pass the per-statement variable
-  // cap and 500 the restore.
-  const { clause, params } = libraryScope(req);
+  // cap and 500 the restore. demotedClause: keep the planner on the hash
+  // probes, not idx_tracks_library — see libraryScope.
+  const { demotedClause, params } = libraryScope(req);
   let songRows = [];
   for (const chunk of chunkedHashes(hashes)) {
     const ph = chunk.map(() => '?').join(',');
@@ -3010,7 +3298,7 @@ export function getPlayQueue(req, res) {
       FROM tracks t
       LEFT JOIN artists a  ON a.id = t.artist_id
       LEFT JOIN albums  al ON al.id = t.album_id
-      WHERE (t.audio_hash IN (${ph}) OR t.file_hash IN (${ph})) AND ${clause}
+      WHERE (t.audio_hash IN (${ph}) OR t.file_hash IN (${ph})) AND ${demotedClause}
     `).all(...chunk, ...chunk, ...params));
   }
 
@@ -3042,17 +3330,21 @@ export function getPlayQueue(req, res) {
 }
 
 export function savePlayQueue(req, res) {
-  const songIds = arrayParam(req.query.id).map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
-  const currentId = decodeId(req.query.current, 'song')?.id;
+  const songIds = arrayParam(req, 'id').map(v => decodeId(v, 'song')?.id).filter(Number.isFinite);
+  // qparam, not req.query: clients put `current` / `position` / `c` AFTER
+  // the id list, and with a 1,000+-track queue that is past the qs parsing
+  // cliff — the queue saved but its position silently vanished.
+  const currentId = decodeId(qparam(req, 'current'), 'song')?.id;
   // Resolve every queue id (plus the optional current id) to its canonical hash
   // in one batched query instead of a SELECT per id.
   const hashById = trackHashesByIds(currentId ? [...songIds, currentId] : songIds);
   const canonOf = (id) => { const hr = hashById.get(id); return hr ? (hr.audio_hash || hr.file_hash) : undefined; };
   const hashes = songIds.map(canonOf).filter(Boolean);
   const currentHash = currentId ? canonOf(currentId) : null;
-  const position = parseInt(req.query.position, 10);
+  const position = parseInt(qparam(req, 'position'), 10);
   const posMs = Number.isFinite(position) && position >= 0 ? position : null;
-  const changedBy = req.query.c ? String(req.query.c) : null;
+  const changedByRaw = qparam(req, 'c');
+  const changedBy = changedByRaw ? String(changedByRaw) : null;
 
   db.getDB().prepare(`
     INSERT INTO user_play_queue
@@ -3366,7 +3658,7 @@ export async function jukeboxControl(req, res) {
   // ── Queue-mutating actions ──────────────────────────────────────────
 
   if (action === 'set' || action === 'add') {
-    const songIds = arrayParam(req.query.id)
+    const songIds = arrayParam(req, 'id')
       .map(v => decodeId(v, 'song')?.id)
       .filter(Number.isFinite);
     const files = songIds.map(id => songIdToVpath(req, id)).filter(Boolean);

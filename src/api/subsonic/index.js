@@ -13,6 +13,7 @@
  * Subsonic's historical `.view` suffix (`/rest/ping.view`). Both are accepted.
  */
 
+import winston from 'winston';
 import { subsonicAuth } from './auth.js';
 import { SubErr } from './response.js';
 import * as H from './handlers.js';
@@ -164,6 +165,16 @@ export function methodStatusTable() {
 }
 
 export function setup(mstream) {
+  // Runs once per boot for whichever mode mounts the surface (same-port
+  // via server.js, separate-port via subsonic-server.js) — never when the
+  // mode is 'disabled', so a server that has not opted in stays silent.
+  winston.warn(
+    '[subsonic] The Subsonic API is DEPRECATED and will be removed in a future '
+    + 'release once the first-party mStream apps are available — development '
+    + 'focus is on the first-party apps and their iroh-based Quick Connect. '
+    + 'If you rely on the Subsonic API, please say so: '
+    + 'https://github.com/IrosTheBeggar/mStream/issues (see docs/subsonic-deprecation.md)');
+
   // Single handler for both `/rest/:method` and `/rest/:method.view`. We
   // normalise the method name (stripping any ".view"), look it up in the
   // METHODS table, authenticate, and dispatch.

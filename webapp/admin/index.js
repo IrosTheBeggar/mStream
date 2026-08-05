@@ -4535,6 +4535,10 @@ const subsonicView = Vue.component('subsonic-view', {
           <div class="card">
             <div class="card-content">
               <span class="card-title">Subsonic REST API</span>
+              <div class="card-panel amber lighten-4" style="margin-top:12px">
+                <p><b>Deprecated:</b> the Subsonic API will be removed in a future release once the first-party mStream apps are available. Development focus is on the first-party apps and their iroh-based Quick Connect, which no third-party client can offer. The Subsonic surface is frozen &mdash; crash and security fixes only, no new endpoints.</p>
+                <p style="margin-top:8px">If you rely on the Subsonic API, please say so on <a href="https://github.com/IrosTheBeggar/mStream/issues" target="_blank" rel="noopener">GitHub</a> or Discord &mdash; real usage reports are what decide the removal timeline.</p>
+              </div>
               <p>The Subsonic API lets you use third-party music apps &mdash; DSub, Symfonium, Substreamer, play:Sub, Feishin, Sonixd, and many others &mdash; as clients for your mStream library. Each user signs in with their mStream username and password (or an API key they generate on their profile) from inside the client app.</p>
               <div style="margin-top:16px">
                 <p><b>Current mode:</b> {{params.mode || 'disabled'}}</p>
