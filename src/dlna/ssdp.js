@@ -32,9 +32,23 @@ let joinedInterfaces = [];
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-export function getLocalIp() {
-  const addr = config.program.address;
-  if (addr && addr !== '::' && addr !== '0.0.0.0') { return addr; }
+// Resolving the outbound address means enumerating every network adapter,
+// and `os.networkInterfaces()` is not cheap — ~13 ms per call on Windows.
+// That mattered enormously, because getBaseUrl() is called once per DIDL
+// element: trackItem() builds a media URL for every track and
+// containerArtXml() an art URL for every container. A single unauthenticated
+// SOAP `Search` for '*' (10,000 items) therefore spent over two minutes of
+// event loop inside this one syscall.
+//
+// The answer only changes when the host's networking does (DHCP renew, VPN
+// up/down, adapter swap), so a short TTL keeps the self-healing behaviour —
+// a stale media URL survives at most LOCAL_IP_TTL_MS — while collapsing a
+// per-item syscall into at most one per response.
+const LOCAL_IP_TTL_MS = 5000;
+let localIpCache = null;
+let localIpCachedAt = 0;
+
+function resolveLocalIp() {
   const ifaces = os.networkInterfaces();
   for (const name of Object.keys(ifaces)) {
     for (const iface of ifaces[name]) {
@@ -42,6 +56,25 @@ export function getLocalIp() {
     }
   }
   return '127.0.0.1';
+}
+
+export function getLocalIp() {
+  const addr = config.program.address;
+  // An explicitly configured address needs no lookup and no cache — it can
+  // only change on a config reload, which reloads this value anyway.
+  if (addr && addr !== '::' && addr !== '0.0.0.0') { return addr; }
+  const now = Date.now();
+  if (localIpCache !== null && now - localIpCachedAt < LOCAL_IP_TTL_MS) { return localIpCache; }
+  localIpCache = resolveLocalIp();
+  localIpCachedAt = now;
+  return localIpCache;
+}
+
+// Test hook: drop the memo so a suite can observe an adapter change without
+// waiting out the TTL.
+export function invalidateLocalIpCache() {
+  localIpCache = null;
+  localIpCachedAt = 0;
 }
 
 export function getBaseUrl() {
