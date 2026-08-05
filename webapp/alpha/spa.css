@@ -162,6 +162,41 @@ body.top-bar-hidden #content {
   z-index: 3;
 }
 
+/* Cue point ticks — overlay on the seek bar, above waveform + fill.
+   The 9px span is the hit target; the ::after line is the visible tick. */
+.cue-markers {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 4;
+  pointer-events: none;
+}
+.cue-tick {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 9px;
+  margin-left: -4px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.cue-tick::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 0;
+  width: 3px;
+  height: 100%;
+  background: #ffd54f;
+  border-radius: 1px;
+  box-shadow: 0 0 2px rgba(0, 0, 0, .45);
+}
+.cue-tick:hover::after {
+  background: #fff176;
+}
+
 #media-player-button-bar {
   flex: 0 0 50px;
 

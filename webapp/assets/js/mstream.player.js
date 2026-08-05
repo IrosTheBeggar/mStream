@@ -1115,7 +1115,8 @@ const MSTREAMPLAYER = (() => {
       // Virtual playhead: a server-side seek reloads the stream from `-ss
       // offset`, so the element's own currentTime restarts at 0. Add the
       // offset back to report the true position.
-      mstreamModule.playerStats.currentTime = (cur.seekOffset || 0) + cur.playerObject.currentTime;
+      const absTime = (cur.seekOffset || 0) + cur.playerObject.currentTime;
+      mstreamModule.playerStats.currentTime = absTime;
 
       // Duration: a chunked transcode stream has no usable audio.duration
       // (Infinity until fully buffered, and a seeked stream only spans the
@@ -1123,12 +1124,59 @@ const MSTREAMPLAYER = (() => {
       // report an exact audio.duration.
       const adur = cur.playerObject.duration;
       const metaDur = cur.songObject && cur.songObject.metadata ? Number(cur.songObject.metadata.duration) : NaN;
+      let fullDur;
       if (isTranscoding()) {
-        mstreamModule.playerStats.duration = (Number.isFinite(metaDur) && metaDur > 0)
+        fullDur = (Number.isFinite(metaDur) && metaDur > 0)
           ? metaDur : (Number.isFinite(adur) ? adur : 0);
       } else {
-        mstreamModule.playerStats.duration = (Number.isFinite(adur) && adur > 0)
+        fullDur = (Number.isFinite(adur) && adur > 0)
           ? adur : (Number.isFinite(metaDur) ? metaDur : 0);
+      }
+      mstreamModule.playerStats.duration = fullDur;
+
+      // CHAPTER presentation: a chapter entry reports time/duration
+      // relative to its slice, and advances the queue at its boundary.
+      const ch = cur.songObject && cur.songObject.chapter;
+      if (ch) {
+        // Transcode note: for a chapter entry, metadata.duration is the
+        // CHAPTER length (set at expansion), so the transcode fullDur is
+        // already slice-scoped; the end-of-file for `end == null` then
+        // comes from the element's natural 'ended'.
+        const chEnd = (ch.end != null)
+          ? ch.end
+          : (!isTranscoding() && Number.isFinite(adur) && adur > 0 ? adur : null);
+        mstreamModule.playerStats.currentTime = Math.max(0, absTime - ch.start);
+        if (isTranscoding()) {
+          // fullDur is metadata.duration = chapter length already
+        } else if (chEnd != null && chEnd > ch.start) {
+          mstreamModule.playerStats.duration = chEnd - ch.start;
+        }
+
+        // Boundary handling — only the live player's own events advance
+        // the queue (the idle pre-cache element fires a timeupdate when
+        // its pending chapter seek lands).
+        if (playerObj === cur && !cur.chapterEnded
+            && ch.end != null && absTime >= ch.end) {
+          const pos = mstreamModule.positionCache.val;
+          const next = mstreamModule.playlist[pos + 1];
+          const seamless = mstreamModule.playerStats.shuffle !== true
+            && mstreamModule.playerStats.shouldLoopOne !== true
+            && next && next.chapter && next.url === cur.songObject.url
+            && Math.abs(next.chapter.start - ch.end) < 0.01;
+          if (seamless) {
+            // Same file, contiguous slice: keep the element playing
+            // straight through the boundary (true gapless — essential
+            // for continuous mixes) and just advance the queue pointer.
+            mstreamModule.positionCache.val = pos + 1;
+            cur.songObject = next;
+            mstreamModule.resetCurrentMetadata();
+            clearTimeout(scrobbleTimer);
+            scrobbleTimer = setTimeout(() => { mstreamModule.scrobble() }, 30000);
+          } else {
+            cur.chapterEnded = true;
+            callMeOnStreamEnd();
+          }
+        }
       }
     });
   }
@@ -1173,11 +1221,37 @@ const MSTREAMPLAYER = (() => {
   }
 
   function setMedia(song, player, play) {
-    player.seekOffset = 0; // a fresh song starts at the beginning
-    player.playerObject.src = buildStreamUrl(song, 0);
+    // CHAPTER entries (queue rows expanded from a .cue sheet) play a
+    // [start, end) slice of their file. Transcoded streams start at the
+    // slice via the server's `-ss` (?offset=); direct files seek the
+    // element once its metadata arrives (seeking before loadedmetadata
+    // is unreliable across browsers).
+    const startAt = (song.chapter && song.chapter.start > 0) ? song.chapter.start : 0;
+    player.chapterEnded = false;
+    if (player._pendingChapterSeek) {
+      player.playerObject.removeEventListener('loadedmetadata', player._pendingChapterSeek);
+      player._pendingChapterSeek = null;
+    }
+
+    if (startAt > 0 && isTranscoding()) {
+      player.seekOffset = startAt;
+      player.playerObject.src = buildStreamUrl(song, startAt);
+    } else {
+      player.seekOffset = 0;
+      player.playerObject.src = buildStreamUrl(song, 0);
+    }
     player.songObject = song;
     player.playerObject.load();
     player.playerObject.playbackRate = mstreamModule.playerStats.playbackRate;
+
+    if (startAt > 0 && !isTranscoding()) {
+      const el = player.playerObject;
+      player._pendingChapterSeek = () => {
+        player._pendingChapterSeek = null;
+        try { el.currentTime = startAt; } catch (_err) { /* not seekable */ }
+      };
+      el.addEventListener('loadedmetadata', player._pendingChapterSeek, { once: true });
+    }
 
     player.playerObject.onended = () => {
       callMeOnStreamEnd();
@@ -1197,9 +1271,12 @@ const MSTREAMPLAYER = (() => {
     goToNextSong();
   }
 
-  // Seek to an absolute position (seconds). Direct /media files seek natively
-  // (byte ranges); a transcoded stream isn't seekable in the browser, so we
-  // re-request it from the server with ?offset= and reload — see transcodeSeek.
+  // Seek to a PRESENTED position (seconds). For a chapter entry the
+  // presented timeline is the slice, so the target maps to
+  // chapter.start + target before touching the stream. Direct /media
+  // files seek natively (byte ranges); a transcoded stream isn't
+  // seekable in the browser, so we re-request it from the server with
+  // ?offset= and reload — see transcodeSeek.
   function seekToAbsolute(targetSec) {
     const lPlayer = getCurrentPlayer();
     if (!lPlayer.songObject) { return; }
@@ -1207,17 +1284,20 @@ const MSTREAMPLAYER = (() => {
     if (!(targetSec >= 0)) { targetSec = 0; }
     if (Number.isFinite(dur) && dur > 0 && targetSec > dur) { targetSec = dur; }
 
+    const ch = lPlayer.songObject.chapter;
+    const streamTarget = ch ? ch.start + targetSec : targetSec;
+
     if (isTranscoding()) {
-      transcodeSeek(targetSec);
+      transcodeSeek(streamTarget);
     } else {
       lPlayer.seekOffset = 0;
-      lPlayer.playerObject.currentTime = targetSec;
+      lPlayer.playerObject.currentTime = streamTarget;
     }
   }
 
   // Server-side seek for transcoded playback: reload the stream from `-ss
-  // targetSec`, remember the offset so the playhead reads correctly, and
-  // resume playback if it was playing.
+  // targetSec` (a FILE-absolute position), remember the offset so the
+  // playhead reads correctly, and resume playback if it was playing.
   function transcodeSeek(targetSec) {
     const lPlayer = getCurrentPlayer();
     const wasPlaying = mstreamModule.playerStats.playing === true;
@@ -1225,7 +1305,9 @@ const MSTREAMPLAYER = (() => {
     lPlayer.playerObject.src = buildStreamUrl(lPlayer.songObject, targetSec);
     lPlayer.playerObject.load();
     lPlayer.playerObject.playbackRate = mstreamModule.playerStats.playbackRate;
-    mstreamModule.playerStats.currentTime = targetSec; // reflect immediately
+    // Reflect immediately, in presented (chapter-relative) time.
+    const ch = lPlayer.songObject.chapter;
+    mstreamModule.playerStats.currentTime = ch ? Math.max(0, targetSec - ch.start) : targetSec;
     if (wasPlaying) { lPlayer.playerObject.play(); }
   }
 
