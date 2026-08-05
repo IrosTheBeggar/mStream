@@ -31,9 +31,17 @@ import { pipeline } from 'stream/promises';
 import winston from 'winston';
 import * as config from '../state/config.js';
 import {
-  getDiscoveryDb, getMeta,
+  getDiscoveryDb, getMeta, discoveryDbPath, openedDiscoveryDbPath,
   DISCOVERY_SCHEMA_VERSION, EMBEDDING_DTYPE, EMBEDDING_NORMALIZATION,
 } from './discovery-db.js';
+import { launchWorker } from '../util/worker-process.js';
+import { getDirname } from '../util/esm-helpers.js';
+
+const __dirname = getDirname(import.meta.url);
+const EXPORT_SCRIPT_PATH = path.join(__dirname, 'discovery-export-script.mjs');
+// A 138 MB copy takes seconds; leave slack for 100k-track libraries on slow
+// disks before declaring the child wedged.
+const EXPORT_WORKER_TIMEOUT_MS = 10 * 60 * 1000;
 
 export const SNAPSHOT_FORMAT = 'mstream-discovery-snapshot';
 export const SNAPSHOT_FORMAT_VERSION = 1;
@@ -74,12 +82,16 @@ async function sha256File(filePath) {
   return hash.digest('hex');
 }
 
-// Build (or rebuild) the current snapshot + manifest + README.
-// Returns the manifest object. Caller is responsible for serializing
-// concurrent invocations (the admin route holds a simple in-flight flag).
-// `opts.outDir` overrides the config-derived output directory (tests /
-// config-less callers); the admin routes pass nothing.
-export async function exportDiscoverySnapshot(opts = {}) {
+// Build (or rebuild) the current snapshot + manifest + README, on THIS
+// process's discovery connection. Returns the manifest object.
+//
+// ⚠ The 100+ MB INSERT…SELECT inside is one synchronous DatabaseSync
+// statement — in the server process it blocks the event loop for seconds
+// (audit H3: 2.5–3.5 s at 25k tracks). Server-side callers must go through
+// exportDiscoverySnapshot() below, which runs this in a forked child; this
+// function stays exported for that child (discovery-export-script.mjs) and
+// for tests that want the build synchronous and in-process.
+export async function buildSnapshot(opts = {}) {
   const db = getDiscoveryDb();
 
   const outDir = opts.outDir || exportDir();
@@ -237,6 +249,103 @@ export async function exportDiscoverySnapshot(opts = {}) {
 
   winston.info(`discovery export built: ${rowCount} tracks, ${manifest.sizeBytes} bytes`);
   return manifest;
+}
+
+// ── Server-side entry point: build in a forked child ────────────────────────
+//
+// Same name + contract as the old in-process export (both callers — the
+// admin route and p2p auto-publish — await it and get the manifest back),
+// but the multi-second blob copy now happens in a child process, so the
+// server's event loop stays free. The child gets its own connection to the
+// same discovery.db; WAL gives its transaction the same point-in-time
+// consistency the single-connection build had.
+//
+// Concurrent calls coalesce onto the running build (admin export racing
+// auto-publish used to be an ATTACH failure; with a child per call it would
+// be two children fighting over the same .building temp file).
+let exportInFlight = null;
+
+export async function exportDiscoverySnapshot(opts = {}) {
+  while (exportInFlight) {
+    const current = exportInFlight;
+    const manifest = await current.promise.catch(() => null);
+    // Same target: the just-finished build IS this caller's answer.
+    if (manifest && current.dbPath === (opts.dbPath || openedDiscoveryDbPath() || discoveryDbPath())
+      && current.outDir === (opts.outDir || exportDir())) {
+      return manifest;
+    }
+    // Different target (or the run failed): loop until the slot frees, then
+    // run our own build.
+    if (exportInFlight === current) { exportInFlight = null; }
+  }
+
+  const dbPath = opts.dbPath || openedDiscoveryDbPath() || discoveryDbPath();
+  const outDir = opts.outDir || exportDir();
+  const entry = { dbPath, outDir, promise: null };
+  entry.promise = runExportWorker(dbPath, outDir);
+  exportInFlight = entry;
+  try {
+    return await entry.promise;
+  } finally {
+    if (exportInFlight === entry) { exportInFlight = null; }
+  }
+}
+
+function runExportWorker(dbPath, outDir) {
+  return new Promise((resolve, reject) => {
+    const child = launchWorker('discovery-export', EXPORT_SCRIPT_PATH,
+      JSON.stringify({ dbPath, outDir }));
+
+    let settled = false;
+    const finish = (err, value) => {
+      if (settled) { return; }
+      settled = true;
+      clearTimeout(watchdog);
+      if (err) { reject(err); } else { resolve(value); }
+    };
+    const watchdog = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch (_e) { /* already gone */ }
+      finish(new Error('discovery export worker timed out'));
+    }, EXPORT_WORKER_TIMEOUT_MS);
+
+    // stdout: line-buffered JSON events ({event:'error'} carries the cause);
+    // stderr: forwarded to the log, tail kept for the failure message.
+    let stdoutBuf = '';
+    let childError = null;
+    let stderrTail = '';
+    child.stdout.on('data', (chunk) => {
+      stdoutBuf += chunk.toString();
+      let nl;
+      while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
+        const line = stdoutBuf.slice(0, nl).trim();
+        stdoutBuf = stdoutBuf.slice(nl + 1);
+        if (!line) { continue; }
+        try {
+          const evt = JSON.parse(line);
+          if (evt.event === 'error') { childError = evt.message; }
+        } catch (_e) { /* non-protocol chatter */ }
+      }
+    });
+    child.stderr.on('data', (chunk) => {
+      const text = chunk.toString();
+      stderrTail = (stderrTail + text).slice(-2048);
+      winston.warn(`[discovery-export worker] ${text.trim()}`);
+    });
+    child.on('error', (err) => finish(new Error(`discovery export worker failed to start: ${err.message}`)));
+    child.on('close', (code, signal) => {
+      if (code !== 0 || signal) {
+        return finish(new Error(childError
+          || `discovery export worker exited ${signal || code}${stderrTail ? `: ${stderrTail.trim().slice(-300)}` : ''}`));
+      }
+      // The manifest on disk is the child's return value.
+      let manifest;
+      try { manifest = JSON.parse(fs.readFileSync(path.join(outDir, 'manifest.json'), 'utf8')); }
+      catch (err) {
+        return finish(new Error(`discovery export worker succeeded but the manifest is unreadable: ${err.message}`));
+      }
+      finish(null, manifest);
+    });
+  });
 }
 
 function readmeText() {

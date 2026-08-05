@@ -25,10 +25,46 @@ export function norm(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-// The local library's identity sets. Built per request — two indexed scans
-// over a 10k-track library are a few ms, and a live cache would need
-// scanner invalidation hooks for marginal gain.
+// The local library's identity sets, cached across requests. The "built per
+// request" original was measured at ~130 ms per call on a 25k-track library
+// (full tracks scan + two regex normalizations per row — audit M13), paid
+// by EVERY p2p and federation similar request, i.e. twice per song change.
+//
+// Invalidation, cheapest-signal-first:
+//   * lib PRAGMA data_version — moves when ANOTHER connection commits to
+//     mstream.db (the scanner and every enrichment worker are separate
+//     processes, so bulk library changes land here);
+//   * discovery index_epoch/row_seq — moves when the discovery dataset
+//     advanced (new MBIDs from the AcoustID pass);
+//   * a short TTL — catches writes made on THIS connection (ytdl inserts,
+//     admin library deletes), which data_version deliberately ignores.
+// Staleness within the TTL only affects an exclusion filter: a result that
+// should be hidden shows (or vice versa) for under a minute — harmless
+// against 130 ms × every request.
+const IDENTITY_TTL_MS = 60 * 1000;
+let identityCache = null; // { dataVersion, discoveryKey, builtAt, sets }
+
+function libDataVersion() {
+  return db.getDB().prepare('PRAGMA data_version').get().data_version;
+}
+
+function discoveryFreshnessKey() {
+  if (!discoveryDb.openDiscoveryDbIfExists()) { return 'closed'; }
+  // Batch-grained when writers publish (same key the similarity index uses),
+  // per-write fallback for pre-epoch DBs.
+  return discoveryDb.getMeta('index_epoch') ?? (discoveryDb.getMeta('row_seq') || '0');
+}
+
 export function localIdentitySets() {
+  const dataVersion = libDataVersion();
+  const discoveryKey = discoveryFreshnessKey();
+  if (identityCache
+    && identityCache.dataVersion === dataVersion
+    && identityCache.discoveryKey === discoveryKey
+    && Date.now() - identityCache.builtAt < IDENTITY_TTL_MS) {
+    return identityCache.sets;
+  }
+
   const sets = { mbids: new Set(), artistTitles: new Set(), artists: new Set() };
   const rows = db.getDB().prepare(`
     SELECT a.name AS artist, t.title AS title
@@ -46,8 +82,12 @@ export function localIdentitySets() {
     ).all();
     for (const r of mbids) { sets.mbids.add(r.recording_mbid); }
   }
+  identityCache = { dataVersion, discoveryKey, builtAt: Date.now(), sets };
   return sets;
 }
+
+// Test hook: force the next localIdentitySets() call to rebuild.
+export function invalidateIdentityCache() { identityCache = null; }
 
 // One candidate through the chain. `similarityVsSeed` is the candidate's
 // cosine vs the QUERY track (however the caller obtained it — a local dot

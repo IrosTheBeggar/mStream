@@ -58,9 +58,23 @@ const ROTATION_LEDGER_MAX = 200;
 // installs should never set it.
 const DISK_FREE_FLOOR_BYTES =
   Number(process.env.MSTREAM_TEST_DISCOVERY_DISK_FLOOR_BYTES) || 500 * 1024 * 1024;
-// Cache of parsed embedding matrices (they're a few MB each) — keep the
-// working set small so a Pi isn't holding every peer's vectors forever.
-const MATRIX_CACHE_MAX = 4;
+// Cache of parsed embedding matrices — sized to the peer set, evicted LRU.
+//
+// The old shape (fixed cap of 4, FIFO eviction, no touch-on-read) sat BELOW
+// the default autoFetchCount of 6: the p2p similar route walks every held
+// peer in a stable order, so each request evicted exactly the matrices it
+// would need next — a 0% hit rate re-reading ~50 MB per peer per request
+// (audit H4: ~3.2 s/request where ~370 ms is inherent). The cap now tracks
+// autoFetchCount so steady-state holds every held peer, reads refresh
+// recency, and a byte budget stays as the memory backstop for huge peers on
+// small boxes (a Pi shouldn't pin gigabytes of vectors; past it, LRU keeps
+// the hottest peers and the rest re-read like before).
+const MATRIX_CACHE_MAX_BYTES =
+  Number(process.env.MSTREAM_TEST_MATRIX_CACHE_BYTES) || 512 * 1024 * 1024;
+function matrixCacheMaxEntries() {
+  const autoFetch = Number(config.program?.discoveryP2p?.autoFetchCount) || 0;
+  return Math.max(4, autoFetch);
+}
 
 // endpointId -> { endpointId, hash, path, snapshotSeq, modelId, modelVersion,
 //                 rowCount, sizeBytes, name, fetchedAt }
@@ -356,7 +370,13 @@ export function readEmbeddings(endpointId, modelId) {
   if (!entry) { return null; }
 
   const cached = matrixCache.get(endpointId);
-  if (cached && cached.hash === entry.hash && cached.modelId === modelId) { return cached; }
+  if (cached && cached.hash === entry.hash && cached.modelId === modelId) {
+    // Touch-on-read: Map iteration order is insertion order, so re-inserting
+    // makes eviction genuinely LRU instead of FIFO.
+    matrixCache.delete(endpointId);
+    matrixCache.set(endpointId, cached);
+    return cached;
+  }
 
   const rows = openPeerDb(entry).prepare(`
     SELECT export_id, recording_mbid, artist, title, duration, embedding
@@ -394,8 +414,14 @@ export function readEmbeddings(endpointId, modelId) {
     peerName: entry.name, endpointId,
   };
   matrixCache.set(endpointId, result);
-  // Tiny LRU: evict the oldest insertions beyond the cap.
-  while (matrixCache.size > MATRIX_CACHE_MAX) {
+  // Evict least-recently-used past the entry cap or the byte budget (never
+  // the entry just inserted — a single over-budget peer still gets served,
+  // it just won't pin the cache).
+  const maxEntries = matrixCacheMaxEntries();
+  const totalBytes = () =>
+    [...matrixCache.values()].reduce((s, m) => s + m.matrix.byteLength, 0);
+  while (matrixCache.size > 1
+    && (matrixCache.size > maxEntries || totalBytes() > MATRIX_CACHE_MAX_BYTES)) {
     matrixCache.delete(matrixCache.keys().next().value);
   }
   return result;

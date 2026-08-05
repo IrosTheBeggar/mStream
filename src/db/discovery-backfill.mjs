@@ -47,7 +47,7 @@ import path from 'node:path';
 import Joi from 'joi';
 import winston from 'winston';
 import {
-  initDiscoveryDb, setMeta, upsertDiscoveryTrack,
+  initDiscoveryDb, setMeta, upsertDiscoveryTrack, bumpRowSeq, publishIndexEpoch,
 } from './discovery-db.js';
 import { createEmbedder, analyzeFile, EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL } from './discovery-features-lib.js';
 
@@ -156,8 +156,12 @@ function pruneOrphans() {
       UNION
       SELECT file_hash  FROM lib.tracks WHERE file_hash  IS NOT NULL
     `;
-    db.prepare(`DELETE FROM discovery_tracks  WHERE audio_hash NOT IN (${sub})`).run();
+    const removed = db.prepare(`DELETE FROM discovery_tracks  WHERE audio_hash NOT IN (${sub})`).run().changes;
     db.prepare(`DELETE FROM discovery_lookups WHERE audio_hash NOT IN (${sub})`).run();
+    // Plain DELETEs don't touch row_seq, so without this a prune-only run
+    // was invisible to every row_seq consumer — the similarity index kept
+    // serving ghosts and auto-publish considered the snapshot current.
+    if (removed > 0) { bumpRowSeq(); }
   } catch (_e) { /* best-effort housekeeping */ }
 }
 
@@ -325,13 +329,23 @@ async function run() {
   });
 }
 
+// This worker is a batch owner for the similarity-index epoch: one publish
+// per run, on every exit path (a failed run may still have persisted rows
+// before dying). setMeta of an unchanged row_seq is a no-op key-wise, so
+// publishing unconditionally never causes a spurious rebuild.
+function publishEpochBestEffort() {
+  try { publishIndexEpoch(); } catch (_e) { /* db may be unusable */ }
+}
+
 run()
   .then(() => {
+    publishEpochBestEffort();
     try { db.close(); } catch (_) { /* best-effort */ }
     process.exit(0);
   })
   .catch((err) => {
     emit({ event: 'error', message: err?.message || String(err) });
+    publishEpochBestEffort();
     try { db.close(); } catch (_) { /* best-effort */ }
     // dependencyMissing (set by createEmbedder): onnxruntime-node absent
     // or unloadable here — a structural failure that repeats identically

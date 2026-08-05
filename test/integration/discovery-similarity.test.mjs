@@ -339,7 +339,11 @@ describe('similarity index invalidation', () => {
           (audio_hash, updated_at, export_id, artist, title, duration, model_id, model_version, embedding)
         VALUES (?, 99, 'anon:orbit', ?, 'Orbit', 120, 'test-fake', '1', ?)
       `).run(orbit.hash, orbit.artist, blob(vec(0.99, 0.141, 0, 0)));
+      // Batch-writer contract (discovery-db.js): move the rowversion AND
+      // publish the index epoch — the server's index refreshes on the
+      // epoch, not on per-row row_seq churn.
       ddb.prepare("UPDATE discovery_meta SET value = '99' WHERE key = 'row_seq'").run();
+      ddb.prepare("INSERT OR REPLACE INTO discovery_meta (key, value) VALUES ('index_epoch', '99')").run();
     } finally { ddb.close(); }
 
     const { body } = await api('/api/v1/discovery/local/similar/tracks', { filePath: seedPath, limit: 1 });
@@ -361,7 +365,9 @@ describe('POST /api/v1/discovery/local/path', () => {
     const ddb = openDiscovery();
     try {
       ddb.prepare("DELETE FROM discovery_tracks WHERE title = 'Orbit'").run();
+      // Same batch-writer contract as the Orbit embed above.
       ddb.prepare("UPDATE discovery_meta SET value = '100' WHERE key = 'row_seq'").run();
+      ddb.prepare("INSERT OR REPLACE INTO discovery_meta (key, value) VALUES ('index_epoch', '100')").run();
     } finally { ddb.close(); }
 
     // Resolve Neon's request path from the API rather than hardcoding the
