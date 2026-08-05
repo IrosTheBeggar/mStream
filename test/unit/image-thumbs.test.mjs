@@ -41,7 +41,28 @@ const FFMPEG = path.join(REPO_ROOT, 'bin', 'ffmpeg', `ffmpeg${EXE}`);
 const FFPROBE = path.join(REPO_ROOT, 'bin', 'ffmpeg', `ffprobe${EXE}`);
 const BINS = { ffmpegPath: FFMPEG, ffprobePath: FFPROBE };
 
+// A real 64×64 VP8 WebP (82 bytes), generated once with a libwebp-enabled
+// ffmpeg and EMBEDDED because not every CI ffmpeg carries a WebP encoder
+// (macOS homebrew-ffmpeg tap: decodes WebP, can't encode it). Decode-side
+// coverage must not depend on an encoder existing; the one encoder-side
+// test below probes for it and skips honestly.
+const WEBP_64 = Buffer.from(
+  'UklGRkoAAABXRUJQVlA4ID4AAADQAwCdASpAAEAAPpFIoEwlpCMiIggAsBIJaQB2AAAgbqag'
+  + 'CvELcgAA/uwmX/rQtCBz//5Sv58/IPhkAAAAAA==', 'base64');
+
+// Hand-craft a RIFF/WEBP container around one chunk — for header-parser
+// tests, where building the bytes directly is more precise than asking an
+// encoder to (and works on encoder-less ffmpeg builds).
+function craftWebp(fourcc, body) {
+  const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b; };
+  return Buffer.concat([
+    Buffer.from('RIFF', 'latin1'), u32(4 + 8 + body.length), Buffer.from('WEBP', 'latin1'),
+    Buffer.from(fourcc, 'latin1'), u32(body.length), body,
+  ]);
+}
+
 let tmpDir;
+let hasWebpEncoder = false;
 
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
@@ -84,6 +105,13 @@ before(async () => {
   assert.ok(fs.existsSync(FFMPEG), `ffmpeg missing at ${FFMPEG} — copy it from the main checkout`);
   assert.ok(fs.existsSync(FFPROBE), `ffprobe missing at ${FFPROBE} — copy it from the main checkout`);
   tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'mstream-imgthumb-'));
+  hasWebpEncoder = await new Promise((resolve) => {
+    const p = spawn(FFMPEG, ['-hide_banner', '-encoders'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    p.stdout.on('data', (d) => { out += d.toString(); });
+    p.on('error', () => resolve(false));
+    p.on('close', () => resolve(/webp/i.test(out)));
+  });
 });
 
 after(async () => {
@@ -91,16 +119,32 @@ after(async () => {
 });
 
 describe('dimensionsOf (advisory pre-filter)', () => {
-  test('reads JPEG / PNG / WebP / GIF header dimensions', async () => {
+  test('reads JPEG / PNG / GIF header dimensions', async () => {
     for (const [name, size, w, h] of [
       ['a.jpg', '640x480', 640, 480],
       ['a.png', '1234x567', 1234, 567],
-      ['a.webp', '800x600', 800, 600],
       ['a.gif', '321x123', 321, 123],
     ]) {
       const buf = await fsp.readFile(await makeImage(name, size));
       assert.deepEqual(dimensionsOf(buf), { width: w, height: h }, `${name} dimensions`);
     }
+  });
+
+  test('reads WebP dimensions from all three fourcc forms (no encoder involved)', () => {
+    // VP8 (lossy): the real embedded file.
+    assert.deepEqual(dimensionsOf(WEBP_64), { width: 64, height: 64 }, 'VP8 fixture');
+
+    // VP8L (lossless): signature byte + 14-bit (w-1)/(h-1) packed LE.
+    const vp8l = Buffer.alloc(5);
+    vp8l[0] = 0x2F;
+    vp8l.writeUInt32LE((800 - 1) | ((600 - 1) << 14), 1);
+    assert.deepEqual(dimensionsOf(craftWebp('VP8L', vp8l)), { width: 800, height: 600 }, 'VP8L header');
+
+    // VP8X (extended): flags + reserved, then 24-bit LE canvas w-1 / h-1.
+    const vp8x = Buffer.alloc(10);
+    const canvas = (n, off) => { vp8x[off] = (n - 1) & 0xFF; vp8x[off + 1] = ((n - 1) >> 8) & 0xFF; vp8x[off + 2] = ((n - 1) >> 16) & 0xFF; };
+    canvas(1920, 4); canvas(1080, 7);
+    assert.deepEqual(dimensionsOf(craftWebp('VP8X', vp8x)), { width: 1920, height: 1080 }, 'VP8X header');
   });
 
   test('walks past a big APPn block to the real frame header', async () => {
@@ -159,9 +203,10 @@ describe('tooManyPixels + isSupportedImage', () => {
   });
 
   test('accepts the four supported formats, rejects the rest', async () => {
-    for (const name of ['s.jpg', 's.png', 's.webp', 's.gif']) {
+    for (const name of ['s.jpg', 's.png', 's.gif']) {
       assert.ok(isSupportedImage(await fsp.readFile(await makeImage(name, '64x64'))), `${name} accepted`);
     }
+    assert.ok(isSupportedImage(WEBP_64), 'webp accepted (embedded fixture)');
     assert.ok(!isSupportedImage(Buffer.concat([Buffer.from([0x49, 0x49, 0x2A, 0x00]), Buffer.alloc(16)])), 'TIFF');
     assert.ok(!isSupportedImage(Buffer.concat([Buffer.from('BM'), Buffer.alloc(16)])), 'BMP');
     assert.ok(!isSupportedImage(Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('AVI ')])), 'RIFF/AVI');
@@ -208,15 +253,38 @@ describe('generateThumbnails — happy paths', () => {
       { width: 256, height: 256 });
   });
 
-  test('png and webp cache names produce those formats', async () => {
-    for (const [name, size] of [['c.png', '600x600'], ['c.webp', '600x600']]) {
-      const src = await makeImage(name, size);
-      const outDir = await fsp.mkdtemp(path.join(tmpDir, 'out-'));
-      await generateThumbnails(await fsp.readFile(src), src, outDir, name, BINS);
-      const zl = await fsp.readFile(path.join(outDir, 'zl-' + name));
-      assert.deepEqual(dimensionsOf(zl), { width: 256, height: 256 }, `${name} thumbnail readable`);
-      assert.ok(isSupportedImage(zl), `${name} thumbnail is a real image`);
-    }
+  test('png cache names produce png thumbnails', async () => {
+    const src = await makeImage('c.png', '600x600');
+    const outDir = await fsp.mkdtemp(path.join(tmpDir, 'out-'));
+    await generateThumbnails(await fsp.readFile(src), src, outDir, 'c.png', BINS);
+    const zl = await fsp.readFile(path.join(outDir, 'zl-c.png'));
+    assert.deepEqual(dimensionsOf(zl), { width: 256, height: 256 }, 'c.png thumbnail readable');
+    assert.ok(isSupportedImage(zl), 'c.png thumbnail is a real image');
+  });
+
+  test('webp INPUT under a .jpg cache name decodes to jpeg thumbnails', async () => {
+    // The upload route names every cache entry <hash>.jpg regardless of
+    // content, so a WebP upload is exactly this shape: ffmpeg sniffs the
+    // real container, the thumbnails come out JPEG. Needs only the WebP
+    // DECODER, which every ffmpeg build carries.
+    const { outDir, entries } = await thumbnail(WEBP_64, 'w.jpg');
+    assert.deepEqual(entries, ['w.jpg', 'zl-w.jpg', 'zs-w.jpg']);
+    const zl = await fsp.readFile(path.join(outDir, 'zl-w.jpg'));
+    assert.deepEqual(dimensionsOf(zl), { width: 64, height: 64 }, 'decoded, not upscaled');
+  });
+
+  test('webp cache names produce webp thumbnails (when this build can encode them)', async (t) => {
+    // Not every ffmpeg build has a WebP ENCODER (macOS CI's homebrew-ffmpeg
+    // tap build doesn't). On such hosts .webp-named thumbnail outputs skip
+    // gracefully — logged, full-size original still serves — so this pins
+    // the encoder path only where the encoder exists.
+    if (!hasWebpEncoder) { t.skip('this ffmpeg build has no WebP encoder'); return; }
+    const src = await makeImage('c.webp', '600x600');
+    const outDir = await fsp.mkdtemp(path.join(tmpDir, 'out-'));
+    await generateThumbnails(await fsp.readFile(src), src, outDir, 'c.webp', BINS);
+    const zl = await fsp.readFile(path.join(outDir, 'zl-c.webp'));
+    assert.deepEqual(dimensionsOf(zl), { width: 256, height: 256 }, 'c.webp thumbnail readable');
+    assert.ok(isSupportedImage(zl), 'c.webp thumbnail is a real image');
   });
 });
 
