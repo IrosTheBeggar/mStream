@@ -637,13 +637,20 @@ export function setup(mstream) {
     // audit M8) and there was previously no way for a client to ask for a
     // page. This is the server half only — nothing gets faster until a
     // caller opts in.
+    // `.unknown(true)` on purpose: this route has never had a schema, and it
+    // is reachable from clients this repo does not contain (the Flutter app,
+    // federated peers — see federation-auth's allow-list). Rejecting fields
+    // that used to be ignored would be a breaking change smuggled into a
+    // perf PR. The new paging fields are still validated.
     const schema = Joi.object({
       genre: Joi.string().required(),
       limit: Joi.number().integer().min(1).max(10000).optional(),
       offset: Joi.number().integer().min(0).optional(),
       ignoreVPaths: Joi.array().items(Joi.string()).optional()
-    });
-    joiValidate(schema, req.body);
+    }).unknown(true);
+    // Use the COERCED value, not req.body: Joi turns `limit: "50"` into a
+    // number, and binding a string into LIMIT would be a different query.
+    const { value: query } = joiValidate(schema, req.body);
 
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
 
@@ -668,10 +675,10 @@ export function setup(mstream) {
 
     // SQLite treats LIMIT -1 as "no limit", and OFFSET is meaningless without
     // one — so the unpaged call keeps exactly its old plan and result.
-    const pageSql = (req.body.limit != null || req.body.offset != null)
+    const pageSql = (query.limit != null || query.offset != null)
       ? 'LIMIT ? OFFSET ?' : '';
     const pageParams = pageSql
-      ? [req.body.limit ?? -1, req.body.offset ?? 0] : [];
+      ? [query.limit ?? -1, query.offset ?? 0] : [];
 
     const rows = d().prepare(`
       ${trackQuery(req.user?.id, { includeGenres: false })}

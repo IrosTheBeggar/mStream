@@ -408,4 +408,22 @@ describe('genre-songs limit/offset', () => {
     assert.equal(r.status, 200);
     assert.deepEqual(r.body, []);
   });
+
+  test('an unrecognised field is still ignored, not rejected', async () => {
+    // The route never had a schema; clients outside this repo (the Flutter
+    // app, federated peers) may send fields it does not know about, and this
+    // PR must not start 400ing them.
+    scopeTo(null);
+    const r = await post('/api/v1/db/genre-songs',
+      { genre: 'Shared', somethingOlderClientsSend: true });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.length, sharedCount());
+  });
+
+  test('a stringified limit is coerced, not bound as text', async () => {
+    scopeTo(null);
+    const r = await post('/api/v1/db/genre-songs', { genre: 'Shared', limit: '2' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.length, 2);
+  });
 });
