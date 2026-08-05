@@ -1,0 +1,38 @@
+services:
+  mpd:
+    image: vimagick/mpd:latest
+    container_name: mstream-mpd
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+    volumes:
+      - ./music:/music:ro
+      - ./mpd.conf:/etc/mpd.conf:ro
+      - mpd-socket:/run/mpd
+    restart: unless-stopped
+
+  mstream:
+    image: lscr.io/linuxserver/mstream:latest
+    container_name: mstream
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      # Unix socket required — MPD 0.22+ restricts file:// playback to
+      # local socket clients. The shared volume puts it in both containers.
+      - MSTREAM_MPD_HOST=/run/mpd/socket
+    volumes:
+      - ./config:/config
+      # Must match the mpd service's mount path — mStream sends absolute
+      # file:///music/... URIs with no rewriting.
+      - ./music:/music:ro
+      - mpd-socket:/run/mpd
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mpd
+    restart: unless-stopped
+
+volumes:
+  mpd-socket:

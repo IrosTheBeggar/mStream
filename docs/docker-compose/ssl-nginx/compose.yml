@@ -1,0 +1,35 @@
+services:
+  nginx:
+    build:
+      context: ./nginx
+      args:
+        ACME_EMAIL: ${ACME_EMAIL}
+    container_name: mstream-nginx
+    restart: always
+    env_file: .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - acme-state:/root/.acme.sh    # acme.sh account + renewal cron + cert source-of-truth
+      - cert-out:/etc/ssl             # what nginx reads (fullchain.pem, privkey.pem)
+    depends_on:
+      - mstream
+
+  mstream:
+    image: lscr.io/linuxserver/mstream:latest
+    container_name: mstream
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    volumes:
+      - ./mstream-config:/config
+      - ./music:/music:ro
+    # No published port — only nginx is exposed; it reaches mstream by
+    # service name on the compose network.
+    restart: unless-stopped
+
+volumes:
+  acme-state:
+  cert-out:

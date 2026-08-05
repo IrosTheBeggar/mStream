@@ -1,0 +1,27 @@
+services:
+  mstream:
+    build: .
+    container_name: mstream-dev-everything
+    # Host networking so DLNA's SSDP multicast reaches the LAN — under
+    # bridge networking everything still serves, but renderers can't
+    # auto-discover the server. Linux only.
+    network_mode: host
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+    volumes:
+      # ../../.. = repo root (paths are relative to this file).
+      - ../../..:/app
+      # Anonymous volume so the container's install wins over the host's
+      # node_modules.
+      - /app/node_modules
+      # RW: mStream writes `secret` and `dlna.uuid` back on first boot.
+      - ./mstream.json:/etc/mstream/mstream.json
+      # Drop tracks in ./music on the host; rescan from the mStream UI.
+      - ./music:/music:ro
+    environment:
+      - NODE_ENV=development
+    # npm ci + skip-if-installed — see dev/compose.yml for the rationale.
+    command: sh -c "[ -f /app/node_modules/.package-lock.json ] || npm ci --no-audit --no-fund; exec node --watch cli-boot-wrapper.js -j /etc/mstream/mstream.json"
+    restart: unless-stopped
