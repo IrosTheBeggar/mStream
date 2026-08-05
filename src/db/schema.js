@@ -78,7 +78,10 @@ import { HASH_GENERATION } from './audio-hash.js';
 // (stream_kbps / daily_mb / max_streams, 0 = unlimited; expires_at, NULL =
 // never) and the federation_key_usage per-day byte/request counters that
 // back the daily quota and the admin usage readout. See SCHEMA_V62.
-export const SCHEMA_VERSION = 63;
+// V63 indexes cue_points.library_id and play_events.library_id so the
+// library-delete cascade seeks instead of scanning. See SCHEMA_V63.
+// V64 indexes tracks.year so the DLNA By-Year browse seeks. See SCHEMA_V64.
+export const SCHEMA_VERSION = 64;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2349,6 +2352,16 @@ export const SCHEMA_V63 = `
   CREATE INDEX IF NOT EXISTS idx_play_events_library ON play_events(library_id);
 `;
 
+// tracks.year had no index, so DLNA's "By Year" surface full-scanned the
+// table three ways: the year list (GROUP BY year), each year's child count,
+// and each year's track page (2026-07 audit). Partial because roughly the
+// only rows that matter are the tagged ones — untagged tracks are excluded
+// from every By-Year query by `year IS NOT NULL AND year > 0`, and leaving
+// them out keeps the index small on libraries with sparse year tags.
+export const SCHEMA_V64 = `
+  CREATE INDEX IF NOT EXISTS idx_tracks_year ON tracks(year) WHERE year IS NOT NULL;
+`;
+
 export const SCHEMA_V58 = `
   ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
 `;
@@ -2723,4 +2736,7 @@ export const MIGRATIONS = [
   // V63 indexes the two library_id foreign keys the library-delete cascade
   // walks. Index-only, no rescan. See SCHEMA_V63.
   { version: 63, sql: SCHEMA_V63 },
+  // V64 indexes tracks.year for the DLNA By-Year browse. Index-only, no
+  // rescan. See SCHEMA_V64.
+  { version: 64, sql: SCHEMA_V64 },
 ];
