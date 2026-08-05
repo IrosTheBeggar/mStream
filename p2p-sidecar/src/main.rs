@@ -33,6 +33,17 @@
 // gossip Message's `delivered_from` is the last hop, NOT the author —
 // without app-level signatures any peer could impersonate any other.
 //
+// DM (direct messages): a third ALPN for ADDRESSED, non-gossip delivery —
+// the transport under federation requests ("this discovery peer wants to
+// pair"). `dm` dials ONE peer and hands over a small JSON payload; the
+// receiving side forwards it to Node as an event and acks. Sender identity
+// is the QUIC-authenticated remote endpoint id — no app-level signature
+// needed (unlike gossip, where delivered_from is just the last hop).
+// Fail-closed: inbound DMs are refused until Node opts in via
+// `setDmAccept` (the operator's "accept requests" toggle), so the sender
+// gets an immediate typed refusal instead of silence. Rust caps sizes and
+// rate-limits; payload CONTENT is Node's problem.
+//
 // Protocol (one JSON object per line):
 //   → {"id":1,"cmd":"status"}
 //   → {"id":2,"cmd":"publish","path":"C:/.../discovery-export.db"}
@@ -42,12 +53,18 @@
 //   → {"id":6,"cmd":"announce","payload":{"hash":"...","size":1,"rowCount":1,
 //        "modelId":"...","modelVersion":"...","snapshotSeq":1,"name":"...",
 //        "description":"..."}}   (description optional, ≤180 chars)
-//   → {"id":7,"cmd":"shutdown"}
+//   → {"id":7,"cmd":"dm","to":"<endpoint ticket | endpoint id>","payload":{...}}
+//        ← {"id":7,"ok":true,"delivered":true}                    (accepted)
+//        ← {"id":7,"ok":true,"delivered":false,"reason":"..."}    (peer refused)
+//        ← {"id":7,"ok":false,"error":"..."}                      (never reached)
+//   → {"id":8,"cmd":"setDmAccept","accept":true}
+//   → {"id":9,"cmd":"shutdown"}
 //   ← {"id":N,"ok":true,...} | {"id":N,"ok":false,"error":"..."}
 // Unsolicited events:
 //   ← {"event":"ready","endpointId":"...","ticket":"..."}
 //   ← {"event":"announcement","from":"...","payload":{...}}
 //   ← {"event":"neighbor","up":true|false,"id":"..."}
+//   ← {"event":"dm","from":"<endpoint id>","payload":{...}}
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -101,6 +118,22 @@ const HOLDS_SIGNING_CONTEXT: &str = "mstream-discovery-holds-v1";
 const MAX_HOLDS: usize = 64;
 const MAX_HOLDS_BYTES: usize = 8192;
 
+// Direct messages. The ALPN is versioned like the catalog topic: a future
+// incompatible envelope moves to /2 and old nodes fail the dial cleanly
+// (the sender maps that to "older mStream or offline").
+const DM_ALPN: &[u8] = b"mstream/discovery-dm/1";
+// A DM is a federation request/accept/reject envelope — name, message,
+// uuid, a ticket at most. 8 KB is generous; anything bigger is abuse.
+const MAX_DM_BYTES: usize = 8192;
+const MAX_DM_ACK_BYTES: usize = 256;
+const DM_CONNECT_TIMEOUT: Duration = Duration::from_secs(25);
+// Inbound abuse caps, enforced BEFORE the payload is even parsed. Legit
+// traffic is a handful of messages per pairing, ever — these numbers are
+// generous for humans and hostile to loops.
+const DM_WINDOW: Duration = Duration::from_secs(60);
+const DM_PER_REMOTE_MAX: usize = 6;
+const DM_GLOBAL_MAX: usize = 30;
+
 #[derive(Deserialize, Debug)]
 struct Request {
     id: u64,
@@ -113,8 +146,12 @@ struct Request {
     #[serde(rename = "outDir")]
     out_dir: Option<String>,
     bootstrap: Option<Vec<String>>,
-    payload: Option<AnnouncePayload>,
+    // Untyped here because two commands share it: `announce` parses it into
+    // AnnouncePayload, `dm` forwards it opaquely (content is Node's concern).
+    payload: Option<Value>,
     hashes: Option<Vec<String>>,
+    to: Option<String>,
+    accept: Option<bool>,
 }
 
 // What a server says about its current snapshot. `snapshot_seq` is the
@@ -199,6 +236,9 @@ struct Node {
     // "kind:origin" -> (last accepted instant, seq/marker). Flood guard:
     // same-content heartbeats coalesce, genuinely-new content passes.
     last_accepted: Mutex<HashMap<String, (Instant, u64)>>,
+    // Direct-message state shared with the DM_ALPN protocol handler
+    // (accept flag + inbound rate limiter).
+    dm: Arc<DmState>,
     out_tx: mpsc::UnboundedSender<Value>,
 }
 
@@ -261,21 +301,30 @@ async fn run(data_dir: PathBuf) -> Result<()> {
     let store = FsStore::load_with_opts(blobs_root.join("blobs.db"), store_opts)
         .await
         .map_err(|e| anyhow!("blob store load failed: {e}"))?;
+    // Single writer task owns stdout; handlers post JSON values to it. Keeps
+    // concurrent responses from interleaving mid-line. Created before the
+    // router because the DM protocol handler forwards inbound messages
+    // through it.
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
+
+    let dm = Arc::new(DmState {
+        accept: std::sync::atomic::AtomicBool::new(false),
+        limiter: Mutex::new(DmLimiter::default()),
+        out_tx: out_tx.clone(),
+    });
+
     let blobs = BlobsProtocol::new(&store, None);
     let gossip = Gossip::builder().spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone())
         .accept(iroh_blobs::ALPN, blobs)
         .accept(iroh_gossip::ALPN, gossip.clone())
+        .accept(DM_ALPN, DmProtocol(dm.clone()))
         .spawn();
 
     // Bounded wait for a home relay so tickets carry relay info — mirrors the
     // awaitOnline race in src/state/iroh.js. Offline hosts proceed anyway
     // (tickets then hold direct addresses only, which still works on a LAN).
     let _ = tokio::time::timeout(Duration::from_secs(8), endpoint.online()).await;
-
-    // Single writer task owns stdout; handlers post JSON values to it. Keeps
-    // concurrent responses from interleaving mid-line.
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
     // The writer exits on a JSON `null` sentinel, NOT on channel close: a
     // sender clone lives inside the Arc<Node> (shared with the gossip loops,
     // which never finish), so the channel can never close — awaiting that
@@ -305,6 +354,7 @@ async fn run(data_dir: PathBuf) -> Result<()> {
         heartbeat: std::sync::atomic::AtomicU64::new(0),
         neighbor_count: AtomicI64::new(0),
         last_accepted: Mutex::new(HashMap::new()),
+        dm,
         out_tx: out_tx.clone(),
     });
 
@@ -508,7 +558,9 @@ async fn handle(node: Arc<Node>, req: Request) -> Result<Value> {
         }
 
         "announce" => {
-            let payload = req.payload.context("announce needs `payload`")?;
+            let payload: AnnouncePayload =
+                serde_json::from_value(req.payload.context("announce needs `payload`")?)
+                    .map_err(|e| anyhow!("bad announce payload: {e}"))?;
             let payload = validate_payload(payload)?;
             let canonical = canonical_bytes(&node.endpoint.id().to_string(), &payload);
             let sig = node.secret_key.sign(&canonical);
@@ -580,9 +632,162 @@ async fn handle(node: Arc<Node>, req: Request) -> Result<Value> {
             Ok(json!({ "forgotten": removed > 0, "tagsRemoved": removed }))
         }
 
+        // Send one direct message. Structured outcome (see the header):
+        // Ok{delivered:true} = the peer took it; Ok{delivered:false,reason}
+        // = the peer was REACHED and refused (terminal — don't retry);
+        // Err = never reached (unreachable / timeout / no DM support).
+        "dm" => {
+            let to = req.to.context("dm needs `to`")?;
+            let payload = req.payload.context("dm needs `payload`")?;
+            if !payload.is_object() { bail!("dm payload must be a JSON object"); }
+            let wire = serde_json::to_vec(&payload)?;
+            if wire.len() > MAX_DM_BYTES {
+                bail!("dm payload too large ({} > {MAX_DM_BYTES} bytes)", wire.len());
+            }
+
+            // Same dual addressing as `join` bootstrap entries: a ticket is
+            // self-contained (and seeds MemoryLookup for future bare-id
+            // dials — the catalog flow); a bare id leans on N0 discovery.
+            let addr: iroh::EndpointAddr = if let Ok(t) = EndpointTicket::from_str(&to) {
+                let a = t.endpoint_addr().clone();
+                node.memory_lookup.add_endpoint_info(a.clone());
+                a
+            } else if let Ok(id) = EndpointId::from_str(&to) {
+                id.into()
+            } else {
+                bail!("dm `to` is neither an endpoint ticket nor an endpoint id");
+            };
+
+            let conn = tokio::time::timeout(DM_CONNECT_TIMEOUT, node.endpoint.connect(addr, DM_ALPN))
+                .await
+                .map_err(|_| anyhow!("dm connect timed out after {}s", DM_CONNECT_TIMEOUT.as_secs()))?
+                .map_err(|e| {
+                    // ALPN rejection = the peer runs a build without the DM
+                    // protocol. Best-effort string sniff — the sender's UX
+                    // hint, not a security decision.
+                    let msg = e.to_string();
+                    if msg.to_ascii_lowercase().contains("protocol") || msg.to_ascii_lowercase().contains("alpn") {
+                        anyhow!("peer does not support direct messages (older mStream, or offline): {msg}")
+                    } else {
+                        anyhow!("peer unreachable: {msg}")
+                    }
+                })?;
+            let (mut send, mut recv) = conn.open_bi().await
+                .map_err(|e| anyhow!("dm stream open failed: {e}"))?;
+            send.write_all(&wire).await.map_err(|e| anyhow!("dm send failed: {e}"))?;
+            send.finish().map_err(|e| anyhow!("dm send close failed: {e}"))?;
+            let ack_bytes = recv.read_to_end(MAX_DM_ACK_BYTES).await
+                .map_err(|e| anyhow!("dm ack read failed: {e}"))?;
+            conn.close(0u32.into(), b"done");
+            let ack: Value = serde_json::from_slice(&ack_bytes)
+                .map_err(|e| anyhow!("dm ack unparseable: {e}"))?;
+            if ack.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                Ok(json!({ "delivered": true }))
+            } else {
+                let reason = ack.get("reason").and_then(|v| v.as_str()).unwrap_or("refused");
+                Ok(json!({ "delivered": false, "reason": reason }))
+            }
+        }
+
+        // Node's inbound-DM policy switch (the "accept federation requests"
+        // toggle). Fail-closed: the flag starts false on every boot and
+        // stays false until Node says otherwise.
+        "setDmAccept" => {
+            let accept = req.accept.context("setDmAccept needs `accept`")?;
+            node.dm.accept.store(accept, Ordering::Relaxed);
+            Ok(json!({ "accept": accept }))
+        }
+
         "shutdown" => Ok(json!({})),
 
         other => Err(anyhow!("unknown command: {other}")),
+    }
+}
+
+// ── Direct messages (DM_ALPN) ───────────────────────────────────────────────
+
+// Sliding-window counters for inbound DMs, per remote + global. Pure (the
+// caller passes `now`) so the arithmetic gets direct unit tests. Vec scans
+// are fine: the caps keep every list tiny by construction.
+#[derive(Debug, Default)]
+struct DmLimiter {
+    per_remote: HashMap<String, Vec<Instant>>,
+    global: Vec<Instant>,
+}
+
+impl DmLimiter {
+    fn check(&mut self, remote: &str, now: Instant) -> Result<(), &'static str> {
+        let fresh = |t: &Instant| now.duration_since(*t) < DM_WINDOW;
+        self.global.retain(fresh);
+        if self.global.len() >= DM_GLOBAL_MAX { return Err("rate-limited"); }
+        let entries = self.per_remote.entry(remote.to_string()).or_default();
+        entries.retain(fresh);
+        if entries.len() >= DM_PER_REMOTE_MAX { return Err("rate-limited"); }
+        entries.push(now);
+        self.global.push(now);
+        // Drop empty per-remote entries so a scanning stranger can't grow
+        // the map unboundedly with one-shot identities.
+        self.per_remote.retain(|_, v| !v.is_empty());
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct DmState {
+    // Fail-closed: refused until Node's setDmAccept says otherwise.
+    accept: std::sync::atomic::AtomicBool,
+    limiter: Mutex<DmLimiter>,
+    out_tx: mpsc::UnboundedSender<Value>,
+}
+
+#[derive(Debug, Clone)]
+struct DmProtocol(Arc<DmState>);
+
+impl iroh::protocol::ProtocolHandler for DmProtocol {
+    async fn accept(&self, conn: iroh::endpoint::Connection) -> Result<(), iroh::protocol::AcceptError> {
+        let state = self.0.clone();
+        let remote = conn.remote_id().to_string();
+
+        let (mut send, mut recv) = conn.accept_bi().await?;
+        // The refusal path still reads the (capped) payload first: QUIC
+        // gives no way to ack before the peer finishes sending anyway, and
+        // TooLong closes the read without buffering past the cap.
+        let verdict: Result<Value, &'static str> = match recv.read_to_end(MAX_DM_BYTES).await {
+            Err(_) => Err("too-large"),
+            Ok(bytes) => {
+                if !state.accept.load(Ordering::Relaxed) {
+                    Err("not-accepting")
+                } else if state.limiter.lock().await.check(&remote, Instant::now()).is_err() {
+                    Err("rate-limited")
+                } else {
+                    match serde_json::from_slice::<Value>(&bytes) {
+                        Ok(v) if v.is_object() => Ok(v),
+                        _ => Err("malformed"),
+                    }
+                }
+            }
+        };
+
+        let ack = match &verdict {
+            Ok(payload) => {
+                let _ = state.out_tx.send(json!({ "event": "dm", "from": remote, "payload": payload }));
+                json!({ "ok": true })
+            }
+            Err(reason) => {
+                eprintln!("[p2p-sidecar] refused dm from {remote}: {reason}");
+                json!({ "ok": false, "reason": reason })
+            }
+        };
+        // A failed ack write means the dialer already hung up — there is
+        // nobody left to tell, so it is not an accept error.
+        if send.write_all(&serde_json::to_vec(&ack).unwrap_or_default()).await.is_err() {
+            return Ok(());
+        }
+        send.finish().ok();
+        // Give the dialer a moment to read the ack before the Router drops
+        // the connection; it closes from its side once it has the bytes.
+        let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
+        Ok(())
     }
 }
 
@@ -1037,5 +1242,36 @@ mod tests {
         let sk = SecretKey::generate();
         let wire = signed_holds(&sk, vec!["ef".repeat(32)], true);
         assert!(verify_wire(&wire).is_err(), "padded hold set must not verify");
+    }
+
+    #[test]
+    fn dm_limiter_caps_per_remote_and_recovers_after_the_window() {
+        let mut l = DmLimiter::default();
+        let t0 = Instant::now();
+        for i in 0..DM_PER_REMOTE_MAX {
+            assert!(l.check("peer-a", t0).is_ok(), "send {i} within the cap must pass");
+        }
+        assert!(l.check("peer-a", t0).is_err(), "over the per-remote cap must be refused");
+        // A different remote has its own budget.
+        assert!(l.check("peer-b", t0).is_ok());
+        // Past the window, the budget refills.
+        let later = t0 + DM_WINDOW + Duration::from_secs(1);
+        assert!(l.check("peer-a", later).is_ok(), "budget must refill after the window");
+    }
+
+    #[test]
+    fn dm_limiter_global_cap_spans_remotes() {
+        let mut l = DmLimiter::default();
+        let t0 = Instant::now();
+        let mut accepted = 0;
+        // Many one-shot identities (the cheap sybil pattern): the per-remote
+        // cap never trips, the global one must.
+        for i in 0..(DM_GLOBAL_MAX + 5) {
+            if l.check(&format!("stranger-{i}"), t0).is_ok() { accepted += 1; }
+        }
+        assert_eq!(accepted, DM_GLOBAL_MAX, "global cap must bound total accepts");
+        // And the per-remote map must not have grown a tombstone per stranger
+        // beyond the accepted ones (empty entries are pruned on the way out).
+        assert!(l.per_remote.len() <= DM_GLOBAL_MAX);
     }
 }
