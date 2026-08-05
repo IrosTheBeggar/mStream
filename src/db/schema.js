@@ -81,7 +81,7 @@ import { HASH_GENERATION } from './audio-hash.js';
 // V63 indexes cue_points.library_id and play_events.library_id so the
 // library-delete cascade seeks instead of scanning. See SCHEMA_V63.
 // V64 indexes tracks.year so the DLNA By-Year browse seeks. See SCHEMA_V64.
-export const SCHEMA_VERSION = 64;
+export const SCHEMA_VERSION = 65;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2362,6 +2362,17 @@ export const SCHEMA_V64 = `
   CREATE INDEX IF NOT EXISTS idx_tracks_year ON tracks(year) WHERE year IS NOT NULL;
 `;
 
+// Every wrapped-stats query is `WHERE user_id = ? AND started_at >= ? AND
+// started_at < ?`, and play_events grows without bound — the single-column
+// indexes (V7-era user_id, started_at) made the planner pick one and filter
+// the rest, which on a one-user server means walking the user's ENTIRE
+// listening history per stats query, ~10 queries per page view (2026-07
+// audit M2: 215 ms @13k events, 1.62 s @150k, statement-level). The
+// composite turns each into a tight range seek.
+export const SCHEMA_V65 = `
+  CREATE INDEX IF NOT EXISTS idx_play_events_user_time ON play_events(user_id, started_at);
+`;
+
 export const SCHEMA_V58 = `
   ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
 `;
@@ -2739,4 +2750,7 @@ export const MIGRATIONS = [
   // V64 indexes tracks.year for the DLNA By-Year browse. Index-only, no
   // rescan. See SCHEMA_V64.
   { version: 64, sql: SCHEMA_V64 },
+  // V65 indexes play_events(user_id, started_at) for the wrapped-stats
+  // period windows. Index-only, no rescan. See SCHEMA_V65.
+  { version: 65, sql: SCHEMA_V65 },
 ];
