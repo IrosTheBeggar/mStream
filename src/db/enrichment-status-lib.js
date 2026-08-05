@@ -16,11 +16,24 @@
 // a permissions error on the waveform cache) nulls out ITS pass instead
 // of failing the endpoint.
 //
-// Costs: one aggregate scan over tracks/albums per pass (all COUNT/SUM,
-// no row materialisation — single-digit ms at 100k tracks) plus one
-// readdir of the waveform cache. Cheap, but not free at poll frequency —
-// so results are memoised for CACHE_TTL_MS per libIds set (the fs
-// readdir for WAVEFORM_FS_TTL_MS globally).
+// Costs — honest numbers, not the "single-digit ms" this header used to
+// claim (2026-07 audit H6, off by ~100×): a full recompute is ~8
+// aggregate passes over tracks/albums plus the hash-ledger probes
+// (~430 ms at 25k tracks) plus the discovery.db counts (0.8–1.4 s
+// UNINDEXED; ~ms with the V2 partial index) plus one readdir of the
+// waveform cache. The endpoint is NOT admin-only and the dashboard polls
+// every 4 s, so the caching layer carries the load:
+//   • fresh hits (≤ CACHE_TTL_MS) serve the memo;
+//   • STALE hits serve the stale snapshot immediately and refresh
+//     off-request, one builder per event-loop tick, so a poll never
+//     blocks on a recompute (stale-while-revalidate);
+//   • the globally-scoped passes (waveform, discovery) are memoised once
+//     for all library signatures — their counts don't vary by caller;
+//   • only the FIRST request for a signature (or force:true) pays a
+//     synchronous full compute — there is nothing stale to serve yet.
+// Freshness at pass/scan boundaries still comes from
+// invalidateCoverageCache(), which also discards any refresh that was
+// mid-flight when the world changed.
 
 import fs from 'fs';
 import path from 'path';
@@ -44,7 +57,7 @@ const ACOUSTID_MAX_DURATION_SEC = 2 * 60 * 60;
 // recomputed the whole snapshot. Freshness at pass/scan boundaries comes
 // from invalidateCoverageCache(), not the TTL — this only bounds staleness
 // of mid-pass counts.
-const CACHE_TTL_MS = 15_000;
+const CACHE_TTL_MS = Number(process.env.MSTREAM_TEST_COVERAGE_TTL_MS) || 15_000;
 const WAVEFORM_FS_TTL_MS = 60_000;
 
 // key = sorted libIds signature → { at, data }. Bounded: a burst of
@@ -55,11 +68,24 @@ const COVERAGE_CACHE_MAX_ENTRIES = 64;
 
 let waveformFsCache = { at: 0, bins: 0, failed: 0 };
 
+// Globally-scoped pass results (waveform, discovery) — identical for
+// every library signature, so they're computed once per TTL window
+// instead of once per signature.
+let globalPassCache = { at: 0, values: {} };
+
+// Refreshes in flight (per signature) + a generation counter: a refresh
+// started before invalidateCoverageCache() must not land its
+// now-outdated snapshot as fresh.
+const refreshing = new Set();
+let cacheGeneration = 0;
+
 // Tests poke config/library state between calls; give them (and the
 // admin force-refresh, if one ever ships) a way to drop the memo.
 export function invalidateCoverageCache() {
   coverageCache.clear();
+  globalPassCache = { at: 0, values: {} };
   waveformFsCache = { at: 0, bins: 0, failed: 0 };
+  cacheGeneration++;
 }
 
 // `library_id IN (...)` filter for the caller's accessible libraries —
@@ -327,12 +353,94 @@ function discoveryCoverage() {
   };
 }
 
+// ── Compute + caching machinery ─────────────────────────────────────────────
+
+// One builder failing (locked discovery.db, mid-migration schema) nulls
+// out its pass, never the endpoint.
+function guard(label, fn) {
+  try { return fn(); } catch (err) {
+    winston.warn(`enrichment coverage: ${label} counts failed: ${err.message}`);
+    return null;
+  }
+}
+
+// Waveform + discovery counts ignore the caller's libraries entirely
+// (hash-keyed cache files / the separate discovery.db), so one result
+// serves every signature for a TTL window.
+function globalPass(label, now, fn) {
+  if (now - globalPassCache.at > CACHE_TTL_MS) {
+    globalPassCache = { at: now, values: {} };
+  }
+  if (!(label in globalPassCache.values)) {
+    globalPassCache.values[label] = guard(label, fn);
+  }
+  return globalPassCache.values[label];
+}
+
+// The compute, expressed as an ordered step list so the synchronous
+// first-call path and the chunked background refresh share one
+// definition. Each step assigns into `data` when it runs.
+function coverageSteps(d, ids, data) {
+  const lib = libClause('t.library_id', ids);
+  return [
+    () => { data.totals = guard('totals', () => ({
+      tracks: d.prepare(`SELECT COUNT(*) AS n FROM tracks t WHERE ${lib.clause}`)
+        .get(...lib.params).n,
+    })); },
+    () => { data.passes.waveform = globalPass('waveform', Date.now(), () => waveformCoverage(d, Date.now())); },
+    () => { data.passes.albumart = guard('albumart', () => albumartCoverage(d, ids)); },
+    () => { data.passes.lyrics = guard('lyrics', () => lyricsCoverage(d, ids)); },
+    () => { data.passes.audioanalysis = guard('audioanalysis', () => audioAnalysisCoverage(d, ids)); },
+    () => { data.passes.discovery = globalPass('discovery', Date.now(), () => discoveryCoverage()); },
+    () => { data.passes.acoustid = guard('acoustid', () => acoustidCoverage(d, ids)); },
+  ];
+}
+
+function storeEntry(key, data) {
+  if (coverageCache.size >= COVERAGE_CACHE_MAX_ENTRIES) { coverageCache.clear(); }
+  coverageCache.set(key, { at: Date.now(), data });
+}
+
+function computeSync(d, ids) {
+  const data = { passes: {} };
+  for (const step of coverageSteps(d, ids, data)) { step(); }
+  return data;
+}
+
+// Background refresh for a signature whose memo went stale: one builder
+// per event-loop tick, so no single tick blocks longer than the slowest
+// builder (~100 ms at 25k vs 0.5–2 s for the whole snapshot). The
+// generation check discards the result if the world changed mid-flight
+// (a pass finished, a scan landed) — the stale-serving caller already
+// scheduled a fresh refresh under the new generation by then.
+async function refreshInBackground(key, ids) {
+  if (refreshing.has(key)) { return; }
+  refreshing.add(key);
+  const startedGeneration = cacheGeneration;
+  try {
+    const d = db.getDB();
+    if (!d) { return; }
+    const data = { passes: {} };
+    for (const step of coverageSteps(d, ids, data)) {
+      step();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    if (cacheGeneration === startedGeneration) { storeEntry(key, data); }
+  } catch (err) {
+    winston.warn(`enrichment coverage: background refresh failed: ${err.message}`);
+  } finally {
+    refreshing.delete(key);
+  }
+}
+
 // ── Public API ──────────────────────────────────────────────────────────────
 
 // Coverage for every enrichment pass, memoised per accessible-library
 // set. Returns { totals: { tracks }, passes: { <kind>: {...}|null } };
 // null for the whole thing only when the library DB isn't open.
-// `force` drops the memo first (tests; admin refresh).
+// `force` drops the memo first and recomputes synchronously (tests;
+// admin refresh). A stale memo is served as-is while a chunked refresh
+// runs off-request — see the header comment.
 export function getEnrichmentCoverage(libIds, { force = false } = {}) {
   const d = db.getDB();
   if (!d) { return null; }
@@ -343,33 +451,15 @@ export function getEnrichmentCoverage(libIds, { force = false } = {}) {
   if (force) { coverageCache.delete(key); }
   const hit = coverageCache.get(key);
   if (hit && now - hit.at <= CACHE_TTL_MS) { return hit.data; }
+  if (hit) {
+    // Stale-while-revalidate: the poll gets the stale counts instantly;
+    // the next poll (or the one after) sees the refreshed ones.
+    refreshInBackground(key, ids);
+    return hit.data;
+  }
 
-  // One builder failing (locked discovery.db, mid-migration schema)
-  // nulls out its pass, never the endpoint.
-  const guard = (label, fn) => {
-    try { return fn(); } catch (err) {
-      winston.warn(`enrichment coverage: ${label} counts failed: ${err.message}`);
-      return null;
-    }
-  };
-
-  const lib = libClause('t.library_id', ids);
-  const data = {
-    totals: guard('totals', () => ({
-      tracks: d.prepare(`SELECT COUNT(*) AS n FROM tracks t WHERE ${lib.clause}`)
-        .get(...lib.params).n,
-    })),
-    passes: {
-      waveform: guard('waveform', () => waveformCoverage(d, now)),
-      albumart: guard('albumart', () => albumartCoverage(d, ids)),
-      lyrics: guard('lyrics', () => lyricsCoverage(d, ids)),
-      audioanalysis: guard('audioanalysis', () => audioAnalysisCoverage(d, ids)),
-      discovery: guard('discovery', () => discoveryCoverage()),
-      acoustid: guard('acoustid', () => acoustidCoverage(d, ids)),
-    },
-  };
-
-  if (coverageCache.size >= COVERAGE_CACHE_MAX_ENTRIES) { coverageCache.clear(); }
-  coverageCache.set(key, { at: now, data });
+  // First sight of this signature (or force): nothing stale to serve.
+  const data = computeSync(d, ids);
+  storeEntry(key, data);
   return data;
 }

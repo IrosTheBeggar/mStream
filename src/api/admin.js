@@ -1628,34 +1628,35 @@ export function setup(mstream) {
     // user_id, playlist_json) but this list endpoint kept its
     // pre-migration `SELECT *`, so the UI bound to fields that no longer
     // existed — blank ids, blank user, and a per-row delete that posted
-    // `undefined` as the id. Mirror the POST /api/v1/share response
-    // shape. LEFT JOIN users so an orphaned share (user_id SET NULL when
-    // its owner is deleted) still lists, with user = null.
+    // `undefined` as the id. LEFT JOIN users so an orphaned share
+    // (user_id SET NULL when its owner is deleted) still lists, with
+    // user = null.
+    //
+    // The playlist blobs themselves never leave the DB: the admin UIs
+    // render id/user/expires and a per-row delete, nothing else, yet this
+    // endpoint used to fetch + JSON.parse + re-stringify EVERY share's
+    // full track list — and blob volume is controlled by NON-admin users
+    // (2026-07 audit M3: ~1 s and a 64 MB response at 200 shares × 5k
+    // tracks). json_array_length gives the UI a track count for the cost
+    // of reading the header; json_valid guards it (a corrupt blob would
+    // otherwise fail the whole statement, and corrupt shares must stay
+    // listable so the admin can delete them).
     const rows = d.prepare(`
-      SELECT s.share_id, s.playlist_json, s.expires, s.created_at, u.username
+      SELECT s.share_id, s.expires, s.created_at, u.username,
+             CASE WHEN json_valid(s.playlist_json)
+                  THEN json_array_length(s.playlist_json) ELSE 0 END AS track_count
       FROM shared_playlists s
       LEFT JOIN users u ON u.id = s.user_id
       ORDER BY s.id DESC
     `).all();
 
-    res.json(rows.map(r => {
-      let playlist = [];
-      try {
-        playlist = JSON.parse(r.playlist_json);
-      } catch (err) {
-        // A corrupt playlist_json shouldn't take the whole admin list
-        // down — log which share is bad and surface it with an empty
-        // track list so the admin can still see (and delete) it.
-        winston.warn(`Corrupt playlist_json for shared playlist ${r.share_id}: ${err.message}`);
-      }
-      return {
-        playlistId: r.share_id,
-        user: r.username,
-        playlist,
-        expires: r.expires,
-        created: r.created_at,
-      };
-    }));
+    res.json(rows.map(r => ({
+      playlistId: r.share_id,
+      user: r.username,
+      trackCount: r.track_count,
+      expires: r.expires,
+      created: r.created_at,
+    })));
   });
 
   mstream.delete("/api/v1/admin/db/shared", (req, res) => {

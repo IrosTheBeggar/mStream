@@ -33,7 +33,7 @@ import winston from 'winston';
 import * as config from '../state/config.js';
 
 // Independent version line — this is NOT mstream.db's SCHEMA_VERSION.
-export const DISCOVERY_SCHEMA_VERSION = 1;
+export const DISCOVERY_SCHEMA_VERSION = 2;
 
 // Contract constants for the embedding column. Declared here (and copied
 // into discovery_meta + every export snapshot) so a consumer never has to
@@ -115,8 +115,23 @@ const SCHEMA_V1 = `
   );
 `;
 
+// V2: covering partial index for the status API's coverage counts (2026-07
+// audit H6). Both the done-count (model_id = ? over embedded rows) and the
+// ATTACH'd NOT-EXISTS eligibility probe (model_id = ? AND audio_hash = ?)
+// resolve entirely inside this index instead of walking the table's
+// blob-laden pages. The win is the COLD case — the audit measured
+// 0.8–1.4 s per status recompute at 25k rows against uncached pages of a
+// ~140 MB file; with everything warm the difference shrinks, which is why
+// the request path additionally went stale-while-revalidate
+// (enrichment-status-lib.js).
+const SCHEMA_V2 = `
+  CREATE INDEX IF NOT EXISTS idx_discovery_tracks_embedded_model
+    ON discovery_tracks(model_id, audio_hash) WHERE embedding IS NOT NULL;
+`;
+
 const MIGRATIONS = [
   { version: 1, sql: SCHEMA_V1 },
+  { version: 2, sql: SCHEMA_V2 },
 ];
 
 export function discoveryDbPath() {
@@ -388,6 +403,14 @@ export function applyHashTransitionGroups(groups) {
   const out = { moved: 0, dropped: 0 };
   if (!groups || groups.length === 0) { return out; }
   const ddb = getDiscoveryDb();
+  // Rowversions for the moves are reserved as ONE block inside the
+  // transaction below (audit M1: per-move nextUpdateSeq() was one
+  // discovery_meta UPDATE per row across a 15k-row drain). At most one
+  // move per group, so groups.length covers it; unused reservations leave
+  // gaps in row_seq, which is fine — it's a monotonic version, not a count.
+  const reserveSeqs = ddb.prepare(
+    "UPDATE discovery_meta SET value = CAST(value AS INTEGER) + ? " +
+    "WHERE key = 'row_seq' RETURNING CAST(value AS INTEGER) AS seq");
   const stmts = {
     trackGet: ddb.prepare(
       'SELECT audio_hash, recording_mbid, updated_at FROM discovery_tracks WHERE audio_hash = ?'),
@@ -402,6 +425,8 @@ export function applyHashTransitionGroups(groups) {
   };
   ddb.exec('BEGIN');
   try {
+    const seqBase = reserveSeqs.get(groups.length).seq - groups.length;
+    let seqUsed = 0;
     for (const { target, sources } of groups) {
       const live = sources.map((s) => stmts.trackGet.get(s)).filter(Boolean);
       if (live.length > 0) {
@@ -410,7 +435,7 @@ export function applyHashTransitionGroups(groups) {
         } else {
           live.sort((a, b) => b.updated_at - a.updated_at);
           stmts.trackMove.run(target,
-            exportIdFor(live[0].recording_mbid, target), nextUpdateSeq(), live[0].audio_hash);
+            exportIdFor(live[0].recording_mbid, target), seqBase + (++seqUsed), live[0].audio_hash);
           out.moved++;
           for (const r of live.slice(1)) { stmts.trackDel.run(r.audio_hash); out.dropped++; }
         }

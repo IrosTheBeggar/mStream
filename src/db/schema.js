@@ -78,7 +78,7 @@ import { HASH_GENERATION } from './audio-hash.js';
 // (stream_kbps / daily_mb / max_streams, 0 = unlimited; expires_at, NULL =
 // never) and the federation_key_usage per-day byte/request counters that
 // back the daily quota and the admin usage readout. See SCHEMA_V62.
-export const SCHEMA_VERSION = 62;
+export const SCHEMA_VERSION = 63;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2338,6 +2338,17 @@ export const SCHEMA_V62 = `
   );
 `;
 
+// Library deletes cascade into cue_points (library_id ON DELETE CASCADE)
+// and null out play_events.library_id (ON DELETE SET NULL). Neither table
+// indexed library_id — cue_points only has it as the SECOND column of
+// idx_cue_points_file — so every library delete paid a full scan of both
+// tables, and play_events grows without bound (2026-07 audit H2; part of
+// a 5.7 s writer-lock hold at 20k tracks).
+export const SCHEMA_V63 = `
+  CREATE INDEX IF NOT EXISTS idx_cue_points_library ON cue_points(library_id);
+  CREATE INDEX IF NOT EXISTS idx_play_events_library ON play_events(library_id);
+`;
+
 export const SCHEMA_V58 = `
   ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
 `;
@@ -2709,4 +2720,7 @@ export const MIGRATIONS = [
   // federation_key_usage per-day counters behind the daily quota. Additive
   // columns + a new empty table — no rescan needed. See SCHEMA_V62.
   { version: 62, sql: SCHEMA_V62 },
+  // V63 indexes the two library_id foreign keys the library-delete cascade
+  // walks. Index-only, no rescan. See SCHEMA_V63.
+  { version: 63, sql: SCHEMA_V63 },
 ];
