@@ -443,7 +443,33 @@ function checkQueueDrainedSideEffects() {
 // any failure leaves the ledger in place for the next drain. Covered
 // end-to-end (real drain hook, real discovery.db, discovery-off server)
 // by test/integration/hash-transition-applier.test.mjs.
-function applyHashTransitions() {
+//
+// Async + chunked since the 2026-07 audit (M1): the first drain of a
+// hash epoch used to apply the whole ledger as one synchronous
+// transaction (~4.4 s at 15k transitions) and then walk a sync rename
+// loop that threw ~15k ENOENTs (~44 s on NTFS) — all on the event loop.
+// Now the discovery re-key commits in bounded chunks with a yield
+// between them, and the waveform re-key enumerates the cache dir ONCE
+// and only touches files that exist, through fs.promises. The ledger
+// DELETE still happens only after everything applied; a crash mid-way
+// re-applies cleanly (moved groups have no live sources → no-ops).
+let hashTransitionsInFlight = false;
+// 250 groups ≈ 250 ms of block per chunk on the rig (each move pays a
+// per-row export-id re-derivation); 500 measured ~2× that.
+const HASH_TRANSITION_CHUNK = 250;
+const RENAME_CONCURRENCY = 16;
+
+async function applyHashTransitions() {
+  if (hashTransitionsInFlight) { return; }
+  hashTransitionsInFlight = true;
+  try {
+    await applyHashTransitionsInner();
+  } finally {
+    hashTransitionsInFlight = false;
+  }
+}
+
+async function applyHashTransitionsInner() {
   try {
     const mdb = db.getDB();
     if (!mdb) { return; }
@@ -486,11 +512,22 @@ function applyHashTransitions() {
     // openDiscoveryDbIfExists, NOT the throwing getter: with the feature
     // off (the default) the ledger must still drain — and a dormant
     // discovery.db left by a since-disabled collection still gets its
-    // embeddings re-keyed rather than stranded.
+    // embeddings re-keyed rather than stranded. Chunked: each slice is
+    // its own transaction (applyHashTransitionGroups keeps its
+    // atomicity per chunk; re-applying an already-moved group is a
+    // no-op) with a yield between slices so the event loop breathes.
     const ddb = discoveryDb.openDiscoveryDbIfExists();
-    const applied = ddb
-      ? discoveryDb.applyHashTransitionGroups(groupList)
-      : null;
+    let applied = null;
+    if (ddb) {
+      applied = { moved: 0, dropped: 0 };
+      for (let i = 0; i < groupList.length; i += HASH_TRANSITION_CHUNK) {
+        const part = discoveryDb.applyHashTransitionGroups(
+          groupList.slice(i, i + HASH_TRANSITION_CHUNK));
+        applied.moved += part.moved;
+        applied.dropped += part.dropped;
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
 
     // Waveform cache artifacts follow the re-key on disk ({hash}.bin +
     // {hash}.failed). Done HERE, not scanner-side: the drain runs after
@@ -500,22 +537,55 @@ function applyHashTransitions() {
     // engine, and the live config supplies the directory (the scan
     // payload's waveformCacheDir is a stale-binary transition field).
     // Same-content sources share one waveform, so first-in wins and
-    // later sources are dropped; every step tolerates missing files.
+    // later sources are dropped.
+    //
+    // The dir is enumerated ONCE and only files that exist are touched —
+    // the old per-source existsSync/rename walk threw ~15k ENOENTs per
+    // drain (most re-keyed tracks have no waveform yet) at ~3 ms per
+    // sync syscall on NTFS. What remains runs through fs.promises with
+    // bounded concurrency.
     const waveDir = config.program?.storage?.waveformCacheDirectory;
+    let renamed = 0;
     if (waveDir) {
-      for (const { target, sources } of groupList) {
-        for (const src of sources) {
-          for (const toPath of [waveformLib.cacheFilePath, waveformLib.failedMarkerPath]) {
-            try {
+      let present = null;
+      try { present = new Set(await fs.promises.readdir(waveDir)); }
+      catch (err) {
+        if (err.code !== 'ENOENT') {
+          winston.warn(`Waveform cache re-key: dir unreadable: ${err.message}`);
+        }
+      }
+      if (present) {
+        const ops = [];
+        for (const { target, sources } of groupList) {
+          for (const src of sources) {
+            for (const toPath of [waveformLib.cacheFilePath, waveformLib.failedMarkerPath]) {
               const from = toPath(waveDir, src);
-              if (fs.existsSync(toPath(waveDir, target))) { fs.unlinkSync(from); }
-              else { fs.renameSync(from, toPath(waveDir, target)); }
-            } catch (err) {
-              if (err.code !== 'ENOENT') {
-                winston.warn(`Waveform cache re-key ${src} → ${target} failed: ${err.message}`);
+              const to = toPath(waveDir, target);
+              const fromName = path.basename(from);
+              if (!present.has(fromName)) { continue; }
+              const toName = path.basename(to);
+              if (present.has(toName)) {
+                ops.push({ kind: 'unlink', from });
+              } else {
+                ops.push({ kind: 'rename', from, to });
+                present.add(toName);   // later sources of this target unlink
               }
+              present.delete(fromName);
             }
           }
+        }
+        for (let i = 0; i < ops.length; i += RENAME_CONCURRENCY) {
+          await Promise.all(ops.slice(i, i + RENAME_CONCURRENCY).map(async (op) => {
+            try {
+              if (op.kind === 'unlink') { await fs.promises.unlink(op.from); }
+              else { await fs.promises.rename(op.from, op.to); }
+              renamed++;
+            } catch (err) {
+              if (err.code !== 'ENOENT') {
+                winston.warn(`Waveform cache re-key ${op.from} failed: ${err.message}`);
+              }
+            }
+          }));
         }
       }
     }
@@ -523,7 +593,8 @@ function applyHashTransitions() {
     mdb.prepare('DELETE FROM hash_transitions').run();
     winston.info(`Applied ${rows.length} hash transition(s) (${groupList.length} identity group(s))`
       + (applied ? ` — discovery rows moved: ${applied.moved}, superseded: ${applied.dropped}`
-        : ' (discovery inactive — drained)'));
+        : ' (discovery inactive — drained)')
+      + (renamed > 0 ? `; ${renamed} waveform artifact(s) re-keyed` : ''));
   } catch (err) {
     winston.warn(`Hash-transition apply failed (will retry on next drain): ${err.message}`);
   }

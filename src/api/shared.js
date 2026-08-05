@@ -64,7 +64,12 @@ export function setupAfterSecurity(mstream) {
 
   mstream.post('/api/v1/share', (req, res) => {
     const schema = Joi.object({
-      playlist: Joi.array().items(Joi.string()).required(),
+      // Bounded at the producer (2026-07 audit M3): share blobs are
+      // written by NON-admin users but read back in bulk by admin
+      // surfaces, so an unbounded array here is someone else's memory
+      // problem later. 5000 tracks is far past any real shared playlist;
+      // the per-item cap rejects degenerate megabyte "paths".
+      playlist: Joi.array().items(Joi.string().max(4096)).max(5000).required(),
       time: Joi.number().integer().positive().optional()
     });
     joiValidate(schema, req.body);

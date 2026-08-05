@@ -106,6 +106,39 @@ export async function setLibraryFollowSymlinks(vpath, followSymlinks) {
   db.invalidateCache();
 }
 
+// Delete a library's rows: tracks first in bounded chunks, then the
+// libraries row. The single cascading DELETE used to remove 20k+ track
+// rows (each firing the FTS5 sync triggers) in ONE statement — 5.7 s of
+// synchronous main-thread work holding the writer lock past other
+// writers' 5 s busy_timeout (2026-07 audit H2). Chunking bounds each lock
+// hold AND each event-loop block to one chunk; the yield between chunks
+// lets queued handlers (and other writers) interleave. Total work is
+// unchanged — the FTS triggers still fire per row.
+//
+// Mid-delete visibility: a browser hitting this library sees it shrink
+// for a few seconds instead of vanishing atomically. Acceptable for an
+// admin-initiated delete that reboots the server at the end anyway; a
+// crash mid-way leaves a partial library the re-run (or next scan)
+// handles like any other library.
+//
+// Exported separately from removeDirectory (which also cancels backups
+// and reboots the server) so the delete mechanics are testable on a bare
+// DB.
+export async function deleteLibraryRows(d, libraryId) {
+  const deleteChunk = d.prepare(
+    'DELETE FROM tracks WHERE id IN (SELECT id FROM tracks WHERE library_id = ? LIMIT 500)');
+  for (;;) {
+    const { changes } = deleteChunk.run(libraryId);
+    if (changes === 0) { break; }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  // CASCADE handles what's left: user_libraries, cue_points (indexed by
+  // V63), backup_destinations + their backup_history, and the SET NULL
+  // sweep over play_events.library_id (also indexed by V63 — this was a
+  // full ever-growing-table scan before).
+  d.prepare('DELETE FROM libraries WHERE id = ?').run(libraryId);
+}
+
 export async function removeDirectory(vpath) {
   const library = db.getLibraryByName(vpath);
   if (!library) { throw new Error(`'${vpath}' not found`); }
@@ -131,9 +164,7 @@ export async function removeDirectory(vpath) {
   }
 
   const d = db.getDB();
-  // CASCADE will delete tracks and user_libraries entries
-  // (and backup_destinations + their backup_history).
-  d.prepare('DELETE FROM libraries WHERE id = ?').run(library.id);
+  await deleteLibraryRows(d, library.id);
 
   // Clean up orphan albums / artists / genres left over after the
   // tracks cascade. Chunked + commits per chunk so the multi-second
