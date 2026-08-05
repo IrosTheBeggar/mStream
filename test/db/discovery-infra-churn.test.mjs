@@ -30,7 +30,16 @@ import { DatabaseSync } from 'node:sqlite';
 
 // Captured at import by discovery-similarity.js / discovery-peer-dbs.js —
 // must be set before the dynamic imports below.
-process.env.MSTREAM_TEST_SIM_STALE_REBUILD_MS = '80';
+//
+// 1000, not 80: the safety-net test's "inside the window" probe must run
+// build → upsert → getIndex before this many ms elapse, and a loaded CI
+// runner routinely stalls longer than 80 ms between two statements — the
+// windows-latest shard failed exactly that way (2026-08-05, PR #813 run)
+// while every ubuntu/macOS shard passed. The probe is additionally
+// elapsed-guarded in the test body; this constant just keeps the guard
+// from skipping in practice.
+process.env.MSTREAM_TEST_SIM_STALE_REBUILD_MS = '1000';
+const SIM_STALE_MS = 1000;
 
 let testRoot;
 let config, ddb, sim, manager, novelty, peerDbs, discoveryExport;
@@ -111,10 +120,19 @@ describe('H5: similarity index epoch invalidation', () => {
 
   test('safety net: unpublished drift rebuilds once the debounce window passes', async () => {
     sim.invalidate();
+    const t0 = Date.now();
     const base = sim.getIndex();             // fresh build → builtAt = now
     upsert('h-d', [0, 0, 0, 1]);             // drift, no publish
-    assert.equal(sim.getIndex(), base, 'inside the window: still cached');
-    await sleep(120);                         // > MSTREAM_TEST_SIM_STALE_REBUILD_MS
+    const probe = sim.getIndex();
+    // Elapsed-guarded: on a stalled runner the window can genuinely have
+    // passed by the time we probe, and then a rebuild is CORRECT behaviour,
+    // not a failure. The cached-inside-the-window property itself is pinned
+    // time-free by the published-epoch test above; this test's unique claim
+    // is the rebuild AFTER the window, asserted unconditionally below.
+    if (Date.now() - t0 < SIM_STALE_MS) {
+      assert.equal(probe, base, 'inside the window: still cached');
+    }
+    await sleep(SIM_STALE_MS + 200);          // > MSTREAM_TEST_SIM_STALE_REBUILD_MS
     const i2 = sim.getIndex();
     assert.notEqual(i2, base, 'aged cache + drift → rebuilt despite the epoch');
     assert.equal(i2.entries.length, 4);
