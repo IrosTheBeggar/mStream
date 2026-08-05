@@ -267,6 +267,14 @@ function enrichTrackRows(user, rowGroups) {
 
 // Build an artists-side FTS expression. Single-token: scope to {name} for
 // rank quality. Multi-token: cross-token AND, still scoped to name.
+// The visibility test on these two is an EXISTS probe, not `id IN (SELECT …
+// FROM tracks WHERE <scope>)`. The IN form made SQLite materialise every
+// visible artist_id / album_id in the library before FTS had narrowed
+// anything down — a whole-library pass on every keystroke (2026-07 audit).
+// EXISTS runs per candidate instead, and FTS only ever emits 30:
+// 24.5 → 1.6 ms (artists) and 27.8 → 2.9 ms (albums) at 25k tracks.
+// Equivalent: album/artist ids are primary keys and so never NULL, which is
+// the only case where IN and EXISTS could differ here.
 function ftsArtistsRows(d, filter, parsed) {
   const expr = buildFtsExpression({
     column: 'name',
@@ -283,7 +291,7 @@ function ftsArtistsRows(d, filter, parsed) {
     FROM fts_artists fa
     JOIN artists a ON a.id = fa.rowid
     WHERE fa.fts_artists MATCH ?
-      AND a.id IN (SELECT artist_id FROM tracks t WHERE ${filter.clause})
+      AND EXISTS (SELECT 1 FROM tracks t WHERE t.artist_id = a.id AND ${filter.clause})
     ORDER BY rank LIMIT 30
   `).all(expr, ...filter.params);
 }
@@ -300,7 +308,7 @@ function ftsAlbumsRows(d, filter, parsed) {
     FROM fts_albums fa
     JOIN albums al ON al.id = fa.rowid
     WHERE fa.fts_albums MATCH ?
-      AND al.id IN (SELECT album_id FROM tracks t WHERE ${filter.clause})
+      AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})
     ORDER BY rank LIMIT 30
   `).all(expr, ...filter.params);
 }
