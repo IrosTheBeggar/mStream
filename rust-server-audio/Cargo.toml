@@ -8,11 +8,14 @@ name = "rust-server-audio"
 path = "src/main.rs"
 
 [dependencies]
-rodio = { version = "0.20", features = ["symphonia-all"] }
+# 0.22 for DecoderBuilder: 0.20's decoder hardcoded byte_len to None, which
+# left FLACs without a SEEKTABLE block unseekable (see play_current).
+rodio = { version = "0.22", features = ["symphonia-all"] }
 tiny_http = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 symphonia = { version = "0.5", features = ["all"] }
+fastrand = "2"
 
 [profile.release]
 strip = true
