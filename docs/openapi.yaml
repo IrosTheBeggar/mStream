@@ -1375,6 +1375,11 @@ paths:
     post:
       tags: [Library]
       summary: List tracks in a genre
+      description: >
+        Returns every track in the genre by default. `limit`/`offset` are
+        optional; omitting both preserves the full-list response. Worth using
+        on a dominant genre, where the unpaged response can span most of the
+        library.
       requestBody:
         required: true
         content:
@@ -1385,6 +1390,15 @@ paths:
                   required: [genre]
                   properties:
                     genre: { type: string }
+                    limit:
+                      type: integer
+                      minimum: 1
+                      maximum: 10000
+                      description: Page size. Omit for the whole genre.
+                    offset:
+                      type: integer
+                      minimum: 0
+                      description: Rows to skip. Usable without `limit`.
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":

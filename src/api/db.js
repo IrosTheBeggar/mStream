@@ -172,10 +172,30 @@ export function libraryFilter(user, ignoreVPaths) {
     libIds = libIds.filter(id => !ignoredIds.has(id));
   }
 
-  if (libIds.length === 0) { return { clause: '1=0', params: [] }; }
+  if (libIds.length === 0) { return { clause: '1=0', params: [], coversAllLibraries: false }; }
+
+  // Does this filter actually filter anything? When the caller can see every
+  // library the clause is a no-op, and a couple of hot read paths drop it
+  // entirely — which lets SQLite satisfy their ORDER BY / GROUP BY straight
+  // from an index instead of probing idx_tracks_library across the whole
+  // visible set and sorting the result in a temp b-tree.
+  //
+  // ONLY safe as a no-op shortcut. Forcing that index-ordered plan while a
+  // real filter is in play regresses badly: a user who can see one small
+  // library of old tracks would walk the entire created_at index to fill a
+  // page (measured 0.05 ms → 13.7 ms at 25k tracks).
+  //
+  // Compared as a set rather than by length: a federation key supplies
+  // `user.libraryIds` directly (see getUserLibraryIds) and could repeat an id
+  // or name one that no longer exists.
+  const visible = new Set(libIds);
+  const allLibs = db.getAllLibraries();
+  const coversAllLibraries = allLibs.length > 0 && allLibs.every(l => visible.has(l.id));
+
   return {
     clause: `t.library_id IN (${libIds.map(() => '?').join(',')})`,
-    params: libIds
+    params: libIds,
+    coversAllLibraries
   };
 }
 
@@ -490,20 +510,44 @@ export function setup(mstream) {
     // or track_artists (compilation / collab appearances) — "click Artist A
     // → see every album Artist A is on" stays correct after the schema
     // change.
+    // Shape matters here, not just the predicates. Written as an OR of three
+    // album-id tests AND-ed to a tracks join, SQLite drove the whole thing
+    // from tracks — SEARCH t USING idx_tracks_library across the entire
+    // visible library, once per artist click, on the hottest default-UI path
+    // (2026-07 audit). Collapsing the three sources into one UNION ALL id set
+    // gives the planner a single small candidate list to seek albums by, and
+    // the visibility test becomes an EXISTS probe per candidate instead of a
+    // driving scan: 21.8 ms → 0.05 ms at 25k tracks.
+    //
+    // UNION ALL, not UNION: duplicates across the three sources are harmless
+    // (`al.id IN (…)` is a membership test) and deduping them would cost a
+    // temp b-tree. The outer DISTINCT is retained from the original — two
+    // distinct album rows can share (name, year, art), e.g. the same album
+    // present in two libraries, and the original collapsed those.
+    //
+    // The name tiebreak exists because `ORDER BY al.year DESC` alone leaves
+    // same-year order to the plan, the old and new plans disagree on it, and
+    // the UI renders response order — without it, an artist's same-year
+    // albums would visibly reshuffle on upgrade (25k-fixture sweep: 200 of
+    // 653 artists). Pinning ties alphabetically is deterministic across
+    // plans and SQLite versions; the sort b-tree already exists, so it's
+    // free.
     const albumRows = d().prepare(`
       SELECT DISTINCT al.name, al.year, al.album_art_file
       FROM albums al
-      JOIN tracks t ON t.album_id = al.id
-      WHERE (
-        al.artist_id IN (SELECT id FROM artists WHERE name = ?)
-        OR al.id IN (SELECT album_id FROM album_artists
-                     WHERE artist_id IN (SELECT id FROM artists WHERE name = ?))
-        OR al.id IN (SELECT t2.album_id FROM track_artists ta
-                     JOIN tracks t2 ON t2.id = ta.track_id
-                     WHERE ta.artist_id IN (SELECT id FROM artists WHERE name = ?)
-                       AND t2.album_id IS NOT NULL)
-      ) AND ${filter.clause}
-      ORDER BY al.year DESC
+      WHERE al.id IN (
+        SELECT id FROM albums WHERE artist_id IN (SELECT id FROM artists WHERE name = ?)
+        UNION ALL
+        SELECT album_id FROM album_artists
+          WHERE artist_id IN (SELECT id FROM artists WHERE name = ?)
+        UNION ALL
+        SELECT t2.album_id FROM track_artists ta
+          JOIN tracks t2 ON t2.id = ta.track_id
+          WHERE ta.artist_id IN (SELECT id FROM artists WHERE name = ?)
+            AND t2.album_id IS NOT NULL
+      )
+      AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})
+      ORDER BY al.year DESC, al.name COLLATE NOCASE
     `).all(String(req.body.artist), String(req.body.artist), String(req.body.artist), ...filter.params);
 
     const albums = albumRows.map(r => ({
@@ -558,15 +602,32 @@ export function setup(mstream) {
 
   function getGenres(req) {
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
-    const rows = d().prepare(`
-      SELECT DISTINCT g.name, COUNT(DISTINCT t.id) AS track_count
-      FROM genres g
-      JOIN track_genres tg ON tg.genre_id = g.id
-      JOIN tracks t ON t.id = tg.track_id
-      WHERE ${filter.clause}
-      GROUP BY g.id
-      ORDER BY g.name COLLATE NOCASE
-    `).all(...filter.params);
+
+    // Same no-op shortcut as recent/added: with every library visible the
+    // tracks join exists only to enforce a filter that excludes nothing, so
+    // the count comes straight off the M2M (19.8 ms → 2.8 ms at 25k tracks).
+    // Equivalent because track_genres is PRIMARY KEY (track_id, genre_id) —
+    // no duplicate pairs, so COUNT(*) per genre IS COUNT(DISTINCT track_id) —
+    // and track_id is a CASCADE foreign key, so there are no orphan rows to
+    // over-count. DISTINCT is kept for the same reason the original had it:
+    // legacy data can hold two vocabulary rows with the same name.
+    const rows = filter.coversAllLibraries
+      ? d().prepare(`
+          SELECT DISTINCT g.name, COUNT(*) AS track_count
+          FROM track_genres tg
+          JOIN genres g ON g.id = tg.genre_id
+          GROUP BY g.id
+          ORDER BY g.name COLLATE NOCASE
+        `).all()
+      : d().prepare(`
+          SELECT DISTINCT g.name, COUNT(DISTINCT t.id) AS track_count
+          FROM genres g
+          JOIN track_genres tg ON tg.genre_id = g.id
+          JOIN tracks t ON t.id = tg.track_id
+          WHERE ${filter.clause}
+          GROUP BY g.id
+          ORDER BY g.name COLLATE NOCASE
+        `).all(...filter.params);
 
     return { genres: rows.map(r => ({ name: r.name, track_count: r.track_count })) };
   }
@@ -577,6 +638,28 @@ export function setup(mstream) {
   // ── Genre Songs ─────────────────────────────────────────────────────────
 
   mstream.post('/api/v1/db/genre-songs', (req, res) => {
+    // `limit`/`offset` are optional and default to "everything", so the
+    // existing full-list contract is untouched. They exist because a
+    // dominant genre returns the whole library in one response (measured
+    // 10,500 rows / 3.5 MB for a 42%-share genre at 25k tracks, 2026-07
+    // audit M8) and there was previously no way for a client to ask for a
+    // page. This is the server half only — nothing gets faster until a
+    // caller opts in.
+    // `.unknown(true)` on purpose: this route has never had a schema, and it
+    // is reachable from clients this repo does not contain (the Flutter app,
+    // federated peers — see federation-auth's allow-list). Rejecting fields
+    // that used to be ignored would be a breaking change smuggled into a
+    // perf PR. The new paging fields are still validated.
+    const schema = Joi.object({
+      genre: Joi.string().required(),
+      limit: Joi.number().integer().min(1).max(10000).optional(),
+      offset: Joi.number().integer().min(0).optional(),
+      ignoreVPaths: Joi.array().items(Joi.string()).optional()
+    }).unknown(true);
+    // Use the COERCED value, not req.body: Joi turns `limit: "50"` into a
+    // number, and binding a string into LIMIT would be a different query.
+    const { value: query } = joiValidate(schema, req.body);
+
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
 
     // V34: case-insensitive name match — uniform with the post-V34
@@ -598,12 +681,20 @@ export function setup(mstream) {
       ? [req.user.id, ...genreIds, ...filter.params]
       : [...genreIds, ...filter.params];
 
+    // SQLite treats LIMIT -1 as "no limit", and OFFSET is meaningless without
+    // one — so the unpaged call keeps exactly its old plan and result.
+    const pageSql = (query.limit != null || query.offset != null)
+      ? 'LIMIT ? OFFSET ?' : '';
+    const pageParams = pageSql
+      ? [query.limit ?? -1, query.offset ?? 0] : [];
+
     const rows = d().prepare(`
       ${trackQuery(req.user?.id, { includeGenres: false })}
       JOIN track_genres tg ON tg.track_id = t.id AND tg.genre_id IN (${idPh})
       WHERE ${filter.clause}
       ORDER BY a.name COLLATE NOCASE, al.name COLLATE NOCASE, t.disc_number, t.track_number
-    `).all(...allParams);
+      ${pageSql}
+    `).all(...allParams, ...pageParams);
 
     res.json(enrichRowsWithGenres(d(), rows).map(renderMetadataObj));
   });
@@ -750,11 +841,18 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
 
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
-    const allParams = req.user?.id ? [req.user.id, ...filter.params] : filter.params;
+    // With every library visible the scope clause excludes nothing, and
+    // dropping it is what lets SQLite walk idx_tracks_created_at and stop at
+    // LIMIT — otherwise it probes idx_tracks_library for the entire visible
+    // set and sorts that in a temp b-tree (45.6 ms → 0.2 ms at 25k tracks).
+    // See libraryFilter for why this is gated on the no-op case only.
+    const scopeSql = filter.coversAllLibraries ? '' : `WHERE ${filter.clause}`;
+    const scopeParams = filter.coversAllLibraries ? [] : filter.params;
+    const allParams = req.user?.id ? [req.user.id, ...scopeParams] : scopeParams;
 
     const rows = d().prepare(`
       ${trackQuery(req.user?.id, { includeGenres: false })}
-      WHERE ${filter.clause}
+      ${scopeSql}
       ORDER BY t.created_at DESC, t.id DESC
       LIMIT ?
     `).all(...allParams, req.body.limit);
