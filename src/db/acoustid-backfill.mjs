@@ -44,7 +44,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import Joi from 'joi';
 import { DatabaseSync } from './sqlite-driver.js';
-import { initDiscoveryDb, updateDiscoveryIdentity } from './discovery-db.js';
+import { initDiscoveryDb, updateDiscoveryIdentity, publishIndexEpoch } from './discovery-db.js';
 
 const run_ = promisify(execFile);
 const SCHEMA_GUARD_EXIT = 3;
@@ -361,13 +361,24 @@ async function run() {
   });
 }
 
+// Batch owner for discovery's similarity-index epoch (discovery-db.js):
+// identity upgrades bump row_seq per matched track, and consumers (the
+// novelty filter's MBID set) pick them up when the epoch publishes — once
+// per run here, not per row. No-op key-wise when nothing was upgraded.
+function publishEpochBestEffort() {
+  if (!discoveryOpen) { return; }
+  try { publishIndexEpoch(); } catch (_e) { /* best-effort */ }
+}
+
 run()
   .then(() => {
+    publishEpochBestEffort();
     try { db.close(); } catch (_) { /* best-effort */ }
     process.exit(0);
   })
   .catch((err) => {
     emit({ event: 'error', message: err?.message || String(err) });
+    publishEpochBestEffort();
     try { db.close(); } catch (_) { /* best-effort */ }
     process.exit(1);
   });

@@ -45,6 +45,10 @@ export const EMBEDDING_DTYPE = 'float32le';
 export const EMBEDDING_NORMALIZATION = 'l2';
 
 let db = null;
+// The path the singleton actually opened — config-derived by default, but
+// tests and forked workers pass explicit paths, and the export orchestrator
+// needs to hand THAT path (not a re-derived one) to its child process.
+let openedPath = null;
 
 const SCHEMA_V1 = `
   -- Self-description + small internal state. Every export snapshot copies
@@ -139,7 +143,8 @@ export function getDiscoveryDb() {
 export function initDiscoveryDb(dbPath) {
   if (db) { return db; }
 
-  db = new DatabaseSync(dbPath || discoveryDbPath());
+  openedPath = dbPath || discoveryDbPath();
+  db = new DatabaseSync(openedPath);
   try {
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA busy_timeout = 5000');
@@ -170,6 +175,12 @@ export function closeDiscoveryDb() {
     winston.warn(`discovery DB close failed: ${err.message}`);
   }
   db = null;
+  openedPath = null;
+}
+
+// The path the open singleton was created from, or null when closed.
+export function openedDiscoveryDbPath() {
+  return db ? openedPath : null;
 }
 
 function runMigrations() {
@@ -231,6 +242,38 @@ function nextUpdateSeq() {
     "WHERE key = 'row_seq' RETURNING CAST(value AS INTEGER) AS seq"
   ).get();
   return row.seq;
+}
+
+// Advance row_seq without writing a row — for bulk operations whose plain
+// DELETEs would otherwise be invisible to every row_seq consumer (the
+// similarity index epoch below, auto-publish's freshness watermark). The
+// embedding worker calls this once when its orphan prune actually removed
+// rows.
+export function bumpRowSeq() {
+  return nextUpdateSeq();
+}
+
+// ── Similarity-index epoch ──────────────────────────────────────────────────
+//
+// row_seq bumps on EVERY row write, which made it a catastrophic cache key
+// for the in-memory similarity index: during an embedding backfill each
+// upsert moved it, so every request rebuilt the full matrix (audit H5 —
+// 1.5-1.7 s per rebuild at 25k tracks, recurring for hours). index_epoch is
+// the BATCH-grained sibling: writers publish it at batch/run boundaries by
+// copying row_seq's current value, so the epoch only moves when data
+// changed AND a writer declared a consistent point to rebuild from.
+//
+// Contract for writers of discovery_tracks:
+//   * per-row paths (upsertDiscoveryTrack, updateDiscoveryIdentity) do NOT
+//     touch it;
+//   * batch owners (the embedding worker's run end, the AcoustID worker's
+//     run end, applyHashTransitionGroups) call publishIndexEpoch() once
+//     when done.
+// Readers treat a missing key as "no writer has ever published" and fall
+// back to row_seq — pre-upgrade DBs and unit tests that write directly keep
+// the old per-write invalidation until the first publish.
+export function publishIndexEpoch() {
+  setMeta('index_epoch', getMeta('row_seq') || '0');
 }
 
 // Share-safe identity for one row. Prefer the MusicBrainz recording MBID
@@ -388,5 +431,9 @@ export function applyHashTransitionGroups(groups) {
     try { ddb.exec('ROLLBACK'); } catch (_e) { /* not in a transaction */ }
     throw err;
   }
+  // Re-keyed hashes must reach the similarity index (its entries are keyed
+  // by canonical hash; stale ones would miss every main-DB lookup) — this
+  // drain is a batch owner, so it publishes.
+  if (out.moved + out.dropped > 0) { publishIndexEpoch(); }
   return out;
 }

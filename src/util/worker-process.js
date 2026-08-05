@@ -49,6 +49,7 @@ export async function maybeRunWorker(argv = process.argv) {
     case 'discovery':      await import('../db/discovery-backfill.mjs'); break;
     case 'backup':         await import('../backup/worker.mjs'); break;
     case 'image-compress': await import('../db/image-compress-script.js'); break;
+    case 'discovery-export': await import('../db/discovery-export-script.mjs'); break;
     case 'ssl-test':       await import('./ssl-test.js'); break;
     case 'iroh-selftest':  await import('./iroh-selftest.js'); break;
     default:

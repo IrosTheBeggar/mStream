@@ -7,12 +7,18 @@
 // query ≈ 15-30 ms) an ANN index would be pure complexity; vectors are
 // L2-normalized at write time, so cosine = dot product.
 //
-// Cache invalidation rides the dataset's own monotonic rowversion:
-// discovery_meta.row_seq bumps on EVERY discovery_tracks write (that's what
-// updated_at is derived from), so one cheap meta read per request tells us
-// whether the matrix is stale. The active model is part of the cache key —
-// only rows pinned to the CURRENTLY configured model are comparable (rows
-// from an in-progress model migration are excluded until re-embedded).
+// Cache invalidation rides discovery_meta.index_epoch — the BATCH-grained
+// watermark writers publish at run/batch boundaries (discovery-db.js). It
+// deliberately does NOT ride row_seq, which bumps on EVERY row write: keyed
+// on row_seq, each request during a multi-hour embedding backfill saw a new
+// value and rebuilt the full matrix on the event loop (audit H5, 1.5-1.7 s
+// per rebuild at 25k tracks). DBs that predate the epoch key fall back to
+// row_seq until a writer first publishes. A time-boxed safety net (below)
+// still catches a writer that moved row_seq but never published, so a
+// forgotten publish costs bounded staleness, never a stale-forever index.
+// The active model is part of the cache key — only rows pinned to the
+// CURRENTLY configured model are comparable (rows from an in-progress model
+// migration are excluded until re-embedded).
 //
 // The peer-dataset import (the p2p thread) is expected to plug in here
 // later: peer snapshots become additional entry sources feeding the same
@@ -23,6 +29,14 @@ import * as discoveryDb from './discovery-db.js';
 import * as config from '../state/config.js';
 
 let cache = null;
+
+// Safety net for the epoch keying: if row_seq moved but no writer published
+// a new epoch (a future writer that forgot, hand-edited DBs), rebuild anyway
+// once the cache is this old. Bounds both failure modes: staleness can't
+// exceed this window, and mid-backfill rebuild churn can't exceed one
+// rebuild per window.
+const STALE_REBUILD_MS =
+  Number(process.env.MSTREAM_TEST_SIM_STALE_REBUILD_MS) || 5 * 60 * 1000;
 
 // Test/ops hook: drop the cached matrix (e.g. after swapping discovery.db
 // files out from under the process).
@@ -68,8 +82,19 @@ export function getIndex() {
   if (!ddb) { return null; }
 
   const modelId = config.program.scanOptions.discoveryModel;
-  const seq = discoveryDb.getMeta('row_seq') || '0';
-  if (cache && cache.seq === seq && cache.modelId === modelId) { return cache; }
+  const rowSeq = discoveryDb.getMeta('row_seq') || '0';
+  const epoch = discoveryDb.getMeta('index_epoch');
+  // Batch-grained key when a writer has ever published; per-write fallback
+  // otherwise (pre-epoch DBs, tests writing directly).
+  const seq = epoch !== null ? epoch : rowSeq;
+  if (cache && cache.seq === seq && cache.modelId === modelId) {
+    // Epoch says fresh but rows moved underneath and nobody published —
+    // serve the cache until it ages out, then rebuild despite the epoch.
+    const unpublishedDrift = epoch !== null && cache.rowSeq !== rowSeq;
+    if (!unpublishedDrift || Date.now() - cache.builtAt < STALE_REBUILD_MS) {
+      return cache;
+    }
+  }
 
   const started = Date.now();
   const rows = ddb.prepare(`
@@ -119,7 +144,7 @@ export function getIndex() {
   }
 
   const modelVersion = discoveryDb.getMeta('embedding_model_version') || null;
-  cache = { seq, modelId, modelVersion, dim, entries, byHash, artists };
+  cache = { seq, rowSeq, builtAt: Date.now(), modelId, modelVersion, dim, entries, byHash, artists };
   winston.info(`discovery similarity index built: ${entries.length} tracks, ${artists.size} artists, ${dim}-d (${Date.now() - started} ms)`);
   return cache;
 }
