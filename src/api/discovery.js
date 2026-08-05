@@ -180,9 +180,11 @@ export function setup(mstream) {
     }
 
     const filter = libraryFilter(req.user);
-    const ranked = sim.rankTracks(index, seedEntry.vec, canonHash);
-    const results = [];
     const maxConsidered = considerBudget(body.limit);
+    // topK = the walk's own cap: ranking past it was a 25k-object
+    // allocation + full sort per Discover refresh (audit M9).
+    const ranked = sim.rankTracks(index, seedEntry.vec, canonHash, maxConsidered);
+    const results = [];
     let considered = 0;
     let capped = false;
     for (const { entry, similarity } of ranked) {
