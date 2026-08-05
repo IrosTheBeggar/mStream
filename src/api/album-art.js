@@ -11,7 +11,6 @@ import path from 'path';
 import https from 'https';
 import http from 'http';
 import { spawn } from 'child_process';
-import { Jimp } from 'jimp';
 import winston from 'winston';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
@@ -20,31 +19,79 @@ import { joiValidate, sanitizeFilename } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import { isDownloaded as ffmpegIsDownloaded } from './transcode.js';
+import { generateThumbnails, tooManyPixels, isSupportedImage } from '../util/image-thumbs.js';
 
 // ── HTTP helpers ────────────────────────────────────────────────────────────
 
-export function httpGet(url) {
+// Bounded GET. `maxBytes` is enforced DURING streaming, so a response that
+// lies about (or omits) its length can't balloon memory before the caller's
+// size check runs — /album-art/set-from-url fetches an ATTACKER-CHOSEN URL.
+// The 15s inactivity timeout is wired to an actual destroy (on its own,
+// 'timeout' only fires an event and the request hangs until the peer closes)
+// PLUS a 60s overall deadline: a trickling server resets the inactivity
+// timer with every byte, so the inactivity timeout alone never fires and
+// the request (and its socket) would stay open indefinitely. The deadline
+// destroys the in-flight request too — settling the promise on its own
+// would leave the trickle connection buffering in the background.
+// This mirrors the hardened twin in src/db/album-art-lib.js.
+export function httpGet(url, { maxBytes = 10 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
+    let activeReq = null;
+    const deadline = setTimeout(() => {
+      reject(new Error('Request deadline exceeded'));
+      if (activeReq) { activeReq.destroy(); }
+    }, 60_000);
+    const done = (err, value) => {
+      clearTimeout(deadline);
+      if (err) { reject(err); } else { resolve(value); }
+    };
     const follow = (u, redirects = 0) => {
-      if (redirects > 5) return reject(new Error('Too many redirects'));
+      if (redirects > 5) return done(new Error('Too many redirects'));
       const mod = u.startsWith('https') ? https : http;
-      mod.get(u, {
-        headers: { 'User-Agent': 'mStream/6.0 (https://mstream.io)' },
-        timeout: 15000
-      }, res => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          res.resume();
-          return follow(res.headers.location, redirects + 1);
-        }
-        if (res.statusCode !== 200) {
-          res.resume();
-          return reject(new Error(`HTTP ${res.statusCode}`));
-        }
-        const chunks = [];
-        res.on('data', c => chunks.push(c));
-        res.on('end', () => resolve(Buffer.concat(chunks)));
-        res.on('error', reject);
-      }).on('error', reject);
+      let req;
+      try {
+        req = mod.get(u, {
+          headers: { 'User-Agent': 'mStream/6.0 (https://mstream.io)' },
+          timeout: 15000
+        }, res => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            res.resume();
+            // Resolve + protocol-check INSIDE the handler: a relative or
+            // malformed Location threw out of this callback (uncaught → the
+            // whole process died), and a file:/data: target would have been
+            // handed to http.get. Same hardening as the album-art-lib twin.
+            let next;
+            try { next = new URL(res.headers.location, u); }
+            catch (_e) { return done(new Error('Malformed redirect Location')); }
+            if (next.protocol !== 'http:' && next.protocol !== 'https:') {
+              return done(new Error(`Refusing redirect to ${next.protocol} URL`));
+            }
+            return follow(next.href, redirects + 1);
+          }
+          if (res.statusCode !== 200) {
+            res.resume();
+            return done(new Error(`HTTP ${res.statusCode}`));
+          }
+          const chunks = [];
+          let received = 0;
+          res.on('data', c => {
+            received += c.length;
+            if (received > maxBytes) {
+              res.destroy();
+              return done(new Error(`Response exceeded ${maxBytes} bytes`));
+            }
+            chunks.push(c);
+          });
+          res.on('end', () => done(null, Buffer.concat(chunks)));
+          res.on('error', e => done(e));
+        });
+      } catch (e) {
+        // e.g. a sync throw from a poisoned URL handed to http.get.
+        return done(e);
+      }
+      activeReq = req;
+      req.on('timeout', function () { this.destroy(new Error('Request timeout')); })
+        .on('error', e => done(e));
     };
     follow(url);
   });
@@ -154,11 +201,11 @@ export async function saveImageToCache(imgBuf, albumArtDir) {
   if (!fs.existsSync(artPath)) {
     await fsp.writeFile(artPath, imgBuf);
     if (config.program.scanOptions.compressImage) {
-      try {
-        const img = await Jimp.fromBuffer(imgBuf);
-        await img.scaleToFit({ w: 256, h: 256 }).write(path.join(albumArtDir, 'zl-' + filename));
-        await img.scaleToFit({ w: 92, h: 92 }).write(path.join(albumArtDir, 'zs-' + filename));
-      } catch (_e) {}
+      // Off the event loop (bundled ffmpeg child process) + pixel-count
+      // guarded; failures are logged inside, never thrown — the full-size
+      // cover serves on its own. See src/util/image-thumbs.js for why this
+      // is not a Jimp decode here any more.
+      await generateThumbnails(imgBuf, artPath, albumArtDir, filename);
     }
   }
   return filename;
@@ -274,6 +321,18 @@ export function setup(mstream) {
       const imgBuf = await httpGet(req.body.url);
       if (imgBuf.length < 1000) throw new Error('Downloaded image too small');
       if (imgBuf.length > 10 * 1024 * 1024) throw new Error('Downloaded image too large (>10MB)');
+      // The URL is attacker-chosen, so validate what came back the same way
+      // the upload route validates its body. Format first: an unsupported
+      // format (TIFF/BMP/...) has dimensions we cannot read, so it would
+      // reach the decoder unbounded.
+      if (!isSupportedImage(imgBuf)) {
+        throw new Error('Downloaded file is not a supported image (JPEG, PNG, WebP or GIF)');
+      }
+      // Byte size doesn't bound pixel count: a small file can decode to
+      // hundreds of megapixels. Checked from the header, before anything
+      // touches the image data.
+      const pixelReason = tooManyPixels(imgBuf);
+      if (pixelReason) throw new Error(`Downloaded ${pixelReason}`);
 
       await applyAlbumArt(req.body.filepath, imgBuf, req.body.writeToFolder, req.body.writeToFile, req.user);
       res.json({ ok: true });
@@ -305,13 +364,19 @@ export function setup(mstream) {
         return res.status(400).json({ error: 'Image too small' });
       }
 
-      // Validate format by checking magic bytes
-      const isJpeg = imgBuf[0] === 0xFF && imgBuf[1] === 0xD8;
-      const isPng = imgBuf[0] === 0x89 && imgBuf[1] === 0x50 && imgBuf[2] === 0x4E && imgBuf[3] === 0x47;
-      const isWebp = imgBuf[0] === 0x52 && imgBuf[1] === 0x49 && imgBuf[2] === 0x46 && imgBuf[3] === 0x46;
+      // Validate format by checking magic bytes (shared with set-from-url so
+      // the two entry points cannot drift apart). The old inline WebP check
+      // only matched 'RIFF' — any RIFF container passed.
+      if (!isSupportedImage(imgBuf)) {
+        return res.status(400).json({ error: 'Invalid image format. Use JPEG, PNG, WebP or GIF.' });
+      }
 
-      if (!isJpeg && !isPng && !isWebp) {
-        return res.status(400).json({ error: 'Invalid image format. Use JPEG, PNG, or WebP.' });
+      // The 10 MB byte cap above does NOT bound pixel count — a 92 KB
+      // 4000×4000 JPEG used to stall the whole server for seconds while it
+      // decoded. Header-only check, so rejection costs microseconds.
+      const pixelReason = tooManyPixels(imgBuf);
+      if (pixelReason) {
+        return res.status(400).json({ error: `Image too large: ${pixelReason}` });
       }
 
       await applyAlbumArt(req.body.filepath, imgBuf, req.body.writeToFolder, req.body.writeToFile, req.user);
@@ -342,10 +407,10 @@ export function setup(mstream) {
         writeToFile = false; // silently downgrade — don't error
       }
     }
-    const albumArtDir = config.program.storage.albumArtDirectory;
-    const filename = await saveImageToCache(imgBuf, albumArtDir);
-
-    // Find the track in DB
+    // Resolve (and thereby authorize) the target BEFORE any image work: a
+    // bogus filepath must not buy an attacker a decode/resize. This used to
+    // run after saveImageToCache, so every request paid the image cost even
+    // when it ended in a 404.
     const pathInfo = vpath.getVPathInfo(filepath, user);
     const lib = db.getLibraryByName(pathInfo.vpath);
     if (!lib) throw new WebError('Library not found', 404);
@@ -354,6 +419,9 @@ export function setup(mstream) {
       'SELECT id, album_id FROM tracks WHERE filepath = ? AND library_id = ?'
     ).get(pathInfo.relativePath, lib.id);
     if (!track) throw new WebError('Track not found', 404);
+
+    const albumArtDir = config.program.storage.albumArtDirectory;
+    const filename = await saveImageToCache(imgBuf, albumArtDir);
 
     // Update track art
     d().prepare('UPDATE tracks SET album_art_file = ? WHERE id = ?').run(filename, track.id);

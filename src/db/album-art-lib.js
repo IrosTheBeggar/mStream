@@ -23,7 +23,7 @@ import fsp from 'fs/promises';
 import path from 'path';
 import https from 'https';
 import http from 'http';
-import { Jimp } from 'jimp';
+import { generateThumbnails as makeThumbnails } from '../util/image-thumbs.js';
 
 const MUSICBRAINZ_BASE = process.env.MSTREAM_MUSICBRAINZ_BASE || 'https://musicbrainz.org';
 const COVERART_BASE = process.env.MSTREAM_COVERARTARCHIVE_BASE || 'https://coverartarchive.org';
@@ -41,8 +41,12 @@ const DEEZER_BASE = process.env.MSTREAM_DEEZER_BASE || 'https://api.deezer.com';
 // response event callback (which would kill the whole worker process).
 export function httpGet(url, { maxBytes = 10 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
+    let activeReq = null;
     const deadline = setTimeout(() => {
       reject(new Error('Request deadline exceeded'));
+      // Settling the promise is not enough: without the destroy the
+      // trickling connection would keep buffering in the background.
+      if (activeReq) { activeReq.destroy(); }
     }, 60_000);
     const done = (err, value) => {
       clearTimeout(deadline);
@@ -88,6 +92,7 @@ export function httpGet(url, { maxBytes = 10 * 1024 * 1024 } = {}) {
         // e.g. ERR_INVALID_PROTOCOL from a poisoned initial URL.
         return done(e);
       }
+      activeReq = req;
       req.on('timeout', function () {
         // 'timeout' does NOT destroy the socket by itself — without this
         // the request would hang until the server closed it.
@@ -202,12 +207,13 @@ export function sniffImage(buf) {
 
 // Generate the zl-/zs- thumbnail variants for an already-known cache
 // filename. Best-effort — the full-size cover serves regardless.
-export async function generateThumbnails(imgBuf, albumArtDir, filename) {
-  try {
-    const img = await Jimp.fromBuffer(imgBuf);
-    await img.scaleToFit({ w: 256, h: 256 }).write(path.join(albumArtDir, 'zl-' + filename));
-    await img.scaleToFit({ w: 92, h: 92 }).write(path.join(albumArtDir, 'zs-' + filename));
-  } catch (_e) { /* thumbnails are best-effort */ }
+export async function generateThumbnails(imgBuf, albumArtDir, filename, bins = {}) {
+  // Delegates to the shared helper so the downloader and the API produce
+  // thumbnails the same way: ffmpeg in a child process, never an in-process
+  // decoder. Art fetched from remote services is untrusted input too — a
+  // hostile or compromised provider could otherwise stall/OOM this worker
+  // with a crafted cover (see src/util/image-thumbs.js).
+  await makeThumbnails(imgBuf, path.join(albumArtDir, filename), albumArtDir, filename, bins);
 }
 
 // Hash the image bytes (MD5 → `<hash>.<ext>`), write into `albumArtDir`
@@ -218,14 +224,14 @@ export async function generateThumbnails(imgBuf, albumArtDir, filename) {
 // probes without re-digesting. The extension comes from a magic-byte
 // sniff using the scanners' spellings, so the same bytes cached here and
 // by a scanner produce the SAME filename (one art_files row, one file).
-export async function saveImageToCache(imgBuf, albumArtDir, compress) {
+export async function saveImageToCache(imgBuf, albumArtDir, compress, bins = {}) {
   const hash = crypto.createHash('md5').update(imgBuf).digest('hex');
   const filename = `${hash}.${sniffImage(imgBuf)?.ext || 'jpeg'}`;
   const artPath = path.join(albumArtDir, filename);
 
   if (!fs.existsSync(artPath)) {
     await fsp.writeFile(artPath, imgBuf);
-    if (compress) { await generateThumbnails(imgBuf, albumArtDir, filename); }
+    if (compress) { await generateThumbnails(imgBuf, albumArtDir, filename, bins); }
   }
   return { filename, hash };
 }

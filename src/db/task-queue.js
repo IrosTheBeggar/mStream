@@ -11,7 +11,7 @@ import { SCHEMA_VERSION } from './schema.js';
 import { HASH_GENERATION } from './audio-hash.js';
 import { getDirname, appRoot } from '../util/esm-helpers.js';
 import { launchWorker, workerReaperMarker } from '../util/worker-process.js';
-import { ffmpegBin, ensureFfmpeg } from '../util/ffmpeg-bootstrap.js';
+import { ffmpegBin, ffprobeBin, ensureFfmpeg } from '../util/ffmpeg-bootstrap.js';
 import * as dlnaApi from '../api/dlna.js';
 import * as discoveryDb from './discovery-db.js';
 import * as libraryWatcher from '../util/library-watcher.js';
@@ -1150,6 +1150,12 @@ function runAlbumArtTask(taskObj) {
     dbPath: path.join(config.program.storage.dbDirectory, 'mstream.db'),
     albumArtDirectory: config.program.storage.albumArtDirectory,
     compressImage: opts.compressImage,
+    // Thumbnails are produced by ffmpeg in a child process — never by an
+    // in-process decoder (see src/util/image-thumbs.js). The worker has no
+    // config state, so the resolved binaries are passed in; without them it
+    // simply skips thumbnails.
+    ffmpegPath: ffmpegBin() || undefined,
+    ffprobePath: ffprobeBin() || undefined,
     services: opts.albumArtServices || ['musicbrainz', 'itunes', 'deezer'],
     mode: opts.autoAlbumArtMode || 'missing',
     writeToFolder: opts.autoAlbumArtWriteToFolder === true,

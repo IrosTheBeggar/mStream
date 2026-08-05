@@ -11,7 +11,7 @@ import * as db from '../db/manager.js';
 import WebError from '../util/web-error.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import { parseFile } from 'music-metadata';
-import { Jimp } from 'jimp';
+import { generateThumbnails } from '../util/image-thumbs.js';
 import mime from 'mime-types';
 import crypto from 'crypto';
 import fs from 'fs/promises';
@@ -403,11 +403,12 @@ export function setup(mstream) {
               isNewFile = true;
             }
 
-            // Create compressed versions for thumbnails
+            // Create compressed versions for thumbnails. Off the event loop
+            // + pixel-count guarded (util/image-thumbs.js): embedded covers
+            // come from downloaded media, so their dimensions are not ours to
+            // trust, and a pure-JS decode here stalls every other request.
             if (isNewFile && config.program.scanOptions.compressImage) {
-              const img = await Jimp.fromBuffer(picData);
-              await img.scaleToFit({ w: 256, h: 256 }).write(path.join(aaDir, 'zl-' + data.aaFile));
-              await img.scaleToFit({ w: 92, h: 92 }).write(path.join(aaDir, 'zs-' + data.aaFile));
+              await generateThumbnails(picData, aaFilePath, aaDir, data.aaFile);
             }
           } catch (err) {
             winston.error('yt-dlp: failed to extract album art', { stack: err });
@@ -693,9 +694,7 @@ export function setup(mstream) {
         try { await fs.access(aaFilePath); } catch {
           await fs.writeFile(aaFilePath, picData);
           if (config.program.scanOptions.compressImage) {
-            const img = await Jimp.fromBuffer(picData);
-            await img.scaleToFit({ w: 256, h: 256 }).write(path.join(aaDir, 'zl-' + aaFile));
-            await img.scaleToFit({ w: 92, h: 92 }).write(path.join(aaDir, 'zs-' + aaFile));
+            await generateThumbnails(picData, aaFilePath, aaDir, aaFile);
           }
         }
       } catch (err) { /* ignore */ }
