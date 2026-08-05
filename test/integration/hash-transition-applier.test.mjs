@@ -58,10 +58,31 @@ function canonOfTrack(mstreamDbPath, filepathLike) {
   });
 }
 
-function seedTransition(mstreamDbPath, oldHash, newHash) {
+// Seed forged transition hops in ONE transaction. Atomicity is load-bearing:
+// applyHashTransitions() fires on EVERY queue-drain event (task-queue calls
+// checkQueueDrainedSideEffects from every task-completion site, and the gate
+// counts enrichment passes as "drained"), so the server can consume this
+// ledger at any moment — including while a test is still staging it. Seeding
+// a chain as separate autocommitted INSERTs opens a window where the applier
+// sees only the first hop and re-keys the embedding to a mid-chain identity
+// that is never live; the discovery worker's next orphan prune then deletes
+// it, and the terminal row this suite asserts on never materializes. That is
+// exactly the windows-latest CI flake this helper's shape caused (PR #801,
+// run 30958877312: drain saw 0 but no row at `fin`). One transaction means
+// any drain sees the whole chain or none of it — either of which converges
+// on the same asserted end state.
+function seedTransitions(mstreamDbPath, hops) {
   withDb(mstreamDbPath, (d) => {
-    d.prepare('INSERT OR REPLACE INTO hash_transitions (old_hash, new_hash) VALUES (?, ?)')
-      .run(oldHash, newHash);
+    const ins = d.prepare(
+      'INSERT OR REPLACE INTO hash_transitions (old_hash, new_hash) VALUES (?, ?)');
+    d.exec('BEGIN');
+    try {
+      for (const [oldHash, newHash] of hops) { ins.run(oldHash, newHash); }
+      d.exec('COMMIT');
+    } catch (err) {
+      d.exec('ROLLBACK');
+      throw err;
+    }
   });
 }
 
@@ -150,12 +171,16 @@ describe('hash-transition applier (discovery ON — live worker)', () => {
     const mid = 'a'.repeat(32);
     const fin = canonOfTrack(mdb, 'terminal.mp3');
     assert.ok(fin, 'terminal fixture scanned');
-    seedTransition(mdb, seed.audio_hash, mid);
-    seedTransition(mdb, mid, fin);
 
-    // Waveform artifacts at the seed identity must follow to `fin`.
+    // Stage order is load-bearing (see seedTransitions): the waveform
+    // artifacts go on disk BEFORE the ledger rows become visible, because
+    // whichever drain event consumes the ledger — the boot chain's tail or
+    // the post-force-rescan drain — must see the complete stage. Ledger
+    // first would let an early drain move the embedding and clear the
+    // ledger while {seed}.bin doesn't exist yet, so nothing ever renames.
     await fsp.writeFile(path.join(waveDir, `${seed.audio_hash}.bin`), 'wavedata');
     await fsp.writeFile(path.join(waveDir, `${seed.audio_hash}.failed`), 'symphonia\n');
+    seedTransitions(mdb, [[seed.audio_hash, mid], [mid, fin]]);
 
     await forceRescanAndDrain(server, mdb);
 
@@ -214,8 +239,9 @@ describe('hash-transition applier (discovery collection OFF)', () => {
   test('the ledger drains (and waveforms rename) with no discovery.db, without creating one', async () => {
     const p = 'b'.repeat(32);
     const q = 'c'.repeat(32);
-    seedTransition(mdb, p, q);
+    // Artifacts before ledger — same stage-ordering rule as the ON suite.
     await fsp.writeFile(path.join(waveDir, `${p}.bin`), 'wavedata');
+    seedTransitions(mdb, [[p, q]]);
 
     await forceRescanAndDrain(server, mdb);
 
@@ -237,8 +263,7 @@ describe('hash-transition applier (discovery collection OFF)', () => {
       upsertDiscoveryTrack({ audioHash: a, artist: 'stale' });   // older rowversion
       upsertDiscoveryTrack({ audioHash: b, artist: 'fresh' });   // newer rowversion
     } finally { closeDiscoveryDb(); }
-    seedTransition(mdb, a, b);
-    seedTransition(mdb, b, c);
+    seedTransitions(mdb, [[a, b], [b, c]]);
 
     await forceRescanAndDrain(server, mdb);
 
@@ -262,8 +287,10 @@ describe('hash-transition applier (discovery collection OFF)', () => {
     initDiscoveryDb(ddbPath);
     try { upsertDiscoveryTrack({ audioHash: y, artist: 'cyc' }); }
     finally { closeDiscoveryDb(); }
-    seedTransition(mdb, x, y);
-    seedTransition(mdb, y, x);
+    // Atomic for a second reason here: a drain that saw only x→y wouldn't
+    // be a cycle at all — it would resolve as a plain move and the test
+    // would no longer exercise the cycle-resolution path it exists for.
+    seedTransitions(mdb, [[x, y], [y, x]]);
 
     await forceRescanAndDrain(server, mdb);
 
