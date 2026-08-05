@@ -67,6 +67,13 @@ before(async () => {
 
   const insAlbum = d.prepare('INSERT INTO albums (name, artist_id, year, album_art_file) VALUES (?, ?, ?, ?)');
   insAlbum.run('Solo Album', artistId('Solo'), 2001, 'art-solo.jpg');
+  // A separate artist with a same-year album pair (plus one newer) pins the
+  // deterministic tie order — kept off Solo so the exact-list assertions on
+  // Solo's albums stay untouched.
+  insArtist.run('TieBreak');
+  insAlbum.run('B Second', artistId('TieBreak'), 2010, null);
+  insAlbum.run('a first', artistId('TieBreak'), 2010, null);
+  insAlbum.run('C Newest', artistId('TieBreak'), 2011, null);
   // Two DISTINCT album rows sharing (name, year, art) — the same release
   // credited to two different artists, which is the only way past
   // albums' UNIQUE(name, artist_id, year). Solo reaches its own row via
@@ -93,6 +100,9 @@ before(async () => {
   }
   addTrack(LIB_A, albumId('Via Album-Artists')[0], artistId('Collab'), '2024-01-02 00:00:00');
   addTrack(LIB_A, albumId('Via Track-Artists')[0], artistId('Collab'), '2024-01-03 00:00:00');
+  for (const al of ['B Second', 'a first', 'C Newest']) {
+    addTrack(LIB_A, albumId(al)[0], artistId('TieBreak'), '2024-01-04 00:00:00');
+  }
   // libB: OLDEST timestamps + an album and artist that exist ONLY here.
   addTrack(LIB_B, albumId('Hidden Album')[0], artistId('Solo'), '2000-01-01 00:00:00');
   addTrack(LIB_B, null, artistId('HiddenOnly'), '2000-01-02 00:00:00');
@@ -309,6 +319,17 @@ describe('artists-albums', () => {
     const got = (await post('/api/v1/db/artists-albums', { artist: 'Solo' })).body.albums;
     assert.deepEqual([...got].sort((a, b) => String(a.name).localeCompare(b.name)),
       [...oracle].sort((a, b) => String(a.name).localeCompare(b.name)));
+  });
+
+  test('same-year albums come back in a deterministic name order', async () => {
+    // `ORDER BY al.year DESC` alone leaves ties to the plan, the rewrite
+    // changed the plan, and the UI renders response order — so ties are now
+    // pinned alphabetically (NOCASE). Year still dominates.
+    scopeTo(null);
+    const r = await post('/api/v1/db/artists-albums', { artist: 'TieBreak' });
+    assert.deepEqual(r.body.albums.map((a) => a.name),
+      ['C Newest', 'a first', 'B Second'],
+      'year DESC first, then case-insensitive name within the 2010 tie');
   });
 
   test('visibility is still enforced — a hidden-library album drops out', async () => {

@@ -524,6 +524,14 @@ export function setup(mstream) {
     // temp b-tree. The outer DISTINCT is retained from the original — two
     // distinct album rows can share (name, year, art), e.g. the same album
     // present in two libraries, and the original collapsed those.
+    //
+    // The name tiebreak exists because `ORDER BY al.year DESC` alone leaves
+    // same-year order to the plan, the old and new plans disagree on it, and
+    // the UI renders response order — without it, an artist's same-year
+    // albums would visibly reshuffle on upgrade (25k-fixture sweep: 200 of
+    // 653 artists). Pinning ties alphabetically is deterministic across
+    // plans and SQLite versions; the sort b-tree already exists, so it's
+    // free.
     const albumRows = d().prepare(`
       SELECT DISTINCT al.name, al.year, al.album_art_file
       FROM albums al
@@ -539,7 +547,7 @@ export function setup(mstream) {
             AND t2.album_id IS NOT NULL
       )
       AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})
-      ORDER BY al.year DESC
+      ORDER BY al.year DESC, al.name COLLATE NOCASE
     `).all(String(req.body.artist), String(req.body.artist), String(req.body.artist), ...filter.params);
 
     const albums = albumRows.map(r => ({
