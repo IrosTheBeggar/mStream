@@ -322,12 +322,17 @@ export function stop() {
   const ifaces = ifaceSnapshot.length > 1 ? ifaceSnapshot : [null];
   let remaining = messages.length * ifaces.length;
 
+  // Same reasoning as mdns.js's stop(): announce the stop synchronously below,
+  // and keep the deferred socket close at debug. Emitted from here, the
+  // 'Stopped' line lands after a reboot's fresh 'Started' and reads as a
+  // torn-down advertiser.
   function closeWhenDone() {
     if (--remaining === 0) {
-      try { sock.close(); } catch (_) {}
-      winston.info('[dlna-ssdp] Stopped');
+      try { sock.close(); } catch (_) { /* already closed */ }
+      winston.debug('[dlna-ssdp] old socket closed');
     }
   }
+  winston.info('[dlna-ssdp] Stopped');
 
   // Mirror sendMessages()'s interface fan-out for the byebye batch so
   // renderers on every interface see us leave — otherwise stale entries

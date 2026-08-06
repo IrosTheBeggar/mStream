@@ -381,9 +381,16 @@ export function stop() {
     winston.debug(`[mdns] goodbye error: ${err.message}`);
   }
 
+  // Logged HERE, synchronously: the advertiser is stopped the moment the
+  // module drops its socket. Emitting it from the deferred close below put
+  // '[mdns] Stopped' AFTER a reboot's fresh '[mdns] Advertising', which reads
+  // exactly like the stale-singleton teardown bug this codebase has already
+  // been bitten by — a red herring that has cost debugging time more than once.
+  winston.info('[mdns] Stopped');
+
   // Give the goodbye datagram(s) a moment to flush before closing the socket.
   setTimeout(() => {
     try { sock.close(); } catch (_) { /* already closed */ }
-    winston.info('[mdns] Stopped');
+    winston.debug('[mdns] old socket closed');
   }, 100);
 }

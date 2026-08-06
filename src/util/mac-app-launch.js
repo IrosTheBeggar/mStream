@@ -49,11 +49,29 @@ export function detachForFinderLaunch() {
   // User args: a standalone binary's argv is [exe, embedded-entry, ...args];
   // a source run's is [runtime, script, ...args] and must keep the script.
   const args = isBunStandalone ? process.argv.slice(2) : process.argv.slice(1);
-  spawn(process.execPath, args, {
-    detached: true,
-    stdio: 'ignore',
-    env: { ...process.env, MSTREAM_MAC_APP_DETACHED: '1' },
-  }).unref();
+  let child;
+  try {
+    child = spawn(process.execPath, args, {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, MSTREAM_MAC_APP_DETACHED: '1' },
+    });
+  } catch (err) {
+    winston.warn(`[launch] could not detach (${err.message}) — booting in this process instead`);
+    return false;
+  }
+  // A spawn failure surfaces asynchronously as 'error'; unhandled, that kills
+  // this process. It also means no server: we are about to exit on the
+  // assumption a child took over. There is no pid in that case, so fall
+  // through to booting in-process rather than exiting into silence.
+  child.on('error', (err) => {
+    winston.warn(`[launch] detached copy failed to start: ${err.message}`);
+  });
+  if (!child.pid) {
+    winston.warn('[launch] detach produced no child — booting in this process instead');
+    return false;
+  }
+  child.unref();
   return true;
 }
 
@@ -65,10 +83,24 @@ export function urlHost(address) {
   return address.includes(':') ? `[${address}]` : address;
 }
 
+// Every helper below is spawned on a path where the server is otherwise
+// healthy, so a spawn failure must degrade to a log line, never to an
+// unhandled 'error' event — that would turn a stripped image with no
+// /usr/bin/open into a crash immediately after a successful boot.
+function spawnHelper(bin, args, what) {
+  try {
+    const child = spawn(bin, args, { stdio: 'ignore', detached: true });
+    child.on('error', (err) => winston.warn(`[launch] ${what} failed: ${err.message}`));
+    child.unref();
+  } catch (err) {
+    winston.warn(`[launch] ${what} could not be started: ${err.message}`);
+  }
+}
+
 function openInBrowser(url) {
   // /usr/bin/open resolves the user's default browser. Detached so the
   // helper never ties to our lifetime.
-  spawn('/usr/bin/open', [url], { stdio: 'ignore', detached: true }).unref();
+  spawnHelper('/usr/bin/open', [url], 'opening the browser');
 }
 
 // Native dialog via osascript — the only channel a Finder launch has for
@@ -76,12 +108,12 @@ function openInBrowser(url) {
 // no quoting/injection concerns. Detached: the dialog must outlive the
 // exiting server process.
 function alert(message) {
-  spawn('/usr/bin/osascript', [
+  spawnHelper('/usr/bin/osascript', [
     '-e', 'on run argv',
     '-e', 'display alert "mStream" message (item 1 of argv) as critical',
     '-e', 'end run',
     message,
-  ], { stdio: 'ignore', detached: true }).unref();
+  ], 'showing the error dialog');
 }
 
 // Open the UI once the server is listening. Once per process: reboot()

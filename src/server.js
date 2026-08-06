@@ -99,13 +99,17 @@ function isLoopbackRequest(req) {
 // killing the healthy winner with it.
 let rebootInFlight = false;
 
-// `relisten: true` marks a reboot()'s re-serve of a port THIS process just
-// released. Windows doesn't grant the immediate same-process rebind unix
-// does — close()'s callback can fire before the OS frees the port — so a
-// relisten briefly retries EADDRINUSE instead of treating it as fatal.
-// First boots never retry: there the squatter is a real foreign process and
-// the fail-fast path (log / probe / alert) is the right answer.
-export async function serveIt(configFile, { relisten = false } = {}) {
+// `relisten` carries the port THIS process just released, so a reboot's
+// re-serve can tell a Windows port-release delay from a real conflict.
+// Windows doesn't grant the immediate same-process rebind unix does —
+// close()'s callback can fire before the OS frees the port — so retrying
+// EADDRINUSE briefly is right THERE, and only there. It is deliberately not a
+// boolean: an admin who changed the port is re-serving a port this process
+// never owned, where a conflict is permanent, and retrying would spend five
+// seconds blaming a transient OS condition before exiting anyway (and on a
+// mac .app could even probe a DIFFERENT mStream on the new port and exit 0 as
+// "redundant"). First boots never retry for the same reason.
+export async function serveIt(configFile, { relisten = null } = {}) {
   mstream = express();
 
   try {
@@ -162,15 +166,17 @@ export async function serveIt(configFile, { relisten = false } = {}) {
       'Access-Control-Allow-Headers',
       'Origin, X-Requested-With, Content-Type, Accept'
     );
-    // Identity marker on every response, auth-independent: lets a second
-    // .app launch recognize that the port squatter is an existing mStream
-    // and reopen the browser at it (see src/util/mac-app-launch.js).
-    res.header('X-Mstream', 'true');
-    // The per-boot instance nonce PROVES that identity, and only to callers
-    // on this machine — a marker anyone can copy would let a local squatter
-    // redirect the user's browser to itself. Loopback-only so it never
-    // travels the LAN.
-    if (isLoopbackRequest(req)) { res.header('X-Mstream-Instance', instanceNonce); }
+    // Identity headers for the macOS relaunch probe (src/util/mac-app-launch.js),
+    // both loopback-only. The probe is a same-machine question, so neither
+    // header has any reason to cross the network: on a WAN-exposed instance
+    // X-Mstream would turn "is this mStream?" from a heuristic into a
+    // one-request positive ID for mass scanners, and the nonce is the secret
+    // that proves the port holder is our own server rather than a local
+    // impostor. remoteAddress, not req.ip — see isLoopbackRequest.
+    if (isLoopbackRequest(req)) {
+      res.header('X-Mstream', 'true');
+      res.header('X-Mstream-Instance', instanceNonce);
+    }
     next();
   });
   // Trust Proxy
@@ -505,7 +511,11 @@ export async function serveIt(configFile, { relisten = false } = {}) {
     socket.on('close', () => mySockets.delete(socket));
   });
   const thisServer = server;
-  let relistenRetries = relisten ? 20 : 0;   // 20 × 250ms = 5s budget
+  // Only arm the budget when we are re-taking the SAME port we just released.
+  let relistenRetries = (relisten !== null && relisten === config.program.port) ? 20 : 0;   // 20 × 250ms = 5s
+  if (relisten !== null && relistenRetries === 0) {
+    winston.info(`Reboot moved the port ${relisten} -> ${config.program.port}; a conflict on the new port is real, not a release delay`);
+  }
   server.on('error', async (err) => {
     // Only the CURRENT server may act on its errors. A superseded instance
     // (an overlapping reboot's loser) must never run the exit paths below —
@@ -654,6 +664,9 @@ export function reboot() {
       return;
     }
     rebootInFlight = true;
+    // Captured BEFORE serveIt's config.setup re-reads the file: the re-serve
+    // only gets the EADDRINUSE retry budget if it is re-taking this same port.
+    const previousPort = config.program.port;
     winston.info('Rebooting Server');
     logger.reset();
     scrobblerApi.reset();
@@ -684,6 +697,26 @@ export function reboot() {
     // Peer bridges (loopback servers + outbound conns) go down with it.
     import('./state/federation-client.js').then((m) => m.stopAll()).catch(() => {});
     import('./state/federation.js').then((m) => m.stop()).catch(() => {});
+    // Same for the discovery-network gossip stack: sidecar process, gossip
+    // subscription, mesh-health watch, auto-fetch and pruning timers. Without
+    // it, an operator who DISABLES the feature in the config file and uses the
+    // admin reboot (the documented flow) keeps publishing snapshots and
+    // gossiping their catalog until a full process restart, while the server
+    // reports the feature off.
+    //
+    // Unlike the teardowns above this one must be SEQUENCED before the
+    // re-serve, not fired and forgotten: the stack guards start with a
+    // `running` flag it only clears at the END of stop, so a restart landing
+    // mid-stop returns early as a no-op and the stop then kills the sidecar it
+    // was supposed to replace — leaving the feature dead until a full restart,
+    // which is worse than the leak. Bounded by a timeout so a wedged teardown
+    // can delay the restart but never block it.
+    const p2pStopped = Promise.race([
+      import('./state/discovery-p2p-stack.js')
+        .then((m) => m.stopDiscoveryP2pStack())
+        .catch((err) => winston.warn(`[discovery-p2p] stop during reboot failed: ${err.message}`)),
+      new Promise((resolve) => setTimeout(resolve, 5000)),
+    ]);
 
     // Close the server. server.close() waits for every in-flight HTTP
     // request AND every idle keep-alive socket to drain. The admin
@@ -706,7 +739,8 @@ export function reboot() {
       // cert first fails HERE). Unhandled, that's a raw unhandled rejection
       // with the old server already town down — the silent death this PR set
       // out to eliminate, just moved to the reboot path.
-      serveIt(config.configFile, { relisten: true }).catch((rebootErr) => {
+      // Gate the re-serve on the discovery-p2p teardown finishing (see above).
+      p2pStopped.then(() => serveIt(config.configFile, { relisten: previousPort })).catch((rebootErr) => {
         rebootInFlight = false;
         winston.error('Reboot failed to restart the server', { stack: rebootErr });
         try { fs.writeSync(2, `mStream fatal: reboot failed to restart the server: ${rebootErr.message}\n`); } catch (_) { /* stderr gone */ }

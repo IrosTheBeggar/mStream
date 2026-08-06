@@ -240,10 +240,11 @@ function macInfoPlist(version) {
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>LSUIElement</key><true/>
-  <key>NSLocalNetworkUsageDescription</key><string>mStream advertises itself over Bonjour so players on your local network can find your music library.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>mStream advertises itself on your local network so players and speakers can find your music library, using Bonjour and — if you enable DLNA — SSDP.</string>
   <key>NSBonjourServices</key>
   <array>
     <string>_mstream._tcp</string>
+    <string>_services._dns-sd._udp</string>
   </array>
 </dict>
 </plist>

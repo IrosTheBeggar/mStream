@@ -24,6 +24,12 @@ jobs:
   build:
     name: ${{ matrix.key }}
     runs-on: ${{ matrix.os }}
+    # The smoke steps drive a real server: a wedged accept-but-never-respond
+    # process would otherwise sit in a retry loop until the 6-hour default,
+    # burning paid macOS/Windows runners and showing "still running" instead of
+    # a failure. Every smoke curl also carries --max-time. A full build+smoke
+    # is ~2 minutes today.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -116,10 +122,10 @@ jobs:
           UP=0
           for i in $(seq 1 60); do
             sleep 1
-            if curl -sf -o /dev/null "http://127.0.0.1:3399/api/v1/ping"; then UP=1; break; fi
+            if curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3399/api/v1/ping"; then UP=1; break; fi
           done
           sleep 3   # let the boot scan finish
-          CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3399/api/v1/ping" 2>/dev/null)
+          CODE=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:3399/api/v1/ping" 2>/dev/null)
           echo "HTTP up=$UP after ~${i}s ; /api/v1/ping -> ${CODE:-000}"
           grep -iE "scan started|scan complete" "$RUN/boot.log"
 
@@ -136,17 +142,17 @@ jobs:
           REBOOT_OK=0
           if [ "$CODE" = "200" ]; then
             BOOTS_BEFORE=$(grep -c "Access mStream locally" "$RUN/boot.log")
-            TRIG=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"trustProxy":true}' "http://127.0.0.1:3399/api/v1/admin/config/trust-proxy")
+            TRIG=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"trustProxy":true}' "http://127.0.0.1:3399/api/v1/admin/config/trust-proxy")
             if [ "$TRIG" != "200" ]; then
               echo "FAIL: reboot trigger POST returned ${TRIG:-000}, not 200 — the smoke would have passed without rebooting anything"
               cat "$RUN/boot.log"; kill "$SRV" 2>/dev/null; exit 1
             fi
             for i in $(seq 1 20); do
               sleep 1
-              if curl -sf -o /dev/null "http://127.0.0.1:3399/api/v1/ping"; then REBOOT_OK=1; break; fi
+              if curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3399/api/v1/ping"; then REBOOT_OK=1; break; fi
             done
             sleep 3   # outlive the close-grace sweep, which used to kill the new listener
-            curl -sf -o /dev/null "http://127.0.0.1:3399/api/v1/ping" || REBOOT_OK=0
+            curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3399/api/v1/ping" || REBOOT_OK=0
             BOOTS_AFTER=$(grep -c "Access mStream locally" "$RUN/boot.log")
             if [ "$BOOTS_AFTER" -le "$BOOTS_BEFORE" ]; then
               echo "FAIL: no re-serve observed (boot lines ${BOOTS_BEFORE} -> ${BOOTS_AFTER}) — the reboot never happened"
@@ -168,13 +174,13 @@ jobs:
             CONCURRENT_OK=0
             for i in $(seq 1 25); do
               sleep 1
-              if curl -sf -o /dev/null "http://127.0.0.1:3399/api/v1/ping"; then CONCURRENT_OK=1; break; fi
+              if curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3399/api/v1/ping"; then CONCURRENT_OK=1; break; fi
             done
             # Must outlive a losing sibling's FULL relisten budget (20 x 250ms):
             # the process.exit lands ~5s in, and a shorter wait passes against
             # the very bug this guards.
             sleep 10
-            curl -sf -o /dev/null "http://127.0.0.1:3399/api/v1/ping" || CONCURRENT_OK=0
+            curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3399/api/v1/ping" || CONCURRENT_OK=0
             kill -0 "$SRV" 2>/dev/null || CONCURRENT_OK=0
           fi
           kill "$SRV" 2>/dev/null
@@ -209,7 +215,7 @@ jobs:
           UP=0
           for i in $(seq 1 30); do
             sleep 1
-            if curl -sf -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; then UP=1; break; fi
+            if curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; then UP=1; break; fi
           done
           if [ "$UP" != "1" ]; then echo "FAIL: detached child never served — the app-launch hand-off is broken"; cat "$RUN/applaunch.log"; exit 1; fi
           CHILD=$(pgrep -f "applaunch-config.json" | head -1)
@@ -224,7 +230,7 @@ jobs:
           RC2=$?
           sleep 4
           COUNT=$(pgrep -f "applaunch-config.json" | wc -l | tr -d ' ')
-          curl -sf -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; STILL=$?
+          curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; STILL=$?
           if [ "$RC2" != "0" ]; then echo "FAIL: relaunch exited $RC2, expected 0"; cat "$RUN/applaunch2.log"; pkill -f applaunch-config.json; exit 1; fi
           if [ "$COUNT" != "1" ] || [ "$STILL" != "0" ]; then echo "FAIL: relaunch disturbed the running server (count=$COUNT alive=$STILL)"; pkill -f applaunch-config.json; exit 1; fi
           echo "ok: redundant relaunch exited 0 and left the running server alone"
@@ -236,7 +242,7 @@ jobs:
           __CFBundleIdentifier=io.mstream.server MSTREAM_MAC_APP_DETACHED=1 "$BIN" -j "$RUN/applaunch-config.json" > "$RUN/applaunch3.log" 2>&1
           RC3=$?
           COUNT=$(pgrep -f "applaunch-config.json" | wc -l | tr -d ' ')
-          curl -sf -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; STILL=$?
+          curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; STILL=$?
           pkill -f "applaunch-config.json" 2>/dev/null
           if [ "$RC3" != "0" ]; then echo "FAIL: in-process relaunch exited $RC3, expected 0 (redundant, not failed)"; cat "$RUN/applaunch3.log"; exit 1; fi
           grep -q "already running" "$RUN/applaunch3.log" || { echo "FAIL: the nonce probe did not recognize our own running instance"; cat "$RUN/applaunch3.log"; exit 1; }
