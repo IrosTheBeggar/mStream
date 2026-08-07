@@ -16,6 +16,13 @@
 //     double-clicked-it-again case) → reopen the browser at it; anything
 //     else → alert
 //
+// This module ships start, restart-feedback, and error affordances but no STOP
+// one: as an LSUIElement agent the server has no Dock presence and no Quit, so
+// stopping a Finder-launched instance today means Activity Monitor or `kill`
+// (re-clicking only reopens the browser via handleListenError). A user-facing
+// Quit is deferred to the planned macOS menu-bar status item (tray/autostart
+// work), which will drive a graceful-shutdown path rather than a bare kill.
+//
 // Every hook is a no-op unless the process was launched AS the bundle.
 // LaunchServices stamps the launched app's own bundle id into
 // __CFBundleIdentifier; a terminal run inherits the terminal's id (e.g.

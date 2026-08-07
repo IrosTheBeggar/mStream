@@ -228,8 +228,17 @@ jobs:
           # why this step first shipped red).
           __CFBundleIdentifier=io.mstream.server "$BIN" -j "$RUN/applaunch-config.json" > "$RUN/applaunch2.log" 2>&1
           RC2=$?
-          sleep 4
-          COUNT=$(pgrep -f "applaunch-config.json" | wc -l | tr -d ' ')
+          # The detached copy boots FULLY before it hits EADDRINUSE, probes, and
+          # exits — measured 3.6–4.2s across runners, straddling any fixed sleep.
+          # Poll for it to drain back to the single running server rather than
+          # guessing a duration: a fixed `sleep` flakes red when the copy is
+          # merely slow, not broken (30 x 0.5s = 15s ceiling, exits early on drain).
+          COUNT=2
+          for i in $(seq 1 30); do
+            COUNT=$(pgrep -f "applaunch-config.json" | wc -l | tr -d ' ')
+            [ "$COUNT" = "1" ] && break
+            sleep 0.5
+          done
           curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; STILL=$?
           if [ "$RC2" != "0" ]; then echo "FAIL: relaunch exited $RC2, expected 0"; cat "$RUN/applaunch2.log"; pkill -f applaunch-config.json; exit 1; fi
           if [ "$COUNT" != "1" ] || [ "$STILL" != "0" ]; then echo "FAIL: relaunch disturbed the running server (count=$COUNT alive=$STILL)"; pkill -f applaunch-config.json; exit 1; fi
@@ -243,11 +252,36 @@ jobs:
           RC3=$?
           COUNT=$(pgrep -f "applaunch-config.json" | wc -l | tr -d ' ')
           curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; STILL=$?
+
+          # Negative control for the nonce identity check. The positive probe
+          # above (RC3 + "already running") stays green even if the probe
+          # regresses from `header === expectedNonce` to a mere presence check —
+          # the two are observationally identical when the nonce genuinely
+          # matches. So overwrite the on-disk nonce the probe reads while the
+          # running server keeps serving its real (in-memory) one: a correct
+          # comparison now MISMATCHES, so the relaunch must refuse to redirect,
+          # exit 1 (never logging "already running"), and leave the server
+          # untouched. A presence-check regression would instead exit 0 here and
+          # hand a local port squatter the real UI's trusted localStorage origin.
+          # The probe's 2s timeout bounds this and its alert is detached — no hang.
+          NONCE_FILE=$(find "$RUN" -name '.instance-nonce' 2>/dev/null | head -1)
+          if [ -z "$NONCE_FILE" ]; then echo "FAIL: running server wrote no .instance-nonce to probe against"; pkill -f "applaunch-config.json"; exit 1; fi
+          cp "$NONCE_FILE" "$RUN/nonce.bak"
+          printf 'not-the-real-nonce' > "$NONCE_FILE"
+          __CFBundleIdentifier=io.mstream.server MSTREAM_MAC_APP_DETACHED=1 "$BIN" -j "$RUN/applaunch-config.json" > "$RUN/applaunch4.log" 2>&1
+          RC4=$?
+          cp "$RUN/nonce.bak" "$NONCE_FILE"
+          BADCOUNT=$(pgrep -f "applaunch-config.json" | wc -l | tr -d ' ')
+          curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; BADSTILL=$?
+
           pkill -f "applaunch-config.json" 2>/dev/null
           if [ "$RC3" != "0" ]; then echo "FAIL: in-process relaunch exited $RC3, expected 0 (redundant, not failed)"; cat "$RUN/applaunch3.log"; exit 1; fi
           grep -q "already running" "$RUN/applaunch3.log" || { echo "FAIL: the nonce probe did not recognize our own running instance"; cat "$RUN/applaunch3.log"; exit 1; }
           if [ "$COUNT" != "1" ] || [ "$STILL" != "0" ]; then echo "FAIL: relaunch disturbed the running server (count=$COUNT alive=$STILL)"; exit 1; fi
-          echo "SMOKE OK: app-launch detach, serve, redundant relaunch, and nonce probe all behave"
+          if [ "$RC4" = "0" ]; then echo "FAIL: probe ACCEPTED a wrong nonce (exit 0) — identity is a presence test, not a comparison; a local squatter would be handed the real UI origin"; cat "$RUN/applaunch4.log"; exit 1; fi
+          if grep -q "already running" "$RUN/applaunch4.log"; then echo "FAIL: probe logged 'already running' for a MISMATCHED nonce"; cat "$RUN/applaunch4.log"; exit 1; fi
+          if [ "$BADCOUNT" != "1" ] || [ "$BADSTILL" != "0" ]; then echo "FAIL: mismatch relaunch disturbed the running server (count=$BADCOUNT alive=$BADSTILL)"; exit 1; fi
+          echo "SMOKE OK: app-launch detach, serve, redundant relaunch, nonce MATCH and nonce-MISMATCH rejection all behave"
 
       - name: Smoke test iroh native binding
         # Proves the standalone binary can dlopen the bundled @number0/iroh .node

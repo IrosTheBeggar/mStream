@@ -221,6 +221,13 @@ console.log(`Done: dist/${bundleName}.zip`);
 // src/util/mac-app-launch.js, which keys off CFBundleIdentifier below (the two
 // must stay in sync).
 //
+// KNOWN LIMITATION (deferred, #802): with no Dock presence the running server
+// has no user-facing Quit — re-clicking the app only reopens the browser, so
+// stopping it means Activity Monitor or `kill`. The planned home for a Quit is
+// the macOS menu-bar status item tracked with the tray/autostart work, which
+// will call a graceful-shutdown path; deliberately not added here to keep this
+// PR scoped. See src/util/mac-app-launch.js.
+//
 // The NSLocalNetwork/NSBonjour keys caption macOS 15+'s Local Network consent
 // prompt, which fires on first launch because mDNS advertising
 // (_mstream._tcp, src/discovery/mdns.js) is on by default — without them the

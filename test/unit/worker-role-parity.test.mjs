@@ -46,9 +46,23 @@ test('every launchWorker role has a self-dispatch case (Bun standalone contract)
     `roles launched but not dispatched in maybeRunWorker(): ${missing.join(', ')} — these die with "Unknown mStream worker role" in every Bun standalone binary`);
 });
 
-test('every dispatched role points at a worker module that exists on disk', () => {
+test('every dispatched role embeds as a static-literal import that exists on disk', () => {
+  // `cases` is deliberately STRICTER than the dispatchedRoles scan above: it
+  // also requires the case body to be a static single-quoted import('...'),
+  // the only form Bun's --compile bundler can see and embed. So a role that
+  // dispatches via a non-literal specifier — a variable, a computed value, even
+  // a double-quoted string — appears in dispatchedRoles but NOT here, and its
+  // module never enters the standalone binary; the role then dies at runtime
+  // with "Cannot find module ... from /$bunfs/root/" though the file is on
+  // disk. Assert coverage, not a count: a `cases.length >= N` check passes
+  // vacuously while that exact regression slips through (it still leaves N
+  // other cases). This is the Bun-only failure class the whole file exists for.
   const cases = [...dispatcher.matchAll(/case\s+['"]([\w-]+)['"]\s*:\s*await import\('([^']+)'\)/g)];
-  assert.ok(cases.length >= 7, `expected the dispatch switch to be found, got ${cases.length} cases`);
+  assert.ok(dispatchedRoles.size >= 7, `expected the dispatch switch to be found, got ${dispatchedRoles.size} roles`);
+  const embeddable = new Set(cases.map(([, role]) => role));
+  const notEmbeddable = [...dispatchedRoles].filter(r => !embeddable.has(r));
+  assert.deepEqual(notEmbeddable, [],
+    `dispatch cases whose import is not a static single-quoted literal: ${notEmbeddable.join(', ')} — Bun's --compile bundler cannot embed these, so the role dies at runtime with "Cannot find module" despite the file existing on disk`);
   for (const [, role, spec] of cases) {
     // Existence check, not an import: worker modules run their job ON import
     // (each reads its payload from argv), so importing one here would execute
