@@ -29,6 +29,14 @@ export function run() {
     winston.error(`Image Compress Error: ${data}`);
   });
 
+  // A spawn failure emits 'error' and never 'close'. Without this listener
+  // that's an unhandled EventEmitter error — a dead server — and runningTask
+  // would stay latched, blocking every later compress run.
+  forkedScan.on('error', (err) => {
+    winston.error(`Image compress script failed to start: ${err.message}`);
+    runningTask = undefined;
+  });
+
   forkedScan.on('close', (code) => {
     winston.info(`Image compress script completed with code ${code}`);
     runningTask = undefined;

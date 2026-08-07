@@ -164,7 +164,9 @@ function downloadToBuffer(url) {
         res.on('data', c => {
           received += c.length;
           if (received > MAX_BUFFER_BYTES) {
-            return res.destroy(new Error(`Response exceeds ${MAX_BUFFER_BYTES} bytes for ${u}`));
+            const tooBig = new Error(`Response exceeds ${MAX_BUFFER_BYTES} bytes for ${u}`);
+            res.destroy(tooBig);
+            return reject(tooBig);
           }
           chunks.push(c);
         });
@@ -172,7 +174,16 @@ function downloadToBuffer(url) {
         res.on('error', reject);
       });
       req.on('error', reject);
-      req.setTimeout(HTTP_TIMEOUT_MS, () => req.destroy(new Error(`Timeout downloading ${u}`)));
+      // Reject explicitly as well as destroying: Bun's destroy(err) emits no
+      // 'error' event, so relying on the listener above would leave this
+      // promise pending forever on a stalled mirror — the timeout guard
+      // achieving the exact opposite of its purpose. Settling twice is a
+      // no-op, so Node (which does emit) is unaffected.
+      req.setTimeout(HTTP_TIMEOUT_MS, () => {
+        const timedOut = new Error(`Timeout downloading ${u}`);
+        req.destroy(timedOut);
+        reject(timedOut);
+      });
     };
     follow(url);
   });
@@ -206,7 +217,14 @@ function downloadToFile(url, destPath) {
         res.pipe(out);
       });
       req.on('error', reject);
-      req.setTimeout(HTTP_TIMEOUT_MS, () => req.destroy(new Error(`Timeout downloading ${u}`)));
+      // See downloadToBuffer: Bun's destroy(err) emits no 'error', so the
+      // rejection has to be explicit or a stalled mirror hangs the ffmpeg
+      // install — and the boot scan chained behind it — forever.
+      req.setTimeout(HTTP_TIMEOUT_MS, () => {
+        const timedOut = new Error(`Timeout downloading ${u}`);
+        req.destroy(timedOut);
+        reject(timedOut);
+      });
     };
     follow(url);
   });
