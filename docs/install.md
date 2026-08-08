@@ -7,9 +7,8 @@ linux-x64-musl, linux-arm64-musl, darwin-x64, darwin-arm64). They embed their ow
 runtime — no Node.js install.
 
 A bundle is a **folder**, not a single file: the server binary plus `webapp/`
-(the UI) and `bin/` (sidecar binaries). Keep them together and run the binary
-**in place** — it creates its database, config, and caches next to the binary on
-first run (under `save/`).
+(the UI) and `bin/` (sidecar binaries). Keep them together; the bundle itself
+can live anywhere.
 
 ```shell
 # Linux / macOS (Windows: just extract the .zip in Explorer)
@@ -19,20 +18,44 @@ cd mStream-<version>-linux-x64
 # then open http://localhost:3000
 ```
 
-On first run it creates `save/conf/default.json`. Edit it to add your music and
+**Where your data lives.** On first run the binary creates its config,
+database, and caches in your user data directory:
+
+| OS | Data directory |
+|---|---|
+| Windows | `%LOCALAPPDATA%\mStream` |
+| macOS | `~/Library/Application Support/mStream` |
+| Linux | `$XDG_DATA_HOME/mstream` (default `~/.local/share/mstream`) |
+
+The config is `conf/default.json` in there. Edit it to add your music and
 restart, or pass your own config with `-j <path>`:
 
 ```json
 { "port": 3000, "folders": { "music": { "root": "/absolute/path/to/music" } } }
 ```
 
+Upgrading an older bundle that already has a `save/conf/default.json` next to
+the binary? That config keeps being used — nothing moves. To get the same
+next-to-binary layout on a fresh install (USB stick, one-folder deployments),
+run with `--portable`.
+
+**Quick Connect is on by default** in the config the binary generates: the web
+UI shows a Quick Connect code/QR that the mStream apps can use to connect from
+anywhere — no port forwarding. It's the standard connection setup for this
+install method. For a headless box that shouldn't run a remote-access tunnel
+by default, launch with `--quick-connect-off-by-default` (e.g. in a systemd
+unit): the first-run config is then generated with it disabled. The flag only
+shapes that generated default — it never changes an existing config, so
+enabling Quick Connect yourself later always sticks, flag or no flag.
+
 **Platform notes**
 
 * **Windows** — run `mStream.exe`.
-* **macOS** — the bundle is `mStream.app`. It is a *portable* app: run it where
-  you extracted it (it writes its data inside the bundle). Do **not** move it
-  into `/Applications` (app data can't be written there). To see logs, launch
-  from a terminal: `./mStream.app/Contents/MacOS/mStream`.
+* **macOS** — the bundle is `mStream.app`; data lives in
+  `~/Library/Application Support/mStream`, so the app can live anywhere,
+  including `/Applications`. To see logs, launch from a terminal:
+  `./mStream.app/Contents/MacOS/mStream`. (Older installs that wrote data
+  inside the bundle keep working in place — see the upgrade note above.)
 * **Linux** — a `mStream.desktop` launcher and `mStream.png` icon are included
   for adding mStream to your application menu. Before using the launcher, replace
   the `%INSTALL_DIR%` placeholders in `mStream.desktop` with the absolute extract
