@@ -45,6 +45,10 @@
         var btn = document.getElementById('quick-connect-btn');
         if (btn) { btn.style.display = ''; }
         renderQr(d.code);
+        // Deep link for the desktop launcher's tray menu ("Quick Connect"
+        // opens the browser at /#quick-connect): pop the modal once the code
+        // is confirmed available. No-op on servers that don't share the code.
+        if (window.location.hash === '#quick-connect') { window.QUICKCONNECT.open(); }
       })
       .catch(function () { /* not shared / unreachable — stay hidden */ });
   }

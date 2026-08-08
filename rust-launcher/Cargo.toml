@@ -1,0 +1,47 @@
+[package]
+name = "mstream-launcher"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mstream-launcher"
+path = "src/main.rs"
+
+[dependencies]
+# Tray icon + menu (Tauri's tray-icon, which re-exports muda for the menu
+# types). Both need a live event loop on the MAIN thread; tao supplies the
+# cross-platform pump (win32 message loop / NSApplication / gtk). Linux
+# build deps: libgtk-3-dev + libayatana-appindicator3-dev; at runtime a
+# missing StatusNotifier host degrades gracefully (server still runs).
+tray-icon = "0.19"
+tao = "0.30"
+# Login-item registration: HKCU Run key (Windows), LaunchAgent plist (macOS,
+# see set_use_launch_agent below — the AppleScript default would tie us to
+# System Events), XDG autostart .desktop (Linux). The launcher registers
+# ITSELF (with --autostarted), never the server.
+auto-launch = "0.5"
+# Default-browser opener; that_detached so the browser never ties to our
+# process lifetime.
+open = "5"
+# Single-instance advisory file lock in the data home. A second launch must
+# focus the running server (open the browser), not race it for the port.
+fslock = "0.2"
+# Read the server config for the port; read/write the tiny launcher state file.
+serde_json = "1"
+# Decode the embedded tray PNG (build/icon.png) to the RGBA buffer tray-icon
+# wants. Deliberately not the `image` crate — png alone keeps the build light.
+png = "0.17"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_System_Console",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+strip = true
+lto = true
