@@ -41,6 +41,10 @@ import winston from 'winston';
 import * as config from '../state/config.js';
 import * as db from './manager.js';
 import * as discoveryDb from './discovery-db.js';
+import {
+  CACHE_EXT as WAVEFORM_CACHE_EXT,
+  FAILED_EXT as WAVEFORM_FAILED_EXT,
+} from './waveform-lib.js';
 
 // Worker-mirror duration windows. Deliberately duplicated from the
 // enqueue pre-checks in task-queue.js (which themselves mirror the
@@ -267,9 +271,12 @@ function waveformCoverage(d, now) {
     let bins = 0;
     let failed = 0;
     try {
+      // Current-generation names only. Artifacts from a superseded bar
+      // format are swept at boot, but until that lands they must not be
+      // counted as coverage the operator does not actually have.
       for (const name of fs.readdirSync(config.program.storage.waveformCacheDirectory)) {
-        if (name.endsWith('.bin')) { bins++; }
-        else if (name.endsWith('.failed')) { failed++; }
+        if (name.endsWith(WAVEFORM_CACHE_EXT)) { bins++; }
+        else if (name.endsWith(WAVEFORM_FAILED_EXT)) { failed++; }
       }
     } catch (err) {
       // Missing dir = simply no waveforms generated yet (the pass creates

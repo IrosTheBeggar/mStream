@@ -11,11 +11,12 @@ import { SCHEMA_VERSION } from './schema.js';
 import { HASH_GENERATION } from './audio-hash.js';
 import { getDirname, appRoot } from '../util/esm-helpers.js';
 import { launchWorker, workerReaperMarker } from '../util/worker-process.js';
-import { ffmpegBin, ffprobeBin, ensureFfmpeg } from '../util/ffmpeg-bootstrap.js';
+import { ffmpegBin, ffprobeBin, ensureFfmpeg, getResolvedSource } from '../util/ffmpeg-bootstrap.js';
 import * as dlnaApi from '../api/dlna.js';
 import * as discoveryDb from './discovery-db.js';
 import * as libraryWatcher from '../util/library-watcher.js';
 import * as waveformLib from './waveform-lib.js';
+import * as waveformFallback from './waveform-fallback.js';
 import { invalidateCoverageCache } from './enrichment-status-lib.js';
 
 const __dirname = getDirname(import.meta.url);
@@ -1131,19 +1132,89 @@ function runWaveformTask(taskObj) {
       winston.error(`Waveform pass FAILED with exit code ${code}`);
     }
     clearScannerPidfile(config.program.storage.dbDirectory);
-    if (activeTask?.child === wfChild) {
-      removeFromKillQueue(activeTask.killFn);
-      activeTask = null;
-    }
-    finishEnrichment('waveform', code, signal, completeEvt);
-    nextTask();
-    checkQueueDrainedSideEffects();
+
+    // Releasing activeTask is what makes the queue look idle, so it stays
+    // held until the ffmpeg half below has finished too — otherwise a scan
+    // could start alongside it, against the single-task rule, and an
+    // observer could read 'idle' before finishEnrichment had landed.
+    const done = () => {
+      if (activeTask?.child === wfChild) {
+        removeFromKillQueue(activeTask.killFn);
+        activeTask = null;
+      }
+      finishEnrichment('waveform', code, signal, completeEvt);
+      nextTask();
+      checkQueueDrainedSideEffects();
+    };
+    // symphonia can't decode Opus, so the rust pass leaves those keys
+    // uncached by design. Sweep them (and anything else it gave up on)
+    // with ffmpeg before the pass counts as finished — otherwise every
+    // first play of an Opus track pays a cold decode. Skipped when the
+    // pass was killed (shutdown shouldn't start new work) or failed
+    // (a broken/stale binary means lazy generation is already the only
+    // producer, and the endpoint still covers it).
+    if (signal || code !== 0) { return done(); }
+    runWaveformFfmpegFallback().then(done, done);
   };
   wfChild.on('error', (err) => {
     winston.error(`Waveform pass failed to start: ${err.message}`);
     closeOnce(-1, null);
   });
   wfChild.on('close', (code, signal) => closeOnce(code, signal));
+}
+
+// Second half of the waveform pass: covers content symphonia structurally
+// cannot decode (Opus) plus anything it failed on, using the same ffmpeg
+// generator the on-demand endpoint uses. Runs in-process — ffmpeg does the
+// work in its own process and this side is bookkeeping — under its own kill
+// registration so a shutdown between the rust child closing and this
+// finishing stops it promptly. Never rejects: the rust pass's outcome is
+// what the enrichment status reports, and a fallback failure must not turn
+// a successful pass into a failed one.
+async function runWaveformFfmpegFallback() {
+  // Readiness check, not a bootstrap: ensureFfmpeg() may go and DOWNLOAD a
+  // toolchain, which is not something a background enrichment pass should
+  // trigger. If ffmpeg isn't resolved yet the pass simply skips — the
+  // on-demand endpoint still covers these tracks, and the next pass runs
+  // with it resolved.
+  if (!getResolvedSource()) {
+    winston.info('Waveform ffmpeg fallback skipped — ffmpeg not resolved yet');
+    return;
+  }
+  const abort = { stopped: false };
+  const killFn = () => { abort.stopped = true; };
+  addToKillQueue(killFn);
+  try {
+    const res = await waveformFallback.run({
+      db: db.getDB(),
+      cacheDir: config.program.storage.waveformCacheDirectory,
+      ffmpegBin: ffmpegBin(),
+      abort,
+      onProgress: (done, total) => reportEnrichment('waveform',
+        { progress: { attempted: done, total } }),
+    });
+    if (res.total > 0) {
+      winston.info(
+        `Waveform ffmpeg fallback: ${res.generated} generated, ${res.failed} failed ` +
+        `(${res.total} attempted)` +
+        (res.capped ? '; more remain, queueing another pass' : ''));
+      invalidateCoverageCache();
+    }
+    // Chain another pass so a backlog larger than one run's cap drains on
+    // its own instead of waiting for N more scans. Gated on the run having
+    // RESOLVED something: every generate writes a cache file and every
+    // failure writes a marker, so real progress always shrinks the work
+    // list — but a batch of rows whose files have all vanished resolves
+    // nothing (deliberately: no marker for a file that may come back), and
+    // re-queueing on that would spin forever.
+    if (res.capped && (res.generated + res.failed) > 0 && !abort.stopped) {
+      addWaveformTask();
+    }
+  } catch (err) {
+    winston.warn(`Waveform ffmpeg fallback failed: ${err.message}`);
+  } finally {
+    removeFromKillQueue(killFn);
+  }
 }
 
 // ── Album-art download task ─────────────────────────────────────────────────

@@ -107,14 +107,21 @@ before(async () => {
   d.prepare(`INSERT INTO lyrics_cache (audio_hash, status, fetched_at) VALUES ('h-orphan', 'hit', ?)`)
     .run(Date.now());
 
-  // Waveform cache artifacts: 2 bins + 1 failed marker; the .bin.tmp is
-  // an in-flight temp file the counter must ignore. Global hash pool is
-  // h1/h2/h4/h5 (T3 is hashless) → remaining = 4 − 2 − 1 = 1.
+  // Waveform cache artifacts: 2 bins + 1 failed marker; the trailing-.tmp
+  // file is an in-flight write the counter must ignore, as are the two
+  // previous-generation names. Global hash pool is h1/h2/h4/h5 (T3 is
+  // hashless) → remaining = 4 − 2 − 1 = 1.
   const wf = config.program.storage.waveformCacheDirectory;
-  fs.writeFileSync(path.join(wf, 'h1.bin'), Buffer.alloc(8));
-  fs.writeFileSync(path.join(wf, 'h2.bin'), Buffer.alloc(8));
-  fs.writeFileSync(path.join(wf, 'h4.failed'), '');
-  fs.writeFileSync(path.join(wf, 'h5.bin.tmp'), Buffer.alloc(8));
+  const { cacheFilePath, failedMarkerPath } = await import('../../src/db/waveform-lib.js');
+  fs.writeFileSync(cacheFilePath(wf, 'h1'), Buffer.alloc(8));
+  fs.writeFileSync(cacheFilePath(wf, 'h2'), Buffer.alloc(8));
+  fs.writeFileSync(failedMarkerPath(wf, 'h4'), '');
+  fs.writeFileSync(cacheFilePath(wf, 'h5') + '.tmp', Buffer.alloc(8));
+  // Artifacts from a superseded bar format describe different bytes for
+  // the same audio and are swept at boot — they must never be counted as
+  // coverage the operator does not actually have.
+  fs.writeFileSync(path.join(wf, 'h5.bin'), Buffer.alloc(8));
+  fs.writeFileSync(path.join(wf, 'h5.failed'), '');
 
   // Discovery: h1 embedded under the CURRENT model → done. h5 embedded
   // under a stale model → still remaining (the worker re-embeds it).
