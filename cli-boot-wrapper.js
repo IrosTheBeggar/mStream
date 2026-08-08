@@ -3,10 +3,11 @@
 // Must stay the first import: arms the console-loss watcher (see
 // src/util/supervision.js) before any other module can write.
 import { watchSupervisorStdin } from './src/util/supervision.js';
+import { existsSync } from 'fs';
 import { join } from 'path';
 import { maybeRunWorker } from './src/util/worker-process.js';
 import { detachForFinderLaunch } from './src/util/mac-app-launch.js';
-import { appRoot } from './src/util/esm-helpers.js';
+import { appRoot, dataRoot } from './src/util/esm-helpers.js';
 import pkg from './package.json' with { type: 'json' };
 
 const version = pkg.version;
@@ -21,7 +22,14 @@ if (await maybeRunWorker()) {
   // Default config lives next to the app: the repo root under Node, or the
   // binary's own directory under a Bun standalone build (appRoot resolves both).
   // MSTREAM_CONFIG overrides the default; an explicit -j/--json overrides that.
-  const defaultJson = process.env.MSTREAM_CONFIG || join(appRoot, 'save/conf/default.json');
+  //
+  // When the app is read-only (a translocated macOS .app), writable state moves
+  // to dataRoot — but keep honoring a config that ALREADY exists next to the
+  // app first, so a pre-provisioned read-only install keeps booting from the
+  // config it shipped with instead of silently starting empty somewhere else.
+  const bundledJson = join(appRoot, 'save/conf/default.json');
+  const defaultJson = process.env.MSTREAM_CONFIG
+    || (existsSync(bundledJson) ? bundledJson : join(dataRoot, 'save/conf/default.json'));
   const { json, supervised } = parseArgs(process.argv.slice(2), defaultJson);
 
   // Finder double-click (macOS .app only — a no-op everywhere else): hand

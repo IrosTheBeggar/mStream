@@ -3,12 +3,16 @@ import path from 'path';
 import crypto from 'crypto';
 import Joi from 'joi';
 import winston from 'winston';
-import { appRoot } from '../util/esm-helpers.js';
+import { appRoot, dataRoot } from '../util/esm-helpers.js';
 import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
 import { CLIENT_TYPE, ENABLED_FOR } from '../torrent/constants.js';
 import { EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL } from '../db/discovery-features-lib.js';
 
-const DEFAULT_DB_DIRECTORY = path.join(appRoot, 'save/db');
+// Writable state hangs off dataRoot, not appRoot: they are the same directory
+// unless the app itself is read-only (a translocated/quarantined macOS .app —
+// see resolveDataRoot in util/esm-helpers.js). Shipped assets below (ffmpeg,
+// rpn, webapp) stay on appRoot, which is where they actually ship.
+const DEFAULT_DB_DIRECTORY = path.join(dataRoot, 'save/db');
 
 /**
  * Default for storage.modelCacheDirectory when the config doesn't set it:
@@ -32,10 +36,10 @@ export function deriveModelCacheDirectory(dbDirectory) {
 }
 
 const storageJoi = Joi.object({
-  albumArtDirectory: Joi.string().default(path.join(appRoot, 'image-cache')),
+  albumArtDirectory: Joi.string().default(path.join(dataRoot, 'image-cache')),
   dbDirectory: Joi.string().default(DEFAULT_DB_DIRECTORY),
-  logsDirectory: Joi.string().default(path.join(appRoot, 'save/logs')),
-  waveformCacheDirectory: Joi.string().default(path.join(appRoot, 'waveform-cache')),
+  logsDirectory: Joi.string().default(path.join(dataRoot, 'save/logs')),
+  waveformCacheDirectory: Joi.string().default(path.join(dataRoot, 'waveform-cache')),
   // Where ML model weights download/cache (currently: the discovery
   // embedding model, ~18 MB EffNet; CLAP is far larger). Deliberately
   // OUTSIDE node_modules — transformers.js's default cache lands in there
@@ -314,7 +318,12 @@ const adminAccessOptions = Joi.object({
 });
 
 const transcodeOptions = Joi.object({
-  ffmpegDirectory: Joi.string().default(path.join(appRoot, 'bin/ffmpeg')),
+  // dataRoot, not appRoot: nothing ships ffmpeg inside the bundle — this is the
+  // directory mStream DOWNLOADS into and auto-updates, so it has to be
+  // writable. Must stay in step with BUNDLED_FFMPEG_DIR in
+  // util/ffmpeg-bootstrap.js, which compares against it to tell "the install we
+  // manage" from "a custom directory the user pointed us at".
+  ffmpegDirectory: Joi.string().default(path.join(dataRoot, 'bin/ffmpeg')),
   defaultCodec: Joi.string().valid(...getTransCodecs()).default('opus'),
   defaultBitrate: Joi.string().valid(...getTransBitrates()).default('96k'),
   // Auto-update the managed ffmpeg build (BtbN on Linux/Windows, martin-riedl

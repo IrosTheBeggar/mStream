@@ -84,3 +84,6 @@ save/waveform-cache-smoke/
 docs/api.html
 model-cache/
 
+# Scratch files left in the repo root by `bun build --compile`; one per build.
+.*.bun-build
+

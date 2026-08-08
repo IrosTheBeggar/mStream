@@ -9,6 +9,8 @@ import { compression } from './util/compression.js';
 import jwt from 'jsonwebtoken';
 import http from 'http';
 import https from 'https';
+import { dataRoot, usingFallbackDataRoot } from './util/esm-helpers.js';
+import { CHALLENGE_HEADER, PROOF_HEADER, computeProof } from './util/instance-proof.js';
 
 import * as dbApi from './api/db.js';
 import * as discoveryApi from './api/discovery.js';
@@ -83,14 +85,6 @@ function instanceNoncePath() {
   return path.join(config.program.storage.dbDirectory, INSTANCE_NONCE_FILE);
 }
 
-// Loopback-only gate for the nonce header. req.socket.remoteAddress is the
-// real peer — deliberately NOT req.ip, which honors X-Forwarded-For under
-// trustProxy and would let a remote client spoof its way to the nonce.
-function isLoopbackRequest(req) {
-  const addr = req.socket && req.socket.remoteAddress;
-  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
-}
-
 // True from the start of a reboot until its re-served instance is listening.
 // Guards against overlapping reboots (two quick admin saves, two admin tabs):
 // a second server.close() on an already-closing server still runs its callback,
@@ -117,7 +111,16 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   } catch (err) {
     winston.error('Failed to validate config file', { stack: err });
     // A Finder-launched app has no console to print to — raise a dialog.
-    macAppLaunch.announceBootFailure(`mStream could not start — error in the config file:\n${configFile}\n\n${err.message}`);
+    // A permission/read-only failure is NOT a malformed config, and saying so
+    // sends the user hunting through a file that is usually fine (or absent):
+    // name the real cause instead. dataRoot already redirects writable state
+    // away from a read-only app (util/esm-helpers.js), so reaching this means
+    // the chosen location itself is unwritable — an explicit -j/MSTREAM_CONFIG
+    // pointing somewhere read-only, or a container mount without permission.
+    const denied = err.code === 'EROFS' || err.code === 'EACCES' || err.code === 'EPERM';
+    macAppLaunch.announceBootFailure(denied
+      ? `mStream could not start — it can't write to:\n${configFile}\n\nThe location is read-only or permission was denied. If you launched mStream from a downloaded copy, move it to your Applications folder and open it again.\n\n${err.message}`
+      : `mStream could not start — error in the config file:\n${configFile}\n\n${err.message}`);
     process.exit(1);
   }
 
@@ -128,6 +131,11 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   logger.setBufferCapacity(config.program.logBufferSize);
   if (config.program.writeLogs) {
     logger.addFileLogger(config.program.storage.logsDirectory);
+  }
+  // Say so when the app couldn't be written to and state went elsewhere —
+  // otherwise "where is my database?" has no answer anywhere in the logs.
+  if (usingFallbackDataRoot) {
+    winston.info(`App directory is read-only — storing config, database and caches in ${dataRoot}`);
   }
 
   // Set server
@@ -166,16 +174,22 @@ export async function serveIt(configFile, { relisten = null } = {}) {
       'Access-Control-Allow-Headers',
       'Origin, X-Requested-With, Content-Type, Accept'
     );
-    // Identity headers for the macOS relaunch probe (src/util/mac-app-launch.js),
-    // both loopback-only. The probe is a same-machine question, so neither
-    // header has any reason to cross the network: on a WAN-exposed instance
-    // X-Mstream would turn "is this mStream?" from a heuristic into a
-    // one-request positive ID for mass scanners, and the nonce is the secret
-    // that proves the port holder is our own server rather than a local
-    // impostor. remoteAddress, not req.ip — see isLoopbackRequest.
-    if (isLoopbackRequest(req)) {
-      res.header('X-Mstream', 'true');
-      res.header('X-Mstream-Instance', instanceNonce);
+    // Identity proof for the macOS relaunch probe (src/util/mac-app-launch.js).
+    // ONLY answers a caller that presents a challenge, and answers with an HMAC
+    // keyed by the per-boot nonce — never the nonce itself. See
+    // util/instance-proof.js for why the proof runs in this direction.
+    //
+    // This deliberately sits ahead of the auth wall: the probe is a launcher
+    // with no credentials. That is safe because the reply proves knowledge
+    // without disclosing it — the previous version published the nonce
+    // outright to every loopback caller, which let any local process read the
+    // secret it was never supposed to have (and, via mStream's own
+    // 127.0.0.1 iroh/federation bridges and reverse-proxy setups, leaked it
+    // off-machine to remote callers that merely LOOKED local).
+    const challenge = req.headers[CHALLENGE_HEADER];
+    if (challenge) {
+      const proof = computeProof(instanceNonce, challenge);
+      if (proof) { res.header(PROOF_HEADER, proof); }
     }
     next();
   });
@@ -704,13 +718,19 @@ export function reboot() {
     // gossiping their catalog until a full process restart, while the server
     // reports the feature off.
     //
-    // Unlike the teardowns above this one must be SEQUENCED before the
-    // re-serve, not fired and forgotten: the stack guards start with a
-    // `running` flag it only clears at the END of stop, so a restart landing
-    // mid-stop returns early as a no-op and the stop then kills the sidecar it
-    // was supposed to replace — leaving the feature dead until a full restart,
-    // which is worse than the leak. Bounded by a timeout so a wedged teardown
-    // can delay the restart but never block it.
+    // Unlike the teardowns above this one is SEQUENCED before the re-serve
+    // rather than fired and forgotten, so a reboot that disables the feature
+    // has actually released the sidecar before the new instance boots.
+    //
+    // The timeout is a LATENCY bound, not the correctness mechanism: a wedged
+    // teardown can delay the restart but never block it. Correctness lives in
+    // the stack itself, which now clears `running` up front and makes a start
+    // wait on the in-flight stop (see startDiscoveryP2pStack). That ordering
+    // matters because a full stop can outlast this timeout — the sidecar gets
+    // a shutdown-RPC grace AND a SIGKILL fallback — and when it does, the
+    // restart lands mid-stop. Before the stack serialized, that combination
+    // silently left the feature dead: the restart no-oped on a stale flag and
+    // the late stop killed the sidecar it was meant to replace.
     const p2pStopped = Promise.race([
       import('./state/discovery-p2p-stack.js')
         .then((m) => m.stopDiscoveryP2pStack())

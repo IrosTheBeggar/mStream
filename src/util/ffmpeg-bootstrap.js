@@ -21,10 +21,14 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import winston from 'winston';
 import * as config from '../state/config.js';
-import { appRoot } from './esm-helpers.js';
+import { dataRoot } from './esm-helpers.js';
 
 const binaryExt = process.platform === 'win32' ? '.exe' : '';
-const BUNDLED_FFMPEG_DIR = path.join(appRoot, 'bin/ffmpeg');
+// dataRoot, not appRoot: ffmpeg is never shipped in the bundle, so this is a
+// download target and must be writable (a translocated macOS .app is not).
+// Kept identical to config's transcode.ffmpegDirectory default — the two are
+// compared to distinguish our managed install from a user's custom directory.
+const BUNDLED_FFMPEG_DIR = path.join(dataRoot, 'bin/ffmpeg');
 const MIN_FFMPEG_MAJOR = 6;
 const CHECKSUMS_URL = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/checksums.sha256';
 // Download hardening: cap redirect chains and apply a socket-inactivity

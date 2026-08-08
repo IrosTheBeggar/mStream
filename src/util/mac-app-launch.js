@@ -32,6 +32,7 @@
 import { spawn } from 'child_process';
 import winston from 'winston';
 import { isBunStandalone } from './esm-helpers.js';
+import { CHALLENGE_HEADER, PROOF_HEADER, newChallenge, verifyProof } from './instance-proof.js';
 
 export const MAC_BUNDLE_ID = 'io.mstream.server';
 
@@ -139,20 +140,25 @@ export function announceBootFailure(message) {
 
 // Ask whatever is already on the port whether it is OUR mStream.
 //
-// The X-Mstream marker alone can't answer that: it's on every response, so any
-// local process can set it, and a "yes" here makes us open the user's browser
-// at that port and exit 0 — handing a squatter the real UI's origin, where the
-// web client keeps its token in localStorage. So identity rests on
-// `expectedNonce`: a per-boot random value the running instance publishes only
-// to loopback callers and mirrors into a 0600 file only we can read (written by
-// server.js). No nonce, or a mismatch, means "not provably ours" → the caller
-// alerts instead of redirecting. TLS verification stays off: a self-signed cert
-// is normal for a home server, and the nonce — not the cert — is the proof.
+// A marker header can't answer that — any local process can set one — and
+// getting it wrong matters: a "yes" makes us open the user's browser at that
+// port and exit 0, handing a squatter the real UI's origin, where the web
+// client keeps its token in localStorage. So we challenge and make the server
+// prove it: send fresh random bytes, require back HMAC(nonce, challenge) where
+// the nonce is the per-boot secret mirrored into a 0600 file only our own user
+// can read (written by server.js). No nonce on disk, no proof, or a mismatch
+// all mean "not provably ours" → the caller alerts instead of redirecting.
+//
+// The nonce never leaves this process, so nothing an impostor observes helps it
+// answer, and a stale nonce file from a previous boot can't be replayed by a
+// squatter that never saw it. TLS verification stays off: a self-signed cert is
+// normal for a home server, and the proof — not the cert — is the identity.
 function probeExistingServer(protocol, port, address, expectedNonce) {
   return new Promise((resolve) => {
     if (!expectedNonce) { resolve(false); return; }
     let settled = false;
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const challenge = newChallenge();
     import(protocol === 'https' ? 'https' : 'http').then(({ default: mod }) => {
       const req = mod.get({
         host: urlHost(address).replace(/^\[|\]$/g, ''),
@@ -160,9 +166,10 @@ function probeExistingServer(protocol, port, address, expectedNonce) {
         path: '/',
         timeout: 2000,
         rejectUnauthorized: false,
+        headers: { [CHALLENGE_HEADER]: challenge },
       }, (res) => {
         res.resume();
-        done(res.headers['x-mstream-instance'] === expectedNonce);
+        done(verifyProof(expectedNonce, challenge, res.headers[PROOF_HEADER]));
       });
       req.on('timeout', () => { req.destroy(); });
       // 'close' is the only settle signal Bun guarantees here: its

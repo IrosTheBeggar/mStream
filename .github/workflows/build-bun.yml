@@ -166,9 +166,16 @@ jobs:
             # and most others it has NO unchanged-value short-circuit, so both
             # POSTs really do reboot (with a no-op second POST this test passes
             # against the bug). Bind stays reachable at 127.0.0.1.
-            curl -s -o /dev/null --max-time 5 -X POST -H 'Content-Type: application/json' -d '{"address":"127.0.0.1"}' "http://127.0.0.1:3399/api/v1/admin/config/address" &
+            # Capture each POST's status. Previously these were `curl -s` with
+            # no -f and their exit codes discarded by `wait`, so if the endpoint
+            # ever 400s or moves (a renamed Joi key, a moved route) NO reboot
+            # fired, the untouched server answered every probe, and the step
+            # printed "survived two overlapping reboots" — the rebootInFlight
+            # coalescing could have been deleted outright and this stayed green.
+            CONCURRENT_BOOTS_BEFORE=$(grep -c "Access mStream locally" "$RUN/boot.log")
+            curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: application/json' -d '{"address":"127.0.0.1"}' "http://127.0.0.1:3399/api/v1/admin/config/address" > "$RUN/post1.code" &
             C1=$!
-            curl -s -o /dev/null --max-time 5 -X POST -H 'Content-Type: application/json' -d '{"address":"127.0.0.1"}' "http://127.0.0.1:3399/api/v1/admin/config/address" &
+            curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: application/json' -d '{"address":"127.0.0.1"}' "http://127.0.0.1:3399/api/v1/admin/config/address" > "$RUN/post2.code" &
             C2=$!
             wait $C1 $C2
             CONCURRENT_OK=0
@@ -182,6 +189,27 @@ jobs:
             sleep 10
             curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3399/api/v1/ping" || CONCURRENT_OK=0
             kill -0 "$SRV" 2>/dev/null || CONCURRENT_OK=0
+            # Fail closed on the TRIGGERS, not just on survival: both requests
+            # must have been accepted, and the server must actually have come
+            # back up again afterwards. Without these, "nothing happened" is
+            # indistinguishable from "handled two overlapping reboots".
+            POST1=$(cat "$RUN/post1.code" 2>/dev/null)
+            POST2=$(cat "$RUN/post2.code" 2>/dev/null)
+            CONCURRENT_BOOTS_AFTER=$(grep -c "Access mStream locally" "$RUN/boot.log")
+            if [ "$POST1" != "200" ] || [ "$POST2" != "200" ]; then
+              echo "FAIL: reboot triggers were not accepted (HTTP $POST1 / $POST2) — this step would otherwise pass having rebooted NOTHING"
+              CONCURRENT_OK=0
+            fi
+            if [ "$CONCURRENT_BOOTS_AFTER" -le "$CONCURRENT_BOOTS_BEFORE" ]; then
+              echo "FAIL: no additional boot after the overlapping reboots (before=$CONCURRENT_BOOTS_BEFORE after=$CONCURRENT_BOOTS_AFTER) — the server never actually restarted"
+              CONCURRENT_OK=0
+            fi
+            # Positive evidence that the SECOND request hit the coalescing guard
+            # rather than being silently lost. Advisory: the interleaving is
+            # timing-dependent, so a miss is reported, not fatal.
+            grep -q "Reboot already in progress" "$RUN/boot.log" \
+              && echo "ok: the duplicate reboot request was coalesced" \
+              || echo "note: no coalescing line — the two reboots did not overlap on this runner"
           fi
           kill "$SRV" 2>/dev/null
 
@@ -281,7 +309,34 @@ jobs:
           if [ "$RC4" = "0" ]; then echo "FAIL: probe ACCEPTED a wrong nonce (exit 0) — identity is a presence test, not a comparison; a local squatter would be handed the real UI origin"; cat "$RUN/applaunch4.log"; exit 1; fi
           if grep -q "already running" "$RUN/applaunch4.log"; then echo "FAIL: probe logged 'already running' for a MISMATCHED nonce"; cat "$RUN/applaunch4.log"; exit 1; fi
           if [ "$BADCOUNT" != "1" ] || [ "$BADSTILL" != "0" ]; then echo "FAIL: mismatch relaunch disturbed the running server (count=$BADCOUNT alive=$BADSTILL)"; exit 1; fi
-          echo "SMOKE OK: app-launch detach, serve, redundant relaunch, nonce MATCH and nonce-MISMATCH rejection all behave"
+
+          # Explicit (non-wildcard) bind. The identity exchange used to be gated
+          # on the caller looking like loopback, but a same-host client reaching
+          # a LAN-bound listener is seen as the LAN address — so the server hid
+          # its identity from its OWN probe and every re-click produced a bogus
+          # "port is in use by another application" alert. Nothing caught that,
+          # because every other case here binds the wildcard. Bind a real
+          # interface address and require the relaunch to still recognize us.
+          LANIP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)
+          if [ -z "$LANIP" ]; then
+            echo "note: no LAN address on this runner — skipping the explicit-bind probe case"
+          else
+            printf '{"port":3402,"address":"%s"}' "$LANIP" > "$RUN/bindlaunch-config.json"
+            __CFBundleIdentifier=io.mstream.server "$BIN" -j "$RUN/bindlaunch-config.json" > "$RUN/bind1.log" 2>&1
+            BINDUP=0
+            for i in $(seq 1 30); do
+              sleep 1
+              if curl -sf --max-time 5 -o /dev/null "http://$LANIP:3402/api/v1/ping"; then BINDUP=1; break; fi
+            done
+            if [ "$BINDUP" != "1" ]; then echo "FAIL: explicit-bind server never served on $LANIP:3402"; cat "$RUN/bind1.log"; pkill -f bindlaunch-config.json; exit 1; fi
+            __CFBundleIdentifier=io.mstream.server MSTREAM_MAC_APP_DETACHED=1 "$BIN" -j "$RUN/bindlaunch-config.json" > "$RUN/bind2.log" 2>&1
+            RCBIND=$?
+            pkill -f "bindlaunch-config.json" 2>/dev/null
+            if [ "$RCBIND" != "0" ]; then echo "FAIL: explicit-bind relaunch exited $RCBIND — the probe cannot identify a non-wildcard-bound instance"; cat "$RUN/bind2.log"; exit 1; fi
+            grep -q "already running" "$RUN/bind2.log" || { echo "FAIL: explicit-bind relaunch did not recognize our own instance"; cat "$RUN/bind2.log"; exit 1; }
+            echo "ok: explicit-bind ($LANIP) relaunch recognized its own instance"
+          fi
+          echo "SMOKE OK: app-launch detach, serve, redundant relaunch, nonce MATCH, nonce-MISMATCH rejection, and explicit-bind identity all behave"
 
       - name: Smoke test iroh native binding
         # Proves the standalone binary can dlopen the bundled @number0/iroh .node
