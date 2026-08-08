@@ -12,20 +12,24 @@
 // This runs straight after the rust pass and closes that gap with the same
 // ffmpeg generator the endpoint uses. Two kinds of work:
 //
-//   1. Extensions whose content symphonia may be unable to decode
-//      (CANDIDATE_EXTS: .opus always; .ogg when it carries Opus). The
-//      rust pass leaves those out of its results — extension skip for
-//      .opus, a probed NoDecoder skip for Opus-in-Ogg — with no marker
-//      and no inflated failure count, so they arrive here uncached.
-//   2. Hashes carrying a `symphonia`-only failure marker. ffmpeg decodes
-//      plenty that symphonia won't; a success here deletes the marker.
+//   1. Extensions the rust pass refuses on sight (CANDIDATE_EXTS) — it
+//      never opens these, so they leave no artifact at all.
+//   2. Hashes carrying a `symphonia` (tried and failed) or `no-decoder`
+//      (no decoder for the codec) marker. ffmpeg decodes plenty symphonia
+//      won't; a success here deletes the marker.
+//
+// Source 2 is what makes coverage complete, and it is NOT optional: the
+// set of codecs symphonia can't decode is not knowable from the extension
+// (5.1 and HE-AAC in .m4a/.m4b/.aac fail decoder construction just like
+// Opus in .ogg does), so routing by extension alone left those files with
+// no waveform from either pass. The marker is the rust pass telling us
+// which keys it deferred, whatever the container.
 //
 // Deliberately in-process rather than a forked worker: the CPU cost is
 // ffmpeg's, in its own process, and this side is bookkeeping. Concurrency
 // matches the on-demand endpoint so a pass and a burst of playback
 // requests can't together fork a decoder per core.
 
-import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import winston from 'winston';
@@ -135,7 +139,15 @@ async function generateOne({ key, paths, cacheDir, ffmpegBin, result }) {
   // sitting on disk.
   let decodeFailures = 0;
   for (const absPath of paths) {
-    if (!fs.existsSync(absPath)) { continue; }
+    // Open, don't stat. existsSync answers "is there a directory entry",
+    // which is not the question — a file can stat fine and still be
+    // unreadable (an ACL change, an antivirus or backup lock, a stale
+    // network mount), and ffmpeg then exits non-zero exactly like
+    // genuinely corrupt audio does. Recording that as ffmpeg's verdict
+    // wrote a marker nothing ever clears: planWork excludes the key, the
+    // endpoint 500s on it forever, and coverage counts it failed for
+    // good. The rust pass has always gated on File::open for this reason.
+    if (!(await isReadable(absPath))) { continue; }
     let bars;
     try {
       bars = await generateWaveformBars(absPath, ffmpegBin);
@@ -149,6 +161,14 @@ async function generateOne({ key, paths, cacheDir, ffmpegBin, result }) {
       if (err.transient) {
         winston.warn(
           `[waveform] ffmpeg fallback deferred for ${absPath}: ${err.message}`);
+        return;
+      }
+      // The file was readable when we started; if it is not readable NOW,
+      // the environment moved under us mid-decode and ffmpeg's exit code
+      // describes that, not the audio. Treat it like a vanished copy.
+      if (!(await isReadable(absPath))) {
+        winston.warn(
+          `[waveform] ffmpeg fallback deferred for ${absPath}: became unreadable mid-decode`);
         return;
       }
       winston.warn(`[waveform] ffmpeg fallback failed for ${absPath}: ${err.message}`);
@@ -219,14 +239,20 @@ async function planWork({ db, cacheDir }) {
   // the extension query, so checking it only on the marker path would
   // re-spawn a doomed 30-second decode on every pass, forever.
   const ffmpegFailed = new Set();
-  const symphoniaFailed = [];
+  const rustDeferred = [];
   const BATCH = 32;
   for (let i = 0; i < markerNames.length; i += BATCH) {
     await Promise.all(markerNames.slice(i, i + BATCH).map(async (name) => {
       const key = name.slice(0, -FAILED_EXT.length);
       const body = await readMarker(path.join(cacheDir, name));
+      // `symphonia` = the rust pass tried and failed. `no-decoder` = it has
+      // no decoder for the codec at all. Both are ours to attempt, and the
+      // second is the ONLY route for an undecodable codec in a container
+      // our extension query doesn't cover (5.1/HE-AAC in .m4a, .m4b, .aac).
       if (body.includes('ffmpeg')) { ffmpegFailed.add(key); }
-      else if (body.includes('symphonia')) { symphoniaFailed.push(key); }
+      else if (body.includes('symphonia') || body.includes('no-decoder')) {
+        rustDeferred.push(key);
+      }
     }));
   }
 
@@ -255,11 +281,12 @@ async function planWork({ db, cacheDir }) {
     await breathe();
   }
 
-  // (2) Hashes symphonia gave up on. Chunked so a library with thousands
-  // of markers doesn't build one enormous IN list.
+  // (2) Hashes the rust pass deferred to us — failed or no-decoder.
+  // Chunked so a library with thousands of markers doesn't build one
+  // enormous IN list.
   const CHUNK = 400;
-  for (let i = 0; i < symphoniaFailed.length; i += CHUNK) {
-    const chunk = symphoniaFailed.slice(i, i + CHUNK);
+  for (let i = 0; i < rustDeferred.length; i += CHUNK) {
+    const chunk = rustDeferred.slice(i, i + CHUNK);
     const placeholders = chunk.map(() => '?').join(',');
     const rows = db.prepare(`
       SELECT t.filepath, t.audio_hash, t.file_hash, l.root_path
@@ -276,4 +303,21 @@ async function planWork({ db, cacheDir }) {
 async function readMarker(file) {
   try { return await fsp.readFile(file, 'utf8'); }
   catch (_err) { return 'symphonia'; }  // unreadable — assume the pass wrote it
+}
+
+// Can we actually READ this path right now? A real open+read of one byte,
+// because that is the operation ffmpeg is about to perform — stat and
+// access(R_OK) both answer a weaker question and miss mandatory locks,
+// offline/recalled cloud files, and directories standing in for files.
+async function isReadable(absPath) {
+  let handle;
+  try {
+    handle = await fsp.open(absPath, 'r');
+    await handle.read(Buffer.alloc(1), 0, 1, 0);
+    return true;
+  } catch (_err) {
+    return false;
+  } finally {
+    if (handle) { await handle.close().catch(() => {}); }
+  }
 }

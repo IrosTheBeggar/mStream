@@ -241,7 +241,10 @@ describe('waveform ffmpeg fallback', () => {
     db.close();
 
     for (const r of [r1, r2]) {
+      assert.equal(r.total, 1, 'the work was genuinely attempted, not skipped');
       assert.equal(r.generated, 0);
+      assert.equal(r.failed, 0,
+        'a write that could not land is not a decode verdict on the audio');
       assert.equal(r.markersRecorded, 0,
         'a marker that never landed must not be counted as durable progress');
     }
@@ -252,26 +255,103 @@ describe('waveform ffmpeg fallback', () => {
 
   test('a cache-write failure is NOT recorded as ffmpeg’s verdict on the audio', { timeout: 60_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
-    const { db, cache } = await makeCase([{ name: 'good.opus', hash: 'aaa' }]);
-    // Obstruct the FINAL path with a directory: the decode succeeds, the
-    // rename cannot land. (The temp path is unique per write, so the final
-    // path is the only deterministic obstruction point.)
-    fs.mkdirSync(cacheFilePath(cache, 'aaa'));
+    const { db, lib } = await makeCase([{ name: 'good.opus', hash: 'aaa' }]);
+    // The cache "directory" is a FILE. Every write into it fails, and —
+    // unlike obstructing the final path with a directory — planWork cannot
+    // mistake the obstruction for a cache hit. That mattered: the first
+    // version of this test planted a directory named <key>.w2.bin, which
+    // planWork classifies as cached by suffix alone, so the run did NOTHING
+    // and every assertion passed vacuously on reverted code.
+    const cache = path.join(path.dirname(lib), 'cache-is-a-file');
+    await fsp.writeFile(cache, 'not a directory');
 
     const res = await run({ db, cacheDir: cache, ffmpegBin: FFMPEG, abort: newAbort() });
 
+    assert.equal(res.total, 1, 'the decode really ran — otherwise this test proves nothing');
+    assert.equal(res.generated, 0, 'the write could not land');
     assert.equal(res.failed, 0, 'a disk error is not a decode failure');
     assert.equal(res.markersRecorded, 0);
-    assert.ok(!fs.existsSync(failedMarkerPath(cache, 'aaa')),
-      'ffmpeg decoded this file fine — a permanent marker would be a lie no pass ever clears');
 
-    // Remove the obstruction: the very next pass succeeds, proving the
-    // failure was never remembered anywhere.
-    fs.rmdirSync(cacheFilePath(cache, 'aaa'));
+    // Replace the obstruction with a real directory: the very next pass
+    // succeeds, proving the disk error was never remembered anywhere.
+    await fsp.rm(cache);
+    await fsp.mkdir(cache, { recursive: true });
     const retry = await run({ db, cacheDir: cache, ffmpegBin: FFMPEG, abort: newAbort() });
     db.close();
     assert.equal(retry.generated, 1, 'nothing durable blocked the retry');
+    assert.ok(!fs.existsSync(failedMarkerPath(cache, 'aaa')),
+      'ffmpeg decoded this file fine — a marker would be a lie no pass ever clears');
     assert.equal(fs.readFileSync(cacheFilePath(cache, 'aaa')).length, NUM_BARS);
+  });
+
+  test('an undecodable file whose marker cannot be written counts no durable progress', { timeout: 60_000 }, async (t) => {
+    if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
+    // Pins recordFfmpegFailure's boolean return AND the markersRecorded
+    // gate, in both directions: the decode genuinely fails (so `failed`
+    // must rise) but the marker cannot land (so `markersRecorded` must
+    // not, and the chain must refuse).
+    const { db, lib } = await makeCase([{ name: 'junk.opus', hash: 'aaa', create: false }]);
+    await fsp.writeFile(path.join(lib, 'junk.opus'), 'this is not an opus stream');
+    const cache = path.join(path.dirname(lib), 'cache-file-2');
+    await fsp.writeFile(cache, 'not a directory');
+
+    const res = await run({ db, cacheDir: cache, ffmpegBin: FFMPEG, abort: newAbort() });
+    db.close();
+
+    assert.equal(res.total, 1);
+    assert.equal(res.failed, 1, 'the content really is undecodable');
+    assert.equal(res.markersRecorded, 0, 'but no marker landed, so nothing durable happened');
+    assert.equal(shouldChain({ ...res, capped: true }, null), false,
+      'a round that recorded nothing must not chain');
+  });
+
+  test('an unreadable file is not given a permanent ffmpeg verdict', { timeout: 60_000 }, async (t) => {
+    if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
+    // A path that exists but cannot be READ — a lock, an ACL change, a
+    // stale mount. ffmpeg exits non-zero exactly as it would for corrupt
+    // audio, and treating that as a content verdict wrote a marker nothing
+    // ever clears: the key left every future plan and the endpoint 500'd
+    // on it forever. A directory standing in for the file reproduces the
+    // stat-succeeds-read-fails shape portably.
+    const { db, cache, lib } = await makeCase([{ name: 'locked.opus', hash: 'aaa', create: false }]);
+    fs.mkdirSync(path.join(lib, 'locked.opus'));
+
+    const res = await run({ db, cacheDir: cache, ffmpegBin: FFMPEG, abort: newAbort() });
+
+    assert.equal(res.failed, 0, 'unreadable is not undecodable');
+    assert.equal(res.markersRecorded, 0);
+    assert.ok(!fs.existsSync(failedMarkerPath(cache, 'aaa')),
+      'a terminal marker here would strand the track forever');
+
+    // The obstruction clears (permissions restored, mount back): the very
+    // next pass must be able to generate.
+    fs.rmdirSync(path.join(lib, 'locked.opus'));
+    await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=1:sample_rate=48000',
+      '-c:a', 'libopus', '-b:a', '64k', '-f', 'opus', path.join(lib, 'locked.opus')]);
+    const retry = await run({ db, cacheDir: cache, ffmpegBin: FFMPEG, abort: newAbort() });
+    db.close();
+    assert.equal(retry.generated, 1, 'the key must still be reachable once readable again');
+  });
+
+  test('a no-decoder marker routes the key here whatever its container', { timeout: 60_000 }, async (t) => {
+    if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
+    // The rust pass writes `no-decoder` for a codec it has no decoder for.
+    // The container may be one CANDIDATE_EXTS never queries (5.1 or HE-AAC
+    // in .m4a/.m4b/.aac), so the marker is the ONLY route to a waveform —
+    // routing by extension alone left those files uncovered by both passes.
+    const { db, cache, lib } = await makeCase([{ name: 'multi.m4a', hash: 'aaa', create: false }]);
+    await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=1:sample_rate=48000',
+      '-ac', '6', '-c:a', 'aac', '-b:a', '192k', path.join(lib, 'multi.m4a')]);
+    await fsp.writeFile(failedMarkerPath(cache, 'aaa'), 'no-decoder\n');
+
+    const res = await run({ db, cacheDir: cache, ffmpegBin: FFMPEG, abort: newAbort() });
+    db.close();
+
+    assert.equal(res.total, 1, '.m4a is not in CANDIDATE_EXTS — the marker is what found it');
+    assert.equal(res.generated, 1);
+    assert.equal(fs.readFileSync(cacheFilePath(cache, 'aaa')).length, NUM_BARS);
+    assert.ok(!fs.existsSync(failedMarkerPath(cache, 'aaa')),
+      'success clears the marker so the key stops being replanned');
   });
 
   test('an unreadable copy does not end the walk while a good copy remains', { timeout: 60_000 }, async (t) => {

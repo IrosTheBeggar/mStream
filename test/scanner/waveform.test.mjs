@@ -41,18 +41,28 @@ const FFMPEG =
 function findRustParser() {
   const ext = process.platform === 'win32' ? '.exe' : '';
   const libc = process.platform === 'linux' ? '-musl' : '';
-  const candidates = [
-    path.join(REPO_ROOT, 'rust-parser', 'target', 'release', `rust-parser${ext}`),
-    path.join(REPO_ROOT, 'bin', 'rust-parser',
-      `rust-parser-${process.platform}-${process.arch}${libc}${ext}`),
-  ].filter(p => fsSync.existsSync(p));
+  const localBuild = path.join(REPO_ROOT, 'rust-parser', 'target', 'release', `rust-parser${ext}`);
+  const prebuilt = path.join(REPO_ROOT, 'bin', 'rust-parser',
+    `rust-parser-${process.platform}-${process.arch}${libc}${ext}`);
 
-  // Generation probe, the same one the server runs before its pass: a
-  // binary from before the current cache generation (or before the
-  // `frames` field these tests assert on) answers wrong or not at all,
-  // and skipping it is the truthful result — CI in the window before
-  // bin/ rebuilds must skip, not fail.
-  return candidates.find(p => probeWaveformGeneration(p) === CACHE_EXT) || null;
+  // A LOCAL build is something this checkout produced on purpose (CI builds
+  // one on every leg), so a generation mismatch there is a real defect —
+  // a stale target/, or WAVEFORM_EXT and CACHE_EXT drifting apart — and
+  // must FAIL, not quietly skip the whole suite green.
+  if (fsSync.existsSync(localBuild)) {
+    const gen = probeWaveformGeneration(localBuild);
+    assert.equal(gen, CACHE_EXT,
+      `local rust-parser build writes waveform generation ${gen} but the server ` +
+      `expects ${CACHE_EXT} — run: cargo build --release --manifest-path rust-parser/Cargo.toml`);
+    return localBuild;
+  }
+  // Only the committed prebuilt is available. CI rebuilds those on pushes
+  // to master, so a mismatch here is the expected lag window after a
+  // generation bump: skipping is the truthful result.
+  if (fsSync.existsSync(prebuilt) && probeWaveformGeneration(prebuilt) === CACHE_EXT) {
+    return prebuilt;
+  }
+  return null;
 }
 
 function runFfmpeg(args) {

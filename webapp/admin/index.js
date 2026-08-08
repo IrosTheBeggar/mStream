@@ -2980,6 +2980,7 @@ const dbView = Vue.component('db-view', {
           'no-api-key': 'no API key',
           'no-binary': 'rust-parser unavailable',
           'binary-unsupported': 'rust-parser outdated',
+          'binary-generation-mismatch': 'rust-parser outdated (ffmpeg half only)',
           'runtime-unavailable': 'ML runtime unavailable',
         }[p.disabledReason] || p.disabledReason;
         return `Off — ${reason}`;

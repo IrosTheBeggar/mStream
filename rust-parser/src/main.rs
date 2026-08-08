@@ -4549,12 +4549,18 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
         // for a transient quirk) must not stop this pass from trying, and
         // a generated .bin is exactly what unblocks the endpoint again.
         // Mirrors the engine-line discipline in src/db/waveform-lib.js.
+        // Both lines mean "this pass already decided about this key":
+        // `symphonia` is a decode failure, `no-decoder` is a codec we have
+        // no decoder for. Either way re-running would repeat the same work
+        // for the same answer, so both exclude the key from the plan. Only
+        // the ffmpeg fallback can move them, and a success there deletes
+        // the marker outright.
         let symphonia_failed: HashSet<&String> = existing
             .iter()
             .filter(|name| {
                 name.ends_with(WAVEFORM_FAILED_EXT)
                     && fs::read_to_string(cache_dir.join(name.as_str()))
-                        .map(|c| c.contains("symphonia"))
+                        .map(|c| c.contains("symphonia") || c.contains("no-decoder"))
                         .unwrap_or(true) // unreadable marker — assume ours
             })
             .collect();
@@ -4669,12 +4675,27 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
                         generated.fetch_add(1, Ordering::Relaxed);
                     }
                 }
-                // A codec symphonia can't decode (Opus hiding in a .ogg) is
-                // the ffmpeg fallback's work: no marker — it would misreport
-                // a fine file as failed and exclude the key from this pass
-                // forever — and no failure count. The fallback caches it in
-                // the same task, so the re-probe here happens at most once.
-                Some(WaveformDecode::NoDecoder) => {}
+                // A codec symphonia has no decoder for. This is the ffmpeg
+                // fallback's work, not a verdict on the file, so it must not
+                // count as failed — but it still has to leave a TRACE.
+                //
+                // Writing nothing was wrong in two ways. The key had no
+                // route to the fallback except its extension, so anything
+                // undecodable in a container the fallback doesn't query
+                // (5.1 or HE-AAC in .m4a/.m4b/.aac — symphonia's AAC
+                // decoder refuses non-LC, >2ch and SBR streams) got no
+                // waveform from EITHER pass, ever. And with no artifact to
+                // exclude it, this pass re-planned and re-probed those files
+                // on every single scan, forever.
+                //
+                // The `no-decoder` line is not a failure line: the fallback
+                // treats it as work, the coverage counter does not count it
+                // as failed, and the on-demand endpoint (which gates only on
+                // `ffmpeg`) still serves. A later ffmpeg success deletes the
+                // whole marker.
+                Some(WaveformDecode::NoDecoder) => {
+                    append_failure_marker(&cache_dir, key, "no-decoder");
+                }
                 Some(WaveformDecode::Failed) => {
                     failed.fetch_add(1, Ordering::Relaxed);
                     append_failure_marker(&cache_dir, key, "symphonia");
