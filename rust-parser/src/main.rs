@@ -25,6 +25,7 @@ use base64::Engine as _;
 use rusty_chromaprint::{Configuration, FingerprintCompressor, Fingerprinter};
 use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::codecs::CodecParameters;
+use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
@@ -33,6 +34,16 @@ use symphonia::core::meta::MetadataOptions;
 // Number of bars in a waveform — matches NUM_BARS in src/db/waveform-lib.js.
 // Cache files are exactly this many bytes (one u8 per bar).
 const NUM_BARS: usize = 800;
+
+// Cache artifact naming — MUST match cacheFilePath()/failedMarkerPath() in
+// src/db/waveform-lib.js, which owns the scheme. The `w2` generation marks
+// the corrected decoder: bars are binned by the TRUE decoded frame count
+// (containers that lie about their length no longer stretch the waveform)
+// and channels are combined with max|ch| rather than an average. v1
+// `<hash>.bin` files describe different bytes for the same audio, so they
+// are ignored here and swept at boot by the JS side.
+const WAVEFORM_EXT: &str = ".w2.bin";
+const WAVEFORM_FAILED_EXT: &str = ".w2.failed";
 
 // ── Config (matches what task-queue.js passes) ──────────────────────────────
 
@@ -725,10 +736,10 @@ fn main() {
                 // immediately.
                 let mut hex = String::with_capacity(NUM_BARS * 2);
                 for b in output.bars.iter() { hex.push_str(&format!("{:02x}", b)); }
-                println!("{{\"bars\":\"{}\"}}", hex);
+                println!("{{\"bars\":\"{}\",\"frames\":{}}}", hex, output.frames);
             }
             None => {
-                println!("{{\"bars\":null}}");
+                println!("{{\"bars\":null,\"frames\":0}}");
             }
         }
         return;
@@ -4433,16 +4444,17 @@ pub(crate) struct DirListing {
 }
 
 // One-time scan of the waveform cache directory into a set of filenames
-// (`<hash>.bin` results and `<hash>.failed` markers). The waveform pass
-// checks membership against the set instead of stat-ing the filesystem
-// per track. Missing/unreadable cache dir → empty set, which degrades
-// to "generate everything".
+// (`<hash>.w2.bin` results and `<hash>.w2.failed` markers). The waveform
+// pass checks membership against the set instead of stat-ing the
+// filesystem per track. Missing/unreadable cache dir → empty set, which
+// degrades to "generate everything". Superseded v1 names are deliberately
+// NOT collected: they must not suppress regeneration.
 fn load_waveform_cache_names(dir: &Path) -> HashSet<String> {
     let mut names = HashSet::new();
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             if let Some(fname) = entry.file_name().to_str() {
-                if fname.ends_with(".bin") || fname.ends_with(".failed") {
+                if fname.ends_with(WAVEFORM_EXT) || fname.ends_with(WAVEFORM_FAILED_EXT) {
                     names.insert(fname.to_string());
                 }
             }
@@ -4528,7 +4540,7 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
         let symphonia_failed: HashSet<&String> = existing
             .iter()
             .filter(|name| {
-                name.ends_with(".failed")
+                name.ends_with(WAVEFORM_FAILED_EXT)
                     && fs::read_to_string(cache_dir.join(name.as_str()))
                         .map(|c| c.contains("symphonia"))
                         .unwrap_or(true) // unreadable marker — assume ours
@@ -4558,15 +4570,21 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
                 Some(k) => k,
                 None => continue, // no content hash to key the cache on
             };
-            if existing.contains(&format!("{}.bin", key))
-                || symphonia_failed.contains(&format!("{}.failed", key))
+            if existing.contains(&format!("{}{}", key, WAVEFORM_EXT))
+                || symphonia_failed.contains(&format!("{}{}", key, WAVEFORM_FAILED_EXT))
             {
                 continue;
             }
+            let path = Path::new(&root).join(rel);
+            // A codec symphonia can't touch is not work for this pass and
+            // not a failure: leaving it out keeps the planned total, the
+            // progress bar and the reported failure count honest, and
+            // leaves the key visible to the ffmpeg fallback pass.
+            if waveform_codec_unsupported(&file_ext(&path).to_lowercase()) { continue; }
             match by_key.get_mut(&key) {
-                Some(paths) => paths.push(Path::new(&root).join(rel)),
+                Some(paths) => paths.push(path),
                 None => {
-                    by_key.insert(key.clone(), vec![Path::new(&root).join(rel)]);
+                    by_key.insert(key.clone(), vec![path]);
                     order.push(key);
                 }
             }
@@ -4635,7 +4653,7 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
             }
             match decoded {
                 Some(output) => {
-                    let bin = cache_dir.join(format!("{}.bin", key));
+                    let bin = cache_dir.join(format!("{}{}", key, WAVEFORM_EXT));
                     if write_atomic(&bin, &output.bars).is_some() {
                         generated.fetch_add(1, Ordering::Relaxed);
                     }
@@ -4674,7 +4692,7 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
 // endpoint's append is tiny, and the content union is correct from
 // either side.
 fn append_failure_marker(cache_dir: &Path, key: &str, engine: &str) {
-    let marker = cache_dir.join(format!("{}.failed", key));
+    let marker = cache_dir.join(format!("{}{}", key, WAVEFORM_FAILED_EXT));
     let mut content = fs::read_to_string(&marker).unwrap_or_default();
     if !content.contains(engine) {
         content.push_str(engine);
@@ -5224,27 +5242,155 @@ fn audio_ranges_for_ext<R: Read + Seek>(
 
 // ── Waveform generation (symphonia-powered) ───────────────────────────────
 //
-// Decodes the audio stream, downmixes to mono magnitudes, and emits NUM_BARS
-// peak values (u8, 0-255). .opus is skipped because symphonia 0.6 still lacks an
-// Opus decoder. On any decoder/IO error we fall back to None so the scanner
-// continues and the on-demand endpoint can try ffmpeg later.
+// Decodes the audio stream, reduces each frame to one magnitude, and emits
+// NUM_BARS peak values (u8, 0-255). .opus is skipped because symphonia 0.6
+// still lacks an Opus decoder — the ffmpeg fallback pass covers it. On any
+// decoder/IO error we return None so the scanner continues.
 //
-// Two decode strategies:
-//   (a) Streaming — when track.codec_params.n_frames is populated, map each
-//       decoded frame directly to its bar by index (bar = frame_idx * N / total).
-//       Memory: O(1). Used for most formats (MP3, FLAC, Ogg Vorbis, AAC/M4A).
-//   (b) Buffered — when n_frames is None (notably WAV, where symphonia's
-//       format reader doesn't populate it), collect mono magnitudes into a
-//       Vec and bin by the actual count at the end. Memory: O(n_frames).
-//       Capped at MAX_BUFFERED_FRAMES to keep worst-case memory bounded on
-//       very long WAV files; past that we truncate.
-const MAX_BUFFERED_FRAMES: usize = 30 * 1024 * 1024;  // ~10 min at 48 kHz
+// Binning runs through a bounded peak pyramid rather than a container-
+// declared frame count. The old code had two paths: a streaming one that
+// mapped each frame to `frame_idx * NUM_BARS / n_frames`, and a buffered
+// one (Vec of every magnitude, truncated past MAX_BUFFERED_FRAMES) for
+// formats that report no length. Both were wrong in ways real files hit:
+//
+//   - n_frames is an ESTIMATE for a VBR MP3 with no Xing/Info header.
+//     Measured on a 60 s fixture with bursts at 0/25/50/75/99.5 %, the
+//     bars came out at 1/220/441/661 instead of 0/200/400/600 and the
+//     last burst ran past bar 799 and was dropped — ~10 % of the track
+//     missing and every x-position out of step with the playhead.
+//   - the buffered path truncated anything past ~12 minutes, silently.
+//
+// The pyramid keeps one peak per `stride` frames and halves itself (peak
+// of pairs, doubling the stride) whenever it fills, so memory is capped
+// while the final binning uses the true decoded frame count.
+//
+// Capacity is per decode and the pass decodes on every rayon thread, so
+// this is a memory-per-core knob. Peaks of peaks are exact — the only
+// error is a group straddling a bar boundary, which costs at most
+// 800/CAPACITY of a bar's width, here 0.6 %, well under a pixel. The old
+// buffered path allocated up to 120 MB for a single long file; this is
+// 512 KB per thread.
+const PYRAMID_CAPACITY: usize = 1 << 17;
+
+struct PeakPyramid {
+    store: Vec<f32>,
+    length: usize,
+    stride: u64,
+    group_peak: f32,
+    group_fill: u64,
+    frames: u64,
+}
+
+impl PeakPyramid {
+    fn new() -> Self {
+        Self {
+            store: vec![0.0; PYRAMID_CAPACITY],
+            length: 0,
+            stride: 1,
+            group_peak: 0.0,
+            group_fill: 0,
+            frames: 0,
+        }
+    }
+
+    fn push(&mut self, mag: f32) {
+        self.frames += 1;
+        if mag > self.group_peak { self.group_peak = mag; }
+        self.group_fill += 1;
+        if self.group_fill != self.stride { return; }
+        if self.length == PYRAMID_CAPACITY {
+            for j in 0..PYRAMID_CAPACITY / 2 {
+                self.store[j] = self.store[2 * j].max(self.store[2 * j + 1]);
+            }
+            self.length = PYRAMID_CAPACITY / 2;
+            self.stride *= 2;
+            // The partial group keeps filling under the doubled stride.
+            return;
+        }
+        self.store[self.length] = self.group_peak;
+        self.length += 1;
+        self.group_peak = 0.0;
+        self.group_fill = 0;
+    }
+
+    // Flush the partial tail group, then bin what we actually decoded.
+    // None means no frames at all (probed OK, decoded empty).
+    fn bars(&mut self) -> Option<[u8; NUM_BARS]> {
+        if self.group_fill > 0 {
+            if self.length < PYRAMID_CAPACITY {
+                self.store[self.length] = self.group_peak;
+                self.length += 1;
+            } else if self.group_peak > self.store[PYRAMID_CAPACITY - 1] {
+                self.store[PYRAMID_CAPACITY - 1] = self.group_peak;
+            }
+            self.group_peak = 0.0;
+            self.group_fill = 0;
+        }
+        let total = self.length;
+        if total == 0 { return None; }
+        let mut bars = [0u8; NUM_BARS];
+        for (i, bar) in bars.iter_mut().enumerate() {
+            let start = i * total / NUM_BARS;
+            // A file shorter than NUM_BARS groups would otherwise leave
+            // empty bars between the filled ones; neighbours share instead.
+            let end = (((i + 1) * total / NUM_BARS).max(start + 1)).min(total);
+            let mut peak = 0f32;
+            for &m in &self.store[start..end] {
+                if m > peak { peak = m; }
+            }
+            *bar = (peak.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+        Some(bars)
+    }
+}
+
+// A MediaSource that forwards reads and seeks but refuses to state its
+// length. Symphonia's MPEG-audio reader, given no Xing/Info header, guesses
+// the stream length from the FIRST frame's bitrate and then ends the packet
+// stream at that guess. On a VBR file that opens denser than its average
+// the guess lands short and the tail is silently dropped — measured on two
+// encodes of the same 60 s audio differing only in section order: opening
+// loud decoded 47.5 s, opening quiet decoded 60.0 s. With no byte length
+// to extrapolate from, the reader runs to real EOF instead.
+//
+// Applied to MPEG audio only. Other containers (notably ISO-BMFF) use the
+// length for legitimate structural reasons, and none of them shows this bug.
+struct HiddenLenSource {
+    inner: Box<dyn symphonia::core::io::MediaSource>,
+}
+impl std::io::Read for HiddenLenSource {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> { self.inner.read(buf) }
+}
+impl std::io::Seek for HiddenLenSource {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> { self.inner.seek(pos) }
+}
+impl symphonia::core::io::MediaSource for HiddenLenSource {
+    fn is_seekable(&self) -> bool { self.inner.is_seekable() }
+    fn byte_len(&self) -> Option<u64> { None }
+}
+
+fn hides_stream_length(ext: &str) -> bool {
+    matches!(ext, "mp3" | "mp2" | "mpga" | "mpeg")
+}
+
+// Codecs symphonia cannot decode at all. Not a failure of the file — the
+// ffmpeg fallback pass handles these — so the scan pass skips them
+// without writing a `.failed` marker that would misreport as an error
+// and, worse, stop the fallback's own bookkeeping from ever clearing.
+fn waveform_codec_unsupported(ext: &str) -> bool {
+    ext == "opus"
+}
 
 // Decode result: the 800-bar peak waveform the cache writes to disk.
 // (The raw-sample retention that fed stratum-dsp BPM analysis left
 // with the analysis itself — the essentia scanner will own that.)
 struct WaveformOutput {
     bars: [u8; NUM_BARS],
+    // Frames actually decoded. Only the cache write ignores it; the hidden
+    // `--waveform` subcommand reports it so a test can assert the decoder
+    // consumed the whole stream rather than stopping at a container's
+    // guess or at the first damaged frame.
+    frames: u64,
 }
 
 fn waveform_from_source(
@@ -5252,9 +5398,14 @@ fn waveform_from_source(
 ) -> Option<WaveformOutput> {
     // Symphonia still doesn't ship a pure-Rust Opus decoder in 0.6 (only a
     // libopus C adapter, which we deliberately avoid). Skip .opus here and
-    // let the on-demand endpoint handle it via ffmpeg on first playback.
-    if ext == "opus" { return None; }
+    // let the ffmpeg fallback pass handle it.
+    if waveform_codec_unsupported(ext) { return None; }
 
+    let source: Box<dyn symphonia::core::io::MediaSource> = if hides_stream_length(ext) {
+        Box::new(HiddenLenSource { inner: source })
+    } else {
+        source
+    };
     let mss = MediaSourceStream::new(source, Default::default());
 
     let mut hint = Hint::new();
@@ -5267,9 +5418,9 @@ fn waveform_from_source(
         .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
         .ok()?;
 
-    let (track_id, n_frames, audio_params) = format.tracks().iter().find_map(|t| {
+    let (track_id, audio_params) = format.tracks().iter().find_map(|t| {
         match &t.codec_params {
-            Some(CodecParameters::Audio(p)) => Some((t.id, t.num_frames, p.clone())),
+            Some(CodecParameters::Audio(p)) => Some((t.id, p.clone())),
             _ => None,
         }
     })?;
@@ -5279,19 +5430,29 @@ fn waveform_from_source(
         .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
         .ok()?;
 
-    let mut peaks = [0f32; NUM_BARS];
-    let mut buffered: Vec<f32> = Vec::new();
-    let mut frame_idx: u64 = 0;
+    let mut pyramid = PeakPyramid::new();
     // 0.6 replaced SampleBuffer with copy-out methods on the decoded buffer;
     // one Vec reused across packets keeps the no-per-packet-alloc behavior.
     let mut interleaved: Vec<f32> = Vec::new();
-    let mut truncated = false;
 
-    'outer: loop {
+    // A malformed frame mid-stream is not the end of the stream. The old
+    // loop broke on ANY demuxer error, which is how a VBR MP3 with no
+    // Xing header lost the last ~9 % of its waveform: the reader hits an
+    // unsyncable frame, errors once, resyncs on the next call — but we had
+    // already given up. Bounded so a genuinely shredded file still ends.
+    const MAX_CONSECUTIVE_DEMUX_ERRORS: u32 = 64;
+    let mut demux_errors: u32 = 0;
+
+    loop {
         let packet = match format.next_packet() {
-            Ok(Some(p)) => p,
+            Ok(Some(p)) => { demux_errors = 0; p }
             Ok(None) => break,  // clean EOF (explicit in 0.6)
-            Err(_) => break,    // unrecoverable — whatever we have is what we get
+            Err(SymphoniaError::DecodeError(_)) => {
+                demux_errors += 1;
+                if demux_errors > MAX_CONSECUTIVE_DEMUX_ERRORS { break; }
+                continue;
+            }
+            Err(_) => break,    // IO/limit/reset — whatever we have is what we get
         };
         if packet.track_id != track_id { continue; }
 
@@ -5302,61 +5463,26 @@ fn waveform_from_source(
 
         decoded.copy_to_vec_interleaved(&mut interleaved);
 
-        // Downmix interleaved samples to mono via abs-sum/channels
-        // (perceived loudness — unchanged from the original
-        // implementation, so cached bars stay byte-stable).
+        // One magnitude per frame: the loudest channel, NOT an average.
+        // Averaging attenuates anything the channels disagree about, so a
+        // widened or out-of-phase mix read quieter than it sounds — and
+        // the ffmpeg fallback, which used to sum to mono, cancelled such
+        // material outright. max|ch| never cancels and lets both engines
+        // describe the same audio the same way.
         for chunk in interleaved.chunks(channels) {
-            let mut abs_sum = 0f32;
+            let mut mag = 0f32;
             for &s in chunk {
-                abs_sum += s.abs();
+                let a = s.abs();
+                if a > mag { mag = a; }
             }
-            let mag = abs_sum / (channels as f32);
-
-            match n_frames {
-                Some(total) if total > 0 => {
-                    let bar = (frame_idx.saturating_mul(NUM_BARS as u64) / total) as usize;
-                    if bar < NUM_BARS && mag > peaks[bar] {
-                        peaks[bar] = mag;
-                    }
-                }
-                _ => {
-                    if buffered.len() >= MAX_BUFFERED_FRAMES {
-                        truncated = true;
-                        break 'outer;
-                    }
-                    buffered.push(mag);
-                }
-            }
-            frame_idx += 1;
+            pyramid.push(mag);
         }
     }
 
-    // Guard against symphonia emitting zero frames (unsupported codec that
-    // probed OK but decoded empty). Distinguish from the buffered-truncated
-    // path, which does have data.
-    if frame_idx == 0 && !truncated { return None; }
-
-    // If we went the buffered route, bin now that we know the true length.
-    if n_frames.is_none() || n_frames == Some(0) {
-        let total = buffered.len();
-        if total == 0 { return None; }
-        for i in 0..NUM_BARS {
-            let start = i * total / NUM_BARS;
-            let end = ((i + 1) * total / NUM_BARS).max(start + 1).min(total);
-            let mut peak = 0f32;
-            for &m in &buffered[start..end] {
-                if m > peak { peak = m; }
-            }
-            peaks[i] = peak;
-        }
-    }
-
-    let mut bars = [0u8; NUM_BARS];
-    for i in 0..NUM_BARS {
-        bars[i] = (peaks[i].clamp(0.0, 1.0) * 255.0).round() as u8;
-    }
-
-    Some(WaveformOutput { bars })
+    // None = probed OK but decoded no frames (e.g. a codec the probe
+    // recognised and the decoder didn't).
+    let frames = pyramid.frames;
+    pyramid.bars().map(|bars| WaveformOutput { bars, frames })
 }
 
 // File-backed waveform entry point. Opens the file once; symphonia

@@ -1005,7 +1005,25 @@ const VUEPLAYERCORE = (() => {
   let _waveformData = null;   // Array of 0-255 bar heights (800 entries)
   let _waveformFp   = null;   // filepath of the currently loaded waveform
   let _waveformRaf  = null;   // requestAnimationFrame handle
-  const _WF_LS_PREFIX = 'wf:';
+  // Bumped alongside the server's cache generation (CACHE_EXT in
+  // src/db/waveform-lib.js). Waveforms are stored per filepath with no
+  // version in the value, so without a new prefix a browser would keep
+  // rendering bars from the old decoder forever — the server-side fix
+  // would simply never reach anyone who had already played the track.
+  // Entries under the previous prefix are purged on first load.
+  const _WF_LS_PREFIX = 'wf2:';
+  const _WF_LS_OLD_PREFIXES = ['wf:'];
+
+  (function _wfLsPurgeOldGenerations() {
+    try {
+      const doomed = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && _WF_LS_OLD_PREFIXES.some(p => k.startsWith(p))) doomed.push(k);
+      }
+      for (const k of doomed) localStorage.removeItem(k);
+    } catch (_e) { /* private mode / quota — the new prefix still wins */ }
+  }());
 
   function _wfLsGet(filepath) {
     try {

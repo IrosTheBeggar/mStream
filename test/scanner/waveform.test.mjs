@@ -204,6 +204,82 @@ describe('rust-parser --waveform across supported formats', () => {
       'two runs over the same file produced different waveforms');
   });
 
+  // The decoder used to bin bars against `codec_params.n_frames`, which is
+  // an ESTIMATE for an MPEG stream with no Xing/Info header — and worse,
+  // symphonia's reader ENDS the packet stream at that estimate. A VBR file
+  // that opens denser than its average therefore lost its tail and had
+  // every bar shifted off its true timestamp.
+  //
+  // Both encodes below hold the same 60 s of audio and differ only in
+  // section order, so the estimate lands short for one and long for the
+  // other. Both must decode the whole thing.
+  describe('full-length decode regardless of container length hints', () => {
+    const VARIANTS = [
+      { name: 'VBR, no Xing, dense opening', order: ['noise', 'sine'],
+        args: ['-c:a', 'libmp3lame', '-q:a', '0', '-write_xing', '0'] },
+      { name: 'VBR, no Xing, sparse opening', order: ['sine', 'noise'],
+        args: ['-c:a', 'libmp3lame', '-q:a', '0', '-write_xing', '0'] },
+      { name: 'VBR with Xing', order: ['noise', 'sine'],
+        args: ['-c:a', 'libmp3lame', '-q:a', '0'] },
+      { name: 'CBR', order: ['noise', 'sine'],
+        args: ['-c:a', 'libmp3lame', '-b:a', '192k'] },
+    ];
+
+    for (const v of VARIANTS) {
+      test(`${v.name}: decodes all 60 s`, { timeout: 120_000 }, async (t) => {
+        if (!fsSync.existsSync(FFMPEG)) { return t.skip('no bundled ffmpeg'); }
+        if (!rustBin)                   { return t.skip('no rust-parser binary'); }
+
+        const src = { noise: 'anoisesrc=d=30:c=white:a=0.8:r=44100',
+          sine: 'sine=frequency=100:duration=30:sample_rate=44100' };
+        const out = path.join(tmpDir, `len-${v.name.replace(/\W+/g, '')}.mp3`);
+        await runFfmpeg([
+          '-nostdin', '-y', '-loglevel', 'error',
+          '-f', 'lavfi', '-i', src[v.order[0]],
+          '-f', 'lavfi', '-i', src[v.order[1]],
+          '-filter_complex', '[0][1]concat=n=2:v=0:a=1',
+          '-ac', '2', ...v.args, out,
+        ]);
+
+        const res = await runRustWaveform(rustBin, out);
+        assert.ok(typeof res.frames === 'number', 'frames must be reported');
+        const seconds = res.frames / 44100;
+        // Encoder padding moves this by a few ms, never by seconds.
+        assert.ok(Math.abs(seconds - 60) < 0.5,
+          `decoded ${seconds.toFixed(2)} s of a 60 s file — the stream was cut short`);
+      });
+    }
+  });
+
+  // The mono reduction used to average |channel| across channels, which
+  // reads low on anything the channels disagree about. max|ch| never
+  // cancels and matches what the ffmpeg fallback now does.
+  test('anti-phase stereo keeps its full level', { timeout: 60_000 }, async (t) => {
+    if (!fsSync.existsSync(FFMPEG)) { return t.skip('no bundled ffmpeg'); }
+    if (!rustBin)                   { return t.skip('no rust-parser binary'); }
+
+    // Both fixtures go through the SAME amerge, differing only in the sign
+    // of the right channel — `-ac 2` would have applied ffmpeg's -3 dB
+    // mono→stereo gain to one of them and not the other, making the two
+    // peaks incomparable for reasons that have nothing to do with phase.
+    const mono = path.join(tmpDir, 'phase-mono.flac');
+    const anti = path.join(tmpDir, 'phase-anti.flac');
+    const tone = ['-f', 'lavfi', '-i', 'sine=frequency=440:duration=2:sample_rate=44100'];
+    await runFfmpeg(['-nostdin', '-y', '-loglevel', 'error', ...tone,
+      '-filter_complex', '[0:a]asplit[l][r];[r]volume=1[ri];[l][ri]amerge=inputs=2[out]',
+      '-map', '[out]', '-c:a', 'flac', mono]);
+    await runFfmpeg(['-nostdin', '-y', '-loglevel', 'error', ...tone,
+      '-filter_complex', '[0:a]asplit[l][r];[r]volume=-1[ri];[l][ri]amerge=inputs=2[out]',
+      '-map', '[out]', '-c:a', 'flac', anti]);
+
+    const inPhase = hexToBytes((await runRustWaveform(rustBin, mono)).bars);
+    const outPhase = hexToBytes((await runRustWaveform(rustBin, anti)).bars);
+    const peak = (b) => Math.max(...Array.from(b));
+    assert.ok(peak(outPhase) > 0, 'anti-phase stereo must not read as silence');
+    assert.equal(peak(outPhase), peak(inPhase),
+      'inverting one channel must not change the peak the waveform reports');
+  });
+
   test('corrupt/unknown file: returns null gracefully, does not crash', async (t) => {
     if (!rustBin) { return t.skip('no rust-parser binary'); }
 

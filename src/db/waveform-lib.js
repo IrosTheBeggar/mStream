@@ -20,8 +20,24 @@ export const NUM_BARS = 800;
 // On-disk cache format: raw byte array, exactly NUM_BARS bytes, one per bar.
 // Files are keyed by track content hash. Exported (with failedMarkerPath
 // below) so the naming scheme has ONE owner — the V60 hash-transition
-// applier renames these artifacts when a track's canonical hash changes.
-const CACHE_EXT = '.bin';
+// applier renames these artifacts when a track's canonical hash changes,
+// and the rust pass mirrors these constants (WAVEFORM_EXT in main.rs).
+//
+// The `w2` generation marks a decoder correctness fix: bars are binned by
+// the frames actually decoded rather than a container-declared length, and
+// channels combine with max|ch| rather than an average or a mono sum. The
+// same audio therefore produces different bytes than v1 did, so v1 names
+// are neither read nor honoured — sweepSupersededArtifacts() deletes them
+// and both engines regenerate.
+//
+// Bump this whenever the bars change meaning, and bump `_WF_LS_PREFIX` in
+// webapp/alpha/vp.js with it: browsers keep their own copy keyed by
+// filepath with no version in the value, so a server-side change that
+// doesn't move that prefix never reaches anyone who already played the
+// track. Exported because the coverage counter matches names rather than
+// building paths.
+export const CACHE_EXT = '.w2.bin';
+export const FAILED_EXT = '.w2.failed';
 
 export function cacheFilePath(dir, fileHash) {
   return path.join(dir, fileHash + CACHE_EXT);
@@ -71,7 +87,41 @@ export async function writeCachedWaveform(dir, fileHash, bars) {
 // A successful generation deletes the marker.
 
 export function failedMarkerPath(dir, fileHash) {
-  return path.join(dir, fileHash + '.failed');
+  return path.join(dir, fileHash + FAILED_EXT);
+}
+
+/**
+ * Delete cache artifacts left by an older bar format. Called once per boot
+ * from the endpoint's ensureCacheDir(), which is the only place both the
+ * rust-equipped and rust-less deployments pass through — putting it in the
+ * rust pass would strand the sweep on hosts that never run one.
+ *
+ * Without this the old files are merely ignored, which is worse than it
+ * sounds: the enrichment coverage counter would keep counting them, and on
+ * a large library they are dead weight (one 800-byte file per track) that
+ * nothing would ever clean up. Best-effort throughout — a cache directory
+ * we cannot write is already handled as advisory.
+ *
+ * @returns {Promise<number>} artifacts removed
+ */
+export async function sweepSupersededArtifacts(dir) {
+  let names;
+  try { names = await fsp.readdir(dir); }
+  catch (_err) { return 0; }   // no dir yet, or unreadable — nothing to do
+
+  const stale = names.filter((n) =>
+    (n.endsWith('.bin') || n.endsWith('.failed'))
+    && !n.endsWith(CACHE_EXT) && !n.endsWith(FAILED_EXT));
+
+  let removed = 0;
+  const BATCH = 32;
+  for (let i = 0; i < stale.length; i += BATCH) {
+    await Promise.all(stale.slice(i, i + BATCH).map(async (name) => {
+      try { await fsp.unlink(path.join(dir, name)); removed++; }
+      catch (_err) { /* raced with another sweep, or read-only cache */ }
+    }));
+  }
+  return removed;
 }
 
 export function hasFfmpegFailedMarker(dir, fileHash) {
@@ -152,7 +202,10 @@ class PeakPyramid {
     const bars = new Array(numBars);
     for (let i = 0; i < numBars; i++) {
       const start = Math.floor(i * total / numBars);
-      const end = Math.floor((i + 1) * total / numBars);
+      // A clip with fewer than numBars groups would otherwise leave empty
+      // bars interleaved with filled ones; neighbours share a group
+      // instead. Matches PeakPyramid::bars() in rust-parser.
+      const end = Math.min(total, Math.max(start + 1, Math.floor((i + 1) * total / numBars)));
       let peak = 0;
       for (let j = start; j < end; j++) {
         if (this.store[j] > peak) { peak = this.store[j]; }
@@ -181,7 +234,18 @@ export function generateWaveformBars(audioPath, ffmpegBin) {
       // Drop embedded cover art / data / subtitle streams so ffmpeg doesn't
       // waste cycles decoding a JPEG we'd discard anyway.
       '-vn', '-dn', '-sn',
-      '-ac', '1',                // mono
+      // Deliberately NO `-ac 1`. Downmixing to mono SUMS the channels, so
+      // anything out of phase between them cancels: an anti-phase stereo
+      // fixture that the rust engine renders at 32/255 across the whole
+      // file came back from here as 800 zero bars — a blank waveform for
+      // audio that is plainly audible. Real mid/side-widened masters lose
+      // energy the same way, just partially.
+      //
+      // Keeping the channels interleaved costs nothing here: the pyramid
+      // takes a running max over every sample it is handed, and max over
+      // (channels x time) is exactly max-per-frame then max-over-time.
+      // That also matches what the rust engine now does, so the two
+      // engines describe the same audio the same way.
       '-ar', '8000',             // 8 kHz — plenty of resolution for 800 bars
       '-f', 'u8',
       '-acodec', 'pcm_u8',
