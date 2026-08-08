@@ -1069,6 +1069,17 @@ const MSTREAMPLAYER = (() => {
     shouldLoopOne: false,
     shuffle: false,
     volume: 100,
+    // EVERY field resetCurrentMetadata() writes must be declared here.
+    // Vue 2 can only make properties reactive at observation time, so a
+    // field that only ever appears via assignment gets no accessor and no
+    // dependency tracking: watchers and computeds that read it never
+    // invalidate. `musical-key` was missing, which froze the key shown on
+    // the now-playing card at whatever the first keyed track of the
+    // session was, for every track after it. `bpm` survived only because
+    // it happens to be interpolated directly rather than through a
+    // computed, and `replaygain-track-db` has no default-UI reader today
+    // — both are declared anyway so the next reader doesn't inherit the
+    // same silent breakage.
     metadata: {
       "artist": "",
       "album": "",
@@ -1079,6 +1090,9 @@ const MSTREAMPLAYER = (() => {
       "filepath": "",
       "has-lyrics": false,
       "has-synced-lyrics": false,
+      "bpm": null,
+      "musical-key": null,
+      "replaygain-track-db": "",
     },
     replayGain: false,
     replayGainPreGainDb: 0
