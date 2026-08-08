@@ -1025,24 +1025,71 @@ const VUEPLAYERCORE = (() => {
     } catch (_e) { /* private mode / quota — the new prefix still wins */ }
   }());
 
+  // Bars are stored base64, not as a JSON number array. Each bar is one
+  // byte, so JSON spends ~3.4 characters ("128,") on what base64 says in
+  // 1.34 — and localStorage holds UTF-16, which doubles whatever we write.
+  // Measured on an 800-bar waveform: 5474 bytes as JSON, 2166 as base64.
+  // At the 500-entry cap that is ~2.7 MB against ~1.1 MB, i.e. the
+  // difference between sitting comfortably inside a ~5 MB origin budget
+  // and living permanently in the eviction path, re-fetching what was
+  // just dropped. Decoding is ~16x cheaper too (31.5 us -> 1.9 us), and
+  // hands the renderer a Uint8Array instead of 800 boxed numbers.
+  //
+  // NOT compressed on the wire and NOT changed server-side: this is purely
+  // how the browser holds its own copy. The endpoint still returns JSON,
+  // which the compression middleware already handles well.
+  function _wfB64Encode(data) {
+    // Chunked rather than String.fromCharCode(...data): spreading is fine
+    // at 800 entries but throws RangeError once arrays get large, and this
+    // is the one place the array length is not ours to assume.
+    let s = '';
+    for (let i = 0; i < data.length; i += 4096) {
+      s += String.fromCharCode.apply(null,
+        Array.prototype.slice.call(data, i, i + 4096));
+    }
+    return btoa(s);
+  }
+
+  function _wfB64Decode(str) {
+    const bin = atob(str);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) { out[i] = bin.charCodeAt(i); }
+    return out;
+  }
+
   function _wfLsGet(filepath) {
     try {
       const raw = localStorage.getItem(_WF_LS_PREFIX + filepath);
       if (!raw) return null;
-      const arr = JSON.parse(raw);
-      return Array.isArray(arr) && arr.length > 0 ? arr : null;
+      // Entries written before this encoding are still perfectly valid
+      // bars, so they are read rather than discarded — a '[' can't start
+      // base64, which makes the two formats trivially distinguishable.
+      // Re-write on hit so a warm cache migrates as tracks get played
+      // instead of staying oversized forever.
+      if (raw[0] === '[') {
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr) || arr.length === 0) { return null; }
+        const bytes = Uint8Array.from(arr, (v) => v & 255);
+        _wfLsSet(filepath, bytes);
+        return bytes;
+      }
+      const bytes = _wfB64Decode(raw);
+      return bytes.length > 0 ? bytes : null;
     } catch (_e) { return null; }
   }
 
   const _WF_LS_MAX = 500; // max cached waveforms in localStorage
 
   function _wfLsSet(filepath, data) {
+    let encoded;
+    try { encoded = _wfB64Encode(data); }
+    catch (_e) { return; }   // unencodable input is not worth a quota retry
     try {
-      localStorage.setItem(_WF_LS_PREFIX + filepath, JSON.stringify(data));
+      localStorage.setItem(_WF_LS_PREFIX + filepath, encoded);
     } catch (_e) {
       // Quota exceeded — evict oldest wf:* entries and retry once
       _wfLsEvict();
-      try { localStorage.setItem(_WF_LS_PREFIX + filepath, JSON.stringify(data)); }
+      try { localStorage.setItem(_WF_LS_PREFIX + filepath, encoded); }
       catch (_e2) { /* still full — give up */ }
     }
   }
