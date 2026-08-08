@@ -10,7 +10,7 @@
 // (0..127), rescaled to 0..255. The cache format is shared with the
 // rust pass, .failed markers included.
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -44,6 +44,27 @@ export function cacheFilePath(dir, fileHash) {
 }
 
 /**
+ * Ask a rust-parser binary which cache generation it writes. The server
+ * refuses to run the waveform pass when this differs from CACHE_EXT: a
+ * binary one generation behind would write names the boot sweep deletes,
+ * re-decoding the whole library on every boot — the exact cycle a stale
+ * local `rust-parser/target` build (or the bin/ prebuilts in the window
+ * before CI rebuilds them) would otherwise cause.
+ *
+ * @returns {string|null} the binary's waveform extension, or null when the
+ *   binary pre-dates the probe or failed to answer
+ */
+export function probeWaveformGeneration(rustBin) {
+  try {
+    const r = spawnSync(rustBin, ['--wf-generation'], { encoding: 'utf8', timeout: 5000 });
+    const parsed = JSON.parse(String(r.stdout || '').trim());
+    return typeof parsed.waveformExt === 'string' ? parsed.waveformExt : null;
+  } catch (_err) {
+    return null;   // pre-probe binary: "Invalid JSON Input" on stderr, empty stdout
+  }
+}
+
+/**
  * Read a cached waveform. Returns null if nothing is cached OR the file
  * exists but isn't exactly NUM_BARS bytes (partial write from a prior
  * crash, wrong-format leftover, etc.) — in which case the caller
@@ -72,11 +93,25 @@ export async function readCachedWaveform(dir, fileHash) {
  * happen given generateWaveformBars() clamps on output, but the clamp is
  * implicit rather than asserted.
  */
+// Per-writer temp sequence. The staging name must be unique per write:
+// with a fixed name, two same-key writers (the on-demand endpoint and the
+// fallback pass live in one process but there can be a second mStream
+// against the same cache dir) interleave write/rename and the loser's
+// rename throws ENOENT. The rust side solved this the same way
+// (write_atomic's `<file>.tmp.<seq>`), and its stale-temp sweep collects
+// any `.tmp.` leftovers older than an hour, which this name shape joins.
+let wfTmpSeq = 0;
+
 export async function writeCachedWaveform(dir, fileHash, bars) {
   const finalPath = cacheFilePath(dir, fileHash);
-  const tmpPath = path.join(dir, fileHash + CACHE_EXT + '.tmp');
-  await fsp.writeFile(tmpPath, Buffer.from(bars));
-  await fsp.rename(tmpPath, finalPath);
+  const tmpPath = `${finalPath}.tmp.${process.pid}.${wfTmpSeq++}`;
+  try {
+    await fsp.writeFile(tmpPath, Buffer.from(bars));
+    await fsp.rename(tmpPath, finalPath);
+  } catch (err) {
+    fsp.unlink(tmpPath).catch(() => {});   // don't orphan the staging file
+    throw err;
+  }
 }
 
 // Failure markers, shared with the rust `--waveform-scan` pass: a
@@ -109,8 +144,17 @@ export async function sweepSupersededArtifacts(dir) {
   try { names = await fsp.readdir(dir); }
   catch (_err) { return 0; }   // no dir yet, or unreadable — nothing to do
 
+  // Only names WE could have written are candidates: a bare content hash
+  // (lowercase hex, 32 for MD5 today, room for longer digests) directly
+  // followed by the artifact suffix. The directory is operator-pointable
+  // (storage.waveformCacheDirectory is a free-form string), and `.bin` is
+  // not ours alone — cue/bin disc images live in real music libraries,
+  // and ML tooling ships pytorch_model.bin. A suffix-only match deleted
+  // all of those; a hash-shaped name that ISN'T ours is indistinguishable
+  // anyway, which is as narrow as this can get.
+  const V1_ARTIFACT = /^[0-9a-f]{32,64}\.(bin|failed)$/;
   const stale = names.filter((n) =>
-    (n.endsWith('.bin') || n.endsWith('.failed'))
+    V1_ARTIFACT.test(n)
     && !n.endsWith(CACHE_EXT) && !n.endsWith(FAILED_EXT));
 
   let removed = 0;
@@ -132,9 +176,23 @@ export function hasFfmpegFailedMarker(dir, fileHash) {
   }
 }
 
+/**
+ * Record ffmpeg's failure verdict on a content key.
+ *
+ * @returns {Promise<boolean>} whether the marker actually landed on disk.
+ *   The write error itself stays swallowed (the marker is advisory — never
+ *   fail a request over it), but callers that count failures as PROGRESS
+ *   must know the difference: the fallback pass re-enqueues itself on the
+ *   promise that every counted failure shrank the next plan, and a marker
+ *   that never landed shrinks nothing.
+ */
 export async function recordFfmpegFailure(dir, fileHash) {
-  try { await fsp.appendFile(failedMarkerPath(dir, fileHash), 'ffmpeg\n'); }
-  catch (_err) { /* marker is advisory — never fail the request over it */ }
+  try {
+    await fsp.appendFile(failedMarkerPath(dir, fileHash), 'ffmpeg\n');
+    return true;
+  } catch (_err) {
+    return false;
+  }
 }
 
 export async function clearFailedMarker(dir, fileHash) {
@@ -244,8 +302,12 @@ export function generateWaveformBars(audioPath, ffmpegBin) {
       // Keeping the channels interleaved costs nothing here: the pyramid
       // takes a running max over every sample it is handed, and max over
       // (channels x time) is exactly max-per-frame then max-over-time.
-      // That also matches what the rust engine now does, so the two
-      // engines describe the same audio the same way.
+      // That matches the rust engine's reduction ON THE CHANNEL AXIS —
+      // the two engines are NOT byte-identical, because `-ar 8000` below
+      // band-limits this path to 4 kHz while rust decodes at native rate,
+      // so bright broadband content reads somewhat lower here (measured
+      // 0.84-0.98x on real music). Only ever visible across a cache
+      // regeneration; the player shows one engine's bars at a time.
       '-ar', '8000',             // 8 kHz — plenty of resolution for 800 bars
       '-f', 'u8',
       '-acodec', 'pcm_u8',

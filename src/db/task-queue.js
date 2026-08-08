@@ -1048,6 +1048,21 @@ function runWaveformTask(taskObj) {
       'endpoint will generate waveforms lazily on first play)');
     return;
   }
+  // Waveform-generation gate, same idea as the hash-generation gate in
+  // findRustParser: the cache filenames are a contract between this server
+  // and the binary. A binary one generation behind writes names the boot
+  // sweep deletes, so running it re-decodes the whole library every boot
+  // for artifacts nothing ever reads. Probed per pass rather than latched:
+  // dropping in a rebuilt binary heals on the next scan without a restart.
+  const binWfGen = waveformLib.probeWaveformGeneration(rustParserBin);
+  if (binWfGen !== waveformLib.CACHE_EXT) {
+    winston.warn(
+      `Waveform pass skipped — rust-parser writes waveform generation ` +
+      `'${binWfGen ?? 'pre-w2'}' but this server expects '${waveformLib.CACHE_EXT}'. ` +
+      `Update bin/rust-parser (CI rebuilds it on pushes to master) or rebuild ` +
+      `rust-parser/target with cargo. Lazy on-demand generation still covers playback.`);
+    return;
+  }
 
   const payload = {
     dbPath: path.join(config.program.storage.dbDirectory, 'mstream.db'),
@@ -1163,6 +1178,22 @@ function runWaveformTask(taskObj) {
   wfChild.on('close', (code, signal) => closeOnce(code, signal));
 }
 
+// Backlog of the previous CHAINED fallback round — shouldChain() requires
+// the eligible set to strictly shrink between chained rounds, so any
+// future non-shrinking work source degrades to once-per-scan instead of a
+// hot loop. null = the last round did not chain.
+let lastFallbackBacklog = null;
+
+// True when the resolved rust binary exists AND writes the same waveform
+// cache generation this server reads. Exported for tests that need to
+// know whether the real pass can run at all (a stale prebuilt in the
+// window before CI rebuilds bin/ answers the probe wrong, and the pass
+// correctly refuses to run — tests must skip rather than fail there).
+export function waveformPassBinaryReady() {
+  if (!findRustParser()) { return false; }
+  return waveformLib.probeWaveformGeneration(rustParserBin) === waveformLib.CACHE_EXT;
+}
+
 // Second half of the waveform pass: covers content symphonia structurally
 // cannot decode (Opus) plus anything it failed on, using the same ffmpeg
 // generator the on-demand endpoint uses. Runs in-process — ffmpeg does the
@@ -1196,22 +1227,26 @@ async function runWaveformFfmpegFallback() {
     if (res.total > 0) {
       winston.info(
         `Waveform ffmpeg fallback: ${res.generated} generated, ${res.failed} failed ` +
-        `(${res.total} attempted)` +
-        (res.capped ? '; more remain, queueing another pass' : ''));
+        `(${res.total} of ${res.backlog} eligible)` +
+        (res.capped ? '; more remain' : ''));
       invalidateCoverageCache();
     }
     // Chain another pass so a backlog larger than one run's cap drains on
-    // its own instead of waiting for N more scans. Gated on the run having
-    // RESOLVED something: every generate writes a cache file and every
-    // failure writes a marker, so real progress always shrinks the work
-    // list — but a batch of rows whose files have all vanished resolves
-    // nothing (deliberately: no marker for a file that may come back), and
-    // re-queueing on that would spin forever.
-    if (res.capped && (res.generated + res.failed) > 0 && !abort.stopped) {
+    // its own instead of waiting for N more scans — but only on DURABLE
+    // progress, judged by shouldChain(): the first version of this gate
+    // counted mere attempts and re-forked the whole pass forever on an
+    // unwritable cache dir (nothing landed, so the plan never shrank).
+    // The backlog handed to shouldChain is from the previous CHAINED
+    // round, so a run that stops chaining also resets the comparison.
+    if (!abort.stopped && waveformFallback.shouldChain(res, lastFallbackBacklog)) {
+      lastFallbackBacklog = res.backlog;
       addWaveformTask();
+    } else {
+      lastFallbackBacklog = null;
     }
   } catch (err) {
     winston.warn(`Waveform ffmpeg fallback failed: ${err.message}`);
+    lastFallbackBacklog = null;
   } finally {
     removeFromKillQueue(killFn);
   }

@@ -32,7 +32,7 @@ import {
   generateWaveformBars, NUM_BARS, CACHE_EXT, FAILED_EXT,
   cacheFilePath, failedMarkerPath,
   hasFfmpegFailedMarker, recordFfmpegFailure, clearFailedMarker,
-  sweepSupersededArtifacts,
+  sweepSupersededArtifacts, probeWaveformGeneration,
 } from '../../src/db/waveform-lib.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -43,11 +43,16 @@ const FFMPEG = path.join(REPO_ROOT, 'bin', 'ffmpeg',
 function findRustParser() {
   const ext = process.platform === 'win32' ? '.exe' : '';
   const libc = process.platform === 'linux' ? '-musl' : '';
-  return [
+  const candidates = [
     path.join(REPO_ROOT, 'rust-parser', 'target', 'release', `rust-parser${ext}`),
     path.join(REPO_ROOT, 'bin', 'rust-parser',
       `rust-parser-${process.platform}-${process.arch}${libc}${ext}`),
-  ].find(p => fs.existsSync(p)) || null;
+  ].filter(p => fs.existsSync(p));
+  // Only a binary on the CURRENT cache generation can satisfy this suite —
+  // a prebuilt from before a generation bump writes filenames these
+  // assertions (and the server, via the same probe) no longer accept.
+  // Skipping in the window before CI rebuilds bin/ is the truthful result.
+  return candidates.find(p => probeWaveformGeneration(p) === CACHE_EXT) || null;
 }
 
 function runFfmpeg(args) {
@@ -230,6 +235,45 @@ describe('rust-parser --waveform-scan (the enrichment pass)', () => {
       'a symphonia failure is not retried by this pass');
   });
 
+  test('opus hidden in a .ogg container: skipped silently, no marker, left for the fallback', { timeout: 60_000 }, async (t) => {
+    if (!(await setupScannedLibrary(t))) { return; }
+    // The extension gate can't see this one — symphonia's ogg reader maps
+    // the Opus stream happily and only decoder creation fails. It used to
+    // be counted failed and marked `symphonia`, misreporting a fine file.
+    await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=1:sample_rate=48000',
+      '-c:a', 'libopus', '-b:a', '64k', path.join(lib, 'hidden.ogg')]);
+    const rescan = await spawnJson(rustBin, [JSON.stringify({
+      dbPath, libraryId: 1, vpath: 'wflib', directory: lib,
+      skipImg: true, albumArtDirectory: path.join(tmp, 'art'), scanId: 'wf-ogg',
+      compressImage: false, supportedFiles: { mp3: true, opus: true, ogg: true },
+      scanCommitInterval: 25, forceRescan: false, followSymlinks: false,
+      subtree: '', waveformCacheDir: '', analyzeBpm: false,
+      expectedSchemaVersion: SCHEMA_VERSION, scanThreads: 1,
+    })]);
+    assert.equal(rescan.code, 0, rescan.err);
+    const db = new DatabaseSync(dbPath);
+    const key = db.prepare(
+      "SELECT COALESCE(NULLIF(audio_hash, ''), file_hash) AS k FROM tracks WHERE filepath = 'hidden.ogg'"
+    ).get().k;
+    db.close();
+
+    const r = await spawnJson(rustBin, ['--waveform-scan', wfConfig()]);
+    assert.equal(r.code, 0, r.err);
+    const complete = lastEvent(r.out, 'waveformScanComplete');
+    assert.equal(complete.total, 4, 'the ogg-opus IS planned — only a probe can classify it');
+    assert.equal(complete.generated, 3, 'the three mp3s generated');
+    assert.equal(complete.failed, 0, 'a codec with no decoder is not a failure of the file');
+    assert.ok(!fs.existsSync(failedMarkerPath(cache, key)),
+      'no marker — it would exclude the key from every future pass');
+    assert.ok(!fs.existsSync(cacheFilePath(cache, key)), 'and symphonia produced no bars');
+
+    // The ffmpeg fallback fills the key in the same task; from then on the
+    // rust pass plans zero and stops re-probing it.
+    fs.writeFileSync(cacheFilePath(cache, key), Buffer.alloc(NUM_BARS, 5));
+    const r2 = await spawnJson(rustBin, ['--waveform-scan', wfConfig()]);
+    assert.equal(lastEvent(r2.out, 'waveformScanPlan').total, 0, 'cached key ends the re-probe');
+  });
+
   test('duplicate content: a vanished first copy does not starve the surviving copy', { timeout: 60_000 }, async (t) => {
     if (!(await setupScannedLibrary(t))) { return; }
     // Two byte-identical files → one content key with two paths. The
@@ -334,15 +378,29 @@ describe('on-demand generation covers the full track length', () => {
   test('sweepSupersededArtifacts removes previous-generation names only', async () => {
     const dir = path.join(tmp, 'sweep-dir');
     await fsp.mkdir(dir, { recursive: true });
-    const keep = [cacheFilePath(dir, 'aaa'), failedMarkerPath(dir, 'bbb')];
-    const drop = [path.join(dir, 'ccc.bin'), path.join(dir, 'ddd.failed')];
-    const bystander = path.join(dir, 'README.md');
-    for (const f of [...keep, ...drop, bystander]) { await fsp.writeFile(f, 'x'); }
+    const hashA = 'a'.repeat(32);
+    const hashB = 'b'.repeat(32);
+    const hashC = 'c1d2e3f4'.repeat(4);
+    const keep = [cacheFilePath(dir, hashA), failedMarkerPath(dir, hashB)];
+    const drop = [path.join(dir, `${hashC}.bin`), path.join(dir, `${'d'.repeat(40)}.failed`)];
+    // The cache directory is operator-pointable, and `.bin` is not ours
+    // alone: cue/bin disc images and ML model weights are real residents
+    // of real music folders. Only bare-hex hash names may ever be swept.
+    const foreign = [
+      path.join(dir, 'pytorch_model.bin'),
+      path.join(dir, 'disc1.bin'),
+      path.join(dir, 'MyAlbum.failed'),
+      path.join(dir, 'DEADBEEF'.repeat(4) + '.bin'),   // uppercase = not a hash we wrote
+      path.join(dir, 'README.md'),
+    ];
+    for (const f of [...keep, ...drop, ...foreign]) { await fsp.writeFile(f, 'x'); }
 
     assert.equal(await sweepSupersededArtifacts(dir), 2);
     for (const f of keep) { assert.ok(fs.existsSync(f), `${path.basename(f)} must survive`); }
     for (const f of drop) { assert.ok(!fs.existsSync(f), `${path.basename(f)} must be swept`); }
-    assert.ok(fs.existsSync(bystander), 'unrelated files are left alone');
+    for (const f of foreign) {
+      assert.ok(fs.existsSync(f), `${path.basename(f)} is not ours and must never be deleted`);
+    }
     // Idempotent, and a missing directory is not an error.
     assert.equal(await sweepSupersededArtifacts(dir), 0);
     assert.equal(await sweepSupersededArtifacts(path.join(tmp, 'nope')), 0);

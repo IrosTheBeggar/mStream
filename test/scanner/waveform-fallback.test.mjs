@@ -24,7 +24,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { MIGRATIONS } from '../../src/db/schema.js';
-import { run } from '../../src/db/waveform-fallback.js';
+import { run, shouldChain } from '../../src/db/waveform-fallback.js';
 import {
   NUM_BARS, cacheFilePath, failedMarkerPath,
 } from '../../src/db/waveform-lib.js';
@@ -70,11 +70,16 @@ async function makeCase(tracks) {
 
   for (const t of tracks) {
     if (t.create !== false) {
+      // `codec` override lets a test put Opus inside a .ogg container —
+      // the case the extension alone can't classify.
+      const codecArgs =
+        t.codec === 'opus' || t.name.endsWith('.opus')
+          ? ['-c:a', 'libopus', '-b:a', '64k',
+             ...(t.name.endsWith('.opus') ? ['-f', 'opus'] : [])]
+          : ['-c:a', 'libmp3lame', '-b:a', '64k'];
       await runFfmpeg([
         '-f', 'lavfi', '-i', `sine=frequency=${t.freq || 440}:duration=1:sample_rate=48000`,
-        ...(t.name.endsWith('.opus')
-          ? ['-c:a', 'libopus', '-b:a', '64k', '-f', 'opus']
-          : ['-c:a', 'libmp3lame', '-b:a', '64k']),
+        ...codecArgs,
         path.join(lib, t.name),
       ]);
     }
@@ -218,5 +223,110 @@ describe('waveform ffmpeg fallback', () => {
     assert.equal(res.total, 3, 'the plan is still reported');
     assert.equal(res.generated, 0, 'but no work is started');
     assert.equal(fs.readdirSync(cache).length, 0);
+  });
+
+  // ── Regressions from the adversarial review of PR #818 ────────────────────
+
+  test('an unreachable cache dir reports zero DURABLE progress — the self-chain spin guard', { timeout: 60_000 }, async (t) => {
+    if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
+    // The dir vanished after boot (unmounted volume, deleted tree). Every
+    // decode succeeds but nothing can persist; the old chain gate counted
+    // the attempt-failures as progress and re-forked the whole pass
+    // forever against a byte-identical plan.
+    const { db, lib } = await makeCase([{ name: 'a.opus', hash: 'aaa' }]);
+    const gone = path.join(path.dirname(lib), 'cache-that-vanished');
+
+    const r1 = await run({ db, cacheDir: gone, ffmpegBin: FFMPEG, abort: newAbort() });
+    const r2 = await run({ db, cacheDir: gone, ffmpegBin: FFMPEG, abort: newAbort() });
+    db.close();
+
+    for (const r of [r1, r2]) {
+      assert.equal(r.generated, 0);
+      assert.equal(r.markersRecorded, 0,
+        'a marker that never landed must not be counted as durable progress');
+    }
+    assert.ok(!fs.existsSync(gone), 'nothing was persisted anywhere');
+    assert.equal(shouldChain({ ...r1, capped: true }, null), false,
+      'the chain gate must refuse a round that landed nothing');
+  });
+
+  test('a cache-write failure is NOT recorded as ffmpeg’s verdict on the audio', { timeout: 60_000 }, async (t) => {
+    if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
+    const { db, cache } = await makeCase([{ name: 'good.opus', hash: 'aaa' }]);
+    // Obstruct the FINAL path with a directory: the decode succeeds, the
+    // rename cannot land. (The temp path is unique per write, so the final
+    // path is the only deterministic obstruction point.)
+    fs.mkdirSync(cacheFilePath(cache, 'aaa'));
+
+    const res = await run({ db, cacheDir: cache, ffmpegBin: FFMPEG, abort: newAbort() });
+
+    assert.equal(res.failed, 0, 'a disk error is not a decode failure');
+    assert.equal(res.markersRecorded, 0);
+    assert.ok(!fs.existsSync(failedMarkerPath(cache, 'aaa')),
+      'ffmpeg decoded this file fine — a permanent marker would be a lie no pass ever clears');
+
+    // Remove the obstruction: the very next pass succeeds, proving the
+    // failure was never remembered anywhere.
+    fs.rmdirSync(cacheFilePath(cache, 'aaa'));
+    const retry = await run({ db, cacheDir: cache, ffmpegBin: FFMPEG, abort: newAbort() });
+    db.close();
+    assert.equal(retry.generated, 1, 'nothing durable blocked the retry');
+    assert.equal(fs.readFileSync(cacheFilePath(cache, 'aaa')).length, NUM_BARS);
+  });
+
+  test('an unreadable copy does not end the walk while a good copy remains', { timeout: 60_000 }, async (t) => {
+    if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
+    const { db, cache, lib } = await makeCase([
+      { name: 'bad.opus', hash: 'dup2', create: false },
+      { name: 'zz-good.opus', hash: 'dup2' },
+    ]);
+    // The bad copy EXISTS (existsSync true) but cannot be decoded — a
+    // directory stands in for a permission-denied or rotted file. The old
+    // walk returned on the first non-transient failure and wrote a
+    // terminal ffmpeg marker with the good copy still on disk.
+    fs.mkdirSync(path.join(lib, 'bad.opus'));
+
+    const res = await run({ db, cacheDir: cache, ffmpegBin: FFMPEG, abort: newAbort() });
+    db.close();
+
+    assert.equal(res.generated, 1, 'the good copy must be tried and carry the key');
+    assert.equal(res.failed, 0);
+    assert.ok(fs.existsSync(cacheFilePath(cache, 'dup2')));
+    assert.ok(!fs.existsSync(failedMarkerPath(cache, 'dup2')));
+  });
+
+  test('opus inside a .ogg container is picked up via the extension source', { timeout: 60_000 }, async (t) => {
+    if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
+    // The rust pass probes these, finds no decoder, and skips them
+    // silently (no marker) — so the ONLY route to a waveform is this
+    // pass noticing the extension. A vorbis .ogg the rust pass already
+    // cached must not be re-decoded.
+    const { db, cache } = await makeCase([{ name: 'hidden.ogg', hash: 'ogg1', codec: 'opus' }]);
+    await fsp.writeFile(cacheFilePath(cache, 'vorbis1'), Buffer.alloc(NUM_BARS, 3));
+    db.prepare(`INSERT INTO tracks (library_id, filepath, title, audio_hash)
+                VALUES (1, 'cached.ogg', 'cached.ogg', 'vorbis1')`).run();
+
+    const res = await run({ db, cacheDir: cache, ffmpegBin: FFMPEG, abort: newAbort() });
+    db.close();
+
+    assert.equal(res.total, 1, 'only the uncached ogg is work; the cached one is excluded');
+    assert.equal(res.generated, 1);
+    const buf = fs.readFileSync(cacheFilePath(cache, 'ogg1'));
+    assert.equal(buf.length, NUM_BARS);
+    assert.ok(Math.max(...buf) > 0, 'the hidden Opus stream produced real peaks');
+    assert.equal(fs.readFileSync(cacheFilePath(cache, 'vorbis1'))[0], 3, 'cached entry untouched');
+  });
+
+  test('shouldChain: only durable, shrinking progress justifies another round', () => {
+    const base = { capped: true, generated: 0, markersRecorded: 0, backlog: 1000 };
+    assert.equal(shouldChain({ ...base }, null), false, 'attempts alone never chain');
+    assert.equal(shouldChain({ ...base, generated: 5 }, null), true, 'landed cache files chain');
+    assert.equal(shouldChain({ ...base, markersRecorded: 5 }, null), true, 'landed markers chain');
+    assert.equal(shouldChain({ ...base, generated: 5, capped: false }, null), false,
+      'an uncapped run finished the backlog — nothing to chain');
+    assert.equal(shouldChain({ ...base, generated: 5, backlog: 1000 }, 1000), false,
+      'a backlog that failed to shrink stops the chain even with progress claimed');
+    assert.equal(shouldChain({ ...base, generated: 5, backlog: 500 }, 1000), true,
+      'a genuinely shrinking backlog keeps draining');
   });
 });
