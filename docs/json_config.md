@@ -1,6 +1,11 @@
 # JSON config
 
-By default, mStream will generate a config at `save/conf/default.conf`. You can set the config file for mstream the the `-j` flag.
+By default, mStream generates a config at `save/conf/default.json` when run
+from source or npm. The standalone binary bundles instead keep it in your user
+data directory (`%LOCALAPPDATA%\mStream`, `~/Library/Application Support/mStream`,
+or `~/.local/share/mstream` — see [install.md](install.md)), and generate it
+with Quick Connect enabled unless launched with `--quick-connect-off-by-default`.
+You can set the config file explicitly with the `-j` flag.
 
 ```
 mstream -j /path/to/config.json
