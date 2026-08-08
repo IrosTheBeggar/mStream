@@ -49,6 +49,7 @@ bun.lock
 
 rust-parser/target/
 rust-server-audio/target/
+rust-launcher/target/
 p2p-sidecar/target/
 
 save/waveforms/*
