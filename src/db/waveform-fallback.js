@@ -14,9 +14,10 @@
 //
 //   1. Extensions the rust pass refuses on sight (CANDIDATE_EXTS) — it
 //      never opens these, so they leave no artifact at all.
-//   2. Hashes carrying a `symphonia` (tried and failed) or `no-decoder`
-//      (no decoder for the codec) marker. ffmpeg decodes plenty symphonia
-//      won't; a success here deletes the marker.
+//   2. Hashes the rust pass left an artifact for: a `.w2.deferred` (it
+//      has no decoder for the codec) or a `symphonia` line in
+//      `.w2.failed` (it tried and failed). ffmpeg decodes plenty
+//      symphonia won't; a success here deletes both.
 //
 // Source 2 is what makes coverage complete, and it is NOT optional: the
 // set of codecs symphonia can't decode is not knowable from the extension
@@ -37,10 +38,11 @@ import {
   NUM_BARS,
   FAILED_EXT,
   CACHE_EXT,
+  DEFERRED_EXT,
   generateWaveformBars,
   writeCachedWaveform,
   recordFfmpegFailure,
-  clearFailedMarker,
+  clearWaveformMarkers,
 } from './waveform-lib.js';
 
 // Extensions whose content symphonia may be unable to decode: .opus always
@@ -190,8 +192,10 @@ async function generateOne({ key, paths, cacheDir, ffmpegBin, result }) {
       return;
     }
     result.generated++;
-    // ffmpeg succeeded where symphonia didn't — the marker is now a lie.
-    await clearFailedMarker(cacheDir, key);
+    // ffmpeg succeeded where symphonia didn't — every marker for this key
+    // is now a lie, including a deferral that would otherwise keep it in
+    // the plan forever.
+    await clearWaveformMarkers(cacheDir, key);
     return;
   }
   // Every copy that exists failed to DECODE — that is a verdict on the
@@ -226,9 +230,14 @@ async function planWork({ db, cacheDir }) {
 
   const cached = new Set();
   const markerNames = [];
+  // Deferrals are classified by SUFFIX — no body read, and no ambiguity
+  // with a failure verdict.
+  const rustDeferred = [];
   for (const name of names) {
     if (name.endsWith(CACHE_EXT)) {
       cached.add(name.slice(0, -CACHE_EXT.length));
+    } else if (name.endsWith(DEFERRED_EXT)) {
+      rustDeferred.push(name.slice(0, -DEFERRED_EXT.length));
     } else if (name.endsWith(FAILED_EXT)) {
       markerNames.push(name);
     }
@@ -239,20 +248,13 @@ async function planWork({ db, cacheDir }) {
   // the extension query, so checking it only on the marker path would
   // re-spawn a doomed 30-second decode on every pass, forever.
   const ffmpegFailed = new Set();
-  const rustDeferred = [];
   const BATCH = 32;
   for (let i = 0; i < markerNames.length; i += BATCH) {
     await Promise.all(markerNames.slice(i, i + BATCH).map(async (name) => {
       const key = name.slice(0, -FAILED_EXT.length);
       const body = await readMarker(path.join(cacheDir, name));
-      // `symphonia` = the rust pass tried and failed. `no-decoder` = it has
-      // no decoder for the codec at all. Both are ours to attempt, and the
-      // second is the ONLY route for an undecodable codec in a container
-      // our extension query doesn't cover (5.1/HE-AAC in .m4a, .m4b, .aac).
       if (body.includes('ffmpeg')) { ffmpegFailed.add(key); }
-      else if (body.includes('symphonia') || body.includes('no-decoder')) {
-        rustDeferred.push(key);
-      }
+      else if (body.includes('symphonia')) { rustDeferred.push(key); }
     }));
   }
 

@@ -31,8 +31,9 @@ import { MIGRATIONS, SCHEMA_VERSION } from '../../src/db/schema.js';
 import {
   generateWaveformBars, NUM_BARS, CACHE_EXT, FAILED_EXT,
   cacheFilePath, failedMarkerPath,
-  hasFfmpegFailedMarker, recordFfmpegFailure, clearFailedMarker,
+  hasFfmpegFailedMarker, recordFfmpegFailure,
   sweepSupersededArtifacts, probeWaveformGeneration,
+  DEFERRED_EXT, deferredMarkerPath, clearWaveformMarkers,
 } from '../../src/db/waveform-lib.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -277,13 +278,15 @@ describe('rust-parser --waveform-scan (the enrichment pass)', () => {
     assert.equal(complete.failed, 0, 'a codec with no decoder is not a failure of the file');
     assert.ok(!fs.existsSync(cacheFilePath(cache, key)), 'and symphonia produced no bars');
 
-    // It DOES leave a `no-decoder` marker. That is not a failure line — it
-    // is how the key stays reachable: the ffmpeg fallback routes on it, and
-    // without it anything undecodable in a container the fallback doesn't
-    // query by extension had no route to a waveform from either pass.
-    const marker = fs.readFileSync(failedMarkerPath(cache, key), 'utf8');
-    assert.match(marker, /no-decoder/);
-    assert.doesNotMatch(marker, /symphonia/, 'this is not a decode failure');
+    // It DOES leave a `.w2.deferred` artifact — a SEPARATE suffix, not a
+    // line in `.failed`. That is how the key stays reachable (the ffmpeg
+    // fallback routes on it) without the coverage counter, which
+    // classifies by filename only, reporting a good file as a failure.
+    assert.ok(fs.existsSync(deferredMarkerPath(cache, key)),
+      'the key must stay reachable for the ffmpeg half');
+    assert.ok(!fs.existsSync(failedMarkerPath(cache, key)),
+      'a deferral is not a failure and must not be counted as one');
+    assert.ok(fs.readdirSync(cache).some(n => n.endsWith(DEFERRED_EXT)));
 
     // The marker also stops the endless re-probe: a second pass plans zero
     // for that key rather than re-opening the file on every scan forever.
@@ -294,7 +297,7 @@ describe('rust-parser --waveform-scan (the enrichment pass)', () => {
     // And a later ffmpeg success clears it, so the key stops being planned
     // for the right reason.
     fs.writeFileSync(cacheFilePath(cache, key), Buffer.alloc(NUM_BARS, 5));
-    fs.rmSync(failedMarkerPath(cache, key));
+    fs.rmSync(deferredMarkerPath(cache, key));
     const r3 = await spawnJson(rustBin, ['--waveform-scan', wfConfig()]);
     assert.equal(lastEvent(r3.out, 'waveformScanPlan').total, 0, 'cached key stays done');
   });
@@ -373,7 +376,7 @@ describe('on-demand generation covers the full track length', () => {
     assert.equal(hasFfmpegFailedMarker(dir, key), true);
     assert.match(await fsp.readFile(failedMarkerPath(dir, key), 'utf8'), /symphonia/,
       'recording ffmpeg must preserve the symphonia line');
-    await clearFailedMarker(dir, key);
+    await clearWaveformMarkers(dir, key);
     assert.equal(hasFfmpegFailedMarker(dir, key), false);
   });
 

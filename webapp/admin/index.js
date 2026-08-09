@@ -2980,12 +2980,23 @@ const dbView = Vue.component('db-view', {
           'no-api-key': 'no API key',
           'no-binary': 'rust-parser unavailable',
           'binary-unsupported': 'rust-parser outdated',
-          'binary-generation-mismatch': 'rust-parser outdated (ffmpeg half only)',
           'runtime-unavailable': 'ML runtime unavailable',
         }[p.disabledReason] || p.disabledReason;
         return `Off — ${reason}`;
       }
-      return { idle: 'Idle', queued: 'Queued', running: 'Running' }[p.state] || p.state;
+      const base = { idle: 'Idle', queued: 'Queued', running: 'Running' }[p.state] || p.state;
+      // A pass can be ENABLED and still degraded — the waveform pass runs
+      // its ffmpeg half while the rust half sits out on a generation
+      // mismatch. Without this the badge read plain "Idle", identical to a
+      // healthy server, and the operator had no way to see that half the
+      // producer never runs.
+      if (p.enabled && p.disabledReason) {
+        const why = {
+          'binary-generation-mismatch': 'rust-parser outdated (ffmpeg half only)',
+        }[p.disabledReason] || p.disabledReason;
+        return `${base} — ${why}`;
+      }
+      return base;
     },
     pctOf: function(part, whole) {
       if (!whole) { return 0; }

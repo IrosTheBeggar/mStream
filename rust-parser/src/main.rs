@@ -44,6 +44,12 @@ const NUM_BARS: usize = 800;
 // are ignored here and swept at boot by the JS side.
 const WAVEFORM_EXT: &str = ".w2.bin";
 const WAVEFORM_FAILED_EXT: &str = ".w2.failed";
+// Deferred to the ffmpeg half: no decoder for this codec. A SEPARATE
+// artifact, not a line inside `.failed`, because every consumer
+// classifies these by filename — the JS coverage counter must stay
+// filename-only, and counting a deferral as a failure misreports a
+// perfectly good file. Mirrors DEFERRED_EXT in src/db/waveform-lib.js.
+const WAVEFORM_DEFERRED_EXT: &str = ".w2.deferred";
 
 // ── Config (matches what task-queue.js passes) ──────────────────────────────
 
@@ -4466,7 +4472,10 @@ fn load_waveform_cache_names(dir: &Path) -> HashSet<String> {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             if let Some(fname) = entry.file_name().to_str() {
-                if fname.ends_with(WAVEFORM_EXT) || fname.ends_with(WAVEFORM_FAILED_EXT) {
+                if fname.ends_with(WAVEFORM_EXT)
+                    || fname.ends_with(WAVEFORM_FAILED_EXT)
+                    || fname.ends_with(WAVEFORM_DEFERRED_EXT)
+                {
                     names.insert(fname.to_string());
                 }
             }
@@ -4549,18 +4558,16 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
         // for a transient quirk) must not stop this pass from trying, and
         // a generated .bin is exactly what unblocks the endpoint again.
         // Mirrors the engine-line discipline in src/db/waveform-lib.js.
-        // Both lines mean "this pass already decided about this key":
-        // `symphonia` is a decode failure, `no-decoder` is a codec we have
-        // no decoder for. Either way re-running would repeat the same work
-        // for the same answer, so both exclude the key from the plan. Only
-        // the ffmpeg fallback can move them, and a success there deletes
-        // the marker outright.
+        // A `symphonia` line means this pass tried and failed; re-running
+        // would repeat the work for the same answer. Only the ffmpeg
+        // fallback can move such a key, and a success there deletes the
+        // marker outright.
         let symphonia_failed: HashSet<&String> = existing
             .iter()
             .filter(|name| {
                 name.ends_with(WAVEFORM_FAILED_EXT)
                     && fs::read_to_string(cache_dir.join(name.as_str()))
-                        .map(|c| c.contains("symphonia") || c.contains("no-decoder"))
+                        .map(|c| c.contains("symphonia"))
                         .unwrap_or(true) // unreadable marker — assume ours
             })
             .collect();
@@ -4589,6 +4596,7 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
                 None => continue, // no content hash to key the cache on
             };
             if existing.contains(&format!("{}{}", key, WAVEFORM_EXT))
+                || existing.contains(&format!("{}{}", key, WAVEFORM_DEFERRED_EXT))
                 || symphonia_failed.contains(&format!("{}{}", key, WAVEFORM_FAILED_EXT))
             {
                 continue;
@@ -4688,13 +4696,18 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
                 // exclude it, this pass re-planned and re-probed those files
                 // on every single scan, forever.
                 //
-                // The `no-decoder` line is not a failure line: the fallback
-                // treats it as work, the coverage counter does not count it
-                // as failed, and the on-demand endpoint (which gates only on
-                // `ffmpeg`) still serves. A later ffmpeg success deletes the
-                // whole marker.
+                // The deferral artifact is NOT a failure marker: the
+                // fallback routes on it, the coverage counter counts it as
+                // neither done nor failed (so the key reads as remaining,
+                // which is the truth), and the on-demand endpoint — which
+                // gates only on an `ffmpeg` line in `.failed` — still
+                // serves. A later success deletes it.
                 Some(WaveformDecode::NoDecoder) => {
-                    append_failure_marker(&cache_dir, key, "no-decoder");
+                    let marker = cache_dir.join(format!("{}{}", key, WAVEFORM_DEFERRED_EXT));
+                    // Content is a breadcrumb for a human reading the cache
+                    // dir; nothing parses it — the suffix carries the meaning.
+                    let _ = write_atomic(&marker, b"no-decoder
+");
                 }
                 Some(WaveformDecode::Failed) => {
                     failed.fetch_add(1, Ordering::Relaxed);

@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { MIGRATIONS } from '../../src/db/schema.js';
 import { run, shouldChain } from '../../src/db/waveform-fallback.js';
 import {
-  NUM_BARS, cacheFilePath, failedMarkerPath,
+  NUM_BARS, cacheFilePath, failedMarkerPath, deferredMarkerPath,
 } from '../../src/db/waveform-lib.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -333,25 +333,28 @@ describe('waveform ffmpeg fallback', () => {
     assert.equal(retry.generated, 1, 'the key must still be reachable once readable again');
   });
 
-  test('a no-decoder marker routes the key here whatever its container', { timeout: 60_000 }, async (t) => {
+  test('a deferred artifact routes the key here whatever its container', { timeout: 60_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
-    // The rust pass writes `no-decoder` for a codec it has no decoder for.
-    // The container may be one CANDIDATE_EXTS never queries (5.1 or HE-AAC
-    // in .m4a/.m4b/.aac), so the marker is the ONLY route to a waveform —
-    // routing by extension alone left those files uncovered by both passes.
+    // The rust pass writes a `.w2.deferred` artifact for a codec it has no
+    // decoder for. The container may be one CANDIDATE_EXTS never queries
+    // (5.1 or HE-AAC in .m4a/.m4b/.aac), so that artifact is the ONLY route
+    // to a waveform — routing by extension alone left those files uncovered
+    // by both passes.
     const { db, cache, lib } = await makeCase([{ name: 'multi.m4a', hash: 'aaa', create: false }]);
     await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=1:sample_rate=48000',
       '-ac', '6', '-c:a', 'aac', '-b:a', '192k', path.join(lib, 'multi.m4a')]);
-    await fsp.writeFile(failedMarkerPath(cache, 'aaa'), 'no-decoder\n');
+    await fsp.writeFile(deferredMarkerPath(cache, 'aaa'), 'no-decoder\n');
 
     const res = await run({ db, cacheDir: cache, ffmpegBin: FFMPEG, abort: newAbort() });
     db.close();
 
-    assert.equal(res.total, 1, '.m4a is not in CANDIDATE_EXTS — the marker is what found it');
+    assert.equal(res.total, 1, '.m4a is not in CANDIDATE_EXTS — the deferral is what found it');
     assert.equal(res.generated, 1);
     assert.equal(fs.readFileSync(cacheFilePath(cache, 'aaa')).length, NUM_BARS);
+    assert.ok(!fs.existsSync(deferredMarkerPath(cache, 'aaa')),
+      'success clears the deferral so the key stops being replanned');
     assert.ok(!fs.existsSync(failedMarkerPath(cache, 'aaa')),
-      'success clears the marker so the key stops being replanned');
+      'and a deferral must never have been a failure');
   });
 
   test('an unreadable copy does not end the walk while a good copy remains', { timeout: 60_000 }, async (t) => {

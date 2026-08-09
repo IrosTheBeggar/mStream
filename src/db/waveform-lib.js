@@ -39,6 +39,20 @@ export const NUM_BARS = 800;
 export const CACHE_EXT = '.w2.bin';
 export const FAILED_EXT = '.w2.failed';
 
+// Third artifact: the rust pass DEFERRED this key to the ffmpeg half —
+// it has no decoder for the codec (Opus in any container, 5.1/HE-AAC in
+// .m4a/.m4b/.aac, anything else symphonia's registry can't instantiate).
+//
+// Deliberately a separate suffix rather than a line inside `.failed`.
+// Everything that classifies these artifacts does so by FILENAME —
+// notably the enrichment coverage counter, which must stay filename-only
+// (it is the hot status path behind a prior production CPU-spin
+// incident, so it must never read N marker bodies per poll). Folding the
+// deferral into `.failed` made a perfectly good file count as a decode
+// FAILURE in the admin panel, which is the exact misreport this whole
+// pass exists to remove.
+export const DEFERRED_EXT = '.w2.deferred';
+
 export function cacheFilePath(dir, fileHash) {
   return path.join(dir, fileHash + CACHE_EXT);
 }
@@ -125,6 +139,10 @@ export function failedMarkerPath(dir, fileHash) {
   return path.join(dir, fileHash + FAILED_EXT);
 }
 
+export function deferredMarkerPath(dir, fileHash) {
+  return path.join(dir, fileHash + DEFERRED_EXT);
+}
+
 /**
  * Delete cache artifacts left by an older bar format. Called once per boot
  * from the endpoint's ensureCacheDir(), which is the only place both the
@@ -152,10 +170,10 @@ export async function sweepSupersededArtifacts(dir) {
   // and ML tooling ships pytorch_model.bin. A suffix-only match deleted
   // all of those; a hash-shaped name that ISN'T ours is indistinguishable
   // anyway, which is as narrow as this can get.
-  const V1_ARTIFACT = /^[0-9a-f]{32,64}\.(bin|failed)$/;
+  const V1_ARTIFACT = /^[0-9a-f]{32,64}\.(bin|failed|deferred)$/;
   const stale = names.filter((n) =>
     V1_ARTIFACT.test(n)
-    && !n.endsWith(CACHE_EXT) && !n.endsWith(FAILED_EXT));
+    && !n.endsWith(CACHE_EXT) && !n.endsWith(FAILED_EXT) && !n.endsWith(DEFERRED_EXT));
 
   let removed = 0;
   const BATCH = 32;
@@ -195,9 +213,16 @@ export async function recordFfmpegFailure(dir, fileHash) {
   }
 }
 
-export async function clearFailedMarker(dir, fileHash) {
-  try { await fsp.unlink(failedMarkerPath(dir, fileHash)); }
-  catch (_err) { /* none existed */ }
+/**
+ * Drop every marker for a key. Called when a waveform is successfully
+ * generated: both a failure verdict and a deferral are now false, and a
+ * stale deferral would keep the key in the fallback's plan forever.
+ */
+export async function clearWaveformMarkers(dir, fileHash) {
+  await Promise.all([
+    fsp.unlink(failedMarkerPath(dir, fileHash)).catch(() => {}),
+    fsp.unlink(deferredMarkerPath(dir, fileHash)).catch(() => {}),
+  ]);
 }
 
 const FFMPEG_TIMEOUT = 30000;       // per track

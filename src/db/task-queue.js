@@ -559,7 +559,8 @@ async function applyHashTransitionsInner() {
         const ops = [];
         for (const { target, sources } of groupList) {
           for (const src of sources) {
-            for (const toPath of [waveformLib.cacheFilePath, waveformLib.failedMarkerPath]) {
+            for (const toPath of [waveformLib.cacheFilePath, waveformLib.failedMarkerPath,
+                                  waveformLib.deferredMarkerPath]) {
               const from = toPath(waveDir, src);
               const to = toPath(waveDir, target);
               const fromName = path.basename(from);
@@ -1206,23 +1207,43 @@ let waveformGenerationMismatch = false;
 // runWaveformTask's bookkeeping: hold the queue slot, report running, and
 // finish through the same reporting path so lastRun/coverage stay honest.
 function runWaveformFallbackOnly() {
-  const killFn = () => {};   // replaced below; kept so the shape matches
+  // Placeholder so activeTask has the same shape the rust path gives it.
+  // The REAL abort is registered inside runWaveformFfmpegFallback, in the
+  // same synchronous tick, so shutdown still stops the work.
+  const killFn = () => {};
   activeTask = { kind: 'waveform', taskObj: null, child: null, killFn };
   addToKillQueue(killFn);
   reportEnrichment('waveform', { state: 'running' });
-  return runWaveformFfmpegFallback().then((res) => {
+
+  const finish = (res) => {
     removeFromKillQueue(killFn);
     if (activeTask && activeTask.kind === 'waveform' && !activeTask.child) {
       activeTask = null;
     }
-    // Report the ffmpeg half's own numbers. Shape matches the rust pass's
-    // waveformScanComplete payload so the status API and its consumers
-    // don't have to care which half did the work.
-    finishEnrichment('waveform', 0, null, res
-      ? { generated: res.generated, failed: res.failed, total: res.total }
-      : null);
+    if (res) {
+      // Report the ffmpeg half's own numbers. Shape matches the rust
+      // pass's waveformScanComplete payload so the status API and its
+      // consumers don't have to care which half did the work.
+      finishEnrichment('waveform', 0, null,
+        { generated: res.generated, failed: res.failed, total: res.total });
+    } else {
+      // Nothing ran (ffmpeg unresolved, or the half threw). Return to idle
+      // and refresh coverage, but do NOT write a synthetic 'completed'
+      // lastRun over the previous real one — same rule finishEnrichment's
+      // own contract states for a run-time gate bail.
+      invalidateCoverageCache();
+      reportEnrichment('waveform', { state: 'idle', progress: null });
+    }
     nextTask();
     checkQueueDrainedSideEffects();
+  };
+
+  // Both settle paths go through finish: if it ever rejected, activeTask
+  // would never be released and the whole task queue would wedge for the
+  // process lifetime.
+  return runWaveformFfmpegFallback().then(finish, (err) => {
+    winston.warn(`Waveform ffmpeg fallback (standalone) failed: ${err.message}`);
+    finish(null);
   });
 }
 

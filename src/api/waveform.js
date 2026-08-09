@@ -15,7 +15,7 @@ import {
   writeCachedWaveform,
   hasFfmpegFailedMarker,
   recordFfmpegFailure,
-  clearFailedMarker,
+  clearWaveformMarkers,
   sweepSupersededArtifacts,
 } from '../db/waveform-lib.js';
 
@@ -179,7 +179,7 @@ export function setup(mstream) {
           // Success also clears any failure marker the rust pass left
           // (symphonia can't decode Opus; ffmpeg just did).
           writeCachedWaveform(cacheDir(), key, waveform).catch(() => {});
-          clearFailedMarker(cacheDir(), key).catch(() => {});
+          clearWaveformMarkers(cacheDir(), key).catch(() => {});
           rememberInMem(waveform);
           return waveform;
         } catch (err) {
