@@ -27,8 +27,9 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { CACHE_EXT, probeWaveformGeneration } from '../../src/db/waveform-lib.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -40,26 +41,26 @@ const FFMPEG =
 function findRustParser() {
   const ext = process.platform === 'win32' ? '.exe' : '';
   const libc = process.platform === 'linux' ? '-musl' : '';
-  const candidates = [
-    path.join(REPO_ROOT, 'rust-parser', 'target', 'release', `rust-parser${ext}`),
-    path.join(REPO_ROOT, 'bin', 'rust-parser',
-      `rust-parser-${process.platform}-${process.arch}${libc}${ext}`),
-  ].filter(p => fsSync.existsSync(p));
+  const localBuild = path.join(REPO_ROOT, 'rust-parser', 'target', 'release', `rust-parser${ext}`);
+  const prebuilt = path.join(REPO_ROOT, 'bin', 'rust-parser',
+    `rust-parser-${process.platform}-${process.arch}${libc}${ext}`);
 
-  // Probe each candidate for the `--waveform` subcommand. A stale
-  // local build (compiled before --waveform was added) falls through
-  // to the main JSON-input path and exits 1 with "Invalid JSON Input"
-  // on stderr. Any other response — success, or a different error —
-  // means the subcommand is recognised. Distinguish by the stderr
-  // signature rather than status code so we work whether the probe
-  // path exists or not.
-  for (const bin of candidates) {
-    try {
-      const result = spawnSync(bin, ['--waveform', path.join(REPO_ROOT, 'NONEXISTENT_PROBE_FILE')],
-        { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 });
-      const stderr = (result.stderr || '').toString();
-      if (!/Invalid JSON Input/.test(stderr)) { return bin; }
-    } catch (_) { /* try next candidate */ }
+  // A LOCAL build is something this checkout produced on purpose (CI builds
+  // one on every leg), so a generation mismatch there is a real defect —
+  // a stale target/, or WAVEFORM_EXT and CACHE_EXT drifting apart — and
+  // must FAIL, not quietly skip the whole suite green.
+  if (fsSync.existsSync(localBuild)) {
+    const gen = probeWaveformGeneration(localBuild);
+    assert.equal(gen, CACHE_EXT,
+      `local rust-parser build writes waveform generation ${gen} but the server ` +
+      `expects ${CACHE_EXT} — run: cargo build --release --manifest-path rust-parser/Cargo.toml`);
+    return localBuild;
+  }
+  // Only the committed prebuilt is available. CI rebuilds those on pushes
+  // to master, so a mismatch here is the expected lag window after a
+  // generation bump: skipping is the truthful result.
+  if (fsSync.existsSync(prebuilt) && probeWaveformGeneration(prebuilt) === CACHE_EXT) {
+    return prebuilt;
   }
   return null;
 }
@@ -278,6 +279,19 @@ describe('rust-parser --waveform across supported formats', () => {
     assert.ok(peak(outPhase) > 0, 'anti-phase stereo must not read as silence');
     assert.equal(peak(outPhase), peak(inPhase),
       'inverting one channel must not change the peak the waveform reports');
+  });
+
+  test('opus hidden in a .ogg container returns null, same as bare .opus', async (t) => {
+    if (!fsSync.existsSync(FFMPEG)) { return t.skip('no bundled ffmpeg'); }
+    if (!rustBin)                   { return t.skip('no rust-parser binary'); }
+    // The extension gate can't classify this one — the ogg reader maps the
+    // Opus stream and only decoder creation fails (NoDecoder, not Failed).
+    const fixture = path.join(tmpDir, 'hidden-opus.ogg');
+    await runFfmpeg(['-nostdin', '-y', '-loglevel', 'error',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1:sample_rate=48000',
+      '-c:a', 'libopus', '-b:a', '64k', fixture]);
+    const out = await runRustWaveform(rustBin, fixture);
+    assert.equal(out.bars, null, 'no decoder for the codec — same posture as .opus');
   });
 
   test('corrupt/unknown file: returns null gracefully, does not crash', async (t) => {

@@ -31,8 +31,9 @@ import { MIGRATIONS, SCHEMA_VERSION } from '../../src/db/schema.js';
 import {
   generateWaveformBars, NUM_BARS, CACHE_EXT, FAILED_EXT,
   cacheFilePath, failedMarkerPath,
-  hasFfmpegFailedMarker, recordFfmpegFailure, clearFailedMarker,
-  sweepSupersededArtifacts,
+  hasFfmpegFailedMarker, recordFfmpegFailure,
+  sweepSupersededArtifacts, probeWaveformGeneration,
+  DEFERRED_EXT, deferredMarkerPath, clearWaveformMarkers,
 } from '../../src/db/waveform-lib.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -43,11 +44,28 @@ const FFMPEG = path.join(REPO_ROOT, 'bin', 'ffmpeg',
 function findRustParser() {
   const ext = process.platform === 'win32' ? '.exe' : '';
   const libc = process.platform === 'linux' ? '-musl' : '';
-  return [
-    path.join(REPO_ROOT, 'rust-parser', 'target', 'release', `rust-parser${ext}`),
-    path.join(REPO_ROOT, 'bin', 'rust-parser',
-      `rust-parser-${process.platform}-${process.arch}${libc}${ext}`),
-  ].find(p => fs.existsSync(p)) || null;
+  const localBuild = path.join(REPO_ROOT, 'rust-parser', 'target', 'release', `rust-parser${ext}`);
+  const prebuilt = path.join(REPO_ROOT, 'bin', 'rust-parser',
+    `rust-parser-${process.platform}-${process.arch}${libc}${ext}`);
+
+  // A LOCAL build is something this checkout produced on purpose (CI builds
+  // one on every leg), so a generation mismatch there is a real defect —
+  // a stale target/, or WAVEFORM_EXT and CACHE_EXT drifting apart — and
+  // must FAIL, not quietly skip the whole suite green.
+  if (fs.existsSync(localBuild)) {
+    const gen = probeWaveformGeneration(localBuild);
+    assert.equal(gen, CACHE_EXT,
+      `local rust-parser build writes waveform generation ${gen} but the server ` +
+      `expects ${CACHE_EXT} — run: cargo build --release --manifest-path rust-parser/Cargo.toml`);
+    return localBuild;
+  }
+  // Only the committed prebuilt is available. CI rebuilds those on pushes
+  // to master, so a mismatch here is the expected lag window after a
+  // generation bump: skipping is the truthful result.
+  if (fs.existsSync(prebuilt) && probeWaveformGeneration(prebuilt) === CACHE_EXT) {
+    return prebuilt;
+  }
+  return null;
 }
 
 function runFfmpeg(args) {
@@ -230,6 +248,60 @@ describe('rust-parser --waveform-scan (the enrichment pass)', () => {
       'a symphonia failure is not retried by this pass');
   });
 
+  test('opus hidden in a .ogg container: skipped silently, no marker, left for the fallback', { timeout: 60_000 }, async (t) => {
+    if (!(await setupScannedLibrary(t))) { return; }
+    // The extension gate can't see this one — symphonia's ogg reader maps
+    // the Opus stream happily and only decoder creation fails. It used to
+    // be counted failed and marked `symphonia`, misreporting a fine file.
+    await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=1:sample_rate=48000',
+      '-c:a', 'libopus', '-b:a', '64k', path.join(lib, 'hidden.ogg')]);
+    const rescan = await spawnJson(rustBin, [JSON.stringify({
+      dbPath, libraryId: 1, vpath: 'wflib', directory: lib,
+      skipImg: true, albumArtDirectory: path.join(tmp, 'art'), scanId: 'wf-ogg',
+      compressImage: false, supportedFiles: { mp3: true, opus: true, ogg: true },
+      scanCommitInterval: 25, forceRescan: false, followSymlinks: false,
+      subtree: '', waveformCacheDir: '', analyzeBpm: false,
+      expectedSchemaVersion: SCHEMA_VERSION, scanThreads: 1,
+    })]);
+    assert.equal(rescan.code, 0, rescan.err);
+    const db = new DatabaseSync(dbPath);
+    const key = db.prepare(
+      "SELECT COALESCE(NULLIF(audio_hash, ''), file_hash) AS k FROM tracks WHERE filepath = 'hidden.ogg'"
+    ).get().k;
+    db.close();
+
+    const r = await spawnJson(rustBin, ['--waveform-scan', wfConfig()]);
+    assert.equal(r.code, 0, r.err);
+    const complete = lastEvent(r.out, 'waveformScanComplete');
+    assert.equal(complete.total, 4, 'the ogg-opus IS planned — only a probe can classify it');
+    assert.equal(complete.generated, 3, 'the three mp3s generated');
+    assert.equal(complete.failed, 0, 'a codec with no decoder is not a failure of the file');
+    assert.ok(!fs.existsSync(cacheFilePath(cache, key)), 'and symphonia produced no bars');
+
+    // It DOES leave a `.w2.deferred` artifact — a SEPARATE suffix, not a
+    // line in `.failed`. That is how the key stays reachable (the ffmpeg
+    // fallback routes on it) without the coverage counter, which
+    // classifies by filename only, reporting a good file as a failure.
+    assert.ok(fs.existsSync(deferredMarkerPath(cache, key)),
+      'the key must stay reachable for the ffmpeg half');
+    assert.ok(!fs.existsSync(failedMarkerPath(cache, key)),
+      'a deferral is not a failure and must not be counted as one');
+    assert.ok(fs.readdirSync(cache).some(n => n.endsWith(DEFERRED_EXT)));
+
+    // The marker also stops the endless re-probe: a second pass plans zero
+    // for that key rather than re-opening the file on every scan forever.
+    const r2 = await spawnJson(rustBin, ['--waveform-scan', wfConfig()]);
+    assert.equal(lastEvent(r2.out, 'waveformScanPlan').total, 0,
+      'the marker ends the re-probe');
+
+    // And a later ffmpeg success clears it, so the key stops being planned
+    // for the right reason.
+    fs.writeFileSync(cacheFilePath(cache, key), Buffer.alloc(NUM_BARS, 5));
+    fs.rmSync(deferredMarkerPath(cache, key));
+    const r3 = await spawnJson(rustBin, ['--waveform-scan', wfConfig()]);
+    assert.equal(lastEvent(r3.out, 'waveformScanPlan').total, 0, 'cached key stays done');
+  });
+
   test('duplicate content: a vanished first copy does not starve the surviving copy', { timeout: 60_000 }, async (t) => {
     if (!(await setupScannedLibrary(t))) { return; }
     // Two byte-identical files → one content key with two paths. The
@@ -304,7 +376,7 @@ describe('on-demand generation covers the full track length', () => {
     assert.equal(hasFfmpegFailedMarker(dir, key), true);
     assert.match(await fsp.readFile(failedMarkerPath(dir, key), 'utf8'), /symphonia/,
       'recording ffmpeg must preserve the symphonia line');
-    await clearFailedMarker(dir, key);
+    await clearWaveformMarkers(dir, key);
     assert.equal(hasFfmpegFailedMarker(dir, key), false);
   });
 
@@ -334,15 +406,29 @@ describe('on-demand generation covers the full track length', () => {
   test('sweepSupersededArtifacts removes previous-generation names only', async () => {
     const dir = path.join(tmp, 'sweep-dir');
     await fsp.mkdir(dir, { recursive: true });
-    const keep = [cacheFilePath(dir, 'aaa'), failedMarkerPath(dir, 'bbb')];
-    const drop = [path.join(dir, 'ccc.bin'), path.join(dir, 'ddd.failed')];
-    const bystander = path.join(dir, 'README.md');
-    for (const f of [...keep, ...drop, bystander]) { await fsp.writeFile(f, 'x'); }
+    const hashA = 'a'.repeat(32);
+    const hashB = 'b'.repeat(32);
+    const hashC = 'c1d2e3f4'.repeat(4);
+    const keep = [cacheFilePath(dir, hashA), failedMarkerPath(dir, hashB)];
+    const drop = [path.join(dir, `${hashC}.bin`), path.join(dir, `${'d'.repeat(40)}.failed`)];
+    // The cache directory is operator-pointable, and `.bin` is not ours
+    // alone: cue/bin disc images and ML model weights are real residents
+    // of real music folders. Only bare-hex hash names may ever be swept.
+    const foreign = [
+      path.join(dir, 'pytorch_model.bin'),
+      path.join(dir, 'disc1.bin'),
+      path.join(dir, 'MyAlbum.failed'),
+      path.join(dir, 'DEADBEEF'.repeat(4) + '.bin'),   // uppercase = not a hash we wrote
+      path.join(dir, 'README.md'),
+    ];
+    for (const f of [...keep, ...drop, ...foreign]) { await fsp.writeFile(f, 'x'); }
 
     assert.equal(await sweepSupersededArtifacts(dir), 2);
     for (const f of keep) { assert.ok(fs.existsSync(f), `${path.basename(f)} must survive`); }
     for (const f of drop) { assert.ok(!fs.existsSync(f), `${path.basename(f)} must be swept`); }
-    assert.ok(fs.existsSync(bystander), 'unrelated files are left alone');
+    for (const f of foreign) {
+      assert.ok(fs.existsSync(f), `${path.basename(f)} is not ours and must never be deleted`);
+    }
     // Idempotent, and a missing directory is not an error.
     assert.equal(await sweepSupersededArtifacts(dir), 0);
     assert.equal(await sweepSupersededArtifacts(path.join(tmp, 'nope')), 0);

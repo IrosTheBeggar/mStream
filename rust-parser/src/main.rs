@@ -44,6 +44,12 @@ const NUM_BARS: usize = 800;
 // are ignored here and swept at boot by the JS side.
 const WAVEFORM_EXT: &str = ".w2.bin";
 const WAVEFORM_FAILED_EXT: &str = ".w2.failed";
+// Deferred to the ffmpeg half: no decoder for this codec. A SEPARATE
+// artifact, not a line inside `.failed`, because every consumer
+// classifies these by filename — the JS coverage counter must stay
+// filename-only, and counting a deferral as a failure misreports a
+// perfectly good file. Mirrors DEFERRED_EXT in src/db/waveform-lib.js.
+const WAVEFORM_DEFERRED_EXT: &str = ".w2.deferred";
 
 // ── Config (matches what task-queue.js passes) ──────────────────────────────
 
@@ -719,6 +725,18 @@ fn main() {
         }
     }
 
+    // Capability probe: `rust-parser --wf-generation` prints the waveform
+    // cache generation this binary writes. The server compares it against
+    // its own CACHE_EXT before running the pass — a binary one generation
+    // behind would write names the boot sweep deletes, re-decoding the
+    // whole library on every boot. Binaries that pre-date the probe fall
+    // through to the JSON-config path and exit 1 with nothing on stdout,
+    // which the server reads the same way (skip the pass).
+    if args.len() == 2 && args[1] == "--wf-generation" {
+        println!("{{\"waveformExt\":\"{}\"}}", WAVEFORM_EXT);
+        return;
+    }
+
     // Hidden developer/test subcommand: `rust-parser --waveform <path>`
     // prints `{"bars":"<hex of 800 bytes>"}` on success or `{"bars":null}`
     // when no waveform can be produced (e.g. .opus, where symphonia 0.6
@@ -729,7 +747,7 @@ fn main() {
         let p = Path::new(&args[2]);
         let ext = file_ext(p).to_lowercase();
         match waveform_from_symphonia(p, &ext) {
-            Some(output) => {
+            WaveformDecode::Bars(output) => {
                 // Hex instead of base64: trivial to produce without extra
                 // crates, trivial for the JS test to decode, fixed-length
                 // 1600 chars so a bug that truncates or pads shows up
@@ -738,7 +756,7 @@ fn main() {
                 for b in output.bars.iter() { hex.push_str(&format!("{:02x}", b)); }
                 println!("{{\"bars\":\"{}\",\"frames\":{}}}", hex, output.frames);
             }
-            None => {
+            WaveformDecode::NoDecoder | WaveformDecode::Failed => {
                 println!("{{\"bars\":null,\"frames\":0}}");
             }
         }
@@ -4454,7 +4472,10 @@ fn load_waveform_cache_names(dir: &Path) -> HashSet<String> {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             if let Some(fname) = entry.file_name().to_str() {
-                if fname.ends_with(WAVEFORM_EXT) || fname.ends_with(WAVEFORM_FAILED_EXT) {
+                if fname.ends_with(WAVEFORM_EXT)
+                    || fname.ends_with(WAVEFORM_FAILED_EXT)
+                    || fname.ends_with(WAVEFORM_DEFERRED_EXT)
+                {
                     names.insert(fname.to_string());
                 }
             }
@@ -4537,6 +4558,10 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
         // for a transient quirk) must not stop this pass from trying, and
         // a generated .bin is exactly what unblocks the endpoint again.
         // Mirrors the engine-line discipline in src/db/waveform-lib.js.
+        // A `symphonia` line means this pass tried and failed; re-running
+        // would repeat the work for the same answer. Only the ffmpeg
+        // fallback can move such a key, and a success there deletes the
+        // marker outright.
         let symphonia_failed: HashSet<&String> = existing
             .iter()
             .filter(|name| {
@@ -4571,6 +4596,7 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
                 None => continue, // no content hash to key the cache on
             };
             if existing.contains(&format!("{}{}", key, WAVEFORM_EXT))
+                || existing.contains(&format!("{}{}", key, WAVEFORM_DEFERRED_EXT))
                 || symphonia_failed.contains(&format!("{}{}", key, WAVEFORM_FAILED_EXT))
             {
                 continue;
@@ -4625,21 +4651,19 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
     pool.install(|| {
         use rayon::prelude::*;
         work.par_iter().for_each(|(key, paths)| {
-            let mut decoded = None;
-            let mut decode_attempted = false;
+            let mut decoded: Option<WaveformDecode> = None;   // None = no copy opened
             // Walk this content's paths until one OPENS: a vanished or
             // unreadable copy is not a verdict on the content — another
             // copy (or a later pass) can still produce the waveform. One
             // decode attempt per key: the bytes are the same everywhere.
             for path in paths {
                 let Ok(file) = fs::File::open(path) else { continue; };
-                decode_attempted = true;
                 let ext = file_ext(path).to_lowercase();
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     waveform_from_source(Box::new(file), &ext)
                 }));
-                match outcome {
-                    Ok(result) => { decoded = result; }
+                decoded = Some(match outcome {
+                    Ok(result) => result,
                     Err(_) => {
                         if warn_lines.fetch_add(1, Ordering::Relaxed) < 20 {
                             eprintln!(
@@ -4647,18 +4671,45 @@ fn run_waveform_scan(json_str: &str) -> Result<(), Box<dyn std::error::Error>> {
                                 path.display()
                             );
                         }
+                        WaveformDecode::Failed
                     }
-                }
+                });
                 break;
             }
             match decoded {
-                Some(output) => {
+                Some(WaveformDecode::Bars(output)) => {
                     let bin = cache_dir.join(format!("{}{}", key, WAVEFORM_EXT));
                     if write_atomic(&bin, &output.bars).is_some() {
                         generated.fetch_add(1, Ordering::Relaxed);
                     }
                 }
-                None if decode_attempted => {
+                // A codec symphonia has no decoder for. This is the ffmpeg
+                // fallback's work, not a verdict on the file, so it must not
+                // count as failed — but it still has to leave a TRACE.
+                //
+                // Writing nothing was wrong in two ways. The key had no
+                // route to the fallback except its extension, so anything
+                // undecodable in a container the fallback doesn't query
+                // (5.1 or HE-AAC in .m4a/.m4b/.aac — symphonia's AAC
+                // decoder refuses non-LC, >2ch and SBR streams) got no
+                // waveform from EITHER pass, ever. And with no artifact to
+                // exclude it, this pass re-planned and re-probed those files
+                // on every single scan, forever.
+                //
+                // The deferral artifact is NOT a failure marker: the
+                // fallback routes on it, the coverage counter counts it as
+                // neither done nor failed (so the key reads as remaining,
+                // which is the truth), and the on-demand endpoint — which
+                // gates only on an `ffmpeg` line in `.failed` — still
+                // serves. A later success deletes it.
+                Some(WaveformDecode::NoDecoder) => {
+                    let marker = cache_dir.join(format!("{}{}", key, WAVEFORM_DEFERRED_EXT));
+                    // Content is a breadcrumb for a human reading the cache
+                    // dir; nothing parses it — the suffix carries the meaning.
+                    let _ = write_atomic(&marker, b"no-decoder
+");
+                }
+                Some(WaveformDecode::Failed) => {
                     failed.fetch_add(1, Ordering::Relaxed);
                     append_failure_marker(&cache_dir, key, "symphonia");
                 }
@@ -5393,13 +5444,25 @@ struct WaveformOutput {
     frames: u64,
 }
 
+// Decode outcome, split three ways because the scan pass treats them
+// differently: Bars → cache file; NoDecoder → silent skip (the ffmpeg
+// fallback pass owns codecs symphonia cannot decode — a marker here would
+// misreport a fine file as failed, which is exactly the Opus bug the w2
+// generation fixed, resurfacing through the container instead of the
+// extension); Failed → `symphonia` marker so the pass stops retrying.
+enum WaveformDecode {
+    Bars(WaveformOutput),
+    NoDecoder,
+    Failed,
+}
+
 fn waveform_from_source(
     source: Box<dyn symphonia::core::io::MediaSource>, ext: &str,
-) -> Option<WaveformOutput> {
+) -> WaveformDecode {
     // Symphonia still doesn't ship a pure-Rust Opus decoder in 0.6 (only a
     // libopus C adapter, which we deliberately avoid). Skip .opus here and
     // let the ffmpeg fallback pass handle it.
-    if waveform_codec_unsupported(ext) { return None; }
+    if waveform_codec_unsupported(ext) { return WaveformDecode::NoDecoder; }
 
     let source: Box<dyn symphonia::core::io::MediaSource> = if hides_stream_length(ext) {
         Box::new(HiddenLenSource { inner: source })
@@ -5414,21 +5477,33 @@ fn waveform_from_source(
     // symphonia 0.6: probe() returns the FormatReader directly (no Probed
     // wrapper), and per-track codec params became an Option'd enum — the
     // old CODEC_TYPE_NULL sentinel is now simply a non-Audio/None entry.
-    let mut format = symphonia::default::get_probe()
+    let mut format = match symphonia::default::get_probe()
         .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
-        .ok()?;
+    {
+        Ok(f) => f,
+        Err(_) => return WaveformDecode::Failed,
+    };
 
-    let (track_id, audio_params) = format.tracks().iter().find_map(|t| {
+    let Some((track_id, audio_params)) = format.tracks().iter().find_map(|t| {
         match &t.codec_params {
             Some(CodecParameters::Audio(p)) => Some((t.id, p.clone())),
             _ => None,
         }
-    })?;
+    }) else { return WaveformDecode::Failed; };
     let channels = audio_params.channels.as_ref().map(|c| c.count()).unwrap_or(2);
 
-    let mut decoder = symphonia::default::get_codecs()
+    // The extension gate above cannot see codecs hidden inside a neutral
+    // container — Opus in .ogg probes fine (symphonia-format-ogg ships an
+    // Opus MAPPER) and only fails here, where the registry has no decoder
+    // for it. That is the same "not our work" case as the extension skip,
+    // NOT a verdict on the file.
+    let mut decoder = match symphonia::default::get_codecs()
         .make_audio_decoder(&audio_params, &AudioDecoderOptions::default())
-        .ok()?;
+    {
+        Ok(d) => d,
+        Err(SymphoniaError::Unsupported(_)) => return WaveformDecode::NoDecoder,
+        Err(_) => return WaveformDecode::Failed,
+    };
 
     let mut pyramid = PeakPyramid::new();
     // 0.6 replaced SampleBuffer with copy-out methods on the decoded buffer;
@@ -5479,17 +5554,22 @@ fn waveform_from_source(
         }
     }
 
-    // None = probed OK but decoded no frames (e.g. a codec the probe
-    // recognised and the decoder didn't).
+    // Failed = probed OK but decoded no frames (e.g. a stream the probe
+    // recognised and the decoder then produced nothing from).
     let frames = pyramid.frames;
-    pyramid.bars().map(|bars| WaveformOutput { bars, frames })
+    match pyramid.bars() {
+        Some(bars) => WaveformDecode::Bars(WaveformOutput { bars, frames }),
+        None => WaveformDecode::Failed,
+    }
 }
 
 // File-backed waveform entry point. Opens the file once; symphonia
 // streams it as needed.
-fn waveform_from_symphonia(path: &Path, ext: &str) -> Option<WaveformOutput> {
-    let file = fs::File::open(path).ok()?;
-    waveform_from_source(Box::new(file), ext)
+fn waveform_from_symphonia(path: &Path, ext: &str) -> WaveformDecode {
+    match fs::File::open(path) {
+        Ok(file) => waveform_from_source(Box::new(file), ext),
+        Err(_) => WaveformDecode::Failed,
+    }
 }
 
 // ── Chromaprint fingerprint (--fingerprint) ─────────────────────────────────
