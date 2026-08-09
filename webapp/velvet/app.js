@@ -10143,7 +10143,20 @@ function _applyRGGain(s) {
 // ── WAVEFORM SCRUBBER ─────────────────────────────────────────
 // ── WAVEFORM LOCALSTORAGE CACHE ───────────────────────────────
 // Key prefix; value is a JSON array of 800 integers (0-255), ~2 KB each.
-const _WF_LS_PREFIX = 'wf:';
+// Bumped alongside the server's cache generation (CACHE_EXT in
+// src/db/waveform-lib.js) — see the same note in webapp/alpha/vp.js.
+// Without it a browser keeps rendering bars from the old decoder forever.
+const _WF_LS_PREFIX = 'wf2:';
+(function _wfLsPurgeOldGenerations() {
+  try {
+    const doomed = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('wf:')) doomed.push(k);
+    }
+    for (const k of doomed) localStorage.removeItem(k);
+  } catch (_e) { /* private mode / quota — the new prefix still wins */ }
+}());
 function _wfLsGet(filepath) {
   try {
     const raw = localStorage.getItem(_WF_LS_PREFIX + filepath);

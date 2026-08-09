@@ -15,7 +15,8 @@ import {
   writeCachedWaveform,
   hasFfmpegFailedMarker,
   recordFfmpegFailure,
-  clearFailedMarker,
+  clearWaveformMarkers,
+  sweepSupersededArtifacts,
 } from '../db/waveform-lib.js';
 
 // In-memory LRU to avoid repeated disk reads
@@ -78,6 +79,19 @@ function ensureCacheDir() {
       `at a writable path (typically alongside dbDirectory) or fix ownership/perms.`
     );
   }
+
+  // Clear out artifacts from a superseded bar format. Deliberately not
+  // awaited — boot doesn't wait on a cache sweep — and deliberately here
+  // rather than in the rust pass, which never runs on a rust-less host.
+  sweepSupersededArtifacts(dir)
+    .then((removed) => {
+      if (removed > 0) {
+        winston.info(
+          `[waveform] removed ${removed} cache artifact(s) from a superseded ` +
+          `bar format; they will regenerate with the corrected decoder`);
+      }
+    })
+    .catch((err) => winston.warn(`[waveform] cache sweep failed: ${err.message}`));
 }
 
 export function setup(mstream) {
@@ -165,7 +179,7 @@ export function setup(mstream) {
           // Success also clears any failure marker the rust pass left
           // (symphonia can't decode Opus; ffmpeg just did).
           writeCachedWaveform(cacheDir(), key, waveform).catch(() => {});
-          clearFailedMarker(cacheDir(), key).catch(() => {});
+          clearWaveformMarkers(cacheDir(), key).catch(() => {});
           rememberInMem(waveform);
           return waveform;
         } catch (err) {

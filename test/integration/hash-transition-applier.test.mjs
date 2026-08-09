@@ -40,6 +40,10 @@ import { makeAudio } from '../helpers/scanner-fixture.mjs';
 import {
   initDiscoveryDb, closeDiscoveryDb, upsertDiscoveryTrack,
 } from '../../src/db/discovery-db.js';
+// The cache naming scheme has one owner (src/db/waveform-lib.js) and this
+// suite asserts against the same helpers the applier renames through, so a
+// format generation bump can't leave the test asserting the old names.
+import { cacheFilePath, failedMarkerPath } from '../../src/db/waveform-lib.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -177,9 +181,9 @@ describe('hash-transition applier (discovery ON — live worker)', () => {
     // whichever drain event consumes the ledger — the boot chain's tail or
     // the post-force-rescan drain — must see the complete stage. Ledger
     // first would let an early drain move the embedding and clear the
-    // ledger while {seed}.bin doesn't exist yet, so nothing ever renames.
-    await fsp.writeFile(path.join(waveDir, `${seed.audio_hash}.bin`), 'wavedata');
-    await fsp.writeFile(path.join(waveDir, `${seed.audio_hash}.failed`), 'symphonia\n');
+    // ledger while the seed's cache file doesn't exist yet, so nothing ever renames.
+    await fsp.writeFile(cacheFilePath(waveDir, seed.audio_hash), 'wavedata');
+    await fsp.writeFile(failedMarkerPath(waveDir, seed.audio_hash), 'symphonia\n');
     seedTransitions(mdb, [[seed.audio_hash, mid], [mid, fin]]);
 
     await forceRescanAndDrain(server, mdb);
@@ -202,9 +206,9 @@ describe('hash-transition applier (discovery ON — live worker)', () => {
     assert.ok(finRow.updated_at > seed.updated_at,
       'rowversion bumped — incremental consumers and the similarity cache see the re-key');
     // Waveform artifacts renamed at drain.
-    assert.ok(fs.existsSync(path.join(waveDir, `${fin}.bin`)), 'waveform bin followed');
-    assert.ok(fs.existsSync(path.join(waveDir, `${fin}.failed`)), 'failed marker followed');
-    assert.ok(!fs.existsSync(path.join(waveDir, `${seed.audio_hash}.bin`)), 'old bin gone');
+    assert.ok(fs.existsSync(cacheFilePath(waveDir, fin)), 'waveform bin followed');
+    assert.ok(fs.existsSync(failedMarkerPath(waveDir, fin)), 'failed marker followed');
+    assert.ok(!fs.existsSync(cacheFilePath(waveDir, seed.audio_hash)), 'old bin gone');
   });
 });
 
@@ -240,16 +244,16 @@ describe('hash-transition applier (discovery collection OFF)', () => {
     const p = 'b'.repeat(32);
     const q = 'c'.repeat(32);
     // Artifacts before ledger — same stage-ordering rule as the ON suite.
-    await fsp.writeFile(path.join(waveDir, `${p}.bin`), 'wavedata');
+    await fsp.writeFile(cacheFilePath(waveDir, p), 'wavedata');
     seedTransitions(mdb, [[p, q]]);
 
     await forceRescanAndDrain(server, mdb);
 
     assert.ok(!fs.existsSync(ddbPath),
       'draining must not silently create discovery.db');
-    assert.ok(fs.existsSync(path.join(waveDir, `${q}.bin`)),
+    assert.ok(fs.existsSync(cacheFilePath(waveDir, q)),
       'waveform renamed even with discovery off');
-    assert.ok(!fs.existsSync(path.join(waveDir, `${p}.bin`)), 'old bin gone');
+    assert.ok(!fs.existsSync(cacheFilePath(waveDir, p)), 'old bin gone');
   });
 
   test('a dormant discovery.db is still re-keyed, freshest source winning per terminal', async () => {
