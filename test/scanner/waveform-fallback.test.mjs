@@ -54,6 +54,39 @@ after(async () => {
   if (tmp) { await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {}); }
 });
 
+// Encode each DISTINCT fixture once for the whole file and copy it per
+// case. Every test wants the same handful of one-second tones, so
+// re-encoding them per case spent an extra ffmpeg spawn or two on top of
+// the one the code under test needs.
+//
+// Measured: this is a wash locally (89s -> 91s, inside the noise) because
+// a spawn here costs ~1s. It is worth keeping anyway because the cost it
+// removes is spawns, and spawns are what is expensive on the Windows CI
+// runner — there a single ffmpeg spawn measured ~15s, the ffmpeg tests in
+// this file ran 27-30s apiece, and one of them blew a 60s timeout with
+// nothing actually wrong. The rust-binary waveform suites, which spawn
+// nothing per case, stayed at 2-8s on that same runner.
+const fixtureCache = new Map();
+async function fixtureFor(name, codec, freq) {
+  const ext = path.extname(name);
+  // `codec` override lets a test put Opus inside a .ogg container — the
+  // case the extension alone cannot classify.
+  const useOpus = codec === 'opus' || ext === '.opus';
+  const key = `${ext}|${useOpus ? 'opus' : 'mp3'}|${freq}`;
+  if (fixtureCache.has(key)) { return fixtureCache.get(key); }
+
+  const codecArgs = useOpus
+    ? ['-c:a', 'libopus', '-b:a', '64k', ...(ext === '.opus' ? ['-f', 'opus'] : [])]
+    : ['-c:a', 'libmp3lame', '-b:a', '64k'];
+  const out = path.join(tmp, `fixture-${fixtureCache.size}${ext}`);
+  await runFfmpeg([
+    '-f', 'lavfi', '-i', `sine=frequency=${freq}:duration=1:sample_rate=48000`,
+    ...codecArgs, out,
+  ]);
+  fixtureCache.set(key, out);
+  return out;
+}
+
 // A minimal DB with hand-written track rows: this module reads
 // tracks+libraries and nothing else, so a real scan would only add
 // runtime and a rust-binary dependency the fallback itself doesn't have.
@@ -70,18 +103,8 @@ async function makeCase(tracks) {
 
   for (const t of tracks) {
     if (t.create !== false) {
-      // `codec` override lets a test put Opus inside a .ogg container —
-      // the case the extension alone can't classify.
-      const codecArgs =
-        t.codec === 'opus' || t.name.endsWith('.opus')
-          ? ['-c:a', 'libopus', '-b:a', '64k',
-             ...(t.name.endsWith('.opus') ? ['-f', 'opus'] : [])]
-          : ['-c:a', 'libmp3lame', '-b:a', '64k'];
-      await runFfmpeg([
-        '-f', 'lavfi', '-i', `sine=frequency=${t.freq || 440}:duration=1:sample_rate=48000`,
-        ...codecArgs,
-        path.join(lib, t.name),
-      ]);
+      const src = await fixtureFor(t.name, t.codec, t.freq || 440);
+      await fsp.copyFile(src, path.join(lib, t.name));
     }
     db.prepare(`INSERT INTO tracks (library_id, filepath, title, audio_hash)
                 VALUES (1, ?, ?, ?)`).run(t.name, t.name, t.hash);
@@ -92,7 +115,7 @@ async function makeCase(tracks) {
 const newAbort = () => ({ stopped: false });
 
 describe('waveform ffmpeg fallback', () => {
-  test('generates a waveform for Opus, which symphonia cannot decode', { timeout: 60_000 }, async (t) => {
+  test('generates a waveform for Opus, which symphonia cannot decode', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     const { db, cache } = await makeCase([{ name: 'a.opus', hash: 'aaa' }]);
 
@@ -108,7 +131,7 @@ describe('waveform ffmpeg fallback', () => {
     assert.ok(!fs.existsSync(failedMarkerPath(cache, 'aaa')), 'success leaves no marker');
   });
 
-  test('mp3s are left to the rust pass; only unsupported codecs are picked up', { timeout: 60_000 }, async (t) => {
+  test('mp3s are left to the rust pass; only unsupported codecs are picked up', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     const { db, cache } = await makeCase([
       { name: 'a.opus', hash: 'aaa' },
@@ -123,7 +146,7 @@ describe('waveform ffmpeg fallback', () => {
     assert.ok(!fs.existsSync(cacheFilePath(cache, 'bbb')));
   });
 
-  test('an already-cached key is skipped', { timeout: 60_000 }, async (t) => {
+  test('an already-cached key is skipped', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     const { db, cache } = await makeCase([{ name: 'a.opus', hash: 'aaa' }]);
     await fsp.writeFile(cacheFilePath(cache, 'aaa'), Buffer.alloc(NUM_BARS, 7));
@@ -135,7 +158,7 @@ describe('waveform ffmpeg fallback', () => {
     assert.equal(fs.readFileSync(cacheFilePath(cache, 'aaa'))[0], 7, 'existing cache untouched');
   });
 
-  test('a symphonia-only marker is retried and cleared when ffmpeg succeeds', { timeout: 60_000 }, async (t) => {
+  test('a symphonia-only marker is retried and cleared when ffmpeg succeeds', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     // An mp3 symphonia choked on: not an unsupported codec, so it only
     // reaches the fallback via its marker.
@@ -151,7 +174,7 @@ describe('waveform ffmpeg fallback', () => {
       'a marker that is no longer true must be removed');
   });
 
-  test('a marker naming ffmpeg is not retried', { timeout: 60_000 }, async (t) => {
+  test('a marker naming ffmpeg is not retried', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     const { db, cache } = await makeCase([{ name: 'a.opus', hash: 'aaa' }]);
     await fsp.writeFile(failedMarkerPath(cache, 'aaa'), 'symphonia\nffmpeg\n');
@@ -163,7 +186,7 @@ describe('waveform ffmpeg fallback', () => {
     assert.ok(!fs.existsSync(cacheFilePath(cache, 'aaa')));
   });
 
-  test('undecodable content records an ffmpeg failure exactly once', { timeout: 60_000 }, async (t) => {
+  test('undecodable content records an ffmpeg failure exactly once', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     const { db, cache, lib } = await makeCase([{ name: 'a.opus', hash: 'aaa', create: false }]);
     await fsp.writeFile(path.join(lib, 'a.opus'), 'this is not an opus stream');
@@ -178,7 +201,7 @@ describe('waveform ffmpeg fallback', () => {
     assert.equal(second.total, 0, 'a recorded failure is not re-attempted');
   });
 
-  test('duplicate content decodes once; a vanished copy falls through to a live one', { timeout: 60_000 }, async (t) => {
+  test('duplicate content decodes once; a vanished copy falls through to a live one', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     const { db, cache, lib } = await makeCase([
       { name: 'gone.opus', hash: 'dup' },
@@ -194,7 +217,7 @@ describe('waveform ffmpeg fallback', () => {
     assert.ok(fs.existsSync(cacheFilePath(cache, 'dup')));
   });
 
-  test('a key whose every copy has vanished leaves no marker', { timeout: 60_000 }, async (t) => {
+  test('a key whose every copy has vanished leaves no marker', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     const { db, cache, lib } = await makeCase([{ name: 'a.opus', hash: 'aaa' }]);
     fs.rmSync(path.join(lib, 'a.opus'));
@@ -208,7 +231,7 @@ describe('waveform ffmpeg fallback', () => {
       'the file may come back unchanged — do not poison the key');
   });
 
-  test('abort stops the run without generating anything further', { timeout: 60_000 }, async (t) => {
+  test('abort stops the run without generating anything further', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     const { db, cache } = await makeCase([
       { name: 'a.opus', hash: 'aaa' },
@@ -227,7 +250,7 @@ describe('waveform ffmpeg fallback', () => {
 
   // ── Regressions from the adversarial review of PR #818 ────────────────────
 
-  test('an unreachable cache dir reports zero DURABLE progress — the self-chain spin guard', { timeout: 60_000 }, async (t) => {
+  test('an unreachable cache dir reports zero DURABLE progress — the self-chain spin guard', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     // The dir vanished after boot (unmounted volume, deleted tree). Every
     // decode succeeds but nothing can persist; the old chain gate counted
@@ -253,7 +276,7 @@ describe('waveform ffmpeg fallback', () => {
       'the chain gate must refuse a round that landed nothing');
   });
 
-  test('a cache-write failure is NOT recorded as ffmpeg’s verdict on the audio', { timeout: 60_000 }, async (t) => {
+  test('a cache-write failure is NOT recorded as ffmpeg’s verdict on the audio', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     const { db, lib } = await makeCase([{ name: 'good.opus', hash: 'aaa' }]);
     // The cache "directory" is a FILE. Every write into it fails, and —
@@ -284,7 +307,7 @@ describe('waveform ffmpeg fallback', () => {
     assert.equal(fs.readFileSync(cacheFilePath(cache, 'aaa')).length, NUM_BARS);
   });
 
-  test('an undecodable file whose marker cannot be written counts no durable progress', { timeout: 60_000 }, async (t) => {
+  test('an undecodable file whose marker cannot be written counts no durable progress', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     // Pins recordFfmpegFailure's boolean return AND the markersRecorded
     // gate, in both directions: the decode genuinely fails (so `failed`
@@ -305,7 +328,7 @@ describe('waveform ffmpeg fallback', () => {
       'a round that recorded nothing must not chain');
   });
 
-  test('an unreadable file is not given a permanent ffmpeg verdict', { timeout: 60_000 }, async (t) => {
+  test('an unreadable file is not given a permanent ffmpeg verdict', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     // A path that exists but cannot be READ — a lock, an ACL change, a
     // stale mount. ffmpeg exits non-zero exactly as it would for corrupt
@@ -333,7 +356,7 @@ describe('waveform ffmpeg fallback', () => {
     assert.equal(retry.generated, 1, 'the key must still be reachable once readable again');
   });
 
-  test('a deferred artifact routes the key here whatever its container', { timeout: 60_000 }, async (t) => {
+  test('a deferred artifact routes the key here whatever its container', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     // The rust pass writes a `.w2.deferred` artifact for a codec it has no
     // decoder for. The container may be one CANDIDATE_EXTS never queries
@@ -357,7 +380,7 @@ describe('waveform ffmpeg fallback', () => {
       'and a deferral must never have been a failure');
   });
 
-  test('an unreadable copy does not end the walk while a good copy remains', { timeout: 60_000 }, async (t) => {
+  test('an unreadable copy does not end the walk while a good copy remains', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     const { db, cache, lib } = await makeCase([
       { name: 'bad.opus', hash: 'dup2', create: false },
@@ -378,7 +401,7 @@ describe('waveform ffmpeg fallback', () => {
     assert.ok(!fs.existsSync(failedMarkerPath(cache, 'dup2')));
   });
 
-  test('opus inside a .ogg container is picked up via the extension source', { timeout: 60_000 }, async (t) => {
+  test('opus inside a .ogg container is picked up via the extension source', { timeout: 120_000 }, async (t) => {
     if (!ffmpegOk) { return t.skip('no bundled ffmpeg'); }
     // The rust pass probes these, finds no decoder, and skips them
     // silently (no marker) — so the ONLY route to a waveform is this
