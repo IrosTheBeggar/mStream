@@ -169,11 +169,25 @@ var VIZ = (() => {
     }
     isInit = true;
 
-    loadButterchurn().then(startVisualizer, function (err) {
-      console.error('[viz] ' + err.message);
-      butterchurnLoad = null;   // allow a retry
-      isInit = false;
-    });
+    // .catch AFTER .then, not a second .then argument: an onRejected
+    // handler passed to .then only sees rejections from the promise BEFORE
+    // it, so a throw inside startVisualizer — createVisualizer does throw
+    // when the browser has no WebGL2, which is a real configuration —
+    // would escape as an unhandled rejection with isInit stuck true,
+    // leaving the visualizer permanently dead for the session and never
+    // running the recovery below.
+    loadButterchurn()
+      .catch(function (err) {
+        // The download itself failed; drop the cached promise so a later
+        // click re-fetches rather than reusing a rejected one.
+        butterchurnLoad = null;
+        throw err;
+      })
+      .then(startVisualizer)
+      .catch(function (err) {
+        console.error('[viz] ' + err.message);
+        isInit = false;   // let a later click try again
+      });
   }
 
   function startVisualizer() {
