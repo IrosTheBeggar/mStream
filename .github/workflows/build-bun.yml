@@ -24,6 +24,12 @@ jobs:
   build:
     name: ${{ matrix.key }}
     runs-on: ${{ matrix.os }}
+    # The smoke steps drive a real server: a wedged accept-but-never-respond
+    # process would otherwise sit in a retry loop until the 6-hour default,
+    # burning paid macOS/Windows runners and showing "still running" instead of
+    # a failure. Every smoke curl also carries --max-time. A full build+smoke
+    # is ~2 minutes today.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -116,17 +122,221 @@ jobs:
           UP=0
           for i in $(seq 1 60); do
             sleep 1
-            if curl -sf -o /dev/null "http://127.0.0.1:3399/api/v1/ping"; then UP=1; break; fi
+            if curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3399/api/v1/ping"; then UP=1; break; fi
           done
           sleep 3   # let the boot scan finish
-          CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3399/api/v1/ping" 2>/dev/null)
+          CODE=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:3399/api/v1/ping" 2>/dev/null)
           echo "HTTP up=$UP after ~${i}s ; /api/v1/ping -> ${CODE:-000}"
           grep -iE "scan started|scan complete" "$RUN/boot.log"
+
+          # (4) soft reboot must survive under the BUN runtime. Node's test
+          # suite can't catch this class: reboot()'s delayed sweep once hit
+          # the NEW server, and Bun's closeAllConnections (unlike Node's)
+          # stops the listener outright — the binary kept running with no
+          # port. Trigger a reboot-requiring config change, require the
+          # server back up, then require it STILL up after the ~1s sweep.
+          # Fail closed: assert the TRIGGER worked (a 400 from a renamed key or
+          # an auth wall would otherwise leave the server up and pass this step
+          # having rebooted nothing), and require a SECOND "Access mStream
+          # locally" line as positive proof a re-serve actually happened.
+          REBOOT_OK=0
+          if [ "$CODE" = "200" ]; then
+            BOOTS_BEFORE=$(grep -c "Access mStream locally" "$RUN/boot.log")
+            TRIG=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"trustProxy":true}' "http://127.0.0.1:3399/api/v1/admin/config/trust-proxy")
+            if [ "$TRIG" != "200" ]; then
+              echo "FAIL: reboot trigger POST returned ${TRIG:-000}, not 200 — the smoke would have passed without rebooting anything"
+              cat "$RUN/boot.log"; kill "$SRV" 2>/dev/null; exit 1
+            fi
+            for i in $(seq 1 20); do
+              sleep 1
+              if curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3399/api/v1/ping"; then REBOOT_OK=1; break; fi
+            done
+            sleep 3   # outlive the close-grace sweep, which used to kill the new listener
+            curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3399/api/v1/ping" || REBOOT_OK=0
+            BOOTS_AFTER=$(grep -c "Access mStream locally" "$RUN/boot.log")
+            if [ "$BOOTS_AFTER" -le "$BOOTS_BEFORE" ]; then
+              echo "FAIL: no re-serve observed (boot lines ${BOOTS_BEFORE} -> ${BOOTS_AFTER}) — the reboot never happened"
+              REBOOT_OK=0
+            fi
+
+            # (5) overlapping reboots must not kill the process. Two rapid admin
+            # saves used to start two serveIt()s racing for the port; the loser
+            # exhausted the relisten budget and process.exit()ed the healthy
+            # winner. /config/address is the right trigger: unlike trust-proxy
+            # and most others it has NO unchanged-value short-circuit, so both
+            # POSTs really do reboot (with a no-op second POST this test passes
+            # against the bug). Bind stays reachable at 127.0.0.1.
+            # Capture each POST's status. Previously these were `curl -s` with
+            # no -f and their exit codes discarded by `wait`, so if the endpoint
+            # ever 400s or moves (a renamed Joi key, a moved route) NO reboot
+            # fired, the untouched server answered every probe, and the step
+            # printed "survived two overlapping reboots" — the rebootInFlight
+            # coalescing could have been deleted outright and this stayed green.
+            CONCURRENT_BOOTS_BEFORE=$(grep -c "Access mStream locally" "$RUN/boot.log")
+            curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: application/json' -d '{"address":"127.0.0.1"}' "http://127.0.0.1:3399/api/v1/admin/config/address" > "$RUN/post1.code" &
+            C1=$!
+            curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: application/json' -d '{"address":"127.0.0.1"}' "http://127.0.0.1:3399/api/v1/admin/config/address" > "$RUN/post2.code" &
+            C2=$!
+            wait $C1 $C2
+            CONCURRENT_OK=0
+            for i in $(seq 1 25); do
+              sleep 1
+              if curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3399/api/v1/ping"; then CONCURRENT_OK=1; break; fi
+            done
+            # Must outlive a losing sibling's FULL relisten budget (20 x 250ms):
+            # the process.exit lands ~5s in, and a shorter wait passes against
+            # the very bug this guards.
+            sleep 10
+            curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3399/api/v1/ping" || CONCURRENT_OK=0
+            kill -0 "$SRV" 2>/dev/null || CONCURRENT_OK=0
+            # Fail closed on the TRIGGERS, not just on survival: both requests
+            # must have been accepted, and the server must actually have come
+            # back up again afterwards. Without these, "nothing happened" is
+            # indistinguishable from "handled two overlapping reboots".
+            POST1=$(cat "$RUN/post1.code" 2>/dev/null)
+            POST2=$(cat "$RUN/post2.code" 2>/dev/null)
+            CONCURRENT_BOOTS_AFTER=$(grep -c "Access mStream locally" "$RUN/boot.log")
+            if [ "$POST1" != "200" ] || [ "$POST2" != "200" ]; then
+              echo "FAIL: reboot triggers were not accepted (HTTP $POST1 / $POST2) — this step would otherwise pass having rebooted NOTHING"
+              CONCURRENT_OK=0
+            fi
+            if [ "$CONCURRENT_BOOTS_AFTER" -le "$CONCURRENT_BOOTS_BEFORE" ]; then
+              echo "FAIL: no additional boot after the overlapping reboots (before=$CONCURRENT_BOOTS_BEFORE after=$CONCURRENT_BOOTS_AFTER) — the server never actually restarted"
+              CONCURRENT_OK=0
+            fi
+            # Positive evidence that the SECOND request hit the coalescing guard
+            # rather than being silently lost. Advisory: the interleaving is
+            # timing-dependent, so a miss is reported, not fatal.
+            grep -q "Reboot already in progress" "$RUN/boot.log" \
+              && echo "ok: the duplicate reboot request was coalesced" \
+              || echo "note: no coalescing line — the two reboots did not overlap on this runner"
+          fi
           kill "$SRV" 2>/dev/null
 
           if [ "$CODE" != "200" ]; then echo "FAIL: server did not serve 200"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; fi
           grep -q "Scan complete" "$RUN/boot.log" || { echo "FAIL: scan did not complete"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; }
-          echo "SMOKE OK: $BIN booted, served 200, and completed a scan"
+          if [ "$REBOOT_OK" != "1" ]; then echo "FAIL: server did not survive a soft reboot (admin config change)"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; fi
+          if [ "$CONCURRENT_OK" != "1" ]; then echo "FAIL: server did not survive two overlapping reboots"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; fi
+          echo "SMOKE OK: $BIN booted, served 200, completed a scan, and survived both a soft reboot and overlapping reboots"
+
+      - name: Smoke test macOS app-launch flow (detach + serve)
+        # The .app double-click path (src/util/mac-app-launch.js) is gated on
+        # __CFBundleIdentifier, which nothing in CI sets — so the headline flow
+        # of the desktop fix had zero coverage, and LSUIElement means a
+        # regression is INVISIBLE to users (no Dock icon, no window, no console).
+        # Setting the marker by hand reproduces a LaunchServices launch closely
+        # enough to prove the two compiled-binary-only behaviors: the argv slice
+        # in detachForFinderLaunch (whose shape exists only in a Bun standalone)
+        # and the detached hand-off. announceReady's browser spawn is
+        # stdio-ignored and detached, so it's harmless on a runner.
+        if: matrix.key == 'darwin-arm64'
+        shell: bash
+        run: |
+          set +e
+          D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
+          BIN="$D/mStream.app/Contents/MacOS/mStream"
+          RUN=$(dirname "$BIN")
+          printf '{"port":3401}' > "$RUN/applaunch-config.json"
+          __CFBundleIdentifier=io.mstream.server "$BIN" -j "$RUN/applaunch-config.json" > "$RUN/applaunch.log" 2>&1
+          LAUNCHER_RC=$?
+          if [ "$LAUNCHER_RC" != "0" ]; then echo "FAIL: app-mode launcher exited $LAUNCHER_RC (expected 0 after handing off)"; cat "$RUN/applaunch.log"; exit 1; fi
+          UP=0
+          for i in $(seq 1 30); do
+            sleep 1
+            if curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; then UP=1; break; fi
+          done
+          if [ "$UP" != "1" ]; then echo "FAIL: detached child never served — the app-launch hand-off is broken"; cat "$RUN/applaunch.log"; exit 1; fi
+          CHILD=$(pgrep -f "applaunch-config.json" | head -1)
+          echo "ok: launcher exited 0, detached child $CHILD serving on 3401"
+
+          # Relaunch, full Finder path: detaches again, and the detached copy is
+          # the one that probes. Its stdio is /dev/null by design, so the only
+          # observable contract here is "exit 0 and don't disturb the running
+          # server" — asserting on its log would test nothing (that mistake is
+          # why this step first shipped red).
+          __CFBundleIdentifier=io.mstream.server "$BIN" -j "$RUN/applaunch-config.json" > "$RUN/applaunch2.log" 2>&1
+          RC2=$?
+          # The detached copy boots FULLY before it hits EADDRINUSE, probes, and
+          # exits — measured 3.6–4.2s across runners, straddling any fixed sleep.
+          # Poll for it to drain back to the single running server rather than
+          # guessing a duration: a fixed `sleep` flakes red when the copy is
+          # merely slow, not broken (30 x 0.5s = 15s ceiling, exits early on drain).
+          COUNT=2
+          for i in $(seq 1 30); do
+            COUNT=$(pgrep -f "applaunch-config.json" | wc -l | tr -d ' ')
+            [ "$COUNT" = "1" ] && break
+            sleep 0.5
+          done
+          curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; STILL=$?
+          if [ "$RC2" != "0" ]; then echo "FAIL: relaunch exited $RC2, expected 0"; cat "$RUN/applaunch2.log"; pkill -f applaunch-config.json; exit 1; fi
+          if [ "$COUNT" != "1" ] || [ "$STILL" != "0" ]; then echo "FAIL: relaunch disturbed the running server (count=$COUNT alive=$STILL)"; pkill -f applaunch-config.json; exit 1; fi
+          echo "ok: redundant relaunch exited 0 and left the running server alone"
+
+          # Relaunch with the detach already done (MSTREAM_MAC_APP_DETACHED=1 is
+          # what the detached copy itself carries), so the probe runs in THIS
+          # process where its result is observable. This is the assertion that
+          # actually covers the nonce identity check.
+          __CFBundleIdentifier=io.mstream.server MSTREAM_MAC_APP_DETACHED=1 "$BIN" -j "$RUN/applaunch-config.json" > "$RUN/applaunch3.log" 2>&1
+          RC3=$?
+          COUNT=$(pgrep -f "applaunch-config.json" | wc -l | tr -d ' ')
+          curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; STILL=$?
+
+          # Negative control for the nonce identity check. The positive probe
+          # above (RC3 + "already running") stays green even if the probe
+          # regresses from `header === expectedNonce` to a mere presence check —
+          # the two are observationally identical when the nonce genuinely
+          # matches. So overwrite the on-disk nonce the probe reads while the
+          # running server keeps serving its real (in-memory) one: a correct
+          # comparison now MISMATCHES, so the relaunch must refuse to redirect,
+          # exit 1 (never logging "already running"), and leave the server
+          # untouched. A presence-check regression would instead exit 0 here and
+          # hand a local port squatter the real UI's trusted localStorage origin.
+          # The probe's 2s timeout bounds this and its alert is detached — no hang.
+          NONCE_FILE=$(find "$RUN" -name '.instance-nonce' 2>/dev/null | head -1)
+          if [ -z "$NONCE_FILE" ]; then echo "FAIL: running server wrote no .instance-nonce to probe against"; pkill -f "applaunch-config.json"; exit 1; fi
+          cp "$NONCE_FILE" "$RUN/nonce.bak"
+          printf 'not-the-real-nonce' > "$NONCE_FILE"
+          __CFBundleIdentifier=io.mstream.server MSTREAM_MAC_APP_DETACHED=1 "$BIN" -j "$RUN/applaunch-config.json" > "$RUN/applaunch4.log" 2>&1
+          RC4=$?
+          cp "$RUN/nonce.bak" "$NONCE_FILE"
+          BADCOUNT=$(pgrep -f "applaunch-config.json" | wc -l | tr -d ' ')
+          curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; BADSTILL=$?
+
+          pkill -f "applaunch-config.json" 2>/dev/null
+          if [ "$RC3" != "0" ]; then echo "FAIL: in-process relaunch exited $RC3, expected 0 (redundant, not failed)"; cat "$RUN/applaunch3.log"; exit 1; fi
+          grep -q "already running" "$RUN/applaunch3.log" || { echo "FAIL: the nonce probe did not recognize our own running instance"; cat "$RUN/applaunch3.log"; exit 1; }
+          if [ "$COUNT" != "1" ] || [ "$STILL" != "0" ]; then echo "FAIL: relaunch disturbed the running server (count=$COUNT alive=$STILL)"; exit 1; fi
+          if [ "$RC4" = "0" ]; then echo "FAIL: probe ACCEPTED a wrong nonce (exit 0) — identity is a presence test, not a comparison; a local squatter would be handed the real UI origin"; cat "$RUN/applaunch4.log"; exit 1; fi
+          if grep -q "already running" "$RUN/applaunch4.log"; then echo "FAIL: probe logged 'already running' for a MISMATCHED nonce"; cat "$RUN/applaunch4.log"; exit 1; fi
+          if [ "$BADCOUNT" != "1" ] || [ "$BADSTILL" != "0" ]; then echo "FAIL: mismatch relaunch disturbed the running server (count=$BADCOUNT alive=$BADSTILL)"; exit 1; fi
+
+          # Explicit (non-wildcard) bind. The identity exchange used to be gated
+          # on the caller looking like loopback, but a same-host client reaching
+          # a LAN-bound listener is seen as the LAN address — so the server hid
+          # its identity from its OWN probe and every re-click produced a bogus
+          # "port is in use by another application" alert. Nothing caught that,
+          # because every other case here binds the wildcard. Bind a real
+          # interface address and require the relaunch to still recognize us.
+          LANIP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)
+          if [ -z "$LANIP" ]; then
+            echo "note: no LAN address on this runner — skipping the explicit-bind probe case"
+          else
+            printf '{"port":3402,"address":"%s"}' "$LANIP" > "$RUN/bindlaunch-config.json"
+            __CFBundleIdentifier=io.mstream.server "$BIN" -j "$RUN/bindlaunch-config.json" > "$RUN/bind1.log" 2>&1
+            BINDUP=0
+            for i in $(seq 1 30); do
+              sleep 1
+              if curl -sf --max-time 5 -o /dev/null "http://$LANIP:3402/api/v1/ping"; then BINDUP=1; break; fi
+            done
+            if [ "$BINDUP" != "1" ]; then echo "FAIL: explicit-bind server never served on $LANIP:3402"; cat "$RUN/bind1.log"; pkill -f bindlaunch-config.json; exit 1; fi
+            __CFBundleIdentifier=io.mstream.server MSTREAM_MAC_APP_DETACHED=1 "$BIN" -j "$RUN/bindlaunch-config.json" > "$RUN/bind2.log" 2>&1
+            RCBIND=$?
+            pkill -f "bindlaunch-config.json" 2>/dev/null
+            if [ "$RCBIND" != "0" ]; then echo "FAIL: explicit-bind relaunch exited $RCBIND — the probe cannot identify a non-wildcard-bound instance"; cat "$RUN/bind2.log"; exit 1; fi
+            grep -q "already running" "$RUN/bind2.log" || { echo "FAIL: explicit-bind relaunch did not recognize our own instance"; cat "$RUN/bind2.log"; exit 1; }
+            echo "ok: explicit-bind ($LANIP) relaunch recognized its own instance"
+          fi
+          echo "SMOKE OK: app-launch detach, serve, redundant relaunch, nonce MATCH, nonce-MISMATCH rejection, and explicit-bind identity all behave"
 
       - name: Smoke test iroh native binding
         # Proves the standalone binary can dlopen the bundled @number0/iroh .node

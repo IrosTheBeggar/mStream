@@ -37,6 +37,8 @@ save/*.json
 *.db-wal
 *.db-shm
 .migrated-from-loki
+# Per-boot identity secret for the macOS relaunch probe (src/server.js)
+.instance-nonce
 frp/*.ini
 
 dist/*
@@ -81,4 +83,7 @@ save/waveform-cache-smoke/
 # also built+deployed by .github/workflows/publish-api-docs.yml)
 docs/api.html
 model-cache/
+
+# Scratch files left in the repo root by `bun build --compile`; one per build.
+.*.bun-build
 

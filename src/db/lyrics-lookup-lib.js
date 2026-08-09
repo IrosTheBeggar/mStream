@@ -173,7 +173,14 @@ function defaultHttpGet(url, { timeoutMs = 8000, headers = {} } = {}) {
         stream.on('error', reject);
       });
       req.on('error', reject);
-      req.setTimeout(Math.min(timeoutMs, remaining), () => req.destroy(new Error('request timeout')));
+      // Explicit rejection alongside destroy: Bun's destroy(err) emits no
+      // 'error', which would leave this promise — and the lyrics backfill
+      // pass awaiting it — pending forever against a stalled endpoint.
+      req.setTimeout(Math.min(timeoutMs, remaining), () => {
+        const timedOut = new Error('request timeout');
+        req.destroy(timedOut);
+        reject(timedOut);
+      });
     };
     follow(url);
   });

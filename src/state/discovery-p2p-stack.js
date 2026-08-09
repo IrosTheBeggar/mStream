@@ -14,10 +14,22 @@ import winston from 'winston';
 
 let running = false;
 let starting = null;
+let stopping = null;
 
 export function isStackRunning() { return running; }
 
 export async function startDiscoveryP2pStack() {
+  // Serialize behind an in-flight stop. A soft reboot stops the stack and then
+  // re-serves, and stopping the sidecar can take up to ~10s (a shutdown RPC
+  // grace plus a SIGKILL fallback). Without this wait, the restart raced the
+  // teardown: it saw the not-yet-cleared `running`, returned as a silent no-op,
+  // and the late stop then killed the sidecar — leaving the config saying
+  // "enabled", the admin panel reporting success, and NOTHING actually
+  // gossiping or publishing, with no error logged anywhere until a full
+  // restart. Waiting is what makes the restart real.
+  if (stopping) {
+    try { await stopping; } catch (_err) { /* stop's own caller logs it */ }
+  }
   if (running) { return; }
   if (starting) { return starting; }
   starting = (async () => {
@@ -67,13 +79,22 @@ export async function startDiscoveryP2pStack() {
 // process itself. Catalog + shelf files stay on disk — a re-enable (or the
 // next boot) picks up right where this left off.
 export async function stopDiscoveryP2pStack() {
-  const seeds = await import('./discovery-seeds.js');
-  const peerDbs = await import('./discovery-peer-dbs.js');
-  const catalog = await import('./discovery-catalog.js');
-  seeds.stopMeshHealthWatch();
-  peerDbs.stopAutoFetch();
-  catalog.stopPruning();
-  const p2p = await import('./discovery-p2p.js');
-  await p2p.stop();
+  if (stopping) { return stopping; }
+  // `running` states INTENT, not completion: clear it before the first await,
+  // so a start that arrives mid-teardown waits on `stopping` above instead of
+  // seeing a stale `true` and no-oping. Clearing it only after p2p.stop()
+  // resolved was the bug — the window is seconds wide, and a reboot lands
+  // squarely inside it.
   running = false;
+  stopping = (async () => {
+    const seeds = await import('./discovery-seeds.js');
+    const peerDbs = await import('./discovery-peer-dbs.js');
+    const catalog = await import('./discovery-catalog.js');
+    seeds.stopMeshHealthWatch();
+    peerDbs.stopAutoFetch();
+    catalog.stopPruning();
+    const p2p = await import('./discovery-p2p.js');
+    await p2p.stop();
+  })();
+  try { await stopping; } finally { stopping = null; }
 }
