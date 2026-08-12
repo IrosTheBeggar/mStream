@@ -40,6 +40,10 @@ save/*.json
 *.db-wal
 *.db-shm
 .migrated-from-loki
+# Legacy residue: pre-6.20 servers wrote a per-boot identity secret for the
+# retired macOS relaunch probe. Nothing writes these anymore, but existing
+# checkouts and data dirs still carry one — keep it out of `git status`.
+.instance-nonce
 frp/*.ini
 
 dist/*

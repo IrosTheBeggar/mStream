@@ -501,9 +501,9 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   server.on('request', mstream);
   // Without this handler a failed listen() — port already taken being the
   // canonical case — dies as an uncaught 'error' event: a raw stack in a
-  // terminal, and under a Finder launch pure silence. Log it properly; on an
-  // app launch the port squatter is usually an earlier mStream instance, in
-  // which case this launch is redundant rather than failed (exit 0).
+  // terminal, and under a desktop launch pure silence. Log it properly and
+  // exit non-zero; under the launcher, supervision reports the exit and the
+  // reason lands in server-console.log.
   // Track live sockets for reboot()'s drain (see liveSockets above).
   const mySockets = new Set();
   liveSockets = mySockets;
