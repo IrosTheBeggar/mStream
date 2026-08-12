@@ -1118,7 +1118,7 @@ paths:
                         disabledReason:
                           type: string
                           nullable: true
-                          enum: [config, no-ffmpeg, no-api-key, no-binary, binary-unsupported, runtime-unavailable, null]
+                          enum: [config, no-ffmpeg, no-api-key, no-binary, binary-unsupported, binary-generation-mismatch, runtime-unavailable, null]
                         state:
                           type: string
                           enum: [idle, queued, running, disabled]

@@ -40,6 +40,10 @@ import { makeAudio } from '../helpers/scanner-fixture.mjs';
 import {
   initDiscoveryDb, closeDiscoveryDb, upsertDiscoveryTrack,
 } from '../../src/db/discovery-db.js';
+// The cache naming scheme has one owner (src/db/waveform-lib.js) and this
+// suite asserts against the same helpers the applier renames through, so a
+// format generation bump can't leave the test asserting the old names.
+import { cacheFilePath, failedMarkerPath } from '../../src/db/waveform-lib.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -151,9 +155,19 @@ describe('hash-transition applier (discovery ON — live worker)', () => {
   });
 
   test('a chained re-key lands the embedding at the terminal identity with invariants intact', async () => {
-    // Wait for the test-fake worker to embed the eligible track.
+    // Wait for the test-fake worker to embed the eligible track. 480 ticks
+    // (4 min): this file shares its shard with the heaviest suites (p2p
+    // sidecars, federation e2e), and node --test runs files CONCURRENTLY —
+    // a small CI runner can starve the worker into needing minutes, not
+    // seconds (the old 240-tick budget expired on macos-latest 2026-08-12
+    // while the shard's neighbors churned). The wait is self-diagnosing,
+    // not just longer: a pass reporting 'disabled', or a run that finished
+    // 'failed' with still no row, means more waiting is pointless — fail
+    // NOW with the reason, so the next CI failure names its cause instead
+    // of presenting as a mystery timeout.
     let seed = null;
-    for (let i = 0; i < 240 && !seed; i++) {
+    let passState = null;
+    for (let i = 0; i < 480 && !seed; i++) {
       try {
         seed = withDb(ddbPath, (d) => {
           const r = d.prepare(
@@ -161,9 +175,23 @@ describe('hash-transition applier (discovery ON — live worker)', () => {
           return r ? { ...r } : null;
         });
       } catch { /* db not created yet */ }
-      if (!seed) { await sleep(500); }
+      if (seed) { break; }
+      try {
+        const st = await fetch(`${server.baseUrl}/api/v1/scan/status`).then((r) => r.json());
+        passState = st.enrichment?.find((p) => p.pass === 'discovery') ?? null;
+        assert.notEqual(passState?.state, 'disabled',
+          `discovery pass reports disabled: ${passState?.disabledReason}`);
+        if (passState?.lastRun?.outcome === 'failed') {
+          assert.fail(`discovery pass ran and FAILED with no row embedded: ${JSON.stringify(passState.lastRun)}`);
+        }
+      } catch (err) {
+        if (err.code === 'ERR_ASSERTION') { throw err; }
+        // status probe is best-effort — keep waiting on transient fetch noise
+      }
+      await sleep(500);
     }
-    assert.ok(seed, 'discovery worker embedded the eligible track');
+    assert.ok(seed,
+      `discovery worker embedded the eligible track (last pass state: ${JSON.stringify(passState)})`);
 
     // Chain seed→mid→fin. The middle hop never exists as a row; the
     // terminal is the LIVE short track's canon, so the worker's orphan
@@ -177,9 +205,9 @@ describe('hash-transition applier (discovery ON — live worker)', () => {
     // whichever drain event consumes the ledger — the boot chain's tail or
     // the post-force-rescan drain — must see the complete stage. Ledger
     // first would let an early drain move the embedding and clear the
-    // ledger while {seed}.bin doesn't exist yet, so nothing ever renames.
-    await fsp.writeFile(path.join(waveDir, `${seed.audio_hash}.bin`), 'wavedata');
-    await fsp.writeFile(path.join(waveDir, `${seed.audio_hash}.failed`), 'symphonia\n');
+    // ledger while the seed's cache file doesn't exist yet, so nothing ever renames.
+    await fsp.writeFile(cacheFilePath(waveDir, seed.audio_hash), 'wavedata');
+    await fsp.writeFile(failedMarkerPath(waveDir, seed.audio_hash), 'symphonia\n');
     seedTransitions(mdb, [[seed.audio_hash, mid], [mid, fin]]);
 
     await forceRescanAndDrain(server, mdb);
@@ -202,9 +230,9 @@ describe('hash-transition applier (discovery ON — live worker)', () => {
     assert.ok(finRow.updated_at > seed.updated_at,
       'rowversion bumped — incremental consumers and the similarity cache see the re-key');
     // Waveform artifacts renamed at drain.
-    assert.ok(fs.existsSync(path.join(waveDir, `${fin}.bin`)), 'waveform bin followed');
-    assert.ok(fs.existsSync(path.join(waveDir, `${fin}.failed`)), 'failed marker followed');
-    assert.ok(!fs.existsSync(path.join(waveDir, `${seed.audio_hash}.bin`)), 'old bin gone');
+    assert.ok(fs.existsSync(cacheFilePath(waveDir, fin)), 'waveform bin followed');
+    assert.ok(fs.existsSync(failedMarkerPath(waveDir, fin)), 'failed marker followed');
+    assert.ok(!fs.existsSync(cacheFilePath(waveDir, seed.audio_hash)), 'old bin gone');
   });
 });
 
@@ -240,16 +268,16 @@ describe('hash-transition applier (discovery collection OFF)', () => {
     const p = 'b'.repeat(32);
     const q = 'c'.repeat(32);
     // Artifacts before ledger — same stage-ordering rule as the ON suite.
-    await fsp.writeFile(path.join(waveDir, `${p}.bin`), 'wavedata');
+    await fsp.writeFile(cacheFilePath(waveDir, p), 'wavedata');
     seedTransitions(mdb, [[p, q]]);
 
     await forceRescanAndDrain(server, mdb);
 
     assert.ok(!fs.existsSync(ddbPath),
       'draining must not silently create discovery.db');
-    assert.ok(fs.existsSync(path.join(waveDir, `${q}.bin`)),
+    assert.ok(fs.existsSync(cacheFilePath(waveDir, q)),
       'waveform renamed even with discovery off');
-    assert.ok(!fs.existsSync(path.join(waveDir, `${p}.bin`)), 'old bin gone');
+    assert.ok(!fs.existsSync(cacheFilePath(waveDir, p)), 'old bin gone');
   });
 
   test('a dormant discovery.db is still re-keyed, freshest source winning per terminal', async () => {

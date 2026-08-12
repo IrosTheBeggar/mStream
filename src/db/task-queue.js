@@ -11,11 +11,12 @@ import { SCHEMA_VERSION } from './schema.js';
 import { HASH_GENERATION } from './audio-hash.js';
 import { getDirname, appRoot } from '../util/esm-helpers.js';
 import { launchWorker, workerReaperMarker } from '../util/worker-process.js';
-import { ffmpegBin, ffprobeBin, ensureFfmpeg } from '../util/ffmpeg-bootstrap.js';
+import { ffmpegBin, ffprobeBin, ensureFfmpeg, getResolvedSource } from '../util/ffmpeg-bootstrap.js';
 import * as dlnaApi from '../api/dlna.js';
 import * as discoveryDb from './discovery-db.js';
 import * as libraryWatcher from '../util/library-watcher.js';
 import * as waveformLib from './waveform-lib.js';
+import * as waveformFallback from './waveform-fallback.js';
 import { invalidateCoverageCache } from './enrichment-status-lib.js';
 
 const __dirname = getDirname(import.meta.url);
@@ -558,7 +559,8 @@ async function applyHashTransitionsInner() {
         const ops = [];
         for (const { target, sources } of groupList) {
           for (const src of sources) {
-            for (const toPath of [waveformLib.cacheFilePath, waveformLib.failedMarkerPath]) {
+            for (const toPath of [waveformLib.cacheFilePath, waveformLib.failedMarkerPath,
+                                  waveformLib.deferredMarkerPath]) {
               const from = toPath(waveDir, src);
               const to = toPath(waveDir, target);
               const fromName = path.basename(from);
@@ -1041,12 +1043,38 @@ function runWaveformTask(taskObj) {
   // sat queued, and findRustParser() stays false for the process
   // lifetime once the binary was found dead.
   if (config.program.scanOptions.generateWaveforms === false) { return; }
+
+  // The rust half and the ffmpeg half are INDEPENDENT producers. Both
+  // bails below skip only the rust half and then run the ffmpeg half
+  // standalone: it is plain JS plus bin/ffmpeg, reads the same DB and
+  // cache dir, and imports CACHE_EXT from this server — it cannot be
+  // wrong about a generation it defines. Returning outright (as the gate
+  // first did) made a stale prebuilt disable the very Opus coverage this
+  // pass exists to add, on every deployment between merge and the CI
+  // binary rebuild.
   if (!findRustParser()) {
     winston.info(
-      'Waveform pass skipped — no usable rust-parser binary (the on-demand ' +
-      'endpoint will generate waveforms lazily on first play)');
-    return;
+      'Waveform pass: no usable rust-parser binary — running the ffmpeg half only');
+    return void runWaveformFallbackOnly();
   }
+  // Waveform-generation gate, same idea as the hash-generation gate in
+  // findRustParser: the cache filenames are a contract between this server
+  // and the binary. A binary one generation behind writes names the boot
+  // sweep deletes, so running it re-decodes the whole library every boot
+  // for artifacts nothing ever reads. Probed per pass rather than latched:
+  // dropping in a rebuilt binary heals on the next scan without a restart.
+  const binWfGen = waveformLib.probeWaveformGeneration(rustParserBin);
+  if (binWfGen !== waveformLib.CACHE_EXT) {
+    waveformGenerationMismatch = true;
+    winston.warn(
+      `Waveform pass: rust-parser writes waveform generation ` +
+      `'${binWfGen ?? 'pre-w2'}' but this server expects '${waveformLib.CACHE_EXT}' — ` +
+      `skipping the rust half and running the ffmpeg half only. ` +
+      `Update bin/rust-parser (CI rebuilds it on pushes to master) or rebuild ` +
+      `rust-parser/target with cargo.`);
+    return void runWaveformFallbackOnly();
+  }
+  waveformGenerationMismatch = false;
 
   const payload = {
     dbPath: path.join(config.program.storage.dbDirectory, 'mstream.db'),
@@ -1131,19 +1159,162 @@ function runWaveformTask(taskObj) {
       winston.error(`Waveform pass FAILED with exit code ${code}`);
     }
     clearScannerPidfile(config.program.storage.dbDirectory);
-    if (activeTask?.child === wfChild) {
-      removeFromKillQueue(activeTask.killFn);
-      activeTask = null;
-    }
-    finishEnrichment('waveform', code, signal, completeEvt);
-    nextTask();
-    checkQueueDrainedSideEffects();
+
+    // Releasing activeTask is what makes the queue look idle, so it stays
+    // held until the ffmpeg half below has finished too — otherwise a scan
+    // could start alongside it, against the single-task rule, and an
+    // observer could read 'idle' before finishEnrichment had landed.
+    const done = () => {
+      if (activeTask?.child === wfChild) {
+        removeFromKillQueue(activeTask.killFn);
+        activeTask = null;
+      }
+      finishEnrichment('waveform', code, signal, completeEvt);
+      nextTask();
+      checkQueueDrainedSideEffects();
+    };
+    // symphonia can't decode Opus, so the rust pass leaves those keys
+    // uncached by design. Sweep them (and anything else it gave up on)
+    // with ffmpeg before the pass counts as finished — otherwise every
+    // first play of an Opus track pays a cold decode. Skipped when the
+    // pass was killed (shutdown shouldn't start new work) or failed
+    // (a broken/stale binary means lazy generation is already the only
+    // producer, and the endpoint still covers it).
+    if (signal || code !== 0) { return done(); }
+    runWaveformFfmpegFallback().then(done, done);
   };
   wfChild.on('error', (err) => {
     winston.error(`Waveform pass failed to start: ${err.message}`);
     closeOnce(-1, null);
   });
   wfChild.on('close', (code, signal) => closeOnce(code, signal));
+}
+
+// Backlog of the previous CHAINED fallback round — shouldChain() requires
+// the eligible set to strictly shrink between chained rounds, so any
+// future non-shrinking work source degrades to once-per-scan instead of a
+// hot loop. null = the last round did not chain.
+let lastFallbackBacklog = null;
+
+// Latched when the resolved binary writes a different waveform cache
+// generation than this server reads. Surfaced through the enrichment gate
+// so the admin panel says WHY the rust half stopped contributing instead
+// of showing an enabled pass that silently never runs. Cleared the moment
+// a probe matches, so a dropped-in rebuild clears the badge too.
+let waveformGenerationMismatch = false;
+
+// The ffmpeg half on its own, for when the rust half can't run. Mirrors
+// runWaveformTask's bookkeeping: hold the queue slot, report running, and
+// finish through the same reporting path so lastRun/coverage stay honest.
+function runWaveformFallbackOnly() {
+  // Placeholder so activeTask has the same shape the rust path gives it.
+  // The REAL abort is registered inside runWaveformFfmpegFallback, in the
+  // same synchronous tick, so shutdown still stops the work.
+  const killFn = () => {};
+  activeTask = { kind: 'waveform', taskObj: null, child: null, killFn };
+  addToKillQueue(killFn);
+  reportEnrichment('waveform', { state: 'running' });
+
+  const finish = (res) => {
+    removeFromKillQueue(killFn);
+    if (activeTask && activeTask.kind === 'waveform' && !activeTask.child) {
+      activeTask = null;
+    }
+    if (res) {
+      // Report the ffmpeg half's own numbers. Shape matches the rust
+      // pass's waveformScanComplete payload so the status API and its
+      // consumers don't have to care which half did the work.
+      finishEnrichment('waveform', 0, null,
+        { generated: res.generated, failed: res.failed, total: res.total });
+    } else {
+      // Nothing ran (ffmpeg unresolved, or the half threw). Return to idle
+      // and refresh coverage, but do NOT write a synthetic 'completed'
+      // lastRun over the previous real one — same rule finishEnrichment's
+      // own contract states for a run-time gate bail.
+      invalidateCoverageCache();
+      reportEnrichment('waveform', { state: 'idle', progress: null });
+    }
+    nextTask();
+    checkQueueDrainedSideEffects();
+  };
+
+  // Both settle paths go through finish: if it ever rejected, activeTask
+  // would never be released and the whole task queue would wedge for the
+  // process lifetime.
+  return runWaveformFfmpegFallback().then(finish, (err) => {
+    winston.warn(`Waveform ffmpeg fallback (standalone) failed: ${err.message}`);
+    finish(null);
+  });
+}
+
+// True when the resolved rust binary exists AND writes the same waveform
+// cache generation this server reads. Exported for tests that need to
+// know whether the real pass can run at all (a stale prebuilt in the
+// window before CI rebuilds bin/ answers the probe wrong, and the pass
+// correctly refuses to run — tests must skip rather than fail there).
+export function waveformPassBinaryReady() {
+  if (!findRustParser()) { return false; }
+  return waveformLib.probeWaveformGeneration(rustParserBin) === waveformLib.CACHE_EXT;
+}
+
+// Second half of the waveform pass: covers content symphonia structurally
+// cannot decode (Opus) plus anything it failed on, using the same ffmpeg
+// generator the on-demand endpoint uses. Runs in-process — ffmpeg does the
+// work in its own process and this side is bookkeeping — under its own kill
+// registration so a shutdown between the rust child closing and this
+// finishing stops it promptly. Never rejects: the rust pass's outcome is
+// what the enrichment status reports, and a fallback failure must not turn
+// a successful pass into a failed one.
+async function runWaveformFfmpegFallback() {
+  // Readiness check, not a bootstrap: ensureFfmpeg() may go and DOWNLOAD a
+  // toolchain, which is not something a background enrichment pass should
+  // trigger. If ffmpeg isn't resolved yet the pass simply skips — the
+  // on-demand endpoint still covers these tracks, and the next pass runs
+  // with it resolved.
+  if (!getResolvedSource()) {
+    winston.info('Waveform ffmpeg fallback skipped — ffmpeg not resolved yet');
+    return null;
+  }
+  const abort = { stopped: false };
+  const killFn = () => { abort.stopped = true; };
+  addToKillQueue(killFn);
+  try {
+    const res = await waveformFallback.run({
+      db: db.getDB(),
+      cacheDir: config.program.storage.waveformCacheDirectory,
+      ffmpegBin: ffmpegBin(),
+      abort,
+      onProgress: (done, total) => reportEnrichment('waveform',
+        { progress: { attempted: done, total } }),
+    });
+    if (res.total > 0) {
+      winston.info(
+        `Waveform ffmpeg fallback: ${res.generated} generated, ${res.failed} failed ` +
+        `(${res.total} of ${res.backlog} eligible)` +
+        (res.capped ? '; more remain' : ''));
+      invalidateCoverageCache();
+    }
+    // Chain another pass so a backlog larger than one run's cap drains on
+    // its own instead of waiting for N more scans — but only on DURABLE
+    // progress, judged by shouldChain(): the first version of this gate
+    // counted mere attempts and re-forked the whole pass forever on an
+    // unwritable cache dir (nothing landed, so the plan never shrank).
+    // The backlog handed to shouldChain is from the previous CHAINED
+    // round, so a run that stops chaining also resets the comparison.
+    if (!abort.stopped && waveformFallback.shouldChain(res, lastFallbackBacklog)) {
+      lastFallbackBacklog = res.backlog;
+      addWaveformTask();
+    } else {
+      lastFallbackBacklog = null;
+    }
+    return res;
+  } catch (err) {
+    winston.warn(`Waveform ffmpeg fallback failed: ${err.message}`);
+    lastFallbackBacklog = null;
+    return null;
+  } finally {
+    removeFromKillQueue(killFn);
+  }
 }
 
 // ── Album-art download task ─────────────────────────────────────────────────
@@ -2644,6 +2815,13 @@ function enrichmentGate(kind) {
       if (opts.generateWaveforms === false) { return off('config'); }
       if (waveformPassUnsupported) { return off('binary-unsupported'); }
       if (rustParserDisabled) { return off('no-binary'); }
+      // The rust half is sidelined but the ffmpeg half still runs, so this
+      // is a degraded-not-disabled state: reported as enabled with a reason
+      // rather than off, otherwise the panel would claim nothing happens
+      // while Opus coverage is in fact still being produced.
+      if (waveformGenerationMismatch) {
+        return { enabled: true, reason: 'binary-generation-mismatch' };
+      }
       return on;
     case 'albumart':
       if (opts.autoAlbumArt === false || opts.skipImg === true) { return off('config'); }

@@ -78,8 +78,26 @@ export function setupAfterAuth(mstream, server) {
     }
   }});
 
+  // ws forwards the wrapped HTTP server's 'error' events onto the wss (and
+  // adds its own). With no listener here, that re-emit throws mid-dispatch —
+  // killing the process before server.js's own 'error' handler (registered
+  // after this setup runs) ever sees the original event. Log only: fatal
+  // server errors are the HTTP handler's job.
+  wss.on('error', (err) => {
+    winston.error(`WebSocket server error: ${err.message}`);
+  });
+
   wss.on('connection', (connection, req) => {
     const code = nanoid(8);
+    // MUST be attached before anything else can throw: ws raises protocol and
+    // socket failures (a malformed frame, a reset mid-message) on the
+    // individual connection, never on the wss above — and an unhandled
+    // EventEmitter 'error' takes the whole server down. Under Node that made
+    // one 6-byte bad frame from any client that completed the upgrade a remote
+    // process kill; on a fresh install, verifyClient skips auth entirely.
+    connection.on('error', (err) => {
+      winston.warn(`Websocket connection error (${code}): ${err.message}`);
+    });
     winston.info(`Websocket Connection Accepted With Code: ${code}`);
     clients[code] = connection;
 

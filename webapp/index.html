@@ -73,11 +73,10 @@
   <script defer src="assets/js/lib/qr.js"></script>
   <script defer src="assets/js/quick-connect.js"></script>
   
-  <!-- Visualizer -->
+  <!-- Visualizer. butterchurn and its two preset packs are ~1.65 MB of the
+       boot payload for a feature reached by one click, so t.js injects them
+       on first open instead (VIZ.initPlayer). Do not put them back here. -->
   <script src="assets/js/t.js"></script>
-  <script async src="assets/js/lib/butterchurn.min.js"></script>
-  <script async src="assets/js/lib/butterchurn-presets.min.js"></script>
-  <script async src="assets/js/lib/butterchurn-presets-extra.js"></script>
 
   <script src="assets/js/lib/dropzone.js"></script>
 </head>
@@ -882,7 +881,7 @@
             </div>
           </div>
           <draggable class="collection scroll-auto grow" tag="ul" :list="playlist" handle=".drag-handle" @end="checkMove" >
-            <li v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :song="song">
+            <li v-for="(song, index) in playlist" is="playlist-item" :key="index" :index="index" :song="song" :class="{ 'np-queue-active': index === positionCache.val }">
             </li>
           </draggable>
 

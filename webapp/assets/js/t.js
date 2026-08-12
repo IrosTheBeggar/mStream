@@ -25,9 +25,15 @@ var VIZ = (() => {
     if(source) {
       renderSource = source;
     }
-    if(isInit === true && renderSource) {
+    // Gate on `visualizer`, not `isInit`. Since the butterchurn bundles are
+    // now fetched on demand, isInit goes true the moment the overlay opens
+    // but the visualizer object does not exist until the load resolves — a
+    // song change in that window reaches here via VIZ.connect and would
+    // dereference null. renderSource is still recorded above, and
+    // startVisualizer() ends with a bare startRenderer() that picks it up.
+    if(visualizer && isInit === true && renderSource) {
       visualizer.connectAudio(renderSource);
-  
+
       requestAnimationFrame(() => startRenderer());
       visualizer.render();
     }
@@ -109,7 +115,10 @@ var VIZ = (() => {
   }
 
   function reportWindowSize() {
-    if (!document.getElementById("viz-canvas").clientWidth || !isInit) {
+    // `visualizer` for the same reason as startRenderer: isInit can be true
+    // while the on-demand bundle load is still in flight, and updateSize
+    // calls straight into visualizer.setRendererSize.
+    if (!document.getElementById("viz-canvas").clientWidth || !isInit || !visualizer) {
       return;
     }
     vizModule.updateSize();
@@ -122,12 +131,66 @@ var VIZ = (() => {
     VIZ.initPlayer();
   }
 
+  // butterchurn + its two preset packs are ~1.65 MB unminified — the single
+  // largest thing the webapp used to download, on every page load, for a
+  // feature behind a click. They are fetched here on first open instead.
+  // The promise is cached, so a second open (or a double click) reuses the
+  // in-flight or completed load rather than injecting the tags twice.
+  var butterchurnLoad = null;
+  function loadButterchurn() {
+    if (butterchurnLoad) { return butterchurnLoad; }
+    // Order matters: the preset packs register themselves against globals
+    // the core defines, so they are chained rather than fired in parallel.
+    var files = [
+      'assets/js/lib/butterchurn.min.js',
+      'assets/js/lib/butterchurn-presets.min.js',
+      'assets/js/lib/butterchurn-presets-extra.js'
+    ];
+    butterchurnLoad = files.reduce(function (chain, src) {
+      return chain.then(function () {
+        return new Promise(function (resolve, reject) {
+          var s = document.createElement('script');
+          s.src = src;
+          s.onload = resolve;
+          // Reject rather than hang: initPlayer resets isInit on failure so
+          // a later click can retry (a flaky first load shouldn't kill the
+          // visualizer for the rest of the session).
+          s.onerror = function () { reject(new Error('failed to load ' + src)); };
+          document.head.appendChild(s);
+        });
+      });
+    }, Promise.resolve());
+    return butterchurnLoad;
+  }
+
   vizModule.initPlayer = function () {
     if(isInit === true) {
       return false;
     }
     isInit = true;
 
+    // .catch AFTER .then, not a second .then argument: an onRejected
+    // handler passed to .then only sees rejections from the promise BEFORE
+    // it, so a throw inside startVisualizer — createVisualizer does throw
+    // when the browser has no WebGL2, which is a real configuration —
+    // would escape as an unhandled rejection with isInit stuck true,
+    // leaving the visualizer permanently dead for the session and never
+    // running the recovery below.
+    loadButterchurn()
+      .catch(function (err) {
+        // The download itself failed; drop the cached promise so a later
+        // click re-fetches rather than reusing a rejected one.
+        butterchurnLoad = null;
+        throw err;
+      })
+      .then(startVisualizer)
+      .catch(function (err) {
+        console.error('[viz] ' + err.message);
+        isInit = false;   // let a later click try again
+      });
+  }
+
+  function startVisualizer() {
     var canvas = document.getElementById('viz-canvas');
     // audioContext = new AudioContext();
     presets = {};

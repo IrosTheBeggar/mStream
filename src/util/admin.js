@@ -1054,7 +1054,16 @@ export async function removeSSL() {
 
 function testSSL(jsonLoad) {
   return new Promise((resolve, reject) => {
-    launchWorker('ssl-test', path.join(__dirname, './ssl-test.js'), JSON.stringify(jsonLoad)).on('close', (code) => {
+    const worker = launchWorker('ssl-test', path.join(__dirname, './ssl-test.js'), JSON.stringify(jsonLoad));
+    // A spawn that fails asynchronously (EMFILE/ENOMEM/exec policy) emits
+    // 'error' and never 'close'. Unhandled, that's an EventEmitter throw
+    // that takes the whole server down — and this promise would hang
+    // regardless. Every task-queue worker guards this; these sites didn't.
+    worker.on('error', (err) => {
+      winston.error(`SSL test worker failed to start: ${err.message}`);
+      reject('SSL Failure');
+    });
+    worker.on('close', (code) => {
       if (code !== 0) { return reject('SSL Failure'); }
       resolve();
     });
