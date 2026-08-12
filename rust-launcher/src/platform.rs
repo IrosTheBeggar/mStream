@@ -49,19 +49,38 @@ pub fn run_console_passthrough(args: &LauncherArgs) {
     {
         use std::fs::File;
         use std::process::{Command, Stdio};
-        use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+        use windows_sys::Win32::System::Console::{
+            SetConsoleCtrlHandler, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
 
-        // Our own std handles are still the detached ones from the GUI
-        // subsystem; hand the child the REAL console devices instead.
-        let conin = File::options().read(true).write(true).open("CONIN$").ok();
-        let conout = File::options().read(true).write(true).open("CONOUT$").ok();
-        let conerr = conout.as_ref().and_then(|f| f.try_clone().ok());
-
+        // Std handles come in two shapes here (same rules console_out relies
+        // on): NULL when a GUI-subsystem exe was launched bare from a console
+        // — bind those to the real console devices so the pass-through has a
+        // face — but REAL when the caller redirected or piped them
+        // (`mStream.exe -h > out.txt`, `... | findstr`). A real handle must
+        // be INHERITED, not rebound: forcing CONOUT$ over a redirect sends
+        // the server's output to the visible console and leaves the
+        // caller's file/pipe empty, silently breaking the "same flags, same
+        // output, same exit code" promise install.md makes for the terminal
+        // face. (Command's default stdio is inherit, so "real" needs no arm.)
         let mut cmd = Command::new(&bin);
         cmd.args(&args.server_args);
-        if let Some(f) = conin { cmd.stdin(Stdio::from(f)); }
-        if let Some(f) = conout { cmd.stdout(Stdio::from(f)); }
-        if let Some(f) = conerr { cmd.stderr(Stdio::from(f)); }
+        if !std_handle_is_real(STD_INPUT_HANDLE) {
+            if let Ok(f) = File::options().read(true).write(true).open("CONIN$") {
+                cmd.stdin(Stdio::from(f));
+            }
+        }
+        let conout = || File::options().read(true).write(true).open("CONOUT$").ok();
+        if !std_handle_is_real(STD_OUTPUT_HANDLE) {
+            if let Some(f) = conout() {
+                cmd.stdout(Stdio::from(f));
+            }
+        }
+        if !std_handle_is_real(STD_ERROR_HANDLE) {
+            if let Some(f) = conout() {
+                cmd.stderr(Stdio::from(f));
+            }
+        }
 
         match cmd.spawn() {
             Ok(mut child) => {

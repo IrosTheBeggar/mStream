@@ -108,8 +108,21 @@ pub fn run(args: LauncherArgs) -> ! {
         autostart::ensure_default_on();
     }
 
-    // ── Spawn the server.
+    // ── Bounded logs. An always-on login item appends forever, and the
+    // server-console capture (full stdout+stderr: request logs, scan
+    // progress) has no other ceiling — a year of daily sessions quietly
+    // accretes hundreds of MB. Policy: server-console.log starts fresh
+    // every launcher session (previous session kept as .1 for diagnosis;
+    // in-session Restart keeps appending so evidence survives a crash
+    // loop); launcher.log is a low-volume narrative, rotated only past a
+    // size cap. Rotation MUST sit after the lock is won — a losing second
+    // instance passing through here must not rotate the live instance's
+    // logs out from under it.
     let server_log = logs_dir.join("server-console.log");
+    rotate_log(&log.0, Some(512 * 1024));
+    rotate_log(&server_log, None);
+
+    // ── Spawn the server.
     let shared = Arc::new(Shared {
         proc: Mutex::new(None),
         generation: AtomicU64::new(0),
@@ -377,6 +390,23 @@ fn spawn_generation(
         });
     }
     Ok(())
+}
+
+/// Move `path` aside to `path.1` (replacing any previous `.1`). With a cap,
+/// only when the file has outgrown it; with None, whenever it exists. Rename
+/// is atomic-enough and never blocks on a reader; all failures are ignored —
+/// log hygiene must never be the reason the launcher dies.
+fn rotate_log(path: &Path, keep_if_under: Option<u64>) {
+    let rotate = match (keep_if_under, std::fs::metadata(path)) {
+        (_, Err(_)) => false,
+        (None, Ok(_)) => true,
+        (Some(cap), Ok(m)) => m.len() > cap,
+    };
+    if rotate {
+        let mut rotated = path.as_os_str().to_owned();
+        rotated.push(".1");
+        let _ = std::fs::rename(path, PathBuf::from(rotated));
+    }
 }
 
 fn stop_current(shared: &Arc<Shared>) {
