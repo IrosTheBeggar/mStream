@@ -58,14 +58,40 @@ async function waitForReady(baseUrl, { timeoutMs = 90_000, getExitError = () => 
 
 // Same loaded-CI-runner ceiling as waitForReady — the scan (plus the
 // embedding pass some discovery suites run behind it) shares the risk.
+//
+// "Complete" must mean the whole QUEUE of scans, not "no scan active this
+// instant": boot scans enqueue ONE TASK PER LIBRARY (task-queue scanAll()),
+// and onScanClose nulls the active task BEFORE nextTask() dispatches the
+// next one — so /db/status's `locked` bit reads false between two
+// per-library scans while later libraries are still unscanned. This 50ms
+// poll slipped through exactly that gap on a contended runner (PR #803's
+// ubuntu full-ci shard) and returned a half-scanned fixture to a suite
+// using extraFolders. So gate on /api/v1/scan/status, which exposes the
+// queue itself: done means no scan task ACTIVE and none QUEUED. Enrichment
+// kinds (waveform, albumart, ...) are deliberately not waited on — same
+// reasoning as isScanning() ignoring them; a throttled art pass can run for
+// minutes after the library is fully browsable. The totalFileCount > 0
+// guard (from /db/status, as before) covers the window before the boot scan
+// is enqueued at all (scanOptions.bootScanDelay), when the queue is exactly
+// as empty as when everything finished.
 async function waitForScanComplete(baseUrl, timeoutMs = 90_000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      const r = await fetch(`${baseUrl}/api/v1/db/status`);
-      if (r.ok) {
-        const j = await r.json();
-        if (!j.locked && j.totalFileCount > 0) { return j.totalFileCount; }
+      const [statusR, queueR] = await Promise.all([
+        fetch(`${baseUrl}/api/v1/db/status`),
+        fetch(`${baseUrl}/api/v1/scan/status`),
+      ]);
+      if (statusR.ok && queueR.ok) {
+        const status = await statusR.json();
+        const { queue } = await queueR.json();
+        // queue.scanning covers an active scan OR backup (the old `locked`
+        // bit); the two kind checks close the between-tasks and not-yet-
+        // dispatched gaps that bit can't see.
+        const pending = queue.scanning
+          || queue.activeTask === 'scan'
+          || queue.queued.includes('scan');
+        if (!pending && status.totalFileCount > 0) { return status.totalFileCount; }
       }
     } catch { /* retry */ }
     await sleep(50);
