@@ -18,6 +18,10 @@ on:
       - 'scripts/build-bun.mjs'
       - 'package.json'
       - '.github/workflows/build-bun.yml'
+      # Launcher source changes must run the integrated bundle smokes BEFORE
+      # merge (the launcher step below builds them fresh for such PRs) — the
+      # binary-commit workflow's own gate is only compile + --autostart=status.
+      - 'rust-launcher/**'
   workflow_dispatch:
 
 jobs:
@@ -91,7 +95,7 @@ jobs:
       # SHIPPABLE linux launcher is the committed one from
       # build-rust-launcher.yml, which builds in a debian:11 container for a
       # 2.31 floor — don't tag a release while bin/rust-launcher/ is empty.
-      - name: Build launcher (if not committed)
+      - name: Build launcher (if not committed / stale for this PR / assert provenance on tags)
         if: matrix.key == 'win-x64' || matrix.key == 'linux-x64' || matrix.key == 'darwin-arm64' || matrix.key == 'darwin-x64'
         shell: bash
         run: |
@@ -102,8 +106,48 @@ jobs:
             darwin-arm64) NAME=mstream-launcher-darwin-arm64;  TARGET=aarch64-apple-darwin ;;
             darwin-x64)   NAME=mstream-launcher-darwin-x64;    TARGET=x86_64-apple-darwin ;;
           esac
-          if [ -f "bin/rust-launcher/$NAME" ]; then echo "committed launcher present: $NAME"; exit 0; fi
-          echo "no committed launcher — building $NAME ($TARGET)"
+
+          # Tag builds ship the COMMITTED binaries (the linux one carries the
+          # debian:11 glibc floor an in-job rebuild here couldn't reproduce),
+          # so a tag must prove those binaries match its own launcher source.
+          # The stamp is written by build-rust-launcher's commit job; a tag
+          # cut inside the rebuild window — or before the stamp ever landed —
+          # fails here instead of shipping a stale launcher green.
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            WANT=$(git rev-parse HEAD:rust-launcher)
+            if [ ! -f bin/rust-launcher/.source-tree ]; then
+              echo "::error::no launcher provenance stamp (bin/rust-launcher/.source-tree) — wait for build-rust-launcher's commit on master, then re-tag"
+              exit 1
+            fi
+            HAVE=$(cat bin/rust-launcher/.source-tree)
+            if [ "$WANT" != "$HAVE" ]; then
+              echo "::error::committed launcher binaries were built from rust-launcher tree $HAVE but this tag's tree is $WANT — wait for build-rust-launcher's commit (or re-run it), then re-tag"
+              exit 1
+            fi
+            echo "launcher provenance ok: $WANT"
+          fi
+
+          REBUILD=0
+          if [ ! -f "bin/rust-launcher/$NAME" ]; then
+            REBUILD=1; echo "no committed launcher"
+          fi
+          # A PR that touches rust-launcher/ must smoke ITS OWN launcher —
+          # the committed binary predates the PR by definition. Diff against
+          # the PR base; an undiffable base forces the rebuild (fail-safe:
+          # over-building costs minutes, a stale binary voids the smoke).
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "$REBUILD" = "0" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            if git fetch -q --depth=1 origin "$BASE" && CHANGED=$(git diff --name-only "$BASE" HEAD -- rust-launcher/); then
+              if [ -n "$CHANGED" ]; then
+                REBUILD=1; echo "PR modifies rust-launcher/ — building fresh (committed binary would be stale for this smoke)"
+              fi
+            else
+              REBUILD=1; echo "could not diff against PR base — building fresh to be safe"
+            fi
+          fi
+          if [ "$REBUILD" = "0" ]; then echo "committed launcher present: $NAME"; exit 0; fi
+
+          echo "building $NAME ($TARGET)"
           if [ "${{ runner.os }}" = "Linux" ]; then
             sudo apt-get update -qq && sudo apt-get install -y -qq libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
           fi
@@ -368,6 +412,68 @@ jobs:
             exit 1
           fi
           echo "SMOKE OK: launcher spawn, health, and no-orphan supervision all behave"
+
+      # Two gaps the review found unexercised anywhere on Windows/Linux: the
+      # lifecycle smoke above sets MSTREAM_LAUNCHER_SKIP_AUTOSTART=1 (so
+      # default-on autostart never actually writes), and nothing ever proved
+      # the terminal face's "same output, same exit code" promise under
+      # redirection. This step does both against the staged bundle.
+      - name: Smoke test autostart artifacts + terminal-face redirection
+        if: matrix.key == 'win-x64' || matrix.key == 'linux-x64'
+        shell: bash
+        run: |
+          set -e
+          D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
+          case "${{ matrix.key }}" in
+            win-*) LAUNCHER="$D/mStream.exe" ;;
+            *)     LAUNCHER="$D/mstream-desktop" ;;
+          esac
+
+          # ── Terminal-face redirection: `-j` with no value is a
+          # deterministic server-side usage error (text + exit 1). Capturing
+          # it through a bash pipe proves the passthrough hands the child OUR
+          # redirected handles (on Windows, pre-G2-fix it rebound CONOUT$ —
+          # the capture came back empty and the text splashed the console).
+          set +e
+          OUT=$("$LAUNCHER" -j 2>&1); RC=$?
+          set -e
+          echo "passthrough said: '$OUT' (rc=$RC)"
+          echo "$OUT" | grep -q "argument missing" || { echo "FAIL: server's error text did not come back through the redirection"; exit 1; }
+          [ "$RC" = "1" ] || { echo "FAIL: exit code not mirrored (got $RC)"; exit 1; }
+          echo "OK: terminal face honors redirected stdio and mirrors exit codes"
+
+          # ── Autostart artifacts: enable FOR REAL (no skip var here) and
+          # assert the artifact the OS will actually consume at login —
+          # quoted exe path + --autostarted — then disable and assert gone.
+          case "${{ matrix.key }}" in
+            win-*)
+              "$LAUNCHER" --autostart=enable
+              VAL=$(MSYS_NO_PATHCONV=1 reg query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Run' /v mStream | tr -d '\r')
+              echo "$VAL"
+              echo "$VAL" | grep -qE '"[A-Za-z]:[^"]*mStream\.exe" --autostarted' \
+                || { echo "FAIL: Run value is not a quoted path + --autostarted"; exit 1; }
+              [ "$("$LAUNCHER" --autostart=status)" = "enabled" ] || { echo "FAIL: status after enable"; exit 1; }
+              "$LAUNCHER" --autostart=disable
+              if MSYS_NO_PATHCONV=1 reg query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Run' /v mStream 2>/dev/null; then
+                echo "FAIL: Run value still present after disable"; exit 1
+              fi
+              ;;
+            *)
+              # Bare HOME with no ~/.config: enable must create the directory
+              # auto-launch actually writes to (the Docker-smoke ENOENT class).
+              AH="$RUNNER_TEMP/autostart-home"; rm -rf "$AH"; mkdir -p "$AH"
+              HOME="$AH" "$LAUNCHER" --autostart=enable
+              F="$AH/.config/autostart/mStream.desktop"
+              [ -f "$F" ] || { echo "FAIL: no .desktop at $F"; ls -laR "$AH"; exit 1; }
+              grep '^Exec=' "$F"
+              grep -qE '^Exec="/[^"]*mstream-desktop" --autostarted' "$F" \
+                || { echo "FAIL: Exec line is not a quoted path + --autostarted"; exit 1; }
+              [ "$(HOME="$AH" "$LAUNCHER" --autostart=status)" = "enabled" ] || { echo "FAIL: status after enable"; exit 1; }
+              HOME="$AH" "$LAUNCHER" --autostart=disable
+              [ ! -f "$F" ] || { echo "FAIL: .desktop still present after disable"; exit 1; }
+              ;;
+          esac
+          echo "OK: autostart artifact written the way the OS consumes it; disable removes it"
 
       - name: Smoke test iroh native binding
         # Proves the standalone binary can dlopen the bundled @number0/iroh .node

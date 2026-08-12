@@ -161,7 +161,19 @@ if (launcherSrc) {
     const face = t.plat === 'win32' ? 'mStream.exe' : (isMac ? 'mStream' : 'mstream-desktop');
     stageExe(src, join(contentRoot, face));
     launcherStaged = true;
+  } else if (process.env.CI && !process.env.MSTREAM_ALLOW_MISSING_LAUNCHER) {
+    // In CI a launcher-shipping target without its launcher is a broken
+    // release, not a variant: the server-only self-heal below would ship a
+    // bundle whose double-click face is the raw server — no tray, no
+    // supervised lifecycle — and every job stays green (darwin-x64 has no
+    // smoke step to catch it). The workflow's fallback-build step is
+    // responsible for the binary existing; if it didn't, fail HERE, on
+    // every leg, before a green build can say otherwise.
+    console.error(`  FATAL: launcher-shipping target ${key} has no bin/rust-launcher/${launcherSrc} (set MSTREAM_ALLOW_MISSING_LAUNCHER=1 to build server-only on purpose)`);
+    process.exit(1);
   } else {
+    // Local/dev builds: server-only is a legitimate shape (launcher
+    // binaries only exist on master or after a local cargo build).
     console.warn(`  launcher not found, bundle ships server-only: bin/rust-launcher/${launcherSrc}`);
   }
 }

@@ -36,6 +36,16 @@ on:
       - 'rust-launcher/**'
       - '.github/workflows/build-rust-launcher.yml'
 
+# One run at a time per ref: two master pushes touching the crate write the
+# SAME four binary paths, and binaries can't be content-merged — overlapping
+# runs turn the commit job's rebase-retry into a guaranteed conflict, and the
+# loser can leave bin/rust-launcher/ stale (older source's binaries, red run
+# nobody re-dispatches). Never cancel: each finished run commits a consistent
+# set, and the queued newest run lands last either way.
+concurrency:
+  group: build-rust-launcher-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # ── PR gate: compile + lint everywhere the launcher ships. ────────────────
   check:
@@ -203,7 +213,14 @@ jobs:
           # a later `git pull --rebase` isn't blocked by an unstaged mode
           # change, then force 100755 in the index regardless.
           chmod +x bin/rust-launcher/mstream-launcher-*
-          git add bin/rust-launcher/mstream-launcher-*
+          # Provenance stamp: the rust-launcher source TREE these binaries
+          # were built from — the trigger sha, NOT post-rebase HEAD (the
+          # rebase below can pull in newer launcher source these binaries
+          # don't contain). build-bun's tag build asserts this stamp matches
+          # the tag's own tree, so "tag cut inside the rebuild window ships
+          # a stale launcher, all green" becomes a red run with instructions.
+          git rev-parse "${{ github.sha }}:rust-launcher" > bin/rust-launcher/.source-tree
+          git add bin/rust-launcher/mstream-launcher-* bin/rust-launcher/.source-tree
           git update-index --chmod=+x bin/rust-launcher/mstream-launcher-*
           if git diff --cached --quiet; then
             echo "No binary changes to commit"

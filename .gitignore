@@ -25,6 +25,9 @@ bin/rust-parser/*
 
 bin/rust-launcher/*
 !bin/rust-launcher/mstream-launcher-*
+# Provenance stamp committed alongside the binaries (build-rust-launcher.yml
+# writes it; build-bun.yml's tag build asserts it matches the tag's source).
+!bin/rust-launcher/.source-tree
 
 bin/rust-server-audio/*
 !bin/rust-server-audio/README.md
