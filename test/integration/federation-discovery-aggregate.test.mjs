@@ -158,6 +158,29 @@ describe('discovery federation aggregate (B queries A over iroh)', { skip: avail
       assert.equal(added.status, 200);
       peerIds.push(added.body.id);
     }
+
+    // Readiness gate: the federation iroh endpoint boots ASYNCHRONOUSLY and
+    // can lag well past HTTP-ready — measured ~9s under slow relay bootstrap
+    // (2026-08-11), while the aggregate's per-peer budget (PEER_TIMEOUT_MS,
+    // src/api/discovery-federation.js) is 4s with the dial included. That
+    // budget is a deliberate product choice — a slow peer must not hold the
+    // Discover panel hostage — so it stays; the TESTS must instead not start
+    // until the peers are genuinely dialable. Poll the aggregate itself until
+    // both peer rows answer: each unreachable round costs one 4s budget, and
+    // the 60s ceiling matches the helper's other loaded-CI allowances. This
+    // also pre-warms the B→A bridges, which is precisely the state the
+    // assertions below mean to probe (reachable peers); the dead-peer test
+    // still adds its own genuinely-dead row and stays meaningful.
+    const ready = Date.now() + 60_000;
+    for (;;) {
+      const probe = await aggregate({ filePath: SEED_PATH, limit: 1 });
+      if (probe.status === 200
+          && probe.body?.searched?.peers === 2
+          && probe.body.searched.unreachable === 0) { break; }
+      assert.ok(Date.now() < ready,
+        `federation peers never became reachable: last searched=${JSON.stringify(probe.body?.searched)}`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
   });
 
   after(async () => {
