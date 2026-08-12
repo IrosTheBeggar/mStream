@@ -1,0 +1,92 @@
+# npm pack exclusions. This file exists for ONE divergence from .gitignore:
+# the CI-committed tray-launcher binaries (bin/rust-launcher/*) must ship in
+# the release bundles but NOT in the npm tarball — nothing in the npm code
+# path (cli-boot-wrapper.js, src/**) ever spawns them, and the four of them
+# add ~20MB to every `npm i mstream`. npm only consults .gitignore when no
+# .npmignore exists, so everything below must stay a mirror of .gitignore
+# (minus the launcher negations); if you change one file, change the other.
+# The rust-parser/rust-server-audio negations are load-bearing: the npm
+# server DOES spawn those at runtime.
+
+node_modules/*
+webapp/node_modules/*
+
+image-cache/*
+!image-cache/README.md
+
+save/sync/*
+!save/sync/README.md
+
+save/logs/*
+!save/logs/README.md
+
+save/conf/*
+!save/conf/README.md
+
+save/sync-cdn/*
+!save/conf/README.md
+
+bin/ffmpeg/*
+!bin/ffmpeg/README.md
+
+bin/rust-parser/*
+!bin/rust-parser/README.md
+!bin/rust-parser/rust-parser-*
+
+# The whole launcher directory stays out of the tarball (binaries AND the
+# CI provenance stamp) — release bundles get them via scripts/build-bun.mjs.
+bin/rust-launcher/
+
+bin/rust-server-audio/*
+!bin/rust-server-audio/README.md
+!bin/rust-server-audio/rust-server-audio-*
+
+save/*.json
+
+.DS_Store
+.vscode/*
+
+*.log
+*.db
+*.db-wal
+*.db-shm
+.migrated-from-loki
+.instance-nonce
+frp/*.ini
+
+dist/*
+webapp/dist/*
+
+bun.lock
+
+.env
+
+rust-parser/target/
+rust-server-audio/target/
+rust-launcher/target/
+p2p-sidecar/target/
+
+save/waveforms/*
+!save/waveforms/README.md
+
+waveform-cache/*
+!waveform-cache/README.md
+
+test/fixtures/music/
+
+save/library-*/
+save/db-*-smoke/
+save/image-cache-*-smoke/
+save/waveform-cache-*-smoke/
+save/logs-*-smoke/
+save/image-cache-smoke/
+save/waveform-cache-smoke/
+
+.claude/*
+
+/TODO.md
+
+docs/api.html
+model-cache/
+
+.*.bun-build
