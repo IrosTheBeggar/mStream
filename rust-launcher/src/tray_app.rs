@@ -66,6 +66,26 @@ pub fn run(args: LauncherArgs) -> ! {
         std::process::exit(0);
     }
 
+    // ── Headless Linux (ssh without -t, cron, a misused systemd unit):
+    // tao's event-loop build would die inside gtk's initializer with a raw
+    // panic — before any of our diagnostics, and with nothing in the log.
+    // Fail it ourselves instead, logged and explained. (xvfb and real
+    // sessions both set DISPLAY/WAYLAND_DISPLAY; headless boxes run
+    // mstream-server directly, as install.md says.)
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let has_display = ["DISPLAY", "WAYLAND_DISPLAY"]
+            .iter()
+            .any(|v| std::env::var_os(v).is_some_and(|s| !s.is_empty()));
+        if !has_display {
+            log.line("no DISPLAY/WAYLAND_DISPLAY - the desktop face needs a graphical session");
+            platform::fatal_alert(
+                "mstream-desktop needs a graphical session (no DISPLAY or WAYLAND_DISPLAY is set).\nOn a headless machine, run mstream-server instead.",
+            );
+            std::process::exit(1);
+        }
+    }
+
     // ── Autostart default (on) — configured once, then the user's choice
     // rules. An --autostarted run is by definition already configured.
     if !args.autostarted {
@@ -266,6 +286,17 @@ pub fn run(args: LauncherArgs) -> ! {
                     }
                 }
             },
+            // macOS: re-clicking the running .app arrives as a reopen
+            // AppleEvent (applicationShouldHandleReopen), never as a second
+            // process — the single-instance lock never sees it, and the
+            // menu-bar icon is easy to miss. Treat a re-click as "take me to
+            // mStream". (Other platforms never emit this event.)
+            Event::Reopen { .. } => {
+                log.line("reopen event - opening browser");
+                if !args.no_open {
+                    let _ = open::that_detached(url.clone());
+                }
+            }
             Event::LoopDestroyed => {
                 // Belt to Quit's suspenders: whatever ends the loop, never
                 // leave the child running unsupervised.

@@ -28,11 +28,11 @@ pub fn spawn(bin: &Path, server_args: &[String], log_file: &Path) -> io::Result<
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err));
 
-    // The macOS .app will run the LAUNCHER as its bundle executable, and
-    // LaunchServices stamps __CFBundleIdentifier into our env. The server
-    // child must not inherit it: server-side code keys "launched AS the
-    // bundle" off that marker (see #803's mac-app-launch), and the child is
-    // a managed background process, not the app.
+    // The macOS .app runs the LAUNCHER as its bundle executable, and
+    // LaunchServices stamps __CFBundleIdentifier into our env. Drop it for
+    // the child: the server is a managed background process, not the app,
+    // and anything keying "launched AS the bundle" off that marker (as the
+    // retired mac-app-launch.js once did) must see a plain CLI environment.
     cmd.env_remove("__CFBundleIdentifier");
 
     #[cfg(windows)]
