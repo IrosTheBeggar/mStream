@@ -155,9 +155,19 @@ describe('hash-transition applier (discovery ON — live worker)', () => {
   });
 
   test('a chained re-key lands the embedding at the terminal identity with invariants intact', async () => {
-    // Wait for the test-fake worker to embed the eligible track.
+    // Wait for the test-fake worker to embed the eligible track. 480 ticks
+    // (4 min): this file shares its shard with the heaviest suites (p2p
+    // sidecars, federation e2e), and node --test runs files CONCURRENTLY —
+    // a small CI runner can starve the worker into needing minutes, not
+    // seconds (the old 240-tick budget expired on macos-latest 2026-08-12
+    // while the shard's neighbors churned). The wait is self-diagnosing,
+    // not just longer: a pass reporting 'disabled', or a run that finished
+    // 'failed' with still no row, means more waiting is pointless — fail
+    // NOW with the reason, so the next CI failure names its cause instead
+    // of presenting as a mystery timeout.
     let seed = null;
-    for (let i = 0; i < 240 && !seed; i++) {
+    let passState = null;
+    for (let i = 0; i < 480 && !seed; i++) {
       try {
         seed = withDb(ddbPath, (d) => {
           const r = d.prepare(
@@ -165,9 +175,23 @@ describe('hash-transition applier (discovery ON — live worker)', () => {
           return r ? { ...r } : null;
         });
       } catch { /* db not created yet */ }
-      if (!seed) { await sleep(500); }
+      if (seed) { break; }
+      try {
+        const st = await fetch(`${server.baseUrl}/api/v1/scan/status`).then((r) => r.json());
+        passState = st.enrichment?.find((p) => p.pass === 'discovery') ?? null;
+        assert.notEqual(passState?.state, 'disabled',
+          `discovery pass reports disabled: ${passState?.disabledReason}`);
+        if (passState?.lastRun?.outcome === 'failed') {
+          assert.fail(`discovery pass ran and FAILED with no row embedded: ${JSON.stringify(passState.lastRun)}`);
+        }
+      } catch (err) {
+        if (err.code === 'ERR_ASSERTION') { throw err; }
+        // status probe is best-effort — keep waiting on transient fetch noise
+      }
+      await sleep(500);
     }
-    assert.ok(seed, 'discovery worker embedded the eligible track');
+    assert.ok(seed,
+      `discovery worker embedded the eligible track (last pass state: ${JSON.stringify(passState)})`);
 
     // Chain seed→mid→fin. The middle hop never exists as a row; the
     // terminal is the LIVE short track's canon, so the worker's orphan
