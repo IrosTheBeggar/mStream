@@ -27,8 +27,34 @@ pub fn is_enabled() -> bool {
 
 pub fn set_enabled(on: bool) -> Result<(), String> {
     let a = launcher().ok_or("could not resolve the launcher executable")?;
+    if on {
+        ensure_autostart_parent_dir();
+    }
     let r = if on { a.enable() } else { a.disable() };
     r.map_err(|e| e.to_string())
+}
+
+// auto-launch writes a file into a per-user dir it does NOT create:
+// ~/.config/autostart on Linux, ~/Library/LaunchAgents on macOS. Real
+// desktop sessions always have them, but fresh or minimal accounts may
+// not — surfaced by the Docker smoke, where enable() failed with ENOENT
+// in a bare-$HOME container. Windows registers via the registry; nothing
+// to create there. Best-effort: a failure here just re-surfaces in
+// enable()'s own error.
+fn ensure_autostart_parent_dir() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::fs::create_dir_all(
+            crate::paths::home_dir().join("Library").join("LaunchAgents"),
+        );
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| crate::paths::home_dir().join(".config"));
+        let _ = std::fs::create_dir_all(base.join("autostart"));
+    }
 }
 
 /// First run of the desktop face: enable autostart once and remember that
@@ -61,7 +87,7 @@ pub fn run_cli(cmd: &str) -> i32 {
     match cmd {
         "enable" | "disable" => match set_enabled(cmd == "enable") {
             Ok(()) => {
-                crate::platform::console_err(&format!("autostart {cmd}d"));
+                crate::platform::console_out(&format!("autostart {cmd}d"));
                 0
             }
             Err(e) => {
@@ -70,7 +96,9 @@ pub fn run_cli(cmd: &str) -> i32 {
             }
         },
         "status" => {
-            crate::platform::console_err(if is_enabled() { "enabled" } else { "disabled" });
+            // Results go to stdout (console_out) — scripts pipe this; only
+            // failures belong on stderr.
+            crate::platform::console_out(if is_enabled() { "enabled" } else { "disabled" });
             0
         }
         other => {

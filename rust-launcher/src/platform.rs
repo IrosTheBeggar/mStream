@@ -80,6 +80,24 @@ pub fn run_console_passthrough(args: &LauncherArgs) {
     }
 }
 
+/// RESULT output for the scriptable CLI surface (--autostart=status and
+/// friends): stdout on unix so pipes and `grep` see it — the Docker smoke
+/// caught status answering on stderr — and the real console device on
+/// Windows, where a windows-subsystem exe's own stdout handle is detached
+/// even after AttachConsole (piping there is a pre-existing GUI-subsystem
+/// limitation; the visible console is the best available contract).
+pub fn console_out(msg: &str) {
+    #[cfg(windows)]
+    {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::File::options().write(true).open("CONOUT$") {
+            let _ = writeln!(f, "{msg}");
+            return;
+        }
+    }
+    println!("{msg}");
+}
+
 /// Write a line to the attached console (Windows GUI subsystem can't just
 /// eprintln — the std handles are detached; CONOUT$ is the real device).
 pub fn console_err(msg: &str) {

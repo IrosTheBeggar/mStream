@@ -14,23 +14,23 @@ pub fn data_home() -> PathBuf {
     {
         let base = env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
-            .unwrap_or_else(|| home().join("AppData").join("Local"));
+            .unwrap_or_else(|| home_dir().join("AppData").join("Local"));
         base.join("mStream")
     }
     #[cfg(target_os = "macos")]
     {
-        home().join("Library").join("Application Support").join("mStream")
+        home_dir().join("Library").join("Application Support").join("mStream")
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let base = env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|| home().join(".local").join("share"));
+            .unwrap_or_else(|| home_dir().join(".local").join("share"));
         base.join("mstream")
     }
 }
 
-fn home() -> PathBuf {
+pub(crate) fn home_dir() -> PathBuf {
     #[cfg(windows)]
     let var = "USERPROFILE";
     #[cfg(unix)]
