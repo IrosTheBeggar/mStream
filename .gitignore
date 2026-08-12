@@ -23,6 +23,9 @@ bin/rust-parser/*
 !bin/rust-parser/README.md
 !bin/rust-parser/rust-parser-*
 
+bin/rust-launcher/*
+!bin/rust-launcher/mstream-launcher-*
+
 bin/rust-server-audio/*
 !bin/rust-server-audio/README.md
 !bin/rust-server-audio/rust-server-audio-*
@@ -37,8 +40,6 @@ save/*.json
 *.db-wal
 *.db-shm
 .migrated-from-loki
-# Per-boot identity secret for the macOS relaunch probe (src/server.js)
-.instance-nonce
 frp/*.ini
 
 dist/*

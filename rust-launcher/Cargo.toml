@@ -39,6 +39,13 @@ windows-sys = { version = "0.59", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 
+[target.'cfg(windows)'.build-dependencies]
+# Exe icon + VersionInfo (see build.rs). winresource is the maintained fork
+# of winres; serde_json reads the repo package.json so the version string
+# can't drift from the release.
+winresource = "0.1"
+serde_json = "1"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

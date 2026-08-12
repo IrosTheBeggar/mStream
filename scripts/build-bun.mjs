@@ -134,8 +134,37 @@ const isMac = t.plat === 'darwin';
 const contentRoot = isMac ? join(stageDir, 'mStream.app', 'Contents', 'MacOS') : stageDir;
 mkdirSync(contentRoot, { recursive: true });
 
-stageExe(join(root, outPath), join(contentRoot, isMac ? 'mStream' : t.out));     // the server binary
+// The server ships as `mstream-server` in EVERY bundle (1c rename): it is the
+// sibling name the desktop launcher resolves, the terminal/headless entry, and
+// one consistent name across platforms (the bundle dir already carries the
+// arch). The launcher below — where this platform has one — takes over the
+// user-facing name (mStream.exe / the .app executable / mstream-desktop).
+const serverName = `mstream-server${t.ext}`;
+stageExe(join(root, outPath), join(contentRoot, serverName));
 cpSync(join(root, 'webapp'), join(contentRoot, 'webapp'), { recursive: true });  // the UI
+
+// Desktop tray launcher (rust-launcher/), CI-committed per platform like the
+// rust-parser sidecars. Deliberately absent on linux-arm64 and the musl
+// targets: those are headless-leaning (Pi servers, Alpine/NAS containers) and
+// the gtk/appindicator cross-build isn't worth carrying until someone asks —
+// their bundles stay server-only and the .desktop/plist writers below adapt.
+const launcherSrc = {
+  'win-x64':      'mstream-launcher-win32-x64.exe',
+  'darwin-x64':   'mstream-launcher-darwin-x64',
+  'darwin-arm64': 'mstream-launcher-darwin-arm64',
+  'linux-x64':    'mstream-launcher-linux-x64',
+}[key];
+let launcherStaged = false;
+if (launcherSrc) {
+  const src = join(root, 'bin', 'rust-launcher', launcherSrc);
+  if (existsSync(src)) {
+    const face = t.plat === 'win32' ? 'mStream.exe' : (isMac ? 'mStream' : 'mstream-desktop');
+    stageExe(src, join(contentRoot, face));
+    launcherStaged = true;
+  } else {
+    console.warn(`  launcher not found, bundle ships server-only: bin/rust-launcher/${launcherSrc}`);
+  }
+}
 
 // External binaries the server spawns, arch- and libc-specific. A musl bundle
 // stages the -musl sidecar variants (the primary parser on Alpine). A glibc
@@ -181,10 +210,15 @@ if (isMac) {
   const resDir = join(stageDir, 'mStream.app', 'Contents', 'Resources');
   mkdirSync(resDir, { recursive: true });
   cpSync(join(root, 'build', 'mstream-logo-cut.icns'), join(resDir, 'mStream.icns'));
-  writeFileSync(join(stageDir, 'mStream.app', 'Contents', 'Info.plist'), macInfoPlist(pkg.version));
+  // CFBundleExecutable = the launcher when staged (the menu-bar face), else
+  // the server itself (cross-built legs before the launcher binaries land,
+  // and any future launcher-less darwin variant).
+  writeFileSync(join(stageDir, 'mStream.app', 'Contents', 'Info.plist'),
+    macInfoPlist(pkg.version, launcherStaged ? 'mStream' : serverName));
 } else if (t.plat === 'linux') {
   cpSync(join(root, 'build', 'icon.png'), join(stageDir, 'mStream.png'));
-  writeFileSync(join(stageDir, 'mStream.desktop'), linuxDesktopEntry(t.out));
+  writeFileSync(join(stageDir, 'mStream.desktop'),
+    linuxDesktopEntry(launcherStaged ? 'mstream-desktop' : serverName, launcherStaged));
 }
 
 const archivePath = join(root, 'dist', `${bundleName}.zip`);
@@ -201,7 +235,11 @@ console.log(`Bundling -> dist/${bundleName}.zip`);
 //     .zip from the extension; a Windows .exe carries no mode bit to lose.
 let zip;
 if (process.platform === 'win32') {
-  zip = spawnSync('tar', ['-a', '-c', '-f', archivePath, '-C', stageRoot, bundleName], { stdio: 'inherit' });
+  // Relative paths under an explicit cwd: an absolute C:\... archive path
+  // makes GNU tar (first on PATH in git-bash dev shells) read the drive
+  // colon as a remote host ("Cannot connect to C:"). System32's bsdtar
+  // tolerates either form, so relative keeps both happy.
+  zip = spawnSync('tar', ['-a', '-c', '-f', join('dist', `${bundleName}.zip`), '-C', join('dist', 'stage'), bundleName], { cwd: root, stdio: 'inherit' });
 } else {
   zip = spawnSync('zip', ['-r', '-y', '-q', archivePath, bundleName], { cwd: stageRoot, stdio: 'inherit' });
 }
@@ -210,29 +248,22 @@ if (zip.status !== 0) { console.error('archive (zip) failed'); process.exit(zip.
 console.log(`Done: dist/${bundleName}.zip`);
 
 // macOS .app Info.plist — points CFBundleIconFile at the staged mStream.icns
-// and CFBundleExecutable at the inner binary.
+// and CFBundleExecutable at the bundle's face.
 //
-// LSUIElement is load-bearing (#802): the executable is a faceless CLI server
-// that never connects to the WindowServer, and without this key LaunchServices
-// treats a Finder launch as a regular GUI app — the Dock icon bounces, times
-// out, and the app is branded "Application Not Responding" forever even though
-// the server is up and serving. As a UIElement/agent app it gets no Dock
-// presence at all; the visible launch feedback is the browser open in
-// src/util/mac-app-launch.js, which keys off CFBundleIdentifier below (the two
-// must stay in sync).
-//
-// KNOWN LIMITATION (deferred, #802): with no Dock presence the running server
-// has no user-facing Quit — re-clicking the app only reopens the browser, so
-// stopping it means Activity Monitor or `kill`. The planned home for a Quit is
-// the macOS menu-bar status item tracked with the tray/autostart work, which
-// will call a graceful-shutdown path; deliberately not added here to keep this
-// PR scoped. See src/util/mac-app-launch.js.
+// LSUIElement is load-bearing twice over. Historically (#802): a faceless CLI
+// server never checks in with the WindowServer, and without this key a Finder
+// launch bounced into a permanent "Application Not Responding". Now: the
+// bundle's executable is the tray LAUNCHER (rust-launcher/), a menu-bar app —
+// which is exactly what LSUIElement declares (menu-bar presence, no Dock
+// tile). The user-facing Quit that #802's fix had to defer lives in the
+// launcher's tray menu. When execName is the server itself (launcher-less
+// staging), the key still prevents the ANR class.
 //
 // The NSLocalNetwork/NSBonjour keys caption macOS 15+'s Local Network consent
 // prompt, which fires on first launch because mDNS advertising
 // (_mstream._tcp, src/discovery/mdns.js) is on by default — without them the
 // prompt shows no explanation of why a music server wants LAN access.
-function macInfoPlist(version) {
+function macInfoPlist(version, execName) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -242,7 +273,7 @@ function macInfoPlist(version) {
   <key>CFBundleIdentifier</key><string>io.mstream.server</string>
   <key>CFBundleVersion</key><string>${version}</string>
   <key>CFBundleShortVersionString</key><string>${version}</string>
-  <key>CFBundleExecutable</key><string>mStream</string>
+  <key>CFBundleExecutable</key><string>${execName}</string>
   <key>CFBundleIconFile</key><string>mStream.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
@@ -261,14 +292,18 @@ function macInfoPlist(version) {
 // Linux .desktop launcher: a bare ELF can't carry an icon, so this is how the
 // PNG shows up in an app menu. Exec/Icon need absolute paths once installed —
 // replace %INSTALL_DIR% with the extract location (or use desktop-file-install).
-function linuxDesktopEntry(binName) {
+function linuxDesktopEntry(binName, isLauncher) {
+  // Launcher bundles are a real desktop app (background server + tray) — no
+  // terminal. Server-only bundles (no launcher for this target) keep the old
+  // run-in-a-terminal behavior so the .desktop entry still does something
+  // sensible.
   return `[Desktop Entry]
 Type=Application
 Name=mStream
 Comment=Self-hosted music streaming server
 Exec=%INSTALL_DIR%/${binName}
 Icon=%INSTALL_DIR%/mStream.png
-Terminal=true
+Terminal=${isLauncher ? 'false' : 'true'}
 Categories=AudioVideo;Audio;Network;
 `;
 }
@@ -320,7 +355,10 @@ function stageIroh(target, dest) {
   }
   const tgz = readdirSync(tmp).find((f) => f.endsWith('.tgz'));
   if (!tgz) { console.warn('  iroh: npm pack produced no tarball — remote access unavailable'); return; }
-  const untar = spawnSync('tar', ['-xzf', join(tmp, tgz), '-C', tmp], { stdio: 'inherit' });
+  // Relative path under cwd, not join(tmp, tgz): GNU tar (first on PATH in
+  // git-bash dev shells) reads an absolute C:\...'s drive colon as a remote
+  // host — this silently dropped iroh from every locally cross-built bundle.
+  const untar = spawnSync('tar', ['-xzf', tgz], { cwd: tmp, stdio: 'inherit' });
   // npm tarballs put files under package/.
   const extracted = join(tmp, 'package', file);
   if (untar.status !== 0 || !existsSync(extracted)) {

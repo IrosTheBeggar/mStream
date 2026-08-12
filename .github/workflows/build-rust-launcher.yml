@@ -1,20 +1,38 @@
 name: Build Rust Launcher
 
-# Build-only CI for the desktop tray launcher (rust-launcher/). Phase 1c of
-# the binary-releases roadmap wires the built launcher into the server
-# bundles (build-bun.mjs staging + rename); until then this keeps the crate
-# compiling on all three desktop platforms so it can't bit-rot between
-# phases. No artifacts are committed or uploaded yet — 1c owns staging.
+# Two duties, mirroring build-rust-parser.yml:
+#   - PR check (build + clippy on all three desktop OSes) so the crate can't
+#     bit-rot between phases.
+#   - On master pushes touching the crate: build the four shipped launcher
+#     binaries, self-test each, and COMMIT them to bin/rust-launcher/ — the
+#     bundler (scripts/build-bun.mjs) stages the launcher from there as the
+#     bundle's double-click face (mStream.exe / .app executable /
+#     mstream-desktop). Keep launcher PRs source-only; CI owns the binaries.
+#
+# Deliberately NOT built: linux-arm64 and the musl targets. Those bundles are
+# headless-leaning (Pi servers, Alpine/NAS containers) and the gtk/appindicator
+# cross-build isn't worth carrying until someone asks — build-bun.mjs ships
+# them server-only and says so.
 on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build + self-test only; do not commit the binaries'
+        type: boolean
+        default: false
+  push:
+    branches: [master]
+    paths: ['rust-launcher/**']
   pull_request:
     paths:
       - 'rust-launcher/**'
       - '.github/workflows/build-rust-launcher.yml'
-  workflow_dispatch:
 
 jobs:
-  build:
-    name: ${{ matrix.os }}
+  # ── PR gate: compile + lint everywhere the launcher ships. ────────────────
+  check:
+    name: check (${{ matrix.os }})
+    if: github.event_name == 'pull_request'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -25,13 +43,16 @@ jobs:
       - name: Check out
         uses: actions/checkout@v6
 
-      # tray-icon/muda/tao link gtk + the ayatana appindicator on Linux;
-      # libxdo backs muda's accelerator handling.
       - name: Install Linux build deps
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-launcher
 
       - name: Build (release)
         working-directory: rust-launcher
@@ -40,3 +61,126 @@ jobs:
       - name: Clippy
         working-directory: rust-launcher
         run: cargo clippy --release --locked -- -D warnings
+
+  # ── Shipped binaries: build, self-test, commit (master pushes). ───────────
+  build:
+    name: Build ${{ matrix.binary_name }}
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            binary_name: mstream-launcher-win32-x64.exe
+
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            binary_name: mstream-launcher-darwin-x64
+
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            binary_name: mstream-launcher-darwin-arm64
+
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            binary_name: mstream-launcher-linux-x64
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-launcher
+          key: ${{ matrix.target }}
+
+      - name: Build
+        working-directory: rust-launcher
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Rename binary
+        shell: bash
+        run: |
+          src="rust-launcher/target/${{ matrix.target }}/release/mstream-launcher"
+          if [[ "${{ matrix.binary_name }}" == *.exe ]]; then src="${src}.exe"; fi
+          mkdir -p staging
+          cp "$src" "staging/${{ matrix.binary_name }}"
+
+      # Gate the commit on the binary actually executing. --autostart=status
+      # runs the scriptable CLI path end to end (arg parse, auto-launch
+      # registration lookup, stdout result) with no display, no server, and no
+      # side effects — exactly what a headless runner can prove. darwin-x64
+      # runs under Rosetta on the arm64 runner, same trick rust-parser uses.
+      - name: Self-test the freshly built binary
+        shell: bash
+        run: |
+          bin="staging/${{ matrix.binary_name }}"
+          out="$("$bin" --autostart=status)"
+          echo "self-test --autostart=status -> '$out'"
+          echo "$out" | grep -qE 'enabled|disabled' \
+            || { echo "::error::self-test: launcher produced no status"; exit 1; }
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.binary_name }}
+          path: staging/${{ matrix.binary_name }}
+          retention-days: 1
+
+  commit-binaries:
+    name: Commit binaries
+    needs: build
+    if: ${{ github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: bin/rust-launcher
+          merge-multiple: true
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Same exec-bit dance as build-rust-parser.yml: artifact zips strip
+          # the mode, and a first-run download lands 644 — restore on disk so
+          # a later `git pull --rebase` isn't blocked by an unstaged mode
+          # change, then force 100755 in the index regardless.
+          chmod +x bin/rust-launcher/mstream-launcher-*
+          git add bin/rust-launcher/mstream-launcher-*
+          git update-index --chmod=+x bin/rust-launcher/mstream-launcher-*
+          if git diff --cached --quiet; then
+            echo "No binary changes to commit"
+          else
+            git commit -m "ci: update pre-built mstream-launcher binaries"
+            # Rebase-and-retry against sibling binary workflows racing the
+            # same push window (see build-rust-parser.yml for the war story;
+            # each workflow writes a disjoint file set, so the rebase is
+            # always clean).
+            for attempt in 1 2 3 4 5; do
+              git pull --rebase origin ${{ github.ref_name }}
+              if git push; then exit 0; fi
+              echo "push rejected (attempt $attempt) — a sibling workflow pushed; retrying"
+              sleep $(( (RANDOM % 5) + 2 ))
+            done
+            echo "::error::could not push after 5 attempts"
+            exit 1
+          fi

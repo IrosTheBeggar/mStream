@@ -6,15 +6,27 @@ Pre-built, self-contained server bundles are attached to each
 linux-x64-musl, linux-arm64-musl, darwin-x64, darwin-arm64). They embed their own
 runtime — no Node.js install.
 
-A bundle is a **folder**, not a single file: the server binary plus `webapp/`
-(the UI) and `bin/` (sidecar binaries). Keep them together; the bundle itself
-can live anywhere.
+A bundle is a **folder**, not a single file: the desktop launcher, the server
+binary (`mstream-server`), `webapp/` (the UI), and `bin/` (sidecar binaries).
+Keep them together; the bundle itself can live anywhere.
+
+**Just double-click it.** The desktop face of the bundle — `mStream.exe` on
+Windows, `mStream.app` on macOS, `mstream-desktop` on Linux — starts the
+server in the background, puts an mStream icon in your tray / menu bar
+(Open mStream · Quick Connect · Start at login · Restart server · Quit), and
+opens your browser at the player. Start-at-login is on by default; one click
+in the tray menu turns it off.
+
+**Terminal users lose nothing.** The same desktop binary run from a terminal
+behaves exactly like the server itself (same flags, output, and exit codes) —
+or run `mstream-server` directly, which is also the right entry for headless
+boxes and service managers:
 
 ```shell
 # Linux / macOS (Windows: just extract the .zip in Explorer)
 unzip mStream-<version>-linux-x64.zip
 cd mStream-<version>-linux-x64
-./mStream-linux-x64
+./mstream-server
 # then open http://localhost:3000
 ```
 
@@ -50,17 +62,23 @@ enabling Quick Connect yourself later always sticks, flag or no flag.
 
 **Platform notes**
 
-* **Windows** — run `mStream.exe`.
-* **macOS** — the bundle is `mStream.app`; data lives in
-  `~/Library/Application Support/mStream`, so the app can live anywhere,
-  including `/Applications`. To see logs, launch from a terminal:
-  `./mStream.app/Contents/MacOS/mStream`. (Older installs that wrote data
-  inside the bundle keep working in place — see the upgrade note above.)
-* **Linux** — a `mStream.desktop` launcher and `mStream.png` icon are included
-  for adding mStream to your application menu. Before using the launcher, replace
-  the `%INSTALL_DIR%` placeholders in `mStream.desktop` with the absolute extract
-  path (or run `desktop-file-install`). Running the binary directly needs no
-  setup.
+* **Windows** — double-click `mStream.exe` (the tray launcher). The server
+  itself is `mstream-server.exe`, for terminals and services.
+* **macOS** — the bundle is `mStream.app`; opening it puts mStream in the menu
+  bar. Data lives in `~/Library/Application Support/mStream`, so the app can
+  live anywhere, including `/Applications`. To see server logs in a terminal,
+  run `./mStream.app/Contents/MacOS/mstream-server`. (Older installs that
+  wrote data inside the bundle keep working in place — see the upgrade note
+  above.)
+* **Linux** — `mstream-desktop` is the tray app (needs a system-tray/
+  StatusNotifier host; the server keeps running fine without one). A
+  `mStream.desktop` entry and `mStream.png` icon are included for your app
+  menu — replace the `%INSTALL_DIR%` placeholders with the absolute extract
+  path (or run `desktop-file-install`). Headless boxes just run
+  `mstream-server`.
+* **linux-arm64 and musl bundles ship server-only** (no tray launcher): those
+  targets are overwhelmingly headless (Pi servers, Alpine/NAS containers).
+  Their entry point is `mstream-server`, exactly as before.
 * **Alpine / musl Linux** — use the `*-musl` bundle (the glibc Linux build can't
   run on musl). Bun's musl binary needs the GNU C++ runtime: `apk add libstdc++`.
   For transcoding/waveforms also `apk add ffmpeg`.

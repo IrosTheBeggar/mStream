@@ -4,7 +4,6 @@
 // src/util/supervision.js) before any other module can write.
 import { watchSupervisorStdin } from './src/util/supervision.js';
 import { maybeRunWorker } from './src/util/worker-process.js';
-import { detachForFinderLaunch } from './src/util/mac-app-launch.js';
 import { resolveDefaultConfig, ensureDesktopDefaultConfig } from './src/util/boot-config.js';
 import pkg from './package.json' with { type: 'json' };
 
@@ -28,16 +27,6 @@ if (await maybeRunWorker()) {
   // which the parser needs for its help text.
   const resolved = resolveDefaultConfig({ portable: process.argv.includes('--portable') });
   const { json, supervised, quickConnectOffByDefault } = parseArgs(process.argv.slice(2), resolved.path);
-
-  // Finder double-click (macOS .app only — a no-op everywhere else): hand
-  // the real boot to a detached copy and exit, so LaunchServices doesn't
-  // pin this process as "the app" and swallow later double-clicks. Runs
-  // BEFORE first-run config generation — the detached copy re-enters this
-  // prologue and generation is idempotent ('wx' create). See
-  // src/util/mac-app-launch.js for the whole desktop-launch story.
-  if (detachForFinderLaunch()) {
-    process.exit(0);
-  }
 
   // First run of a standalone binary with no explicit config: create the
   // desktop-profile config (storage under the data home, Quick Connect on
@@ -74,16 +63,12 @@ if (await maybeRunWorker()) {
 
   // Boot the server. serveIt can reject before the listen handler exists
   // (bad SSL certs, unexpected setup errors); without this catch that's an
-  // unhandled rejection — a raw stack in a terminal, and total silence when
-  // Finder launched the macOS .app (stdout is /dev/null there). Surface it,
-  // and as a dialog on an app launch (see src/util/mac-app-launch.js).
+  // unhandled rejection — a raw stack instead of a clean message + exit code.
+  // Desktop launches get their user-visible dialog from the LAUNCHER, which
+  // watches this process and reads its log (rust-launcher/).
   const server = await import("./src/server.js");
-  server.serveIt(json).catch(async (err) => {
+  server.serveIt(json).catch((err) => {
     console.error('mStream failed to start:', err);
-    try {
-      const { announceBootFailure } = await import('./src/util/mac-app-launch.js');
-      announceBootFailure(`mStream could not start: ${err.message}`);
-    } catch (_err) { /* feedback is best-effort — still exit nonzero */ }
     process.exit(1);
   });
 }

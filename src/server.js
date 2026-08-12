@@ -2,7 +2,6 @@ import winston from 'winston';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
 import Joi from 'joi';
 import cookieParser from 'cookie-parser';
 import { compression } from './util/compression.js';
@@ -10,7 +9,6 @@ import jwt from 'jsonwebtoken';
 import http from 'http';
 import https from 'https';
 import { dataRoot, usingFallbackDataRoot } from './util/esm-helpers.js';
-import { CHALLENGE_HEADER, PROOF_HEADER, computeProof } from './util/instance-proof.js';
 
 import * as dbApi from './api/db.js';
 import * as discoveryApi from './api/discovery.js';
@@ -59,7 +57,6 @@ import * as backupManager from './backup/manager.js';
 // Velvet UI modules — dynamically imported only when ui='velvet' is active
 import WebError from './util/web-error.js';
 import { isAdminAllowed } from './util/admin-network.js';
-import * as macAppLaunch from './util/mac-app-launch.js';
 
 import packageJson from '../package.json' with { type: 'json' };
 
@@ -73,19 +70,6 @@ let server;
 // transcode, a big download — never fires its close callback and the server
 // never comes back. 'connection' fires on both runtimes, so this does.
 let liveSockets = new Set();
-// Per-boot identity secret for the macOS relaunch probe (see
-// src/util/mac-app-launch.js). Published only to loopback callers and mirrored
-// into a 0600 file at listen time, so a second .app launch can prove the port
-// holder is really our own running instance before redirecting the user's
-// browser at it. Regenerated every boot: a stale file can then only fail
-// closed.
-const instanceNonce = crypto.randomBytes(18).toString('base64url');
-const INSTANCE_NONCE_FILE = '.instance-nonce';
-
-function instanceNoncePath() {
-  return path.join(config.program.storage.dbDirectory, INSTANCE_NONCE_FILE);
-}
-
 // True from the start of a reboot until its re-served instance is listening.
 // Guards against overlapping reboots (two quick admin saves, two admin tabs):
 // a second server.close() on an already-closing server still runs its callback,
@@ -110,18 +94,18 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   try {
     await config.setup(configFile);
   } catch (err) {
-    winston.error('Failed to validate config file', { stack: err });
-    // A Finder-launched app has no console to print to — raise a dialog.
     // A permission/read-only failure is NOT a malformed config, and saying so
     // sends the user hunting through a file that is usually fine (or absent):
     // name the real cause instead. dataRoot already redirects writable state
     // away from a read-only app (util/esm-helpers.js), so reaching this means
     // the chosen location itself is unwritable — an explicit -j/MSTREAM_CONFIG
     // pointing somewhere read-only, or a container mount without permission.
+    // (Desktop-launch users see the launcher's own boot-failure dialog; this
+    // message is what its server log carries.)
     const denied = err.code === 'EROFS' || err.code === 'EACCES' || err.code === 'EPERM';
-    macAppLaunch.announceBootFailure(denied
-      ? `mStream could not start — it can't write to:\n${configFile}\n\nThe location is read-only or permission was denied. If you launched mStream from a downloaded copy, move it to your Applications folder and open it again.\n\n${err.message}`
-      : `mStream could not start — error in the config file:\n${configFile}\n\n${err.message}`);
+    winston.error(denied
+      ? `mStream could not start — it can't write to ${configFile}: the location is read-only or permission was denied (${err.message})`
+      : 'Failed to validate config file', { stack: err });
     process.exit(1);
   }
 
@@ -175,23 +159,6 @@ export async function serveIt(configFile, { relisten = null } = {}) {
       'Access-Control-Allow-Headers',
       'Origin, X-Requested-With, Content-Type, Accept'
     );
-    // Identity proof for the macOS relaunch probe (src/util/mac-app-launch.js).
-    // ONLY answers a caller that presents a challenge, and answers with an HMAC
-    // keyed by the per-boot nonce — never the nonce itself. See
-    // util/instance-proof.js for why the proof runs in this direction.
-    //
-    // This deliberately sits ahead of the auth wall: the probe is a launcher
-    // with no credentials. That is safe because the reply proves knowledge
-    // without disclosing it — the previous version published the nonce
-    // outright to every loopback caller, which let any local process read the
-    // secret it was never supposed to have (and, via mStream's own
-    // 127.0.0.1 iroh/federation bridges and reverse-proxy setups, leaked it
-    // off-machine to remote callers that merely LOOKED local).
-    const challenge = req.headers[CHALLENGE_HEADER];
-    if (challenge) {
-      const proof = computeProof(instanceNonce, challenge);
-      if (proof) { res.header(PROOF_HEADER, proof); }
-    }
     next();
   });
   // Trust Proxy
@@ -550,7 +517,7 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   if (relisten !== null && relistenRetries === 0) {
     winston.info(`Reboot moved the port ${relisten} -> ${config.program.port}; a conflict on the new port is real, not a release delay`);
   }
-  server.on('error', async (err) => {
+  server.on('error', (err) => {
     // Only the CURRENT server may act on its errors. A superseded instance
     // (an overlapping reboot's loser) must never run the exit paths below —
     // it would take the healthy live server down with it.
@@ -577,26 +544,11 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     // winston's File transport, whose boot-time backlog means the on-disk log
     // of a writeLogs install otherwise just stops mid-boot with no reason.
     try { fs.writeSync(2, `mStream fatal: ${err.code === 'EADDRINUSE' ? `port ${config.program.port} already in use` : err.message}\n`); } catch (_) { /* stderr gone too */ }
-    // The running instance's nonce, if any — the only proof that the port
-    // holder is our own server and not a local impostor.
-    let runningNonce;
-    try { runningNonce = fs.readFileSync(instanceNoncePath(), 'utf8').trim(); } catch (_) { /* none: probe fails closed */ }
-    const alreadyRunning = await macAppLaunch.handleListenError(err, protocol, config.program.port, config.program.address, runningNonce);
-    process.exit(alreadyRunning ? 0 : 1);
+    process.exit(1);
   });
   const onListening = async () => {
     rebootInFlight = false;   // a reboot's re-serve is complete
-    // Publish the instance nonce only once we actually OWN the port — a
-    // process that failed to listen must never overwrite the running
-    // instance's file, or the relaunch probe would stop recognizing it.
-    try {
-      fs.writeFileSync(instanceNoncePath(), instanceNonce, { mode: 0o600 });
-    } catch (err) {
-      winston.warn(`Could not write the instance nonce file: ${err.message}`);
-    }
     winston.info(`Access mStream locally: ${protocol}://localhost:${config.program.port}`);
-    // Finder launch (macOS .app): surface the UI — nothing else is visible.
-    macAppLaunch.announceReady(protocol, config.program.port, config.program.address);
 
     const taskQueue = await import('./db/task-queue.js');
     taskQueue.runAfterBoot();
@@ -784,7 +736,6 @@ export function reboot() {
         rebootInFlight = false;
         winston.error('Reboot failed to restart the server', { stack: rebootErr });
         try { fs.writeSync(2, `mStream fatal: reboot failed to restart the server: ${rebootErr.message}\n`); } catch (_) { /* stderr gone */ }
-        macAppLaunch.announceBootFailure(`mStream stopped: the server could not restart after a settings change.\n\n${rebootErr.message}`);
         process.exit(1);
       });
     });
