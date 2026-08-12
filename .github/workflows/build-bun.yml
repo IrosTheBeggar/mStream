@@ -434,8 +434,19 @@ jobs:
           # it through a bash pipe proves the passthrough hands the child OUR
           # redirected handles (on Windows, pre-G2-fix it rebound CONOUT$ —
           # the capture came back empty and the text splashed the console).
+          # Windows engages the terminal face via AttachConsole, which the
+          # runner's hidden console satisfies even under full redirection.
+          # Unix keys the face off isatty — a CI step with EVERYTHING piped
+          # has no tty at all and correctly takes the GUI path instead — so
+          # the linux probe runs under a pty (`script`), the same shape as a
+          # real terminal user redirecting stdout.
           set +e
-          OUT=$("$LAUNCHER" -j 2>&1); RC=$?
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            OUT=$("$LAUNCHER" -j 2>&1); RC=$?
+          else
+            OUT=$(script -qec "\"$LAUNCHER\" -j" /dev/null 2>&1); RC=$?   # -e mirrors the child's exit code
+            OUT=$(printf '%s' "$OUT" | tr -d '\r')
+          fi
           set -e
           echo "passthrough said: '$OUT' (rc=$RC)"
           echo "$OUT" | grep -q "argument missing" || { echo "FAIL: server's error text did not come back through the redirection"; exit 1; }
