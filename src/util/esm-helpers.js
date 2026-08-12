@@ -28,16 +28,21 @@ export const appRoot = isBunStandalone
   ? dirname(process.execPath)
   : join(dirname(selfPath), '..', '..');
 
-// Per-user writable location, used only when appRoot is read-only.
-function userDataDir() {
-  const home = os.homedir();
-  if (process.platform === 'darwin') {
-    return join(home, 'Library', 'Application Support', 'mStream');
+// Canonical per-user data directory — THE one implementation, shared by
+// dataRoot's read-only fallback below and by the desktop install profile
+// (src/util/boot-config.js), so every code path that relocates writable
+// state agrees on a single destination per OS. LOCALAPPDATA (not roaming
+// APPDATA) on Windows: the db and art/waveform caches can reach gigabytes
+// and don't belong in a roaming profile. Lowercase `mstream` on Linux per
+// XDG convention. Injectable for tests.
+export function userDataHome(platform = process.platform, env = process.env, homedir = os.homedir) {
+  if (platform === 'win32') {
+    return join(env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'mStream');
   }
-  if (process.platform === 'win32') {
-    return join(process.env.APPDATA || join(home, 'AppData', 'Roaming'), 'mStream');
+  if (platform === 'darwin') {
+    return join(homedir(), 'Library', 'Application Support', 'mStream');
   }
-  return join(process.env.XDG_DATA_HOME || join(home, '.local', 'share'), 'mStream');
+  return join(env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'mstream');
 }
 
 // Root for WRITABLE state — config, db, logs, image/waveform caches — as
@@ -61,7 +66,7 @@ function resolveDataRoot() {
     fs.accessSync(appRoot, fs.constants.W_OK);
     return appRoot;
   } catch (_err) {
-    return userDataDir();
+    return userDataHome();
   }
 }
 
