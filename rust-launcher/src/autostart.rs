@@ -62,10 +62,15 @@ fn ensure_autostart_parent_dir() {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| crate::paths::home_dir().join(".config"));
-        let _ = std::fs::create_dir_all(base.join("autostart"));
+        // auto-launch 0.5's linux get_dir() is hardcoded to
+        // ~/.config/autostart — it never consults XDG_CONFIG_HOME — so THIS
+        // is the directory that must exist for enable() to succeed.
+        // Pre-creating $XDG_CONFIG_HOME/autostart instead re-opens the very
+        // ENOENT this helper exists to prevent. (Known limitation, not ours
+        // to paper over here: with XDG_CONFIG_HOME pointed elsewhere, a
+        // spec-compliant session manager reads autostart entries from a
+        // directory the crate never writes.)
+        let _ = std::fs::create_dir_all(crate::paths::home_dir().join(".config").join("autostart"));
     }
 }
 

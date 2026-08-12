@@ -9,7 +9,7 @@
 // a restart) from reporting the new child's state.
 use crate::{autostart, paths, platform, server, LauncherArgs};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -41,6 +41,24 @@ pub fn run(args: LauncherArgs) -> ! {
     let log_path = logs_dir.join("launcher.log");
     let log = Logger(log_path);
 
+    // ── Locate the server binary FIRST: the config ladder's legacy/portable
+    // rung anchors at the SERVER binary's directory (the server resolves
+    // appRoot = dirname(process.execPath), src/util/boot-config.js), which
+    // equals our own exe_dir only in the shipped sibling layout —
+    // --server-bin/MSTREAM_SERVER_BIN break that on purpose, and anchoring
+    // at the launcher would make the two sides resolve different configs.
+    let bin = match paths::find_server_bin(args.server_bin.as_deref()) {
+        Ok(b) => paths::absolutize(b),
+        Err(e) => {
+            log.line(&e);
+            platform::fatal_alert(&format!("mStream could not start: {e}"));
+            std::process::exit(1);
+        }
+    };
+    let server_dir = bin.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let config = paths::resolve_config_path(&args.server_args, &server_dir);
+    let ep = paths::read_endpoint(&config);
+
     // ── Single instance: the lock lives in the data home, so two launchers
     // managing the same data/port exclude each other (two --portable
     // launchers in different folders are genuinely different servers and
@@ -56,12 +74,10 @@ pub fn run(args: LauncherArgs) -> ! {
             std::process::exit(1);
         }
     };
-    let config = paths::resolve_config_path(&args.server_args);
-    let port = paths::read_port(&config);
     if !lock.try_lock().unwrap_or(false) {
         log.line("another launcher instance holds the lock - focusing it and exiting");
         if !args.autostarted && !args.no_open {
-            let _ = open::that_detached(paths::server_url(port));
+            let _ = open::that_detached(paths::server_url(&ep));
         }
         std::process::exit(0);
     }
@@ -93,25 +109,24 @@ pub fn run(args: LauncherArgs) -> ! {
     }
 
     // ── Spawn the server.
-    let bin = match paths::find_server_bin(args.server_bin.as_deref()) {
-        Ok(b) => b,
-        Err(e) => {
-            log.line(&e);
-            platform::fatal_alert(&format!("mStream could not start: {e}"));
-            std::process::exit(1);
-        }
-    };
     let server_log = logs_dir.join("server-console.log");
     let shared = Arc::new(Shared {
         proc: Mutex::new(None),
         generation: AtomicU64::new(0),
         quitting: AtomicBool::new(false),
     });
+    // Same "port N" text as always (smokes grep this log); the address only
+    // appears when the config pins one — the interesting case for support.
+    let addr_note = if ep.ip.is_loopback() {
+        String::new()
+    } else {
+        format!(", address {}", ep.ip)
+    };
     log.line(&format!(
-        "starting server: {} (config {}, port {})",
+        "starting server: {} (config {}, port {}{addr_note})",
         bin.display(),
         config.display(),
-        port
+        ep.port
     ));
 
     // ── Event loop + tray.
@@ -134,7 +149,7 @@ pub fn run(args: LauncherArgs) -> ! {
         }));
     }
 
-    match spawn_generation(&shared, &bin, &args.server_args, &server_log, port, &proxy, &log) {
+    match spawn_generation(&shared, &bin, &args.server_args, &server_log, ep, &proxy, &log) {
         Ok(()) => {}
         Err(e) => {
             log.line(&format!("server failed to spawn: {e}"));
@@ -151,7 +166,7 @@ pub fn run(args: LauncherArgs) -> ! {
     let mut autostart_item: Option<CheckMenuItem> = None;
     let mut ever_up = false;
     let mut opened = false;
-    let url = paths::server_url(port);
+    let url = paths::server_url(&ep);
     let announce = !args.autostarted && !args.no_open;
     let shared_loop = shared.clone();
     let server_log_loop = server_log.clone();
@@ -226,7 +241,7 @@ pub fn run(args: LauncherArgs) -> ! {
                             &bin,
                             &args.server_args,
                             &server_log_loop,
-                            port,
+                            ep,
                             &proxy,
                             &log,
                         ) {
@@ -313,7 +328,7 @@ fn spawn_generation(
     bin: &Path,
     server_args: &[String],
     server_log: &Path,
-    port: u16,
+    ep: paths::Endpoint,
     proxy: &tao::event_loop::EventLoopProxy<AppEvent>,
     log: &Logger,
 ) -> Result<(), String> {
@@ -322,12 +337,12 @@ fn spawn_generation(
     *shared.proc.lock().unwrap() = Some(proc);
     log.line(&format!("server generation {generation} spawned"));
 
-    // Health prober: poll until the port answers as mStream (an identity
+    // Health prober: poll until the endpoint answers as mStream (an identity
     // probe, not a bare connect — see wait_serving), then report up.
     {
         let proxy = proxy.clone();
         std::thread::spawn(move || {
-            if server::wait_serving(port, BOOT_TIMEOUT) {
+            if server::wait_serving(ep, BOOT_TIMEOUT) {
                 let _ = proxy.send_event(AppEvent::ServerUp(generation));
             }
         });

@@ -66,20 +66,25 @@ pub fn stop(proc: &mut ServerProc, grace: Duration) {
     let _ = proc.child.wait();
 }
 
-/// True once the port answers `GET /` with something that identifies as
+/// True once the endpoint answers `GET /` with something that identifies as
 /// mStream. The child is ours but the PORT is not: 3000 is contested dev
 /// territory, and a bare TCP connect would "succeed" instantly against a
 /// squatter (React/Grafana/anything) while our child dies on EADDRINUSE
 /// behind it — announcing up would then point the user's browser at a
 /// stranger and mask the real boot failure. The webapp's index page carries
-/// the product name; a foreign 200 won't. (SSL-terminated configs won't
-/// match a plaintext GET — the launcher's whole URL surface is http-only
-/// today, so such a config times out here instead of "succeeding" wrong.)
-pub fn wait_serving(port: u16, timeout: Duration) -> bool {
-    let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+/// the product name; a foreign 200 won't. The endpoint's address matters as
+/// much as its port: a config that pins `address` to one interface binds
+/// ONLY there (server.js listen(port, address)), and probing loopback
+/// against it would report a healthy server as never up — paths::read_endpoint
+/// hands us the address the server will actually answer on. (SSL-terminated
+/// configs won't match a plaintext GET — the launcher's whole URL surface is
+/// http-only today, so such a config times out here instead of "succeeding"
+/// wrong.)
+pub fn wait_serving(ep: crate::paths::Endpoint, timeout: Duration) -> bool {
+    let addr: SocketAddr = (ep.ip, ep.port).into();
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if probe_mstream(&addr, port) {
+        if probe_mstream(&addr) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(500));
@@ -89,15 +94,16 @@ pub fn wait_serving(port: u16, timeout: Duration) -> bool {
 
 /// One probe round: HTTP GET / and check for a 200 whose payload mentions
 /// mStream (the webapp title appears in the first kilobyte).
-fn probe_mstream(addr: &SocketAddr, port: u16) -> bool {
+fn probe_mstream(addr: &SocketAddr) -> bool {
     use std::io::{Read, Write};
     let Ok(mut s) = TcpStream::connect_timeout(addr, Duration::from_millis(500)) else {
         return false;
     };
     let _ = s.set_read_timeout(Some(Duration::from_millis(1500)));
     let _ = s.set_write_timeout(Some(Duration::from_millis(1500)));
+    // SocketAddr's Display renders the Host form directly ([v6]:port).
     let req =
-        format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAccept: text/html\r\nConnection: close\r\n\r\n");
+        format!("GET / HTTP/1.1\r\nHost: {addr}\r\nAccept: text/html\r\nConnection: close\r\n\r\n");
     if s.write_all(req.as_bytes()).is_err() {
         return false;
     }
