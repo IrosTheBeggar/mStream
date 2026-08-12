@@ -1,0 +1,42 @@
+name: Build Rust Launcher
+
+# Build-only CI for the desktop tray launcher (rust-launcher/). Phase 1c of
+# the binary-releases roadmap wires the built launcher into the server
+# bundles (build-bun.mjs staging + rename); until then this keeps the crate
+# compiling on all three desktop platforms so it can't bit-rot between
+# phases. No artifacts are committed or uploaded yet — 1c owns staging.
+on:
+  pull_request:
+    paths:
+      - 'rust-launcher/**'
+      - '.github/workflows/build-rust-launcher.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      # tray-icon/muda/tao link gtk + the ayatana appindicator on Linux;
+      # libxdo backs muda's accelerator handling.
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
+
+      - name: Build (release)
+        working-directory: rust-launcher
+        run: cargo build --release --locked
+
+      - name: Clippy
+        working-directory: rust-launcher
+        run: cargo clippy --release --locked -- -D warnings
