@@ -82,34 +82,54 @@ pub fn run_console_passthrough(args: &LauncherArgs) {
 
 /// RESULT output for the scriptable CLI surface (--autostart=status and
 /// friends): stdout on unix so pipes and `grep` see it — the Docker smoke
-/// caught status answering on stderr — and the real console device on
-/// Windows, where a windows-subsystem exe's own stdout handle is detached
-/// even after AttachConsole (piping there is a pre-existing GUI-subsystem
-/// limitation; the visible console is the best available contract).
+/// caught status answering on stderr. On Windows a GUI-subsystem exe's std
+/// handles are NULL when launched bare (Explorer, or cmd without
+/// redirection), but REAL when the parent redirected them — pipes, `$()`
+/// command substitution, `> file`. The CI self-test captures stdout exactly
+/// that way (and bash on the runners always has a hidden console, so
+/// AttachConsole succeeding says nothing about where stdout points). Honor a
+/// real handle first — println! reaches the caller — and only a detached
+/// stdout falls back to the attached console device.
 pub fn console_out(msg: &str) {
     #[cfg(windows)]
     {
         use std::io::Write;
-        if let Ok(mut f) = std::fs::File::options().write(true).open("CONOUT$") {
-            let _ = writeln!(f, "{msg}");
-            return;
+        use windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE;
+        if !std_handle_is_real(STD_OUTPUT_HANDLE) {
+            if let Ok(mut f) = std::fs::File::options().write(true).open("CONOUT$") {
+                let _ = writeln!(f, "{msg}");
+                return;
+            }
         }
     }
     println!("{msg}");
 }
 
-/// Write a line to the attached console (Windows GUI subsystem can't just
-/// eprintln — the std handles are detached; CONOUT$ is the real device).
+/// Write a line to stderr, or the attached console when stderr is detached
+/// (Windows GUI subsystem: same handle rules as console_out above).
 pub fn console_err(msg: &str) {
     #[cfg(windows)]
     {
         use std::io::Write;
-        if let Ok(mut f) = std::fs::File::options().write(true).open("CONOUT$") {
-            let _ = writeln!(f, "{msg}");
-            return;
+        use windows_sys::Win32::System::Console::STD_ERROR_HANDLE;
+        if !std_handle_is_real(STD_ERROR_HANDLE) {
+            if let Ok(mut f) = std::fs::File::options().write(true).open("CONOUT$") {
+                let _ = writeln!(f, "{msg}");
+                return;
+            }
         }
     }
     eprintln!("{msg}");
+}
+
+/// Whether the given std handle points at something a parent process gave us
+/// (pipe, file, or console handle) rather than the GUI-subsystem NULL.
+#[cfg(windows)]
+fn std_handle_is_real(which: windows_sys::Win32::System::Console::STD_HANDLE) -> bool {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Console::GetStdHandle;
+    let h = unsafe { GetStdHandle(which) };
+    !h.is_null() && h != INVALID_HANDLE_VALUE
 }
 
 /// Fatal error with a visible face on a GUI launch: message box on Windows,

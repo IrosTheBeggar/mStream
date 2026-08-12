@@ -75,7 +75,9 @@ enabling Quick Connect yourself later always sticks, flag or no flag.
   `mStream.desktop` entry and `mStream.png` icon are included for your app
   menu — replace the `%INSTALL_DIR%` placeholders with the absolute extract
   path (or run `desktop-file-install`). Headless boxes just run
-  `mstream-server`.
+  `mstream-server`. The tray app needs glibc ≥ 2.31 (Debian 11 / Ubuntu
+  20.04 or newer); on older distros (e.g. RHEL/Rocky 8) run
+  `mstream-server` directly — the server itself has a much lower floor.
 * **linux-arm64 and musl bundles ship server-only** (no tray launcher): those
   targets are overwhelmingly headless (Pi servers, Alpine/NAS containers).
   Their entry point is `mstream-server`, exactly as before.

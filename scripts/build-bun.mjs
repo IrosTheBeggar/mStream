@@ -9,7 +9,7 @@
 // Windows icon + metadata flags are only applied for a win-x64 build running ON
 // Windows — Bun can't set them when cross-compiling. Name/version/etc. come from
 // package.json so they never drift.
-import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, cpSync, chmodSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, cpSync, chmodSync, readdirSync, openSync, readSync, closeSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -235,16 +235,38 @@ console.log(`Bundling -> dist/${bundleName}.zip`);
 //     .zip from the extension; a Windows .exe carries no mode bit to lose.
 let zip;
 if (process.platform === 'win32') {
-  // Relative paths under an explicit cwd: an absolute C:\... archive path
-  // makes GNU tar (first on PATH in git-bash dev shells) read the drive
-  // colon as a remote host ("Cannot connect to C:"). System32's bsdtar
-  // tolerates either form, so relative keeps both happy.
-  zip = spawnSync('tar', ['-a', '-c', '-f', join('dist', `${bundleName}.zip`), '-C', join('dist', 'stage'), bundleName], { cwd: root, stdio: 'inherit' });
+  // Two tar traps on Windows dev machines, both dodged here:
+  //   - GNU tar (first on PATH under git-bash) reads an absolute C:\...
+  //     path's drive colon as a remote hostname, so paths stay relative
+  //     under an explicit cwd.
+  //   - GNU tar cannot CREATE zips at all: `-a` with a suffix it doesn't
+  //     know (.zip isn't in its table) silently writes an UNCOMPRESSED TAR
+  //     named .zip and exits 0. So prefer System32's bsdtar by absolute
+  //     path — it's what the CI runners resolve anyway — and only fall back
+  //     to PATH lookup on exotic setups. The magic-byte check below catches
+  //     whatever slips through either way.
+  const sysTar = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+  const tarBin = existsSync(sysTar) ? sysTar : 'tar';
+  zip = spawnSync(tarBin, ['-a', '-c', '-f', join('dist', `${bundleName}.zip`), '-C', join('dist', 'stage'), bundleName], { cwd: root, stdio: 'inherit' });
 } else {
   zip = spawnSync('zip', ['-r', '-y', '-q', archivePath, bundleName], { cwd: stageRoot, stdio: 'inherit' });
 }
 if (zip.error) { console.error(zip.error.message); }
 if (zip.status !== 0) { console.error('archive (zip) failed'); process.exit(zip.status ?? 1); }
+
+// A release archive that isn't a real zip must fail the build, not ship:
+// every zip starts with the PK\x03\x04 local-file-header magic (a tar in
+// zip's clothing starts with the first filename instead).
+{
+  const fd = openSync(archivePath, 'r');
+  const magic = Buffer.alloc(4);
+  const n = readSync(fd, magic, 0, 4, 0);
+  closeSync(fd);
+  if (n !== 4 || !magic.equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) {
+    console.error(`dist/${bundleName}.zip is not a zip archive (magic: ${magic.subarray(0, Math.max(n, 0)).toString('hex') || 'empty'}) — wrong tar on PATH?`);
+    process.exit(1);
+  }
+}
 console.log(`Done: dist/${bundleName}.zip`);
 
 // macOS .app Info.plist — points CFBundleIconFile at the staged mStream.icns

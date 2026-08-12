@@ -224,7 +224,19 @@ pub fn run(args: LauncherArgs) -> ! {
                     _ => {}
                 },
                 AppEvent::ServerUp(generation) => {
-                    if generation == shared_loop.generation.load(Ordering::SeqCst) {
+                    // The probe proved SOMETHING on the port speaks mStream —
+                    // make sure it's OUR child and not a foreign instance the
+                    // port was lost to (child already dead on EADDRINUSE).
+                    // Announcing then would set ever_up and mask the boot
+                    // failure the ServerExited path is about to dialog.
+                    let child_alive = shared_loop
+                        .proc
+                        .lock()
+                        .unwrap()
+                        .as_mut()
+                        .map(|p| matches!(p.child.try_wait(), Ok(None)))
+                        .unwrap_or(false);
+                    if child_alive && generation == shared_loop.generation.load(Ordering::SeqCst) {
                         ever_up = true;
                         log.line("server is up");
                         if let Some(t) = &tray {
@@ -279,11 +291,12 @@ fn spawn_generation(
     *shared.proc.lock().unwrap() = Some(proc);
     log.line(&format!("server generation {generation} spawned"));
 
-    // Health prober: TCP-connect until the port answers, then report up.
+    // Health prober: poll until the port answers as mStream (an identity
+    // probe, not a bare connect — see wait_serving), then report up.
     {
         let proxy = proxy.clone();
         std::thread::spawn(move || {
-            if server::wait_listening(port, BOOT_TIMEOUT) {
+            if server::wait_serving(port, BOOT_TIMEOUT) {
                 let _ = proxy.send_event(AppEvent::ServerUp(generation));
             }
         });

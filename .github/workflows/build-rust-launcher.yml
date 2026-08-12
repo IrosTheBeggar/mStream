@@ -22,7 +22,15 @@ on:
         default: false
   push:
     branches: [master]
-    paths: ['rust-launcher/**']
+    # package.json is here because build.rs stamps the Windows VersionInfo
+    # from it: the release version bump must retrigger the binary build or
+    # the shipped mStream.exe reports the PREVIOUS version in Explorer.
+    # Cheap for non-release package.json edits — the commit job no-ops when
+    # the binaries come out byte-identical (unix binaries don't embed the
+    # version at all). Release process note: after bumping the version, wait
+    # for this workflow's commit before tagging — build-bun stages whatever
+    # is in bin/rust-launcher/ at tag time.
+    paths: ['rust-launcher/**', 'package.json']
   pull_request:
     paths:
       - 'rust-launcher/**'
@@ -67,6 +75,16 @@ jobs:
     name: Build ${{ matrix.binary_name }}
     if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.runner }}
+    # linux-x64 builds inside debian:11 (glibc 2.31): a binary linked on
+    # ubuntu-latest inherits a GLIBC_2.34 floor and the shipped
+    # mstream-desktop dies at the dynamic linker — SILENTLY, Terminal=false —
+    # on Debian 11 / Ubuntu 20.04-era distros the bundle otherwise supports
+    # (the same floor build-bun.mjs works around for rust-parser with a
+    # static musl fallback; gtk makes a static launcher impractical, so we
+    # lower the link floor instead). RHEL/Rocky 8 (2.28) stays below the
+    # floor: actions' node20 runtime needs >= 2.28 itself, so bullseye is as
+    # low as a container build goes — install.md documents the floor.
+    container: ${{ matrix.container }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -86,20 +104,25 @@ jobs:
 
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
+            container: debian:11
             binary_name: mstream-launcher-linux-x64
     steps:
+      # Container leg first: the checkout action and rustup both need these,
+      # and a debian container starts bare (root, no sudo — none needed).
+      # zstd keeps actions/cache on its fast path inside the container.
+      - name: Install container build deps
+        if: matrix.container
+        run: |
+          apt-get update
+          apt-get install -y curl ca-certificates git build-essential pkg-config zstd \
+            libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
+
       - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Install Linux build deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
@@ -110,6 +133,21 @@ jobs:
       - name: Build
         working-directory: rust-launcher
         run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # Regression guard for the floor: if this leg ever loses its container
+      # (or the container image moves), fail loudly instead of shipping a
+      # launcher that dies at the dynamic linker on supported distros.
+      - name: Assert glibc floor <= 2.31
+        if: matrix.container
+        run: |
+          bin="rust-launcher/target/${{ matrix.target }}/release/mstream-launcher"
+          max=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -Vu | tail -1)
+          echo "max glibc symbol version: ${max:-none}"
+          worst=$(printf '%s\n2.31\n' "$max" | sort -V | tail -1)
+          if [ -n "$max" ] && [ "$worst" != "2.31" ] && [ "$max" != "2.31" ]; then
+            echo "::error::launcher links GLIBC_$max > 2.31 — the container floor regressed"
+            exit 1
+          fi
 
       - name: Rename binary
         shell: bash

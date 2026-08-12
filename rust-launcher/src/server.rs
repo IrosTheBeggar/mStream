@@ -66,16 +66,54 @@ pub fn stop(proc: &mut ServerProc, grace: Duration) {
     let _ = proc.child.wait();
 }
 
-/// True once something accepts TCP on the port. Identity isn't in question
-/// — the child is OURS — this only answers "is it up yet".
-pub fn wait_listening(port: u16, timeout: Duration) -> bool {
+/// True once the port answers `GET /` with something that identifies as
+/// mStream. The child is ours but the PORT is not: 3000 is contested dev
+/// territory, and a bare TCP connect would "succeed" instantly against a
+/// squatter (React/Grafana/anything) while our child dies on EADDRINUSE
+/// behind it — announcing up would then point the user's browser at a
+/// stranger and mask the real boot failure. The webapp's index page carries
+/// the product name; a foreign 200 won't. (SSL-terminated configs won't
+/// match a plaintext GET — the launcher's whole URL surface is http-only
+/// today, so such a config times out here instead of "succeeding" wrong.)
+pub fn wait_serving(port: u16, timeout: Duration) -> bool {
     let addr: SocketAddr = ([127, 0, 0, 1], port).into();
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok() {
+        if probe_mstream(&addr, port) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(500));
     }
     false
+}
+
+/// One probe round: HTTP GET / and check for a 200 whose payload mentions
+/// mStream (the webapp title appears in the first kilobyte).
+fn probe_mstream(addr: &SocketAddr, port: u16) -> bool {
+    use std::io::{Read, Write};
+    let Ok(mut s) = TcpStream::connect_timeout(addr, Duration::from_millis(500)) else {
+        return false;
+    };
+    let _ = s.set_read_timeout(Some(Duration::from_millis(1500)));
+    let _ = s.set_write_timeout(Some(Duration::from_millis(1500)));
+    let req =
+        format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAccept: text/html\r\nConnection: close\r\n\r\n");
+    if s.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = Vec::with_capacity(8192);
+    let mut chunk = [0u8; 2048];
+    while buf.len() < 16384 {
+        match s.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(_) => break,
+        }
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let status_ok = text
+        .lines()
+        .next()
+        .is_some_and(|l| l.starts_with("HTTP/") && l.contains(" 200"));
+    status_ok && text.contains("mStream")
 }

@@ -84,6 +84,13 @@ jobs:
       # build this leg's launcher here so the bundle and its smokes cover the
       # real product shape. Launcher-less targets (linux-arm64, musl) skip:
       # their bundles ship server-only by design.
+      #
+      # Floor caveat: this fallback links on the leg's own runner, so the
+      # linux-x64 binary it produces carries ubuntu-latest's glibc floor
+      # (2.34+). Fine for PR bundles and their smokes (same runner), but the
+      # SHIPPABLE linux launcher is the committed one from
+      # build-rust-launcher.yml, which builds in a debian:11 container for a
+      # 2.31 floor — don't tag a release while bin/rust-launcher/ is empty.
       - name: Build launcher (if not committed)
         if: matrix.key == 'win-x64' || matrix.key == 'linux-x64' || matrix.key == 'darwin-arm64' || matrix.key == 'darwin-x64'
         shell: bash
