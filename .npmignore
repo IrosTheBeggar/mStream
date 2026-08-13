@@ -24,7 +24,7 @@ save/conf/*
 !save/conf/README.md
 
 save/sync-cdn/*
-!save/conf/README.md
+!save/sync-cdn/README.md
 
 bin/ffmpeg/*
 !bin/ffmpeg/README.md
