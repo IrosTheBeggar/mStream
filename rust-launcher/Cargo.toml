@@ -13,7 +13,13 @@ path = "src/main.rs"
 # cross-platform pump (win32 message loop / NSApplication / gtk). Linux
 # build deps: libgtk-3-dev + libayatana-appindicator3-dev; at runtime a
 # missing StatusNotifier host degrades gracefully (server still runs).
-tray-icon = "0.19"
+# default-features = false drops the `libxdo` feature: it hard-links
+# libxdo.so.3 (xdotool's lib — NOT part of any stock desktop) yet muda only
+# uses it for predefined Copy/Cut/Paste items this menu doesn't have. With
+# it on, the shipped binary died at the dynamic loader on every machine
+# without xdotool installed — caught by the v6.20.0 tag smoke. The
+# remaining hard links are glibc + GTK3 only; CI asserts exactly that set.
+tray-icon = { version = "0.19", default-features = false }
 tao = "0.30"
 # Login-item registration: HKCU Run key (Windows), LaunchAgent plist (macOS,
 # see set_use_launch_agent below — the AppleScript default would tie us to

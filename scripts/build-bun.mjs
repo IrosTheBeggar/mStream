@@ -233,6 +233,11 @@ if (isMac) {
     linuxDesktopEntry(launcherStaged ? 'mstream-desktop' : serverName, launcherStaged));
 }
 
+// Signpost at the bundle root: which binary is the desktop face, which is the
+// headless entry. The launcher is a GTK3 tray app and can't even LOAD on a
+// bare server box, so the box can't explain itself — this file has to.
+writeFileSync(join(stageDir, 'README.txt'), bundleReadme(pkg.version, t, launcherStaged, serverName));
+
 const archivePath = join(root, 'dist', `${bundleName}.zip`);
 rmSync(archivePath, { force: true });
 console.log(`Bundling -> dist/${bundleName}.zip`);
@@ -340,6 +345,49 @@ Icon=%INSTALL_DIR%/mStream.png
 Terminal=${isLauncher ? 'false' : 'true'}
 Categories=AudioVideo;Audio;Network;
 `;
+}
+
+// The bundle-root README.txt. Kept to one screen: it exists to answer exactly
+// one question — "which of these two binaries do I run?" — for the person who
+// just extracted the zip, especially on a headless box where the launcher
+// fails at the dynamic loader before it can say anything.
+function bundleReadme(version, t, launcherStaged, serverName) {
+  const osName = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[t.plat];
+  const dataDir = { win32: '%LOCALAPPDATA%\\mStream', darwin: '~/Library/Application Support/mStream', linux: '~/.local/share/mstream' }[t.plat];
+  const server = t.plat === 'darwin' ? `mStream.app/Contents/MacOS/${serverName}` : serverName;
+  const run = t.plat === 'win32' ? '' : './';
+  const lines = [`mStream ${version}  (${osName} ${t.arch}${t.musl ? ', static musl build' : ''})`, ''];
+  if (launcherStaged) {
+    const face = { win32: 'mStream.exe', darwin: 'open mStream.app', linux: './mstream-desktop' }[t.plat];
+    lines.push(
+      `Desktop:   ${face}`,
+      '           Runs the server in the background with a tray icon and opens',
+      '           the web app. Also works from a terminal (output stays attached).',
+      t.plat === 'linux'
+        ? '           Needs a graphical session with GTK3 (any stock desktop has it).'
+        : null,
+      '',
+      `Headless:  ${run}${server}`,
+      '           The server alone - no tray, no GUI libraries needed. Use this',
+      `           over SSH, in containers, and as a service (${t.plat === 'win32' ? 'NSSM, sc.exe' : t.plat === 'darwin' ? 'launchd' : 'systemd'}).`,
+    );
+  } else {
+    lines.push(
+      `This bundle is server-only (no desktop launcher for this target):`,
+      `           ${run}${server}`,
+      t.musl
+        ? '           Fully static - runs on any Linux, including Alpine and NAS systems.'
+        : null,
+    );
+  }
+  lines.push(
+    '',
+    `The web app serves on http://localhost:3000 - set up your library there.`,
+    `Data lives in ${dataDir}; pass --portable to keep it next to the binaries.`,
+    '',
+    `Docs: https://mstream.io        More flags: ${run}${server} --help`,
+  );
+  return lines.filter((l) => l !== null).join('\n') + '\n';
 }
 
 // NAPI-RS target triple for @number0/iroh's platform package / .node filename
