@@ -65,7 +65,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
+          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
@@ -125,7 +125,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y curl ca-certificates git build-essential pkg-config zstd \
-            libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
+            libgtk-3-dev libayatana-appindicator3-dev
 
       - uses: actions/checkout@v6
 
@@ -156,6 +156,36 @@ jobs:
           worst=$(printf '%s\n2.31\n' "$max" | sort -V | tail -1)
           if [ -n "$max" ] && [ "$worst" != "2.31" ] && [ "$max" != "2.31" ]; then
             echo "::error::launcher links GLIBC_$max > 2.31 — the container floor regressed"
+            exit 1
+          fi
+
+      # The launcher must stay runnable on a STOCK desktop install: its only
+      # acceptable hard runtime deps are glibc and GTK3 (universal on desktop
+      # distros). Any other NEEDED entry means a dependency grew a link-time
+      # requirement most user machines won't satisfy — exactly how tray-icon's
+      # default `libxdo` feature shipped a launcher that died at the dynamic
+      # loader (libxdo.so.3 is xdotool's lib), caught only by the v6.20.0 tag
+      # smoke. The appindicator lib is deliberately NOT allowlisted: tray-icon
+      # dlopens it at runtime, where a miss degrades to "tray unavailable"
+      # instead of a binary that won't start — the shape we want new deps to
+      # take. This can't run on the PR leg (no linux binary is built there),
+      # so it guards the shipped artifact, the one that matters.
+      - name: Assert NEEDED libs are glibc + GTK3 only
+        if: matrix.container
+        run: |
+          bin="rust-launcher/target/${{ matrix.target }}/release/mstream-launcher"
+          objdump -p "$bin" | awk '/NEEDED/{print "  NEEDED", $2}'
+          bad=""
+          for so in $(objdump -p "$bin" | awk '/NEEDED/{print $2}'); do
+            case "$so" in
+              libgtk-3.so.*|libgdk-3.so.*|libgdk_pixbuf-2.0.so.*|libcairo.so.*) ;;
+              libglib-2.0.so.*|libgobject-2.0.so.*|libgio-2.0.so.*) ;;
+              libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|libgcc_s.so.*) ;;
+              *) bad="$bad $so" ;;
+            esac
+          done
+          if [ -n "$bad" ]; then
+            echo "::error::launcher hard-links non-stock libs:$bad — make the dep dlopen (like appindicator) or drop the feature that links it"
             exit 1
           fi
 

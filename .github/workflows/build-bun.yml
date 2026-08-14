@@ -149,7 +149,7 @@ jobs:
 
           echo "building $NAME ($TARGET)"
           if [ "${{ runner.os }}" = "Linux" ]; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
+            sudo apt-get update -qq && sudo apt-get install -y -qq libgtk-3-dev libayatana-appindicator3-dev
           fi
           rustup target add "$TARGET"
           cargo build --release --locked --target "$TARGET" --manifest-path rust-launcher/Cargo.toml
