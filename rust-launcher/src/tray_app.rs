@@ -213,18 +213,33 @@ pub fn run(args: LauncherArgs) -> ! {
                 let _ = menu.append(&quit_item);
                 autostart_item = Some(auto_item);
 
-                match TrayIconBuilder::new()
-                    .with_tooltip("mStream Server")
-                    .with_menu(Box::new(menu))
-                    .with_icon(load_icon())
-                    .build()
-                {
-                    Ok(t) => tray = Some(t),
-                    Err(e) => {
-                        // No tray host (minimal desktops, headless-ish
-                        // sessions). The server is still running and
-                        // reachable; say so once and keep serving.
+                // catch_unwind because "no tray" arrives two ways: as a
+                // build Err (no StatusNotifier host), but ALSO as a PANIC —
+                // libappindicator-sys dlopens libayatana-appindicator3 at
+                // first use and panic!()s when no variant is installed
+                // (stock Fedora/Arch desktops without an appindicator
+                // package), which would take down the whole launcher here.
+                // Both fold into the same degrade: server keeps serving.
+                let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    TrayIconBuilder::new()
+                        .with_tooltip("mStream Server")
+                        .with_menu(Box::new(menu))
+                        .with_icon(load_icon())
+                        .build()
+                }));
+                match built {
+                    Ok(Ok(t)) => tray = Some(t),
+                    Ok(Err(e)) => {
                         log.line(&format!("tray unavailable ({e}) - server continues without it"));
+                    }
+                    Err(p) => {
+                        let msg = p
+                            .downcast_ref::<String>()
+                            .map(|s| s.as_str())
+                            .or_else(|| p.downcast_ref::<&str>().copied())
+                            .unwrap_or("panic in the tray library")
+                            .replace('\n', " / ");
+                        log.line(&format!("tray unavailable ({msg}) - server continues without it"));
                     }
                 }
             }
