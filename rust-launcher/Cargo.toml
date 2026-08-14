@@ -39,6 +39,10 @@ serde_json = "1"
 png = "0.17"
 
 [target.'cfg(windows)'.dependencies]
+# Pre-create the HKCU Run key before auto-launch touches it: auto-launch 0.5
+# only ever OPENS it and errors on fresh profiles where it doesn't exist yet.
+# Same winreg version auto-launch itself compiles — no second copy.
+winreg = "0.10"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_System_Console",
