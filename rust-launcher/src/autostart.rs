@@ -46,14 +46,23 @@ pub fn set_enabled(on: bool) -> Result<(), String> {
     r.map_err(|e| e.to_string())
 }
 
-// auto-launch writes a file into a per-user dir it does NOT create:
-// ~/.config/autostart on Linux, ~/Library/LaunchAgents on macOS. Real
-// desktop sessions always have them, but fresh or minimal accounts may
-// not — surfaced by the Docker smoke, where enable() failed with ENOENT
-// in a bare-$HOME container. Windows registers via the registry; nothing
-// to create there. Best-effort: a failure here just re-surfaces in
-// enable()'s own error.
+// auto-launch writes into a per-user CONTAINER it does NOT create:
+// ~/.config/autostart on Linux, ~/Library/LaunchAgents on macOS, and the
+// HKCU Run key on Windows (enable/disable/is_enabled all use
+// open_subkey_with_flags — open, never create). Real lived-in accounts
+// always have them, but fresh or minimal profiles may not — the Linux gap
+// surfaced as ENOENT in a bare-$HOME Docker smoke, the Windows one as
+// `os error 2` on a fresh CI runner image at the v6.20.0 tag build.
+// Best-effort: a failure here just re-surfaces in enable()'s own error.
 fn ensure_autostart_parent_dir() {
+    #[cfg(windows)]
+    {
+        // create_subkey is open-or-create; plain HKCU write access, no
+        // elevation. Same key path auto-launch 0.5 hardcodes (AL_REGKEY).
+        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+        let _ = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run");
+    }
     #[cfg(target_os = "macos")]
     {
         let _ = std::fs::create_dir_all(
