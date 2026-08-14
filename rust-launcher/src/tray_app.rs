@@ -77,7 +77,7 @@ pub fn run(args: LauncherArgs) -> ! {
     if !lock.try_lock().unwrap_or(false) {
         log.line("another launcher instance holds the lock - focusing it and exiting");
         if !args.autostarted && !args.no_open {
-            let _ = open::that_detached(paths::server_url(&ep));
+            let _ = open::that_detached(paths::browse_target(&config, &ep));
         }
         std::process::exit(0);
     }
@@ -183,6 +183,11 @@ pub fn run(args: LauncherArgs) -> ! {
     let announce = !args.autostarted && !args.no_open;
     let shared_loop = shared.clone();
     let server_log_loop = server_log.clone();
+    // For launcher-initiated opens inside the loop (announce, macOS reopen):
+    // re-read the config each time so the destination tracks the library —
+    // admin panel while no folders exist (a fresh install's player is a dead
+    // end), the player once music is configured.
+    let config_loop = config.clone();
 
     event_loop.run(move |event, _target, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -290,9 +295,15 @@ pub fn run(args: LauncherArgs) -> ! {
                         if let Some(t) = &tray {
                             let _ = t.set_tooltip(Some(format!("mStream Server - {url}")));
                         }
+                        // Logged unconditionally (even under --no-open) so
+                        // smokes and support can see the routing decision.
+                        let target = paths::browse_target(&config_loop, &ep);
+                        if target.ends_with("/admin") {
+                            log.line("no music folders configured yet - browser target is the admin panel");
+                        }
                         if announce && !opened {
                             opened = true;
-                            let _ = open::that_detached(url.clone());
+                            let _ = open::that_detached(target);
                         }
                     }
                 }
@@ -322,7 +333,7 @@ pub fn run(args: LauncherArgs) -> ! {
             Event::Reopen { .. } => {
                 log.line("reopen event - opening browser");
                 if !args.no_open {
-                    let _ = open::that_detached(url.clone());
+                    let _ = open::that_detached(paths::browse_target(&config_loop, &ep));
                 }
             }
             Event::LoopDestroyed => {

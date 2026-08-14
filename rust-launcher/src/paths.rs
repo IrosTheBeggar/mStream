@@ -182,6 +182,31 @@ pub fn server_url(ep: &Endpoint) -> String {
     }
 }
 
+/// Whether the config declares any music folders. Unreadable or absent
+/// config counts as unconfigured — on a true first run the file appears
+/// mid-boot, and the right answer is the same either way.
+pub fn library_is_configured(config: &Path) -> bool {
+    std::fs::read_to_string(config)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("folders").and_then(|f| f.as_object().map(|o| !o.is_empty())))
+        .unwrap_or(false)
+}
+
+/// Where a launcher-initiated browser open should land (the announce after
+/// boot, a second instance yielding, a macOS reopen): the player when there
+/// is music, the ADMIN PANEL when the library has no folders yet — a fresh
+/// install's player is a dead end, and the admin panel is where folders get
+/// added. The tray's explicit "Open mStream" item stays literal (always the
+/// player) so the menu does what it says.
+pub fn browse_target(config: &Path, ep: &Endpoint) -> String {
+    if library_is_configured(config) {
+        server_url(ep)
+    } else {
+        format!("{}/admin", server_url(ep))
+    }
+}
+
 /// Locate the server binary: explicit override (--server-bin /
 /// MSTREAM_SERVER_BIN), else the `mstream-server` sibling the bundles stage
 /// next to the launcher (phase 1c renames the shipped binaries to this).
@@ -282,6 +307,36 @@ mod tests {
         let got = resolve_config_path(&[], &dir);
         assert_eq!(got, conf.join("default.json"), "existing save/ next to the SERVER wins");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn library_configured_detection() {
+        let dir = env::temp_dir();
+        let f = |name: &str, body: &str| {
+            let p = dir.join(format!("mstream-lib-{}-{}.json", std::process::id(), name));
+            std::fs::write(&p, body).unwrap();
+            p
+        };
+        assert!(!library_is_configured(Path::new("/definitely/not/there.json")), "absent config = unconfigured");
+        let empty = f("empty", "{}");
+        assert!(!library_is_configured(&empty), "no folders key = unconfigured");
+        let bare = f("bare", r#"{"folders":{}}"#);
+        assert!(!library_is_configured(&bare), "empty folders object = unconfigured");
+        let garbage = f("garbage", r#"{"folders":"nope"}"#);
+        assert!(!library_is_configured(&garbage), "non-object folders = unconfigured");
+        let real = f("real", r#"{"folders":{"music":{"root":"/m"}}}"#);
+        assert!(library_is_configured(&real));
+        for p in [empty, bare, garbage, real] { let _ = std::fs::remove_file(p); }
+    }
+
+    #[test]
+    fn browse_target_lands_on_admin_until_folders_exist() {
+        let ep = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOCALHOST), port: 3000 };
+        assert_eq!(browse_target(Path::new("/nope.json"), &ep), "http://localhost:3000/admin");
+        let p = env::temp_dir().join(format!("mstream-bt-{}.json", std::process::id()));
+        std::fs::write(&p, r#"{"folders":{"music":{"root":"/m"}}}"#).unwrap();
+        assert_eq!(browse_target(&p, &ep), "http://localhost:3000");
+        let _ = std::fs::remove_file(p);
     }
 
     #[test]
