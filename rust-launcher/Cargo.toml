@@ -39,6 +39,16 @@ windows-sys = { version = "0.59", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 
+[build-dependencies]
+# Exe icon + VersionInfo (see build.rs). winresource is the maintained fork
+# of winres; serde_json reads the repo package.json so the version string
+# can't drift from the release. Unconditional (not cfg(windows)-gated):
+# build.rs keys the work off CARGO_CFG_TARGET_OS at runtime so CROSS-builds
+# for windows embed resources too — a cfg gate here would ask about the
+# HOST instead. Both crates compile fine on every host.
+winresource = "0.1"
+serde_json = "1"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

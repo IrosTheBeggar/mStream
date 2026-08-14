@@ -9,7 +9,7 @@
 // a restart) from reporting the new child's state.
 use crate::{autostart, paths, platform, server, LauncherArgs};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -41,6 +41,24 @@ pub fn run(args: LauncherArgs) -> ! {
     let log_path = logs_dir.join("launcher.log");
     let log = Logger(log_path);
 
+    // ── Locate the server binary FIRST: the config ladder's legacy/portable
+    // rung anchors at the SERVER binary's directory (the server resolves
+    // appRoot = dirname(process.execPath), src/util/boot-config.js), which
+    // equals our own exe_dir only in the shipped sibling layout —
+    // --server-bin/MSTREAM_SERVER_BIN break that on purpose, and anchoring
+    // at the launcher would make the two sides resolve different configs.
+    let bin = match paths::find_server_bin(args.server_bin.as_deref()) {
+        Ok(b) => paths::absolutize(b),
+        Err(e) => {
+            log.line(&e);
+            platform::fatal_alert(&format!("mStream could not start: {e}"));
+            std::process::exit(1);
+        }
+    };
+    let server_dir = bin.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let config = paths::resolve_config_path(&args.server_args, &server_dir);
+    let ep = paths::read_endpoint(&config);
+
     // ── Single instance: the lock lives in the data home, so two launchers
     // managing the same data/port exclude each other (two --portable
     // launchers in different folders are genuinely different servers and
@@ -56,14 +74,32 @@ pub fn run(args: LauncherArgs) -> ! {
             std::process::exit(1);
         }
     };
-    let config = paths::resolve_config_path(&args.server_args);
-    let port = paths::read_port(&config);
     if !lock.try_lock().unwrap_or(false) {
         log.line("another launcher instance holds the lock - focusing it and exiting");
         if !args.autostarted && !args.no_open {
-            let _ = open::that_detached(paths::server_url(port));
+            let _ = open::that_detached(paths::browse_target(&config, &ep));
         }
         std::process::exit(0);
+    }
+
+    // ── Headless Linux (ssh without -t, cron, a misused systemd unit):
+    // tao's event-loop build would die inside gtk's initializer with a raw
+    // panic — before any of our diagnostics, and with nothing in the log.
+    // Fail it ourselves instead, logged and explained. (xvfb and real
+    // sessions both set DISPLAY/WAYLAND_DISPLAY; headless boxes run
+    // mstream-server directly, as install.md says.)
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let has_display = ["DISPLAY", "WAYLAND_DISPLAY"]
+            .iter()
+            .any(|v| std::env::var_os(v).is_some_and(|s| !s.is_empty()));
+        if !has_display {
+            log.line("no DISPLAY/WAYLAND_DISPLAY - the desktop face needs a graphical session");
+            platform::fatal_alert(
+                "mstream-desktop needs a graphical session (no DISPLAY or WAYLAND_DISPLAY is set).\nOn a headless machine, run mstream-server instead.",
+            );
+            std::process::exit(1);
+        }
     }
 
     // ── Autostart default (on) — configured once, then the user's choice
@@ -72,26 +108,38 @@ pub fn run(args: LauncherArgs) -> ! {
         autostart::ensure_default_on();
     }
 
-    // ── Spawn the server.
-    let bin = match paths::find_server_bin(args.server_bin.as_deref()) {
-        Ok(b) => b,
-        Err(e) => {
-            log.line(&e);
-            platform::fatal_alert(&format!("mStream could not start: {e}"));
-            std::process::exit(1);
-        }
-    };
+    // ── Bounded logs. An always-on login item appends forever, and the
+    // server-console capture (full stdout+stderr: request logs, scan
+    // progress) has no other ceiling — a year of daily sessions quietly
+    // accretes hundreds of MB. Policy: server-console.log starts fresh
+    // every launcher session (previous session kept as .1 for diagnosis;
+    // in-session Restart keeps appending so evidence survives a crash
+    // loop); launcher.log is a low-volume narrative, rotated only past a
+    // size cap. Rotation MUST sit after the lock is won — a losing second
+    // instance passing through here must not rotate the live instance's
+    // logs out from under it.
     let server_log = logs_dir.join("server-console.log");
+    rotate_log(&log.0, Some(512 * 1024));
+    rotate_log(&server_log, None);
+
+    // ── Spawn the server.
     let shared = Arc::new(Shared {
         proc: Mutex::new(None),
         generation: AtomicU64::new(0),
         quitting: AtomicBool::new(false),
     });
+    // Same "port N" text as always (smokes grep this log); the address only
+    // appears when the config pins one — the interesting case for support.
+    let addr_note = if ep.ip.is_loopback() {
+        String::new()
+    } else {
+        format!(", address {}", ep.ip)
+    };
     log.line(&format!(
-        "starting server: {} (config {}, port {})",
+        "starting server: {} (config {}, port {}{addr_note})",
         bin.display(),
         config.display(),
-        port
+        ep.port
     ));
 
     // ── Event loop + tray.
@@ -114,7 +162,7 @@ pub fn run(args: LauncherArgs) -> ! {
         }));
     }
 
-    match spawn_generation(&shared, &bin, &args.server_args, &server_log, port, &proxy, &log) {
+    match spawn_generation(&shared, &bin, &args.server_args, &server_log, ep, &proxy, &log) {
         Ok(()) => {}
         Err(e) => {
             log.line(&format!("server failed to spawn: {e}"));
@@ -131,10 +179,15 @@ pub fn run(args: LauncherArgs) -> ! {
     let mut autostart_item: Option<CheckMenuItem> = None;
     let mut ever_up = false;
     let mut opened = false;
-    let url = paths::server_url(port);
+    let url = paths::server_url(&ep);
     let announce = !args.autostarted && !args.no_open;
     let shared_loop = shared.clone();
     let server_log_loop = server_log.clone();
+    // For launcher-initiated opens inside the loop (announce, macOS reopen):
+    // re-read the config each time so the destination tracks the library —
+    // admin panel while no folders exist (a fresh install's player is a dead
+    // end), the player once music is configured.
+    let config_loop = config.clone();
 
     event_loop.run(move |event, _target, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -206,7 +259,7 @@ pub fn run(args: LauncherArgs) -> ! {
                             &bin,
                             &args.server_args,
                             &server_log_loop,
-                            port,
+                            ep,
                             &proxy,
                             &log,
                         ) {
@@ -224,15 +277,33 @@ pub fn run(args: LauncherArgs) -> ! {
                     _ => {}
                 },
                 AppEvent::ServerUp(generation) => {
-                    if generation == shared_loop.generation.load(Ordering::SeqCst) {
+                    // The probe proved SOMETHING on the port speaks mStream —
+                    // make sure it's OUR child and not a foreign instance the
+                    // port was lost to (child already dead on EADDRINUSE).
+                    // Announcing then would set ever_up and mask the boot
+                    // failure the ServerExited path is about to dialog.
+                    let child_alive = shared_loop
+                        .proc
+                        .lock()
+                        .unwrap()
+                        .as_mut()
+                        .map(|p| matches!(p.child.try_wait(), Ok(None)))
+                        .unwrap_or(false);
+                    if child_alive && generation == shared_loop.generation.load(Ordering::SeqCst) {
                         ever_up = true;
                         log.line("server is up");
                         if let Some(t) = &tray {
                             let _ = t.set_tooltip(Some(format!("mStream Server - {url}")));
                         }
+                        // Logged unconditionally (even under --no-open) so
+                        // smokes and support can see the routing decision.
+                        let target = paths::browse_target(&config_loop, &ep);
+                        if target.ends_with("/admin") {
+                            log.line("no music folders configured yet - browser target is the admin panel");
+                        }
                         if announce && !opened {
                             opened = true;
-                            let _ = open::that_detached(url.clone());
+                            let _ = open::that_detached(target);
                         }
                     }
                 }
@@ -254,6 +325,17 @@ pub fn run(args: LauncherArgs) -> ! {
                     }
                 }
             },
+            // macOS: re-clicking the running .app arrives as a reopen
+            // AppleEvent (applicationShouldHandleReopen), never as a second
+            // process — the single-instance lock never sees it, and the
+            // menu-bar icon is easy to miss. Treat a re-click as "take me to
+            // mStream". (Other platforms never emit this event.)
+            Event::Reopen { .. } => {
+                log.line("reopen event - opening browser");
+                if !args.no_open {
+                    let _ = open::that_detached(paths::browse_target(&config_loop, &ep));
+                }
+            }
             Event::LoopDestroyed => {
                 // Belt to Quit's suspenders: whatever ends the loop, never
                 // leave the child running unsupervised.
@@ -270,7 +352,7 @@ fn spawn_generation(
     bin: &Path,
     server_args: &[String],
     server_log: &Path,
-    port: u16,
+    ep: paths::Endpoint,
     proxy: &tao::event_loop::EventLoopProxy<AppEvent>,
     log: &Logger,
 ) -> Result<(), String> {
@@ -279,11 +361,12 @@ fn spawn_generation(
     *shared.proc.lock().unwrap() = Some(proc);
     log.line(&format!("server generation {generation} spawned"));
 
-    // Health prober: TCP-connect until the port answers, then report up.
+    // Health prober: poll until the endpoint answers as mStream (an identity
+    // probe, not a bare connect — see wait_serving), then report up.
     {
         let proxy = proxy.clone();
         std::thread::spawn(move || {
-            if server::wait_listening(port, BOOT_TIMEOUT) {
+            if server::wait_serving(ep, BOOT_TIMEOUT) {
                 let _ = proxy.send_event(AppEvent::ServerUp(generation));
             }
         });
@@ -318,6 +401,23 @@ fn spawn_generation(
         });
     }
     Ok(())
+}
+
+/// Move `path` aside to `path.1` (replacing any previous `.1`). With a cap,
+/// only when the file has outgrown it; with None, whenever it exists. Rename
+/// is atomic-enough and never blocks on a reader; all failures are ignored —
+/// log hygiene must never be the reason the launcher dies.
+fn rotate_log(path: &Path, keep_if_under: Option<u64>) {
+    let rotate = match (keep_if_under, std::fs::metadata(path)) {
+        (_, Err(_)) => false,
+        (None, Ok(_)) => true,
+        (Some(cap), Ok(m)) => m.len() > cap,
+    };
+    if rotate {
+        let mut rotated = path.as_os_str().to_owned();
+        rotated.push(".1");
+        let _ = std::fs::rename(path, PathBuf::from(rotated));
+    }
 }
 
 fn stop_current(shared: &Arc<Shared>) {

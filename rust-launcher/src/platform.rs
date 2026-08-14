@@ -49,19 +49,38 @@ pub fn run_console_passthrough(args: &LauncherArgs) {
     {
         use std::fs::File;
         use std::process::{Command, Stdio};
-        use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+        use windows_sys::Win32::System::Console::{
+            SetConsoleCtrlHandler, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
 
-        // Our own std handles are still the detached ones from the GUI
-        // subsystem; hand the child the REAL console devices instead.
-        let conin = File::options().read(true).write(true).open("CONIN$").ok();
-        let conout = File::options().read(true).write(true).open("CONOUT$").ok();
-        let conerr = conout.as_ref().and_then(|f| f.try_clone().ok());
-
+        // Std handles come in two shapes here (same rules console_out relies
+        // on): NULL when a GUI-subsystem exe was launched bare from a console
+        // — bind those to the real console devices so the pass-through has a
+        // face — but REAL when the caller redirected or piped them
+        // (`mStream.exe -h > out.txt`, `... | findstr`). A real handle must
+        // be INHERITED, not rebound: forcing CONOUT$ over a redirect sends
+        // the server's output to the visible console and leaves the
+        // caller's file/pipe empty, silently breaking the "same flags, same
+        // output, same exit code" promise install.md makes for the terminal
+        // face. (Command's default stdio is inherit, so "real" needs no arm.)
         let mut cmd = Command::new(&bin);
         cmd.args(&args.server_args);
-        if let Some(f) = conin { cmd.stdin(Stdio::from(f)); }
-        if let Some(f) = conout { cmd.stdout(Stdio::from(f)); }
-        if let Some(f) = conerr { cmd.stderr(Stdio::from(f)); }
+        if !std_handle_is_real(STD_INPUT_HANDLE) {
+            if let Ok(f) = File::options().read(true).write(true).open("CONIN$") {
+                cmd.stdin(Stdio::from(f));
+            }
+        }
+        let conout = || File::options().read(true).write(true).open("CONOUT$").ok();
+        if !std_handle_is_real(STD_OUTPUT_HANDLE) {
+            if let Some(f) = conout() {
+                cmd.stdout(Stdio::from(f));
+            }
+        }
+        if !std_handle_is_real(STD_ERROR_HANDLE) {
+            if let Some(f) = conout() {
+                cmd.stderr(Stdio::from(f));
+            }
+        }
 
         match cmd.spawn() {
             Ok(mut child) => {
@@ -82,34 +101,54 @@ pub fn run_console_passthrough(args: &LauncherArgs) {
 
 /// RESULT output for the scriptable CLI surface (--autostart=status and
 /// friends): stdout on unix so pipes and `grep` see it — the Docker smoke
-/// caught status answering on stderr — and the real console device on
-/// Windows, where a windows-subsystem exe's own stdout handle is detached
-/// even after AttachConsole (piping there is a pre-existing GUI-subsystem
-/// limitation; the visible console is the best available contract).
+/// caught status answering on stderr. On Windows a GUI-subsystem exe's std
+/// handles are NULL when launched bare (Explorer, or cmd without
+/// redirection), but REAL when the parent redirected them — pipes, `$()`
+/// command substitution, `> file`. The CI self-test captures stdout exactly
+/// that way (and bash on the runners always has a hidden console, so
+/// AttachConsole succeeding says nothing about where stdout points). Honor a
+/// real handle first — println! reaches the caller — and only a detached
+/// stdout falls back to the attached console device.
 pub fn console_out(msg: &str) {
     #[cfg(windows)]
     {
         use std::io::Write;
-        if let Ok(mut f) = std::fs::File::options().write(true).open("CONOUT$") {
-            let _ = writeln!(f, "{msg}");
-            return;
+        use windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE;
+        if !std_handle_is_real(STD_OUTPUT_HANDLE) {
+            if let Ok(mut f) = std::fs::File::options().write(true).open("CONOUT$") {
+                let _ = writeln!(f, "{msg}");
+                return;
+            }
         }
     }
     println!("{msg}");
 }
 
-/// Write a line to the attached console (Windows GUI subsystem can't just
-/// eprintln — the std handles are detached; CONOUT$ is the real device).
+/// Write a line to stderr, or the attached console when stderr is detached
+/// (Windows GUI subsystem: same handle rules as console_out above).
 pub fn console_err(msg: &str) {
     #[cfg(windows)]
     {
         use std::io::Write;
-        if let Ok(mut f) = std::fs::File::options().write(true).open("CONOUT$") {
-            let _ = writeln!(f, "{msg}");
-            return;
+        use windows_sys::Win32::System::Console::STD_ERROR_HANDLE;
+        if !std_handle_is_real(STD_ERROR_HANDLE) {
+            if let Ok(mut f) = std::fs::File::options().write(true).open("CONOUT$") {
+                let _ = writeln!(f, "{msg}");
+                return;
+            }
         }
     }
     eprintln!("{msg}");
+}
+
+/// Whether the given std handle points at something a parent process gave us
+/// (pipe, file, or console handle) rather than the GUI-subsystem NULL.
+#[cfg(windows)]
+fn std_handle_is_real(which: windows_sys::Win32::System::Console::STD_HANDLE) -> bool {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Console::GetStdHandle;
+    let h = unsafe { GetStdHandle(which) };
+    !h.is_null() && h != INVALID_HANDLE_VALUE
 }
 
 /// Fatal error with a visible face on a GUI launch: message box on Windows,

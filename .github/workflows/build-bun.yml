@@ -18,6 +18,10 @@ on:
       - 'scripts/build-bun.mjs'
       - 'package.json'
       - '.github/workflows/build-bun.yml'
+      # Launcher source changes must run the integrated bundle smokes BEFORE
+      # merge (the launcher step below builds them fresh for such PRs) — the
+      # binary-commit workflow's own gate is only compile + --autostart=status.
+      - 'rust-launcher/**'
   workflow_dispatch:
 
 jobs:
@@ -77,6 +81,84 @@ jobs:
           "BUN_COMPILE_EXEC_PATH=$exe" | Add-Content -Path $env:GITHUB_ENV
           Write-Host "runtime: $exe"
 
+      # Desktop tray launcher: the bundler stages bin/rust-launcher/<name> as
+      # the bundle's double-click face (mStream.exe / .app executable /
+      # mstream-desktop). Those binaries are CI-committed on master pushes
+      # (build-rust-launcher.yml); on PRs — and before the first commit lands —
+      # build this leg's launcher here so the bundle and its smokes cover the
+      # real product shape. Launcher-less targets (linux-arm64, musl) skip:
+      # their bundles ship server-only by design.
+      #
+      # Floor caveat: this fallback links on the leg's own runner, so the
+      # linux-x64 binary it produces carries ubuntu-latest's glibc floor
+      # (2.34+). Fine for PR bundles and their smokes (same runner), but the
+      # SHIPPABLE linux launcher is the committed one from
+      # build-rust-launcher.yml, which builds in a debian:11 container for a
+      # 2.31 floor — don't tag a release while bin/rust-launcher/ is empty.
+      - name: Build launcher (if not committed / stale for this PR / assert provenance on tags)
+        if: matrix.key == 'win-x64' || matrix.key == 'linux-x64' || matrix.key == 'darwin-arm64' || matrix.key == 'darwin-x64'
+        shell: bash
+        run: |
+          set -e
+          case "${{ matrix.key }}" in
+            win-x64)      NAME=mstream-launcher-win32-x64.exe; TARGET=x86_64-pc-windows-msvc ;;
+            linux-x64)    NAME=mstream-launcher-linux-x64;     TARGET=x86_64-unknown-linux-gnu ;;
+            darwin-arm64) NAME=mstream-launcher-darwin-arm64;  TARGET=aarch64-apple-darwin ;;
+            darwin-x64)   NAME=mstream-launcher-darwin-x64;    TARGET=x86_64-apple-darwin ;;
+          esac
+
+          # Tag builds ship the COMMITTED binaries (the linux one carries the
+          # debian:11 glibc floor an in-job rebuild here couldn't reproduce),
+          # so a tag must prove those binaries match its own launcher source.
+          # The stamp is written by build-rust-launcher's commit job; a tag
+          # cut inside the rebuild window — or before the stamp ever landed —
+          # fails here instead of shipping a stale launcher green.
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            WANT=$(git rev-parse HEAD:rust-launcher)
+            if [ ! -f bin/rust-launcher/.source-tree ]; then
+              echo "::error::no launcher provenance stamp (bin/rust-launcher/.source-tree) — wait for build-rust-launcher's commit on master, then re-tag"
+              exit 1
+            fi
+            HAVE=$(cat bin/rust-launcher/.source-tree)
+            if [ "$WANT" != "$HAVE" ]; then
+              echo "::error::committed launcher binaries were built from rust-launcher tree $HAVE but this tag's tree is $WANT — wait for build-rust-launcher's commit (or re-run it), then re-tag"
+              exit 1
+            fi
+            echo "launcher provenance ok: $WANT"
+          fi
+
+          REBUILD=0
+          if [ ! -f "bin/rust-launcher/$NAME" ]; then
+            REBUILD=1; echo "no committed launcher"
+          fi
+          # A PR that touches rust-launcher/ must smoke ITS OWN launcher —
+          # the committed binary predates the PR by definition. Diff against
+          # the PR base; an undiffable base forces the rebuild (fail-safe:
+          # over-building costs minutes, a stale binary voids the smoke).
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "$REBUILD" = "0" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            if git fetch -q --depth=1 origin "$BASE" && CHANGED=$(git diff --name-only "$BASE" HEAD -- rust-launcher/); then
+              if [ -n "$CHANGED" ]; then
+                REBUILD=1; echo "PR modifies rust-launcher/ — building fresh (committed binary would be stale for this smoke)"
+              fi
+            else
+              REBUILD=1; echo "could not diff against PR base — building fresh to be safe"
+            fi
+          fi
+          if [ "$REBUILD" = "0" ]; then echo "committed launcher present: $NAME"; exit 0; fi
+
+          echo "building $NAME ($TARGET)"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
+          fi
+          rustup target add "$TARGET"
+          cargo build --release --locked --target "$TARGET" --manifest-path rust-launcher/Cargo.toml
+          SRC="rust-launcher/target/$TARGET/release/mstream-launcher"
+          if [ "${{ runner.os }}" = "Windows" ]; then SRC="$SRC.exe"; fi
+          mkdir -p bin/rust-launcher
+          cp "$SRC" "bin/rust-launcher/$NAME"
+          echo "built: bin/rust-launcher/$NAME"
+
       - name: Build + bundle (${{ matrix.key }})
         run: bun scripts/build-bun.mjs --target=${{ matrix.key }} --bundle
 
@@ -86,7 +168,10 @@ jobs:
         run: |
           set +e   # exit codes are checked explicitly; don't abort on a probe miss
           D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
-          if [ -d "$D/mStream.app" ]; then BIN="$D/mStream.app/Contents/MacOS/mStream"; elif [ -f "$D/mStream.exe" ]; then BIN="$D/mStream.exe"; else BIN="$D/mStream-${{ matrix.key }}"; fi
+          # The SERVER is mstream-server in every bundle (1c rename); the
+          # user-facing mStream.exe / .app executable is the tray launcher,
+          # which has its own smoke step below.
+          if [ -d "$D/mStream.app" ]; then BIN="$D/mStream.app/Contents/MacOS/mstream-server"; elif [ -f "$D/mstream-server.exe" ]; then BIN="$D/mstream-server.exe"; else BIN="$D/mstream-server"; fi
           RUN=$(dirname "$BIN")
           echo "smoke binary: $BIN"
 
@@ -242,124 +327,164 @@ jobs:
           if [ "$CONCURRENT_OK" != "1" ]; then echo "FAIL: server did not survive two overlapping reboots"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; fi
           echo "SMOKE OK: $BIN booted, served 200, completed a scan, and survived both a soft reboot and overlapping reboots"
 
-      - name: Smoke test macOS app-launch flow (detach + serve)
-        # The .app double-click path (src/util/mac-app-launch.js) is gated on
-        # __CFBundleIdentifier, which nothing in CI sets — so the headline flow
-        # of the desktop fix had zero coverage, and LSUIElement means a
-        # regression is INVISIBLE to users (no Dock icon, no window, no console).
-        # Setting the marker by hand reproduces a LaunchServices launch closely
-        # enough to prove the two compiled-binary-only behaviors: the argv slice
-        # in detachForFinderLaunch (whose shape exists only in a Bun standalone)
-        # and the detached hand-off. announceReady's browser spawn is
-        # stdio-ignored and detached, so it's harmless on a runner.
-        if: matrix.key == 'darwin-arm64'
+      - name: Smoke test desktop launcher (spawn + supervise + no-orphan)
+        # The launcher IS the bundle's double-click face now. Prove the
+        # integrated shape on each native leg: launcher finds its
+        # mstream-server sibling, spawns it --supervised, the server serves,
+        # and a hard-killed launcher takes the server down through the
+        # supervision pipe (the no-orphan property the whole design rests on).
+        # Tray construction is environment-dependent on runners (no
+        # StatusNotifier host on linux, CI sessions vary) — the launcher
+        # degrades gracefully and logs it, so this smoke asserts lifecycle,
+        # not pixels. Linux runs under xvfb so gtk init succeeds at all.
+        if: matrix.smoke
         shell: bash
         run: |
           set +e
           D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
-          BIN="$D/mStream.app/Contents/MacOS/mStream"
-          RUN=$(dirname "$BIN")
-          printf '{"port":3401}' > "$RUN/applaunch-config.json"
-          __CFBundleIdentifier=io.mstream.server "$BIN" -j "$RUN/applaunch-config.json" > "$RUN/applaunch.log" 2>&1
-          LAUNCHER_RC=$?
-          if [ "$LAUNCHER_RC" != "0" ]; then echo "FAIL: app-mode launcher exited $LAUNCHER_RC (expected 0 after handing off)"; cat "$RUN/applaunch.log"; exit 1; fi
-          UP=0
-          for i in $(seq 1 30); do
-            sleep 1
-            if curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; then UP=1; break; fi
-          done
-          if [ "$UP" != "1" ]; then echo "FAIL: detached child never served — the app-launch hand-off is broken"; cat "$RUN/applaunch.log"; exit 1; fi
-          CHILD=$(pgrep -f "applaunch-config.json" | head -1)
-          echo "ok: launcher exited 0, detached child $CHILD serving on 3401"
+          case "${{ matrix.key }}" in
+            win-*)    LAUNCHER="$D/mStream.exe" ;;
+            darwin-*) LAUNCHER="$D/mStream.app/Contents/MacOS/mStream" ;;
+            *)        LAUNCHER="$D/mstream-desktop" ;;
+          esac
+          [ -f "$LAUNCHER" ] || { echo "FAIL: launcher not staged at $LAUNCHER"; ls -la "$D"; exit 1; }
 
-          # Relaunch, full Finder path: detaches again, and the detached copy is
-          # the one that probes. Its stdio is /dev/null by design, so the only
-          # observable contract here is "exit 0 and don't disturb the running
-          # server" — asserting on its log would test nothing (that mistake is
-          # why this step first shipped red).
-          __CFBundleIdentifier=io.mstream.server "$BIN" -j "$RUN/applaunch-config.json" > "$RUN/applaunch2.log" 2>&1
-          RC2=$?
-          # The detached copy boots FULLY before it hits EADDRINUSE, probes, and
-          # exits — measured 3.6–4.2s across runners, straddling any fixed sleep.
-          # Poll for it to drain back to the single running server rather than
-          # guessing a duration: a fixed `sleep` flakes red when the copy is
-          # merely slow, not broken (30 x 0.5s = 15s ceiling, exits early on drain).
-          COUNT=2
-          for i in $(seq 1 30); do
-            COUNT=$(pgrep -f "applaunch-config.json" | wc -l | tr -d ' ')
-            [ "$COUNT" = "1" ] && break
+          # Isolated per-user dirs so this can't touch the earlier boots' state.
+          LH="$RUNNER_TEMP/launcher-home"
+          rm -rf "$LH"; mkdir -p "$LH"
+          export MSTREAM_LAUNCHER_SKIP_AUTOSTART=1
+          case "${{ matrix.key }}" in
+            win-*)    export LOCALAPPDATA="$LH"; DH="$LH/mStream" ;;
+            darwin-*) export HOME="$LH"; DH="$LH/Library/Application Support/mStream" ;;
+            *)        export HOME="$LH"; DH="$LH/.local/share/mstream" ;;
+          esac
+
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            sudo apt-get install -y -qq xvfb > /dev/null 2>&1
+            xvfb-run -a "$LAUNCHER" --tray --no-open > "$LH/launcher-run.log" 2>&1 &
+          else
+            "$LAUNCHER" --tray --no-open > "$LH/launcher-run.log" 2>&1 &
+          fi
+          WRAP=$!
+
+          UP=0
+          for i in $(seq 1 45); do
+            sleep 1
+            if curl -sf --max-time 3 -o /dev/null "http://127.0.0.1:3000/api/v1/ping"; then UP=1; break; fi
+          done
+          if [ "$UP" != "1" ]; then
+            echo "FAIL: launcher-managed server never served on 3000"
+            cat "$LH/launcher-run.log" 2>/dev/null; cat "$DH/logs/launcher.log" 2>/dev/null; cat "$DH/logs/server-console.log" 2>/dev/null | tail -20
+            exit 1
+          fi
+          echo "ok: launcher spawned mstream-server; serving on 3000 (~${i}s)"
+
+          # The health event must land in the launcher's own log (settle loop —
+          # the prober ticks at 500ms behind the port opening).
+          HUP=0
+          for i in $(seq 1 20); do
+            grep -q "server is up" "$DH/logs/launcher.log" 2>/dev/null && { HUP=1; break; }
             sleep 0.5
           done
-          curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; STILL=$?
-          if [ "$RC2" != "0" ]; then echo "FAIL: relaunch exited $RC2, expected 0"; cat "$RUN/applaunch2.log"; pkill -f applaunch-config.json; exit 1; fi
-          if [ "$COUNT" != "1" ] || [ "$STILL" != "0" ]; then echo "FAIL: relaunch disturbed the running server (count=$COUNT alive=$STILL)"; pkill -f applaunch-config.json; exit 1; fi
-          echo "ok: redundant relaunch exited 0 and left the running server alone"
+          [ "$HUP" = "1" ] || { echo "FAIL: no 'server is up' in launcher.log"; cat "$DH/logs/launcher.log"; exit 1; }
+          grep -i "tray unavailable" "$DH/logs/launcher.log"             && echo "note: tray degraded gracefully on this runner"             || echo "note: tray constructed"
 
-          # Relaunch with the detach already done (MSTREAM_MAC_APP_DETACHED=1 is
-          # what the detached copy itself carries), so the probe runs in THIS
-          # process where its result is observable. This is the assertion that
-          # actually covers the nonce identity check.
-          __CFBundleIdentifier=io.mstream.server MSTREAM_MAC_APP_DETACHED=1 "$BIN" -j "$RUN/applaunch-config.json" > "$RUN/applaunch3.log" 2>&1
-          RC3=$?
-          COUNT=$(pgrep -f "applaunch-config.json" | wc -l | tr -d ' ')
-          curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; STILL=$?
-
-          # Negative control for the nonce identity check. The positive probe
-          # above (RC3 + "already running") stays green even if the probe
-          # regresses from `header === expectedNonce` to a mere presence check —
-          # the two are observationally identical when the nonce genuinely
-          # matches. So overwrite the on-disk nonce the probe reads while the
-          # running server keeps serving its real (in-memory) one: a correct
-          # comparison now MISMATCHES, so the relaunch must refuse to redirect,
-          # exit 1 (never logging "already running"), and leave the server
-          # untouched. A presence-check regression would instead exit 0 here and
-          # hand a local port squatter the real UI's trusted localStorage origin.
-          # The probe's 2s timeout bounds this and its alert is detached — no hang.
-          NONCE_FILE=$(find "$RUN" -name '.instance-nonce' 2>/dev/null | head -1)
-          if [ -z "$NONCE_FILE" ]; then echo "FAIL: running server wrote no .instance-nonce to probe against"; pkill -f "applaunch-config.json"; exit 1; fi
-          cp "$NONCE_FILE" "$RUN/nonce.bak"
-          printf 'not-the-real-nonce' > "$NONCE_FILE"
-          __CFBundleIdentifier=io.mstream.server MSTREAM_MAC_APP_DETACHED=1 "$BIN" -j "$RUN/applaunch-config.json" > "$RUN/applaunch4.log" 2>&1
-          RC4=$?
-          cp "$RUN/nonce.bak" "$NONCE_FILE"
-          BADCOUNT=$(pgrep -f "applaunch-config.json" | wc -l | tr -d ' ')
-          curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3401/api/v1/ping"; BADSTILL=$?
-
-          pkill -f "applaunch-config.json" 2>/dev/null
-          if [ "$RC3" != "0" ]; then echo "FAIL: in-process relaunch exited $RC3, expected 0 (redundant, not failed)"; cat "$RUN/applaunch3.log"; exit 1; fi
-          grep -q "already running" "$RUN/applaunch3.log" || { echo "FAIL: the nonce probe did not recognize our own running instance"; cat "$RUN/applaunch3.log"; exit 1; }
-          if [ "$COUNT" != "1" ] || [ "$STILL" != "0" ]; then echo "FAIL: relaunch disturbed the running server (count=$COUNT alive=$STILL)"; exit 1; fi
-          if [ "$RC4" = "0" ]; then echo "FAIL: probe ACCEPTED a wrong nonce (exit 0) — identity is a presence test, not a comparison; a local squatter would be handed the real UI origin"; cat "$RUN/applaunch4.log"; exit 1; fi
-          if grep -q "already running" "$RUN/applaunch4.log"; then echo "FAIL: probe logged 'already running' for a MISMATCHED nonce"; cat "$RUN/applaunch4.log"; exit 1; fi
-          if [ "$BADCOUNT" != "1" ] || [ "$BADSTILL" != "0" ]; then echo "FAIL: mismatch relaunch disturbed the running server (count=$BADCOUNT alive=$BADSTILL)"; exit 1; fi
-
-          # Explicit (non-wildcard) bind. The identity exchange used to be gated
-          # on the caller looking like loopback, but a same-host client reaching
-          # a LAN-bound listener is seen as the LAN address — so the server hid
-          # its identity from its OWN probe and every re-click produced a bogus
-          # "port is in use by another application" alert. Nothing caught that,
-          # because every other case here binds the wildcard. Bind a real
-          # interface address and require the relaunch to still recognize us.
-          LANIP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)
-          if [ -z "$LANIP" ]; then
-            echo "note: no LAN address on this runner — skipping the explicit-bind probe case"
-          else
-            printf '{"port":3402,"address":"%s"}' "$LANIP" > "$RUN/bindlaunch-config.json"
-            __CFBundleIdentifier=io.mstream.server "$BIN" -j "$RUN/bindlaunch-config.json" > "$RUN/bind1.log" 2>&1
-            BINDUP=0
-            for i in $(seq 1 30); do
-              sleep 1
-              if curl -sf --max-time 5 -o /dev/null "http://$LANIP:3402/api/v1/ping"; then BINDUP=1; break; fi
-            done
-            if [ "$BINDUP" != "1" ]; then echo "FAIL: explicit-bind server never served on $LANIP:3402"; cat "$RUN/bind1.log"; pkill -f bindlaunch-config.json; exit 1; fi
-            __CFBundleIdentifier=io.mstream.server MSTREAM_MAC_APP_DETACHED=1 "$BIN" -j "$RUN/bindlaunch-config.json" > "$RUN/bind2.log" 2>&1
-            RCBIND=$?
-            pkill -f "bindlaunch-config.json" 2>/dev/null
-            if [ "$RCBIND" != "0" ]; then echo "FAIL: explicit-bind relaunch exited $RCBIND — the probe cannot identify a non-wildcard-bound instance"; cat "$RUN/bind2.log"; exit 1; fi
-            grep -q "already running" "$RUN/bind2.log" || { echo "FAIL: explicit-bind relaunch did not recognize our own instance"; cat "$RUN/bind2.log"; exit 1; }
-            echo "ok: explicit-bind ($LANIP) relaunch recognized its own instance"
+          # Hard-kill the launcher — never the server — and require the server
+          # to follow it down via supervision-stdin EOF.
+          # pgrep -x (exact process name), never -f: a cmdline pattern matches
+          # the xvfb-run wrapper — whose kill -9 does NOT propagate — and can
+          # even match the polling shell itself (that footgun killed the local
+          # Docker smoke's own script mid-run).
+          case "${{ matrix.key }}" in
+            win-*)    LPID=$WRAP ;;
+            darwin-*) LPID=$(pgrep -x mStream | head -1); LPID=${LPID:-$WRAP} ;;
+            *)        LPID=$(pgrep -x mstream-desktop | head -1); LPID=${LPID:-$WRAP} ;;
+          esac
+          kill -9 "$LPID" 2>/dev/null
+          DOWN=0
+          for i in $(seq 1 12); do
+            sleep 1
+            curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:3000/api/v1/ping" || { DOWN=1; break; }
+          done
+          if [ "$DOWN" != "1" ]; then
+            echo "FAIL: server still serving after the launcher was hard-killed — ORPHAN"
+            pkill -f mstream-server 2>/dev/null
+            exit 1
           fi
-          echo "SMOKE OK: app-launch detach, serve, redundant relaunch, nonce MATCH, nonce-MISMATCH rejection, and explicit-bind identity all behave"
+          echo "SMOKE OK: launcher spawn, health, and no-orphan supervision all behave"
+
+      # Two gaps the review found unexercised anywhere on Windows/Linux: the
+      # lifecycle smoke above sets MSTREAM_LAUNCHER_SKIP_AUTOSTART=1 (so
+      # default-on autostart never actually writes), and nothing ever proved
+      # the terminal face's "same output, same exit code" promise under
+      # redirection. This step does both against the staged bundle.
+      - name: Smoke test autostart artifacts + terminal-face redirection
+        if: matrix.key == 'win-x64' || matrix.key == 'linux-x64'
+        shell: bash
+        run: |
+          set -e
+          D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
+          case "${{ matrix.key }}" in
+            win-*) LAUNCHER="$D/mStream.exe" ;;
+            *)     LAUNCHER="$D/mstream-desktop" ;;
+          esac
+
+          # ── Terminal-face redirection: `-j` with no value is a
+          # deterministic server-side usage error (text + exit 1). Capturing
+          # it through a bash pipe proves the passthrough hands the child OUR
+          # redirected handles (on Windows, pre-G2-fix it rebound CONOUT$ —
+          # the capture came back empty and the text splashed the console).
+          # Windows engages the terminal face via AttachConsole, which the
+          # runner's hidden console satisfies even under full redirection.
+          # Unix keys the face off isatty — a CI step with EVERYTHING piped
+          # has no tty at all and correctly takes the GUI path instead — so
+          # the linux probe runs under a pty (`script`), the same shape as a
+          # real terminal user redirecting stdout.
+          set +e
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            OUT=$("$LAUNCHER" -j 2>&1); RC=$?
+          else
+            OUT=$(script -qec "\"$LAUNCHER\" -j" /dev/null 2>&1); RC=$?   # -e mirrors the child's exit code
+            OUT=$(printf '%s' "$OUT" | tr -d '\r')
+          fi
+          set -e
+          echo "passthrough said: '$OUT' (rc=$RC)"
+          echo "$OUT" | grep -q "argument missing" || { echo "FAIL: server's error text did not come back through the redirection"; exit 1; }
+          [ "$RC" = "1" ] || { echo "FAIL: exit code not mirrored (got $RC)"; exit 1; }
+          echo "OK: terminal face honors redirected stdio and mirrors exit codes"
+
+          # ── Autostart artifacts: enable FOR REAL (no skip var here) and
+          # assert the artifact the OS will actually consume at login —
+          # quoted exe path + --autostarted — then disable and assert gone.
+          case "${{ matrix.key }}" in
+            win-*)
+              "$LAUNCHER" --autostart=enable
+              VAL=$(MSYS_NO_PATHCONV=1 reg query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Run' /v mStream | tr -d '\r')
+              echo "$VAL"
+              echo "$VAL" | grep -qE '"[A-Za-z]:[^"]*mStream\.exe" --autostarted' \
+                || { echo "FAIL: Run value is not a quoted path + --autostarted"; exit 1; }
+              [ "$("$LAUNCHER" --autostart=status)" = "enabled" ] || { echo "FAIL: status after enable"; exit 1; }
+              "$LAUNCHER" --autostart=disable
+              if MSYS_NO_PATHCONV=1 reg query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Run' /v mStream 2>/dev/null; then
+                echo "FAIL: Run value still present after disable"; exit 1
+              fi
+              ;;
+            *)
+              # Bare HOME with no ~/.config: enable must create the directory
+              # auto-launch actually writes to (the Docker-smoke ENOENT class).
+              AH="$RUNNER_TEMP/autostart-home"; rm -rf "$AH"; mkdir -p "$AH"
+              HOME="$AH" "$LAUNCHER" --autostart=enable
+              F="$AH/.config/autostart/mStream.desktop"
+              [ -f "$F" ] || { echo "FAIL: no .desktop at $F"; ls -laR "$AH"; exit 1; }
+              grep '^Exec=' "$F"
+              grep -qE '^Exec="/[^"]*mstream-desktop" --autostarted' "$F" \
+                || { echo "FAIL: Exec line is not a quoted path + --autostarted"; exit 1; }
+              [ "$(HOME="$AH" "$LAUNCHER" --autostart=status)" = "enabled" ] || { echo "FAIL: status after enable"; exit 1; }
+              HOME="$AH" "$LAUNCHER" --autostart=disable
+              [ ! -f "$F" ] || { echo "FAIL: .desktop still present after disable"; exit 1; }
+              ;;
+          esac
+          echo "OK: autostart artifact written the way the OS consumes it; disable removes it"
 
       - name: Smoke test iroh native binding
         # Proves the standalone binary can dlopen the bundled @number0/iroh .node
@@ -371,7 +496,7 @@ jobs:
         run: |
           set -e
           D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
-          if [ -d "$D/mStream.app" ]; then BIN="$D/mStream.app/Contents/MacOS/mStream"; elif [ -f "$D/mStream.exe" ]; then BIN="$D/mStream.exe"; else BIN="$D/mStream-${{ matrix.key }}"; fi
+          if [ -d "$D/mStream.app" ]; then BIN="$D/mStream.app/Contents/MacOS/mstream-server"; elif [ -f "$D/mstream-server.exe" ]; then BIN="$D/mstream-server.exe"; else BIN="$D/mstream-server"; fi
           echo "iroh smoke binary: $BIN"
           OUT=$("$BIN" --mstream-worker=iroh-selftest '{}' 2>&1) || { echo "$OUT"; echo "FAIL: iroh self-test exited non-zero"; exit 1; }
           echo "$OUT"

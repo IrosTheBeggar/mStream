@@ -47,7 +47,7 @@ The demo site does not require you to sign in because mStream is publicly access
 
 #### Binaries
 
-**NOTE:** as of v6.13, mStream no longer uses electron to build binaries.  The new binaries comes in two flavors: a minimal build that is just the server, or a batteries included build that comes with all the convenience features (auto update, run server on system boot, etc). The binaries are included on the release page, and the batteries included build will be released soon.
+**NOTE:** as of v6.20, releases ship one standalone bundle per platform (no Electron). Double-click the desktop face — `mStream.exe` on Windows, `mStream.app` on macOS, `mstream-desktop` on Linux — for the tray app with start-at-login and Quick Connect, or run the bundled `mstream-server` directly for a plain terminal/headless server (the only flavor in the linux-arm64 and musl bundles). Details in [the install docs](docs/install.md).
 
 * [Binaries for Win/OSX/Linux](https://github.com/IrosTheBeggar/mStream/releases/latest)
 

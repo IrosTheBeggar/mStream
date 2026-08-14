@@ -23,6 +23,12 @@ bin/rust-parser/*
 !bin/rust-parser/README.md
 !bin/rust-parser/rust-parser-*
 
+bin/rust-launcher/*
+!bin/rust-launcher/mstream-launcher-*
+# Provenance stamp committed alongside the binaries (build-rust-launcher.yml
+# writes it; build-bun.yml's tag build asserts it matches the tag's source).
+!bin/rust-launcher/.source-tree
+
 bin/rust-server-audio/*
 !bin/rust-server-audio/README.md
 !bin/rust-server-audio/rust-server-audio-*
@@ -37,7 +43,9 @@ save/*.json
 *.db-wal
 *.db-shm
 .migrated-from-loki
-# Per-boot identity secret for the macOS relaunch probe (src/server.js)
+# Legacy residue: pre-6.20 servers wrote a per-boot identity secret for the
+# retired macOS relaunch probe. Nothing writes these anymore, but existing
+# checkouts and data dirs still carry one — keep it out of `git status`.
 .instance-nonce
 frp/*.ini
 
