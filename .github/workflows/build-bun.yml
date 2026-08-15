@@ -23,6 +23,11 @@ on:
       # binary-commit workflow's own gate is only compile + --autostart=status.
       - 'rust-launcher/**'
   workflow_dispatch:
+    inputs:
+      notarize:
+        description: 'Run the full notarize+staple round-trip (normally tag-only)'
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -161,6 +166,116 @@ jobs:
 
       - name: Build + bundle (${{ matrix.key }})
         run: bun scripts/build-bun.mjs --target=${{ matrix.key }} --bundle
+
+      # ── Developer ID signing + notarization (darwin legs only) ──────────
+      # Ported from mstream-terminal-player's release.yml, adapted from a
+      # bare Mach-O to a full .app bundle: sign inside-out (sidecar Mach-Os
+      # first, then mstream-server with the Bun JIT entitlements, then the
+      # bundle itself, which also signs the launcher main executable), then
+      # notarize and STAPLE — a bundle can carry its ticket offline, which a
+      # bare binary never could. Kills Gatekeeper's "damaged" dialog on
+      # browser-downloaded zips.
+      #
+      # Secrets-gated like the terminal player: absent secrets ship an
+      # unsigned build (fork PRs, dry runs), never a failed one. Signing
+      # runs on EVERY darwin build so the smoke below boots the signed,
+      # hardened-runtime binaries and would catch a missing entitlement in
+      # PR CI; the slow notarize+staple round-trip runs only on tag builds
+      # (or a dispatch with notarize=true, for proving the pipeline without
+      # cutting a release).
+      #
+      # Secrets (same names/values as mstream-terminal-player — repo-scoped,
+      # so they must also be added to THIS repo's Actions secrets):
+      #   MACOS_CERT_P12       base64 of the Developer ID Application .p12
+      #   MACOS_CERT_PASSWORD  the .p12 password
+      #   ASC_API_KEY          App Store Connect API private key (.p8 body)
+      #   ASC_KEY_ID           its key id
+      #   ASC_ISSUER_ID        issuer UUID (team keys only; empty for
+      #                        individual keys — notarytool forbids --issuer
+      #                        with those)
+      - name: Sign, notarize, staple (${{ matrix.key }})
+        if: startsWith(matrix.key, 'darwin')
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          ASC_API_KEY: ${{ secrets.ASC_API_KEY }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          FULL_NOTARIZE: ${{ github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.notarize) }}
+        run: |
+          set -euo pipefail
+          # The secrets context is not allowed in a step-level `if`, so the
+          # gate lives here: absent secrets mean an unsigned build.
+          if [ -z "${CERT_P12}" ]; then
+            echo "signing secrets absent — shipping unsigned"
+            exit 0
+          fi
+          D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
+          APP="$D/mStream.app"
+          [ -d "$APP" ] || { echo "::error::no .app staged at $APP"; exit 1; }
+
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(uuidgen)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 1200 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S "apple-tool:,apple:" \
+            -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" login.keychain
+
+          identity=$(security find-identity -v -p codesigning "$keychain" \
+            | sed -n 's/.*"\(Developer ID Application[^"]*\)".*/\1/p' | head -1)
+          [ -n "$identity" ] || { echo "::error::no Developer ID Application identity in the imported .p12"; exit 1; }
+
+          # Nested code first — every sidecar Mach-O under Contents/MacOS/bin
+          # (rust-parser, rust-server-audio, the iroh .node). The bundle sign
+          # below verifies nested code is already signed; identifiers derive
+          # from the filenames, which notarization accepts.
+          for f in "$APP/Contents/MacOS/bin"/*/*; do
+            [ -f "$f" ] || continue
+            codesign --force --timestamp --options runtime --sign "$identity" "$f"
+          done
+          # The Bun server: JavaScriptCore JITs under hardened runtime only
+          # with these entitlements (see build/mac-entitlements-server.plist).
+          codesign --force --timestamp --options runtime \
+            --entitlements build/mac-entitlements-server.plist \
+            --sign "$identity" "$APP/Contents/MacOS/mstream-server"
+          # The bundle: signs the launcher main executable and seals the
+          # resource envelope (webapp/ included). Identifier comes from
+          # Info.plist (io.mstream.server).
+          codesign --force --timestamp --options runtime --sign "$identity" "$APP"
+          codesign --verify --strict --deep --verbose=2 "$APP"
+
+          if [ "$FULL_NOTARIZE" = "true" ]; then
+            echo "$ASC_API_KEY" > "$RUNNER_TEMP/asc.p8"
+            ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarize.zip"
+            # Team keys carry an issuer UUID; individual keys must not pass
+            # --issuer at all, says notarytool itself.
+            issuer=()
+            if [ -n "${ASC_ISSUER_ID}" ]; then
+              issuer=(--issuer "$ASC_ISSUER_ID")
+            fi
+            xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+              --key "$RUNNER_TEMP/asc.p8" --key-id "$ASC_KEY_ID" \
+              "${issuer[@]}" --wait --timeout 20m
+            rm "$RUNNER_TEMP/asc.p8"
+            xcrun stapler staple "$APP"
+            xcrun stapler validate "$APP"
+          else
+            echo "non-tag build: signed only (notarize+staple is tag/dispatch-gated)"
+          fi
+
+          # The bundler cut its zip BEFORE signing changed the bytes — recut
+          # it from the staged tree, same tool and shape as build-bun.mjs's
+          # unix branch (Info-ZIP, -y keeps symlinks, modes preserved).
+          B=$(basename "$D")
+          rm -f "dist/$B.zip"
+          (cd dist/stage && zip -qry "../$B.zip" "$B")
+          echo "re-zipped dist/$B.zip with the signed bundle"
 
       - name: Smoke test (self-dispatch + boot + serve + scan)
         if: matrix.smoke

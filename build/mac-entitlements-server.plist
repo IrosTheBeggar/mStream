@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hardened-runtime entitlements for mstream-server (the Bun standalone
+     binary) and ONLY it — the launcher and rust sidecars sign without any.
+     Bun embeds JavaScriptCore, whose JIT allocates writable-then-executable
+     pages; under the hardened runtime that requires both entitlements below
+     (Bun's own codesign guidance ships exactly this pair). Deliberately NOT
+     included: com.apple.security.cs.disable-library-validation — the iroh
+     .node the server loads is signed with the same Developer ID, so library
+     validation passes as-is; loosening it would weaken the whole point of
+     signing. -->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+</dict>
+</plist>
