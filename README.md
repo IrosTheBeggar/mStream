@@ -16,8 +16,6 @@ Main|Shared|Admin
 
 ## Notable Features
 
-mStream has some unique features other server's don't have
-
 #### Album Art Lookup
 
 mStream automatically retrieves album art for your collection
@@ -62,13 +60,14 @@ The demo site does not require you to sign in because mStream is publicly access
 
 ## Mobile Apps
 
-#### Official Android App
+#### Official Mobile Apps
 
-[<img src="/webapp/assets/img/play-store-logo.png" alt="mStream Android App" width="200" />](https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1)
+[These apps are open source! Click here to see the code](https://github.com/IrosTheBeggar/mstream_music)
 
-The iOS app is currently in review. You can get early access to it here: https://testflight.apple.com/join/dX37YTzK
+[<img src="/webapp/assets/img/play-store-logo.png" alt="mStream Android App" width="200" />](https://play.google.com/store/apps/details?id=mstream.music&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1)[<img src="/webapp/assets/img/app-store-logo.png" alt="mStream iOS App" width="200" />](https://apps.apple.com/gb/app/mstream-music/id1455309629)
 
-#### [Made by Niera Tech](https://mplayer.nieratech.com/)
+
+#### [Mobile Apps Made by Niera Tech](https://mplayer.nieratech.com/)
 
 [<img src="/webapp/assets/img/app-store-logo.png" alt="mStream iOS App" width="200" />](https://apps.apple.com/us/app/mstream-player/id1605378892) [<img src="/webapp/assets/img/play-store-logo.png" alt="mStream Android App" width="200" />](https://play.google.com/store/apps/details?id=com.nieratechinc.mstreamplayer&hl=en_US)
 
@@ -80,7 +79,6 @@ The iOS app is currently in review. You can get early access to it here: https:/
 * DLNA Support
 * Automatic Backup Feature - Backup your music to any drive connected to your server
 * Transcoding
-* Subsonic API support - *deprecated: removal planned once the first-party apps ship — [details](docs/subsonic-deprecation.md)*
 * Auto DJ - Automatically queue up songs
 * Lyrics Support - includes being able to search by lyrics
 * Jukebox Mode - Control your browser remotely
