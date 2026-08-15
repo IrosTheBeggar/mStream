@@ -150,7 +150,16 @@ async function bootMstream(tmpDir, musicDir) {
   proc.stdout.on('data', () => {});
   proc.stderr.on('data', () => {});
   const baseUrl = `http://127.0.0.1:${port}`;
-  await waitForReady(baseUrl);
+  try {
+    await waitForReady(baseUrl);
+  } catch (err) {
+    // A ready-timeout must not leak the child: the server can boot late but
+    // healthy on a loaded runner, and a live orphan's stdio keeps this file's
+    // event loop open — the run then hangs at exit instead of reporting the
+    // timeout. test/helpers/server.mjs kills on this path for the same reason.
+    try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+    throw err;
+  }
   return { proc, baseUrl, port };
 }
 
