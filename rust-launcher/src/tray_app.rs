@@ -202,6 +202,7 @@ pub fn run(args: LauncherArgs) -> ! {
                 let qc_item = MenuItem::with_id("quick-connect", "Quick Connect", true, None);
                 let auto_item =
                     CheckMenuItem::with_id("autostart", "Start at login", true, autostart::is_enabled(), None);
+                let logs_item = MenuItem::with_id("logs", "View logs", true, None);
                 let restart_item = MenuItem::with_id("restart", "Restart server", true, None);
                 let quit_item = MenuItem::with_id("quit", "Quit mStream", true, None);
                 let _ = menu.append(&open_item);
@@ -209,6 +210,7 @@ pub fn run(args: LauncherArgs) -> ! {
                 let _ = menu.append(&PredefinedMenuItem::separator());
                 let _ = menu.append(&auto_item);
                 let _ = menu.append(&PredefinedMenuItem::separator());
+                let _ = menu.append(&logs_item);
                 let _ = menu.append(&restart_item);
                 let _ = menu.append(&quit_item);
                 autostart_item = Some(auto_item);
@@ -264,6 +266,14 @@ pub fn run(args: LauncherArgs) -> ! {
                             } else {
                                 log.line(&format!("autostart {}", if want { "enabled" } else { "disabled" }));
                             }
+                        }
+                    }
+                    "logs" => {
+                        // Support surface: "click View logs and read me what it
+                        // says" beats digging paths out of Application Support.
+                        log.line("menu: view logs");
+                        if let Err(e) = platform::open_logs_terminal(&logs_dir) {
+                            log.line(&format!("view logs failed: {e}"));
                         }
                     }
                     "restart" => {
