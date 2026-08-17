@@ -213,7 +213,10 @@ pub fn open_logs_terminal(logs_dir: &std::path::Path) -> Result<(), String> {
     {
         use std::os::windows::process::CommandExt;
         // The launcher is a GUI-subsystem exe with no console of its own to
-        // lend — give the tail a brand-new console window.
+        // lend — give the tail a brand-new console window. -Encoding UTF8 on
+        // both reads: the server writes UTF-8 (winston's em-dashes), and
+        // Windows PowerShell 5.1's Get-Content defaults to the ANSI codepage
+        // for BOM-less files — without it every "—" renders as "â€"".
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
         let dir = logs_dir.display().to_string().replace('\'', "''");
         std::process::Command::new("powershell.exe")
@@ -223,9 +226,9 @@ pub fn open_logs_terminal(logs_dir: &std::path::Path) -> Result<(), String> {
                 "-Command",
                 &format!(
                     "Set-Location '{dir}'; Write-Host '== launcher.log =='; \
-                     Get-Content .\\launcher.log -Tail 50 -ErrorAction SilentlyContinue; \
+                     Get-Content .\\launcher.log -Tail 50 -Encoding UTF8 -ErrorAction SilentlyContinue; \
                      Write-Host ''; Write-Host '== server-console.log: full server log for this session (following; close the window to stop) =='; \
-                     Get-Content .\\server-console.log -Wait"
+                     Get-Content .\\server-console.log -Wait -Encoding UTF8"
                 ),
             ])
             .creation_flags(CREATE_NEW_CONSOLE)
