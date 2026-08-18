@@ -26,10 +26,11 @@ on:
     # from it: the release version bump must retrigger the binary build or
     # the shipped mStream.exe reports the PREVIOUS version in Explorer.
     # Cheap for non-release package.json edits — the commit job no-ops when
-    # the binaries come out byte-identical (unix binaries don't embed the
-    # version at all). Release process note: after bumping the version, wait
-    # for this workflow's commit before tagging — build-bun stages whatever
-    # is in bin/rust-launcher/ at tag time.
+    # nothing changed (unix binaries don't embed the version at all, but the
+    # provenance stamp records it, so a version bump always commits).
+    # Release process (docs/deploy.md): bump WITHOUT tagging, wait for this
+    # workflow's commit, tag THAT commit — build-bun's tag build asserts the
+    # stamp's tree AND version against the tag and refuses otherwise.
     paths: ['rust-launcher/**', 'package.json']
   pull_request:
     paths:
@@ -243,13 +244,24 @@ jobs:
           # a later `git pull --rebase` isn't blocked by an unstaged mode
           # change, then force 100755 in the index regardless.
           chmod +x bin/rust-launcher/mstream-launcher-*
-          # Provenance stamp: the rust-launcher source TREE these binaries
-          # were built from — the trigger sha, NOT post-rebase HEAD (the
-          # rebase below can pull in newer launcher source these binaries
-          # don't contain). build-bun's tag build asserts this stamp matches
-          # the tag's own tree, so "tag cut inside the rebuild window ships
-          # a stale launcher, all green" becomes a red run with instructions.
-          git rev-parse "${{ github.sha }}:rust-launcher" > bin/rust-launcher/.source-tree
+          # Provenance stamp, two lines:
+          #   1. the rust-launcher source TREE these binaries were built from
+          #   2. the package.json VERSION they were built from
+          # Both taken from the trigger sha, NOT post-rebase HEAD (the rebase
+          # below can pull in newer source these binaries don't contain).
+          # build-bun's tag build asserts BOTH against the tag's own tree and
+          # version, so "tag cut inside the rebuild window ships a stale
+          # launcher, all green" becomes a red run with instructions. Line 2
+          # exists because build.rs bakes package.json's version into the
+          # Windows exe's VersionInfo: a version bump changes package.json but
+          # not the launcher tree, so a tree-only stamp let v6.20.1 ship an
+          # mStream.exe whose FileVersion still read 6.20.0. `npm version`
+          # tags the bump commit itself, so the tag build can only be honest
+          # if it checks the version the binaries actually carry.
+          {
+            git rev-parse "${{ github.sha }}:rust-launcher"
+            git show "${{ github.sha }}:package.json" | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version"
+          } > bin/rust-launcher/.source-tree
           git add bin/rust-launcher/mstream-launcher-* bin/rust-launcher/.source-tree
           git update-index --chmod=+x bin/rust-launcher/mstream-launcher-*
           if git diff --cached --quiet; then
