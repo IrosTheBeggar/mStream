@@ -27,6 +27,11 @@ on:
       # to codesign. An entitlements-only PR without this filter would merge
       # with zero CI and first run on the release tag.
       - 'build/**'
+      # The install scripts + manifest generator have their own PR-time
+      # contract check (installer-contract job below).
+      - 'install.sh'
+      - 'install.ps1'
+      - 'scripts/release-manifest.sh'
   workflow_dispatch:
     inputs:
       notarize:
@@ -35,6 +40,132 @@ on:
         default: false
 
 jobs:
+  # ── The installers' contract with the manifest, checked on every PR. ─────
+  # The real manifest step only runs on tag builds, and install.sh parses the
+  # manifest with grep (no jq on a fresh box) — so a harmless-looking change
+  # to either side (pretty-printing the JSON, renaming a key, a shell
+  # portability slip) would ship broken and be found by users. This job
+  # builds fake bundles of the real SHAPE, generates a manifest with the real
+  # script, serves it locally, and runs each installer end to end against it:
+  # fetch → verify → extract → link → post-install proof. Fast (no bun build).
+  installer-contract:
+    name: installer contract (${{ matrix.os }})
+    if: github.event_name != 'push'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build fake bundles + real manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -n install.sh
+          mkdir -p rel
+          # A fake bundle: the folder shape the installers expect, with a
+          # mstream-server that answers -V (the post-install proof) and a
+          # README. Every key, so the linux AND windows installer find theirs.
+          for key in win-x64 linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl darwin-x64 darwin-arm64; do
+            b="mStream-9.9.9-$key"; mkdir -p "rel/$b"
+            case "$key" in
+              win-*)  # a .cmd is not an .exe; the windows leg's proof runs a real tiny exe below
+                      printf 'fake' > "rel/$b/mstream-server.exe"; printf 'fake' > "rel/$b/mStream.exe" ;;
+              darwin-*) mkdir -p "rel/$b/mStream.app/Contents/MacOS"
+                      printf '#!/bin/sh\n[ "$1" = -V ] && echo 9.9.9\n' > "rel/$b/mStream.app/Contents/MacOS/mstream-server"; chmod +x "rel/$b/mStream.app/Contents/MacOS/mstream-server" ;;
+              *)      printf '#!/bin/sh\n[ "$1" = -V ] && echo 9.9.9\n' > "rel/$b/mstream-server"; chmod +x "rel/$b/mstream-server"
+                      printf '[Desktop Entry]\nExec=%%INSTALL_DIR%%/mstream-desktop\n' > "rel/$b/mStream.desktop" ;;
+            esac
+            echo "fake bundle" > "rel/$b/README.txt"
+            # python's zipfile, not `zip`: the Windows runner's git-bash has
+            # no Info-ZIP, and python3 is on every runner. Unix mode bits
+            # don't survive this route, which is fine — install.sh chmods
+            # the binaries it knows about, exactly as it must for real
+            # bundles that crossed a mode-stripping hop.
+            (cd rel && python3 -m zipfile -c "$b.zip" "$b" && rm -rf "$b")
+          done
+          sh scripts/release-manifest.sh 9.9.9 rel
+          # The manifest must be valid JSON with every asset — and the
+          # generator must REFUSE a zip whose name doesn't match the version.
+          node -e "const m=JSON.parse(require('fs').readFileSync('rel/manifest.json','utf8')); if(m.version!=='9.9.9'||m.assets.length!==7) process.exit(1); console.log('manifest ok:', m.assets.length, 'assets')"
+          cp rel/mStream-9.9.9-win-x64.zip rel/mStream-9.9.9-beta.1-win-x64.zip
+          if sh scripts/release-manifest.sh 9.9.9 rel 2>/dev/null; then echo "::error::generator accepted a prerelease-named zip for 9.9.9"; exit 1; fi
+          rm rel/mStream-9.9.9-beta.1-win-x64.zip
+          sh scripts/release-manifest.sh 9.9.9 rel
+
+      - name: Serve the fake release
+        shell: bash
+        run: |
+          (cd rel && python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1 &)
+          for i in $(seq 1 20); do curl -sf http://127.0.0.1:8765/manifest.json >/dev/null && break; sleep 0.5; done
+          curl -sf http://127.0.0.1:8765/manifest.json | head -3
+
+      - name: install.sh end to end (linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MSTREAM_RELEASE_BASE=http://127.0.0.1:8765
+          export MSTREAM_INSTALL_DIR="$RUNNER_TEMP/app" MSTREAM_BIN_DIR="$RUNNER_TEMP/bin"
+          export MSTREAM_NO_DESKTOP=1
+          sh install.sh | tee out.log
+          grep -q "mstream-server 9.9.9 runs" out.log
+          [ "$(readlink "$RUNNER_TEMP/app/current")" = "$RUNNER_TEMP/app/mStream-9.9.9-linux-x64" ]
+          [ -x "$RUNNER_TEMP/bin/mstream-server" ]
+          # same-version re-run: keep + short-circuit. Capture to a file, then
+          # grep: `sh install.sh | grep -q` closes the pipe on first match and
+          # the installer's later echo dies of EPIPE under set -e (measured:
+          # "echo: I/O error", a false failure).
+          echo keep > "$RUNNER_TEMP/app/mStream-9.9.9-linux-x64/STATE"
+          sh install.sh > rerun.log 2>&1
+          grep -q "already installed" rerun.log
+          [ -f "$RUNNER_TEMP/app/mStream-9.9.9-linux-x64/STATE" ]
+          # tampered manifest must refuse
+          sed -i 's/"sha256": "[0-9a-f]*"/"sha256": "0000000000000000000000000000000000000000000000000000000000000000"/' rel/manifest.json
+          if MSTREAM_FORCE=1 sh install.sh >/dev/null 2>&1; then echo "::error::installed despite bad hash"; exit 1; fi
+          # uninstall removes what was installed and nothing else
+          git checkout -- . 2>/dev/null || true
+          sh scripts/release-manifest.sh 9.9.9 rel
+          MSTREAM_UNINSTALL=1 sh install.sh | tee un.log
+          [ ! -e "$RUNNER_TEMP/app" ] && [ ! -e "$RUNNER_TEMP/bin/mstream-server" ]
+          grep -q "left in place" un.log
+          echo "install.sh contract OK"
+
+      - name: install.ps1 end to end (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'
+          # The fake win bundle needs a real exe for the -V proof: reuse the
+          # runner's own tiny "cmd /c" via a wrapper is not an exe either —
+          # so accept the proof warning path here and assert on the layout.
+          $env:MSTREAM_RELEASE_BASE = 'http://127.0.0.1:8765'
+          $env:MSTREAM_INSTALL_DIR = "$env:RUNNER_TEMP\app"
+          $env:MSTREAM_NO_DESKTOP = '1'; $env:MSTREAM_NO_PATH = '1'
+          & .\install.ps1 *>&1 | Tee-Object -Variable out
+          if (-not (Test-Path "$env:RUNNER_TEMP\app\mStream-9.9.9-win-x64\README.txt")) { throw "no install" }
+          $j = Get-Item "$env:RUNNER_TEMP\app\current" -Force
+          if (-not ($j.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "current is not a junction" }
+          # same-version re-run keeps + short-circuits
+          Set-Content "$env:RUNNER_TEMP\app\mStream-9.9.9-win-x64\STATE" keep
+          $out2 = & .\install.ps1 *>&1 | Out-String
+          if ($out2 -notmatch 'already installed') { throw "no short-circuit" }
+          if (-not (Test-Path "$env:RUNNER_TEMP\app\mStream-9.9.9-win-x64\STATE")) { throw "state deleted on re-run" }
+          # tampered manifest refused
+          (Get-Content rel\manifest.json -Raw) -replace '"sha256": "[0-9a-f]*"', ('"sha256": "' + ('0' * 64) + '"') | Set-Content rel\manifest.json -NoNewline
+          $env:MSTREAM_FORCE = '1'
+          try { & .\install.ps1 *>&1 | Out-Null; throw "installed despite bad hash" } catch { if ("$_" -notmatch 'sha256 mismatch') { throw } }
+          $env:MSTREAM_FORCE = $null
+          # uninstall
+          $env:MSTREAM_UNINSTALL = '1'
+          & .\install.ps1 *>&1 | Tee-Object -Variable un
+          if (Test-Path "$env:RUNNER_TEMP\app") { throw "app root survived uninstall" }
+          if (($un | Out-String) -notmatch 'left in place') { throw "no data-home note" }
+          Write-Host "install.ps1 contract OK"
+
   build:
     name: ${{ matrix.key }}
     runs-on: ${{ matrix.os }}
@@ -801,6 +932,25 @@ jobs:
           path: bundles
           merge-multiple: true
 
+      # manifest.json: the release's own inventory (scripts/release-manifest.sh
+      # — the SAME script the PR-time `installer-contract` job below runs, so
+      # the generator and the installers' parser cannot drift apart). It
+      # refuses unless every zip is exactly mStream-<tag-version>-<key>.zip:
+      # a lagging or prerelease package.json would otherwise ship bundles no
+      # installer can name.
+      - name: Check out (for scripts/release-manifest.sh)
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts/release-manifest.sh
+          sparse-checkout-cone-mode: false
+          path: src
+
+      - name: Generate sha256 manifest
+        shell: bash
+        run: |
+          sh src/scripts/release-manifest.sh "${GITHUB_REF_NAME#v}" bundles
+          cat bundles/manifest.json
+
       - name: Attach bundles to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -810,8 +960,20 @@ jobs:
         # can be reviewed and PUBLISHED manually (publishing is what fires the
         # downstream npm-publish / deploy-demo jobs), idempotent on same-tag
         # re-runs, then upload the bundles. A genuine create failure fails the job.
+        #
+        # Never touch a PUBLISHED release: a re-run of the tag workflow (Re-run
+        # all jobs, or a dispatch on the tag) would --clobber the zips and the
+        # manifest piecemeal — builds aren't byte-reproducible (fresh
+        # notarization ticket, zip mtimes), so for the ~5s window users mid-
+        # `curl | sh` get a sha256 mismatch, and if a leg failed the release is
+        # left half-new. Publishing is the point of no return; a genuine
+        # re-ship of a published version is a new patch tag.
         run: |
           if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             gh release create "$TAG" --repo "$REPO" --title "$TAG" --generate-notes --draft
           fi
-          gh release upload "$TAG" bundles/*.zip --clobber --repo "$REPO"
+          if [ "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)" != "true" ]; then
+            echo "::error::release $TAG is already PUBLISHED - refusing to overwrite its assets. Ship a new patch version instead."
+            exit 1
+          fi
+          gh release upload "$TAG" bundles/*.zip bundles/manifest.json --clobber --repo "$REPO"

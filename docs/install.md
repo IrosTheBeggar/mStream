@@ -10,6 +10,52 @@ A bundle is a **folder**, not a single file: the desktop launcher, the server
 binary (`mstream-server`), `webapp/` (the UI), and `bin/` (sidecar binaries).
 Keep them together; the bundle itself can live anywhere.
 
+## Install with one command
+
+The install scripts pick the right bundle for your machine (OS, CPU, and on
+Linux glibc-vs-musl), verify its sha256 against the release's `manifest.json`,
+extract it into a versioned folder, and wire up a `mstream-server` command
+plus an app-menu / Start Menu / `~/Applications` entry. Re-running upgrades in
+place; your data is never inside the app folder, so it is never touched.
+
+```shell
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/IrosTheBeggar/mStream/master/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/IrosTheBeggar/mStream/master/install.ps1 | iex
+```
+
+Where things land: the app folders under `~/.local/share/mstream/app/`
+(Linux), `~/Library/Application Support/mStream/app/` (macOS), or
+`%LOCALAPPDATA%\Programs\mStream\` (Windows), with `current` pointing at the
+active version; the `mstream-server` command in `~/.local/bin` (Linux/macOS) or
+via the user PATH (Windows). Optional knobs, all environment variables:
+`MSTREAM_VERSION` (a tag; default latest — releases from v6.20.2 on carry the
+`manifest.json` the script needs), `MSTREAM_INSTALL_DIR`, `MSTREAM_BIN_DIR`
+(unix), `MSTREAM_NO_PATH` (Windows), `MSTREAM_NO_DESKTOP`, `MSTREAM_KEY` (unix:
+force a bundle key when auto-detection is wrong), `MSTREAM_FORCE` (replace an
+already-installed copy of the same version; the old one is moved aside), and
+`MSTREAM_RELEASE_BASE` (a URL serving `manifest.json` + the zips, for internal
+mirrors). Older versions are kept beside `current` for rollback — once mStream
+is no longer running from one, delete it whenever you like.
+
+Re-running to upgrade re-points the app-menu / Start Menu entry and the
+login item at the new version, but never stops a running mStream: Quit it
+from the tray icon and start it again to switch. A copy you extracted by hand
+somewhere else (or run with `--portable`) is left untouched — the script only
+manages its own folder.
+
+To uninstall, run the same one-liner with `MSTREAM_UNINSTALL=1` set: it
+removes the app folders, the `mstream-server` command, the menu / Start Menu /
+`~/Applications` entry, and the login item — and leaves your library, config,
+and database in the data directory for you to keep or delete.
+
+Prefer to do it by hand? Every release from v6.20.2 on also lists the zips
+directly, with `manifest.json` holding their sha256s:
+
 **Just double-click it.** The desktop face of the bundle — `mStream.exe` on
 Windows, `mStream.app` on macOS, `mstream-desktop` on Linux — starts the
 server in the background, puts an mStream icon in your tray / menu bar

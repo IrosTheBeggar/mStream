@@ -417,6 +417,11 @@ function bundleReadme(version, t, launcherStaged, serverName) {
       ? `Data lives in ${dataDir}. (Do not use --portable with the .app: writing inside a signed app breaks its seal.)`
       : `Data lives in ${dataDir}; pass --portable to keep it next to the binaries.`,
     '',
+    'Upgrading? The install script does it in place and verifies the download:',
+    t.plat === 'win32'
+      ? '  irm https://raw.githubusercontent.com/IrosTheBeggar/mStream/master/install.ps1 | iex'
+      : '  curl -fsSL https://raw.githubusercontent.com/IrosTheBeggar/mStream/master/install.sh | sh',
+    '',
     `Docs: https://mstream.io        More flags: ${run}${server} --help`,
   );
   return lines.filter((l) => l !== null).join('\n') + '\n';
