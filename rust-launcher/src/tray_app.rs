@@ -182,6 +182,12 @@ pub fn run(args: LauncherArgs) -> ! {
     // it IS the supervisor, and the server has no uptime API to ask.
     let mut status_item: Option<MenuItem> = None;
     let mut phase = Phase::Starting;
+    // Last time the timer path re-rendered the status. The status can only
+    // change on a minute boundary, so timer wakes are throttled to 1 Hz:
+    // any other timer that shares this loop's ControlFlow (a fast poll
+    // while a popup is open, say) would otherwise re-set the same tooltip
+    // text at that timer's rate. Phase changes render unconditionally.
+    let mut status_rendered_at: Option<Instant> = None;
     let mut ever_up = false;
     let mut opened = false;
     let url = paths::server_url(&ep);
@@ -270,8 +276,14 @@ pub fn run(args: LauncherArgs) -> ! {
             // The minute tick armed at the top of the closure: re-render the
             // uptime. Only here and on phase changes — never on unrelated
             // events, so the tooltip isn't re-set under a hovering cursor.
+            // Throttled to once per second: this arm fires for EVERY timer
+            // wake the loop is asked for, not just ours.
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
-                show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
+                let now = Instant::now();
+                if status_rendered_at.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1)) {
+                    status_rendered_at = Some(now);
+                    show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
+                }
             }
             Event::UserEvent(app_event) => match app_event {
                 AppEvent::Menu(id) => match id.as_str() {
