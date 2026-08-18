@@ -543,6 +543,21 @@ jobs:
               echo "FAIL: no re-serve observed (boot lines ${BOOTS_BEFORE} -> ${BOOTS_AFTER}) — the reboot never happened"
               REBOOT_OK=0
             fi
+            # A same-bind reboot must KEEP the listening socket, never
+            # close()+listen() it. On Windows a live child (here: the ffmpeg
+            # download's PowerShell extractor, alive at this point on a fast
+            # runner) holds an inherited handle to the old listen socket under
+            # Bun <= 1.3.14 (oven-sh/bun#36936), so a relisten sits in
+            # EADDRINUSE until that child exits — this exact step used to die
+            # of it intermittently. Positive proof, not just survival.
+            if ! grep -q "keeping the listening socket" "$RUN/boot.log"; then
+              echo "FAIL: the same-bind reboot did not keep the listening socket (see boot.log)"
+              REBOOT_OK=0
+            fi
+            if grep -q "retrying listen" "$RUN/boot.log"; then
+              echo "FAIL: the same-bind reboot relistened (retrying listen seen) — the socket should never have been released"
+              REBOOT_OK=0
+            fi
 
             # (5) overlapping reboots must not kill the process. Two rapid admin
             # saves used to start two serveIt()s racing for the port; the loser
@@ -568,23 +583,35 @@ jobs:
               sleep 1
               if curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3399/api/v1/ping"; then CONCURRENT_OK=1; break; fi
             done
-            # Must outlive a losing sibling's FULL relisten budget (20 x 250ms):
-            # the process.exit lands ~5s in, and a shorter wait passes against
-            # the very bug this guards.
+            # Must outlive the window in which a losing sibling used to
+            # process.exit() (its 5 s relisten budget — since replaced by an
+            # open-ended, backed-off retry, but a shorter wait would still pass
+            # against a regression of the coalescing itself). Note this step
+            # CHANGES the bind (address), so it exercises the recycle path: a
+            # relisten here — and, on Windows/Bun <= 1.3.14, a few EADDRINUSE
+            # retries while a child still holds the old socket — is expected.
             sleep 10
             curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3399/api/v1/ping" || CONCURRENT_OK=0
             kill -0 "$SRV" 2>/dev/null || CONCURRENT_OK=0
-            # Fail closed on the TRIGGERS, not just on survival: both requests
+            # Fail closed on the TRIGGERS, not just on survival: the requests
             # must have been accepted, and the server must actually have come
             # back up again afterwards. Without these, "nothing happened" is
-            # indistinguishable from "handled two overlapping reboots".
+            # indistinguishable from "handled two overlapping reboots". At
+            # least one POST must be a 200 (it triggered a reboot); the other
+            # is a 200 (sequential or coalesced) OR a 503 — the reboot window's
+            # own answer, meaning it arrived while the first reboot was already
+            # tearing down (the listener stays bound and says "restarting"
+            # instead of refusing the connection). Anything else — a 400 from a
+            # renamed key, a 404 from a moved route, 000 — is a real failure.
             POST1=$(cat "$RUN/post1.code" 2>/dev/null)
             POST2=$(cat "$RUN/post2.code" 2>/dev/null)
             CONCURRENT_BOOTS_AFTER=$(grep -c "Access mStream locally" "$RUN/boot.log")
-            if [ "$POST1" != "200" ] || [ "$POST2" != "200" ]; then
-              echo "FAIL: reboot triggers were not accepted (HTTP $POST1 / $POST2) — this step would otherwise pass having rebooted NOTHING"
-              CONCURRENT_OK=0
-            fi
+            case "$POST1/$POST2" in
+              200/200|200/503|503/200) ;;
+              *)
+                echo "FAIL: reboot triggers were not accepted (HTTP ${POST1:-000} / ${POST2:-000}) — this step would otherwise pass having rebooted NOTHING"
+                CONCURRENT_OK=0 ;;
+            esac
             if [ "$CONCURRENT_BOOTS_AFTER" -le "$CONCURRENT_BOOTS_BEFORE" ]; then
               echo "FAIL: no additional boot after the overlapping reboots (before=$CONCURRENT_BOOTS_BEFORE after=$CONCURRENT_BOOTS_AFTER) — the server never actually restarted"
               CONCURRENT_OK=0
@@ -594,7 +621,7 @@ jobs:
             # timing-dependent, so a miss is reported, not fatal.
             grep -q "Reboot already in progress" "$RUN/boot.log" \
               && echo "ok: the duplicate reboot request was coalesced" \
-              || echo "note: no coalescing line — the two reboots did not overlap on this runner"
+              || echo "note: no coalescing line — the two reboots did not overlap on this runner (HTTP $POST1 / $POST2)"
           fi
           kill "$SRV" 2>/dev/null
 

@@ -15,6 +15,7 @@
 
 import fsp from 'node:fs/promises';
 import fs from 'node:fs';
+import http from 'node:http';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import path from 'node:path';
@@ -30,7 +31,14 @@ const binaryExt = process.platform === 'win32' ? '.exe' : '';
 // compared to distinguish our managed install from a user's custom directory.
 const BUNDLED_FFMPEG_DIR = path.join(dataRoot, 'bin/ffmpeg');
 const MIN_FFMPEG_MAJOR = 6;
-const CHECKSUMS_URL = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/checksums.sha256';
+// Where the builds come from. MSTREAM_FFMPEG_MIRROR replaces the upstream
+// base for BOTH sources (BtbN archive + checksums.sha256; martin-riedl's
+// per-binary zips + sibling .sha256) — for an internal mirror on an air-gapped
+// host, and for the unit test's loopback server. Layout under the base must
+// match upstream's; the mirror is only trusted over https or loopback http.
+const MIRROR = (process.env.MSTREAM_FFMPEG_MIRROR || '').replace(/\/+$/, '');
+const BTBN_BASE = MIRROR || 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest';
+const CHECKSUMS_URL = `${BTBN_BASE}/checksums.sha256`;
 // Download hardening: cap redirect chains and apply a socket-inactivity
 // timeout so a stalled or looping endpoint can't hang the process forever.
 const MAX_REDIRECTS = 5;
@@ -40,6 +48,18 @@ const HTTP_TIMEOUT_MS = 30000;
 const MAX_BUFFER_BYTES = 1024 * 1024;
 
 let _initPromise = null;
+// Bumped by reset(): a resolution chain started before a reset is stale — it
+// may still finish (its download is shared, see _install), but it must not
+// publish its outcome or touch the chain that superseded it.
+let _generation = 0;
+// The one in-flight install, keyed by its target dir: { dir, promise }.
+// Deliberately NOT cleared by reset(). Before this, a soft reboot mid-download
+// (reset() -> the re-served transcode.init() -> ensureFfmpeg()) started a
+// second download+extract into the SAME .staging dir while the first was still
+// extracting — each rm'ing the other's files, both racing to swap binaries in,
+// and the archive fetched twice per reboot (three times in one CI boot.log).
+// checkForUpdate() shares it, so a weekly check can't overlap a boot install.
+let _install = null;
 let _updateTimer = null;
 let _bootTimer = null;
 
@@ -120,7 +140,7 @@ function releaseInfo() {
   const asset = btbnAsset();
   if (asset) {
     return {
-      url: `https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${asset}`,
+      url: `${BTBN_BASE}/${asset}`,
       asset,
       source: 'btbn'
     };
@@ -134,7 +154,7 @@ function releaseInfo() {
   // stable build (vs `snapshot` = git master). Arch tokens are amd64/arm64.
   if (process.platform === 'darwin') {
     const macArch = process.arch === 'arm64' ? 'arm64' : 'amd64';
-    const base = `https://ffmpeg.martin-riedl.de/redirect/latest/macos/${macArch}/release`;
+    const base = MIRROR || `https://ffmpeg.martin-riedl.de/redirect/latest/macos/${macArch}/release`;
     return {
       url: `${base}/ffmpeg.zip`,
       ffprobeUrl: `${base}/ffprobe.zip`,
@@ -148,12 +168,29 @@ function releaseInfo() {
 
 // ── HTTP download with redirect following ───────────────────────────────────
 
+// Only https may leave the machine — a redirect chain must never downgrade a
+// binary download to cleartext. Plain http is accepted for loopback alone (a
+// same-host mirror, the test harness), where nothing can sit in the path.
+function isAcceptedUrl(u) {
+  if (u.startsWith('https:')) { return true; }
+  try {
+    const { protocol, hostname } = new URL(u);
+    return protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(hostname);
+  } catch {
+    return false;
+  }
+}
+
+function clientFor(u) {
+  return u.startsWith('https:') ? https : http;
+}
+
 function downloadToBuffer(url) {
   return new Promise((resolve, reject) => {
     const follow = (u, redirects = 0) => {
       if (redirects > MAX_REDIRECTS) { return reject(new Error(`Too many redirects for ${url}`)); }
-      if (!u.startsWith('https:')) { return reject(new Error(`Refusing non-HTTPS URL: ${u}`)); }
-      const req = https.get(u, { headers: { 'User-Agent': 'mstream-ffmpeg-bootstrap/2.0' } }, res => {
+      if (!isAcceptedUrl(u)) { return reject(new Error(`Refusing non-HTTPS URL: ${u}`)); }
+      const req = clientFor(u).get(u, { headers: { 'User-Agent': 'mstream-ffmpeg-bootstrap/2.0' } }, res => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
           // Location may be relative (martin-riedl) — resolve against `u`.
@@ -199,8 +236,8 @@ function downloadToFile(url, destPath) {
   return new Promise((resolve, reject) => {
     const follow = (u, redirects = 0) => {
       if (redirects > MAX_REDIRECTS) { return reject(new Error(`Too many redirects for ${url}`)); }
-      if (!u.startsWith('https:')) { return reject(new Error(`Refusing non-HTTPS URL: ${u}`)); }
-      const req = https.get(u, { headers: { 'User-Agent': 'mstream-ffmpeg-bootstrap/2.0' } }, res => {
+      if (!isAcceptedUrl(u)) { return reject(new Error(`Refusing non-HTTPS URL: ${u}`)); }
+      const req = clientFor(u).get(u, { headers: { 'User-Agent': 'mstream-ffmpeg-bootstrap/2.0' } }, res => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
           return follow(new URL(res.headers.location, u).toString(), redirects + 1);
@@ -467,25 +504,41 @@ function getFfmpegVersion(binPath) {
 
 // ── Core download + verify ──────────────────────────────────────────────────
 
-async function downloadAndInstall() {
+// Single-flight per target dir (see _install). A caller arriving while an
+// install into the same dir is running — the re-served instance after a soft
+// reboot, the post-boot update check, a retry — joins it instead of starting a
+// competing one. A DIFFERENT dir (ffmpegDirectory changed by that reboot) is a
+// separate install with its own staging area, so the two never touch.
+function downloadAndInstall() {
+  const dir = getFfmpegDir();
+  if (_install && _install.dir === dir) { return _install.promise; }
+  const promise = installInto(dir).finally(() => {
+    if (_install && _install.promise === promise) { _install = null; }
+  });
+  _install = { dir, promise };
+  return promise;
+}
+
+async function installInto(dir) {
   const info = releaseInfo();
   if (!info) {
     winston.warn(
       `[ffmpeg-bootstrap] No static build for ${process.platform}/${process.arch}. ` +
-      `Place ffmpeg and ffprobe in ${getFfmpegDir()} manually.`
+      `Place ffmpeg and ffprobe in ${dir} manually.`
     );
     return false;
   }
 
-  const dir = getFfmpegDir();
   await fsp.mkdir(dir, { recursive: true });
 
   // Everything is downloaded, extracted, and verified in a staging dir, then
   // renamed into place as a pair. The live binaries stay untouched (and
   // spawnable) for the whole multi-minute download window, and a broken build
   // (glibc mismatch, truncated extract) is rejected before it ever replaces a
-  // working install. Staging lives INSIDE getFfmpegDir() so the final rename
-  // never crosses filesystems.
+  // working install. Staging lives INSIDE the target dir so the final rename
+  // never crosses filesystems. Only one install per dir runs in this process
+  // (downloadAndInstall's single-flight), so the rm here can only ever hit a
+  // previous run's leftovers, never a live one's.
   const staging = path.join(dir, '.staging');
   await fsp.rm(staging, { recursive: true, force: true }).catch(() => {});
   await fsp.mkdir(staging, { recursive: true });
@@ -497,7 +550,7 @@ async function downloadAndInstall() {
   const stagedFfmpeg = path.join(staging, `ffmpeg${binaryExt}`);
   const stagedFfprobe = path.join(staging, `ffprobe${binaryExt}`);
 
-  winston.info(`[ffmpeg-bootstrap] Downloading ffmpeg for ${process.platform}/${process.arch}...`);
+  winston.info(`[ffmpeg-bootstrap] Downloading ffmpeg for ${process.platform}/${process.arch}...${MIRROR ? ` (mirror: ${MIRROR})` : ''}`);
 
   try {
     let archiveChecksum = null;
@@ -591,12 +644,39 @@ async function downloadAndInstall() {
  *
  * Safe to call multiple times — dedupes via cached promise. On success sets
  * _resolvedFfmpegPath / _resolvedFfprobePath / _resolvedSource.
+ *
+ * A chain that a reset() overtakes (soft reboot mid-resolution) runs to its
+ * end — its download is the shared single-flight one — but as a bystander: it
+ * neither publishes its result nor clears the promise of the chain that
+ * replaced it (that used to be possible, and turned one reboot into a THIRD
+ * download).
  */
 export async function ensureFfmpeg() {
   if (_resolvedFfmpegPath) {
     return { ffmpeg: _resolvedFfmpegPath, ffprobe: _resolvedFfprobePath, source: _resolvedSource };
   }
   if (_initPromise) return _initPromise;
+
+  const gen = _generation;
+  const current = () => gen === _generation;
+  // Publish a resolution — unless a reset() has made this chain stale, in
+  // which case the caller still gets its answer but the module state stays
+  // with the current chain.
+  const resolved = (ffmpeg, ffprobe, source, line) => {
+    if (current()) {
+      _resolvedFfmpegPath = ffmpeg;
+      _resolvedFfprobePath = ffprobe;
+      _resolvedSource = source;
+      winston.info(`[ffmpeg-bootstrap] ${line}`);
+    }
+    return { ffmpeg, ffprobe, source };
+  };
+  // Don't cache a failure — let a later call retry. Only OUR promise, though:
+  // a stale chain must not wipe out its successor's.
+  const failed = () => {
+    if (current()) { _initPromise = null; }
+    return null;
+  };
 
   _initPromise = (async () => {
     const dir = getFfmpegDir();
@@ -611,11 +691,7 @@ export async function ensureFfmpeg() {
       // Subsonic / DLNA paths. Every other resolution path checks both.
       const probe = await getFfmpegVersion(bundledFfprobe);
       if (major >= MIN_FFMPEG_MAJOR && probe.major >= MIN_FFMPEG_MAJOR) {
-        _resolvedFfmpegPath = bundledFfmpeg;
-        _resolvedFfprobePath = bundledFfprobe;
-        _resolvedSource = 'bundled';
-        winston.info(`[ffmpeg-bootstrap] ${versionLine}`);
-        return { ffmpeg: _resolvedFfmpegPath, ffprobe: _resolvedFfprobePath, source: _resolvedSource };
+        return resolved(bundledFfmpeg, bundledFfprobe, 'bundled', versionLine);
       }
       winston.warn(`[ffmpeg-bootstrap] ffmpeg v${major || '?'} / ffprobe v${probe.major || '?'} in ${dir} is unusable, refreshing`);
       await fsp.unlink(bundledFfmpeg).catch(() => {});
@@ -627,15 +703,10 @@ export async function ensureFfmpeg() {
       winston.info('[ffmpeg-bootstrap] musl libc detected, skipping download');
       const sys = await findSystemBinaries();
       if (sys) {
-        _resolvedFfmpegPath = sys.ffmpeg;
-        _resolvedFfprobePath = sys.ffprobe;
-        _resolvedSource = 'system';
-        winston.info(`[ffmpeg-bootstrap] Using system ffmpeg: ${sys.ffmpegVersion}`);
-        return { ffmpeg: _resolvedFfmpegPath, ffprobe: _resolvedFfprobePath, source: _resolvedSource };
+        return resolved(sys.ffmpeg, sys.ffprobe, 'system', `Using system ffmpeg: ${sys.ffmpegVersion}`);
       }
       winston.error('[ffmpeg-bootstrap] No system ffmpeg found. Install with: apk add ffmpeg');
-      _initPromise = null; // don't cache failure — let a later call retry
-      return null;
+      return failed();
     }
 
     // ── Step 3: Download to getFfmpegDir(), verify it executes ───────────
@@ -643,11 +714,7 @@ export async function ensureFfmpeg() {
     if (downloadOk) {
       const { major, versionLine } = await getFfmpegVersion(bundledFfmpeg);
       if (major >= MIN_FFMPEG_MAJOR) {
-        _resolvedFfmpegPath = bundledFfmpeg;
-        _resolvedFfprobePath = bundledFfprobe;
-        _resolvedSource = 'bundled';
-        winston.info(`[ffmpeg-bootstrap] ${versionLine}`);
-        return { ffmpeg: _resolvedFfmpegPath, ffprobe: _resolvedFfprobePath, source: _resolvedSource };
+        return resolved(bundledFfmpeg, bundledFfprobe, 'bundled', versionLine);
       }
       winston.warn(`[ffmpeg-bootstrap] Downloaded ffmpeg won't execute (likely libc mismatch), trying system fallback`);
       await fsp.unlink(bundledFfmpeg).catch(() => {});
@@ -657,21 +724,15 @@ export async function ensureFfmpeg() {
     // ── Step 4: System PATH fallback ─────────────────────────────────────
     const sys = await findSystemBinaries();
     if (sys) {
-      _resolvedFfmpegPath = sys.ffmpeg;
-      _resolvedFfprobePath = sys.ffprobe;
-      _resolvedSource = 'system';
-      winston.info(`[ffmpeg-bootstrap] Using system ffmpeg: ${sys.ffmpegVersion}`);
-      return { ffmpeg: _resolvedFfmpegPath, ffprobe: _resolvedFfprobePath, source: _resolvedSource };
+      return resolved(sys.ffmpeg, sys.ffprobe, 'system', `Using system ffmpeg: ${sys.ffmpegVersion}`);
     }
 
     // ── Step 5: Nothing works ────────────────────────────────────────────
     winston.error('[ffmpeg-bootstrap] No working ffmpeg found (download failed and no system binary on PATH)');
-    _initPromise = null; // don't cache failure — let a later call retry
-    return null;
+    return failed();
   })().catch(e => {
     winston.error(`[ffmpeg-bootstrap] ${e.message}`);
-    _initPromise = null; // allow retry
-    return null;
+    return failed();
   });
 
   return _initPromise;
@@ -690,8 +751,15 @@ export function getResolvedSource() {
 /**
  * Reset all resolved state — used by transcode.reset() on soft reboot so that
  * a changed ffmpegDirectory is picked up by the next ensureFfmpeg() call.
+ *
+ * An install already in flight is left alone on purpose: the next
+ * ensureFfmpeg() re-walks the chain and, if the target dir is unchanged, joins
+ * that install rather than starting a competitor (see _install). The chain
+ * that was running is marked stale (see ensureFfmpeg) so it can't publish over
+ * — or clear the promise of — the one the re-serve starts.
  */
 export function reset() {
+  _generation++;
   _resolvedFfmpegPath = null;
   _resolvedFfprobePath = null;
   _resolvedSource = null;
@@ -722,7 +790,7 @@ export async function checkForUpdate() {
     // BtbN: compare checksums to detect new builds
     const checksumFile = path.join(getFfmpegDir(), '.checksum');
     let stored = null;
-    try { stored = (await fsp.readFile(checksumFile, 'utf8')).trim(); } catch {}
+    try { stored = (await fsp.readFile(checksumFile, 'utf8')).trim(); } catch { /* no baseline yet */ }
 
     // `.checksum` is only ever written by our own installs, so it doubles as
     // a provenance marker. No baseline in a CUSTOM ffmpegDirectory means the
