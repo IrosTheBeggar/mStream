@@ -253,22 +253,36 @@ jobs:
 
           # Tag builds ship the COMMITTED binaries (the linux one carries the
           # debian:11 glibc floor an in-job rebuild here couldn't reproduce),
-          # so a tag must prove those binaries match its own launcher source.
-          # The stamp is written by build-rust-launcher's commit job; a tag
-          # cut inside the rebuild window — or before the stamp ever landed —
-          # fails here instead of shipping a stale launcher green.
+          # so a tag must prove those binaries match its own launcher source
+          # AND its own version: build.rs bakes package.json's version into
+          # the Windows exe's VersionInfo, and `npm version` tags the bump
+          # commit itself — before build-rust-launcher has rebuilt — so a
+          # tree-only check let v6.20.1 ship an mStream.exe reporting 6.20.0.
+          # The two-line stamp (tree, version) is written by
+          # build-rust-launcher's commit job; a tag cut inside the rebuild
+          # window — or before the stamp ever landed — fails here instead of
+          # shipping a stale launcher green.
           if [ "${{ github.ref_type }}" = "tag" ]; then
-            WANT=$(git rev-parse HEAD:rust-launcher)
+            WANT_TREE=$(git rev-parse HEAD:rust-launcher)
+            # node, not jq: this leg runs on all three OSes and setup-node ran
+            # above; jq's presence on the Windows leg's git-bash is a runner-
+            # image detail not worth depending on.
+            WANT_VER=$(node -pe "require('./package.json').version")
             if [ ! -f bin/rust-launcher/.source-tree ]; then
               echo "::error::no launcher provenance stamp (bin/rust-launcher/.source-tree) — wait for build-rust-launcher's commit on master, then re-tag"
               exit 1
             fi
-            HAVE=$(cat bin/rust-launcher/.source-tree)
-            if [ "$WANT" != "$HAVE" ]; then
-              echo "::error::committed launcher binaries were built from rust-launcher tree $HAVE but this tag's tree is $WANT — wait for build-rust-launcher's commit (or re-run it), then re-tag"
+            HAVE_TREE=$(sed -n '1p' bin/rust-launcher/.source-tree)
+            HAVE_VER=$(sed -n '2p' bin/rust-launcher/.source-tree)
+            if [ "$WANT_TREE" != "$HAVE_TREE" ]; then
+              echo "::error::committed launcher binaries were built from rust-launcher tree $HAVE_TREE but this tag's tree is $WANT_TREE — wait for build-rust-launcher's commit (or re-run it), then re-tag"
               exit 1
             fi
-            echo "launcher provenance ok: $WANT"
+            if [ "$WANT_VER" != "$HAVE_VER" ]; then
+              echo "::error::committed launcher binaries were built for version '${HAVE_VER:-<unstamped>}' but this tag is $WANT_VER — their VersionInfo would be wrong. Bump with \`npm version --no-git-tag-version\`, push, wait for build-rust-launcher's 'ci: update pre-built' commit, then tag THAT commit"
+              exit 1
+            fi
+            echo "launcher provenance ok: tree $WANT_TREE, version $WANT_VER"
           fi
 
           REBUILD=0
@@ -460,6 +474,23 @@ jobs:
           # Gatekeeper's own spctl assessment after stapling, below.
           codesign --verify --strict --verbose=2 "$APP"
 
+          # The signing key's job is done: everything from here on —
+          # notarytool (submits the already-signed app), stapler, spctl, the
+          # re-zip — reads the signature or talks to Apple; none of it needs
+          # the private key. Take the keychain out of the search list and
+          # delete it NOW, not at job end: the smoke steps that follow run the
+          # freshly built server plus every prod dependency on this same
+          # runner, and an unlocked, codesign-authorized Developer ID keychain
+          # sitting in the search list for that whole time is an exfiltration
+          # window (a validly signed Mach-O under our identity is the prize;
+          # Apple revoking the cert would Gatekeeper-fail every shipped
+          # release). Ephemeral runners make it a small window; there is no
+          # reason to leave it open at all. The `if: always()` step below
+          # covers a failure that exits this script before this line.
+          security list-keychains -d user -s login.keychain
+          security delete-keychain "$keychain"
+          echo "signing keychain removed"
+
           if [ "$FULL_NOTARIZE" = "true" ]; then
             echo "$ASC_API_KEY" > "$RUNNER_TEMP/asc.p8"
             ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarize.zip"
@@ -549,6 +580,20 @@ jobs:
           magic=$(head -c 4 "dist/$B.zip" | xxd -p)
           [ "$magic" = "504b0304" ] || { echo "::error::recut dist/$B.zip is not a zip (magic: $magic)"; exit 1; }
           echo "re-zipped dist/$B.zip with the signed bundle"
+
+      # Belt to the sign step's suspenders: if that script exits before its
+      # own keychain removal (a codesign or verify failure), the keychain
+      # must still not survive into the smoke steps / the rest of the job.
+      # Idempotent — a keychain already deleted above is simply not there.
+      - name: Remove signing keychain (always)
+        if: always() && startsWith(matrix.key, 'darwin')
+        run: |
+          security list-keychains -d user -s login.keychain 2>/dev/null || true
+          if [ -f "$RUNNER_TEMP/signing.keychain-db" ]; then
+            security delete-keychain "$RUNNER_TEMP/signing.keychain-db" && echo "signing keychain removed (cleanup step)"
+          else
+            echo "no signing keychain present (already removed, or this build shipped unsigned)"
+          fi
 
       # darwin-x64 is the one shipped artifact whose binaries never execute
       # in CI (smoke: false — it's cross-compiled), which after signing means
