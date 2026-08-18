@@ -9,7 +9,7 @@
 // Windows icon + metadata flags are only applied for a win-x64 build running ON
 // Windows — Bun can't set them when cross-compiling. Name/version/etc. come from
 // package.json so they never drift.
-import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, cpSync, chmodSync, readdirSync, openSync, readSync, closeSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, cpSync, chmodSync, readdirSync, openSync, readSync, closeSync, symlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -125,11 +125,12 @@ function stageExe(src, dest) {
   if (isUnix) { try { chmodSync(dest, 0o755); } catch (_) { /* best-effort; no-op on Windows hosts */ } }
 }
 
-// macOS gets a .app bundle so Finder/Dock show the icon; its assets (webapp/,
-// bin/) live next to the binary inside Contents/MacOS so appRoot
-// (= dirname(process.execPath)) still resolves them. It's a portable .app —
-// run it in place (it writes its db/config next to the binary, like the bare
-// builds). Other platforms stage flat in the bundle dir.
+// macOS gets a .app bundle so Finder/Dock show the icon. The bin/ sidecars
+// live next to the binary inside Contents/MacOS so appRoot
+// (= dirname(process.execPath)) still resolves them; webapp/ lives in
+// Contents/Resources with a symlink from MacOS (see below — codesign's
+// sealing rules force the split, the symlink keeps appRoot resolution
+// working). Other platforms stage flat in the bundle dir.
 const isMac = t.plat === 'darwin';
 const contentRoot = isMac ? join(stageDir, 'mStream.app', 'Contents', 'MacOS') : stageDir;
 mkdirSync(contentRoot, { recursive: true });
@@ -141,7 +142,23 @@ mkdirSync(contentRoot, { recursive: true });
 // user-facing name (mStream.exe / the .app executable / mstream-desktop).
 const serverName = `mstream-server${t.ext}`;
 stageExe(join(root, outPath), join(contentRoot, serverName));
-cpSync(join(root, 'webapp'), join(contentRoot, 'webapp'), { recursive: true });  // the UI
+// The UI. On macOS it lives in Contents/Resources with a RELATIVE SYMLINK
+// from Contents/MacOS/webapp: codesign's bundle-sealing scan treats every
+// item under MacOS as a nested-code candidate, and a tree of html/js there
+// fails the bundle sign outright ("code object is not signed at all — In
+// subcomponent: …webapp/velvet/admin/index.html", observed on the first
+// signed CI runs). A symlink is sealed as a symlink, the server's
+// appRoot-relative lookup resolves through it unchanged, and zip -y /
+// ditto / Finder extraction all preserve it. bin/ stays under MacOS: its
+// contents are signed Mach-Os, which the nested-code scan accepts.
+if (isMac) {
+  const resRoot = join(stageDir, 'mStream.app', 'Contents', 'Resources');
+  mkdirSync(resRoot, { recursive: true });
+  cpSync(join(root, 'webapp'), join(resRoot, 'webapp'), { recursive: true });
+  symlinkSync(join('..', 'Resources', 'webapp'), join(contentRoot, 'webapp'));
+} else {
+  cpSync(join(root, 'webapp'), join(contentRoot, 'webapp'), { recursive: true });  // the UI
+}
 
 // Desktop tray launcher (rust-launcher/), CI-committed per platform like the
 // rust-parser sidecars. Deliberately absent on linux-arm64 and the musl
@@ -188,6 +205,13 @@ if (launcherSrc) {
 // 20.04, Amazon Linux 2, Debian 11) instead of the ~16x-slower JS fallback.
 // rust-server-audio has no musl build, so musl bundles ship without it
 // (server-audio is opt-in). Each entry is skipped gracefully if not committed.
+//
+// SIGN-LOAD-BEARING LAYOUT (darwin): build-bun.yml's sign step walks
+// Contents/MacOS for Mach-Os (these sidecars + the iroh .node), signs
+// mstream-server by name with its entitlements, and asserts the bundle face
+// is the launcher. If you move where binaries land — or stage a second
+// JIT-needing (Bun-compiled) binary, which would need its own entitlements
+// wiring — update that step in the same PR.
 const libc = t.musl ? '-musl' : '';
 const sidecars = [
   ['rust-parser',       `rust-parser-${t.plat}-${t.arch}${libc}${t.ext}`],
@@ -383,7 +407,15 @@ function bundleReadme(version, t, launcherStaged, serverName) {
   lines.push(
     '',
     `The web app serves on http://localhost:3000 - set up your library there.`,
-    `Data lives in ${dataDir}; pass --portable to keep it next to the binaries.`,
+    // macOS gets no --portable suggestion: "next to the binaries" is INSIDE
+    // mStream.app/Contents/MacOS there, and the first write into a signed
+    // bundle invalidates its seal — codesign --verify fails, Gatekeeper
+    // calls a copied .app "damaged", and signature-keyed consents (Local
+    // Network) can re-prompt. The one sentence users would follow must not
+    // undo the notarization the bundle ships with.
+    t.plat === 'darwin'
+      ? `Data lives in ${dataDir}. (Do not use --portable with the .app: writing inside a signed app breaks its seal.)`
+      : `Data lives in ${dataDir}; pass --portable to keep it next to the binaries.`,
     '',
     `Docs: https://mstream.io        More flags: ${run}${server} --help`,
   );

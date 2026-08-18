@@ -22,7 +22,17 @@ on:
       # merge (the launcher step below builds them fresh for such PRs) — the
       # binary-commit workflow's own gate is only compile + --autostart=status.
       - 'rust-launcher/**'
+      # build/ carries bundle inputs the legs consume directly — icons the
+      # bundler stages and mac-entitlements-server.plist the sign step feeds
+      # to codesign. An entitlements-only PR without this filter would merge
+      # with zero CI and first run on the release tag.
+      - 'build/**'
   workflow_dispatch:
+    inputs:
+      notarize:
+        description: 'Run the full notarize+staple round-trip (normally tag-only)'
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -32,8 +42,11 @@ jobs:
     # process would otherwise sit in a retry loop until the 6-hour default,
     # burning paid macOS/Windows runners and showing "still running" instead of
     # a failure. Every smoke curl also carries --max-time. A full build+smoke
-    # is ~2 minutes today.
-    timeout-minutes: 30
+    # is ~2 minutes today — but the darwin legs' notarize path waits on Apple
+    # for up to 20 minutes (notarytool --timeout below) BEFORE staple, re-zip,
+    # and the smoke battery run, so those legs get the headroom to match; the
+    # tight cap stays for every other leg.
+    timeout-minutes: ${{ startsWith(matrix.key, 'darwin') && 50 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -161,6 +174,270 @@ jobs:
 
       - name: Build + bundle (${{ matrix.key }})
         run: bun scripts/build-bun.mjs --target=${{ matrix.key }} --bundle
+
+      # ── Developer ID signing + notarization (darwin legs only) ──────────
+      # Ported from mstream-terminal-player's release.yml, adapted from a
+      # bare Mach-O to a full .app bundle: sign inside-out (sidecar Mach-Os
+      # first, then mstream-server with the Bun JIT entitlements, then the
+      # bundle itself, which also signs the launcher main executable), then
+      # notarize and STAPLE — a bundle can carry its ticket offline, which a
+      # bare binary never could. Kills Gatekeeper's "damaged" dialog on
+      # browser-downloaded zips.
+      #
+      # Secrets-gated like the terminal player: absent secrets ship an
+      # unsigned build (fork PRs, dry runs), never a failed one. Signing
+      # runs on EVERY darwin build so the smoke below boots the signed,
+      # hardened-runtime binaries and would catch a missing entitlement in
+      # PR CI; the slow notarize+staple round-trip runs only on tag builds
+      # (or a dispatch with notarize=true, for proving the pipeline without
+      # cutting a release).
+      #
+      # Secrets (same names/values as mstream-terminal-player — repo-scoped,
+      # so they must also be added to THIS repo's Actions secrets):
+      #   MACOS_CERT_P12       base64 of the Developer ID Application .p12
+      #   MACOS_CERT_PASSWORD  the .p12 password
+      #   ASC_API_KEY          App Store Connect API private key (.p8 body)
+      #   ASC_KEY_ID           its key id
+      #   ASC_ISSUER_ID        issuer UUID (team keys only; empty for
+      #                        individual keys — notarytool forbids --issuer
+      #                        with those)
+      - name: Sign, notarize, staple (${{ matrix.key }})
+        if: startsWith(matrix.key, 'darwin')
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          ASC_API_KEY: ${{ secrets.ASC_API_KEY }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          FULL_NOTARIZE: ${{ github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.notarize) }}
+        run: |
+          set -euo pipefail
+          # The secrets context is not allowed in a step-level `if`, so the
+          # gate lives here — and it gates on the COHERENT secret set, not one
+          # sentinel value, with opposite postures per context:
+          #   * A build that must notarize (tag, or dispatch with
+          #     notarize=true) with ANY required secret missing fails LOUDLY:
+          #     a release silently shipping unsigned would resurrect the exact
+          #     Gatekeeper dialog this step exists to kill, with one log line
+          #     in a green job as the only witness. This also makes the
+          #     notarize=true proving dispatch mean something: it can no
+          #     longer vacuously succeed by skipping everything.
+          #   * A non-notarizing context (PR, fork, plain dispatch) with NO
+          #     cert ships unsigned — never a failed build.
+          #   * A HALF-configured cert (p12 without password) fails with the
+          #     secret's name in any context: it could only ever fail later
+          #     at `security import` with a message naming nothing.
+          # ASC_ISSUER_ID is deliberately not required: empty means an
+          # individual API key (see the notarytool call below).
+          if [ "$FULL_NOTARIZE" = "true" ]; then
+            missing=""
+            [ -n "${CERT_P12}" ]      || missing="$missing MACOS_CERT_P12"
+            [ -n "${CERT_PASSWORD}" ] || missing="$missing MACOS_CERT_PASSWORD"
+            [ -n "${ASC_API_KEY}" ]   || missing="$missing ASC_API_KEY"
+            [ -n "${ASC_KEY_ID}" ]    || missing="$missing ASC_KEY_ID"
+            if [ -n "$missing" ]; then
+              echo "::error::this build must notarize (tag/dispatch) but these repo secrets are missing:$missing — refusing to ship a release unsigned"
+              exit 1
+            fi
+          fi
+          if [ -z "${CERT_P12}" ]; then
+            echo "signing secrets absent — shipping unsigned"
+            exit 0
+          fi
+          if [ -z "${CERT_PASSWORD}" ]; then
+            echo "::error::MACOS_CERT_P12 is set but MACOS_CERT_PASSWORD is not — signing would die at 'security import' with an error naming no secret; add the password (or remove the cert secret to ship unsigned)"
+            exit 1
+          fi
+          D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
+          APP="$D/mStream.app"
+          [ -d "$APP" ] || { echo "::error::no .app staged at $APP"; exit 1; }
+
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(uuidgen)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 1200 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S "apple-tool:,apple:" \
+            -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" login.keychain
+
+          identity=$(security find-identity -v -p codesigning "$keychain" \
+            | sed -n 's/.*"\(Developer ID Application[^"]*\)".*/\1/p' | head -1)
+          [ -n "$identity" ] || { echo "::error::no Developer ID Application identity in the imported .p12"; exit 1; }
+
+          # Secure timestamps only when the result will be notarized (Apple
+          # requires them there). On PR builds they'd add a network round-trip
+          # to timestamp.apple.com per codesign call — a flake channel for
+          # throwaway signatures; the hardened-runtime smoke value is
+          # identical without. (Same bash-3.2-safe empty-array idiom as
+          # `issuer` below.)
+          ts=()
+          if [ "$FULL_NOTARIZE" = "true" ]; then ts=(--timestamp); fi
+
+          # Nested code first — every sidecar Mach-O under Contents/MacOS
+          # except the two signed by name below (the server with its
+          # entitlements, the launcher via the bundle seal). A find walk
+          # keyed on `file`, NOT a fixed-depth glob: the staged layout
+          # belongs to scripts/build-bun.mjs (marked sign-load-bearing
+          # there), and a sidecar nested one level deeper must not be
+          # silently skipped (unsigned nested code fails the bundle sign —
+          # or tag-day notarization — in the wrong place), nor a stray text
+          # file fed to codesign. Identifiers derive from the filenames,
+          # which notarization accepts.
+          while IFS= read -r f; do
+            case "$(file -b "$f")" in
+              Mach-O*) codesign --force ${ts[@]+"${ts[@]}"} --options runtime --sign "$identity" "$f" ;;
+            esac
+          done < <(find "$APP/Contents/MacOS" -type f ! -name mStream ! -name mstream-server)
+          # The Bun server: JavaScriptCore JITs under hardened runtime only
+          # with these entitlements (see build/mac-entitlements-server.plist).
+          codesign --force ${ts[@]+"${ts[@]}"} --options runtime \
+            --entitlements build/mac-entitlements-server.plist \
+            --sign "$identity" "$APP/Contents/MacOS/mstream-server"
+          # The bundle sign below re-signs the MAIN executable with NO
+          # entitlements — correct only while that executable is the
+          # launcher. In a launcher-less staging (CFBundleExecutable =
+          # mstream-server: the MSTREAM_ALLOW_MISSING_LAUNCHER escape hatch,
+          # or a future server-only darwin variant) it would silently STRIP
+          # the JIT entitlements just applied above and ship a server that
+          # dies at its first JIT allocation — invisibly, on the smoke-less
+          # darwin-x64 leg. Refuse loudly instead; teach this step per-face
+          # entitlement wiring if that variant ever becomes real.
+          face=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$APP/Contents/Info.plist")
+          if [ "$face" != "mStream" ]; then
+            echo "::error::bundle main executable is '$face', not the launcher — the entitlement-less bundle sign would strip its entitlements; this step only supports launcher-faced bundles"
+            exit 1
+          fi
+          # The bundle: signs the launcher main executable and seals the
+          # resource envelope (webapp/ included). Identifier comes from
+          # Info.plist (io.mstream.server).
+          codesign --force ${ts[@]+"${ts[@]}"} --options runtime --sign "$identity" "$APP"
+          # Verify the seal and every nested-code entry the signer recorded —
+          # deliberately NOT --deep. --deep's verification walk classifies
+          # every regular file under Contents/MacOS as a code object, and
+          # this bundle ships the webapp tree + sidecar dirs there (the
+          # server resolves both appRoot-relative, next to its own binary),
+          # so data files like webapp/**/index.html fail it as "code object
+          # is not signed at all" even though the outer seal covers them as
+          # hashed resources — observed on the first signed CI run, AFTER
+          # the sign itself succeeded. Every actual Mach-O is signed
+          # explicitly above; the honest end-to-end acceptance check is
+          # Gatekeeper's own spctl assessment after stapling, below.
+          codesign --verify --strict --verbose=2 "$APP"
+
+          if [ "$FULL_NOTARIZE" = "true" ]; then
+            echo "$ASC_API_KEY" > "$RUNNER_TEMP/asc.p8"
+            ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarize.zip"
+            # Team keys carry an issuer UUID; individual keys must not pass
+            # --issuer at all, says notarytool itself. Normalize both ids
+            # first — these are hand-pasted repo secrets, and a stray
+            # newline/space/quote from the paste otherwise surfaces as
+            # notarytool usage error rc=64 mid-run (observed: "'***' is
+            # invalid for '--issuer': must be a valid UUID") — then
+            # shape-check the issuer so a wrong-field paste fails NAMED.
+            ASC_KEY_ID=$(printf '%s' "$ASC_KEY_ID" | tr -d '[:space:]"')
+            ASC_ISSUER_ID=$(printf '%s' "$ASC_ISSUER_ID" | tr -d '[:space:]"')
+            if [ -n "$ASC_ISSUER_ID" ] && ! printf '%s' "$ASC_ISSUER_ID" | grep -qiE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+              echo "::error::ASC_ISSUER_ID is set but is not a UUID — re-copy the Issuer ID from App Store Connect (Users and Access → Integrations) and reset the secret"
+              exit 1
+            fi
+            issuer=()
+            if [ -n "${ASC_ISSUER_ID}" ]; then
+              issuer=(--issuer "$ASC_ISSUER_ID")
+            fi
+            # ${issuer[@]+...}: macOS runners execute this step with /bin/bash
+            # 3.2 (even `shell: bash` resolves there), where expanding an
+            # EMPTY array via "${issuer[@]}" under `set -u` aborts with
+            # 'unbound variable' (fixed only in bash 4.4) — which would kill
+            # exactly the individual-key path the array exists to support.
+            # The +-form expands to nothing when the array is empty and to
+            # the quoted elements when it isn't, on every bash.
+            #
+            # Submission output is CAPTURED so its id survives for the
+            # failure path: on an Invalid verdict the per-file reasons live
+            # only in the notary log, fetched by id with the same .p8 —
+            # without this, a rejected release says 'status: Invalid' and
+            # nothing else, and the credential needed to ask why is already
+            # deleted. (Belt+suspenders on the Accepted grep: early
+            # notarytool builds exited 0 on Invalid.)
+            set +e
+            sub_out=$(xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+              --key "$RUNNER_TEMP/asc.p8" --key-id "$ASC_KEY_ID" \
+              ${issuer[@]+"${issuer[@]}"} --wait --timeout 20m 2>&1)
+            sub_rc=$?
+            set -e
+            echo "$sub_out"
+            sub_id=$(echo "$sub_out" | sed -n 's/^[[:space:]]*id: \([0-9a-f-]*\).*/\1/p' | head -1)
+            if [ "$sub_rc" -ne 0 ] || ! echo "$sub_out" | grep -q "status: Accepted"; then
+              if [ -n "$sub_id" ]; then
+                echo "::group::notarytool log $sub_id"
+                xcrun notarytool log "$sub_id" \
+                  --key "$RUNNER_TEMP/asc.p8" --key-id "$ASC_KEY_ID" \
+                  ${issuer[@]+"${issuer[@]}"} || true
+                echo "::endgroup::"
+              fi
+              rm -f "$RUNNER_TEMP/asc.p8"
+              echo "::error::notarization did not complete (submit rc=$sub_rc) — per-file reasons in the notary log above"
+              exit 1
+            fi
+            rm -f "$RUNNER_TEMP/asc.p8"
+            # Staple can transiently fail right after Accepted — the ticket's
+            # CDN propagation lags by seconds-to-minutes (the classic Error
+            # 65) — and one transient miss must not discard a completed
+            # 20-minute round-trip.
+            stapled=0
+            for attempt in 1 2 3; do
+              if xcrun stapler staple "$APP"; then stapled=1; break; fi
+              echo "stapler attempt $attempt failed — waiting for ticket propagation"
+              sleep $(( attempt * 20 ))
+            done
+            [ "$stapled" = "1" ] || { echo "::error::stapler failed after 3 attempts (ticket never became fetchable)"; exit 1; }
+            xcrun stapler validate "$APP"
+            # The verdict that actually matters to a user's double-click:
+            # Gatekeeper's own assessment of the signed, notarized, stapled
+            # bundle. Expected: "accepted ... source=Notarized Developer ID".
+            spctl --assess --type execute --verbose=2 "$APP"
+          else
+            echo "non-tag build: signed only (notarize+staple is tag/dispatch-gated)"
+          fi
+
+          # The bundler cut its zip BEFORE signing changed the bytes — recut
+          # it from the staged tree, same tool and shape as build-bun.mjs's
+          # unix branch (Info-ZIP, -y keeps symlinks, modes preserved).
+          B=$(basename "$D")
+          rm -f "dist/$B.zip"
+          (cd dist/stage && zip -qry "../$B.zip" "$B")
+          # Same ship gate as the bundler's own archive step: the recut IS
+          # the zip users download, and an archive that isn't a real zip
+          # must fail here, not ship (scripts/build-bun.mjs grew this check
+          # after a tar-in-zip's-clothing shipped once).
+          magic=$(head -c 4 "dist/$B.zip" | xxd -p)
+          [ "$magic" = "504b0304" ] || { echo "::error::recut dist/$B.zip is not a zip (magic: $magic)"; exit 1; }
+          echo "re-zipped dist/$B.zip with the signed bundle"
+
+      # darwin-x64 is the one shipped artifact whose binaries never execute
+      # in CI (smoke: false — it's cross-compiled), which after signing means
+      # a hardened-runtime + entitlements problem specific to x64 would ship
+      # notarized and green. The arm64 runner has Rosetta 2: one worker
+      # self-dispatch boots the x64 Bun binary far enough that JavaScriptCore
+      # must JIT — the class of failure `codesign --verify` cannot see. Runs
+      # on unsigned builds too (no secrets): still proves the x64 Bun blob
+      # executes, at ~2s cost. (iroh-selftest would be wrong here — darwin-x64
+      # ships without an iroh .node, an upstream prebuilt gap.)
+      - name: Smoke x64 binary under Rosetta (darwin-x64)
+        if: matrix.key == 'darwin-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          D=$(ls -d dist/stage/mStream-*-darwin-x64)
+          BIN="$D/mStream.app/Contents/MacOS/mstream-server"
+          OUT=$("$BIN" --mstream-worker=scanner '{}' 2>&1) || true
+          echo "$OUT" | grep -q dbPath || { echo "::error::x64 mstream-server did not run under Rosetta (hardened-runtime/entitlement or Bun-blob problem)"; echo "$OUT" | head -20; exit 1; }
+          echo "OK: x64 binary executes under Rosetta (JIT path exercised)"
 
       - name: Smoke test (self-dispatch + boot + serve + scan)
         if: matrix.smoke
