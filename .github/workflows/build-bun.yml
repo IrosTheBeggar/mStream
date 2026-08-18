@@ -344,8 +344,14 @@ jobs:
       # blank — and later unsigned — by omission.
       #
       # rust-server-audio is stamped here but exercised by no other smoke
-      # (server-playback is opt-in), so prove the stamped exe still runs:
-      # start it, GET /status, stop it. rust-parser and the launcher run
+      # (server-playback is opt-in), so prove the stamped exe still LOADS
+      # AND RUNS: start it and either see it serve /status, or see it get
+      # as far as its own audio-device probe. The runner has no sound
+      # device, so on CI it panics at startup with "Failed to open audio
+      # output device: NoDevice" — that is Rust code executing past main(),
+      # i.e. the PE loader accepted the re-laid-out file, which is the only
+      # thing the stamp could have broken. Anything else (won't start, no
+      # output, a different failure) fails. rust-parser and the launcher run
       # stamped/baked in the smoke steps below.
       - name: Assert Windows VersionInfo on every shipped PE (win-x64)
         if: matrix.key == 'win-x64'
@@ -366,12 +372,18 @@ jobs:
             if ($p.HasExited) { break }
           }
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-          if (-not $ok) {
-            Write-Host "::error::stamped rust-server-audio did not serve /status (exited=$($p.HasExited))"
-            Get-Content sa.out, sa.err -ErrorAction SilentlyContinue | Select-Object -Last 10
-            exit 1
+          if ($ok) {
+            Write-Host 'stamped rust-server-audio serves /status -> 200'
+          } else {
+            $err = (Get-Content sa.err -ErrorAction SilentlyContinue) -join "`n"
+            if ($p.HasExited -and $err -match 'Failed to open audio output device') {
+              Write-Host 'stamped rust-server-audio executes (reached its audio-device probe: no sound device on this runner, as expected)'
+            } else {
+              Write-Host "::error::stamped rust-server-audio neither served /status nor reached its audio-device probe (exited=$($p.HasExited))"
+              Get-Content sa.out, sa.err -ErrorAction SilentlyContinue | Select-Object -Last 10
+              exit 1
+            }
           }
-          Write-Host 'stamped rust-server-audio serves /status -> 200'
 
       # ── Developer ID signing + notarization (darwin legs only) ──────────
       # Ported from mstream-terminal-player's release.yml, adapted from a
