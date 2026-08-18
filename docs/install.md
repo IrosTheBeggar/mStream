@@ -13,9 +13,10 @@ Keep them together; the bundle itself can live anywhere.
 **Just double-click it.** The desktop face of the bundle — `mStream.exe` on
 Windows, `mStream.app` on macOS, `mstream-desktop` on Linux — starts the
 server in the background, puts an mStream icon in your tray / menu bar
-(Open mStream · Quick Connect · Start at login · Restart server · Quit), and
-opens your browser at the player. Start-at-login is on by default; one click
-in the tray menu turns it off.
+(a status line — "Running · up 3h 12m", or Starting… / Stopped — then Open
+mStream · Quick Connect · Start at login · View logs · Restart server · Quit),
+and opens your browser at the player. Start-at-login is on by default; one
+click in the tray menu turns it off.
 
 **Terminal users lose nothing.** The same desktop binary run from a terminal
 behaves exactly like the server itself (same flags, output, and exit codes) —
