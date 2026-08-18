@@ -269,23 +269,53 @@ jobs:
             | sed -n 's/.*"\(Developer ID Application[^"]*\)".*/\1/p' | head -1)
           [ -n "$identity" ] || { echo "::error::no Developer ID Application identity in the imported .p12"; exit 1; }
 
-          # Nested code first — every sidecar Mach-O under Contents/MacOS/bin
-          # (rust-parser, rust-server-audio, the iroh .node). The bundle sign
-          # below verifies nested code is already signed; identifiers derive
-          # from the filenames, which notarization accepts.
-          for f in "$APP/Contents/MacOS/bin"/*/*; do
-            [ -f "$f" ] || continue
-            codesign --force --timestamp --options runtime --sign "$identity" "$f"
-          done
+          # Secure timestamps only when the result will be notarized (Apple
+          # requires them there). On PR builds they'd add a network round-trip
+          # to timestamp.apple.com per codesign call — a flake channel for
+          # throwaway signatures; the hardened-runtime smoke value is
+          # identical without. (Same bash-3.2-safe empty-array idiom as
+          # `issuer` below.)
+          ts=()
+          if [ "$FULL_NOTARIZE" = "true" ]; then ts=(--timestamp); fi
+
+          # Nested code first — every sidecar Mach-O under Contents/MacOS
+          # except the two signed by name below (the server with its
+          # entitlements, the launcher via the bundle seal). A find walk
+          # keyed on `file`, NOT a fixed-depth glob: the staged layout
+          # belongs to scripts/build-bun.mjs (marked sign-load-bearing
+          # there), and a sidecar nested one level deeper must not be
+          # silently skipped (unsigned nested code fails the bundle sign —
+          # or tag-day notarization — in the wrong place), nor a stray text
+          # file fed to codesign. Identifiers derive from the filenames,
+          # which notarization accepts.
+          while IFS= read -r f; do
+            case "$(file -b "$f")" in
+              Mach-O*) codesign --force ${ts[@]+"${ts[@]}"} --options runtime --sign "$identity" "$f" ;;
+            esac
+          done < <(find "$APP/Contents/MacOS" -type f ! -name mStream ! -name mstream-server)
           # The Bun server: JavaScriptCore JITs under hardened runtime only
           # with these entitlements (see build/mac-entitlements-server.plist).
-          codesign --force --timestamp --options runtime \
+          codesign --force ${ts[@]+"${ts[@]}"} --options runtime \
             --entitlements build/mac-entitlements-server.plist \
             --sign "$identity" "$APP/Contents/MacOS/mstream-server"
+          # The bundle sign below re-signs the MAIN executable with NO
+          # entitlements — correct only while that executable is the
+          # launcher. In a launcher-less staging (CFBundleExecutable =
+          # mstream-server: the MSTREAM_ALLOW_MISSING_LAUNCHER escape hatch,
+          # or a future server-only darwin variant) it would silently STRIP
+          # the JIT entitlements just applied above and ship a server that
+          # dies at its first JIT allocation — invisibly, on the smoke-less
+          # darwin-x64 leg. Refuse loudly instead; teach this step per-face
+          # entitlement wiring if that variant ever becomes real.
+          face=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$APP/Contents/Info.plist")
+          if [ "$face" != "mStream" ]; then
+            echo "::error::bundle main executable is '$face', not the launcher — the entitlement-less bundle sign would strip its entitlements; this step only supports launcher-faced bundles"
+            exit 1
+          fi
           # The bundle: signs the launcher main executable and seals the
           # resource envelope (webapp/ included). Identifier comes from
           # Info.plist (io.mstream.server).
-          codesign --force --timestamp --options runtime --sign "$identity" "$APP"
+          codesign --force ${ts[@]+"${ts[@]}"} --options runtime --sign "$identity" "$APP"
           codesign --verify --strict --deep --verbose=2 "$APP"
 
           if [ "$FULL_NOTARIZE" = "true" ]; then
@@ -304,11 +334,46 @@ jobs:
             # exactly the individual-key path the array exists to support.
             # The +-form expands to nothing when the array is empty and to
             # the quoted elements when it isn't, on every bash.
-            xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            #
+            # Submission output is CAPTURED so its id survives for the
+            # failure path: on an Invalid verdict the per-file reasons live
+            # only in the notary log, fetched by id with the same .p8 —
+            # without this, a rejected release says 'status: Invalid' and
+            # nothing else, and the credential needed to ask why is already
+            # deleted. (Belt+suspenders on the Accepted grep: early
+            # notarytool builds exited 0 on Invalid.)
+            set +e
+            sub_out=$(xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
               --key "$RUNNER_TEMP/asc.p8" --key-id "$ASC_KEY_ID" \
-              ${issuer[@]+"${issuer[@]}"} --wait --timeout 20m
-            rm "$RUNNER_TEMP/asc.p8"
-            xcrun stapler staple "$APP"
+              ${issuer[@]+"${issuer[@]}"} --wait --timeout 20m 2>&1)
+            sub_rc=$?
+            set -e
+            echo "$sub_out"
+            sub_id=$(echo "$sub_out" | sed -n 's/^[[:space:]]*id: \([0-9a-f-]*\).*/\1/p' | head -1)
+            if [ "$sub_rc" -ne 0 ] || ! echo "$sub_out" | grep -q "status: Accepted"; then
+              if [ -n "$sub_id" ]; then
+                echo "::group::notarytool log $sub_id"
+                xcrun notarytool log "$sub_id" \
+                  --key "$RUNNER_TEMP/asc.p8" --key-id "$ASC_KEY_ID" \
+                  ${issuer[@]+"${issuer[@]}"} || true
+                echo "::endgroup::"
+              fi
+              rm -f "$RUNNER_TEMP/asc.p8"
+              echo "::error::notarization did not complete (submit rc=$sub_rc) — per-file reasons in the notary log above"
+              exit 1
+            fi
+            rm -f "$RUNNER_TEMP/asc.p8"
+            # Staple can transiently fail right after Accepted — the ticket's
+            # CDN propagation lags by seconds-to-minutes (the classic Error
+            # 65) — and one transient miss must not discard a completed
+            # 20-minute round-trip.
+            stapled=0
+            for attempt in 1 2 3; do
+              if xcrun stapler staple "$APP"; then stapled=1; break; fi
+              echo "stapler attempt $attempt failed — waiting for ticket propagation"
+              sleep $(( attempt * 20 ))
+            done
+            [ "$stapled" = "1" ] || { echo "::error::stapler failed after 3 attempts (ticket never became fetchable)"; exit 1; }
             xcrun stapler validate "$APP"
           else
             echo "non-tag build: signed only (notarize+staple is tag/dispatch-gated)"
@@ -320,7 +385,33 @@ jobs:
           B=$(basename "$D")
           rm -f "dist/$B.zip"
           (cd dist/stage && zip -qry "../$B.zip" "$B")
+          # Same ship gate as the bundler's own archive step: the recut IS
+          # the zip users download, and an archive that isn't a real zip
+          # must fail here, not ship (scripts/build-bun.mjs grew this check
+          # after a tar-in-zip's-clothing shipped once).
+          magic=$(head -c 4 "dist/$B.zip" | xxd -p)
+          [ "$magic" = "504b0304" ] || { echo "::error::recut dist/$B.zip is not a zip (magic: $magic)"; exit 1; }
           echo "re-zipped dist/$B.zip with the signed bundle"
+
+      # darwin-x64 is the one shipped artifact whose binaries never execute
+      # in CI (smoke: false — it's cross-compiled), which after signing means
+      # a hardened-runtime + entitlements problem specific to x64 would ship
+      # notarized and green. The arm64 runner has Rosetta 2: one worker
+      # self-dispatch boots the x64 Bun binary far enough that JavaScriptCore
+      # must JIT — the class of failure `codesign --verify` cannot see. Runs
+      # on unsigned builds too (no secrets): still proves the x64 Bun blob
+      # executes, at ~2s cost. (iroh-selftest would be wrong here — darwin-x64
+      # ships without an iroh .node, an upstream prebuilt gap.)
+      - name: Smoke x64 binary under Rosetta (darwin-x64)
+        if: matrix.key == 'darwin-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          D=$(ls -d dist/stage/mStream-*-darwin-x64)
+          BIN="$D/mStream.app/Contents/MacOS/mstream-server"
+          OUT=$("$BIN" --mstream-worker=scanner '{}' 2>&1) || true
+          echo "$OUT" | grep -q dbPath || { echo "::error::x64 mstream-server did not run under Rosetta (hardened-runtime/entitlement or Bun-blob problem)"; echo "$OUT" | head -20; exit 1; }
+          echo "OK: x64 binary executes under Rosetta (JIT path exercised)"
 
       - name: Smoke test (self-dispatch + boot + serve + scan)
         if: matrix.smoke

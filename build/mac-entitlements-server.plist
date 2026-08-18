@@ -3,12 +3,22 @@
 <!-- Hardened-runtime entitlements for mstream-server (the Bun standalone
      binary) and ONLY it — the launcher and rust sidecars sign without any.
      Bun embeds JavaScriptCore, whose JIT allocates writable-then-executable
-     pages; under the hardened runtime that requires both entitlements below
-     (Bun's own codesign guidance ships exactly this pair). Deliberately NOT
-     included: com.apple.security.cs.disable-library-validation — the iroh
-     .node the server loads is signed with the same Developer ID, so library
-     validation passes as-is; loosening it would weaken the whole point of
-     signing. -->
+     pages; under the hardened runtime that needs the two entitlements below.
+
+     This is a DELIBERATE SUBSET of Bun's five-entitlement codesign guidance
+     (https://bun.com/docs/bundler/executables). The three omissions are
+     verified unnecessary for THIS binary, and each would loosen the seal:
+       * disable-library-validation — the iroh .node the server loads
+         carries the same Developer ID, so library validation passes as-is;
+       * allow-dyld-environment-variables — nothing here reads DYLD_*
+         (NAPI_RS_NATIVE_LIBRARY_PATH is a plain env var the hardened
+         runtime doesn't touch);
+       * disable-executable-page-protection — an extreme superset of
+         allow-jit that JSC needs on neither arch (allow-jit covers MAP_JIT;
+         allow-unsigned-executable-memory covers the legacy x64 path, and
+         the darwin-x64 Rosetta smoke in build-bun.yml executes that claim).
+     If a signed build ever dies at a JIT allocation, diff against Bun's
+     full list FIRST. -->
 <plist version="1.0">
 <dict>
   <key>com.apple.security.cs.allow-jit</key>

@@ -188,6 +188,13 @@ if (launcherSrc) {
 // 20.04, Amazon Linux 2, Debian 11) instead of the ~16x-slower JS fallback.
 // rust-server-audio has no musl build, so musl bundles ship without it
 // (server-audio is opt-in). Each entry is skipped gracefully if not committed.
+//
+// SIGN-LOAD-BEARING LAYOUT (darwin): build-bun.yml's sign step walks
+// Contents/MacOS for Mach-Os (these sidecars + the iroh .node), signs
+// mstream-server by name with its entitlements, and asserts the bundle face
+// is the launcher. If you move where binaries land — or stage a second
+// JIT-needing (Bun-compiled) binary, which would need its own entitlements
+// wiring — update that step in the same PR.
 const libc = t.musl ? '-musl' : '';
 const sidecars = [
   ['rust-parser',       `rust-parser-${t.plat}-${t.arch}${libc}${t.ext}`],
@@ -383,7 +390,15 @@ function bundleReadme(version, t, launcherStaged, serverName) {
   lines.push(
     '',
     `The web app serves on http://localhost:3000 - set up your library there.`,
-    `Data lives in ${dataDir}; pass --portable to keep it next to the binaries.`,
+    // macOS gets no --portable suggestion: "next to the binaries" is INSIDE
+    // mStream.app/Contents/MacOS there, and the first write into a signed
+    // bundle invalidates its seal — codesign --verify fails, Gatekeeper
+    // calls a copied .app "damaged", and signature-keyed consents (Local
+    // Network) can re-prompt. The one sentence users would follow must not
+    // undo the notarization the bundle ships with.
+    t.plat === 'darwin'
+      ? `Data lives in ${dataDir}. (Do not use --portable with the .app: writing inside a signed app breaks its seal.)`
+      : `Data lives in ${dataDir}; pass --portable to keep it next to the binaries.`,
     '',
     `Docs: https://mstream.io        More flags: ${run}${server} --help`,
   );
