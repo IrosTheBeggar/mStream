@@ -13,6 +13,7 @@ import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, cpSync, chm
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { canonicalFields, stampWindowsVersionInfo } from './win-versioninfo.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
@@ -62,10 +63,12 @@ if (!t) {
 }
 
 const outPath = join('dist', t.out);
-// --windows-version wants 4 numeric parts; strip any prerelease/build suffix.
-const verParts = String(pkg.version).split('-')[0].split('.').map((n) => String(parseInt(n, 10) || 0));
-while (verParts.length < 4) { verParts.push('0'); }
-const winVersion = verParts.slice(0, 4).join('.');
+// One VersionInfo contract for every Windows PE the bundle ships (server via
+// these Bun flags, launcher via rust-launcher/build.rs, sidecars stamped
+// below) — asserted by scripts/check-win-versioninfo.ps1 on the win-x64 CI
+// leg. --windows-version wants 4 numeric parts (prerelease suffix dropped).
+const winMeta = canonicalFields(pkg);
+const winVersion = winMeta.version;
 
 const buildArgs = ['build', '--compile', `--target=${t.bun}`];
 // The discovery feature's ML runtimes CANNOT be bundled: onnxruntime-node's
@@ -81,11 +84,14 @@ buildArgs.push('--external', '@huggingface/transformers', '--external', 'onnxrun
 if (t.win && process.platform === 'win32') {
   buildArgs.push(
     '--windows-icon=build/mstream-logo-cut.ico',
-    '--windows-title=mStream Server',
-    `--windows-publisher=${pkg.author?.name ?? ''}`,
+    // --windows-title is the ProductName (shared, "mStream" like every other
+    // shipped PE); --windows-description is the FileDescription — the name
+    // Task Manager and the Details tab show for THIS file.
+    `--windows-title=${winMeta.productName}`,
+    `--windows-publisher=${winMeta.companyName}`,
     `--windows-version=${winVersion}`,
-    `--windows-description=${pkg.description ?? ''}`,
-    `--windows-copyright=${pkg.author?.name ?? ''} (${pkg.license ?? ''})`,
+    '--windows-description=mStream Server',
+    `--windows-copyright=${winMeta.legalCopyright}`,
   );
 } else if (t.win) {
   console.warn('NOTE: building for Windows from a non-Windows host - icon/metadata skipped (Bun limitation).');
@@ -220,11 +226,43 @@ const sidecars = [
 if (t.plat === 'linux' && !t.musl) {
   sidecars.push(['rust-parser', `rust-parser-${t.plat}-${t.arch}-musl`]);
 }
+// Windows sidecars leave their CI build with no VersionInfo (they're
+// version-agnostic tools). Stamp the bundle's canonical block onto the STAGED
+// copy (bin/ itself stays CI-managed) so every PE in the zip carries the same
+// product name/version — see scripts/win-versioninfo.mjs for why this happens
+// here and not in each crate's build. FileDescription is what Task Manager
+// shows as the process name.
+//
+// THREE LISTS MOVE TOGETHER: the `sidecars` array above, this description
+// map, and $known in scripts/check-win-versioninfo.ps1 (which fails the
+// win-x64 leg on any PE it doesn't know). Staging a new Windows sidecar —
+// e.g. bin/p2p-sidecar/*.exe, CI-committed today but deliberately NOT staged
+// (Bun bundles ship without discovery-P2P) — means updating all three in the
+// same change, or the leg goes red with "unknown PE".
+const sidecarDescription = {
+  'rust-parser':       'mStream Library Scanner',
+  'rust-server-audio': 'mStream Server Audio',
+};
 for (const [dir, file] of sidecars) {
   const src = join(root, 'bin', dir, file);
   if (existsSync(src)) {
     mkdirSync(join(contentRoot, 'bin', dir), { recursive: true });
-    stageExe(src, join(contentRoot, 'bin', dir, file));
+    const dest = join(contentRoot, 'bin', dir, file);
+    stageExe(src, dest);
+    if (t.plat === 'win32') {
+      try {
+        await stampWindowsVersionInfo(dest, { ...winMeta, fileDescription: sidecarDescription[dir] ?? 'mStream' });
+        console.log(`  stamped VersionInfo: bin/${dir}/${file} (${winMeta.productName} ${winMeta.version})`);
+      } catch (err) {
+        // A Windows bundle whose sidecars carry no VersionInfo is a metadata
+        // regression the CI assert would catch anyway — fail here, at the
+        // cause, in CI. Locally it's a warning: a dev box without the
+        // devDependency still gets a working bundle.
+        const msg = `VersionInfo stamp failed for bin/${dir}/${file}: ${err.message}`;
+        if (process.env.CI) { console.error(`  FATAL: ${msg}`); process.exit(1); }
+        console.warn(`  WARN: ${msg}`);
+      }
+    }
   } else {
     console.warn(`  sidecar not found, skipping: bin/${dir}/${file}`);
   }

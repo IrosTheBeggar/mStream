@@ -78,6 +78,7 @@
     "@eslint/js": "^10.0.1",
     "@redocly/cli": "^2.35.1",
     "eslint": "^10.6.0",
-    "globals": "^17.7.0"
+    "globals": "^17.7.0",
+    "resedit": "3.0.2"
   }
 }

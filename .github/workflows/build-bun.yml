@@ -16,7 +16,15 @@ on:
       - 'bin/**'
       - 'cli-boot-wrapper.js'
       - 'scripts/build-bun.mjs'
+      # Imported by build-bun.mjs on EVERY target (a broken stamper breaks
+      # bundling everywhere) / the win-x64 VersionInfo gate — a change to
+      # either must run the legs before merge, not first on the release tag.
+      - 'scripts/win-versioninfo.mjs'
+      - 'scripts/check-win-versioninfo.ps1'
+      # A lockfile-only dependency refresh changes what `npm ci` + `bun build
+      # --compile` embed in the shipped binaries just as much as package.json.
       - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/build-bun.yml'
       # Launcher source changes must run the integrated bundle smokes BEFORE
       # merge (the launcher step below builds them fresh for such PRs) — the
@@ -225,6 +233,47 @@ jobs:
           "BUN_COMPILE_EXEC_PATH=$exe" | Add-Content -Path $env:GITHUB_ENV
           Write-Host "runtime: $exe"
 
+      # The bundler stamps Windows VersionInfo onto the staged rust sidecars
+      # with resedit (scripts/win-versioninfo.mjs). It's a devDependency, and
+      # this job installs prod-only, so add JUST that package under
+      # scripts/node_modules — a plain `npm install --no-save resedit` would
+      # reconcile the whole tree and drag every devDependency (eslint,
+      # redocly, ...) in with it; `--omit=dev` would then skip resedit itself.
+      # The bundler resolves it from scripts/ (its own directory) first.
+      #
+      # This install does NOT consult package-lock.json (verified: it happily
+      # installs with a corrupted root lock), and the code it fetches rewrites
+      # two PEs that ship — and will be code-signed. So: pin BOTH packages
+      # (resedit's `pe-library ^2.0.1` would otherwise float to whatever the
+      # registry serves that minute), run no lifecycle scripts, and then bind
+      # the result to the reviewed lockfile: npm records resolved+integrity of
+      # what it installed in scripts/node_modules/.package-lock.json; both
+      # entries must equal the root package-lock.json's. Any drift — a new
+      # publish, a registry substitution, a stale pin here vs the lock — is a
+      # red step, not a silently different stamper. Bump the pins together
+      # with the lockfile.
+      - name: Install the VersionInfo stamper (win-x64)
+        if: matrix.key == 'win-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --prefix scripts --no-save --no-audit --no-fund --ignore-scripts resedit@3.0.2 pe-library@2.0.1
+          node -e '
+            const want = require("./package-lock.json").packages;
+            const got = require("./scripts/node_modules/.package-lock.json").packages;
+            let bad = 0;
+            for (const name of ["node_modules/resedit", "node_modules/pe-library"]) {
+              const w = want[name], g = got[name];
+              if (!w || !g || w.version !== g.version || w.integrity !== g.integrity || w.resolved !== g.resolved) {
+                console.error(`::error::stamper dependency ${name} differs from package-lock.json: installed ${g && g.version} ${g && g.integrity} vs lock ${w && w.version} ${w && w.integrity} — bump the pins in this step together with the lockfile`);
+                bad = 1;
+              } else {
+                console.log(`ok ${name}@${g.version} matches package-lock.json (${g.integrity.slice(0, 20)}...)`);
+              }
+            }
+            process.exit(bad);
+          '
+
       # Desktop tray launcher: the bundler stages bin/rust-launcher/<name> as
       # the bundle's double-click face (mStream.exe / .app executable /
       # mstream-desktop). Those binaries are CI-committed on master pushes
@@ -316,9 +365,70 @@ jobs:
           mkdir -p bin/rust-launcher
           cp "$SRC" "bin/rust-launcher/$NAME"
           echo "built: bin/rust-launcher/$NAME"
+          # Tell the VersionInfo assert below that mStream.exe is THIS PR's
+          # own build: a version mismatch there can only mean build.rs is
+          # broken, so it must fail, not get the committed-launcher leniency.
+          echo "LAUNCHER_REBUILT=1" >> "$GITHUB_ENV"
 
       - name: Build + bundle (${{ matrix.key }})
         run: bun scripts/build-bun.mjs --target=${{ matrix.key }} --bundle
+
+      # ── Windows VersionInfo contract (win-x64) ──────────────────────────
+      # Every PE the zip ships must carry the same ProductName / version /
+      # company / copyright, read back through the Win32 version API — what
+      # Explorer, Task Manager, and (next) code-signing metadata restrictions
+      # see. Three sources feed it: Bun's --windows-* flags (server), the
+      # launcher's build.rs (baked at its CI build), and the bundler's
+      # resedit stamp (sidecars). Strict on tags AND whenever the launcher
+      # step above rebuilt mStream.exe from this very tree (LAUNCHER_REBUILT):
+      # a fresh build has no excuse. Only a PR that stages the COMMITTED
+      # launcher gets the leniency (package.json-derived fields may lag until
+      # build-rust-launcher recommits — see the script). Any PE the script
+      # doesn't know fails the build: no binary may ship blank — and later
+      # unsigned — by omission.
+      #
+      # rust-server-audio is stamped here but exercised by no other smoke
+      # (server-playback is opt-in), so prove the stamped exe still LOADS
+      # AND RUNS: start it and either see it serve /status, or see it get
+      # as far as its own audio-device probe. The runner has no sound
+      # device, so on CI it panics at startup with "Failed to open audio
+      # output device: NoDevice" — that is Rust code executing past main(),
+      # i.e. the PE loader accepted the re-laid-out file, which is the only
+      # thing the stamp could have broken. Anything else (won't start, no
+      # output, a different failure) fails. rust-parser and the launcher run
+      # stamped/baked in the smoke steps below.
+      - name: Assert Windows VersionInfo on every shipped PE (win-x64)
+        if: matrix.key == 'win-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'
+          $D = (Get-Item dist/stage/mStream-*-win-x64).FullName
+          $strict = ('${{ github.ref_type }}' -eq 'tag') -or ($env:LAUNCHER_REBUILT -eq '1')
+          if ($env:LAUNCHER_REBUILT -eq '1') { Write-Host 'launcher was rebuilt from this tree -> strict mode' }
+          & ./scripts/check-win-versioninfo.ps1 -BundleDir $D -Strict:$strict
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $sa = Join-Path $D 'bin/rust-server-audio/rust-server-audio-win32-x64.exe'
+          $p = Start-Process -FilePath $sa -ArgumentList '--port','3391' -PassThru -WindowStyle Hidden -RedirectStandardOutput sa.out -RedirectStandardError sa.err
+          $ok = $false
+          for ($i = 0; $i -lt 20 -and -not $ok; $i++) {
+            Start-Sleep -Milliseconds 250
+            try { $ok = (Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:3391/status' -TimeoutSec 2).StatusCode -eq 200 } catch { $ok = $false }
+            if ($p.HasExited) { break }
+          }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          if ($ok) {
+            Write-Host 'stamped rust-server-audio serves /status -> 200'
+          } else {
+            $err = (Get-Content sa.err -ErrorAction SilentlyContinue) -join "`n"
+            if ($p.HasExited -and $err -match 'Failed to open audio output device') {
+              Write-Host 'stamped rust-server-audio executes (reached its audio-device probe: no sound device on this runner, as expected)'
+            } else {
+              Write-Host "::error::stamped rust-server-audio neither served /status nor reached its audio-device probe (exited=$($p.HasExited))"
+              Get-Content sa.out, sa.err -ErrorAction SilentlyContinue | Select-Object -Last 10
+              exit 1
+            }
+          }
 
       # ── Developer ID signing + notarization (darwin legs only) ──────────
       # Ported from mstream-terminal-player's release.yml, adapted from a
