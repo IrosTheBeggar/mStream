@@ -742,7 +742,15 @@ jobs:
           MUSIC="$WS/smoke-music"
           mkdir -p "$MUSIC"
           ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:duration=1" -metadata title=Smoke -metadata artist=CI "$MUSIC/smoke.mp3" -y || echo "ffmpeg unavailable; scanning an empty library"
-          printf '{"port":3399,"folders":{"music":{"root":"%s"}}}\n' "$MUSIC" > "$RUN/smoke-config.json"
+          # address is pinned to 127.0.0.1 ON PURPOSE: step (5) reboots via
+          # POST /config/address {"address":"127.0.0.1"}, and that must be a
+          # SAME-bind reboot (keep-socket path). Unset, the server binds [::]
+          # and the same POST becomes a bind CHANGE — which recycles the
+          # listener by design (#833), leaving a real ~40 ms refused window
+          # that the second concurrent trigger sometimes lands in (000 on
+          # darwin-arm64, run 32170210445). That was the "listener down for a
+          # beat" #832 retried around, not the pre-#833 socket drop.
+          printf '{"port":3399,"address":"127.0.0.1","folders":{"music":{"root":"%s"}}}\n' "$MUSIC" > "$RUN/smoke-config.json"
           "$BIN" -j "$RUN/smoke-config.json" > "$RUN/boot.log" 2>&1 &
           SRV=$!
           UP=0
@@ -768,14 +776,18 @@ jobs:
           #
           # The trigger POSTs below are plain, single-shot curls ON PURPOSE:
           # a connection-level failure (curl code 000) is a real finding, not
-          # noise. Once (#832) they retried 000s, because the old reboot
-          # dropped the listener for a beat and a trigger racing that window
-          # got connection-refused. Since #833 a same-bind reboot never gives
-          # the socket up — a request landing in the window gets an honest
-          # 503, never a dead connection — so a 000 here would mean that
-          # guarantee regressed, which is precisely what steps (4)/(5) exist
-          # to catch. A retry would re-fire after the dust settled and turn
-          # that regression back into a green run.
+          # noise. Once (#832) they retried 000s, because a trigger racing a
+          # reboot window got connection-refused. Since #833 a SAME-bind
+          # reboot never gives the socket up — a request landing in the window
+          # gets an honest 503, never a dead connection — so a 000 here would
+          # mean that guarantee regressed, which is precisely what steps
+          # (4)/(5) exist to catch. A retry would re-fire after the dust
+          # settled and turn that regression back into a green run. Both
+          # triggers are therefore same-bind by construction: trust-proxy
+          # doesn't touch the bind, and the smoke config above pins address to
+          # the very value step (5) posts. (A bind-CHANGING save recycles the
+          # listener on purpose and does have a refused window; that path is
+          # not what these steps assert.)
 
           REBOOT_OK=0
           if [ "$CODE" = "200" ]; then
@@ -818,7 +830,9 @@ jobs:
             # winner. /config/address is the right trigger: unlike trust-proxy
             # and most others it has NO unchanged-value short-circuit, so both
             # POSTs really do reboot (with a no-op second POST this test passes
-            # against the bug). Bind stays reachable at 127.0.0.1.
+            # against the bug). The posted address EQUALS the smoke config's
+            # bind, so this is the keep-socket path: the reboot log line must
+            # read "bind unchanged", not "recycling the listener".
             # Capture each POST's status. Previously these were `curl -s` with
             # no -f and their exit codes discarded by `wait`, so if the endpoint
             # ever 400s or moves (a renamed Joi key, a moved route) NO reboot
@@ -881,6 +895,15 @@ jobs:
             grep -q "Reboot already in progress" "$RUN/boot.log" \
               && echo "ok: the duplicate reboot request was coalesced" \
               || echo "note: no coalescing line — the two reboots did not overlap on this runner (HTTP $POST1 / $POST2)"
+            # The 000-is-a-regression rule above only holds if this reboot
+            # kept the socket. Enforce it: if the address save recycled the
+            # listener, the smoke config's address and the posted one have
+            # drifted apart, and a 000 here would be the by-design refused
+            # window, not a finding — fail loudly instead of guessing.
+            if grep -q "recycling the listener" "$RUN/boot.log"; then
+              echo "FAIL: the step-(5) address save recycled the listener — the posted address must equal the smoke config's bind (same-bind = keep-socket) for the 000 rule to mean anything"
+              CONCURRENT_OK=0
+            fi
           fi
           kill "$SRV" 2>/dev/null
 
