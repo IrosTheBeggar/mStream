@@ -524,10 +524,29 @@ jobs:
           # an auth wall would otherwise leave the server up and pass this step
           # having rebooted nothing), and require a SECOND "Access mStream
           # locally" line as positive proof a re-serve actually happened.
+          # POST a reboot trigger, retrying ONLY connection-level failures
+          # (curl code 000): mid-reboot the listener is down for a beat, and
+          # a trigger racing that window gets connection-refused — measured
+          # on run 32139960873 (HTTP 200 / 000), green on plain re-run. A
+          # real HTTP error (a 400 from a renamed Joi key, a 404 from a
+          # moved route) never retries: failing loudly on those is exactly
+          # what the assertions below exist for. 3 attempts, 2s apart,
+          # covers the relisten window; a server that stays unreachable
+          # still fails with the same message as before.
+          post_trigger() {
+            ptcode=000
+            for ptattempt in 1 2 3; do
+              ptcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' -d "$2" "$1")
+              [ "$ptcode" != "000" ] && break
+              sleep 2
+            done
+            echo "$ptcode"
+          }
+
           REBOOT_OK=0
           if [ "$CODE" = "200" ]; then
             BOOTS_BEFORE=$(grep -c "Access mStream locally" "$RUN/boot.log")
-            TRIG=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"trustProxy":true}' "http://127.0.0.1:3399/api/v1/admin/config/trust-proxy")
+            TRIG=$(post_trigger "http://127.0.0.1:3399/api/v1/admin/config/trust-proxy" '{"trustProxy":true}')
             if [ "$TRIG" != "200" ]; then
               echo "FAIL: reboot trigger POST returned ${TRIG:-000}, not 200 — the smoke would have passed without rebooting anything"
               cat "$RUN/boot.log"; kill "$SRV" 2>/dev/null; exit 1
@@ -557,10 +576,15 @@ jobs:
             # fired, the untouched server answered every probe, and the step
             # printed "survived two overlapping reboots" — the rebootInFlight
             # coalescing could have been deleted outright and this stayed green.
+            # The pair stays CONCURRENT (the overlap is the point); each arm
+            # retries its own 000 independently. A retried arm re-fires
+            # after the dust settles — the hard-overlap already happened
+            # (the dead connection proves it), and the boots-increase +
+            # survival assertions below stay meaningful for the re-fire.
             CONCURRENT_BOOTS_BEFORE=$(grep -c "Access mStream locally" "$RUN/boot.log")
-            curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: application/json' -d '{"address":"127.0.0.1"}' "http://127.0.0.1:3399/api/v1/admin/config/address" > "$RUN/post1.code" &
+            ( post_trigger "http://127.0.0.1:3399/api/v1/admin/config/address" '{"address":"127.0.0.1"}' > "$RUN/post1.code" ) &
             C1=$!
-            curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST -H 'Content-Type: application/json' -d '{"address":"127.0.0.1"}' "http://127.0.0.1:3399/api/v1/admin/config/address" > "$RUN/post2.code" &
+            ( post_trigger "http://127.0.0.1:3399/api/v1/admin/config/address" '{"address":"127.0.0.1"}' > "$RUN/post2.code" ) &
             C2=$!
             wait $C1 $C2
             CONCURRENT_OK=0
