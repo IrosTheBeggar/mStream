@@ -79,5 +79,8 @@
     "@redocly/cli": "^2.35.1",
     "eslint": "^10.6.0",
     "globals": "^17.7.0"
+  },
+  "overrides": {
+    "adm-zip": "0.6.0"
   }
 }
