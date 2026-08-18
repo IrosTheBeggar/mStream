@@ -20,7 +20,21 @@ path = "src/main.rs"
 # without xdotool installed — caught by the v6.20.0 tag smoke. The
 # remaining hard links are glibc + GTK3 only; CI asserts exactly that set.
 tray-icon = { version = "0.19", default-features = false }
-tao = "0.30"
+# rwh_06: the Quick Connect popup (qr_popup.rs) paints into a tao Window
+# through softbuffer, which speaks raw-window-handle 0.6 — tao implements
+# it behind this feature.
+tao = { version = "0.30", features = ["rwh_06"] }
+# The Quick Connect popup: a plain pixel surface on a tao window (no toolkit,
+# no GPU). default-features off drops the KMS/DRM backend everywhere and lets
+# each OS pick only its native blit path below — Windows = GDI via the
+# windows-sys we already carry, macOS = CoreGraphics via objc2 siblings of
+# what tray-icon already links, Linux = X11/Wayland DLOPENED (never hard-
+# linked; the NEEDED-set assert in CI stays satisfied).
+softbuffer = { version = "0.4", default-features = false }
+# QR encoder for the pairing code — the Rust port of the same Nayuki library
+# the web modal uses (webapp/assets/js/lib/qr.js), so both faces render an
+# identical symbol. Zero dependencies.
+qrcodegen = "1.8"
 # Login-item registration: HKCU Run key (Windows), LaunchAgent plist (macOS,
 # see set_use_launch_agent below — the AppleScript default would tie us to
 # System Events), XDG autostart .desktop (Linux). The launcher registers
@@ -47,6 +61,9 @@ windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_System_Console",
   "Win32_UI_WindowsAndMessaging",
+  # GetAsyncKeyState for the Quick Connect popup's click-outside dismiss
+  # (qr_popup.rs) — a tray-spawned window never gets focus on Windows.
+  "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
 [build-dependencies]
@@ -61,6 +78,12 @@ serde_json = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+# softbuffer needs a display backend on Linux; the -dlopen variants load
+# libX11/libwayland-client at RUNTIME, so a machine missing one still runs
+# and — the part CI polices — the shipped binary gains no NEEDED entry.
+softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
 
 [profile.release]
 strip = true

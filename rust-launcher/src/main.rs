@@ -18,6 +18,7 @@
 mod autostart;
 mod paths;
 mod platform;
+mod qr_popup;
 mod server;
 mod tray_app;
 

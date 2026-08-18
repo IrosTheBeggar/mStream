@@ -7,16 +7,16 @@
 // the EventLoopProxy. The server child lives in an Arc<Mutex<...>> shared
 // with the watcher; a generation counter keeps a stale watcher (from before
 // a restart) from reporting the new child's state.
-use crate::{autostart, paths, platform, server, LauncherArgs};
+use crate::{autostart, paths, platform, qr_popup, server, LauncherArgs};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tao::event::{Event, StartCause};
+use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 const STOP_GRACE: Duration = Duration::from_secs(8);
 const BOOT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -24,6 +24,8 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(60);
 #[derive(Debug)]
 enum AppEvent {
     Menu(String),
+    /// Left-click on the tray icon (physical-pixel icon rect: position, size).
+    TrayClick(tao::dpi::PhysicalPosition<f64>, tao::dpi::PhysicalSize<u32>),
     ServerUp(u64),
     ServerExited(u64),
 }
@@ -161,6 +163,20 @@ pub fn run(args: LauncherArgs) -> ! {
             let _ = proxy.send_event(AppEvent::Menu(event.id().0.clone()));
         }));
     }
+    {
+        // Left-click = the Quick Connect popup (qr_popup.rs); the native menu
+        // stays on right-click (with_menu_on_left_click(false) below). Only
+        // the release edge, so a click doesn't fire twice; the icon rect
+        // rides along so the popup can hug the icon.
+        let proxy = proxy.clone();
+        TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, rect, .. } =
+                event
+            {
+                let _ = proxy.send_event(AppEvent::TrayClick(rect.position, rect.size));
+            }
+        }));
+    }
 
     match spawn_generation(&shared, &bin, &args.server_args, &server_log, ep, &proxy, &log) {
         Ok(()) => {}
@@ -177,6 +193,9 @@ pub fn run(args: LauncherArgs) -> ! {
     // State owned by the loop closure.
     let mut tray: Option<TrayIcon> = None;
     let mut autostart_item: Option<CheckMenuItem> = None;
+    // The Quick Connect popup, while one is showing. At most one; a second
+    // left-click while it's up closes it (toggle), like every OS flyout.
+    let mut popup: Option<qr_popup::Popup> = None;
     let mut ever_up = false;
     let mut opened = false;
     let url = paths::server_url(&ep);
@@ -189,8 +208,22 @@ pub fn run(args: LauncherArgs) -> ! {
     // end), the player once music is configured.
     let config_loop = config.clone();
 
-    event_loop.run(move |event, _target, control_flow| {
+    event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
+        // Windows: while the Quick Connect popup is up, tick every 50ms to
+        // catch a click outside it (see Popup::clicked_outside for why the
+        // Focused(false) path can't do this there). Wait (no ticks) the
+        // moment it closes.
+        #[cfg(windows)]
+        if let Some(p) = popup.as_mut() {
+            if p.clicked_outside() {
+                log.line("tray click: quick connect popup dismissed (click outside)");
+                popup = None;
+            } else {
+                *control_flow =
+                    ControlFlow::WaitUntil(std::time::Instant::now() + Duration::from_millis(50));
+            }
+        }
         match event {
             // Tray creation belongs HERE, not before run(): on Linux the
             // tray needs the gtk main context tao initializes, and on macOS
@@ -226,6 +259,11 @@ pub fn run(args: LauncherArgs) -> ! {
                     TrayIconBuilder::new()
                         .with_tooltip("mStream Server")
                         .with_menu(Box::new(menu))
+                        // Left-click opens the Quick Connect popup instead of
+                        // the menu — the flyout convention (Wi-Fi/volume on
+                        // Windows, every menu-bar extra on macOS). Right-
+                        // click still gets the full native menu.
+                        .with_menu_on_left_click(false)
                         .with_icon(load_icon())
                         .build()
                 }));
@@ -296,11 +334,39 @@ pub fn run(args: LauncherArgs) -> ! {
                         log.line("menu: quit");
                         shared_loop.quitting.store(true, Ordering::SeqCst);
                         stop_current(&shared_loop);
+                        popup.take();
                         tray.take(); // remove the icon before the process exits
                         *control_flow = ControlFlow::Exit;
                     }
                     _ => {}
                 },
+                AppEvent::TrayClick(pos, size) => {
+                    if popup.take().is_some() {
+                        // Toggle: clicking the icon while the popup is up
+                        // dismisses it (dropping the Popup closes its window).
+                        log.line("tray click: quick connect popup closed");
+                    } else {
+                        let content = qr_popup::fetch_content(&ep);
+                        log.line(&format!(
+                            "tray click: quick connect popup ({})",
+                            match content {
+                                qr_popup::Content::Code(_) => "code ready",
+                                qr_popup::Content::NotReady => "tunnel not ready",
+                                qr_popup::Content::Disabled => "quick connect disabled",
+                                qr_popup::Content::NoServer => "server not answering",
+                            }
+                        ));
+                        match qr_popup::Popup::open(target, content, Some((pos, size))) {
+                            Ok(p) => popup = Some(p),
+                            Err(e) => {
+                                // No window (weird display stack): fall back
+                                // to what the menu item does — the web modal.
+                                log.line(&format!("popup unavailable ({e}) - opening the web modal instead"));
+                                let _ = open::that_detached(format!("{url}/#quick-connect"));
+                            }
+                        }
+                    }
+                }
                 AppEvent::ServerUp(generation) => {
                     // The probe proved SOMETHING on the port speaks mStream —
                     // make sure it's OUR child and not a foreign instance the
@@ -350,6 +416,41 @@ pub fn run(args: LauncherArgs) -> ! {
                     }
                 }
             },
+            // The popup's window events. It is the only window this process
+            // ever creates, so any WindowEvent is its; the id check is a
+            // guard against a stale event for a popup already dropped.
+            Event::WindowEvent { window_id, event: we, .. }
+                if popup.as_ref().is_some_and(|p| p.window_id() == window_id) =>
+            {
+                match we {
+                    WindowEvent::CloseRequested | WindowEvent::Destroyed => {
+                        popup = None;
+                    }
+                    // Flyout manners: clicking anywhere else dismisses it.
+                    // (macOS/Linux — the popup does receive focus there. On
+                    // Windows it never does; the poll above covers it.)
+                    WindowEvent::Focused(false) => {
+                        popup = None;
+                    }
+                    WindowEvent::KeyboardInput { event, .. }
+                        if event.logical_key == tao::keyboard::Key::Escape =>
+                    {
+                        popup = None;
+                    }
+                    // Repaint on OS request (expose, DPI change, first show).
+                    WindowEvent::ScaleFactorChanged { .. } => {
+                        if let Some(p) = popup.as_mut() {
+                            p.request_redraw();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Event::RedrawRequested(id) if popup.as_ref().is_some_and(|p| p.window_id() == id) => {
+                if let Some(p) = popup.as_mut() {
+                    p.paint();
+                }
+            }
             // macOS: re-clicking the running .app arrives as a reopen
             // AppleEvent (applicationShouldHandleReopen), never as a second
             // process — the single-instance lock never sees it, and the
