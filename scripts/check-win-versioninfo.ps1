@@ -15,25 +15,35 @@
 #   build.rs (baked at its CI build; the tag build proves that build matches
 #   the tag); the rust sidecars <- stamped by the bundler.
 #
-# -Strict (tag builds): every mismatch fails. Without it (PR builds), a
-# version mismatch on mStream.exe ALONE is a warning: a PR that bumps
-# package.json builds against the committed launcher, which was baked for the
-# previous version by design - the release ritual (docs/deploy.md) rebuilds it
-# before the tag, and the tag build asserts strictly. Everything else is
-# produced in this very build and must match regardless.
+# -Strict (tag builds, and PR builds whose launcher was rebuilt from the same
+# tree - build-bun.yml passes it then): every mismatch fails. Without it, a
+# mismatch on mStream.exe ALONE, confined to the fields its build.rs bakes
+# FROM package.json (the version strings/numbers, CompanyName,
+# LegalCopyright), is a warning: a PR that edits package.json builds against
+# the COMMITTED launcher, which was baked from the previous package.json by
+# design - build-rust-launcher recommits it on merge (package.json is one of
+# its triggers) and the tag build asserts strictly. Blank fields, a wrong
+# ProductName/FileDescription, or a mismatch on any OTHER file are never
+# lenient: those are produced in this very build and must match regardless.
 #
 # Any PE in the bundle that this script does not know is a FAILURE: a new
 # binary must be added here (and given metadata) rather than ship blank -
 # and later unsigned - by omission. bin/iroh/*.node is @number0/iroh's own
-# prebuilt (upstream, not ours to relabel): listed, never checked.
+# prebuilt (upstream, not ours to relabel): listed, never checked. If you
+# stage another sidecar in scripts/build-bun.mjs, add it to the stamper's
+# description map there AND to $known here in the same change.
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)][string]$BundleDir,
   [switch]$Strict,
-  [string]$PackageJson = (Join-Path (Split-Path -Parent $PSScriptRoot) 'package.json')
+  [string]$PackageJson
 )
 $ErrorActionPreference = 'Stop'
 $inCi = [bool]$env:GITHUB_ACTIONS
+# Default computed here, not in the param block: under Windows PowerShell 5.1
+# `powershell -File` binds parameters before $PSScriptRoot is populated, and a
+# default that reads it dies with "Split-Path: cannot bind ... empty string".
+if (-not $PackageJson) { $PackageJson = Join-Path (Split-Path -Parent (Split-Path -Parent $PSCommandPath)) 'package.json' }
 
 $BundleDir = (Resolve-Path -LiteralPath $BundleDir).Path
 $pkg = Get-Content -LiteralPath $PackageJson -Raw | ConvertFrom-Json
@@ -58,6 +68,11 @@ $known = @(
   @{ path = 'bin\rust-server-audio\rust-server-audio-win32-x64.exe'; lenient = $false; optional = $false }
 )
 $upstream = @('bin\iroh\iroh.win32-x64-msvc.node')
+# The server's ffmpeg-bootstrap downloads ffmpeg/ffprobe into <appRoot>/bin/ffmpeg
+# at RUNTIME. They are never in the zip (the bundler cuts it before anything
+# runs), but a staged bundle that has been booted locally carries them -
+# upstream binaries, not ours: listed, never checked.
+$runtimeUpstreamPrefix = 'bin\ffmpeg\'
 
 $failures = New-Object System.Collections.Generic.List[string]
 $warnings = New-Object System.Collections.Generic.List[string]
@@ -100,12 +115,16 @@ foreach ($k in $known) {
   }
   if ([string]::IsNullOrWhiteSpace($v.FileDescription)) { $problems += 'FileDescription is empty' }
   if ($problems.Count -eq 0) { continue }
-  # Launcher leniency: ONLY version fields, ONLY when not strict, ONLY if
-  # nothing else is wrong - a blank ProductName or company is a real bug even
-  # on a PR build.
-  $versionOnly = @($problems | Where-Object { $_ -notmatch '^(ProductVersion|FileVersion|FileVersionRaw|ProductVersionRaw)=' }).Count -eq 0
-  if ($k.lenient -and -not $Strict -and $versionOnly) {
-    Report 'warning' ("{0}: baked version differs from package.json ({1}) - expected on a PR that bumps the version; the committed launcher is rebuilt for the release before tagging and the tag build asserts strictly" -f $k.path, ($problems -join '; '))
+  # Launcher leniency: ONLY the fields build.rs bakes from package.json
+  # (versions, CompanyName, LegalCopyright - blank included: a launcher
+  # committed by an older build.rs simply lacks them, which is the same lag),
+  # ONLY when not strict, ONLY if nothing else is wrong. A missing rc.exe or
+  # a broken build.rs blanks ProductName/FileDescription too, and those are
+  # never lenient; a launcher rebuilt from the PR itself runs strict.
+  $pkgDerived = '^(ProductVersion|FileVersion|FileVersionRaw|ProductVersionRaw|CompanyName|LegalCopyright)='
+  $lagOnly = @($problems | Where-Object { $_ -notmatch $pkgDerived }).Count -eq 0
+  if ($k.lenient -and -not $Strict -and $lagOnly) {
+    Report 'warning' ("{0}: package.json-derived fields lag ({1}) - expected on a PR that edits package.json (version/author/license) and stages the COMMITTED launcher; build-rust-launcher recommits it on merge and the tag build asserts strictly" -f $k.path, ($problems -join '; '))
   } else {
     Report 'error' ("{0}: {1}" -f $k.path, ($problems -join '; '))
   }
@@ -117,6 +136,7 @@ foreach ($pe in $allPe) {
   $rel = $pe.FullName.Substring($BundleDir.Length).TrimStart('\', '/')
   if ($known.path -contains $rel) { continue }
   if ($upstream -contains $rel) { Write-Host ("  (upstream, not checked) {0}" -f $rel); continue }
+  if ($rel.StartsWith($runtimeUpstreamPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { Write-Host ("  (upstream runtime download, not in the zip, not checked) {0}" -f $rel); continue }
   Report 'error' ("unknown PE in bundle: {0} - add it to scripts/check-win-versioninfo.ps1 (and give it VersionInfo) instead of shipping it blank" -f $rel)
 }
 

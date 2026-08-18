@@ -232,6 +232,13 @@ if (t.plat === 'linux' && !t.musl) {
 // product name/version — see scripts/win-versioninfo.mjs for why this happens
 // here and not in each crate's build. FileDescription is what Task Manager
 // shows as the process name.
+//
+// THREE LISTS MOVE TOGETHER: the `sidecars` array above, this description
+// map, and $known in scripts/check-win-versioninfo.ps1 (which fails the
+// win-x64 leg on any PE it doesn't know). Staging a new Windows sidecar —
+// e.g. bin/p2p-sidecar/*.exe, CI-committed today but deliberately NOT staged
+// (Bun bundles ship without discovery-P2P) — means updating all three in the
+// same change, or the leg goes red with "unknown PE".
 const sidecarDescription = {
   'rust-parser':       'mStream Library Scanner',
   'rust-server-audio': 'mStream Server Audio',

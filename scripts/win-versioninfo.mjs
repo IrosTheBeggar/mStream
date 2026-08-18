@@ -106,7 +106,11 @@ export async function stampWindowsVersionInfo(file, fields) {
 
 // Read back what a PE carries (resedit's view; check-win-versioninfo.ps1 is
 // the Win32-API truth on Windows). Returns null when the file has no
-// VersionInfo. Handy for a quick look from any host:
+// VersionInfo. Throws for PEs pe-library refuses to parse — notably Bun's
+// compiled mstream-server.exe, whose `.bun` section sits after `.rsrc`
+// ("After Resource section, sections except for relocation are not
+// supported"): read that one with PowerShell. Handy for a quick look from
+// any host:
 //   bun scripts/win-versioninfo.mjs <file.exe> [...]
 export async function readWindowsVersionInfo(file) {
   const R = await loadResedit();
@@ -130,8 +134,15 @@ export async function readWindowsVersionInfo(file) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const files = process.argv.slice(2);
   if (!files.length) { console.error('usage: bun scripts/win-versioninfo.mjs <file.exe|.dll|.node> ...'); process.exit(2); }
+  let failed = 0;
   for (const f of files) {
     console.log(f);
-    console.log(await readWindowsVersionInfo(f) ?? '  (no VersionInfo)');
+    try {
+      console.log(await readWindowsVersionInfo(f) ?? '  (no VersionInfo)');
+    } catch (err) {
+      failed += 1;
+      console.log(`  (unreadable by resedit: ${err.message} — on Windows use (Get-Item <file>).VersionInfo or scripts/check-win-versioninfo.ps1)`);
+    }
   }
+  process.exit(failed ? 1 : 0);
 }
