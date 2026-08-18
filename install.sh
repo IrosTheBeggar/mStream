@@ -334,13 +334,17 @@ fi
 # it - nothing here can (or should) kill their server under them.
 running_from=""
 if command -v ps >/dev/null 2>&1; then
-    # `ps -axo pid=,args=`, NOT `pgrep -a`: on macOS/BSD pgrep, -a means
-    # "include ancestors" and prints bare PIDs - no command column, so the
-    # match below silently never fired on Macs (measured). ps args= puts
-    # argv[0] in $2 on both platforms. Match the EXECUTABLE (argv[0]), not
-    # the whole command line: a shell whose command text merely mentions
-    # "mstream-server" (a terminal, a script, docker-init) is not mStream.
-    for pid in $(ps -axo pid=,args= 2>/dev/null \
+    # `ps -A -o pid=,args=` - the POSIX spelling - NOT `pgrep -a` and NOT
+    # `ps -ax`: on macOS/BSD pgrep, -a means "include ancestors" and prints
+    # bare PIDs (no command column - the match silently never fired on
+    # Macs, measured), and busybox ps (Alpine, most NAS firmware) rejects
+    # the BSD -ax flags outright ("unrecognized option: x" - the scan was
+    # silently empty there, measured). -A = every process on busybox,
+    # procps, and BSD alike; args= puts argv[0] in $2 on all three. Match
+    # the EXECUTABLE (argv[0]), not the whole command line: a shell whose
+    # command text merely mentions "mstream-server" (a terminal, a script,
+    # docker-init) is not mStream.
+    for pid in $(ps -A -o pid=,args= 2>/dev/null \
         | awk '$1 != '"$$"' && ($2 ~ /(^|\/)mstream-server$/ || $2 ~ /(^|\/)mstream-desktop$/ || $2 ~ /\/MacOS\/mStream$/) {print $1}'); do
         # The real path of the running binary where the OS will say
         # (/proc on Linux); argv[0] otherwise (macOS launches by absolute
