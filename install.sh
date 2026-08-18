@@ -133,7 +133,14 @@ fi
 login_item_target() {
     if [ "$platform" = darwin ]; then
         f="$HOME/Library/LaunchAgents/mStream.plist"
-        [ -f "$f" ] && sed -n 's/^[[:space:]]*<string>\(\/[^<]*\)<\/string>.*/\1/p' "$f" | head -1
+        # First absolute-path <string> in the plist, WHEREVER it sits: the
+        # launcher's auto-launch crate writes ProgramArguments as ONE line
+        # (<array><string>/path</string><string>--autostarted</string>...),
+        # so a ^-anchored per-line match never fires and every login item
+        # would read as "not ours" - upgrades would silently never re-point
+        # (measured). Splitting on '<' handles one-line and pretty-printed
+        # plists alike, and greedy-match order can't pick a later argument.
+        [ -f "$f" ] && tr '<' '\n' < "$f" | sed -n 's/^string>\(\/.*\)/\1/p' | head -1
     else
         f="$HOME/.config/autostart/mStream.desktop"
         [ -f "$f" ] && sed -n 's/^Exec="\{0,1\}\([^" ]*\).*/\1/p' "$f" | head -1
@@ -144,8 +151,22 @@ login_item_is_ours() {
     [ -z "$t" ] && return 1
     case "$t" in
         "$ROOT/"*) return 0 ;;
-        "$HOME/Applications/mStream.app/"*) [ -f "$HOME/Applications/mStream.app/Contents/.mstream-installer" ] && return 0 ;;
+        "$HOME/Applications/mStream.app/"*) apps_copy_is_ours && return 0 ;;
     esac
+    return 1
+}
+# Does this script own ~/Applications/mStream.app? The ownership marker is a
+# SIBLING file, never inside the bundle: writing anything into Contents/
+# invalidates the notarization seal, and the hardened-runtime launcher in a
+# seal-broken bundle is SIGKILLed by the kernel at exec — the installed app
+# would be dead on arrival (measured; the very bug this marker placement
+# once caused). The legacy inner marker is still honored read-only so a copy
+# installed by the broken version is recognized as ours and healed by the
+# next install run.
+apps_marker="$HOME/Applications/.mstream-installer"
+apps_copy_is_ours() {
+    [ -f "$apps_marker" ] && return 0
+    [ -f "$HOME/Applications/mStream.app/Contents/.mstream-installer" ] && return 0
     return 1
 }
 
@@ -159,7 +180,7 @@ if [ -n "${MSTREAM_UNINSTALL:-}" ]; then
         exit 1
     fi
     launcher="$ROOT/current/$launcher_rel"
-    [ "$platform" = darwin ] && [ -f "$HOME/Applications/mStream.app/Contents/.mstream-installer" ] \
+    [ "$platform" = darwin ] && apps_copy_is_ours \
         && launcher="$HOME/Applications/mStream.app/Contents/MacOS/mStream"
     # Login item first, while a launcher still exists to remove it - but
     # only if it points at a copy this script manages.
@@ -175,9 +196,10 @@ if [ -n "${MSTREAM_UNINSTALL:-}" ]; then
     else
         d="$HOME/Applications/mStream.app"
         if [ -L "$d" ]; then rm -f "$d" && echo "removed ~/Applications/mStream.app (link)"
-        elif [ -f "$d/Contents/.mstream-installer" ]; then rm -rf "$d" && echo "removed ~/Applications/mStream.app"
+        elif [ -e "$d" ] && apps_copy_is_ours; then rm -rf "$d" && echo "removed ~/Applications/mStream.app"
         elif [ -e "$d" ]; then echo "left ~/Applications/mStream.app alone (not installed by this script)"
         fi
+        rm -f "$apps_marker"
     fi
     if [ -d "$ROOT" ]; then rm -rf "$ROOT" && echo "removed $ROOT"; fi
     echo "mStream is uninstalled. Your library, config, and database were left in place:"
@@ -311,13 +333,14 @@ fi
 # told that the running instance stays on the OLD version until they quit
 # it - nothing here can (or should) kill their server under them.
 running_from=""
-if command -v pgrep >/dev/null 2>&1; then
-    # -f matches the full command line; the launcher execs from an
-    # absolute path under $ROOT (or wherever the user extracted it).
-    # Match the EXECUTABLE (argv[0], the 2nd field of `pgrep -a`), not the
-    # whole command line: a shell whose command text merely mentions
+if command -v ps >/dev/null 2>&1; then
+    # `ps -axo pid=,args=`, NOT `pgrep -a`: on macOS/BSD pgrep, -a means
+    # "include ancestors" and prints bare PIDs - no command column, so the
+    # match below silently never fired on Macs (measured). ps args= puts
+    # argv[0] in $2 on both platforms. Match the EXECUTABLE (argv[0]), not
+    # the whole command line: a shell whose command text merely mentions
     # "mstream-server" (a terminal, a script, docker-init) is not mStream.
-    for pid in $(pgrep -a . 2>/dev/null \
+    for pid in $(ps -axo pid=,args= 2>/dev/null \
         | awk '$1 != '"$$"' && ($2 ~ /(^|\/)mstream-server$/ || $2 ~ /(^|\/)mstream-desktop$/ || $2 ~ /\/MacOS\/mStream$/) {print $1}'); do
         # The real path of the running binary where the OS will say
         # (/proc on Linux); argv[0] otherwise (macOS launches by absolute
@@ -367,21 +390,27 @@ if [ -z "${MSTREAM_NO_DESKTOP:-}" ]; then
         # lesson Homebrew Cask learned. ditto preserves the bundle's internal
         # symlink (Contents/MacOS/webapp -> ../Resources/webapp), xattrs,
         # and the notarization staple, so Gatekeeper still sees a sealed,
-        # stapled app. Only THIS installer's copy is ever replaced: a bundle
-        # the user put there by hand (no marker file) is left alone.
+        # stapled app - PROVIDED nothing is ever written inside it: the
+        # ownership marker lives BESIDE the app (see apps_copy_is_ours), and
+        # the copy must land byte-identical to the bundle. Only THIS
+        # installer's copy is ever replaced: a bundle the user put there by
+        # hand (no marker) is left alone.
         mkdir -p "$HOME/Applications"
         dest="$HOME/Applications/mStream.app"
-        marker="$dest/Contents/.mstream-installer"
-        if [ -e "$dest" ] && [ ! -L "$dest" ] && [ ! -f "$marker" ]; then
+        if [ -e "$dest" ] && [ ! -L "$dest" ] && ! apps_copy_is_ours; then
             desktop_note="app: $ROOT/current/mStream.app  (~/Applications/mStream.app is your own copy - replace it with this one when you're ready)"
         elif [ -n "$installed_fresh" ] || [ ! -e "$dest" ]; then
             rm -rf "$dest.installing"
             if ditto "$ROOT/$bundle/mStream.app" "$dest.installing" 2>/dev/null; then
-                printf '%s\n' "$version" > "$dest.installing/Contents/.mstream-installer"
                 # A symlink from an older run of this script gives way too.
                 [ -L "$dest" ] && rm -f "$dest"
                 [ -d "$dest" ] && mv "$dest" "$dest.old.$$" && rm -rf "$dest.old.$$"
                 mv "$dest.installing" "$dest"
+                # Marker AFTER the copy is in place, and OUTSIDE the bundle.
+                # (This also heals a copy from the old installer, which wrote
+                # the marker inside Contents/ and broke the seal - the fresh
+                # ditto above replaced it wholesale.)
+                printf '%s\n' "$version" > "$apps_marker"
                 desktop_note="app: ~/Applications/mStream.app (menu-bar icon; Quick Connect on)"
             else
                 rm -rf "$dest.installing"
