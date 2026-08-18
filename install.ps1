@@ -17,6 +17,9 @@
 #                         GitHub release) - for internal mirrors and testing
 #   MSTREAM_FORCE         set to 1 to replace an already-installed copy of
 #                         the same version (the old one is moved aside)
+#   MSTREAM_UNINSTALL     set to 1 to remove everything this script installed
+#                         (app folders, PATH entry, Start Menu shortcut,
+#                         login item). Your data is left in place.
 #
 # The bundle is a folder (mStream.exe tray launcher + mstream-server.exe +
 # webapp\ + bin\ sidecars). Data lives in %LOCALAPPDATA%\mStream, outside
@@ -30,6 +33,10 @@
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
 
+# Everything below runs from Main, called on the LAST line: PowerShell parses
+# the whole function before executing any of it, so an `irm | iex` whose
+# stream is cut short fails to parse instead of running half an install.
+function Main {
 $repo = 'IrosTheBeggar/mStream'
 $key = 'win-x64'
 if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
@@ -48,6 +55,43 @@ $base = if ($env:MSTREAM_RELEASE_BASE) {
     "https://github.com/$repo/releases/latest/download"
 } else {
     "https://github.com/$repo/releases/download/$version"
+}
+
+# -- Uninstall: MSTREAM_UNINSTALL=1 removes everything this script created -
+# the app folders + junction, the PATH entry, the Start Menu shortcut, and
+# the login item - and nothing else. Your library, config, and database in
+# %LOCALAPPDATA%\mStream stay put; the last line says where.
+if ($env:MSTREAM_UNINSTALL) {
+    $running = @(Get-Process mStream, mstream-server -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$root\*" })
+    if ($running) { throw "mStream is running from $root - Quit it from the tray icon first, then re-run" }
+    $current = Join-Path $root 'current'
+    $launcher = Join-Path $current 'mStream.exe'
+    if (Test-Path $launcher) {
+        # Login item first, while a launcher still exists to remove it.
+        & $launcher --autostart=disable 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { Write-Host "removed the login item" }
+    }
+    $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'mStream.lnk'
+    if (Test-Path $lnk) { Remove-Item $lnk -Force; Write-Host "removed the Start Menu shortcut" }
+    $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    try {
+        $rawPath = [string]$envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $parts = @($rawPath -split ';' | Where-Object { $_ -and $_ -ne $current })
+        if (($rawPath -split ';') -contains $current) {
+            $envKey.SetValue('Path', ($parts -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            Write-Host "removed $current from your user PATH"
+        }
+    } finally { $envKey.Close() }
+    if (Test-Path $current) {
+        # A junction: delete the link only, never the target's contents.
+        $item = Get-Item $current -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { $item.Delete() }
+    }
+    if (Test-Path $root) { Remove-Item -Recurse -Force $root; Write-Host "removed $root" }
+    Write-Host "mStream is uninstalled. Your library, config, and database were left in place:"
+    Write-Host "  $env:LOCALAPPDATA\mStream"
+    Write-Host "  (delete that folder yourself if you want them gone too)"
+    return
 }
 
 $tmp = Join-Path $env:TEMP "mstream-install-$PID"
@@ -208,3 +252,6 @@ try {
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
+}
+
+Main

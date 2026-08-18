@@ -14,7 +14,10 @@
 #   MSTREAM_BIN_DIR       where the `mstream-server` command goes
 #                         (default: ~/.local/bin)
 #   MSTREAM_NO_DESKTOP    set to 1 to skip the app-menu entry (Linux) /
-#                         ~/Applications link (macOS)
+#                         ~/Applications copy (macOS)
+#   MSTREAM_UNINSTALL     set to 1 to remove everything this script installed
+#                         (app folders, command, menu entry / ~/Applications
+#                         copy, login item). Your data is left in place.
 #   MSTREAM_RELEASE_BASE  URL serving manifest.json + the zips (default: the
 #                         GitHub release) - for internal mirrors and testing
 #   MSTREAM_KEY           force a bundle key (linux-x64, linux-x64-musl,
@@ -32,6 +35,11 @@
 # POSIX sh on purpose: NAS boxes and minimal images do not all carry bash.
 set -eu
 
+# Everything below runs from main(), called on the LAST line: sh parses the
+# whole function before executing any of it, so a `curl | sh` whose stream
+# is cut short fails to parse instead of running half an install (the
+# rustup / brew / deno installers all do this).
+main() {
 REPO="IrosTheBeggar/mStream"
 VERSION="${MSTREAM_VERSION:-latest}"
 BIN_DIR="${MSTREAM_BIN_DIR:-$HOME/.local/bin}"
@@ -104,6 +112,50 @@ fi
 mkdir -p "$ROOT" "$BIN_DIR"
 ROOT=$(cd "$ROOT" && pwd -P)
 BIN_DIR=$(cd "$BIN_DIR" && pwd -P)
+
+# Per-platform names inside a bundle, and where the server keeps its data
+# (which this script never touches - not on install, not on uninstall).
+if [ "$platform" = darwin ]; then
+    launcher_rel="mStream.app/Contents/MacOS/mStream"; server_rel="mStream.app/Contents/MacOS/mstream-server"
+    data_home="$HOME/Library/Application Support/mStream"
+else
+    launcher_rel="mstream-desktop"; server_rel="mstream-server"
+    data_home="${XDG_DATA_HOME:-$HOME/.local/share}/mstream"
+fi
+
+# -- Uninstall: MSTREAM_UNINSTALL=1 removes everything this script created -
+# the app folders, the command link, the app-menu entry / ~/Applications
+# copy, and the login item - and nothing else. Your library, config, and
+# database in the data home stay put; the last line says where.
+if [ -n "${MSTREAM_UNINSTALL:-}" ]; then
+    if command -v pgrep >/dev/null 2>&1 && pgrep -f "^$ROOT/" >/dev/null 2>&1; then
+        echo "mStream is running from $ROOT - Quit it from the tray icon first, then re-run" >&2
+        exit 1
+    fi
+    launcher="$ROOT/current/$launcher_rel"
+    [ "$platform" = darwin ] && [ -f "$HOME/Applications/mStream.app/Contents/.mstream-installer" ] \
+        && launcher="$HOME/Applications/mStream.app/Contents/MacOS/mStream"
+    # Login item first, while a launcher still exists to remove it.
+    if [ -x "$launcher" ]; then
+        "$launcher" --autostart=disable >/dev/null 2>&1 && echo "removed the login item" || true
+    fi
+    if [ -L "$BIN_DIR/mstream-server" ]; then rm -f "$BIN_DIR/mstream-server"; echo "removed $BIN_DIR/mstream-server"; fi
+    if [ "$platform" = linux ]; then
+        f="${XDG_DATA_HOME:-$HOME/.local/share}/applications/mstream.desktop"
+        if [ -f "$f" ]; then rm -f "$f"; echo "removed the app-menu entry"; fi
+    else
+        d="$HOME/Applications/mStream.app"
+        if [ -L "$d" ]; then rm -f "$d" && echo "removed ~/Applications/mStream.app (link)"
+        elif [ -f "$d/Contents/.mstream-installer" ]; then rm -rf "$d" && echo "removed ~/Applications/mStream.app"
+        elif [ -e "$d" ]; then echo "left ~/Applications/mStream.app alone (not installed by this script)"
+        fi
+    fi
+    if [ -d "$ROOT" ]; then rm -rf "$ROOT" && echo "removed $ROOT"; fi
+    echo "mStream is uninstalled. Your library, config, and database were left in place:"
+    echo "  $data_home"
+    echo "  (delete that folder yourself if you want them gone too)"
+    exit 0
+fi
 
 if [ -n "${MSTREAM_RELEASE_BASE:-}" ]; then
     base="${MSTREAM_RELEASE_BASE%/}"
@@ -228,21 +280,27 @@ fi
 # Which version is running right now, if any? Needed twice below: the
 # login item must be re-pointed at the NEW launcher, and the user must be
 # told that the running instance stays on the OLD version until they quit
-# it - nothing here can (or should) kill their server under them. Detect by
-# the launcher's single-instance lock in the data home, then find its exe.
-if [ "$platform" = darwin ]; then
-    launcher_rel="mStream.app/Contents/MacOS/mStream"; server_rel="mStream.app/Contents/MacOS/mstream-server"
-    data_home="$HOME/Library/Application Support/mStream"
-else
-    launcher_rel="mstream-desktop"; server_rel="mstream-server"
-    data_home="${XDG_DATA_HOME:-$HOME/.local/share}/mstream"
-fi
+# it - nothing here can (or should) kill their server under them.
 running_from=""
 if command -v pgrep >/dev/null 2>&1; then
     # -f matches the full command line; the launcher execs from an
     # absolute path under $ROOT (or wherever the user extracted it).
-    running_from=$(pgrep -fa "mstream-server|mstream-desktop|MacOS/mStream( |$)" 2>/dev/null \
-        | grep -v "$$" | awk '{print $2}' | grep -v "^$ROOT/current/" | head -1 || true)
+    # Match the EXECUTABLE (argv[0], the 2nd field of `pgrep -a`), not the
+    # whole command line: a shell whose command text merely mentions
+    # "mstream-server" (a terminal, a script, docker-init) is not mStream.
+    for pid in $(pgrep -a . 2>/dev/null \
+        | awk '$1 != '"$$"' && ($2 ~ /(^|\/)mstream-server$/ || $2 ~ /(^|\/)mstream-desktop$/ || $2 ~ /\/MacOS\/mStream$/) {print $1}'); do
+        # The real path of the running binary where the OS will say
+        # (/proc on Linux); argv[0] otherwise (macOS launches by absolute
+        # path from LaunchServices, so that is already the full path).
+        exe=$(readlink "/proc/$pid/exe" 2>/dev/null || ps -o comm= -p "$pid" 2>/dev/null || true)
+        # Skip the version this run is installing (a real path never goes
+        # through the `current` symlink, so compare against the bundle dir).
+        case "$exe" in
+            "$ROOT/$bundle/"*|"$ROOT/current/"*|"") ;;
+            *) running_from="$exe"; break ;;
+        esac
+    done
 fi
 
 # `current` -> this version. If a previous manual layout left a REAL
@@ -258,6 +316,54 @@ link "$ROOT/$bundle" "$ROOT/current"
 server="$ROOT/current/$server_rel"
 link "$server" "$BIN_DIR/mstream-server" || true
 
+# Desktop integration where a launcher shipped.
+desktop_note=""
+if [ -z "${MSTREAM_NO_DESKTOP:-}" ]; then
+    if [ "$platform" = linux ] && [ -f "$ROOT/$bundle/mStream.desktop" ]; then
+        # The app-menu entry: written with printf, not by sed over the
+        # bundle's template - a ROOT containing '&' or '|' would corrupt or
+        # abort a sed replacement, and Exec= must be quoted per the XDG spec
+        # so a path with a space survives the launcher's word split.
+        apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+        mkdir -p "$apps"
+        printf '[Desktop Entry]\nType=Application\nName=mStream\nComment=Self-hosted music streaming server\nExec="%s/current/mstream-desktop"\nTryExec=%s/current/mstream-desktop\nIcon=%s/current/mStream.png\nTerminal=false\nCategories=AudioVideo;Audio;Network;\n' \
+            "$ROOT" "$ROOT" "$ROOT" > "$apps/mstream.desktop"
+        chmod 644 "$apps/mstream.desktop"
+        command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps" 2>/dev/null || true
+        desktop_note="app menu: mStream (or run: $ROOT/current/mstream-desktop)"
+    elif [ "$platform" = darwin ] && [ -d "$ROOT/$bundle/mStream.app" ]; then
+        # A real COPY of the .app in ~/Applications, not a symlink: Spotlight
+        # indexes a symlink as a symlink (not an application), Launchpad
+        # skips it, and LaunchServices treats it as second-class - the same
+        # lesson Homebrew Cask learned. ditto preserves the bundle's internal
+        # symlink (Contents/MacOS/webapp -> ../Resources/webapp), xattrs,
+        # and the notarization staple, so Gatekeeper still sees a sealed,
+        # stapled app. Only THIS installer's copy is ever replaced: a bundle
+        # the user put there by hand (no marker file) is left alone.
+        mkdir -p "$HOME/Applications"
+        dest="$HOME/Applications/mStream.app"
+        marker="$dest/Contents/.mstream-installer"
+        if [ -e "$dest" ] && [ ! -L "$dest" ] && [ ! -f "$marker" ]; then
+            desktop_note="app: $ROOT/current/mStream.app  (~/Applications/mStream.app is your own copy - replace it with this one when you're ready)"
+        elif [ -n "$installed_fresh" ] || [ ! -e "$dest" ]; then
+            rm -rf "$dest.installing"
+            if ditto "$ROOT/$bundle/mStream.app" "$dest.installing" 2>/dev/null; then
+                printf '%s\n' "$version" > "$dest.installing/Contents/.mstream-installer"
+                # A symlink from an older run of this script gives way too.
+                [ -L "$dest" ] && rm -f "$dest"
+                [ -d "$dest" ] && mv "$dest" "$dest.old.$$" && rm -rf "$dest.old.$$"
+                mv "$dest.installing" "$dest"
+                desktop_note="app: ~/Applications/mStream.app (menu-bar icon; Quick Connect on)"
+            else
+                rm -rf "$dest.installing"
+                desktop_note="app: $ROOT/current/mStream.app (could not copy into ~/Applications)"
+            fi
+        else
+            desktop_note="app: ~/Applications/mStream.app (menu-bar icon; Quick Connect on)"
+        fi
+    fi
+fi
+
 # The launcher registers ITSELF as the login item, by absolute path - which
 # is the VERSIONED folder, not `current`. Without this step an upgrade
 # never reaches the login item: next boot silently starts the OLD version
@@ -265,37 +371,18 @@ link "$server" "$BIN_DIR/mstream-server" || true
 # says "Start at login" is on). --autostart=enable re-registers using the
 # new binary's own path; the launcher's CLI face does this with no tray,
 # no server, no window. Only when the user has it enabled - never turn it
-# on for them here.
+# on for them here. Which launcher: the one the user actually opens - the
+# ~/Applications copy on macOS when this installer owns it (a stable path
+# across upgrades), else the one behind `current`.
 launcher="$ROOT/current/$launcher_rel"
+if [ "$platform" = darwin ] && [ -f "$HOME/Applications/mStream.app/Contents/.mstream-installer" ]; then
+    launcher="$HOME/Applications/mStream.app/Contents/MacOS/mStream"
+fi
 if [ -x "$launcher" ] && [ -n "$installed_fresh" ]; then
     if [ "$("$launcher" --autostart=status 2>/dev/null)" = enabled ]; then
         "$launcher" --autostart=enable >/dev/null 2>&1 \
             && echo "  login item re-pointed at $version" \
             || echo "  note: could not re-point the login item - open mStream once to fix it" >&2
-    fi
-fi
-
-# Desktop integration where a launcher shipped: the app-menu entry (Linux)
-# gets the bundle's own .desktop with its %INSTALL_DIR% placeholder filled;
-# macOS gets a link in ~/Applications so Spotlight and Launchpad find it.
-desktop_note=""
-if [ -z "${MSTREAM_NO_DESKTOP:-}" ]; then
-    if [ "$platform" = linux ] && [ -f "$ROOT/$bundle/mStream.desktop" ]; then
-        apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-        mkdir -p "$apps"
-        sed "s|%INSTALL_DIR%|$ROOT/current|g" "$ROOT/$bundle/mStream.desktop" > "$apps/mstream.desktop"
-        chmod 644 "$apps/mstream.desktop"
-        command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps" 2>/dev/null || true
-        desktop_note="app menu: mStream (or run: $ROOT/current/mstream-desktop)"
-    elif [ "$platform" = darwin ] && [ -d "$ROOT/$bundle/mStream.app" ]; then
-        mkdir -p "$HOME/Applications"
-        # A REAL mStream.app already there (dragged in by hand) is the
-        # user's; link() refuses to touch it and says so.
-        if link "$ROOT/current/mStream.app" "$HOME/Applications/mStream.app"; then
-            desktop_note="app: ~/Applications/mStream.app (menu-bar icon; Quick Connect on)"
-        else
-            desktop_note="app: $ROOT/current/mStream.app  (~/Applications/mStream.app is a separate copy - replace it with this one when you're ready)"
-        fi
     fi
 fi
 
@@ -351,3 +438,6 @@ count=$(ls -d "$ROOT"/mStream-*-"$key" 2>/dev/null | wc -l | tr -d ' ')
 if [ "$count" -gt 1 ]; then
     echo "  older versions kept under $ROOT - once mStream is not running from one, it is safe to delete"
 fi
+}
+
+main "$@"

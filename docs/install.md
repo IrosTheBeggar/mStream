@@ -48,6 +48,11 @@ from the tray icon and start it again to switch. A copy you extracted by hand
 somewhere else (or run with `--portable`) is left untouched — the script only
 manages its own folder.
 
+To uninstall, run the same one-liner with `MSTREAM_UNINSTALL=1` set: it
+removes the app folders, the `mstream-server` command, the menu / Start Menu /
+`~/Applications` entry, and the login item — and leaves your library, config,
+and database in the data directory for you to keep or delete.
+
 Prefer to do it by hand? Every release from v6.20.2 on also lists the zips
 directly, with `manifest.json` holding their sha256s:
 
