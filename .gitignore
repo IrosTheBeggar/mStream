@@ -1,4 +1,6 @@
 node_modules/*
+# build-bun.yml installs the VersionInfo stamper (resedit) here on the win-x64 leg
+scripts/node_modules/
 webapp/node_modules/*
 
 image-cache/*

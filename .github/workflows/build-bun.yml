@@ -225,6 +225,18 @@ jobs:
           "BUN_COMPILE_EXEC_PATH=$exe" | Add-Content -Path $env:GITHUB_ENV
           Write-Host "runtime: $exe"
 
+      # The bundler stamps Windows VersionInfo onto the staged rust sidecars
+      # with resedit (scripts/win-versioninfo.mjs). It's a devDependency, and
+      # this job installs prod-only, so add JUST that package under
+      # scripts/node_modules — a plain `npm install --no-save resedit` would
+      # reconcile the whole tree and drag every devDependency (eslint,
+      # redocly, ...) in with it; `--omit=dev` would then skip resedit itself.
+      # The bundler resolves it from scripts/ (its own directory) first.
+      # Version pinned to match package.json's devDependency — bump both.
+      - name: Install the VersionInfo stamper (win-x64)
+        if: matrix.key == 'win-x64'
+        run: npm install --prefix scripts --no-save --no-audit --no-fund resedit@3.0.2
+
       # Desktop tray launcher: the bundler stages bin/rust-launcher/<name> as
       # the bundle's double-click face (mStream.exe / .app executable /
       # mstream-desktop). Those binaries are CI-committed on master pushes
@@ -319,6 +331,47 @@ jobs:
 
       - name: Build + bundle (${{ matrix.key }})
         run: bun scripts/build-bun.mjs --target=${{ matrix.key }} --bundle
+
+      # ── Windows VersionInfo contract (win-x64) ──────────────────────────
+      # Every PE the zip ships must carry the same ProductName / version /
+      # company / copyright, read back through the Win32 version API — what
+      # Explorer, Task Manager, and (next) code-signing metadata restrictions
+      # see. Three sources feed it: Bun's --windows-* flags (server), the
+      # launcher's build.rs (baked at its CI build), and the bundler's
+      # resedit stamp (sidecars). Strict on tags; on PR builds a version-only
+      # mismatch on the committed launcher is a warning (see the script).
+      # Any PE the script doesn't know fails the build: no binary may ship
+      # blank — and later unsigned — by omission.
+      #
+      # rust-server-audio is stamped here but exercised by no other smoke
+      # (server-playback is opt-in), so prove the stamped exe still runs:
+      # start it, GET /status, stop it. rust-parser and the launcher run
+      # stamped/baked in the smoke steps below.
+      - name: Assert Windows VersionInfo on every shipped PE (win-x64)
+        if: matrix.key == 'win-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'
+          $D = (Get-Item dist/stage/mStream-*-win-x64).FullName
+          $strict = '${{ github.ref_type }}' -eq 'tag'
+          & ./scripts/check-win-versioninfo.ps1 -BundleDir $D -Strict:$strict
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $sa = Join-Path $D 'bin/rust-server-audio/rust-server-audio-win32-x64.exe'
+          $p = Start-Process -FilePath $sa -ArgumentList '--port','3391' -PassThru -WindowStyle Hidden -RedirectStandardOutput sa.out -RedirectStandardError sa.err
+          $ok = $false
+          for ($i = 0; $i -lt 20 -and -not $ok; $i++) {
+            Start-Sleep -Milliseconds 250
+            try { $ok = (Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:3391/status' -TimeoutSec 2).StatusCode -eq 200 } catch { $ok = $false }
+            if ($p.HasExited) { break }
+          }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          if (-not $ok) {
+            Write-Host "::error::stamped rust-server-audio did not serve /status (exited=$($p.HasExited))"
+            Get-Content sa.out, sa.err -ErrorAction SilentlyContinue | Select-Object -Last 10
+            exit 1
+          }
+          Write-Host 'stamped rust-server-audio serves /status -> 200'
 
       # ── Developer ID signing + notarization (darwin legs only) ──────────
       # Ported from mstream-terminal-player's release.yml, adapted from a
