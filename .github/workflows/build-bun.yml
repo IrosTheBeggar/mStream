@@ -655,29 +655,22 @@ jobs:
           # an auth wall would otherwise leave the server up and pass this step
           # having rebooted nothing), and require a SECOND "Access mStream
           # locally" line as positive proof a re-serve actually happened.
-          # POST a reboot trigger, retrying ONLY connection-level failures
-          # (curl code 000): mid-reboot the listener is down for a beat, and
-          # a trigger racing that window gets connection-refused — measured
-          # on run 32139960873 (HTTP 200 / 000), green on plain re-run. A
-          # real HTTP error (a 400 from a renamed Joi key, a 404 from a
-          # moved route) never retries: failing loudly on those is exactly
-          # what the assertions below exist for. 3 attempts, 2s apart,
-          # covers the relisten window; a server that stays unreachable
-          # still fails with the same message as before.
-          post_trigger() {
-            ptcode=000
-            for ptattempt in 1 2 3; do
-              ptcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' -d "$2" "$1")
-              [ "$ptcode" != "000" ] && break
-              sleep 2
-            done
-            echo "$ptcode"
-          }
+          #
+          # The trigger POSTs below are plain, single-shot curls ON PURPOSE:
+          # a connection-level failure (curl code 000) is a real finding, not
+          # noise. Once (#832) they retried 000s, because the old reboot
+          # dropped the listener for a beat and a trigger racing that window
+          # got connection-refused. Since #833 a same-bind reboot never gives
+          # the socket up — a request landing in the window gets an honest
+          # 503, never a dead connection — so a 000 here would mean that
+          # guarantee regressed, which is precisely what steps (4)/(5) exist
+          # to catch. A retry would re-fire after the dust settled and turn
+          # that regression back into a green run.
 
           REBOOT_OK=0
           if [ "$CODE" = "200" ]; then
             BOOTS_BEFORE=$(grep -c "Access mStream locally" "$RUN/boot.log")
-            TRIG=$(post_trigger "http://127.0.0.1:3399/api/v1/admin/config/trust-proxy" '{"trustProxy":true}')
+            TRIG=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' -d '{"trustProxy":true}' "http://127.0.0.1:3399/api/v1/admin/config/trust-proxy")
             if [ "$TRIG" != "200" ]; then
               echo "FAIL: reboot trigger POST returned ${TRIG:-000}, not 200 — the smoke would have passed without rebooting anything"
               cat "$RUN/boot.log"; kill "$SRV" 2>/dev/null; exit 1
@@ -722,15 +715,16 @@ jobs:
             # fired, the untouched server answered every probe, and the step
             # printed "survived two overlapping reboots" — the rebootInFlight
             # coalescing could have been deleted outright and this stayed green.
-            # The pair stays CONCURRENT (the overlap is the point); each arm
-            # retries its own 000 independently. A retried arm re-fires
-            # after the dust settles — the hard-overlap already happened
-            # (the dead connection proves it), and the boots-increase +
-            # survival assertions below stay meaningful for the re-fire.
+            # The pair stays CONCURRENT (the overlap is the point). Each arm
+            # is a single shot: the second POST may land inside the first
+            # reboot's window and get a 503 from the kept socket — accepted
+            # below as the legitimate interleaving it is — but it must never
+            # get a dead connection (000); that would be the listener being
+            # dropped again, and this step is where that shows.
             CONCURRENT_BOOTS_BEFORE=$(grep -c "Access mStream locally" "$RUN/boot.log")
-            ( post_trigger "http://127.0.0.1:3399/api/v1/admin/config/address" '{"address":"127.0.0.1"}' > "$RUN/post1.code" ) &
+            curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' -d '{"address":"127.0.0.1"}' "http://127.0.0.1:3399/api/v1/admin/config/address" > "$RUN/post1.code" &
             C1=$!
-            ( post_trigger "http://127.0.0.1:3399/api/v1/admin/config/address" '{"address":"127.0.0.1"}' > "$RUN/post2.code" ) &
+            curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H 'Content-Type: application/json' -d '{"address":"127.0.0.1"}' "http://127.0.0.1:3399/api/v1/admin/config/address" > "$RUN/post2.code" &
             C2=$!
             wait $C1 $C2
             CONCURRENT_OK=0
