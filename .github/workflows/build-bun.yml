@@ -80,7 +80,12 @@ jobs:
                       printf '[Desktop Entry]\nExec=%%INSTALL_DIR%%/mstream-desktop\n' > "rel/$b/mStream.desktop" ;;
             esac
             echo "fake bundle" > "rel/$b/README.txt"
-            (cd rel && zip -qr "$b.zip" "$b" && rm -rf "$b")
+            # python's zipfile, not `zip`: the Windows runner's git-bash has
+            # no Info-ZIP, and python3 is on every runner. Unix mode bits
+            # don't survive this route, which is fine — install.sh chmods
+            # the binaries it knows about, exactly as it must for real
+            # bundles that crossed a mode-stripping hop.
+            (cd rel && python3 -m zipfile -c "$b.zip" "$b" && rm -rf "$b")
           done
           sh scripts/release-manifest.sh 9.9.9 rel
           # The manifest must be valid JSON with every asset — and the
@@ -110,9 +115,13 @@ jobs:
           grep -q "mstream-server 9.9.9 runs" out.log
           [ "$(readlink "$RUNNER_TEMP/app/current")" = "$RUNNER_TEMP/app/mStream-9.9.9-linux-x64" ]
           [ -x "$RUNNER_TEMP/bin/mstream-server" ]
-          # same-version re-run: keep + short-circuit
+          # same-version re-run: keep + short-circuit. Capture to a file, then
+          # grep: `sh install.sh | grep -q` closes the pipe on first match and
+          # the installer's later echo dies of EPIPE under set -e (measured:
+          # "echo: I/O error", a false failure).
           echo keep > "$RUNNER_TEMP/app/mStream-9.9.9-linux-x64/STATE"
-          sh install.sh | grep -q "already installed"
+          sh install.sh > rerun.log 2>&1
+          grep -q "already installed" rerun.log
           [ -f "$RUNNER_TEMP/app/mStream-9.9.9-linux-x64/STATE" ]
           # tampered manifest must refuse
           sed -i 's/"sha256": "[0-9a-f]*"/"sha256": "0000000000000000000000000000000000000000000000000000000000000000"/' rel/manifest.json
