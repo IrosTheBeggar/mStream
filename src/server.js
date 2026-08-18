@@ -8,6 +8,7 @@ import { compression } from './util/compression.js';
 import jwt from 'jsonwebtoken';
 import http from 'http';
 import https from 'https';
+import net from 'net';
 import crypto from 'crypto';
 import { dataRoot, usingFallbackDataRoot } from './util/esm-helpers.js';
 
@@ -58,6 +59,7 @@ import * as backupManager from './backup/manager.js';
 // Velvet UI modules — dynamically imported only when ui='velvet' is active
 import WebError from './util/web-error.js';
 import { isAdminAllowed } from './util/admin-network.js';
+import { writeJsonAtomic, completedWrites } from './util/atomic-json.js';
 
 import packageJson from '../package.json' with { type: 'json' };
 
@@ -83,6 +85,38 @@ let currentBind = null;
 // relisten budget and process.exit() the whole process, killing the healthy
 // winner with it.
 let rebootInFlight = false;
+// A reboot request that arrived while one was in flight. The in-flight reboot
+// re-reads the config from disk, but only ONCE, at its start: a save that
+// lands after that read (two admin tabs, a slow-bodied POST already dispatched
+// to the old app) would otherwise be on disk and never applied — the admin
+// sees "Updated" while the server runs the previous value until the next
+// restart. So a coalesced request re-runs the reboot once the in-flight one
+// has re-served — but only if a config write actually completed after that
+// read (configWritesAtRead vs util/atomic-json's completed-write count);
+// otherwise the in-flight reboot already applied it and a second bounce would
+// just cost another tunnel/listener cycle.
+let rebootPending = false;
+let configWritesAtRead = 0;
+// Bumped by every reboot(); each request tags its socket with the generation
+// serving it, so reboot()'s grace-period sweep can tell "still busy with an
+// OLD-app response" (destroy: that handler must not live on) from "idle
+// keep-alive" or "already carrying a NEW-app response" (leave alone: the kept
+// socket swapped apps ~70 ms in, and destroying those cut audio streams the
+// new app was mid-way through).
+let appGeneration = 0;
+
+// Per-request socket tagging for the sweep above. Registered ONCE per
+// listener alongside the 'connection' tracker; runtimes/servers where
+// req.socket is not the accepted socket (Bun's shim, https' TLSSocket over
+// the raw 'connection' socket) simply leave sockets untagged, and untagged
+// sockets get the pre-existing behaviour (destroyed by the sweep).
+function tagRequestSocket(req, res) {
+  const socket = req.socket;
+  if (!socket) { return; }
+  socket._mstreamGen = appGeneration;
+  socket._mstreamBusy = true;
+  res.once('close', () => { socket._mstreamBusy = false; });
+}
 
 // Placeholder request handler for the reboot window: the listening socket stays
 // bound while the app is torn down and rebuilt, and callers get an honest 503
@@ -92,6 +126,30 @@ function rebootStub(req, res) {
   res.setHeader('Retry-After', '1');
   res.setHeader('Connection', 'close');
   res.end('mStream is restarting');
+}
+
+// Put a rejected bind change back: the previous port/address into the config
+// file (atomically — the admin's own saves go through the same writer), so
+// the next start doesn't fail on the value this one just refused.
+async function revertBindInConfig(configFile, prev) {
+  const doc = JSON.parse(await fs.promises.readFile(configFile, 'utf8'));
+  doc.port = prev.port;
+  doc.address = prev.address;
+  await writeJsonAtomic(configFile, doc);
+}
+
+// Can this machine bind {port, address} right now? A throwaway net.Server —
+// node:net, deliberately: Bun's node:http server reports an address that
+// isn't local as EADDRINUSE ("Is port N in use?"), which the same-port relisten
+// patience would then wait on forever, while its node:net server says
+// EADDRNOTAVAIL like Node does. Port 0 probes the ADDRESS alone.
+function probeBind(port, address) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    const timer = setTimeout(() => { try { probe.close(); } catch (_) { /* never opened */ } resolve({ ok: false, code: 'ETIMEDOUT' }); }, 3000);
+    probe.once('error', (err) => { clearTimeout(timer); resolve({ ok: false, code: err.code || err.message }); });
+    probe.listen(port, address, () => { clearTimeout(timer); probe.close(() => resolve({ ok: true })); });
+  });
 }
 
 function bindLabel(bind) {
@@ -132,6 +190,9 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   mstream = express();
 
   try {
+    // Captured BEFORE the read: any admin save that completes from here on
+    // may have missed this read (see rebootPending).
+    configWritesAtRead = completedWrites(configFile);
     await config.setup(configFile);
   } catch (err) {
     // A permission/read-only failure is NOT a malformed config, and saying so
@@ -193,7 +254,37 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   // Keep the socket when a reboot re-serves the very same bind (the common
   // case: trust proxy, UI switch, request-size limit...). See keepListener's
   // rationale above serveIt.
-  const keepListener = relisten !== null && !!server && server.listening && sameBind(relisten, bind);
+  let keepListener = relisten !== null && !!server && server.listening && sameBind(relisten, bind);
+  if (!keepListener && relisten !== null && server && server.listening &&
+      (relisten.port !== bind.port || relisten.address !== bind.address)) {
+    // The admin moved the port/address. Before giving up a socket that works,
+    // prove the new one is servable AT ALL — an address that isn't this
+    // machine's, a privileged/reserved port, a port another program owns. It
+    // used to be: recycle, fail to listen, exit — and exit again on every
+    // later start, the bad value now being on disk. Now: refuse the change,
+    // put the previous port/address back in the config, keep serving on the
+    // socket we have. A port move probes the exact new bind (that port is one
+    // this process never held, so "in use" is real); an address move on the
+    // same port probes the address alone (port 0) — the exact bind would fail
+    // against our own still-open socket on Linux.
+    const portMoved = relisten.port !== bind.port;
+    const probe = await probeBind(portMoved ? bind.port : 0, bind.address);
+    if (!probe.ok) {
+      const rejected = bindLabel(bind);
+      bind.port = relisten.port;
+      bind.address = relisten.address;
+      config.program.port = relisten.port;
+      config.program.address = relisten.address;
+      winston.error(`The new bind ${rejected} cannot be served (${probe.code}) — keeping ${bindLabel(bind)} and restoring port/address in the config file`);
+      try { fs.writeSync(2, `mStream: bind ${rejected} rejected (${probe.code}); staying on ${bindLabel(bind)}\n`); } catch (_) { /* stderr gone */ }
+      revertBindInConfig(configFile, relisten).catch((revertErr) => {
+        winston.error(`Could not restore the previous port/address in ${configFile}: ${revertErr.message} — edit it by hand or the next start will fail the same way`);
+      });
+      // Nothing about the bind changes now (unless TLS did too, which still
+      // recycles — onto the address we know works).
+      keepListener = sameBind(relisten, bind);
+    }
+  }
   if (!keepListener) {
     // Build the replacement first: an unreadable or malformed cert must fail
     // here, before anything is torn down.
@@ -238,6 +329,7 @@ export async function serveIt(configFile, { relisten = null } = {}) {
       mySockets.add(socket);
       socket.on('close', () => mySockets.delete(socket));
     });
+    server.on('request', tagRequestSocket);
   }
 
   // Magic Middleware Things
@@ -602,6 +694,20 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     rebootInFlight = false;   // a reboot's re-serve is complete
     winston.info(`Access mStream locally: ${protocol}://localhost:${config.program.port}`);
 
+    // A settings change landed while the reboot above was already past its
+    // config read (see rebootPending): go straight around again rather than
+    // booting the chores below for a config that is already stale. The
+    // re-run re-reads the file, so it applies both changes.
+    if (rebootPending) {
+      rebootPending = false;
+      if (completedWrites(config.configFile) > configWritesAtRead) {
+        winston.info('A settings change landed after this reboot read the config — rebooting once more to apply it');
+        setImmediate(reboot);
+        return;
+      }
+      winston.info('The settings change that arrived during the reboot was already picked up by it');
+    }
+
     const taskQueue = await import('./db/task-queue.js');
     taskQueue.runAfterBoot();
 
@@ -616,11 +722,20 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     if (config.program.dlna.mode !== 'disabled') {
       dlnaSsdp.start();
     }
+    // The separate-port servers are kept listeners (util/kept-listener.js):
+    // reboot() deliberately does NOT stop them, so start() here keeps their
+    // socket when port/address are unchanged and only recycles it when they
+    // are — same rule as the main listener, same Windows/Bun reason. A config
+    // that no longer wants them must therefore stop them HERE.
     if (config.program.dlna.mode === 'separate-port') {
       dlnaServer.start();
+    } else {
+      dlnaServer.stop();
     }
     if (config.program.subsonic.mode === 'separate-port') {
       subsonicServer.start();
+    } else {
+      subsonicServer.stop();
     }
 
     // Iroh P2P remote-access tunnel (opt-in; default off). Lazy-loaded so a
@@ -717,7 +832,7 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   // until that child exits (see keepListener above). Both end on their own;
   // neither is a reason to take the process down. So retry with backoff for
   // as long as it takes, say why, and let the eventual listen succeed.
-  const samePortRelisten = relisten !== null && relisten.port === bind.port;
+  let samePortRelisten = relisten !== null && relisten.port === bind.port;
   if (relisten !== null && !samePortRelisten) {
     winston.info(`Reboot moved the port ${relisten.port} -> ${bind.port}; a conflict on the new port is real, not a release delay`);
   }
@@ -725,6 +840,7 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   let relistenAttempts = 0;
   let relistenLastLoggedAt = 0;
   let relistenDiagnosed = false;
+  let rolledBack = false;
   server.on('error', (err) => {
     // Only the CURRENT server may act on its errors. A superseded instance
     // (an overlapping reboot's loser) must never run the exit paths below —
@@ -734,9 +850,53 @@ export async function serveIt(configFile, { relisten = null } = {}) {
       try { thisServer.close(); } catch (_) { /* already closed */ }
       return;
     }
+    // A reboot that CHANGED the bind to something this machine cannot serve
+    // — an address that isn't local (EADDRNOTAVAIL), a privileged or reserved
+    // port (EACCES), a port some other program owns (EADDRINUSE on a MOVED
+    // port, where a conflict is real). The old bind worked a moment ago; going
+    // dark, exiting, and re-exiting on every later boot because the bad value
+    // is now on disk (that was the behaviour) helps nobody. Revert instead:
+    // put the previous port/address back in the config file, say so loudly,
+    // and re-take the bind we just released — with the same-port patience,
+    // since it IS the port this process held.
+    if (relisten !== null && !rolledBack &&
+        (err.code === 'EADDRNOTAVAIL' || err.code === 'EACCES' || err.code === 'EINVAL' ||
+         (err.code === 'EADDRINUSE' && !samePortRelisten))) {
+      rolledBack = true;
+      const rejected = bindLabel(bind);
+      bind.port = relisten.port;
+      bind.address = relisten.address;
+      config.program.port = relisten.port;
+      config.program.address = relisten.address;
+      samePortRelisten = true;
+      winston.error(`The new bind ${rejected} cannot be served (${err.code}${err.message ? `: ${err.message}` : ''}) — reverting to ${bindLabel(bind)} and restoring port/address in the config file`);
+      try { fs.writeSync(2, `mStream: bind ${rejected} rejected (${err.code}); staying on ${bindLabel(bind)}\n`); } catch (_) { /* stderr gone */ }
+      revertBindInConfig(config.configFile, relisten).catch((revertErr) => {
+        winston.error(`Could not restore the previous port/address in ${config.configFile}: ${revertErr.message} — edit it by hand or the next start will fail the same way`);
+      });
+      setTimeout(() => { if (thisServer === server) { thisServer.listen(bind.port, bind.address); } }, 250);
+      return;
+    }
     if (err.code === 'EADDRINUSE' && samePortRelisten) {
       relistenAttempts++;
       const waitedMs = Date.now() - relistenStartedAt;
+      // Same port, MOVED address (e.g. [::] -> 127.0.0.1): "in use" can be our
+      // own child's inherited handle (a wait, as below) or another program on
+      // exactly the new address (permanent — the pre-recycle probe can't see
+      // that one, since on Linux the exact bind fails against our own socket
+      // until we close it). Give it 20 s, then go back to the address that
+      // worked rather than sit dark indefinitely; if THAT is held too it is
+      // the inherited-handle case, and the unbounded patience below applies.
+      if (!rolledBack && relisten.address !== bind.address && waitedMs >= 20000) {
+        rolledBack = true;
+        const rejected = bindLabel(bind);
+        bind.address = relisten.address;
+        config.program.address = relisten.address;
+        winston.error(`Port ${bind.port} still busy 20s after moving to ${rejected} — reverting to ${bindLabel(bind)} and restoring the address in the config file`);
+        revertBindInConfig(config.configFile, relisten).catch((revertErr) => {
+          winston.error(`Could not restore the previous address in ${config.configFile}: ${revertErr.message}`);
+        });
+      }
       // 250 ms for the first two seconds (the ordinary Windows release delay),
       // then 1 s, then every 5 s once it is clearly a held socket.
       const delay = waitedMs < 2000 ? 250 : waitedMs < 30000 ? 1000 : 5000;
@@ -786,13 +946,16 @@ export function reboot() {
     // serveIt()s would both try to take over the listener (or race for the
     // port on a bind change, where the loser exits the process out from under
     // the winner). Two quick admin saves is all it takes. Coalesce instead —
-    // the in-flight reboot already re-reads the config from disk, so it picks
-    // up both changes.
+    // and remember it: the in-flight reboot re-reads the config exactly once,
+    // at its start, so a save landing after that read is applied by ONE more
+    // reboot once this one has re-served (see rebootPending / onListening).
     if (rebootInFlight) {
-      winston.warn('Reboot already in progress — skipping the duplicate request');
+      rebootPending = true;
+      winston.warn('Reboot already in progress — this request will re-run the reboot once it completes');
       return;
     }
     rebootInFlight = true;
+    appGeneration++;
     // The bind we are serving right now, captured BEFORE serveIt's
     // config.setup re-reads the file: the re-serve keeps the socket if the
     // new config binds identically, and only gets the EADDRINUSE patience if
@@ -804,8 +967,13 @@ export function reboot() {
     transcode.reset();
 
     dlnaSsdp.stop();
-    dlnaServer.stop();
-    subsonicServer.stop();
+    // The separate-port DLNA/Subsonic servers are NOT stopped here: they are
+    // kept listeners (util/kept-listener.js) and onListening re-ensures them
+    // against the re-read config — kept when their bind is unchanged, recycled
+    // (with same-port patience) when it isn't, stopped when no longer wanted.
+    // Closing them here made every soft reboot on the Windows Bun bundle
+    // re-listen against a child's inherited handle, and their re-listen has
+    // no second chance: the Subsonic API stayed dead until the next restart.
     mdns.stop();
     serverPlaybackApi.killRustPlayer();
     // Tear down the /remote WebSocket server: it detaches its upgrade/error
@@ -820,39 +988,39 @@ export function reboot() {
     // pending alongside the new ones.
     backupManager.shutdown();
 
-    // Tear down the Iroh tunnel. It binds its own UDP socket independent of the
-    // HTTP server, so it doesn't block server.close(); we stop it to free the
-    // socket + relay connection. Lazy-imported to match the boot path and to
-    // stay a no-op when the native module was never loaded.
-    import('./state/iroh.js').then((m) => m.stop()).catch(() => {});
-    // Same for the federation endpoint — its own UDP socket + relay conn.
-    // Peer bridges (loopback servers + outbound conns) go down with it.
-    import('./state/federation-client.js').then((m) => m.stopAll()).catch(() => {});
-    import('./state/federation.js').then((m) => m.stop()).catch(() => {});
-    // Same for the discovery-network gossip stack: sidecar process, gossip
-    // subscription, mesh-health watch, auto-fetch and pruning timers. Without
-    // it, an operator who DISABLES the feature in the config file and uses the
-    // admin reboot (the documented flow) keeps publishing snapshots and
-    // gossiping their catalog until a full process restart, while the server
-    // reports the feature off.
+    // Tear down the Iroh tunnel, the federation endpoint (+ its peer bridges)
+    // and the discovery-network gossip stack. Each binds its own sockets
+    // independent of the HTTP server; each is lazy-imported to match the boot
+    // path and to stay a no-op when its native module was never loaded.
     //
-    // Unlike the teardowns above this one is SEQUENCED before the re-serve
-    // rather than fired and forgotten, so a reboot that disables the feature
-    // has actually released the sidecar before the new instance boots.
+    // ALL of these are SEQUENCED before the re-serve, not fired and
+    // forgotten. The re-serve now runs tens of milliseconds after this point
+    // (the kept-socket swap), while closing an iroh endpoint takes ~1 s: a
+    // fire-and-forget stop() meant onListening's start() found the endpoint
+    // still set (closing), no-oped, and the late stop then nulled it — Quick
+    // Connect and federation dead after ANY reboot-requiring admin save, no
+    // error logged, until the next process restart. Same for the discovery
+    // stack: an operator who DISABLES it in the config and uses the admin
+    // reboot kept publishing until a full restart.
     //
     // The timeout is a LATENCY bound, not the correctness mechanism: a wedged
     // teardown can delay the restart but never block it. Correctness lives in
-    // the stack itself, which now clears `running` up front and makes a start
-    // wait on the in-flight stop (see startDiscoveryP2pStack). That ordering
-    // matters because a full stop can outlast this timeout — the sidecar gets
-    // a shutdown-RPC grace AND a SIGKILL fallback — and when it does, the
-    // restart lands mid-stop. Before the stack serialized, that combination
-    // silently left the feature dead: the restart no-oped on a stale flag and
-    // the late stop killed the sidecar it was meant to replace.
-    const p2pStopped = Promise.race([
-      import('./state/discovery-p2p-stack.js')
-        .then((m) => m.stopDiscoveryP2pStack())
-        .catch((err) => winston.warn(`[discovery-p2p] stop during reboot failed: ${err.message}`)),
+    // the modules themselves — each keeps an in-flight `stopping` promise,
+    // clears its public state up front, and makes a start() wait on the stop
+    // (state/iroh.js, state/federation.js, state/discovery-p2p-stack.js). That
+    // ordering matters because a full stop can outlast this timeout (the
+    // discovery sidecar gets a shutdown-RPC grace AND a SIGKILL fallback), and
+    // when it does the restart lands mid-stop and must wait rather than no-op.
+    const stopOf = (label, load) => load()
+      .catch((err) => winston.warn(`[${label}] stop during reboot failed: ${err.message}`));
+    const teardowns = Promise.all([
+      stopOf('discovery-p2p', () => import('./state/discovery-p2p-stack.js').then((m) => m.stopDiscoveryP2pStack())),
+      stopOf('iroh', () => import('./state/iroh.js').then((m) => m.stop())),
+      stopOf('federation-client', () => import('./state/federation-client.js').then((m) => m.stopAll())),
+      stopOf('federation', () => import('./state/federation.js').then((m) => m.stop())),
+    ]);
+    const teardownsDone = Promise.race([
+      teardowns,
       new Promise((resolve) => setTimeout(resolve, 5000)),
     ]);
 
@@ -865,17 +1033,25 @@ export function reboot() {
       server.off('request', mstream);
       server.on('request', rebootStub);
     }
-    // Drop the connections that existed at reboot time after a short grace
-    // period, so in-flight writes get a chance to finish but a long transfer
-    // (a transcode, a big download) doesn't keep the old app's handlers alive
-    // indefinitely — and, on a bind change, so Node's close() can settle (it
-    // waits for every connection to drain, and closeAllConnections() is a
-    // guaranteed no-op under Bun once close() has run). Snapshot, not the
-    // live set: connections the kept socket accepts after this moment belong
-    // to the stub and then to the new app.
+    // Drop the OLD app's in-flight connections after a short grace period, so
+    // short writes get a chance to finish but a long transfer (a transcode, a
+    // big download) doesn't keep the old app's handlers alive indefinitely —
+    // and, on a bind change, so Node's close() can settle (serveIt's recycle
+    // path destroys ALL of the old listener's sockets for that; see there).
+    // Snapshot, not the live set: connections the kept socket accepts after
+    // this moment belong to the stub and then to the new app. And on the
+    // kept socket the app swaps ~70 ms in, so by the time this fires an idle
+    // keep-alive connection from before the reboot may already be carrying a
+    // NEW-app response (a browser's pooled connection starting the next
+    // track): destroy only sockets still busy with a response the OLD
+    // generation started; leave idle ones and new-generation ones alone.
+    // Untagged sockets (a runtime where req.socket isn't the accepted socket)
+    // keep the previous behaviour and are destroyed.
     const closingSockets = [...liveSockets];
+    const newGeneration = appGeneration;
     setTimeout(() => {
       for (const socket of closingSockets) {
+        if (socket._mstreamGen !== undefined && (!socket._mstreamBusy || socket._mstreamGen >= newGeneration)) { continue; }
         try { socket.destroy(); } catch (_) { /* already gone */ }
       }
     }, 1000);
@@ -884,9 +1060,10 @@ export function reboot() {
     // cert first fails HERE). Unhandled, that's a raw unhandled rejection
     // with the old app already torn down — the silent death #803 set out to
     // eliminate, just moved to the reboot path.
-    // Gate the re-serve on the discovery-p2p teardown finishing (see above).
-    p2pStopped.then(() => serveIt(config.configFile, { relisten: previousBind })).catch((rebootErr) => {
+    // Gate the re-serve on the endpoint/sidecar teardowns finishing (see above).
+    teardownsDone.then(() => serveIt(config.configFile, { relisten: previousBind })).catch((rebootErr) => {
       rebootInFlight = false;
+      rebootPending = false;
       winston.error('Reboot failed to restart the server', { stack: rebootErr });
       try { fs.writeSync(2, `mStream fatal: reboot failed to restart the server: ${rebootErr.message}\n`); } catch (_) { /* stderr gone */ }
       process.exit(1);

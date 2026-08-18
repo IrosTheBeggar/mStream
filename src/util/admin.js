@@ -18,17 +18,68 @@ import * as subsonicServer from '../subsonic/subsonic-server.js';
 import { getDirname } from './esm-helpers.js';
 import { launchWorker } from './worker-process.js';
 import { invalidateWhitelistCache } from './admin-network.js';
+import { updateJsonAtomic, completedWrites } from './atomic-json.js';
 
 const __dirname = getDirname(import.meta.url);
 
 // ── Config file helpers (for server-level settings) ─────────────────────────
 
+// Every setting editor below is a read-modify-write: loadFile -> mutate ->
+// saveFile. Two of them in flight together (two admin tabs, two quick saves,
+// the smoke's concurrent POSTs) used to be last-writer-wins on disk — both
+// loaded the same document, and the second save silently threw away the
+// first's change (a trustProxy flip lost under a maxRequestSize save, both
+// answered 200). And the writes were plain fs.writeFile, so the soft reboot's
+// config re-read, now microseconds after the save that triggered it, could
+// see a truncated file and exit the process.
+//
+// So: loadFile remembers the document it handed out (a deep snapshot, keyed by
+// the returned object), and saveFile writes through util/atomic-json.js —
+// atomic (temp + rename: no reader ever sees a partial document), serialized
+// per file, and MERGING when another write landed in between: only the paths
+// the caller actually changed since its load are applied onto the file's
+// current content, so concurrent saves of different settings both survive
+// (same path: the later save wins, as before). Callers need no change.
+const loaded = new WeakMap();   // returned object -> { file, base (deep clone), writes }
+
 export async function loadFile(file) {
-  return JSON.parse(await fs.readFile(file, 'utf-8'));
+  const doc = JSON.parse(await fs.readFile(file, 'utf-8'));
+  if (doc && typeof doc === 'object') {
+    loaded.set(doc, { file: path.resolve(file), base: structuredClone(doc), writes: completedWrites(file) });
+  }
+  return doc;
 }
 
 export function saveFile(saveData, file) {
-  return fs.writeFile(file, JSON.stringify(saveData, null, 2), 'utf8');
+  const origin = (saveData && typeof saveData === 'object') ? loaded.get(saveData) : undefined;
+  return updateJsonAtomic(file, (current) => {
+    // No snapshot (not from loadFile), a different file, nothing landed since
+    // the load, or nothing to merge onto: write the caller's document as is.
+    if (!origin || origin.file !== path.resolve(file) || completedWrites(file) === origin.writes || !current || typeof current !== 'object') {
+      return saveData;
+    }
+    return mergeChanges(current, origin.base, saveData);
+  });
+}
+
+const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+// Apply to `current` every path where `mine` differs from `base` (what this
+// caller loaded); paths the caller didn't touch keep `current`'s value.
+function mergeChanges(current, base, mine) {
+  const out = { ...current };
+  for (const key of new Set([...Object.keys(base || {}), ...Object.keys(mine || {})])) {
+    const inMine = Object.prototype.hasOwnProperty.call(mine, key);
+    const inBase = Object.prototype.hasOwnProperty.call(base || {}, key);
+    if (!inMine && inBase) { delete out[key]; continue; }          // caller deleted it
+    if (!inMine) { continue; }
+    if (isPlainObject(mine[key]) && isPlainObject(base?.[key]) && isPlainObject(out[key])) {
+      out[key] = mergeChanges(out[key], base[key], mine[key]);      // descend: sibling sub-keys survive
+    } else if (!inBase || JSON.stringify(mine[key]) !== JSON.stringify(base[key])) {
+      out[key] = mine[key];                                         // caller changed (or added) it
+    }
+  }
+  return out;
 }
 
 // ── Directory / Library management (now in SQLite) ──────────────────────────
