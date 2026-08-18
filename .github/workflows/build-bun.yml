@@ -801,6 +801,47 @@ jobs:
           path: bundles
           merge-multiple: true
 
+      # manifest.json: the release's own inventory — version + sha256 per zip.
+      # install.sh / install.ps1 read it FIRST (to learn the exact asset name
+      # for their platform, then to verify the download), and the future
+      # launcher auto-updater will read the same file. Same shape as
+      # mstream-terminal-player's, so tooling that understands one
+      # understands both: {name, version, apiVersion, assets:[{file,sha256}]}.
+      # Bump apiVersion only on a breaking change to this shape.
+      - name: Generate sha256 manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd bundles
+          version="${GITHUB_REF_NAME#v}"
+          {
+            echo '{'
+            echo '  "name": "mstream",'
+            echo "  \"version\": \"${version}\","
+            echo '  "apiVersion": 1,'
+            echo '  "assets": ['
+            first=true
+            for f in mStream-*.zip; do
+              sum=$(sha256sum "$f" | cut -d' ' -f1)
+              $first || echo ','
+              first=false
+              printf '    {"file": "%s", "sha256": "%s"}' "$f" "$sum"
+            done
+            echo ''
+            echo '  ]'
+            echo '}'
+          } > manifest.json
+          cat manifest.json
+          # Every asset name must carry THIS version: the installers derive
+          # the filename from manifest.version, so a bundle built from a
+          # package.json that lags the tag would be un-installable.
+          for f in mStream-*.zip; do
+            case "$f" in
+              "mStream-${version}-"*) ;;
+              *) echo "::error::$f does not match tag version ${version} - package.json and the tag disagree"; exit 1 ;;
+            esac
+          done
+
       - name: Attach bundles to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -814,4 +855,4 @@ jobs:
           if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             gh release create "$TAG" --repo "$REPO" --title "$TAG" --generate-notes --draft
           fi
-          gh release upload "$TAG" bundles/*.zip --clobber --repo "$REPO"
+          gh release upload "$TAG" bundles/*.zip bundles/manifest.json --clobber --repo "$REPO"

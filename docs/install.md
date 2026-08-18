@@ -10,6 +10,38 @@ A bundle is a **folder**, not a single file: the desktop launcher, the server
 binary (`mstream-server`), `webapp/` (the UI), and `bin/` (sidecar binaries).
 Keep them together; the bundle itself can live anywhere.
 
+## Install with one command
+
+The install scripts pick the right bundle for your machine (OS, CPU, and on
+Linux glibc-vs-musl), verify its sha256 against the release's `manifest.json`,
+extract it into a versioned folder, and wire up a `mstream-server` command
+plus an app-menu / Start Menu / `~/Applications` entry. Re-running upgrades in
+place; your data is never inside the app folder, so it is never touched.
+
+```shell
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/IrosTheBeggar/mStream/master/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/IrosTheBeggar/mStream/master/install.ps1 | iex
+```
+
+Where things land: the app folders under `~/.local/share/mstream/app/`
+(Linux), `~/Library/Application Support/mStream/app/` (macOS), or
+`%LOCALAPPDATA%\Programs\mStream\` (Windows), with `current` pointing at the
+active version; the `mstream-server` command in `~/.local/bin` (Linux/macOS) or
+via the user PATH (Windows). Optional knobs, all environment variables:
+`MSTREAM_VERSION` (a tag like `v6.20.0`; default latest), `MSTREAM_INSTALL_DIR`,
+`MSTREAM_BIN_DIR` (unix), `MSTREAM_NO_PATH` (Windows), `MSTREAM_NO_DESKTOP`,
+and `MSTREAM_RELEASE_BASE` (a URL serving `manifest.json` + the zips, for
+internal mirrors). Older versions are kept beside `current` for rollback —
+delete them whenever you like.
+
+Prefer to do it by hand? Every release also lists the zips directly, with
+`manifest.json` holding their sha256s:
+
 **Just double-click it.** The desktop face of the bundle — `mStream.exe` on
 Windows, `mStream.app` on macOS, `mstream-desktop` on Linux — starts the
 server in the background, puts an mStream icon in your tray / menu bar
