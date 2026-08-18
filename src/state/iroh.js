@@ -62,6 +62,12 @@ let irohMod = null;         // the loaded native module (set by start/connectTun
 let endpoint = null;        // the live Iroh endpoint (null when stopped)
 let endpointIdStr = null;   // cached base32 EndpointId string
 let connectSecretBuf = null; // Buffer the handshake compares against
+// In-flight stop(), or null. A start() that lands mid-teardown waits on it:
+// the soft reboot fires stop() and re-serves within tens of milliseconds while
+// endpoint.close() takes ~1 s, so without this the re-serve's start() saw the
+// still-closing endpoint, returned as a no-op, and the tunnel stayed dead
+// until the next process restart (same shape discovery-p2p-stack.js fixed).
+let stopping = null;
 
 // ---------------------------------------------------------------------------
 // Composite ticket (what the QR encodes): EndpointTicket + connectSecret.
@@ -133,11 +139,11 @@ async function acceptConnection(conn, targetHost, targetPort) {
 
 // Top-level accept loop: pull incoming connections, complete the handshake, and
 // hand authorized connections to acceptConnection. Unauthorized peers are closed.
-async function runAcceptLoop(targetHost, targetPort) {
+async function runAcceptLoop(ep, targetHost, targetPort) {
   for (;;) {
     let incoming;
     try {
-      incoming = await endpoint.acceptNext();
+      incoming = await ep.acceptNext();
     } catch (_err) {
       break; // endpoint closing
     }
@@ -172,6 +178,9 @@ async function runAcceptLoop(targetHost, targetPort) {
 //   awaitOnline   wait (bounded) for a home relay so the ticket has relay info (default true).
 // Returns { endpointId }. Throws if the native module can't load (caller handles).
 export async function start({ targetPort, targetHost = '127.0.0.1', secretKey, connectSecret, awaitOnline = true } = {}) {
+  if (stopping) {
+    try { await stopping; } catch (_err) { /* stop() is best-effort */ }
+  }
   if (endpoint) { return { endpointId: endpointIdStr }; }
   if (!targetPort) { throw new Error('iroh.start: targetPort is required'); }
   if (!connectSecret) { throw new Error('iroh.start: connectSecret is required'); }
@@ -182,14 +191,19 @@ export async function start({ targetPort, targetHost = '127.0.0.1', secretKey, c
 
   const options = { alpns: [TUNNEL_ALPN] };
   if (secretKey) { options.secretKey = Array.from(asBuffer(secretKey)); }
-  endpoint = await Endpoint.bind(options);
-  endpointIdStr = endpoint.id().toString();
+  const ep = await Endpoint.bind(options);
+  endpoint = ep;
+  endpointIdStr = ep.id().toString();
 
   if (awaitOnline) {
-    await Promise.race([endpoint.online().catch(() => {}), delay(8000)]);
+    await Promise.race([ep.online().catch(() => {}), delay(8000)]);
   }
+  // stop() ran while we waited for the relay (a soft reboot lands here when
+  // an admin saves right after boot): ep is closed and the state cleared —
+  // nothing to serve, and the reboot's own start() brings the tunnel back.
+  if (endpoint !== ep) { return { endpointId: null }; }
 
-  runAcceptLoop(targetHost, targetPort); // detached; ends when the endpoint closes
+  runAcceptLoop(ep, targetHost, targetPort); // detached; ends when the endpoint closes
   winston.info(`[iroh] tunnel up — endpointId=${endpointIdStr} -> ${targetHost}:${targetPort}`);
   return { endpointId: endpointIdStr };
 }
@@ -213,11 +227,18 @@ export function getTicket() {
 export function getEndpoint() { return endpoint; }
 
 export async function stop() {
+  if (stopping) { return stopping; }
   if (!endpoint) { return; }
-  try { await endpoint.close(); } catch (_err) { /* best effort */ }
+  // Clear the public state FIRST: from here on the tunnel reports stopped and
+  // start() waits on `stopping` rather than seeing a live-looking endpoint.
+  const ep = endpoint;
   endpoint = null;
   endpointIdStr = null;
   connectSecretBuf = null;
+  stopping = (async () => {
+    try { await ep.close(); } catch (_err) { /* best effort */ }
+  })();
+  try { await stopping; } finally { stopping = null; }
 }
 
 // ---------------------------------------------------------------------------
