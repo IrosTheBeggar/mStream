@@ -33,14 +33,23 @@ Where things land: the app folders under `~/.local/share/mstream/app/`
 `%LOCALAPPDATA%\Programs\mStream\` (Windows), with `current` pointing at the
 active version; the `mstream-server` command in `~/.local/bin` (Linux/macOS) or
 via the user PATH (Windows). Optional knobs, all environment variables:
-`MSTREAM_VERSION` (a tag like `v6.20.0`; default latest), `MSTREAM_INSTALL_DIR`,
-`MSTREAM_BIN_DIR` (unix), `MSTREAM_NO_PATH` (Windows), `MSTREAM_NO_DESKTOP`,
-and `MSTREAM_RELEASE_BASE` (a URL serving `manifest.json` + the zips, for
-internal mirrors). Older versions are kept beside `current` for rollback —
-delete them whenever you like.
+`MSTREAM_VERSION` (a tag; default latest — releases from v6.20.2 on carry the
+`manifest.json` the script needs), `MSTREAM_INSTALL_DIR`, `MSTREAM_BIN_DIR`
+(unix), `MSTREAM_NO_PATH` (Windows), `MSTREAM_NO_DESKTOP`, `MSTREAM_KEY` (unix:
+force a bundle key when auto-detection is wrong), `MSTREAM_FORCE` (replace an
+already-installed copy of the same version; the old one is moved aside), and
+`MSTREAM_RELEASE_BASE` (a URL serving `manifest.json` + the zips, for internal
+mirrors). Older versions are kept beside `current` for rollback — once mStream
+is no longer running from one, delete it whenever you like.
 
-Prefer to do it by hand? Every release also lists the zips directly, with
-`manifest.json` holding their sha256s:
+Re-running to upgrade re-points the app-menu / Start Menu entry and the
+login item at the new version, but never stops a running mStream: Quit it
+from the tray icon and start it again to switch. A copy you extracted by hand
+somewhere else (or run with `--portable`) is left untouched — the script only
+manages its own folder.
+
+Prefer to do it by hand? Every release from v6.20.2 on also lists the zips
+directly, with `manifest.json` holding their sha256s:
 
 **Just double-click it.** The desktop face of the bundle — `mStream.exe` on
 Windows, `mStream.app` on macOS, `mstream-desktop` on Linux — starts the

@@ -15,6 +15,8 @@
 #   MSTREAM_NO_DESKTOP    set to 1 to skip the Start Menu shortcut
 #   MSTREAM_RELEASE_BASE  URL serving manifest.json + the zips (default: the
 #                         GitHub release) - for internal mirrors and testing
+#   MSTREAM_FORCE         set to 1 to replace an already-installed copy of
+#                         the same version (the old one is moved aside)
 #
 # The bundle is a folder (mStream.exe tray launcher + mstream-server.exe +
 # webapp\ + bin\ sidecars). Data lives in %LOCALAPPDATA%\mStream, outside
@@ -54,10 +56,20 @@ try {
     # The manifest first: it names the exact zip for this version, so the
     # script never guesses the version number embedded in the filename.
     Write-Host "fetching manifest ($version)..."
-    Invoke-WebRequest -UseBasicParsing -Uri "$base/manifest.json" -OutFile (Join-Path $tmp 'manifest.json')
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri "$base/manifest.json" -OutFile (Join-Path $tmp 'manifest.json')
+    } catch {
+        throw ("could not fetch $base/manifest.json ($($_.Exception.Message)). " +
+               "Releases published before the installer existed have no manifest.json - " +
+               "pick a newer MSTREAM_VERSION, or download a bundle by hand from " +
+               "https://github.com/$repo/releases (see docs/install.md).")
+    }
     $manifest = Get-Content (Join-Path $tmp 'manifest.json') -Raw | ConvertFrom-Json
     if (-not $manifest.version) { throw 'manifest.json is missing a version - refusing to install' }
-    $ver = $manifest.version
+    $ver = [string]$manifest.version
+    # The version becomes a path component below: keep it to what a release
+    # tag can contain, so a bad manifest can't steer Remove-Item anywhere.
+    if ($ver -notmatch '^[0-9A-Za-z.\-]+$') { throw "manifest.json version '$ver' is not a plain version string - refusing" }
     $bundle = "mStream-$ver-$key"
     $asset = "$bundle.zip"
     $expected = ($manifest.assets | Where-Object file -eq $asset).sha256
@@ -72,30 +84,75 @@ try {
         throw "sha256 mismatch for $asset - download corrupted, not installing (expected $expected, got $actual)"
     }
 
-    # Extract beside the final location, then rename into place: a killed
-    # install leaves a stray .partial folder, never a half-written `current`.
     New-Item -ItemType Directory -Force $root | Out-Null
+    $root = (Resolve-Path $root).Path   # a relative MSTREAM_INSTALL_DIR would bake into the junction + PATH
     $partial = Join-Path $root "$bundle.partial"
     $final = Join-Path $root $bundle
-    if (Test-Path $partial) { Remove-Item -Recurse -Force $partial }
-    Expand-Archive -Path (Join-Path $tmp $asset) -DestinationPath $partial -Force
-    if (Test-Path $final) {
-        # A running launcher holds files open; stopping it is the user's
-        # call (tray > Quit), so say why instead of a cryptic access error.
-        try { Remove-Item -Recurse -Force $final } catch {
-            throw "could not replace $final - if mStream is running, Quit it from the tray icon and re-run"
+    $current = Join-Path $root 'current'
+
+    # Which mStream is running right now, if any? Never stop it (that is the
+    # user's call, tray > Quit) - but never delete files under it either:
+    # Remove-Item -Recurse tears through bin\ and webapp\ before it reaches
+    # the locked exe, leaving a live server without its UI or sidecars. And
+    # after an upgrade, that instance keeps running the OLD version until
+    # restarted, which the summary must say plainly.
+    $runningFrom = @(Get-Process mStream, mstream-server -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path } | ForEach-Object { Split-Path $_.Path } | Sort-Object -Unique)
+
+    $installedFresh = $false
+    if ((Test-Path $final) -and -not $env:MSTREAM_FORCE) {
+        # Same version already installed: leave it ALONE (it may be live,
+        # and under --portable it holds the user's config and database).
+        # Re-point the links and shortcuts, nothing more.
+        Write-Host "mStream $ver is already installed at $final - keeping it (set MSTREAM_FORCE=1 to replace)"
+    } else {
+        if ($runningFrom -contains $final) {
+            throw "mStream is running from $final - Quit it from the tray icon and re-run to replace this version"
         }
+        # Extract beside the final location, then rename into place: a killed
+        # install leaves a stray .partial folder, never a half-written `current`.
+        if (Test-Path $partial) { Remove-Item -Recurse -Force $partial }
+        Expand-Archive -Path (Join-Path $tmp $asset) -DestinationPath $partial -Force
+        if (Test-Path $final) {
+            # Forced replace: MOVE the old copy aside (never rm), so
+            # whatever state it held survives at a findable name.
+            $aside = "$final.replaced-$(Get-Date -Format yyyyMMddHHmmss)"
+            Move-Item $final $aside
+            Write-Host "  previous copy moved to $aside"
+        }
+        Move-Item (Join-Path $partial $bundle) $final
+        Remove-Item -Recurse -Force $partial
+        $installedFresh = $true
     }
-    Move-Item (Join-Path $partial $bundle) $final
-    Remove-Item -Recurse -Force $partial
 
     # `current` as a junction (no admin needed, unlike a symlink), so a
-    # shortcut and the PATH entry keep working across upgrades.
-    $current = Join-Path $root 'current'
-    if (Test-Path $current) { (Get-Item $current).Delete() }
+    # shortcut and the PATH entry keep working across upgrades. A REAL
+    # directory named current (older manual layout) is moved aside, not
+    # nested into. Deleting a junction removes only the link, never the
+    # target's contents.
+    if (Test-Path $current) {
+        $item = Get-Item $current -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { $item.Delete() }
+        else { Move-Item $current "$current.was-a-directory-$(Get-Date -Format yyyyMMddHHmmss)" }
+    }
     New-Item -ItemType Junction -Path $current -Target $final | Out-Null
 
-    Write-Host "installed mStream $ver to $final"
+    if ($installedFresh) { Write-Host "installed mStream $ver to $final" }
+
+    # The launcher registers ITSELF as the login item (HKCU Run) by absolute
+    # path - the VERSIONED folder, not current - so an upgrade would never
+    # reach the login item: next boot silently starts the OLD version. Ask
+    # the NEW launcher to re-register (its --autostart CLI runs with no
+    # tray/window/server), only if the user has it enabled.
+    $launcher = Join-Path $current 'mStream.exe'
+    if ($installedFresh -and (Test-Path $launcher)) {
+        $status = (& $launcher --autostart=status 2>$null | Out-String).Trim()
+        if ($status -eq 'enabled') {
+            & $launcher --autostart=enable 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { Write-Host "  login item re-pointed at $ver" }
+            else { Write-Warning "could not re-point the login item - open mStream once to fix it" }
+        }
+    }
     # Proof the binary execs here: commander's -V is instant and boots nothing.
     try {
         $v = & (Join-Path $final 'mstream-server.exe') -V 2>&1
@@ -119,17 +176,34 @@ try {
 
     if (-not $env:MSTREAM_NO_PATH) {
         # The user PATH in the registry, not this session's: an installer
-        # that edits $env:PATH improves exactly one window's life.
-        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-        if (($userPath -split ';') -notcontains $current) {
-            [Environment]::SetEnvironmentVariable('Path', "$userPath;$current", 'User')
-            Write-Host "  added $current to your user PATH - new terminals will see mstream-server"
-        }
+        # that edits $env:PATH improves exactly one window's life. Read the
+        # RAW value and write it back as REG_EXPAND_SZ: the .NET
+        # GetEnvironmentVariable/SetEnvironmentVariable pair returns the
+        # EXPANDED string and writes REG_SZ, which would bake every %VAR%
+        # entry other tools rely on (nvm's %NVM_HOME%, %JAVA_HOME%\bin) into
+        # frozen literals.
+        $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+        try {
+            $rawPath = [string]$envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if (($rawPath -split ';') -notcontains $current) {
+                $newPath = if ($rawPath) { "$rawPath;$current" } else { $current }
+                $envKey.SetValue('Path', $newPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+                Write-Host "  added $current to your user PATH - new terminals will see mstream-server"
+            }
+        } finally { $envKey.Close() }
     }
 
+    # An instance running from somewhere else stays on its own version until
+    # it is restarted - the script never kills a user's server. Say so, with
+    # the exact path, instead of letting "installed" imply "upgraded".
+    $elsewhere = @($runningFrom | Where-Object { $_ -ne $final -and $_ -ne $current })
+    if ($elsewhere) {
+        Write-Warning ("mStream is currently running from $($elsewhere -join ', ') - it keeps running that version " +
+                       "until you Quit it (tray icon) and start the new one; the Start Menu entry now points at $ver.")
+    }
     $others = Get-ChildItem $root -Directory | Where-Object { $_.Name -like "mStream-*-$key" -and $_.Name -ne $bundle }
     if ($others) {
-        Write-Host "  older versions kept under $root - safe to delete any that aren't 'current'"
+        Write-Host "  older versions kept under $root - once mStream is not running from one, it is safe to delete"
     }
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
