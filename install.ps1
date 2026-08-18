@@ -33,6 +33,23 @@
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
 
+# Where the login item points right now, if anywhere. The launcher registers
+# ONE per-user login item by app name (HKCU\...\Run\mStream), so a second
+# copy of mStream on the machine - one the user extracted by hand, a
+# developer's checkout - shares the slot. This script only ever re-points
+# or removes a login item that points at a copy IT manages (under $root);
+# anything else is the user's and is left alone, and they are told so.
+function Get-LoginItemTarget {
+    $v = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name mStream -ErrorAction SilentlyContinue).mStream
+    if (-not $v) { return $null }
+    # The value is `"C:\path\mStream.exe" --autostarted`; take the quoted path.
+    if ($v -match '^"([^"]+)"') { return $Matches[1] } else { return ($v -split ' ')[0] }
+}
+function Test-LoginItemIsOurs([string]$root) {
+    $t = Get-LoginItemTarget
+    return [bool]($t -and $t.StartsWith("$root\", [StringComparison]::OrdinalIgnoreCase))
+}
+
 # Everything below runs from Main, called on the LAST line: PowerShell parses
 # the whole function before executing any of it, so an `irm | iex` whose
 # stream is cut short fails to parse instead of running half an install.
@@ -66,13 +83,17 @@ if ($env:MSTREAM_UNINSTALL) {
     if ($running) { throw "mStream is running from $root - Quit it from the tray icon first, then re-run" }
     $current = Join-Path $root 'current'
     $launcher = Join-Path $current 'mStream.exe'
-    if (Test-Path $launcher) {
-        # Login item first, while a launcher still exists to remove it.
-        # Best-effort: an exe that cannot start must not block the uninstall.
+    $rootAbs = if (Test-Path $root) { (Resolve-Path $root).Path } else { $root }
+    if ((Test-Path $launcher) -and (Test-LoginItemIsOurs $rootAbs)) {
+        # Login item first, while a launcher still exists to remove it -
+        # only if it points at a copy this script manages. Best-effort: an
+        # exe that cannot start must not block the uninstall.
         try {
             & $launcher --autostart=disable 2>$null | Out-Null
             if ($LASTEXITCODE -eq 0) { Write-Host "removed the login item" }
         } catch { Write-Warning "could not run the launcher to remove the login item ($($_.Exception.Message))" }
+    } elseif (Get-LoginItemTarget) {
+        Write-Host "left the login item alone - it points at $(Get-LoginItemTarget), which this script did not install"
     }
     $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'mStream.lnk'
     if (Test-Path $lnk) { Remove-Item $lnk -Force; Write-Host "removed the Start Menu shortcut" }
@@ -201,9 +222,16 @@ try {
         try {
             $status = (& $launcher --autostart=status 2>$null | Out-String).Trim()
             if ($status -eq 'enabled') {
-                & $launcher --autostart=enable 2>$null | Out-Null
-                if ($LASTEXITCODE -eq 0) { Write-Host "  login item re-pointed at $ver" }
-                else { Write-Warning "could not re-point the login item - open mStream once to fix it" }
+                if (Test-LoginItemIsOurs $root) {
+                    & $launcher --autostart=enable 2>$null | Out-Null
+                    if ($LASTEXITCODE -eq 0) { Write-Host "  login item re-pointed at $ver" }
+                    else { Write-Warning "could not re-point the login item - open mStream once to fix it" }
+                } else {
+                    # Enabled, but for a copy we don't manage (hand-extracted, a
+                    # dev checkout). Its owner decides; the launcher's own logic
+                    # takes over the moment they open THIS copy and toggle it.
+                    Write-Warning "the login item points at $(Get-LoginItemTarget) (not managed by this script) - left as is; open the new mStream and toggle 'Start at login' to move it"
+                }
             }
         } catch {
             Write-Warning "could not run the launcher to re-point the login item ($($_.Exception.Message)) - open mStream once to fix it"

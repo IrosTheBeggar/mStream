@@ -123,6 +123,32 @@ else
     data_home="${XDG_DATA_HOME:-$HOME/.local/share}/mstream"
 fi
 
+# Where the login item points right now, if anywhere. The launcher registers
+# ONE per-user login item by app name ("mStream"), so a second copy of
+# mStream on the machine - one the user extracted by hand, a developer's
+# checkout - shares the slot. This script only ever re-points or removes
+# a login item that points at a copy IT manages ($ROOT, or the
+# ~/Applications copy on macOS); anything else is the user's and is left
+# alone, and they are told so.
+login_item_target() {
+    if [ "$platform" = darwin ]; then
+        f="$HOME/Library/LaunchAgents/mStream.plist"
+        [ -f "$f" ] && sed -n 's/^[[:space:]]*<string>\(\/[^<]*\)<\/string>.*/\1/p' "$f" | head -1
+    else
+        f="$HOME/.config/autostart/mStream.desktop"
+        [ -f "$f" ] && sed -n 's/^Exec="\{0,1\}\([^" ]*\).*/\1/p' "$f" | head -1
+    fi
+}
+login_item_is_ours() {
+    t=$(login_item_target)
+    [ -z "$t" ] && return 1
+    case "$t" in
+        "$ROOT/"*) return 0 ;;
+        "$HOME/Applications/mStream.app/"*) [ -f "$HOME/Applications/mStream.app/Contents/.mstream-installer" ] && return 0 ;;
+    esac
+    return 1
+}
+
 # -- Uninstall: MSTREAM_UNINSTALL=1 removes everything this script created -
 # the app folders, the command link, the app-menu entry / ~/Applications
 # copy, and the login item - and nothing else. Your library, config, and
@@ -135,9 +161,12 @@ if [ -n "${MSTREAM_UNINSTALL:-}" ]; then
     launcher="$ROOT/current/$launcher_rel"
     [ "$platform" = darwin ] && [ -f "$HOME/Applications/mStream.app/Contents/.mstream-installer" ] \
         && launcher="$HOME/Applications/mStream.app/Contents/MacOS/mStream"
-    # Login item first, while a launcher still exists to remove it.
-    if [ -x "$launcher" ]; then
+    # Login item first, while a launcher still exists to remove it - but
+    # only if it points at a copy this script manages.
+    if [ -x "$launcher" ] && login_item_is_ours; then
         "$launcher" --autostart=disable >/dev/null 2>&1 && echo "removed the login item" || true
+    elif [ -n "$(login_item_target)" ]; then
+        echo "left the login item alone - it points at $(login_item_target), which this script did not install"
     fi
     if [ -L "$BIN_DIR/mstream-server" ]; then rm -f "$BIN_DIR/mstream-server"; echo "removed $BIN_DIR/mstream-server"; fi
     if [ "$platform" = linux ]; then
@@ -380,9 +409,17 @@ if [ "$platform" = darwin ] && [ -f "$HOME/Applications/mStream.app/Contents/.ms
 fi
 if [ -x "$launcher" ] && [ -n "$installed_fresh" ]; then
     if [ "$("$launcher" --autostart=status 2>/dev/null)" = enabled ]; then
-        "$launcher" --autostart=enable >/dev/null 2>&1 \
-            && echo "  login item re-pointed at $version" \
-            || echo "  note: could not re-point the login item - open mStream once to fix it" >&2
+        if login_item_is_ours; then
+            "$launcher" --autostart=enable >/dev/null 2>&1 \
+                && echo "  login item re-pointed at $version" \
+                || echo "  note: could not re-point the login item - open mStream once to fix it" >&2
+        else
+            # Enabled, but for a copy we don't manage (hand-extracted, a dev
+            # checkout). Its owner decides; the launcher's own first-run logic
+            # takes over the moment they open THIS copy and toggle it.
+            echo "  note: the login item points at $(login_item_target) (not managed by this script) - left as is;" >&2
+            echo "        open the new mStream and toggle 'Start at login' to move it" >&2
+        fi
     fi
 fi
 
