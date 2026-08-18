@@ -333,7 +333,18 @@ jobs:
             echo "$ASC_API_KEY" > "$RUNNER_TEMP/asc.p8"
             ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarize.zip"
             # Team keys carry an issuer UUID; individual keys must not pass
-            # --issuer at all, says notarytool itself.
+            # --issuer at all, says notarytool itself. Normalize both ids
+            # first — these are hand-pasted repo secrets, and a stray
+            # newline/space/quote from the paste otherwise surfaces as
+            # notarytool usage error rc=64 mid-run (observed: "'***' is
+            # invalid for '--issuer': must be a valid UUID") — then
+            # shape-check the issuer so a wrong-field paste fails NAMED.
+            ASC_KEY_ID=$(printf '%s' "$ASC_KEY_ID" | tr -d '[:space:]"')
+            ASC_ISSUER_ID=$(printf '%s' "$ASC_ISSUER_ID" | tr -d '[:space:]"')
+            if [ -n "$ASC_ISSUER_ID" ] && ! printf '%s' "$ASC_ISSUER_ID" | grep -qiE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+              echo "::error::ASC_ISSUER_ID is set but is not a UUID — re-copy the Issuer ID from App Store Connect (Users and Access → Integrations) and reset the secret"
+              exit 1
+            fi
             issuer=()
             if [ -n "${ASC_ISSUER_ID}" ]; then
               issuer=(--issuer "$ASC_ISSUER_ID")
