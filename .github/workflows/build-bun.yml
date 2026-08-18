@@ -316,7 +316,18 @@ jobs:
           # resource envelope (webapp/ included). Identifier comes from
           # Info.plist (io.mstream.server).
           codesign --force ${ts[@]+"${ts[@]}"} --options runtime --sign "$identity" "$APP"
-          codesign --verify --strict --deep --verbose=2 "$APP"
+          # Verify the seal and every nested-code entry the signer recorded —
+          # deliberately NOT --deep. --deep's verification walk classifies
+          # every regular file under Contents/MacOS as a code object, and
+          # this bundle ships the webapp tree + sidecar dirs there (the
+          # server resolves both appRoot-relative, next to its own binary),
+          # so data files like webapp/**/index.html fail it as "code object
+          # is not signed at all" even though the outer seal covers them as
+          # hashed resources — observed on the first signed CI run, AFTER
+          # the sign itself succeeded. Every actual Mach-O is signed
+          # explicitly above; the honest end-to-end acceptance check is
+          # Gatekeeper's own spctl assessment after stapling, below.
+          codesign --verify --strict --verbose=2 "$APP"
 
           if [ "$FULL_NOTARIZE" = "true" ]; then
             echo "$ASC_API_KEY" > "$RUNNER_TEMP/asc.p8"
@@ -375,6 +386,10 @@ jobs:
             done
             [ "$stapled" = "1" ] || { echo "::error::stapler failed after 3 attempts (ticket never became fetchable)"; exit 1; }
             xcrun stapler validate "$APP"
+            # The verdict that actually matters to a user's double-click:
+            # Gatekeeper's own assessment of the signed, notarized, stapled
+            # bundle. Expected: "accepted ... source=Notarized Developer ID".
+            spctl --assess --type execute --verbose=2 "$APP"
           else
             echo "non-tag build: signed only (notarize+staple is tag/dispatch-gated)"
           fi
