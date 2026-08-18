@@ -8,6 +8,7 @@ import { compression } from './util/compression.js';
 import jwt from 'jsonwebtoken';
 import http from 'http';
 import https from 'https';
+import crypto from 'crypto';
 import { dataRoot, usingFallbackDataRoot } from './util/esm-helpers.js';
 
 import * as dbApi from './api/db.js';
@@ -62,32 +63,71 @@ import packageJson from '../package.json' with { type: 'json' };
 
 let mstream;
 let server;
-// Live sockets of the CURRENT server, for reboot()'s forced drain. Tracked by
+// Live sockets of the CURRENT listener, for reboot()'s forced drain. Tracked by
 // hand because closeAllConnections() is unusable under Bun: its shim nulls the
 // internal handle synchronously inside close(), so any sweep scheduled after
 // close() early-returns and does nothing (Node's, by contrast, still destroys
 // sockets). Without a working sweep a reboot during an active transfer — a
 // transcode, a big download — never fires its close callback and the server
-// never comes back. 'connection' fires on both runtimes, so this does.
+// never comes back. 'connection' fires on both runtimes, so this does. The set
+// lives as long as the listening socket does (it is NOT per serveIt(): a
+// same-bind reboot keeps the socket and swaps only the app — see below).
 let liveSockets = new Set();
-// True from the start of a reboot until its re-served instance is listening.
+// Identity of the CURRENT listener: { port, address, ssl, fingerprint }. Set
+// once a listen succeeds; reboot() hands it to the re-serve as `relisten` so
+// serveIt() can tell "same socket, keep it" from "bind changed, recycle it".
+let currentBind = null;
+// True from the start of a reboot until its re-served instance is serving.
 // Guards against overlapping reboots (two quick admin saves, two admin tabs):
-// a second server.close() on an already-closing server still runs its callback,
-// which would start a SECOND serveIt racing the first for the port — and the
-// loser would exhaust the relisten budget and process.exit() the whole process,
-// killing the healthy winner with it.
+// two serveIt()s racing for the same port would have the loser exhaust its
+// relisten budget and process.exit() the whole process, killing the healthy
+// winner with it.
 let rebootInFlight = false;
 
-// `relisten` carries the port THIS process just released, so a reboot's
-// re-serve can tell a Windows port-release delay from a real conflict.
-// Windows doesn't grant the immediate same-process rebind unix does —
-// close()'s callback can fire before the OS frees the port — so retrying
-// EADDRINUSE briefly is right THERE, and only there. It is deliberately not a
-// boolean: an admin who changed the port is re-serving a port this process
-// never owned, where a conflict is permanent, and retrying would spend five
-// seconds blaming a transient OS condition before exiting anyway (and on a
-// mac .app could even probe a DIFFERENT mStream on the new port and exit 0 as
-// "redundant"). First boots never retry for the same reason.
+// Placeholder request handler for the reboot window: the listening socket stays
+// bound while the app is torn down and rebuilt, and callers get an honest 503
+// instead of a connection refused (or, worse, a hang — see keepListener below).
+function rebootStub(req, res) {
+  res.statusCode = 503;
+  res.setHeader('Retry-After', '1');
+  res.setHeader('Connection', 'close');
+  res.end('mStream is restarting');
+}
+
+function bindLabel(bind) {
+  const host = bind.address.includes(':') ? `[${bind.address}]` : bind.address;
+  return `${bind.ssl ? 'https' : 'http'}://${host}:${bind.port}`;
+}
+
+function sameBind(a, b) {
+  return a.port === b.port && a.address === b.address && a.ssl === b.ssl && a.fingerprint === b.fingerprint;
+}
+
+// Why a same-bind reboot keeps the listening socket instead of close()+listen():
+// on Windows, a listen socket is a kernel object shared with every child that
+// inherited a handle to it, and under Bun <= 1.3.14 EVERY spawned child does
+// (uSockets created inheritable handles; fixed upstream in oven-sh/bun#36938,
+// unreleased as of Aug 2026). So close() in the parent releases nothing while a
+// scanner, transcode, ffmpeg download or enrichment worker is alive — the port
+// stays LISTENING (and even completes TCP handshakes that then hang) until the
+// last such child exits, which for a scan or a backfill can be an hour. A
+// close()+listen() reboot therefore meant EADDRINUSE for the child's lifetime;
+// with the old 5 s budget it meant the whole process exiting after any admin
+// save made mid-scan. Never giving the socket up sidesteps all of it, on every
+// runtime: only a changed bind (port, address, http<->https, rotated cert
+// material) recycles the listener.
+//
+// `relisten` carries the bind THIS process is currently serving, so a reboot's
+// re-serve can (a) keep the socket when nothing about the bind changed and
+// (b) when it did change but the PORT is the same, tell a release delay from a
+// real conflict. Windows doesn't grant the immediate same-process rebind unix
+// does — close()'s callback can fire before the OS frees the port — and the
+// inherited-handle hold above is the same symptom lasting longer, so retrying
+// EADDRINUSE is right THERE, and only there. It is deliberately not a boolean:
+// an admin who changed the port is re-serving a port this process never owned,
+// where a conflict is permanent, and retrying would only delay the inevitable
+// exit while blaming a transient OS condition. First boots never retry for the
+// same reason.
 export async function serveIt(configFile, { relisten = null } = {}) {
   mstream = express();
 
@@ -124,21 +164,80 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   }
 
   // Set server
-  if (config.program.ssl && config.program.ssl.cert && config.program.ssl.key) {
+  const wantSsl = !!(config.program.ssl && config.program.ssl.cert && config.program.ssl.key);
+  let sslMaterial = null;
+  if (wantSsl) {
     try {
-      config.setIsHttps(true);
-      server = https.createServer({
+      sslMaterial = {
         key: fs.readFileSync(config.program.ssl.key),
         cert: fs.readFileSync(config.program.ssl.cert),
-      });
+      };
     } catch (error) {
       winston.error('FAILED TO CREATE HTTPS SERVER');
       error.code = 'BAD CERTS';
       throw error;
     }
-  } else {
-    config.setIsHttps(false);
-    server = http.createServer();
+  }
+  config.setIsHttps(wantSsl);
+  const bind = {
+    port: config.program.port,
+    address: config.program.address,
+    ssl: wantSsl,
+    // Identity is the cert MATERIAL, not the file names: a rotated cert under
+    // unchanged paths must still recycle the listener, or the reused socket
+    // would keep serving the old certificate.
+    fingerprint: wantSsl
+      ? crypto.createHash('sha256').update(sslMaterial.key).update(sslMaterial.cert).digest('hex')
+      : null,
+  };
+  // Keep the socket when a reboot re-serves the very same bind (the common
+  // case: trust proxy, UI switch, request-size limit...). See keepListener's
+  // rationale above serveIt.
+  const keepListener = relisten !== null && !!server && server.listening && sameBind(relisten, bind);
+  if (!keepListener) {
+    // Build the replacement first: an unreadable or malformed cert must fail
+    // here, before anything is torn down.
+    let next;
+    try {
+      next = wantSsl ? https.createServer(sslMaterial) : http.createServer();
+    } catch (error) {
+      winston.error('FAILED TO CREATE HTTPS SERVER');
+      error.code = 'BAD CERTS';
+      throw error;
+    }
+    if (relisten !== null && server && server.listening) {
+      // The bind changed: this is a real recycle. Release the old listener
+      // before the new one binds, so a same-port move (address or TLS
+      // change) doesn't compete with itself. Node's close() waits for the
+      // remaining connections; reboot()'s grace-period sweep (already armed)
+      // destroys the stragglers so this settles within ~1 s. Under Bun the
+      // callback fires synchronously.
+      winston.info(`Reboot: bind changed ${bindLabel(relisten)} -> ${bindLabel(bind)}; recycling the listener`);
+      const oldSockets = liveSockets;
+      await new Promise((resolve) => {
+        server.close((err) => {
+          if (err) { winston.warn(`Reboot: closing the previous listener reported ${err.code || err.message}`); }
+          resolve();
+        });
+        // The socket kept accepting (and answering 503) during the teardown,
+        // so connections younger than reboot()'s snapshot exist; a stalled one
+        // must not hold close() — and this reboot — open indefinitely.
+        setTimeout(() => {
+          for (const socket of oldSockets) {
+            try { socket.destroy(); } catch (_) { /* already gone */ }
+          }
+        }, 1000);
+      });
+    }
+    server = next;
+    // Track live sockets for reboot()'s drain (see liveSockets above). Bound
+    // to the socket's lifetime, so registered exactly once per listener.
+    const mySockets = new Set();
+    liveSockets = mySockets;
+    server.on('connection', (socket) => {
+      mySockets.add(socket);
+      socket.on('close', () => mySockets.delete(socket));
+    });
   }
 
   // Magic Middleware Things
@@ -497,56 +596,9 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   });
 
   // Start the server!
-  const protocol = config.program.ssl && config.program.ssl.cert && config.program.ssl.key ? 'https' : 'http';
-  server.on('request', mstream);
-  // Without this handler a failed listen() — port already taken being the
-  // canonical case — dies as an uncaught 'error' event: a raw stack in a
-  // terminal, and under a desktop launch pure silence. Log it properly and
-  // exit non-zero; under the launcher, supervision reports the exit and the
-  // reason lands in server-console.log.
-  // Track live sockets for reboot()'s drain (see liveSockets above).
-  const mySockets = new Set();
-  liveSockets = mySockets;
-  server.on('connection', (socket) => {
-    mySockets.add(socket);
-    socket.on('close', () => mySockets.delete(socket));
-  });
-  const thisServer = server;
-  // Only arm the budget when we are re-taking the SAME port we just released.
-  let relistenRetries = (relisten !== null && relisten === config.program.port) ? 20 : 0;   // 20 × 250ms = 5s
-  if (relisten !== null && relistenRetries === 0) {
-    winston.info(`Reboot moved the port ${relisten} -> ${config.program.port}; a conflict on the new port is real, not a release delay`);
-  }
-  server.on('error', (err) => {
-    // Only the CURRENT server may act on its errors. A superseded instance
-    // (an overlapping reboot's loser) must never run the exit paths below —
-    // it would take the healthy live server down with it.
-    if (thisServer !== server) {
-      winston.warn(`Ignoring '${err.code || err.message}' from a superseded server instance`);
-      try { thisServer.close(); } catch (_) { /* already closed */ }
-      return;
-    }
-    if (err.code === 'EADDRINUSE' && relistenRetries > 0) {
-      relistenRetries--;
-      winston.warn(`Port ${config.program.port} not released yet after reboot — retrying listen (${relistenRetries} left)`);
-      // Bare listen(): the 'listening' handler is registered once below —
-      // passing a callback here would stack one stale once-listener per
-      // failed attempt, all firing together on the eventual success.
-      setTimeout(() => { if (thisServer === server) { thisServer.listen(config.program.port, config.program.address); } }, 250);
-      return;
-    }
-    if (err.code === 'EADDRINUSE') {
-      winston.error(`Unable to start mStream: port ${config.program.port} is already in use`);
-    } else {
-      winston.error(`Server error: ${err.message}`, { stack: err });
-    }
-    // Fatal diagnostics go to fd 2 directly as well: process.exit() below beats
-    // winston's File transport, whose boot-time backlog means the on-disk log
-    // of a writeLogs install otherwise just stops mid-boot with no reason.
-    try { fs.writeSync(2, `mStream fatal: ${err.code === 'EADDRINUSE' ? `port ${config.program.port} already in use` : err.message}\n`); } catch (_) { /* stderr gone too */ }
-    process.exit(1);
-  });
+  const protocol = bind.ssl ? 'https' : 'http';
   const onListening = async () => {
+    currentBind = bind;
     rebootInFlight = false;   // a reboot's re-serve is complete
     winston.info(`Access mStream locally: ${protocol}://localhost:${config.program.port}`);
 
@@ -633,26 +685,119 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     // eagerly so the admin endpoint has fresh data by the time it's called.
     serverPlaybackApi.bootRustPlayer().catch(() => {});
   };
-  server.once('listening', onListening);
-  server.listen(config.program.port, config.program.address);
+
+  if (keepListener) {
+    // Same bind: the socket never stopped listening. Swap the rebuilt app in
+    // for the reboot stub — atomically, in one tick, so no request falls into
+    // a gap — and run the post-listen boot chores exactly as a fresh listen
+    // would. The 'error' and 'connection' listeners registered when this
+    // socket was created stay in place; nothing about them is per-app.
+    winston.info(`Reboot: bind unchanged (${bindLabel(bind)}) — keeping the listening socket`);
+    server.off('request', rebootStub);
+    server.on('request', mstream);
+    // Fire-and-forget on purpose: same contract as the 'listening' event
+    // dispatch below (a rejection surfaces the same way in both paths).
+    onListening();
+    return;
+  }
+
+  server.on('request', mstream);
+  const thisServer = server;
+  // Without this handler a failed listen() — port already taken being the
+  // canonical case — dies as an uncaught 'error' event: a raw stack in a
+  // terminal, and under a desktop launch pure silence. Log it properly and
+  // exit non-zero; under the launcher, supervision reports the exit and the
+  // reason lands in server-console.log.
+  //
+  // EXCEPT when we are re-taking the very port this process was serving a
+  // moment ago (a reboot that changed the address or TLS setup but not the
+  // port). There EADDRINUSE is a release delay, not a conflict — Windows can
+  // report the port busy for a moment after close(), and under Bun <= 1.3.14
+  // on Windows a live child that inherited the old listen socket holds it
+  // until that child exits (see keepListener above). Both end on their own;
+  // neither is a reason to take the process down. So retry with backoff for
+  // as long as it takes, say why, and let the eventual listen succeed.
+  const samePortRelisten = relisten !== null && relisten.port === bind.port;
+  if (relisten !== null && !samePortRelisten) {
+    winston.info(`Reboot moved the port ${relisten.port} -> ${bind.port}; a conflict on the new port is real, not a release delay`);
+  }
+  const relistenStartedAt = Date.now();
+  let relistenAttempts = 0;
+  let relistenLastLoggedAt = 0;
+  let relistenDiagnosed = false;
+  server.on('error', (err) => {
+    // Only the CURRENT server may act on its errors. A superseded instance
+    // (an overlapping reboot's loser) must never run the exit paths below —
+    // it would take the healthy live server down with it.
+    if (thisServer !== server) {
+      winston.warn(`Ignoring '${err.code || err.message}' from a superseded server instance`);
+      try { thisServer.close(); } catch (_) { /* already closed */ }
+      return;
+    }
+    if (err.code === 'EADDRINUSE' && samePortRelisten) {
+      relistenAttempts++;
+      const waitedMs = Date.now() - relistenStartedAt;
+      // 250 ms for the first two seconds (the ordinary Windows release delay),
+      // then 1 s, then every 5 s once it is clearly a held socket.
+      const delay = waitedMs < 2000 ? 250 : waitedMs < 30000 ? 1000 : 5000;
+      // One line at once, the diagnosis once it has clearly outlasted a
+      // release delay (~5 s), then a heartbeat every 30 s.
+      if (relistenAttempts === 1) {
+        winston.warn(`Port ${bind.port} not released yet after reboot — retrying listen`);
+        relistenLastLoggedAt = Date.now();
+      } else if (waitedMs >= 5000 && Date.now() - relistenLastLoggedAt >= (relistenDiagnosed ? 30000 : 0)) {
+        winston.warn(
+          `Port ${bind.port} still held ${Math.round(waitedMs / 1000)}s after reboot — retrying until it frees ` +
+          '(mStream is unreachable meanwhile). A child process that was alive during the reboot — a scan, ' +
+          'transcode, ffmpeg download or enrichment worker — can hold the old listening socket until it ' +
+          'exits: under Bun <= 1.3.14 on Windows spawned children inherit it (oven-sh/bun#36936).');
+        relistenDiagnosed = true;
+        relistenLastLoggedAt = Date.now();
+      }
+      // Bare listen(): the 'listening' handler is registered once below —
+      // passing a callback here would stack one stale once-listener per
+      // failed attempt, all firing together on the eventual success.
+      setTimeout(() => { if (thisServer === server) { thisServer.listen(bind.port, bind.address); } }, delay);
+      return;
+    }
+    if (err.code === 'EADDRINUSE') {
+      winston.error(`Unable to start mStream: port ${bind.port} is already in use`);
+    } else {
+      winston.error(`Server error: ${err.message}`, { stack: err });
+    }
+    // Fatal diagnostics go to fd 2 directly as well: process.exit() below beats
+    // winston's File transport, whose boot-time backlog means the on-disk log
+    // of a writeLogs install otherwise just stops mid-boot with no reason.
+    try { fs.writeSync(2, `mStream fatal: ${err.code === 'EADDRINUSE' ? `port ${bind.port} already in use` : err.message}\n`); } catch (_) { /* stderr gone too */ }
+    process.exit(1);
+  });
+  server.once('listening', () => {
+    if (relistenAttempts > 0) {
+      winston.info(`Port ${bind.port} released after ${Math.round((Date.now() - relistenStartedAt) / 1000)}s (${relistenAttempts} retries)`);
+    }
+    onListening();
+  });
+  server.listen(bind.port, bind.address);
 }
 
 export function reboot() {
   try {
-    // Overlapping reboots are a hard outage, not a slow restart: a second
-    // close() on an already-closing server still runs its callback, so two
-    // serveIt()s race for the port and the loser's exhausted relisten budget
-    // exits the process out from under the winner. Two quick admin saves is
-    // all it takes. Coalesce instead — the in-flight reboot already re-reads
-    // the config from disk, so it picks up both changes.
+    // Overlapping reboots are a hard outage, not a slow restart: two
+    // serveIt()s would both try to take over the listener (or race for the
+    // port on a bind change, where the loser exits the process out from under
+    // the winner). Two quick admin saves is all it takes. Coalesce instead —
+    // the in-flight reboot already re-reads the config from disk, so it picks
+    // up both changes.
     if (rebootInFlight) {
       winston.warn('Reboot already in progress — skipping the duplicate request');
       return;
     }
     rebootInFlight = true;
-    // Captured BEFORE serveIt's config.setup re-reads the file: the re-serve
-    // only gets the EADDRINUSE retry budget if it is re-taking this same port.
-    const previousPort = config.program.port;
+    // The bind we are serving right now, captured BEFORE serveIt's
+    // config.setup re-reads the file: the re-serve keeps the socket if the
+    // new config binds identically, and only gets the EADDRINUSE patience if
+    // it is at least re-taking this same port.
+    const previousBind = currentBind;
     winston.info('Rebooting Server');
     logger.reset();
     scrobblerApi.reset();
@@ -663,10 +808,11 @@ export function reboot() {
     subsonicServer.stop();
     mdns.stop();
     serverPlaybackApi.killRustPlayer();
-    // Tear down the /remote WebSocket server — any open WS client
-    // otherwise keeps the HTTP server alive and server.close() below
-    // never fires its callback, leaving the user with "server stopped
-    // but never rebooted".
+    // Tear down the /remote WebSocket server: it detaches its upgrade/error
+    // listeners from the HTTP server (serveIt attaches a fresh one) and closes
+    // its clients — an open WS client would otherwise keep a recycled listener
+    // from ever closing, leaving the user with "server stopped but never
+    // rebooted".
     remoteApi.stop();
     // Pause the backup scheduler's timers (intervals + one-shot boot
     // ticks). serveIt below re-runs backupManager.init(), which re-arms
@@ -710,49 +856,41 @@ export function reboot() {
       new Promise((resolve) => setTimeout(resolve, 5000)),
     ]);
 
-    // Close the server. server.close() waits for every in-flight HTTP
-    // request AND every idle keep-alive socket to drain. The admin
-    // client that just issued the UI-switch POST has an open
-    // keep-alive socket; without closeAllConnections() we'd wait up
-    // to the agent's keep-alive timeout (tens of seconds) before the
-    // callback fires. Force the close after a short grace period so
-    // in-flight writes get a chance to finish but stragglers don't
-    // block the restart.
-    server.close((err) => {
-      // An already-closed server reports ERR_SERVER_NOT_RUNNING here; re-serving
-      // on that would mean two live instances fighting for the port.
-      if (err) {
-        winston.warn(`Reboot: server was already closed (${err.code || err.message}) — not re-serving`);
-        rebootInFlight = false;
-        return;
-      }
-      // serveIt can reject before its listen handler exists (bad SSL certs are
-      // the classic: config.setup re-reads the file every reboot, so a rotated
-      // cert first fails HERE). Unhandled, that's a raw unhandled rejection
-      // with the old server already town down — the silent death this PR set
-      // out to eliminate, just moved to the reboot path.
-      // Gate the re-serve on the discovery-p2p teardown finishing (see above).
-      p2pStopped.then(() => serveIt(config.configFile, { relisten: previousPort })).catch((rebootErr) => {
-        rebootInFlight = false;
-        winston.error('Reboot failed to restart the server', { stack: rebootErr });
-        try { fs.writeSync(2, `mStream fatal: reboot failed to restart the server: ${rebootErr.message}\n`); } catch (_) { /* stderr gone */ }
-        process.exit(1);
-      });
-    });
-    // Force the drain after a grace period. Sweeps the sockets WE tracked
-    // rather than calling closeAllConnections(): under Bun that method is a
-    // guaranteed no-op once close() has run (its shim nulls the internal
-    // handle synchronously inside close()), so an active transfer would hold
-    // the close callback — and therefore the whole restart — open forever.
-    // Destroying the old server's sockets is safe for the new one: `mySockets`
-    // is per-instance, and serveIt rebinds `liveSockets` to the new set.
-    const closingSockets = liveSockets;
+    // Park the listener rather than closing it: the socket stays bound and
+    // answers 503 while the app is rebuilt, and serveIt() either swaps the
+    // new app in (same bind — the usual case) or recycles the socket itself
+    // (bind changed). See keepListener above serveIt for why the socket must
+    // not be given up here.
+    if (server) {
+      server.off('request', mstream);
+      server.on('request', rebootStub);
+    }
+    // Drop the connections that existed at reboot time after a short grace
+    // period, so in-flight writes get a chance to finish but a long transfer
+    // (a transcode, a big download) doesn't keep the old app's handlers alive
+    // indefinitely — and, on a bind change, so Node's close() can settle (it
+    // waits for every connection to drain, and closeAllConnections() is a
+    // guaranteed no-op under Bun once close() has run). Snapshot, not the
+    // live set: connections the kept socket accepts after this moment belong
+    // to the stub and then to the new app.
+    const closingSockets = [...liveSockets];
     setTimeout(() => {
       for (const socket of closingSockets) {
         try { socket.destroy(); } catch (_) { /* already gone */ }
       }
-      closingSockets.clear();
     }, 1000);
+    // serveIt can reject before its listen handler exists (bad SSL certs are
+    // the classic: config.setup re-reads the file every reboot, so a rotated
+    // cert first fails HERE). Unhandled, that's a raw unhandled rejection
+    // with the old app already torn down — the silent death #803 set out to
+    // eliminate, just moved to the reboot path.
+    // Gate the re-serve on the discovery-p2p teardown finishing (see above).
+    p2pStopped.then(() => serveIt(config.configFile, { relisten: previousBind })).catch((rebootErr) => {
+      rebootInFlight = false;
+      winston.error('Reboot failed to restart the server', { stack: rebootErr });
+      try { fs.writeSync(2, `mStream fatal: reboot failed to restart the server: ${rebootErr.message}\n`); } catch (_) { /* stderr gone */ }
+      process.exit(1);
+    });
   } catch (err) {
     rebootInFlight = false;
     winston.error('Reboot Failed', { stack: err });
