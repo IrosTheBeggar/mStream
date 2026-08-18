@@ -22,6 +22,11 @@ on:
       # merge (the launcher step below builds them fresh for such PRs) — the
       # binary-commit workflow's own gate is only compile + --autostart=status.
       - 'rust-launcher/**'
+      # build/ carries bundle inputs the legs consume directly — icons the
+      # bundler stages and mac-entitlements-server.plist the sign step feeds
+      # to codesign. An entitlements-only PR without this filter would merge
+      # with zero CI and first run on the release tag.
+      - 'build/**'
   workflow_dispatch:
     inputs:
       notarize:
@@ -37,8 +42,11 @@ jobs:
     # process would otherwise sit in a retry loop until the 6-hour default,
     # burning paid macOS/Windows runners and showing "still running" instead of
     # a failure. Every smoke curl also carries --max-time. A full build+smoke
-    # is ~2 minutes today.
-    timeout-minutes: 30
+    # is ~2 minutes today — but the darwin legs' notarize path waits on Apple
+    # for up to 20 minutes (notarytool --timeout below) BEFORE staple, re-zip,
+    # and the smoke battery run, so those legs get the headroom to match; the
+    # tight cap stays for every other leg.
+    timeout-minutes: ${{ startsWith(matrix.key, 'darwin') && 50 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -205,10 +213,40 @@ jobs:
         run: |
           set -euo pipefail
           # The secrets context is not allowed in a step-level `if`, so the
-          # gate lives here: absent secrets mean an unsigned build.
+          # gate lives here — and it gates on the COHERENT secret set, not one
+          # sentinel value, with opposite postures per context:
+          #   * A build that must notarize (tag, or dispatch with
+          #     notarize=true) with ANY required secret missing fails LOUDLY:
+          #     a release silently shipping unsigned would resurrect the exact
+          #     Gatekeeper dialog this step exists to kill, with one log line
+          #     in a green job as the only witness. This also makes the
+          #     notarize=true proving dispatch mean something: it can no
+          #     longer vacuously succeed by skipping everything.
+          #   * A non-notarizing context (PR, fork, plain dispatch) with NO
+          #     cert ships unsigned — never a failed build.
+          #   * A HALF-configured cert (p12 without password) fails with the
+          #     secret's name in any context: it could only ever fail later
+          #     at `security import` with a message naming nothing.
+          # ASC_ISSUER_ID is deliberately not required: empty means an
+          # individual API key (see the notarytool call below).
+          if [ "$FULL_NOTARIZE" = "true" ]; then
+            missing=""
+            [ -n "${CERT_P12}" ]      || missing="$missing MACOS_CERT_P12"
+            [ -n "${CERT_PASSWORD}" ] || missing="$missing MACOS_CERT_PASSWORD"
+            [ -n "${ASC_API_KEY}" ]   || missing="$missing ASC_API_KEY"
+            [ -n "${ASC_KEY_ID}" ]    || missing="$missing ASC_KEY_ID"
+            if [ -n "$missing" ]; then
+              echo "::error::this build must notarize (tag/dispatch) but these repo secrets are missing:$missing — refusing to ship a release unsigned"
+              exit 1
+            fi
+          fi
           if [ -z "${CERT_P12}" ]; then
             echo "signing secrets absent — shipping unsigned"
             exit 0
+          fi
+          if [ -z "${CERT_PASSWORD}" ]; then
+            echo "::error::MACOS_CERT_P12 is set but MACOS_CERT_PASSWORD is not — signing would die at 'security import' with an error naming no secret; add the password (or remove the cert secret to ship unsigned)"
+            exit 1
           fi
           D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
           APP="$D/mStream.app"
@@ -259,9 +297,16 @@ jobs:
             if [ -n "${ASC_ISSUER_ID}" ]; then
               issuer=(--issuer "$ASC_ISSUER_ID")
             fi
+            # ${issuer[@]+...}: macOS runners execute this step with /bin/bash
+            # 3.2 (even `shell: bash` resolves there), where expanding an
+            # EMPTY array via "${issuer[@]}" under `set -u` aborts with
+            # 'unbound variable' (fixed only in bash 4.4) — which would kill
+            # exactly the individual-key path the array exists to support.
+            # The +-form expands to nothing when the array is empty and to
+            # the quoted elements when it isn't, on every bash.
             xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
               --key "$RUNNER_TEMP/asc.p8" --key-id "$ASC_KEY_ID" \
-              "${issuer[@]}" --wait --timeout 20m
+              ${issuer[@]+"${issuer[@]}"} --wait --timeout 20m
             rm "$RUNNER_TEMP/asc.p8"
             xcrun stapler staple "$APP"
             xcrun stapler validate "$APP"
