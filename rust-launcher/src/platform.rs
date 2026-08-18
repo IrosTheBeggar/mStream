@@ -270,11 +270,84 @@ pub fn open_logs_terminal(logs_dir: &std::path::Path) -> Result<(), String> {
     }
 }
 
+/// Tray "Quick Connect": open a terminal window that paints the pairing-code
+/// QR and a short explanation, so a phone can scan it and reach this server
+/// over the Iroh tunnel. The window runs THIS launcher binary again with
+/// `--show-quick-connect=<addr>` (see quick_connect.rs) — no external script,
+/// no `node`, nothing the shipped bundle might be missing. `addr` is the
+/// host:port the health probe uses; `script_dir` (the logs dir) holds the
+/// tiny macOS `.command` shim. Same per-OS "what is a terminal" seams as
+/// open_logs_terminal; the caller logs a failure and falls back to the web
+/// modal — a missing terminal must never take the tray down.
+pub fn open_quick_connect_terminal(script_dir: &std::path::Path, addr: &str) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let flag = format!("--show-quick-connect={addr}");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = script_dir;
+        // A fresh console for the GUI-subsystem launcher; the subcommand opens
+        // CONOUT$/CONIN$, enables VT + UTF-8, and sizes the window itself.
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        std::process::Command::new(&exe)
+            .arg(&flag)
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("spawn {}: {e}", exe.display()))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Terminal.app opens an executable .command as a document — no
+        // AppleEvents automation consent (an osascript tell would prompt).
+        let script = script_dir.join("quick-connect.command");
+        let body = format!(
+            "#!/bin/sh\n# Written by mStream's tray 'Quick Connect' item - safe to delete.\nexec {exe} {flag}\n",
+            exe = sh_quote(&exe),
+            flag = sh_quote_str(&flag),
+        );
+        std::fs::write(&script, body).map_err(|e| format!("write {}: {e}", script.display()))?;
+        let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
+        std::process::Command::new("/usr/bin/open")
+            .arg(&script)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("open {}: {e}", script.display()))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = script_dir;
+        let cmd = format!("exec {exe} {flag}", exe = sh_quote(&exe), flag = sh_quote_str(&flag));
+        let candidates = [
+            ("x-terminal-emulator", ["-e", "sh", "-c", cmd.as_str()]),
+            ("gnome-terminal", ["--", "sh", "-c", cmd.as_str()]),
+            ("konsole", ["-e", "sh", "-c", cmd.as_str()]),
+            ("xfce4-terminal", ["-x", "sh", "-c", cmd.as_str()]),
+            ("xterm", ["-e", "sh", "-c", cmd.as_str()]),
+        ];
+        for (bin, args) in candidates {
+            if std::process::Command::new(bin).args(args).spawn().is_ok() {
+                return Ok(());
+            }
+        }
+        Err("no terminal emulator found (tried x-terminal-emulator, gnome-terminal, \
+             konsole, xfce4-terminal, xterm)"
+            .to_string())
+    }
+}
+
 /// POSIX single-quote a path for embedding in `sh -c` text — the macOS data
 /// home ("Application Support") guarantees a space.
 #[cfg(unix)]
 fn sh_quote(p: &std::path::Path) -> String {
     format!("'{}'", p.display().to_string().replace('\'', "'\\''"))
+}
+
+/// POSIX single-quote an arbitrary string for `sh -c` text.
+#[cfg(unix)]
+fn sh_quote_str(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 #[cfg(all(test, target_os = "macos"))]

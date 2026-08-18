@@ -251,9 +251,22 @@ pub fn run(args: LauncherArgs) -> ! {
                         let _ = open::that_detached(url.clone());
                     }
                     "quick-connect" => {
-                        // The web UI opens its Quick Connect modal on this
-                        // hash (webapp/assets/js/quick-connect.js).
-                        let _ = open::that_detached(format!("{url}/#quick-connect"));
+                        // Open a terminal showing the pairing-code QR (the
+                        // launcher re-invokes itself to paint it — see
+                        // quick_connect.rs). Fetch runs against the same
+                        // address the health probe uses. If no terminal can
+                        // be opened, fall back to the web UI's Quick Connect
+                        // modal (webapp/assets/js/quick-connect.js).
+                        let addr = std::net::SocketAddr::new(ep.ip, ep.port).to_string();
+                        match platform::open_quick_connect_terminal(&logs_dir, &addr) {
+                            Ok(()) => log.line("quick connect: opened terminal QR"),
+                            Err(e) => {
+                                log.line(&format!(
+                                    "quick connect terminal unavailable ({e}) - opening the web modal instead"
+                                ));
+                                let _ = open::that_detached(format!("{url}/#quick-connect"));
+                            }
+                        }
                     }
                     "autostart" => {
                         // muda toggles the checkbox before we hear about it,

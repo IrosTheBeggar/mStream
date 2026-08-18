@@ -18,6 +18,7 @@
 mod autostart;
 mod paths;
 mod platform;
+mod quick_connect;
 mod server;
 mod tray_app;
 
@@ -33,6 +34,10 @@ pub struct LauncherArgs {
     pub no_open: bool,
     /// Server binary override (`--server-bin <p>` / MSTREAM_SERVER_BIN).
     pub server_bin: Option<PathBuf>,
+    /// Internal: `--show-quick-connect=<ip:port>` — render the Quick Connect
+    /// QR into this terminal and exit. The tray re-invokes the launcher this
+    /// way inside a fresh terminal (see quick_connect.rs); never user-typed.
+    pub show_quick_connect: Option<String>,
     /// Everything not launcher-specific, forwarded to the server verbatim
     /// (-j, --portable, --quick-connect-off-by-default, ...).
     pub server_args: Vec<String>,
@@ -51,6 +56,7 @@ fn parse_cli(argv: impl Iterator<Item = String>) -> (LauncherArgs, Option<String
         autostarted: false,
         no_open: false,
         server_bin: std::env::var_os("MSTREAM_SERVER_BIN").map(PathBuf::from),
+        show_quick_connect: None,
         server_args: Vec::new(),
     };
     let mut autostart_cmd: Option<String> = None;
@@ -71,6 +77,9 @@ fn parse_cli(argv: impl Iterator<Item = String>) -> (LauncherArgs, Option<String
             }
             other if other.starts_with("--autostart=") => {
                 autostart_cmd = Some(other["--autostart=".len()..].to_string());
+            }
+            other if other.starts_with("--show-quick-connect=") => {
+                args.show_quick_connect = Some(other["--show-quick-connect=".len()..].to_string());
             }
             // The server's config flag: forward it AND its value verbatim
             // (cli-boot-wrapper.js consumes the next token as the path, so
@@ -104,6 +113,14 @@ fn main() {
     // any window/tray machinery and exits.
     if let Some(cmd) = autostart_cmd {
         std::process::exit(autostart::run_cli(&cmd));
+    }
+
+    // Quick Connect QR face: the tray spawns us in a fresh terminal with this
+    // flag to paint the pairing-code QR. Runs before the passthrough below —
+    // that terminal gives us a console, so has_console would otherwise send
+    // us down the server pass-through path.
+    if let Some(addr) = args.show_quick_connect.as_deref() {
+        std::process::exit(quick_connect::show(addr));
     }
 
     // Terminal face: hand the whole invocation to the server.

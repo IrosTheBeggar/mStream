@@ -37,6 +37,11 @@ serde_json = "1"
 # Decode the embedded tray PNG (build/icon.png) to the RGBA buffer tray-icon
 # wants. Deliberately not the `image` crate — png alone keeps the build light.
 png = "0.17"
+# Encode the Quick Connect pairing code as a QR for the terminal popup
+# (quick_connect.rs). The Rust port of the same Nayuki library the web modal
+# uses (webapp/assets/js/lib/qr.js), so both faces render an identical symbol.
+# Zero dependencies.
+qrcodegen = "1.8"
 
 [target.'cfg(windows)'.dependencies]
 # Pre-create the HKCU Run key before auto-launch touches it: auto-launch 0.5
