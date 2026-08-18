@@ -307,10 +307,10 @@ jobs:
           # the Windows exe's VersionInfo, and `npm version` tags the bump
           # commit itself — before build-rust-launcher has rebuilt — so a
           # tree-only check let v6.20.1 ship an mStream.exe reporting 6.20.0.
-          # The two-line stamp (tree, version) is written by
-          # build-rust-launcher's commit job; a tag cut inside the rebuild
-          # window — or before the stamp ever landed — fails here instead of
-          # shipping a stale launcher green.
+          # The four-line stamp (tree, version, exe-icon blob, tray-icon
+          # blob) is written by build-rust-launcher's commit job; a tag cut
+          # inside the rebuild window — or before the stamp ever landed —
+          # fails here instead of shipping a stale launcher green.
           if [ "${{ github.ref_type }}" = "tag" ]; then
             WANT_TREE=$(git rev-parse HEAD:rust-launcher)
             # node, not jq: this leg runs on all three OSes and setup-node ran
@@ -331,7 +331,26 @@ jobs:
               echo "::error::committed launcher binaries were built for version '${HAVE_VER:-<unstamped>}' but this tag is $WANT_VER — their VersionInfo would be wrong. Bump with \`npm version --no-git-tag-version\`, push, wait for build-rust-launcher's 'ci: update pre-built' commit, then tag THAT commit"
               exit 1
             fi
-            echo "launcher provenance ok: tree $WANT_TREE, version $WANT_VER"
+            # Lines 3-4: the two icons the launcher embeds from build/ (exe
+            # icon via build.rs, tray icon via include_bytes!). Outside the
+            # rust-launcher/ tree, so a tree-only stamp let an icon change ship
+            # the old icon green.
+            WANT_ICO=$(git rev-parse HEAD:build/mstream-logo-cut.ico)
+            WANT_PNG=$(git rev-parse HEAD:build/icon.png)
+            HAVE_ICO=$(sed -n '3p' bin/rust-launcher/.source-tree)
+            HAVE_PNG=$(sed -n '4p' bin/rust-launcher/.source-tree)
+            if [ "$WANT_ICO" != "$HAVE_ICO" ] || [ "$WANT_PNG" != "$HAVE_PNG" ]; then
+              echo "::error::committed launcher binaries embed icons ${HAVE_ICO:-<unstamped>}/${HAVE_PNG:-<unstamped>} but this tag's build/ icons are $WANT_ICO/$WANT_PNG — wait for build-rust-launcher's commit (an icon change triggers it), then tag THAT commit"
+              exit 1
+            fi
+            # A tag ships the COMMITTED launcher (the linux one carries a glibc
+            # floor an in-job rebuild here cannot reproduce): a missing binary
+            # is a broken release, not a reason to build one on this runner.
+            if [ ! -f "bin/rust-launcher/$NAME" ]; then
+              echo "::error::no committed launcher bin/rust-launcher/$NAME for this tag — the in-job rebuild is for PRs only (it would ship this runner's glibc floor); dispatch build-rust-launcher, wait for its commit, then re-tag"
+              exit 1
+            fi
+            echo "launcher provenance ok: tree $WANT_TREE, version $WANT_VER, icons $WANT_ICO/$WANT_PNG"
           fi
 
           REBUILD=0

@@ -31,18 +31,40 @@ on:
     # Release process (docs/deploy.md): bump WITHOUT tagging, wait for this
     # workflow's commit, tag THAT commit — build-bun's tag build asserts the
     # stamp's tree AND version against the tag and refuses otherwise.
-    paths: ['rust-launcher/**', 'package.json']
+    #
+    # The two icons are launcher INPUTS that live outside rust-launcher/:
+    # build.rs embeds mstream-logo-cut.ico as the exe icon and tray_app.rs
+    # include_bytes!()s icon.png as the tray icon. Without them here an icon
+    # change never rebuilt the committed launcher — and the provenance stamp
+    # (tree + version) couldn't see it either, so a tag shipped the old icon
+    # green. Both are also recorded in the stamp (lines 3-4) for that reason.
+    paths:
+      - 'rust-launcher/**'
+      - 'package.json'
+      - 'build/mstream-logo-cut.ico'
+      - 'build/icon.png'
+      # This file too: a change to how the binaries are built, checked or
+      # STAMPED must re-land the set (e.g. a new stamp format) right away —
+      # otherwise the next tag build fails on the old stamp until an unrelated
+      # launcher push happens by. A no-op run costs a few runner-minutes.
+      - '.github/workflows/build-rust-launcher.yml'
   pull_request:
     paths:
       - 'rust-launcher/**'
+      - 'package.json'
+      - 'build/mstream-logo-cut.ico'
+      - 'build/icon.png'
       - '.github/workflows/build-rust-launcher.yml'
 
 # One run at a time per ref: two master pushes touching the crate write the
-# SAME four binary paths, and binaries can't be content-merged — overlapping
-# runs turn the commit job's rebase-retry into a guaranteed conflict, and the
-# loser can leave bin/rust-launcher/ stale (older source's binaries, red run
-# nobody re-dispatches). Never cancel: each finished run commits a consistent
-# set, and the queued newest run lands last either way.
+# SAME four binary paths, and binaries can't be content-merged, so runs must
+# not overlap. Never cancel: each finished run commits a consistent set.
+# NOTE that serialization alone does not order the RESULT: a queued run still
+# checks out its own (older) trigger sha and must not clobber binaries a
+# newer run already landed — the commit job below handles that (it commits
+# onto the CURRENT master tip and stands down when newer launcher inputs
+# have already landed there), instead of rebasing a binaries commit, which
+# conflicted on every queued run.
 concurrency:
   group: build-rust-launcher-${{ github.ref }}
   cancel-in-progress: false
@@ -212,12 +234,46 @@ jobs:
           echo "$out" | grep -qE 'enabled|disabled' \
             || { echo "::error::self-test: launcher produced no status"; exit 1; }
 
+      # build.rs downgrades a resource-compile failure (no rc.exe/llvm-rc on
+      # the host, a moved .ico) to a cargo:warning so `cargo check` stays
+      # usable from any host — which means the SHIPPED exe could quietly lack
+      # its icon and VersionInfo, and nothing here looked. Read it back the way
+      # Windows does (Get-Item ... .VersionInfo = the Win32 version API): the
+      # contract build.rs bakes must be present, with the version package.json
+      # says. A tag build asserts the same thing later, but red HERE names the
+      # cause on the commit that produced it, not on release day.
+      - name: Assert VersionInfo was embedded (win)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $parts = @(([string]$pkg.version).Split('-')[0].Split('.') | ForEach-Object { $n = 0; [void][int]::TryParse($_, [ref]$n); $n })
+          while ($parts.Count -lt 4) { $parts += 0 }
+          $want = ($parts[0..3] -join '.')
+          $v = (Get-Item "staging/${{ matrix.binary_name }}").VersionInfo
+          "ProductName='$($v.ProductName)' ProductVersion='$($v.ProductVersion)' FileVersionRaw=$($v.FileVersionRaw) CompanyName='$($v.CompanyName)' FileDescription='$($v.FileDescription)'"
+          $bad = @()
+          if ($v.ProductName -ne 'mStream') { $bad += "ProductName='$($v.ProductName)'" }
+          if ($v.ProductVersion -ne $want) { $bad += "ProductVersion='$($v.ProductVersion)' (want $want)" }
+          if ($v.FileVersionRaw.ToString() -ne $want) { $bad += "FileVersionRaw=$($v.FileVersionRaw) (want $want)" }
+          if ([string]::IsNullOrWhiteSpace($v.CompanyName)) { $bad += 'CompanyName blank' }
+          if ($bad.Count -gt 0) {
+            Write-Host "::error::the built launcher lacks its VersionInfo contract ($($bad -join '; ')) — build.rs's resource compile was skipped or wrong; see its cargo:warning in the Build step"
+            exit 1
+          }
+          Write-Host 'VersionInfo embedded and matches package.json'
+
+      # Long enough for a next-week "Re-run failed jobs" to still find its
+      # SIBLING artifacts: with 1-day retention, a re-run after that could
+      # download one fresh binary next to three expired ones and the commit job
+      # would stamp the whole set as built from this sha (it now refuses an
+      # incomplete set, see below — but a refusal costs a full re-run).
       - name: Upload binary
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.binary_name }}
           path: staging/${{ matrix.binary_name }}
-          retention-days: 1
+          retention-days: 7
 
   commit-binaries:
     name: Commit binaries
@@ -229,55 +285,97 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Into a scratch dir, NOT bin/: the inventory below must see exactly what
+      # this run built. Downloading straight over bin/ let a partial set (an
+      # expired sibling artifact after a late re-run) silently keep the
+      # previous binaries for the missing legs under a fresh stamp.
       - name: Download all binaries
         uses: actions/download-artifact@v8
         with:
-          path: bin/rust-launcher
+          path: staging
           merge-multiple: true
 
       - name: Commit and push
+        env:
+          TRIGGER_SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Same exec-bit dance as build-rust-parser.yml: artifact zips strip
-          # the mode, and a first-run download lands 644 — restore on disk so
-          # a later `git pull --rebase` isn't blocked by an unstaged mode
-          # change, then force 100755 in the index regardless.
-          chmod +x bin/rust-launcher/mstream-launcher-*
-          # Provenance stamp, two lines:
-          #   1. the rust-launcher source TREE these binaries were built from
-          #   2. the package.json VERSION they were built from
-          # Both taken from the trigger sha, NOT post-rebase HEAD (the rebase
-          # below can pull in newer source these binaries don't contain).
-          # build-bun's tag build asserts BOTH against the tag's own tree and
-          # version, so "tag cut inside the rebuild window ships a stale
-          # launcher, all green" becomes a red run with instructions. Line 2
-          # exists because build.rs bakes package.json's version into the
-          # Windows exe's VersionInfo: a version bump changes package.json but
-          # not the launcher tree, so a tree-only stamp let v6.20.1 ship an
-          # mStream.exe whose FileVersion still read 6.20.0. `npm version`
-          # tags the bump commit itself, so the tag build can only be honest
-          # if it checks the version the binaries actually carry.
-          {
-            git rev-parse "${{ github.sha }}:rust-launcher"
-            git show "${{ github.sha }}:package.json" | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version"
-          } > bin/rust-launcher/.source-tree
-          git add bin/rust-launcher/mstream-launcher-* bin/rust-launcher/.source-tree
-          git update-index --chmod=+x bin/rust-launcher/mstream-launcher-*
-          if git diff --cached --quiet; then
-            echo "No binary changes to commit"
-          else
-            git commit -m "ci: update pre-built mstream-launcher binaries"
-            # Rebase-and-retry against sibling binary workflows racing the
-            # same push window (see build-rust-parser.yml for the war story;
-            # each workflow writes a disjoint file set, so the rebase is
-            # always clean).
-            for attempt in 1 2 3 4 5; do
-              git pull --rebase origin ${{ github.ref_name }}
-              if git push; then exit 0; fi
-              echo "push rejected (attempt $attempt) — a sibling workflow pushed; retrying"
-              sleep $(( (RANDOM % 5) + 2 ))
-            done
-            echo "::error::could not push after 5 attempts"
+
+          # 1. Inventory: all four shipped binaries, non-empty. Anything less
+          #    is not a set this sha built — refuse rather than stamp it.
+          missing=""
+          for name in mstream-launcher-win32-x64.exe mstream-launcher-darwin-x64 mstream-launcher-darwin-arm64 mstream-launcher-linux-x64; do
+            [ -s "staging/$name" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::not all launcher binaries were built by this run (missing:$missing) — an artifact expired or a leg was skipped; re-run ALL jobs (or dispatch the workflow), never 'failed jobs only'"
             exit 1
           fi
+
+          # 2. Provenance stamp, computed from the TRIGGER sha — the source
+          #    these binaries were built from — never from whatever master
+          #    tip we commit onto below:
+          #      1. rust-launcher/ tree hash
+          #      2. package.json version (build.rs bakes it into the Windows
+          #         exe's VersionInfo; a version bump changes package.json but
+          #         not the launcher tree — v6.20.1 shipped an mStream.exe
+          #         reading 6.20.0 on a tree-only stamp)
+          #      3. build/mstream-logo-cut.ico blob (the exe icon, build.rs)
+          #      4. build/icon.png blob (the tray icon, tray_app.rs)
+          #    build-bun's tag build asserts all four against the tag itself,
+          #    so a tag cut inside a rebuild window — or after an icon-only
+          #    change — is a red run with instructions instead of a stale
+          #    launcher shipped green.
+          stamp="$(mktemp)"
+          {
+            git rev-parse "$TRIGGER_SHA:rust-launcher"
+            git show "$TRIGGER_SHA:package.json" | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version"
+            git rev-parse "$TRIGGER_SHA:build/mstream-logo-cut.ico"
+            git rev-parse "$TRIGGER_SHA:build/icon.png"
+          } > "$stamp"
+          echo "stamp for $TRIGGER_SHA:"; sed 's/^/  /' "$stamp"
+
+          # 3. Land on the CURRENT tip and commit there — never rebase a
+          #    binaries commit. Runs are serialized (concurrency group) but a
+          #    queued run still checks out its own, older trigger sha; rebasing
+          #    its commit onto a tip that already carries a newer run's
+          #    binaries conflicted on every file (binaries can't be merged),
+          #    the job went red, and master kept whatever was there. Instead:
+          #    fetch the tip, stand down if newer launcher INPUTS already
+          #    landed on it (the run for that newer sha owns bin/ — it has run,
+          #    or will), else put OUR set on top of the tip.
+          for attempt in 1 2 3 4 5; do
+            git fetch --depth=1 origin "$BRANCH"
+            git checkout -q --detach FETCH_HEAD
+            if ! git diff --quiet "$TRIGGER_SHA" FETCH_HEAD -- rust-launcher package.json build/mstream-logo-cut.ico build/icon.png; then
+              echo "master already carries launcher inputs newer than $TRIGGER_SHA — that push's run owns bin/rust-launcher/; standing down without committing"
+              exit 0
+            fi
+            mkdir -p bin/rust-launcher
+            cp staging/mstream-launcher-* bin/rust-launcher/
+            # Artifact zips strip the mode: restore on disk AND force 100755 in
+            # the index (a 644 launcher ships as a non-runnable file).
+            chmod +x bin/rust-launcher/mstream-launcher-*
+            cp "$stamp" bin/rust-launcher/.source-tree
+            git add bin/rust-launcher/mstream-launcher-* bin/rust-launcher/.source-tree
+            git update-index --chmod=+x bin/rust-launcher/mstream-launcher-*
+            if git diff --cached --quiet; then
+              echo "No binary changes to commit (master already has this exact set)"
+              exit 0
+            fi
+            git commit -q -m "ci: update pre-built mstream-launcher binaries"
+            if git push origin "HEAD:$BRANCH"; then
+              echo "pushed $(git rev-parse --short HEAD) onto $BRANCH"
+              exit 0
+            fi
+            # Someone (a sibling binary workflow, a merge) pushed between our
+            # fetch and our push: drop our commit and go again from the new tip.
+            echo "push rejected (attempt $attempt) — the tip moved; retrying from the new tip"
+            git reset -q --hard FETCH_HEAD
+            sleep $(( (RANDOM % 5) + 2 ))
+          done
+          echo "::error::could not push after 5 attempts"
+          exit 1
