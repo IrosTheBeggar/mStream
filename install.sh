@@ -158,7 +158,7 @@ login_item_is_ours() {
 # Does this script own ~/Applications/mStream.app? The ownership marker is a
 # SIBLING file, never inside the bundle: writing anything into Contents/
 # invalidates the notarization seal, and the hardened-runtime launcher in a
-# seal-broken bundle is SIGKILLed by the kernel at exec — the installed app
+# seal-broken bundle is SIGKILLed by the kernel at exec - the installed app
 # would be dead on arrival (measured; the very bug this marker placement
 # once caused). The legacy inner marker is still honored read-only so a copy
 # installed by the broken version is recognized as ours and healed by the
