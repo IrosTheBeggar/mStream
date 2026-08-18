@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -177,6 +177,17 @@ pub fn run(args: LauncherArgs) -> ! {
     // State owned by the loop closure.
     let mut tray: Option<TrayIcon> = None;
     let mut autostart_item: Option<CheckMenuItem> = None;
+    // The status line at the top of the menu ("Running · up 3h 12m") and
+    // the phase it renders. The launcher's own clock is the uptime source:
+    // it IS the supervisor, and the server has no uptime API to ask.
+    let mut status_item: Option<MenuItem> = None;
+    let mut phase = Phase::Starting;
+    // Last time the timer path re-rendered the status. The status can only
+    // change on a minute boundary, so timer wakes are throttled to 1 Hz:
+    // any other timer that shares this loop's ControlFlow (a fast poll
+    // while a popup is open, say) would otherwise re-set the same tooltip
+    // text at that timer's rate. Phase changes render unconditionally.
+    let mut status_rendered_at: Option<Instant> = None;
     let mut ever_up = false;
     let mut opened = false;
     let url = paths::server_url(&ep);
@@ -190,7 +201,16 @@ pub fn run(args: LauncherArgs) -> ! {
     let config_loop = config.clone();
 
     event_loop.run(move |event, _target, control_flow| {
-        *control_flow = ControlFlow::Wait;
+        // Idle, except that a RUNNING server's status line has a minute
+        // boundary to cross — wake exactly there and nowhere else (one
+        // wake a minute; the exit watcher already polls twice a second).
+        // Re-evaluated on every pass, so a phase change made below is
+        // armed by the MainEventsCleared that follows it. Exit is sticky
+        // in tao, so Quit's ControlFlow::Exit survives this assignment.
+        *control_flow = match phase.next_tick() {
+            Some(at) => ControlFlow::WaitUntil(at),
+            None => ControlFlow::Wait,
+        };
         match event {
             // Tray creation belongs HERE, not before run(): on Linux the
             // tray needs the gtk main context tao initializes, and on macOS
@@ -198,6 +218,10 @@ pub fn run(args: LauncherArgs) -> ! {
             // either; one code path keeps all three honest.
             Event::NewEvents(StartCause::Init) => {
                 let menu = Menu::new();
+                // Disabled = the greyed, unclickable status line every tray
+                // app leads with (Docker Desktop, Tailscale). Text tracks
+                // `phase` via show_status; the id never fires a MenuEvent.
+                let status = MenuItem::with_id("status", phase.menu_text(), false, None);
                 let open_item = MenuItem::with_id("open", "Open mStream", true, None);
                 let qc_item = MenuItem::with_id("quick-connect", "Quick Connect", true, None);
                 let auto_item =
@@ -205,6 +229,8 @@ pub fn run(args: LauncherArgs) -> ! {
                 let logs_item = MenuItem::with_id("logs", "View logs", true, None);
                 let restart_item = MenuItem::with_id("restart", "Restart server", true, None);
                 let quit_item = MenuItem::with_id("quit", "Quit mStream", true, None);
+                let _ = menu.append(&status);
+                let _ = menu.append(&PredefinedMenuItem::separator());
                 let _ = menu.append(&open_item);
                 let _ = menu.append(&qc_item);
                 let _ = menu.append(&PredefinedMenuItem::separator());
@@ -213,6 +239,7 @@ pub fn run(args: LauncherArgs) -> ! {
                 let _ = menu.append(&logs_item);
                 let _ = menu.append(&restart_item);
                 let _ = menu.append(&quit_item);
+                status_item = Some(status);
                 autostart_item = Some(auto_item);
 
                 // catch_unwind because "no tray" arrives two ways: as a
@@ -243,6 +270,19 @@ pub fn run(args: LauncherArgs) -> ! {
                             .replace('\n', " / ");
                         log.line(&format!("tray unavailable ({msg}) - server continues without it"));
                     }
+                }
+                show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
+            }
+            // The minute tick armed at the top of the closure: re-render the
+            // uptime. Only here and on phase changes — never on unrelated
+            // events, so the tooltip isn't re-set under a hovering cursor.
+            // Throttled to once per second: this arm fires for EVERY timer
+            // wake the loop is asked for, not just ours.
+            Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+                let now = Instant::now();
+                if status_rendered_at.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1)) {
+                    status_rendered_at = Some(now);
+                    show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
                 }
             }
             Event::UserEvent(app_event) => match app_event {
@@ -279,7 +319,7 @@ pub fn run(args: LauncherArgs) -> ! {
                     "restart" => {
                         log.line("menu: restart server");
                         stop_current(&shared_loop);
-                        if let Err(e) = spawn_generation(
+                        phase = match spawn_generation(
                             &shared_loop,
                             &bin,
                             &args.server_args,
@@ -288,9 +328,14 @@ pub fn run(args: LauncherArgs) -> ! {
                             &proxy,
                             &log,
                         ) {
-                            log.line(&format!("restart failed: {e}"));
-                            platform::fatal_alert(&format!("mStream could not restart its server:\n{e}"));
-                        }
+                            Ok(()) => Phase::Starting,
+                            Err(e) => {
+                                log.line(&format!("restart failed: {e}"));
+                                platform::fatal_alert(&format!("mStream could not restart its server:\n{e}"));
+                                Phase::Stopped
+                            }
+                        };
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
                     }
                     "quit" => {
                         log.line("menu: quit");
@@ -317,9 +362,11 @@ pub fn run(args: LauncherArgs) -> ! {
                     if child_alive && generation == shared_loop.generation.load(Ordering::SeqCst) {
                         ever_up = true;
                         log.line("server is up");
-                        if let Some(t) = &tray {
-                            let _ = t.set_tooltip(Some(format!("mStream Server - {url}")));
-                        }
+                        // Uptime counts from here — "up" means serving, not
+                        // spawned. A restart or crash lands back in
+                        // Starting/Stopped, so the count resets with it.
+                        phase = Phase::Running { since: Instant::now() };
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
                         // Logged unconditionally (even under --no-open) so
                         // smokes and support can see the routing decision.
                         let target = paths::browse_target(&config_loop, &ep);
@@ -336,9 +383,8 @@ pub fn run(args: LauncherArgs) -> ! {
                     let current = shared_loop.generation.load(Ordering::SeqCst);
                     if generation == current && !shared_loop.quitting.load(Ordering::SeqCst) {
                         log.line("server exited unexpectedly");
-                        if let Some(t) = &tray {
-                            let _ = t.set_tooltip(Some("mStream Server - stopped (use Restart server)"));
-                        }
+                        phase = Phase::Stopped;
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
                         if !ever_up {
                             // Died before ever serving = a boot failure the
                             // user would otherwise never see (no console).
@@ -454,6 +500,83 @@ fn stop_current(shared: &Arc<Shared>) {
     }
 }
 
+/// The server's lifecycle as the tray reports it. Running carries the
+/// instant the identity probe first answered (ServerUp), which is what the
+/// uptime counts from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    Starting,
+    Running { since: Instant },
+    Stopped,
+}
+
+impl Phase {
+    /// The disabled first menu line.
+    fn menu_text(&self) -> String {
+        match self {
+            Phase::Starting => "Starting…".to_string(),
+            Phase::Running { since } => format!("Running · up {}", format_uptime(since.elapsed())),
+            Phase::Stopped => "Stopped · use Restart server".to_string(),
+        }
+    }
+
+    /// The icon tooltip (Windows/macOS; tray-icon's Linux tooltip is a
+    /// no-op, so the menu line is the cross-platform carrier).
+    fn tooltip(&self, url: &str) -> String {
+        match self {
+            Phase::Starting => "mStream Server - starting".to_string(),
+            Phase::Running { since } => format!("mStream Server - {url} (up {})", format_uptime(since.elapsed())),
+            Phase::Stopped => "mStream Server - stopped (use Restart server)".to_string(),
+        }
+    }
+
+    /// When the status line next changes: the running server's next minute
+    /// boundary, or never. Aligned to the boundary rather than "60 s from
+    /// now" so the shown minutes are exact, not up to a minute stale.
+    fn next_tick(&self) -> Option<Instant> {
+        match self {
+            Phase::Running { since } => Some(next_minute_boundary(*since, Instant::now())),
+            _ => None,
+        }
+    }
+}
+
+/// Push the phase into the status line and tooltip. Both handles are
+/// Options because the tray can be degraded away (no StatusNotifier host)
+/// while the loop, and the server, carry on.
+fn show_status(item: Option<&MenuItem>, tray: Option<&TrayIcon>, phase: &Phase, url: &str) {
+    if let Some(i) = item {
+        i.set_text(phase.menu_text());
+    }
+    if let Some(t) = tray {
+        let _ = t.set_tooltip(Some(phase.tooltip(url)));
+    }
+}
+
+/// The first minute boundary after `now`, counted from `since`. A timer
+/// that fires a hair early lands on the same boundary again — one cheap
+/// extra wake, then the value flips; never a skipped or a stale minute.
+fn next_minute_boundary(since: Instant, now: Instant) -> Instant {
+    let elapsed = now.saturating_duration_since(since);
+    since + Duration::from_secs((elapsed.as_secs() / 60 + 1) * 60)
+}
+
+/// Uptime at the resolution the tick refreshes it: the two most significant
+/// units, `uptime(1)`-style, so a menu line never grows past "12d 3h".
+fn format_uptime(d: Duration) -> String {
+    let mins = d.as_secs() / 60;
+    let (days, hours, minutes) = (mins / 1440, (mins / 60) % 24, mins % 60);
+    if mins == 0 {
+        "<1m".to_string()
+    } else if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
+}
+
 /// Tray icon: the repo logo (build/icon.png), embedded at compile time; a
 /// plain fallback square if decoding ever fails — an icon must never be the
 /// reason the launcher dies.
@@ -489,5 +612,61 @@ impl Logger {
         if let Ok(mut f) = std::fs::File::options().create(true).append(true).open(&self.0) {
             let _ = writeln!(f, "[{ts}] {msg}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MIN: u64 = 60;
+    const HOUR: u64 = 60 * MIN;
+    const DAY: u64 = 24 * HOUR;
+
+    #[test]
+    fn uptime_shows_the_two_most_significant_units() {
+        let f = |s: u64| format_uptime(Duration::from_secs(s));
+        assert_eq!(f(0), "<1m");
+        assert_eq!(f(59), "<1m", "sub-minute is <1m, never 0m");
+        assert_eq!(f(MIN), "1m");
+        assert_eq!(f(45 * MIN + 59), "45m", "seconds are dropped, not rounded up");
+        assert_eq!(f(HOUR), "1h 0m");
+        assert_eq!(f(3 * HOUR + 12 * MIN), "3h 12m");
+        assert_eq!(f(DAY), "1d 0h");
+        assert_eq!(f(3 * DAY + 4 * HOUR + 59 * MIN), "3d 4h", "minutes vanish once days show");
+        assert_eq!(f(400 * DAY + 23 * HOUR), "400d 23h");
+    }
+
+    #[test]
+    fn next_tick_lands_on_the_minute_boundary_after_now() {
+        let t0 = Instant::now();
+        let at = |secs_ms: (u64, u32)| t0 + Duration::new(secs_ms.0, secs_ms.1 * 1_000_000);
+        assert_eq!(next_minute_boundary(t0, t0), at((60, 0)), "fresh: first boundary");
+        assert_eq!(next_minute_boundary(t0, at((59, 900))), at((60, 0)), "just before: same boundary");
+        assert_eq!(next_minute_boundary(t0, at((60, 0))), at((120, 0)), "on the boundary: the next one");
+        assert_eq!(next_minute_boundary(t0, at((60, 1))), at((120, 0)), "just after: the next one");
+        assert_eq!(next_minute_boundary(t0, at((3 * HOUR + 12 * MIN + 30, 0))), at((3 * HOUR + 13 * MIN, 0)));
+        // A clock that reads BEFORE `since` (never expected; Instant is
+        // monotonic) still yields the first boundary, not a panic.
+        assert_eq!(next_minute_boundary(at((10, 0)), t0), at((70, 0)));
+    }
+
+    #[test]
+    fn phase_texts() {
+        assert_eq!(Phase::Starting.menu_text(), "Starting…");
+        assert_eq!(Phase::Stopped.menu_text(), "Stopped · use Restart server");
+        assert_eq!(Phase::Starting.tooltip("http://localhost:3000"), "mStream Server - starting");
+        assert_eq!(
+            Phase::Stopped.tooltip("http://localhost:3000"),
+            "mStream Server - stopped (use Restart server)"
+        );
+        // A just-started server (Instant can't be rewound on a freshly
+        // booted CI box; the big-number formatting is pinned above).
+        let running = Phase::Running { since: Instant::now() };
+        assert_eq!(running.menu_text(), "Running · up <1m");
+        assert_eq!(running.tooltip("http://localhost:3000"), "mStream Server - http://localhost:3000 (up <1m)");
+        assert!(running.next_tick().is_some());
+        assert_eq!(Phase::Starting.next_tick(), None, "no ticks unless running");
+        assert_eq!(Phase::Stopped.next_tick(), None);
     }
 }
