@@ -22,6 +22,7 @@
 import { describe, before, after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { startServer } from '../helpers/server.mjs';
@@ -245,6 +246,52 @@ describe(`overlapping admin saves and rejected binds (${label})`, () => {
     assert.match(text, /Reboot: bind unchanged .* keeping the listening socket/);
     assert.doesNotMatch(text, /recycling the listener|retrying listen/);
     assert.match(text, /Access mStream locally/);
+  });
+});
+
+describe(`the reboot sweep spares kept keep-alive connections (${label})`, () => {
+  let server;
+  let jwt;
+  before(async () => {
+    server = await startServer({ dlnaMode: 'disabled', subsonicMode: 'disabled', users: [{ ...ADMIN, admin: true }], ...startOpts });
+    jwt = await login(server);
+  });
+  after(async () => { if (server) { await server.stop(); } });
+
+  // One keep-alive connection: reuse it for a request served by the NEW app
+  // shortly after the swap, then keep it alive across the +1 s sweep. It
+  // used to be destroyed at +1 s regardless (it existed at reboot time),
+  // resetting whatever the new app was sending on it - a browser's pooled
+  // connection starting the next track.
+  test('a pre-reboot idle connection reused by the new app is not destroyed at +1 s', async () => {
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    const get = (p) => new Promise((resolve, reject) => {
+      const req = http.get({ host: '127.0.0.1', port: server.port, path: p, agent, headers: { 'x-access-token': jwt } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve({ status: res.statusCode, reused: req.reusedSocket }));
+      });
+      req.on('error', reject);
+    });
+    // Warm the pooled connection before the reboot, then leave it IDLE.
+    assert.equal((await get('/api/v1/ping')).status, 200);
+    const t0 = Date.now();
+    const r = await adminPost(server, jwt, '/api/v1/admin/config/trust-proxy', { trustProxy: true });
+    assert.equal(r.status, 200);
+    // Wait (on fresh connections) until the NEW app is serving, then send a
+    // request down the idle pooled connection: it is served by the new app -
+    // exactly the "browser starts the next track after the swap" shape...
+    await waitForConfig(server, jwt, (c) => c.trustProxy === true, 'trustProxy=true');
+    const mid = await get('/api/v1/ping');
+    assert.equal(mid.status, 200);
+    assert.equal(mid.reused, true, 'precondition: the pooled socket from before the reboot must be the one reused');
+    // ...and it must survive the +1 s sweep: another request on the SAME
+    // socket after that must not find it reset/closed.
+    const untilSweepPassed = t0 + 1400 - Date.now();
+    if (untilSweepPassed > 0) { await sleep(untilSweepPassed); }
+    const late = await get('/api/v1/ping');
+    assert.equal(late.status, 200);
+    assert.equal(late.reused, true, 'the pooled keep-alive socket should still be the same one - the sweep must not have destroyed it');
+    agent.destroy();
   });
 });
 }
