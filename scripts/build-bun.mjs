@@ -11,6 +11,7 @@
 // package.json so they never drift.
 import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, cpSync, chmodSync, readdirSync, openSync, readSync, closeSync, symlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { canonicalFields, stampWindowsVersionInfo } from './win-versioninfo.mjs';
@@ -493,13 +494,25 @@ function stageIroh(target, dest) {
   }
 
   // 2) Cross target: fetch the platform package tarball and extract its .node.
-  let version;
+  // Version AND integrity come from package-lock.json — the same pin `npm ci`
+  // enforces for the host triple. `npm pack` only checks the tarball against
+  // the registry's own packument (the same party serving the bytes), so
+  // without this a registry-/mirror-side substitution shipped attacker code
+  // that every remote-access session on the linux-arm64/musl bundles would
+  // dlopen in-process; the lockfile pin closes that the way it already does
+  // for the natively-installed packages.
+  const lockKey = `node_modules/@number0/iroh-${triple}`;
+  let pinned;
   try {
-    version = JSON.parse(readFileSync(join(root, 'node_modules', '@number0', 'iroh', 'package.json'), 'utf8')).version;
+    pinned = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8')).packages[lockKey];
   } catch {
-    console.warn('  iroh: @number0/iroh not installed — remote access unavailable in this bundle');
+    pinned = null;
+  }
+  if (!pinned || !pinned.version || !pinned.integrity) {
+    console.warn(`  iroh: package-lock.json has no pinned ${lockKey} — remote access unavailable in this bundle`);
     return;
   }
+  const version = pinned.version;
   const tmp = join(root, 'dist', '.iroh-fetch');
   rmSync(tmp, { recursive: true, force: true });
   mkdirSync(tmp, { recursive: true });
@@ -512,6 +525,16 @@ function stageIroh(target, dest) {
   }
   const tgz = readdirSync(tmp).find((f) => f.endsWith('.tgz'));
   if (!tgz) { console.warn('  iroh: npm pack produced no tarball — remote access unavailable'); return; }
+  // Bind the fetched bytes to the lockfile before extracting anything.
+  const [algo, want] = pinned.integrity.split('-', 2);
+  const got = createHash(algo).update(readFileSync(join(tmp, tgz))).digest('base64');
+  if (got !== want) {
+    const msg = `iroh: ${tgz} does not match package-lock.json's ${algo} integrity for ${lockKey} (got ${got.slice(0, 16)}..., want ${want.slice(0, 16)}...) — refusing to stage it`;
+    if (process.env.CI) { console.error(`  FATAL: ${msg}`); process.exit(1); }
+    console.warn(`  WARN: ${msg} — remote access unavailable in this bundle`);
+    return;
+  }
+  console.log(`  iroh: ${tgz} matches package-lock.json integrity (${algo})`);
   // Relative path under cwd, not join(tmp, tgz): GNU tar (first on PATH in
   // git-bash dev shells) reads an absolute C:\...'s drive colon as a remote
   // host — this silently dropped iroh from every locally cross-built bundle.

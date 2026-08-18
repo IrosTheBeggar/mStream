@@ -370,6 +370,38 @@ jobs:
           # broken, so it must fail, not get the committed-launcher leniency.
           echo "LAUNCHER_REBUILT=1" >> "$GITHUB_ENV"
 
+      # ── Sidecar provenance (tags) ─────────────────────────────────────────
+      # bin/rust-parser/* and bin/rust-server-audio/* are CI-committed and
+      # staged verbatim into EVERY bundle. Like the launcher, a tag must prove
+      # they were built from THIS tag's source: their workflows write a stamp
+      # (the source tree hash, from the trigger sha) next to the binaries —
+      # rust-parser has two, one per workflow (glibc / musl legs), so the two
+      # never write the same path. A PR merged just before the version bump
+      # would otherwise ship stale scanners green — soon code-signed — and a
+      # hand-committed binary would pass unnoticed.
+      - name: Assert sidecar provenance (tags)
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          fail=0
+          check() {   # <stamp file> <source dir> <workflow that writes it>
+            want=$(git rev-parse "HEAD:$2")
+            if [ ! -f "$1" ]; then
+              echo "::error::no provenance stamp $1 — dispatch $3 (or push a $2/ change), wait for its 'ci: update pre-built' commit, then re-tag"
+              fail=1; return
+            fi
+            have=$(sed -n '1p' "$1")
+            if [ "$want" != "$have" ]; then
+              echo "::error::committed $2 binaries were built from tree ${have:-<unstamped>} but this tag's $2 tree is $want — wait for $3's commit (or re-run it), then re-tag"
+              fail=1; return
+            fi
+            echo "$2 provenance ok: $want ($1)"
+          }
+          check bin/rust-parser/.source-tree       rust-parser       build-rust-parser
+          check bin/rust-parser/.source-tree-musl  rust-parser       build-rust-parser-musl
+          check bin/rust-server-audio/.source-tree rust-server-audio build-rust-server-audio
+          [ "$fail" = 0 ]
+
       - name: Build + bundle (${{ matrix.key }})
         run: bun scripts/build-bun.mjs --target=${{ matrix.key }} --bundle
 

@@ -9,7 +9,9 @@ on:
         default: false
   push:
     branches: [master]
-    paths: ['rust-parser/**']
+    # This file too, so a change to how the binaries are built or STAMPED
+    # re-lands the set (and its provenance stamp) right away.
+    paths: ['rust-parser/**', '.github/workflows/build-rust-parser.yml']
 
 jobs:
   build:
@@ -75,15 +77,20 @@ jobs:
       - name: Install cross
         if: matrix.use_cross
         run: |
-          curl -fsSL https://github.com/cross-rs/cross/releases/latest/download/cross-x86_64-unknown-linux-gnu.tar.gz \
-            | tar xz -C "$HOME/.cargo/bin"
+          # Pinned + hashed: `releases/latest` piped straight into ~/.cargo/bin
+          # meant a new (or hijacked) cross release ran on the next master push
+          # and produced the shipped ARM/musl binaries. Bump the version and
+          # the sha256 together (sha256sum of the release asset).
+          curl -fsSL -o cross.tar.gz "https://github.com/cross-rs/cross/releases/download/v0.2.5/cross-x86_64-unknown-linux-gnu.tar.gz"
+          echo "642375d1bcf3bd88272c32ba90e999f3d983050adf45e66bd2d3887e8e838bad  cross.tar.gz" | sha256sum -c -
+          tar xzf cross.tar.gz -C "$HOME/.cargo/bin" && rm cross.tar.gz
 
       - name: Build
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} --manifest-path rust-parser/Cargo.toml
+            cross build --release --locked --target ${{ matrix.target }} --manifest-path rust-parser/Cargo.toml
           else
-            cargo build --release --target ${{ matrix.target }} --manifest-path rust-parser/Cargo.toml
+            cargo build --release --locked --target ${{ matrix.target }} --manifest-path rust-parser/Cargo.toml
           fi
         shell: bash
 
@@ -157,7 +164,15 @@ jobs:
           # leaves an unstaged mode change that makes `git pull --rebase`
           # refuse to run (this bit build-p2p-sidecar.yml's bootstrap).
           chmod +x bin/rust-parser/rust-parser-*
-          git add bin/rust-parser/rust-parser-*
+          # Provenance stamp: the rust-parser/ source TREE these binaries were
+          # built from, taken from the trigger sha (not post-rebase HEAD).
+          # build-bun's tag build asserts it against the tag's own tree, so a
+          # tag cut before this commit landed — or a hand-committed binary —
+          # is a red run instead of a scanner shipped (and soon signed) that
+          # doesn't correspond to the tagged source. The musl workflow writes
+          # its own file (.source-tree-musl): disjoint paths, no rebase clash.
+          git rev-parse "${{ github.sha }}:rust-parser" > bin/rust-parser/.source-tree
+          git add bin/rust-parser/rust-parser-* bin/rust-parser/.source-tree
           # Belt-and-braces: force 100755 in the index regardless — without
           # +x, scanners spawn the binary and hit EACCES on every boot. Run
           # AFTER `git add` but BEFORE the diff check so a pure-mode flip
