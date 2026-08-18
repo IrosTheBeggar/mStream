@@ -68,8 +68,11 @@ if ($env:MSTREAM_UNINSTALL) {
     $launcher = Join-Path $current 'mStream.exe'
     if (Test-Path $launcher) {
         # Login item first, while a launcher still exists to remove it.
-        & $launcher --autostart=disable 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) { Write-Host "removed the login item" }
+        # Best-effort: an exe that cannot start must not block the uninstall.
+        try {
+            & $launcher --autostart=disable 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { Write-Host "removed the login item" }
+        } catch { Write-Warning "could not run the launcher to remove the login item ($($_.Exception.Message))" }
     }
     $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'mStream.lnk'
     if (Test-Path $lnk) { Remove-Item $lnk -Force; Write-Host "removed the Start Menu shortcut" }
@@ -188,13 +191,22 @@ try {
     # reach the login item: next boot silently starts the OLD version. Ask
     # the NEW launcher to re-register (its --autostart CLI runs with no
     # tray/window/server), only if the user has it enabled.
+    # Best-effort from here on: the install already succeeded, so nothing
+    # below may fail it. Under $ErrorActionPreference='Stop', a launcher that
+    # cannot start at all ("not a valid application for this OS platform" -
+    # a foreign-arch or corrupt exe) throws from `&` itself, not just a
+    # nonzero exit; catch it and say what happened.
     $launcher = Join-Path $current 'mStream.exe'
     if ($installedFresh -and (Test-Path $launcher)) {
-        $status = (& $launcher --autostart=status 2>$null | Out-String).Trim()
-        if ($status -eq 'enabled') {
-            & $launcher --autostart=enable 2>$null | Out-Null
-            if ($LASTEXITCODE -eq 0) { Write-Host "  login item re-pointed at $ver" }
-            else { Write-Warning "could not re-point the login item - open mStream once to fix it" }
+        try {
+            $status = (& $launcher --autostart=status 2>$null | Out-String).Trim()
+            if ($status -eq 'enabled') {
+                & $launcher --autostart=enable 2>$null | Out-Null
+                if ($LASTEXITCODE -eq 0) { Write-Host "  login item re-pointed at $ver" }
+                else { Write-Warning "could not re-point the login item - open mStream once to fix it" }
+            }
+        } catch {
+            Write-Warning "could not run the launcher to re-point the login item ($($_.Exception.Message)) - open mStream once to fix it"
         }
     }
     # Proof the binary execs here: commander's -V is instant and boots nothing.
