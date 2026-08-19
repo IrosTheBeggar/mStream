@@ -6,6 +6,12 @@ on:
     branches: [master]
     paths: ['rust-server-audio/**', '.github/workflows/build-rust-server-audio.yml']
 
+# Serialize runs of THIS workflow per ref (see build-rust-parser.yml — same
+# rationale; sibling families keep their own groups on purpose).
+concurrency:
+  group: build-rust-server-audio-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build ${{ matrix.binary_name }}
@@ -98,7 +104,8 @@ jobs:
         with:
           name: ${{ matrix.binary_name }}
           path: staging/${{ matrix.binary_name }}
-          retention-days: 1
+          # 7, not 1: the commit job refuses a partial set (see there).
+          retention-days: 7
 
   commit-binaries:
     name: Commit binaries
@@ -109,41 +116,73 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Into a scratch dir, NOT bin/ — see build-rust-parser.yml's commit
+      # job: the inventory must see exactly what this run built, and the
+      # no-rebase loop re-checkouts the tip, which needs a clean worktree.
       - name: Download all binaries
         uses: actions/download-artifact@v8
         with:
-          path: bin/rust-server-audio
+          path: staging
           merge-multiple: true
 
       - name: Commit and push
+        env:
+          TRIGGER_SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # chmod BEFORE staging: a file download-artifact CREATES (vs
-          # overwrites) lands 644, and an index-only mode fix leaves an
-          # unstaged mode change that breaks `git pull --rebase` below.
-          # See build-rust-parser.yml for the full story.
-          chmod +x bin/rust-server-audio/rust-server-audio-*
-          # Provenance stamp (see build-rust-parser.yml): the source tree these
-          # binaries were built from; build-bun's tag build asserts it.
-          git rev-parse "${{ github.sha }}:rust-server-audio" > bin/rust-server-audio/.source-tree
-          git add bin/rust-server-audio/rust-server-audio-* bin/rust-server-audio/.source-tree
-          # Belt-and-braces: force 100755 in the index so user checkouts get
-          # `+x` — without it, server-playback.js spawn hits EACCES on every
-          # boot in Docker.
-          git update-index --chmod=+x bin/rust-server-audio/rust-server-audio-*
-          if git diff --cached --quiet; then
-            echo "No binary changes to commit"
-          else
-            git commit -m "ci: update pre-built rust-server-audio binaries"
-            # Rebase-and-retry: sibling binary workflows race this push —
-            # see build-rust-parser.yml's commit step for the rationale.
-            for attempt in 1 2 3 4 5; do
-              git pull --rebase origin ${{ github.ref_name }}
-              if git push; then exit 0; fi
-              echo "push rejected (attempt $attempt) — a sibling workflow pushed; retrying"
-              sleep $(( (RANDOM % 5) + 2 ))
-            done
-            echo "::error::binary push failed after 5 attempts"
+
+          # 1. Inventory: every leg, non-empty (see build-rust-parser.yml).
+          names="rust-server-audio-win32-x64.exe rust-server-audio-darwin-x64 rust-server-audio-darwin-arm64 rust-server-audio-linux-x64 rust-server-audio-linux-arm64 rust-server-audio-linux-arm"
+          missing=""
+          for name in $names; do
+            [ -s "staging/$name" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::not all rust-server-audio binaries were built by this run (missing:$missing) — an artifact expired or a leg was skipped; re-run ALL jobs (or dispatch the workflow), never 'failed jobs only'"
             exit 1
           fi
+
+          # 2. Provenance stamp from the TRIGGER sha (see build-rust-parser.yml);
+          #    build-bun's tag build asserts it.
+          stamp="$(mktemp)"
+          git rev-parse "$TRIGGER_SHA:rust-server-audio" > "$stamp"
+          echo "stamp for $TRIGGER_SHA:"; sed 's/^/  /' "$stamp"
+
+          # 3. No-rebase loop: land on the current tip, stand down if a newer
+          #    rust-server-audio/ tree already got there. Full rationale in
+          #    build-rust-parser.yml's commit job. (+x matters here too:
+          #    without it, server-playback.js spawn hits EACCES on every boot
+          #    in Docker.)
+          for attempt in 1 2 3 4 5; do
+            git fetch --depth=1 origin "$BRANCH"
+            git checkout -q --detach FETCH_HEAD
+            if ! git diff --quiet "$TRIGGER_SHA" FETCH_HEAD -- rust-server-audio; then
+              echo "master already carries a rust-server-audio/ tree newer than $TRIGGER_SHA — that push's run owns this family's binaries; standing down without committing"
+              exit 0
+            fi
+            for name in $names; do
+              cp "staging/$name" "bin/rust-server-audio/$name"
+              chmod +x "bin/rust-server-audio/$name"
+              git add "bin/rust-server-audio/$name"
+              git update-index --chmod=+x "bin/rust-server-audio/$name"
+            done
+            cp "$stamp" bin/rust-server-audio/.source-tree
+            git add bin/rust-server-audio/.source-tree
+            if git diff --cached --quiet; then
+              echo "No binary changes to commit (master already has this exact set)"
+              exit 0
+            fi
+            git commit -q -m "ci: update pre-built rust-server-audio binaries"
+            if git push origin "HEAD:$BRANCH"; then
+              echo "pushed $(git rev-parse --short HEAD) onto $BRANCH"
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt) — the tip moved; retrying from the new tip"
+            git reset -q --hard FETCH_HEAD
+            sleep $(( (RANDOM % 5) + 2 ))
+          done
+          echo "::error::could not push after 5 attempts"
+          exit 1
