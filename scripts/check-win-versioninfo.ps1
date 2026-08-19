@@ -66,6 +66,12 @@ $known = @(
   @{ path = 'mstream-server.exe';                                   lenient = $false; optional = $false }
   @{ path = 'bin\rust-parser\rust-parser-win32-x64.exe';            lenient = $false; optional = $false }
   @{ path = 'bin\rust-server-audio\rust-server-audio-win32-x64.exe'; lenient = $false; optional = $false }
+  # Fetched from the pinned release assets at bundle time and stamped like
+  # the other sidecars (build-bun.mjs). optional: a local/offline build
+  # legitimately ships without it (runtime fetch is the fallback); in CI
+  # the bundler itself is fatal on a missing asset, so absence here can
+  # only mean a deliberate MSTREAM_ALLOW_MISSING_SIDECAR build.
+  @{ path = 'bin\p2p-sidecar\p2p-sidecar-win32-x64.exe';            lenient = $false; optional = $true  }
 )
 $upstream = @('bin\iroh\iroh.win32-x64-msvc.node')
 # The server's ffmpeg-bootstrap downloads ffmpeg/ffprobe into <appRoot>/bin/ffmpeg
