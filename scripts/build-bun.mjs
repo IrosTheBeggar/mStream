@@ -298,8 +298,8 @@ for (const [dir, file] of sidecars) {
   try {
     const m = JSON.parse(readFileSync(manifestFile, 'utf8'));
     entry = m.assets?.[scName] ? { ...m.assets[scName], repo: m.repo, tag: m.tag } : null;
-  } catch (err) {
-    entry = null;
+  } catch (_err) {
+    // unreadable/absent manifest = the same no-entry skip below
   }
   if (!entry) {
     skip(`no manifest entry for ${scName}`);
