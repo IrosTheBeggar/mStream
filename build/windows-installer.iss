@@ -116,12 +116,15 @@ begin
     p := procs.ItemIndex(i);
     path := '';
     try
-      path := Lowercase(VarToStr(p.ExecutablePath));
+      { plain Variant->string assignment; a Null ExecutablePath (some
+        system processes) raises here and is swallowed }
+      path := p.ExecutablePath;
     except
     end;
+    path := Lowercase(path);
     if (path <> '') and (Pos(AppPrefix(), path) = 1) then
     begin
-      Log('terminating ' + name + ' (pid ' + VarToStr(p.ProcessId) + ') under the install dir');
+      Log('terminating ' + name + ' (pid ' + IntToStr(p.ProcessId) + ') under the install dir');
       try
         p.Terminate(1);
       except
