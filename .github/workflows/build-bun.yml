@@ -1271,11 +1271,51 @@ jobs:
           echo "$OUT" | grep -q IROH_OK || { echo "FAIL: iroh native binding did not load in the standalone binary"; exit 1; }
           echo "OK: iroh native binding loaded from the bundled .node"
 
+      # ── Windows installer (Inno Setup) ──────────────────────────────────
+      # Compiled LAST — after the VersionInfo assert and every smoke — so the
+      # setup.exe wraps exactly the bytes that were proven. ISCC ships on the
+      # windows-latest image. Per-user install to {localappdata}\Programs\
+      # mStream (same location install.ps1 uses); design notes live in
+      # build/windows-installer.iss. When SignPath lands, PE signing slots in
+      # before this step and setup.exe signing after it.
+      - name: Build Windows installer (win-x64)
+        if: matrix.key == 'win-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { Write-Host '::error::Inno Setup 6 not found on this runner'; exit 1 }
+          $ver = node -pe "require('./package.json').version"
+          $ver4 = node --input-type=module -e "import {windowsVersion} from './scripts/win-versioninfo.mjs'; import {readFileSync} from 'node:fs'; console.log(windowsVersion(JSON.parse(readFileSync('package.json','utf8')).version))"
+          $stage = (Get-Item dist/stage/mStream-*-win-x64).FullName
+          $out = Join-Path $PWD 'dist/installer'
+          & $iscc "/DAppVersion=$ver" "/DAppVersion4=$ver4" "/DStageDir=$stage" "/O$out" 'build/windows-installer.iss'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $setup = Get-Item (Join-Path $out "mStream-$ver-win-x64-setup.exe")
+          Write-Host "installer: $($setup.Name) ($([math]::Round($setup.Length/1MB,1)) MB)"
+          # The installer exe carries the same 4-part VersionInfo contract as
+          # every shipped PE (Win32 truth, like check-win-versioninfo.ps1).
+          # Inno space-pads the VersionInfo string fields to a fixed width —
+          # trim before comparing.
+          $vi = $setup.VersionInfo
+          $fv = "$($vi.FileVersion)".Trim(); $pn = "$($vi.ProductName)".Trim()
+          Write-Host "VersionInfo: FileVersion='$fv' Product='$pn' Company='$("$($vi.CompanyName)".Trim())'"
+          if ($fv -ne $ver4) { Write-Host "::error::installer FileVersion '$fv' is not '$ver4'"; exit 1 }
+          if ($pn -ne 'mStream') { Write-Host "::error::installer ProductName '$pn' is not 'mStream'"; exit 1 }
+
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
         with:
           name: mStream-${{ matrix.key }}
           path: dist/mStream-*-${{ matrix.key }}.zip
+          if-no-files-found: error
+
+      - name: Upload installer artifact (win-x64)
+        if: matrix.key == 'win-x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mStream-win-x64-installer
+          path: dist/installer/mStream-*-win-x64-setup.exe
           if-no-files-found: error
 
   release:
@@ -1336,4 +1376,8 @@ jobs:
             echo "::error::release $TAG is already PUBLISHED - refusing to overwrite its assets. Ship a new patch version instead."
             exit 1
           fi
-          gh release upload "$TAG" bundles/*.zip bundles/manifest.json --clobber --repo "$REPO"
+          # The Windows setup.exe rides the same artifact download into
+          # bundles/ (manifest.json stays zips-only by design — the install
+          # scripts and the future auto-updater consume zips; the installer
+          # is a direct-download asset).
+          gh release upload "$TAG" bundles/*.zip bundles/manifest.json bundles/mStream-*-win-x64-setup.exe --clobber --repo "$REPO"
