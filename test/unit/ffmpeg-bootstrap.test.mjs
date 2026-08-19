@@ -12,13 +12,16 @@
  * changed ffmpegDirectory) gets its own.
  *
  * Hermetic: MSTREAM_FFMPEG_MIRROR points the bootstrap at a loopback server
- * that serves a slow fake archive and DELIBERATELY WRONG checksums, so every
- * download completes, fails verification (no extractor is spawned, nothing is
- * installed) and the chain falls through to the system-PATH probe. What is
- * asserted is how many times the archive was fetched. The env var is read at
- * module import, and config.js imports the bootstrap transitively (via
- * api/transcode.js), so the server is started and the env set BEFORE the
- * first src import.
+ * that serves a slow fake archive whose bytes can never hash to the pins in
+ * the repo's committed bin/ffmpeg/manifest.json, so every download completes,
+ * fails pin verification (no extractor is spawned, nothing is installed) and
+ * the chain falls through to the system-PATH probe — which doubles as the
+ * hash-mismatch-refuses-install proof. What is asserted is how many times the
+ * archive was fetched. The env var is read at module import, and config.js
+ * imports the bootstrap transitively (via api/transcode.js), so the server is
+ * started and the env set BEFORE the first src import. (The .sha256 endpoint
+ * below is vestigial — pinned verification never fetches checksums — and kept
+ * only so a regression to live-checksum fetching can't accidentally pass.)
  */
 
 import { describe, before, after, test } from 'node:test';
