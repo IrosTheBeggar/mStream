@@ -16,7 +16,15 @@ on:
         default: false
   push:
     branches: [master]
-    paths: ['p2p-sidecar/**']
+    # The workflow file itself is a build input (toolchain pins, build
+    # flags) — every sibling family lists its own; this one was missing it.
+    paths: ['p2p-sidecar/**', '.github/workflows/build-p2p-sidecar.yml']
+
+# Serialize runs of THIS workflow per ref (see build-rust-parser.yml — same
+# rationale; sibling families keep their own groups on purpose).
+concurrency:
+  group: build-p2p-sidecar-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -163,7 +171,8 @@ jobs:
         with:
           name: ${{ matrix.binary_name }}
           path: staging/${{ matrix.binary_name }}
-          retention-days: 1
+          # 7, not 1: the commit job refuses a partial set (see there).
+          retention-days: 7
 
   commit-binaries:
     name: Commit binaries
@@ -175,41 +184,76 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Into a scratch dir, NOT bin/ — see build-rust-parser.yml's commit
+      # job: the inventory must see exactly what this run built, and the
+      # no-rebase loop re-checkouts the tip, which needs a clean worktree.
+      # (This family's scar: an unstaged mode change once made the old
+      # `git pull --rebase` refuse to run, and zero p2p-sidecar binaries
+      # shipped while every build leg was green.)
       - name: Download all binaries
         uses: actions/download-artifact@v8
         with:
-          path: bin/p2p-sidecar
+          path: staging
           merge-multiple: true
 
       - name: Commit and push
+        env:
+          TRIGGER_SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Restore the exec bit ON DISK before staging. Artifact zips strip
-          # it, and files download-artifact CREATES (rather than overwrites —
-          # i.e. any binary name not already committed, like this workflow's
-          # very first run) land as 644. Staging the mode via update-index
-          # alone leaves the worktree at 644 vs a 755 index/HEAD — an
-          # unstaged mode change that makes `git pull --rebase` below refuse
-          # to run. That exact failure shipped zero p2p-sidecar binaries
-          # while every build leg was green.
-          chmod +x bin/p2p-sidecar/p2p-sidecar-*
-          git add bin/p2p-sidecar/p2p-sidecar-*
-          # Belt-and-braces: force 100755 in the index even if the chmod is
-          # ever lost (see build-rust-parser.yml for the EACCES history).
-          git update-index --chmod=+x bin/p2p-sidecar/p2p-sidecar-*
-          if git diff --cached --quiet; then
-            echo "No binary changes to commit"
-          else
-            git commit -m "ci: update pre-built p2p-sidecar binaries"
-            # Rebase-and-retry: sibling binary workflows race this push —
-            # see build-rust-parser.yml's commit step for the rationale.
-            for attempt in 1 2 3 4 5; do
-              git pull --rebase origin ${{ github.ref_name }}
-              if git push; then exit 0; fi
-              echo "push rejected (attempt $attempt) — a sibling workflow pushed; retrying"
-              sleep $(( (RANDOM % 5) + 2 ))
-            done
-            echo "::error::binary push failed after 5 attempts"
+
+          # 1. Inventory: every leg, non-empty (see build-rust-parser.yml).
+          names="p2p-sidecar-win32-x64.exe p2p-sidecar-darwin-x64 p2p-sidecar-darwin-arm64 p2p-sidecar-linux-x64 p2p-sidecar-linux-arm64 p2p-sidecar-linux-arm"
+          missing=""
+          for name in $names; do
+            [ -s "staging/$name" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::not all p2p-sidecar binaries were built by this run (missing:$missing) — an artifact expired or a leg was skipped; re-run ALL jobs (or dispatch the workflow), never 'failed jobs only'"
             exit 1
           fi
+
+          # 2. Provenance stamp from the TRIGGER sha — new for this family
+          #    (the other sidecars got theirs in #841). Nothing asserts it
+          #    yet (the p2p sidecar ships via npm, not the release bundles);
+          #    it's the freshness ledger a future assert reads.
+          stamp="$(mktemp)"
+          git rev-parse "$TRIGGER_SHA:p2p-sidecar" > "$stamp"
+          echo "stamp for $TRIGGER_SHA:"; sed 's/^/  /' "$stamp"
+
+          # 3. No-rebase loop: land on the current tip, stand down if a newer
+          #    p2p-sidecar/ tree already got there. Full rationale in
+          #    build-rust-parser.yml's commit job.
+          for attempt in 1 2 3 4 5; do
+            git fetch --depth=1 origin "$BRANCH"
+            git checkout -q --detach FETCH_HEAD
+            if ! git diff --quiet "$TRIGGER_SHA" FETCH_HEAD -- p2p-sidecar; then
+              echo "master already carries a p2p-sidecar/ tree newer than $TRIGGER_SHA — that push's run owns this family's binaries; standing down without committing"
+              exit 0
+            fi
+            for name in $names; do
+              cp "staging/$name" "bin/p2p-sidecar/$name"
+              chmod +x "bin/p2p-sidecar/$name"
+              git add "bin/p2p-sidecar/$name"
+              git update-index --chmod=+x "bin/p2p-sidecar/$name"
+            done
+            cp "$stamp" bin/p2p-sidecar/.source-tree
+            git add bin/p2p-sidecar/.source-tree
+            if git diff --cached --quiet; then
+              echo "No binary changes to commit (master already has this exact set)"
+              exit 0
+            fi
+            git commit -q -m "ci: update pre-built p2p-sidecar binaries"
+            if git push origin "HEAD:$BRANCH"; then
+              echo "pushed $(git rev-parse --short HEAD) onto $BRANCH"
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt) — the tip moved; retrying from the new tip"
+            git reset -q --hard FETCH_HEAD
+            sleep $(( (RANDOM % 5) + 2 ))
+          done
+          echo "::error::could not push after 5 attempts"
+          exit 1

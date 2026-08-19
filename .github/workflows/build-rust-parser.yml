@@ -13,6 +13,16 @@ on:
     # re-lands the set (and its provenance stamp) right away.
     paths: ['rust-parser/**', '.github/workflows/build-rust-parser.yml']
 
+# Serialize runs of THIS workflow per ref: the commit job lands binaries on
+# the master tip, and two interleaved runs of the same family would race to
+# do it. cancel-in-progress stays false — a canceled run silently drops its
+# binaries update. Sibling families (musl, other sidecars) keep their OWN
+# groups on purpose: one shared group would cancel a sibling's pending
+# update outright.
+concurrency:
+  group: build-rust-parser-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build ${{ matrix.binary_name }}
@@ -133,7 +143,11 @@ jobs:
         with:
           name: ${{ matrix.binary_name }}
           path: staging/${{ matrix.binary_name }}
-          retention-days: 1
+          # 7, not 1: the commit job refuses to land a PARTIAL set (inventory
+          # below), so a next-day re-run must still find every leg's artifact
+          # — with 1-day retention it would find one fresh + the rest expired
+          # and could only fail.
+          retention-days: 7
 
   commit-binaries:
     name: Commit binaries
@@ -146,59 +160,93 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Into a scratch dir, NOT bin/: the inventory below must see exactly
+      # what this run built (downloading over bin/ let a partial set silently
+      # keep the previous binaries for the missing legs under a fresh stamp),
+      # and the no-rebase loop below re-checkouts the tip, which needs a
+      # clean worktree. Same design as build-rust-launcher.yml (#840).
       - name: Download all binaries
         uses: actions/download-artifact@v8
         with:
-          path: bin/rust-parser
+          path: staging
           merge-multiple: true
 
       - name: Commit and push
+        env:
+          TRIGGER_SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Restore the exec bit ON DISK before staging. Artifact zips strip
-          # it; for binaries that already exist in the repo the download
-          # merely overwrites content (checkout already gave them 755), but a
-          # file download-artifact CREATES (a new platform leg's first run)
-          # lands as 644 — and staging the mode via update-index alone then
-          # leaves an unstaged mode change that makes `git pull --rebase`
-          # refuse to run (this bit build-p2p-sidecar.yml's bootstrap).
-          chmod +x bin/rust-parser/rust-parser-*
-          # Provenance stamp: the rust-parser/ source TREE these binaries were
-          # built from, taken from the trigger sha (not post-rebase HEAD).
-          # build-bun's tag build asserts it against the tag's own tree, so a
-          # tag cut before this commit landed — or a hand-committed binary —
-          # is a red run instead of a scanner shipped (and soon signed) that
-          # doesn't correspond to the tagged source. The musl workflow writes
-          # its own file (.source-tree-musl): disjoint paths, no rebase clash.
-          git rev-parse "${{ github.sha }}:rust-parser" > bin/rust-parser/.source-tree
-          git add bin/rust-parser/rust-parser-* bin/rust-parser/.source-tree
-          # Belt-and-braces: force 100755 in the index regardless — without
-          # +x, scanners spawn the binary and hit EACCES on every boot. Run
-          # AFTER `git add` but BEFORE the diff check so a pure-mode flip
-          # still skips the commit when content is unchanged.
-          git update-index --chmod=+x bin/rust-parser/rust-parser-*
-          if git diff --cached --quiet; then
-            echo "No binary changes to commit"
-          else
-            git commit -m "ci: update pre-built rust-parser binaries"
-            # Sibling binary workflows can land on the same push (the
-            # glibc + musl pairs share path triggers, and one commit can
-            # match several families) and their commit jobs race: a
-            # sibling pushing between our rebase and our push gets this
-            # push rejected — run 29967087650's glibc leg lost exactly
-            # that race and needed a manual rerun. Rebase-and-retry until
-            # it lands: each workflow writes a disjoint file set, so the
-            # rebase is always clean and a few attempts always converge.
-            # (A shared concurrency group would be WRONG here — GitHub
-            # keeps only one pending run per group and cancels the rest,
-            # silently dropping a sibling's binary update.)
-            for attempt in 1 2 3 4 5; do
-              git pull --rebase origin ${{ github.ref_name }}
-              if git push; then exit 0; fi
-              echo "push rejected (attempt $attempt) — a sibling workflow pushed; retrying"
-              sleep $(( (RANDOM % 5) + 2 ))
-            done
-            echo "::error::binary push failed after 5 attempts"
+
+          # 1. Inventory: every glibc-family binary, non-empty. Anything less
+          #    is not a set this sha built — refuse rather than stamp it.
+          names="rust-parser-win32-x64.exe rust-parser-darwin-x64 rust-parser-darwin-arm64 rust-parser-linux-x64 rust-parser-linux-arm64 rust-parser-linux-arm"
+          missing=""
+          for name in $names; do
+            [ -s "staging/$name" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::not all rust-parser binaries were built by this run (missing:$missing) — an artifact expired or a leg was skipped; re-run ALL jobs (or dispatch the workflow), never 'failed jobs only'"
             exit 1
           fi
+
+          # 2. Provenance stamp: the rust-parser/ source TREE these binaries
+          #    were built from, computed from the TRIGGER sha — never from
+          #    whatever master tip we commit onto below. build-bun's tag
+          #    build asserts it against the tag's own tree, so a tag cut
+          #    inside a rebuild window — or a hand-committed binary — is a
+          #    red run instead of a scanner shipped (and soon signed) that
+          #    doesn't correspond to the tagged source. The musl workflow
+          #    writes its own file (.source-tree-musl): disjoint paths.
+          stamp="$(mktemp)"
+          git rev-parse "$TRIGGER_SHA:rust-parser" > "$stamp"
+          echo "stamp for $TRIGGER_SHA:"; sed 's/^/  /' "$stamp"
+
+          # 3. Land on the CURRENT tip and commit there — never rebase a
+          #    binaries commit. A queued run of THIS workflow checks out its
+          #    own, older trigger sha; rebasing its commit onto a tip that
+          #    already carries a newer run's binaries conflicts on every file
+          #    (binaries can't be merged), the job goes red, and master keeps
+          #    whatever was there. Instead: fetch the tip, stand down if a
+          #    newer rust-parser/ tree already landed on it (the run for that
+          #    newer sha owns this family's files — it has run, or will),
+          #    else put OUR set on top of the tip. Sibling families (musl,
+          #    other sidecars) racing this push only ever reject it — the
+          #    retry re-applies our disjoint file set on their new tip.
+          for attempt in 1 2 3 4 5; do
+            git fetch --depth=1 origin "$BRANCH"
+            git checkout -q --detach FETCH_HEAD
+            if ! git diff --quiet "$TRIGGER_SHA" FETCH_HEAD -- rust-parser; then
+              echo "master already carries a rust-parser/ tree newer than $TRIGGER_SHA — that push's run owns this family's binaries; standing down without committing"
+              exit 0
+            fi
+            for name in $names; do
+              cp "staging/$name" "bin/rust-parser/$name"
+              # Artifact zips strip the mode: restore on disk AND force
+              # 100755 in the index — without +x, scanners spawn the binary
+              # and hit EACCES on every boot.
+              chmod +x "bin/rust-parser/$name"
+              git add "bin/rust-parser/$name"
+              git update-index --chmod=+x "bin/rust-parser/$name"
+            done
+            cp "$stamp" bin/rust-parser/.source-tree
+            git add bin/rust-parser/.source-tree
+            if git diff --cached --quiet; then
+              echo "No binary changes to commit (master already has this exact set)"
+              exit 0
+            fi
+            git commit -q -m "ci: update pre-built rust-parser binaries"
+            if git push origin "HEAD:$BRANCH"; then
+              echo "pushed $(git rev-parse --short HEAD) onto $BRANCH"
+              exit 0
+            fi
+            # Someone (a sibling binary workflow, a merge) pushed between our
+            # fetch and our push: drop our commit and go again from the new tip.
+            echo "push rejected (attempt $attempt) — the tip moved; retrying from the new tip"
+            git reset -q --hard FETCH_HEAD
+            sleep $(( (RANDOM % 5) + 2 ))
+          done
+          echo "::error::could not push after 5 attempts"
+          exit 1
