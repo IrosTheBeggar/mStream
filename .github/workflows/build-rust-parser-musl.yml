@@ -58,11 +58,16 @@ jobs:
 
       - name: Install cross
         run: |
-          curl -fsSL https://github.com/cross-rs/cross/releases/latest/download/cross-x86_64-unknown-linux-gnu.tar.gz \
-            | tar xz -C "$HOME/.cargo/bin"
+          # Pinned + hashed: `releases/latest` piped straight into ~/.cargo/bin
+          # meant a new (or hijacked) cross release ran on the next master push
+          # and produced the shipped ARM/musl binaries. Bump the version and
+          # the sha256 together (sha256sum of the release asset).
+          curl -fsSL -o cross.tar.gz "https://github.com/cross-rs/cross/releases/download/v0.2.5/cross-x86_64-unknown-linux-gnu.tar.gz"
+          echo "642375d1bcf3bd88272c32ba90e999f3d983050adf45e66bd2d3887e8e838bad  cross.tar.gz" | sha256sum -c -
+          tar xzf cross.tar.gz -C "$HOME/.cargo/bin" && rm cross.tar.gz
 
       - name: Build
-        run: cross build --release --target ${{ matrix.target }} --manifest-path rust-parser/Cargo.toml
+        run: cross build --release --locked --target ${{ matrix.target }} --manifest-path rust-parser/Cargo.toml
 
       - name: Stage binary
         run: |
@@ -129,7 +134,10 @@ jobs:
           # unstaged mode change that breaks `git pull --rebase` below.
           # See build-rust-parser.yml for the full story.
           chmod +x bin/rust-parser/rust-parser-*-musl*
-          git add bin/rust-parser/rust-parser-*-musl*
+          # Provenance stamp for the musl set — its own file so this workflow
+          # and build-rust-parser.yml never write the same path (see there).
+          git rev-parse "${{ github.sha }}:rust-parser" > bin/rust-parser/.source-tree-musl
+          git add bin/rust-parser/rust-parser-*-musl* bin/rust-parser/.source-tree-musl
           # Belt-and-braces: force 100755 in the index so user checkouts
           # get `+x` regardless.
           git update-index --chmod=+x bin/rust-parser/rust-parser-*-musl*
