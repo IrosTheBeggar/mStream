@@ -11,8 +11,13 @@ jobs:
   publish-npm:
     # Server releases only. The desktop player ships as a separate
     # release with a `-DESKTOP_PLAYER` tag suffix; publishing its
-    # draft shouldn't republish the server to npm.
-    if: ${{ !endsWith(github.event.release.tag_name, '-DESKTOP_PLAYER') }}
+    # draft shouldn't republish the server to npm. The p2p-sidecar
+    # asset-store release (`p2p-sidecar-assets`) is machine-managed —
+    # its workflow creates it with GITHUB_TOKEN, whose events never
+    # trigger workflows, but a HUMAN touching that release in the UI
+    # can re-fire `published`; this guard keeps even that from ever
+    # publishing to npm. Same for the discovery-models-* asset tags.
+    if: ${{ !endsWith(github.event.release.tag_name, '-DESKTOP_PLAYER') && !startsWith(github.event.release.tag_name, 'p2p-sidecar-') && !startsWith(github.event.release.tag_name, 'discovery-models-') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

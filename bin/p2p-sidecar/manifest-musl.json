@@ -1,0 +1,6 @@
+{
+  "family": "p2p-sidecar",
+  "schema": 1,
+  "_comment": "Machine-managed by .github/workflows/build-p2p-sidecar-musl.yml — do not edit. Empty until the first post-migration publish run pins the musl release assets here.",
+  "assets": {}
+}

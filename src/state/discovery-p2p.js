@@ -28,6 +28,7 @@ import { EventEmitter } from 'events';
 import { spawn } from 'child_process';
 import winston from 'winston';
 import { appRoot } from '../util/esm-helpers.js';
+import * as sidecarBootstrap from '../util/p2p-sidecar-bootstrap.js';
 import * as config from './config.js';
 
 // Unsolicited sidecar events surface here:
@@ -54,13 +55,18 @@ let nextId = 1;
 let readyPromise = null;  // in-flight start() so concurrent callers share one spawn
 const pending = new Map(); // id -> { resolve, reject, timer }
 
-// Prebuilt binary (CI-committed) or a local `npm run build-p2p-sidecar`
-// output. Returns null when neither exists — deliberately NO implicit
-// `cargo build` fallback here (unlike the scanner): this resolves inside
-// admin HTTP requests, and a surprise 10-minute compile inside a request
-// is worse than a clear error.
+// A binary already on disk — a local `npm run build-p2p-sidecar` output, an
+// operator-placed prebuilt in bin/p2p-sidecar/, or a previously fetched
+// managed install (see p2p-sidecar-bootstrap.js; the binaries left git in
+// favor of sha256-pinned GitHub release assets). Returns null when none
+// exists — deliberately NO implicit `cargo build` fallback here (unlike the
+// scanner): this resolves inside admin HTTP requests, and a surprise
+// 10-minute compile inside a request is worse than a clear error. The
+// DOWNLOAD lives in start()'s async path, never here — status routes call
+// this synchronously and must stay side-effect free.
 export function resolveSidecarBinary() {
-  const prebuilt = path.join(appRoot, `bin/p2p-sidecar/p2p-sidecar-${process.platform}-${process.arch}${libcSuffix}${ext}`);
+  const name = `p2p-sidecar-${process.platform}-${process.arch}${libcSuffix}${ext}`;
+  const prebuilt = path.join(appRoot, 'bin', 'p2p-sidecar', name);
   const localBuild = path.join(appRoot, 'p2p-sidecar', 'target', 'release', `p2p-sidecar${ext}`);
   // Local build first: during development it may be newer than the prebuilt.
   if (fs.existsSync(localBuild)) { return localBuild; }
@@ -68,6 +74,11 @@ export function resolveSidecarBinary() {
     try { fs.chmodSync(prebuilt, 0o755); } catch (_err) { /* zip extraction can strip +x; spawn will surface real failures */ }
     return prebuilt;
   }
+  // The managed (fetched) install — same path as `prebuilt` for a plain
+  // checkout, but a distinct writable dir when appRoot is read-only (a
+  // translocated .app, a system-prefix install).
+  const managed = sidecarBootstrap.managedSidecarPath();
+  if (managed !== prebuilt && fs.existsSync(managed)) { return managed; }
   return null;
 }
 
@@ -83,21 +94,37 @@ export function getEndpointId() { return endpointId; }
 // their bootstrapPeers to befriend this server.
 export function getEndpointTicket() { return endpointTicket; }
 
+// Acquire a binary to spawn. A dev build or an operator-placed prebuilt wins
+// untouched; otherwise the bootstrap fetches (or refreshes) the managed
+// install from the manifest-pinned release assets — so the first start on a
+// fresh checkout downloads ~20 MB once, with every byte sha256-verified
+// against the committed manifest, instead of every clone carrying all nine
+// platforms' binaries forever. Failures reject with the bootstrap's own
+// actionable cause (checksum refused, no build published, download failed).
+async function acquireSidecarBinary() {
+  const bin = resolveSidecarBinary();
+  // Local build / operator prebuilt: theirs to manage, never second-guessed.
+  // Only the MANAGED path flows through ensureSidecar(), which also picks up
+  // pinned updates for installs it made itself (receipt-gated).
+  if (bin && bin !== sidecarBootstrap.managedSidecarPath()) { return bin; }
+  const ensured = await sidecarBootstrap.ensureSidecar();
+  if (ensured) { return ensured; }
+  if (bin) { return bin; } // on disk but unmanaged coverage — still spawnable
+  throw new Error(
+    'p2p-sidecar binary not found and no downloadable build is published for this platform — ' +
+    'expected a prebuilt at bin/p2p-sidecar/, a local build at p2p-sidecar/target/release/ ' +
+    '(run `npm run build-p2p-sidecar`), or a manifest entry (bin/p2p-sidecar/README.md)');
+}
+
 // Start the sidecar (idempotent; concurrent callers await the same spawn).
 // Resolves once the sidecar's ready event arrives. Rejects with an
-// actionable message when the binary is missing or the process dies first.
+// actionable message when the binary is missing/unfetchable or the process
+// dies first.
 export function start() {
   if (isRunning()) { return Promise.resolve({ endpointId }); }
   if (readyPromise) { return readyPromise; }
 
-  const bin = resolveSidecarBinary();
-  if (!bin) {
-    return Promise.reject(new Error(
-      'p2p-sidecar binary not found — expected a prebuilt at bin/p2p-sidecar/ ' +
-      'or a local build at p2p-sidecar/target/release/ (run `npm run build-p2p-sidecar`)'));
-  }
-
-  readyPromise = new Promise((resolve, reject) => {
+  readyPromise = acquireSidecarBinary().then((bin) => new Promise((resolve, reject) => {
     fs.mkdirSync(dataDir(), { recursive: true });
     const child = spawn(bin, ['--data-dir', dataDir()], { stdio: ['pipe', 'pipe', 'pipe'] });
     proc = child;
@@ -151,7 +178,7 @@ export function start() {
       teardown(why);
       reject(new Error(`p2p-sidecar ${why}`));
     });
-  }).finally(() => { readyPromise = null; });
+  })).finally(() => { readyPromise = null; });
 
   return readyPromise;
 }

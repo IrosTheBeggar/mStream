@@ -40,6 +40,17 @@ bin/rust-server-audio/*
 !bin/rust-server-audio/rust-server-audio-*
 !bin/rust-server-audio/.source-tree
 
+# p2p-sidecar binaries are FETCHED, not committed (they live as GitHub
+# release assets; each CI refresh of the 9-binary set used to add ~172 MB of
+# undeltifiable blobs to history). Only the CI-written manifests that pin
+# them — and this README — are tracked; the fetched binaries, install
+# receipt, and staging files land here on checkouts whose data root is the
+# app root and must stay out of `git status`.
+bin/p2p-sidecar/*
+!bin/p2p-sidecar/README.md
+!bin/p2p-sidecar/manifest.json
+!bin/p2p-sidecar/manifest-musl.json
+
 save/*.json
 
 .DS_Store

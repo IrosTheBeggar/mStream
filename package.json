@@ -38,7 +38,8 @@
     "test:cli-audio": "docker build -f test/cli-audio/Dockerfile -t mstream-cli-audio-smoke . && docker run --rm mstream-cli-audio-smoke",
     "test:smoke:docker": "node test/smoke/docker/run-docker-stack-smoke.mjs",
     "test:smoke:windows": "node test/smoke/windows-native-daemons.mjs",
-    "build-p2p-sidecar": "cd p2p-sidecar && cargo build --release"
+    "build-p2p-sidecar": "cd p2p-sidecar && cargo build --release",
+    "fetch-p2p-sidecar": "node scripts/fetch-p2p-sidecar.mjs"
   },
   "repository": {
     "type": "git",

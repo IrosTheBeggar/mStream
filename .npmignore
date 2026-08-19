@@ -46,6 +46,16 @@ bin/rust-server-audio/*
 !bin/rust-server-audio/rust-server-audio-*
 !bin/rust-server-audio/.source-tree
 
+# p2p-sidecar binaries are fetched on first use from GitHub release assets,
+# sha256-pinned by the committed manifests below — they must never ride the
+# npm tarball again (they were 179 MB of its 284 MB unpacked, for a
+# default-off feature). The manifests DO ship: they're what the fetch
+# verifies against.
+bin/p2p-sidecar/*
+!bin/p2p-sidecar/README.md
+!bin/p2p-sidecar/manifest.json
+!bin/p2p-sidecar/manifest-musl.json
+
 save/*.json
 
 .DS_Store

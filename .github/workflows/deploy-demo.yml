@@ -9,8 +9,12 @@ jobs:
   deploy-demo:
     # Server releases only. The `-DESKTOP_PLAYER` companion
     # release is just binaries for the Electron player; there's
-    # no reason to re-pull the server on the demo host.
-    if: ${{ !endsWith(github.event.release.tag_name, '-DESKTOP_PLAYER') }}
+    # no reason to re-pull the server on the demo host. Asset-store
+    # releases (p2p-sidecar-assets, discovery-models-*) are not
+    # server releases either — see npm-publish.yml for why the
+    # guard exists even though their workflow's GITHUB_TOKEN events
+    # can't trigger this.
+    if: ${{ !endsWith(github.event.release.tag_name, '-DESKTOP_PLAYER') && !startsWith(github.event.release.tag_name, 'p2p-sidecar-') && !startsWith(github.event.release.tag_name, 'discovery-models-') }}
     runs-on: ubuntu-latest
     steps:
     - name: pull changes

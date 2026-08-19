@@ -1,24 +1,45 @@
 # Builds the p2p-sidecar binaries (the iroh networking companion for the
-# music-discovery network) and commits them to bin/p2p-sidecar/ — same
-# CI-managed-binaries model as build-rust-parser.yml: PRs stay source-only,
-# the prebuilt binaries land in a bot commit on master.
+# music-discovery network), publishes them as GitHub RELEASE assets under
+# immutable names, and commits only a small text MANIFEST
+# (bin/p2p-sidecar/manifest.json: per-platform file name + sha256 + size +
+# url + source-tree hash) that the server's fetch-on-first-use verifies
+# against (src/util/p2p-sidecar-bootstrap.js).
+#
+# This family used to follow build-rust-parser.yml's commit-the-binaries
+# model; it was the worst offender by far — nine ~20 MB iroh-linked binaries
+# per refresh, ~1.1 GB of undeltifiable blobs already in master's history —
+# so it moved to release assets first. PRs stay source-only either way.
+#
+# Assets live on the rolling `p2p-sidecar-assets` release (prerelease, so it
+# never becomes `releases/latest` for install.sh), and are APPEND-ONLY:
+# names embed the source-tree hash and the binary's own sha256, so an
+# existing name is byte-identical by construction — the publish step skips
+# it, never replaces it, and every manifest ever committed keeps resolving.
+# Workflow ARTIFACTS would expire (90 days max) and break old manifests.
 #
 # musl (Alpine) legs live in build-p2p-sidecar-musl.yml — the linuxserver.io
-# Docker image is Alpine, so those are load-bearing, not a nicety.
+# Docker image is Alpine, so those are load-bearing, not a nicety. That
+# workflow uploads to the SAME release but owns manifest-musl.json, so the
+# two publishers never write the same path (the old .source-tree /
+# .source-tree-musl stamp split, carried forward).
 name: Build P2P Sidecar Binaries
 
 on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Build + self-test only; do not commit the binaries'
+        description: 'Build + self-test only; do not publish assets or commit the manifest'
         type: boolean
         default: false
   push:
     branches: [master]
     # The workflow file itself is a build input (toolchain pins, build
     # flags) — every sibling family lists its own; this one was missing it.
-    paths: ['p2p-sidecar/**', '.github/workflows/build-p2p-sidecar.yml']
+    # The manifest helper script is a publish input for the same reason.
+    paths:
+      - 'p2p-sidecar/**'
+      - '.github/workflows/build-p2p-sidecar.yml'
+      - 'scripts/p2p-sidecar-manifest.mjs'
 
 # Serialize runs of THIS workflow per ref (see build-rust-parser.yml — same
 # rationale; sibling families keep their own groups on purpose).
@@ -174,8 +195,8 @@ jobs:
           # 7, not 1: the commit job refuses a partial set (see there).
           retention-days: 7
 
-  commit-binaries:
-    name: Commit binaries
+  publish:
+    name: Publish assets + manifest
     needs: build
     if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
     runs-on: ubuntu-latest
@@ -196,17 +217,27 @@ jobs:
           path: staging
           merge-multiple: true
 
-      - name: Commit and push
+      # Order is load-bearing: assets are uploaded BEFORE the manifest that
+      # references them is committed, so a manifest on master never points
+      # at a missing asset. A failure between the two leaves orphaned,
+      # unreferenced assets — harmless, immutable, cheap.
+      - name: Upload release assets and commit the manifest
         env:
           TRIGGER_SHA: ${{ github.sha }}
           BRANCH: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # 1. Inventory: every leg, non-empty (see build-rust-parser.yml).
+          release_tag="p2p-sidecar-assets"
+          manifest_file="manifest.json"
           names="p2p-sidecar-win32-x64.exe p2p-sidecar-darwin-x64 p2p-sidecar-darwin-arm64 p2p-sidecar-linux-x64 p2p-sidecar-linux-arm64 p2p-sidecar-linux-arm"
+
+          # 1. Inventory: every leg, non-empty (see build-rust-parser.yml).
           missing=""
           for name in $names; do
             [ -s "staging/$name" ] || missing="$missing $name"
@@ -216,37 +247,66 @@ jobs:
             exit 1
           fi
 
-          # 2. Provenance stamp from the TRIGGER sha — new for this family
-          #    (the other sidecars got theirs in #841). Nothing asserts it
-          #    yet (the p2p sidecar ships via npm, not the release bundles);
-          #    it's the freshness ledger a future assert reads.
-          stamp="$(mktemp)"
-          git rev-parse "$TRIGGER_SHA:p2p-sidecar" > "$stamp"
-          echo "stamp for $TRIGGER_SHA:"; sed 's/^/  /' "$stamp"
+          # 2. Provenance + manifest, computed from the TRIGGER sha — the
+          #    source these binaries were built from, never whatever tip the
+          #    manifest lands on below. The manifest replaces (and
+          #    strengthens) the old .source-tree stamp: same tree hash, plus
+          #    a sha256 pin per binary that the server VERIFIES at fetch
+          #    time instead of a ledger nothing read.
+          tree="$(git rev-parse "$TRIGGER_SHA:p2p-sidecar")"
+          version="$(git show "$TRIGGER_SHA:p2p-sidecar/Cargo.toml" | sed -n 's/^version *= *"\(.*\)".*/\1/p' | head -1)"
+          echo "source tree $tree (crate version ${version:-unknown})"
+          manifest="$(mktemp)"
+          node scripts/p2p-sidecar-manifest.mjs \
+            --tag "$release_tag" --repo "$REPO" --tree "$tree" \
+            --version "${version:-unknown}" --built-from "$TRIGGER_SHA" --run-url "$RUN_URL" \
+            --staging staging --assets-dir assets --out "$manifest" \
+            $names
 
-          # 3. No-rebase loop: land on the current tip, stand down if a newer
-          #    p2p-sidecar/ tree already got there. Full rationale in
-          #    build-rust-parser.yml's commit job.
+          # 3. Ensure the rolling release exists, then upload what's new.
+          #    Prerelease: it must never become `releases/latest` (that's
+          #    the server-bundle path install.sh resolves). Asset names
+          #    embed tree + content hashes, so an existing name IS the same
+          #    bytes — skip exactly, replace never. `|| true` on create: a
+          #    racing sibling (the musl workflow) may have just created it;
+          #    the re-view is the real gate.
+          if ! gh release view "$release_tag" --json tagName --jq .tagName >/dev/null 2>&1; then
+            gh release create "$release_tag" --prerelease \
+              --title "p2p-sidecar prebuilt binaries" \
+              --notes "Machine-managed asset store for the p2p-sidecar build workflows. Binaries are addressed by the committed bin/p2p-sidecar/manifest*.json (sha256-verified at fetch). Assets are append-only under content-addressed names — do not delete or replace them; old manifests in git history resolve here forever." \
+              || true
+            gh release view "$release_tag" --json tagName --jq .tagName >/dev/null
+          fi
+          existing="$(gh release view "$release_tag" --json assets --jq '.assets[].name')"
+          for f in assets/*; do
+            name="$(basename "$f")"
+            if printf '%s\n' "$existing" | grep -qxF "$name"; then
+              echo "asset already published (immutable name, same bytes): $name"
+            else
+              gh release upload "$release_tag" "$f"
+              echo "uploaded: $name"
+            fi
+          done
+
+          # 4. No-rebase loop for the MANIFEST file: land on the current
+          #    tip, stand down if a newer p2p-sidecar/ tree already got
+          #    there. Full rationale in build-rust-parser.yml's commit job —
+          #    unchanged by the asset move, just a much smaller payload.
           for attempt in 1 2 3 4 5; do
             git fetch --depth=1 origin "$BRANCH"
             git checkout -q --detach FETCH_HEAD
             if ! git diff --quiet "$TRIGGER_SHA" FETCH_HEAD -- p2p-sidecar; then
-              echo "master already carries a p2p-sidecar/ tree newer than $TRIGGER_SHA — that push's run owns this family's binaries; standing down without committing"
+              echo "master already carries a p2p-sidecar/ tree newer than $TRIGGER_SHA — that push's run owns this family's manifest; standing down without committing (this run's uploaded assets stay: unreferenced, immutable, harmless)"
               exit 0
             fi
-            for name in $names; do
-              cp "staging/$name" "bin/p2p-sidecar/$name"
-              chmod +x "bin/p2p-sidecar/$name"
-              git add "bin/p2p-sidecar/$name"
-              git update-index --chmod=+x "bin/p2p-sidecar/$name"
-            done
-            cp "$stamp" bin/p2p-sidecar/.source-tree
-            git add bin/p2p-sidecar/.source-tree
+            mkdir -p bin/p2p-sidecar
+            cp "$manifest" "bin/p2p-sidecar/$manifest_file"
+            git add "bin/p2p-sidecar/$manifest_file"
             if git diff --cached --quiet; then
-              echo "No binary changes to commit (master already has this exact set)"
+              echo "No manifest changes to commit (master already pins this exact set)"
               exit 0
             fi
-            git commit -q -m "ci: update pre-built p2p-sidecar binaries"
+            git commit -q -m "ci: update p2p-sidecar release manifest"
             if git push origin "HEAD:$BRANCH"; then
               echo "pushed $(git rev-parse --short HEAD) onto $BRANCH"
               exit 0
