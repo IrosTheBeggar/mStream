@@ -237,9 +237,11 @@ if (t.plat === 'linux' && !t.musl) {
 // THREE LISTS MOVE TOGETHER: the `sidecars` array above, this description
 // map, and $known in scripts/check-win-versioninfo.ps1 (which fails the
 // win-x64 leg on any PE it doesn't know). Staging a new Windows sidecar —
-// e.g. bin/p2p-sidecar/*.exe, CI-committed today but deliberately NOT staged
-// (Bun bundles ship without discovery-P2P) — means updating all three in the
-// same change, or the leg goes red with "unknown PE".
+// e.g. the p2p-sidecar exe, deliberately NOT staged (Bun bundles ship
+// without a baked-in discovery-P2P binary; since the move to fetch-on-use
+// the server can download it into its data root at runtime instead) — means
+// updating all three in the same change, or the leg goes red with
+// "unknown PE".
 const sidecarDescription = {
   'rust-parser':       'mStream Library Scanner',
   'rust-server-audio': 'mStream Server Audio',
