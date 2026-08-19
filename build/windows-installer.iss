@@ -96,9 +96,11 @@ begin
   Result := Lowercase(AddBackslash(ExpandConstant('{app}')));
 end;
 
-{ Terminate mStream.exe / mstream-server.exe running FROM {app} — and only
-  from {app}. Launcher first: dropping its stdin pipe makes a supervised
-  server exit on its own; the second pass catches anything left. }
+{ Terminate mStream.exe / mstream-server.exe running FROM the install dir —
+  and only from there. (No braces in these comments: Pascal brace comments
+  do not nest, so a literal app-dir constant here would end the comment.)
+  Launcher first: dropping its stdin pipe makes a supervised server exit on
+  its own; the second pass catches anything left. }
 procedure KillOneName(const name: string);
 var
   locator, svc, procs, p: Variant;
