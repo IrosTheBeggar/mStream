@@ -959,6 +959,19 @@ jobs:
           echo "$OUT" | grep -q dbPath || { echo "FAIL: worker self-dispatch"; echo "$OUT"; exit 1; }
           echo "ok: worker self-dispatch"
 
+          # (1b) the baked-in p2p-sidecar: staged from the pinned release
+          # assets (sha-verified at bundle time) and actually EXECUTABLE on
+          # this leg — --print-id is the sidecar's own identity self-test.
+          # Bundle installs' discovery P2P depends on exactly this file (the
+          # resolver's appRoot rung); on darwin this also proves the SIGNED
+          # copy still runs (the sign walk covers it as a generic Mach-O).
+          SC=$(ls "$RUN"/bin/p2p-sidecar/p2p-sidecar-* 2>/dev/null | head -1)
+          [ -n "$SC" ] || { echo "FAIL: no p2p-sidecar staged in the bundle (bin/p2p-sidecar empty)"; exit 1; }
+          SCOUT=$("$SC" --print-id --data-dir "$RUN/sc-selftest" 2>/dev/null)
+          echo "$SCOUT" | grep -Eq '^[0-9a-f]{64}$' || { echo "FAIL: staged p2p-sidecar --print-id produced no/invalid output"; echo "$SCOUT"; exit 1; }
+          rm -rf "$RUN/sc-selftest"
+          echo "ok: baked-in p2p-sidecar executes ($(basename "$SC"))"
+
           # (2) default-path boot (no -j) — the double-click invocation. A fresh
           # standalone install is the DESKTOP profile: the config resolves to the
           # per-OS user data home and is generated with Quick Connect on
