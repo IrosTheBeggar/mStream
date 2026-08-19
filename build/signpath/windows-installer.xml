@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Repo-versioned copy of the SignPath artifact configuration
+     `windows-installer` (live copy in the SignPath UI; keep in lockstep).
+     Signs the Inno setup.exe, which is built FROM the already-signed PE set.
+     Deliberately no product-version restriction yet: Inno space-pads its
+     VersionInfo strings and SignPath's comparison semantics against padded
+     values are unproven — tighten after the first release run shows clean
+     reads. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="mStream-*-win-x64-setup.exe" product-name="mStream">
+      <authenticode-sign/>
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

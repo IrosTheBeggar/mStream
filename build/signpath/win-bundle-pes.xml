@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Repo-versioned copy of the SignPath artifact configuration `win-bundle-pes`
+     (the live one is in the SignPath UI; keep them in lockstep). Signs the
+     win-x64 bundle's PE set. The upstream @number0/iroh .node is signed but
+     carries no metadata restrictions (no VersionInfo of its own); our four
+     PEs are restricted to the shared product identity (#836 contract).
+     When the p2p-sidecar starts shipping in bundles (Phase D of the sidecar
+     plan), add its pe-file entry here AND in the UI in the same change. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" default-value="0.0.0.0" />
+  </parameters>
+  <zip-file>
+    <pe-file path="mStream.exe" product-name="mStream" product-version="${version}">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="mstream-server.exe" product-name="mStream" product-version="${version}">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="bin/rust-parser/rust-parser-win32-x64.exe" product-name="mStream" product-version="${version}">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="bin/rust-server-audio/rust-server-audio-win32-x64.exe" product-name="mStream" product-version="${version}">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="bin/iroh/iroh.win32-x64-msvc.node">
+      <authenticode-sign/>
+    </pe-file>
+  </zip-file>
+</artifact-configuration>
