@@ -61,10 +61,33 @@ export function userDataHome(platform = process.platform, env = process.env, hom
 // signing and is lost on upgrade, so the fallback is the correct destination
 // regardless.) Falling back beats failing: the only installs affected are ones
 // that could not have stored anything at appRoot in the first place.
-function resolveDataRoot() {
+// System install locations are never data homes, even when this process CAN
+// write there: W_OK answers yes for root under /opt and /usr (a sudo'd
+// `mstream-server -j …` from a deb/rpm install) and for any admin user under
+// /Applications (the pkg install) — but parking the db inside a
+// package-managed tree pollutes it. dpkg/rpm leave the leftovers behind on
+// remove (observed: `apt remove mstream` keeping /opt/mstream alive after
+// one root boot), a pkg upgrade replaces the tree out from under the
+// library, and on macOS it breaks the bundle's code signature. Ownership,
+// not writability, is the question in these prefixes. Windows deliberately
+// unlisted: our per-user install dir (LOCALAPPDATA\Programs) is user space,
+// and there is no package manager reclaiming it. Exported for tests.
+export function underSystemPrefix(dir, platform = process.platform) {
+  if (platform === 'win32') { return false; }
+  const norm = dir.endsWith('/') ? dir : `${dir}/`;
+  return ['/opt/', '/usr/', '/Applications/'].some(
+    (prefix) => norm === prefix || norm.startsWith(prefix));
+}
+
+// Split from the module-level constant wiring so the decision table is unit
+// testable; production behavior is exactly the constant below.
+export function resolveDataRoot(root = appRoot, platform = process.platform, access = fs.accessSync) {
+  if (underSystemPrefix(root, platform)) {
+    return userDataHome();
+  }
   try {
-    fs.accessSync(appRoot, fs.constants.W_OK);
-    return appRoot;
+    access(root, fs.constants.W_OK);
+    return root;
   } catch (_err) {
     return userDataHome();
   }
