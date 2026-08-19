@@ -1,16 +1,30 @@
 /**
  * ffmpeg-bootstrap.js
  *
- * Auto-downloads static ffmpeg + ffprobe binaries on first use, with SHA256
- * checksum verification. Re-checks weekly and auto-updates when a new build
- * is available — but only for binaries it installed itself; operator-supplied
- * binaries in a custom ffmpegDirectory are never overwritten.
+ * Downloads static ffmpeg + ffprobe binaries on first use, verified against
+ * the PINNED manifest committed at bin/ffmpeg/manifest.json — the same trust
+ * model as p2p-sidecar-bootstrap: {tag/path, sha256, size} per platform is
+ * reviewed text, a download that doesn't hash to its pin is deleted and
+ * refused (no fallback, no retry-with-less-verification), and updates ship
+ * as a manifest-bump PR (scripts/update-ffmpeg-manifest.mjs) instead of
+ * whatever the upstream's rolling "latest" serves that week.
  *
- * Supported auto-download platforms:
- *   Linux x64, Linux arm64, Windows x64 (BtbN/FFmpeg-Builds)
- *   macOS x64 / arm64 (ffmpeg.martin-riedl.de)
+ * Why pins and not upstream's own checksum file (the pre-2026-08 design):
+ * a rolling build means every refresh hands Windows users a brand-new
+ * UNSIGNED binary hash with zero SmartScreen / Smart App Control cloud
+ * reputation, and means we ship whatever upstream published minutes ago. A
+ * stable pinned hash accrues reputation and gets reviewed like any other
+ * dependency bump. Binaries it installed itself are refreshed when the pins
+ * change; operator-supplied binaries in a custom ffmpegDirectory are never
+ * overwritten.
  *
- * Other platforms: logs a warning — user must provide binaries manually.
+ * Pinned sources (see the manifest):
+ *   Linux x64, Linux arm64, Windows x64 — BtbN/FFmpeg-Builds dated autobuild
+ *   release assets; macOS x64 / arm64 — ffmpeg.martin-riedl.de versioned
+ *   download paths.
+ *
+ * Platforms with no manifest entry: logs a warning — user must provide
+ * binaries manually (musl skips straight to the system-PATH rung by design).
  */
 
 import fsp from 'node:fs/promises';
@@ -22,7 +36,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import winston from 'winston';
 import * as config from '../state/config.js';
-import { dataRoot } from './esm-helpers.js';
+import { appRoot, dataRoot } from './esm-helpers.js';
+import { writeJsonAtomic } from './atomic-json.js';
 
 const binaryExt = process.platform === 'win32' ? '.exe' : '';
 // dataRoot, not appRoot: ffmpeg is never shipped in the bundle, so this is a
@@ -31,21 +46,20 @@ const binaryExt = process.platform === 'win32' ? '.exe' : '';
 // compared to distinguish our managed install from a user's custom directory.
 const BUNDLED_FFMPEG_DIR = path.join(dataRoot, 'bin/ffmpeg');
 const MIN_FFMPEG_MAJOR = 6;
-// Where the builds come from. MSTREAM_FFMPEG_MIRROR replaces the upstream
-// base for BOTH sources (BtbN archive + checksums.sha256; martin-riedl's
-// per-binary zips + sibling .sha256) — for an internal mirror on an air-gapped
-// host, and for the unit test's loopback server. Layout under the base must
-// match upstream's; the mirror is only trusted over https or loopback http.
+// MSTREAM_FFMPEG_MIRROR replaces the download BASE for both sources — an
+// internal mirror on an air-gapped host, or the unit tests' loopback server.
+// The mirror serves a FLAT namespace: the BtbN archive under its pinned file
+// name, the macOS binaries as ffmpeg.zip / ffprobe.zip. The sha256 pins are
+// enforced regardless of where the bytes came from, so a mirror can never
+// substitute contents; it is only trusted over https or loopback http.
 const MIRROR = (process.env.MSTREAM_FFMPEG_MIRROR || '').replace(/\/+$/, '');
-const BTBN_BASE = MIRROR || 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest';
-const CHECKSUMS_URL = `${BTBN_BASE}/checksums.sha256`;
+// martin-riedl is a vendor constant, not a supply-chain pin — the manifest
+// pins the versioned PATH (+ sha256) under this host.
+const MR_HOST = 'https://ffmpeg.martin-riedl.de';
 // Download hardening: cap redirect chains and apply a socket-inactivity
 // timeout so a stalled or looping endpoint can't hang the process forever.
 const MAX_REDIRECTS = 5;
 const HTTP_TIMEOUT_MS = 30000;
-// downloadToBuffer only ever fetches checksum manifests (a few KB) — cap the
-// in-memory size so a misbehaving endpoint can't balloon process memory.
-const MAX_BUFFER_BYTES = 1024 * 1024;
 
 let _initPromise = null;
 // Bumped by reset(): a resolution chain started before a reset is stale — it
@@ -124,46 +138,133 @@ async function pathExists(p) {
 }
 
 
-// ── Platform → asset mapping ────────────────────────────────────────────────
+// ── Pinned release manifest ─────────────────────────────────────────────────
 
-// BtbN assets (Linux, Windows) — used for download URL and checksum verification
-function btbnAsset() {
-  const { platform, arch } = process;
-  if (platform === 'linux' && arch === 'x64')   return 'ffmpeg-master-latest-linux64-gpl.tar.xz';
-  if (platform === 'linux' && arch === 'arm64') return 'ffmpeg-master-latest-linuxarm64-gpl.tar.xz';
-  if (platform === 'win32' && arch === 'x64')   return 'ffmpeg-master-latest-win64-gpl.zip';
-  return null;
+// The committed pin set. Lives under appRoot (shipped with the code, like
+// bin/p2p-sidecar/manifest.json), while downloads land in getFfmpegDir()
+// (dataRoot-based) — same split as the sidecar: pins travel with the code
+// they were reviewed with, binaries live somewhere writable.
+const MANIFEST_DIR = path.join(appRoot, 'bin', 'ffmpeg');
+
+// Everything that goes into a URL is validated as a plain token first: the
+// manifest is committed and reviewed, but these checks keep a bad merge or
+// hand-edit from ever turning into a surprising request target.
+const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const TOKEN_RE = /^[A-Za-z0-9._-]+$/;
+const isSha256 = (s) => /^[0-9a-f]{64}$/.test(s || '');
+const isSize = (n) => Number.isInteger(n) && n > 0;
+// martin-riedl paths are multi-segment: token-validate each segment so no
+// traversal, absolute path, or scheme smuggling survives.
+function isSafeRelPath(p) {
+  if (typeof p !== 'string' || p === '' || p.includes('\\')) { return false; }
+  return p.split('/').every((seg) => seg !== '' && seg !== '.' && seg !== '..' && TOKEN_RE.test(seg));
 }
 
-// Returns { url, asset, source } for the current platform, or null if unsupported.
-function releaseInfo() {
-  const asset = btbnAsset();
-  if (asset) {
-    return {
-      url: `${BTBN_BASE}/${asset}`,
-      asset,
-      source: 'btbn'
-    };
-  }
+export function platformKey(platform = process.platform, arch = process.arch) {
+  return `${platform}-${arch}`;
+}
 
-  // macOS: martin-riedl.de provides static builds for Intel + Apple Silicon.
-  // Each binary ships as a `.zip` with a sibling `.sha256`. The /redirect/
-  // endpoint 307s to a versioned /download/ path, and the `.sha256` only
-  // exists at that resolved path — so we follow the redirect at download time
-  // and derive the checksum URL from the final location. `release` = tagged
-  // stable build (vs `snapshot` = git master). Arch tokens are amd64/arm64.
-  if (process.platform === 'darwin') {
-    const macArch = process.arch === 'arm64' ? 'arm64' : 'amd64';
-    const base = MIRROR || `https://ffmpeg.martin-riedl.de/redirect/latest/macos/${macArch}/release`;
-    return {
-      url: `${base}/ffmpeg.zip`,
-      ffprobeUrl: `${base}/ffprobe.zip`,
-      asset: `ffmpeg-macos-${macArch}`,
-      source: 'martin-riedl'
-    };
+function readManifest(manifestDir) {
+  const file = path.join(manifestDir, 'manifest.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    if (err.code !== 'ENOENT') { winston.warn(`[ffmpeg-bootstrap] could not read ${file}: ${err.message}`); }
+    return null;
   }
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    winston.warn(`[ffmpeg-bootstrap] ${file} is not valid JSON (${err.message}) — treating as absent`);
+    return null;
+  }
+}
 
-  return null;
+/**
+ * The validated pin set for a platform, with download URLs derived from the
+ * pins (never stored in the manifest), or null when the platform has no
+ * pinned build / the entry is malformed (malformed warns — refuse loudly
+ * rather than download something unverifiable).
+ *
+ *   btbn:        { source, tag, file, url, sha256, size }
+ *   martinriedl: { source, files: { ffmpeg|ffprobe: { path, url, sha256, size } } }
+ *
+ * Exported for the unit tests: a pure function of (manifestDir, key), no
+ * network, no config.
+ */
+export function pinnedRelease({ manifestDir = MANIFEST_DIR, key = platformKey() } = {}) {
+  const m = readManifest(manifestDir);
+  const entry = m?.assets?.[key];
+  if (!entry) { return null; }
+  const refuse = (why) => {
+    winston.warn(`[ffmpeg-bootstrap] manifest entry for ${key} is malformed (${why}) — refusing to fetch from it`);
+    return null;
+  };
+  if (entry.source === 'btbn') {
+    if (!REPO_RE.test(m.btbn?.repo || '') || !TOKEN_RE.test(m.btbn?.tag || '')) { return refuse('bad repo/tag'); }
+    if (typeof entry.file !== 'string' || !TOKEN_RE.test(entry.file)) { return refuse('bad file'); }
+    if (!isSha256(entry.sha256) || !isSize(entry.size)) { return refuse('bad sha256/size'); }
+    const url = MIRROR
+      ? `${MIRROR}/${entry.file}`
+      : `https://github.com/${m.btbn.repo}/releases/download/${m.btbn.tag}/${entry.file}`;
+    return { source: 'btbn', tag: m.btbn.tag, file: entry.file, url, sha256: entry.sha256, size: entry.size };
+  }
+  if (entry.source === 'martinriedl') {
+    const files = {};
+    for (const member of ['ffmpeg', 'ffprobe']) {
+      const f = entry.files?.[member];
+      if (!f || !isSafeRelPath(f.path) || !f.path.endsWith('.zip')) { return refuse(`bad ${member} path`); }
+      if (!isSha256(f.sha256) || !isSize(f.size)) { return refuse(`bad ${member} sha256/size`); }
+      // Mirror layout is flat (see MIRROR): the member name, not the
+      // versioned upstream path.
+      files[member] = { path: f.path, sha256: f.sha256, size: f.size, url: MIRROR ? `${MIRROR}/${member}.zip` : `${MR_HOST}/${f.path}` };
+    }
+    return { source: 'martinriedl', files };
+  }
+  return refuse(`unknown source '${entry.source}'`);
+}
+
+// The comparable pin identity recorded in the install receipt — refresh
+// triggers when this differs from the current manifest's.
+function pinsOf(release) {
+  if (release.source === 'btbn') {
+    return { source: 'btbn', tag: release.tag, file: release.file, sha256: release.sha256 };
+  }
+  return {
+    source: 'martinriedl',
+    files: {
+      ffmpeg: { path: release.files.ffmpeg.path, sha256: release.files.ffmpeg.sha256 },
+      ffprobe: { path: release.files.ffprobe.path, sha256: release.files.ffprobe.sha256 },
+    },
+  };
+}
+
+// ── Install receipt ──────────────────────────────────────────────────────────
+
+// Records the pins THIS module installed from. Its absence for an existing
+// install marks the binaries as the OPERATOR's (see checkForUpdate). The
+// pre-manifest design wrote a `.checksum` baseline instead — still honored
+// as a provenance marker, then replaced by a receipt on the first refresh.
+const RECEIPT_FILE = '.fetched.json';
+const LEGACY_CHECKSUM_FILE = '.checksum';
+
+function readReceipt(dir) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, RECEIPT_FILE), 'utf8'));
+    return (parsed && typeof parsed === 'object' && parsed.pins) ? parsed : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+async function writeReceipt(dir, release) {
+  await writeJsonAtomic(path.join(dir, RECEIPT_FILE), {
+    schema: 1,
+    family: 'ffmpeg',
+    pins: pinsOf(release),
+    installedAt: new Date().toISOString(),
+  });
 }
 
 // ── HTTP download with redirect following ───────────────────────────────────
@@ -183,51 +284,6 @@ function isAcceptedUrl(u) {
 
 function clientFor(u) {
   return u.startsWith('https:') ? https : http;
-}
-
-function downloadToBuffer(url) {
-  return new Promise((resolve, reject) => {
-    const follow = (u, redirects = 0) => {
-      if (redirects > MAX_REDIRECTS) { return reject(new Error(`Too many redirects for ${url}`)); }
-      if (!isAcceptedUrl(u)) { return reject(new Error(`Refusing non-HTTPS URL: ${u}`)); }
-      const req = clientFor(u).get(u, { headers: { 'User-Agent': 'mstream-ffmpeg-bootstrap/2.0' } }, res => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          res.resume();
-          // Location may be relative (martin-riedl) — resolve against `u`.
-          return follow(new URL(res.headers.location, u).toString(), redirects + 1);
-        }
-        if (res.statusCode !== 200) {
-          res.resume();
-          return reject(new Error(`HTTP ${res.statusCode} downloading ${u}`));
-        }
-        const chunks = [];
-        let received = 0;
-        res.on('data', c => {
-          received += c.length;
-          if (received > MAX_BUFFER_BYTES) {
-            const tooBig = new Error(`Response exceeds ${MAX_BUFFER_BYTES} bytes for ${u}`);
-            res.destroy(tooBig);
-            return reject(tooBig);
-          }
-          chunks.push(c);
-        });
-        res.on('end', () => resolve(Buffer.concat(chunks)));
-        res.on('error', reject);
-      });
-      req.on('error', reject);
-      // Reject explicitly as well as destroying: Bun's destroy(err) emits no
-      // 'error' event, so relying on the listener above would leave this
-      // promise pending forever on a stalled mirror — the timeout guard
-      // achieving the exact opposite of its purpose. Settling twice is a
-      // no-op, so Node (which does emit) is unaffected.
-      req.setTimeout(HTTP_TIMEOUT_MS, () => {
-        const timedOut = new Error(`Timeout downloading ${u}`);
-        req.destroy(timedOut);
-        reject(timedOut);
-      });
-    };
-    follow(url);
-  });
 }
 
 // Resolves with the final (post-redirect) URL so callers can derive sibling
@@ -288,23 +344,6 @@ export function downloadToFile(url, destPath, { maxBytes = null } = {}) {
 }
 
 // ── Checksum verification ───────────────────────────────────────────────────
-
-async function fetchExpectedChecksum(assetName) {
-  try {
-    const buf = await downloadToBuffer(CHECKSUMS_URL);
-    const lines = buf.toString('utf8').split('\n');
-    for (const line of lines) {
-      // Format: "sha256hash  filename"
-      const parts = line.trim().split(/\s+/);
-      if (parts.length >= 2 && parts[1] === assetName) {
-        return parts[0];
-      }
-    }
-  } catch (e) {
-    winston.warn(`[ffmpeg-bootstrap] Could not fetch checksums: ${e.message}`);
-  }
-  return null;
-}
 
 // Exported for the same reason as downloadToFile — one hashing helper for
 // every managed-binary download path.
@@ -372,45 +411,40 @@ function extractZipUnix(zipPath, destDir, member) {
   });
 }
 
-// Fetch + parse a single-line `<sha256>  <name>` checksum file. Returns the
-// lowercased hex digest, or null on any failure (network, format, etc.).
-async function fetchRemoteSha256(url) {
+// Download one file and verify it against its manifest pin: size cap during
+// transfer (wrong bytes aren't worth the disk or the wait), exact size after,
+// sha256 last. Deletes the file and returns false on any miss — the pin is
+// the only authority, there is no fetch-the-checksum fallback.
+async function downloadPinned(url, destPath, pin, label) {
   try {
-    const buf = await downloadToBuffer(url);
-    const token = buf.toString('utf8').trim().split('\n')[0].trim().split(/\s+/)[0];
-    return /^[0-9a-f]{64}$/i.test(token) ? token.toLowerCase() : null;
+    await downloadToFile(url, destPath, { maxBytes: pin.size });
   } catch (e) {
-    winston.warn(`[ffmpeg-bootstrap] Could not fetch checksum ${url}: ${e.message}`);
-    return null;
+    winston.error(`[ffmpeg-bootstrap] ${label} download failed: ${e.message}`);
+    return false;
   }
+  const { size } = await fsp.stat(destPath).catch(() => ({ size: -1 }));
+  if (size !== pin.size) {
+    await fsp.unlink(destPath).catch(() => {});
+    winston.error(`[ffmpeg-bootstrap] ${label} is ${size} bytes, manifest pins ${pin.size} — refusing`);
+    return false;
+  }
+  const actual = await computeFileChecksum(destPath);
+  if (actual !== pin.sha256) {
+    await fsp.unlink(destPath).catch(() => {});
+    winston.error(`[ffmpeg-bootstrap] ${label} does not match its committed pin! Expected ${pin.sha256}, got ${actual} — refusing (a modified or substituted upstream asset fails closed; see bin/ffmpeg/manifest.json)`);
+    return false;
+  }
+  return true;
 }
 
-// macOS: download one binary's .zip into the staging dir, verify its sha256
-// (fetched from the resolved download URL — see downloadToFile's return
-// value), extract, and chmod. Returns false on any failure so the caller
-// refuses to install an unverified binary, matching the BtbN hard-fail
-// policy. The caller execution-verifies and swaps the staged pair into place.
-async function installMacBinary(redirectUrl, stagingDir, member) {
+// macOS: download one binary's .zip into the staging dir, verify against its
+// manifest pin, extract, and chmod. Returns false on any failure so the
+// caller refuses to install an unverified binary, matching the BtbN
+// hard-fail policy. The caller execution-verifies and swaps the staged pair
+// into place.
+async function installMacBinary(pin, stagingDir, member) {
   const zipPath = path.join(stagingDir, `${member}.zip`);
-  let finalUrl;
-  try {
-    finalUrl = await downloadToFile(redirectUrl, zipPath);
-  } catch (e) {
-    winston.error(`[ffmpeg-bootstrap] ${member} download failed: ${e.message}`);
-    return false;
-  }
-  const expected = await fetchRemoteSha256(`${finalUrl}.sha256`);
-  if (!expected) {
-    await fsp.unlink(zipPath).catch(() => {});
-    winston.error(`[ffmpeg-bootstrap] No checksum for ${member} (macOS) — refusing unverified binary`);
-    return false;
-  }
-  const actual = await computeFileChecksum(zipPath);
-  if (actual !== expected) {
-    await fsp.unlink(zipPath).catch(() => {});
-    winston.error(`[ffmpeg-bootstrap] Checksum mismatch for ${member} (macOS)! Expected ${expected}, got ${actual}`);
-    return false;
-  }
+  if (!(await downloadPinned(pin.url, zipPath, pin, `${member} (macOS)`))) { return false; }
   try {
     await extractZipUnix(zipPath, stagingDir, member);
   } catch (e) {
@@ -538,11 +572,11 @@ function downloadAndInstall() {
 }
 
 async function installInto(dir) {
-  const info = releaseInfo();
-  if (!info) {
+  const release = pinnedRelease();
+  if (!release) {
     winston.warn(
-      `[ffmpeg-bootstrap] No static build for ${process.platform}/${process.arch}. ` +
-      `Place ffmpeg and ffprobe in ${dir} manually.`
+      `[ffmpeg-bootstrap] No pinned ffmpeg build for ${process.platform}/${process.arch} in bin/ffmpeg/manifest.json. ` +
+      `Place ffmpeg and ffprobe in ${dir} manually (or update the manifest via scripts/update-ffmpeg-manifest.mjs).`
     );
     return false;
   }
@@ -571,36 +605,20 @@ async function installInto(dir) {
   winston.info(`[ffmpeg-bootstrap] Downloading ffmpeg for ${process.platform}/${process.arch}...${MIRROR ? ` (mirror: ${MIRROR})` : ''}`);
 
   try {
-    let archiveChecksum = null;
-    if (info.source === 'martin-riedl') {
-      // macOS: per-binary .zip downloads, each sha256-verified before extract.
-      if (!(await installMacBinary(info.url, staging, 'ffmpeg'))) { return false; }
-      if (!(await installMacBinary(info.ffprobeUrl, staging, 'ffprobe'))) { return false; }
+    if (release.source === 'martinriedl') {
+      // macOS: per-binary .zip downloads, each verified against its pin.
+      if (!(await installMacBinary(release.files.ffmpeg, staging, 'ffmpeg'))) { return false; }
+      if (!(await installMacBinary(release.files.ffprobe, staging, 'ffprobe'))) { return false; }
     } else {
-      // BtbN: archive download with checksum verification
-      const archivePath = path.join(staging, info.asset);
-      await downloadToFile(info.url, archivePath);
-
-      // Verify checksum — hard-fail if we can't obtain the expected hash, so a
-      // transient network blip or compromised CDN can't slip an unverified
-      // binary through. Retry will happen on the next ensureFfmpeg() cycle.
-      const expected = await fetchExpectedChecksum(info.asset);
-      if (!expected) {
-        winston.error(`[ffmpeg-bootstrap] Could not fetch checksum for ${info.asset} — refusing to install unverified binary`);
-        return false;
-      }
-      const actual = await computeFileChecksum(archivePath);
-      if (actual !== expected) {
-        winston.error(`[ffmpeg-bootstrap] Checksum mismatch! Expected ${expected}, got ${actual}`);
-        return false;
-      }
-      archiveChecksum = expected;
-      winston.info(`[ffmpeg-bootstrap] Checksum verified`);
+      // BtbN: one archive, verified against its pin before extraction.
+      const archivePath = path.join(staging, release.file);
+      if (!(await downloadPinned(release.url, archivePath, release, release.file))) { return false; }
+      winston.info(`[ffmpeg-bootstrap] Checksum verified against the committed pin (${release.tag})`);
 
       // Extract
-      if (info.asset.endsWith('.tar.xz')) {
-        await extractTarXz(archivePath, staging, info.asset);
-      } else if (info.asset.endsWith('.zip')) {
+      if (release.file.endsWith('.tar.xz')) {
+        await extractTarXz(archivePath, staging, release.file);
+      } else if (release.file.endsWith('.zip')) {
         await extractZip(archivePath, staging);
       }
 
@@ -629,13 +647,17 @@ async function installInto(dir) {
       { staged: stagedFfprobe, dest: destFfprobe },
     ]);
 
-    // Persist the verified archive checksum so the weekly update check has a
-    // baseline to compare against. Without this the first post-boot check
-    // finds no `.checksum`, assumes "out of date", and re-downloads the exact
-    // build we just installed. It also marks the install as ours — see the
-    // provenance check in checkForUpdate().
-    if (archiveChecksum) {
-      await fsp.writeFile(path.join(dir, '.checksum'), archiveChecksum, 'utf8').catch(() => {});
+    // Persist the pins we installed from so the update check has a baseline
+    // to compare against — without it the first post-boot check would treat
+    // the install we just made as stale and re-download it. It also marks the
+    // install as ours — see the provenance check in checkForUpdate(). The
+    // pre-manifest `.checksum` baseline is superseded (its absence alongside
+    // a receipt must not read as "operator's"), so drop it.
+    try {
+      await writeReceipt(dir, release);
+      await fsp.rm(path.join(dir, LEGACY_CHECKSUM_FILE), { force: true }).catch(() => {});
+    } catch (e) {
+      winston.warn(`[ffmpeg-bootstrap] could not write install receipt: ${e.message}`);
     }
 
     winston.info(`[ffmpeg-bootstrap] ffmpeg ready: ${ffCheck.versionLine || destFfmpeg}`);
@@ -786,64 +808,56 @@ export function reset() {
 }
 
 /**
- * Check for updates and re-download if a newer version is available.
- * Compares the checksum of the current archive against the remote.
+ * Refresh the managed install when the COMMITTED pins have changed — a purely
+ * LOCAL check (receipt on disk vs bin/ffmpeg/manifest.json), no network
+ * unless a refresh is actually due. New builds arrive as manifest-bump PRs
+ * (scripts/update-ffmpeg-manifest.mjs), land here via a code update, and the
+ * next check converges the install onto them.
+ *
  * No-ops when running off system binaries (managed by the OS package
  * manager, not us) and for operator-supplied binaries in a custom
- * ffmpegDirectory (no `.checksum` baseline — we didn't install them).
+ * ffmpegDirectory (no receipt — we didn't install them).
  */
 export async function checkForUpdate() {
   if (_resolvedSource === 'system') return;
-  // Operators can pin their current build (config: transcode.autoUpdate=false)
-  // to avoid a rolling upstream build regressing a working install.
+  // Operators can freeze their current build (config: transcode.autoUpdate=false)
+  // so even a pin change shipped by an update won't touch a working install.
   if (config.program?.transcode?.autoUpdate === false) return;
 
-  const info = releaseInfo();
-  if (!info) return;
+  const release = pinnedRelease();
+  if (!release) return;
 
-  const bin = path.join(getFfmpegDir(), `ffmpeg${binaryExt}`);
+  const dir = getFfmpegDir();
+  const bin = path.join(dir, `ffmpeg${binaryExt}`);
   try { await fsp.access(bin); } catch { return; } // no binary to update
 
-  if (info.source === 'btbn') {
-    // BtbN: compare checksums to detect new builds
-    const checksumFile = path.join(getFfmpegDir(), '.checksum');
-    let stored = null;
-    try { stored = (await fsp.readFile(checksumFile, 'utf8')).trim(); } catch { /* no baseline yet */ }
-
-    // `.checksum` is only ever written by our own installs, so it doubles as
-    // a provenance marker. No baseline in a CUSTOM ffmpegDirectory means the
-    // operator placed their own binaries there (possibly a custom or non-free
-    // build) — overwriting those with BtbN GPL master would destroy them, so
-    // hands off. The default dir is always ours; a missing baseline there is
-    // just an install predating the marker, so update and let
-    // downloadAndInstall() write one.
-    if (!stored && path.resolve(getFfmpegDir()) !== path.resolve(BUNDLED_FFMPEG_DIR)) {
-      winston.info('[ffmpeg-bootstrap] Binaries in custom ffmpegDirectory were not installed by mStream — skipping auto-update');
-      return;
-    }
-
-    const expected = await fetchExpectedChecksum(info.asset);
-    if (!expected) return;
-    if (stored === expected) return; // already up to date
-
-    winston.info(`[ffmpeg-bootstrap] New ffmpeg build available, updating...`);
-    // The live binaries stay in place (and spawnable) for the whole download:
-    // downloadAndInstall() stages + verifies the new build elsewhere and only
-    // then rename-swaps it in, so _resolvedFfmpegPath remains valid for
-    // concurrent transcode / DLNA seek / yt-dlp calls throughout. It also
-    // persists the new `.checksum` baseline on success.
-    await downloadAndInstall();
-  } else {
-    // macOS (martin-riedl): the `.sha256` lives at the resolved versioned URL,
-    // not a stable path, so a cheap "is there a newer build" check isn't
-    // available here. Fall back to a version-floor check — a tagged stable
-    // release rarely needs refreshing mid-deployment.
-    const { major } = await getFfmpegVersion(bin);
-    if (major < MIN_FFMPEG_MAJOR) {
-      winston.info(`[ffmpeg-bootstrap] ffmpeg outdated, updating...`);
-      await downloadAndInstall();
-    }
+  // Receipts are only ever written by our own installs, so they double as a
+  // provenance marker (the pre-manifest `.checksum` baseline counts too). No
+  // marker in a CUSTOM ffmpegDirectory means the operator placed their own
+  // binaries there (possibly a custom or non-free build) — overwriting those
+  // would destroy them, so hands off. The default dir is always ours; a
+  // missing marker there is just an install predating the markers, so
+  // refresh and let downloadAndInstall() write a receipt.
+  const receipt = readReceipt(dir);
+  let legacyBaseline = false;
+  try { legacyBaseline = !!(await fsp.readFile(path.join(dir, LEGACY_CHECKSUM_FILE), 'utf8')).trim(); } catch { /* no legacy marker */ }
+  if (!receipt && !legacyBaseline && path.resolve(dir) !== path.resolve(BUNDLED_FFMPEG_DIR)) {
+    winston.info('[ffmpeg-bootstrap] Binaries in custom ffmpegDirectory were not installed by mStream — skipping auto-update');
+    return;
   }
+
+  // Up to date = the receipt records exactly the current pins. Legacy
+  // installs (a `.checksum` baseline, or a default-dir install with no
+  // marker at all) never match and converge onto the pinned build once.
+  if (receipt && JSON.stringify(receipt.pins) === JSON.stringify(pinsOf(release))) return;
+
+  winston.info('[ffmpeg-bootstrap] Manifest pins changed — refreshing the managed ffmpeg install...');
+  // The live binaries stay in place (and spawnable) for the whole download:
+  // downloadAndInstall() stages + verifies the new build elsewhere and only
+  // then rename-swaps it in, so _resolvedFfmpegPath remains valid for
+  // concurrent transcode / DLNA seek / yt-dlp calls throughout. It also
+  // persists the new receipt on success.
+  await downloadAndInstall();
 }
 
 /**
@@ -864,10 +878,10 @@ export function startAutoUpdate() {
   }, 30000); // 30 seconds after boot
   if (_bootTimer.unref) { _bootTimer.unref(); }
 
-  // Then weekly. BtbN publishes git-master builds ~daily, so a daily check
-  // meant ~daily churn (and regression exposure); weekly is plenty current for
-  // a media server and cuts that 7×. Operators wanting tighter currency or none
-  // at all can still tune via transcode.autoUpdate.
+  // Then weekly. The check is a LOCAL receipt-vs-manifest compare (near
+  // free); the interval only matters for a long-running server whose code —
+  // and thus manifest — was updated on disk without a restart (git pull, npm
+  // update). Operators can freeze entirely via transcode.autoUpdate.
   _updateTimer = setInterval(() => {
     checkForUpdate().catch(e => {
       winston.warn(`[ffmpeg-bootstrap] Update check failed: ${e.message}`);
