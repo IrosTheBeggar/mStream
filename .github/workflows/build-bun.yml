@@ -518,12 +518,13 @@ jobs:
           VER4=$(node --input-type=module -e "import {windowsVersion} from './scripts/win-versioninfo.mjs'; import {readFileSync} from 'node:fs'; console.log(windowsVersion(JSON.parse(readFileSync('package.json','utf8')).version))")
           echo "ver4=$VER4" >> "$GITHUB_OUTPUT"
           D=$(ls -d dist/stage/mStream-*-win-x64)
-          mkdir -p signing/pe-set/bin/rust-parser signing/pe-set/bin/rust-server-audio signing/pe-set/bin/iroh
+          mkdir -p signing/pe-set/bin/rust-parser signing/pe-set/bin/rust-server-audio signing/pe-set/bin/p2p-sidecar signing/pe-set/bin/iroh
           cp "$D/mStream.exe" "$D/mstream-server.exe" signing/pe-set/
           cp "$D/bin/rust-parser/rust-parser-win32-x64.exe" signing/pe-set/bin/rust-parser/
           cp "$D/bin/rust-server-audio/rust-server-audio-win32-x64.exe" signing/pe-set/bin/rust-server-audio/
+          cp "$D/bin/p2p-sidecar/p2p-sidecar-win32-x64.exe" signing/pe-set/bin/p2p-sidecar/
           cp "$D/bin/iroh/iroh.win32-x64-msvc.node" signing/pe-set/bin/iroh/
-          echo "collected 5 PEs for $mode (version $VER4)"
+          echo "collected 6 PEs for $mode (version $VER4)"
 
       - name: Upload PE set for signing
         if: matrix.key == 'win-x64' && steps.collect-pes.outputs.policy != 'skip'
@@ -561,6 +562,7 @@ jobs:
             @('signing/pe-signed/mstream-server.exe', "$D/mstream-server.exe"),
             @('signing/pe-signed/bin/rust-parser/rust-parser-win32-x64.exe', "$D/bin/rust-parser/rust-parser-win32-x64.exe"),
             @('signing/pe-signed/bin/rust-server-audio/rust-server-audio-win32-x64.exe', "$D/bin/rust-server-audio/rust-server-audio-win32-x64.exe"),
+            @('signing/pe-signed/bin/p2p-sidecar/p2p-sidecar-win32-x64.exe', "$D/bin/p2p-sidecar/p2p-sidecar-win32-x64.exe"),
             @('signing/pe-signed/bin/iroh/iroh.win32-x64-msvc.node', "$D/bin/iroh/iroh.win32-x64-msvc.node")
           )
           foreach ($p in $pairs) {
