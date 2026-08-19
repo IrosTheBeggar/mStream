@@ -147,20 +147,166 @@ begin
   end;
 end;
 
+{ Stop EVERY process running from the given dir (the legacy Electron app's
+  exe names are not ours, so the name-scoped sweep above can't reach them).
+  No WQL path filter on purpose: WQL string literals treat backslash as an
+  escape; enumerating and comparing in Pascal sidesteps the quoting trap. }
+procedure KillAllUnder(const dir: string);
+var
+  locator, svc, procs, p: Variant;
+  i: Integer;
+  path, prefix: string;
+begin
+  prefix := Lowercase(AddBackslash(dir));
+  try
+    locator := CreateOleObject('WbemScripting.SWbemLocator');
+    svc := locator.ConnectServer('.', 'root\cimv2');
+    procs := svc.ExecQuery('SELECT ProcessId, ExecutablePath FROM Win32_Process WHERE ExecutablePath IS NOT NULL');
+    for i := 0 to procs.Count - 1 do
+    begin
+      p := procs.ItemIndex(i);
+      path := '';
+      try
+        path := p.ExecutablePath;
+      except
+      end;
+      if (path <> '') and (Pos(prefix, Lowercase(path)) = 1) then
+      begin
+        Log('terminating pid ' + IntToStr(p.ProcessId) + ' (' + path + ') under the old app dir');
+        try
+          p.Terminate(1);
+        except
+        end;
+      end;
+    end;
+  except
+    Log('old-app process sweep failed: ' + GetExceptionMessage);
+  end;
+end;
+
+{ "C:\path with spaces\un.exe" /args  ->  exe + params. Unquoted commands
+  split at the first space. }
+procedure SplitCommand(const cmd: string; var exe, params: string);
+var
+  rest: string;
+  i: Integer;
+begin
+  exe := ''; params := '';
+  rest := Trim(cmd);
+  if rest = '' then exit;
+  if rest[1] = '"' then
+  begin
+    rest := Copy(rest, 2, MaxInt);
+    i := Pos('"', rest);
+    if i = 0 then begin exe := rest; exit; end;
+    exe := Copy(rest, 1, i - 1);
+    params := Trim(Copy(rest, i + 1, MaxInt));
+  end else begin
+    i := Pos(' ', rest);
+    if i = 0 then begin exe := rest; exit; end;
+    exe := Copy(rest, 1, i - 1);
+    params := Trim(Copy(rest, i + 1, MaxInt));
+  end;
+end;
+
+{ Find the uninstall registration whose UNINSTALLER EXE lives under dir.
+  The real legacy app registers with an EMPTY InstallLocation (verified
+  live: HKCU\...\Uninstall\95ce77b3-..., "mStream Server 6.12.0"), so the
+  quoted exe path inside Quiet/UninstallString is the only reliable link
+  between a registration and the folder it owns. Prefers the quiet string;
+  falls back to UninstallString + /S (NSIS silent switch). }
+function FindOldAppUninstall(const dir: string; var exe, params: string): Boolean;
+var
+  roots: array of Integer;
+  names: TArrayOfString;
+  r, i: Integer;
+  keyBase, cmd: string;
+begin
+  Result := False;
+  keyBase := 'Software\Microsoft\Windows\CurrentVersion\Uninstall';
+  SetArrayLength(roots, 3);
+  roots[0] := HKCU; roots[1] := HKLM; roots[2] := HKLM64;
+  for r := 0 to GetArrayLength(roots) - 1 do
+  begin
+    if (roots[r] = HKLM64) and not IsWin64 then continue;
+    if not RegGetSubkeyNames(roots[r], keyBase, names) then continue;
+    for i := 0 to GetArrayLength(names) - 1 do
+    begin
+      cmd := '';
+      if not RegQueryStringValue(roots[r], keyBase + '\' + names[i], 'QuietUninstallString', cmd) then
+        if RegQueryStringValue(roots[r], keyBase + '\' + names[i], 'UninstallString', cmd) then
+          cmd := cmd + ' /S'
+        else
+          continue;
+      SplitCommand(cmd, exe, params);
+      if (exe <> '') and (Pos(Lowercase(AddBackslash(dir)), Lowercase(exe)) = 1) then
+      begin
+        Log('old-app uninstall registration: [' + names[i] + '] ' + cmd);
+        Result := True;
+        exit;
+      end;
+    end;
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  wantRemove: Boolean;
+  unExe, unParams: string;
+  rc, i: Integer;
 begin
   Result := '';
   { The legacy Electron-era desktop app (mStream Express 5.x) used this very
     folder as ITS electron-builder default (Programs\mStream) — a machine
-    with the old app gets a silent tree-mix unless we refuse. Chromium
+    with the old app gets a silent tree-mix unless we intervene. Chromium
     payload present without our server exe = that app lives here, not a
-    prior copy of us. Returning non-empty aborts with this message (silent
-    installs exit non-zero with it in the log). }
+    prior copy of us. Offer to run ITS OWN uninstaller and continue;
+    declined or impossible = abort with instructions (silent installs exit
+    non-zero with the message in the log). }
   if FileExists(ExpandConstant('{app}\chrome_100_percent.pak')) and
      not FileExists(ExpandConstant('{app}\mstream-server.exe')) then
   begin
-    Result := 'This folder contains the old mStream desktop app (Electron). Uninstall it first (Settings > Apps > Installed apps), or choose a different install folder.';
-    exit;
+    { /REMOVEOLDAPP=1 is the scripted opt-in; silent runs never remove
+      another product without it. Interactive default is No. }
+    wantRemove := ExpandConstant('{param:REMOVEOLDAPP|0}') = '1';
+    if (not wantRemove) and (not WizardSilent) then
+      wantRemove := MsgBox('This folder contains the old mStream desktop app (Electron).'#13#10#13#10
+        + 'Setup can uninstall it now using its own uninstaller, then continue installing the new mStream. Your music files are not affected.'#13#10#13#10
+        + 'Uninstall the old mStream app now?', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
+    if not wantRemove then
+    begin
+      Result := 'This folder contains the old mStream desktop app (Electron). Uninstall it first (Settings > Apps > Installed apps), or choose a different install folder.';
+      if WizardSilent then
+        Result := Result + ' Silent installs can pass /REMOVEOLDAPP=1 to have Setup uninstall it automatically.';
+      exit;
+    end;
+    { The old app must not be running while its uninstaller works. }
+    KillAllUnder(ExpandConstant('{app}'));
+    Sleep(1000);
+    if not FindOldAppUninstall(ExpandConstant('{app}'), unExe, unParams) then
+    begin
+      Result := 'The old mStream desktop app is in this folder, but its uninstaller could not be found in the registry. Uninstall it manually (Settings > Apps > Installed apps), or choose a different install folder.';
+      exit;
+    end;
+    if not Exec(unExe, unParams, '', SW_HIDE, ewWaitUntilTerminated, rc) then
+    begin
+      Result := 'The old mStream app''s uninstaller could not be started. Uninstall it manually (Settings > Apps > Installed apps), or choose a different install folder.';
+      exit;
+    end;
+    { NSIS uninstallers copy themselves to TEMP and return early — the exit
+      above only means "launched". The Chromium marker disappearing is the
+      real completion signal; give it a minute. }
+    for i := 1 to 60 do
+    begin
+      if not FileExists(ExpandConstant('{app}\chrome_100_percent.pak')) then break;
+      Sleep(1000);
+    end;
+    if FileExists(ExpandConstant('{app}\chrome_100_percent.pak')) then
+    begin
+      Result := 'The old mStream app''s uninstaller ran but the folder still contains the old app. Uninstall it manually (Settings > Apps > Installed apps), then run Setup again.';
+      exit;
+    end;
+    Log('old mStream desktop app removed; continuing with the install');
   end;
   { Upgrade over a running install: stop our processes so files aren't locked. }
   KillAppProcesses();
