@@ -42,8 +42,22 @@ pub fn set_enabled(on: bool) -> Result<(), String> {
     if on {
         ensure_autostart_parent_dir();
     }
-    let r = if on { a.enable() } else { a.disable() };
-    r.map_err(|e| e.to_string())
+    match if on { a.enable() } else { a.disable() } {
+        Ok(()) => Ok(()),
+        // Disable is idempotent: on Windows auto-launch's disable() is a bare
+        // `delete_value` and fails with "cannot find the file specified (os
+        // error 2)" when the Run value doesn't exist — while Linux/macOS
+        // return Ok for a missing file. An uninstaller or script asking for
+        // a state that already holds must not get exit 1. Judge by the
+        // outcome: if the item is not enabled after the attempt, the request
+        // is satisfied. (An unreadable state stays an error — nothing was
+        // proven. That includes a profile with no Run KEY at all: the
+        // crate's is_enabled() ?-propagates that open_subkey failure rather
+        // than reporting "disabled", so this guard deliberately does not
+        // vouch for it.)
+        Err(_) if !on && !a.is_enabled().unwrap_or(true) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 // auto-launch writes into a per-user CONTAINER it does NOT create:

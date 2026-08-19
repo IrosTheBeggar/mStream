@@ -218,19 +218,32 @@ pub fn open_logs_terminal(logs_dir: &std::path::Path) -> Result<(), String> {
         // Windows PowerShell 5.1's Get-Content defaults to the ANSI codepage
         // for BOM-less files — without it every "—" renders as "â€"".
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        let dir = logs_dir.display().to_string().replace('\'', "''");
+        // The logs dir travels in an ENVIRONMENT VARIABLE, never inside the
+        // script text: interpolating it into a single-quoted PowerShell
+        // string only escapes ASCII apostrophes — a curly apostrophe in the
+        // user name (`O’Brien`: legal in a Windows account, and PowerShell
+        // treats U+2018/U+2019 as string delimiters) ended the literal early
+        // and the window opened on a parse error; and -Path is a wildcard
+        // parameter, so `[`/`]` in the path made Set-Location fail and the
+        // Get-Contents then read from the launcher's cwd. Every file is
+        // named by an ABSOLUTE -LiteralPath built with Join-Path: a relative
+        // `.\launcher.log` after Set-Location is resolved against the current
+        // directory with the wildcard characters backtick-ESCAPED (Windows
+        // PowerShell 5.1: `O'Brien `[work`]\logs\...`) and not found. -NoProfile:
+        // a user profile that errors under the default execution policy must
+        // not prefix the support window with unrelated red text.
         std::process::Command::new("powershell.exe")
             .args([
                 "-NoLogo",
+                "-NoProfile",
                 "-NoExit",
                 "-Command",
-                &format!(
-                    "Set-Location '{dir}'; Write-Host '== launcher.log =='; \
-                     Get-Content .\\launcher.log -Tail 50 -Encoding UTF8 -ErrorAction SilentlyContinue; \
-                     Write-Host ''; Write-Host '== server-console.log: full server log for this session (following; close the window to stop) =='; \
-                     Get-Content .\\server-console.log -Wait -Encoding UTF8"
-                ),
+                "$d = $env:MSTREAM_LOGS_DIR; Set-Location -LiteralPath $d; Write-Host '== launcher.log =='; \
+                 Get-Content -LiteralPath (Join-Path $d 'launcher.log') -Tail 50 -Encoding UTF8 -ErrorAction SilentlyContinue; \
+                 Write-Host ''; Write-Host '== server-console.log: full server log for this session (following; close the window to stop) =='; \
+                 Get-Content -LiteralPath (Join-Path $d 'server-console.log') -Wait -Encoding UTF8",
             ])
+            .env("MSTREAM_LOGS_DIR", logs_dir)
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
             .map(|_| ())
