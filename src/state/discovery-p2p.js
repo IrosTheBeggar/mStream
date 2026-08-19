@@ -53,6 +53,14 @@ let endpointId = null;    // from the sidecar's ready event
 let endpointTicket = null; // full dialable address (relay + direct), from ready
 let nextId = 1;
 let readyPromise = null;  // in-flight start() so concurrent callers share one spawn
+// Bumped by stop(). start() used to spawn synchronously, so a stop() always
+// found `proc` set and could kill it; now that acquiring the binary can
+// involve a DOWNLOAD, a stop() landing inside that window would find
+// proc=null, no-op, and the child would spawn seconds later into a stack
+// that believes it's stopped (config off, sidecar running — the B1
+// reboot-review bug class). A start chain must therefore re-check its
+// generation right before spawning and abort if a stop overtook it.
+let startGen = 0;
 const pending = new Map(); // id -> { resolve, reject, timer }
 
 // A binary already on disk — a local `npm run build-p2p-sidecar` output, an
@@ -124,7 +132,17 @@ export function start() {
   if (isRunning()) { return Promise.resolve({ endpointId }); }
   if (readyPromise) { return readyPromise; }
 
-  readyPromise = acquireSidecarBinary().then((bin) => new Promise((resolve, reject) => {
+  const gen = startGen;
+  const promise = acquireSidecarBinary().then((bin) => new Promise((resolve, reject) => {
+    if (gen !== startGen) {
+      // A stop() (or a stop/start cycle) overtook this chain while the
+      // binary was downloading — spawning now would orphan a sidecar into a
+      // stack that believes it's stopped. The download itself isn't wasted:
+      // it landed in the managed dir, and the successor chain's ensure
+      // found or joined it.
+      reject(new Error('p2p-sidecar start aborted — stop() arrived while the binary was being acquired'));
+      return;
+    }
     fs.mkdirSync(dataDir(), { recursive: true });
     const child = spawn(bin, ['--data-dir', dataDir()], { stdio: ['pipe', 'pipe', 'pipe'] });
     proc = child;
@@ -178,7 +196,12 @@ export function start() {
       teardown(why);
       reject(new Error(`p2p-sidecar ${why}`));
     });
-  })).finally(() => { readyPromise = null; });
+  })).finally(() => {
+    // Only OUR slot: stop() may already have detached this chain so a fresh
+    // start() could begin — never null out the successor's promise.
+    if (readyPromise === promise) { readyPromise = null; }
+  });
+  readyPromise = promise;
 
   return readyPromise;
 }
@@ -357,6 +380,12 @@ export async function maybeAutoPublishSnapshot({ announceEvenIfFresh = false } =
 // Graceful stop: ask politely, then close stdin (the sidecar's EOF exit
 // path), then SIGKILL as the last resort.
 export async function stop() {
+  // Abort any start chain still acquiring its binary (see startGen), and
+  // detach it so a subsequent start() begins fresh instead of joining the
+  // doomed chain. Its ensure-download keeps running harmlessly — the fresh
+  // chain's ensure joins it via the bootstrap's single-flight.
+  startGen++;
+  readyPromise = null;
   if (!proc) { return; }
   const child = proc;
   try { await rpc('shutdown', {}, SHUTDOWN_GRACE_MS); } catch (_err) { /* it may already be gone */ }
