@@ -52,6 +52,10 @@ ok()  { echo "  PASS: $1"; PASS=$((PASS+1)); }
 bad() { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
 # MSYS_NO_PATHCONV: keep Git Bash on Windows from rewriting container paths.
 dockerq() { MSYS_NO_PATHCONV=1 docker "$@"; }
+# With conversion off, bind-mount HOST paths must be explicitly
+# Windows-form on a Git Bash host (an MSYS /tmp/... path means nothing to
+# Docker Desktop and silently mounts an empty directory).
+hostpath() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 
 cleanup() {
   dockerq volume rm -f "$APP_VOL" "$DATA_VOL" >/dev/null 2>&1 || true
@@ -158,8 +162,9 @@ grep -E "p2p-sidecar\] (downloading|checksum|ready)" /tmp/boot.log | sed 's/^/  
 EOF
 
 # ── One-time prep: extract the checkout + npm ci onto the app volume.
+HWORK="$(hostpath "$WORK")"
 echo "== prep: checkout + npm ci onto the app volume (once) =="
-dockerq run --rm -v "$APP_VOL:/opt/mstream" -v "$WORK:/work:ro" "$IMAGE" sh -ec '
+dockerq run --rm -v "$APP_VOL:/opt/mstream" -v "$HWORK:/work:ro" "$IMAGE" sh -ec '
   tar xf /work/src.tar -C /opt/mstream
   cd /opt/mstream && npm ci --omit=optional --no-audit --no-fund --loglevel=error
   ls bin/p2p-sidecar/' | tail -4
@@ -167,7 +172,7 @@ dockerq run --rm -v "$APP_VOL:/opt/mstream" -v "$WORK:/work:ro" "$IMAGE" sh -ec 
 run_phase() { # $1=label $2=manifest $3=store-dir
   dockerq run --rm \
     -v "$APP_VOL:/opt/mstream" -v "$DATA_VOL:/data" \
-    -v "$WORK:/work:ro" -v "$WORK/$3:/store:ro" \
+    -v "$HWORK:/work:ro" -v "$HWORK/$3:/store:ro" \
     -e XDG_DATA_HOME=/data \
     "$IMAGE" sh /work/phase.sh "$2" > "$WORK/$1.out" 2>&1
 }
@@ -178,7 +183,9 @@ echo "== phase A: fresh container + empty volume -> one fetch, ready =="
 if run_phase A manifest-store-v1.json store-v1; then ok "phase A container succeeded"; else bad "phase A failed"; sed -n '1,40p' "$WORK/A.out"; fi
 grep -q "PHASE-RUNNING" "$WORK/A.out" && ok "sidecar running (A)" || bad "not running (A)"
 [ "$(hits)" = "1" ] && ok "exactly one fetch hit the store" || bad "hits after A: $(hits)"
-V1_SHA=$(node -pe "JSON.parse(require('fs').readFileSync('$WORK/manifest-store-v1.json','utf8')).assets['$KEY'].sha256")
+# Path via argv, not embedded in the -pe string: MSYS argv conversion makes
+# it Windows-safe on a Git Bash host.
+V1_SHA=$(node -pe "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).assets['$KEY'].sha256" "$WORK/manifest-store-v1.json")
 [ "$(receipt_sha)" = "$V1_SHA" ] && ok "receipt on the volume pins v1" || bad "receipt: $(receipt_sha)"
 
 echo "== phase B: same volume, brand-new container -> ZERO re-fetches, still ready =="
@@ -191,7 +198,7 @@ echo "== phase C: manifest bumped to v2 -> exactly one refresh =="
 if run_phase C manifest-store-v2.json store-v2; then ok "phase C container succeeded"; else bad "phase C failed"; sed -n '1,40p' "$WORK/C.out"; fi
 grep -q "PHASE-RUNNING" "$WORK/C.out" && ok "sidecar running (C, refreshed build)" || bad "not running (C)"
 [ "$(hits)" = "2" ] && ok "exactly one refresh download" || bad "hits after C: $(hits)"
-V2_SHA=$(node -pe "JSON.parse(require('fs').readFileSync('$WORK/manifest-store-v2.json','utf8')).assets['$KEY'].sha256")
+V2_SHA=$(node -pe "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).assets['$KEY'].sha256" "$WORK/manifest-store-v2.json")
 [ "$(receipt_sha)" = "$V2_SHA" ] && ok "receipt moved to v2" || bad "receipt after C: $(receipt_sha)"
 
 echo
