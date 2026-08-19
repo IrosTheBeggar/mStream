@@ -541,7 +541,7 @@ jobs:
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: 075a387f-6509-4983-be83-cc89fa5ded20
-          project-slug: mstream
+          project-slug: mStream
           signing-policy-slug: ${{ steps.collect-pes.outputs.policy }}
           artifact-configuration-slug: win-bundle-pes
           github-artifact-id: ${{ steps.pe-artifact.outputs.artifact-id }}
@@ -1608,7 +1608,7 @@ jobs:
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: 075a387f-6509-4983-be83-cc89fa5ded20
-          project-slug: mstream
+          project-slug: mStream
           signing-policy-slug: ${{ steps.collect-pes.outputs.policy }}
           artifact-configuration-slug: windows-installer
           github-artifact-id: ${{ steps.installer-artifact.outputs.artifact-id }}
