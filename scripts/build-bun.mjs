@@ -236,10 +236,11 @@ if (t.plat === 'linux' && !t.musl) {
 //
 // THREE LISTS MOVE TOGETHER: the `sidecars` array above, this description
 // map, and $known in scripts/check-win-versioninfo.ps1 (which fails the
-// win-x64 leg on any PE it doesn't know). Staging a new Windows sidecar —
-// e.g. bin/p2p-sidecar/*.exe, CI-committed today but deliberately NOT staged
-// (Bun bundles ship without discovery-P2P) — means updating all three in the
-// same change, or the leg goes red with "unknown PE".
+// win-x64 leg on any PE it doesn't know). Staging a new Windows sidecar
+// means updating all three in the same change, or the leg goes red with
+// "unknown PE". (The p2p-sidecar is staged separately below — it comes from
+// the pinned release assets, not from bin/ — but its Windows copy joins the
+// same stamped set and the same $known list.)
 const sidecarDescription = {
   'rust-parser':       'mStream Library Scanner',
   'rust-server-audio': 'mStream Server Audio',
@@ -266,6 +267,91 @@ for (const [dir, file] of sidecars) {
     }
   } else {
     console.warn(`  sidecar not found, skipping: bin/${dir}/${file}`);
+  }
+}
+
+// p2p-sidecar (discovery network): the crate lives in its own repo
+// (IrosTheBeggar/mstream-p2p-sidecar) and the binaries left git — bundles
+// BAKE the target's binary in at build time, fetched from the release
+// assets the committed manifests pin (fetch → sha256+size verify → stage;
+// one download in CI instead of one per user machine). The runtime
+// resolver (src/state/discovery-p2p.js resolveSidecarBinary) finds it at
+// appRoot/bin/p2p-sidecar/<name> — its "prebuilt" rung — so bundle
+// installs never fetch; npm/source/Docker installs keep fetch-on-first-use.
+// The Windows copy is VersionInfo-stamped like the other sidecars (the
+// staged bytes then legitimately differ from the manifest sha — verify
+// happens BEFORE the stamp) and gets Authenticode-signed with the PE set.
+// CI without the asset = a broken release, fail loud (launcher precedent);
+// local/offline builds warn and ship without — the runtime fetch is the
+// fallback. MSTREAM_SIDECAR_BASE mirrors apply here too (pins still hold).
+{
+  const scName = `p2p-sidecar-${t.plat}-${t.arch}${libc}${t.ext}`;
+  const manifestFile = join(root, 'bin', 'p2p-sidecar', t.musl ? 'manifest-musl.json' : 'manifest.json');
+  const skip = (why) => {
+    if (process.env.CI && !process.env.MSTREAM_ALLOW_MISSING_SIDECAR) {
+      console.error(`  FATAL: p2p-sidecar staging failed for ${key}: ${why} (set MSTREAM_ALLOW_MISSING_SIDECAR=1 to bundle without it on purpose)`);
+      process.exit(1);
+    }
+    console.warn(`  p2p-sidecar not staged (${why}) — bundle falls back to runtime fetch`);
+  };
+  let entry = null;
+  try {
+    const m = JSON.parse(readFileSync(manifestFile, 'utf8'));
+    entry = m.assets?.[scName] ? { ...m.assets[scName], repo: m.repo, tag: m.tag } : null;
+  } catch (_err) {
+    // unreadable/absent manifest = the same no-entry skip below
+  }
+  if (!entry) {
+    skip(`no manifest entry for ${scName}`);
+  } else {
+    // Same URL shape the runtime fetch uses — one derivation, no drift.
+    const { deriveAssetUrl } = await import('../src/util/p2p-sidecar-bootstrap.js');
+    const base = (process.env.MSTREAM_SIDECAR_BASE || '').replace(/\/+$/, '');
+    const url = base ? `${base}/${entry.file}` : deriveAssetUrl(entry);
+    const cacheDir = join(root, 'dist', 'sidecar-cache');
+    mkdirSync(cacheDir, { recursive: true });
+    const cached = join(cacheDir, `${entry.sha256.slice(0, 12)}-${scName}`);
+    let bytes = null;
+    if (existsSync(cached)) {
+      bytes = readFileSync(cached);
+      if (createHash('sha256').update(bytes).digest('hex') !== entry.sha256) { bytes = null; }
+    }
+    if (!bytes) {
+      console.log(`  fetching p2p-sidecar: ${url}`);
+      try {
+        const res = await fetch(url, { redirect: 'follow' });
+        if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
+        bytes = Buffer.from(await res.arrayBuffer());
+      } catch (err) {
+        bytes = null;
+        skip(`download failed: ${err.message}`);
+      }
+    }
+    if (bytes) {
+      const gotSha = createHash('sha256').update(bytes).digest('hex');
+      if (gotSha !== entry.sha256 || bytes.length !== entry.size) {
+        // A hash mismatch is NEVER skippable — wrong bytes must not ship,
+        // and must not poison the cache.
+        console.error(`  FATAL: p2p-sidecar ${scName} failed verification (sha ${gotSha.slice(0, 12)}… vs pinned ${entry.sha256.slice(0, 12)}…, ${bytes.length} vs ${entry.size} bytes)`);
+        process.exit(1);
+      }
+      writeFileSync(cached, bytes);
+      mkdirSync(join(contentRoot, 'bin', 'p2p-sidecar'), { recursive: true });
+      const dest = join(contentRoot, 'bin', 'p2p-sidecar', scName);
+      writeFileSync(dest, bytes);
+      if (t.plat !== 'win32') { chmodSync(dest, 0o755); }
+      console.log(`  staged p2p-sidecar ${entry.tag}: bin/p2p-sidecar/${scName} (${(entry.size / 1048576).toFixed(1)} MB, sha verified)`);
+      if (t.plat === 'win32') {
+        try {
+          await stampWindowsVersionInfo(dest, { ...winMeta, fileDescription: 'mStream P2P Sidecar' });
+          console.log(`  stamped VersionInfo: bin/p2p-sidecar/${scName} (${winMeta.productName} ${winMeta.version})`);
+        } catch (err) {
+          const msg = `VersionInfo stamp failed for bin/p2p-sidecar/${scName}: ${err.message}`;
+          if (process.env.CI) { console.error(`  FATAL: ${msg}`); process.exit(1); }
+          console.warn(`  WARN: ${msg}`);
+        }
+      }
+    }
   }
 }
 

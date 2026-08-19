@@ -1,0 +1,40 @@
+{
+  "family": "p2p-sidecar",
+  "schema": 2,
+  "repo": "IrosTheBeggar/mstream-p2p-sidecar",
+  "tag": "v1.0.1",
+  "builtFrom": "6503af188c42add3663e72456cd278ed9830437b",
+  "workflowRun": "https://github.com/IrosTheBeggar/mstream-p2p-sidecar/actions/runs/32279710706",
+  "assets": {
+    "p2p-sidecar-win32-x64.exe": {
+      "file": "p2p-sidecar-win32-x64.exe",
+      "sha256": "ed5652eedcdaa6f41045fbb461cdc9dcaf0e2f0c082d5364daff081e2bcc09cf",
+      "size": 7008768
+    },
+    "p2p-sidecar-darwin-x64": {
+      "file": "p2p-sidecar-darwin-x64",
+      "sha256": "5897b7bcec43b52286ea3d45e2950f3f4eef71d70dc38d14938684e6804bc77a",
+      "size": 7341804
+    },
+    "p2p-sidecar-darwin-arm64": {
+      "file": "p2p-sidecar-darwin-arm64",
+      "sha256": "825792d6c26c496bb41f03a86ac791c6a2c8f7521e6f66bfec16825cd7005afe",
+      "size": 6262960
+    },
+    "p2p-sidecar-linux-x64": {
+      "file": "p2p-sidecar-linux-x64",
+      "sha256": "93e6eddb12333b6b7bf88f8020e71fa2cd7bdd6e667a0d29b5755df91788dfb6",
+      "size": 8508224
+    },
+    "p2p-sidecar-linux-arm64": {
+      "file": "p2p-sidecar-linux-arm64",
+      "sha256": "5c122b99965256fabb3c06761ac24239058ebcec1c8b6a9bda834a56e50b7c44",
+      "size": 7492520
+    },
+    "p2p-sidecar-linux-arm": {
+      "file": "p2p-sidecar-linux-arm",
+      "sha256": "6791ef8e1d2bcc6c64434f17818f4d25a383d6a5351170cb2509a7a1b16ca6ff",
+      "size": 7288664
+    }
+  }
+}

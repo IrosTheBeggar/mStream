@@ -9,10 +9,17 @@ on:
 
 jobs:
   publish-npm:
-    # Server releases only. The desktop player ships as a separate
-    # release with a `-DESKTOP_PLAYER` tag suffix; publishing its
-    # draft shouldn't republish the server to npm.
-    if: ${{ !endsWith(github.event.release.tag_name, '-DESKTOP_PLAYER') }}
+    # Server releases only, twice over:
+    #  - the desktop player ships as a separate release with a
+    #    `-DESKTOP_PLAYER` tag suffix; publishing its draft shouldn't
+    #    republish the server to npm;
+    #  - asset-store releases (`discovery-models-*` today; any future
+    #    `p2p-sidecar-*` tag) are machine-managed file shelves, not server
+    #    releases. A HUMAN editing or re-publishing one in the UI re-fires
+    #    `release: published` — without this guard that meant an `npm
+    #    publish` of whatever master held (worst case: a version bumped but
+    #    not yet released ships to npm early).
+    if: ${{ !endsWith(github.event.release.tag_name, '-DESKTOP_PLAYER') && !startsWith(github.event.release.tag_name, 'p2p-sidecar-') && !startsWith(github.event.release.tag_name, 'discovery-models-') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
