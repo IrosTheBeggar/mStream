@@ -750,11 +750,176 @@ jobs:
         if: always() && startsWith(matrix.key, 'darwin')
         run: |
           security list-keychains -d user -s login.keychain 2>/dev/null || true
-          if [ -f "$RUNNER_TEMP/signing.keychain-db" ]; then
-            security delete-keychain "$RUNNER_TEMP/signing.keychain-db" && echo "signing keychain removed (cleanup step)"
+          for kc in "$RUNNER_TEMP/signing.keychain-db" "$RUNNER_TEMP/pkgsign.keychain-db"; do
+            if [ -f "$kc" ]; then
+              security delete-keychain "$kc" && echo "$(basename "$kc") removed (cleanup step)"
+            fi
+          done
+          echo "keychain cleanup done"
+
+      # ── macOS installer (.pkg) ──────────────────────────────────────────
+      # Built AFTER sign/notarize/staple so the payload is the final .app
+      # (the staple ticket lives inside the bundle and rides along). Payload
+      # = mStream.app -> /Applications, wrapped in a distribution archive
+      # that gates OS (11.0, matching LSMinimumSystemVersion) and CPU
+      # (arm64-only pkg must refuse an Intel Mac; the x64 pkg allows arm64
+      # for Rosetta). Signing a pkg needs a "Developer ID INSTALLER"
+      # identity — a different certificate type from the Application cert
+      # the app step uses — via the optional MACOS_INSTALLER_CERT_P12/
+      # _PASSWORD secrets. Absent, the pkg ships UNSIGNED next to the
+      # (possibly notarized) zips with a loud warning: a missing pkg cert
+      # must never block a release. Present on a notarizing build, the pkg
+      # itself is notarized and stapled too (Gatekeeper assesses the PKG's
+      # signature, not just its payload's).
+      - name: Build macOS installer (.pkg)
+        if: startsWith(matrix.key, 'darwin')
+        env:
+          INSTALLER_CERT_P12: ${{ secrets.MACOS_INSTALLER_CERT_P12 }}
+          INSTALLER_CERT_PASSWORD: ${{ secrets.MACOS_INSTALLER_CERT_PASSWORD }}
+          ASC_API_KEY: ${{ secrets.ASC_API_KEY }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          FULL_NOTARIZE: ${{ github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.notarize) }}
+          KEY: ${{ matrix.key }}
+        run: |
+          set -euo pipefail
+          VER=$(node -pe "require('./package.json').version")
+          D=$(ls -d dist/stage/mStream-*-"$KEY")
+          APP="$D/mStream.app"
+          [ -d "$APP" ] || { echo "::error::no .app staged at $APP"; exit 1; }
+          mkdir -p dist/installer pkgwork
+          PKG="dist/installer/mStream-$VER-$KEY.pkg"
+
+          pkgbuild --component "$APP" --install-location /Applications \
+            --identifier io.mstream.server --version "$VER" pkgwork/component.pkg
+          case "$KEY" in
+            darwin-arm64) ARCHS="arm64" ;;
+            *)            ARCHS="x86_64,arm64" ;;   # x64 payload runs under Rosetta
+          esac
+          cat > pkgwork/distribution.xml <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <installer-gui-script minSpecVersion="2">
+            <title>mStream</title>
+            <options customize="never" require-scripts="false" hostArchitectures="$ARCHS"/>
+            <volume-check><allowed-os-versions><os-version min="11.0"/></allowed-os-versions></volume-check>
+            <domains enable_localSystem="true"/>
+            <choices-outline><line choice="default"><line choice="io.mstream.server"/></line></choices-outline>
+            <choice id="default"/>
+            <choice id="io.mstream.server" visible="false"><pkg-ref id="io.mstream.server"/></choice>
+            <pkg-ref id="io.mstream.server" version="$VER" onConclusion="none">component.pkg</pkg-ref>
+          </installer-gui-script>
+          EOF
+          productbuild --distribution pkgwork/distribution.xml \
+            --package-path pkgwork "pkgwork/unsigned.pkg"
+
+          if [ -n "${INSTALLER_CERT_P12}" ]; then
+            [ -n "${INSTALLER_CERT_PASSWORD}" ] || { echo "::error::MACOS_INSTALLER_CERT_P12 is set but MACOS_INSTALLER_CERT_PASSWORD is not"; exit 1; }
+            keychain="$RUNNER_TEMP/pkgsign.keychain-db"
+            keychain_password="$(uuidgen)"
+            security create-keychain -p "$keychain_password" "$keychain"
+            security set-keychain-settings -lut 1200 "$keychain"
+            security unlock-keychain -p "$keychain_password" "$keychain"
+            echo "$INSTALLER_CERT_P12" | base64 --decode > "$RUNNER_TEMP/pkgcert.p12"
+            security import "$RUNNER_TEMP/pkgcert.p12" -k "$keychain" \
+              -P "$INSTALLER_CERT_PASSWORD" -T /usr/bin/productsign
+            rm "$RUNNER_TEMP/pkgcert.p12"
+            security set-key-partition-list -S "apple-tool:,apple:" \
+              -s -k "$keychain_password" "$keychain" >/dev/null
+            security list-keychains -d user -s "$keychain" login.keychain
+            identity=$(security find-identity -v "$keychain" \
+              | sed -n 's/.*"\(Developer ID Installer[^"]*\)".*/\1/p' | head -1)
+            [ -n "$identity" ] || { echo "::error::no Developer ID Installer identity in MACOS_INSTALLER_CERT_P12 (an Application cert cannot sign a pkg)"; exit 1; }
+            productsign --sign "$identity" --keychain "$keychain" "pkgwork/unsigned.pkg" "$PKG"
+            # Key's job is done — same hygiene as the app step.
+            security list-keychains -d user -s login.keychain
+            security delete-keychain "$keychain"
+            pkgutil --check-signature "$PKG"
+
+            if [ "$FULL_NOTARIZE" = "true" ]; then
+              echo "$ASC_API_KEY" > "$RUNNER_TEMP/asc-pkg.p8"
+              ASC_KEY_ID=$(printf '%s' "$ASC_KEY_ID" | tr -d '[:space:]"')
+              ASC_ISSUER_ID=$(printf '%s' "$ASC_ISSUER_ID" | tr -d '[:space:]"')
+              issuer=()
+              if [ -n "${ASC_ISSUER_ID}" ]; then issuer=(--issuer "$ASC_ISSUER_ID"); fi
+              set +e
+              sub_out=$(xcrun notarytool submit "$PKG" \
+                --key "$RUNNER_TEMP/asc-pkg.p8" --key-id "$ASC_KEY_ID" \
+                ${issuer[@]+"${issuer[@]}"} --wait --timeout 20m 2>&1)
+              sub_rc=$?
+              set -e
+              echo "$sub_out"
+              sub_id=$(echo "$sub_out" | sed -n 's/^[[:space:]]*id: \([0-9a-f-]*\).*/\1/p' | head -1)
+              if [ "$sub_rc" -ne 0 ] || ! echo "$sub_out" | grep -q "status: Accepted"; then
+                if [ -n "$sub_id" ]; then
+                  echo "::group::notarytool log $sub_id"
+                  xcrun notarytool log "$sub_id" \
+                    --key "$RUNNER_TEMP/asc-pkg.p8" --key-id "$ASC_KEY_ID" \
+                    ${issuer[@]+"${issuer[@]}"} || true
+                  echo "::endgroup::"
+                fi
+                rm -f "$RUNNER_TEMP/asc-pkg.p8"
+                echo "::error::pkg notarization did not complete (rc=$sub_rc)"
+                exit 1
+              fi
+              rm -f "$RUNNER_TEMP/asc-pkg.p8"
+              stapled=0
+              for attempt in 1 2 3; do
+                if xcrun stapler staple "$PKG"; then stapled=1; break; fi
+                echo "stapler attempt $attempt failed — waiting for ticket propagation"
+                sleep $(( attempt * 20 ))
+              done
+              [ "$stapled" = "1" ] || { echo "::error::pkg stapler failed after 3 attempts"; exit 1; }
+              spctl --assess --type install --verbose=2 "$PKG"
+            fi
           else
-            echo "no signing keychain present (already removed, or this build shipped unsigned)"
+            mv "pkgwork/unsigned.pkg" "$PKG"
+            if [ "$FULL_NOTARIZE" = "true" ]; then
+              echo "::warning::shipping an UNSIGNED pkg on a notarizing build — add MACOS_INSTALLER_CERT_P12/_PASSWORD (a Developer ID INSTALLER identity, distinct from the Application cert) to sign+notarize the installer itself; until then users need right-click Open / Open Anyway for the pkg (the zips are unaffected)"
+            else
+              echo "installer cert absent — unsigned pkg (PR/dev build)"
+            fi
           fi
+
+          # Structure asserts on every leg: the distribution must carry the
+          # right version/identifier, and the payload must be our app.
+          rm -rf pkgwork/expanded
+          pkgutil --expand "$PKG" pkgwork/expanded
+          grep -q 'io.mstream.server' pkgwork/expanded/Distribution || { echo "::error::pkg Distribution lacks the identifier"; exit 1; }
+          grep -q "version=\"$VER\"" pkgwork/expanded/Distribution || { echo "::error::pkg Distribution version is not $VER"; exit 1; }
+          grep -q "hostArchitectures=\"$ARCHS\"" pkgwork/expanded/Distribution || { echo "::error::pkg hostArchitectures is not $ARCHS"; exit 1; }
+          ls -l "$PKG"
+
+      # The real proof, native leg only: install the pkg onto THIS runner
+      # with Apple's own installer, then run what it installed — including
+      # the webapp symlink surviving the payload round-trip, the exact
+      # symlink codesign forced into the bundle layout.
+      - name: Install-smoke the macOS pkg (darwin-arm64)
+        if: matrix.key == 'darwin-arm64'
+        run: |
+          set -euo pipefail
+          VER=$(node -pe "require('./package.json').version")
+          PKG="dist/installer/mStream-$VER-darwin-arm64.pkg"
+          sudo installer -pkg "$PKG" -target /
+          test -d /Applications/mStream.app || { echo "::error::pkg install did not produce /Applications/mStream.app"; exit 1; }
+          test -e /Applications/mStream.app/Contents/MacOS/webapp/index.html || { echo "::error::webapp symlink broken after pkg install"; exit 1; }
+          OUT=$(/Applications/mStream.app/Contents/MacOS/mstream-server -V)
+          echo "installed server -V -> $OUT"
+          echo "$OUT" | grep -qF "$VER" || { echo "::error::installed server reports the wrong version"; exit 1; }
+          printf '{"port":3557,"address":"127.0.0.1"}\n' > "$HOME/pkg-smoke.json"
+          /Applications/mStream.app/Contents/MacOS/mstream-server -j "$HOME/pkg-smoke.json" > "$HOME/pkg-boot.log" 2>&1 &
+          SRV=$!
+          UP=0
+          for i in $(seq 1 30); do
+            sleep 1
+            if curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3557/api/v1/ping"; then UP=1; break; fi
+          done
+          kill "$SRV" 2>/dev/null || true
+          wait "$SRV" 2>/dev/null || true
+          [ "$UP" = "1" ] || { echo "::error::pkg-installed server never served"; tail -30 "$HOME/pkg-boot.log"; exit 1; }
+          echo "pkg-installed server served 200 on :3557"
+          sudo rm -rf /Applications/mStream.app
+          sudo pkgutil --forget io.mstream.server
+          echo "PKG INSTALL SMOKE OK"
 
       # darwin-x64 is the one shipped artifact whose binaries never execute
       # in CI (smoke: false — it's cross-compiled), which after signing means
@@ -1318,9 +1483,236 @@ jobs:
           path: dist/installer/mStream-*-win-x64-setup.exe
           if-no-files-found: error
 
+      - name: Upload installer artifact (darwin)
+        if: startsWith(matrix.key, 'darwin')
+        uses: actions/upload-artifact@v4
+        with:
+          name: mStream-${{ matrix.key }}-installer
+          path: dist/installer/mStream-*-${{ matrix.key }}.pkg
+          if-no-files-found: error
+
+  # ── Linux native packages (P3.4b) ─────────────────────────────────────────
+  # deb + rpm for the glibc bundles, built with pinned nfpm from the exact
+  # zips the build job produced (musl targets use apk-based distros — no
+  # deb/rpm for them). amd64 is the full desktop package: /opt/mstream tree,
+  # /usr/bin symlinks for both faces, a system .desktop entry + hicolor icon.
+  # arm64 bundles are server-only BY DESIGN (no launcher), so their packages
+  # are too. Server hard-deps stay minimal (the server is pure glibc — the
+  # bare-Debian-11 dep audit); the desktop/audio libraries ride Recommends,
+  # so a headless `--no-install-recommends` install never drags GTK in.
+  # The amd64 deb is installed and BOOTED on this runner; the rpm proves
+  # itself in a Fedora container; arm64 can't exec here, so its packages get
+  # content asserts.
+  linux-packages:
+    name: Linux deb/rpm packages
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download linux-x64 bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: mStream-linux-x64
+          path: zips
+      - name: Download linux-arm64 bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: mStream-linux-arm64
+          path: zips
+
+      - name: Install nfpm (pinned)
+        run: |
+          set -euo pipefail
+          # Pinned + hashed like every other fetched build tool in this repo
+          # (see the sidecar workflows' cross pin). Bump version and sha256
+          # together.
+          curl -fsSL -o nfpm.tar.gz "https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz"
+          echo "0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783  nfpm.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar xzf nfpm.tar.gz -C "$HOME/.local/bin" nfpm
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build deb + rpm packages
+        run: |
+          set -euo pipefail
+          VER=$(node -pe "require('./package.json').version")
+          mkdir -p pkg dist/packages
+          for key in linux-x64 linux-arm64; do
+            unzip -q "zips/mStream-$VER-$key.zip" -d "pkg/$key"
+            tree=$(ls -d "pkg/$key"/mStream-*)
+            # Belt over the zip's unix attrs: the spawn paths need +x.
+            chmod +x "$tree/mstream-server" 2>/dev/null || true
+            chmod +x "$tree/mstream-desktop" 2>/dev/null || true
+            chmod +x "$tree"/bin/rust-parser/* "$tree"/bin/rust-server-audio/* 2>/dev/null || true
+            mv "$tree" "pkg/tree-$key"
+          done
+          test -x pkg/tree-linux-x64/mstream-desktop || { echo "::error::linux-x64 bundle has no launcher — the desktop package would be a lie"; exit 1; }
+
+          cat > pkg/mstream.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=mStream
+          Comment=Personal music streaming server
+          Exec=/opt/mstream/mstream-desktop
+          TryExec=/opt/mstream/mstream-desktop
+          Icon=mstream
+          Terminal=false
+          Categories=AudioVideo;Audio;Player;
+          EOF
+          cat > pkg/postinstall.sh <<'EOF'
+          #!/bin/sh
+          update-desktop-database -q /usr/share/applications 2>/dev/null || true
+          gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null || true
+          exit 0
+          EOF
+          cp pkg/postinstall.sh pkg/postremove.sh
+
+          # amd64: full desktop package.
+          cat > pkg/nfpm-amd64.yaml <<EOF
+          name: mstream
+          arch: amd64
+          platform: linux
+          version: "$VER"
+          maintainer: "Paul Sori <paul@mstream.io>"
+          description: |
+            Personal music streaming server with a desktop tray launcher.
+            Stream your music collection to any browser or mobile device.
+          homepage: https://mstream.io
+          license: GPL-3.0
+          contents:
+            - src: ./pkg/tree-linux-x64
+              dst: /opt/mstream
+              type: tree
+            - src: /opt/mstream/mstream-server
+              dst: /usr/bin/mstream-server
+              type: symlink
+            - src: /opt/mstream/mstream-desktop
+              dst: /usr/bin/mstream-desktop
+              type: symlink
+            - src: ./pkg/mstream.desktop
+              dst: /usr/share/applications/mstream.desktop
+            - src: ./pkg/tree-linux-x64/mStream.png
+              dst: /usr/share/icons/hicolor/512x512/apps/mstream.png
+          scripts:
+            postinstall: ./pkg/postinstall.sh
+            postremove: ./pkg/postremove.sh
+          overrides:
+            deb:
+              depends: [libc6]
+              recommends: [libgtk-3-0, libayatana-appindicator3-1, libasound2]
+            rpm:
+              depends: [glibc]
+              recommends: [gtk3, libayatana-appindicator-gtk3, alsa-lib]
+          EOF
+
+          # arm64: server-only (the bundle ships no launcher by design).
+          cat > pkg/nfpm-arm64.yaml <<EOF
+          name: mstream
+          arch: arm64
+          platform: linux
+          version: "$VER"
+          maintainer: "Paul Sori <paul@mstream.io>"
+          description: |
+            Personal music streaming server (headless).
+            Stream your music collection to any browser or mobile device.
+          homepage: https://mstream.io
+          license: GPL-3.0
+          contents:
+            - src: ./pkg/tree-linux-arm64
+              dst: /opt/mstream
+              type: tree
+            - src: /opt/mstream/mstream-server
+              dst: /usr/bin/mstream-server
+              type: symlink
+          overrides:
+            deb:
+              depends: [libc6]
+              recommends: [libasound2]
+            rpm:
+              depends: [glibc]
+              recommends: [alsa-lib]
+          EOF
+
+          for a in amd64 arm64; do
+            nfpm pkg --config "pkg/nfpm-$a.yaml" --packager deb --target dist/packages/
+            nfpm pkg --config "pkg/nfpm-$a.yaml" --packager rpm --target dist/packages/
+          done
+          ls -l dist/packages/
+
+      - name: Smoke the amd64 deb on this runner (install, boot, remove)
+        run: |
+          set -euo pipefail
+          VER=$(node -pe "require('./package.json').version")
+          sudo apt-get install -y ./dist/packages/mstream_"$VER"_amd64.deb desktop-file-utils
+          test -x /opt/mstream/mstream-server
+          test -x /opt/mstream/mstream-desktop
+          test -L /usr/bin/mstream-server
+          desktop-file-validate /usr/share/applications/mstream.desktop
+          V_OUT=$(/usr/bin/mstream-server -V)
+          echo "mstream-server -V -> $V_OUT"
+          echo "$V_OUT" | grep -qF "$VER" || { echo "::error::installed server reports the wrong version"; exit 1; }
+          # Boot through the /usr/bin symlink and serve — the package layout
+          # must actually run, not just exist.
+          printf '{"port":3555,"address":"127.0.0.1"}\n' > /tmp/pkg-smoke.json
+          /usr/bin/mstream-server -j /tmp/pkg-smoke.json > /tmp/pkg-boot.log 2>&1 &
+          SRV=$!
+          UP=0
+          for i in $(seq 1 30); do
+            sleep 1
+            if curl -sf --max-time 5 -o /dev/null "http://127.0.0.1:3555/api/v1/ping"; then UP=1; break; fi
+          done
+          kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null || true
+          [ "$UP" = "1" ] || { echo "::error::installed server never served /api/v1/ping"; tail -30 /tmp/pkg-boot.log; exit 1; }
+          echo "installed server served 200 on :3555"
+          sudo apt-get remove -y mstream
+          [ ! -e /opt/mstream ] || { echo "::error::/opt/mstream survived apt remove"; exit 1; }
+          echo "deb install/boot/remove: OK"
+
+      - name: Smoke the x86_64 rpm in a Fedora container
+        run: |
+          set -euo pipefail
+          VER=$(node -pe "require('./package.json').version")
+          docker run --rm -v "$PWD/dist/packages:/pkg:ro" fedora:41 bash -c "
+            set -e
+            dnf install -y -q /pkg/mstream-$VER-1.x86_64.rpm
+            test -x /opt/mstream/mstream-server
+            out=\$(/usr/bin/mstream-server -V)
+            echo \"mstream-server -V -> \$out\"
+            echo \"\$out\" | grep -qF '$VER'
+            rpm -e mstream
+            [ ! -e /opt/mstream ]
+            echo 'rpm install/exec/remove: OK'
+          "
+
+      - name: Content-assert the arm64 packages (cannot exec on x64)
+        run: |
+          set -euo pipefail
+          VER=$(node -pe "require('./package.json').version")
+          deb="dist/packages/mstream_${VER}_arm64.deb"
+          # List once into a file: `dpkg-deb -c | grep -q` under pipefail
+          # SIGPIPEs dpkg-deb on the first match and fails the pipeline
+          # BECAUSE it matched.
+          dpkg-deb -c "$deb" > arm64-contents.txt
+          grep -q './opt/mstream/mstream-server' arm64-contents.txt || { echo "::error::arm64 deb lacks the server"; exit 1; }
+          if grep -q 'mstream-desktop' arm64-contents.txt; then echo "::error::arm64 deb unexpectedly ships a launcher"; exit 1; fi
+          rpm=$(ls dist/packages/mstream-"$VER"-*.aarch64.rpm)
+          docker run --rm -v "$PWD/dist/packages:/pkg:ro" fedora:41 bash -c "rpm -qlp /pkg/$(basename "$rpm") > /tmp/l && grep -q '/opt/mstream/mstream-server' /tmp/l"
+          echo "arm64 package contents: OK"
+
+      - name: Upload packages artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mStream-linux-packages
+          path: dist/packages/*
+          if-no-files-found: error
+
   release:
     name: Attach bundles to release
-    needs: build
+    # linux-packages too: its deb/rpm artifacts ride the same merged
+    # download below — without the dependency a tag's attach step races the
+    # packaging job and globs at nothing.
+    needs: [build, linux-packages]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -1376,8 +1768,14 @@ jobs:
             echo "::error::release $TAG is already PUBLISHED - refusing to overwrite its assets. Ship a new patch version instead."
             exit 1
           fi
-          # The Windows setup.exe rides the same artifact download into
-          # bundles/ (manifest.json stays zips-only by design — the install
-          # scripts and the future auto-updater consume zips; the installer
-          # is a direct-download asset).
-          gh release upload "$TAG" bundles/*.zip bundles/manifest.json bundles/mStream-*-win-x64-setup.exe --clobber --repo "$REPO"
+          # The Windows setup.exe and the Linux deb/rpm packages ride the
+          # same artifact download into bundles/ (manifest.json stays
+          # zips-only by design — the install scripts and the future
+          # auto-updater consume zips; native installers are direct-download
+          # assets, and the manifest generator's mStream-*.zip glob never
+          # sees them).
+          gh release upload "$TAG" bundles/*.zip bundles/manifest.json \
+            bundles/mStream-*-win-x64-setup.exe \
+            bundles/mstream_*.deb bundles/mstream-*.rpm \
+            bundles/mStream-*-darwin-*.pkg \
+            --clobber --repo "$REPO"
