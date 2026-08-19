@@ -80,5 +80,8 @@
     "eslint": "^10.6.0",
     "globals": "^17.7.0",
     "resedit": "3.0.2"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.9"
   }
 }
