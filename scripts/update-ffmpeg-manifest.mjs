@@ -2,12 +2,19 @@
 // bootstrap downloads against (see src/util/ffmpeg-bootstrap.js).
 //
 // Usage:
-//   node scripts/update-ffmpeg-manifest.mjs [autobuild-YYYY-MM-DD-HH-MM]
+//   node scripts/update-ffmpeg-manifest.mjs [autobuild-YYYY-MM-DD-HH-MM] [--verify]
 //
-// With no argument, pins the newest dated BtbN autobuild. NEVER pins the
+// With no tag argument, pins the newest dated BtbN autobuild. NEVER pins the
 // rolling "latest" tag — its assets are replaced in place, which would break
 // both the sha256 pins and the Smart-App-Control-reputation goal (a stable
 // hash accrues reputation; a rolling one resets weekly).
+//
+// --verify: after assembling, DOWNLOAD every pinned asset and hash it against
+// its pin (~500 MB total). This is the load-bearing check for the monthly
+// auto-PR workflow (.github/workflows/update-ffmpeg-manifest.yml): a PR
+// opened by GITHUB_TOKEN triggers no CI, so the generating run itself proves
+// every pin is live and hash-true — catching upstream checksum/asset skew and
+// mid-publish partial releases before a human ever sees the PR.
 //
 // Sources:
 //   - BtbN/FFmpeg-Builds (linux x64/arm64, win x64): the release's own
@@ -23,6 +30,7 @@
 // The result is plain reviewed text: eyeball the diff (tag bump + hash
 // churn) like any dependency bump.
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -35,10 +43,31 @@ const MR_HOST = 'https://ffmpeg.martin-riedl.de';
 const ghHeaders = { 'User-Agent': 'mstream-ffmpeg-manifest', Accept: 'application/vnd.github+json' };
 if (process.env.GITHUB_TOKEN) { ghHeaders.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`; }
 
-async function gh(path) {
-  const res = await fetch(`https://api.github.com${path}`, { headers: ghHeaders });
-  if (!res.ok) { throw new Error(`GitHub API ${path} -> HTTP ${res.status}`); }
-  return res.json();
+// Transient-blip resilience: a scheduled job must not die on one flaky 404
+// from a CDN edge (observed live on martin-riedl's redirect endpoint) or a
+// hiccuping API call. Real outages still fail — three attempts, then throw.
+async function withRetry(label, fn) {
+  let lastErr;
+  for (const delayMs of [0, 3000, 10000]) {
+    if (delayMs) {
+      console.warn(`  retrying ${label} in ${delayMs / 1000}s (${lastErr.message})`);
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
+function gh(path) {
+  return withRetry(`GitHub API ${path}`, async () => {
+    const res = await fetch(`https://api.github.com${path}`, { headers: ghHeaders });
+    if (!res.ok) { throw new Error(`GitHub API ${path} -> HTTP ${res.status}`); }
+    return res.json();
+  });
 }
 
 async function resolveTag(argTag) {
@@ -100,19 +129,46 @@ async function resolveFinal(url, hops = 0) {
 async function mrEntry(arch) {
   const files = {};
   for (const member of ['ffmpeg', 'ffprobe']) {
-    const { finalUrl, size } = await resolveFinal(`${MR_HOST}/redirect/latest/macos/${arch}/release/${member}.zip`);
-    const u = new URL(finalUrl);
-    if (u.origin !== MR_HOST) { throw new Error(`redirect left ${MR_HOST}: ${finalUrl}`); }
-    const shaText = await (await fetch(`${finalUrl}.sha256`, { headers: { 'User-Agent': ghHeaders['User-Agent'] } })).text();
-    const sha256 = shaText.trim().split(/\s+/)[0].toLowerCase();
-    if (!/^[0-9a-f]{64}$/.test(sha256)) { throw new Error(`no valid .sha256 beside ${finalUrl}`); }
-    if (!Number.isInteger(size) || size <= 0) { throw new Error(`no content-length for ${finalUrl}`); }
-    files[member] = { path: u.pathname.replace(/^\//, ''), sha256, size };
+    files[member] = await withRetry(`martin-riedl ${arch}/${member}`, async () => {
+      const { finalUrl, size } = await resolveFinal(`${MR_HOST}/redirect/latest/macos/${arch}/release/${member}.zip`);
+      const u = new URL(finalUrl);
+      if (u.origin !== MR_HOST) { throw new Error(`redirect left ${MR_HOST}: ${finalUrl}`); }
+      const shaText = await (await fetch(`${finalUrl}.sha256`, { headers: { 'User-Agent': ghHeaders['User-Agent'] } })).text();
+      const sha256 = shaText.trim().split(/\s+/)[0].toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(sha256)) { throw new Error(`no valid .sha256 beside ${finalUrl}`); }
+      if (!Number.isInteger(size) || size <= 0) { throw new Error(`no content-length for ${finalUrl}`); }
+      return { path: u.pathname.replace(/^\//, ''), sha256, size };
+    });
   }
   return { source: 'martinriedl', files };
 }
 
-const tag = await resolveTag(process.argv[2]);
+// Stream-hash a pinned asset without writing it to disk. Fails loudly on any
+// size or digest miss — the same fail-closed bar the runtime bootstrap holds.
+// Retried: a truncated stream or edge 404 is transient; a hash mismatch on a
+// complete download is NOT (same bytes will hash the same) — but a retry of a
+// deterministic mismatch just fails again, so uniform retry keeps this simple.
+async function verifyAsset(url, pin, label) {
+  await withRetry(`verify ${label}`, async () => {
+    const res = await fetch(url, { headers: { 'User-Agent': ghHeaders['User-Agent'] } });
+    if (!res.ok) { throw new Error(`verify ${label}: HTTP ${res.status} for ${url}`); }
+    const hash = createHash('sha256');
+    let size = 0;
+    for await (const chunk of res.body) {
+      size += chunk.length;
+      if (size > pin.size) { throw new Error(`verify ${label}: response exceeds pinned size ${pin.size}`); }
+      hash.update(chunk);
+    }
+    if (size !== pin.size) { throw new Error(`verify ${label}: got ${size} bytes, pinned ${pin.size}`); }
+    const actual = hash.digest('hex');
+    if (actual !== pin.sha256) { throw new Error(`verify ${label}: sha256 ${actual} != pinned ${pin.sha256}`); }
+    console.log(`  verified ${label}: ${(size / 1e6).toFixed(1)} MB, sha256 matches`);
+  });
+}
+
+const args = process.argv.slice(2);
+const doVerify = args.includes('--verify');
+const tag = await resolveTag(args.find((a) => !a.startsWith('--')));
 console.log(`pinning BtbN ${tag} + martin-riedl current release builds...`);
 const [btbn, macX64, macArm64] = await Promise.all([
   btbnEntries(tag),
@@ -132,6 +188,20 @@ const manifest = {
     'darwin-arm64': macArm64,
   },
 };
+
+if (doVerify) {
+  console.log('verifying every pinned asset (download + hash)...');
+  for (const [key, e] of Object.entries(manifest.assets)) {
+    if (e.source === 'btbn') {
+      await verifyAsset(`https://github.com/${BTBN_REPO}/releases/download/${tag}/${e.file}`, e, key);
+    } else {
+      for (const member of ['ffmpeg', 'ffprobe']) {
+        await verifyAsset(`${MR_HOST}/${e.files[member].path}`, e.files[member], `${key}/${member}`);
+      }
+    }
+  }
+  console.log('all pinned assets verified');
+}
 
 const before = existsSync(OUT) ? readFileSync(OUT, 'utf8') : null;
 const after = JSON.stringify(manifest, null, 2) + '\n';
