@@ -1,17 +1,17 @@
 import express from 'express';
-import http from 'node:http';
-import winston from 'winston';
 import * as config from '../state/config.js';
 import * as dlnaApi from '../api/dlna.js';
 import { serveAlbumArtFile } from '../api/album-art.js';
 import { timeSeekMiddleware } from './time-seek.js';
 import { resolveLibraryMediaPath } from './media-path.js';
+import { createKeptListener } from '../util/kept-listener.js';
 
-let dlnaServer = null;
+// Kept listener (util/kept-listener.js): start() after a soft reboot keeps
+// the socket when port/address are unchanged and recycles it (with same-port
+// EADDRINUSE patience) when they changed — the main listener's rule.
+const listener = createKeptListener('dlna');
 
-export function start() {
-  if (dlnaServer) { return; }
-
+function buildApp() {
   const app = express();
 
   // Time-seek (TimeSeekRange.dlna.org) handler runs first; it calls next()
@@ -39,29 +39,17 @@ export function start() {
 
   // All DLNA control/description routes — no mode guard needed on this server
   dlnaApi.setup(app, { checkMode: false });
+  return app;
+}
 
-  const s = http.createServer(app);
-  dlnaServer = s;
-
-  s.listen(config.program.dlna.port, config.program.address, () => {
-    winston.info(`[dlna] Separate server listening on port ${config.program.dlna.port}`);
-  });
-
-  s.on('error', (err) => {
-    winston.error(`[dlna] Separate server error: ${err.message}`);
-    // Only clear the module-level reference if it still points at THIS server.
-    // A late error on an already-replaced server must not nullify the new one.
-    if (dlnaServer === s) { dlnaServer = null; }
+export function start() {
+  listener.ensure({
+    port: config.program.dlna.port,
+    address: config.program.address,
+    build: buildApp,
   });
 }
 
-export function stop() {
-  if (!dlnaServer) { return; }
-  const s = dlnaServer;
-  dlnaServer = null;
-  s.close(() => { winston.info('[dlna] Separate server stopped'); });
-}
+export function stop() { listener.stop(); }
 
-export function isRunning() {
-  return dlnaServer !== null;
-}
+export function isRunning() { return listener.isRunning(); }

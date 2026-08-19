@@ -55,6 +55,10 @@ const failedHandshakes = new Map(); // remoteId -> { fails, blockedUntil }
 let irohMod = null;
 let endpoint = null;
 let endpointIdStr = null;
+// In-flight stop(), or null — see state/iroh.js: a soft reboot's re-serve
+// calls start() while the previous endpoint is still closing; start() must
+// wait for that instead of no-oping on the closing endpoint.
+let stopping = null;
 
 // Live authorized connections per key id, so revoking a key can sever its
 // open pipes instead of waiting for the peer to reconnect and fail.
@@ -221,11 +225,11 @@ async function acceptConnection(conn, targetHost, targetPort) {
   }
 }
 
-async function runAcceptLoop(targetHost, targetPort) {
+async function runAcceptLoop(ep, targetHost, targetPort) {
   for (;;) {
     let incoming;
     try {
-      incoming = await endpoint.acceptNext();
+      incoming = await ep.acceptNext();
     } catch (_err) {
       break; // endpoint closing
     }
@@ -277,6 +281,9 @@ async function runAcceptLoop(targetHost, targetPort) {
 //               info (default true).
 // Returns { endpointId }. Throws if the native module can't load.
 export async function start({ targetPort, targetHost = '127.0.0.1', secretKey, awaitOnline = true } = {}) {
+  if (stopping) {
+    try { await stopping; } catch (_err) { /* stop() is best-effort */ }
+  }
   if (endpoint) { return { endpointId: endpointIdStr }; }
   if (!targetPort) { throw new Error('federation.start: targetPort is required'); }
 
@@ -285,14 +292,18 @@ export async function start({ targetPort, targetHost = '127.0.0.1', secretKey, a
 
   const options = { alpns: [FEDERATION_ALPN] };
   if (secretKey) { options.secretKey = Array.from(asBuffer(secretKey)); }
-  endpoint = await Endpoint.bind(options);
-  endpointIdStr = endpoint.id().toString();
+  const ep = await Endpoint.bind(options);
+  endpoint = ep;
+  endpointIdStr = ep.id().toString();
 
   if (awaitOnline) {
-    await Promise.race([endpoint.online().catch(() => {}), delay(8000)]);
+    await Promise.race([ep.online().catch(() => {}), delay(8000)]);
   }
+  // stop() ran while we waited for the relay (see state/iroh.js): ep is
+  // closed and the state cleared — the reboot's own start() takes over.
+  if (endpoint !== ep) { return { endpointId: null }; }
 
-  runAcceptLoop(targetHost, targetPort); // detached; ends when the endpoint closes
+  runAcceptLoop(ep, targetHost, targetPort); // detached; ends when the endpoint closes
   winston.info(`[federation] endpoint up — endpointId=${endpointIdStr} -> ${targetHost}:${targetPort}`);
   return { endpointId: endpointIdStr };
 }
@@ -312,12 +323,17 @@ export function getEndpointTicket() {
 }
 
 export async function stop() {
+  if (stopping) { return stopping; }
   if (!endpoint) { return; }
-  try { await endpoint.close(); } catch (_err) { /* best effort */ }
+  const ep = endpoint;
   endpoint = null;
   endpointIdStr = null;
   liveConns.clear();
   failedHandshakes.clear();
+  stopping = (async () => {
+    try { await ep.close(); } catch (_err) { /* best effort */ }
+  })();
+  try { await stopping; } finally { stopping = null; }
 }
 
 // ---------------------------------------------------------------------------
