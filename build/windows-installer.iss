@@ -149,9 +149,21 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  Result := '';
+  { The legacy Electron-era desktop app (mStream Express 5.x) used this very
+    folder as ITS electron-builder default (Programs\mStream) — a machine
+    with the old app gets a silent tree-mix unless we refuse. Chromium
+    payload present without our server exe = that app lives here, not a
+    prior copy of us. Returning non-empty aborts with this message (silent
+    installs exit non-zero with it in the log). }
+  if FileExists(ExpandConstant('{app}\chrome_100_percent.pak')) and
+     not FileExists(ExpandConstant('{app}\mstream-server.exe')) then
+  begin
+    Result := 'This folder contains the old mStream desktop app (Electron). Uninstall it first (Settings > Apps > Installed apps), or choose a different install folder.';
+    exit;
+  end;
   { Upgrade over a running install: stop our processes so files aren't locked. }
   KillAppProcesses();
-  Result := '';
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
