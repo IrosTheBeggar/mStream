@@ -24,6 +24,10 @@ bin/ffmpeg/*
 bin/rust-parser/*
 !bin/rust-parser/README.md
 !bin/rust-parser/rust-parser-*
+# Provenance stamps committed alongside the binaries (build-rust-parser.yml /
+# build-rust-parser-musl.yml write them; build-bun's tag build asserts them).
+!bin/rust-parser/.source-tree
+!bin/rust-parser/.source-tree-musl
 
 bin/rust-launcher/*
 !bin/rust-launcher/mstream-launcher-*
@@ -34,6 +38,7 @@ bin/rust-launcher/*
 bin/rust-server-audio/*
 !bin/rust-server-audio/README.md
 !bin/rust-server-audio/rust-server-audio-*
+!bin/rust-server-audio/.source-tree
 
 save/*.json
 
