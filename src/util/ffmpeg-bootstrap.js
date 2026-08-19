@@ -232,7 +232,12 @@ function downloadToBuffer(url) {
 
 // Resolves with the final (post-redirect) URL so callers can derive sibling
 // resources — e.g. a `.sha256` that only exists at the resolved download path.
-function downloadToFile(url, destPath) {
+// Exported: p2p-sidecar-bootstrap.js reuses this exact transport (same
+// https-or-loopback policy, same timeout hardening) for its release-asset
+// downloads. `maxBytes` (optional) aborts a response that grows past the
+// expected size — a manifest-pinned download knows its size up front, so
+// anything larger is wrong bytes and not worth the disk or the wait.
+export function downloadToFile(url, destPath, { maxBytes = null } = {}) {
   return new Promise((resolve, reject) => {
     const follow = (u, redirects = 0) => {
       if (redirects > MAX_REDIRECTS) { return reject(new Error(`Too many redirects for ${url}`)); }
@@ -251,6 +256,17 @@ function downloadToFile(url, destPath) {
         const fail = e => { out.destroy(); fsp.unlink(tmp).catch(() => {}); reject(e); };
         res.on('error', fail);
         out.on('error', fail);
+        if (maxBytes !== null) {
+          let received = 0;
+          res.on('data', c => {
+            received += c.length;
+            if (received > maxBytes) {
+              const tooBig = new Error(`Response exceeds expected ${maxBytes} bytes for ${u}`);
+              res.destroy(tooBig);
+              fail(tooBig);
+            }
+          });
+        }
         out.on('finish', async () => {
           try { await fsp.rename(tmp, destPath); resolve(u); }
           catch (e) { fsp.unlink(tmp).catch(() => {}); reject(e); }
@@ -290,7 +306,9 @@ async function fetchExpectedChecksum(assetName) {
   return null;
 }
 
-function computeFileChecksum(filePath) {
+// Exported for the same reason as downloadToFile — one hashing helper for
+// every managed-binary download path.
+export function computeFileChecksum(filePath) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
     const stream = fs.createReadStream(filePath);

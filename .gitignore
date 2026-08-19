@@ -40,6 +40,18 @@ bin/rust-server-audio/*
 !bin/rust-server-audio/rust-server-audio-*
 !bin/rust-server-audio/.source-tree
 
+# p2p-sidecar binaries are FETCHED, not committed — the crate lives in its
+# own repo (IrosTheBeggar/mstream-p2p-sidecar) and its versioned releases
+# hold the binaries (each CI refresh of the old in-tree 9-binary set added
+# ~172 MB of undeltifiable blobs to history). Only the committed manifests
+# that pin a release — and the README — are tracked; fetched binaries, the
+# install receipt, and staging files land here on checkouts whose data root
+# is the app root and must stay out of `git status`.
+bin/p2p-sidecar/*
+!bin/p2p-sidecar/README.md
+!bin/p2p-sidecar/manifest.json
+!bin/p2p-sidecar/manifest-musl.json
+
 save/*.json
 
 .DS_Store
@@ -67,7 +79,13 @@ bun.lock
 rust-parser/target/
 rust-server-audio/target/
 rust-launcher/target/
-p2p-sidecar/target/
+# The sidecar crate moved to its own repo; the dev loop is cloning it INTO
+# this checkout as p2p-sidecar/ (see bin/p2p-sidecar/README.md), so the
+# whole nested clone stays untracked. ANCHORED to the repo root: an
+# unanchored `p2p-sidecar/` also matches bin/p2p-sidecar/ — a directory
+# exclusion that file negations cannot pierce — and silently swallowed the
+# committed manifests (caught by a post-commit ls-tree check).
+/p2p-sidecar/
 
 save/waveforms/*
 !save/waveforms/README.md

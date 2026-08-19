@@ -1342,12 +1342,12 @@ describe('discovery seeds — unreachable list degrades gracefully', () => {
   let p1;
   let p2;
   let tmpDir;
-  // The chicken-and-egg of protocol PRs: CI runs whatever prebuilt sidecar
-  // master last shipped (bin/p2p-sidecar/), which by definition predates
-  // the protocol additions in the PR under review — local dev always has a
-  // fresh cargo build, so this only bites CI. Probe the capability in
-  // before() and skip with a reason; the post-merge binaries rebuild makes
-  // CI cover this suite automatically from the next PR on.
+  // The chicken-and-egg of protocol work: whatever sidecar binary this
+  // machine has (a fetched pinned release, an operator-placed prebuilt, or
+  // a nested-clone cargo build — see bin/p2p-sidecar/README.md) may predate
+  // a protocol addition under test. Probe the capability in before() and
+  // skip with a reason — the server does the same probe in production (the
+  // sidecar repo's README calls this the compatibility contract).
   let sidecarHasN3 = false;
 
   before(async () => {

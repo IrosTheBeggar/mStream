@@ -15,6 +15,7 @@ import * as discoveryDb from '../db/discovery-db.js';
 import * as discoveryExport from '../db/discovery-export.js';
 import { EMBEDDING_MODELS } from '../db/discovery-features-lib.js';
 import * as discoveryP2p from '../state/discovery-p2p.js';
+import * as sidecarBootstrap from '../util/p2p-sidecar-bootstrap.js';
 import * as discoveryCatalog from '../state/discovery-catalog.js';
 import * as discoveryPeerDbs from '../state/discovery-peer-dbs.js';
 import * as logger from '../logger.js';
@@ -558,6 +559,9 @@ export function setup(mstream) {
     res.json({
       enabled: config.program.discoveryP2p.enabled,
       binaryFound: discoveryP2p.resolveSidecarBinary() !== null,
+      // Additive: lets the UI say "will be downloaded on enable" instead of
+      // a dead-end "binary missing" when the manifest covers this platform.
+      binaryFetchable: sidecarBootstrap.canAutoFetch(),
       running: discoveryP2p.isRunning(),
       endpointId: discoveryP2p.getEndpointId(),
       ticket: discoveryP2p.getEndpointTicket(),
@@ -746,8 +750,12 @@ export function setup(mstream) {
       return res.json({ enabled: false });
     }
 
-    if (discoveryP2p.resolveSidecarBinary() === null) {
-      throw new WebError('the p2p-sidecar binary is missing for this platform — the network cannot be enabled', 503);
+    // Missing binary is only a hard stop when it can't be fetched either —
+    // otherwise startDiscoveryP2pStack() below downloads it (sha256-pinned by
+    // the committed manifest) as part of the start, and a failure there rolls
+    // the flag back with the download's own cause.
+    if (discoveryP2p.resolveSidecarBinary() === null && !sidecarBootstrap.canAutoFetch()) {
+      throw new WebError('the p2p-sidecar binary is missing for this platform and no downloadable build is published — the network cannot be enabled', 503);
     }
     const collectForced = config.program.scanOptions.collectDiscoveryData !== true;
     if (collectForced) {
