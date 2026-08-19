@@ -25,7 +25,20 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(60);
 enum AppEvent {
     Menu(String),
     ServerUp(u64),
+    /// The identity probe gave up (BOOT_TIMEOUT) while the child is still
+    /// alive: a serving-but-unverifiable server (an SSL-terminated config,
+    /// a bind the plaintext probe can't reach), not a boot failure.
+    ProbeGaveUp(u64),
     ServerExited(u64),
+    /// The status line's minute boundary, from the ticker thread — a
+    /// generation-stamped user event, NOT a ControlFlow::WaitUntil timer:
+    /// tao's gtk backend has no timer behind WaitUntil (run_return blocks in
+    /// gtk::main_iteration_do(true) until some other event wakes the loop),
+    /// so on Wayland the "one wake a minute" never came and the menu line
+    /// went stale for hours; the X11 backend only appeared to work because
+    /// its device thread woke the loop on mouse motion. A proxy event wakes
+    /// all three backends identically.
+    Tick(u64),
 }
 
 struct Shared {
@@ -182,12 +195,15 @@ pub fn run(args: LauncherArgs) -> ! {
     // it IS the supervisor, and the server has no uptime API to ask.
     let mut status_item: Option<MenuItem> = None;
     let mut phase = Phase::Starting;
-    // Last time the timer path re-rendered the status. The status can only
-    // change on a minute boundary, so timer wakes are throttled to 1 Hz:
-    // any other timer that shares this loop's ControlFlow (a fast poll
-    // while a popup is open, say) would otherwise re-set the same tooltip
-    // text at that timer's rate. Phase changes render unconditionally.
+    // Last time a tick re-rendered the status. The status can only change
+    // on a minute boundary, so ticks are throttled to 1 Hz: a stale ticker
+    // (from before a restart) or any other timer this loop is asked for
+    // must not re-set the same tooltip text under a hovering cursor. Phase
+    // changes render unconditionally.
     let mut status_rendered_at: Option<Instant> = None;
+    // When the current generation was spawned: the uptime origin for a
+    // server the probe could not verify (Phase::Unverified).
+    let mut spawned_at = Instant::now();
     let mut ever_up = false;
     let mut opened = false;
     let url = paths::server_url(&ep);
@@ -201,16 +217,12 @@ pub fn run(args: LauncherArgs) -> ! {
     let config_loop = config.clone();
 
     event_loop.run(move |event, _target, control_flow| {
-        // Idle, except that a RUNNING server's status line has a minute
-        // boundary to cross — wake exactly there and nowhere else (one
-        // wake a minute; the exit watcher already polls twice a second).
-        // Re-evaluated on every pass, so a phase change made below is
-        // armed by the MainEventsCleared that follows it. Exit is sticky
-        // in tao, so Quit's ControlFlow::Exit survives this assignment.
-        *control_flow = match phase.next_tick() {
-            Some(at) => ControlFlow::WaitUntil(at),
-            None => ControlFlow::Wait,
-        };
+        // Idle. Everything that must wake this loop arrives as a user event
+        // through the proxy — menu clicks, the prober, the exit watcher, and
+        // the status line's minute tick (see AppEvent::Tick for why a timer
+        // wouldn't do). Exit is sticky in tao, so Quit's ControlFlow::Exit
+        // survives this assignment.
+        *control_flow = ControlFlow::Wait;
         match event {
             // Tray creation belongs HERE, not before run(): on Linux the
             // tray needs the gtk main context tao initializes, and on macOS
@@ -273,19 +285,22 @@ pub fn run(args: LauncherArgs) -> ! {
                 }
                 show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
             }
-            // The minute tick armed at the top of the closure: re-render the
-            // uptime. Only here and on phase changes — never on unrelated
-            // events, so the tooltip isn't re-set under a hovering cursor.
-            // Throttled to once per second: this arm fires for EVERY timer
-            // wake the loop is asked for, not just ours.
-            Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
-                let now = Instant::now();
-                if status_rendered_at.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1)) {
-                    status_rendered_at = Some(now);
-                    show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
-                }
-            }
             Event::UserEvent(app_event) => match app_event {
+                // The minute tick from the current generation's ticker
+                // thread: re-render the uptime. Only here and on phase
+                // changes — never on unrelated events, so the tooltip isn't
+                // re-set under a hovering cursor. Stale generations are
+                // ignored outright and the rest is throttled to 1 Hz.
+                AppEvent::Tick(generation) => {
+                    let now = Instant::now();
+                    if generation == shared_loop.generation.load(Ordering::SeqCst)
+                        && phase.ticks()
+                        && status_rendered_at.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1))
+                    {
+                        status_rendered_at = Some(now);
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
+                    }
+                }
                 AppEvent::Menu(id) => match id.as_str() {
                     "open" => {
                         let _ = open::that_detached(url.clone());
@@ -319,6 +334,7 @@ pub fn run(args: LauncherArgs) -> ! {
                     "restart" => {
                         log.line("menu: restart server");
                         stop_current(&shared_loop);
+                        spawned_at = Instant::now();
                         phase = match spawn_generation(
                             &shared_loop,
                             &bin,
@@ -365,8 +381,10 @@ pub fn run(args: LauncherArgs) -> ! {
                         // Uptime counts from here — "up" means serving, not
                         // spawned. A restart or crash lands back in
                         // Starting/Stopped, so the count resets with it.
-                        phase = Phase::Running { since: Instant::now() };
+                        let since = Instant::now();
+                        phase = Phase::Running { since };
                         show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
+                        start_ticker(&shared_loop, generation, since, &proxy);
                         // Logged unconditionally (even under --no-open) so
                         // smokes and support can see the routing decision.
                         let target = paths::browse_target(&config_loop, &ep);
@@ -377,6 +395,39 @@ pub fn run(args: LauncherArgs) -> ! {
                             opened = true;
                             let _ = open::that_detached(target);
                         }
+                    }
+                }
+                AppEvent::ProbeGaveUp(generation) => {
+                    // The child outlived BOOT_TIMEOUT without answering the
+                    // plaintext identity probe. It is serving something we
+                    // cannot read — an SSL-terminated config, or a bind the
+                    // probe's address doesn't reach — not failing to boot:
+                    // that shape is ServerExited's. Before this arm existed
+                    // the menu said "Starting…" for the rest of the session,
+                    // inviting a needless Restart. Say what we know instead.
+                    let child_alive = shared_loop
+                        .proc
+                        .lock()
+                        .unwrap()
+                        .as_mut()
+                        .map(|p| matches!(p.child.try_wait(), Ok(None)))
+                        .unwrap_or(false);
+                    if child_alive
+                        && generation == shared_loop.generation.load(Ordering::SeqCst)
+                        && phase == Phase::Starting
+                    {
+                        // Alive this long is not a boot failure: a later exit
+                        // is "exited unexpectedly", not "stopped before it
+                        // finished starting".
+                        ever_up = true;
+                        log.line(&format!(
+                            "server did not answer the identity probe within {}s but is still running - showing it as running (unverified); an SSL-only config or a bind the plaintext probe can't reach looks like this",
+                            BOOT_TIMEOUT.as_secs()
+                        ));
+                        let since = spawned_at;
+                        phase = Phase::Unverified { since };
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
+                        start_ticker(&shared_loop, generation, since, &proxy);
                     }
                 }
                 AppEvent::ServerExited(generation) => {
@@ -433,13 +484,17 @@ fn spawn_generation(
     log.line(&format!("server generation {generation} spawned"));
 
     // Health prober: poll until the endpoint answers as mStream (an identity
-    // probe, not a bare connect — see wait_serving), then report up.
+    // probe, not a bare connect — see wait_serving), then report up — or,
+    // past BOOT_TIMEOUT, report that it gave up so the loop can tell a
+    // still-alive-but-unverifiable server from one that is still starting.
     {
         let proxy = proxy.clone();
         std::thread::spawn(move || {
-            if server::wait_serving(ep, BOOT_TIMEOUT) {
-                let _ = proxy.send_event(AppEvent::ServerUp(generation));
-            }
+            let _ = proxy.send_event(if server::wait_serving(ep, BOOT_TIMEOUT) {
+                AppEvent::ServerUp(generation)
+            } else {
+                AppEvent::ProbeGaveUp(generation)
+            });
         });
     }
     // Exit watcher: polls try_wait (wait() would hold the mutex across a
@@ -474,6 +529,32 @@ fn spawn_generation(
     Ok(())
 }
 
+/// The status line's minute tick for one server generation: sleep to each
+/// minute boundary counted from `since` (so the shown minutes are exact,
+/// not up to a minute stale) and nudge the loop with a generation-stamped
+/// Tick. Ends on its own once a restart moves the generation on; a stopped
+/// server keeps a harmless one-wake-a-minute ticker until then. See
+/// AppEvent::Tick for why this is a thread and not ControlFlow::WaitUntil.
+fn start_ticker(
+    shared: &Arc<Shared>,
+    generation: u64,
+    since: Instant,
+    proxy: &tao::event_loop::EventLoopProxy<AppEvent>,
+) {
+    let proxy = proxy.clone();
+    let shared = shared.clone();
+    std::thread::spawn(move || loop {
+        let at = next_minute_boundary(since, Instant::now());
+        std::thread::sleep(at.saturating_duration_since(Instant::now()));
+        if shared.generation.load(Ordering::SeqCst) != generation {
+            return; // superseded by a restart
+        }
+        if proxy.send_event(AppEvent::Tick(generation)).is_err() {
+            return; // the loop is gone
+        }
+    });
+}
+
 /// Move `path` aside to `path.1` (replacing any previous `.1`). With a cap,
 /// only when the file has outgrown it; with None, whenever it exists. Rename
 /// is atomic-enough and never blocks on a reader; all failures are ignored —
@@ -502,11 +583,15 @@ fn stop_current(shared: &Arc<Shared>) {
 
 /// The server's lifecycle as the tray reports it. Running carries the
 /// instant the identity probe first answered (ServerUp), which is what the
-/// uptime counts from.
+/// uptime counts from; Unverified is a child that outlived the probe's
+/// patience without ever answering it (an SSL-only config, a bind the
+/// plaintext probe can't reach) — alive and presumably serving, counted
+/// from its spawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     Starting,
     Running { since: Instant },
+    Unverified { since: Instant },
     Stopped,
 }
 
@@ -516,6 +601,7 @@ impl Phase {
         match self {
             Phase::Starting => "Starting…".to_string(),
             Phase::Running { since } => format!("Running · up {}", format_uptime(since.elapsed())),
+            Phase::Unverified { since } => format!("Running (unverified) · up {}", format_uptime(since.elapsed())),
             Phase::Stopped => "Stopped · use Restart server".to_string(),
         }
     }
@@ -526,18 +612,17 @@ impl Phase {
         match self {
             Phase::Starting => "mStream Server - starting".to_string(),
             Phase::Running { since } => format!("mStream Server - {url} (up {})", format_uptime(since.elapsed())),
+            Phase::Unverified { since } => {
+                format!("mStream Server - {url} (up {}, not verified by the launcher)", format_uptime(since.elapsed()))
+            }
             Phase::Stopped => "mStream Server - stopped (use Restart server)".to_string(),
         }
     }
 
-    /// When the status line next changes: the running server's next minute
-    /// boundary, or never. Aligned to the boundary rather than "60 s from
-    /// now" so the shown minutes are exact, not up to a minute stale.
-    fn next_tick(&self) -> Option<Instant> {
-        match self {
-            Phase::Running { since } => Some(next_minute_boundary(*since, Instant::now())),
-            _ => None,
-        }
+    /// Whether the status line carries an uptime that a minute tick must
+    /// refresh.
+    fn ticks(&self) -> bool {
+        matches!(self, Phase::Running { .. } | Phase::Unverified { .. })
     }
 }
 
@@ -665,8 +750,18 @@ mod tests {
         let running = Phase::Running { since: Instant::now() };
         assert_eq!(running.menu_text(), "Running · up <1m");
         assert_eq!(running.tooltip("http://localhost:3000"), "mStream Server - http://localhost:3000 (up <1m)");
-        assert!(running.next_tick().is_some());
-        assert_eq!(Phase::Starting.next_tick(), None, "no ticks unless running");
-        assert_eq!(Phase::Stopped.next_tick(), None);
+        // A child that outlived the probe without answering it: alive,
+        // presumably serving, and the tray must say so rather than
+        // "Starting…" for the rest of the session.
+        let unverified = Phase::Unverified { since: Instant::now() };
+        assert_eq!(unverified.menu_text(), "Running (unverified) · up <1m");
+        assert_eq!(
+            unverified.tooltip("http://localhost:3000"),
+            "mStream Server - http://localhost:3000 (up <1m, not verified by the launcher)"
+        );
+        assert!(running.ticks());
+        assert!(unverified.ticks());
+        assert!(!Phase::Starting.ticks(), "no ticks unless an uptime is showing");
+        assert!(!Phase::Stopped.ticks());
     }
 }
