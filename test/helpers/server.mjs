@@ -263,7 +263,15 @@ export async function startServer(opts = {}) {
     {
       cwd: REPO_ROOT,
       stdio: captureLogs ? 'inherit' : [stdin, 'pipe', 'pipe'],
-      env: { ...process.env, NODE_ENV: 'test', MSTREAM_TEST_BAKED_SEEDS: '[]', ...env },
+      // MSTREAM_SIDECAR_BASE → dead local port: same guard family as the
+      // seedListUrl one above. When no sidecar binary is on disk, a suite
+      // that enables discoveryP2p would otherwise have the server fetch the
+      // manifest-pinned binary from the REAL sidecar release mid-test; the
+      // dead base makes that path fail instantly and locally instead (the
+      // stack degrades exactly like the missing-binary case). Suites that
+      // exercise the fetch itself bring their own loopback store and
+      // override this via `env`.
+      env: { ...process.env, NODE_ENV: 'test', MSTREAM_TEST_BAKED_SEEDS: '[]', MSTREAM_SIDECAR_BASE: 'http://127.0.0.1:9', ...env },
     },
   );
 
