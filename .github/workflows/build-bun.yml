@@ -1295,10 +1295,13 @@ jobs:
           Write-Host "installer: $($setup.Name) ($([math]::Round($setup.Length/1MB,1)) MB)"
           # The installer exe carries the same 4-part VersionInfo contract as
           # every shipped PE (Win32 truth, like check-win-versioninfo.ps1).
+          # Inno space-pads the VersionInfo string fields to a fixed width —
+          # trim before comparing.
           $vi = $setup.VersionInfo
-          Write-Host "VersionInfo: FileVersion=$($vi.FileVersion) Product=$($vi.ProductName) Company=$($vi.CompanyName)"
-          if ($vi.FileVersion -ne $ver4) { Write-Host "::error::installer FileVersion '$($vi.FileVersion)' is not '$ver4'"; exit 1 }
-          if ($vi.ProductName -ne 'mStream') { Write-Host "::error::installer ProductName '$($vi.ProductName)' is not 'mStream'"; exit 1 }
+          $fv = "$($vi.FileVersion)".Trim(); $pn = "$($vi.ProductName)".Trim()
+          Write-Host "VersionInfo: FileVersion='$fv' Product='$pn' Company='$("$($vi.CompanyName)".Trim())'"
+          if ($fv -ne $ver4) { Write-Host "::error::installer FileVersion '$fv' is not '$ver4'"; exit 1 }
+          if ($pn -ne 'mStream') { Write-Host "::error::installer ProductName '$pn' is not 'mStream'"; exit 1 }
 
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
