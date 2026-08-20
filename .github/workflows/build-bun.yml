@@ -154,7 +154,7 @@ jobs:
           bb="mStream-9.9.10-linux-x64"; mkdir -p "rel/$bb"
           printf '#!/bin/sh\nexit 1\n' > "rel/$bb/mstream-server"; chmod +x "rel/$bb/mstream-server"
           echo broken > "rel/$bb/README.txt"
-          rm -f rel/mStream-*.zip rel/manifest.json
+          rm -f rel/mStream-* rel/manifest.json
           (cd rel && python3 -m zipfile -c "$bb.zip" "$bb" && rm -rf "$bb")
           sh scripts/release-manifest.sh 9.9.10 rel
           if sh install.sh > broken.log 2>&1; then echo "::error::installed a bundle that cannot exec"; exit 1; fi
@@ -201,7 +201,7 @@ jobs:
           # which is exactly the probe-failure shape; only the presence of a
           # working-or-first-install current decides advisory vs refusal.
           $bb = 'mStream-9.9.10-win-x64'
-          Remove-Item rel\mStream-*.zip, rel\manifest.json -Force
+          Remove-Item rel\mStream-*, rel\manifest.json -Force
           # zip from INSIDE rel so entries carry no rel\ prefix
           Push-Location rel
           New-Item -ItemType Directory -Force $bb | Out-Null
@@ -257,7 +257,7 @@ jobs:
           exit 0
           STUB
           mkrel() {
-            rm -f rel/mStream-*.zip rel/manifest.json
+            rm -f rel/mStream-* rel/manifest.json
             b="mStream-$1-$DKEY"; mkdir -p "rel/$b/mStream.app/Contents/MacOS"
             printf '%s\n' "$1" > "rel/$b/mStream.app/Contents/VERSION"
             printf '#!/bin/sh\n[ "$1" = -V ] && echo %s\nexit 0\n' "$1" > "rel/$b/mStream.app/Contents/MacOS/mstream-server"
