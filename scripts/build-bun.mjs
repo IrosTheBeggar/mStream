@@ -210,8 +210,9 @@ if (launcherSrc) {
 // host glibc (needs GLIBC_2.34; see tryMuslRetry() in src/db/task-queue.js),
 // keeping native-speed scanning on older-glibc distros (RHEL/Rocky 8, Ubuntu
 // 20.04, Amazon Linux 2, Debian 11) instead of the ~16x-slower JS fallback.
-// rust-server-audio has no musl build, so musl bundles ship without it
-// (server-audio is opt-in). Each entry is skipped gracefully if not committed.
+// Each entry is skipped gracefully if not committed. (mstream-player — the
+// server-audio engine — is not in this list: like the p2p sidecar it left
+// git and is fetched from its pinned release below.)
 //
 // SIGN-LOAD-BEARING LAYOUT (darwin): build-bun.yml's sign step walks
 // Contents/MacOS for Mach-Os (these sidecars + the iroh .node), signs
@@ -221,8 +222,7 @@ if (launcherSrc) {
 // wiring — update that step in the same PR.
 const libc = t.musl ? '-musl' : '';
 const sidecars = [
-  ['rust-parser',       `rust-parser-${t.plat}-${t.arch}${libc}${t.ext}`],
-  ['rust-server-audio', `rust-server-audio-${t.plat}-${t.arch}${libc}${t.ext}`],
+  ['rust-parser', `rust-parser-${t.plat}-${t.arch}${libc}${t.ext}`],
 ];
 if (t.plat === 'linux' && !t.musl) {
   sidecars.push(['rust-parser', `rust-parser-${t.plat}-${t.arch}-musl`]);
@@ -242,8 +242,7 @@ if (t.plat === 'linux' && !t.musl) {
 // the pinned release assets, not from bin/ — but its Windows copy joins the
 // same stamped set and the same $known list.)
 const sidecarDescription = {
-  'rust-parser':       'mStream Library Scanner',
-  'rust-server-audio': 'mStream Server Audio',
+  'rust-parser': 'mStream Library Scanner',
 };
 for (const [dir, file] of sidecars) {
   const src = join(root, 'bin', dir, file);
@@ -372,6 +371,7 @@ for (const [dir, file] of sidecars) {
 for (const m of [
   { family: 'ffmpeg', file: 'manifest.json' },
   { family: 'p2p-sidecar', file: t.musl ? 'manifest-musl.json' : 'manifest.json' },
+  ...(t.musl ? [] : [{ family: 'mstream-player', file: 'manifest.json' }]),
 ]) {
   const src = join(root, 'bin', m.family, m.file);
   const destDir = join(contentRoot, 'bin', m.family);
@@ -384,6 +384,92 @@ for (const m of [
     symlinkSync(join('..', '..', '..', 'Resources', resName), join(destDir, m.file));
   } else {
     cpSync(src, join(destDir, m.file));
+  }
+}
+
+// mstream-player (server audio): the crate left git for its own repo
+// (IrosTheBeggar/mstream-terminal-player — the in-tree rust-server-audio
+// was a stale fork of it) and bundles BAKE the target's binary in at build
+// time, fetched from the release assets the committed manifest pins (fetch
+// -> sha256+size verify -> stage; one download in CI instead of one per
+// user machine). The runtime resolver (src/api/server-playback.js) finds
+// it at appRoot/bin/mstream-player/<name>; npm/source installs keep
+// fetch-on-first-use. No musl build exists — server audio is opt-in and
+// needs a sound device — so musl bundles ship without it, exactly as they
+// always have. The Windows copy is VersionInfo-stamped (verify happens
+// BEFORE the stamp) and joins the same $known set. CI without the asset =
+// a broken release, fail loud; local/offline builds warn and ship without
+// — the runtime fetch is the fallback. MSTREAM_PLAYER_BASE mirrors apply
+// (pins still hold); MSTREAM_ALLOW_MISSING_PLAYER is the deliberate
+// escape hatch.
+if (!t.musl) {
+  const plName = `mstream-player-${t.plat}-${t.arch}${t.ext}`;
+  const plManifest = join(root, 'bin', 'mstream-player', 'manifest.json');
+  const skip = (why) => {
+    if (process.env.CI && !process.env.MSTREAM_ALLOW_MISSING_PLAYER) {
+      console.error(`  FATAL: mstream-player staging failed for ${key}: ${why} (set MSTREAM_ALLOW_MISSING_PLAYER=1 to bundle without it on purpose)`);
+      process.exit(1);
+    }
+    console.warn(`  mstream-player not staged (${why}) — bundle falls back to runtime fetch`);
+  };
+  let entry = null;
+  try {
+    const m = JSON.parse(readFileSync(plManifest, 'utf8'));
+    entry = m.assets?.[plName] ? { ...m.assets[plName], repo: m.repo, tag: m.tag } : null;
+  } catch (_err) {
+    // unreadable/absent manifest = the same no-entry skip below
+  }
+  if (!entry) {
+    skip(`no manifest entry for ${plName}`);
+  } else {
+    // Same URL shape the runtime fetch uses — one derivation, no drift.
+    const { deriveAssetUrl } = await import('../src/util/mstream-player-bootstrap.js');
+    const base = (process.env.MSTREAM_PLAYER_BASE || '').replace(/\/+$/, '');
+    const url = base ? `${base}/${entry.file}` : deriveAssetUrl(entry);
+    const cacheDir = join(root, 'dist', 'player-cache');
+    mkdirSync(cacheDir, { recursive: true });
+    const cached = join(cacheDir, `${entry.sha256.slice(0, 12)}-${plName}`);
+    let bytes = null;
+    if (existsSync(cached)) {
+      bytes = readFileSync(cached);
+      if (createHash('sha256').update(bytes).digest('hex') !== entry.sha256) { bytes = null; }
+    }
+    if (!bytes) {
+      console.log(`  fetching mstream-player: ${url}`);
+      try {
+        const res = await fetch(url, { redirect: 'follow' });
+        if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
+        bytes = Buffer.from(await res.arrayBuffer());
+      } catch (err) {
+        bytes = null;
+        skip(`download failed: ${err.message}`);
+      }
+    }
+    if (bytes) {
+      const gotSha = createHash('sha256').update(bytes).digest('hex');
+      if (gotSha !== entry.sha256 || bytes.length !== entry.size) {
+        // A hash mismatch is NEVER skippable — wrong bytes must not ship,
+        // and must not poison the cache.
+        console.error(`  FATAL: mstream-player ${plName} failed verification (sha ${gotSha.slice(0, 12)}… vs pinned ${entry.sha256.slice(0, 12)}…, ${bytes.length} vs ${entry.size} bytes)`);
+        process.exit(1);
+      }
+      writeFileSync(cached, bytes);
+      mkdirSync(join(contentRoot, 'bin', 'mstream-player'), { recursive: true });
+      const dest = join(contentRoot, 'bin', 'mstream-player', plName);
+      writeFileSync(dest, bytes);
+      if (t.plat !== 'win32') { chmodSync(dest, 0o755); }
+      console.log(`  staged mstream-player ${entry.tag}: bin/mstream-player/${plName} (${(entry.size / 1048576).toFixed(1)} MB, sha verified)`);
+      if (t.plat === 'win32') {
+        try {
+          await stampWindowsVersionInfo(dest, { ...winMeta, fileDescription: 'mStream Server Audio' });
+          console.log(`  stamped VersionInfo: bin/mstream-player/${plName} (${winMeta.productName} ${winMeta.version})`);
+        } catch (err) {
+          const msg = `VersionInfo stamp failed for bin/mstream-player/${plName}: ${err.message}`;
+          if (process.env.CI) { console.error(`  FATAL: ${msg}`); process.exit(1); }
+          console.warn(`  WARN: ${msg}`);
+        }
+      }
+    }
   }
 }
 

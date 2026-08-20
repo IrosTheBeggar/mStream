@@ -5564,7 +5564,7 @@ paths:
       tags: [Admin - Subsonic]
       summary: Live jukebox status (Rust audio backend)
       description: |
-        Proxies to the bundled rust-server-audio process for its `/status` and
+        Proxies to the bundled mstream-player process for its `/status` and
         `/queue` endpoints. Returns `{available:false, reason}` if the
         backend isn't running (autoBootServerAudio disabled or boot failed).
       responses:

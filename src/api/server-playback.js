@@ -10,6 +10,7 @@ import * as db from '../db/manager.js';
 import { appRoot } from '../util/esm-helpers.js';
 import * as killQueue from '../state/kill-list.js';
 import * as cliAudio from './cli-audio/index.js';
+import { playerKey, managedPlayerPath, ensurePlayer, canAutoFetch } from '../util/mstream-player-bootstrap.js';
 
 let rustPlayerProcess = null;
 
@@ -34,9 +35,16 @@ export function getDetectedCliPlayers() {
 }
 
 export function getActiveBackend() {
-  if (rustPlayerProcess) { return { backend: 'rust', player: 'rust-server-audio' }; }
+  if (rustPlayerProcess) { return { backend: 'rust', player: 'mstream-player' }; }
   if (cliAudio.isCliActive()) { return { backend: 'cli', player: cliAudio.getActivePlayerName() }; }
   return { backend: null, player: null };
+}
+
+// Can a missing player binary be fetched for this platform? Surfaced on the
+// admin info endpoint so the UI can tell "one download away" apart from
+// "not available here" (musl hosts).
+export function playerBinaryFetchable() {
+  return canAutoFetch();
 }
 
 function getRustPort() {
@@ -45,21 +53,29 @@ function getRustPort() {
 
 // ── Auto-boot logic ───────────────────────────────────────────────────────
 
+// Sync, side-effect-free-ish resolver (mirrors discovery-p2p's
+// resolveSidecarBinary). Rungs, in trust order:
+//   1. dev cargo build of the player repo cloned into this checkout
+//   2. bundle-staged / operator-placed copy under appRoot
+//   3. the managed dataRoot home where the runtime fetch installs
+// The manifest key IS the filename, so there is no mapping to drift.
 function findRustBinary() {
   const ext = process.platform === 'win32' ? '.exe' : '';
   const candidates = [
-    path.join(appRoot, `bin/rust-server-audio/rust-server-audio-${process.platform}-${process.arch}${ext}`),
-    path.join(appRoot, `rust-server-audio/target/release/rust-server-audio${ext}`),
+    path.join(appRoot, `mstream-terminal-player/target/release/mstream-player${ext}`),
+    path.join(appRoot, 'bin', 'mstream-player', playerKey()),
   ];
+  const managed = managedPlayerPath();
+  if (!candidates.includes(managed)) { candidates.push(managed); }
 
   for (const bin of candidates) {
     if (fs.existsSync(bin)) {
-      // Docker image builds / tarball extraction / npm pack commonly strip
-      // the execute bit from checked-in binaries — without this, spawn
-      // fails with EACCES on every boot. No-op on Windows. `chmod` fails
-      // silently on read-only volumes; the downstream spawn will surface
-      // the real error if exec is truly blocked (noexec mount, SELinux).
-      // Matches the rust-parser's fix in src/db/task-queue.js.
+      // Docker image builds / tarball extraction / zip commonly strip the
+      // execute bit — without this, spawn fails with EACCES on every boot.
+      // No-op on Windows. `chmod` fails silently on read-only volumes; the
+      // downstream spawn will surface the real error if exec is truly
+      // blocked (noexec mount, SELinux). Matches the rust-parser's fix in
+      // src/db/task-queue.js.
       try { fs.chmodSync(bin, 0o755); } catch (_) {}
       return bin;
     }
@@ -121,14 +137,26 @@ export async function bootRustPlayer() {
     return;
   }
 
-  const bin = findRustBinary();
+  let bin = findRustBinary();
+  if (!bin && canAutoFetch()) {
+    // npm/source/Docker installs: the binary left git — fetch the pinned
+    // release build on first use (bundles ship it staged, so they never
+    // land here). A failed fetch degrades to the CLI players like any
+    // other miss; the cause is already logged by the bootstrap.
+    try {
+      bin = await ensurePlayer();
+    } catch (err) {
+      await bootCliFallback(`mstream-player fetch failed: ${err.message}`);
+      return;
+    }
+  }
   if (!bin) {
-    await bootCliFallback('rust-server-audio binary not found');
+    await bootCliFallback('mstream-player binary not found');
     return;
   }
 
   const port = getRustPort();
-  winston.info(`Starting rust-server-audio on port ${port}`);
+  winston.info(`Starting mstream-player (server audio) on port ${port}`);
 
   _rustStartupSettled = false;
   rustPlayerProcess = child_process.spawn(bin, ['--port', String(port)], {
@@ -140,31 +168,31 @@ export async function bootRustPlayer() {
   }, RUST_SETTLE_MS);
 
   rustPlayerProcess.stdout.on('data', (data) => {
-    winston.info(`[rust-audio] ${data.toString().trim()}`);
+    winston.info(`[mstream-player] ${data.toString().trim()}`);
   });
 
   rustPlayerProcess.stderr.on('data', (data) => {
-    winston.error(`[rust-audio] ${data.toString().trim()}`);
+    winston.error(`[mstream-player] ${data.toString().trim()}`);
   });
 
   rustPlayerProcess.on('close', (code) => {
     clearTimeout(settleTimer);
-    winston.info(`rust-server-audio exited with code ${code}`);
+    winston.info(`mstream-player exited with code ${code}`);
     const settled = _rustStartupSettled;
     rustPlayerProcess = null;
     if (!settled) {
       // Died during startup → roll over to CLI.
-      bootCliFallback(`rust-server-audio exited early (code ${code})`).catch(() => {});
+      bootCliFallback(`mstream-player exited early (code ${code})`).catch(() => {});
     }
   });
 
   rustPlayerProcess.on('error', (err) => {
     clearTimeout(settleTimer);
-    winston.error(`Failed to start rust-server-audio: ${err.message}`);
+    winston.error(`Failed to start mstream-player: ${err.message}`);
     const settled = _rustStartupSettled;
     rustPlayerProcess = null;
     if (!settled) {
-      bootCliFallback(`rust-server-audio spawn failed: ${err.message}`).catch(() => {});
+      bootCliFallback(`mstream-player spawn failed: ${err.message}`).catch(() => {});
     }
   });
 }
@@ -443,7 +471,7 @@ export function setup(mstream) {
         'a{color:#7aabdf;text-decoration:none;}a:hover{text-decoration:underline;}' +
         '</style></head><body><div class="box">' +
         '<h1>Server Audio Unavailable</h1>' +
-        '<p>The server audio player is not running. Start the rust-server-audio binary or enable ' +
+        '<p>The server audio player is not running. Start the mstream-player binary or enable ' +
         '<b>autoBootServerAudio</b> in the <a href="/admin">admin panel</a>.</p>' +
         '<a href="/server-remote">Retry</a> &middot; <a href="/">Normal Mode</a>' +
         '</div></body></html>'

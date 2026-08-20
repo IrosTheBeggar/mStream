@@ -23,7 +23,7 @@ import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
 import { isAdminAllowed } from '../util/admin-network.js';
 import WebError from '../util/web-error.js';
-import { bootRustPlayer, killRustPlayer, proxyToRust, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers } from './server-playback.js';
+import { bootRustPlayer, killRustPlayer, proxyToRust, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers, playerBinaryFetchable } from './server-playback.js';
 import { listImplementedMethods, methodStatusTable } from './subsonic/index.js';
 import * as lyricsLrclib from './lyrics-cache.js';
 import { warmScrobbleUser } from './scrobbler.js';
@@ -1540,6 +1540,10 @@ export function setup(mstream) {
       backend: active.backend,
       player: active.player,
       detectedCliPlayers: getDetectedCliPlayers(),
+      // Whether a missing player binary could be fetched for this platform
+      // (npm/source installs download it on first autoBoot; musl hosts
+      // have no build and report false).
+      binaryFetchable: playerBinaryFetchable(),
     });
   });
 

@@ -1,0 +1,40 @@
+{
+  "family": "mstream-player",
+  "schema": 2,
+  "repo": "IrosTheBeggar/mstream-terminal-player",
+  "tag": "v0.3.0",
+  "builtFrom": "51ec063422e0e581d187c392a8c469002393fa64",
+  "release": "https://github.com/IrosTheBeggar/mstream-terminal-player/releases/tag/v0.3.0",
+  "assets": {
+    "mstream-player-darwin-arm64": {
+      "file": "mstream-player-darwin-arm64",
+      "sha256": "e2ac81b3bac2482f8f47ce56a00444c006e4fae8a7c95786ddacee450d161b47",
+      "size": 19714448
+    },
+    "mstream-player-darwin-x64": {
+      "file": "mstream-player-darwin-x64",
+      "sha256": "83c7e781473ca39cf3b461ede6b69b4f452b9989c5f878b0ad48c4ee673a6245",
+      "size": 22443360
+    },
+    "mstream-player-linux-arm": {
+      "file": "mstream-player-linux-arm",
+      "sha256": "8221c5d34b17d55f4ac429a340722f022371dd275684e8ff5b33ddcf1de6a42f",
+      "size": 20950140
+    },
+    "mstream-player-linux-arm64": {
+      "file": "mstream-player-linux-arm64",
+      "sha256": "a9723d26fa7aed234c63fcbc589552ed5a8ebb97529b15af27a68cab04ac0244",
+      "size": 22113808
+    },
+    "mstream-player-linux-x64": {
+      "file": "mstream-player-linux-x64",
+      "sha256": "168758e9af23470c4ae1708c6e92d8622b8be62787a08d10994d56d1a385a0ed",
+      "size": 26119648
+    },
+    "mstream-player-win32-x64.exe": {
+      "file": "mstream-player-win32-x64.exe",
+      "sha256": "b13be3cebc33fa3e8a9a404dbd6d542f5125f75a5d5a89867629fc774ed4288c",
+      "size": 24360960
+    }
+  }
+}

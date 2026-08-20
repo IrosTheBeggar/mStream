@@ -5,8 +5,9 @@
 # add ~20MB to every `npm i mstream`. npm only consults .gitignore when no
 # .npmignore exists, so everything below must stay a mirror of .gitignore
 # (minus the launcher negations); if you change one file, change the other.
-# The rust-parser/rust-server-audio negations are load-bearing: the npm
-# server DOES spawn those at runtime.
+# The rust-parser negations are load-bearing: the npm server DOES spawn
+# it at runtime. (mstream-player and the p2p sidecar are fetched on first
+# use instead — only their pin manifests ship.)
 
 node_modules/*
 # build-bun.yml installs the VersionInfo stamper (resedit) here on the win-x64 leg
@@ -41,10 +42,12 @@ bin/rust-parser/*
 # CI provenance stamp) — release bundles get them via scripts/build-bun.mjs.
 bin/rust-launcher/
 
-bin/rust-server-audio/*
-!bin/rust-server-audio/README.md
-!bin/rust-server-audio/rust-server-audio-*
-!bin/rust-server-audio/.source-tree
+# mstream-player binaries are fetched on first use from the player repo's
+# release assets, sha256-pinned by the committed manifest — only the pins
+# and the README ship in the tarball.
+bin/mstream-player/*
+!bin/mstream-player/README.md
+!bin/mstream-player/manifest.json
 
 # p2p-sidecar binaries are fetched on first use from the sidecar repo's
 # release assets, sha256-pinned by the committed manifests below — they must
@@ -77,12 +80,12 @@ bun.lock
 .env
 
 rust-parser/target/
-rust-server-audio/target/
 rust-launcher/target/
 # Nested sidecar-repo clone (dev loop) — never ships in the tarball.
 # Anchored: unanchored it would also swallow bin/p2p-sidecar/'s manifests
 # (same pitfall as .gitignore — see there).
 /p2p-sidecar/
+/mstream-terminal-player/
 
 save/waveforms/*
 !save/waveforms/README.md

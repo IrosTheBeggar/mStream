@@ -271,7 +271,7 @@ export async function startServer(opts = {}) {
       // stack degrades exactly like the missing-binary case). Suites that
       // exercise the fetch itself bring their own loopback store and
       // override this via `env`.
-      env: { ...process.env, NODE_ENV: 'test', MSTREAM_TEST_BAKED_SEEDS: '[]', MSTREAM_SIDECAR_BASE: 'http://127.0.0.1:9', ...env },
+      env: { ...process.env, NODE_ENV: 'test', MSTREAM_TEST_BAKED_SEEDS: '[]', MSTREAM_SIDECAR_BASE: 'http://127.0.0.1:9', MSTREAM_PLAYER_BASE: 'http://127.0.0.1:9', ...env },
     },
   );
 

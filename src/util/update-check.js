@@ -12,7 +12,7 @@
 // ~/Applications .app where any write breaks the notarization seal).
 //
 // What "an update" means: the WHOLE bundle folder, never the server binary
-// alone. webapp/, rust-parser (hash-generation gated), rust-server-audio, and
+// alone. webapp/, rust-parser (hash-generation gated), mstream-player, and
 // the p2p sidecar all ship inside the zip and must move together — a lone
 // binary swap leaves a stale UI and sidecars that can never self-heal (the
 // bundle's sidecar sits on the "operator property" rung of discovery-p2p's
