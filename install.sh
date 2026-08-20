@@ -401,14 +401,40 @@ if [ -z "${MSTREAM_NO_DESKTOP:-}" ]; then
         # hand (no marker) is left alone.
         mkdir -p "$HOME/Applications"
         dest="$HOME/Applications/mStream.app"
+        # Is anything running from under this path? pgrep matches the COMMAND
+        # string (argv), which keeps saying the ORIGINAL path even after the
+        # directory is renamed aside - so a busy $dest also means the .old.*
+        # asides may be live trees, and none of them can be swept this run.
+        apps_busy() { command -v pgrep >/dev/null 2>&1 && pgrep -f "^$1/" >/dev/null 2>&1; }
         if [ -e "$dest" ] && [ ! -L "$dest" ] && ! apps_copy_is_ours; then
             desktop_note="app: $ROOT/current/mStream.app  (~/Applications/mStream.app is your own copy - replace it with this one when you're ready)"
         elif [ -n "$installed_fresh" ] || [ ! -e "$dest" ]; then
+            # Sweep asides left by earlier upgrades that ran while mStream was
+            # live (below) - only once nothing runs from the copy at all.
+            if ! apps_busy "$dest"; then
+                for old in "$dest".old.*; do
+                    [ -e "$old" ] || continue
+                    apps_busy "$old" && continue
+                    rm -rf "$old"
+                done
+            fi
             rm -rf "$dest.installing"
             if ditto "$ROOT/$bundle/mStream.app" "$dest.installing" 2>/dev/null; then
                 # A symlink from an older run of this script gives way too.
                 [ -L "$dest" ] && rm -f "$dest"
-                [ -d "$dest" ] && mv "$dest" "$dest.old.$$" && rm -rf "$dest.old.$$"
+                if [ -d "$dest" ]; then
+                    # Replace the directory ENTRY, but never delete a tree a
+                    # live process runs from: the binary itself survives an
+                    # unlink, but the running app's webapp/ and bin/ sidecars
+                    # are read from disk on demand - rm -rf here kills its UI
+                    # mid-flight. Move the old copy aside instead; a later
+                    # idle run sweeps it (above).
+                    if apps_busy "$dest"; then
+                        mv "$dest" "$dest.old.$(date +%Y%m%d%H%M%S).$$"
+                    else
+                        mv "$dest" "$dest.old.$$" && rm -rf "$dest.old.$$"
+                    fi
+                fi
                 mv "$dest.installing" "$dest"
                 # Marker AFTER the copy is in place, and OUTSIDE the bundle.
                 # (This also heals a copy from the old installer, which wrote
@@ -435,9 +461,13 @@ fi
 # no server, no window. Only when the user has it enabled - never turn it
 # on for them here. Which launcher: the one the user actually opens - the
 # ~/Applications copy on macOS when this installer owns it (a stable path
-# across upgrades), else the one behind `current`.
+# across upgrades), else the one behind `current`. Ownership means
+# apps_copy_is_ours - the SIBLING marker; testing only the legacy inner
+# marker here made every current-installer install re-point the login item
+# at the versioned folder instead, exactly what this step exists to avoid.
 launcher="$ROOT/current/$launcher_rel"
-if [ "$platform" = darwin ] && [ -f "$HOME/Applications/mStream.app/Contents/.mstream-installer" ]; then
+if [ "$platform" = darwin ] && apps_copy_is_ours \
+    && [ -x "$HOME/Applications/mStream.app/Contents/MacOS/mStream" ]; then
     launcher="$HOME/Applications/mStream.app/Contents/MacOS/mStream"
 fi
 if [ -x "$launcher" ] && [ -n "$installed_fresh" ]; then
