@@ -22,16 +22,23 @@
 // winresource for non-windows targets built on a Windows host. No-op for
 // every non-Windows TARGET.
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
-        return;
-    }
-    println!("cargo:rerun-if-changed=../build/mstream-logo-cut.ico");
     println!("cargo:rerun-if-changed=../package.json");
     let pkg: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string("../package.json").expect("read ../package.json"),
     )
     .expect("parse package.json");
     let version = pkg["version"].as_str().unwrap_or("0.0.0");
+    // Compile-time bundle version for EVERY target (the Windows VersionInfo
+    // below stamps only PEs): the tray's status line shows the server version
+    // from update-status.json once the server writes it, and this stamp is
+    // the before-first-boot fallback. Launcher binaries are rebuilt each
+    // release (deploy.md step 2), so the stamp always matches the bundle.
+    println!("cargo:rustc-env=MSTREAM_BUNDLE_VERSION={version}");
+
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    println!("cargo:rerun-if-changed=../build/mstream-logo-cut.ico");
     let author = pkg["author"]["name"].as_str().unwrap_or("");
     let license = pkg["license"].as_str().unwrap_or("");
 

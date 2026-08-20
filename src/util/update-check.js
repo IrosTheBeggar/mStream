@@ -203,6 +203,10 @@ const state = {
   stagedVersion: null,
   downloading: false,
   applyRequested: false,
+  // A fresh token per arm (ISO timestamp): the launcher retries a FAILED
+  // apply only when a NEW request arrives — same-version auto-retry loops
+  // and stale-request replays are both ruled out by comparing this value.
+  applyRequestedAt: null,
   installerPath: null,      // inno/pkg: the verified installer the launcher may spawn
   downloadUrl: null,        // non-managed: where a human gets the update
   lastCheckAt: null,
@@ -406,12 +410,24 @@ export function stageNow(manifest = null) {
   if (!state.latest || !state.available) { return { error: 'no update available' }; }
   if (_staging) { return { started: true }; }
   const target = state.latest;
-  // The managed download is minutes on a slow link and runs inside the
-  // spawned installer — surface it, exactly as the inno path does, so the
-  // card and the tray don't report "not downloaded" mid-download.
-  state.downloading = true;
-  writeStatus().catch(() => {});
-  _staging = runInstallerScript(target, m.root)
+  _staging = (async () => {
+    // A previous (possibly pre-restart) stage may already sit behind
+    // `current` — re-running the installer would re-download the whole
+    // bundle only to short-circuit into "already installed". Trust the
+    // link: it only ever points at a bundle whose pre-flip exec probe
+    // passed. This also makes a launcher-side failed-apply recovery cycle
+    // cheap instead of a fresh download per attempt.
+    if (await stagedVersionFromRoot(m.root) === target) {
+      winston.info(`[update] mStream ${target} is already staged on disk - skipping the re-download`);
+      return;
+    }
+    // The managed download is minutes on a slow link and runs inside the
+    // spawned installer — surface it, exactly as the inno path does, so the
+    // card and the tray don't report "not downloaded" mid-download.
+    state.downloading = true;
+    writeStatus().catch(() => {});
+    await runInstallerScript(target, m.root);
+  })()
     .then(async () => {
       const landed = await stagedVersionFromRoot(m.root);
       if (!landed) {
@@ -636,6 +652,7 @@ export async function requestApply() {
     return { opened: true };
   }
   state.applyRequested = true;
+  state.applyRequestedAt = new Date().toISOString();
   await writeStatus();
   if (m.method === 'managed' && !supervisedByLauncher()) {
     scheduleHeadlessExit('an admin requested the update');
@@ -668,6 +685,7 @@ function maybeAutoApply() {
   // Launcher-supervised (managed restart, or inno silent install): flag it;
   // the launcher acts within a minute.
   state.applyRequested = true;
+  state.applyRequestedAt = new Date().toISOString();
   writeStatus().catch(() => {});
 }
 
@@ -812,6 +830,7 @@ async function enforceSkip() {
   state.staged = false;
   state.stagedVersion = null;
   state.applyRequested = false;
+  state.applyRequestedAt = null;
   if (!ok) {
     state.error = `Version ${held} is skipped, but the previous version could not be fully restored - `
       + `re-run the installer with MSTREAM_VERSION=v${state.current} to finish the rollback`;
@@ -852,6 +871,7 @@ export function setup(mstream, hooks = {}) {
     state.staged = false;
     state.stagedVersion = null;
     state.applyRequested = false;
+    state.applyRequestedAt = null;
   }
   writeStatus().catch(() => {});
   if (_bootTimer || _checkTimer) { return; }
@@ -875,7 +895,7 @@ export function stopForTests() {
   _exiting = false;
   state.skipped = false;
   state.latest = null; state.available = false; state.staged = false;
-  state.stagedVersion = null; state.applyRequested = false; state.error = null;
+  state.stagedVersion = null; state.applyRequested = false; state.applyRequestedAt = null; state.error = null;
   state.installerPath = null; state.downloadUrl = null; state.notifyOnly = false;
   state.downloading = false; state.method = null; state.lastCheckAt = null;
 }

@@ -283,6 +283,144 @@ pub fn open_logs_terminal(logs_dir: &std::path::Path) -> Result<(), String> {
     }
 }
 
+/// Start the NEW launcher for the apply-update handoff, detached, and return
+/// so the caller can exit. Always passes `--takeover`: the new instance
+/// retries the single-instance lock briefly (we still hold it for the last
+/// few milliseconds of our life) and skips first-run behavior like the
+/// browser announce.
+///
+/// macOS .app targets go through `open -n`: a bare exec of the inner binary
+/// works, but LaunchServices activation is what keeps the menu-bar
+/// registration and reopen events behaving like an app the user launched.
+/// This is a spawn+exit handoff, NOT an exec-in-place: AppKit/gtk state does
+/// not survive exec, and PID continuity buys nothing here (nothing
+/// supervises the launcher).
+/// `server_args` are the current session's forwarded server flags (-j, --portable,
+/// ...) — the relaunched instance must serve the SAME config, so they ride
+/// along. (Env-shaped overrides like MSTREAM_SERVER_BIN survive the direct
+/// spawn but not `open -n`, which launches through LaunchServices; argv is
+/// the reliable carrier.)
+pub fn relaunch(target: &std::path::Path, server_args: &[String]) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Testing hook (same family as MSTREAM_LAUNCHER_SKIP_AUTOSTART):
+        // smokes run inside a redirected HOME, which `open -n` would discard
+        // — launchd starts apps with the session's real environment. Direct
+        // spawn keeps the sandbox; real usage wants LaunchServices below.
+        let direct = std::env::var_os("MSTREAM_LAUNCHER_DIRECT_RELAUNCH").is_some();
+        // .../mStream.app/Contents/MacOS/mStream -> the .app root.
+        let app_root = target
+            .ancestors()
+            .find(|p| p.extension().is_some_and(|e| e == "app"))
+            .filter(|_| !direct);
+        if let Some(app) = app_root {
+            // status(), not spawn(): `open` exits nonzero when LaunchServices
+            // refuses the launch (damaged bundle, Gatekeeper). A fire-and-
+            // forget spawn would report Ok on a launch that never happened,
+            // and the caller — who already stopped the server — would exit
+            // into nothing. `open` returns promptly either way.
+            return match std::process::Command::new("/usr/bin/open")
+                .arg("-n")
+                .arg(app)
+                .arg("--args")
+                .arg("--takeover")
+                .args(server_args)
+                .status()
+            {
+                Ok(st) if st.success() => {
+                    // Exit 0 only proves LaunchServices ACCEPTED the launch:
+                    // a takeover that execs and dies instantly (missing
+                    // server sibling in a bad staged copy, an early panic)
+                    // still reports success — measured with a bundle whose
+                    // executable is `exit 7`. Poll briefly for a live
+                    // process under the app path that is not US (the old
+                    // launcher may share the exact path); the takeover
+                    // stays alive through its ~12s lock retry, so any
+                    // healthy handoff is visible well within this window.
+                    let pat = format!("^{}/", crate::paths::escape_ere(&app.display().to_string()));
+                    let me = std::process::id().to_string();
+                    for _ in 0..8 {
+                        std::thread::sleep(std::time::Duration::from_millis(250));
+                        match std::process::Command::new("/usr/bin/pgrep").arg("-f").arg(&pat).output() {
+                            Ok(out) => {
+                                if String::from_utf8_lossy(&out.stdout)
+                                    .lines()
+                                    .any(|l| !l.trim().is_empty() && l.trim() != me)
+                                {
+                                    return Ok(());
+                                }
+                            }
+                            // pgrep itself failing must not fail a possibly
+                            // healthy handoff.
+                            Err(_) => return Ok(()),
+                        }
+                    }
+                    Err(format!("takeover under {} never appeared after open", app.display()))
+                }
+                Ok(st) => Err(format!("open -n {} exited {st}", app.display())),
+                Err(e) => Err(format!("open -n {}: {e}", app.display())),
+            };
+        }
+    }
+    let mut cmd = std::process::Command::new(target);
+    cmd.arg("--takeover");
+    cmd.args(server_args);
+    // The child must outlive US and our whole session: null stdio (an
+    // inherited pty dies with the old session and would SIGHUP the update —
+    // measured) and, on unix, its own session via setsid (no controlling
+    // terminal at all).
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(DETACHED_PROCESS);
+    }
+    match cmd.spawn() {
+        Ok(mut child) => {
+            // A brief liveness check: a takeover that dies within its first
+            // beat (bad interpreter, immediate loader failure) means the
+            // handoff did NOT happen — report it so the caller can recover
+            // instead of exiting into nothing. Past this window the child
+            // owns its own fate (its lock retry outlives us).
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            match child.try_wait() {
+                Ok(Some(st)) => Err(format!("{} exited immediately: {st}", target.display())),
+                _ => Ok(()),
+            }
+        }
+        Err(e) => Err(format!("spawn {}: {e}", target.display())),
+    }
+}
+
+/// Windows: run the verified update installer, detached, and return so the
+/// tray can exit before the installer's process sweep begins. Silent =
+/// Inno's /VERYSILENT unattended path (a param-gated [Run] entry in the .iss
+/// relaunches the tray afterwards); non-silent shows the familiar wizard.
+#[cfg(windows)]
+pub fn spawn_installer_detached(installer: &std::path::Path, silent: bool) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    let mut cmd = std::process::Command::new(installer);
+    if silent {
+        cmd.args(["/VERYSILENT", "/NORESTART", "/MSTREAMRELAUNCH=1"]);
+    }
+    cmd.creation_flags(DETACHED_PROCESS);
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("spawn {}: {e}", installer.display()))
+}
+
 /// POSIX single-quote a path for embedding in `sh -c` text — the macOS data
 /// home ("Application Support") guarantees a space.
 #[cfg(unix)]
