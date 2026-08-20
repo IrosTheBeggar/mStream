@@ -1,61 +1,135 @@
-
 name: Update Website
 
+# Stamps a published server release into the NEW Astro site
+# (IrosTheBeggar/mstream-website): src/data/release.json is the site's single
+# source of truth for every download link (its own $comment documents this
+# contract), and a push to the site's master triggers its Bunny CDN deploy.
+# This replaces the old global-sed of templates/express.html (file gone with
+# the Astro rewrite).
+#
+# Channel rules:
+#   - Only STABLE SERVER tags stamp (vX.Y.Z, not marked prerelease). The
+#     legacy -DESKTOP_PLAYER channel and asset-store re-publishes
+#     (discovery-models-*, and any human re-publish of a data release) must
+#     never touch the site; release.json's `desktop` block is legacy-manual
+#     by the site's own convention (its file versions don't derive from the
+#     tag).
+#   - Before stamping, every asset the site will render a button for must
+#     exist on the release — stamping a half-published release would ship a
+#     download page of 404s.
+#
+# workflow_dispatch = re-stamp from master's package.json (the release for
+# that version must already exist — same asset check applies). With the
+# site already current it's a green no-op, which doubles as the auth/path
+# rehearsal.
 on:
-  # Stamps the published server version into the mstream.io download page.
-  # CONVENTION this depends on: in mstream-website's templates/express.html,
-  # every x.y.z string IS the release version (table header + the version
-  # embedded twice in each release-asset URL) — that's what the global sed
-  # below rewrites. Keep that page free of any other three-part version
-  # number, or replace this sed with a template variable.
   release:
     types: [published]
   workflow_dispatch:
 
 jobs:
   update-website:
-    # Server releases only. The `-DESKTOP_PLAYER` companion
-    # release bumps a different version channel entirely; the
-    # mstream.io website's homepage badge tracks the server.
-    if: ${{ !endsWith(github.event.release.tag_name, '-DESKTOP_PLAYER') }}
+    if: github.event_name == 'workflow_dispatch' || (startsWith(github.event.release.tag_name, 'v') && !endsWith(github.event.release.tag_name, '-DESKTOP_PLAYER') && github.event.release.prerelease == false)
     runs-on: ubuntu-latest
     steps:
-      - name: get node
-        uses: actions/setup-node@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - name: checkout mstream.io source code
-        uses: actions/checkout@v6
-        with:
-          path: website
-          repository: IrosTheBeggar/mstream-website
-          ref: master
-          ssh-key: ${{ secrets.WEBSITE_KEY }}
+
       - name: checkout mStream app code
         uses: actions/checkout@v6
         with:
           path: mstream
           repository: IrosTheBeggar/mStream
           ref: master
-      - run: ls
-      - run: |
-          cd website
-          VERS=$(node -pe "require('../mstream/package.json').version")
-          node -pe "require('../mstream/package.json').version"
-          echo "v$(node -pe "require('../mstream/package.json').version")" 
-          echo $VERS
-          sed -i "s/[1-9]\+[0-9]*\.[0-9]\+\.[0-9]\+/$VERS/g" templates/express.html
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git add .
-          # No-op runs must stay green: the page may already carry this
-          # version (first release after a manual page rewrite, or a
-          # re-published release) and `git commit` errors on an empty stage.
-          if git diff --cached --quiet; then
-            echo "page already at $VERS - nothing to stamp"
+
+      - name: resolve tag + version
+        id: rel
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="$EVENT_TAG"
+          else
+            TAG="v$(node -pe "require('./mstream/package.json').version")"
+          fi
+          # Belt over the job-level if: exactly vX.Y.Z. Anything else (betas,
+          # oddly named tags) skips green rather than stamping the site.
+          if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "tag '$TAG' is not a stable server release — nothing to stamp"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git commit -m "action: update server"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: verify every site-linked asset exists on the release
+        if: steps.rel.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.rel.outputs.tag }}
+          VERS: ${{ steps.rel.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' > have.txt
+          missing=0
+          # Exactly the file names src/data/downloads.ts renders: the five
+          # portable zips + two musl zips, the Windows installer, both pkgs,
+          # both debs, both rpms.
+          for f in \
+            "mStream-$VERS-win-x64.zip" \
+            "mStream-$VERS-darwin-arm64.zip" \
+            "mStream-$VERS-darwin-x64.zip" \
+            "mStream-$VERS-linux-x64.zip" \
+            "mStream-$VERS-linux-arm64.zip" \
+            "mStream-$VERS-linux-x64-musl.zip" \
+            "mStream-$VERS-linux-arm64-musl.zip" \
+            "mStream-$VERS-win-x64-setup.exe" \
+            "mStream-$VERS-darwin-arm64.pkg" \
+            "mStream-$VERS-darwin-x64.pkg" \
+            "mstream_${VERS}_amd64.deb" \
+            "mstream_${VERS}_arm64.deb" \
+            "mstream-$VERS-1.x86_64.rpm" \
+            "mstream-$VERS-1.aarch64.rpm"; do
+            grep -qxF "$f" have.txt || { echo "::error::release $TAG is missing asset $f — the download page would 404; fix the release, then re-run this workflow"; missing=1; }
+          done
+          [ "$missing" = "0" ]
+
+      - name: checkout mstream.io source code
+        if: steps.rel.outputs.skip == 'false'
+        uses: actions/checkout@v6
+        with:
+          path: website
+          repository: IrosTheBeggar/mstream-website
+          ref: master
+          ssh-key: ${{ secrets.WEBSITE_KEY }}
+
+      - name: stamp release.json and push
+        if: steps.rel.outputs.skip == 'false'
+        env:
+          TAG: ${{ steps.rel.outputs.tag }}
+          VERS: ${{ steps.rel.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd website
+          node -e '
+            const fs = require("fs");
+            const p = "src/data/release.json";
+            const j = JSON.parse(fs.readFileSync(p, "utf8"));
+            j.server = { version: process.env.VERS, tag: process.env.TAG };
+            fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+          '
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add src/data/release.json
+          # No-op runs stay green: a re-published release or a dispatch
+          # rehearsal may find the site already current.
+          if git diff --cached --quiet; then
+            echo "site already at $TAG — nothing to stamp"
+            exit 0
+          fi
+          git commit -m "action: server release $TAG"
           git push
-
-
+          echo "stamped $TAG — the site repo's Bunny deploy takes it from here"
