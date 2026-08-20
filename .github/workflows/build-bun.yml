@@ -1610,6 +1610,14 @@ jobs:
           scripts:
             postinstall: ./pkg/postinstall.sh
             postremove: ./pkg/postremove.sh
+          # xz over nfpm's gzip default: ~25-30% smaller on this binary-heavy
+          # payload (measured against the released bundles), and xz is the
+          # compatibility-safe strong choice (dpkg since 2012, rpm since 4.7 /
+          # EL6 — zstd would exclude EL7 and older dpkg).
+          deb:
+            compression: xz
+          rpm:
+            compression: xz
           overrides:
             deb:
               depends: [libc6]
@@ -1638,6 +1646,10 @@ jobs:
             - src: /opt/mstream/mstream-server
               dst: /usr/bin/mstream-server
               type: symlink
+          deb:
+            compression: xz
+          rpm:
+            compression: xz
           overrides:
             deb:
               depends: [libc6]

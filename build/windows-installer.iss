@@ -56,9 +56,15 @@ SetupIconFile={#SourcePath}\mstream-logo-cut.ico
 UninstallDisplayIcon={app}\mStream.exe
 UninstallDisplayName=mStream
 LicenseFile={#SourcePath}\..\LICENSE
-; lzma2/fast: the server exe is ~120 MB; max squeezes a few MB more for
-; minutes of every CI win-leg's time.
-Compression=lzma2/fast
+; lzma2/ultra64 (64 MB dictionary): measured on the real 6.20.x payload
+; (~162 MB, dominated by the ~120 MB server exe), lzma2 max-class beats the
+; old lzma2/fast by ~25% — 51 -> 38 MB in a same-payload 7z proxy, so the
+; setup.exe drops from ~56 MB to the low-to-mid 40s. Two block threads keep
+; the CI compile in check (each thread compresses an independent block:
+; ~halves the wall time for a 1-2% ratio give-back, and bounds memory at
+; ~1.4 GB on the 4-core runner).
+Compression=lzma2/ultra64
+LZMANumBlockThreads=2
 SolidCompression=yes
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
