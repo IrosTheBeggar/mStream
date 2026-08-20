@@ -1222,22 +1222,6 @@ jobs:
           rm -rf "$RUN/sc-selftest"
           echo "ok: baked-in p2p-sidecar executes ($(basename "$SC"))"
 
-          # (1c) the baked-in mstream-player (server audio): same deal —
-          # staged from its pinned release, sha-verified at bundle time, and
-          # --version is its one-shot self-test (no audio device needed,
-          # which the runner doesn't have). musl bundles ship none (no musl
-          # build; server audio is opt-in there).
-          case "${{ matrix.key }}" in
-            *-musl) echo "skip: no mstream-player on musl bundles" ;;
-            *)
-              PL=$(ls "$RUN"/bin/mstream-player/mstream-player-* 2>/dev/null | head -1)
-              [ -n "$PL" ] || { echo "FAIL: no mstream-player staged in the bundle (bin/mstream-player empty)"; exit 1; }
-              PLOUT=$("$PL" --version 2>/dev/null)
-              echo "$PLOUT" | grep -Eq '^mstream-player [0-9]+\.[0-9]+\.[0-9]+' || { echo "FAIL: staged mstream-player --version produced no/invalid output"; echo "$PLOUT"; exit 1; }
-              echo "ok: baked-in mstream-player executes ($(basename "$PL"))"
-              ;;
-          esac
-
           # (2) default-path boot (no -j) — the double-click invocation. A fresh
           # standalone install is the DESKTOP profile: the config resolves to the
           # per-OS user data home and is generated with Quick Connect on
@@ -1538,6 +1522,28 @@ jobs:
           if [ "$CONCURRENT_OK" != "1" ]; then echo "FAIL: server did not survive two overlapping reboots"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; fi
           if [ "$BINDCHANGE_OK" != "1" ]; then echo "FAIL: the bind-change reboot did not recycle onto the new bind"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; fi
           echo "SMOKE OK: $BIN booted, served 200, Rust-scanned the fixture, and survived a soft reboot, overlapping reboots, and a bind change"
+
+      # The staged mstream-player (server audio) must EXECUTE on this leg —
+      # staged from its pinned release, sha-verified at bundle time, and
+      # --version is its one-shot self-test (no audio device needed, which
+      # the runner doesn't have; the engine opens audio only in serve
+      # mode). On darwin this runs the SIGNED copy. A separate step, not
+      # part of the big smoke above: that step's run block is a single
+      # GitHub expression, and it sits near the 21000-char expression cap.
+      - name: Smoke test staged mstream-player (--version)
+        if: matrix.smoke
+        shell: bash
+        run: |
+          D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
+          case "${{ matrix.key }}" in
+            darwin-*) B="$D/mStream.app/Contents/MacOS/bin" ;;
+            *)        B="$D/bin" ;;
+          esac
+          PL=$(ls "$B"/mstream-player/mstream-player-* 2>/dev/null | head -1)
+          [ -n "$PL" ] || { echo "::error::no mstream-player staged in the bundle (bin/mstream-player empty)"; exit 1; }
+          OUT=$("$PL" --version 2>/dev/null)
+          echo "$OUT" | grep -Eq '^mstream-player [0-9]+\.[0-9]+\.[0-9]+' || { echo "::error::staged mstream-player --version produced no/invalid output"; echo "$OUT"; exit 1; }
+          echo "OK: staged mstream-player executes ($(basename "$PL"))"
 
       - name: Smoke test desktop launcher (spawn + supervise + no-orphan)
         # The launcher IS the bundle's double-click face now. Prove the
