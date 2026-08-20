@@ -264,13 +264,22 @@ export function resolveFilePath(filePath, user) {
   return info.fullPath;
 }
 
+// Is `child` the same path as `root`, or inside it? A plain startsWith isn't
+// enough: "C:\Music" is a prefix of "C:\MusicVideos\song.mp3" without
+// containing it, which produced vpaths like "music/../MusicVideos/song.mp3".
+export function isWithin(child, root) {
+  if (child === root) { return true; }
+  const withSep = root.endsWith(path.sep) ? root : root + path.sep;
+  return child.startsWith(withSep);
+}
+
 // Reverse: convert an absolute path back to a virtual path (e.g. "55/song.mp3")
 export function absoluteToVpath(absolutePath) {
   const normalized = path.normalize(absolutePath);
   const libraries = db.getAllLibraries();
   for (const lib of libraries) {
     const root = path.normalize(lib.root_path);
-    if (normalized.startsWith(root)) {
+    if (isWithin(normalized, root)) {
       const relative = path.relative(root, normalized);
       return lib.name + '/' + relative.replace(/\\/g, '/');
     }
