@@ -151,10 +151,13 @@ jobs:
           # `current`: probe-before-flip refuses, exits nonzero, keeps the
           # working install (the in-app updater treats that exit as a failed
           # stage instead of arming a landmine for the next restart)
-          bb="mStream-9.9.10-linux-x64"; mkdir -p "rel/$bb"
+          bb="mStream-9.9.10-linux-x64"
+          # sweep BEFORE creating the new bundle dir: the glob covers the
+          # fake installer files too, and rm -f refuses directories
+          rm -f rel/mStream-* rel/manifest.json
+          mkdir -p "rel/$bb"
           printf '#!/bin/sh\nexit 1\n' > "rel/$bb/mstream-server"; chmod +x "rel/$bb/mstream-server"
           echo broken > "rel/$bb/README.txt"
-          rm -f rel/mStream-* rel/manifest.json
           (cd rel && python3 -m zipfile -c "$bb.zip" "$bb" && rm -rf "$bb")
           sh scripts/release-manifest.sh 9.9.10 rel
           if sh install.sh > broken.log 2>&1; then echo "::error::installed a bundle that cannot exec"; exit 1; fi
