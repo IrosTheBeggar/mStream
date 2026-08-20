@@ -896,8 +896,20 @@ jobs:
           mkdir -p dist/installer pkgwork
           PKG="dist/installer/mStream-$VER-$KEY.pkg"
 
-          pkgbuild --component "$APP" --install-location /Applications \
-            --identifier io.mstream.server --version "$VER" pkgwork/component.pkg
+          # BundleIsRelocatable=false, explicitly: with the default (true),
+          # macOS installer lets Spotlight pick the install target - and when
+          # it has indexed the STAGED mStream.app sitting in this very
+          # workspace, "Upgrading at base path /" relocates the payload onto
+          # the stage copy instead of /Applications (bit the v6.21.1 tag build
+          # on the arm64 leg; a Spotlight-indexing race, so earlier runs
+          # passed). Users keep a fixed /Applications install path too.
+          # Needs the --root + --component-plist form (--component accepts no
+          # plist); ditto preserves the signed bundle bit-exactly.
+          rm -rf pkgwork/root && mkdir -p pkgwork/root
+          ditto "$APP" pkgwork/root/mStream.app
+          pkgbuild --analyze --root pkgwork/root pkgwork/component.plist
+          /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" pkgwork/component.plist
+          pkgbuild --root pkgwork/root --component-plist pkgwork/component.plist --install-location /Applications --identifier io.mstream.server --version "$VER" pkgwork/component.pkg
           case "$KEY" in
             darwin-arm64) ARCHS="arm64" ;;
             *)            ARCHS="x86_64,arm64" ;;   # x64 payload runs under Rosetta
@@ -1756,6 +1768,14 @@ jobs:
           scripts:
             postinstall: ./pkg/postinstall.sh
             postremove: ./pkg/postremove.sh
+          # xz over nfpm's gzip default: ~25-30% smaller on this binary-heavy
+          # payload (measured against the released bundles), and xz is the
+          # compatibility-safe strong choice (dpkg since 2012, rpm since 4.7 /
+          # EL6 — zstd would exclude EL7 and older dpkg).
+          deb:
+            compression: xz
+          rpm:
+            compression: xz
           overrides:
             deb:
               depends: [libc6]
@@ -1784,6 +1804,10 @@ jobs:
             - src: /opt/mstream/mstream-server
               dst: /usr/bin/mstream-server
               type: symlink
+          deb:
+            compression: xz
+          rpm:
+            compression: xz
           overrides:
             deb:
               depends: [libc6]

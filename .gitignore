@@ -20,6 +20,8 @@ save/sync-cdn/*
 
 bin/ffmpeg/*
 !bin/ffmpeg/README.md
+# The committed pin set the bootstrap downloads against (binaries stay ignored).
+!bin/ffmpeg/manifest.json
 
 bin/rust-parser/*
 !bin/rust-parser/README.md

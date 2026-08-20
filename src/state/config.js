@@ -326,10 +326,11 @@ const transcodeOptions = Joi.object({
   ffmpegDirectory: Joi.string().default(path.join(dataRoot, 'bin/ffmpeg')),
   defaultCodec: Joi.string().valid(...getTransCodecs()).default('opus'),
   defaultBitrate: Joi.string().valid(...getTransBitrates()).default('96k'),
-  // Auto-update the managed ffmpeg build (BtbN on Linux/Windows, martin-riedl
-  // on macOS) on a weekly check. Default on so codec/security fixes land
-  // without operator action. Set false to pin the current binary — useful when
-  // a rolling upstream build regresses, or for air-gapped / reproducible
+  // Refresh the managed ffmpeg build when the committed pins change
+  // (bin/ffmpeg/manifest.json — the check is local, no upstream polling).
+  // Default on so codec/security fixes shipped as manifest bumps land without
+  // operator action. Set false to freeze the current binary even across pin
+  // changes — useful when a build regresses, or for air-gapped / reproducible
   // installs. No effect when running off system ffmpeg (managed by the OS).
   autoUpdate: Joi.boolean().default(true)
 });
