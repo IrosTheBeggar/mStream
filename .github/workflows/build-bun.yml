@@ -102,6 +102,19 @@ jobs:
           cp rel/mStream-9.9.9-win-x64.zip rel/mStream-9.9.9-beta.1-win-x64.zip
           if sh scripts/release-manifest.sh 9.9.9 rel 2>/dev/null; then echo "::error::generator accepted a prerelease-named zip for 9.9.9"; exit 1; fi
           rm rel/mStream-9.9.9-beta.1-win-x64.zip
+          # Native-installer entries (the updater verifies setup.exe/.pkg by
+          # these hashes) — exercised HERE, not first on tag day: allowlist,
+          # extra same-shape lines, and wrong-version refusal. The e2e
+          # installs below then run against a manifest that carries them,
+          # proving the scripts' name-anchored greps really ignore extras.
+          printf 'i' > rel/mStream-9.9.9-win-x64-setup.exe
+          printf 'p' > rel/mStream-9.9.9-darwin-x64.pkg
+          printf 'p' > rel/mStream-9.9.9-darwin-arm64.pkg
+          sh scripts/release-manifest.sh 9.9.9 rel
+          node -e "const m=JSON.parse(require('fs').readFileSync('rel/manifest.json','utf8')); const names=m.assets.map(a=>a.file); if(m.assets.length!==10){console.error('want 10 assets with installers, got',m.assets.length);process.exit(1)}; for(const n of ['mStream-9.9.9-win-x64-setup.exe','mStream-9.9.9-darwin-x64.pkg','mStream-9.9.9-darwin-arm64.pkg']) if(!names.includes(n)){console.error('manifest missing',n);process.exit(1)}; console.log('manifest ok with installers:', m.assets.length, 'assets')"
+          printf 'x' > rel/mStream-8.8.8-win-x64-setup.exe
+          if sh scripts/release-manifest.sh 9.9.9 rel 2>/dev/null; then echo "::error::generator accepted a wrong-version installer"; exit 1; fi
+          rm rel/mStream-8.8.8-win-x64-setup.exe
           sh scripts/release-manifest.sh 9.9.9 rel
 
       - name: Serve the fake release
@@ -138,10 +151,13 @@ jobs:
           # `current`: probe-before-flip refuses, exits nonzero, keeps the
           # working install (the in-app updater treats that exit as a failed
           # stage instead of arming a landmine for the next restart)
-          bb="mStream-9.9.10-linux-x64"; mkdir -p "rel/$bb"
+          bb="mStream-9.9.10-linux-x64"
+          # sweep BEFORE creating the new bundle dir: the glob covers the
+          # fake installer files too, and rm -f refuses directories
+          rm -f rel/mStream-* rel/manifest.json
+          mkdir -p "rel/$bb"
           printf '#!/bin/sh\nexit 1\n' > "rel/$bb/mstream-server"; chmod +x "rel/$bb/mstream-server"
           echo broken > "rel/$bb/README.txt"
-          rm -f rel/mStream-*.zip rel/manifest.json
           (cd rel && python3 -m zipfile -c "$bb.zip" "$bb" && rm -rf "$bb")
           sh scripts/release-manifest.sh 9.9.10 rel
           if sh install.sh > broken.log 2>&1; then echo "::error::installed a bundle that cannot exec"; exit 1; fi
@@ -188,7 +204,7 @@ jobs:
           # which is exactly the probe-failure shape; only the presence of a
           # working-or-first-install current decides advisory vs refusal.
           $bb = 'mStream-9.9.10-win-x64'
-          Remove-Item rel\mStream-*.zip, rel\manifest.json -Force
+          Remove-Item rel\mStream-*, rel\manifest.json -Force
           # zip from INSIDE rel so entries carry no rel\ prefix
           Push-Location rel
           New-Item -ItemType Directory -Force $bb | Out-Null
@@ -244,7 +260,7 @@ jobs:
           exit 0
           STUB
           mkrel() {
-            rm -f rel/mStream-*.zip rel/manifest.json
+            rm -f rel/mStream-* rel/manifest.json
             b="mStream-$1-$DKEY"; mkdir -p "rel/$b/mStream.app/Contents/MacOS"
             printf '%s\n' "$1" > "rel/$b/mStream.app/Contents/VERSION"
             printf '#!/bin/sh\n[ "$1" = -V ] && echo %s\nexit 0\n' "$1" > "rel/$b/mStream.app/Contents/MacOS/mstream-server"
@@ -353,7 +369,21 @@ jobs:
         run: |
           $V = (bun --version).Trim()
           Write-Host "bun $V - pre-fetching bun-windows-x64-baseline runtime"
-          Invoke-WebRequest "https://github.com/oven-sh/bun/releases/download/bun-v$V/bun-windows-x64-baseline.zip" -OutFile baseline.zip
+          $rel = "https://github.com/oven-sh/bun/releases/download/bun-v$V"
+          Invoke-WebRequest "$rel/bun-windows-x64-baseline.zip" -OutFile baseline.zip
+          # This runtime is EMBEDDED into the shipped mstream-server.exe —
+          # previously the only input reaching a release PE with no hash
+          # check. Verify against the Bun release's own SHASUMS256.txt: not
+          # a committed pin (that belongs with a pinned Bun version), but it
+          # binds the bytes to the release they claim to come from and fails
+          # a truncated or substituted download loudly.
+          Invoke-WebRequest "$rel/SHASUMS256.txt" -OutFile shasums.txt
+          $want = (Select-String -Path shasums.txt -Pattern 'bun-windows-x64-baseline\.zip$' |
+            ForEach-Object { ($_.Line -split '\s+')[0] } | Select-Object -First 1)
+          if (-not $want) { throw 'SHASUMS256.txt has no entry for bun-windows-x64-baseline.zip' }
+          $got = (Get-FileHash -Algorithm SHA256 baseline.zip).Hash.ToLower()
+          if ($got -ne $want.ToLower()) { throw "baseline runtime sha256 mismatch: expected $want, got $got" }
+          Write-Host "baseline runtime sha256 verified ($got)"
           Expand-Archive baseline.zip -DestinationPath baseline-rt -Force
           $exe = (Get-ChildItem -Recurse baseline-rt -Filter bun.exe | Select-Object -First 1).FullName
           if (-not $exe) { throw 'bun.exe not found in the baseline runtime archive' }
@@ -575,6 +605,21 @@ jobs:
       # thing the stamp could have broken. Anything else (won't start, no
       # output, a different failure) fails. rust-parser and the launcher run
       # stamped/baked in the smoke steps below.
+      # The updater stages new versions by running the installer script
+      # embedded in its own bundle — a bundle that ships without one can
+      # never self-update, and nothing at runtime would say why. Assert it
+      # per leg, like the sidecar/launcher/iroh assets already are.
+      - name: Assert the embedded installer script shipped
+        shell: bash
+        run: |
+          D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
+          case "${{ matrix.key }}" in
+            win-x64) test -f "$D/install.ps1" || { echo "::error::install.ps1 missing from the bundle"; exit 1; } ;;
+            darwin-*) test -f "$D/mStream.app/Contents/Resources/install.sh" || { echo "::error::embedded install.sh missing (Contents/Resources)"; exit 1; } ;;
+            *) test -f "$D/install.sh" || { echo "::error::embedded install.sh missing"; exit 1; } ;;
+          esac
+          echo "OK: embedded installer present for ${{ matrix.key }}"
+
       - name: Assert Windows VersionInfo on every shipped PE (win-x64)
         if: matrix.key == 'win-x64'
         shell: pwsh
@@ -634,6 +679,24 @@ jobs:
       #   ASC_ISSUER_ID        issuer UUID (team keys only; empty for
       #                        individual keys — notarytool forbids --issuer
       #                        with those)
+      # ── Pristine installer payload (win-x64) ────────────────────────────
+      # The smoke steps below BOOT the staged bundle in place: they write
+      # boot logs and a smoke config into the stage dir, and each booted
+      # server's ffmpeg bootstrap downloads into <stage>/bin/ffmpeg
+      # (dataRoot == appRoot on a writable dir). The setup.exe must wrap the
+      # bytes the ZIP shipped — not that residue, whose exact contents vary
+      # with runner speed (up to a truncated mid-download ffmpeg). Snapshot
+      # now, after staging + the VersionInfo assert and before any smoke;
+      # the ISCC step compiles from this copy.
+      - name: Snapshot installer payload (win-x64)
+        if: matrix.key == 'win-x64'
+        shell: pwsh
+        run: |
+          $stage = (Get-Item dist/stage/mStream-*-win-x64).FullName
+          $snap = Join-Path $env:RUNNER_TEMP 'installer-stage'
+          Copy-Item $stage $snap -Recurse
+          Write-Host "snapshot: $snap ($((Get-ChildItem -Recurse $snap | Measure-Object).Count) entries)"
+
       - name: Sign, notarize, staple (${{ matrix.key }})
         if: startsWith(matrix.key, 'darwin')
         env:
@@ -1589,12 +1652,15 @@ jobs:
           echo "OK: iroh native binding loaded from the bundled .node"
 
       # ── Windows installer (Inno Setup) ──────────────────────────────────
-      # Compiled LAST — after the VersionInfo assert and every smoke — so the
-      # setup.exe wraps exactly the bytes that were proven. ISCC ships on the
-      # windows-latest image. Per-user install to {localappdata}\Programs\
-      # mStream (same location install.ps1 uses); design notes live in
-      # build/windows-installer.iss. When SignPath lands, PE signing slots in
-      # before this step and setup.exe signing after it.
+      # Compiled from the PRISTINE payload snapshot taken before the smokes
+      # (see "Snapshot installer payload" above): the smoked stage dir
+      # accretes logs and an in-flight ffmpeg download the installer must
+      # never ship. Still compiled last so a failed smoke means no installer
+      # artifact at all. ISCC ships on the windows-latest image; per-user
+      # install to {localappdata}\Programs\mStream (same location
+      # install.ps1 uses); design notes live in build/windows-installer.iss.
+      # When SignPath lands, PE signing slots in before the snapshot and
+      # setup.exe signing after this step.
       - name: Build Windows installer (win-x64)
         if: matrix.key == 'win-x64'
         shell: pwsh
@@ -1604,7 +1670,13 @@ jobs:
           if (-not (Test-Path $iscc)) { Write-Host '::error::Inno Setup 6 not found on this runner'; exit 1 }
           $ver = node -pe "require('./package.json').version"
           $ver4 = node --input-type=module -e "import {windowsVersion} from './scripts/win-versioninfo.mjs'; import {readFileSync} from 'node:fs'; console.log(windowsVersion(JSON.parse(readFileSync('package.json','utf8')).version))"
-          $stage = (Get-Item dist/stage/mStream-*-win-x64).FullName
+          $stage = Join-Path $env:RUNNER_TEMP 'installer-stage'
+          if (-not (Test-Path $stage)) { Write-Host '::error::pristine payload snapshot missing - was the snapshot step reordered?'; exit 1 }
+          # Belt for future reordering: smoke residue in the SNAPSHOT means
+          # it was taken too late, and the installer must not ship.
+          foreach ($bad in 'boot.log','default-boot.log','portable-boot.log','smoke-config.json','post1.code','post2.code','bin\ffmpeg') {
+            if (Test-Path (Join-Path $stage $bad)) { Write-Host "::error::smoke residue '$bad' inside the installer payload snapshot"; exit 1 }
+          }
           $out = Join-Path $PWD 'dist/installer'
           & $iscc "/DAppVersion=$ver" "/DAppVersion4=$ver4" "/DStageDir=$stage" "/O$out" 'build/windows-installer.iss'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
