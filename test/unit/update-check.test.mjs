@@ -85,16 +85,25 @@ test('refuses aside/partial names so pruning never eyes them', () => {
 
 // ── detectInstallMethod ──────────────────────────────────────────────────────
 // The decision table. Fake fs: a Set of paths that exist; realpath is
-// identity. All shapes use posix-style paths so the table runs on any host.
+// identity. Shapes are posix-style; the fake normalizes separators because
+// the production code path.join()s its probe paths with the HOST separator —
+// on a Windows host that means backslashes against these forward-slash keys
+// (this exact mismatch failed the windows CI test shard).
 
 function fakeFs(existing) {
   const set = new Set(existing);
+  const norm = (p) => String(p).replaceAll('\\', '/');
   return {
-    existsSync: (p) => set.has(p),
+    existsSync: (p) => set.has(norm(p)),
     realpathSync: (p) => p,
-    accessSync: (p) => { if (!set.has(p)) { throw new Error('ENOENT'); } },
+    accessSync: (p) => { if (!set.has(norm(p))) { throw new Error('ENOENT'); } },
   };
 }
+
+// The ~/Applications scenario exercises a separator-bound prefix check
+// (host path.sep) that in production only ever runs on a darwin host —
+// skip it on a Windows HOST; the mac and linux CI legs keep it covered.
+const posixHostOnly = { skip: process.platform === 'win32' };
 
 const noEnv = {};
 
@@ -155,7 +164,7 @@ test('managed darwin: the versioned .app under the default root', () => {
   assert.deepEqual(r, { method: 'managed', root });
 });
 
-test('the ~/Applications copy with the sibling marker is managed', () => {
+test('the ~/Applications copy with the sibling marker is managed', posixHostOnly, () => {
   const root = '/Users/u/Library/Application Support/mStream/app';
   const r = detectInstallMethod({
     execPath: '/Users/u/Applications/mStream.app/Contents/MacOS/mstream-server',
