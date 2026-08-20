@@ -47,9 +47,13 @@ jobs:
       # Bun runtime, for the supervision suite's bun legs — the shipped
       # standalone binaries are Bun builds, so the lost-supervision behavior
       # (test/integration/supervision-shutdown.test.mjs) is asserted on that
-      # runtime too. Those legs skip wherever bun is absent.
+      # runtime too. Those legs skip wherever bun is absent. Pinned to the
+      # version build-bun.yml compiles releases with, so the legs assert the
+      # runtime users actually get — bump the two pins together.
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
 
       # ffmpeg sources differ per OS: version-pinned, checksum-verified static
       # builds fetched from GitHub-CDN mirrors on Linux (BtbN) and Windows
