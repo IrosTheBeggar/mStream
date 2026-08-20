@@ -64,6 +64,10 @@ A heavily edited config would look like:
     "defaultBitrate": "128k",
     "autoUpdate": true
   },
+  "updates": {
+    "check": true,
+    "mode": "stage"
+  },
   "ssl": {
     "key": "/path/to/key.pem",
     "cert": "/path/to/cert.pem"
@@ -175,6 +179,27 @@ uses them as-is and never auto-updates them.
 
 Note: older configs may contain `"enabled": true` here — that key is ignored;
 transcoding no longer has an on/off switch.
+
+## Updates
+
+Controls the daily release-update check and what happens when one is found
+(see the "Automatic updates" section of `install.md` for the full story):
+
+```json
+  "updates": {
+    "check": true,
+    "mode": "stage"
+  },
+```
+
+* `check`: (boolean, default `true`) poll the release feed once a day. Set
+  `false` to never phone home — the admin panel's "check now" still works.
+* `mode`: `"notify"` (report only), `"stage"` (default — download in the
+  background; applying takes a restart or a click), or `"auto"` (also
+  restart into the update when the server is idle; headless installs need a
+  process supervisor that restarts mStream after it exits).
+
+Both are editable live from the admin panel's About page — no reboot needed.
 
 ## Secret
 

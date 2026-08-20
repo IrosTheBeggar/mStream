@@ -530,7 +530,20 @@ const ADMINDATA = (() => {
         url: `${API.url()}/api`
       });
       module.version.val = res.data.server;
-    }catch (err) {} 
+    }catch (err) {}
+  }
+
+  // Release-update state (GET /api/v1/admin/update). `s` is the whole status
+  // object; the About view polls it while a download is in flight.
+  module.updateStatus = { s: null };
+  module.getUpdateStatus = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/update`
+      });
+      module.updateStatus.s = res.data;
+    }catch (err) {}
   }
 
   module.getWinDrives = async () => {
@@ -3295,7 +3308,9 @@ const rpnView = Vue.component('rpn-view', {
 const infoView = Vue.component('info-view', {
   data() {
     return {
-      version: ADMINDATA.version
+      version: ADMINDATA.version,
+      update: ADMINDATA.updateStatus,
+      updateBusy: false,
     };
   },
   template: `
@@ -3324,7 +3339,135 @@ const infoView = Vue.component('info-view', {
           </div>
         </div>
       </div>
-    </div>`
+      <div class="row">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Software Updates</span>
+              <div v-if="!update.s">checking...</div>
+              <table v-else>
+                <tbody>
+                  <tr>
+                    <td><b>Installed:</b> v{{update.s.current}}<span v-if="!update.s.available && update.s.lastCheckAt"> &mdash; up to date</span></td>
+                    <td>[<a v-on:click="updCheckNow()">check now</a>]</td>
+                  </tr>
+                  <tr v-if="update.s.available">
+                    <td><b>Available:</b> v{{update.s.latest}} &mdash; {{updLine()}}</td>
+                    <td>
+                      <span v-if="updAction()">[<a v-on:click="updDoAction()">{{updAction()}}</a>]</span>
+                      <a v-else-if="update.s.downloadUrl" v-bind:href="update.s.downloadUrl" target="_blank">[downloads page]</a>
+                    </td>
+                  </tr>
+                  <tr v-if="update.s.error">
+                    <td colspan="2" style="color:#c62828;">{{update.s.error}}</td>
+                  </tr>
+                  <tr>
+                    <td><b title="notify: report only. stage (default): download updates in the background; applying still takes a restart or a click. auto: additionally restart into the update when the server is idle (headless installs need a process supervisor that restarts mStream).">Mode:</b> {{update.s.mode}}</td>
+                    <td>[<a v-on:click="updCycleMode()">change</a>]</td>
+                  </tr>
+                  <tr>
+                    <td><b title="One request a day to the release feed on GitHub. Off = never phones home; 'check now' still works.">Daily check:</b> {{update.s.check ? 'on' : 'off'}}</td>
+                    <td>[<a v-on:click="updToggleCheck()">{{update.s.check ? 'disable' : 'enable'}}</a>]</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`,
+  mounted: function() {
+    ADMINDATA.getUpdateStatus();
+    this.updPoll = setInterval(() => { ADMINDATA.getUpdateStatus(); }, 5000);
+  },
+  beforeDestroy: function() {
+    clearInterval(this.updPoll);
+  },
+  methods: {
+    updLine: function() {
+      const s = this.update.s;
+      if (s.notifyOnly) { return 'this build is too old to self-update; re-run the install command'; }
+      if (s.downloading) { return 'downloading...'; }
+      if (s.staged && s.method === 'managed') { return 'downloaded and staged; it takes over on the next restart'; }
+      if (s.staged && s.method === 'inno') { return 'installer downloaded and verified'; }
+      if (s.staged && s.method === 'pkg') { return 'installer downloaded; the running app keeps playing until you restart it after installing'; }
+      if (s.method === 'managed' || s.method === 'inno') { return 'not downloaded yet'; }
+      if (s.method === 'pkg') { return 'download the installer, then run it'; }
+      if (s.method === 'deb-rpm') { return 'installed from a deb/rpm package; update it with your package manager'; }
+      if (s.method === 'docker') { return 'running in Docker; pull the updated image'; }
+      if (s.method === 'npm-source') { return 'running from npm/source; update with npm or git'; }
+      return 'this copy was extracted by hand; download the new bundle or use the one-line installer';
+    },
+    updAction: function() {
+      const s = this.update.s;
+      if (s.notifyOnly || s.downloading) { return null; }
+      if (s.staged) {
+        if (s.method === 'managed') { return 'restart into it'; }
+        if (s.method === 'inno') { return 'install now'; }
+        if (s.method === 'pkg') { return 'open installer'; }
+        return null;
+      }
+      if (s.method === 'managed' || s.method === 'inno' || s.method === 'pkg') { return 'download'; }
+      return null;
+    },
+    updDoAction: async function() {
+      if (this.updateBusy) { return; }
+      this.updateBusy = true;
+      const s = this.update.s;
+      try {
+        if (s.staged) {
+          const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/update/apply` });
+          iziToast.success({
+            title: res.data.exiting ? 'mStream is restarting into the update'
+              : res.data.opened ? 'Installer opened'
+              : 'Requested - the tray app applies it within a minute',
+            position: 'topCenter', timeout: 4000
+          });
+        } else {
+          await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/update/download` });
+          iziToast.success({ title: 'Download started', position: 'topCenter', timeout: 2500 });
+        }
+        await ADMINDATA.getUpdateStatus();
+      } catch (err) {
+        iziToast.error({ title: 'Update action failed', position: 'topCenter', timeout: 3500 });
+      } finally {
+        this.updateBusy = false;
+      }
+    },
+    updCheckNow: async function() {
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/update/check` });
+        ADMINDATA.updateStatus.s = res.data;
+        iziToast.success({
+          title: res.data.available ? `mStream v${res.data.latest} is available` : 'You are up to date',
+          position: 'topCenter', timeout: 3000
+        });
+      } catch (err) {
+        iziToast.error({ title: 'Update check failed', position: 'topCenter', timeout: 3500 });
+      }
+    },
+    updCycleMode: async function() {
+      const order = ['notify', 'stage', 'auto'];
+      const next = order[(order.indexOf(this.update.s.mode) + 1) % order.length];
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/update/settings`, data: { mode: next } });
+        Vue.set(ADMINDATA.updateStatus.s, 'mode', next);
+        iziToast.success({ title: `Update mode: ${next}`, position: 'topCenter', timeout: 2500 });
+      } catch (err) {
+        iziToast.error({ title: 'Failed to change update mode', position: 'topCenter', timeout: 3500 });
+      }
+    },
+    updToggleCheck: async function() {
+      const next = !this.update.s.check;
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/update/settings`, data: { check: next } });
+        Vue.set(ADMINDATA.updateStatus.s, 'check', next);
+        iziToast.success({ title: next ? 'Daily update check enabled' : 'Daily update check disabled', position: 'topCenter', timeout: 2500 });
+      } catch (err) {
+        iziToast.error({ title: 'Failed to change update check', position: 'topCenter', timeout: 3500 });
+      }
+    },
+  }
 });
 
 const transcodeView = Vue.component('transcode-view', {

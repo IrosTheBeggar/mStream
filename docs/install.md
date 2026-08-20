@@ -48,6 +48,30 @@ from the tray icon and start it again to switch. A copy you extracted by hand
 somewhere else (or run with `--portable`) is left untouched — the script only
 manages its own folder.
 
+## Automatic updates
+
+mStream checks the release feed once a day (plus once shortly after boot)
+and, by default, **downloads new versions in the background and applies them
+on the next restart**: installs made by the one-liner stage the new version
+beside the running one and flip `current`, so any restart — the tray menu,
+a reboot, a service restart — lands on it. Windows `setup.exe` installs
+download the verified installer; applying it is one click. The admin panel's
+About page shows the state and holds the controls:
+
+- `updates.mode` — `notify` (report only, download nothing), `stage`
+  (the default, described above), or `auto` (additionally restart into the
+  update once the server is idle — no active streams, no scan running).
+  On a headless install, `auto` exits with code 0 after staging and expects
+  a process supervisor (systemd, pm2) configured to start mStream again.
+- `updates.check` — set `false` and mStream never phones home; the admin
+  panel's "check now" button still works on demand.
+
+The check and the downloads honor `MSTREAM_RELEASE_BASE` for mirrors, verify
+every download against the release's `manifest.json` sha256s, and only ever
+stage into layouts the installer owns: package-manager installs (deb/rpm,
+the macOS `.pkg`), Docker, npm, and hand-extracted copies are told about
+updates but never touched.
+
 To uninstall, run the same one-liner with `MSTREAM_UNINSTALL=1` set: it
 removes the app folders, the `mstream-server` command, the menu / Start Menu /
 `~/Applications` entry, and the login item — and leaves your library, config,

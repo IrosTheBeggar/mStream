@@ -10,6 +10,7 @@ import * as config from '../state/config.js';
 import * as dbQueue from '../db/task-queue.js';
 import * as imageCompress from '../db/image-compress-manager.js';
 import * as transcode from './transcode.js';
+import * as updateCheck from '../util/update-check.js';
 import * as db from '../db/manager.js';
 import * as discoveryDb from '../db/discovery-db.js';
 import * as discoveryExport from '../db/discovery-export.js';
@@ -1601,6 +1602,44 @@ export function setup(mstream) {
 
   mstream.post("/api/v1/admin/transcode/download", async (req, res) => {
     await transcode.downloadedFFmpeg();
+    res.json({});
+  });
+
+  // ── Release updates (util/update-check.js) ──────────────────────────────
+  // Status is in-memory state, instant; check hits the release feed and
+  // waits; download kicks staging off and returns - a bundle is minutes on
+  // a slow link, so the card polls GET status instead of hanging a POST.
+
+  mstream.get("/api/v1/admin/update", (req, res) => {
+    res.json(updateCheck.getStatus());
+  });
+
+  mstream.post("/api/v1/admin/update/check", async (req, res) => {
+    res.json(await updateCheck.checkNow(true));
+  });
+
+  mstream.post("/api/v1/admin/update/download", (req, res) => {
+    const r = updateCheck.stageNow();
+    if (r.error) { return res.status(409).json(r); }
+    res.json(r);
+  });
+
+  mstream.post("/api/v1/admin/update/apply", async (req, res) => {
+    const r = await updateCheck.requestApply();
+    if (r.error) { return res.status(409).json(r); }
+    res.json(r);
+  });
+
+  mstream.post("/api/v1/admin/update/settings", async (req, res) => {
+    const schema = Joi.object({
+      check: Joi.boolean(),
+      mode: Joi.string().valid('notify', 'stage', 'auto'),
+    }).or('check', 'mode');
+    joiValidate(schema, req.body);
+
+    if (req.body.check !== undefined) { await admin.editUpdatesCheck(req.body.check); }
+    if (req.body.mode !== undefined) { await admin.editUpdatesMode(req.body.mode); }
+    updateCheck.onSettingsChanged();
     res.json({});
   });
 

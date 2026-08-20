@@ -1806,11 +1806,12 @@ jobs:
             exit 1
           fi
           # The Windows setup.exe and the Linux deb/rpm packages ride the
-          # same artifact download into bundles/ (manifest.json stays
-          # zips-only by design — the install scripts and the future
-          # auto-updater consume zips; native installers are direct-download
-          # assets, and the manifest generator's mStream-*.zip glob never
-          # sees them).
+          # same artifact download into bundles/. manifest.json lists the
+          # zips (what the install scripts and the updater's managed staging
+          # consume) PLUS the setup.exe/.pkg installers — the in-app updater
+          # verifies those hashes before offering/launching them on Inno and
+          # pkg installs. deb/rpm stay unlisted: their integrity story is the
+          # package manager's.
           gh release upload "$TAG" bundles/*.zip bundles/manifest.json \
             bundles/mStream-*-win-x64-setup.exe \
             bundles/mstream_*.deb bundles/mstream-*.rpm \

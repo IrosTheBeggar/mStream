@@ -335,6 +335,23 @@ const transcodeOptions = Joi.object({
   autoUpdate: Joi.boolean().default(true)
 });
 
+const updatesOptions = Joi.object({
+  // Daily poll of the release feed (manifest.json on the latest GitHub
+  // release; MSTREAM_RELEASE_BASE overrides it, exactly as for the install
+  // scripts). false = never phone home - the admin "Check now" button still
+  // works, it is only the schedule that stops.
+  check: Joi.boolean().default(true),
+  // notify: report only, download nothing until a human clicks.
+  // stage (default): background-download the new version - managed installs
+  //   stage it behind $ROOT/current, Windows setup.exe installs download the
+  //   verified installer - but applying still takes a restart or a click.
+  // auto: additionally apply when the server is idle (no busy connections,
+  //   no scan): under the tray launcher by asking it to restart into the
+  //   staged version; headless by exiting 0, which expects a process
+  //   supervisor (systemd/pm2) configured to start mStream again.
+  mode: Joi.string().valid('notify', 'stage', 'auto').default('stage'),
+});
+
 const rpnOptions = Joi.object({
   iniFile: Joi.string().default(path.join(appRoot, 'bin/rpn/frps.ini')),
   apiUrl: Joi.string().default('https://api.mstream.io'),
@@ -680,6 +697,7 @@ const schema = Joi.object({
   webAppDirectory: Joi.string().default(path.join(appRoot, 'webapp')),
   rpn: rpnOptions.default(rpnOptions.validate({}).value),
   transcode: transcodeOptions.default(transcodeOptions.validate({}).value),
+  updates: updatesOptions.default(updatesOptions.validate({}).value),
   lyrics: lyricsOptions.default(lyricsOptions.validate({}).value),
   secret: Joi.string().optional(),
   // Separate secret used to derive the AES-256-GCM key for the

@@ -909,6 +909,25 @@ export async function editAutoUpdate(val) {
   config.program.transcode.autoUpdate = val;
 }
 
+// Release auto-update settings (util/update-check.js). Same live-effect
+// contract as editAutoUpdate above: the checker reads config.program.updates
+// at each firing, so neither needs a reboot.
+export async function editUpdatesCheck(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.updates) { loadConfig.updates = {}; }
+  loadConfig.updates.check = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.updates.check = val;
+}
+
+export async function editUpdatesMode(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.updates) { loadConfig.updates = {}; }
+  loadConfig.updates.mode = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.updates.mode = val;
+}
+
 // Set the SQLite synchronous mode for the main DB connection (FULL | NORMAL).
 // Persisted to config and applied to the live connection immediately —
 // PRAGMA synchronous is per-connection and takes effect on the next
