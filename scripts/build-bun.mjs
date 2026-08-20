@@ -355,6 +355,38 @@ for (const [dir, file] of sidecars) {
   }
 }
 
+// Runtime-fetch pin manifests travel WITH the bundle. The ffmpeg bootstrap
+// (src/util/ffmpeg-bootstrap.js) deliberately downloads on first use — the
+// binaries are ~60-130 MB of GPL code we don't redistribute — and reads its
+// pin set from appRoot/bin/ffmpeg/manifest.json at runtime, so a bundle
+// without the file boots with ffmpeg permanently unavailable ("No pinned
+// ffmpeg build for <platform>", observed on the first post-pin bundle).
+// The p2p-sidecar manifest backs that family's runtime-fetch rung for
+// bundles built without the baked binary (MSTREAM_ALLOW_MISSING_SIDECAR /
+// offline local builds) — the "falls back to runtime fetch" promise above
+// holds only if the pins ship. macOS: real file in Contents/Resources,
+// relative symlink from MacOS/bin/<family>/ — codesign's nested-code scan
+// rejects loose non-Mach-O files under MacOS (the same rule that put
+// webapp/ and install.sh in Resources), a symlink is sealed as a symlink,
+// and the runtime's appRoot-relative read resolves through it unchanged.
+for (const m of [
+  { family: 'ffmpeg', file: 'manifest.json' },
+  { family: 'p2p-sidecar', file: t.musl ? 'manifest-musl.json' : 'manifest.json' },
+]) {
+  const src = join(root, 'bin', m.family, m.file);
+  const destDir = join(contentRoot, 'bin', m.family);
+  mkdirSync(destDir, { recursive: true });
+  if (isMac) {
+    const resRoot = join(stageDir, 'mStream.app', 'Contents', 'Resources');
+    const resName = `${m.family}-${m.file}`;
+    mkdirSync(resRoot, { recursive: true });
+    cpSync(src, join(resRoot, resName));
+    symlinkSync(join('..', '..', '..', 'Resources', resName), join(destDir, m.file));
+  } else {
+    cpSync(src, join(destDir, m.file));
+  }
+}
+
 // Iroh remote-access tunnel: @number0/iroh ships as a NAPI-RS *native addon*
 // (prebuilt .node), not a spawned exe like the rust sidecars. A Bun standalone
 // binary can't resolve it from node_modules, so we stage the target's .node next
