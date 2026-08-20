@@ -7,6 +7,7 @@ import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import { getBaseUrl } from '../dlna/ssdp.js';
 import { timeSeekMiddleware } from '../dlna/time-seek.js';
+import { ALBUM_TRACK_ORDER } from '../db/track-order.js';
 
 // ── Mutable state ────────────────────────────────────────────────────────────
 
@@ -522,7 +523,7 @@ function getLibraryTrackCount(libraryId) {
   });
 }
 
-function getLibraryTracks(libraryId, start, count, orderBy = 'al.name, t.disc_number, t.track_number, t.title') {
+function getLibraryTracks(libraryId, start, count, orderBy = `al.name, ${ALBUM_TRACK_ORDER}, t.title`) {
   const limit = count > 0 ? count : -1; // SQLite: -1 = no limit
   return db.getDB().prepare(`
     SELECT t.id, t.filepath, t.title, t.track_number, t.duration, t.format,
@@ -644,7 +645,7 @@ function getAlbumTracks(libraryId, albumId) {
       LEFT JOIN artists a  ON t.artist_id = a.id
       LEFT JOIN albums  al ON t.album_id  = al.id
       WHERE t.library_id = ? AND t.album_id IS NULL
-      ORDER BY t.disc_number, t.track_number, t.title
+      ORDER BY ${ALBUM_TRACK_ORDER}, t.title
     `).all(libraryId);
   }
   return db.getDB().prepare(`
@@ -655,7 +656,7 @@ function getAlbumTracks(libraryId, albumId) {
     LEFT JOIN artists a  ON t.artist_id = a.id
     LEFT JOIN albums  al ON t.album_id  = al.id
     WHERE t.library_id = ? AND t.album_id = ?
-    ORDER BY t.disc_number, t.track_number, t.title
+    ORDER BY ${ALBUM_TRACK_ORDER}, t.title
   `).all(libraryId, albumId);
 }
 
@@ -981,7 +982,7 @@ function getFavoriteTracks(start, count) {
     LEFT JOIN albums  al ON t.album_id  = al.id
     GROUP BY t.id
     HAVING top_rating >= 4
-    ORDER BY top_rating DESC, a.name, al.name, t.disc_number, t.track_number
+    ORDER BY top_rating DESC, a.name, al.name, ${ALBUM_TRACK_ORDER}
     LIMIT ? OFFSET ?
   `).all(limit, start);
 }
@@ -1032,7 +1033,7 @@ function getYearTracks(year, start, count) {
     LEFT JOIN artists a  ON t.artist_id = a.id
     LEFT JOIN albums  al ON t.album_id  = al.id
     WHERE t.year = ?
-    ORDER BY a.name COLLATE NOCASE, al.name COLLATE NOCASE, t.disc_number, t.track_number, t.title
+    ORDER BY a.name COLLATE NOCASE, al.name COLLATE NOCASE, ${ALBUM_TRACK_ORDER}, t.title
     LIMIT ? OFFSET ?
   `).all(year, limit, start);
 }
@@ -1518,7 +1519,7 @@ function handleBrowse(body, res) {
       return sendBrowseResponse(res, didlWrapper(viewContainer(libId, 'tracks', total)), 1, 1);
     }
 
-    const orderBy = buildOrderBy(sortTerms, 'al.name, t.disc_number, t.track_number, t.title');
+    const orderBy = buildOrderBy(sortTerms, `al.name, ${ALBUM_TRACK_ORDER}, t.title`);
     const tracks = getLibraryTracks(libId, startIdx, reqCount, orderBy);
     return sendBrowseResponse(res, didlWrapper(tracks.map(t => trackItem(t, lib, objectId)).join('')), tracks.length, total);
   }

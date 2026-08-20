@@ -26,6 +26,7 @@ import * as dbQueue from '../../db/task-queue.js';
 import * as adminUtil from '../../util/admin.js';
 import { ffmpegBin, getResolvedSource } from '../../util/ffmpeg-bootstrap.js';
 import { serveAlbumArtFile } from '../album-art.js';
+import { ALBUM_TRACK_ORDER } from '../../db/track-order.js';
 import { getSystemUpdateID } from '../dlna.js';
 import * as serverPlayback from '../server-playback.js';
 import { sendOk, sendError, SubErr } from './response.js';
@@ -781,7 +782,7 @@ export function getAlbum(req, res) {
     LEFT JOIN artists a ON a.id = t.artist_id
     LEFT JOIN albums  al ON al.id = t.album_id
     WHERE t.album_id = ? AND ${clause}
-    ORDER BY t.disc_number, t.track_number, t.title
+    ORDER BY ${ALBUM_TRACK_ORDER}, t.title
   `).all(id, ...params);
 
   const albumStars = albumStarMap(req.user.id, [album.id]);
@@ -948,7 +949,7 @@ export function getMusicDirectory(req, res) {
       LEFT JOIN artists a ON a.id = t.artist_id
       LEFT JOIN albums  al ON al.id = t.album_id
       WHERE t.album_id = ? AND ${clause}
-      ORDER BY t.disc_number, t.track_number, t.title
+      ORDER BY ${ALBUM_TRACK_ORDER}, t.title
     `).all(album.id, ...params);
     return sendOk(req, res, {
       directory: {
@@ -2249,7 +2250,7 @@ export function getSongsByGenre(req, res) {
     LEFT JOIN artists a  ON a.id = t.artist_id
     LEFT JOIN albums  al ON al.id = t.album_id
     WHERE ${where.join(' AND ')}
-    ORDER BY a.name COLLATE NOCASE, al.name COLLATE NOCASE, t.disc_number, t.track_number
+    ORDER BY a.name COLLATE NOCASE, al.name COLLATE NOCASE, ${ALBUM_TRACK_ORDER}
     LIMIT ? OFFSET ?
   `).all(...args, count, offset);
 
