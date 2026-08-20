@@ -620,6 +620,43 @@ jobs:
           esac
           echo "OK: embedded installer present for ${{ matrix.key }}"
 
+      # Same story for the runtime-fetch pin manifests: the ffmpeg bootstrap
+      # reads bin/ffmpeg/manifest.json from the bundle at runtime, and a
+      # bundle without it downloads nothing, forever, with only a boot-time
+      # warning to say why (observed on the first post-pin bundle). Assert
+      # presence, valid JSON, and — for ffmpeg — a pin for this leg's own
+      # platform. The p2p-sidecar manifest backs its runtime-fetch fallback
+      # rung; presence + JSON is enough (musl legs ship manifest-musl.json).
+      - name: Assert the pin manifests shipped
+        shell: bash
+        run: |
+          D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
+          case "${{ matrix.key }}" in
+            darwin-*) B="$D/mStream.app/Contents/MacOS/bin" ;;
+            *)        B="$D/bin" ;;
+          esac
+          case "${{ matrix.key }}" in
+            *-musl) SC_MANIFEST="manifest-musl.json" ;;
+            *)      SC_MANIFEST="manifest.json" ;;
+          esac
+          case "${{ matrix.key }}" in
+            win-x64)      FKEY="win32-x64" ;;
+            linux-arm64*) FKEY="linux-arm64" ;;
+            linux-x64*)   FKEY="linux-x64" ;;
+            *)            FKEY="${{ matrix.key }}" ;;
+          esac
+          node -e "
+            const fs = require('fs');
+            const read = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
+            const fm = read(process.argv[1] + '/ffmpeg/manifest.json');
+            if (!fm.assets || !fm.assets[process.argv[2]]) {
+              console.error('::error::bin/ffmpeg/manifest.json in the bundle has no pin for ' + process.argv[2]);
+              process.exit(1);
+            }
+            read(process.argv[1] + '/p2p-sidecar/' + process.argv[3]);
+          " "$B" "$FKEY" "$SC_MANIFEST" || { echo "::error::pin manifest missing or invalid in the bundle"; exit 1; }
+          echo "OK: pin manifests present for ${{ matrix.key }} (ffmpeg key $FKEY, sidecar $SC_MANIFEST)"
+
       - name: Assert Windows VersionInfo on every shipped PE (win-x64)
         if: matrix.key == 'win-x64'
         shell: pwsh
@@ -1673,10 +1710,14 @@ jobs:
           $stage = Join-Path $env:RUNNER_TEMP 'installer-stage'
           if (-not (Test-Path $stage)) { Write-Host '::error::pristine payload snapshot missing - was the snapshot step reordered?'; exit 1 }
           # Belt for future reordering: smoke residue in the SNAPSHOT means
-          # it was taken too late, and the installer must not ship.
-          foreach ($bad in 'boot.log','default-boot.log','portable-boot.log','smoke-config.json','post1.code','post2.code','bin\ffmpeg') {
+          # it was taken too late, and the installer must not ship. bin\ffmpeg
+          # itself is legitimate now (the pin manifest ships there), so the
+          # sentinel is the smoke's DOWNLOADED binaries, not the directory.
+          foreach ($bad in 'boot.log','default-boot.log','portable-boot.log','smoke-config.json','post1.code','post2.code','bin\ffmpeg\ffmpeg.exe','bin\ffmpeg\ffprobe.exe') {
             if (Test-Path (Join-Path $stage $bad)) { Write-Host "::error::smoke residue '$bad' inside the installer payload snapshot"; exit 1 }
           }
+          $ffx = Get-ChildItem (Join-Path $stage 'bin\ffmpeg') -File | Where-Object { $_.Name -ne 'manifest.json' }
+          if ($ffx) { Write-Host "::error::unexpected files beside the manifest in bin\ffmpeg: $($ffx.Name -join ', ')"; exit 1 }
           $out = Join-Path $PWD 'dist/installer'
           & $iscc "/DAppVersion=$ver" "/DAppVersion4=$ver4" "/DStageDir=$stage" "/O$out" 'build/windows-installer.iss'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

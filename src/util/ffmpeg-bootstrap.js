@@ -143,7 +143,10 @@ async function pathExists(p) {
 // The committed pin set. Lives under appRoot (shipped with the code, like
 // bin/p2p-sidecar/manifest.json), while downloads land in getFfmpegDir()
 // (dataRoot-based) — same split as the sidecar: pins travel with the code
-// they were reviewed with, binaries live somewhere writable.
+// they were reviewed with, binaries live somewhere writable. Standalone
+// bundles ship it too — scripts/build-bun.mjs stages it at bin/ffmpeg/
+// (a Resources-backed symlink on macOS); a bundle without it has no pins
+// and boots with ffmpeg permanently unavailable.
 const MANIFEST_DIR = path.join(appRoot, 'bin', 'ffmpeg');
 
 // Everything that goes into a URL is validated as a plain token first: the
