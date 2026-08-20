@@ -60,6 +60,7 @@ import * as backupManager from './backup/manager.js';
 import WebError from './util/web-error.js';
 import { isAdminAllowed } from './util/admin-network.js';
 import { writeJsonAtomic, completedWrites } from './util/atomic-json.js';
+import * as updateCheck from './util/update-check.js';
 
 import packageJson from '../package.json' with { type: 'json' };
 
@@ -97,6 +98,10 @@ let rebootInFlight = false;
 // just cost another tunnel/listener cycle.
 let rebootPending = false;
 let configWritesAtRead = 0;
+// Set by onListening's lazy import; update-check's idle test reads it (null
+// = "not fully booted yet", which idle() treats as busy — auto-apply never
+// fires into a half-started server).
+let taskQueueMod = null;
 // Bumped by every reboot(); each request tags its socket with the generation
 // serving it, so reboot()'s grace-period sweep can tell "still busy with an
 // OLD-app response" (destroy: that handler must not live on) from "idle
@@ -565,6 +570,16 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   downloadApi.setup(mstream);
   fileExplorerApi.setup(mstream);
   transcode.setup(mstream);
+  updateCheck.setup(mstream, {
+    // Idle = safe to restart into a staged update: no socket carrying an
+    // in-flight response (the same tagging reboot()'s drain sweep uses) and
+    // no scan running. Conservative before boot completes.
+    hasBusySockets: () => {
+      for (const s of liveSockets) { if (s._mstreamBusy) { return true; } }
+      return false;
+    },
+    isScanning: () => (taskQueueMod ? taskQueueMod.isScanning() : true),
+  });
   scrobblerApi.setup(mstream);
   remoteApi.setupAfterAuth(mstream, server);
   sharedApi.setupAfterSecurity(mstream);
@@ -709,6 +724,7 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     }
 
     const taskQueue = await import('./db/task-queue.js');
+    taskQueueMod = taskQueue;
     taskQueue.runAfterBoot();
 
     // Torrent completion-watcher (V42-adjacent). Polls the active
