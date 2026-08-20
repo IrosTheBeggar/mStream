@@ -556,6 +556,26 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # Policy-aware signature gate. release-signing chains to a public CA
+          # and must verify Valid on a stock runner. test-signing uses
+          # SignPath's SELF-SIGNED test certificate: the runner does not trust
+          # its root, so Get-AuthenticodeSignature reports UnknownError BY
+          # DESIGN even though the bytes are correctly signed (proving-run
+          # lesson: CN=Test certificate for 'mStream [OSS]'). Accept exactly
+          # that shape in test mode - a signature must exist with a signer -
+          # and everything else (NotSigned, HashMismatch = tampering) still
+          # fails in both modes.
+          $policy = '${{ steps.collect-pes.outputs.policy }}'
+          function Assert-MStreamSignature([string]$path, [string]$what) {
+            $sig = Get-AuthenticodeSignature $path
+            Write-Host "${what}: $($sig.Status) ($($sig.SignerCertificate.Subject))"
+            if ($policy -eq 'release-signing') {
+              if ($sig.Status -ne 'Valid') { Write-Host "::error::signature on $path is $($sig.Status) - release signing must chain to a trusted root"; exit 1 }
+            } else {
+              $signedButUntrustedRoot = ($sig.Status -eq 'UnknownError' -and $null -ne $sig.SignerCertificate)
+              if (-not ($sig.Status -eq 'Valid' -or $signedButUntrustedRoot)) { Write-Host "::error::signature on $path is $($sig.Status) - expected a test-signed PE (Valid, or UnknownError with a signer)"; exit 1 }
+            }
+          }
           $D = (Get-Item dist/stage/mStream-*-win-x64).FullName
           $pairs = @(
             @('signing/pe-signed/mStream.exe', "$D/mStream.exe"),
@@ -568,9 +588,7 @@ jobs:
           foreach ($p in $pairs) {
             if (-not (Test-Path $p[0])) { Write-Host "::error::signed file missing: $($p[0])"; exit 1 }
             Copy-Item $p[0] $p[1] -Force
-            $sig = Get-AuthenticodeSignature $p[1]
-            Write-Host "$([System.IO.Path]::GetFileName($p[1])): $($sig.Status) ($($sig.SignerCertificate.Subject))"
-            if ($sig.Status -ne 'Valid') { Write-Host "::error::signature on $($p[1]) is $($sig.Status)"; exit 1 }
+            Assert-MStreamSignature $p[1] ([System.IO.Path]::GetFileName($p[1]))
           }
           # The bundler cut the zip before signing changed the bytes — recut
           # (same rule as the darwin re-zip; the recut IS what users
@@ -1635,9 +1653,18 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $signed = Get-Item signing/installer-signed/mStream-*-win-x64-setup.exe
           Copy-Item $signed.FullName (Join-Path 'dist/installer' $signed.Name) -Force
+          # Same policy-aware gate as the PE set (see that step's comment):
+          # test-signing's self-signed cert reads UnknownError on a stock
+          # runner by design; release-signing must verify Valid.
+          $policy = '${{ steps.collect-pes.outputs.policy }}'
           $sig = Get-AuthenticodeSignature (Join-Path 'dist/installer' $signed.Name)
           Write-Host "$($signed.Name): $($sig.Status) ($($sig.SignerCertificate.Subject))"
-          if ($sig.Status -ne 'Valid') { Write-Host "::error::installer signature is $($sig.Status)"; exit 1 }
+          if ($policy -eq 'release-signing') {
+            if ($sig.Status -ne 'Valid') { Write-Host "::error::installer signature is $($sig.Status) - release signing must chain to a trusted root"; exit 1 }
+          } else {
+            $signedButUntrustedRoot = ($sig.Status -eq 'UnknownError' -and $null -ne $sig.SignerCertificate)
+            if (-not ($sig.Status -eq 'Valid' -or $signedButUntrustedRoot)) { Write-Host "::error::installer signature is $($sig.Status) - expected a test-signed installer (Valid, or UnknownError with a signer)"; exit 1 }
+          }
 
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
