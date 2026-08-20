@@ -207,6 +207,22 @@ pub fn browse_target(config: &Path, ep: &Endpoint) -> String {
     }
 }
 
+/// Escape a literal string for use inside a POSIX ERE (the pgrep -f
+/// patterns built from filesystem paths): a HOME containing '+', '?',
+/// '(' or brackets must match itself — a metacharacter that COMPILES but
+/// narrows the pattern silently under-matches, and for a busy-check that
+/// under-match is a deleted live tree.
+pub(crate) fn escape_ere(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        if "\\^$.|?*+()[]{}".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// The status file the server's update checker writes
 /// (src/util/update-check.js) — same data home that holds launcher.lock, by
 /// the same byte-identical derivation on both sides.
@@ -500,6 +516,17 @@ mod tests {
         env::set_var(&var, "x");
         assert_eq!(env_dir(&var), Some(OsString::from("x")));
         env::remove_var(&var);
+    }
+
+    #[test]
+    fn ere_escaping_neutralizes_path_metacharacters() {
+        assert_eq!(escape_ere("/Users/plain/Applications"), "/Users/plain/Applications");
+        assert_eq!(escape_ere("a+b"), "a\\+b");
+        assert_eq!(escape_ere("q?"), "q\\?");
+        assert_eq!(escape_ere("x{1}"), "x\\{1\\}");
+        assert_eq!(escape_ere("(par)[br]"), "\\(par\\)\\[br\\]");
+        assert_eq!(escape_ere("dot.dir"), "dot\\.dir");
+        assert_eq!(escape_ere("back\\slash"), "back\\\\slash");
     }
 
     #[test]

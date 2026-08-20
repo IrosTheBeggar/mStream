@@ -327,7 +327,36 @@ pub fn relaunch(target: &std::path::Path, server_args: &[String]) -> Result<(), 
                 .args(server_args)
                 .status()
             {
-                Ok(st) if st.success() => Ok(()),
+                Ok(st) if st.success() => {
+                    // Exit 0 only proves LaunchServices ACCEPTED the launch:
+                    // a takeover that execs and dies instantly (missing
+                    // server sibling in a bad staged copy, an early panic)
+                    // still reports success — measured with a bundle whose
+                    // executable is `exit 7`. Poll briefly for a live
+                    // process under the app path that is not US (the old
+                    // launcher may share the exact path); the takeover
+                    // stays alive through its ~12s lock retry, so any
+                    // healthy handoff is visible well within this window.
+                    let pat = format!("^{}/", crate::paths::escape_ere(&app.display().to_string()));
+                    let me = std::process::id().to_string();
+                    for _ in 0..8 {
+                        std::thread::sleep(std::time::Duration::from_millis(250));
+                        match std::process::Command::new("/usr/bin/pgrep").arg("-f").arg(&pat).output() {
+                            Ok(out) => {
+                                if String::from_utf8_lossy(&out.stdout)
+                                    .lines()
+                                    .any(|l| !l.trim().is_empty() && l.trim() != me)
+                                {
+                                    return Ok(());
+                                }
+                            }
+                            // pgrep itself failing must not fail a possibly
+                            // healthy handoff.
+                            Err(_) => return Ok(()),
+                        }
+                    }
+                    Err(format!("takeover under {} never appeared after open", app.display()))
+                }
                 Ok(st) => Err(format!("open -n {} exited {st}", app.display())),
                 Err(e) => Err(format!("open -n {}: {e}", app.display())),
             };

@@ -410,12 +410,24 @@ export function stageNow(manifest = null) {
   if (!state.latest || !state.available) { return { error: 'no update available' }; }
   if (_staging) { return { started: true }; }
   const target = state.latest;
-  // The managed download is minutes on a slow link and runs inside the
-  // spawned installer — surface it, exactly as the inno path does, so the
-  // card and the tray don't report "not downloaded" mid-download.
-  state.downloading = true;
-  writeStatus().catch(() => {});
-  _staging = runInstallerScript(target, m.root)
+  _staging = (async () => {
+    // A previous (possibly pre-restart) stage may already sit behind
+    // `current` — re-running the installer would re-download the whole
+    // bundle only to short-circuit into "already installed". Trust the
+    // link: it only ever points at a bundle whose pre-flip exec probe
+    // passed. This also makes a launcher-side failed-apply recovery cycle
+    // cheap instead of a fresh download per attempt.
+    if (await stagedVersionFromRoot(m.root) === target) {
+      winston.info(`[update] mStream ${target} is already staged on disk - skipping the re-download`);
+      return;
+    }
+    // The managed download is minutes on a slow link and runs inside the
+    // spawned installer — surface it, exactly as the inno path does, so the
+    // card and the tray don't report "not downloaded" mid-download.
+    state.downloading = true;
+    writeStatus().catch(() => {});
+    await runInstallerScript(target, m.root);
+  })()
     .then(async () => {
       const landed = await stagedVersionFromRoot(m.root);
       if (!landed) {

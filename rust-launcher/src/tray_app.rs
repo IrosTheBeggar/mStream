@@ -117,7 +117,7 @@ pub fn run(args: LauncherArgs) -> ! {
     }
     if !locked {
         log.line("another launcher instance holds the lock - focusing it and exiting");
-        if !args.autostarted && !args.no_open {
+        if !args.autostarted && !args.no_open && !args.takeover {
             let _ = open::that_detached(paths::browse_target(&config, &ep));
         }
         std::process::exit(0);
@@ -267,6 +267,14 @@ pub fn run(args: LauncherArgs) -> ! {
     // a spawn loop, but a NEW request — a later version, or the operator
     // clicking "restart to update" again in the webapp — starts fresh.
     let mut auto_apply_attempted: Option<String> = None;
+    // The token alone cannot bound retries: every failed apply respawns the
+    // server, and the fresh process re-stages and mints a fresh
+    // applyRequestedAt within ~2 minutes — an unbounded stop/fail/respawn
+    // flap on a PERSISTENT relaunch failure. So failures are also counted
+    // per staged VERSION; past the cap, auto-apply stands down for that
+    // version (the tray menu still lets a human retry) until a different
+    // version stages.
+    let mut apply_failures: Option<(String, u32)> = None;
     // Our own REAL location (canonicalized so a start through the `current`
     // symlink still resolves to the versioned tree the walk-up needs).
     let exe_real = std::env::current_exe()
@@ -391,10 +399,25 @@ pub fn run(args: LauncherArgs) -> ! {
                     // starts fresh. And never while quitting: a queued poll
                     // must not resurrect mStream on the way out.
                     let token = upd.as_ref().and_then(auto_apply_token);
+                    let staged_ver = upd.as_ref().and_then(|s| s.staged_version.clone());
                     if !shared_loop.quitting.load(Ordering::SeqCst)
                         && upd.as_ref().is_some_and(|s| s.apply_requested)
                         && token.is_some()
                         && token != auto_apply_attempted
+                        // Never mid-boot: the takeover launcher's first poll
+                        // can land while the new server is still migrating,
+                        // reading a status file the OLD session armed — an
+                        // apply here kills a healthy boot. Once the server
+                        // is up (or the probe gave up on an SSL config) the
+                        // file is fresh again.
+                        && !matches!(phase, Phase::Starting)
+                        // Never into OURSELVES: after a successful handoff
+                        // the stale file still says "apply X" until the new
+                        // server rewrites it — but this launcher shipped IN
+                        // bundle X; applying it again is a kill-loop, not
+                        // an update.
+                        && staged_ver.as_deref() != Some(env!("MSTREAM_BUNDLE_VERSION"))
+                        && !auto_apply_capped(&apply_failures, staged_ver.as_deref())
                         && !matches!(action, UpdateAction::None | UpdateAction::OpenReleases)
                     {
                         auto_apply_attempted = token;
@@ -406,6 +429,7 @@ pub fn run(args: LauncherArgs) -> ! {
                             }
                             Err(e) => {
                                 log.line(&format!("update apply failed: {e}"));
+                                record_apply_failure(&mut apply_failures, staged_ver.as_deref(), &log);
                                 spawned_at = Instant::now();
                                 phase = recover_after_failed_apply(
                                     &shared_loop, &bin, &args.server_args, &server_log_loop, ep, &proxy, &log,
@@ -495,6 +519,11 @@ pub fn run(args: LauncherArgs) -> ! {
                             UpdateAction::None => {}
                             _ => {
                                 log.line("menu: apply update");
+                                // The click consumes any pending server-side
+                                // request too: a failed MANUAL apply must not
+                                // be auto-repeated seconds later by a poll
+                                // reading the still-armed file.
+                                auto_apply_attempted = upd.as_ref().and_then(auto_apply_token);
                                 match perform_apply(&shared_loop, &action, exe_real.as_deref(), &args.server_args, &log) {
                                     Ok(()) => {
                                         tray.take();
@@ -502,6 +531,11 @@ pub fn run(args: LauncherArgs) -> ! {
                                     }
                                     Err(e) => {
                                         log.line(&format!("update apply failed: {e}"));
+                                        record_apply_failure(
+                                            &mut apply_failures,
+                                            upd.as_ref().and_then(|s| s.staged_version.as_deref()),
+                                            &log,
+                                        );
                                         spawned_at = Instant::now();
                                         phase = recover_after_failed_apply(
                                             &shared_loop, &bin, &args.server_args, &server_log_loop, ep, &proxy, &log,
@@ -867,6 +901,33 @@ fn render_update_item(
     action
 }
 
+/// How many failed applies one staged version gets before auto-apply
+/// stands down for it (the tray menu still allows manual retries).
+const MAX_APPLY_FAILURES: u32 = 2;
+
+/// True when auto-apply should stand down: this staged version has already
+/// burned its failure budget. Pure for the tests; None staged never caps.
+fn auto_apply_capped(failures: &Option<(String, u32)>, staged: Option<&str>) -> bool {
+    match (failures, staged) {
+        (Some((v, n)), Some(s)) => v == s && *n >= MAX_APPLY_FAILURES,
+        _ => false,
+    }
+}
+
+fn record_apply_failure(failures: &mut Option<(String, u32)>, staged: Option<&str>, log: &Logger) {
+    let Some(s) = staged else { return };
+    let n = match failures {
+        Some((v, n)) if v == s => *n + 1,
+        _ => 1,
+    };
+    *failures = Some((s.to_string(), n));
+    if n >= MAX_APPLY_FAILURES {
+        log.line(&format!(
+            "update: {n} failed applies for {s} - auto-apply stands down for this version (use the tray menu to retry)"
+        ));
+    }
+}
+
 /// The identity of an apply request: the server's applyRequestedAt stamp,
 /// else (an older server writing no stamp) the staged version. A failed
 /// attempt consumes exactly this token; a fresh request mints a new one.
@@ -890,15 +951,28 @@ fn sweep_apps_asides(log: &Logger) {
             continue;
         }
         let p = e.path();
-        let busy = std::process::Command::new("/usr/bin/pgrep")
+        // Metacharacters in the path (a '+' or brackets in the user name)
+        // must match themselves — an ERE that silently narrows would read
+        // a live tree as idle.
+        let pat = format!("^{}/", crate::paths::escape_ere(&p.display().to_string()));
+        let pgrep_busy = std::process::Command::new("/usr/bin/pgrep")
             .arg("-f")
-            .arg(format!("^{}/", p.display()))
+            .arg(&pat)
             .output()
             // pgrep: 1 = no match; anything else (match, or pgrep itself
             // failing) counts as busy — never delete blind.
             .map(|o| o.status.code() != Some(1))
             .unwrap_or(true);
-        if busy {
+        // lsof sees what argv text cannot: a process whose cwd or open
+        // files live inside the tree (someone cd'd in and ran the server
+        // by relative path). Any output — or lsof failing — is busy.
+        let lsof_busy = std::process::Command::new("/usr/sbin/lsof")
+            .arg("+D")
+            .arg(&p)
+            .output()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(true);
+        if pgrep_busy || lsof_busy {
             continue;
         }
         log.line(&format!("sweeping stale ~/Applications aside {name}"));
@@ -1197,6 +1271,24 @@ mod tests {
         let (t, a) = update_item_view(s.as_ref(), ud, true);
         assert_eq!(t, "Update available (6.22.0)");
         assert_eq!(a, UpdateAction::OpenReleases);
+    }
+
+    #[test]
+    fn failure_cap_is_per_version_and_bounded() {
+        let mut f: Option<(String, u32)> = None;
+        assert!(!auto_apply_capped(&f, Some("6.22.0")));
+        let log = Logger(std::env::temp_dir().join(format!("mstream-cap-test-{}.log", std::process::id())));
+        record_apply_failure(&mut f, Some("6.22.0"), &log);
+        assert!(!auto_apply_capped(&f, Some("6.22.0")), "one failure is not the cap");
+        record_apply_failure(&mut f, Some("6.22.0"), &log);
+        assert!(auto_apply_capped(&f, Some("6.22.0")), "second failure caps");
+        // A DIFFERENT staged version starts fresh — the cap must never leak
+        // across releases.
+        assert!(!auto_apply_capped(&f, Some("6.23.0")));
+        record_apply_failure(&mut f, Some("6.23.0"), &log);
+        assert!(!auto_apply_capped(&f, Some("6.23.0")), "counter reset for the new version");
+        assert!(!auto_apply_capped(&f, None));
+        let _ = std::fs::remove_file(&log.0);
     }
 
     #[test]
