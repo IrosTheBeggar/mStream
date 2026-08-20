@@ -72,6 +72,13 @@ stage into layouts the installer owns: package-manager installs (deb/rpm,
 the macOS `.pkg`), Docker, npm, and hand-extracted copies are told about
 updates but never touched.
 
+Rolling back? Re-run the installer with `MSTREAM_VERSION=<old tag>`, restart,
+and then **skip the bad release** (the admin panel's skip link, or
+`updates.skipVersion` in the config) — otherwise the next daily check
+re-stages the very version you just backed out of. A staged version that
+gets skipped is un-staged on the spot: `current` returns to the running
+version. The skip clears itself the moment a newer release ships.
+
 To uninstall, run the same one-liner with `MSTREAM_UNINSTALL=1` set: it
 removes the app folders, the `mstream-server` command, the menu / Start Menu /
 `~/Applications` entry, and the login item — and leaves your library, config,

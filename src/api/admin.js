@@ -1634,11 +1634,13 @@ export function setup(mstream) {
     const schema = Joi.object({
       check: Joi.boolean(),
       mode: Joi.string().valid('notify', 'stage', 'auto'),
-    }).or('check', 'mode');
+      skipVersion: Joi.string().pattern(/^\d+\.\d+\.\d+$/).allow(''),
+    }).or('check', 'mode', 'skipVersion');
     joiValidate(schema, req.body);
 
     if (req.body.check !== undefined) { await admin.editUpdatesCheck(req.body.check); }
     if (req.body.mode !== undefined) { await admin.editUpdatesMode(req.body.mode); }
+    if (req.body.skipVersion !== undefined) { await admin.editUpdatesSkipVersion(req.body.skipVersion); }
     updateCheck.onSettingsChanged();
     res.json({});
   });

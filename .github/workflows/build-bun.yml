@@ -134,9 +134,24 @@ jobs:
           # tampered manifest must refuse
           sed -i 's/"sha256": "[0-9a-f]*"/"sha256": "0000000000000000000000000000000000000000000000000000000000000000"/' rel/manifest.json
           if MSTREAM_FORCE=1 sh install.sh >/dev/null 2>&1; then echo "::error::installed despite bad hash"; exit 1; fi
-          # uninstall removes what was installed and nothing else
+          # a bundle whose binary cannot exec here must never take over
+          # `current`: probe-before-flip refuses, exits nonzero, keeps the
+          # working install (the in-app updater treats that exit as a failed
+          # stage instead of arming a landmine for the next restart)
+          bb="mStream-9.9.10-linux-x64"; mkdir -p "rel/$bb"
+          printf '#!/bin/sh\nexit 1\n' > "rel/$bb/mstream-server"; chmod +x "rel/$bb/mstream-server"
+          echo broken > "rel/$bb/README.txt"
+          rm -f rel/mStream-*.zip rel/manifest.json
+          (cd rel && python3 -m zipfile -c "$bb.zip" "$bb" && rm -rf "$bb")
+          sh scripts/release-manifest.sh 9.9.10 rel
+          if sh install.sh > broken.log 2>&1; then echo "::error::installed a bundle that cannot exec"; exit 1; fi
+          grep -q "does not run on this system" broken.log
+          [ "$(readlink "$RUNNER_TEMP/app/current")" = "$RUNNER_TEMP/app/mStream-9.9.9-linux-x64" ]
+          # uninstall removes what was installed and nothing else. The
+          # uninstall path exits before any feed fetch, so the (now 9.9.10-
+          # only) rel dir needs no rebuilding; checkout restores install.sh
+          # from the tamper-test's sed.
           git checkout -- . 2>/dev/null || true
-          sh scripts/release-manifest.sh 9.9.9 rel
           MSTREAM_UNINSTALL=1 sh install.sh | tee un.log
           [ ! -e "$RUNNER_TEMP/app" ] && [ ! -e "$RUNNER_TEMP/bin/mstream-server" ]
           grep -q "left in place" un.log
@@ -167,6 +182,26 @@ jobs:
           $env:MSTREAM_FORCE = '1'
           try { & .\install.ps1 *>&1 | Out-Null; throw "installed despite bad hash" } catch { if ("$_" -notmatch 'sha256 mismatch') { throw } }
           $env:MSTREAM_FORCE = $null
+          # a bundle whose binary cannot exec must never take over `current`:
+          # probe-before-flip refuses (throws, nonzero exit) and keeps the
+          # working install. The fake 9.9.9 exe is already non-executable,
+          # which is exactly the probe-failure shape; only the presence of a
+          # working-or-first-install current decides advisory vs refusal.
+          $bb = 'mStream-9.9.10-win-x64'
+          Remove-Item rel\mStream-*.zip, rel\manifest.json -Force
+          # zip from INSIDE rel so entries carry no rel\ prefix
+          Push-Location rel
+          New-Item -ItemType Directory -Force $bb | Out-Null
+          Set-Content "$bb\mstream-server.exe" 'broken'
+          Set-Content "$bb\README.txt" 'broken'
+          python3 -m zipfile -c "$bb.zip" $bb
+          Remove-Item -Recurse -Force $bb
+          Pop-Location
+          # bash, not sh: git-bash's bash.exe is on the runner PATH for pwsh
+          bash scripts/release-manifest.sh 9.9.10 rel
+          try { & .\install.ps1 *>&1 | Out-Null; throw "installed a bundle that cannot exec" } catch { if ("$_" -notmatch 'does not run on this system') { throw } }
+          $j2 = Get-Item "$env:RUNNER_TEMP\app\current" -Force
+          if (($j2.Target | Select-Object -First 1) -notmatch 'mStream-9\.9\.9-win-x64$') { throw "current moved off 9.9.9: $($j2.Target)" }
           # uninstall
           $env:MSTREAM_UNINSTALL = '1'
           & .\install.ps1 *>&1 | Tee-Object -Variable un
@@ -224,7 +259,7 @@ jobs:
           sh install.sh > a.log 2>&1 || { cat a.log; exit 1; }
           [ "$(readlink "$ROOT/current")" = "$ROOT/mStream-9.9.9-$DKEY" ]
           [ "$(cat "$DEST/Contents/VERSION")" = 9.9.9 ]
-          [ "$(cat "$HOME/Applications/.mstream-installer")" = 9.9.9 ]
+          [ "$(head -1 "$HOME/Applications/.mstream-installer")" = 9.9.9 ]
           [ ! -f "$MSTREAM_STUB_DIR/enable-calls" ]
           # B: with the login item enabled, an upgrade re-points it - and the
           # enable must run through the ~/APPLICATIONS launcher (the stable
@@ -235,7 +270,7 @@ jobs:
           sh install.sh > b.log 2>&1 || { cat b.log; exit 1; }
           grep -q "login item re-pointed at 9.9.10" b.log
           [ "$(tail -1 "$MSTREAM_STUB_DIR/enable-calls")" = "$DEST/Contents/MacOS/mStream" ]
-          [ "$(cat "$HOME/Applications/.mstream-installer")" = 9.9.10 ]
+          [ "$(head -1 "$HOME/Applications/.mstream-installer")" = 9.9.10 ]
           # C: upgrade while mStream runs from ~/Applications - the old tree
           # is moved aside INTACT (a live process reads webapp/sidecars from
           # it), never rm -rf'd; the running-instance note is printed.

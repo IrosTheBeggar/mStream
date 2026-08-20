@@ -350,6 +350,11 @@ const updatesOptions = Joi.object({
   //   staged version; headless by exiting 0, which expects a process
   //   supervisor (systemd/pm2) configured to start mStream again.
   mode: Joi.string().valid('notify', 'stage', 'auto').default('stage'),
+  // Hold one version back: report it, never stage or apply it. The
+  // companion of a manual rollback (docs/install.md) — without it the next
+  // daily check would silently re-stage the very release the operator just
+  // backed out of. Cleared (set '') to resume normal updates.
+  skipVersion: Joi.string().pattern(/^\d+\.\d+\.\d+$/).allow('').default(''),
 });
 
 const rpnOptions = Joi.object({

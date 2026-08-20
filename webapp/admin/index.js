@@ -3354,8 +3354,10 @@ const infoView = Vue.component('info-view', {
                   <tr v-if="update.s.available">
                     <td><b>Available:</b> v{{update.s.latest}} &mdash; {{updLine()}}</td>
                     <td>
-                      <span v-if="updAction()">[<a v-on:click="updDoAction()">{{updAction()}}</a>]</span>
-                      <a v-else-if="update.s.downloadUrl" v-bind:href="update.s.downloadUrl" target="_blank">[downloads page]</a>
+                      <span v-if="updAction()">[<a v-on:click="updDoAction()">{{updAction()}}</a>] </span>
+                      <a v-else-if="!update.s.skipped && update.s.downloadUrl" v-bind:href="update.s.downloadUrl" target="_blank" rel="noopener">[downloads page] </a>
+                      <span v-if="update.s.skipped">[<a v-on:click="updSetSkip('')">unskip</a>]</span>
+                      <span v-else title="Hold this version back: never download or restart into it (e.g. after rolling back). Cleared by unskip or the next release.">[<a v-on:click="updSetSkip(update.s.latest)">skip</a>]</span>
                     </td>
                   </tr>
                   <tr v-if="update.s.error">
@@ -3387,10 +3389,12 @@ const infoView = Vue.component('info-view', {
     updLine: function() {
       const s = this.update.s;
       if (s.notifyOnly) { return 'this build is too old to self-update; re-run the install command'; }
+      if (s.skipped) { return 'held back (skipped) - it will not be downloaded or applied'; }
       if (s.downloading) { return 'downloading...'; }
-      if (s.staged && s.method === 'managed') { return 'downloaded and staged; it takes over on the next restart'; }
-      if (s.staged && s.method === 'inno') { return 'installer downloaded and verified'; }
-      if (s.staged && s.method === 'pkg') { return 'installer downloaded; the running app keeps playing until you restart it after installing'; }
+      const stagedIsLatest = s.staged && s.stagedVersion === s.latest;
+      if (stagedIsLatest && s.method === 'managed') { return 'downloaded and staged; it takes over on the next restart'; }
+      if (stagedIsLatest && s.method === 'inno') { return 'installer downloaded and verified'; }
+      if (stagedIsLatest && s.method === 'pkg') { return 'installer downloaded; the running app keeps playing until you restart it after installing'; }
       if (s.method === 'managed' || s.method === 'inno') { return 'not downloaded yet'; }
       if (s.method === 'pkg') { return 'download the installer, then run it'; }
       if (s.method === 'deb-rpm') { return 'installed from a deb/rpm package; update it with your package manager'; }
@@ -3400,8 +3404,11 @@ const infoView = Vue.component('info-view', {
     },
     updAction: function() {
       const s = this.update.s;
-      if (s.notifyOnly || s.downloading) { return null; }
-      if (s.staged) {
+      if (s.notifyOnly || s.downloading || s.skipped) { return null; }
+      // Act only on a staged copy of the CURRENT latest: with an older
+      // version staged and a newer one advertised, the click must never
+      // apply the old one while the line names the new one.
+      if (s.staged && s.stagedVersion === s.latest) {
         if (s.method === 'managed') { return 'restart into it'; }
         if (s.method === 'inno') { return 'install now'; }
         if (s.method === 'pkg') { return 'open installer'; }
@@ -3415,7 +3422,11 @@ const infoView = Vue.component('info-view', {
       this.updateBusy = true;
       const s = this.update.s;
       try {
-        if (s.staged) {
+        // Same predicate as updAction(): with an OLDER version staged and a
+        // newer latest advertised, the visible action is "download" — the
+        // click must never fall into the apply branch and restart into the
+        // stale one.
+        if (s.staged && s.stagedVersion === s.latest) {
           const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/update/apply` });
           iziToast.success({
             title: res.data.exiting ? 'mStream is restarting into the update'
@@ -3438,12 +3449,27 @@ const infoView = Vue.component('info-view', {
       try {
         const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/update/check` });
         ADMINDATA.updateStatus.s = res.data;
-        iziToast.success({
-          title: res.data.available ? `mStream v${res.data.latest} is available` : 'You are up to date',
-          position: 'topCenter', timeout: 3000
-        });
+        if (res.data.error && !res.data.available) {
+          // Covers both failure classes: transport ('Update check failed:
+          // ...') and validation ('Release feed rejected: ...').
+          iziToast.warning({ title: 'Update check failed', message: String(res.data.error).slice(0, 120), position: 'topCenter', timeout: 4000 });
+        } else {
+          iziToast.success({
+            title: res.data.available ? `mStream v${res.data.latest} is available` : 'You are up to date',
+            position: 'topCenter', timeout: 3000
+          });
+        }
       } catch (err) {
         iziToast.error({ title: 'Update check failed', position: 'topCenter', timeout: 3500 });
+      }
+    },
+    updSetSkip: async function(ver) {
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/update/settings`, data: { skipVersion: ver } });
+        await ADMINDATA.getUpdateStatus();
+        iziToast.success({ title: ver ? `v${ver} will be skipped` : 'Version skip cleared', position: 'topCenter', timeout: 2500 });
+      } catch (err) {
+        iziToast.error({ title: 'Failed to change skip setting', position: 'topCenter', timeout: 3500 });
       }
     },
     updCycleMode: async function() {

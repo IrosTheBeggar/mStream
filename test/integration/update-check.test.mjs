@@ -36,7 +36,7 @@ function hostKey() {
 
 let relDir; let relPort; let relServer; let tmpHome;
 
-function makeBundle(version, key) {
+function makeBundle(version, key, { broken = false } = {}) {
   const b = `mStream-${version}-${key}`;
   const dir = path.join(relDir, b);
   const inner = key.startsWith('darwin')
@@ -44,18 +44,23 @@ function makeBundle(version, key) {
     : dir;
   spawnSync('mkdir', ['-p', inner]);
   const server = path.join(inner, 'mstream-server');
-  spawnSync('bash', ['-c', `printf '#!/bin/sh\\n[ "$1" = -V ] && echo ${version}\\nexit 0\\n' > '${server}' && chmod +x '${server}'`]);
+  // broken = a binary this host "cannot exec": the probe-before-flip in
+  // install.sh must refuse it and the stager must report a failed stage.
+  const stub = broken
+    ? `printf '#!/bin/sh\\nexit 1\\n' > '${server}'`
+    : `printf '#!/bin/sh\\n[ "$1" = -V ] && echo ${version}\\nexit 0\\n' > '${server}'`;
+  spawnSync('bash', ['-c', `${stub} && chmod +x '${server}'`]);
   spawnSync('bash', ['-c', `echo 'fake bundle' > '${dir}/README.txt'`]);
   const zip = spawnSync('python3', ['-m', 'zipfile', '-c', `${b}.zip`, b], { cwd: relDir });
   assert.equal(zip.status, 0, `zip failed: ${zip.stderr}`);
   spawnSync('rm', ['-rf', dir]);
 }
 
-async function publish(version, { tamper = false } = {}) {
+async function publish(version, { tamper = false, broken = false } = {}) {
   for (const f of await fs.readdir(relDir)) {
     if (f.endsWith('.zip') || f === 'manifest.json') { await fs.rm(path.join(relDir, f)); }
   }
-  makeBundle(version, hostKey());
+  makeBundle(version, hostKey(), { broken });
   const gen = spawnSync('sh', [path.join(REPO_ROOT, 'scripts', 'release-manifest.sh'), version, relDir]);
   assert.equal(gen.status, 0, `manifest generation failed: ${gen.stderr}`);
   if (tamper) {
@@ -112,7 +117,13 @@ async function pollStatus(baseUrl, pred, timeoutMs = 60_000) {
 
 test('managed round-trip: check, auto-stage, current flip, tamper refusal, live settings', { skip: posixOnly }, async () => {
   await publish('9.9.9');
-  const srv = await startServer({ waitForScan: false, env: updEnv() });
+  // --supervised + held stdin: the status file is written only by the
+  // launcher-supervised instance (a shared data home must not be clobbered
+  // by unrelated instances), and this test asserts on that file.
+  const srv = await startServer({
+    waitForScan: false, env: updEnv(),
+    extraArgs: ['--supervised'], stdin: 'pipe',
+  });
   try {
     // Boot state: forced-managed, nothing known yet.
     let s = await (await fetch(`${srv.baseUrl}/api/v1/admin/update`)).json();
@@ -150,6 +161,45 @@ test('managed round-trip: check, auto-stage, current flip, tamper refusal, live 
     assert.match(s.error, /Staging failed/);
     assert.equal(path.basename(await fs.readlink(path.join(root, 'current'))), `mStream-9.9.9-${hostKey()}`);
 
+    // A bundle whose binary cannot exec must never take over: install.sh's
+    // probe-before-flip refuses, the stager reports a failed stage, and
+    // `current` stays put.
+    await publish('9.9.11', { broken: true });
+    await fetch(`${srv.baseUrl}/api/v1/admin/update/check`, { method: 'POST' });
+    // Match the probe's own words, not just 'Staging failed' — the tamper
+    // step above already left that prefix in state.error.
+    s = await pollStatus(srv.baseUrl, (x) => (x.error || '').includes('does not run on this system'));
+    assert.match(s.error, /Staging failed/);
+    assert.equal(path.basename(await fs.readlink(path.join(root, 'current'))), `mStream-9.9.9-${hostKey()}`);
+
+    // Skip round-trip: a good newer release stages; skipping it un-stages
+    // AND re-points current at the running version's folder; unskipping
+    // re-stages it. This is the rollback companion — without it the daily
+    // check silently re-flips onto the release the operator backed out of.
+    await publish('9.9.12');
+    await fetch(`${srv.baseUrl}/api/v1/admin/update/check`, { method: 'POST' });
+    s = await pollStatus(srv.baseUrl, (x) => x.staged && x.stagedVersion === '9.9.12');
+    // A folder for the RUNNING version so the un-flip has a target (a real
+    // managed install always has one; this server runs from source).
+    const runningDir = path.join(root, `mStream-${packageJson.version}-${hostKey()}`);
+    await fs.mkdir(runningDir, { recursive: true });
+    const skipSet = await fetch(`${srv.baseUrl}/api/v1/admin/update/settings`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ skipVersion: '9.9.12' }),
+    });
+    assert.equal(skipSet.status, 200);
+    s = await pollStatus(srv.baseUrl, (x) => x.skipped && !x.staged);
+    assert.equal(s.stagedVersion, null);
+    assert.equal(await fs.readlink(path.join(root, 'current')), runningDir);
+    const dlSkipped = await fetch(`${srv.baseUrl}/api/v1/admin/update/download`, { method: 'POST' });
+    assert.equal(dlSkipped.status, 409);
+    const unskip = await fetch(`${srv.baseUrl}/api/v1/admin/update/settings`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ skipVersion: '' }),
+    });
+    assert.equal(unskip.status, 200);
+    s = await pollStatus(srv.baseUrl, (x) => x.staged && x.stagedVersion === '9.9.12' && !x.skipped);
+
     // Settings persist to the config file and apply live.
     const set = await fetch(`${srv.baseUrl}/api/v1/admin/update/settings`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -175,6 +225,12 @@ test('non-managed installs refuse staging; apply refuses with nothing staged', {
   await publish('9.9.9');
   const env = updEnv();
   delete env.MSTREAM_UPDATE_ROOT; // source run -> method npm-source
+  // A separate home: this instance is NOT launcher-supervised, so it must
+  // never write a status file at all (a docker/npm instance sharing the
+  // data home would otherwise clobber the tray's state).
+  const soloHome = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-upd-solo-'));
+  env.HOME = soloHome;
+  env.XDG_DATA_HOME = path.join(soloHome, '.local', 'share');
   const srv = await startServer({ waitForScan: false, env });
   try {
     const check = await (await fetch(`${srv.baseUrl}/api/v1/admin/update/check`, { method: 'POST' })).json();
@@ -187,7 +243,13 @@ test('non-managed installs refuse staging; apply refuses with nothing staged', {
 
     const ap = await fetch(`${srv.baseUrl}/api/v1/admin/update/apply`, { method: 'POST' });
     assert.equal(ap.status, 409);
+
+    const soloStatus = process.platform === 'darwin'
+      ? path.join(soloHome, 'Library', 'Application Support', 'mStream', 'update-status.json')
+      : path.join(soloHome, '.local', 'share', 'mstream', 'update-status.json');
+    await assert.rejects(fs.access(soloStatus), 'unsupervised instances must not write the status file');
   } finally {
     await srv.stop();
+    await fs.rm(soloHome, { recursive: true, force: true }).catch(() => {});
   }
 });

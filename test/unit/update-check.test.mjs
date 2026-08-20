@@ -90,13 +90,17 @@ test('refuses aside/partial names so pruning never eyes them', () => {
 // on a Windows host that means backslashes against these forward-slash keys
 // (this exact mismatch failed the windows CI test shard).
 
-function fakeFs(existing) {
+function fakeFs(existing, files = {}) {
   const set = new Set(existing);
   const norm = (p) => String(p).replaceAll('\\', '/');
   return {
-    existsSync: (p) => set.has(norm(p)),
+    existsSync: (p) => set.has(norm(p)) || (norm(p) in files),
     realpathSync: (p) => p,
-    accessSync: (p) => { if (!set.has(norm(p))) { throw new Error('ENOENT'); } },
+    accessSync: (p) => { if (!set.has(norm(p)) && !(norm(p) in files)) { throw new Error('ENOENT'); } },
+    readFileSync: (p) => {
+      if (norm(p) in files) { return files[norm(p)]; }
+      throw new Error('ENOENT');
+    },
   };
 }
 
@@ -193,6 +197,29 @@ test('a /Applications install is pkg territory', () => {
     homedir: () => '/Users/u',
   });
   assert.equal(r.method, 'pkg');
+});
+
+test('a managed layout under /opt is still managed: geometry outranks prefix', () => {
+  const root = '/opt/apps/mstream';
+  const r = detectInstallMethod({
+    execPath: `${root}/mStream-6.21.2-linux-x64/mstream-server`,
+    platform: 'linux', env: noEnv, standalone: true,
+    fsx: fakeFs([`${root}/current`]),
+  });
+  assert.deepEqual(r, { method: 'managed', root });
+});
+
+test('the marker names a custom root; detection follows it from ~/Applications', posixHostOnly, () => {
+  const root = '/srv/custom/mstream-root';
+  const r = detectInstallMethod({
+    execPath: '/Users/u/Applications/mStream.app/Contents/MacOS/mstream-server',
+    platform: 'darwin', env: noEnv, standalone: true,
+    fsx: fakeFs([`${root}/current`], {
+      '/Users/u/Applications/.mstream-installer': `9.9.9\n${root}\n`,
+    }),
+    homedir: () => '/Users/u',
+  });
+  assert.deepEqual(r, { method: 'managed', root });
 });
 
 test('/opt is deb/rpm territory', () => {

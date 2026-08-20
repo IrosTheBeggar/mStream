@@ -188,7 +188,8 @@ Controls the daily release-update check and what happens when one is found
 ```json
   "updates": {
     "check": true,
-    "mode": "stage"
+    "mode": "stage",
+    "skipVersion": ""
   },
 ```
 
@@ -198,8 +199,12 @@ Controls the daily release-update check and what happens when one is found
   background; applying takes a restart or a click), or `"auto"` (also
   restart into the update when the server is idle; headless installs need a
   process supervisor that restarts mStream after it exits).
+* `skipVersion`: hold one version back — never download or restart into it.
+  Set it (from the admin panel's skip link, or by hand) after rolling back a
+  bad release, or the next daily check would silently re-stage it. Clear
+  with `""`; a newer release supersedes it naturally.
 
-Both are editable live from the admin panel's About page — no reboot needed.
+All of these are editable live from the admin panel's About page — no reboot needed.
 
 ## Secret
 

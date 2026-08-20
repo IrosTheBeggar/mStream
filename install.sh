@@ -14,7 +14,9 @@
 #   MSTREAM_BIN_DIR       where the `mstream-server` command goes
 #                         (default: ~/.local/bin)
 #   MSTREAM_NO_DESKTOP    set to 1 to skip the app-menu entry (Linux) /
-#                         ~/Applications copy (macOS)
+#                         ~/Applications copy (macOS). Persisted: scheduled
+#                         re-runs (the in-app updater) keep the choice.
+#                         Set to 0 to re-enable and clear the persisted opt-out.
 #   MSTREAM_UNINSTALL     set to 1 to remove everything this script installed
 #                         (app folders, command, menu entry / ~/Applications
 #                         copy, login item). Your data is left in place.
@@ -22,7 +24,11 @@
 #                         GitHub release) - for internal mirrors and testing
 #   MSTREAM_KEY           force a bundle key (linux-x64, linux-x64-musl,
 #                         linux-arm64, linux-arm64-musl, darwin-x64,
-#                         darwin-arm64) when auto-detection gets it wrong
+#                         darwin-arm64) when auto-detection gets it wrong.
+#                         The key actually installed is persisted and rules
+#                         later runs, so host-probe drift (e.g. gcompat
+#                         adding a glibc loader on musl) never switches
+#                         bundle families on an existing install
 #   MSTREAM_FORCE         set to 1 to replace an already-installed copy of
 #                         the same version (the old one is moved aside)
 #
@@ -109,9 +115,37 @@ else
 fi
 # Both dirs become symlink TARGETS below; a relative value would be stored
 # literally and dangle from wherever the link lives. Canonicalize.
-mkdir -p "$ROOT" "$BIN_DIR"
+mkdir -p "$ROOT"
 ROOT=$(cd "$ROOT" && pwd -P)
+
+# Choices persisted by an earlier run rule later ones: the in-app updater
+# re-runs this script on a schedule with a bare environment, and "I opted
+# out of the app-menu entry" or a custom command dir must survive that.
+# Env still wins when set; MSTREAM_NO_DESKTOP=0 explicitly re-enables (and
+# un-persists) the integration.
+if [ -f "$ROOT/.install-options" ]; then
+    while IFS='=' read -r optk optv; do
+        case "$optk" in
+            no_desktop) [ -z "${MSTREAM_NO_DESKTOP:-}" ] && MSTREAM_NO_DESKTOP=1 ;;
+            bin_dir) [ -z "${MSTREAM_BIN_DIR:-}" ] && [ -n "$optv" ] && BIN_DIR="$optv" ;;
+        esac
+    done < "$ROOT/.install-options"
+fi
+[ "${MSTREAM_NO_DESKTOP:-}" = 0 ] && MSTREAM_NO_DESKTOP=""
+mkdir -p "$BIN_DIR"
 BIN_DIR=$(cd "$BIN_DIR" && pwd -P)
+
+# The bundle key chosen at FIRST install rules later runs too: the host
+# probes above can drift (installing gcompat drops a glibc loader on a musl
+# box and flips the detection), and a scheduled re-run must never switch
+# bundle families on a live install because of that. An explicit
+# MSTREAM_KEY still overrides - and updates the persisted choice below.
+if [ -z "${MSTREAM_KEY:-}" ] && [ -f "$ROOT/.bundle-key" ]; then
+    saved_key=$(head -1 "$ROOT/.bundle-key" | tr -cd 'a-z0-9-')
+    case " win-x64 linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl darwin-x64 darwin-arm64 " in
+        *" $saved_key "*) key="$saved_key" ;;
+    esac
+fi
 
 # Per-platform names inside a bundle, and where the server keeps its data
 # (which this script never touches - not on install, not on uninstall).
@@ -249,6 +283,16 @@ if ! fetch "$base/manifest.json" "$tmp/manifest.json"; then
 fi
 version=$(grep -o '"version": *"[^"]*"' "$tmp/manifest.json" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
 [ -n "$version" ] || { echo "manifest.json is missing a version - refusing to install" >&2; exit 1; }
+# apiVersion gates the layout contract between this script and the release.
+# This copy may be YEARS old by the time it runs (it rides inside every
+# bundle for the in-app updater), so a bumped apiVersion means: do not
+# guess at a layout you predate - fetch the current installer instead.
+api=$(grep -o '"apiVersion": *[0-9]*' "$tmp/manifest.json" | grep -o '[0-9]*$' || true)
+if [ -n "$api" ] && [ "$api" != 1 ]; then
+    echo "this release uses a newer install layout (apiVersion $api) than this script understands" >&2
+    echo "  re-run the current one-line installer from https://github.com/$REPO (see docs/install.md)" >&2
+    exit 1
+fi
 # The version becomes a path component below: keep it to what a release
 # tag can contain, so a bad manifest can't steer rm/mv anywhere.
 case "$version" in
@@ -359,12 +403,40 @@ if command -v ps >/dev/null 2>&1; then
     done
 fi
 
+# Does the NEW binary actually exec here? Probe it BEFORE `current` moves:
+# a bundle this host cannot run (missing runtime library, a raised OS/libc
+# floor, a bundle family the box cannot exec) must never take over a
+# working install - the in-app updater drives this script on a schedule,
+# and a silent flip here IS the next restart's outage. When there is a
+# working install to keep, refuse and exit nonzero so the updater reports
+# a failed stage instead of a staged landmine. A first install (nothing to
+# keep) still proceeds and gets the diagnostic at the end.
+new_server_v=$("$ROOT/$bundle/$server_rel" -V 2>/dev/null) || new_server_v=""
+if [ -z "$new_server_v" ] && [ -L "$ROOT/current" ] && [ -e "$ROOT/current" ] \
+    && [ "$(readlink "$ROOT/current")" != "$ROOT/$bundle" ]; then
+    echo "the new mstream-server ($version) does not run on this system - keeping the existing install" >&2
+    "$ROOT/$bundle/$server_rel" -V 2>&1 | head -3 | sed 's/^/    /' >&2
+    echo "  current stays at $(readlink "$ROOT/current"); the new copy is at $ROOT/$bundle" >&2
+    echo "  (missing runtime library? wrong bundle for this machine? see docs/install.md; MSTREAM_KEY forces a bundle)" >&2
+    exit 1
+fi
+
 # `current` -> this version. If a previous manual layout left a REAL
 # directory named current, move it aside rather than nest into it.
 if [ -e "$ROOT/current" ] && [ ! -L "$ROOT/current" ]; then
     mv "$ROOT/current" "$ROOT/current.was-a-directory-$(date +%Y%m%d%H%M%S)"
 fi
 link "$ROOT/$bundle" "$ROOT/current"
+
+# The choices this run actually used, for the next (possibly scheduled and
+# env-bare) run - see the read side at the top. Written only once the new
+# version is in place.
+printf '%s\n' "$key" > "$ROOT/.bundle-key"
+{
+    [ -n "${MSTREAM_NO_DESKTOP:-}" ] && echo "no_desktop=1"
+    [ "$BIN_DIR" != "$HOME/.local/bin" ] && printf 'bin_dir=%s\n' "$BIN_DIR"
+    :
+} > "$ROOT/.install-options"
 
 # The command: a symlink, so `mstream-server` on PATH always means `current`
 # and an upgrade is one link flip. Data lives in the server's data home,
@@ -439,8 +511,11 @@ if [ -z "${MSTREAM_NO_DESKTOP:-}" ]; then
                 # Marker AFTER the copy is in place, and OUTSIDE the bundle.
                 # (This also heals a copy from the old installer, which wrote
                 # the marker inside Contents/ and broke the seal - the fresh
-                # ditto above replaced it wholesale.)
-                printf '%s\n' "$version" > "$apps_marker"
+                # ditto above replaced it wholesale.) Line 2 = the install
+                # ROOT, so the in-app updater's method detection can find a
+                # CUSTOM root from a launcher running out of ~/Applications;
+                # single-line markers from older runs read as version-only.
+                printf '%s\n%s\n' "$version" "$ROOT" > "$apps_marker"
                 desktop_note="app: ~/Applications/mStream.app (menu-bar icon; Quick Connect on)"
             else
                 rm -rf "$dest.installing"
@@ -499,15 +574,15 @@ if [ -n "$running_from" ]; then
     echo "        the new one - the app menu / Start Menu entry now points at $version." >&2
 fi
 
-# Does the binary actually exec here? `-V` is commander's version print -
-# instant, no server boot, no side effects - so it doubles as the proof of
-# a working install. Catch a missing runtime library NOW, with the fix,
-# instead of at the user's first run. Known case: the musl bundle (Bun's
-# musl build) links libstdc++/libgcc dynamically, and a minimal Alpine has
-# neither (measured on alpine:3.20 - a wall of "Error relocating" from the
-# loader).
-if v=$("$server" -V 2>/dev/null) && [ -n "$v" ]; then
-    echo "  mstream-server $v runs"
+# Report the exec probe (taken BEFORE the `current` flip above). An empty
+# result down here means a first install or a same-version re-run of a
+# binary that cannot exec - nothing working was displaced, so this stays a
+# diagnostic with the fix, exactly as before. Known case: the musl bundle
+# (Bun's musl build) links libstdc++/libgcc dynamically, and a minimal
+# Alpine has neither (measured on alpine:3.20 - a wall of "Error
+# relocating" from the loader).
+if [ -n "$new_server_v" ]; then
+    echo "  mstream-server $new_server_v runs"
 else
     err=$("$server" -V 2>&1 | head -3)
     case "$err" in
