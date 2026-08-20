@@ -19,6 +19,11 @@
 #     (install.sh greps that shape; it has no jq)
 #   - "version" is the bare tag version (no leading v)
 #   - assets are named mStream-<version>-<key>.zip
+#   - native-installer assets (the win-x64 setup.exe and the darwin .pkgs)
+#     appear as EXTRA lines of the same shape when present in the dir. The
+#     install scripts grep by their own exact zip name, so extra lines are
+#     invisible to them; the in-app updater (src/util/update-check.js) reads
+#     these to verify the installer it downloads for Inno/pkg installs.
 #
 # Refuses (exit 1) when a zip's name does not carry EXACTLY this version
 # followed by a known bundle key: the installers derive filenames from
@@ -33,6 +38,10 @@ case "$version" in
 esac
 cd "$dir"
 keys="win-x64 linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl darwin-x64 darwin-arm64"
+# Native installers whose hashes the in-app updater verifies. Exact names
+# only, same version-strictness as the zips; absent files are simply not
+# listed (releases build them independently of the bundles).
+installers="mStream-$version-win-x64-setup.exe mStream-$version-darwin-x64.pkg mStream-$version-darwin-arm64.pkg"
 found=0
 for f in mStream-*.zip; do
     [ -e "$f" ] || { echo "release-manifest: no mStream-*.zip in $dir" >&2; exit 1; }
@@ -44,7 +53,19 @@ for f in mStream-*.zip; do
         echo "release-manifest: $f is not mStream-$version-<key>.zip for a known key - package.json and the tag disagree, or an unknown bundle" >&2
         exit 1
     fi
-    found=$((found + 1))
+done
+# A setup.exe / .pkg for the WRONG version in the release dir is the same
+# class of bug as a mismatched zip: refuse rather than list or skip it.
+for f in mStream-*-setup.exe mStream-*.pkg; do
+    [ -e "$f" ] || continue
+    ok=""
+    for i in $installers; do
+        [ "$f" = "$i" ] && ok=1
+    done
+    if [ -z "$ok" ]; then
+        echo "release-manifest: $f does not match mStream-$version-<target> for a known installer - refusing" >&2
+        exit 1
+    fi
 done
 {
     echo '{'
@@ -53,7 +74,8 @@ done
     echo '  "apiVersion": 1,'
     echo '  "assets": ['
     first=true
-    for f in mStream-*.zip; do
+    for f in mStream-*.zip $installers; do
+        [ -e "$f" ] || continue
         if command -v sha256sum >/dev/null 2>&1; then
             sum=$(sha256sum "$f" | cut -d' ' -f1)
         else
@@ -61,6 +83,7 @@ done
         fi
         $first || echo ','
         first=false
+        found=$((found + 1))
         printf '    {"file": "%s", "sha256": "%s"}' "$f" "$sum"
     done
     echo ''

@@ -909,6 +909,32 @@ export async function editAutoUpdate(val) {
   config.program.transcode.autoUpdate = val;
 }
 
+// Release auto-update settings (util/update-check.js). Same live-effect
+// contract as editAutoUpdate above: the checker reads config.program.updates
+// at each firing, so no reboot is needed. Written through updateJsonAtomic —
+// the read and the write are ONE serialized step, so a settings POST racing
+// any other config save can't resurrect the document it read before that
+// save landed (the plain load-then-save shape loses that race).
+async function editUpdatesField(field, val) {
+  await updateJsonAtomic(config.configFile, (doc) => {
+    // updateJsonAtomic hands us null for ANY read failure — absent file,
+    // but also a transiently locked or momentarily unparsable one. The
+    // config file always exists on a booted server, so null here means
+    // "could not read it": throwing 500s the settings POST and leaves the
+    // file intact, instead of replacing the operator's whole config with
+    // just an updates block.
+    if (doc === null) { throw new Error('config file unreadable - not overwriting it'); }
+    if (!doc.updates) { doc.updates = {}; }
+    doc.updates[field] = val;
+    return doc;
+  });
+  config.program.updates[field] = val;
+}
+
+export function editUpdatesCheck(val) { return editUpdatesField('check', val); }
+export function editUpdatesMode(val) { return editUpdatesField('mode', val); }
+export function editUpdatesSkipVersion(val) { return editUpdatesField('skipVersion', val); }
+
 // Set the SQLite synchronous mode for the main DB connection (FULL | NORMAL).
 // Persisted to config and applied to the live connection immediately —
 // PRAGMA synchronous is per-connection and takes effect on the next

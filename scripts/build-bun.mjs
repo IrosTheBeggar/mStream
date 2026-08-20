@@ -387,6 +387,21 @@ if (isMac) {
 // bare server box, so the box can't explain itself — this file has to.
 writeFileSync(join(stageDir, 'README.txt'), bundleReadme(pkg.version, t, launcherStaged, serverName));
 
+// The installer script travels WITH the bundle: the in-app updater
+// (src/util/update-check.js) stages a new version by running exactly the
+// code that installed this one, pinned at build time and covered by the
+// bundle's own sha256 — never a fetch of a mutable script URL at update
+// time. macOS: Contents/Resources — it is a data file, and codesign's
+// nested-code scan rejects loose scripts under Contents/MacOS (same rule
+// that put webapp/ in Resources above).
+if (t.plat === 'win32') {
+  cpSync(join(root, 'install.ps1'), join(contentRoot, 'install.ps1'));
+} else if (isMac) {
+  cpSync(join(root, 'install.sh'), join(stageDir, 'mStream.app', 'Contents', 'Resources', 'install.sh'));
+} else {
+  cpSync(join(root, 'install.sh'), join(contentRoot, 'install.sh'));
+}
+
 const archivePath = join(root, 'dist', `${bundleName}.zip`);
 rmSync(archivePath, { force: true });
 console.log(`Bundling -> dist/${bundleName}.zip`);
