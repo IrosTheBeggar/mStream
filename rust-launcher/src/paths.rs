@@ -211,7 +211,10 @@ pub fn browse_target(config: &Path, ep: &Endpoint) -> String {
 /// patterns built from filesystem paths): a HOME containing '+', '?',
 /// '(' or brackets must match itself — a metacharacter that COMPILES but
 /// narrows the pattern silently under-matches, and for a busy-check that
-/// under-match is a deleted live tree.
+/// under-match is a deleted live tree. Both callers (the aside sweep and
+/// the open-handoff liveness probe) are macOS-only; `test` keeps the
+/// matrix test compiling on every host.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn escape_ere(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     for c in s.chars() {
