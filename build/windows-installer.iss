@@ -96,7 +96,10 @@ Filename: "{app}\mStream.exe"; Description: "Launch mStream"; Flags: nowait post
 ; /MSTREAMRELAUNCH=1 after gracefully stopping mStream and exiting itself.
 ; skipifsilent above would leave the user trayless at the end of a silent
 ; update, so this param-gated twin relaunches exactly (and only) then.
-Filename: "{app}\mStream.exe"; Flags: nowait; Check: WantsRelaunch
+; --takeover: a relaunch mid-update is never a first run — without it the
+; tray would announce (pop the user's browser open) after every silent
+; update, at whatever moment the update happened to land.
+Filename: "{app}\mStream.exe"; Parameters: "--takeover"; Flags: nowait; Check: WantsRelaunch
 
 [Code]
 const

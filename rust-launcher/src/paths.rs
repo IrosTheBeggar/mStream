@@ -231,6 +231,10 @@ pub struct UpdateStatus {
     /// auto mode / a webapp "restart to update" click: the server asks the
     /// launcher to apply on its next tick.
     pub apply_requested: bool,
+    /// Fresh per arm (an ISO timestamp; treated as an opaque token): a
+    /// failed apply is retried only when a NEW request arrives — comparing
+    /// this rules out both same-version retry loops and stale replays.
+    pub apply_requested_at: Option<String>,
     /// inno/pkg: the verified installer the server downloaded. Validated
     /// (location + name shape) before the launcher will touch it.
     pub installer_path: Option<PathBuf>,
@@ -279,6 +283,11 @@ pub fn parse_update_status(doc: &str) -> Option<UpdateStatus> {
         staged_version: ver("stagedVersion"),
         downloading: flag("downloading"),
         apply_requested: flag("applyRequested"),
+        apply_requested_at: v
+            .get("applyRequestedAt")
+            .and_then(|x| x.as_str())
+            .filter(|t| t.len() <= 40 && t.chars().all(|c| c.is_ascii_graphic()))
+            .map(str::to_string),
         installer_path: v.get("installerPath").and_then(|x| x.as_str()).map(PathBuf::from),
     })
 }
@@ -534,6 +543,19 @@ mod tests {
         assert!(s.available && s.staged);
         assert_eq!(s.staged_version.as_deref(), Some("6.22.0"));
         assert!(!s.apply_requested, "non-bool flag reads as false, never truthy");
+        assert_eq!(s.apply_requested_at, None);
+        let armed = parse_update_status(
+            r#"{"applyRequested": true, "applyRequestedAt": "2026-08-20T12:00:00.000Z"}"#,
+        )
+        .unwrap();
+        assert!(armed.apply_requested);
+        assert_eq!(armed.apply_requested_at.as_deref(), Some("2026-08-20T12:00:00.000Z"));
+        // Oversized or non-printable tokens are dropped, not displayed/compared.
+        let junk = parse_update_status(&format!(
+            r#"{{"applyRequestedAt": "{}"}}"#, "x".repeat(60)
+        ))
+        .unwrap();
+        assert_eq!(junk.apply_requested_at, None);
         assert_eq!(s.method.as_deref(), Some("managed"));
         // A method with unexpected characters is dropped, not displayed.
         let odd = parse_update_status(r#"{"method": "Managed; rm -rf /"}"#).unwrap();

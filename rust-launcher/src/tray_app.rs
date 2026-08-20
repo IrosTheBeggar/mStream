@@ -47,6 +47,11 @@ enum AppEvent {
     /// its device thread woke the loop on mouse motion. A proxy event wakes
     /// all three backends identically.
     Tick(u64),
+    /// The update-surface poll, from its own always-running thread —
+    /// deliberately NOT tied to a server generation: a server that never
+    /// came up (or a restart whose spawn failed) has no ticker, and the
+    /// update menu line must keep tracking the status file regardless.
+    UpdatePoll,
 }
 
 struct Shared {
@@ -117,6 +122,15 @@ pub fn run(args: LauncherArgs) -> ! {
         }
         std::process::exit(0);
     }
+
+    // ── The lock just proved every previous launcher session dead — the
+    // one moment the ~/Applications asides (trees an upgrade moved aside
+    // for a then-running app) are provably reclaimable. Without this,
+    // always-on tray users leak one full .app copy per release: the
+    // installer's own sweep only runs when nothing runs from the copy,
+    // which for them is never.
+    #[cfg(target_os = "macos")]
+    sweep_apps_asides(&log);
 
     // ── Headless Linux (ssh without -t, cron, a misused systemd unit):
     // tao's event-loop build would die inside gtk's initializer with a raw
@@ -198,6 +212,20 @@ pub fn run(args: LauncherArgs) -> ! {
         }));
     }
 
+    // The update-surface poll: ONE always-running thread for the whole
+    // session, deliberately not tied to a server generation (see
+    // AppEvent::UpdatePoll — a Stopped/never-verified server has no ticker,
+    // and the update menu line must keep tracking the status file anyway).
+    {
+        let proxy = proxy.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(60));
+            if proxy.send_event(AppEvent::UpdatePoll).is_err() {
+                return; // the loop is gone
+            }
+        });
+    }
+
     match spawn_generation(&shared, &bin, &args.server_args, &server_log, ep, &proxy, &log) {
         Ok(()) => {}
         Err(e) => {
@@ -234,7 +262,11 @@ pub fn run(args: LauncherArgs) -> ! {
     let mut update_item: Option<MenuItem> = None;
     let mut upd: Option<paths::UpdateStatus> = paths::read_update_status();
     let mut upd_text = String::new();
-    let mut apply_handled = false;
+    // The apply request we last ACTED on (the file's applyRequestedAt, else
+    // the staged version): a failed handoff must not auto-retry itself into
+    // a spawn loop, but a NEW request — a later version, or the operator
+    // clicking "restart to update" again in the webapp — starts fresh.
+    let mut auto_apply_attempted: Option<String> = None;
     // Our own REAL location (canonicalized so a start through the `current`
     // symlink still resolves to the versioned tree the walk-up needs).
     let exe_real = std::env::current_exe()
@@ -336,10 +368,13 @@ pub fn run(args: LauncherArgs) -> ! {
                 // changes — never on unrelated events, so the tooltip isn't
                 // re-set under a hovering cursor. Stale generations are
                 // ignored outright and the rest is throttled to 1 Hz.
-                AppEvent::Tick(generation) => {
-                    // Update-state refresh rides the minute tick: one small
-                    // file read, then the item re-renders only on change (so
-                    // the text is never re-set under a hovering cursor).
+                AppEvent::UpdatePoll => {
+                    // The update surface tracks the status file on its own
+                    // cadence — independent of any server generation, so a
+                    // server that never came up (or a failed restart) still
+                    // has a live update menu. One small file read; the item
+                    // re-renders only on change (never re-set under a
+                    // hovering cursor).
                     upd = paths::read_update_status();
                     let action = render_update_item(
                         update_item.as_ref(),
@@ -350,19 +385,24 @@ pub fn run(args: LauncherArgs) -> ! {
                     );
                     // auto mode / a webapp "restart to update" click: the
                     // server flags applyRequested and this launcher acts on
-                    // its next tick. Once — a failed handoff must not retry
-                    // itself into a spawn loop.
-                    if !apply_handled
+                    // the next poll. Once PER REQUEST TOKEN — a failed
+                    // handoff never retries itself into a spawn loop, but a
+                    // NEW request (a later version, another webapp click)
+                    // starts fresh. And never while quitting: a queued poll
+                    // must not resurrect mStream on the way out.
+                    let token = upd.as_ref().and_then(auto_apply_token);
+                    if !shared_loop.quitting.load(Ordering::SeqCst)
                         && upd.as_ref().is_some_and(|s| s.apply_requested)
+                        && token.is_some()
+                        && token != auto_apply_attempted
                         && !matches!(action, UpdateAction::None | UpdateAction::OpenReleases)
                     {
-                        apply_handled = true;
+                        auto_apply_attempted = token;
                         log.line("update: the server requested apply - restarting into the staged version");
                         match perform_apply(&shared_loop, &action, exe_real.as_deref(), &args.server_args, &log) {
                             Ok(()) => {
                                 tray.take();
                                 *control_flow = ControlFlow::Exit;
-                                return;
                             }
                             Err(e) => {
                                 log.line(&format!("update apply failed: {e}"));
@@ -374,6 +414,8 @@ pub fn run(args: LauncherArgs) -> ! {
                             }
                         }
                     }
+                }
+                AppEvent::Tick(generation) => {
                     let now = Instant::now();
                     if generation == shared_loop.generation.load(Ordering::SeqCst)
                         && phase.ticks()
@@ -825,6 +867,45 @@ fn render_update_item(
     action
 }
 
+/// The identity of an apply request: the server's applyRequestedAt stamp,
+/// else (an older server writing no stamp) the staged version. A failed
+/// attempt consumes exactly this token; a fresh request mints a new one.
+fn auto_apply_token(s: &paths::UpdateStatus) -> Option<String> {
+    s.apply_requested_at.clone().or_else(|| s.staged_version.clone())
+}
+
+/// Reclaim ~/Applications/mStream.app.old.* asides. Called only right after
+/// the single-instance lock is won: previous launcher sessions (whose
+/// processes report the ORIGINAL ~/Applications path even after their tree
+/// was renamed aside) are provably dead, so the only live risk is something
+/// launched directly FROM an aside path — which pgrep sees and spares.
+#[cfg(target_os = "macos")]
+fn sweep_apps_asides(log: &Logger) {
+    let apps = paths::home_dir().join("Applications");
+    let Ok(entries) = std::fs::read_dir(&apps) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("mStream.app.old.") {
+            continue;
+        }
+        let p = e.path();
+        let busy = std::process::Command::new("/usr/bin/pgrep")
+            .arg("-f")
+            .arg(format!("^{}/", p.display()))
+            .output()
+            // pgrep: 1 = no match; anything else (match, or pgrep itself
+            // failing) counts as busy — never delete blind.
+            .map(|o| o.status.code() != Some(1))
+            .unwrap_or(true);
+        if busy {
+            continue;
+        }
+        log.line(&format!("sweeping stale ~/Applications aside {name}"));
+        let _ = std::fs::remove_dir_all(&p);
+    }
+}
+
 fn relaunch_target_exists(exe: Option<&Path>) -> bool {
     exe.and_then(paths::derive_relaunch_target).is_some()
 }
@@ -1116,6 +1197,25 @@ mod tests {
         let (t, a) = update_item_view(s.as_ref(), ud, true);
         assert_eq!(t, "Update available (6.22.0)");
         assert_eq!(a, UpdateAction::OpenReleases);
+    }
+
+    #[test]
+    fn apply_tokens_identify_requests() {
+        let s = crate::paths::parse_update_status(
+            r#"{"staged": true, "stagedVersion": "6.22.0",
+                "applyRequestedAt": "2026-08-20T12:00:00.000Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(auto_apply_token(&s).as_deref(), Some("2026-08-20T12:00:00.000Z"));
+        // Older server, no stamp: the staged version stands in — a retry
+        // for the SAME version stays consumed, a newer one starts fresh.
+        let old = crate::paths::parse_update_status(
+            r#"{"staged": true, "stagedVersion": "6.22.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(auto_apply_token(&old).as_deref(), Some("6.22.0"));
+        let none = crate::paths::parse_update_status("{}").unwrap();
+        assert_eq!(auto_apply_token(&none), None);
     }
 
     #[test]

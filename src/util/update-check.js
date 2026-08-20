@@ -203,6 +203,10 @@ const state = {
   stagedVersion: null,
   downloading: false,
   applyRequested: false,
+  // A fresh token per arm (ISO timestamp): the launcher retries a FAILED
+  // apply only when a NEW request arrives — same-version auto-retry loops
+  // and stale-request replays are both ruled out by comparing this value.
+  applyRequestedAt: null,
   installerPath: null,      // inno/pkg: the verified installer the launcher may spawn
   downloadUrl: null,        // non-managed: where a human gets the update
   lastCheckAt: null,
@@ -636,6 +640,7 @@ export async function requestApply() {
     return { opened: true };
   }
   state.applyRequested = true;
+  state.applyRequestedAt = new Date().toISOString();
   await writeStatus();
   if (m.method === 'managed' && !supervisedByLauncher()) {
     scheduleHeadlessExit('an admin requested the update');
@@ -668,6 +673,7 @@ function maybeAutoApply() {
   // Launcher-supervised (managed restart, or inno silent install): flag it;
   // the launcher acts within a minute.
   state.applyRequested = true;
+  state.applyRequestedAt = new Date().toISOString();
   writeStatus().catch(() => {});
 }
 
@@ -812,6 +818,7 @@ async function enforceSkip() {
   state.staged = false;
   state.stagedVersion = null;
   state.applyRequested = false;
+  state.applyRequestedAt = null;
   if (!ok) {
     state.error = `Version ${held} is skipped, but the previous version could not be fully restored - `
       + `re-run the installer with MSTREAM_VERSION=v${state.current} to finish the rollback`;
@@ -852,6 +859,7 @@ export function setup(mstream, hooks = {}) {
     state.staged = false;
     state.stagedVersion = null;
     state.applyRequested = false;
+    state.applyRequestedAt = null;
   }
   writeStatus().catch(() => {});
   if (_bootTimer || _checkTimer) { return; }
@@ -875,7 +883,7 @@ export function stopForTests() {
   _exiting = false;
   state.skipped = false;
   state.latest = null; state.available = false; state.staged = false;
-  state.stagedVersion = null; state.applyRequested = false; state.error = null;
+  state.stagedVersion = null; state.applyRequested = false; state.applyRequestedAt = null; state.error = null;
   state.installerPath = null; state.downloadUrl = null; state.notifyOnly = false;
   state.downloading = false; state.method = null; state.lastCheckAt = null;
 }

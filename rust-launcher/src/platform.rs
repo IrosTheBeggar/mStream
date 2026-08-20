@@ -314,15 +314,23 @@ pub fn relaunch(target: &std::path::Path, server_args: &[String]) -> Result<(), 
             .find(|p| p.extension().is_some_and(|e| e == "app"))
             .filter(|_| !direct);
         if let Some(app) = app_root {
-            return std::process::Command::new("/usr/bin/open")
+            // status(), not spawn(): `open` exits nonzero when LaunchServices
+            // refuses the launch (damaged bundle, Gatekeeper). A fire-and-
+            // forget spawn would report Ok on a launch that never happened,
+            // and the caller — who already stopped the server — would exit
+            // into nothing. `open` returns promptly either way.
+            return match std::process::Command::new("/usr/bin/open")
                 .arg("-n")
                 .arg(app)
                 .arg("--args")
                 .arg("--takeover")
                 .args(server_args)
-                .spawn()
-                .map(|_| ())
-                .map_err(|e| format!("open -n {}: {e}", app.display()));
+                .status()
+            {
+                Ok(st) if st.success() => Ok(()),
+                Ok(st) => Err(format!("open -n {} exited {st}", app.display())),
+                Err(e) => Err(format!("open -n {}: {e}", app.display())),
+            };
         }
     }
     let mut cmd = std::process::Command::new(target);
@@ -349,7 +357,21 @@ pub fn relaunch(target: &std::path::Path, server_args: &[String]) -> Result<(), 
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         cmd.creation_flags(DETACHED_PROCESS);
     }
-    cmd.spawn().map(|_| ()).map_err(|e| format!("spawn {}: {e}", target.display()))
+    match cmd.spawn() {
+        Ok(mut child) => {
+            // A brief liveness check: a takeover that dies within its first
+            // beat (bad interpreter, immediate loader failure) means the
+            // handoff did NOT happen — report it so the caller can recover
+            // instead of exiting into nothing. Past this window the child
+            // owns its own fate (its lock retry outlives us).
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            match child.try_wait() {
+                Ok(Some(st)) => Err(format!("{} exited immediately: {st}", target.display())),
+                _ => Ok(()),
+            }
+        }
+        Err(e) => Err(format!("spawn {}: {e}", target.display())),
+    }
 }
 
 /// Windows: run the verified update installer, detached, and return so the
