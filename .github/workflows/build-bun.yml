@@ -64,7 +64,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
 
@@ -173,6 +173,98 @@ jobs:
           if (Test-Path "$env:RUNNER_TEMP\app") { throw "app root survived uninstall" }
           if (($un | Out-String) -notmatch 'left in place') { throw "no data-home note" }
           Write-Host "install.ps1 contract OK"
+
+      # The darwin-only paths: ~/Applications copy + sibling ownership marker,
+      # login-item re-pointing through the RIGHT launcher, and the
+      # refresh-while-running rules. Self-contained: rebuilds the fake darwin
+      # bundle with an instrumented launcher stub (records which binary ran
+      # --autostart=enable, writes the same one-line plist the auto-launch
+      # crate writes) and a server stub, then walks fresh install -> enabled
+      # upgrade -> running upgrade -> idle upgrade -> uninstall. HOME is
+      # redirected so the runner's real ~/Applications is never touched.
+      - name: install.sh end to end (macos)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME/Applications" "$HOME/Library/LaunchAgents"
+          export MSTREAM_STUB_DIR="$RUNNER_TEMP/stub"; mkdir -p "$MSTREAM_STUB_DIR"
+          export MSTREAM_RELEASE_BASE=http://127.0.0.1:8765
+          DKEY="darwin-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')"
+          DEST="$HOME/Applications/mStream.app"
+          ROOT="$HOME/Library/Application Support/mStream/app"
+          cat > "$RUNNER_TEMP/stub-launcher" <<'STUB'
+          #!/bin/sh
+          d="$MSTREAM_STUB_DIR"
+          case "$1" in
+            --autostart=status) cat "$d/state" 2>/dev/null || echo disabled ;;
+            --autostart=enable)
+              echo enabled > "$d/state"
+              printf '%s\n' "$0" >> "$d/enable-calls"
+              printf '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>mStream</string><key>ProgramArguments</key><array><string>%s</string><string>--autostarted</string></array><key>RunAtLoad</key><true/></dict></plist>' "$0" > "$HOME/Library/LaunchAgents/mStream.plist"
+              ;;
+            --autostart=disable) echo disabled > "$d/state"; rm -f "$HOME/Library/LaunchAgents/mStream.plist" ;;
+          esac
+          exit 0
+          STUB
+          mkrel() {
+            rm -f rel/mStream-*.zip rel/manifest.json
+            b="mStream-$1-$DKEY"; mkdir -p "rel/$b/mStream.app/Contents/MacOS"
+            printf '%s\n' "$1" > "rel/$b/mStream.app/Contents/VERSION"
+            printf '#!/bin/sh\n[ "$1" = -V ] && echo %s\nexit 0\n' "$1" > "rel/$b/mStream.app/Contents/MacOS/mstream-server"
+            cp "$RUNNER_TEMP/stub-launcher" "rel/$b/mStream.app/Contents/MacOS/mStream"
+            chmod +x "rel/$b/mStream.app/Contents/MacOS/mstream-server" "rel/$b/mStream.app/Contents/MacOS/mStream"
+            echo "fake bundle" > "rel/$b/README.txt"
+            (cd rel && python3 -m zipfile -c "$b.zip" "$b" && rm -rf "$b")
+            sh scripts/release-manifest.sh "$1" rel >/dev/null
+          }
+          # A: fresh install - copy, sibling marker, untouched login item
+          mkrel 9.9.9
+          sh install.sh > a.log 2>&1 || { cat a.log; exit 1; }
+          [ "$(readlink "$ROOT/current")" = "$ROOT/mStream-9.9.9-$DKEY" ]
+          [ "$(cat "$DEST/Contents/VERSION")" = 9.9.9 ]
+          [ "$(cat "$HOME/Applications/.mstream-installer")" = 9.9.9 ]
+          [ ! -f "$MSTREAM_STUB_DIR/enable-calls" ]
+          # B: with the login item enabled, an upgrade re-points it - and the
+          # enable must run through the ~/APPLICATIONS launcher (the stable
+          # path), not $ROOT/current: the sibling-marker ownership check.
+          "$DEST/Contents/MacOS/mStream" --autostart=enable
+          : > "$MSTREAM_STUB_DIR/enable-calls"
+          mkrel 9.9.10
+          sh install.sh > b.log 2>&1 || { cat b.log; exit 1; }
+          grep -q "login item re-pointed at 9.9.10" b.log
+          [ "$(tail -1 "$MSTREAM_STUB_DIR/enable-calls")" = "$DEST/Contents/MacOS/mStream" ]
+          [ "$(cat "$HOME/Applications/.mstream-installer")" = 9.9.10 ]
+          # C: upgrade while mStream runs from ~/Applications - the old tree
+          # is moved aside INTACT (a live process reads webapp/sidecars from
+          # it), never rm -rf'd; the running-instance note is printed.
+          bash -c "exec -a '$DEST/Contents/MacOS/mstream-server' sleep 600" &
+          HANG=$!
+          sleep 1
+          pgrep -f "^$DEST/" >/dev/null
+          mkrel 9.9.11
+          sh install.sh > c.log 2>&1 || { cat c.log; exit 1; }
+          [ "$(cat "$DEST/Contents/VERSION")" = 9.9.11 ]
+          [ "$(ls -d "$DEST".old.* | wc -l | tr -d ' ')" = 1 ]
+          olddir=$(ls -d "$DEST".old.*)
+          [ "$(cat "$olddir/Contents/VERSION")" = 9.9.10 ]
+          [ -x "$olddir/Contents/MacOS/mstream-server" ]
+          kill -0 "$HANG"
+          grep -q "currently running from" c.log
+          # D: once idle, the next upgrade sweeps the aside
+          kill "$HANG"; wait "$HANG" 2>/dev/null || true
+          mkrel 9.9.12
+          sh install.sh > d.log 2>&1 || { cat d.log; exit 1; }
+          [ "$(cat "$DEST/Contents/VERSION")" = 9.9.12 ]
+          if ls -d "$DEST".old.* 2>/dev/null; then echo "::error::stale aside survived an idle upgrade"; exit 1; fi
+          # E: uninstall removes copy, marker, login item, root - keeps data
+          MSTREAM_UNINSTALL=1 sh install.sh > e.log 2>&1 || { cat e.log; exit 1; }
+          [ ! -e "$ROOT" ] && [ ! -e "$DEST" ]
+          [ ! -e "$HOME/Applications/.mstream-installer" ]
+          [ ! -e "$HOME/Library/LaunchAgents/mStream.plist" ]
+          grep -q "left in place" e.log
+          echo "install.sh darwin contract OK"
 
   build:
     name: ${{ matrix.key }}

@@ -1325,13 +1325,29 @@ describe('discovery seeds — unreachable list degrades gracefully', () => {
   after(async () => { if (server) { await server.stop(); } });
 
   test('server boots, joins the topic, and the p2p surface works', async () => {
+    // What "works" means depends on whether a sidecar binary exists here.
+    //
+    // WITH one, the sidecar must actually come up and be joined-or-joinable.
+    // WITHOUT one there is nothing to come up, and that is now the norm in
+    // CI: the binaries left git when the sidecar moved to its own repo
+    // (fetch-on-first-use, pinned per release), and startServer deliberately
+    // pins MSTREAM_SIDECAR_BASE to a dead port so no suite can pull one
+    // mid-test. Waiting on `running` in that case can only ever time out —
+    // which is exactly what it did on every OS once the binaries left, while
+    // still passing for anyone with a local dev build in p2p-sidecar/target.
+    //
+    // Either way the invariant this suite exists for is the same, and it is
+    // the weaker one: an unreachable community-seed list must not wedge the
+    // boot path. So require `running` only when it is achievable, and always
+    // require the status route to answer with the feature enabled.
     const status = await pollUntil(async () => {
       const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+      if (!SIDECAR_BIN) { return s; }
       return s.running ? s : null;
-    }, { timeoutMs: 30000, what: 'sidecar up despite dead seed URL' });
-    // With the binary present the sidecar must still be running and joined-
-    // or-joinable; without it the route still answers. Either way the dead
-    // URL must not have prevented the boot path from completing.
+    }, {
+      timeoutMs: 30000,
+      what: SIDECAR_BIN ? 'sidecar up despite dead seed URL' : 'p2p status despite dead seed URL',
+    });
     assert.equal(status.enabled, true);
   });
 });
