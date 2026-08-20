@@ -207,6 +207,150 @@ pub fn browse_target(config: &Path, ep: &Endpoint) -> String {
     }
 }
 
+/// The status file the server's update checker writes
+/// (src/util/update-check.js) — same data home that holds launcher.lock, by
+/// the same byte-identical derivation on both sides.
+pub fn update_status_file() -> PathBuf {
+    data_home().join("update-status.json")
+}
+
+/// What the tray needs from update-status.json. Everything here is DATA from
+/// a file another process writes: versions are shape-checked before display,
+/// paths are validated against expectations before use, and nothing else is
+/// trusted at all (no URLs, no commands).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UpdateStatus {
+    /// The running server's own version, as it reported it at boot.
+    pub current: Option<String>,
+    pub latest: Option<String>,
+    pub available: bool,
+    pub method: Option<String>,
+    pub staged: bool,
+    pub staged_version: Option<String>,
+    pub downloading: bool,
+    /// auto mode / a webapp "restart to update" click: the server asks the
+    /// launcher to apply on its next tick.
+    pub apply_requested: bool,
+    /// inno/pkg: the verified installer the server downloaded. Validated
+    /// (location + name shape) before the launcher will touch it.
+    pub installer_path: Option<PathBuf>,
+}
+
+/// A display-safe version: bare digits-and-dots triple, bounded length —
+/// anything else in the file renders as if absent, so a corrupted or
+/// malicious status file can't put arbitrary text in the menu.
+pub fn sanitize_version(s: &str) -> Option<String> {
+    if s.len() > 24 || s.is_empty() {
+        return None;
+    }
+    let mut dots = 0;
+    for c in s.chars() {
+        match c {
+            '0'..='9' => {}
+            '.' => dots += 1,
+            _ => return None,
+        }
+    }
+    (dots == 2 && !s.starts_with('.') && !s.ends_with('.')).then(|| s.to_string())
+}
+
+/// Tolerant read of the status file: absent, unreadable, or garbage all come
+/// back as None; unknown fields are ignored (the server may write a newer
+/// schema than this launcher knows).
+pub fn read_update_status() -> Option<UpdateStatus> {
+    parse_update_status(&std::fs::read_to_string(update_status_file()).ok()?)
+}
+
+/// The parsing half, split out so tests can feed it documents directly.
+pub fn parse_update_status(doc: &str) -> Option<UpdateStatus> {
+    let v = serde_json::from_str::<serde_json::Value>(doc).ok()?;
+    let ver = |key: &str| v.get(key).and_then(|x| x.as_str()).and_then(sanitize_version);
+    let flag = |key: &str| v.get(key).and_then(|x| x.as_bool()).unwrap_or(false);
+    Some(UpdateStatus {
+        current: ver("current"),
+        latest: ver("latest"),
+        available: flag("available"),
+        method: v
+            .get("method")
+            .and_then(|x| x.as_str())
+            .filter(|s| s.len() <= 16 && s.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+            .map(str::to_string),
+        staged: flag("staged"),
+        staged_version: ver("stagedVersion"),
+        downloading: flag("downloading"),
+        apply_requested: flag("applyRequested"),
+        installer_path: v.get("installerPath").and_then(|x| x.as_str()).map(PathBuf::from),
+    })
+}
+
+/// The bundle-dir naming the installers create: mStream-<X.Y.Z>-<key>.
+/// Mirrors parseBundleName in src/util/update-check.js closely enough for
+/// target derivation (the final existence check is the real gate).
+pub fn is_bundle_dir_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("mStream-") else { return false };
+    let Some(dash) = rest.find(|c: char| !(c.is_ascii_digit() || c == '.')) else { return false };
+    if dash == 0 || !rest[dash..].starts_with('-') {
+        return false;
+    }
+    if sanitize_version(&rest[..dash]).is_none() {
+        return false;
+    }
+    let key = &rest[dash + 1..];
+    ["darwin-", "linux-", "win-"].iter().any(|p| key.starts_with(p))
+        && key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && !key.ends_with('-')
+}
+
+/// The launcher face's path inside a bundle, per platform.
+fn launcher_rel() -> &'static str {
+    if cfg!(windows) {
+        "mStream.exe"
+    } else if cfg!(target_os = "macos") {
+        "mStream.app/Contents/MacOS/mStream"
+    } else {
+        "mstream-desktop"
+    }
+}
+
+/// Where "restart into the staged update" should exec from — derived from
+/// OUR OWN location, never from the status file:
+///
+///   - running from the ~/Applications copy (macOS): our own exe path — the
+///     path is stable across upgrades and the installer refreshed its
+///     CONTENTS when it staged;
+///   - running from a managed versioned dir: `<root>/current/<face>`, which
+///     the flip already points at the new version;
+///   - anything else (portable, dev): None — the menu item stays inert.
+///
+/// `exe` is the REAL path of the running launcher (caller passes
+/// current_exe(); tests pass fabricated layouts).
+pub fn derive_relaunch_target(exe: &Path) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let apps_copy = home_dir().join("Applications").join("mStream.app");
+        if exe.starts_with(&apps_copy) && exe.exists() {
+            return Some(exe.to_path_buf());
+        }
+    }
+    let mut dir = exe.parent()?;
+    for _ in 0..8 {
+        let parent = dir.parent()?;
+        if dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(is_bundle_dir_name)
+        {
+            let target = parent.join("current").join(launcher_rel());
+            if target.exists() {
+                return Some(target);
+            }
+            return None;
+        }
+        dir = parent;
+    }
+    None
+}
+
 /// Locate the server binary: explicit override (--server-bin /
 /// MSTREAM_SERVER_BIN), else the `mstream-server` sibling the bundles stage
 /// next to the launcher (phase 1c renames the shipped binaries to this).
@@ -347,5 +491,79 @@ mod tests {
         env::set_var(&var, "x");
         assert_eq!(env_dir(&var), Some(OsString::from("x")));
         env::remove_var(&var);
+    }
+
+    #[test]
+    fn versions_are_display_safe_or_absent() {
+        assert_eq!(sanitize_version("6.21.2"), Some("6.21.2".to_string()));
+        assert_eq!(sanitize_version("10.0.999"), Some("10.0.999".to_string()));
+        assert_eq!(sanitize_version("v6.21.2"), None);
+        assert_eq!(sanitize_version("6.21"), None);
+        assert_eq!(sanitize_version("6.21.2-beta.1"), None);
+        assert_eq!(sanitize_version("6.21.2\n<script>"), None);
+        assert_eq!(sanitize_version(""), None);
+        assert_eq!(sanitize_version(&"9".repeat(30)), None, "length-capped");
+        assert_eq!(sanitize_version(".1.2"), None);
+        assert_eq!(sanitize_version("1.2."), None);
+    }
+
+    #[test]
+    fn bundle_dir_names() {
+        assert!(is_bundle_dir_name("mStream-6.21.2-darwin-arm64"));
+        assert!(is_bundle_dir_name("mStream-6.21.2-linux-x64-musl"));
+        assert!(is_bundle_dir_name("mStream-6.21.2-win-x64"));
+        assert!(!is_bundle_dir_name("mStream-6.21.2-darwin-arm64.partial"));
+        assert!(!is_bundle_dir_name("current"));
+        assert!(!is_bundle_dir_name("mStream-latest-linux-x64"));
+        assert!(!is_bundle_dir_name("mStream.app"));
+    }
+
+    #[test]
+    fn status_parsing_is_tolerant_and_untrusting() {
+        assert_eq!(parse_update_status("not json"), None);
+        assert_eq!(parse_update_status(""), None);
+        // Unknown fields ignored; knowns picked out; junk versions dropped.
+        let s = parse_update_status(
+            r#"{"schema": 9, "surprise": [1], "current": "6.21.2", "latest": "not a version",
+                "available": true, "method": "managed", "staged": true,
+                "stagedVersion": "6.22.0", "applyRequested": "yes-as-string"}"#,
+        )
+        .unwrap();
+        assert_eq!(s.current.as_deref(), Some("6.21.2"));
+        assert_eq!(s.latest, None, "garbage version renders as absent");
+        assert!(s.available && s.staged);
+        assert_eq!(s.staged_version.as_deref(), Some("6.22.0"));
+        assert!(!s.apply_requested, "non-bool flag reads as false, never truthy");
+        assert_eq!(s.method.as_deref(), Some("managed"));
+        // A method with unexpected characters is dropped, not displayed.
+        let odd = parse_update_status(r#"{"method": "Managed; rm -rf /"}"#).unwrap();
+        assert_eq!(odd.method, None);
+    }
+
+    #[test]
+    fn relaunch_target_resolves_through_current() {
+        let root = env::temp_dir().join(format!("mstream-relaunch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bundle = root.join("mStream-6.21.2-linux-x64");
+        // The launcher "runs" from the versioned dir; current points at a
+        // NEWER bundle whose face exists.
+        let newer = root.join("mStream-6.22.0-linux-x64");
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::create_dir_all(&newer).unwrap();
+        let face = newer.join(launcher_rel());
+        if let Some(p) = face.parent() { std::fs::create_dir_all(p).unwrap(); }
+        std::fs::write(&face, "x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&newer, root.join("current")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&newer, root.join("current")).unwrap();
+
+        let exe = bundle.join(launcher_rel());
+        let got = derive_relaunch_target(&exe);
+        assert_eq!(got, Some(root.join("current").join(launcher_rel())));
+
+        // Not under a managed layout: no target, item stays inert.
+        assert_eq!(derive_relaunch_target(Path::new("/tmp/loose/mstream-desktop")), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

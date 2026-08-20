@@ -20,6 +20,14 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 const STOP_GRACE: Duration = Duration::from_secs(8);
 const BOOT_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a `--takeover` relaunch retries the single-instance lock: the
+/// old launcher holds it for at most its own stop_current (STOP_GRACE) plus
+/// process teardown, so this only needs to comfortably exceed that.
+const TAKEOVER_LOCK_PATIENCE: Duration = Duration::from_secs(12);
+/// Where a click on a non-actionable "update available" lands. Hardcoded on
+/// purpose: the status file is another process's data and never supplies a
+/// URL the launcher would open.
+const RELEASES_URL: &str = "https://github.com/IrosTheBeggar/mStream/releases/latest";
 
 #[derive(Debug)]
 enum AppEvent {
@@ -87,7 +95,22 @@ pub fn run(args: LauncherArgs) -> ! {
             std::process::exit(1);
         }
     };
-    if !lock.try_lock().unwrap_or(false) {
+    let mut locked = lock.try_lock().unwrap_or(false);
+    if !locked && args.takeover {
+        // Apply-update handoff: the previous launcher spawned us and is in
+        // its last milliseconds of teardown, still holding the lock. Wait it
+        // out briefly instead of yielding to it.
+        log.line("takeover: waiting for the previous launcher to release the lock");
+        let deadline = Instant::now() + TAKEOVER_LOCK_PATIENCE;
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(250));
+            if lock.try_lock().unwrap_or(false) {
+                locked = true;
+                break;
+            }
+        }
+    }
+    if !locked {
         log.line("another launcher instance holds the lock - focusing it and exiting");
         if !args.autostarted && !args.no_open {
             let _ = open::that_detached(paths::browse_target(&config, &ep));
@@ -206,8 +229,20 @@ pub fn run(args: LauncherArgs) -> ! {
     let mut spawned_at = Instant::now();
     let mut ever_up = false;
     let mut opened = false;
+    // Update-awareness: the server's checker writes update-status.json in
+    // the shared data home; the tray re-reads it on every minute tick.
+    let mut update_item: Option<MenuItem> = None;
+    let mut upd: Option<paths::UpdateStatus> = paths::read_update_status();
+    let mut upd_text = String::new();
+    let mut apply_handled = false;
+    // Our own REAL location (canonicalized so a start through the `current`
+    // symlink still resolves to the versioned tree the walk-up needs).
+    let exe_real = std::env::current_exe()
+        .ok()
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
     let url = paths::server_url(&ep);
-    let announce = !args.autostarted && !args.no_open;
+    // A --takeover relaunch is mid-update, not a first run: never announce.
+    let announce = !args.autostarted && !args.no_open && !args.takeover;
     let shared_loop = shared.clone();
     let server_log_loop = server_log.clone();
     // For launcher-initiated opens inside the loop (announce, macOS reopen):
@@ -233,7 +268,15 @@ pub fn run(args: LauncherArgs) -> ! {
                 // Disabled = the greyed, unclickable status line every tray
                 // app leads with (Docker Desktop, Tailscale). Text tracks
                 // `phase` via show_status; the id never fires a MenuEvent.
-                let status = MenuItem::with_id("status", phase.menu_text(), false, None);
+                let status = MenuItem::with_id("status", phase.menu_text(&version_label(upd.as_ref())), false, None);
+                // The update line right under it: disabled "Up to date" most
+                // of its life, an enabled action ("Restart to update to X")
+                // when the server has one staged. Text/enabled track the
+                // status file via refresh below.
+                let (utext, uaction) =
+                    update_item_view(upd.as_ref(), &updates_dir(), relaunch_target_exists(exe_real.as_deref()));
+                let update = MenuItem::with_id("update", utext.clone(), uaction != UpdateAction::None, None);
+                upd_text = utext;
                 let open_item = MenuItem::with_id("open", "Open mStream", true, None);
                 let qc_item = MenuItem::with_id("quick-connect", "Quick Connect", true, None);
                 let auto_item =
@@ -242,6 +285,7 @@ pub fn run(args: LauncherArgs) -> ! {
                 let restart_item = MenuItem::with_id("restart", "Restart server", true, None);
                 let quit_item = MenuItem::with_id("quit", "Quit mStream", true, None);
                 let _ = menu.append(&status);
+                let _ = menu.append(&update);
                 let _ = menu.append(&PredefinedMenuItem::separator());
                 let _ = menu.append(&open_item);
                 let _ = menu.append(&qc_item);
@@ -252,6 +296,7 @@ pub fn run(args: LauncherArgs) -> ! {
                 let _ = menu.append(&restart_item);
                 let _ = menu.append(&quit_item);
                 status_item = Some(status);
+                update_item = Some(update);
                 autostart_item = Some(auto_item);
 
                 // catch_unwind because "no tray" arrives two ways: as a
@@ -283,7 +328,7 @@ pub fn run(args: LauncherArgs) -> ! {
                         log.line(&format!("tray unavailable ({msg}) - server continues without it"));
                     }
                 }
-                show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
+                show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
             }
             Event::UserEvent(app_event) => match app_event {
                 // The minute tick from the current generation's ticker
@@ -292,13 +337,50 @@ pub fn run(args: LauncherArgs) -> ! {
                 // re-set under a hovering cursor. Stale generations are
                 // ignored outright and the rest is throttled to 1 Hz.
                 AppEvent::Tick(generation) => {
+                    // Update-state refresh rides the minute tick: one small
+                    // file read, then the item re-renders only on change (so
+                    // the text is never re-set under a hovering cursor).
+                    upd = paths::read_update_status();
+                    let action = render_update_item(
+                        update_item.as_ref(),
+                        upd.as_ref(),
+                        &updates_dir(),
+                        relaunch_target_exists(exe_real.as_deref()),
+                        &mut upd_text,
+                    );
+                    // auto mode / a webapp "restart to update" click: the
+                    // server flags applyRequested and this launcher acts on
+                    // its next tick. Once — a failed handoff must not retry
+                    // itself into a spawn loop.
+                    if !apply_handled
+                        && upd.as_ref().is_some_and(|s| s.apply_requested)
+                        && !matches!(action, UpdateAction::None | UpdateAction::OpenReleases)
+                    {
+                        apply_handled = true;
+                        log.line("update: the server requested apply - restarting into the staged version");
+                        match perform_apply(&shared_loop, &action, exe_real.as_deref(), &args.server_args, &log) {
+                            Ok(()) => {
+                                tray.take();
+                                *control_flow = ControlFlow::Exit;
+                                return;
+                            }
+                            Err(e) => {
+                                log.line(&format!("update apply failed: {e}"));
+                                spawned_at = Instant::now();
+                                phase = recover_after_failed_apply(
+                                    &shared_loop, &bin, &args.server_args, &server_log_loop, ep, &proxy, &log,
+                                );
+                                show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
+                            }
+                        }
+                    }
                     let now = Instant::now();
                     if generation == shared_loop.generation.load(Ordering::SeqCst)
                         && phase.ticks()
                         && status_rendered_at.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1))
                     {
                         status_rendered_at = Some(now);
-                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
                     }
                 }
                 AppEvent::Menu(id) => match id.as_str() {
@@ -351,7 +433,42 @@ pub fn run(args: LauncherArgs) -> ! {
                                 Phase::Stopped
                             }
                         };
-                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
+                    }
+                    "update" => {
+                        // Recompute from the file at click time — the menu
+                        // could have been open across a state change.
+                        upd = paths::read_update_status();
+                        let action = render_update_item(
+                            update_item.as_ref(),
+                            upd.as_ref(),
+                            &updates_dir(),
+                            relaunch_target_exists(exe_real.as_deref()),
+                            &mut upd_text,
+                        );
+                        match action {
+                            UpdateAction::OpenReleases => {
+                                let _ = open::that_detached(RELEASES_URL);
+                            }
+                            UpdateAction::None => {}
+                            _ => {
+                                log.line("menu: apply update");
+                                match perform_apply(&shared_loop, &action, exe_real.as_deref(), &args.server_args, &log) {
+                                    Ok(()) => {
+                                        tray.take();
+                                        *control_flow = ControlFlow::Exit;
+                                    }
+                                    Err(e) => {
+                                        log.line(&format!("update apply failed: {e}"));
+                                        spawned_at = Instant::now();
+                                        phase = recover_after_failed_apply(
+                                            &shared_loop, &bin, &args.server_args, &server_log_loop, ep, &proxy, &log,
+                                        );
+                                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
+                                    }
+                                }
+                            }
+                        }
                     }
                     "quit" => {
                         log.line("menu: quit");
@@ -378,12 +495,23 @@ pub fn run(args: LauncherArgs) -> ! {
                     if child_alive && generation == shared_loop.generation.load(Ordering::SeqCst) {
                         ever_up = true;
                         log.line("server is up");
+                        // The booting server just rewrote the status file
+                        // (its version, cleared staged flags) — pick that up
+                        // now instead of a minute from now.
+                        upd = paths::read_update_status();
+                        let _ = render_update_item(
+                            update_item.as_ref(),
+                            upd.as_ref(),
+                            &updates_dir(),
+                            relaunch_target_exists(exe_real.as_deref()),
+                            &mut upd_text,
+                        );
                         // Uptime counts from here — "up" means serving, not
                         // spawned. A restart or crash lands back in
                         // Starting/Stopped, so the count resets with it.
                         let since = Instant::now();
                         phase = Phase::Running { since };
-                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
                         start_ticker(&shared_loop, generation, since, &proxy);
                         // Logged unconditionally (even under --no-open) so
                         // smokes and support can see the routing decision.
@@ -426,7 +554,7 @@ pub fn run(args: LauncherArgs) -> ! {
                         ));
                         let since = spawned_at;
                         phase = Phase::Unverified { since };
-                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
                         start_ticker(&shared_loop, generation, since, &proxy);
                     }
                 }
@@ -435,7 +563,7 @@ pub fn run(args: LauncherArgs) -> ! {
                     if generation == current && !shared_loop.quitting.load(Ordering::SeqCst) {
                         log.line("server exited unexpectedly");
                         phase = Phase::Stopped;
-                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url);
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
                         if !ever_up {
                             // Died before ever serving = a boot failure the
                             // user would otherwise never see (no console).
@@ -581,6 +709,178 @@ fn stop_current(shared: &Arc<Shared>) {
     }
 }
 
+/// What clicking the update menu item does in its current state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum UpdateAction {
+    None,
+    OpenReleases,
+    /// Managed layout with a staged version: quit-path teardown, then spawn
+    /// the launcher behind `current` with --takeover.
+    Relaunch,
+    /// Windows Inno install with a verified downloaded installer.
+    RunInstaller(PathBuf),
+}
+
+/// Where the server's updater downloads native installers (validated
+/// against, never trusted from the status file alone).
+fn updates_dir() -> PathBuf {
+    paths::data_home().join("updates")
+}
+
+/// The version shown in the status line: the running server's own report
+/// (status file), else the version this launcher was built into the bundle
+/// with (build.rs stamp) — present before the server's first boot.
+fn version_label(s: Option<&paths::UpdateStatus>) -> String {
+    s.and_then(|s| s.current.clone())
+        .unwrap_or_else(|| env!("MSTREAM_BUNDLE_VERSION").to_string())
+}
+
+/// The installer path the launcher will actually run: must live in OUR
+/// updates dir with the expected asset name and exist. Everything else in
+/// the status file's installerPath is ignored — the file is another
+/// process's data, not an instruction stream.
+fn valid_installer(p: Option<&Path>, updates_dir: &Path) -> Option<PathBuf> {
+    let p = p?;
+    if !p.starts_with(updates_dir) {
+        return None;
+    }
+    let name = p.file_name()?.to_str()?;
+    (name.starts_with("mStream-") && name.ends_with("-win-x64-setup.exe") && p.exists())
+        .then(|| p.to_path_buf())
+}
+
+/// The update line's text + action for a given status-file state. Pure so
+/// the matrix is unit-testable; `relaunch_ok` is whether
+/// derive_relaunch_target currently resolves (a staged update on a layout
+/// we can't relaunch from renders informational, not clickable).
+fn update_item_view(
+    s: Option<&paths::UpdateStatus>,
+    updates_dir: &Path,
+    relaunch_ok: bool,
+) -> (String, UpdateAction) {
+    let Some(s) = s else {
+        return (
+            format!("Up to date ({})", env!("MSTREAM_BUNDLE_VERSION")),
+            UpdateAction::None,
+        );
+    };
+    if s.downloading {
+        return ("Downloading update…".to_string(), UpdateAction::None);
+    }
+    if s.staged {
+        if let Some(v) = &s.staged_version {
+            let is_new = s.current.as_ref().is_none_or(|c| c != v);
+            if is_new {
+                match s.method.as_deref() {
+                    Some("managed") if relaunch_ok => {
+                        return (format!("Restart to update to {v}"), UpdateAction::Relaunch);
+                    }
+                    Some("managed") => {
+                        return (
+                            format!("Update {v} staged - restart mStream to finish"),
+                            UpdateAction::None,
+                        );
+                    }
+                    Some("inno") => {
+                        if let Some(p) = valid_installer(s.installer_path.as_deref(), updates_dir) {
+                            return (format!("Install update {v}"), UpdateAction::RunInstaller(p));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if s.available {
+        if let Some(v) = &s.latest {
+            return (format!("Update available ({v})"), UpdateAction::OpenReleases);
+        }
+    }
+    (
+        format!(
+            "Up to date ({})",
+            s.current.as_deref().unwrap_or(env!("MSTREAM_BUNDLE_VERSION"))
+        ),
+        UpdateAction::None,
+    )
+}
+
+/// Push the view into the held menu item — only on change, so the text is
+/// never re-set under a hovering cursor. Returns the action for the caller.
+fn render_update_item(
+    item: Option<&MenuItem>,
+    s: Option<&paths::UpdateStatus>,
+    updates_dir: &Path,
+    relaunch_ok: bool,
+    last_text: &mut String,
+) -> UpdateAction {
+    let (text, action) = update_item_view(s, updates_dir, relaunch_ok);
+    if let Some(i) = item {
+        if text != *last_text {
+            i.set_text(text.clone());
+            i.set_enabled(action != UpdateAction::None);
+            *last_text = text;
+        }
+    }
+    action
+}
+
+fn relaunch_target_exists(exe: Option<&Path>) -> bool {
+    exe.and_then(paths::derive_relaunch_target).is_some()
+}
+
+/// Stop the child, then hand off to the update: spawn the new launcher
+/// (managed) or the verified installer (inno). Ok = a handoff process is
+/// running and the caller must exit the loop NOW; Err = nothing was spawned
+/// and the caller must recover — the server is already stopped.
+fn perform_apply(
+    shared: &Arc<Shared>,
+    action: &UpdateAction,
+    exe_real: Option<&Path>,
+    server_args: &[String],
+    log: &Logger,
+) -> Result<(), String> {
+    shared.quitting.store(true, Ordering::SeqCst);
+    stop_current(shared);
+    match action {
+        UpdateAction::Relaunch => {
+            let target = exe_real
+                .and_then(paths::derive_relaunch_target)
+                .ok_or_else(|| "no relaunch target under a managed layout".to_string())?;
+            log.line(&format!("update: relaunching via {}", target.display()));
+            platform::relaunch(&target, server_args)
+        }
+        #[cfg(windows)]
+        UpdateAction::RunInstaller(p) => {
+            log.line(&format!("update: running installer {}", p.display()));
+            platform::spawn_installer_detached(p, true)
+        }
+        _ => Err("not an applicable update action".to_string()),
+    }
+}
+
+/// A failed handoff left the server stopped: bring it back and say so. The
+/// launcher survives; the update stays offered for a later retry.
+#[allow(clippy::too_many_arguments)]
+fn recover_after_failed_apply(
+    shared: &Arc<Shared>,
+    bin: &Path,
+    server_args: &[String],
+    server_log: &Path,
+    ep: paths::Endpoint,
+    proxy: &tao::event_loop::EventLoopProxy<AppEvent>,
+    log: &Logger,
+) -> Phase {
+    shared.quitting.store(false, Ordering::SeqCst);
+    match spawn_generation(shared, bin, server_args, server_log, ep, proxy, log) {
+        Ok(()) => Phase::Starting,
+        Err(e) => {
+            platform::fatal_alert(&format!("mStream could not restart its server:\n{e}"));
+            Phase::Stopped
+        }
+    }
+}
+
 /// The server's lifecycle as the tray reports it. Running carries the
 /// instant the identity probe first answered (ServerUp), which is what the
 /// uptime counts from; Unverified is a child that outlived the probe's
@@ -596,26 +896,30 @@ enum Phase {
 }
 
 impl Phase {
-    /// The disabled first menu line.
-    fn menu_text(&self) -> String {
+    /// The disabled first menu line. `ver` is the server version the status
+    /// file reports (fallback: the bundle version baked in at build time) —
+    /// on the line so "what version am I running" is one glance at the tray.
+    fn menu_text(&self, ver: &str) -> String {
         match self {
-            Phase::Starting => "Starting…".to_string(),
-            Phase::Running { since } => format!("Running · up {}", format_uptime(since.elapsed())),
-            Phase::Unverified { since } => format!("Running (unverified) · up {}", format_uptime(since.elapsed())),
-            Phase::Stopped => "Stopped · use Restart server".to_string(),
+            Phase::Starting => format!("mStream {ver} · starting…"),
+            Phase::Running { since } => format!("mStream {ver} · up {}", format_uptime(since.elapsed())),
+            Phase::Unverified { since } => {
+                format!("mStream {ver} · up {} (unverified)", format_uptime(since.elapsed()))
+            }
+            Phase::Stopped => format!("mStream {ver} · stopped — use Restart server"),
         }
     }
 
     /// The icon tooltip (Windows/macOS; tray-icon's Linux tooltip is a
     /// no-op, so the menu line is the cross-platform carrier).
-    fn tooltip(&self, url: &str) -> String {
+    fn tooltip(&self, url: &str, ver: &str) -> String {
         match self {
-            Phase::Starting => "mStream Server - starting".to_string(),
-            Phase::Running { since } => format!("mStream Server - {url} (up {})", format_uptime(since.elapsed())),
+            Phase::Starting => format!("mStream {ver} - starting"),
+            Phase::Running { since } => format!("mStream {ver} - {url} (up {})", format_uptime(since.elapsed())),
             Phase::Unverified { since } => {
-                format!("mStream Server - {url} (up {}, not verified by the launcher)", format_uptime(since.elapsed()))
+                format!("mStream {ver} - {url} (up {}, not verified by the launcher)", format_uptime(since.elapsed()))
             }
-            Phase::Stopped => "mStream Server - stopped (use Restart server)".to_string(),
+            Phase::Stopped => format!("mStream {ver} - stopped (use Restart server)"),
         }
     }
 
@@ -629,12 +933,12 @@ impl Phase {
 /// Push the phase into the status line and tooltip. Both handles are
 /// Options because the tray can be degraded away (no StatusNotifier host)
 /// while the loop, and the server, carry on.
-fn show_status(item: Option<&MenuItem>, tray: Option<&TrayIcon>, phase: &Phase, url: &str) {
+fn show_status(item: Option<&MenuItem>, tray: Option<&TrayIcon>, phase: &Phase, url: &str, ver: &str) {
     if let Some(i) = item {
-        i.set_text(phase.menu_text());
+        i.set_text(phase.menu_text(ver));
     }
     if let Some(t) = tray {
-        let _ = t.set_tooltip(Some(phase.tooltip(url)));
+        let _ = t.set_tooltip(Some(phase.tooltip(url, ver)));
     }
 }
 
@@ -738,30 +1042,110 @@ mod tests {
 
     #[test]
     fn phase_texts() {
-        assert_eq!(Phase::Starting.menu_text(), "Starting…");
-        assert_eq!(Phase::Stopped.menu_text(), "Stopped · use Restart server");
-        assert_eq!(Phase::Starting.tooltip("http://localhost:3000"), "mStream Server - starting");
+        let v = "6.21.2";
+        assert_eq!(Phase::Starting.menu_text(v), "mStream 6.21.2 · starting…");
+        assert_eq!(Phase::Stopped.menu_text(v), "mStream 6.21.2 · stopped — use Restart server");
+        assert_eq!(Phase::Starting.tooltip("http://localhost:3000", v), "mStream 6.21.2 - starting");
         assert_eq!(
-            Phase::Stopped.tooltip("http://localhost:3000"),
-            "mStream Server - stopped (use Restart server)"
+            Phase::Stopped.tooltip("http://localhost:3000", v),
+            "mStream 6.21.2 - stopped (use Restart server)"
         );
         // A just-started server (Instant can't be rewound on a freshly
         // booted CI box; the big-number formatting is pinned above).
         let running = Phase::Running { since: Instant::now() };
-        assert_eq!(running.menu_text(), "Running · up <1m");
-        assert_eq!(running.tooltip("http://localhost:3000"), "mStream Server - http://localhost:3000 (up <1m)");
+        assert_eq!(running.menu_text(v), "mStream 6.21.2 · up <1m");
+        assert_eq!(running.tooltip("http://localhost:3000", v), "mStream 6.21.2 - http://localhost:3000 (up <1m)");
         // A child that outlived the probe without answering it: alive,
         // presumably serving, and the tray must say so rather than
         // "Starting…" for the rest of the session.
         let unverified = Phase::Unverified { since: Instant::now() };
-        assert_eq!(unverified.menu_text(), "Running (unverified) · up <1m");
+        assert_eq!(unverified.menu_text(v), "mStream 6.21.2 · up <1m (unverified)");
         assert_eq!(
-            unverified.tooltip("http://localhost:3000"),
-            "mStream Server - http://localhost:3000 (up <1m, not verified by the launcher)"
+            unverified.tooltip("http://localhost:3000", v),
+            "mStream 6.21.2 - http://localhost:3000 (up <1m, not verified by the launcher)"
         );
         assert!(running.ticks());
         assert!(unverified.ticks());
         assert!(!Phase::Starting.ticks(), "no ticks unless an uptime is showing");
         assert!(!Phase::Stopped.ticks());
+    }
+
+    fn status(json: &str) -> Option<crate::paths::UpdateStatus> {
+        crate::paths::parse_update_status(json)
+    }
+
+    #[test]
+    fn update_view_matrix() {
+        let ud = std::path::Path::new("/data/updates");
+        // No file at all: bundle-version fallback, inert.
+        let (t, a) = update_item_view(None, ud, true);
+        assert_eq!(t, format!("Up to date ({})", env!("MSTREAM_BUNDLE_VERSION")));
+        assert_eq!(a, UpdateAction::None);
+        // Up to date per the server.
+        let s = status(r#"{"current":"6.21.2","available":false}"#);
+        let (t, a) = update_item_view(s.as_ref(), ud, true);
+        assert_eq!(t, "Up to date (6.21.2)");
+        assert_eq!(a, UpdateAction::None);
+        // Downloading.
+        let s = status(r#"{"current":"6.21.2","available":true,"latest":"6.22.0","downloading":true}"#);
+        let (t, a) = update_item_view(s.as_ref(), ud, true);
+        assert_eq!(t, "Downloading update…");
+        assert_eq!(a, UpdateAction::None);
+        // Staged on a managed layout with a resolvable relaunch target.
+        let s = status(
+            r#"{"current":"6.21.2","available":true,"latest":"6.22.0","method":"managed",
+                "staged":true,"stagedVersion":"6.22.0"}"#,
+        );
+        let (t, a) = update_item_view(s.as_ref(), ud, true);
+        assert_eq!(t, "Restart to update to 6.22.0");
+        assert_eq!(a, UpdateAction::Relaunch);
+        // Same, but the layout can't be relaunched from: informational only.
+        let (t, a) = update_item_view(s.as_ref(), ud, false);
+        assert_eq!(t, "Update 6.22.0 staged - restart mStream to finish");
+        assert_eq!(a, UpdateAction::None);
+        // Staged version already running (post-apply file lag): up to date.
+        let s = status(
+            r#"{"current":"6.22.0","available":false,"method":"managed",
+                "staged":true,"stagedVersion":"6.22.0"}"#,
+        );
+        let (t, a) = update_item_view(s.as_ref(), ud, true);
+        assert_eq!(t, "Up to date (6.22.0)");
+        assert_eq!(a, UpdateAction::None);
+        // Non-managed with an update: availability + the releases page.
+        let s = status(r#"{"current":"6.21.2","available":true,"latest":"6.22.0","method":"docker"}"#);
+        let (t, a) = update_item_view(s.as_ref(), ud, true);
+        assert_eq!(t, "Update available (6.22.0)");
+        assert_eq!(a, UpdateAction::OpenReleases);
+    }
+
+    #[test]
+    fn installer_paths_are_validated_not_trusted() {
+        let dir = std::env::temp_dir().join(format!("mstream-upd-{}", std::process::id()));
+        let ud = dir.join("updates");
+        std::fs::create_dir_all(&ud).unwrap();
+        let good = ud.join("mStream-6.22.0-win-x64-setup.exe");
+        std::fs::write(&good, "x").unwrap();
+        assert_eq!(valid_installer(Some(&good), &ud), Some(good.clone()));
+        // Wrong directory: refused even with a plausible name.
+        let outside = dir.join("mStream-6.22.0-win-x64-setup.exe");
+        std::fs::write(&outside, "x").unwrap();
+        assert_eq!(valid_installer(Some(&outside), &ud), None);
+        // Wrong name shape inside the right dir: refused.
+        let odd = ud.join("evil.exe");
+        std::fs::write(&odd, "x").unwrap();
+        assert_eq!(valid_installer(Some(&odd), &ud), None);
+        // Missing file: refused.
+        assert_eq!(valid_installer(Some(&ud.join("mStream-9.9.9-win-x64-setup.exe")), &ud), None);
+        assert_eq!(valid_installer(None, &ud), None);
+        // An inno status pointing outside the updates dir renders inert.
+        let s = status(&format!(
+            r#"{{"current":"6.21.2","available":true,"latest":"6.22.0","method":"inno",
+                "staged":true,"stagedVersion":"6.22.0","installerPath":{}}}"#,
+            serde_json::json!(outside.to_string_lossy())
+        ));
+        let (t, a) = update_item_view(s.as_ref(), &ud, true);
+        assert_eq!(a, UpdateAction::OpenReleases, "falls back to availability, never runs the file");
+        assert_eq!(t, "Update available (6.22.0)");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

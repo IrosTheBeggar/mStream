@@ -31,6 +31,10 @@ pub struct LauncherArgs {
     pub autostarted: bool,
     /// Never open the browser (`--no-open`; smokes and scripts).
     pub no_open: bool,
+    /// Apply-update handoff (`--takeover`): the previous launcher spawned us
+    /// and is exiting — retry its single-instance lock briefly instead of
+    /// yielding, and skip first-run behavior (no browser announce).
+    pub takeover: bool,
     /// Server binary override (`--server-bin <p>` / MSTREAM_SERVER_BIN).
     pub server_bin: Option<PathBuf>,
     /// Everything not launcher-specific, forwarded to the server verbatim
@@ -50,6 +54,7 @@ fn parse_cli(argv: impl Iterator<Item = String>) -> (LauncherArgs, Option<String
         tray: false,
         autostarted: false,
         no_open: false,
+        takeover: false,
         server_bin: std::env::var_os("MSTREAM_SERVER_BIN").map(PathBuf::from),
         server_args: Vec::new(),
     };
@@ -61,6 +66,10 @@ fn parse_cli(argv: impl Iterator<Item = String>) -> (LauncherArgs, Option<String
             "--tray" => args.tray = true,
             "--autostarted" => args.autostarted = true,
             "--no-open" => args.no_open = true,
+            // Ours, never the server's: without this arm the fall-through
+            // would forward --takeover to mstream-server, which exits on
+            // unknown options — the relaunched update would die at boot.
+            "--takeover" => args.takeover = true,
             "--server-bin" => {
                 if let Some(p) = it.next() {
                     args.server_bin = Some(PathBuf::from(p));
@@ -106,8 +115,12 @@ fn main() {
         std::process::exit(autostart::run_cli(&cmd));
     }
 
-    // Terminal face: hand the whole invocation to the server.
-    if has_console && !args.tray {
+    // Terminal face: hand the whole invocation to the server. A --takeover
+    // relaunch is always the tray taking over from a previous tray — even
+    // when it inherited a tty-shaped stdio from the session that spawned it,
+    // the console face would be wrong (measured: the update handoff became a
+    // bare pass-through server and the tray vanished).
+    if has_console && !args.tray && !args.takeover {
         platform::run_console_passthrough(&args);
         // (only returns on spawn failure, which it has already reported)
         std::process::exit(1);
@@ -144,5 +157,16 @@ mod tests {
         assert_eq!(args.server_bin.as_deref(), Some(std::path::Path::new("/x/srv")));
         assert_eq!(args.server_args, vec!["--portable"]);
         assert_eq!(cmd, None);
+    }
+
+    #[test]
+    fn takeover_is_ours_and_never_reaches_the_server() {
+        let (args, _) = parse(&["--takeover"]);
+        assert!(args.takeover);
+        assert!(args.server_args.is_empty(), "--takeover must not leak into server argv");
+        // ...except when it's a -j VALUE, which belongs to the server verbatim.
+        let (args, _) = parse(&["-j", "--takeover"]);
+        assert!(!args.takeover);
+        assert_eq!(args.server_args, vec!["-j", "--takeover"]);
     }
 }

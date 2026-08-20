@@ -283,6 +283,93 @@ pub fn open_logs_terminal(logs_dir: &std::path::Path) -> Result<(), String> {
     }
 }
 
+/// Start the NEW launcher for the apply-update handoff, detached, and return
+/// so the caller can exit. Always passes `--takeover`: the new instance
+/// retries the single-instance lock briefly (we still hold it for the last
+/// few milliseconds of our life) and skips first-run behavior like the
+/// browser announce.
+///
+/// macOS .app targets go through `open -n`: a bare exec of the inner binary
+/// works, but LaunchServices activation is what keeps the menu-bar
+/// registration and reopen events behaving like an app the user launched.
+/// This is a spawn+exit handoff, NOT an exec-in-place: AppKit/gtk state does
+/// not survive exec, and PID continuity buys nothing here (nothing
+/// supervises the launcher).
+/// `server_args` are the current session's forwarded server flags (-j, --portable,
+/// ...) — the relaunched instance must serve the SAME config, so they ride
+/// along. (Env-shaped overrides like MSTREAM_SERVER_BIN survive the direct
+/// spawn but not `open -n`, which launches through LaunchServices; argv is
+/// the reliable carrier.)
+pub fn relaunch(target: &std::path::Path, server_args: &[String]) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Testing hook (same family as MSTREAM_LAUNCHER_SKIP_AUTOSTART):
+        // smokes run inside a redirected HOME, which `open -n` would discard
+        // — launchd starts apps with the session's real environment. Direct
+        // spawn keeps the sandbox; real usage wants LaunchServices below.
+        let direct = std::env::var_os("MSTREAM_LAUNCHER_DIRECT_RELAUNCH").is_some();
+        // .../mStream.app/Contents/MacOS/mStream -> the .app root.
+        let app_root = target
+            .ancestors()
+            .find(|p| p.extension().is_some_and(|e| e == "app"))
+            .filter(|_| !direct);
+        if let Some(app) = app_root {
+            return std::process::Command::new("/usr/bin/open")
+                .arg("-n")
+                .arg(app)
+                .arg("--args")
+                .arg("--takeover")
+                .args(server_args)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| format!("open -n {}: {e}", app.display()));
+        }
+    }
+    let mut cmd = std::process::Command::new(target);
+    cmd.arg("--takeover");
+    cmd.args(server_args);
+    // The child must outlive US and our whole session: null stdio (an
+    // inherited pty dies with the old session and would SIGHUP the update —
+    // measured) and, on unix, its own session via setsid (no controlling
+    // terminal at all).
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(DETACHED_PROCESS);
+    }
+    cmd.spawn().map(|_| ()).map_err(|e| format!("spawn {}: {e}", target.display()))
+}
+
+/// Windows: run the verified update installer, detached, and return so the
+/// tray can exit before the installer's process sweep begins. Silent =
+/// Inno's /VERYSILENT unattended path (a param-gated [Run] entry in the .iss
+/// relaunches the tray afterwards); non-silent shows the familiar wizard.
+#[cfg(windows)]
+pub fn spawn_installer_detached(installer: &std::path::Path, silent: bool) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    let mut cmd = std::process::Command::new(installer);
+    if silent {
+        cmd.args(["/VERYSILENT", "/NORESTART", "/MSTREAMRELAUNCH=1"]);
+    }
+    cmd.creation_flags(DETACHED_PROCESS);
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("spawn {}: {e}", installer.display()))
+}
+
 /// POSIX single-quote a path for embedding in `sh -c` text — the macOS data
 /// home ("Application Support") guarantees a space.
 #[cfg(unix)]

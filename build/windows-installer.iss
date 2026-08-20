@@ -92,10 +92,22 @@ Name: "{userdesktop}\mStream"; Filename: "{app}\mStream.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\mStream.exe"; Description: "Launch mStream"; Flags: nowait postinstall skipifsilent
+; The tray launcher's one-click update runs this installer /VERYSILENT with
+; /MSTREAMRELAUNCH=1 after gracefully stopping mStream and exiting itself.
+; skipifsilent above would leave the user trayless at the end of a silent
+; update, so this param-gated twin relaunches exactly (and only) then.
+Filename: "{app}\mStream.exe"; Flags: nowait; Check: WantsRelaunch
 
 [Code]
 const
   RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+
+{ True only for the launcher-driven silent update (/MSTREAMRELAUNCH=1) —
+  see the param-gated [Run] entry above. }
+function WantsRelaunch(): Boolean;
+begin
+  Result := ExpandConstant('{param:MSTREAMRELAUNCH|0}') = '1';
+end;
 
 function AppPrefix(): string;
 begin
