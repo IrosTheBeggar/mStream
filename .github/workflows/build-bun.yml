@@ -46,6 +46,11 @@ on:
         description: 'Run the full notarize+staple round-trip (normally tag-only)'
         type: boolean
         default: false
+      signing-policy:
+        description: "Windows signing policy for this dispatch: test-signing (default) or release-signing (DIAGNOSTIC probe of the real policy/certificate; the run's outputs are never shipped)"
+        type: choice
+        options: [test-signing, release-signing]
+        default: test-signing
 
 jobs:
   # ── The installers' contract with the manifest, checked on every PR. ─────
@@ -508,7 +513,16 @@ jobs:
             fi
             mode=release-signing
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$HAVE_TOKEN" = "true" ]; then
-            mode=test-signing
+            # Default probe policy is the self-signed test cert; passing
+            # signing-policy=release-signing turns a dispatch into a
+            # DIAGNOSTIC of the real policy + certificate (e.g. surfacing
+            # SignPath's exact error while the Foundation cert is pending)
+            # without cutting a tag. Dispatch outputs are never shipped.
+            if [ "${{ inputs.signing-policy }}" = "release-signing" ]; then
+              mode=release-signing
+            else
+              mode=test-signing
+            fi
           else
             echo "not a tag/dispatch (or no token) — shipping unsigned"
             mode=skip
