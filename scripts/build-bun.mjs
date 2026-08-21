@@ -72,7 +72,7 @@ const winMeta = canonicalFields(pkg);
 const winVersion = winMeta.version;
 
 const buildArgs = ['build', '--compile', `--target=${t.bun}`];
-// The discovery feature's ML runtimes CANNOT be bundled: onnxruntime-node's
+// The discovery feature's ML runtime CANNOT be bundled: onnxruntime-node's
 // loader requires a per-(platform,arch) native binary that upstream doesn't
 // ship for every target (darwin-x64 has none at all), and Bun folds
 // process.platform/arch to the COMPILE TARGET's constants, so any target
@@ -81,7 +81,7 @@ const buildArgs = ['build', '--compile', `--target=${t.bun}`];
 // and the discovery worker reports the model runtime as unavailable (the
 // dependencyMissing path in src/db/discovery-features-lib.js). Discovery in
 // Bun bundles awaits a sidecar-staging strategy like iroh's below.
-buildArgs.push('--external', '@huggingface/transformers', '--external', 'onnxruntime-node');
+buildArgs.push('--external', 'onnxruntime-node');
 if (t.win && process.platform === 'win32') {
   buildArgs.push(
     '--windows-icon=build/mstream-logo-cut.ico',

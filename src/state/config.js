@@ -6,7 +6,8 @@ import winston from 'winston';
 import { appRoot, dataRoot } from '../util/esm-helpers.js';
 import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
 import { CLIENT_TYPE, ENABLED_FOR } from '../torrent/constants.js';
-import { EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL } from '../db/discovery-features-lib.js';
+import { EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL, RETIRED_EMBEDDING_MODELS }
+  from '../db/discovery-features-lib.js';
 
 // Writable state hangs off dataRoot, not appRoot: they are the same directory
 // unless the app itself is read-only (a translocated/quarantined macOS .app —
@@ -40,11 +41,11 @@ const storageJoi = Joi.object({
   dbDirectory: Joi.string().default(DEFAULT_DB_DIRECTORY),
   logsDirectory: Joi.string().default(path.join(dataRoot, 'save/logs')),
   waveformCacheDirectory: Joi.string().default(path.join(dataRoot, 'waveform-cache')),
-  // Where ML model weights download/cache (currently: the discovery
-  // embedding model, ~18 MB EffNet; CLAP is far larger). Deliberately
-  // OUTSIDE node_modules — transformers.js's default cache lands in there
-  // and every update/reinstall would silently re-download. Defaults next to
-  // dbDirectory (see deriveModelCacheDirectory above).
+  // Where ML model weights download/cache (currently just the discovery
+  // embedding model, ~18 MB EffNet). Deliberately OUTSIDE node_modules: the
+  // ML runtimes default to a cache in there, and every update/reinstall
+  // would silently re-download. Defaults next to dbDirectory (see
+  // deriveModelCacheDirectory above).
   modelCacheDirectory: Joi.string().default((parent) => deriveModelCacheDirectory(parent && parent.dbDirectory)),
 });
 
@@ -872,6 +873,25 @@ export async function setup(configFileArg) {
       + 'LRCLib fetch was removed. To keep fetching lyrics, set lyrics.backfill=true '
       + '(a post-scan pass that queries external providers); set lyrics.backfill=false '
       + 'to silence this notice.');
+  }
+
+  // A retired embedding-model id in the config would fail Joi's .valid()
+  // enum and THROW — i.e. an upgrade that silently bricks the server for
+  // anyone who ever tried that model and left the line in. Coerce to the
+  // default and persist, same generate-and-persist shape as the lockAdmin
+  // migration above, so the fix is sticky and the warning appears once.
+  // Vectors already stored under the retired pin are NOT deleted: every row
+  // carries its own (model_id, model_version), so the discovery worker
+  // re-embeds them against the new model on its next pass, exactly as it
+  // does for any deliberate model swap.
+  const retiredModel = programData.scanOptions && programData.scanOptions.discoveryModel;
+  if (retiredModel && Object.hasOwn(RETIRED_EMBEDDING_MODELS, retiredModel)) {
+    winston.warn(`[config] scanOptions.discoveryModel='${retiredModel}' is no longer available — `
+      + `${RETIRED_EMBEDDING_MODELS[retiredModel]}. Falling back to '${DEFAULT_EMBEDDING_MODEL}' `
+      + 'and saving; tracks embedded with the old model will be re-embedded on the next '
+      + 'discovery pass.');
+    programData.scanOptions.discoveryModel = DEFAULT_EMBEDDING_MODEL;
+    await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
   }
 
   program = await schema.validateAsync(programData, { allowUnknown: true });

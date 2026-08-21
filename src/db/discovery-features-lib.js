@@ -11,10 +11,6 @@
 // export snapshot carries a (model_id, model_version) pin, and the worker
 // re-embeds rows whose pin doesn't match the active model. Adding an engine
 // = one registry entry + (if it's a new kind) one embedder factory below.
-// The project may yet trade the current Apache-licensed CLAP for a
-// non-commercial-licensed model with better music quality (MTG Discogs-
-// EffNet / MERT) if the commercial angle is dropped — this registry is what
-// makes that a config change instead of a rewrite.
 //
 // The default engine is MTG's Discogs-EffNet — the strongest music-specific
 // embedding model available, adopted after the project dropped all
@@ -26,8 +22,27 @@
 // silently vanishing off HF. Bonus: the same inference emits 400 Discogs
 // style activations, which become free genre tags per track.
 //
-// LAION-CLAP (music_and_speech, Apache-2.0) stays selectable for operators
-// who want a permissively-licensed dataset or (future) text→audio queries.
+// ⚠ THE NON-COMMERCIAL LICENSE IS NOW THE ONLY OPTION, DELIBERATELY.
+// LAION-CLAP (music_and_speech, Apache-2.0) used to be selectable here as a
+// permissively-licensed alternative, and was removed — nobody ran it, and it
+// was the sole reason `@huggingface/transformers` was a dependency, which
+// dragged in ~174 MB (onnxruntime-web + sharp + protobufjs) and a high-severity
+// sharp CVE that no published parent allowed us to patch. Consequences worth
+// knowing BEFORE you need them:
+//
+//   • Every exported discovery dataset now inherits CC BY-NC-SA 4.0 —
+//     non-commercial AND share-alike. If mStream (or an instance, or a
+//     partner) ever needs commercially-usable discovery data, that is a
+//     MODEL decision, not a licensing footnote: a permissive model has to
+//     come back into this registry first.
+//   • CLAP was also the only text↔audio model here — its shared embedding
+//     space is what natural-language search ("dreamy 80s synth ballad")
+//     would have been built on. Only the audio tower was ever wired up, so
+//     nothing regressed, but the capability left with it.
+//
+// If either need shows up, prefer bringing the runtime back as a Rust
+// sidecar (the rust-parser / p2p-sidecar pattern) rather than re-adding the
+// npm chain — that gets the model without re-importing sharp.
 //
 // All heavy runtimes are OPTIONAL dependencies imported lazily per model
 // kind — a failed native install must never break the music server; the
@@ -97,18 +112,6 @@ export const EMBEDDING_MODELS = {
     tagThreshold: 0.1,
     tagTopK: 5,
   },
-  'clap-music-and-speech': {
-    kind: 'transformers-clap',
-    hfRepo: 'Xenova/larger_clap_music_and_speech',   // base weights: laion/larger_clap_music_and_speech (Apache-2.0, verified 2026-07-01)
-    version: '1',
-    dim: 512,
-    sampleRate: 48000,
-    segmentSeconds: 10,
-    segmentPositions: [0.25, 0.5, 0.75],
-    dtype: 'fp32',
-    license: 'Apache-2.0',
-    attribution: 'LAION-CLAP (larger_clap_music_and_speech), ONNX conversion by Xenova',
-  },
   // Deterministic, dependency-free pseudo-embedder. Exists for two reasons:
   // it lets the whole worker/task-queue/export pipeline be tested without a
   // model download, and it exercises the model-swap path for real (tests
@@ -126,6 +129,20 @@ export const EMBEDDING_MODELS = {
 };
 
 export const DEFAULT_EMBEDDING_MODEL = 'effnet-discogs';
+
+// Registry keys that USED to be valid. `scanOptions.discoveryModel` is
+// validated with Joi .valid(...Object.keys(EMBEDDING_MODELS)) and config
+// validation THROWS, so simply deleting a key would turn any config still
+// naming it into a server that refuses to boot — including an operator who
+// tried the model once and left the line in. src/state/config.js coerces
+// these back to the default (and persists) before validation runs.
+// Keep entries here forever; they cost nothing and the alternative is a
+// dead server on upgrade.
+export const RETIRED_EMBEDDING_MODELS = {
+  'clap-music-and-speech':
+    'the LAION-CLAP engine was removed (it required the @huggingface/transformers '
+    + 'runtime, which carried an unpatchable sharp advisory)',
+};
 
 export function getModelSpec(key) {
   const spec = EMBEDDING_MODELS[key];
@@ -345,48 +362,6 @@ async function createEffnetEmbedder(spec, { modelCacheDir } = {}) {
   };
 }
 
-// LAION-CLAP through transformers.js. The processor computes the model's mel
-// patches from a raw Float32Array directly — no essentia, no wav wrapping.
-// Model files download to `modelCacheDir` on first use (set it — the default
-// cache would land inside node_modules); loading takes ~20 s, so the worker
-// creates ONE embedder per run.
-async function createClapEmbedder(spec, { modelCacheDir } = {}) {
-  let transformers;
-  try {
-    // NOTE for Bun `--compile`: this package (via its onnxruntime-node
-    // dependency) requires per-platform .node binaries that upstream doesn't
-    // ship for every target, so bundling it breaks cross-builds. It is marked
-    // `--external` in scripts/build-bun.mjs — concatenation tricks don't help
-    // here because Bun's bundler constant-folds them. In a standalone binary
-    // this import fails at runtime and lands in the catch below.
-    transformers = await import('@huggingface/transformers');
-  } catch (err) {
-    // Optional dependency absent (install failed / pruned / not bundled).
-    // The worker turns this into a clean fatal event; the music server
-    // itself is unaffected.
-    const e = new Error(`@huggingface/transformers is not installed — the '${spec.hfRepo}' embedding model cannot run (${err.message})`);
-    e.dependencyMissing = true;
-    throw e;
-  }
-  const { AutoProcessor, ClapAudioModelWithProjection, env } = transformers;
-  if (modelCacheDir) { env.cacheDir = modelCacheDir; }
-
-  const processor = await AutoProcessor.from_pretrained(spec.hfRepo);
-  const model = await ClapAudioModelWithProjection.from_pretrained(spec.hfRepo, { dtype: spec.dtype });
-
-  return {
-    async analyzeSignal(signal) {
-      const segEmbeds = [];
-      for (const seg of segments(signal, spec)) {
-        const inputs = await processor(seg);
-        const { audio_embeds: audioEmbeds } = await model(inputs);
-        segEmbeds.push(Float32Array.from(audioEmbeds.data));
-      }
-      return { embedding: l2normalize(meanPool(segEmbeds)), genreTags: null };
-    },
-  };
-}
-
 // Deterministic pseudo-embedder: dim buckets of per-band RMS over the
 // segment. Same audio → same vector, on every platform, no dependencies.
 function createFakeEmbedder(spec) {
@@ -422,7 +397,6 @@ export async function createEmbedder(key, opts = {}) {
   const spec = getModelSpec(key);
   switch (spec.kind) {
     case 'effnet-discogs': return { spec, ...(await createEffnetEmbedder(spec, opts)) };
-    case 'transformers-clap': return { spec, ...(await createClapEmbedder(spec, opts)) };
     case 'fake': return { spec, ...createFakeEmbedder(spec) };
     default: throw new Error(`no embedder factory for model kind '${spec.kind}'`);
   }

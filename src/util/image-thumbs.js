@@ -36,10 +36,12 @@
 //     uploads instantly, and ffprobe — a real parser, in a child process —
 //     is the authority that gates the decode.
 //
-// `sharp` is deliberately not used: it is only present transitively via the
-// OPTIONAL @huggingface/transformers dependency, so installs that skipped
-// optional deps (or where its native build failed — musl, small VPSes) would
-// lose album-art processing entirely. ffmpeg is already first-class here.
+// `sharp` is deliberately not used, and is no longer even in the tree: it
+// only ever arrived transitively via the optional @huggingface/transformers
+// dependency, which was removed with the CLAP embedding model. Even when it
+// was present, installs that skipped optional deps (or where its native
+// build failed — musl, small VPSes) would have lost album-art processing
+// entirely. ffmpeg is already first-class here.
 
 import fs from 'fs';
 import path from 'path';
