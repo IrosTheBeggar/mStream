@@ -5,6 +5,7 @@ import * as dbQueue from '../db/task-queue.js';
 import * as db from '../db/manager.js';
 import { joiValidate, dualId } from '../util/validation.js';
 import WebError from '../util/web-error.js';
+import { ALBUM_TRACK_ORDER } from '../db/track-order.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -692,7 +693,7 @@ export function setup(mstream) {
       ${trackQuery(req.user?.id, { includeGenres: false })}
       JOIN track_genres tg ON tg.track_id = t.id AND tg.genre_id IN (${idPh})
       WHERE ${filter.clause}
-      ORDER BY a.name COLLATE NOCASE, al.name COLLATE NOCASE, t.disc_number, t.track_number
+      ORDER BY a.name COLLATE NOCASE, al.name COLLATE NOCASE, ${ALBUM_TRACK_ORDER}
       ${pageSql}
     `).all(...allParams, ...pageParams);
 
@@ -729,7 +730,7 @@ export function setup(mstream) {
     const rows = d().prepare(`
       ${trackQuery(req.user?.id, { includeGenres: false })}
       WHERE ${conditions.join(' AND ')}
-      ORDER BY t.disc_number, t.track_number, t.filepath
+      ORDER BY ${ALBUM_TRACK_ORDER}, t.filepath
     `).all(...allParams);
 
     res.json(enrichRowsWithGenres(d(), rows).map(renderMetadataObj));

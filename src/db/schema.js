@@ -81,7 +81,7 @@ import { HASH_GENERATION } from './audio-hash.js';
 // V63 indexes cue_points.library_id and play_events.library_id so the
 // library-delete cascade seeks instead of scanning. See SCHEMA_V63.
 // V64 indexes tracks.year so the DLNA By-Year browse seeks. See SCHEMA_V64.
-export const SCHEMA_VERSION = 65;
+export const SCHEMA_VERSION = 66;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2373,6 +2373,25 @@ export const SCHEMA_V65 = `
   CREATE INDEX IF NOT EXISTS idx_play_events_user_time ON play_events(user_id, started_at);
 `;
 
+// V66: rescan marker only — no schema change, same shape as V49.
+//
+// The Rust scanner used to drop track/disc numbers written in the combined
+// "N/total" form wherever lofty's typed accessors don't split it: Vorbis
+// DISCNUMBER (FLAC/OGG/Opus) and RIFF INFO's ITRK (WAV). It now parses those
+// itself (parse_num_of in rust-parser/src/main.rs) — but only when a file is
+// actually re-parsed, and unchanged files ride the mtime fast-path. Without a
+// forced re-parse, every library scanned by an older build keeps its NULLs:
+// a multi-disc FLAC set stays interleaved and a WAV album stays in
+// alphabetical order in the album view, until the user guesses at a manual
+// force-rescan. rescanRequired writes the .rescan-pending marker so the next
+// boot runs the resumable migration rescan and repairs them automatically.
+//
+// SELECT 1 because the runner unconditionally exec()s migration SQL inside
+// its transaction — a trivial statement keeps that path uniform.
+export const SCHEMA_V66 = `
+  SELECT 1;
+`;
+
 export const SCHEMA_V58 = `
   ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
 `;
@@ -2753,4 +2772,9 @@ export const MIGRATIONS = [
   // V65 indexes play_events(user_id, started_at) for the wrapped-stats
   // period windows. Index-only, no rescan. See SCHEMA_V65.
   { version: 65, sql: SCHEMA_V65 },
+  // V66 is a rescan marker with no schema change: rust-parser now reads
+  // track/disc numbers written as "N/total" in Vorbis DISCNUMBER and RIFF
+  // INFO, and only a re-parse can backfill the NULLs older builds left.
+  // See SCHEMA_V66.
+  { version: 66, sql: SCHEMA_V66, rescanRequired: true },
 ];

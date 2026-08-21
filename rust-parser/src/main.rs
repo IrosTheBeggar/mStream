@@ -2960,6 +2960,29 @@ fn extract_track(
                 disc_num = tag.disk().map(|d| d as i64);
                 track_total = tag.track_total().map(|t| t as i64);
                 disc_total = tag.disk_total().map(|d| d as i64);
+                // The typed accessors above return None when a tag format
+                // lofty doesn't split for stores the combined "N/total" form
+                // — Vorbis `DISCNUMBER=1/2` (FLAC/OGG/Opus) and RIFF INFO's
+                // ITRK are the two that bite in the wild. Re-read the raw
+                // string and split it ourselves so those tracks keep their
+                // numbers instead of landing in the DB as NULL, which drops
+                // the album view back to alphabetical filepath order and
+                // interleaves the discs of a multi-disc set. See
+                // parse_num_of.
+                if track_num.is_none() || track_total.is_none() {
+                    if let Some(raw) = tag.get_string(&ItemKey::TrackNumber) {
+                        let (num, total) = parse_num_of(raw);
+                        if track_num.is_none() { track_num = num; }
+                        if track_total.is_none() { track_total = total; }
+                    }
+                }
+                if disc_num.is_none() || disc_total.is_none() {
+                    if let Some(raw) = tag.get_string(&ItemKey::DiscNumber) {
+                        let (num, total) = parse_num_of(raw);
+                        if disc_num.is_none() { disc_num = num; }
+                        if disc_total.is_none() { disc_total = total; }
+                    }
+                }
                 genre = tag.genre().map(|s| s.to_string());
 
                 rg_track_db = tag.get(&ItemKey::ReplayGainTrackGain).and_then(|item| {
@@ -6312,4 +6335,30 @@ fn hex_lower(bytes: impl AsRef<[u8]>) -> String {
 fn parse_replaygain_db(s: &str) -> Option<f64> {
     let s = s.trim().trim_end_matches("dB").trim_end_matches("db").trim();
     s.parse::<f64>().ok()
+}
+
+// Split a raw track/disc tag value written in the combined "N/total" form
+// (e.g. "7/12") into its two numbers. Returns (number, total); either half is
+// None when it isn't a plain non-negative integer, so "A1" (vinyl side
+// numbering) and "" simply yield (None, None) rather than a bogus value.
+//
+// lofty's typed accessors already split this form for ID3v2 (TRCK/TPOS), MP4
+// (trkn/disk) and Vorbis TRACKNUMBER — but NOT for Vorbis DISCNUMBER or RIFF
+// INFO's ITRK, where a combined value makes `Accessor::disk()` /
+// `Accessor::track()` return None outright. music-metadata (the JS scanner)
+// parses every one of them, so without this the two scanners disagree and a
+// FLAC set tagged `DISCNUMBER=1/2` lands in the DB with no disc number at all.
+//
+// Parsed as u32 — the same domain lofty's accessors return — so this fallback
+// can't admit a value (a negative number) the primary path would have refused.
+// Widened to i64 only because that's what the DB columns take.
+fn parse_num_of(s: &str) -> (Option<i64>, Option<i64>) {
+    let (num, total) = match s.split_once('/') {
+        Some((num, total)) => (num, Some(total)),
+        None => (s, None),
+    };
+    (
+        num.trim().parse::<u32>().ok().map(i64::from),
+        total.and_then(|t| t.trim().parse::<u32>().ok()).map(i64::from),
+    )
 }
