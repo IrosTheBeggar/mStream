@@ -15,6 +15,11 @@
 name: Update mstream-player manifest
 
 on:
+  # TEMP TEST TRIGGER — removed before merge (new workflows cannot be
+  # workflow_dispatched until they exist on the default branch; push runs
+  # use the pushed ref's file, so this is the pre-merge test path).
+  push:
+    branches: [claude/player-manifest-automation]
   repository_dispatch:
     types: [player-release]
   workflow_dispatch:
@@ -50,7 +55,7 @@ jobs:
           # Injected via env, never inline in the script: the payload
           # crosses a repo boundary, and env is the interpolation-proof
           # channel.
-          RAW_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.client_payload.tag }}
+          RAW_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.client_payload.tag || 'v0.3.0' }}  # TEMP: push-test fallback
         run: |
           set -euo pipefail
           if ! printf '%s' "$RAW_TAG" | grep -Eq '^[A-Za-z0-9._-]+$'; then
