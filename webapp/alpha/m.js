@@ -281,6 +281,14 @@ function renderArtist(artist) {
     </li>`;
 }
 
+function renderGenre(genre, trackCount) {
+  return `<li class="collection-item">
+    <div data-genre="${escapeHtml(genre)}"${peerAttr()} class="artistz" onclick="getGenreSongsList(this)">
+      ${escapeHtml(genre)} <span style="color:#888;font-size:13px;">(${escapeHtml(trackCount)})</span>
+    </div>
+  </li>`;
+}
+
 function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
   return `<li data-lokiid="${lokiId}" class="collection-item">
     <div data-file_location="${escapeHtml(filepath)}" class="filez flex" onclick="onFileClick(this);">
@@ -464,12 +472,13 @@ function printdir(response) {
     // wrapper to load, queue, or download one — skip them on a peer rather than
     // render rows whose handlers would call local APIs with a peer path.
     if (file.type === 'm3u' && peerContext) { continue; }
-    currentBrowsingList.push({ type: file.type, name: file.name })
+    const filePath = file.path || response.path + file.name;
+    const title = file.artist != null || file.title != null ? file.artist + ' - ' + file.title : file.name;
+    currentBrowsingList.push({ type: file.type, name: file.name, path: filePath, title });
     if (file.type === 'm3u') {
       filelist += createFileplaylistHtml(file.name);
     } else {
-      const title = file.artist != null || file.title != null ? file.artist + ' - ' + file.title : file.name;
-      filelist += createMusicFileHtml(file.path || response.path + file.name, title);
+      filelist += createMusicFileHtml(filePath, title);
     }
   }
 
@@ -3148,7 +3157,7 @@ async function getArtistsAlbums(artist) {
     response.albums.forEach(value => {
       const albumString = value.name ? value.name : 'SINGLES';
       albums += renderAlbum(value.name, value.name === null ? artist : null, albumString, value.album_art_file, value.year);
-      currentBrowsingList.push({ type: 'album', name: value.name, artist: artist, album_art_file: value.album_art_file })
+      currentBrowsingList.push({ type: 'album', name: value.name, artist: artist, album_art_file: value.album_art_file, year: value.year })
     });
     albums += '</div>';
 
@@ -3172,12 +3181,8 @@ async function getAllGenres() {
 
     let html = '<ul class="collection">';
     response.genres.forEach(value => {
-      html += `<li class="collection-item">
-        <div data-genre="${escapeHtml(value.name)}"${peerAttr()} class="artistz" onclick="getGenreSongsList(this)">
-          ${escapeHtml(value.name)} <span style="color:#888;font-size:13px;">(${escapeHtml(value.track_count)})</span>
-        </div>
-      </li>`;
-      currentBrowsingList.push({ type: 'genre', name: value.name });
+      html += renderGenre(value.name, value.track_count);
+      currentBrowsingList.push({ type: 'genre', name: value.name, track_count: value.track_count });
     });
     html += '</ul>';
 
@@ -3211,14 +3216,11 @@ async function getGenreSongs(genre) {
 
     let songs = '<ul class="collection">';
     response.forEach(song => {
-      currentBrowsingList.push({ type: 'file', name: song.metadata.title ? song.metadata.title : song.filepath.split('/').pop() });
-      songs += createMusicFileHtml(
-        song.filepath,
-        song.metadata.title ? song.metadata.title : song.filepath.split('/').pop(),
-        undefined,
-        undefined,
-        song.metadata.artist ? song.metadata.artist : undefined
-      );
+      const title = song.metadata.title ? song.metadata.title : song.filepath.split('/').pop();
+      const subtitle = song.metadata.artist ? song.metadata.artist : undefined;
+
+      currentBrowsingList.push({ type: 'file', name: title, path: song.filepath, title, subtitle });
+      songs += createMusicFileHtml(song.filepath, title, undefined, undefined, subtitle);
     });
     songs += '</ul>';
 
@@ -3245,7 +3247,8 @@ async function getAllAlbums() {
       currentBrowsingList.push({
         type: 'album',
         name: value.name,
-        'album_art_file': value.album_art_file
+        'album_art_file': value.album_art_file,
+        year: value.year
       });
 
       albums += renderAlbum(value.name, undefined, value.name, value.album_art_file, value.year);
@@ -3296,8 +3299,11 @@ async function getAlbumSongs(album, artist, year) {
     //parse through the json array and make an array of corresponding divs
     let files = '<ul class="collection">';
     response.forEach(song => {
-      currentBrowsingList.push({ type: 'file', name: song.metadata.title ? song.metadata.title : song.metadata.filename });
-      files += createMusicFileHtml(song.filepath, song.metadata.title ? song.metadata.title : song.metadata.filename, undefined, undefined, song.metadata.artist ? song.metadata.artist : undefined);
+      const title = song.metadata.title ? song.metadata.title : song.metadata.filename;
+      const subtitle = song.metadata.artist ? song.metadata.artist : undefined;
+
+      currentBrowsingList.push({ type: 'file', name: title, path: song.filepath, title, subtitle });
+      files += createMusicFileHtml(song.filepath, title, undefined, undefined, subtitle);
     });
     files += '</ul>';
 
@@ -3330,17 +3336,19 @@ async function getRatedSongs() {
         rating = rating.toFixed(1);
       }
 
+      const title = value.metadata.title ? value.metadata.title : value.filepath.split('/').pop();
+      const aa = artImgAttr(value.metadata['album-art'], 's');
+      const subtitle = value.metadata.artist ? value.metadata.artist : '';
+
       currentBrowsingList.push({
         type: 'file',
         name: value.metadata.artist ? value.metadata.artist + ' - ' + value.metadata.title : value.filepath,
-        metadata: value.metadata
+        metadata: value.metadata,
+        path: value.filepath,
+        title, aa, rating, subtitle
       });
 
-      files += createMusicFileHtml(value.filepath,
-        value.metadata.title ? value.metadata.title : value.filepath.split('/').pop(),
-        artImgAttr(value.metadata['album-art'], 's'),
-        rating,
-        value.metadata.artist ? value.metadata.artist : '');
+      files += createMusicFileHtml(value.filepath, title, aa, rating, subtitle);
     });
 
     document.getElementById('filelist').innerHTML = files;
@@ -3375,16 +3383,18 @@ async function redoRecentlyPlayed() {
     //parse through the json array and make an array of corresponding divs
     let filelist = '<ul class="collection">';
     response.forEach(el => {
+      const title = el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop();
+      const aa = artImgAttr(el.metadata['album-art'], 's');
+      const subtitle = el.metadata.artist ? el.metadata.artist : '';
+
       currentBrowsingList.push({
         type: 'file',
-        name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop()
+        name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop(),
+        path: el.filepath,
+        title, aa, subtitle
       });
 
-      filelist += createMusicFileHtml(el.filepath,
-        el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop(),
-        artImgAttr(el.metadata['album-art'], 's'),
-        undefined,
-        el.metadata.artist ? el.metadata.artist : '');
+      filelist += createMusicFileHtml(el.filepath, title, aa, undefined, subtitle);
     });
 
     filelist += '</ul>'
@@ -3427,16 +3437,18 @@ async function redoMostPlayed() {
     //parse through the json array and make an array of corresponding divs
     let filelist = '<ul class="collection">';
     response.forEach(el => {
+      const title = el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop();
+      const aa = artImgAttr(el.metadata['album-art'], 's');
+      const subtitle = el.metadata.artist ? `${el.metadata.artist} [${el.metadata['play-count']} plays]` : `[${el.metadata['play-count']} plays]`;
+
       currentBrowsingList.push({
         type: 'file',
-        name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop()
+        name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop(),
+        path: el.filepath,
+        title, aa, subtitle
       });
 
-      filelist += createMusicFileHtml(el.filepath,
-        el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop(),
-        artImgAttr(el.metadata['album-art'], 's'),
-        undefined,
-        el.metadata.artist ? `${el.metadata.artist} [${el.metadata['play-count']} plays]` : `[${el.metadata['play-count']} plays]`);
+      filelist += createMusicFileHtml(el.filepath, title, aa, undefined, subtitle);
     });
 
     filelist += '</ul>'
@@ -3478,16 +3490,18 @@ async function redoRecentlyAdded() {
     //parse through the json array and make an array of corresponding divs
     let filelist = '<ul class="collection">';
     response.forEach(el => {
+      const title = el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop();
+      const aa = artImgAttr(el.metadata['album-art'], 's');
+      const subtitle = el.metadata.artist ? el.metadata.artist : '';
+
       currentBrowsingList.push({
         type: 'file',
-        name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop()
+        name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop(),
+        path: el.filepath,
+        title, aa, subtitle
       });
 
-      filelist += createMusicFileHtml(el.filepath,
-        el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop(),
-        artImgAttr(el.metadata['album-art'], 's'),
-        undefined,
-        el.metadata.artist ? el.metadata.artist : '');
+      filelist += createMusicFileHtml(el.filepath, title, aa, undefined, subtitle);
     });
 
     filelist += '</ul>'
@@ -5213,18 +5227,22 @@ function runLocalSearch(el) {
         filelist += renderPlaylist(x.name);
       } else if (x.type === 'album') {
         const albumString = x.name  ? x.name  : 'SINGLES';
-        filelist += renderAlbum(x.name, x.name === null ? x.artist : null, albumString, x.album_art_file);
+        filelist += renderAlbum(x.name, x.name === null ? x.artist : null, albumString, x.album_art_file, x.year);
       } else if (x.type === 'artist') {
         filelist += renderArtist(x.name);
+      } else if (x.type === 'genre') {
+        filelist += renderGenre(x.name, x.track_count);
       } else {
         if (programState[programState.length - 1].state === 'playlist') {
           filelist += renderFileWithMetadataHtml(x.filepath, x.lokiId, x.metadata);
         } else if (x.type == "m3u") {
           filelist += createFileplaylistHtml(x.name);
         } else {
-          const fileLocation = x.path || getFileExplorerPath() + x.name;
-          const title = x.artist != null || x.title != null ? x.artist + ' - ' + x.title : x.name;
-          filelist += createMusicFileHtml(fileLocation, title);
+          // Replay the args the panel itself passed to createMusicFileHtml.
+          // Deriving the path here (getFileExplorerPath() + x.name) only ever
+          // held for the file explorer, and silently rewrote every DB-panel
+          // row's data-file_location to a path that does not exist.
+          filelist += createMusicFileHtml(x.path, x.title, x.aa, x.rating, x.subtitle);
         }
       }
     }
