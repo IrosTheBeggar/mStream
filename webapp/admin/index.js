@@ -465,7 +465,7 @@ const ADMINDATA = (() => {
   }
 
   // Jukebox status card. `available: false` means autoBootServerAudio is
-  // disabled or the rust-server-audio binary isn't reachable — the UI
+  // disabled or the mstream-player binary isn't reachable — the UI
   // hides the whole card in that case.
   module.jukeboxStatus = { available: false };
   module.jukeboxStatusUpdated = { ts: 0 };
@@ -1335,7 +1335,7 @@ const advancedView = Vue.component('advanced-view', {
   computed: {
     activePlayerLabel: function() {
       if (!this.audioInfo.backend) { return 'None'; }
-      if (this.audioInfo.backend === 'rust') { return 'rust-server-audio (native)'; }
+      if (this.audioInfo.backend === 'rust') { return 'mstream-player (native)'; }
       if (this.audioInfo.backend === 'cli') { return (this.audioInfo.player || 'cli') + ' (CLI fallback)'; }
       return this.audioInfo.player || 'Unknown';
     },

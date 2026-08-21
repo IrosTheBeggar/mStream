@@ -547,7 +547,7 @@ jobs:
           echo "LAUNCHER_REBUILT=1" >> "$GITHUB_ENV"
 
       # ── Sidecar provenance (tags) ─────────────────────────────────────────
-      # bin/rust-parser/* and bin/rust-server-audio/* are CI-committed and
+      # bin/rust-parser/* is CI-committed and
       # staged verbatim into EVERY bundle. Like the launcher, a tag must prove
       # they were built from THIS tag's source: their workflows write a stamp
       # (the source tree hash, from the trigger sha) next to the binaries —
@@ -575,7 +575,8 @@ jobs:
           }
           check bin/rust-parser/.source-tree       rust-parser       build-rust-parser
           check bin/rust-parser/.source-tree-musl  rust-parser       build-rust-parser-musl
-          check bin/rust-server-audio/.source-tree rust-server-audio build-rust-server-audio
+          # (mstream-player and the p2p sidecar need no stamp: the bundler
+          # verifies their fetched bytes against sha256 pins per build.)
           [ "$fail" = 0 ]
 
       - name: Build + bundle (${{ matrix.key }})
@@ -595,16 +596,16 @@ jobs:
       # doesn't know fails the build: no binary may ship blank — and later
       # unsigned — by omission.
       #
-      # rust-server-audio is stamped here but exercised by no other smoke
+      # mstream-player is stamped here but exercised by no other smoke
       # (server-playback is opt-in), so prove the stamped exe still LOADS
-      # AND RUNS: start it and either see it serve /status, or see it get
-      # as far as its own audio-device probe. The runner has no sound
-      # device, so on CI it panics at startup with "Failed to open audio
-      # output device: NoDevice" — that is Rust code executing past main(),
-      # i.e. the PE loader accepted the re-laid-out file, which is the only
-      # thing the stamp could have broken. Anything else (won't start, no
-      # output, a different failure) fails. rust-parser and the launcher run
-      # stamped/baked in the smoke steps below.
+      # AND RUNS: start it and either see it serve /status, or see it fail
+      # its eager audio-device open. The runner has no sound device, so on
+      # CI serve mode exits with "could not initialize audio output" — that
+      # is Rust code executing past main(), i.e. the PE loader accepted the
+      # re-laid-out file, which is the only thing the stamp could have
+      # broken. Anything else (won't start, no output, a different failure)
+      # fails. rust-parser and the launcher run stamped/baked in the smoke
+      # steps below.
       # The updater stages new versions by running the installer script
       # embedded in its own bundle — a bundle that ships without one can
       # never self-update, and nothing at runtime would say why. Assert it
@@ -654,7 +655,17 @@ jobs:
               process.exit(1);
             }
             read(process.argv[1] + '/p2p-sidecar/' + process.argv[3]);
-          " "$B" "$FKEY" "$SC_MANIFEST" || { echo "::error::pin manifest missing or invalid in the bundle"; exit 1; }
+            // mstream-player: no musl build, so only glibc/darwin/win legs
+            // ship its manifest — and it must pin this leg's own binary.
+            if (process.argv[4] !== 'musl') {
+              const pm = read(process.argv[1] + '/mstream-player/manifest.json');
+              const pkey = 'mstream-player-' + process.argv[2] + (process.argv[2] === 'win32-x64' ? '.exe' : '');
+              if (!pm.assets || !pm.assets[pkey]) {
+                console.error('::error::bin/mstream-player/manifest.json in the bundle has no pin for ' + pkey);
+                process.exit(1);
+              }
+            }
+          " "$B" "$FKEY" "$SC_MANIFEST" "${{ contains(matrix.key, '-musl') && 'musl' || 'glibc' }}" || { echo "::error::pin manifest missing or invalid in the bundle"; exit 1; }
           echo "OK: pin manifests present for ${{ matrix.key }} (ffmpeg key $FKEY, sidecar $SC_MANIFEST)"
 
       - name: Assert Windows VersionInfo on every shipped PE (win-x64)
@@ -668,7 +679,7 @@ jobs:
           & ./scripts/check-win-versioninfo.ps1 -BundleDir $D -Strict:$strict
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          $sa = Join-Path $D 'bin/rust-server-audio/rust-server-audio-win32-x64.exe'
+          $sa = Join-Path $D 'bin/mstream-player/mstream-player-win32-x64.exe'
           $p = Start-Process -FilePath $sa -ArgumentList '--port','3391' -PassThru -WindowStyle Hidden -RedirectStandardOutput sa.out -RedirectStandardError sa.err
           $ok = $false
           for ($i = 0; $i -lt 20 -and -not $ok; $i++) {
@@ -678,13 +689,13 @@ jobs:
           }
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           if ($ok) {
-            Write-Host 'stamped rust-server-audio serves /status -> 200'
+            Write-Host 'stamped mstream-player serves /status -> 200'
           } else {
             $err = (Get-Content sa.err -ErrorAction SilentlyContinue) -join "`n"
-            if ($p.HasExited -and $err -match 'Failed to open audio output device') {
-              Write-Host 'stamped rust-server-audio executes (reached its audio-device probe: no sound device on this runner, as expected)'
+            if ($p.HasExited -and $err -match 'could not initialize audio output') {
+              Write-Host 'stamped mstream-player executes (reached its audio-device open: no sound device on this runner, as expected)'
             } else {
-              Write-Host "::error::stamped rust-server-audio neither served /status nor reached its audio-device probe (exited=$($p.HasExited))"
+              Write-Host "::error::stamped mstream-player neither served /status nor reached its audio-device open (exited=$($p.HasExited))"
               Get-Content sa.out, sa.err -ErrorAction SilentlyContinue | Select-Object -Last 10
               exit 1
             }
@@ -1512,6 +1523,28 @@ jobs:
           if [ "$BINDCHANGE_OK" != "1" ]; then echo "FAIL: the bind-change reboot did not recycle onto the new bind"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; fi
           echo "SMOKE OK: $BIN booted, served 200, Rust-scanned the fixture, and survived a soft reboot, overlapping reboots, and a bind change"
 
+      # The staged mstream-player (server audio) must EXECUTE on this leg —
+      # staged from its pinned release, sha-verified at bundle time, and
+      # --version is its one-shot self-test (no audio device needed, which
+      # the runner doesn't have; the engine opens audio only in serve
+      # mode). On darwin this runs the SIGNED copy. A separate step, not
+      # part of the big smoke above: that step's run block is a single
+      # GitHub expression, and it sits near the 21000-char expression cap.
+      - name: Smoke test staged mstream-player (--version)
+        if: matrix.smoke
+        shell: bash
+        run: |
+          D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
+          case "${{ matrix.key }}" in
+            darwin-*) B="$D/mStream.app/Contents/MacOS/bin" ;;
+            *)        B="$D/bin" ;;
+          esac
+          PL=$(ls "$B"/mstream-player/mstream-player-* 2>/dev/null | head -1)
+          [ -n "$PL" ] || { echo "::error::no mstream-player staged in the bundle (bin/mstream-player empty)"; exit 1; }
+          OUT=$("$PL" --version 2>/dev/null)
+          echo "$OUT" | grep -Eq '^mstream-player [0-9]+\.[0-9]+\.[0-9]+' || { echo "::error::staged mstream-player --version produced no/invalid output"; echo "$OUT"; exit 1; }
+          echo "OK: staged mstream-player executes ($(basename "$PL"))"
+
       - name: Smoke test desktop launcher (spawn + supervise + no-orphan)
         # The launcher IS the bundle's double-click face now. Prove the
         # integrated shape on each native leg: launcher finds its
@@ -1809,7 +1842,7 @@ jobs:
             # Belt over the zip's unix attrs: the spawn paths need +x.
             chmod +x "$tree/mstream-server" 2>/dev/null || true
             chmod +x "$tree/mstream-desktop" 2>/dev/null || true
-            chmod +x "$tree"/bin/rust-parser/* "$tree"/bin/rust-server-audio/* 2>/dev/null || true
+            chmod +x "$tree"/bin/rust-parser/* "$tree"/bin/mstream-player/* 2>/dev/null || true
             mv "$tree" "pkg/tree-$key"
           done
           test -x pkg/tree-linux-x64/mstream-desktop || { echo "::error::linux-x64 bundle has no launcher — the desktop package would be a lie"; exit 1; }

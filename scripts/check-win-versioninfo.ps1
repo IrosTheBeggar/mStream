@@ -65,7 +65,10 @@ $known = @(
   @{ path = 'mStream.exe';                                          lenient = $true;  optional = $true  }  # absent in a local server-only bundle
   @{ path = 'mstream-server.exe';                                   lenient = $false; optional = $false }
   @{ path = 'bin\rust-parser\rust-parser-win32-x64.exe';            lenient = $false; optional = $false }
-  @{ path = 'bin\rust-server-audio\rust-server-audio-win32-x64.exe'; lenient = $false; optional = $false }
+  # optional: fetched from the pinned mstream-terminal-player release at
+  # bundle time — a local/offline build legitimately ships without it (the
+  # bundler is already fatal in CI when the fetch fails).
+  @{ path = 'bin\mstream-player\mstream-player-win32-x64.exe'; lenient = $false; optional = $true }
   # Fetched from the pinned release assets at bundle time and stamped like
   # the other sidecars (build-bun.mjs). optional: a local/offline build
   # legitimately ships without it (runtime fetch is the fallback); in CI

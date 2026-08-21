@@ -3555,14 +3555,14 @@ export function getLyricsBySongId(req, res) {
 export { lyricsRowByArtistTitle, lyricsRowById };
 // ── Phase 4: Jukebox control ──────────────────────────────────────────────
 //
-// Backed by the rust-server-audio subsystem (src/api/server-playback.js).
+// Backed by the mstream-player subsystem (src/api/server-playback.js).
 // Every Subsonic jukeboxControl action maps 1:1 to an existing HTTP
 // endpoint exposed by that subsystem, so this handler is a thin
 // translation layer: action-name dispatch, ID → filepath resolution,
 // status envelope shape-matching.
 //
 // Availability: requires autoBootServerAudio = true (or an externally-
-// started rust-server-audio binary). When the binary is not reachable,
+// started mstream-player binary). When the binary is not reachable,
 // the proxy calls throw and we surface a Subsonic error. Admin-only —
 // server-side playback affects anyone in earshot, so non-admin calls
 // are rejected with error 50.
@@ -3580,7 +3580,7 @@ function songIdToVpath(req, songId) {
   return row ? `${row.vpath}/${row.filepath}` : null;
 }
 
-// Take the rust-server-audio status object and emit the Subsonic-shaped
+// Take the mstream-player status object and emit the Subsonic-shaped
 // jukeboxStatus / jukeboxPlaylist inner object. Subsonic uses integer
 // seconds for `position`, 0.0–1.0 gain, and `currentIndex` indexed from
 // zero (undefined when the queue is empty).
@@ -3594,7 +3594,7 @@ function jukeboxStatusFromRust(status) {
   return out;
 }
 
-// Resolve the current queue from rust-server-audio (which returns vpath
+// Resolve the current queue from mstream-player (which returns vpath
 // strings like "testlib/Icarus/01 - x.mp3") back to full Subsonic song
 // objects via the tracks table.
 function queueToSongEntries(req, queueVpaths) {
@@ -3634,7 +3634,7 @@ function queueToSongEntries(req, queueVpaths) {
   return enrichSongsWithUserMeta(req, rows.map(songFromRow));
 }
 
-// Wrapper: call the rust-server-audio proxy and surface its failures as a
+// Wrapper: call the mstream-player proxy and surface its failures as a
 // Subsonic error envelope rather than crashing the handler.
 async function proxyOrFail(req, res, method, path, body) {
   try {
@@ -3774,7 +3774,7 @@ async function sendJukeboxPlaylist(req, res) {
     proxyOrFail(req, res, 'GET', '/queue'),
   ]);
   if (!s || !q) { return; }
-  // rust-server-audio returns queue entries as absolute paths; the
+  // mstream-player returns queue entries as absolute paths; the
   // server-playback proxy layer rewrites them to vpath form before
   // returning. queueToSongEntries resolves those back to track rows.
   const queue = Array.isArray(q.data?.queue) ? q.data.queue : [];

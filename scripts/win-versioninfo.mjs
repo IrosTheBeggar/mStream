@@ -8,7 +8,7 @@
 //   - mStream.exe (the launcher): rust-launcher/build.rs bakes it via
 //     winresource, and the tag build asserts the baked version matches the
 //     tag (build-bun.yml's provenance check).
-//   - the Rust sidecars (rust-parser, rust-server-audio): CI-committed,
+//   - the Rust sidecars (rust-parser; mstream-player via its pinned release):
 //     version-agnostic tools that were shipping with NO VersionInfo at all.
 //     They are stamped HERE, at bundle time, from the bundle's package.json —
 //     a release property applied at release-packaging time, so a version

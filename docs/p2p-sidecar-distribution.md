@@ -3,7 +3,8 @@
 **Status: implemented. The sidecar's source and releases live in
 [IrosTheBeggar/mstream-p2p-sidecar](https://github.com/IrosTheBeggar/mstream-p2p-sidecar);
 mStream keeps only committed text manifests that pin a release, and fetches
-on first use. rust-parser and rust-server-audio are outlined at the bottom
+on first use. mstream-player (server audio) now follows the same pattern;
+rust-parser is outlined at the bottom
 (later phases, not built).**
 
 ## The problem this solved
@@ -107,22 +108,36 @@ is fetched only when the discovery network is turned on.
   mirror serving the same asset files, or hand-place a binary (never
   touched).
 
-## Later phases (not built): rust-parser and rust-server-audio
+## Later phases: rust-parser (server audio: DONE)
 
-Both families are still CI-committed binaries in this repo (~1.6 GB of
-rust-parser history already), and both ARE staged into release bundles and
-tag-asserted, so their moves touch the release path:
+**Server audio moved (this pattern's second user):** the in-tree
+`rust-server-audio` crate turned out to be a stale fork of
+[IrosTheBeggar/mstream-terminal-player](https://github.com/IrosTheBeggar/mstream-terminal-player)
+(one binary, two faces: interactive terminal player + the headless engine
+mStream spawns via the legacy `--port` contract). mStream now pins that
+repo's releases in `bin/mstream-player/manifest.json`, fetches at bundle
+time (`scripts/build-bun.mjs`) and on first use for npm/source installs
+(`src/util/mstream-player-bootstrap.js`), and the `--version` one-shot is
+the execution probe. Deviations from the sidecar recipe, all deliberate:
+no musl build (server audio needs a sound device; musl bundles ship
+without it, as always), no manifest fragments (one release workflow
+publishes one complete `manifest.json`; the update script
+`scripts/update-mstream-player-manifest.mjs` filters it to the platform
+binaries and re-downloads + re-hashes each before pinning), and the
+upstream darwin binaries arrive Developer-ID-signed by the same team —
+mStream's bundle sign walk re-signs them like any other staged Mach-O.
+
+rust-parser (the whale — ~1.6 GB of history) is still CI-committed and
+remains the last family to move:
 
 - Same shape: crate to its own repo (or stay in-tree with a
-  binaries-to-release-assets move only — decide per family), versioned
-  releases with fragments, committed pins here.
+  binaries-to-release-assets move only), versioned releases with
+  fragments, committed pins here.
 - `scripts/build-bun.mjs` fetches manifest-pinned assets at bundle time
-  instead of copying `bin/` (the sidecar's Phase D staging is the
+  instead of copying `bin/` (the sidecar and player staging blocks are the
   template); Windows VersionInfo stamping is unaffected (it already stamps
   the staged copy).
 - build-bun's tag asserts move from the `.source-tree` stamps to the
   manifests' pins — and gain a per-binary hash check the stamps never had.
-- Runtime fallbacks (JS scanner, CLI players) already provide the
-  degradation net for a fetch-on-first-use path for npm/source users.
-- Sequence: let a few sidecar release cycles prove the ritual, then
-  rust-parser (the whale), then rust-server-audio.
+- The JS scanner already provides the degradation net for a
+  fetch-on-first-use path for npm/source users.

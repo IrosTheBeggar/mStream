@@ -1,7 +1,7 @@
 /**
  * Subsonic jukeboxControl integration tests.
  *
- * Runs mStream + a fake rust-server-audio HTTP stub (test/helpers/fake-rust-audio.mjs).
+ * Runs mStream + a fake mstream-player HTTP stub (test/helpers/fake-rust-audio.mjs).
  * The stub records every proxied request and maintains plausible queue
  * state, so tests can both (a) verify the handler dispatches to the right
  * server-playback endpoint for each Subsonic action, and (b) confirm the
@@ -100,7 +100,7 @@ describe('jukeboxControl authorization', () => {
     assert.equal(env.error.code, 50);
   });
 
-  test('admin status call proxies to /status on rust-server-audio', async () => {
+  test('admin status call proxies to /status on mstream-player', async () => {
     const env = await call('jukeboxControl', { action: 'status' });
     assert.equal(env.status, 'ok');
     assert.ok(env.jukeboxStatus);
@@ -109,7 +109,7 @@ describe('jukeboxControl authorization', () => {
     assert.equal(typeof env.jukeboxStatus.position, 'number');
     // currentIndex = -1 when queue empty (our stub resets to empty).
     assert.equal(env.jukeboxStatus.currentIndex, -1);
-    // And the proxy actually hit rust-server-audio.
+    // And the proxy actually hit mstream-player.
     const statusCall = fakeAudio.calls.find(c => c.path === '/status' && c.method === 'GET');
     assert.ok(statusCall, 'expected GET /status to reach the fake');
   });
@@ -268,9 +268,9 @@ describe('jukeboxControl get (playlist + entries)', () => {
   });
 });
 
-// ── Error-path: rust-server-audio unreachable ─────────────────────────────
+// ── Error-path: mstream-player unreachable ─────────────────────────────
 
-describe('jukeboxControl when rust-server-audio is unavailable', () => {
+describe('jukeboxControl when mstream-player is unavailable', () => {
   test('status returns error 30 when the stub is stopped', async (t) => {
     // Temporarily bring the stub down; the proxy's connect will fail fast.
     await fakeAudio.stop();

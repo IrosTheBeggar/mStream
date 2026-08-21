@@ -37,10 +37,14 @@ bin/rust-launcher/*
 # writes it; build-bun.yml's tag build asserts it matches the tag's source).
 !bin/rust-launcher/.source-tree
 
-bin/rust-server-audio/*
-!bin/rust-server-audio/README.md
-!bin/rust-server-audio/rust-server-audio-*
-!bin/rust-server-audio/.source-tree
+# mstream-player (server audio) binaries are FETCHED, not committed — the
+# crate left git for IrosTheBeggar/mstream-terminal-player (the in-tree
+# rust-server-audio was a stale fork of it). Only the committed pin
+# manifest and the README live in git; .fetched.json is the runtime
+# fetcher's install receipt.
+bin/mstream-player/*
+!bin/mstream-player/README.md
+!bin/mstream-player/manifest.json
 
 # p2p-sidecar binaries are FETCHED, not committed — the crate lives in its
 # own repo (IrosTheBeggar/mstream-p2p-sidecar) and its versioned releases
@@ -79,7 +83,6 @@ bun.lock
 .env
 
 rust-parser/target/
-rust-server-audio/target/
 rust-launcher/target/
 # The sidecar crate moved to its own repo; the dev loop is cloning it INTO
 # this checkout as p2p-sidecar/ (see bin/p2p-sidecar/README.md), so the
@@ -88,6 +91,8 @@ rust-launcher/target/
 # exclusion that file negations cannot pierce — and silently swallowed the
 # committed manifests (caught by a post-commit ls-tree check).
 /p2p-sidecar/
+# Same dev-loop rule for the player repo (see bin/mstream-player/README.md).
+/mstream-terminal-player/
 
 save/waveforms/*
 !save/waveforms/README.md

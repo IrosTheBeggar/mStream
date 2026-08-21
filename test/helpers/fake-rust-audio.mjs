@@ -1,5 +1,5 @@
 /**
- * Minimal HTTP stub that impersonates the rust-server-audio binary for
+ * Minimal HTTP stub that impersonates the mstream-player binary for
  * tests. Mirrors the subset of endpoints the Subsonic jukeboxControl
  * handler (src/api/subsonic/handlers.js) proxies to — enough to exercise
  * every action code path without actually shipping audio to a sound card.
@@ -26,8 +26,8 @@ function freePort() {
 export async function startFakeRustAudio() {
   const port = await freePort();
 
-  // The rust-server-audio status shape — kept in sync with
-  // rust-server-audio/src/main.rs::StatusResponse.
+  // The mstream-player status shape — kept in sync with the Status struct
+  // in IrosTheBeggar/mstream-terminal-player's src/engine/mod.rs.
   const state = {
     playing:      false,
     paused:       false,
