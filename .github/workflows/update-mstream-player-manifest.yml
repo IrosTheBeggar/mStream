@@ -55,7 +55,7 @@ jobs:
           # Injected via env, never inline in the script: the payload
           # crosses a repo boundary, and env is the interpolation-proof
           # channel.
-          RAW_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.client_payload.tag || 'v0.3.0' }}  # TEMP: push-test fallback
+          RAW_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.client_payload.tag || 'v0.2.0' }}  # TEMP: push-test fallback
         run: |
           set -euo pipefail
           if ! printf '%s' "$RAW_TAG" | grep -Eq '^[A-Za-z0-9._-]+$'; then
