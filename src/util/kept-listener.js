@@ -6,8 +6,9 @@
 // reboot precisely because, on Windows under Bun <= 1.3.14, every spawned
 // child (scanner, transcode, ffmpeg download, enrichment worker) inherits a
 // handle to every listen socket in the process, and close() in the parent
-// releases nothing until that child exits (oven-sh/bun#36938). The separate-
-// port servers were still doing close()+listen() on every reboot: their
+// releases nothing until that child exits (oven-sh/bun#36938; fix first
+// released in Bun 1.4.0). The separate-port servers were still doing
+// close()+listen() on every reboot: their
 // re-listen hit EADDRINUSE mid-scan, their 'error' handler nulled the module
 // reference, and the Subsonic API (every mobile client) stayed silently dead
 // until the next restart while the tray said Running. Keeping the server
@@ -64,7 +65,8 @@ export function createKeptListener(name) {
           winston.warn(
             `[${name}] Port ${port} still held ${Math.round(waitedMs / 1000)}s after reboot — retrying until it frees ` +
             '(the separate server is unreachable meanwhile). A child process alive during the reboot can hold the ' +
-            'old listening socket until it exits (Bun <= 1.3.14 on Windows: oven-sh/bun#36938).');
+            'old listening socket until it exits (Bun <= 1.3.14 on Windows: oven-sh/bun#36938, ' +
+            'fixed in Bun 1.4.0).');
           diagnosed = true;
           lastLoggedAt = Date.now();
         }

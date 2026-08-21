@@ -5,7 +5,7 @@
  * Why this matters: on Windows a listen socket is shared with every child
  * process holding an inherited handle to it, and under Bun <= 1.3.14 every
  * spawned child does (uSockets created inheritable handles — fixed upstream
- * in oven-sh/bun#36938, unreleased as of Aug 2026). A close()+listen() reboot
+ * in oven-sh/bun#36938, first released in Bun 1.4.0). A close()+listen() reboot
  * therefore got EADDRINUSE for as long as a scanner / transcode / ffmpeg
  * download / enrichment worker lived, and the old 5 s relisten budget then
  * took the whole process down. The reboot path now keeps the socket bound

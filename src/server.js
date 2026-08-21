@@ -170,7 +170,7 @@ function sameBind(a, b) {
 // on Windows, a listen socket is a kernel object shared with every child that
 // inherited a handle to it, and under Bun <= 1.3.14 EVERY spawned child does
 // (uSockets created inheritable handles; fixed upstream in oven-sh/bun#36938,
-// unreleased as of Aug 2026). So close() in the parent releases nothing while a
+// first released in Bun 1.4.0). So close() in the parent releases nothing while a
 // scanner, transcode, ffmpeg download or enrichment worker is alive — the port
 // stays LISTENING (and even completes TCP handshakes that then hang) until the
 // last such child exits, which for a scan or a backfill can be an hour. A
@@ -926,7 +926,8 @@ export async function serveIt(configFile, { relisten = null } = {}) {
           `Port ${bind.port} still held ${Math.round(waitedMs / 1000)}s after reboot — retrying until it frees ` +
           '(mStream is unreachable meanwhile). A child process that was alive during the reboot — a scan, ' +
           'transcode, ffmpeg download or enrichment worker — can hold the old listening socket until it ' +
-          'exits: under Bun <= 1.3.14 on Windows spawned children inherit it (oven-sh/bun#36936).');
+          'exits: under Bun <= 1.3.14 on Windows spawned children inherit it (oven-sh/bun#36936, ' +
+          'fixed in Bun 1.4.0).');
         relistenDiagnosed = true;
         relistenLastLoggedAt = Date.now();
       }
