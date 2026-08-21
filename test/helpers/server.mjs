@@ -74,30 +74,59 @@ async function waitForReady(baseUrl, { timeoutMs = 90_000, getExitError = () => 
 // guard (from /db/status, as before) covers the window before the boot scan
 // is enqueued at all (scanOptions.bootScanDelay), when the queue is exactly
 // as empty as when everything finished.
+//
+// ORDER MATTERS, and the two facts must NOT be sampled concurrently. The
+// return condition ANDs an observation from /db/status (count > 0) with one
+// from /api/v1/scan/status (queue idle). Issued together via Promise.all,
+// those are two independent round-trips whose SERVICE times can diverge by
+// far more than the 50ms poll: /db/status runs COUNT(*) over tracks, which
+// blocks behind the scanner's SQLite write lock (busy_timeout 5000), while
+// /scan/status answers from in-memory queue state plus a TTL-cached
+// coverage read. Skews of 300ms were measured locally on an idle box; a
+// contended Windows CI runner is worse. Concurrent sampling can therefore
+// satisfy the condition with two observations that were never true at the
+// same moment -- queue read as idle during the bootScanDelay window, count
+// read seconds later once rows had landed -- and return a half-scanned
+// fixture. Sampling SEQUENTIALLY, count first and queue second, makes the
+// pair a sound proof instead: count > 0 means scanning had already begun,
+// so every boot scan task was already enqueued; an idle queue observed
+// strictly AFTER that means all of them have since finished.
 async function waitForScanComplete(baseUrl, timeoutMs = 90_000) {
   const start = Date.now();
+  let last = null;
   while (Date.now() - start < timeoutMs) {
     try {
-      const [statusR, queueR] = await Promise.all([
-        fetch(`${baseUrl}/api/v1/db/status`),
-        fetch(`${baseUrl}/api/v1/scan/status`),
-      ]);
-      if (statusR.ok && queueR.ok) {
+      // Count FIRST -- see the ordering note above; do not merge these two
+      // awaits back into a Promise.all.
+      const statusR = await fetch(`${baseUrl}/api/v1/db/status`);
+      if (statusR.ok) {
         const status = await statusR.json();
-        const { queue } = await queueR.json();
-        // queue.scanning covers an active scan OR backup (the old `locked`
-        // bit); the two kind checks close the between-tasks and not-yet-
-        // dispatched gaps that bit can't see.
-        const pending = queue.scanning
-          || queue.activeTask === 'scan'
-          || queue.queued.includes('scan');
-        if (!pending && status.totalFileCount > 0) { return status.totalFileCount; }
+        if (status.totalFileCount > 0) {
+          const queueR = await fetch(`${baseUrl}/api/v1/scan/status`);
+          if (queueR.ok) {
+            const { queue } = await queueR.json();
+            // queue.scanning covers an active scan OR backup (the old
+            // `locked` bit); the two kind checks close the between-tasks
+            // and not-yet-dispatched gaps that bit can't see.
+            const pending = queue.scanning
+              || queue.activeTask === 'scan'
+              || queue.queued.includes('scan');
+            last = { totalFileCount: status.totalFileCount, queue };
+            if (!pending) { return status.totalFileCount; }
+          }
+        } else {
+          last = { totalFileCount: status.totalFileCount, queue: null };
+        }
       }
-    } catch { /* retry */ }
+    } catch (err) { last = { error: err.message }; }
     await sleep(50);
   }
-  throw new Error(`initial scan did not complete within ${timeoutMs}ms`);
+  // Surface what the poll last saw -- a bare timeout tells the next person
+  // nothing about WHICH half of the condition never came true.
+  throw new Error(
+    `initial scan did not complete within ${timeoutMs}ms; last seen: ${JSON.stringify(last)}`);
 }
+
 
 /**
  * Start an mStream instance. Returns { baseUrl, port, stop }.
