@@ -6,7 +6,7 @@
  * library DB whose tracks point at small ffmpeg-synthesized audio files. All
  * runs use the registry's 'test-fake' model — deterministic, dependency-free,
  * no network — so the full decode→embed→discovery.db-write loop runs for
- * real without the ~700 MB CLAP download. Covers:
+ * real without the real model download. Covers:
  *
  *   - embedded: discovery_tracks row with an L2-normalized vector of the
  *     model's dim, model pin per row + in discovery_meta, artist/title/
