@@ -104,21 +104,39 @@ function probeProcess(pid, needCmdline) {
       const line = (r.stdout || '').toString().split(/\r?\n/).find(l => l.startsWith('"'));
       if (!line) { return null; } // tasklist prints an INFO line when no match
       const image = line.split('","')[0].replace(/^"/, '').toLowerCase();
-      // The command line needs a CIM query (tasklist doesn't expose it).
-      // Only required to vet generic images like node.exe; a failure
-      // leaves cmdline null and the caller refuses to kill on it. The
-      // budget is deliberately generous: PowerShell's cold start blew an
-      // 8s cap on a loaded CI runner (2026-08-04), and a timeout here
-      // demotes a real orphan to "unverifiable" — alive until a later
-      // boot manages to inspect it.
+      // The command line needs WMI (tasklist doesn't expose it). Only
+      // required to vet generic images like node.exe; a failure leaves
+      // cmdline null and the caller refuses to kill on it.
+      //
+      // wmic first: it talks to WMI without PowerShell's cold start and
+      // typically answers in well under a second even on a cold machine.
+      // It is deprecated — client 24H2+ and Server 2025 ship without it —
+      // so ANY failure (absent binary, timeout, no output) falls through
+      // to the PowerShell CIM query. That fallback's budget stays
+      // deliberately generous: PowerShell's cold start blew an 8s cap on
+      // a loaded CI runner (2026-08-04) and the raised 30s cap on another
+      // (2026-08-20) — a timeout here demotes a real orphan to
+      // "unverifiable", alive until a later boot manages to inspect it,
+      // which is exactly why callers must treat 'unknown' as retryable.
       let cmdline = null;
       if (needCmdline) {
-        const ps = child.spawnSync('powershell',
-          ['-NoProfile', '-NonInteractive', '-Command',
-            `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`],
-          { timeout: 30000 });
-        if (ps.status === 0) {
-          cmdline = (ps.stdout || '').toString().trim() || null;
+        try {
+          const w = child.spawnSync('wmic',
+            ['process', 'where', `processid=${pid}`, 'get', 'commandline', '/format:list'],
+            { timeout: 5000 });
+          if (w.status === 0) {
+            const m = (w.stdout || '').toString().match(/^CommandLine=(.*)$/m);
+            if (m && m[1].trim()) { cmdline = m[1].trim(); }
+          }
+        } catch (_err) { /* absent binary — fall through to CIM */ }
+        if (cmdline === null) {
+          const ps = child.spawnSync('powershell',
+            ['-NoProfile', '-NonInteractive', '-Command',
+              `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`],
+            { timeout: 30000 });
+          if (ps.status === 0) {
+            cmdline = (ps.stdout || '').toString().trim() || null;
+          }
         }
       }
       return { image, cmdline };

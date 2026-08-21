@@ -476,7 +476,7 @@ describe('orphan reaper (scan-pidfile.js)', () => {
     }
   });
 
-  test('live orphaned JS scanner is killed', { timeout: 90000 }, async () => {
+  test('live orphaned JS scanner is killed', { timeout: 150000 }, async () => {
     const tmp = makeTmp('orphan');
     // A real "orphan": a node process running a file named scanner.mjs,
     // which is what the identity check requires before killing a
@@ -484,11 +484,22 @@ describe('orphan reaper (scan-pidfile.js)', () => {
     // is written by hand with a foreign ppid.
     //
     // Timing: reapOrphanedScanner is fully synchronous, and for a js
-    // record on Windows it shells out twice (tasklist ≤5s, then the
-    // PowerShell CIM command-line query ≤30s) — up to ~35s on a loaded
-    // runner before it even decides to kill. Only once it returns can
-    // the event loop deliver the child's exit, so the wait below must be
-    // generous too; the declared timeout has to cover reap + wait.
+    // record on Windows the command-line probe can legitimately blow its
+    // whole budget on a cold, loaded runner (wmic ≤5s, then PowerShell
+    // CIM ≤30s — the 30s cap was itself blown on 2026-08-20 after the 8s
+    // cap fell on 2026-08-04). When that happens the verdict is
+    // 'unknown' and the reaper — BY CONTRACT — keeps the record and
+    // declines to kill: a later boot retries. A single reap call plus a
+    // fixed wait therefore flakes by design pressure, not by bug.
+    //
+    // So model successive boots: reap in a loop. The first attempt
+    // doubles as the WMI/PowerShell warm-up, and a retry against warm
+    // services decides in seconds. The loop still fails if the reaper
+    // never kills what it CAN identify — the behavior under guard — and
+    // the record must be gone once it has. Budget arithmetic for the
+    // declared timeout: worst-case attempt ≈ 40s of shell-out caps
+    // (tasklist 5 + wmic 5 + CIM 30) + 10s wait; new attempts start only
+    // inside the first 90s, so the ceiling is ~140s — 150s covers it.
     const fakeScanner = path.join(tmp, 'scanner.mjs');
     fs.writeFileSync(fakeScanner, 'setInterval(() => {}, 1000);\n');
     const p = child.spawn(process.execPath, [fakeScanner], { stdio: 'ignore' });
@@ -501,9 +512,13 @@ describe('orphan reaper (scan-pidfile.js)', () => {
         marker: fakeScanner,
         startedAt: 'x',
       }));
-      reapOrphanedScanner(tmp);
-      const died = await waitFor(() => p.exitCode !== null || p.signalCode !== null, 45000);
-      assert.ok(died, 'orphaned scanner should be terminated by the reaper');
+      const lastBoot = Date.now() + 90000;
+      let died = false;
+      do {
+        reapOrphanedScanner(tmp);
+        died = await waitFor(() => p.exitCode !== null || p.signalCode !== null, 10000);
+      } while (!died && Date.now() < lastBoot);
+      assert.ok(died, 'orphaned scanner should be terminated by the reaper (retried across simulated boots)');
       assert.ok(!fs.existsSync(path.join(tmp, '.scanner.pid.json')));
     } finally {
       try { p.kill(); } catch (_) { /* already dead */ }
