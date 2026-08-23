@@ -957,9 +957,31 @@ paths:
                   apiVersions:
                     type: array
                     items: { type: string }
+                  features:
+                    type: object
+                    description: >
+                      Capability flags a client can gate UI on without an extra
+                      round-trip.
+                    properties:
+                      subsonic:
+                        type: boolean
+                        description: Whether the Subsonic API surface is mounted.
+                      discoveryReady:
+                        type: boolean
+                        description: >
+                          Whether a sonic-similarity query would find anything
+                          right now. Distinct from the ping's `discovery` flag,
+                          which reports only that the feature is enabled: a
+                          server can have discovery on with an unfinished scan,
+                          in which case similarity queries fail against an empty
+                          pool. A boolean rather than a count because this
+                          endpoint is public.
               example:
-                server: "6.4.2"
+                server: "6.22.0"
                 apiVersions: ["1"]
+                features:
+                  subsonic: false
+                  discoveryReady: true
 
   /api/v1/ping:
     get:

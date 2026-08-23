@@ -34,6 +34,7 @@ import * as dbManager from './db/manager.js';
 import * as discoveryDb from './db/discovery-db.js';
 import { reapOrphanedScanner } from './db/scan-pidfile.js';
 // scanner.js removed — parser now writes directly to SQLite
+import * as sim from './db/discovery-similarity.js';
 import * as federationApi from './api/federation.js';
 import * as federationDiscoveryApi from './api/federation-discovery.js';
 import * as federationLimitsApi from './api/federation-limits.js';
@@ -641,6 +642,17 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     apiVersions: ["1"],
     features: {
       subsonic: config.program.subsonic.mode !== 'disabled',
+      // Whether a sonic-similarity query would find anything RIGHT NOW.
+      // Distinct from the ping's `discovery` flag, which says the feature is
+      // switched on: a server can have it on with an unfinished scan, and
+      // that combination is exactly what makes clients look broken. Auto DJ
+      // sends similarTo/minSimilarity, every pick 400s on the empty pool, and
+      // the queue silently stops advancing.
+      //
+      // A boolean, not a count: this endpoint is public, and how many tracks
+      // are analysed is library-size information. Clients only need to know
+      // whether to offer the feature.
+      discoveryReady: sim.hasEmbeddings(),
     },
   }));
 
