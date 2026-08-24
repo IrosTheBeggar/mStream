@@ -31,7 +31,10 @@ export const PLAYERS = [
   { name: 'mplayer', kind: 'spawn',  binary: 'mplayer', probeArgs: ['-v'],        AdapterClass: MplayerAdapter, label: 'MPlayer' },
 ];
 
+const ALLOWED_BINARIES = new Set(PLAYERS.filter((p) => p.kind === 'spawn').map((p) => p.binary));
+
 function probeBinary(binary, args) {
+  if (!ALLOWED_BINARIES.has(binary)) { return Promise.resolve(false); }
   // Async probe: we used to call spawnSync here, but that blocks the Node
   // event loop, which starves the MPD TCP probe's 'data' callback and makes
   // its short timeout misfire. Using spawn lets every probe run concurrently.
