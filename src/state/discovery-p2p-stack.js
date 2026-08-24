@@ -11,6 +11,7 @@
 // for the (default) servers that never enable the feature.
 
 import winston from 'winston';
+import * as config from './config.js';
 
 let running = false;
 let starting = null;
@@ -49,7 +50,17 @@ function scheduleRecovery(why) {
     + `${Math.round(delay / 1000)}s (attempt ${recoveryAttempts})`);
   recoveryTimer = setTimeout(() => {
     recoveryTimer = null;
-    if (!running) { return; }
+    // Two vetoes: `running` (a stop cancelled us) and the CONFIG — the
+    // operator's own flag, which recovery must never outvote. The config
+    // check is the backstop for the one ordering `running` alone misses: a
+    // disable landing while a replay attempt is in flight can't cancel a
+    // timer that doesn't exist yet, and the attempt's failure handler below
+    // re-arms AFTER the stop's cancelRecovery already ran. Both disable
+    // paths write the flag before they touch the stack (api/admin.js), so
+    // by the time that plays out it is authoritative. A reboot's teardown
+    // leaves the flag true — recovery racing the boot start there converges
+    // through the starting/stopping guards.
+    if (!running || config.program.discoveryP2p.enabled !== true) { return; }
     // Clear the dead sidecar's stale intent HERE so the start below does the
     // real work instead of tripping the "already running" guard.
     running = false;
@@ -57,6 +68,13 @@ function scheduleRecovery(why) {
       .then(() => winston.info('[discovery-p2p] sidecar recovered — rejoined the catalog topic'))
       .catch((err) => {
         winston.warn(`[discovery-p2p] sidecar recovery failed: ${err.message}`);
+        if (config.program.discoveryP2p.enabled !== true) {
+          // The feature was switched off while the attempt was in flight —
+          // this failure IS the teardown winning. Stand down: leave
+          // `running` false so nothing re-arms against the operator.
+          winston.info('[discovery-p2p] recovery stands down — the feature was disabled mid-attempt');
+          return;
+        }
         // Re-arm: startDiscoveryP2pStack() left `running` false on failure,
         // and scheduleRecovery reads it as "give up". The intent has not
         // changed — the config still says enabled — so restore it.
