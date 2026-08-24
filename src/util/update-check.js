@@ -443,12 +443,19 @@ export function stageNow(manifest = null) {
       state.stagedVersion = landed;
       state.error = null;
       winston.info(`[update] mStream ${landed} is staged - it takes over on the next restart`);
-      await pruneOldVersions(m.root);
       // A skip that landed WHILE this stage was downloading was a no-op in
       // enforceSkip (nothing was staged yet) — honor it now, before the
       // status file advertises the held-back version as armed.
       await enforceSkip();
+      // Persist BEFORE the prune sweep. The API above already serves
+      // staged:true the moment the state flips, and the launcher-facing
+      // status file must not lag it by a whole disk pass — a loaded CI
+      // runner read the stale file in exactly that window (full-ci
+      // macos shard, PR #881). Pruning also benefits from running after
+      // enforceSkip settled `current`: its protect set is computed from
+      // the link's final target.
       await writeStatus();
+      await pruneOldVersions(m.root);
       maybeAutoApply();
     })
     .catch(async (err) => {
