@@ -147,10 +147,25 @@ test('managed round-trip: check, auto-stage, current flip, tamper refusal, live 
     assert.equal(path.basename(target), `mStream-9.9.9-${hostKey()}`);
 
     // The status file the launcher reads, in the redirected data home.
+    // POLLED, not read once: the API state and the on-disk file are two
+    // writes, and even with the server persisting immediately after the
+    // flip, asserting on a single read races the fsync on a loaded
+    // runner (this exact assert flaked on a full-ci macos shard).
     const statusPath = process.platform === 'darwin'
       ? path.join(tmpHome, 'Library', 'Application Support', 'mStream', 'update-status.json')
       : path.join(tmpHome, '.local', 'share', 'mstream', 'update-status.json');
-    const onDisk = JSON.parse(await fs.readFile(statusPath, 'utf8'));
+    const onDisk = await (async () => {
+      const start = Date.now();
+      let last = null;
+      while (Date.now() - start < 10_000) {
+        try {
+          last = JSON.parse(await fs.readFile(statusPath, 'utf8'));
+          if (last.staged === true) { return last; }
+        } catch { /* not written yet */ }
+        await sleep(100);
+      }
+      throw new Error(`status file never reported staged:true; last: ${JSON.stringify(last)}`);
+    })();
     assert.equal(onDisk.staged, true);
     assert.equal(onDisk.stagedVersion, '9.9.9');
 
