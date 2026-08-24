@@ -201,10 +201,19 @@ export async function resolveBootstrap(opts = {}) {
   );
 }
 
-// Watch the mesh after boot: joined-but-zero-neighbors for a full interval
-// means our bootstrap set is stale or the peers are gone — re-resolve with a
-// forced list refresh and join again (join_peers is idempotent, so this can
-// never hurt an already-healthy mesh). Idempotent across server reboot()s.
+// Watch the mesh after boot: a running sidecar that is off the topic, or on
+// it with zero neighbors for a full interval, means our bootstrap set is
+// stale or the peers are gone — re-resolve with a forced list refresh and
+// join again (join_peers is idempotent, so this can never hurt an
+// already-healthy mesh). Idempotent across server reboot()s.
+//
+// NOTE the un-joined case is included deliberately. It used to be excluded
+// (`if (!s.joined || ...) return`), which skipped the single most broken
+// state a live sidecar can be in — and that state is reachable, because
+// publish/fetch/announce all lazily start() the sidecar WITHOUT joining it.
+// A rotation fetch respawning a crashed sidecar therefore left the server
+// permanently silent: process up, topic un-subscribed, and the one watch
+// that could have noticed bailing on the very condition it should repair.
 let watchTimer = null;
 export function startMeshHealthWatch() {
   if (watchTimer) { return; }
@@ -212,10 +221,11 @@ export function startMeshHealthWatch() {
     try {
       if (!discoveryP2p.isRunning()) { return; }
       const s = await discoveryP2p.status();
-      if (!s.joined || s.neighbors > 0) { return; }
+      if (s.joined && s.neighbors > 0) { return; }
       const bootstrap = await resolveBootstrap({ forceRefresh: true });
       if (bootstrap.length === 0) { return; } // nothing to join with — nothing to do
-      winston.info(`[discovery-seeds] no mesh neighbors — re-joining with ${bootstrap.length} bootstrap peer(s)`);
+      winston.info(`[discovery-seeds] ${s.joined ? 'no mesh neighbors' : 'sidecar is not on the catalog topic'} `
+        + `— re-joining with ${bootstrap.length} bootstrap peer(s)`);
       await discoveryP2p.join(bootstrap);
     } catch (err) {
       winston.warn(`[discovery-seeds] mesh health check failed: ${err.message}`);
