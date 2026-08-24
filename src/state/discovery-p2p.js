@@ -27,7 +27,7 @@ import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 import { EventEmitter } from 'events';
-import { spawn } from 'child_process';
+import { spawn, execFile } from 'child_process';
 import winston from 'winston';
 import { appRoot } from '../util/esm-helpers.js';
 import * as sidecarBootstrap from '../util/p2p-sidecar-bootstrap.js';
@@ -129,6 +129,50 @@ export function getEndpointId() { return endpointId; }
 // The sidecar's own endpoint ticket — what another operator pastes into
 // their bootstrapPeers to befriend this server.
 export function getEndpointTicket() { return endpointTicket; }
+
+export function getPid() { return proc ? proc.pid : null; }
+
+// Resident-set size of the live sidecar in MB, or null when it can't be
+// read (no child, unsupported platform, a race with an exit). Linux reads
+// /proc/<pid>/status VmRSS — reported in kB, so no page-size dependence;
+// darwin shells out to ps (dev machines). Best-effort by design: the
+// watchdog stands down on null rather than guessing.
+export async function sidecarRssMb() {
+  if (!proc || !proc.pid) { return null; }
+  const pid = proc.pid;
+  try {
+    if (process.platform === 'linux') {
+      const status = await fs.promises.readFile(`/proc/${pid}/status`, 'utf8');
+      const m = status.match(/^VmRSS:\s+(\d+)\s+kB/m);
+      return m ? Number(m[1]) / 1024 : null;
+    }
+    if (process.platform === 'darwin') {
+      const kb = await new Promise((resolve) => {
+        execFile('ps', ['-o', 'rss=', '-p', String(pid)], (err, stdout) => {
+          resolve(err ? null : Number(String(stdout).trim()));
+        });
+      });
+      return Number.isFinite(kb) && kb > 0 ? kb / 1024 : null;
+    }
+  } catch (_err) { /* fall through to null */ }
+  return null;
+}
+
+// Watchdog kill: end the child WITHOUT bumping the stop generation, so the
+// exit classifies as unexpected and the stack's crash recovery replays
+// everything — subscribe, spawn, join, announce, holds — on its tested
+// ladder. SIGKILL rather than the graceful shutdown RPC, on purpose: the
+// watchdog fires precisely when the process is unhealthy (bloated, or
+// wedged enough that an RPC may never be answered), and nothing durable
+// depends on the polite goodbye — the identity key and the blob store live
+// on disk, and the store is transactional. The caller logs the why; this
+// logs nothing so the exit handler's warn stays the single source of truth
+// about the death itself.
+export function killSidecarForRestart() {
+  if (!proc) { return false; }
+  try { proc.kill('SIGKILL'); } catch (_err) { return false; }
+  return true;
+}
 
 // Acquire a binary to spawn. A dev build or an operator-placed prebuilt wins
 // untouched; otherwise the bootstrap fetches (or refreshes) the managed
