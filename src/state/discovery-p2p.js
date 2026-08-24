@@ -40,6 +40,29 @@ import * as config from './config.js';
 // The catalog module (discovery-catalog.js) is the main subscriber.
 export const events = new EventEmitter();
 
+// Unexpected-death hook, set by the stack (discovery-p2p-stack.js).
+//
+// The sidecar is a child process, so an OOM kill, a panic, or an operator's
+// `kill` takes it down with nobody asking — and NOTHING used to put it back:
+// start() has exactly one real caller (the stack's boot), and the two
+// periodic passes that could have noticed (the mesh-health watch, the
+// catalog prune) both return early on `!isRunning()`. A server therefore sat
+// off the network, config still saying "enabled", until someone restarted it
+// by hand.
+//
+// Deliberately NOT routed through `events` above: that emitter re-emits
+// whatever the child names in its `event` field, so a buggy sidecar could
+// synthesize its own resurrection. This is a private channel the child
+// cannot reach.
+//
+// The handler gets the whole stack replayed, not a bare respawn — the topic
+// subscription, the announce payload and the holds beacon all live in the
+// sidecar's memory and die with it. A respawn without them yields the worst
+// state of all: a process that reports `running: true` while being just as
+// invisible to the network as no process at all.
+let unexpectedExitHandler = null;
+export function setUnexpectedExitHandler(fn) { unexpectedExitHandler = fn; }
+
 const ext = process.platform === 'win32' ? '.exe' : '';
 // musl detection mirrors task-queue.js's rust-parser resolution.
 const isMusl = process.platform === 'linux' && !process.report?.getReport()?.header?.glibcVersionRuntime;
@@ -152,6 +175,25 @@ export function start() {
     const child = spawn(bin, ['--data-dir', dataDir()], { stdio: ['pipe', 'pipe', 'pipe'] });
     proc = child;
 
+    // Pipe errors must never be fatal. An rpc() that lands in the window
+    // between the child dying and Node delivering its 'exit' event writes
+    // into a broken pipe: EPIPE. The write callback in rpc() already turns
+    // that into a rejected request — but a Writable ALSO emits 'error', and
+    // an unhandled 'error' on a stream is an uncaught exception, i.e. the
+    // whole music server going down because a status poll lost a race with
+    // an OOM kill. The status route polls exactly there, so this is a
+    // reachable crash, not a theoretical one. Same reasoning for the read
+    // side, where a mid-line destroy surfaces on the readline source.
+    child.stdin.on('error', (err) => {
+      winston.debug(`[p2p-sidecar] stdin: ${err.message}`);
+    });
+    child.stdout.on('error', (err) => {
+      winston.debug(`[p2p-sidecar] stdout: ${err.message}`);
+    });
+    child.stderr.on('error', (err) => {
+      winston.debug(`[p2p-sidecar] stderr: ${err.message}`);
+    });
+
     const readyTimer = setTimeout(() => {
       reject(new Error('p2p-sidecar did not become ready in time'));
       try { child.kill(); } catch (_err) { /* already gone */ }
@@ -195,11 +237,21 @@ export function start() {
     child.on('exit', (code, signal) => {
       clearTimeout(readyTimer);
       const why = `exited (code=${code} signal=${signal})`;
-      // Unexpected death after ready: log at warn — an admin action will
-      // surface the failure on its next rpc() call, and start() can respawn.
-      if (endpointId) { winston.warn(`[p2p-sidecar] ${why}`); }
+      // Was this death ASKED FOR? stop() bumps startGen before it touches
+      // anything else, so a generation mismatch means the shutdown is ours —
+      // no warn, and above all no recovery racing the teardown. Computed
+      // before teardown(), which clears endpointId.
+      const unexpected = endpointId !== null && gen === startGen;
+      if (unexpected) { winston.warn(`[p2p-sidecar] ${why}`); }
       teardown(why);
       reject(new Error(`p2p-sidecar ${why}`));
+      // Last, so the module is already back to a clean stopped state by the
+      // time the stack tries to start a replacement.
+      if (unexpected && unexpectedExitHandler) {
+        try { unexpectedExitHandler(why); } catch (err) {
+          winston.warn(`[p2p-sidecar] unexpected-exit handler threw: ${err.message}`);
+        }
+      }
     });
   })).finally(() => {
     // Only OUR slot: stop() may already have detached this chain so a fresh

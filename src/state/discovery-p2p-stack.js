@@ -18,6 +18,55 @@ let stopping = null;
 
 export function isStackRunning() { return running; }
 
+// Recovery backoff after an unexpected sidecar death. Short first — the
+// common cause is a one-off OOM kill, and seconds off the mesh cost nothing
+// — then widening, so a sidecar that CANNOT stay up (bad binary, wedged data
+// dir, a memory limit it will always hit) settles at ~12 attempts an hour
+// instead of hot-looping. It never gives up: the failure this fixes is a
+// server quietly staying off the network forever, and a recovery loop that
+// exhausts itself would just reintroduce it with extra steps.
+const RECOVERY_DELAYS_MS = [5000, 15000, 60000, 300000];
+let recoveryTimer = null;
+let recoveryAttempts = 0;
+
+function cancelRecovery() {
+  if (recoveryTimer) { clearTimeout(recoveryTimer); recoveryTimer = null; }
+  recoveryAttempts = 0;
+}
+
+// Called by discovery-p2p.js when the child died without us asking. Replays
+// the ENTIRE stack — subscribe, spawn, join, re-announce, holds — because
+// everything the sidecar knew about the mesh died with the process.
+function scheduleRecovery(why) {
+  // `running` is the feature's INTENT. A crash leaves it true (that is the
+  // stale flag this module also repairs below), so this reads "we are
+  // supposed to be on the network"; a deliberate stop clears it first and
+  // therefore silences recovery, which is exactly right.
+  if (!running || recoveryTimer) { return; }
+  const delay = RECOVERY_DELAYS_MS[Math.min(recoveryAttempts, RECOVERY_DELAYS_MS.length - 1)];
+  recoveryAttempts += 1;
+  winston.warn(`[discovery-p2p] sidecar ${why} — replaying the stack in `
+    + `${Math.round(delay / 1000)}s (attempt ${recoveryAttempts})`);
+  recoveryTimer = setTimeout(() => {
+    recoveryTimer = null;
+    if (!running) { return; }
+    // Clear the dead sidecar's stale intent HERE so the start below does the
+    // real work instead of tripping the "already running" guard.
+    running = false;
+    startDiscoveryP2pStack()
+      .then(() => winston.info('[discovery-p2p] sidecar recovered — rejoined the catalog topic'))
+      .catch((err) => {
+        winston.warn(`[discovery-p2p] sidecar recovery failed: ${err.message}`);
+        // Re-arm: startDiscoveryP2pStack() left `running` false on failure,
+        // and scheduleRecovery reads it as "give up". The intent has not
+        // changed — the config still says enabled — so restore it.
+        running = true;
+        scheduleRecovery('recovery failed');
+      });
+  }, delay);
+  if (recoveryTimer.unref) { recoveryTimer.unref(); }
+}
+
 export async function startDiscoveryP2pStack() {
   // Serialize behind an in-flight stop. A soft reboot stops the stack and then
   // re-serves, and stopping the sidecar can take up to ~10s (a shutdown RPC
@@ -30,13 +79,28 @@ export async function startDiscoveryP2pStack() {
   if (stopping) {
     try { await stopping; } catch (_err) { /* stop's own caller logs it */ }
   }
-  if (running) { return; }
+  if (running) {
+    // `running` records that a start COMPLETED — never that the sidecar is
+    // still alive. An OOM kill or a crash leaves it stale, and this is the
+    // route the admin "enable the network" button lands on: it answered 200
+    // {"enabled":true} while repairing precisely nothing, which is the worst
+    // possible reply to an operator trying to fix an outage. Ask the sidecar
+    // itself, and if it is gone treat THIS call as the repair it looks like.
+    // The import is free here: a true `running` means the module is resident.
+    const p2p = await import('./discovery-p2p.js');
+    if (p2p.isRunning()) { return; }
+    winston.warn('[discovery-p2p] the stack is marked running but the sidecar is gone — replaying the start');
+    running = false;
+  }
   if (starting) { return starting; }
   starting = (async () => {
     const p2p = await import('./discovery-p2p.js');
     const catalog = await import('./discovery-catalog.js');
     const seeds = await import('./discovery-seeds.js');
     catalog.subscribe();
+    // Armed BEFORE the spawn, so a sidecar that dies seconds into its life
+    // is covered too. Idempotent — re-registering just replaces the slot.
+    p2p.setUnexpectedExitHandler(scheduleRecovery);
     await p2p.start();
     // Two-phase bootstrap. Phase one joins the topic IMMEDIATELY with
     // what's known locally (baked seeds + cached list + the operator's
@@ -71,6 +135,10 @@ export async function startDiscoveryP2pStack() {
     // whose snapshot we hold stays listed however long it's been silent.
     catalog.startPruning(() => new Set(peerDbs.list().map((e) => e.endpointId)));
     running = true;
+    // We are on the network again: retire any pending retry and reset the
+    // backoff, so the NEXT crash starts from 5s rather than wherever this
+    // one's ladder left off.
+    cancelRecovery();
   })();
   try { await starting; } finally { starting = null; }
 }
@@ -86,6 +154,10 @@ export async function stopDiscoveryP2pStack() {
   // resolved was the bug — the window is seconds wide, and a reboot lands
   // squarely inside it.
   running = false;
+  // A pending retry outlives the flag it reads, so drop it here as well —
+  // otherwise a crash landing just before an operator disables the feature
+  // would resurrect the sidecar seconds after they turned it off.
+  cancelRecovery();
   stopping = (async () => {
     const seeds = await import('./discovery-seeds.js');
     const peerDbs = await import('./discovery-peer-dbs.js');
@@ -94,6 +166,10 @@ export async function stopDiscoveryP2pStack() {
     peerDbs.stopAutoFetch();
     catalog.stopPruning();
     const p2p = await import('./discovery-p2p.js');
+    // Nothing to recover from a shutdown we asked for. (stop() also bumps
+    // its generation counter, so the exit is classified as expected anyway —
+    // this is the belt to that suspenders.)
+    p2p.setUnexpectedExitHandler(null);
     await p2p.stop();
   })();
   try { await stopping; } finally { stopping = null; }
