@@ -36,9 +36,18 @@ function makeFixedStack({ spawnFails = 0 } = {}) {
   let running = false;
   let sidecarAlive = false;
   let joined = false;
+  // The operator's own flag (config.program.discoveryP2p.enabled). Recovery
+  // reads it as the veto of last resort: `running` can be restored by the
+  // re-arm path, the config cannot. disable() mirrors the admin route's
+  // order — flag first, stack stop second (src/api/admin.js).
+  let configEnabled = true;
   let recoveryTimer = null;
   let recoveryAttempts = 0;
   let failuresLeft = spawnFails;
+  // Bumped by stop(); a start attempt in flight across a stop must fail,
+  // exactly as the real spawn does when the teardown kills its child.
+  let stopGen = 0;
+  let pendingGate = null;
   const delaysUsed = [];
   let starts = 0;
 
@@ -53,6 +62,11 @@ function makeFixedStack({ spawnFails = 0 } = {}) {
       running = false;                // stale flag — this call IS the repair
     }
     starts += 1;
+    const gen = stopGen;
+    // A one-shot gate a test can arm to park an attempt mid-start — the
+    // deterministic stand-in for "spawn + join take real time".
+    if (pendingGate) { const g = pendingGate; pendingGate = null; await g.promise; }
+    if (gen !== stopGen) { throw new Error('torn down mid-start'); }
     if (failuresLeft > 0) { failuresLeft -= 1; throw new Error('spawn failed'); }
     sidecarAlive = true;
     joined = true;                    // the full sequence: spawn AND join
@@ -61,10 +75,19 @@ function makeFixedStack({ spawnFails = 0 } = {}) {
   }
 
   async function stop() {
+    stopGen += 1;
     running = false;
     cancelRecovery();
     sidecarAlive = false;
     joined = false;
+  }
+
+  // The admin disable route, in its real order: the config flag is written
+  // (and live in config.program) BEFORE the stack stop begins — what makes
+  // the recovery gate race-free.
+  async function disable() {
+    configEnabled = false;
+    await stop();
   }
 
   // What discovery-p2p.js calls when the child died without us asking.
@@ -81,9 +104,15 @@ function makeFixedStack({ spawnFails = 0 } = {}) {
     recoveryAttempts += 1;
     recoveryTimer = setTimeout(() => {
       recoveryTimer = null;
-      if (!running) { return; }
+      if (!running || !configEnabled) { return; }
       running = false;
-      start().catch(() => { running = true; scheduleRecovery(); });
+      start().catch(() => {
+        // Disabled while the attempt was in flight: the failure IS the
+        // teardown winning. Stand down instead of re-arming.
+        if (!configEnabled) { return; }
+        running = true;
+        scheduleRecovery();
+      });
     }, delay);
     // The real timer is unref'd too; without it a stack still walking its
     // ladder would hold the test runner's event loop open.
@@ -95,12 +124,20 @@ function makeFixedStack({ spawnFails = 0 } = {}) {
   function lazyStartSidecarOnly() { sidecarAlive = true; }
 
   return {
-    start, stop, onUnexpectedExit, lazyStartSidecarOnly,
+    start, stop, disable, onUnexpectedExit, lazyStartSidecarOnly,
     // Arm the NEXT n respawns to fail, so a test can drive the ladder. Has
     // to reach the closure's own start(); a monkeypatched .start property
     // would never be seen by scheduleRecovery.
     failNext: (n) => { failuresLeft = n; },
-    state: () => ({ running, sidecarAlive, joined, starts }),
+    // Park the NEXT start attempt until the returned release() is called —
+    // how a test holds a recovery attempt "in flight" without racing timers.
+    gateNextStart: () => {
+      let release;
+      const promise = new Promise((r) => { release = r; });
+      pendingGate = { promise };
+      return release;
+    },
+    state: () => ({ running, sidecarAlive, joined, starts, configEnabled }),
     delaysUsed: () => [...delaysUsed],
   };
 }
@@ -136,7 +173,7 @@ const settle = (ms) => new Promise((r) => setTimeout(r, ms));
 test('a crashed sidecar is brought back AND put on the topic again', async () => {
   const stack = makeFixedStack();
   await stack.start();
-  assert.deepEqual(stack.state(), { running: true, sidecarAlive: true, joined: true, starts: 1 });
+  assert.deepEqual(stack.state(), { running: true, sidecarAlive: true, joined: true, starts: 1, configEnabled: true });
 
   stack.onUnexpectedExit();                       // the OOM kill
   assert.equal(stack.state().sidecarAlive, false);
@@ -201,7 +238,7 @@ test('a deliberate stop cancels recovery — a disabled feature stays disabled',
   await stack.stop();                 // ...just before the operator disables it
   await settle(40);
 
-  assert.deepEqual(stack.state(), { running: false, sidecarAlive: false, joined: false, starts: 1 },
+  assert.deepEqual(stack.state(), { running: false, sidecarAlive: false, joined: false, starts: 1, configEnabled: true },
     'recovery must not resurrect a sidecar the operator just turned off');
 });
 
@@ -232,4 +269,114 @@ test('a recovery that keeps failing never gives up', async () => {
 
   assert.ok(stack.delaysUsed().length >= 3, 'must keep retrying');
   assert.equal(stack.state().sidecarAlive, false, 'still down — but still trying');
+});
+
+// The in-flight flavor of the disable race. The "deliberate stop" test above
+// covers a stop that lands BEFORE the timer fires (cancelRecovery catches
+// it); this one lands AFTER — the attempt is already mid-start, so there is
+// no timer to cancel, the attempt fails against the teardown, and only the
+// config gate in the re-arm path stands between the operator and a
+// resurrected sidecar.
+test('a disable landing while a recovery attempt is in flight must not resurrect the stack', async () => {
+  const stack = makeFixedStack();
+  await stack.start();
+  const release = stack.gateNextStart(); // park the upcoming replay mid-start
+  stack.onUnexpectedExit();              // crash → first rung arms (5ms)
+  await settle(40);                      // rung fired; the attempt is now held in flight
+  assert.equal(stack.state().starts, 2, 'the replay attempt must be in flight before the disable');
+
+  await stack.disable();                 // operator turns it off: config first, then the stack stop
+  release();                             // teardown wins; the parked attempt now fails
+  await settle(400);                     // long enough for every rung to fire, had one re-armed
+
+  const s = stack.state();
+  assert.equal(s.sidecarAlive, false, 'recovery must never outvote the operator');
+  assert.equal(s.running, false, 'and must not restore the intent flag of a disabled feature');
+});
+
+// The same choreography against the UNGATED re-arm — the shape that shipped
+// in the original recovery patch (restore `running`, re-schedule,
+// unconditionally). Reproduced here as its own model, borrowing nothing from
+// the fixed one, and it must FAIL the contract: config off, stack back on.
+function makeUngatedRecoveryStack() {
+  let running = false;
+  let sidecarAlive = false;
+  let joined = false;
+  let configEnabled = true;
+  let recoveryTimer = null;
+  let recoveryAttempts = 0;
+  let stopGen = 0;
+  let pendingGate = null;
+  let starts = 0;
+
+  async function start() {
+    if (running) {
+      if (sidecarAlive) { return; }
+      running = false;
+    }
+    starts += 1;
+    const gen = stopGen;
+    if (pendingGate) { const g = pendingGate; pendingGate = null; await g.promise; }
+    if (gen !== stopGen) { throw new Error('torn down mid-start'); }
+    sidecarAlive = true;
+    joined = true;
+    running = true;
+    if (recoveryTimer) { clearTimeout(recoveryTimer); recoveryTimer = null; }
+    recoveryAttempts = 0;
+  }
+
+  async function stop() {
+    stopGen += 1;
+    running = false;
+    if (recoveryTimer) { clearTimeout(recoveryTimer); recoveryTimer = null; }
+    recoveryAttempts = 0;
+    sidecarAlive = false;
+    joined = false;
+  }
+
+  async function disable() { configEnabled = false; await stop(); }
+
+  function onUnexpectedExit() { sidecarAlive = false; joined = false; scheduleRecovery(); }
+
+  function scheduleRecovery() {
+    if (!running || recoveryTimer) { return; }
+    const delay = RECOVERY_DELAYS_MS[Math.min(recoveryAttempts, RECOVERY_DELAYS_MS.length - 1)];
+    recoveryAttempts += 1;
+    recoveryTimer = setTimeout(() => {
+      recoveryTimer = null;
+      if (!running) { return; }              // no config veto here — the gap under test
+      running = false;
+      start().catch(() => { running = true; scheduleRecovery(); });
+    }, delay);
+    if (recoveryTimer.unref) { recoveryTimer.unref(); }
+  }
+
+  return {
+    start, disable, onUnexpectedExit,
+    gateNextStart: () => {
+      let release;
+      const promise = new Promise((r) => { release = r; });
+      pendingGate = { promise };
+      return release;
+    },
+    state: () => ({ running, sidecarAlive, joined, starts, configEnabled }),
+  };
+}
+
+test('NEGATIVE CONTROL: an ungated re-arm resurrects a stack the operator disabled', async () => {
+  const stack = makeUngatedRecoveryStack();
+  await stack.start();
+  const release = stack.gateNextStart();
+  stack.onUnexpectedExit();
+  await settle(40);
+  assert.equal(stack.state().starts, 2, 'the replay attempt must be in flight before the disable');
+
+  await stack.disable();
+  release();
+  await settle(400);
+
+  const s = stack.state();
+  assert.equal(s.sidecarAlive, true,
+    'ungated: the failed attempt re-armed and the next rung brought it back — config off, stack on');
+  assert.equal(s.configEnabled, false, 'while the operator-facing flag still says disabled');
 });
