@@ -61,6 +61,7 @@ import { classifyError } from './util/web-error.js';
 import { isAdminAllowed } from './util/admin-network.js';
 import { writeJsonAtomic, completedWrites } from './util/atomic-json.js';
 import * as updateCheck from './util/update-check.js';
+import * as bootWatchdog from './util/boot-watchdog.js';
 
 import packageJson from '../package.json' with { type: 'json' };
 
@@ -723,6 +724,10 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   const onListening = async () => {
     currentBind = bind;
     rebootInFlight = false;   // a reboot's re-serve is complete
+    // A successful listen acknowledges this boot: the headless boot
+    // watchdog's attempt counter (armed pre-boot in cli-boot-wrapper.js)
+    // starts over. Cheap no-op everywhere the guard never ran.
+    bootWatchdog.markBootOk();
     winston.info(`Access mStream locally: ${protocol}://localhost:${config.program.port}`);
 
     // A settings change landed while the reboot above was already past its

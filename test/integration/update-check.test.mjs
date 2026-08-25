@@ -351,6 +351,77 @@ test('enforceHold re-points a current link left on a held version', { skip: posi
   }
 });
 
+// Supervision signals the RUNNER environment may carry (GitHub's runners
+// live under systemd) must not leak into the spawned server: exported-but-
+// empty reads as unset on the detection side.
+function scrubSupervision(env) {
+  return { ...env, MSTREAM_SUPERVISED: '', pm_id: '', INVOCATION_ID: '' };
+}
+
+test('auto mode without a supervisor stages but never self-exits', { skip: posixOnly }, async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-upd-nosup-'));
+  try {
+    await publish('9.9.30');
+    const srv = await startServer({
+      waitForScan: true,   // the idle gate must be about supervision, not the boot scan
+      env: scrubSupervision(envFor(home)),
+      extraConfig: { updates: { mode: 'auto', check: true } },
+    });
+    try {
+      await fetch(`${srv.baseUrl}/api/v1/admin/update/check`, { method: 'POST' });
+      // headlessSupervisor lands 'none' only after maybeAutoApply passed
+      // every earlier gate (staged, idle) and declined at supervision — so
+      // this both proves the decline AND that the decline was the only
+      // thing between the server and an exit.
+      const s = await pollStatus(srv.baseUrl, (x) => x.staged && x.stagedVersion === '9.9.30'
+        && x.headlessSupervisor === 'none');
+      assert.equal(s.mode, 'auto');
+      // The old behavior exited 0 about 1.5s after arming. Give it triple
+      // that, then require the server alive and still answering.
+      await sleep(5000);
+      assert.equal(srv.proc.exitCode, null, 'an unsupervised auto server must not self-exit');
+      const alive = await fetch(`${srv.baseUrl}/api/v1/admin/update`);
+      assert.equal(alive.status, 200);
+    } finally {
+      await srv.stop();
+    }
+  } finally {
+    await fs.rm(home, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test('auto mode with MSTREAM_SUPERVISED=1 applies by exiting 0', { skip: posixOnly }, async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-upd-sup-'));
+  try {
+    await publish('9.9.31');
+    const srv = await startServer({
+      waitForScan: true,
+      env: { ...scrubSupervision(envFor(home)), MSTREAM_SUPERVISED: '1' },
+      extraConfig: { updates: { mode: 'auto', check: true } },
+    });
+    try {
+      const exited = new Promise((resolve) => srv.proc.once('exit', resolve));
+      await fetch(`${srv.baseUrl}/api/v1/admin/update/check`, { method: 'POST' });
+      await pollStatus(srv.baseUrl, (x) => x.staged && x.stagedVersion === '9.9.31')
+        .catch(() => { /* the exit can outrun the poll - the assert below decides */ });
+      const code = await Promise.race([
+        exited,
+        sleep(60_000).then(() => { throw new Error('supervised auto server never exited'); }),
+      ]);
+      assert.equal(code, 0, 'the headless apply is a clean exit for the supervisor to restart');
+      assert.equal(
+        path.basename(await fs.readlink(path.join(home, 'app', 'current'))),
+        `mStream-9.9.31-${hostKey()}`,
+        'the exit happened with the update staged behind current'
+      );
+    } finally {
+      await srv.stop();
+    }
+  } finally {
+    await fs.rm(home, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 test('non-managed installs refuse staging; apply refuses with nothing staged', { skip: posixOnly }, async () => {
   await publish('9.9.9');
   const env = updEnv();

@@ -61,8 +61,15 @@ About page shows the state and holds the controls:
 - `updates.mode` — `notify` (report only, download nothing), `stage`
   (the default, described above), or `auto` (additionally restart into the
   update once the server is idle — no active streams, no scan running).
-  On a headless install, `auto` exits with code 0 after staging and expects
-  a process supervisor (systemd, pm2) configured to start mStream again.
+  On a headless install, `auto` applies by exiting with code 0 so the
+  process supervisor's restart lands on the new version — but only when a
+  supervisor that restarts on a clean exit is actually detectable: pm2, or
+  systemd with `Restart=always`/`on-success` (the default `Restart=no` and
+  `on-failure` don't restart an exit 0, so they don't count). For
+  supervisors mStream can't see — a docker `--restart` policy, runit, your
+  own wrapper loop — set `MSTREAM_SUPERVISED=1`. With nothing detected,
+  `auto` behaves like `stage` and says so in the log and the admin panel:
+  exiting would be an outage, not an apply.
 - `updates.check` — set `false` and mStream never phones home; the admin
   panel's "check now" button still works on demand.
 
@@ -79,10 +86,14 @@ restores the `~/Applications` copy on macOS, relaunches, and records the
 failed version in `update-hold.json` so the daily check doesn't re-stage it.
 The admin panel shows the held version; the hold clears automatically the
 moment a release newer than it ships (or by hand via the panel's
-"clear hold & retry"). Headless installs get the server-side half of this —
-a held version is never staged or applied, and a `current` link left on one
-is re-pointed at the running version — but with no launcher watching the
-boot, the rollback itself needs the supervisor or a re-run of the installer.
+"clear hold & retry"). Headless installs have their own watchdog built into
+the server binary itself: it counts boot attempts before any of the work
+that can crash, and on the third failed boot of the version `current` is
+committed to, it rolls `current` back, records the hold, and hands that
+very invocation over to the previous version's binary — no supervisor
+required (set `MSTREAM_BOOT_WATCHDOG=0` to disable it). The server-side
+guards back both watchdogs up: a held version is never staged or applied,
+and a `current` link left on one is re-pointed at the running version.
 
 Rolling back? Re-run the installer with `MSTREAM_VERSION=<old tag>`, restart,
 and then **skip the bad release** (the admin panel's skip link, or

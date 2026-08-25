@@ -5,6 +5,7 @@
 import { watchSupervisorStdin } from './src/util/supervision.js';
 import { maybeRunWorker } from './src/util/worker-process.js';
 import { resolveDefaultConfig, ensureDesktopDefaultConfig } from './src/util/boot-config.js';
+import { guardHeadlessBoot } from './src/util/boot-watchdog.js';
 import pkg from './package.json' with { type: 'json' };
 
 const version = pkg.version;
@@ -27,6 +28,18 @@ if (await maybeRunWorker()) {
   // which the parser needs for its help text.
   const resolved = resolveDefaultConfig({ portable: process.argv.includes('--portable') });
   const { json, supervised, quickConnectOffByDefault } = parseArgs(process.argv.slice(2), resolved.path);
+
+  // Headless boot watchdog (src/util/boot-watchdog.js): on a managed
+  // install whose committed version keeps crashing during boot, roll
+  // `current` back and hand this invocation to the previous version's
+  // binary — in which case this await never resolves (exec semantics: the
+  // child inherits our stdio and its exit exits us). Sits HERE on purpose:
+  // after parseArgs, so the installers' `-V` exec probe stays pure and
+  // never touches the attempt counter, and before the config/db/module
+  // work where boot crashes actually happen. Supervised (tray-launcher)
+  // boots skip it — the launcher's own watchdog owns that recovery with
+  // better signals.
+  if (!supervised) { await guardHeadlessBoot(process.argv.slice(2)); }
 
   // First run of a standalone binary with no explicit config: create the
   // desktop-profile config (storage under the data home, Quick Connect on
