@@ -52,3 +52,68 @@ serialize, and a queued run commits onto the CURRENT master tip — it stands
 down if newer launcher inputs already landed there (that push's own run owns
 the binaries). So a bump pushed right after a launcher PR merges is fine;
 just wait for the LAST binaries commit before tagging.
+
+## When a release goes bad
+
+Auto-update is the default, so a bad release reaches installs fast — and
+the recovery ladder means the fix does too. There is exactly one move:
+
+**Tag and publish the fixed patch immediately.** Every recovery path below
+converges on "a newer release supersedes the bad one on its own." Speed of
+the fix is the whole game; nothing else you can do from the repo side
+reaches installs faster.
+
+What the fleet handles without you:
+
+- **Detectable before the switch** (corrupt asset, missing platform
+  bundle, a binary that cannot exec, a config the new schema refuses, a
+  database from the build's future): staging refuses — the installers
+  verify sha256 and run both `-V` and `--boot-probe` before `current`
+  moves. Nothing changed on the install; the daily check picks up your
+  patch normally.
+- **Crashes at first boot anyway**: the boot watchdogs (the tray app on
+  desktops; the server binary itself on headless installs) roll `current`
+  back to the previous version, record the bad version in
+  `update-hold.json`, and keep serving. Held versions are never re-staged;
+  the hold clears by itself once a version newer than it boots — i.e. when
+  your patch lands.
+- **Runs but misbehaves**: the daily check stages and applies your patch.
+
+What does NOT work — the two classic mistakes:
+
+- **Deleting the release from GitHub does not protect anyone who already
+  staged it.** Their `current` already points at it, the launcher still
+  applies it, and recently-checked installs won't look again for a day.
+  Yank it to stop NEW downloads if you like, but the yank is cosmetic —
+  the patch tag is the fix.
+- **Never modify a published release's assets** (the release job refuses
+  anyway): builds aren't byte-reproducible, so a re-upload gives mid-flight
+  installers sha256 mismatches. A re-ship is always a new patch version.
+
+Per-install brakes, for operators (all on the admin panel's About page):
+the **skip** link (`updates.skipVersion`) holds one version back and
+un-stages it on the spot; **clear hold & retry** (`clearHold`) overrides a
+boot-failure hold after an environmental cause is fixed; a manual rollback
+is `MSTREAM_VERSION=<old tag>` through the installer plus a skip of the bad
+version — noting that after a database schema bump, an older binary serves
+fine but scans refuse until re-upgraded (fix-forward is always the primary
+story).
+
+Reading the field when something went wrong: the admin panel shows held
+versions; `update-hold.json` and `boot-attempts.json` sit in the data home
+beside `update-status.json`; the tray's `launcher.log` narrates a rollback
+("update watchdog: ... rolling back to ...").
+
+Pre-release checklist, beyond green CI (which already covers the installer
+contracts, the launcher's rollback/apply smokes, and a real pkg install
+over a running instance):
+
+- **One manual Windows inno auto-update dry run** before the first tag of
+  a release cycle: stage an update on an inno install in auto mode and let
+  the tray run the silent installer end to end. The pieces have CI and
+  unit coverage, but the machine-driven silent-install relaunch is the one
+  path no runner exercises.
+- **On a database schema bump**, say so in the release notes: rolling back
+  across it leaves scans refusing until re-upgrade, and the watchdogs may
+  legitimately park someone on the previous version with that caveat until
+  the next patch.
