@@ -29,7 +29,12 @@ import { resolveSidecarBinary } from '../../src/state/discovery-p2p.js';
 const SIDECAR_BIN = resolveSidecarBinary();
 const SKIP = process.platform === 'win32'
   ? 'needs POSIX directory permissions to fake the wedged data dir'
-  : (SIDECAR_BIN ? false : 'no p2p-sidecar binary on this machine');
+  : process.getuid?.() === 0
+    // Root writes straight through a 000 directory, so the wedge never
+    // wedges and phase 1 would time out confusingly instead of failing
+    // honestly — common when running the suite inside a container as root.
+    ? 'mode-000 does not block root — run as a regular user'
+    : (SIDECAR_BIN ? false : 'no p2p-sidecar binary on this machine');
 
 async function pollUntil(fn, { timeoutMs = 60000, everyMs = 250, what = 'condition' } = {}) {
   const deadline = Date.now() + timeoutMs;
