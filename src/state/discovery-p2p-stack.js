@@ -17,8 +17,6 @@ let running = false;
 let starting = null;
 let stopping = null;
 
-export function isStackRunning() { return running; }
-
 // Crash-recovery state for the status route / admin panel. `attempts` spans
 // crash -> recovered (cancelRecovery zeroes it on success, stop, or
 // disable), so attempts > 0 reads as "recovery owns the sidecar right now";
