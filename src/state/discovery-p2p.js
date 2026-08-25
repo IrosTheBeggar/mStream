@@ -49,6 +49,9 @@ const neighborIds = new Set();
 events.on('neighbor', (msg) => {
   if (typeof msg.id !== 'string' || msg.id === '') { return; }
   if (msg.up === true) { neighborIds.add(msg.id); } else { neighborIds.delete(msg.id); }
+  // Feeds the panel's Activity ring (and plain log readers). Self-throttling:
+  // the active view caps how many links exist to churn.
+  winston.info(`[discovery-p2p] mesh neighbor ${msg.up === true ? 'up' : 'down'}: ${msg.id.slice(0, 12)}…`);
 });
 export function getNeighborIds() { return [...neighborIds]; }
 

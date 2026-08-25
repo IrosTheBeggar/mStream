@@ -201,6 +201,7 @@ describe('discovery p2p — route gating (no sidecar needed)', () => {
       ['POST', 'description', { description: 'nope' }],
       ['POST', 'sidecar-max-rss', { sidecarMaxRssMb: 512 }],
       ['GET', 'catalog', undefined],
+      ['GET', 'activity', undefined],
     ]) {
       const r = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/${route}`, {
         method,
@@ -423,6 +424,19 @@ describe('discovery p2p — enabled, validation contract', () => {
       return s.neighborIds.includes(peer.endpointId) ? s : null;
     }, { what: 'the peer to appear in status.neighborIds' });
     assert.ok(withNeighbor.neighbors >= 1, 'the count agrees a link exists');
+
+    // And the Activity feed heard about it: the dedicated p2p log ring
+    // carries the neighbor-up line — and ONLY prefixed discovery lines,
+    // even though this server has logged plenty of non-discovery lines
+    // since boot (the wash-in negative control).
+    const activity = await (await fetch(api('activity'))).json();
+    assert.ok(activity.entries.length > 0, 'the feed has entries');
+    assert.ok(activity.entries.every((e) => /^\[(discovery-|p2p-sidecar)/.test(e.message)),
+      'every feed entry is a discovery/p2p line — boot noise stays out');
+    assert.ok(activity.entries.some((e) =>
+      e.message.includes('mesh neighbor up') && e.message.includes(peer.endpointId.slice(0, 12))),
+    'the neighbor-up event for this peer is in the feed');
+    assert.ok(Number.isInteger(activity.lastSeq), 'delta-poll cursor present');
 
     // Ticketless fetch: hash + provider from the announcement, address
     // resolution via the peer's memory lookup (seeded by the join ticket).

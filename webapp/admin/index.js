@@ -7556,7 +7556,11 @@ const discoveryView = Vue.component('discovery-view', {
       // server list renders. Session-local by design — a page load lands
       // everyone on the same view.
       headerTab: 'mesh',
-      listMode: 'cards'
+      listMode: 'cards',
+      // Activity feed: delta-polled from the dedicated p2p log ring. seq
+      // cursors are server-side; entries accumulate here while the tab is
+      // open (capped client-side to the ring's own size).
+      p2pActivity: { entries: [], lastSeq: 0 }
     };
   },
   template: `
@@ -7635,7 +7639,7 @@ const discoveryView = Vue.component('discovery-view', {
                     <div style="display: flex; gap: 8px; margin-top: 12px; border-bottom: 1px solid #3a3a47; padding-bottom: 10px; flex-wrap: wrap;">
                       <div v-on:click="headerTab = 'mesh'" :style="headerTabStyle('mesh')">Mesh</div>
                       <div v-on:click="headerTab = 'stats'" :style="headerTabStyle('stats')">Stats</div>
-                      <div v-on:click="headerTab = 'activity'" :style="headerTabStyle('activity')">Activity</div>
+                      <div v-on:click="headerTab = 'activity'; loadDiscoveryActivity()" :style="headerTabStyle('activity')">Activity</div>
                       <div v-on:click="headerTab = 'invite'" :style="headerTabStyle('invite')">Invite</div>
                       <div v-on:click="headerTab = 'config'" :style="headerTabStyle('config')">Config</div>
                     </div>
@@ -7707,12 +7711,17 @@ const discoveryView = Vue.component('discovery-view', {
                         <div style="font-size: 0.8em; color: #666672; margin-top: 4px;">snapshots served back to the mesh</div>
                       </div>
                     </div>
-                    <div v-if="headerTab === 'activity'" style="min-height: 200px; display: flex; align-items: center; justify-content: center; padding: 12px 0;">
-                      <div style="border: 1px dashed #505061; border-radius: 2px; padding: 22px 28px; max-width: 460px; text-align: center;">
-                        <div style="font-weight: 700; color: #fff; margin-bottom: 6px;">Activity — coming soon</div>
-                        <div style="font-size: 0.85em; color: #9e9ea8; line-height: 1.6;">Mesh joins, snapshot updates, rotation and
-                        recovery events will land here in a future release.</div>
+                    <div v-if="headerTab === 'activity'" style="min-height: 200px; padding-top: 12px;">
+                      <div v-if="activityFeed.length === 0" style="color: #9e9ea8; font-size: 0.85em; padding-top: 8px;">
+                        Nothing yet — mesh joins, snapshot fetches, rotation and recovery events land here as they happen.</div>
+                      <div v-else style="max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; font-family: monospace; font-size: 0.8em;">
+                        <div v-for="e in activityFeed" :key="e.seq" style="color: #bdbdc6; line-height: 1.45; word-break: break-word;">
+                          <span style="color: #666672;">{{ discoveryLogTime(e.t) }}</span>
+                          <span :style="e.level === 'warn' || e.level === 'error' ? 'color: #ffcc80;' : ''"> {{ e.message }}</span>
+                        </div>
                       </div>
+                      <div style="font-size: 0.75em; color: #666672; margin-top: 8px;">newest first · held in memory only — the
+                      full history lives in the server logs</div>
                     </div>
                     <div v-if="headerTab === 'invite'" style="min-height: 200px; padding-top: 12px;">
                       <p style="font-size: 0.85em; color: #9e9ea8; margin: 0 0 8px 0;"><b style="color: #fff;">Endpoint:</b>
@@ -7903,6 +7912,11 @@ const discoveryView = Vue.component('discovery-view', {
     heldPeers: function() {
       return this.discoveryP2p.peers.filter((p) => p.fetched);
     },
+    // Newest first for the Activity tab; display capped so the DOM stays
+    // small even after a long-open tab accumulates the whole ring.
+    activityFeed: function() {
+      return this.p2pActivity.entries.slice(-200).reverse();
+    },
     heldTrackTotal: function() {
       return this.heldPeers.reduce((sum, p) => sum + (Number(p.payload.rowCount) || 0), 0);
     },
@@ -7967,6 +7981,7 @@ const discoveryView = Vue.component('discovery-view', {
       if (document.hidden || this.p2pToggling) { return; }
       if (!this.discoveryP2p.status || this.discoveryP2p.status.enabled !== true) { return; }
       this.loadDiscoveryP2p(true);
+      if (this.headerTab === 'activity') { this.loadDiscoveryActivity(); }
     }, 10000);
   },
   beforeDestroy: function () {
@@ -8082,6 +8097,30 @@ const discoveryView = Vue.component('discovery-view', {
           }],
         ]
       });
+    },
+    loadDiscoveryActivity: async function() {
+      try {
+        const r = (await API.axios({
+          method: 'GET',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/activity?since=${this.p2pActivity.lastSeq}`
+        })).data;
+        // lastSeq below the cursor means the server restarted and its seq
+        // counter reset — start the accumulation over instead of appending
+        // a second copy of history.
+        if (r.lastSeq < this.p2pActivity.lastSeq) { this.p2pActivity.entries = []; }
+        this.p2pActivity.entries.push(...r.entries);
+        if (this.p2pActivity.entries.length > 500) {
+          this.p2pActivity.entries.splice(0, this.p2pActivity.entries.length - 500);
+        }
+        this.p2pActivity.lastSeq = r.lastSeq;
+      } catch (err) { /* quiet — the 10s poll or next tab click retries */ }
+    },
+    discoveryLogTime: function(iso) {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) { return iso; }
+      const sameDay = d.toDateString() === new Date().toDateString();
+      return sameDay ? d.toTimeString().slice(0, 8)
+        : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${d.toTimeString().slice(0, 5)}`;
     },
     discoveryToggleIncompatible: async function() {
       // Server-side filter, so the toggle re-fetches rather than un-hiding

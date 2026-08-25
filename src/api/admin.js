@@ -601,6 +601,16 @@ export function setup(mstream) {
     });
   });
 
+  // The Discovery panel's Activity feed: the discovery/p2p slice of the log
+  // stream from its own fixed-size ring (logger.js) — mesh joins, snapshot
+  // fetches, rotation and recovery lines, immune to wash-out from chatty
+  // non-discovery logging. Same delta-poll contract as /admin/logs/recent;
+  // the two endpoints' seq cursors are independent.
+  mstream.get("/api/v1/admin/discovery/p2p/activity", (req, res) => {
+    requireP2pEnabled();
+    res.json(logger.getP2pActivity(req.query.since));
+  });
+
   // The catalog: every peer we've heard a signed announcement from (newest
   // per peer), enriched with what the shelf knows (fetched? current?) and
   // sorted most-useful-first: online-now (heard within ~90s — announcers
