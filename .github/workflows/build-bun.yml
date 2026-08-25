@@ -246,6 +246,12 @@ jobs:
           if (Test-Path "$env:RUNNER_TEMP\app") { throw "app root survived uninstall" }
           if (($un | Out-String) -notmatch 'left in place') { throw "no data-home note" }
           Write-Host "install.ps1 contract OK"
+          # The runner appends `exit $LASTEXITCODE` to pwsh steps, and the
+          # deep-probe stub's --boot-probe exit 1 is the last NATIVE exit
+          # code set (script invocations and cmdlets never reset it) — so a
+          # fully-passing run would end red. Every check above is a throw;
+          # reaching here IS the pass.
+          exit 0
 
       # The darwin-only paths: ~/Applications copy + sibling ownership marker,
       # login-item re-pointing through the RIGHT launcher, and the
