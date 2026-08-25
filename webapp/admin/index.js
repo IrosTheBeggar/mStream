@@ -8034,7 +8034,7 @@ const discoveryView = Vue.component('discovery-view', {
                         </div>
                         <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #eee; font-size: 0.85em;">
                           <span style="color: #757575;">Community seeds</span>
-                          <span style="color: #212121; text-align: right;"><b>{{ discoveryP2p.status.communitySeeds ? 'on — public network' : 'off — friends only' }}</b></span>
+                          <span style="color: #212121; text-align: right;"><b>{{ discoveryP2p.status.communitySeeds ? 'on — meets strangers via public seed servers' : 'off — joins only through pasted tickets' }}</b></span>
                         </div>
                         <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #eee; font-size: 0.85em;">
                           <span style="color: #757575;">Sidecar memory ceiling</span>
@@ -8043,9 +8043,11 @@ const discoveryView = Vue.component('discovery-view', {
                             [<a v-on:click="openModal('edit-p2p-sidecar-max-rss-modal')">{{ t('admin.settings.edit') }}</a>]</span>
                         </div>
                       </div>
-                      <div style="font-size: 0.8em; color: #9e9e9e; margin-top: 10px;">Rotation only ever swaps a stale unpinned
-                      download for a new server — it never deletes without replacing. Incompatible-model servers are hidden from
-                      the list below; the [show] link reveals them.</div>
+                      <div style="font-size: 0.8em; color: #9e9e9e; margin-top: 10px;">Community seeds are well-known volunteer
+                      relays that introduce a fresh server to the public mesh — with them off, your server only joins through
+                      tickets you paste, though gossip still spreads announcements across everyone connected. Rotation only ever
+                      swaps a stale unpinned download for a new server — it never deletes without replacing. Incompatible-model
+                      servers are hidden from the list below; the [show] link reveals them.</div>
                     </div>
                   </div>
                   <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 2px 0;">
