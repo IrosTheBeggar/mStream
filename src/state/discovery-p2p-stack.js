@@ -19,6 +19,14 @@ let stopping = null;
 
 export function isStackRunning() { return running; }
 
+// Crash-recovery state for the status route / admin panel. `attempts` spans
+// crash -> recovered (cancelRecovery zeroes it on success, stop, or
+// disable), so attempts > 0 reads as "recovery owns the sidecar right now";
+// retryPending narrows that to "a timer is armed" (false mid-attempt).
+export function getRecoveryState() {
+  return { attempts: recoveryAttempts, retryPending: recoveryTimer !== null };
+}
+
 // Recovery backoff after an unexpected sidecar death. Short first — the
 // common cause is a one-off OOM kill, and seconds off the mesh cost nothing
 // — then widening, so a sidecar that CANNOT stay up (bad binary, wedged data

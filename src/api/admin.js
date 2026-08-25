@@ -18,6 +18,8 @@ import { EMBEDDING_MODELS } from '../db/discovery-features-lib.js';
 import * as discoveryP2p from '../state/discovery-p2p.js';
 import * as sidecarBootstrap from '../util/p2p-sidecar-bootstrap.js';
 import * as discoveryCatalog from '../state/discovery-catalog.js';
+import * as discoverySeeds from '../state/discovery-seeds.js';
+import * as discoveryStack from '../state/discovery-p2p-stack.js';
 import * as discoveryPeerDbs from '../state/discovery-peer-dbs.js';
 import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
@@ -568,6 +570,19 @@ export function setup(mstream) {
       ticket: discoveryP2p.getEndpointTicket(),
       joined,
       neighbors,
+      // Sidecar memory + watchdog posture (#885): lastRssMb is the
+      // mesh-health watch's most recent reading (null before the first
+      // tick or where RSS can't be read), restarts counts watchdog kills
+      // this process lifetime, maxRssMb echoes the ceiling (0 = off).
+      watchdog: {
+        ...discoverySeeds.getWatchdogState(),
+        maxRssMb: config.program.discoveryP2p.sidecarMaxRssMb,
+      },
+      // Crash-recovery posture: attempts > 0 = recovery owns the sidecar
+      // right now (it zeroes on success/stop); retryPending = a ladder
+      // timer is armed. Lets the panel say "reconnecting, attempt N"
+      // instead of rendering a dead sidecar as "searching for peers".
+      recovery: discoveryStack.getRecoveryState(),
       knownPeers: discoveryCatalog.size(),
       communitySeeds: config.program.discoveryP2p.useCommunitySeeds,
       serverName: config.program.discoveryP2p.serverName,
