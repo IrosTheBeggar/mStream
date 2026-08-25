@@ -61,7 +61,19 @@ DATA="$FAKEHOME/$DATA_REL"
 # dir (inside ROOT) but not the stub script path.
 mkdir -p "$FAKEHOME" "$ROOT" "$DATA/conf"
 ROOT=$(cd "$ROOT" && pwd -P)
-trap 'pkill -f "$ROOT/" 2>/dev/null; sleep 1; pkill -9 -f "$ROOT/" 2>/dev/null; rm -rf "$SMOKE"' EXIT INT TERM
+# Status-pinning cleanup function, not an inline trap: a pkill that finds
+# nothing returns 1, and dash applies set -e inside EXIT traps — see
+# update-watchdog-smoke.sh for the war story.
+cleanup() {
+    status=$?
+    pkill -f "$ROOT/" 2>/dev/null || true
+    sleep 1
+    pkill -9 -f "$ROOT/" 2>/dev/null || true
+    rm -rf "$SMOKE" 2>/dev/null || true
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' INT TERM
 
 mk_bundle() { # version marker pre-serve-line
     b="$ROOT/mStream-$1-$KEY"

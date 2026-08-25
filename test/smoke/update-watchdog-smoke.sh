@@ -55,8 +55,20 @@ DATA="$FAKEHOME/$DATA_REL"
 # the stub servers are #!/bin/sh scripts, so their argv starts with
 # "/bin/sh " and an anchored pattern would kill the launcher but leak the
 # stub (it ignores stdin, so the supervision EOF cannot reap it either).
-# $ROOT is a unique scratch path — unanchored is still precise.
-trap 'pkill -f "$ROOT/" 2>/dev/null; sleep 1; pkill -9 -f "$ROOT/" 2>/dev/null; rm -rf "$SMOKE"' EXIT INT TERM
+# $ROOT is a unique scratch path — unanchored is still precise. A FUNCTION
+# that pins the exit status: a pkill with nothing left to kill returns 1,
+# and under set -e some shells (dash on the ubuntu runners) apply errexit
+# INSIDE the EXIT trap — an all-PASS run exited 1 out of its own cleanup.
+cleanup() {
+    status=$?
+    pkill -f "$ROOT/" 2>/dev/null || true
+    sleep 1
+    pkill -9 -f "$ROOT/" 2>/dev/null || true
+    rm -rf "$SMOKE" 2>/dev/null || true
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' INT TERM
 mkdir -p "$FAKEHOME" "$ROOT" "$DATA"
 # The watchdog resolves its own exe path, so everything it writes is in
 # CANONICAL form (macOS: /var -> /private/var). Compare in the same form.
