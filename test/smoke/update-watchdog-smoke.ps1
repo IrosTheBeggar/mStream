@@ -120,9 +120,12 @@ try {
         -ArgumentList '--tray', '--no-open' -PassThru
 
     # Two instant crashes + the rollback land within a few seconds; poll 60.
-    $prevDeprefixed = DePrefix $prevBundle
+    # SUFFIX match, not string equality: the launcher writes canonical long
+    # paths into the junction, while $env:TEMP can be the 8.3 short form
+    # (RUNNER~1 on the CI images) — equality failed a fully-correct rollback.
+    $prevSuffix = 'mStream-0\.0\.1-win-x64$'
     for ($i = 0; $i -lt 60; $i++) {
-        if ((CurrentTarget) -eq $prevDeprefixed) { break }
+        if ((CurrentTarget) -match $prevSuffix) { break }
         Start-Sleep -Seconds 1
     }
 
@@ -130,7 +133,7 @@ try {
     Get-Content (Join-Path $data 'logs\launcher.log') -ErrorAction SilentlyContinue
     Write-Host "== assertions =="
     $fail = 0
-    if ((CurrentTarget) -eq $prevDeprefixed) {
+    if ((CurrentTarget) -match $prevSuffix) {
         Write-Host 'PASS current re-pointed at 0.0.1'
     } else {
         Write-Host "FAIL current -> $(CurrentTarget)"; $fail = 1

@@ -55,6 +55,11 @@ on:
       - 'build/mstream-logo-cut.ico'
       - 'build/icon.png'
       - '.github/workflows/build-rust-launcher.yml'
+      # The check job RUNS these against the binary it builds — a smoke
+      # edit must re-run the job that executes it.
+      - 'test/smoke/update-watchdog-smoke.sh'
+      - 'test/smoke/update-watchdog-smoke.ps1'
+      - 'test/smoke/update-apply-smoke.sh'
 
 # One run at a time per ref: two master pushes touching the crate write the
 # SAME four binary paths, and binaries can't be content-merged, so runs must
@@ -114,6 +119,52 @@ jobs:
       - name: Clippy
         working-directory: rust-launcher
         run: cargo clippy --release --locked -- -D warnings
+
+      # ── Process-level smokes with the binary this job just built. ────────
+      # The unit tests above pin the DECISIONS (rollback plan matrix, apply
+      # tokens, failure caps); these prove the PROCESSES — real spawn, lock
+      # handoff, takeover relaunch, `current` re-point — per OS. Two flows:
+      #   watchdog: crash-at-boot version rolls back + holds
+      #     (test/smoke/update-watchdog-smoke.{sh,ps1})
+      #   apply: an armed status file applies the staged version, and the
+      #     fresh launcher does NOT re-apply off the stale arm
+      #     (test/smoke/update-apply-smoke.sh; ~2.5min — the launcher's
+      #     60s update poll twice)
+      # Linux needs a display (the desktop face refuses headless) and the
+      # gtk runtime already pulled in by the build deps; the tray itself may
+      # degrade ("tray unavailable") — the smokes assert on processes and
+      # files, never the tray.
+      - name: Install xvfb (linux smokes)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y xvfb
+
+      - name: Update watchdog smoke
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a sh test/smoke/update-watchdog-smoke.sh
+          else
+            sh test/smoke/update-watchdog-smoke.sh
+          fi
+
+      - name: Update apply smoke
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a sh test/smoke/update-apply-smoke.sh
+          else
+            sh test/smoke/update-apply-smoke.sh
+          fi
+
+      # Windows: the watchdog smoke (rustc-compiled stubs; the runner has
+      # the toolchain). It exercises the junction re-point + DETACHED_PROCESS
+      # takeover — the same takeover machinery the apply path uses.
+      - name: Update watchdog smoke (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File test\smoke\update-watchdog-smoke.ps1
 
   # ── Shipped binaries: build, self-test, commit (master pushes). ───────────
   build:
