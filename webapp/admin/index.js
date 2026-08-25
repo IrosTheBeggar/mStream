@@ -799,6 +799,7 @@ const foldersView = Vue.component('folders-view', {
       winDrives: ADMINDATA.winDrives,
       selected: '',
       autoAccess: true,
+      newFollowSymlinks: false,
       renaming: false
     };
   },
@@ -811,7 +812,7 @@ const foldersView = Vue.component('folders-view', {
               <div class="card-content">
                 <span class="card-title">{{ t('admin.folders.title') }}</span>
                 <div style="display: flex; flex-wrap: wrap; border: 1px solid #e0e0e0; border-radius: 2px; overflow: hidden; margin-top: 8px;">
-                  <div style="flex: 1.5 1 300px; min-width: 0; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column;">
+                  <div style="flex: 1.5 1 300px; min-width: 0; height: 400px; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column;">
                     <div style="padding: 9px 14px; background: #f5f5f5; border-bottom: 1px solid #e0e0e0; font-size: 0.85em; color: #616161; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
                       <select v-if="winDrives.length > 0" @change="browseTo($event.target.value)" class="browser-default"
                         style="width: auto; height: 26px; font-size: 12px; padding: 0 4px; display: inline-block;">
@@ -830,8 +831,8 @@ const foldersView = Vue.component('folders-view', {
                     <div v-if="browse.path === null || browse.pending" style="padding: 30px; text-align: center;">
                       <svg class="spinner" width="40px" height="40px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
                     </div>
-                    <div v-else style="max-height: 340px; overflow-y: auto;">
-                      <div v-on:click="browseTo(browse.path, '..')" style="padding: 8px 14px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #f0f0f0; color: #616161; cursor: pointer; font-size: 0.9em;">
+                    <div v-else style="flex: 1 1 auto; min-height: 0; overflow-y: auto;">
+                      <div v-if="breadcrumbs.length > 1" v-on:click="browseTo(browse.path, '..')" style="padding: 8px 14px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #f0f0f0; color: #616161; cursor: pointer; font-size: 0.9em;">
                         <svg width="18" height="15" viewBox="0 0 48 48" style="flex-shrink: 0;"><path fill="#bdbdbd" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/></svg>
                         .. up one level
                       </div>
@@ -840,16 +841,17 @@ const foldersView = Vue.component('folders-view', {
                         <svg width="18" height="15" viewBox="0 0 48 48" style="flex-shrink: 0;"><path fill="#FFA000" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/><path fill="#FFCA28" d="M42.2 18H15.3c-1.9 0-3.6 1.4-3.9 3.3L8 40h31.7c1.9 0 3.6-1.4 3.9-3.3l2.5-14c.5-2.4-1.4-4.7-3.9-4.7z"/></svg>
                         <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="dir.name">{{ dir.name }}</span>
                         <span v-if="isSelected(dir.name)" style="margin-left: auto; font-size: 0.85em; color: #2e7d32; font-weight: 600; flex-shrink: 0;">selected</span>
-                        <a v-else v-on:click.stop="browseTo(browse.path, dir.name)" style="margin-left: auto; font-size: 0.85em; flex-shrink: 0;">open</a>
+                        <a v-on:click.stop="browseTo(browse.path, dir.name)"
+                          :style="'font-size: 0.85em; flex-shrink: 0;' + (isSelected(dir.name) ? '' : ' margin-left: auto;')">open</a>
                       </div>
                       <div v-if="browse.dirs.length === 0" style="padding: 14px; color: #9e9e9e; font-size: 0.85em;">No subfolders here.</div>
                     </div>
                     <div style="padding: 7px 14px; border-top: 1px solid #f0f0f0; font-size: 0.8em; color: #9e9e9e; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 8px; margin-top: auto;">
-                      <span>{{ browse.dirs.length }} folder{{ browse.dirs.length === 1 ? '' : 's' }} · click selects, open browses</span>
+                      <span>{{ browse.dirs.length }} folder{{ browse.dirs.length === 1 ? '' : 's' }} · double click to open</span>
                       <span style="white-space: nowrap;">[<a v-on:click="selectCurrent()">select this folder</a>]</span>
                     </div>
                   </div>
-                  <div style="flex: 1 1 240px; min-width: 0; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; background: #fafafa;">
+                  <div style="flex: 1 1 240px; min-width: 0; min-height: 400px; padding: 16px 18px; display: flex; flex-direction: column; gap: 18px; background: #fafafa; box-sizing: border-box;">
                     <div>
                       <div style="font-size: 0.75em; letter-spacing: 0.8px; color: #757575; margin-bottom: 4px;">ADDING</div>
                       <div v-if="selected" style="font-family: monospace; font-size: 0.85em; color: #212121; word-break: break-all;">{{ selected }}</div>
@@ -869,10 +871,16 @@ const foldersView = Vue.component('folders-view', {
                       <div v-if="!vpathOk" style="font-size: 0.8em; color: #b71c1c; margin-top: 4px;">Letters, numbers and dashes only.</div>
                       <div v-else-if="folders[dirName]" style="font-size: 0.8em; color: #b71c1c; margin-top: 4px;">That name is already in use.</div>
                     </div>
-                    <div class="pad-checkbox"><label>
-                      <input type="checkbox" v-model="autoAccess"/>
-                      <span>{{ t('admin.folders.giveAccessToAll') }}</span>
-                    </label></div>
+                    <div style="display: flex; flex-direction: column; gap: 10px;">
+                      <div class="pad-checkbox"><label>
+                        <input type="checkbox" v-model="autoAccess"/>
+                        <span>{{ t('admin.folders.giveAccessToAll') }}</span>
+                      </label></div>
+                      <div class="pad-checkbox"><label title="When on, the scanner follows symlinks inside this library. Off keeps scanned content strictly within the library's physical tree.">
+                        <input type="checkbox" v-model="newFollowSymlinks"/>
+                        <span>Follow symlinks</span>
+                      </label></div>
+                    </div>
                     <div style="margin-top: auto;">
                       <a v-on:click="submitForm()" class="btn green waves-effect waves-light" style="width: 100%;"
                         :class="{disabled: submitPending || !selected || !vpathOk || !!folders[dirName]}">
@@ -1054,7 +1062,8 @@ const foldersView = Vue.component('folders-view', {
             data: {
               directory: this.selected,
               vpath: this.dirName,
-              autoAccess: this.autoAccess
+              autoAccess: this.autoAccess,
+              followSymlinks: this.newFollowSymlinks
             }
           });
 
@@ -1064,9 +1073,10 @@ const foldersView = Vue.component('folders-view', {
             });
           }
 
-          Vue.set(ADMINDATA.folders, this.dirName, { root: this.selected });
+          Vue.set(ADMINDATA.folders, this.dirName, { root: this.selected, followSymlinks: this.newFollowSymlinks });
           this.dirName = '';
           this.selected = '';
+          this.newFollowSymlinks = false;
           this.renaming = false;
         }catch(err) {
           iziToast.error({
@@ -1156,7 +1166,15 @@ const usersView = Vue.component('users-view', {
       // when the operator ticks the box explicitly.
       allowServerAudio: false,
       submitPending: false,
-      selectInstance: null
+      selectInstance: null,
+      // Master-detail state: which user the detail panel shows ('' =
+      // the add-user form), and the library editor's lock. Libraries
+      // are read-only until [edit] unlocks them; toggles accumulate in
+      // libsDraft and nothing is sent until [save] locks again.
+      selectedUser: '',
+      libsUnlocked: false,
+      libsDraft: [],
+      libsSaving: false
     };
   },
   template: `
@@ -1166,7 +1184,87 @@ const usersView = Vue.component('users-view', {
           <div class="col s12">
             <div class="card">
               <div class="card-content">
-              <span class="card-title">{{ t('admin.users.title') }}</span>
+              <span class="card-title">{{ t('admin.users.heading') }}</span>
+                <div v-if="usersTS.ts === 0" style="padding: 24px; text-align: center;">
+                  <svg class="spinner" width="50px" height="50px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+                </div>
+                <div v-else>
+                  <div v-if="Object.keys(users).length === 0" style="margin: 4px 0 12px 0;">
+                    <p style="margin: 0 0 4px 0;"><b>{{ t('admin.users.noUsers') }}</b></p>
+                    <p style="margin: 0; color: #757575;">{{ t('admin.users.addWarning') }}</p>
+                  </div>
+                  <div style="display: flex; flex-wrap: wrap; border: 1px solid #e0e0e0; border-radius: 2px; overflow: hidden; margin-top: 8px;">
+                    <div style="flex: 1 1 210px; min-width: 0; max-height: 660px; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column;">
+                      <div style="flex: 1 1 auto; min-height: 0; overflow-y: auto;">
+                      <div v-for="(v, k) in users" :key="k" v-on:click="selectUser(k)"
+                        :style="'padding: 10px 14px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #f0f0f0; cursor: pointer;' + (selectedUser === k ? ' background: #e8f5e9;' : '')">
+                        <span :style="'width: 30px; height: 30px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; flex-shrink: 0;' + (v.admin === true ? ' background: #505061; color: #fff;' : ' background: #ececf2; color: #505061;')">{{ initialOf(k) }}</span>
+                        <span style="min-width: 0;">
+                          <b style="display: block; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="k">{{ k }}</b>
+                          <span v-if="v.admin === true" style="font-size: 11px; color: #2e7d32; font-weight: 600;">admin</span>
+                          <span v-else style="font-size: 11px; color: #9e9e9e;">{{ v.vpaths.length }} librar{{ v.vpaths.length === 1 ? 'y' : 'ies' }}</span>
+                        </span>
+                      </div>
+                      </div>
+                      <div style="padding: 12px 14px; margin-top: auto; border-top: 1px solid #f0f0f0;">
+                        <div v-on:click="selectUser('')"
+                          :style="'border: 1px dashed #bdbdbd; border-radius: 2px; padding: 8px 0; text-align: center; font-size: 12px; font-weight: 600; cursor: pointer;' + (selectedUser === '' ? ' background: #e8f5e9; color: #2e7d32; border-color: #a5d6a7;' : ' color: #616161;')">+ {{ t('admin.users.title').toUpperCase() }}</div>
+                      </div>
+                    </div>
+                    <div style="flex: 3 1 300px; min-width: 0; height: 660px; overflow-y: auto; box-sizing: border-box; padding: 16px 20px; background: #fafafa; display: flex; flex-direction: column; gap: 16px;">
+                    <template v-if="selectedUser !== '' && users[selectedUser]">
+                      <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                        <span :style="'width: 40px; height: 40px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 17px; flex-shrink: 0;' + (users[selectedUser].admin === true ? ' background: #505061; color: #fff;' : ' background: #ececf2; color: #505061;')">{{ initialOf(selectedUser) }}</span>
+                        <span style="min-width: 0;">
+                          <b style="display: block; font-size: 16px; overflow: hidden; text-overflow: ellipsis;">{{ selectedUser }}</b>
+                          <span v-if="users[selectedUser].admin === true" style="font-size: 12px; color: #2e7d32; font-weight: 600;">admin</span>
+                        </span>
+                        <span style="margin-left: auto; font-size: 12px; white-space: nowrap;">[<a v-on:click="changePassword(selectedUser)">{{ t('admin.users.changePass') }}</a>]</span>
+                      </div>
+                      <div>
+                        <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px;">
+                          <span style="font-size: 11px; letter-spacing: 0.8px; color: #757575;">LIBRARIES</span>
+                          <span style="font-size: 12px;">
+                            <span v-if="!libsUnlocked">[<a v-on:click="unlockLibs()">{{ t('admin.settings.edit') }}</a>]</span>
+                            <span v-else>[<a v-on:click="saveLibs()">{{ libsSaving ? 'saving…' : 'save' }}</a>]</span>
+                          </span>
+                        </div>
+                        <div v-if="Object.keys(directories).length === 0" style="font-size: 12px; color: #9e9e9e;">{{ t('admin.users.noDirsWarning') }}</div>
+                        <div v-else style="display: flex; gap: 8px; flex-wrap: wrap;">
+                          <span v-for="(dv, dirName) in directories" :key="dirName" v-on:click="toggleLib(dirName)"
+                            :style="'padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600;' + (userHasLib(dirName) ? ' background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7;' : ' background: #fff; color: #9e9e9e; border: 1px dashed #bdbdbd;') + (libsUnlocked ? ' cursor: pointer;' : '')">{{ dirName }}</span>
+                        </div>
+                        <div style="font-size: 11px; color: #9e9e9e; margin-top: 6px;">{{ libsUnlocked
+                          ? 'click a library to grant or remove it, then save'
+                          : 'locked — click edit to change which libraries this user sees' }}</div>
+                      </div>
+                      <div>
+                        <div style="font-size: 11px; letter-spacing: 0.8px; color: #757575; margin-bottom: 8px;">PERMISSIONS</div>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 8px 20px;">
+                          <div class="pad-checkbox"><label>
+                            <input type="checkbox" :checked="users[selectedUser].admin === true" v-on:change="saveAccess('admin', $event.target.checked)"/>
+                            <span>{{ t('admin.modal.admin') }}</span>
+                          </label></div>
+                          <div class="pad-checkbox"><label>
+                            <input type="checkbox" :checked="users[selectedUser].allowMkdir !== false" v-on:change="saveAccess('allowMkdir', $event.target.checked)"/>
+                            <span>{{ t('admin.modal.createFolders') }}</span>
+                          </label></div>
+                          <div class="pad-checkbox"><label>
+                            <input type="checkbox" :checked="users[selectedUser].allowUpload !== false" v-on:change="saveAccess('allowUpload', $event.target.checked)"/>
+                            <span>{{ t('admin.modal.uploadFiles') }}</span>
+                          </label></div>
+                          <div class="pad-checkbox"><label>
+                            <input type="checkbox" :checked="users[selectedUser].allowServerAudio !== false" v-on:change="saveAccess('allowServerAudio', $event.target.checked)"/>
+                            <span>Allow Server Audio</span>
+                          </label></div>
+                        </div>
+                      </div>
+                      <div style="margin-top: auto; border-top: 1px solid #e0e0e0; padding-top: 12px; font-size: 12px;">
+                        [<a v-on:click="deleteUser(selectedUser)" style="color: #b71c1c;">delete user</a>]
+                      </div>
+                    </template>
+                    <template v-else>
+                      <div style="font-size: 16px; font-weight: 700; color: #212121;">{{ t('admin.users.title') }}</div>
                 <form id="add-user-form" @submit.prevent="addUser">
                   <div class="row">
                     <div class="input-field directory-name-field col s12 m6">
@@ -1227,84 +1325,138 @@ const usersView = Vue.component('users-view', {
                     </button>
                   </div>
                 </form>
+                    </template>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         </div>
       </div>
-      <div v-if="usersTS.ts === 0" class="row">
-        <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
-      </div>
-      <div v-else-if="Object.keys(users).length === 0" class="container">
-        <h5>
-          {{ t('admin.users.noUsers') }}
-        </h5>
-        <h5>
-          {{ t('admin.users.addWarning') }}
-        </h5>
-      </div>
-      <div v-else="usersTS.ts > 0" class="row">
-        <div class="col s12">
-          <h5>{{ t('admin.users.heading') }}</h5>
-          <table>
-            <thead>
-              <tr>
-                <th>{{ t('admin.users.userHeader') }}</th>
-                <th>{{ t('admin.users.dirsHeader') }}</th>
-                <th>{{ t('admin.users.adminHeader') }}</th>
-                <th>{{ t('admin.users.foldersHeader') }}</th>
-                <th>{{ t('admin.users.uploadHeader') }}</th>
-                <th>{{ t('admin.users.modifyHeader') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(v, k) in users">
-                <td>{{k}}</td>
-                <td>{{v.vpaths.join(', ')}}</td>
-                <td>
-                  <svg v-if="v.admin === true" height="24px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 117.72 117.72"><path d="M58.86 0c9.13 0 17.77 2.08 25.49 5.79-3.16 2.5-6.09 4.9-8.82 7.21a48.673 48.673 0 00-16.66-2.92c-13.47 0-25.67 5.46-34.49 14.29-8.83 8.83-14.29 21.02-14.29 34.49 0 13.47 5.46 25.66 14.29 34.49 8.83 8.83 21.02 14.29 34.49 14.29s25.67-5.46 34.49-14.29c8.83-8.83 14.29-21.02 14.29-34.49 0-3.2-.31-6.34-.9-9.37 2.53-3.3 5.12-6.59 7.77-9.85a58.762 58.762 0 013.21 19.22c0 16.25-6.59 30.97-17.24 41.62-10.65 10.65-25.37 17.24-41.62 17.24-16.25 0-30.97-6.59-41.62-17.24C6.59 89.83 0 75.11 0 58.86c0-16.25 6.59-30.97 17.24-41.62S42.61 0 58.86 0zM31.44 49.19L45.8 49l1.07.28c2.9 1.67 5.63 3.58 8.18 5.74a56.18 56.18 0 015.27 5.1c5.15-8.29 10.64-15.9 16.44-22.9a196.16 196.16 0 0120.17-20.98l1.4-.54H114l-3.16 3.51C101.13 30 92.32 41.15 84.36 52.65a325.966 325.966 0 00-21.41 35.62l-1.97 3.8-1.81-3.87c-3.34-7.17-7.34-13.75-12.11-19.63-4.77-5.88-10.32-11.1-16.79-15.54l1.17-3.84z" fill="#01a601"/></svg>
-                </td>
-                <td>
-                  <svg v-if="v.allowMkdir !== false" height="24px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 117.72 117.72"><path d="M58.86 0c9.13 0 17.77 2.08 25.49 5.79-3.16 2.5-6.09 4.9-8.82 7.21a48.673 48.673 0 00-16.66-2.92c-13.47 0-25.67 5.46-34.49 14.29-8.83 8.83-14.29 21.02-14.29 34.49 0 13.47 5.46 25.66 14.29 34.49 8.83 8.83 21.02 14.29 34.49 14.29s25.67-5.46 34.49-14.29c8.83-8.83 14.29-21.02 14.29-34.49 0-3.2-.31-6.34-.9-9.37 2.53-3.3 5.12-6.59 7.77-9.85a58.762 58.762 0 013.21 19.22c0 16.25-6.59 30.97-17.24 41.62-10.65 10.65-25.37 17.24-41.62 17.24-16.25 0-30.97-6.59-41.62-17.24C6.59 89.83 0 75.11 0 58.86c0-16.25 6.59-30.97 17.24-41.62S42.61 0 58.86 0zM31.44 49.19L45.8 49l1.07.28c2.9 1.67 5.63 3.58 8.18 5.74a56.18 56.18 0 015.27 5.1c5.15-8.29 10.64-15.9 16.44-22.9a196.16 196.16 0 0120.17-20.98l1.4-.54H114l-3.16 3.51C101.13 30 92.32 41.15 84.36 52.65a325.966 325.966 0 00-21.41 35.62l-1.97 3.8-1.81-3.87c-3.34-7.17-7.34-13.75-12.11-19.63-4.77-5.88-10.32-11.1-16.79-15.54l1.17-3.84z" fill="#01a601"/></svg>
-                </td>
-                <td>
-                  <svg v-if="v.allowUpload !== false" height="24px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 117.72 117.72"><path d="M58.86 0c9.13 0 17.77 2.08 25.49 5.79-3.16 2.5-6.09 4.9-8.82 7.21a48.673 48.673 0 00-16.66-2.92c-13.47 0-25.67 5.46-34.49 14.29-8.83 8.83-14.29 21.02-14.29 34.49 0 13.47 5.46 25.66 14.29 34.49 8.83 8.83 21.02 14.29 34.49 14.29s25.67-5.46 34.49-14.29c8.83-8.83 14.29-21.02 14.29-34.49 0-3.2-.31-6.34-.9-9.37 2.53-3.3 5.12-6.59 7.77-9.85a58.762 58.762 0 013.21 19.22c0 16.25-6.59 30.97-17.24 41.62-10.65 10.65-25.37 17.24-41.62 17.24-16.25 0-30.97-6.59-41.62-17.24C6.59 89.83 0 75.11 0 58.86c0-16.25 6.59-30.97 17.24-41.62S42.61 0 58.86 0zM31.44 49.19L45.8 49l1.07.28c2.9 1.67 5.63 3.58 8.18 5.74a56.18 56.18 0 015.27 5.1c5.15-8.29 10.64-15.9 16.44-22.9a196.16 196.16 0 0120.17-20.98l1.4-.54H114l-3.16 3.51C101.13 30 92.32 41.15 84.36 52.65a325.966 325.966 0 00-21.41 35.62l-1.97 3.8-1.81-3.87c-3.34-7.17-7.34-13.75-12.11-19.63-4.77-5.88-10.32-11.1-16.79-15.54l1.17-3.84z" fill="#01a601"/></svg>
-                </td>
-                <td>
-                  [<a v-on:click="changePassword(k)">{{ t('admin.users.changePass') }}</a>]
-                  [<a v-on:click="changeVPaths(k)">{{ t('admin.users.changeFolders') }}</a>]
-                  [<a v-on:click="changeAccess(k)">{{ t('admin.users.changeAccess') }}</a>]
-                  [<a v-on:click="deleteUser(k)">{{ t('admin.users.delete') }}</a>]
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
     </div>`,
     mounted: function () {
-      this.selectInstance = M.FormSelect.init(document.querySelectorAll(".material-select"));
+      // Land on the first user when some exist; otherwise the detail
+      // panel is the add form and its directories multiselect needs
+      // Materialize's init.
+      const names = Object.keys(this.users);
+      if (names.length > 0) {
+        this.selectUser(names[0]);
+      } else {
+        this.$nextTick(() => this.initDirsSelect());
+      }
     },
     beforeDestroy: function() {
-      this.selectInstance[0].destroy();
+      this.destroyDirsSelect();
+    },
+    watch: {
+      // Users load async at app boot; if the view mounted before they
+      // arrived, pick the first one once they do (unless the operator
+      // has started typing a new user).
+      'usersTS.ts': function (nv, ov) {
+        if (ov === 0 && nv > 0 && this.selectedUser === ''
+          && Object.keys(this.users).length > 0 && this.newUsername === '') {
+          this.selectUser(Object.keys(this.users)[0]);
+        }
+      }
     },
     methods: {
-      openLastFmModal: function() {
-        modVM.currentViewModal = 'lastfm-modal';
-        M.Modal.getInstance(document.getElementById('admin-modal')).open();
-      },
       maybeResetForm: function() {
 
       },
-      changeVPaths: function(username) {
-        ADMINDATA.selectedUser.value = username;
-        modVM.currentViewModal = 'user-vpaths-modal';
-        M.Modal.getInstance(document.getElementById('admin-modal')).open();
+      initialOf: function(name) {
+        return String(name || '?').slice(0, 1).toUpperCase();
       },
-      changeAccess: function(username) {
-        ADMINDATA.selectedUser.value = username;
-        modVM.currentViewModal = 'user-access-modal';
-        M.Modal.getInstance(document.getElementById('admin-modal')).open();
+      initDirsSelect: function() {
+        this.destroyDirsSelect();
+        const els = document.querySelectorAll('.material-select');
+        if (els.length > 0) { this.selectInstance = M.FormSelect.init(els); }
+      },
+      destroyDirsSelect: function() {
+        if (this.selectInstance && this.selectInstance[0]) { this.selectInstance[0].destroy(); }
+        this.selectInstance = null;
+      },
+      selectUser: function(k) {
+        this.selectedUser = k;
+        this.libsUnlocked = false;
+        this.libsDraft = [];
+        if (k === '') {
+          this.$nextTick(() => this.initDirsSelect());
+        } else {
+          this.destroyDirsSelect();
+        }
+      },
+      userHasLib: function(dirName) {
+        if (this.libsUnlocked) { return this.libsDraft.includes(dirName); }
+        const u = this.users[this.selectedUser];
+        return !!(u && u.vpaths && u.vpaths.includes(dirName));
+      },
+      unlockLibs: function() {
+        const u = this.users[this.selectedUser];
+        this.libsDraft = u && u.vpaths ? [...u.vpaths] : [];
+        this.libsUnlocked = true;
+      },
+      toggleLib: function(dirName) {
+        if (!this.libsUnlocked) { return; }
+        const i = this.libsDraft.indexOf(dirName);
+        if (i === -1) { this.libsDraft.push(dirName); } else { this.libsDraft.splice(i, 1); }
+      },
+      saveLibs: async function() {
+        if (this.libsSaving) { return; }
+        try {
+          this.libsSaving = true;
+          await API.axios({
+            method: 'POST',
+            url: `${API.url()}/api/v1/admin/users/vpaths`,
+            data: { username: this.selectedUser, vpaths: [...this.libsDraft] }
+          });
+          Vue.set(ADMINDATA.users[this.selectedUser], 'vpaths', [...this.libsDraft]);
+          this.libsUnlocked = false;
+          iziToast.success({ title: t('admin.settings.updated'), position: 'topCenter', timeout: 2500 });
+        } catch (err) {
+          // Stay unlocked so the draft isn't lost — the operator can
+          // retry save or adjust.
+          iziToast.error({
+            title: t('admin.modal.updateFailed'),
+            message: escHtml(err.response?.data?.error || ''),
+            position: 'topCenter', timeout: 3500
+          });
+        } finally {
+          this.libsSaving = false;
+        }
+      },
+      // One checkbox flip saves the whole access set (the API takes all
+      // four together, same as the old access modal). Mirrors the
+      // modal's defaults: a missing allow* field means true.
+      saveAccess: async function(field, value) {
+        const u = this.users[this.selectedUser];
+        const payload = {
+          username: this.selectedUser,
+          admin: u.admin === true,
+          allowMkdir: u.allowMkdir !== false,
+          allowUpload: u.allowUpload !== false,
+          allowServerAudio: u.allowServerAudio !== false
+        };
+        payload[field] = value;
+        try {
+          await API.axios({
+            method: 'POST',
+            url: `${API.url()}/api/v1/admin/users/access`,
+            data: payload
+          });
+          Vue.set(u, 'admin', payload.admin);
+          Vue.set(u, 'allowMkdir', payload.allowMkdir);
+          Vue.set(u, 'allowUpload', payload.allowUpload);
+          Vue.set(u, 'allowServerAudio', payload.allowServerAudio);
+        } catch (err) {
+          iziToast.error({
+            title: t('admin.modal.updateFailed'),
+            message: escHtml(err.response?.data?.error || ''),
+            position: 'topCenter', timeout: 3500
+          });
+          // Snap the checkbox back to the stored value.
+          this.$forceUpdate();
+        }
       },
       changePassword: function(username) {
         ADMINDATA.selectedUser.value = username;
@@ -1335,6 +1487,12 @@ const usersView = Vue.component('users-view', {
                   data: { username: username }
                 });
                 Vue.delete(ADMINDATA.users, username);
+                // Don't leave the detail panel pointed at a ghost —
+                // hop to the first remaining user (or the add form).
+                if (this.selectedUser === username) {
+                  const rest = Object.keys(ADMINDATA.users);
+                  this.selectUser(rest.length > 0 ? rest[0] : '');
+                }
               } catch (err) {
                 iziToast.error({
                   title: t('admin.users.deleteFailed'),
@@ -1378,9 +1536,11 @@ const usersView = Vue.component('users-view', {
           });
 
           Vue.set(ADMINDATA.users, this.newUsername, { vpaths: data.vpaths, admin: data.admin, allowMkdir: data.allowMkdir, allowUpload: data.allowUpload, allowServerAudio: data.allowServerAudio });
+          const addedName = this.newUsername;
           this.newUsername = '';
           this.newPassword = '';
           this.newSubsonicPassword = '';
+          this.selectUser(addedName);
 
           // if this is the first user, prompt user and take them to login page
           if (Object.keys(ADMINDATA.users).length === 1) {

@@ -1174,7 +1174,11 @@ export function setup(mstream) {
       // direct-API bypass. vpaths are URL path segments, so slug-only.
       vpath: Joi.string().pattern(/^[a-zA-Z0-9-]+$/).required(),
       autoAccess: Joi.boolean().default(false),
-      isAudioBooks: Joi.boolean().default(false)
+      isAudioBooks: Joi.boolean().default(false),
+      // Set at creation rather than via the follow-symlinks route so the
+      // FIRST scan (queued right below) already honors it — a post-add
+      // flag write races that scan and loses.
+      followSymlinks: Joi.boolean().default(false)
     });
     const input = joiValidate(schema, req.body);
 
@@ -1183,6 +1187,7 @@ export function setup(mstream) {
       input.value.vpath,
       input.value.autoAccess,
       input.value.isAudioBooks,
+      input.value.followSymlinks,
       mstream);
     res.json({});
 

@@ -86,9 +86,12 @@ Folders are set by key value pairs.  The key is used later to give access to fol
 ```json
   "folders": {
     "blues": { "root": "/media/music/blues" },
-    "rock": { "root": "/media/music/rock"}
+    "rock": { "root": "/media/music/rock"},
+    "nas": { "root": "/media/music/nas-mirror", "followSymlinks": true }
   }
 ```
+
+Each folder accepts optional keys: `type` (`music` or `audio-books`, default `music`) and `followSymlinks` (default `false`). `followSymlinks` is applied when the library is created, so its very first scan follows symlinks inside the folder — flipping it later from the admin Directories page requires a rescan to pick up linked content.
 
 If this is not set, the cwd will be used
 

@@ -214,4 +214,98 @@ describe('V21 per-library followSymlinks', () => {
     assert.equal(dirs.symtest.followSymlinks, false,
       `expected false, got ${JSON.stringify(dirs.symtest.followSymlinks)}`);
   });
+
+  // The add route queues the library's first scan the moment it answers,
+  // so a flag applied by a FOLLOW-UP write races that scan and loses.
+  // Passing followSymlinks at creation must make the very first scan
+  // honor it — no rescan, no race.
+  test('PUT /admin/directory with followSymlinks: true — the FIRST scan follows the link', async (t) => {
+    if (!symlinkWorks) { t.skip('symlink creation denied on this host'); return; }
+    const tk = await adminToken();
+
+    const lib2 = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-sym-lib2-'));
+    t.after(async () => { await fs.rm(lib2, { recursive: true, force: true }).catch(() => {}); });
+    await makeFlac(path.join(lib2, 'inside2.flac'), 'Inside Two');
+    await fs.symlink(path.join(outsideDir, 'outside.flac'),
+                     path.join(lib2,      'linked2.flac'));
+
+    const put = await fetch(`${server.baseUrl}/api/v1/admin/directory`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-access-token': tk },
+      body: JSON.stringify({ directory: lib2, vpath: 'symborn', autoAccess: true, followSymlinks: true }),
+    });
+    assert.equal(put.status, 200);
+
+    // The route itself queued the scan — wait for it to start, then idle.
+    await new Promise(r => setTimeout(r, 250));
+    const start = Date.now();
+    for (;;) {
+      const s = await fetch(`${server.baseUrl}/api/v1/db/status`, { headers: { 'x-access-token': tk } });
+      if (s.ok && !(await s.json()).locked) { break; }
+      if (Date.now() - start > 20_000) { throw new Error('add-triggered scan did not finish within 20s'); }
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    const dr = await fetch(`${server.baseUrl}/api/v1/admin/directories`, {
+      headers: { 'x-access-token': tk },
+    });
+    const dirs = await dr.json();
+    assert.equal(dirs.symborn.followSymlinks, true, 'the flag was set from birth');
+
+    const sr = await fetch(`${server.baseUrl}/api/v1/db/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-access-token': tk },
+      body: JSON.stringify({ search: 'Track', noArtists: true, noAlbums: true, noFiles: true }),
+    });
+    const hits = ((await sr.json()).title || []).filter(s => (s.filepath || '').startsWith('symborn/'));
+    const titles = hits.map(s => s.name.replace(/^.*? - /, '')).sort();
+    assert.ok(titles.includes('Outside Track'),
+      `the symlinked track must be indexed by the FIRST scan; got ${JSON.stringify(titles)}`);
+  });
+});
+
+// The OTHER way a library is born: config-file folders, migrated into
+// SQLite at boot (the standard Docker/headless setup). The config schema
+// now carries followSymlinks per folder, and the migration INSERT applies
+// it — so the library's first-ever boot scan follows links, with no admin
+// UI involved at any point.
+describe('config-file folders carry followSymlinks at creation', () => {
+  let server2;
+  let lib2;
+
+  before(async () => {
+    if (!symlinkWorks) { return; }
+    lib2 = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-sym-cfg-'));
+    await makeFlac(path.join(lib2, 'inside3.flac'), 'Inside Three');
+    await fs.symlink(path.join(outsideDir, 'outside.flac'),
+                     path.join(lib2,      'linked3.flac'));
+    // No users: endpoints stay open, mirroring a fresh headless install.
+    server2 = await startServer({
+      dlnaMode: 'disabled',
+      extraFolders: { symcfg: { root: lib2, followSymlinks: true } },
+    });
+  });
+
+  after(async () => {
+    if (server2) { await server2.stop(); }
+    if (lib2) { await fs.rm(lib2, { recursive: true, force: true }).catch(() => {}); }
+  });
+
+  test('the boot scan follows the link and the flag reads back', async (t) => {
+    if (!symlinkWorks) { t.skip('symlink creation denied on this host'); return; }
+
+    const dirs = await (await fetch(`${server2.baseUrl}/api/v1/admin/directories`)).json();
+    assert.equal(dirs.symcfg.followSymlinks, true,
+      'the config flag must land on the library row');
+
+    const sr = await fetch(`${server2.baseUrl}/api/v1/db/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ search: 'Track', noArtists: true, noAlbums: true, noFiles: true }),
+    });
+    const hits = ((await sr.json()).title || []).filter(s => (s.filepath || '').startsWith('symcfg/'));
+    const titles = hits.map(s => s.name.replace(/^.*? - /, '')).sort();
+    assert.ok(titles.includes('Outside Track'),
+      `the boot scan must index the symlinked track; got ${JSON.stringify(titles)}`);
+  });
 });

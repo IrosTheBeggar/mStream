@@ -84,7 +84,7 @@ function mergeChanges(current, base, mine) {
 
 // ── Directory / Library management (now in SQLite) ──────────────────────────
 
-export async function addDirectory(directory, vpath, autoAccess, isAudioBooks, mstream) {
+export async function addDirectory(directory, vpath, autoAccess, isAudioBooks, followSymlinks, mstream) {
   const stat = await fs.stat(directory);
   if (!stat.isDirectory()) { throw new Error(`${directory} is not a directory`); }
 
@@ -93,14 +93,16 @@ export async function addDirectory(directory, vpath, autoAccess, isAudioBooks, m
 
   const d = db.getDB();
   const type = isAudioBooks ? 'audio-books' : 'music';
-  // follow_symlinks is explicitly set to 0 here rather than relying
-  // on the column default: dev hosts that ran an earlier V21 variant
-  // (nullable column, no DEFAULT) would otherwise get NULL on new
-  // INSERTs. Reader code in task-queue.js is null-safe (`=== 1`) but
-  // we'd rather not leave dangling NULLs in the table.
+  // follow_symlinks is set explicitly (0 or 1, never omitted) rather
+  // than relying on the column default: dev hosts that ran an earlier
+  // V21 variant (nullable column, no DEFAULT) would otherwise get NULL
+  // on new INSERTs. Reader code in task-queue.js is null-safe (`=== 1`)
+  // but we'd rather not leave dangling NULLs in the table. Taking the
+  // flag at creation (not via a follow-up edit) matters because the
+  // caller queues the first scan immediately after this returns.
   const result = d.prepare(
-    'INSERT INTO libraries (name, root_path, type, follow_symlinks) VALUES (?, ?, ?, 0)'
-  ).run(vpath, directory, type);
+    'INSERT INTO libraries (name, root_path, type, follow_symlinks) VALUES (?, ?, ?, ?)'
+  ).run(vpath, directory, type, followSymlinks === true ? 1 : 0);
   const libraryId = Number(result.lastInsertRowid);
 
   if (autoAccess === true) {

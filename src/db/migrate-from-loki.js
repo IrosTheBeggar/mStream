@@ -80,11 +80,15 @@ export function migrate(db) {
 function migrateUsersAndFolders(db) {
   // Migrate folders → libraries
   if (config.program.folders) {
+    // follow_symlinks is set explicitly (0/1, never omitted) so the
+    // library's FIRST scan honors the config flag — and so dev hosts
+    // that ran the earlier nullable-no-default V21 column variant don't
+    // collect NULLs (same reasoning as util/admin.js addDirectory).
     const insertLib = db.prepare(
-      'INSERT OR IGNORE INTO libraries (name, root_path, type) VALUES (?, ?, ?)'
+      'INSERT OR IGNORE INTO libraries (name, root_path, type, follow_symlinks) VALUES (?, ?, ?, ?)'
     );
     for (const [name, folder] of Object.entries(config.program.folders)) {
-      insertLib.run(name, folder.root, folder.type || 'music');
+      insertLib.run(name, folder.root, folder.type || 'music', folder.followSymlinks === true ? 1 : 0);
       winston.info(`  Migrated library: ${name} → ${folder.root}`);
     }
   }
