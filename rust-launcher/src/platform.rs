@@ -509,6 +509,7 @@ fn sh_quote(p: &std::path::Path) -> String {
     sh_quote_str(&p.display().to_string())
 }
 
+#[cfg(unix)]
 fn sh_quote_str(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
