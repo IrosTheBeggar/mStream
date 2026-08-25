@@ -38,6 +38,7 @@
     "test:cli-audio": "docker build -f test/cli-audio/Dockerfile -t mstream-cli-audio-smoke . && docker run --rm mstream-cli-audio-smoke",
     "test:smoke:docker": "node test/smoke/docker/run-docker-stack-smoke.mjs",
     "test:smoke:windows": "node test/smoke/windows-native-daemons.mjs",
+    "test:smoke:update-watchdog": "sh test/smoke/update-watchdog-smoke.sh",
     "fetch-p2p-sidecar": "node scripts/fetch-p2p-sidecar.mjs",
     "fetch-mstream-player": "node scripts/fetch-mstream-player.mjs",
     "test:smoke:sidecar-volume": "bash test/smoke/docker/p2p-sidecar-volume-smoke.sh"

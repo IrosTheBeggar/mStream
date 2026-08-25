@@ -33,6 +33,18 @@
 //            the staged version); headless, by exiting 0 — documented as
 //            "auto expects a process supervisor" (systemd/pm2 restart lands
 //            on the new version via the flipped `current` link)
+//
+// Boot-failure holds (update-hold.json, beside the status file): when an
+// applied update crashes before it ever serves, the launcher's boot
+// watchdog (rust-launcher/src/rollback.rs) re-points `current` at the
+// previous version and records the failed version here. This module's half
+// of that contract: never stage/apply a held version (or the next daily
+// check would re-flip onto the very release the watchdog backed out of),
+// keep `current` off held versions (enforceHold — the belt to the
+// launcher's suspenders), and drop entries once a version >= them boots:
+// the fixed release supersedes the hold, and a hand-re-applied version
+// that boots proves its hold stale. The admin settings expose clearHold as
+// the manual override.
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
@@ -56,6 +68,10 @@ const STAGE_TIMEOUT_MS = 30 * 60 * 1000; // a bundle download on a slow link
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // daily
 const BOOT_CHECK_DELAY_MS = 30 * 1000;
 const AUTO_APPLY_POLL_MS = 15 * 60 * 1000;
+// Shared with rust-launcher/src/rollback.rs — one file, two writers who
+// never overlap (the launcher appends only while no server runs).
+const HOLD_FILE = 'update-hold.json';
+const MAX_HELD = 8;
 
 // ── Pure helpers (unit-tested with injected fs) ─────────────────────────────
 
@@ -213,6 +229,8 @@ const state = {
   error: null,
   notifyOnly: false,        // apiVersion from the future: check works, staging refused
   skipped: false,           // latest === updates.skipVersion: report, never act
+  held: false,              // latest failed to boot after a previous update: report, never act
+  heldVersions: [],         // every version the boot watchdog has held (update-hold.json)
 };
 
 function updatesConfig() {
@@ -233,6 +251,100 @@ function supervisedByLauncher() {
 
 export function statusFilePath() {
   return path.join(userDataHome(), 'update-status.json');
+}
+
+export function holdFilePath() {
+  return path.join(userDataHome(), HOLD_FILE);
+}
+
+// The launcher's boot watchdog wrote this after rolling an update back.
+// Read tolerantly — the file is our own, but absent/newer-schema/mangled
+// must all read as "nothing held", never as a crash.
+function readHolds() {
+  try {
+    const doc = JSON.parse(fs.readFileSync(holdFilePath(), 'utf8'));
+    if (!doc || !Array.isArray(doc.held)) { return []; }
+    return doc.held
+      .filter((h) => h && typeof h.version === 'string' && VERSION_RE.test(h.version))
+      .slice(0, MAX_HELD);
+  } catch {
+    return [];
+  }
+}
+
+// Cached in state.heldVersions (refreshHolds) so the status poll doesn't
+// hit the disk: the file only changes at rollback time (no server runs) or
+// through this module's own prune/clear, both of which refresh the cache.
+function isHeld(version) {
+  return !!version && state.heldVersions.includes(version);
+}
+
+function refreshHolds() {
+  state.heldVersions = readHolds().map((h) => h.version);
+  state.held = !!state.latest && state.available && state.heldVersions.includes(state.latest);
+}
+
+// Drop holds a healthy boot has disproven or superseded: we are RUNNING a
+// version >= the held one, so either the fixed release landed or the held
+// version was re-applied by hand and boots after all. Holds for versions
+// NEWER than the running one are the active ones and stay. Called from
+// doCheck — which fires no earlier than the post-listen boot check, so a
+// crash-during-boot can never clear the very hold that protects against it.
+async function pruneHolds() {
+  const holds = readHolds();
+  if (!holds.length) { return; }
+  const keep = holds.filter((h) => compareVersions(state.current, h.version) < 0);
+  if (keep.length === holds.length) { return; }
+  for (const h of holds) {
+    if (!keep.includes(h)) {
+      winston.info(`[update] Boot-failure hold on ${h.version} cleared (running ${state.current})`);
+    }
+  }
+  try {
+    if (!keep.length) { await fsp.unlink(holdFilePath()); }
+    else { await writeJsonAtomic(holdFilePath(), { schema: 1, held: keep }); }
+  } catch (err) {
+    winston.warn(`[update] Could not rewrite ${holdFilePath()}: ${err.message}`);
+  }
+}
+
+// Operator override (admin settings, clearHold: true): drop every hold and
+// let the next check treat the release feed at face value again.
+export async function clearHolds() {
+  await fsp.unlink(holdFilePath()).catch(() => { /* absent is cleared */ });
+  refreshHolds();
+  winston.info('[update] Boot-failure holds cleared by the operator');
+}
+
+// Belt to the launcher's suspenders: the watchdog re-points `current` when
+// it rolls back, but if that re-point failed (or a hold arrived without
+// one), `current` still aims at a version that cannot boot — and on the
+// layouts where the login item goes through `current`, so does the next
+// reboot. Same recovery as a skip: point `current` back at the running
+// version, restore the macOS ~/Applications copy, disarm anything staged.
+async function enforceHold() {
+  if (!state.heldVersions.length) { return; }
+  if (state.stagedVersion && state.heldVersions.includes(state.stagedVersion)) {
+    state.staged = false;
+    state.stagedVersion = null;
+    state.applyRequested = false;
+    state.applyRequestedAt = null;
+    state.installerPath = null;
+  }
+  const m = detectInstall();
+  if (m.method !== 'managed' || !m.root) { return; }
+  const linkVer = await stagedVersionFromRoot(m.root);
+  if (!linkVer || linkVer === state.current || !state.heldVersions.includes(linkVer)) { return; }
+  winston.warn(`[update] current points at held version ${linkVer} - re-pointing at the running version`);
+  let ok = await unstageCurrent(m.root, linkVer);
+  if (process.platform === 'darwin') {
+    ok = (await restoreAppsCopy()) && ok;
+  }
+  if (!ok) {
+    state.error = `Version ${linkVer} failed to start and is held back, but the previous version could not be fully restored - `
+      + `re-run the installer with MSTREAM_VERSION=v${state.current} to finish the rollback`;
+    winston.warn(`[update] ${state.error}`);
+  }
 }
 
 export function getStatus() {
@@ -329,6 +441,13 @@ async function doCheck(force) {
   const cfg = updatesConfig();
   if (!cfg.check && !force) { return getStatus(); }
   detectInstall();
+  // Boot-failure holds first, and independent of the feed being reachable:
+  // running this far past listen proves THIS version boots (prune), and a
+  // `current` still aiming at a held version must be re-pointed even when
+  // GitHub is down (enforce).
+  await pruneHolds();
+  refreshHolds();
+  await enforceHold();
   try {
     const manifest = await fetchManifest();
     const v = validateManifest(manifest);
@@ -355,14 +474,15 @@ async function doCheck(force) {
     state.latest = manifest.version;
     state.available = compareVersions(manifest.version, state.current) > 0;
     state.skipped = state.available && isSkipped(manifest.version);
+    state.held = state.available && isHeld(manifest.version);
     if (!state.available) {
       state.downloadUrl = null;
     } else {
       const m = detectInstall();
       state.downloadUrl = downloadUrlFor(m.method, manifest);
-      winston.info(`[update] mStream ${manifest.version} is available (running ${state.current}, install: ${m.method}${state.skipped ? ', SKIPPED by updates.skipVersion' : ''})`);
+      winston.info(`[update] mStream ${manifest.version} is available (running ${state.current}, install: ${m.method}${state.skipped ? ', SKIPPED by updates.skipVersion' : ''}${state.held ? ', HELD after a failed start' : ''})`);
       const mode = updatesConfig().mode;
-      if (mode !== 'notify' && !state.notifyOnly && !state.skipped
+      if (mode !== 'notify' && !state.notifyOnly && !state.skipped && !state.held
           && (m.method === 'managed' || m.method === 'inno')
           && (!state.staged || state.stagedVersion !== manifest.version)) {
         stageNow(manifest); // async, single-flight; errors land in state
@@ -398,6 +518,9 @@ export function stageNow(manifest = null) {
   if (state.notifyOnly) { return { error: 'update format changed - re-run the install command' }; }
   if (state.latest && isSkipped(state.latest)) {
     return { error: `version ${state.latest} is held back by updates.skipVersion` };
+  }
+  if (state.latest && isHeld(state.latest)) {
+    return { error: `version ${state.latest} failed to start after a previous update and is held back - it clears when a newer release ships, or clear the hold to retry` };
   }
   if (m.method === 'inno' || m.method === 'pkg') {
     if (!state.latest || !state.available) { return { error: 'no update available' }; }
@@ -653,6 +776,9 @@ export async function requestApply() {
   if (isSkipped(state.stagedVersion)) {
     return { error: `version ${state.stagedVersion} is held back by updates.skipVersion` };
   }
+  if (isHeld(state.stagedVersion)) {
+    return { error: `version ${state.stagedVersion} failed to start after a previous update and is held back` };
+  }
   if (m.method === 'pkg') {
     if (!state.installerPath || !fs.existsSync(state.installerPath)) { return { error: 'installer not downloaded yet' }; }
     spawn('open', [state.installerPath], { detached: true, stdio: 'ignore' }).unref();
@@ -681,7 +807,7 @@ function scheduleHeadlessExit(why) {
 // auto mode: apply on our own once nothing is streaming and no scan runs.
 function maybeAutoApply() {
   if (updatesConfig().mode !== 'auto' || !state.staged || state.applyRequested) { return; }
-  if (isSkipped(state.stagedVersion)) { return; }
+  if (isSkipped(state.stagedVersion) || isHeld(state.stagedVersion)) { return; }
   const m = detectInstall();
   if (m.method !== 'managed' && m.method !== 'inno') { return; }
   if (!idle()) { return; }
@@ -855,8 +981,9 @@ export function onSettingsChanged() {
     .then(() => {
       maybeAutoApply();
       const cfg = updatesConfig();
-      if (cfg.check && cfg.mode !== 'notify' && state.available && !state.skipped && !state.staged) {
-        // e.g. notify -> stage, or an unskip: start the withheld download.
+      if (cfg.check && cfg.mode !== 'notify' && state.available && !state.skipped && !state.held && !state.staged) {
+        // e.g. notify -> stage, an unskip, or a cleared hold: start the
+        // withheld download.
         checkNow(true).catch(() => {});
       }
     });
@@ -871,6 +998,10 @@ export function onSettingsChanged() {
 export function setup(mstream, hooks = {}) {
   _hooks = { ..._hooks, ...hooks };
   detectInstall();
+  // Surface any boot-failure holds from the very first status write; the
+  // prune waits for the boot check (running that far past listen is the
+  // proof-of-boot that justifies clearing).
+  refreshHolds();
   // A staged flag from a PREVIOUS process run: if we ARE that version now,
   // clear it; if not (the restart didn't land on it), re-checking will
   // re-discover it within a day, or instantly via the boot check.
@@ -900,7 +1031,7 @@ export function stopForTests() {
   _install = null;
   _checking = null;
   _exiting = false;
-  state.skipped = false;
+  state.skipped = false; state.held = false; state.heldVersions = [];
   state.latest = null; state.available = false; state.staged = false;
   state.stagedVersion = null; state.applyRequested = false; state.applyRequestedAt = null; state.error = null;
   state.installerPath = null; state.downloadUrl = null; state.notifyOnly = false;

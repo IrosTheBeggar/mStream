@@ -3449,8 +3449,9 @@ const infoView = Vue.component('info-view', {
                     <td><b>Available:</b> v{{update.s.latest}} &mdash; {{updLine()}}</td>
                     <td>
                       <span v-if="updAction()">[<a v-on:click="updDoAction()">{{updAction()}}</a>] </span>
-                      <a v-else-if="!update.s.skipped && update.s.downloadUrl" v-bind:href="update.s.downloadUrl" target="_blank" rel="noopener">[downloads page] </a>
-                      <span v-if="update.s.skipped">[<a v-on:click="updSetSkip('')">unskip</a>]</span>
+                      <a v-else-if="!update.s.skipped && !update.s.held && update.s.downloadUrl" v-bind:href="update.s.downloadUrl" target="_blank" rel="noopener">[downloads page] </a>
+                      <span v-if="update.s.held" title="This version was rolled back after it failed to start. Clearing the hold lets the next check download and try it again.">[<a v-on:click="updClearHold()">clear hold &amp; retry</a>]</span>
+                      <span v-else-if="update.s.skipped">[<a v-on:click="updSetSkip('')">unskip</a>]</span>
                       <span v-else title="Hold this version back: never download or restart into it (e.g. after rolling back). Cleared by unskip or the next release.">[<a v-on:click="updSetSkip(update.s.latest)">skip</a>]</span>
                     </td>
                   </tr>
@@ -3484,6 +3485,7 @@ const infoView = Vue.component('info-view', {
       const s = this.update.s;
       if (s.notifyOnly) { return 'this build is too old to self-update; re-run the install command'; }
       if (s.skipped) { return 'held back (skipped) - it will not be downloaded or applied'; }
+      if (s.held) { return 'held back - it failed to start after a previous update and was rolled back; a newer release clears this automatically'; }
       if (s.downloading) { return 'downloading...'; }
       const stagedIsLatest = s.staged && s.stagedVersion === s.latest;
       if (stagedIsLatest && s.method === 'managed') { return 'downloaded and staged; it takes over on the next restart'; }
@@ -3498,7 +3500,7 @@ const infoView = Vue.component('info-view', {
     },
     updAction: function() {
       const s = this.update.s;
-      if (s.notifyOnly || s.downloading || s.skipped) { return null; }
+      if (s.notifyOnly || s.downloading || s.skipped || s.held) { return null; }
       // Act only on a staged copy of the CURRENT latest: with an older
       // version staged and a newer one advertised, the click must never
       // apply the old one while the line names the new one.
@@ -3564,6 +3566,15 @@ const infoView = Vue.component('info-view', {
         iziToast.success({ title: ver ? `v${ver} will be skipped` : 'Version skip cleared', position: 'topCenter', timeout: 2500 });
       } catch (err) {
         iziToast.error({ title: 'Failed to change skip setting', position: 'topCenter', timeout: 3500 });
+      }
+    },
+    updClearHold: async function() {
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/update/settings`, data: { clearHold: true } });
+        await ADMINDATA.getUpdateStatus();
+        iziToast.success({ title: 'Hold cleared - the next check may download it again', position: 'topCenter', timeout: 2500 });
+      } catch (err) {
+        iziToast.error({ title: 'Failed to clear the hold', position: 'topCenter', timeout: 3500 });
       }
     },
     updCycleMode: async function() {
