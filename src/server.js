@@ -816,7 +816,17 @@ export async function serveIt(configFile, { relisten = null } = {}) {
           const stack = await import('./state/discovery-p2p-stack.js');
           await stack.startDiscoveryP2pStack();
         } catch (err) {
-          winston.error(`[discovery-p2p] catalog unavailable — feature disabled this boot: ${err.message}`);
+          // Not "disabled this boot" any more: the config says enabled, so
+          // the stack's crash-recovery ladder takes over — 5s/15s/60s/5min,
+          // never giving up, config-gated so a runtime disable still wins.
+          // The likely causes are transient (a flaky first-install sidecar
+          // download, a busy data dir, a slow relay handshake), and the ones
+          // that aren't stay loudly visible: one warn per attempt, and the
+          // admin panel shows "reconnecting" instead of an ambiguous
+          // "not joined yet".
+          winston.error(`[discovery-p2p] catalog unavailable at boot — retrying on the recovery ladder: ${err.message}`);
+          const stack = await import('./state/discovery-p2p-stack.js');
+          stack.armBootRetry('boot start failed');
         }
       })();
     }
