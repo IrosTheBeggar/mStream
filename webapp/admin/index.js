@@ -7828,7 +7828,7 @@ const discoveryView = Vue.component('discovery-view', {
       // Which header pane is showing (mesh map by default) and how the
       // server list renders. Session-local by design — a page load lands
       // everyone on the same view.
-      headerTab: 'mesh',
+      headerTab: 'stats',
       listMode: 'cards',
       // Activity feed: delta-polled from the dedicated p2p log ring. seq
       // cursors are server-side; entries accumulate here while the tab is
@@ -7910,43 +7910,13 @@ const discoveryView = Vue.component('discovery-view', {
                         : 'searching for peers — this page updates itself every few seconds' }}</span>
                     </div>
                     <div style="display: flex; gap: 8px; margin-top: 12px; border-bottom: 1px solid #e0e0e0; padding-bottom: 10px; flex-wrap: wrap;">
-                      <div v-on:click="headerTab = 'mesh'" :style="headerTabStyle('mesh')">Mesh</div>
                       <div v-on:click="headerTab = 'stats'" :style="headerTabStyle('stats')">Stats</div>
                       <div v-on:click="headerTab = 'activity'; loadDiscoveryActivity()" :style="headerTabStyle('activity')">Activity</div>
                       <div v-on:click="headerTab = 'invite'" :style="headerTabStyle('invite')">Invite</div>
                       <div v-on:click="headerTab = 'config'" :style="headerTabStyle('config')">Config</div>
                     </div>
-                    <div v-if="headerTab === 'mesh'" style="min-height: 200px; padding-top: 12px;">
-                      <div style="position: relative; background: #2a2a34; border-radius: 2px; padding: 8px; box-sizing: border-box; overflow-x: auto; line-height: 0;">
-                      <svg viewBox="0 0 600 240" width="600" height="240" style="width: 100%; min-width: 480px; height: auto; display: block;">
-                        <line v-for="n in meshMap.neighbors" :key="'l-' + n.id" x1="300" y1="120"
-                          :x2="n.x" :y2="n.y" stroke="#4a7c59" stroke-width="2"></line>
-                        <circle v-for="n in meshMap.outer" :key="'o-' + n.id" :cx="n.x" :cy="n.y" r="7"
-                          fill="none" :stroke="n.incompatible ? '#8a6d3b' : '#666672'" stroke-width="1.5"
-                          stroke-dasharray="2 3"></circle>
-                        <circle v-for="n in meshMap.neighbors" :key="'n-' + n.id" :cx="n.x" :cy="n.y" r="10"
-                          fill="#2e7d32"></circle>
-                        <circle cx="300" cy="120" r="18" fill="#EEE" stroke="#2e7d32" stroke-width="3"></circle>
-                        <text x="300" y="124" text-anchor="middle" font-size="11" font-weight="700"
-                          fill="#2a2a34" font-family="inherit">you</text>
-                        <text v-for="n in meshMap.neighbors" :key="'nt-' + n.id" :x="n.lx" :y="n.ly"
-                          text-anchor="middle" font-size="10" fill="#bdbdc6" font-family="inherit">{{ n.label }}</text>
-                        <text v-for="n in meshMap.outer" :key="'ot-' + n.id" :x="n.lx" :y="n.ly"
-                          text-anchor="middle" font-size="9" :fill="n.incompatible ? '#a08a5a' : '#8a8a96'"
-                          font-family="inherit">{{ n.label }}</text>
-                      </svg>
-                      <div style="position: absolute; left: 14px; bottom: 12px; max-width: calc(100% - 28px); box-sizing: border-box; line-height: 1.4; background: rgba(42, 42, 52, 0.88); border-radius: 2px; padding: 8px 12px; font-size: 12px; display: flex; flex-direction: column; gap: 5px;">
-                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; background: #2e7d32; flex-shrink: 0;"></span><span style="color: #bdbdc6;">gossip link — live mesh neighbor</span></div>
-                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; border: 1.5px dashed #666672; box-sizing: border-box; flex-shrink: 0;"></span><span style="color: #bdbdc6;">known, not currently linked</span></div>
-                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; border: 1.5px dashed #a08a5a; box-sizing: border-box; flex-shrink: 0;"></span><span style="color: #bdbdc6;">incompatible model</span></div>
-                        <div v-if="meshMap.overflow > 0" style="color: #8a8a96;">+{{ meshMap.overflow }} more server{{ meshMap.overflow === 1 ? '' : 's' }} not drawn</div>
-                      </div>
-                      </div>
-                      <div v-if="heldPeers.length > 0" style="color: #757575; font-size: 0.85em; margin-top: 8px;">You hold
-                        {{ heldPeers.length }} snapshot{{ heldPeers.length === 1 ? '' : 's' }} from these servers and seed
-                        {{ heldPeers.length === 1 ? 'it' : 'them' }} back to the mesh.</div>
-                    </div>
-                    <div v-if="headerTab === 'stats'" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; min-height: 200px; padding-top: 12px; align-content: start;">
+                    <div style="height: 300px; overflow-y: auto;">
+                    <div v-if="headerTab === 'stats'" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; padding-top: 12px; align-content: start;">
                       <div style="border: 1px solid #e0e0e0; border-radius: 2px; padding: 12px 14px;">
                         <div style="font-size: 1.3em; font-weight: 700; color: #212121;">{{ discoveryP2p.status.neighbors }}</div>
                         <div style="font-size: 0.85em; color: #757575; margin-top: 2px;">mesh neighbors</div>
@@ -7985,8 +7955,8 @@ const discoveryView = Vue.component('discovery-view', {
                         <div style="font-size: 0.8em; color: #9e9e9e; margin-top: 4px;">snapshots served back to the mesh</div>
                       </div>
                     </div>
-                    <div v-if="headerTab === 'activity'" style="min-height: 200px; padding-top: 12px;">
-                      <div style="background: #1e1e1e; color: #d4d4d4; font-family: monospace; font-size: 12px; line-height: 1.45; min-height: 200px; max-height: 260px; overflow-y: auto; padding: 10px; border-radius: 4px; white-space: pre-wrap; word-break: break-word;">
+                    <div v-if="headerTab === 'activity'" style="padding-top: 12px;">
+                      <div style="background: #1e1e1e; color: #d4d4d4; font-family: monospace; font-size: 12px; line-height: 1.45; height: 236px; overflow-y: auto; padding: 10px; border-radius: 4px; white-space: pre-wrap; word-break: break-word;">
                         <div v-if="activityFeed.length === 0" style="color: #888;">Nothing yet — mesh joins, snapshot fetches, rotation and recovery events land here as they happen.</div>
                         <div v-for="e in activityFeed" :key="e.seq">
                           <span style="color: #888;">{{ discoveryLogTime(e.t) }}</span>
@@ -7996,7 +7966,7 @@ const discoveryView = Vue.component('discovery-view', {
                       <div style="font-size: 0.75em; color: #9e9e9e; margin-top: 8px;">newest first · held in memory only — the
                       full history lives in the server logs</div>
                     </div>
-                    <div v-if="headerTab === 'invite'" style="min-height: 200px; padding-top: 12px;">
+                    <div v-if="headerTab === 'invite'" style="padding-top: 12px;">
                       <p style="font-size: 0.85em; color: #616161; margin: 0 0 8px 0;"><b style="color: #212121;">Endpoint:</b>
                         <code style="word-break: break-all; color: #757575;">{{ discoveryP2p.status.endpointId || '(sidecar not running yet)' }}</code></p>
                       <p v-if="discoveryP2p.status.ticket" style="margin-bottom: 4px; font-size: 0.85em; color: #616161;"><b style="color: #212121;">Your ticket</b>
@@ -8013,7 +7983,7 @@ const discoveryView = Vue.component('discovery-view', {
                           {{ joinPending ? 'Joining…' : 'Join' }}</a>
                       </div>
                     </div>
-                    <div v-if="headerTab === 'config'" style="min-height: 200px; padding-top: 6px;">
+                    <div v-if="headerTab === 'config'" style="padding-top: 6px;">
                       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 0 28px;">
                         <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #eee; font-size: 0.85em;">
                           <span style="color: #757575;">Snapshot storage cap</span>
@@ -8050,6 +8020,7 @@ const discoveryView = Vue.component('discovery-view', {
                             [<a v-on:click="openModal('edit-p2p-sidecar-max-rss-modal')">{{ t('admin.settings.edit') }}</a>]</span>
                         </div>
                       </div>
+                    </div>
                     </div>
                   </div>
                   <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 2px 0;">
@@ -8197,62 +8168,6 @@ const discoveryView = Vue.component('discovery-view', {
     knownServersTotal: function() {
       return this.discoveryP2p.peers.length
         + (this.discoveryP2p.showIncompatible ? 0 : this.discoveryP2p.hiddenIncompatible);
-    },
-    // Node positions for the mesh map SVG (300×210, you at 150,105).
-    // Neighbors (from status.neighborIds, protocol-bounded to the gossip
-    // fan-out) sit on an inner ring with solid links; every other catalog
-    // peer is a dashed dot on the outer ring, amber when its embedding
-    // model is incompatible. Deterministic layout — sorted by id — so the
-    // 10s poll never makes the map jiggle. The map draws what the list
-    // shows: peers hidden by the incompatible filter aren't drawn either.
-    meshMap: function() {
-      const CX = 300; const CY = 120;
-      const byId = {};
-      for (const p of this.discoveryP2p.peers) { byId[p.from] = p; }
-      const label = (id) => {
-        const known = byId[id];
-        const name = known && known.payload.name ? known.payload.name : id.slice(0, 8) + '…';
-        return name.length > 18 ? name.slice(0, 17) + '…' : name;
-      };
-      // Elliptical rings: the canvas is wide (600x240), so nodes spread
-      // into the horizontal room instead of piling labels up around a
-      // small circle at the center.
-      const place = (ids, rx, ry, lrx, lry, startDeg) => ids.map((id, i) => {
-        const a = ((startDeg + (360 / Math.max(ids.length, 1)) * i) * Math.PI) / 180;
-        const dip = Math.sin(a) > 0.3 ? 8 : 0; // below-center labels clear their node
-        return {
-          id,
-          x: Math.round(CX + rx * Math.cos(a)),
-          y: Math.round(CY + ry * Math.sin(a)),
-          lx: Math.round(CX + lrx * Math.cos(a)),
-          ly: Math.round(CY + (lry + dip) * Math.sin(a)),
-          label: label(id),
-          incompatible: !!(byId[id] && byId[id].compatible === false),
-        };
-      });
-      const allNeighborIds = [...(this.discoveryP2p.status.neighborIds || [])].sort();
-      const neighborIds = allNeighborIds.slice(0, 8);
-      const neighborSet = new Set(allNeighborIds);
-      // The outer ring's 8 slots go to the most meaningful servers, not
-      // the first 8 by id: held snapshots first (state the operator
-      // owns), then live announcers, then the rest. Rank + id tiebreak
-      // keeps the layout deterministic across polls.
-      const rank = (p) => (p.fetched ? 0 : (p.online ? 1 : 2));
-      const outerAll = this.discoveryP2p.peers
-        .filter((p) => !neighborSet.has(p.from))
-        .sort((a, b) => (rank(a) - rank(b)) || (a.from < b.from ? -1 : 1))
-        .map((p) => p.from);
-      const outerIds = outerAll.slice(0, 8);
-      return {
-        // Neighbors fan out from the top, catalog dots from the bottom —
-        // sparse maps (one node per ring) then never collide label-wise.
-        neighbors: place(neighborIds, 150, 64, 178, 80, -90),
-        outer: place(outerIds, 235, 96, 255, 110, 114),
-        // Everything not drawn, on either ring — the inner slice is
-        // unreachable while hyparview caps the active view, but a
-        // bigger fan-out must not truncate silently.
-        overflow: (allNeighborIds.length - neighborIds.length) + (outerAll.length - outerIds.length),
-      };
     },
   },
   created: async function () {
