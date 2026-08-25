@@ -23,10 +23,17 @@
  *     asset fail closed regardless.
  *   - A download that does not hash to the manifest's pin is deleted and
  *     refused — no fallback, no retry-with-less-verification.
- *   - Binaries the OPERATOR placed (anything we did not record in our install
- *     receipt) are never overwritten or second-guessed: drop a hand-built
- *     binary into bin/p2p-sidecar/ and it wins. Same for a dev cargo build —
- *     src/state/discovery-p2p.js prefers it before this module is consulted.
+ *   - The pin is law for every binary this module manages, WHOEVER put it
+ *     there: a file at the managed path that does not hash to the manifest
+ *     pin is replaced with the pinned build (or, if that can't be fetched,
+ *     refused with the cause). One pinned sidecar everywhere — a binary
+ *     that drifts from the manifest means different installs run different
+ *     network behaviour, and a stale one can quietly reintroduce a fixed
+ *     bug (the v1.0.1 connection leak being the motivating scar). The ONE
+ *     deliberate override left is the dev cargo build at
+ *     p2p-sidecar/target/release/ — src/state/discovery-p2p.js prefers it
+ *     before this module is consulted — which also covers self-built
+ *     binaries for platforms the manifest doesn't pin.
  *
  * The download transport (https-or-loopback policy, redirect cap, socket
  * timeout) is shared with ffmpeg-bootstrap. MSTREAM_SIDECAR_BASE overrides
@@ -42,6 +49,10 @@ import { spawn } from 'node:child_process';
 import winston from 'winston';
 import { appRoot, dataRoot } from './esm-helpers.js';
 import { downloadToFile, computeFileChecksum } from './ffmpeg-bootstrap.js';
+
+// Re-exported for discovery-p2p.js's read-only-root pin check (a bundle's
+// staged binary can't be replaced in place, so acquire verifies it here).
+export { computeFileChecksum };
 import { writeJsonAtomic } from './atomic-json.js';
 
 const FAMILY = 'p2p-sidecar';
@@ -151,11 +162,11 @@ export function deriveAssetUrl({ repo, tag, file }) {
 // ── Install receipt ──────────────────────────────────────────────────────────
 
 // Records the sha256 of every binary THIS module installed, keyed by
-// filename. Its absence for an existing file is the provenance marker that
-// the OPERATOR put it there (hand-built, baked into a Docker image, or a
-// pre-migration git checkout) — those are never refreshed or replaced, the
-// same hands-off rule ffmpeg-bootstrap applies to custom ffmpegDirectory
-// installs via its .checksum baseline.
+// filename. PROVENANCE ONLY since pin enforcement landed: whether a file is
+// current is decided by hashing it against the manifest pin, never by who
+// installed it (a receipt says who put a file there, not what the file is
+// now). Kept because "did the fetcher or a human install this" is still a
+// useful forensic fact — image bakes write it, hand-copies don't.
 const RECEIPT_FILE = '.fetched.json';
 
 function readReceipt(installDir) {
@@ -220,16 +231,20 @@ let _ensure = null;
 /**
  * Make sure a usable sidecar binary exists at the managed path.
  *
- *   - present + not installed by us (no receipt entry) → returned untouched
- *     (operator-supplied; theirs to manage).
- *   - present + ours + receipt matches the manifest pin → returned as-is.
- *   - present + ours + manifest moved on → the new build is downloaded,
- *     verified, probed, and swapped in (rename-aside dance so a locked or
- *     failing swap can roll back).
+ *   - present + hashes to the manifest pin → returned as-is, whoever
+ *     installed it (the hash IS the check; receipts are provenance only).
+ *   - present + does NOT hash to the pin — stale receipted install,
+ *     operator-placed build, bit rot alike → the pinned build is
+ *     downloaded, verified, probed, and swapped in (rename-aside dance so
+ *     a locked or failing swap can roll back). If the fetch fails, this
+ *     throws rather than running the drifted binary: one pinned sidecar
+ *     everywhere. The dev cargo build is the deliberate escape hatch,
+ *     preferred by discovery-p2p.js before this module is consulted.
  *   - absent + manifest has an entry → downloaded, verified, probed,
  *     installed.
- *   - absent + no manifest entry for this platform → null (callers degrade
- *     with their own actionable error; nothing is fetched unverified).
+ *   - present-or-absent + no manifest entry for this platform → whatever
+ *     exists is returned untouched (nothing to enforce against), else null
+ *     (callers degrade with their own actionable error).
  *
  * Throws on download/verification/probe failures — the caller (discovery-p2p
  * start(), which the admin route and boot both funnel through) surfaces the
@@ -263,10 +278,10 @@ async function ensureInto({ manifestDir = defaultManifestDir(), installDir, key 
   }
 
   if (exists) {
-    const receipt = readReceipt(installDir);
-    if (!(key in receipt)) { return dest; }           // operator-supplied: hands off
-    if (receipt[key] === entry.sha256) { return dest; } // ours and current
-    winston.info(`[${FAMILY}] a newer sidecar build is pinned by the manifest — updating ${key}`);
+    const actual = await computeFileChecksum(dest);
+    if (actual === entry.sha256) { return dest; }     // matches the pin: current, whoever installed it
+    winston.info(`[${FAMILY}] ${key} on disk (${actual.slice(0, 12)}…) does not match the manifest pin `
+      + `(${entry.sha256.slice(0, 12)}…) — replacing it with the pinned build`);
   }
 
   await fsp.mkdir(installDir, { recursive: true });

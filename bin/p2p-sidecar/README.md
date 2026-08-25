@@ -24,9 +24,18 @@ Binary naming convention: `p2p-sidecar-{platform}-{arch}[-musl][.exe]`,
 matching Node's `process.platform` / `process.arch`, with `-musl` selected
 at runtime on musl-libc hosts.
 
+The pin is enforced, not advisory: where a manifest entry exists for this
+platform, a binary here (or at the managed install path) that does not
+hash to the pin is replaced with the pinned build — whoever put it there.
+The one deliberate override is a dev cargo build at
+`p2p-sidecar/target/release/` (clone the sidecar repo into this checkout
+and `cargo build --release`), which also covers self-built binaries for
+platforms the manifests don't pin.
+
 Release bundles are different: they ship the sidecar staged next to the
-server at build time (and signed on Windows), so bundle installs never hit
-this fetch path. It exists for npm, source-checkout, and Docker installs.
+server at build time (and signed on Windows), verified against the same
+pins their manifest symlink carries. The fetch path exists for npm,
+source-checkout, and Docker installs.
 
 ## Doing it yourself instead
 
