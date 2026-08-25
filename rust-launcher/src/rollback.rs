@@ -153,8 +153,12 @@ fn record_hold(data_home: &Path, version: &str, reason: &str) -> Result<(), Stri
 }
 
 /// `<bin> -V`, bounded: does the rollback target's server still exec here?
-/// Same bar as the installers' probe-before-flip — never hand off into a
-/// binary that cannot even start (the watchdog would just fire again).
+/// Deliberately SHALLOW — the installers' pre-flip probe also runs the deep
+/// `--boot-probe` (module graph, config, db schema), but a rollback target
+/// is judged availability-first: it RAN on this machine before, and after a
+/// crash the choice is between a server with a caveat (say, scans refusing
+/// on a migrated db) and no server at all. Never hand off into a binary
+/// that cannot even start, nothing stricter.
 pub fn probe_server(bin: &Path) -> bool {
     let Ok(mut child) = std::process::Command::new(bin)
         .arg("-V")
