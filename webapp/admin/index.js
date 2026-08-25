@@ -811,7 +811,7 @@ const foldersView = Vue.component('folders-view', {
               <div class="card-content">
                 <span class="card-title">{{ t('admin.folders.title') }}</span>
                 <div style="display: flex; flex-wrap: wrap; border: 1px solid #e0e0e0; border-radius: 2px; overflow: hidden; margin-top: 8px;">
-                  <div style="flex: 1.5 1 300px; min-width: 0; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column;">
+                  <div style="flex: 1.5 1 300px; min-width: 0; height: 400px; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column;">
                     <div style="padding: 9px 14px; background: #f5f5f5; border-bottom: 1px solid #e0e0e0; font-size: 0.85em; color: #616161; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
                       <select v-if="winDrives.length > 0" @change="browseTo($event.target.value)" class="browser-default"
                         style="width: auto; height: 26px; font-size: 12px; padding: 0 4px; display: inline-block;">
@@ -830,8 +830,8 @@ const foldersView = Vue.component('folders-view', {
                     <div v-if="browse.path === null || browse.pending" style="padding: 30px; text-align: center;">
                       <svg class="spinner" width="40px" height="40px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
                     </div>
-                    <div v-else style="max-height: 340px; overflow-y: auto;">
-                      <div v-on:click="browseTo(browse.path, '..')" style="padding: 8px 14px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #f0f0f0; color: #616161; cursor: pointer; font-size: 0.9em;">
+                    <div v-else style="flex: 1 1 auto; min-height: 0; overflow-y: auto;">
+                      <div v-if="breadcrumbs.length > 1" v-on:click="browseTo(browse.path, '..')" style="padding: 8px 14px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #f0f0f0; color: #616161; cursor: pointer; font-size: 0.9em;">
                         <svg width="18" height="15" viewBox="0 0 48 48" style="flex-shrink: 0;"><path fill="#bdbdbd" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/></svg>
                         .. up one level
                       </div>
@@ -840,16 +840,17 @@ const foldersView = Vue.component('folders-view', {
                         <svg width="18" height="15" viewBox="0 0 48 48" style="flex-shrink: 0;"><path fill="#FFA000" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/><path fill="#FFCA28" d="M42.2 18H15.3c-1.9 0-3.6 1.4-3.9 3.3L8 40h31.7c1.9 0 3.6-1.4 3.9-3.3l2.5-14c.5-2.4-1.4-4.7-3.9-4.7z"/></svg>
                         <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="dir.name">{{ dir.name }}</span>
                         <span v-if="isSelected(dir.name)" style="margin-left: auto; font-size: 0.85em; color: #2e7d32; font-weight: 600; flex-shrink: 0;">selected</span>
-                        <a v-else v-on:click.stop="browseTo(browse.path, dir.name)" style="margin-left: auto; font-size: 0.85em; flex-shrink: 0;">open</a>
+                        <a v-on:click.stop="browseTo(browse.path, dir.name)"
+                          :style="'font-size: 0.85em; flex-shrink: 0;' + (isSelected(dir.name) ? '' : ' margin-left: auto;')">open</a>
                       </div>
                       <div v-if="browse.dirs.length === 0" style="padding: 14px; color: #9e9e9e; font-size: 0.85em;">No subfolders here.</div>
                     </div>
                     <div style="padding: 7px 14px; border-top: 1px solid #f0f0f0; font-size: 0.8em; color: #9e9e9e; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 8px; margin-top: auto;">
-                      <span>{{ browse.dirs.length }} folder{{ browse.dirs.length === 1 ? '' : 's' }} · click selects, open browses</span>
+                      <span>{{ browse.dirs.length }} folder{{ browse.dirs.length === 1 ? '' : 's' }} · double click to open</span>
                       <span style="white-space: nowrap;">[<a v-on:click="selectCurrent()">select this folder</a>]</span>
                     </div>
                   </div>
-                  <div style="flex: 1 1 240px; min-width: 0; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; background: #fafafa;">
+                  <div style="flex: 1 1 240px; min-width: 0; min-height: 400px; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; background: #fafafa; box-sizing: border-box;">
                     <div>
                       <div style="font-size: 0.75em; letter-spacing: 0.8px; color: #757575; margin-bottom: 4px;">ADDING</div>
                       <div v-if="selected" style="font-family: monospace; font-size: 0.85em; color: #212121; word-break: break-all;">{{ selected }}</div>
