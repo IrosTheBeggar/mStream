@@ -36,7 +36,7 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import winston from 'winston';
 import { appRoot, dataRoot } from './esm-helpers.js';
 import { downloadToFile, computeFileChecksum } from './ffmpeg-bootstrap.js';
@@ -150,6 +150,21 @@ export function installedPlayerPath({ bundledDir = defaultManifestDir(), install
     if (fs.existsSync(candidate)) { return candidate; }
   }
   return null;
+}
+
+// The linux player links libasound at LOAD time (it is an audio engine
+// first), so on a headless box without ALSA even `--version` dies with a
+// loader error — an invitation must not greet a fresh install with that.
+// Non-linux platforms link only ever-present system audio (CoreAudio /
+// WASAPI), so they are always loadable.
+export function playerLoadableHere() {
+  if (process.platform !== 'linux') { return true; }
+  try {
+    return execSync('ldconfig -p', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      .includes('libasound.so.2');
+  } catch (_err) {
+    return false; // no ldconfig ⇒ can't prove ALSA ⇒ don't print a command that may die
+  }
 }
 
 // The one place a download URL is built from the pins. Exported so the
