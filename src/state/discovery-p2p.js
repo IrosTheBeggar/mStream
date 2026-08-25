@@ -97,10 +97,18 @@ const pending = new Map(); // id -> { resolve, reject, timer }
 // 10-minute compile inside a request is worse than a clear error. The
 // DOWNLOAD lives in start()'s async path, never here — status routes call
 // this synchronously and must stay side-effect free.
+// The dev cargo build: the ONE deliberate override of the manifest pin —
+// the development loop, and the self-built escape hatch for platforms the
+// manifest doesn't cover. Everything else is pin-enforced in
+// acquireSidecarBinary below.
+function devBuildPath() {
+  return path.join(appRoot, 'p2p-sidecar', 'target', 'release', `p2p-sidecar${ext}`);
+}
+
 export function resolveSidecarBinary() {
   const name = `p2p-sidecar-${process.platform}-${process.arch}${libcSuffix}${ext}`;
   const prebuilt = path.join(appRoot, 'bin', 'p2p-sidecar', name);
-  const localBuild = path.join(appRoot, 'p2p-sidecar', 'target', 'release', `p2p-sidecar${ext}`);
+  const localBuild = devBuildPath();
   // Local build first: the crate lives in its own repo now
   // (IrosTheBeggar/mstream-p2p-sidecar), and the dev loop is cloning it into
   // this checkout as p2p-sidecar/ (gitignored) and `cargo build --release`
@@ -183,17 +191,41 @@ export function killSidecarForRestart() {
 // actionable cause (checksum refused, no build published, download failed).
 async function acquireSidecarBinary() {
   const bin = resolveSidecarBinary();
-  // Local build / operator prebuilt: theirs to manage, never second-guessed.
-  // Only the MANAGED path flows through ensureSidecar(), which also picks up
-  // pinned updates for installs it made itself (receipt-gated).
-  if (bin && bin !== sidecarBootstrap.managedSidecarPath()) { return bin; }
+
+  // The dev build is the one deliberate pin override: the development loop,
+  // and the self-built path for unpinned platforms. Everything else runs
+  // exactly the manifest-pinned build — one pinned sidecar everywhere, so
+  // install types can't drift apart in network behaviour (and a stale
+  // binary can't quietly reintroduce a fixed bug).
+  if (bin && bin === devBuildPath()) {
+    winston.info('[p2p-sidecar] using the dev cargo build — the manifest pin does not apply to it');
+    return bin;
+  }
+
+  // A prebuilt that is NOT the managed path (read-only appRoot: a bundle's
+  // staged binary, a system-prefix install) can't be replaced in place —
+  // verify it against the pin where one exists: a match (the normal bundle
+  // case — staged from the same pinned release at build time) is used
+  // as-is; a mismatch falls through to ensureSidecar, which fetches the
+  // pinned build into the writable managed dir instead.
+  if (bin && bin !== sidecarBootstrap.managedSidecarPath()) {
+    const entry = sidecarBootstrap.manifestEntry();
+    if (!entry) { return bin; } // nothing pinned for this platform — nothing to enforce
+    const actual = await sidecarBootstrap.computeFileChecksum(bin);
+    if (actual === entry.sha256) { return bin; }
+    winston.warn(`[p2p-sidecar] staged binary at ${bin} does not match the manifest pin `
+      + `(${actual.slice(0, 12)}… vs ${entry.sha256.slice(0, 12)}…) — using the managed install instead`);
+  }
+
+  // The managed path: ensureSidecar hash-verifies what exists against the
+  // pin and downloads/replaces as needed (or throws with the cause).
   const ensured = await sidecarBootstrap.ensureSidecar();
   if (ensured) { return ensured; }
   if (bin) { return bin; } // on disk but unmanaged coverage — still spawnable
   throw new Error(
     'p2p-sidecar binary not found and no downloadable build is pinned for this platform — ' +
-    'place a prebuilt at bin/p2p-sidecar/, or clone+build the sidecar repo into this checkout ' +
-    '(see bin/p2p-sidecar/README.md)');
+    'clone+build the sidecar repo into this checkout (the dev build overrides the pin; ' +
+    'see bin/p2p-sidecar/README.md), or publish a build for this platform');
 }
 
 // Start the sidecar (idempotent; concurrent callers await the same spawn).

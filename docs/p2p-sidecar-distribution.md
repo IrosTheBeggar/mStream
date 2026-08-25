@@ -51,13 +51,22 @@ is fetched only when the discovery network is turned on.
    hash or probe deletes the download and the feature degrades with the
    cause in the log. `stop()` during the download window is handled by a
    start-generation gate so an aborted start can never orphan a sidecar.
-4. **Humans always win.** Resolution order: nested-clone dev build
-   (`p2p-sidecar/target/release/`, the directory is gitignored for exactly
-   this) → operator-placed binary in `bin/p2p-sidecar/` → managed install.
-   The fetcher records its own installs in `.fetched.json`; anything
-   without a receipt entry is operator property, never refreshed or
-   replaced. Receipted installs *are* refreshed when the manifest pins a
-   newer release.
+4. **One pinned sidecar everywhere; the dev build is the one override.**
+   Resolution order: nested-clone dev build (`p2p-sidecar/target/release/`,
+   gitignored for exactly this — the development loop, and the self-built
+   path for platforms the manifest doesn't pin) → `bin/p2p-sidecar/` →
+   managed install. Where the manifest pins this platform, whatever sits at
+   the non-dev paths must **hash to the pin**: a drifted binary — stale
+   fetch, hand-copied build, bit rot — is replaced with the pinned build
+   where the path is writable, or bypassed for the managed install where it
+   isn't (a bundle's read-only staging). If the pinned build can't be
+   fetched either, the start fails with the cause rather than running the
+   drifted binary; the boot-retry ladder keeps trying. This is deliberate:
+   provenance used to buy exemption ("operator property, never touched"),
+   which meant different install types could quietly run different sidecar
+   behaviour — and a stale binary could reintroduce a fixed bug. The
+   `.fetched.json` receipt remains as provenance only. Platforms with no
+   manifest entry keep the old behaviour: whatever exists is used untouched.
 5. **Release bundles don't use any of this**: they ship the sidecar staged
    next to the server at bundle-build time (fetched from the same release
    assets, sha256-verified, and Authenticode-signed on Windows along with

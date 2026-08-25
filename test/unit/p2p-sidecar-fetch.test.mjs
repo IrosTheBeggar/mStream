@@ -205,37 +205,87 @@ describe('p2p-sidecar-bootstrap: manifest-pinned fetch', () => {
     assert.equal(hits.length, 0, `no request may leave for a malformed pin, saw: ${hits.join(', ')}`);
   });
 
-  test('operator-placed binary (no receipt) is used as-is and never re-fetched', async () => {
-    const { manifestDir, installDir } = freshDirs('operator');
+  test('a binary matching the pin is used as-is — no receipt required, no download', async () => {
+    // Pin enforcement is a HASH check, not a provenance check: a hand-copied
+    // or image-baked file that IS the pinned build passes untouched.
+    const { manifestDir, installDir } = freshDirs('pinned-copy');
     writeManifest(manifestDir);
     const dest = path.join(installDir, KEY);
-    fs.writeFileSync(dest, 'my hand-built sidecar');
+    fs.writeFileSync(dest, GOOD_BODY); // right bytes, no receipt
 
     const resolved = await ensureSidecar({ manifestDir, installDir, probe: okProbe });
     assert.equal(resolved, dest);
-    assert.equal(fs.readFileSync(dest, 'utf8'), 'my hand-built sidecar');
-    assert.equal(hits.length, 0, 'an operator binary must never trigger a download');
+    assert.equal(hits.length, 0, 'a pin-matching binary must never trigger a download');
+    assert.equal(fs.existsSync(path.join(installDir, '.fetched.json')), false,
+      'and adoption must not fake a receipt — provenance stays honest');
   });
 
-  test('our own install is refreshed when the manifest moves on (receipt-gated)', async () => {
+  test('a binary that does not hash to the pin is replaced — whoever installed it', async () => {
+    // THE contract change (one pinned sidecar everywhere): provenance used
+    // to buy exemption — an unreceipted file was "operator property, never
+    // touched" — which let install types drift apart and a stale binary
+    // quietly reintroduce a fixed bug. Now the pin is law; the dev cargo
+    // build (checked before this module is consulted) is the one override.
+    const { manifestDir, installDir } = freshDirs('drifted');
+    writeManifest(manifestDir);
+    const dest = path.join(installDir, KEY);
+    fs.writeFileSync(dest, 'my hand-built sidecar'); // no receipt, wrong hash
+
+    const resolved = await ensureSidecar({ manifestDir, installDir, probe: okProbe });
+    assert.equal(resolved, dest);
+    assert.equal(hits.length, 1, 'the drifted binary must be re-fetched to the pin');
+    assert.deepEqual(fs.readFileSync(dest), GOOD_BODY, 'pinned bytes on disk');
+    assert.equal(fs.existsSync(`${dest}.old`), false, 'rename-aside swept');
+  });
+
+  test('a drifted binary that cannot be re-fetched fails the ensure and stays on disk untouched', async () => {
+    // Degrade loudly rather than run drift: the caller surfaces the cause
+    // (and the boot-retry ladder keeps trying); the file is left exactly as
+    // found — replacing it with nothing would be strictly worse.
+    const { manifestDir, installDir } = freshDirs('drift-dead');
+    writeManifest(manifestDir);
+    responseBody = EVIL_BODY; // the store serves bytes that fail the pin
+    const dest = path.join(installDir, KEY);
+    fs.writeFileSync(dest, 'my hand-built sidecar');
+
+    await assert.rejects(
+      () => ensureSidecar({ manifestDir, installDir, probe: okProbe }),
+      /checksum mismatch/);
+    assert.equal(fs.readFileSync(dest, 'utf8'), 'my hand-built sidecar',
+      'the existing file is untouched by a failed replacement');
+    assert.equal(fs.existsSync(path.join(installDir, `.staging-${KEY}`)), false, 'staging cleaned');
+  });
+
+  test('no manifest entry: an existing binary is untouched — nothing to enforce against', async () => {
+    const { manifestDir, installDir } = freshDirs('unpinned-platform');
+    // No manifest written at all.
+    const dest = path.join(installDir, KEY);
+    fs.writeFileSync(dest, 'self-built for an unpinned platform');
+    const resolved = await ensureSidecar({ manifestDir, installDir, probe: okProbe });
+    assert.equal(resolved, dest);
+    assert.equal(fs.readFileSync(dest, 'utf8'), 'self-built for an unpinned platform');
+    assert.equal(hits.length, 0);
+  });
+
+  test('an install is refreshed when the manifest moves on (hash-gated)', async () => {
     const { manifestDir, installDir } = freshDirs('upgrade');
     writeManifest(manifestDir);
     await ensureSidecar({ manifestDir, installDir, probe: okProbe });
     assert.equal(hits.length, 1);
 
-    // Same manifest again: receipt matches, no new download.
+    // Same manifest again: the on-disk hash matches the pin, no new download.
     reset();
     const again = await ensureSidecar({ manifestDir, installDir, probe: okProbe });
     assert.equal(again, path.join(installDir, KEY));
     assert.equal(hits.length, 1, 'a current install must not re-download');
 
-    // Manifest now pins a NEW build → refresh.
+    // Manifest now pins a NEW build → the on-disk hash no longer matches → refresh.
     const v2 = Buffer.from('sidecar v2 bytes, longer than before to be sure'.repeat(8));
     writeManifest(manifestDir, { body: v2 });
     responseBody = v2;
     reset();
     const upgraded = await ensureSidecar({ manifestDir, installDir, probe: okProbe });
-    assert.equal(hits.length, 2, 'a stale receipt must trigger exactly one refresh download');
+    assert.equal(hits.length, 2, 'a stale binary must trigger exactly one refresh download');
     assert.deepEqual(fs.readFileSync(upgraded), v2);
     const receipt = JSON.parse(fs.readFileSync(path.join(installDir, '.fetched.json'), 'utf8'));
     assert.equal(receipt[KEY], sha256(v2));
