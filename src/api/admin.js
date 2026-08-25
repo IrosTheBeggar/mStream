@@ -570,6 +570,12 @@ export function setup(mstream) {
       ticket: discoveryP2p.getEndpointTicket(),
       joined,
       neighbors,
+      // Who those neighbors are (endpoint ids), tracked from the sidecar's
+      // neighbor events. Bounded by the gossip fan-out (hyparview active
+      // view), so never more than a handful. The panel's mesh map joins
+      // these against the catalog for names; `neighbors` above (the
+      // sidecar's own count) stays the authority for how many.
+      neighborIds: discoveryP2p.getNeighborIds(),
       // Sidecar memory + watchdog posture (#885): lastRssMb is the
       // mesh-health watch's most recent reading (null before the first
       // tick or where RSS can't be read), restarts counts watchdog kills
@@ -853,6 +859,21 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
     await admin.editRotationDays(req.body.rotationDays);
+    res.json({});
+  });
+
+  // RSS ceiling (MB) for the sidecar memory watchdog (#885); 0 turns the
+  // watchdog off. Live: the mesh-health watch reads the config fresh every
+  // tick, so the next tick enforces the new ceiling — no restart and no
+  // stack bounce. Bounds mirror the config Joi
+  // (discoveryP2pOptions.sidecarMaxRssMb).
+  mstream.post("/api/v1/admin/discovery/p2p/sidecar-max-rss", async (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({
+      sidecarMaxRssMb: Joi.number().integer().min(0).max(100000).required(),
+    });
+    joiValidate(schema, req.body);
+    await admin.editSidecarMaxRssMb(req.body.sidecarMaxRssMb);
     res.json({});
   });
 
