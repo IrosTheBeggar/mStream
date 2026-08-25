@@ -71,8 +71,14 @@ function Make-Bundle([string]$ver, [string]$stubBody) {
     Copy-Item $launcher (Join-Path $b 'mStream.exe')
     $src = Join-Path $smoke "stub-$ver.rs"
     Set-Content -Path $src -Value $stubBody -Encoding ASCII
-    & rustc -O $src -o (Join-Path $b 'mstream-server.exe') 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "rustc failed for the $ver stub" }
+    # --crate-name: rustc derives it from the file name otherwise, and dots
+    # in versions make an invalid crate name. stderr goes to a file, not
+    # 2>&1: under ErrorActionPreference=Stop, PS 5.1 turns any native
+    # stderr line into a terminating NativeCommandError.
+    $crate = 'stub_' + ($ver -replace '[^0-9A-Za-z]', '_')
+    $errf = Join-Path $smoke "rustc-$ver.err"
+    & rustc -O --crate-name $crate $src -o (Join-Path $b 'mstream-server.exe') 2>$errf | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "rustc failed for the $ver stub - see $errf" }
     return $b
 }
 
