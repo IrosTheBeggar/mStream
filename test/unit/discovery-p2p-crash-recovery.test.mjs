@@ -97,6 +97,17 @@ function makeFixedStack({ spawnFails = 0 } = {}) {
     scheduleRecovery();
   }
 
+  // What server.js's boot catch calls when the FIRST start of the session
+  // failed: config intent is on, so establish the running intent and walk
+  // the same ladder a crash gets. No-ops when a later start already won or
+  // the operator's flag is off.
+  function armBootRetry() {
+    if (running) { return; }
+    if (!configEnabled) { return; }
+    running = true;
+    scheduleRecovery();
+  }
+
   function scheduleRecovery() {
     if (!running || recoveryTimer) { return; }
     const delay = RECOVERY_DELAYS_MS[Math.min(recoveryAttempts, RECOVERY_DELAYS_MS.length - 1)];
@@ -124,7 +135,7 @@ function makeFixedStack({ spawnFails = 0 } = {}) {
   function lazyStartSidecarOnly() { sidecarAlive = true; }
 
   return {
-    start, stop, disable, onUnexpectedExit, lazyStartSidecarOnly,
+    start, stop, disable, onUnexpectedExit, armBootRetry, lazyStartSidecarOnly,
     // Arm the NEXT n respawns to fail, so a test can drive the ladder. Has
     // to reach the closure's own start(); a monkeypatched .start property
     // would never be seen by scheduleRecovery.
@@ -379,4 +390,50 @@ test('NEGATIVE CONTROL: an ungated re-arm resurrects a stack the operator disabl
   assert.equal(s.sidecarAlive, true,
     'ungated: the failed attempt re-armed and the next rung brought it back — config off, stack on');
   assert.equal(s.configEnabled, false, 'while the operator-facing flag still says disabled');
+});
+
+
+// The boot-failure flavor: the ladder used to arm only after a SUCCESSFUL
+// start, so a transient failure during the boot start (a flaky first-install
+// sidecar download, a briefly wedged data dir) disabled the feature for the
+// whole session — the last remaining "config enabled, nothing running,
+// nothing retrying" path.
+test('a failed boot start walks the ladder instead of disabling the feature for the session', async () => {
+  const stack = makeFixedStack({ spawnFails: 1 });   // the boot attempt fails...
+  await stack.start().catch(() => stack.armBootRetry()); // ...and the boot catch arms the ladder
+  assert.equal(stack.state().sidecarAlive, false, 'boot attempt genuinely failed');
+
+  await settle(40);                                  // first rung (5ms here) retries
+  const s = stack.state();
+  assert.equal(s.sidecarAlive, true, 'the ladder must bring the stack up');
+  assert.equal(s.joined, true, 'fully — spawn AND join, not a bare respawn');
+});
+
+test('NEGATIVE CONTROL: without the boot arm, a boot failure is a session-long outage', async () => {
+  const stack = makeLegacyStack();
+  // Legacy shape: boot catch only logged. Model the failed boot as "never
+  // started" — nothing is armed, nothing ever retries.
+  await settle(40);
+  const s = stack.state();
+  assert.equal(s.sidecarAlive, false, 'old logic: off for the whole session');
+  assert.equal(s.starts, 0);
+});
+
+test('the boot arm respects the config: a disabled feature is not resurrected', async () => {
+  const stack = makeFixedStack({ spawnFails: 1 });
+  await stack.disable();                             // operator's flag is off
+  await stack.start().catch(() => stack.armBootRetry());
+  await settle(60);
+  assert.equal(stack.state().sidecarAlive, false, 'no ladder for a feature the config says is off');
+  assert.equal(stack.state().running, false);
+});
+
+test('the boot arm is a no-op when a later start already won the race', async () => {
+  const stack = makeFixedStack();
+  await stack.start();                               // e.g. the admin enable route got there first
+  stack.armBootRetry();
+  await settle(40);
+  const s = stack.state();
+  assert.equal(s.starts, 1, 'no second start, no timer churn');
+  assert.equal(s.sidecarAlive, true);
 });
