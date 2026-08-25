@@ -367,11 +367,42 @@ try {
         } finally { $envKey.Close() }
     }
 
+    # A LAUNCHER this script manages is running the old version: ask IT to
+    # restart into the new one through the same armed-status-file contract
+    # the in-app updater uses - the tray polls update-status.json once a
+    # minute and performs the graceful stop + takeover itself, with its
+    # full guard set (never a held version, never its own version, only
+    # while its server is up). The installer itself still never kills
+    # anything; headless servers and copies we don't own keep the warning.
+    $relaunchArmed = $false
+    if ($installedFresh -and -not $env:MSTREAM_NO_RELAUNCH) {
+        $ownedLauncher = @(Get-Process mStream -ErrorAction SilentlyContinue | Where-Object {
+            $_.Path -and $_.Path.StartsWith("$root\", [StringComparison]::OrdinalIgnoreCase) -and
+            ((Split-Path $_.Path -Parent) -ne $final)
+        })
+        if ($ownedLauncher.Count -gt 0) {
+            $dataHome = Join-Path $env:LOCALAPPDATA 'mStream'
+            New-Item -ItemType Directory -Force $dataHome | Out-Null
+            $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            # No `current` field on purpose: the launcher treats an absent
+            # current as "staged version is new", and this script cannot
+            # know the running version.
+            $doc = '{"schema":1,"latest":"' + $ver + '","available":true,"method":"managed",' +
+                   '"staged":true,"stagedVersion":"' + $ver + '","applyRequested":true,' +
+                   '"applyRequestedAt":"' + $now + '"}'
+            $tmpStatus = Join-Path $dataHome ".update-status-installer-$PID"
+            Set-Content -Path $tmpStatus -Value $doc -Encoding ASCII
+            Move-Item -Force $tmpStatus (Join-Path $dataHome 'update-status.json')
+            $relaunchArmed = $true
+            Write-Host "  the running mStream restarts into $ver within a minute (its tray does the switch; set MSTREAM_NO_RELAUNCH=1 to leave it on the old version)"
+        }
+    }
+
     # An instance running from somewhere else stays on its own version until
     # it is restarted - the script never kills a user's server. Say so, with
     # the exact path, instead of letting "installed" imply "upgraded".
     $elsewhere = @($runningFrom | Where-Object { $_ -ne $final -and $_ -ne $current })
-    if ($elsewhere) {
+    if ($elsewhere -and -not $relaunchArmed) {
         Write-Warning ("mStream is currently running from $($elsewhere -join ', ') - it keeps running that version " +
                        "until you Quit it (tray icon) and start the new one; the Start Menu entry now points at $ver.")
     }

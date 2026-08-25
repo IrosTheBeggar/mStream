@@ -94,8 +94,11 @@ mk_bundle "9.9.9" "NEW-marker" "printf '{\"schema\":1,\"current\":\"9.9.9\",\"st
 ln -s "$ROOT/mStream-9.9.9-$KEY" "$ROOT/current"
 echo '{"port":'"$PORT"'}' > "$DATA/conf/default.json"
 
-# The armed file the server's auto mode leaves for the launcher.
-printf '{"schema":1,"current":"0.0.1","latest":"9.9.9","available":true,"method":"managed","staged":true,"stagedVersion":"9.9.9","applyRequested":true,"applyRequestedAt":"2026-01-01T00:00:00.000Z"}\n' \
+# The armed file, in the MINIMAL form install.sh's relaunch arming writes
+# (no `current` — the installer cannot know the running version, and the
+# launcher treats its absence as "staged version is new"). The server's own
+# auto mode writes a superset; consuming the minimal form here covers both.
+printf '{"schema":1,"latest":"9.9.9","available":true,"method":"managed","staged":true,"stagedVersion":"9.9.9","applyRequested":true,"applyRequestedAt":"2026-01-01T00:00:00.000Z"}\n' \
     > "$DATA/update-status.json"
 
 echo "starting the OLD (0.0.1) launcher; current is staged at 9.9.9; apply is armed..."
