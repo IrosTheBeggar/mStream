@@ -8206,15 +8206,18 @@ const discoveryView = Vue.component('discovery-view', {
         const name = known && known.payload.name ? known.payload.name : id.slice(0, 8) + '…';
         return name.length > 18 ? name.slice(0, 17) + '…' : name;
       };
-      const place = (ids, radius, labelRadius, startDeg) => ids.map((id, i) => {
+      // Elliptical rings: the canvas is wide (600x240), so nodes spread
+      // into the horizontal room instead of piling labels up around a
+      // small circle at the center.
+      const place = (ids, rx, ry, lrx, lry, startDeg) => ids.map((id, i) => {
         const a = ((startDeg + (360 / Math.max(ids.length, 1)) * i) * Math.PI) / 180;
-        const lr = labelRadius + (Math.sin(a) > 0.3 ? 8 : 0); // below-center labels clear their node
+        const dip = Math.sin(a) > 0.3 ? 8 : 0; // below-center labels clear their node
         return {
           id,
-          x: Math.round(CX + radius * Math.cos(a)),
-          y: Math.round(CY + radius * Math.sin(a)),
-          lx: Math.round(CX + lr * Math.cos(a)),
-          ly: Math.round(CY + lr * Math.sin(a)),
+          x: Math.round(CX + rx * Math.cos(a)),
+          y: Math.round(CY + ry * Math.sin(a)),
+          lx: Math.round(CX + lrx * Math.cos(a)),
+          ly: Math.round(CY + (lry + dip) * Math.sin(a)),
           label: label(id),
           incompatible: !!(byId[id] && byId[id].compatible === false),
         };
@@ -8235,8 +8238,8 @@ const discoveryView = Vue.component('discovery-view', {
       return {
         // Neighbors fan out from the top, catalog dots from the bottom —
         // sparse maps (one node per ring) then never collide label-wise.
-        neighbors: place(neighborIds, 72, 96, -90),
-        outer: place(outerIds, 96, 110, 114),
+        neighbors: place(neighborIds, 150, 64, 178, 80, -90),
+        outer: place(outerIds, 235, 96, 255, 110, 114),
         // Everything not drawn, on either ring — the inner slice is
         // unreachable while hyparview caps the active view, but a
         // bigger fan-out must not truncate silently.
