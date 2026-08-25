@@ -1194,7 +1194,8 @@ const usersView = Vue.component('users-view', {
                     <p style="margin: 0; color: #757575;">{{ t('admin.users.addWarning') }}</p>
                   </div>
                   <div style="display: flex; flex-wrap: wrap; border: 1px solid #e0e0e0; border-radius: 2px; overflow: hidden; margin-top: 8px;">
-                    <div style="flex: 1 1 210px; min-width: 0; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column;">
+                    <div style="flex: 1 1 210px; min-width: 0; max-height: 660px; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column;">
+                      <div style="flex: 1 1 auto; min-height: 0; overflow-y: auto;">
                       <div v-for="(v, k) in users" :key="k" v-on:click="selectUser(k)"
                         :style="'padding: 10px 14px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #f0f0f0; cursor: pointer;' + (selectedUser === k ? ' background: #e8f5e9;' : '')">
                         <span :style="'width: 30px; height: 30px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; flex-shrink: 0;' + (v.admin === true ? ' background: #505061; color: #fff;' : ' background: #ececf2; color: #505061;')">{{ initialOf(k) }}</span>
@@ -1204,12 +1205,13 @@ const usersView = Vue.component('users-view', {
                           <span v-else style="font-size: 11px; color: #9e9e9e;">{{ v.vpaths.length }} librar{{ v.vpaths.length === 1 ? 'y' : 'ies' }}</span>
                         </span>
                       </div>
+                      </div>
                       <div style="padding: 12px 14px; margin-top: auto; border-top: 1px solid #f0f0f0;">
                         <div v-on:click="selectUser('')"
                           :style="'border: 1px dashed #bdbdbd; border-radius: 2px; padding: 8px 0; text-align: center; font-size: 12px; font-weight: 600; cursor: pointer;' + (selectedUser === '' ? ' background: #e8f5e9; color: #2e7d32; border-color: #a5d6a7;' : ' color: #616161;')">+ {{ t('admin.users.title').toUpperCase() }}</div>
                       </div>
                     </div>
-                    <div style="flex: 3 1 300px; min-width: 0; padding: 16px 20px; background: #fafafa; display: flex; flex-direction: column; gap: 16px;">
+                    <div style="flex: 3 1 300px; min-width: 0; height: 660px; overflow-y: auto; box-sizing: border-box; padding: 16px 20px; background: #fafafa; display: flex; flex-direction: column; gap: 16px;">
                     <template v-if="selectedUser !== '' && users[selectedUser]">
                       <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
                         <span :style="'width: 40px; height: 40px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 17px; flex-shrink: 0;' + (users[selectedUser].admin === true ? ' background: #505061; color: #fff;' : ' background: #ececf2; color: #505061;')">{{ initialOf(selectedUser) }}</span>
