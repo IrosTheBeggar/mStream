@@ -77,7 +77,13 @@ The check and the downloads honor `MSTREAM_RELEASE_BASE` for mirrors, verify
 every download against the release's `manifest.json` sha256s, and only ever
 stage into layouts the installer owns: package-manager installs (deb/rpm,
 the macOS `.pkg`), Docker, npm, and hand-extracted copies are told about
-updates but never touched.
+updates but never touched. Before switching an install to a freshly
+extracted version, the installers probe it twice: `-V` (does the binary
+run here at all) and `--boot-probe` (would it actually *boot* — the new
+build loads its module graph, runs your existing config through its
+schema, and opens the database read-only, all without writing anything).
+A version that fails either probe never takes over a working install: the
+stage fails loudly and the next release retries.
 
 If an applied update crashes before it ever serves, the desktop launcher's
 **boot watchdog** rolls it back on its own: after a failed retry it

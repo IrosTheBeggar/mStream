@@ -421,6 +421,39 @@ if [ -z "$new_server_v" ] && [ -L "$ROOT/current" ] && [ -e "$ROOT/current" ] \
     exit 1
 fi
 
+# The DEEP probe, for bundles that know it: `--boot-probe` loads the module
+# graph, runs the machine's existing config through the new build's schema,
+# and opens the database read-only - the execs-but-cannot-boot classes `-V`
+# is blind to. Its contract: exit 0 = would boot; nonzero WITH a
+# "boot-probe:" sentinel = would not; nonzero with NO sentinel = a bundle
+# that predates the flag (unknown option), which counts as a pass - `-V`
+# already vouched, and the manual-rollback flow must keep installing old
+# bundles. It never writes anything and bounds its own runtime, and it runs
+# with the operator's environment (MSTREAM_CONFIG and friends pass through),
+# so it judges exactly the boot the flip would commit this machine to.
+probe_fail=""
+probe_out=""
+if [ -n "$new_server_v" ]; then
+    if probe_out=$("$ROOT/$bundle/$server_rel" --boot-probe 2>&1); then
+        probe_fail=""
+    elif printf '%s\n' "$probe_out" | grep -q "^boot-probe:"; then
+        probe_fail=1
+    fi
+fi
+if [ -n "$probe_fail" ]; then
+    if [ -L "$ROOT/current" ] && [ -e "$ROOT/current" ] \
+        && [ "$(readlink "$ROOT/current")" != "$ROOT/$bundle" ]; then
+        echo "the new mstream-server ($version) would not BOOT on this system - keeping the existing install" >&2
+        printf '%s\n' "$probe_out" | grep "^boot-probe:" | sed 's/^/    /' >&2
+        echo "  current stays at $(readlink "$ROOT/current"); the new copy is at $ROOT/$bundle" >&2
+        exit 1
+    fi
+    # First install / same-version re-run: nothing working is displaced -
+    # proceed, but say what the probe saw (same policy as the exec probe).
+    echo "  NOTE: the boot probe flagged a problem this install may hit at first start:" >&2
+    printf '%s\n' "$probe_out" | grep "^boot-probe:" | sed 's/^/    /' >&2
+fi
+
 # `current` -> this version. If a previous manual layout left a REAL
 # directory named current, move it aside rather than nest into it.
 if [ -e "$ROOT/current" ] && [ ! -L "$ROOT/current" ]; then

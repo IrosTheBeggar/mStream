@@ -218,12 +218,40 @@ jobs:
           try { & .\install.ps1 *>&1 | Out-Null; throw "installed a bundle that cannot exec" } catch { if ("$_" -notmatch 'does not run on this system') { throw } }
           $j2 = Get-Item "$env:RUNNER_TEMP\app\current" -Force
           if (($j2.Target | Select-Object -First 1) -notmatch 'mStream-9\.9\.9-win-x64$') { throw "current moved off 9.9.9: $($j2.Target)" }
+          # the DEEP probe: a bundle that EXECS (-V answers, so the shallow
+          # probe passes) but reports it would not BOOT must be refused on
+          # the "boot-probe:" sentinel with current untouched. Needs a real
+          # exe — rustc is preinstalled on the runner; stderr to a file, not
+          # 2>&1 (under EAP=Stop native stderr becomes a terminating error).
+          $pb = 'mStream-9.9.11-win-x64'
+          Set-Content stub.rs 'fn main(){let a=std::env::args().nth(1);if a.as_deref()==Some("-V"){println!("9.9.11");return;}if a.as_deref()==Some("--boot-probe"){println!("boot-probe: FAIL simulated boot regression");std::process::exit(1);}}'
+          rustc -O --crate-name probestub stub.rs -o probe-stub.exe 2>rustc.err
+          if ($LASTEXITCODE -ne 0) { Get-Content rustc.err; throw "rustc stub build failed" }
+          Push-Location rel
+          New-Item -ItemType Directory -Force $pb | Out-Null
+          Copy-Item ..\probe-stub.exe "$pb\mstream-server.exe"
+          Set-Content "$pb\README.txt" 'probe'
+          python3 -m zipfile -c "$pb.zip" $pb
+          Remove-Item -Recurse -Force $pb
+          Pop-Location
+          Remove-Item rel\mStream-*.zip -Exclude "$pb.zip" -Force
+          Remove-Item rel\manifest.json -Force
+          bash scripts/release-manifest.sh 9.9.11 rel
+          try { & .\install.ps1 *>&1 | Out-Null; throw "installed a bundle that cannot boot" } catch { if ("$_" -notmatch 'would not BOOT') { throw } }
+          $j3 = Get-Item "$env:RUNNER_TEMP\app\current" -Force
+          if (($j3.Target | Select-Object -First 1) -notmatch 'mStream-9\.9\.9-win-x64$') { throw "current moved off 9.9.9 after probe refusal: $($j3.Target)" }
           # uninstall
           $env:MSTREAM_UNINSTALL = '1'
           & .\install.ps1 *>&1 | Tee-Object -Variable un
           if (Test-Path "$env:RUNNER_TEMP\app") { throw "app root survived uninstall" }
           if (($un | Out-String) -notmatch 'left in place') { throw "no data-home note" }
           Write-Host "install.ps1 contract OK"
+          # The runner appends `exit $LASTEXITCODE` to pwsh steps, and the
+          # deep-probe stub's --boot-probe exit 1 is the last NATIVE exit
+          # code set (script invocations and cmdlets never reset it) — so a
+          # fully-passing run would end red. Every check above is a throw;
+          # reaching here IS the pass.
+          exit 0
 
       # The darwin-only paths: ~/Applications copy + sibling ownership marker,
       # login-item re-pointing through the RIGHT launcher, and the

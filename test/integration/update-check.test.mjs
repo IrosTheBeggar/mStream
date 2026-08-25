@@ -36,7 +36,7 @@ function hostKey() {
 
 let relDir; let relPort; let relServer; let tmpHome;
 
-function makeBundle(version, key, { broken = false } = {}) {
+function makeBundle(version, key, { broken = false, probeFail = false } = {}) {
   const b = `mStream-${version}-${key}`;
   const dir = path.join(relDir, b);
   const inner = key.startsWith('darwin')
@@ -46,9 +46,14 @@ function makeBundle(version, key, { broken = false } = {}) {
   const server = path.join(inner, 'mstream-server');
   // broken = a binary this host "cannot exec": the probe-before-flip in
   // install.sh must refuse it and the stager must report a failed stage.
+  // probeFail = the subtler bad release: -V answers (the exec probe
+  // passes), but the DEEP probe reports it would not boot - install.sh
+  // must refuse on the sentinel.
   const stub = broken
     ? `printf '#!/bin/sh\\nexit 1\\n' > '${server}'`
-    : `printf '#!/bin/sh\\n[ "$1" = -V ] && echo ${version}\\nexit 0\\n' > '${server}'`;
+    : probeFail
+      ? `printf '#!/bin/sh\\n[ "$1" = -V ] && { echo ${version}; exit 0; }\\n[ "$1" = --boot-probe ] && { echo "boot-probe: FAIL simulated boot regression"; exit 1; }\\nexit 0\\n' > '${server}'`
+      : `printf '#!/bin/sh\\n[ "$1" = -V ] && echo ${version}\\nexit 0\\n' > '${server}'`;
   spawnSync('bash', ['-c', `${stub} && chmod +x '${server}'`]);
   spawnSync('bash', ['-c', `echo 'fake bundle' > '${dir}/README.txt'`]);
   const zip = spawnSync('python3', ['-m', 'zipfile', '-c', `${b}.zip`, b], { cwd: relDir });
@@ -56,11 +61,11 @@ function makeBundle(version, key, { broken = false } = {}) {
   spawnSync('rm', ['-rf', dir]);
 }
 
-async function publish(version, { tamper = false, broken = false } = {}) {
+async function publish(version, { tamper = false, broken = false, probeFail = false } = {}) {
   for (const f of await fs.readdir(relDir)) {
     if (f.endsWith('.zip') || f === 'manifest.json') { await fs.rm(path.join(relDir, f)); }
   }
-  makeBundle(version, hostKey(), { broken });
+  makeBundle(version, hostKey(), { broken, probeFail });
   const gen = spawnSync('sh', [path.join(REPO_ROOT, 'scripts', 'release-manifest.sh'), version, relDir]);
   assert.equal(gen.status, 0, `manifest generation failed: ${gen.stderr}`);
   if (tamper) {
@@ -357,6 +362,39 @@ test('enforceHold re-points a current link left on a held version', { skip: posi
 function scrubSupervision(env) {
   return { ...env, MSTREAM_SUPERVISED: '', pm_id: '', INVOCATION_ID: '' };
 }
+
+test('a release that execs but would not boot is refused BEFORE the flip', { skip: posixOnly }, async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-upd-probe-'));
+  try {
+    await publish('9.9.40');
+    const srv = await startServer({
+      waitForScan: false, env: envFor(home),
+      extraArgs: ['--supervised'], stdin: 'pipe',
+    });
+    try {
+      // A good release stages and flips normally.
+      await fetch(`${srv.baseUrl}/api/v1/admin/update/check`, { method: 'POST' });
+      await pollStatus(srv.baseUrl, (x) => x.staged && x.stagedVersion === '9.9.40');
+      const root = path.join(home, 'app');
+      assert.equal(path.basename(await fs.readlink(path.join(root, 'current'))), `mStream-9.9.40-${hostKey()}`);
+
+      // The subtle bad release: -V answers, the deep probe says "would not
+      // boot". install.sh must refuse on the sentinel and leave `current`
+      // exactly where it was - the stage-time refusal that self-heals when
+      // the next release ships, with no watchdog ever needed.
+      await publish('9.9.41', { probeFail: true });
+      await fetch(`${srv.baseUrl}/api/v1/admin/update/check`, { method: 'POST' });
+      const s = await pollStatus(srv.baseUrl, (x) => (x.error || '').includes('would not BOOT'));
+      assert.match(s.error, /Staging failed/);
+      assert.equal(path.basename(await fs.readlink(path.join(root, 'current'))), `mStream-9.9.40-${hostKey()}`,
+        'a probe-refused release must never reach current');
+    } finally {
+      await srv.stop();
+    }
+  } finally {
+    await fs.rm(home, { recursive: true, force: true }).catch(() => {});
+  }
+});
 
 test('auto mode without a supervisor stages but never self-exits', { skip: posixOnly }, async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-upd-nosup-'));

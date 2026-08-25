@@ -241,6 +241,42 @@ try {
         }
     }
 
+    # The DEEP probe, for bundles that know it: --boot-probe loads the
+    # module graph, runs the existing config through the new build's schema,
+    # and opens the database read-only - the execs-but-cannot-boot classes
+    # -V is blind to. Exit 0 = would boot; nonzero WITH a "boot-probe:"
+    # sentinel = would not; nonzero with NO sentinel = a bundle that
+    # predates the flag (unknown option), which counts as a pass (-V
+    # vouched; manual rollbacks must keep installing old bundles). The
+    # local EAP=Continue window keeps native stderr as captured output -
+    # under Stop, PS 5.1 turns it into a terminating NativeCommandError.
+    $probeFail = $false
+    $probeLines = @()
+    if ($newServerV) {
+        $eap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $probeText = (& (Join-Path $final 'mstream-server.exe') --boot-probe 2>&1 | Out-String)
+        $probeCode = $LASTEXITCODE
+        $ErrorActionPreference = $eap
+        if ($probeCode -ne 0 -and $probeText -match 'boot-probe:') {
+            $probeFail = $true
+            $probeLines = @($probeText -split "`r?`n" | Where-Object { $_ -match '^boot-probe:' })
+        }
+    }
+    if ($probeFail) {
+        $curTarget = $null
+        if (Test-Path $current) {
+            $curItem = Get-Item $current -Force
+            if ($curItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { $curTarget = $curItem.Target | Select-Object -First 1 }
+        }
+        if ($curTarget -and (Test-Path $curTarget) -and ((Resolve-Path $curTarget).Path -ne $final)) {
+            throw ("the new mstream-server ($ver) would not BOOT on this system - keeping the existing install " +
+                   "($($probeLines -join '; '); current stays at $curTarget; the new copy is at $final)")
+        }
+        # First install / same-version re-run: nothing working is displaced.
+        Write-Warning "the boot probe flagged a problem this install may hit at first start: $($probeLines -join '; ')"
+    }
+
     # `current` as a junction (no admin needed, unlike a symlink), so a
     # shortcut and the PATH entry keep working across upgrades. A REAL
     # directory named current (older manual layout) is moved aside, not
