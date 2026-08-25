@@ -1,8 +1,8 @@
 name: Build Rust Launcher
 
 # Two duties, mirroring build-rust-parser.yml:
-#   - PR check (build + clippy on all three desktop OSes) so the crate can't
-#     bit-rot between phases.
+#   - PR check (build + test + clippy on all three desktop OSes) so the crate
+#     can't bit-rot between phases.
 #   - On master pushes touching the crate: build the four shipped launcher
 #     binaries, self-test each, and COMMIT them to bin/rust-launcher/ — the
 #     bundler (scripts/build-bun.mjs) stages the launcher from there as the
@@ -98,6 +98,18 @@ jobs:
       - name: Build (release)
         working-directory: rust-launcher
         run: cargo build --release --locked
+
+      # Per-OS on purpose, and --release so the build step's artifacts are
+      # reused: the boot-watchdog rollback module (rollback.rs) is cfg'd per
+      # target — junction re-point via mklink on Windows, atomic symlink swap
+      # on unix, the ~/Applications shape on macOS — so a test run on one
+      # platform proves little about the others. Before this step NOTHING in
+      # CI ran the launcher's tests at all: the windows junction arm had
+      # never executed anywhere, and a linux-only dead-code error shipped to
+      # a PR unseen by a mac-side cargo test.
+      - name: Test
+        working-directory: rust-launcher
+        run: cargo test --release --locked
 
       - name: Clippy
         working-directory: rust-launcher

@@ -11,6 +11,7 @@ real processes. Run them by hand when working on the matching code.
 | All-Docker torrent stack (`docker/`) | `npm run test:smoke:docker` | the compose stack up — see [docker/README.md](docker/README.md) |
 | Native-Windows daemons (`windows-native-daemons.mjs`) | `npm run test:smoke:windows` | Transmission / qBittorrent installed on Windows, plus env config |
 | Boot-watchdog rollback (`update-watchdog-smoke.sh`) | `npm run test:smoke:update-watchdog` | a built launcher (`cd rust-launcher && cargo build --release`); Linux headless needs `xvfb-run` |
+| Boot-watchdog rollback, Windows (`update-watchdog-smoke.ps1`) | `npm run test:smoke:update-watchdog:win` | a built launcher plus `rustc` on PATH (the stub servers are compiled on the spot) |
 
 Each script just runs the harness; bringing the daemons up (and tearing them
 down) is the operator's job. The setup, credentials and env knobs are
