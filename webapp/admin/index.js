@@ -7908,18 +7908,18 @@ const discoveryView = Vue.component('discovery-view', {
                       <div v-on:click="headerTab = 'invite'" :style="headerTabStyle('invite')">Invite</div>
                       <div v-on:click="headerTab = 'config'" :style="headerTabStyle('config')">Config</div>
                     </div>
-                    <div v-if="headerTab === 'mesh'" style="display: flex; gap: 20px; align-items: center; min-height: 200px; flex-wrap: wrap;">
-                      <div style="background: #2a2a34; border-radius: 2px; padding: 8px; flex-shrink: 0; max-width: 100%; box-sizing: border-box; line-height: 0;">
-                      <svg viewBox="0 0 300 210" width="300" height="210" style="max-width: 100%; height: auto;">
-                        <line v-for="n in meshMap.neighbors" :key="'l-' + n.id" x1="150" y1="105"
+                    <div v-if="headerTab === 'mesh'" style="min-height: 200px; padding-top: 12px;">
+                      <div style="position: relative; background: #2a2a34; border-radius: 2px; padding: 8px; box-sizing: border-box; overflow-x: auto; line-height: 0;">
+                      <svg viewBox="0 0 600 240" width="600" height="240" style="width: 100%; min-width: 480px; height: auto; display: block;">
+                        <line v-for="n in meshMap.neighbors" :key="'l-' + n.id" x1="300" y1="120"
                           :x2="n.x" :y2="n.y" stroke="#4a7c59" stroke-width="2"></line>
                         <circle v-for="n in meshMap.outer" :key="'o-' + n.id" :cx="n.x" :cy="n.y" r="7"
                           fill="none" :stroke="n.incompatible ? '#8a6d3b' : '#666672'" stroke-width="1.5"
                           stroke-dasharray="2 3"></circle>
                         <circle v-for="n in meshMap.neighbors" :key="'n-' + n.id" :cx="n.x" :cy="n.y" r="10"
                           fill="#2e7d32"></circle>
-                        <circle cx="150" cy="105" r="18" fill="#EEE" stroke="#2e7d32" stroke-width="3"></circle>
-                        <text x="150" y="109" text-anchor="middle" font-size="11" font-weight="700"
+                        <circle cx="300" cy="120" r="18" fill="#EEE" stroke="#2e7d32" stroke-width="3"></circle>
+                        <text x="300" y="124" text-anchor="middle" font-size="11" font-weight="700"
                           fill="#2a2a34" font-family="inherit">you</text>
                         <text v-for="n in meshMap.neighbors" :key="'nt-' + n.id" :x="n.lx" :y="n.ly"
                           text-anchor="middle" font-size="10" fill="#bdbdc6" font-family="inherit">{{ n.label }}</text>
@@ -7927,17 +7927,16 @@ const discoveryView = Vue.component('discovery-view', {
                           text-anchor="middle" font-size="9" :fill="n.incompatible ? '#a08a5a' : '#8a8a96'"
                           font-family="inherit">{{ n.label }}</text>
                       </svg>
+                      <div style="position: absolute; left: 14px; bottom: 12px; max-width: calc(100% - 28px); box-sizing: border-box; line-height: 1.4; background: rgba(42, 42, 52, 0.88); border-radius: 2px; padding: 8px 12px; font-size: 12px; display: flex; flex-direction: column; gap: 5px;">
+                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; background: #2e7d32; flex-shrink: 0;"></span><span style="color: #bdbdc6;">gossip link — live mesh neighbor</span></div>
+                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; border: 1.5px dashed #666672; box-sizing: border-box; flex-shrink: 0;"></span><span style="color: #bdbdc6;">known, not currently linked</span></div>
+                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; border: 1.5px dashed #a08a5a; box-sizing: border-box; flex-shrink: 0;"></span><span style="color: #bdbdc6;">incompatible model</span></div>
+                        <div v-if="meshMap.overflow > 0" style="color: #8a8a96;">+{{ meshMap.overflow }} more server{{ meshMap.overflow === 1 ? '' : 's' }} not drawn</div>
                       </div>
-                      <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.85em; min-width: 220px;">
-                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; background: #2e7d32; flex-shrink: 0;"></span><span style="color: #616161;">gossip link — live mesh neighbor</span></div>
-                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; border: 1.5px dashed #9e9e9e; box-sizing: border-box; flex-shrink: 0;"></span><span style="color: #616161;">known, not currently linked</span></div>
-                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; border: 1.5px dashed #a06010; box-sizing: border-box; flex-shrink: 0;"></span><span style="color: #616161;">incompatible model</span></div>
-                        <div style="color: #757575; line-height: 1.5; margin-top: 4px;" v-if="heldPeers.length > 0">You hold
-                          {{ heldPeers.length }} snapshot{{ heldPeers.length === 1 ? '' : 's' }} from these servers and seed
-                          {{ heldPeers.length === 1 ? 'it' : 'them' }} back to the mesh.</div>
-                        <div style="color: #9e9e9e; font-size: 0.95em;" v-if="meshMap.overflow > 0">+{{ meshMap.overflow }} more
-                          server{{ meshMap.overflow === 1 ? '' : 's' }} not drawn</div>
                       </div>
+                      <div v-if="heldPeers.length > 0" style="color: #757575; font-size: 0.85em; margin-top: 8px;">You hold
+                        {{ heldPeers.length }} snapshot{{ heldPeers.length === 1 ? '' : 's' }} from these servers and seed
+                        {{ heldPeers.length === 1 ? 'it' : 'them' }} back to the mesh.</div>
                     </div>
                     <div v-if="headerTab === 'stats'" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; min-height: 200px; padding-top: 12px; align-content: start;">
                       <div style="border: 1px solid #e0e0e0; border-radius: 2px; padding: 12px 14px;">
@@ -8199,7 +8198,7 @@ const discoveryView = Vue.component('discovery-view', {
     // 10s poll never makes the map jiggle. The map draws what the list
     // shows: peers hidden by the incompatible filter aren't drawn either.
     meshMap: function() {
-      const CX = 150; const CY = 105;
+      const CX = 300; const CY = 120;
       const byId = {};
       for (const p of this.discoveryP2p.peers) { byId[p.from] = p; }
       const label = (id) => {
@@ -8236,8 +8235,8 @@ const discoveryView = Vue.component('discovery-view', {
       return {
         // Neighbors fan out from the top, catalog dots from the bottom —
         // sparse maps (one node per ring) then never collide label-wise.
-        neighbors: place(neighborIds, 58, 82, -90),
-        outer: place(outerIds, 88, 100, 114),
+        neighbors: place(neighborIds, 72, 96, -90),
+        outer: place(outerIds, 96, 110, 114),
         // Everything not drawn, on either ring — the inner slice is
         // unreachable while hyparview caps the active view, but a
         // bigger fan-out must not truncate silently.
