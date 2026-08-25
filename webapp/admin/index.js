@@ -7738,7 +7738,7 @@ const discoveryView = Vue.component('discovery-view', {
                       <div v-on:click="headerTab = 'config'" :style="headerTabStyle('config')">Config</div>
                     </div>
                     <div v-if="headerTab === 'mesh'" style="display: flex; gap: 20px; align-items: center; min-height: 200px; flex-wrap: wrap;">
-                      <svg viewBox="0 0 300 210" width="300" height="210" style="flex-shrink: 0;">
+                      <svg viewBox="0 0 300 210" width="300" height="210" style="flex-shrink: 0; max-width: 100%; height: auto;">
                         <line v-for="n in meshMap.neighbors" :key="'l-' + n.id" x1="150" y1="105"
                           :x2="n.x" :y2="n.y" stroke="#4a7c59" stroke-width="2"></line>
                         <circle v-for="n in meshMap.outer" :key="'o-' + n.id" :cx="n.x" :cy="n.y" r="7"
@@ -7835,7 +7835,7 @@ const discoveryView = Vue.component('discovery-view', {
                       </div>
                     </div>
                     <div v-if="headerTab === 'config'" style="min-height: 200px; padding-top: 6px;">
-                      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0 28px;">
+                      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 0 28px;">
                         <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #3a3a47; font-size: 0.85em;">
                           <span style="color: #9e9ea8;">Snapshot storage cap</span>
                           <span style="color: #ddd; text-align: right;"><b>{{ discoveryP2p.status.maxPeerDbStorageMb }} MB</b>
@@ -7890,7 +7890,7 @@ const discoveryView = Vue.component('discovery-view', {
                     {{ filteredPeers.length }} of {{ discoveryP2p.peers.length }} servers
                   </p>
                   <div v-if="listMode === 'cards' && filteredPeers.length > 0"
-                    style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin: 8px 0;">
+                    style="display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 14px; margin: 8px 0;">
                     <div v-for="peer in filteredPeers" :key="'card-' + peer.from"
                       :style="'border: 1px solid #e0e0e0; border-radius: 2px; padding: 12px 14px; display: flex; flex-direction: column; gap: 7px;' + (peer.online ? '' : ' opacity: 0.75;')">
                       <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
@@ -7918,7 +7918,8 @@ const discoveryView = Vue.component('discovery-view', {
                       </div>
                     </div>
                   </div>
-                  <table v-else-if="filteredPeers.length > 0">
+                  <div v-else-if="filteredPeers.length > 0" style="overflow-x: auto;">
+                  <table>
                     <thead><tr><th>Server</th><th>Tracks</th><th>Seeders</th><th>Online</th><th>Model</th><th>Downloaded</th><th></th></tr></thead>
                     <tbody>
                       <tr v-for="peer in filteredPeers" :key="peer.from">
@@ -7944,6 +7945,7 @@ const discoveryView = Vue.component('discovery-view', {
                       </tr>
                     </tbody>
                   </table>
+                  </div>
                   <p v-else-if="discoveryP2p.peers.length > 0">No servers match
                     &ldquo;{{ peerFilter }}&rdquo; — [<a v-on:click="peerFilter = ''">clear</a>]</p>
                   <p v-else-if="discoveryP2p.hiddenIncompatible === 0">No servers heard yet — paste a friend's ticket above and give gossip a minute.</p>
