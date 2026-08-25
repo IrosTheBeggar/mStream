@@ -311,26 +311,30 @@ pub fn parse_update_status(doc: &str) -> Option<UpdateStatus> {
     })
 }
 
-/// The bundle-dir naming the installers create: mStream-<X.Y.Z>-<key>.
-/// Mirrors parseBundleName in src/util/update-check.js closely enough for
-/// target derivation (the final existence check is the real gate).
-pub fn is_bundle_dir_name(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix("mStream-") else { return false };
-    let Some(dash) = rest.find(|c: char| !(c.is_ascii_digit() || c == '.')) else { return false };
+/// The bundle-dir naming the installers create: mStream-<X.Y.Z>-<key> ->
+/// (version, key). Mirrors parseBundleName in src/util/update-check.js
+/// closely enough for target derivation (the final existence check is the
+/// real gate).
+pub(crate) fn parse_bundle_dir_name(name: &str) -> Option<(String, String)> {
+    let rest = name.strip_prefix("mStream-")?;
+    let dash = rest.find(|c: char| !(c.is_ascii_digit() || c == '.'))?;
     if dash == 0 || !rest[dash..].starts_with('-') {
-        return false;
+        return None;
     }
-    if sanitize_version(&rest[..dash]).is_none() {
-        return false;
-    }
+    let version = sanitize_version(&rest[..dash])?;
     let key = &rest[dash + 1..];
-    ["darwin-", "linux-", "win-"].iter().any(|p| key.starts_with(p))
+    let ok = ["darwin-", "linux-", "win-"].iter().any(|p| key.starts_with(p))
         && key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        && !key.ends_with('-')
+        && !key.ends_with('-');
+    ok.then(|| (version, key.to_string()))
+}
+
+pub fn is_bundle_dir_name(name: &str) -> bool {
+    parse_bundle_dir_name(name).is_some()
 }
 
 /// The launcher face's path inside a bundle, per platform.
-fn launcher_rel() -> &'static str {
+pub(crate) fn launcher_rel() -> &'static str {
     if cfg!(windows) {
         "mStream.exe"
     } else if cfg!(target_os = "macos") {
@@ -555,6 +559,12 @@ mod tests {
         assert!(!is_bundle_dir_name("current"));
         assert!(!is_bundle_dir_name("mStream-latest-linux-x64"));
         assert!(!is_bundle_dir_name("mStream.app"));
+        // The parsed halves, for the rollback module's candidate scan.
+        assert_eq!(
+            parse_bundle_dir_name("mStream-6.21.2-linux-arm64-musl"),
+            Some(("6.21.2".to_string(), "linux-arm64-musl".to_string()))
+        );
+        assert_eq!(parse_bundle_dir_name("mStream-6.21.2-linux-x64.replaced-2026"), None);
     }
 
     #[test]

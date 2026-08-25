@@ -1699,12 +1699,16 @@ export function setup(mstream) {
       check: Joi.boolean(),
       mode: Joi.string().valid('notify', 'stage', 'auto'),
       skipVersion: Joi.string().pattern(/^\d+\.\d+\.\d+$/).allow(''),
-    }).or('check', 'mode', 'skipVersion');
+      // Operator override for boot-failure holds (the launcher's watchdog
+      // rolled an update back): drop them all and let the next check retry.
+      clearHold: Joi.boolean(),
+    }).or('check', 'mode', 'skipVersion', 'clearHold');
     joiValidate(schema, req.body);
 
     if (req.body.check !== undefined) { await admin.editUpdatesCheck(req.body.check); }
     if (req.body.mode !== undefined) { await admin.editUpdatesMode(req.body.mode); }
     if (req.body.skipVersion !== undefined) { await admin.editUpdatesSkipVersion(req.body.skipVersion); }
+    if (req.body.clearHold === true) { await updateCheck.clearHolds(); }
     updateCheck.onSettingsChanged();
     res.json({});
   });

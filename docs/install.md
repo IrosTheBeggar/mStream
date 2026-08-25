@@ -72,6 +72,18 @@ stage into layouts the installer owns: package-manager installs (deb/rpm,
 the macOS `.pkg`), Docker, npm, and hand-extracted copies are told about
 updates but never touched.
 
+If an applied update crashes before it ever serves, the desktop launcher's
+**boot watchdog** rolls it back on its own: after a failed retry it
+re-points `current` at the previous version (kept on disk for exactly this),
+restores the `~/Applications` copy on macOS, relaunches, and records the
+failed version in `update-hold.json` so the daily check doesn't re-stage it.
+The admin panel shows the held version; the hold clears automatically the
+moment a release newer than it ships (or by hand via the panel's
+"clear hold & retry"). Headless installs get the server-side half of this —
+a held version is never staged or applied, and a `current` link left on one
+is re-pointed at the running version — but with no launcher watching the
+boot, the rollback itself needs the supervisor or a re-run of the installer.
+
 Rolling back? Re-run the installer with `MSTREAM_VERSION=<old tag>`, restart,
 and then **skip the bad release** (the admin panel's skip link, or
 `updates.skipVersion` in the config) — otherwise the next daily check

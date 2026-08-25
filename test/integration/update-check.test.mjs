@@ -236,6 +236,121 @@ test('managed round-trip: check, auto-stage, current flip, tamper refusal, live 
   }
 });
 
+// The per-OS data home under a redirected HOME — where update-status.json
+// and update-hold.json land (userDataHome() in src/util/esm-helpers.js).
+function dataHomeOf(home) {
+  return process.platform === 'darwin'
+    ? path.join(home, 'Library', 'Application Support', 'mStream')
+    : path.join(home, '.local', 'share', 'mstream');
+}
+
+function envFor(home) {
+  return {
+    HOME: home,
+    XDG_DATA_HOME: path.join(home, '.local', 'share'),
+    MSTREAM_RELEASE_BASE: `http://127.0.0.1:${relPort}`,
+    MSTREAM_UPDATE_ROOT: path.join(home, 'app'),
+  };
+}
+
+test('boot-failure holds: held version never stages, a newer release supersedes it, clearHold overrides', { skip: posixOnly }, async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-upd-hold-'));
+  try {
+    // As if the launcher's watchdog rolled 9.9.20 back before this boot.
+    const holdPath = path.join(dataHomeOf(home), 'update-hold.json');
+    await fs.mkdir(path.dirname(holdPath), { recursive: true });
+    await fs.writeFile(holdPath, JSON.stringify({
+      schema: 1,
+      held: [{ version: '9.9.20', at: 0, reason: 'server exited before it finished starting after an update' }],
+    }));
+    await publish('9.9.20');
+    const srv = await startServer({
+      waitForScan: false, env: envFor(home),
+      extraArgs: ['--supervised'], stdin: 'pipe',
+    });
+    try {
+      // The hold is visible from boot, before any check.
+      let s = await (await fetch(`${srv.baseUrl}/api/v1/admin/update`)).json();
+      assert.deepEqual(s.heldVersions, ['9.9.20']);
+
+      // The held version is reported but never staged (mode=stage default
+      // would otherwise download and flip on this very check).
+      s = await (await fetch(`${srv.baseUrl}/api/v1/admin/update/check`, { method: 'POST' })).json();
+      assert.equal(s.available, true);
+      assert.equal(s.latest, '9.9.20');
+      assert.equal(s.held, true);
+      assert.equal(s.staged, false);
+      await assert.rejects(fs.access(path.join(home, 'app', 'current')), 'a held version must never reach current');
+
+      // An explicit download is refused, with the reason.
+      const dl = await fetch(`${srv.baseUrl}/api/v1/admin/update/download`, { method: 'POST' });
+      assert.equal(dl.status, 409);
+      assert.match((await dl.json()).error, /failed to start .* held back/);
+
+      // A newer release supersedes the hold: it stages normally while the
+      // hold on the bad version stays on file (still newer than what runs).
+      await publish('9.9.21');
+      await fetch(`${srv.baseUrl}/api/v1/admin/update/check`, { method: 'POST' });
+      s = await pollStatus(srv.baseUrl, (x) => x.staged && x.stagedVersion === '9.9.21');
+      assert.equal(s.held, false);
+      assert.deepEqual(s.heldVersions, ['9.9.20']);
+
+      // Operator override: clearHold drops the record entirely.
+      const clear = await fetch(`${srv.baseUrl}/api/v1/admin/update/settings`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clearHold: true }),
+      });
+      assert.equal(clear.status, 200);
+      s = await pollStatus(srv.baseUrl, (x) => x.heldVersions.length === 0);
+      await assert.rejects(fs.access(holdPath), 'a cleared hold file must be gone');
+    } finally {
+      await srv.stop();
+    }
+  } finally {
+    await fs.rm(home, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test('enforceHold re-points a current link left on a held version', { skip: posixOnly }, async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-upd-enforce-'));
+  try {
+    // The layout a half-finished rollback leaves: current still aims at the
+    // held version, while the previous (running) version's folder exists.
+    const root = path.join(home, 'app');
+    const heldDir = path.join(root, `mStream-9.9.20-${hostKey()}`);
+    const runningDir = path.join(root, `mStream-${packageJson.version}-${hostKey()}`);
+    await fs.mkdir(heldDir, { recursive: true });
+    await fs.mkdir(runningDir, { recursive: true });
+    await fs.symlink(heldDir, path.join(root, 'current'));
+    const holdPath = path.join(dataHomeOf(home), 'update-hold.json');
+    await fs.mkdir(path.dirname(holdPath), { recursive: true });
+    await fs.writeFile(holdPath, JSON.stringify({ schema: 1, held: [{ version: '9.9.20', at: 0, reason: 't' }] }));
+    await publish('9.9.20'); // the held version is also "latest": nothing may stage
+    const srv = await startServer({
+      waitForScan: false, env: envFor(home),
+      extraArgs: ['--supervised'], stdin: 'pipe',
+    });
+    try {
+      await fetch(`${srv.baseUrl}/api/v1/admin/update/check`, { method: 'POST' });
+      const start = Date.now();
+      let target = null;
+      while (Date.now() - start < 10_000) {
+        target = await fs.readlink(path.join(root, 'current')).catch(() => null);
+        if (target === runningDir) { break; }
+        await sleep(100);
+      }
+      assert.equal(target, runningDir, 'current must be re-pointed at the running version');
+      const s = await (await fetch(`${srv.baseUrl}/api/v1/admin/update`)).json();
+      assert.equal(s.held, true);
+      assert.equal(s.staged, false);
+    } finally {
+      await srv.stop();
+    }
+  } finally {
+    await fs.rm(home, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 test('non-managed installs refuse staging; apply refuses with nothing staged', { skip: posixOnly }, async () => {
   await publish('9.9.9');
   const env = updEnv();
