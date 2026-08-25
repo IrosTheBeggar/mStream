@@ -21,8 +21,6 @@ import {
 } from '../../src/util/boot-watchdog.js';
 import { readHoldEntries, appendHold, HOLD_FILE } from '../../src/util/update-shared.js';
 
-const posixOnly = process.platform === 'win32';
-
 function tmpdir(tag) {
   // realpath'd: the geometry walk canonicalizes the executable path (macOS
   // /var -> /private/var), and the assertions compare against these.
@@ -152,17 +150,18 @@ test('plan skips held versions - two bad releases in a row land on the last good
 
 // ── executeRollback ──────────────────────────────────────────────────────────
 
-// win32: node's junction targets read back with the \\?\ prefix, so the
-// strict readlink equality below belongs to the posix legs (the windows
-// junction mechanics are covered by the launcher's rust tests in CI).
-test('execute appends the hold and re-points current', { skip: posixOnly }, async () => {
+// Compared through realpath, not raw readlink: node's junction targets read
+// back with the \\?\ prefix on Windows, and canonicalizing both sides keeps
+// this exercising the REAL junction re-point on the windows CI shard — the
+// one platform-specific limb of the headless watchdog.
+test('execute appends the hold and re-points current', async () => {
   const root = tmpdir('exec');
   const key = hostKey();
   const bad = mkBundle(root, '6.22.0', key);
   const prev = mkBundle(root, '6.21.0', key);
   linkCurrent(root, bad);
   await executeRollback({ root, failedVersion: '6.22.0', targetBundle: prev, dataHome: root });
-  assert.equal(await fsp.readlink(path.join(root, 'current')), prev);
+  assert.equal(await fsp.realpath(path.join(root, 'current')), await fsp.realpath(prev));
   const held = readHoldEntries(root);
   assert.equal(held.length, 1);
   assert.equal(held[0].version, '6.22.0');
