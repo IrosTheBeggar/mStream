@@ -7979,12 +7979,11 @@ const discoveryView = Vue.component('discovery-view', {
                       </div>
                     </div>
                     <div v-if="headerTab === 'activity'" style="min-height: 200px; padding-top: 12px;">
-                      <div v-if="activityFeed.length === 0" style="color: #757575; font-size: 0.85em; padding-top: 8px;">
-                        Nothing yet — mesh joins, snapshot fetches, rotation and recovery events land here as they happen.</div>
-                      <div v-else style="max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; font-family: monospace; font-size: 0.8em;">
-                        <div v-for="e in activityFeed" :key="e.seq" style="color: #424242; line-height: 1.45; word-break: break-word;">
-                          <span style="color: #9e9e9e;">{{ discoveryLogTime(e.t) }}</span>
-                          <span :style="e.level === 'warn' || e.level === 'error' ? 'color: #e65100;' : ''"> {{ e.message }}</span>
+                      <div style="background: #1e1e1e; color: #d4d4d4; font-family: monospace; font-size: 12px; line-height: 1.45; min-height: 200px; max-height: 260px; overflow-y: auto; padding: 10px; border-radius: 4px; white-space: pre-wrap; word-break: break-word;">
+                        <div v-if="activityFeed.length === 0" style="color: #888;">Nothing yet — mesh joins, snapshot fetches, rotation and recovery events land here as they happen.</div>
+                        <div v-for="e in activityFeed" :key="e.seq">
+                          <span style="color: #888;">{{ discoveryLogTime(e.t) }}</span>
+                          <span :style="{ color: activityLineColor(e.level) }"> {{ e.message }}</span>
                         </div>
                       </div>
                       <div style="font-size: 0.75em; color: #9e9e9e; margin-top: 8px;">newest first · held in memory only — the
@@ -8224,18 +8223,28 @@ const discoveryView = Vue.component('discovery-view', {
           incompatible: !!(byId[id] && byId[id].compatible === false),
         };
       });
-      const neighborIds = [...(this.discoveryP2p.status.neighborIds || [])].sort().slice(0, 8);
-      const neighborSet = new Set(neighborIds);
+      const allNeighborIds = [...(this.discoveryP2p.status.neighborIds || [])].sort();
+      const neighborIds = allNeighborIds.slice(0, 8);
+      const neighborSet = new Set(allNeighborIds);
+      // The outer ring's 8 slots go to the most meaningful servers, not
+      // the first 8 by id: held snapshots first (state the operator
+      // owns), then live announcers, then the rest. Rank + id tiebreak
+      // keeps the layout deterministic across polls.
+      const rank = (p) => (p.fetched ? 0 : (p.online ? 1 : 2));
       const outerAll = this.discoveryP2p.peers
         .filter((p) => !neighborSet.has(p.from))
-        .map((p) => p.from).sort();
+        .sort((a, b) => (rank(a) - rank(b)) || (a.from < b.from ? -1 : 1))
+        .map((p) => p.from);
       const outerIds = outerAll.slice(0, 8);
       return {
         // Neighbors fan out from the top, catalog dots from the bottom —
         // sparse maps (one node per ring) then never collide label-wise.
         neighbors: place(neighborIds, 58, 82, -90),
         outer: place(outerIds, 88, 100, 114),
-        overflow: outerAll.length - outerIds.length,
+        // Everything not drawn, on either ring — the inner slice is
+        // unreachable while hyparview caps the active view, but a
+        // bigger fan-out must not truncate silently.
+        overflow: (allNeighborIds.length - neighborIds.length) + (outerAll.length - outerIds.length),
       };
     },
   },
@@ -8383,6 +8392,17 @@ const discoveryView = Vue.component('discovery-view', {
         }
         this.p2pActivity.lastSeq = r.lastSeq;
       } catch (err) { /* quiet — the 10s poll or next tab click retries */ }
+    },
+    // Same per-level palette as the Logs page console, so the two log
+    // surfaces read identically.
+    activityLineColor: function(level) {
+      switch (level) {
+        case 'error': return '#ff5252';
+        case 'warn': return '#ffb74d';
+        case 'info': return '#9ccc65';
+        case 'debug': return '#90a4ae';
+        default: return '#d4d4d4';
+      }
     },
     discoveryLogTime: function(iso) {
       const d = new Date(iso);
