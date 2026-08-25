@@ -201,8 +201,20 @@ export function transaction(fn) {
 
 export function close() {
   stopSharedCleanup();
+  // The caches memoize rows read through the handle being released; the next
+  // initDB() must re-read them from whatever file it opens. This matters for
+  // the boot hold (server.js): a failed initDB can populate some caches from
+  // a damaged database before throwing, the operator replaces the file, and
+  // the retry's initDB would otherwise serve users/libraries from the old
+  // bytes (loadUsersCache & co. early-return when already populated).
+  invalidateCache();
+  _anonymousUserId = null;
   if (db) {
-    db.close();
+    // A half-configured handle (constructor succeeded, a pragma threw — the
+    // boot-hold entry path) may refuse to close cleanly; that must not turn
+    // the release into a crash. Releasing also matters on Windows: an open
+    // handle blocks the operator from replacing a damaged mstream.db.
+    try { db.close(); } catch (err) { winston.warn(`Could not close the database handle: ${err.message}`); }
     db = null;
   }
 }

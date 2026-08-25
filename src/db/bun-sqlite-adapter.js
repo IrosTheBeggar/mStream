@@ -13,12 +13,19 @@ import { Database } from 'bun:sqlite';
 // name ('SQLITE_ERROR', ...) or undefined (e.g. FTS5 MATCH parse errors).
 // Callers key on the node-style code — notably the FTS5->LIKE search fallback
 // in src/api/search.js and src/api/subsonic/handlers.js — so translate it here
-// so the shim is behaviourally indistinguishable from node:sqlite.
+// so the shim is behaviourally indistinguishable from node:sqlite. The
+// numeric result code matters too: node:sqlite carries it in `errcode`,
+// bun's SQLiteError in `errno` — mirror it across so consumers that map
+// codes (util/boot-errors.js classifying a boot failure as environmental)
+// see one shape on both runtimes.
 function withNodeErrors(fn) {
   try {
     return fn();
   } catch (err) {
-    if (err && err.name === 'SQLiteError') { err.code = 'ERR_SQLITE_ERROR'; }
+    if (err && err.name === 'SQLiteError') {
+      err.code = 'ERR_SQLITE_ERROR';
+      if (err.errcode === undefined && Number.isInteger(err.errno)) { err.errcode = err.errno; }
+    }
     throw err;
   }
 }
@@ -36,9 +43,13 @@ class StatementSync {
 export class DatabaseSync {
   #db;
   constructor(location, options = {}) {
-    this.#db = options.readOnly
+    // The open itself must be wrapped too: a bun:sqlite open failure
+    // (SQLITE_CANTOPEN on a vanished volume, SQLITE_READONLY on a bad
+    // mount) is exactly what the boot-failure classifier needs to see in
+    // node:sqlite's shape — unwrapped, those crashed unclassified.
+    this.#db = withNodeErrors(() => (options.readOnly
       ? new Database(location, { readonly: true })
-      : new Database(location, { create: true });
+      : new Database(location, { create: true })));
   }
   exec(sql) { return withNodeErrors(() => this.#db.exec(sql)); }
   prepare(sql) { return new StatementSync(withNodeErrors(() => this.#db.prepare(sql))); }

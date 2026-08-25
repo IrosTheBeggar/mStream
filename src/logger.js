@@ -171,6 +171,18 @@ winston.configure({
   exitOnError: false
 });
 
+// A transport write failure — ENOSPC on the log file when the disk fills
+// being the case that matters — is re-emitted as 'error' on the default
+// logger (winston Logger._onEvent), and an unlistened 'error' on a stream is
+// an uncaught exception: logging about a full disk would KILL the process,
+// which is exactly the moment the boot hold needs logging to stay soft
+// (server.js). The facade doesn't expose the default logger instance;
+// startTimer()'s Profiler carries a public reference to it. exitOnError
+// above does not cover this path — that flag is for the exception handler.
+winston.startTimer().logger.on('error', (err) => {
+  try { fs.writeSync(2, `[logger] transport error: ${err && err.message ? err.message : err}\n`); } catch { /* stderr gone too */ }
+});
+
 function dateKey() {
   const d = new Date();
   const pad = n => String(n).padStart(2, '0');
@@ -217,6 +229,12 @@ function rotateIfNeeded() {
 }
 
 export function addFileLogger(filepath) {
+  // Already writing to this exact directory: nothing to do. The 60s
+  // rotateIfNeeded interval owns date rollover and re-pruning. This makes
+  // the call idempotent for serveIt re-runs — a soft reboot, and especially
+  // the boot hold's 15s retry loop, which would otherwise close/reopen the
+  // stream and re-stat every retained log file on every retry.
+  if (fileTransport && currentDirname === filepath) { return; }
   if (fileTransport) { reset(); }
 
   fs.mkdirSync(filepath, { recursive: true });
