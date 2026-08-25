@@ -259,6 +259,12 @@ describe('stale sweep verify-absence (deleteStaleTracks)', () => {
 // visited-realpath set (collectFiles); the Rust scanner gets ancestor-loop
 // detection from walkdir. Neither had a regression test — a removed guard
 // would only show up as a stack overflow in production.
+//
+// The per-test timeout is purely the hang-detector for a regressed guard
+// (which never terminates), so generosity costs nothing. 240s because a
+// HEALTHY run — one scanner child over three tiny files — has blown a 60s
+// budget on a loaded windows-latest runner ("test timed out after
+// 60000ms"): child-process boot under load, not the walk.
 describe('symlink cycle termination (followSymlinks=true)', () => {
   function buildCycleLib(tmp) {
     const lib = path.join(tmp, 'music');
@@ -282,7 +288,7 @@ describe('symlink cycle termination (followSymlinks=true)', () => {
     return lib;
   }
 
-  test('JS scanner terminates and indexes each file exactly once', { timeout: 60000 }, async (t) => {
+  test('JS scanner terminates and indexes each file exactly once', { timeout: 240_000 }, async (t) => {
     const tmp = makeTmp('cycle-js');
     const lib = buildCycleLib(tmp);
     if (lib === null) { t.skip('symlink/junction creation not permitted'); return; }
@@ -305,7 +311,7 @@ describe('symlink cycle termination (followSymlinks=true)', () => {
     assert.strictEqual(new Set(rows).size, 3);
   });
 
-  test('Rust scanner terminates and indexes each file exactly once', { timeout: 60000 }, async (t) => {
+  test('Rust scanner terminates and indexes each file exactly once', { timeout: 240_000 }, async (t) => {
     const ext = process.platform === 'win32' ? '.exe' : '';
     const rustBin = [
       path.resolve(__dirname, `../../rust-parser/target/release/rust-parser${ext}`),
