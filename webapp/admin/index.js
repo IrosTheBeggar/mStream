@@ -799,6 +799,7 @@ const foldersView = Vue.component('folders-view', {
       winDrives: ADMINDATA.winDrives,
       selected: '',
       autoAccess: true,
+      newFollowSymlinks: false,
       renaming: false
     };
   },
@@ -850,7 +851,7 @@ const foldersView = Vue.component('folders-view', {
                       <span style="white-space: nowrap;">[<a v-on:click="selectCurrent()">select this folder</a>]</span>
                     </div>
                   </div>
-                  <div style="flex: 1 1 240px; min-width: 0; min-height: 400px; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; background: #fafafa; box-sizing: border-box;">
+                  <div style="flex: 1 1 240px; min-width: 0; min-height: 400px; padding: 16px 18px; display: flex; flex-direction: column; gap: 18px; background: #fafafa; box-sizing: border-box;">
                     <div>
                       <div style="font-size: 0.75em; letter-spacing: 0.8px; color: #757575; margin-bottom: 4px;">ADDING</div>
                       <div v-if="selected" style="font-family: monospace; font-size: 0.85em; color: #212121; word-break: break-all;">{{ selected }}</div>
@@ -870,10 +871,16 @@ const foldersView = Vue.component('folders-view', {
                       <div v-if="!vpathOk" style="font-size: 0.8em; color: #b71c1c; margin-top: 4px;">Letters, numbers and dashes only.</div>
                       <div v-else-if="folders[dirName]" style="font-size: 0.8em; color: #b71c1c; margin-top: 4px;">That name is already in use.</div>
                     </div>
-                    <div class="pad-checkbox"><label>
-                      <input type="checkbox" v-model="autoAccess"/>
-                      <span>{{ t('admin.folders.giveAccessToAll') }}</span>
-                    </label></div>
+                    <div style="display: flex; flex-direction: column; gap: 10px;">
+                      <div class="pad-checkbox"><label>
+                        <input type="checkbox" v-model="autoAccess"/>
+                        <span>{{ t('admin.folders.giveAccessToAll') }}</span>
+                      </label></div>
+                      <div class="pad-checkbox"><label title="When on, the scanner follows symlinks inside this library. Off keeps scanned content strictly within the library's physical tree.">
+                        <input type="checkbox" v-model="newFollowSymlinks"/>
+                        <span>Follow symlinks</span>
+                      </label></div>
+                    </div>
                     <div style="margin-top: auto;">
                       <a v-on:click="submitForm()" class="btn green waves-effect waves-light" style="width: 100%;"
                         :class="{disabled: submitPending || !selected || !vpathOk || !!folders[dirName]}">
@@ -1055,7 +1062,8 @@ const foldersView = Vue.component('folders-view', {
             data: {
               directory: this.selected,
               vpath: this.dirName,
-              autoAccess: this.autoAccess
+              autoAccess: this.autoAccess,
+              followSymlinks: this.newFollowSymlinks
             }
           });
 
@@ -1065,9 +1073,10 @@ const foldersView = Vue.component('folders-view', {
             });
           }
 
-          Vue.set(ADMINDATA.folders, this.dirName, { root: this.selected });
+          Vue.set(ADMINDATA.folders, this.dirName, { root: this.selected, followSymlinks: this.newFollowSymlinks });
           this.dirName = '';
           this.selected = '';
+          this.newFollowSymlinks = false;
           this.renaming = false;
         }catch(err) {
           iziToast.error({
