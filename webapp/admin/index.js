@@ -810,8 +810,8 @@ const foldersView = Vue.component('folders-view', {
             <div class="card">
               <div class="card-content">
                 <span class="card-title">{{ t('admin.folders.title') }}</span>
-                <div style="display: flex; border: 1px solid #e0e0e0; border-radius: 2px; overflow: hidden; margin-top: 8px;">
-                  <div style="flex: 1.5; min-width: 0; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column;">
+                <div style="display: flex; flex-wrap: wrap; border: 1px solid #e0e0e0; border-radius: 2px; overflow: hidden; margin-top: 8px;">
+                  <div style="flex: 1.5 1 300px; min-width: 0; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column;">
                     <div style="padding: 9px 14px; background: #f5f5f5; border-bottom: 1px solid #e0e0e0; font-size: 0.85em; color: #616161; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
                       <select v-if="winDrives.length > 0" @change="browseTo($event.target.value)" class="browser-default"
                         style="width: auto; height: 26px; font-size: 12px; padding: 0 4px; display: inline-block;">
@@ -844,12 +844,12 @@ const foldersView = Vue.component('folders-view', {
                       </div>
                       <div v-if="browse.dirs.length === 0" style="padding: 14px; color: #9e9e9e; font-size: 0.85em;">No subfolders here.</div>
                     </div>
-                    <div style="padding: 7px 14px; border-top: 1px solid #f0f0f0; font-size: 0.8em; color: #9e9e9e; display: flex; justify-content: space-between; gap: 8px; margin-top: auto;">
+                    <div style="padding: 7px 14px; border-top: 1px solid #f0f0f0; font-size: 0.8em; color: #9e9e9e; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 8px; margin-top: auto;">
                       <span>{{ browse.dirs.length }} folder{{ browse.dirs.length === 1 ? '' : 's' }} · click selects, open browses</span>
                       <span style="white-space: nowrap;">[<a v-on:click="selectCurrent()">select this folder</a>]</span>
                     </div>
                   </div>
-                  <div style="flex: 1; min-width: 0; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; background: #fafafa;">
+                  <div style="flex: 1 1 240px; min-width: 0; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; background: #fafafa;">
                     <div>
                       <div style="font-size: 0.75em; letter-spacing: 0.8px; color: #757575; margin-bottom: 4px;">ADDING</div>
                       <div v-if="selected" style="font-family: monospace; font-size: 0.85em; color: #212121; word-break: break-all;">{{ selected }}</div>
