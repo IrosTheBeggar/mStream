@@ -484,6 +484,12 @@ describe('multi-art parity (rust vs JS scanner)', () => {
 
 describe('stale-art reaping (disk is truth)', () => {
   // Per-runner fixture copies — these tests delete and replace images.
+  // That makes every test here build its OWN fixture (a dozen ffmpeg
+  // spawns) plus run TWO scans — more work than the shared-fixture 120s
+  // tests above, so all of them get the 240s ceiling: the rust reap leg
+  // has blown a 120s budget on a loaded windows-latest runner while the
+  // JS twin passed in 60s alongside it (the budget was load headroom,
+  // not runtime).
   async function reapScenario(t, label, runner) {
     const root = path.join(scratch, `reap-${label}`);
     await buildArtFixture(root);
@@ -536,7 +542,7 @@ describe('stale-art reaping (disk is truth)', () => {
     } finally { db.close(); }
   }
 
-  test('rust: deleted folder image reaped; on-disk art kept', { timeout: 120_000 }, async (t) => {
+  test('rust: deleted folder image reaped; on-disk art kept', { timeout: 240_000 }, async (t) => {
     if (!available()) { return t.skip('ffmpeg or rust-parser unavailable'); }
     await reapScenario(t, 'rust', c => runScan(rustBin, c));
   });
@@ -546,7 +552,7 @@ describe('stale-art reaping (disk is truth)', () => {
     await reapScenario(t, 'js', c => runJsScan(c));
   });
 
-  test('replaced embedded cover: stale album_art link reconciled away (cache file stays)', { timeout: 120_000 }, async (t) => {
+  test('replaced embedded cover: stale album_art link reconciled away (cache file stays)', { timeout: 240_000 }, async (t) => {
     if (!available()) { return t.skip('ffmpeg or rust-parser unavailable'); }
     const root = path.join(scratch, 'replace-cover');
     await buildArtFixture(root);

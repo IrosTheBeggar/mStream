@@ -296,18 +296,27 @@ describe('backup API: validation hardening', () => {
   // for the run's natural length and these tests time out — verified
   // by mutation (the earlier version of this test passed even with the
   // cancel deleted, because the ghost-guard alone made status idle).
+  // 40 files x 4000ms ≈ 160s natural runtime. The throttle costs the
+  // passing path nothing (the worker is killed within a file or two) —
+  // it only sets the ceiling the cancellation budgets below must stay
+  // well under to keep discriminating "cancelled" from "ran to
+  // completion" on a loaded CI runner.
   async function startSlowRun(libraryRoot, libraryId, destPath) {
     for (let i = 0; i < 40; i++) {
       fs.writeFileSync(path.join(libraryRoot, `slow-${String(i).padStart(2, '0')}.mp3`), `slow-${i}`);
     }
     const created = await api('POST', '/api/v1/admin/backup/destinations', {
-      libraryId, destPath, triggerType: 'manual', interFileDelayMs: 800,
+      libraryId, destPath, triggerType: 'manual', interFileDelayMs: 4000,
     });
     assert.equal(created.status, 200);
     const did = created.json.id;
     await api('POST', `/api/v1/admin/backup/destinations/${did}/run`);
+    // Ceiling, not a wait: returns on the first active poll. 30s because
+    // activation includes a worker-process spawn, which loaded
+    // windows-latest runners stretch far past the old ~5s (100x50ms) poll.
     let active = null;
-    for (let i = 0; i < 100; i++) {
+    const activeDeadline = Date.now() + 30_000;
+    while (Date.now() < activeDeadline) {
       const s = await api('GET', '/api/v1/admin/backup/status');
       if (s.json.active && s.json.active.destinationId === did) { active = s.json.active; break; }
       await sleep(50);
@@ -344,7 +353,7 @@ describe('backup API: validation hardening', () => {
     const del = await api('DELETE', `/api/v1/admin/backup/destinations/${did}`);
     assert.equal(del.status, 200);
 
-    // The discriminating assertion: the ~32s natural run must be gone
+    // The discriminating assertion: the ~160s natural run must be gone
     // from the queue slot within seconds.
     await assertQueueFreesWithin(10_000, 'destination DELETE');
 
@@ -383,7 +392,13 @@ describe('backup API: validation hardening', () => {
     // destination-DELETE route 404s), holding the serial queue slot
     // for the run's natural length. This path also reboots the HTTP
     // server, so the poller tolerates the reboot's connection gap.
-    await assertQueueFreesWithin(20_000, 'library DELETE');
+    // 90s ceiling (still a poll — passes the moment the slot frees):
+    // the reboot is a server boot, and boots have blown far smaller
+    // budgets on loaded windows-latest runners (see waitForReady's 90s
+    // rationale in helpers/server.mjs); a 20s budget flaked there
+    // ("library DELETE: queue slot still held after 20000ms"). The
+    // ~160s natural run keeps 90s discriminating.
+    await assertQueueFreesWithin(90_000, 'library DELETE');
 
     const s = await api('GET', '/api/v1/admin/backup/status');
     assert.equal(s.json.active, null, 'no phantom run may survive a library delete');
