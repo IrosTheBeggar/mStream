@@ -57,7 +57,7 @@ import * as lyricsLrclib from './api/lyrics-cache.js';
 import * as backupApi from './api/backup.js';
 import * as backupManager from './backup/manager.js';
 // Velvet UI modules — dynamically imported only when ui='velvet' is active
-import WebError from './util/web-error.js';
+import { classifyError } from './util/web-error.js';
 import { isAdminAllowed } from './util/admin-network.js';
 import { writeJsonAtomic, completedWrites } from './util/atomic-json.js';
 import * as updateCheck from './util/update-check.js';
@@ -684,21 +684,37 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     return handler(req, res, next);
   });
 
-  // error handling
+  // Error handling — the terminal translator from thrown errors to HTTP
+  // responses, and the last place log severity gets decided (the policy
+  // itself is classifyError in util/web-error.js, unit-pinned). Handled
+  // rejections log as rejections at warn with ip + user-agent, so a
+  // misbehaving client names itself in the log line (attributing the /ping
+  // one took router logs; never again). Error level + a stack are reserved
+  // for what they imply: genuine server failures.
   mstream.use((error, req, res, _next) => {
-    winston.error(`Server error on route ${req.originalUrl}`, { stack: error });
+    const from = `${req.ip} ${String(req.headers['user-agent'] || '-').slice(0, 80)}`;
 
     // Schema validation failures are malformed-request errors: the client
     // sent a body/params we can't accept. That's 400 Bad Request, not 403
     // Forbidden (which means "authenticated but not permitted").
     if (error instanceof Joi.ValidationError) {
+      winston.warn(`Rejected ${req.method} ${req.originalUrl} (${from}) — 400: ${error.message}`);
       return res.status(400).json({ error: error.message });
     }
 
-    if (error instanceof WebError) {
-      return res.status(error.status).json({ error: error.message });
+    const c = classifyError(error);
+    if (c.kind === 'web') {
+      if (c.level === 'error') {
+        winston.error(`Request failed: ${req.method} ${req.originalUrl} (${from}) — ${c.status}: ${error.message}`);
+      } else {
+        winston.warn(`Rejected ${req.method} ${req.originalUrl} (${from}) — ${c.status}: ${error.message}`);
+      }
+      return res.status(c.status).json({ error: error.message });
     }
 
+    // Unchanged wording + stack metadata on purpose: this line now MEANS
+    // something again — anyone grepping for it finds only real crashes.
+    winston.error(`Server error on route ${req.originalUrl}`, { stack: error });
     res.status(500).json({ error: 'Server Error' });
   });
 
