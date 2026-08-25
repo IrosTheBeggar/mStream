@@ -135,9 +135,14 @@ directly, with `manifest.json` holding their sha256s:
 Windows, `mStream.app` on macOS, `mstream-desktop` on Linux — starts the
 server in the background, puts an mStream icon in your tray / menu bar
 (a status line — "Running · up 3h 12m", or Starting… / Stopped — then Open
-mStream · Quick Connect · Start at login · View logs · Restart server · Quit),
-and opens your browser at the player. Start-at-login is on by default; one
-click in the tray menu turns it off.
+mStream · Quick Connect · Set up mStream · Start at login · View logs ·
+Restart server · Quit), and opens your browser at the player. Start-at-login
+is on by default; one click in the tray menu turns it off. **Set up mStream**
+opens a terminal running the guided setup wizard (the bundled
+`mstream-player setup`) — music folders, admin account, extras — and stays
+useful later: reopened, it picks up what the server already has. Headless
+installs get the same invitation as a boot log line whenever the server has
+no folders and no accounts yet.
 
 **Terminal users lose nothing.** The same desktop binary run from a terminal
 behaves exactly like the server itself (same flags, output, and exit codes) —

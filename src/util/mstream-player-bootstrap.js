@@ -140,6 +140,18 @@ export function canAutoFetch(opts = {}) {
   return manifestEntry(opts) !== null;
 }
 
+// A player binary that is ALREADY on this machine — the bundled copy next to
+// the server (build-bun stages it into every non-musl bundle) or a previously
+// fetched managed one — or null. Never downloads: this feeds boot-time
+// messaging, which must not cost a network round-trip or imply consent to one.
+export function installedPlayerPath({ bundledDir = defaultManifestDir(), installDir = managedPlayerDir(), key = playerKey() } = {}) {
+  for (const dir of [bundledDir, installDir]) {
+    const candidate = path.join(dir, key);
+    if (fs.existsSync(candidate)) { return candidate; }
+  }
+  return null;
+}
+
 // The one place a download URL is built from the pins. Exported so the
 // bundler and the unit tests share the exact shape — callers only ever hand
 // it a manifestEntry() result, i.e. already-validated tokens.
