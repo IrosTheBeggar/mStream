@@ -788,10 +788,18 @@ const foldersView = Vue.component('folders-view', {
     return {
       componentKey: false, // Flip this value to force re-render
       dirName: '',
-      folder: ADMINDATA.sharedSelect,
       foldersTS: ADMINDATA.foldersUpdated,
       folders: ADMINDATA.folders,
-      submitPending: false
+      submitPending: false,
+      // The inline folder browser: the picker lives on the page (left
+      // pane) with a live summary of what will be added (right pane),
+      // instead of routing through the file-explorer modal. The modal
+      // component itself stays — other views still use it.
+      browse: { path: null, dirs: [], pending: false },
+      winDrives: ADMINDATA.winDrives,
+      selected: '',
+      autoAccess: true,
+      renaming: false
     };
   },
   template: `
@@ -802,37 +810,77 @@ const foldersView = Vue.component('folders-view', {
             <div class="card">
               <div class="card-content">
                 <span class="card-title">{{ t('admin.folders.title') }}</span>
-                <form id="choose-directory-form" @submit.prevent="submitForm">
-                  <div class="row">
-                    <div class="input-field col s12">
-                      <input v-on:click="addFolderDialog()" @blur="maybeResetForm()" v-model="folder.value" id="folder-name" required type="text" class="validate">
-                      <label for="folder-name">{{ t('admin.folders.selectDirectory') }}</label>
-                      <span class="helper-text">{{ t('admin.folders.selectDirectoryHint') }}</span>
+                <div style="display: flex; border: 1px solid #e0e0e0; border-radius: 2px; overflow: hidden; margin-top: 8px;">
+                  <div style="flex: 1.5; min-width: 0; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column;">
+                    <div style="padding: 9px 14px; background: #f5f5f5; border-bottom: 1px solid #e0e0e0; font-size: 0.85em; color: #616161; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                      <select v-if="winDrives.length > 0" @change="browseTo($event.target.value)" class="browser-default"
+                        style="width: auto; height: 26px; font-size: 12px; padding: 0 4px; display: inline-block;">
+                        <option v-for="value in winDrives" :selected="browse.path && browse.path.startsWith(value)" :value="value">{{ value }}</option>
+                      </select>
+                      <span style="display: flex; gap: 5px; align-items: center; flex-wrap: wrap; min-width: 0;">
+                        <span v-for="(crumb, i) in breadcrumbs" :key="crumb.target" style="display: inline-flex; gap: 5px; align-items: center;">
+                          <span v-if="i > 0" style="color: #bdbdbd;">›</span>
+                          <b v-if="i === breadcrumbs.length - 1" style="color: #212121;">{{ crumb.label }}</b>
+                          <a v-else v-on:click="browseTo(crumb.target)">{{ crumb.label }}</a>
+                        </span>
+                      </span>
+                      <span style="margin-left: auto; white-space: nowrap;">[<a v-on:click="browseTo('~')">{{ t('admin.fileExplorer.home') }}</a>]
+                        [<a v-on:click="browseTo(browse.path)">{{ t('admin.fileExplorer.refresh') }}</a>]</span>
+                    </div>
+                    <div v-if="browse.path === null || browse.pending" style="padding: 30px; text-align: center;">
+                      <svg class="spinner" width="40px" height="40px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+                    </div>
+                    <div v-else style="max-height: 340px; overflow-y: auto;">
+                      <div v-on:click="browseTo(browse.path, '..')" style="padding: 8px 14px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #f0f0f0; color: #616161; cursor: pointer; font-size: 0.9em;">
+                        <svg width="18" height="15" viewBox="0 0 48 48" style="flex-shrink: 0;"><path fill="#bdbdbd" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/></svg>
+                        .. up one level
+                      </div>
+                      <div v-for="dir in browse.dirs" :key="dir.name" v-on:click="selectDir(dir.name)" v-on:dblclick="browseTo(browse.path, dir.name)"
+                        :style="'padding: 8px 14px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #f0f0f0; cursor: pointer; font-size: 0.9em;' + (isSelected(dir.name) ? ' background: #e8f5e9;' : '')">
+                        <svg width="18" height="15" viewBox="0 0 48 48" style="flex-shrink: 0;"><path fill="#FFA000" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/><path fill="#FFCA28" d="M42.2 18H15.3c-1.9 0-3.6 1.4-3.9 3.3L8 40h31.7c1.9 0 3.6-1.4 3.9-3.3l2.5-14c.5-2.4-1.4-4.7-3.9-4.7z"/></svg>
+                        <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="dir.name">{{ dir.name }}</span>
+                        <span v-if="isSelected(dir.name)" style="margin-left: auto; font-size: 0.85em; color: #2e7d32; font-weight: 600; flex-shrink: 0;">selected</span>
+                        <a v-else v-on:click.stop="browseTo(browse.path, dir.name)" style="margin-left: auto; font-size: 0.85em; flex-shrink: 0;">open</a>
+                      </div>
+                      <div v-if="browse.dirs.length === 0" style="padding: 14px; color: #9e9e9e; font-size: 0.85em;">No subfolders here.</div>
+                    </div>
+                    <div style="padding: 7px 14px; border-top: 1px solid #f0f0f0; font-size: 0.8em; color: #9e9e9e; display: flex; justify-content: space-between; gap: 8px; margin-top: auto;">
+                      <span>{{ browse.dirs.length }} folder{{ browse.dirs.length === 1 ? '' : 's' }} · click selects, open browses</span>
+                      <span style="white-space: nowrap;">[<a v-on:click="selectCurrent()">select this folder</a>]</span>
                     </div>
                   </div>
-                  <div class="row">
-                    <div class="input-field col s12">
-                      <input @blur="maybeResetForm()" pattern="[a-zA-Z0-9-]+" v-model="dirName" id="add-directory-name" required type="text" class="validate">
-                      <label for="add-directory-name">{{ t('admin.folders.vPathLabel') }}</label>
-                      <span class="helper-text">{{ t('admin.folders.vPathHint') }}</span>
+                  <div style="flex: 1; min-width: 0; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; background: #fafafa;">
+                    <div>
+                      <div style="font-size: 0.75em; letter-spacing: 0.8px; color: #757575; margin-bottom: 4px;">ADDING</div>
+                      <div v-if="selected" style="font-family: monospace; font-size: 0.85em; color: #212121; word-break: break-all;">{{ selected }}</div>
+                      <div v-else style="font-size: 0.85em; color: #9e9e9e;">Pick a folder on the left.</div>
+                    </div>
+                    <div v-if="selected">
+                      <div style="font-size: 0.75em; letter-spacing: 0.8px; color: #757575; margin-bottom: 4px;">SHOWN IN THE APP AS</div>
+                      <div v-if="!renaming" style="display: flex; align-items: center; gap: 8px;">
+                        <span style="background: #ececf2; color: #505061; padding: 3px 10px; border-radius: 10px; font-size: 0.85em; font-weight: 600;">{{ dirName || '?' }}</span>
+                        <a style="font-size: 0.85em;" v-on:click="renaming = true">rename</a>
+                      </div>
+                      <div v-else style="display: flex; align-items: center; gap: 8px;">
+                        <input v-model="dirName" pattern="[a-zA-Z0-9-]+" type="text"
+                          style="flex: 1; min-width: 0; margin: 0; height: 28px; font-size: 13px;" v-on:keyup.enter="renaming = false">
+                        <a style="font-size: 0.85em; flex-shrink: 0;" v-on:click="renaming = false">done</a>
+                      </div>
+                      <div v-if="!vpathOk" style="font-size: 0.8em; color: #b71c1c; margin-top: 4px;">Letters, numbers and dashes only.</div>
+                      <div v-else-if="folders[dirName]" style="font-size: 0.8em; color: #b71c1c; margin-top: 4px;">That name is already in use.</div>
+                    </div>
+                    <div class="pad-checkbox"><label>
+                      <input type="checkbox" v-model="autoAccess"/>
+                      <span>{{ t('admin.folders.giveAccessToAll') }}</span>
+                    </label></div>
+                    <div style="margin-top: auto;">
+                      <a v-on:click="submitForm()" class="btn green waves-effect waves-light" style="width: 100%;"
+                        :class="{disabled: submitPending || !selected || !vpathOk || !!folders[dirName]}">
+                        {{ submitPending === false ? t('admin.folders.addButton') : t('admin.folders.adding') }}
+                      </a>
                     </div>
                   </div>
-                  <div class="row">
-                    <div class="col m6 s12">
-                      <div class="pad-checkbox"><label>
-                        <input id="folder-auto-access" type="checkbox" checked/>
-                        <span>{{ t('admin.folders.giveAccessToAll') }}</span>
-                      </label></div>
-                      <div class="pad-checkbox"><label>
-                        <input id="folder-is-audiobooks" type="checkbox"/>
-                        <span>{{ t('admin.folders.audiobooks') }}</span>
-                      </label></div>
-                    </div>
-                    <button class="btn green waves-effect waves-light col m6 s12" type="submit" :disabled="submitPending === true">
-                      {{ submitPending === false ? t('admin.folders.addButton') : t('admin.folders.adding') }}
-                    </button>
-                  </div>
-                </form>
+                </div>
               </div>
             </div>
           </div>
@@ -872,15 +920,72 @@ const foldersView = Vue.component('folders-view', {
         </div>
       </div>
     </div>`,
-    created: function() {
-      ADMINDATA.sharedSelect.value = '';
+    computed: {
+      // The browse path split into clickable crumbs. Separator-preserving:
+      // windows paths rebuild with backslashes (and 'C:' alone gets its
+      // trailing one back), unix paths with slashes rooted at '/'.
+      breadcrumbs: function() {
+        if (!this.browse.path) { return []; }
+        const win = this.browse.path.includes('\\');
+        const parts = this.browse.path.split(/[\\\/]/).filter((p) => p !== '');
+        const crumbs = win ? [] : [{ label: '/', target: '/' }];
+        for (let i = 0; i < parts.length; i++) {
+          const target = win
+            ? parts.slice(0, i + 1).join('\\') + (i === 0 ? '\\' : '')
+            : '/' + parts.slice(0, i + 1).join('/');
+          crumbs.push({ label: parts[i], target });
+        }
+        return crumbs;
+      },
+      vpathOk: function() {
+        return /^[a-zA-Z0-9-]+$/.test(this.dirName);
+      },
     },
-    watch: {
-      'folder.value': function (newVal, oldVal) {
-        this.makeVPath(newVal);
-      }
+    created: function() {
+      this.browseTo('~');
     },
     methods: {
+      joinPath: function(name) {
+        const p = this.browse.path;
+        const sep = p.includes('\\') ? '\\' : '/';
+        return p.endsWith(sep) ? p + name : p + sep + name;
+      },
+      browseTo: async function(dir, joinDir) {
+        this.browse.pending = true;
+        try {
+          const params = { directory: dir };
+          if (joinDir) { params.joinDirectory = joinDir; }
+          const res = await API.axios({
+            method: 'POST',
+            url: `${API.url()}/api/v1/admin/file-explorer`,
+            data: params
+          });
+          this.browse.path = res.data.path;
+          this.browse.dirs = res.data.directories;
+        } catch (err) {
+          iziToast.error({
+            title: t('admin.fileExplorer.contentsFailed'),
+            position: 'topCenter',
+            timeout: 3500
+          });
+        } finally {
+          this.browse.pending = false;
+        }
+      },
+      selectDir: function(name) {
+        this.selected = this.joinPath(name);
+        this.renaming = false;
+        this.makeVPath(this.selected);
+      },
+      selectCurrent: function() {
+        if (!this.browse.path) { return; }
+        this.selected = this.browse.path;
+        this.renaming = false;
+        this.makeVPath(this.selected);
+      },
+      isSelected: function(name) {
+        return this.selected !== '' && this.selected === this.joinPath(name);
+      },
       // iziToast renders title/message as HTML (its internal helper does
       // div.innerHTML = value), and the i18n t() helper interpolates
       // params into translation strings WITHOUT escaping (some strings
@@ -929,16 +1034,8 @@ const foldersView = Vue.component('folders-view', {
           M.updateTextFields();
         });
       },
-      maybeResetForm: function() {
-        if (this.dirName === '' && this.folder.value === '') {
-          document.getElementById("choose-directory-form").reset();
-        }
-      },
-      addFolderDialog: function (event) {
-        modVM.currentViewModal = 'file-explorer-modal';
-        M.Modal.getInstance(document.getElementById('admin-modal')).open();
-      },
       submitForm: async function () {
+        if (this.submitPending || !this.selected || !this.vpathOk) { return; }
         if (ADMINDATA.folders[this.dirName]) {
           iziToast.warn({
             title: t('admin.folders.pathInUse'),
@@ -955,25 +1052,22 @@ const foldersView = Vue.component('folders-view', {
             method: 'PUT',
             url: `${API.url()}/api/v1/admin/directory`,
             data: {
-              directory: this.folder.value,
+              directory: this.selected,
               vpath: this.dirName,
-              autoAccess: document.getElementById('folder-auto-access').checked,
-              isAudioBooks: document.getElementById('folder-is-audiobooks').checked
+              autoAccess: this.autoAccess
             }
           });
 
-          if (document.getElementById('folder-auto-access').checked) {
+          if (this.autoAccess) {
             Object.values(ADMINDATA.users).forEach(user => {
               user.vpaths.push(this.dirName);
             });
           }
 
-          Vue.set(ADMINDATA.folders, this.dirName, { root: this.folder.value });
+          Vue.set(ADMINDATA.folders, this.dirName, { root: this.selected });
           this.dirName = '';
-          this.folder.value = '';
-          this.$nextTick(() => {
-            M.updateTextFields();
-          });
+          this.selected = '';
+          this.renaming = false;
         }catch(err) {
           iziToast.error({
             title: t('admin.folders.addFailed'),
