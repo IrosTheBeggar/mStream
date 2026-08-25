@@ -438,8 +438,16 @@ export function readEmbeddings(endpointId, modelId) {
 // Exponential per-peer cooldown, reset by any success (including a manual
 // admin fetch, which deliberately bypasses the backoff). In-memory only:
 // a reboot retrying immediately is fine.
+//
+// The cap must sit WELL ABOVE the hourly rotation interval. It used to be
+// exactly 60min — equal to ROTATE_INTERVAL_MS — so a failing peer's backoff
+// had always just expired when the next rotation pass ran: the "backoff"
+// retried every hour forever (333 warns in two weeks on one production
+// server, the noise floor that buried the #880 outage). At 24h, a peer that
+// keeps failing walks the ladder to roughly one attempt a day; any success,
+// or a reboot, starts it fresh.
 const FETCH_BACKOFF_BASE_MS = 2 * 60 * 1000;
-const FETCH_BACKOFF_MAX_MS = 60 * 60 * 1000;
+const FETCH_BACKOFF_MAX_MS = 24 * 60 * 60 * 1000;
 const fetchFailures = new Map(); // endpointId -> { failures, nextTryMs }
 
 function recordFetchFailure(endpointId) {

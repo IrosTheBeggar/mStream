@@ -12,6 +12,8 @@
  *     prefer entries other seeders still hold
  *   - candidate order: never-held first (ledger), then the shared
  *     usefulness order (model-compatible -> online -> biggest)
+ *   - candidate fetchability: offline origins with no live seeders are not
+ *     candidates at all — novelty never outranks reachability
  *   - capacity: the incoming snapshot must fit AFTER the eviction;
  *     evictFirst signals when it only fits because of it
  */
@@ -204,6 +206,39 @@ describe('planRotation — candidate choice', () => {
         cat('d', { modelId: 'other-model', rowCount: 99999 }),
         cat('e', { modelId: 'model-x', rowCount: 1 }),
       ],
+    }));
+    assert.equal(plan.fetchId, id('e'));
+  });
+});
+
+describe('planRotation — candidate fetchability', () => {
+  test('an offline candidate with no live seeders is not a candidate', () => {
+    assert.equal(planRotation(inputs({
+      catalog: [cat('d', { silentMs: DAY })],
+    })), null, 'a guaranteed-dead dial must not be planned');
+  });
+
+  test('an offline candidate WITH live seeders is fetchable via the swarm', () => {
+    const plan = planRotation(inputs({
+      catalog: [cat('d', { silentMs: DAY })],
+      seederCountOf: (hash) => (hash === id('d') ? 2 : 0),
+    }));
+    assert.equal(plan.fetchId, id('d'),
+      'live holders make an offline origin a perfectly good pick');
+  });
+
+  test('the production pathology: only dead candidates -> no plan, no hourly churn', () => {
+    // Two long-offline peers, no seeders — the exact shape that produced a
+    // guaranteed-failure dial (and a warn line) every hour for two weeks.
+    assert.equal(planRotation(inputs({
+      catalog: [cat('d', { silentMs: 7 * DAY }), cat('e', { silentMs: 30 * DAY })],
+    })), null);
+  });
+
+  test('novelty no longer outranks reachability: a dead never-held loses to a live past-evictee', () => {
+    const plan = planRotation(inputs({
+      catalog: [cat('d', { silentMs: DAY }), cat('e')], // d never held but dead; e alive
+      ledger: { [id('e')]: iso(2 * DAY) },              // e was rotated out recently
     }));
     assert.equal(plan.fetchId, id('e'));
   });

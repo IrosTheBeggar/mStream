@@ -17,6 +17,13 @@
 // (gentle, self-limiting on small catalogs), never touches pinned entries,
 // and prefers to evict what's least useful (long-offline, longest-held) in
 // favor of what's most novel (never held before, model-compatible, online).
+//
+// Novelty never outranks REACHABILITY: a candidate must be fetchable right
+// now — origin online, or a live holds beacon offering its snapshot — or it
+// is not a candidate at all. Without that gate, the never-held-first order
+// kept picking the same two long-offline peers every hour for two weeks on a
+// production server: each pass a guaranteed dead dial and a warn line, noise
+// that ended up masking a real outage (mStream #880).
 
 // A peer is "online" when we heard a re-announcement recently. Announcers
 // re-broadcast every ~15s; 90s tolerates a few missed rounds.
@@ -124,8 +131,15 @@ export function planRotation({
   if (eligible.length === 0) { return null; }
 
   const held = new Set(shelf.map((e) => e.endpointId));
+  // Fetchable = someone can actually serve the snapshot right now: the
+  // origin announced within the online window, or a live (TTL-pruned) holds
+  // beacon lists the hash — the swarm path fetches from any live holder, so
+  // an offline origin with live seeders is still a perfectly good pick.
+  const fetchable = (c) => now - ts(c.updatedAt) < ONLINE_WINDOW_MS
+    || seederCountOf(c.payload.hash || '') > 0;
   const candidates = catalog
-    .filter((c) => !held.has(c.from) && !isBlocked(c.from) && !inBackoff(c.from))
+    .filter((c) => !held.has(c.from) && !isBlocked(c.from) && !inBackoff(c.from)
+      && fetchable(c))
     .sort(rotationCandidateOrder(ledger, localModel, now));
   if (candidates.length === 0) { return null; }
 
