@@ -62,6 +62,7 @@ import { isAdminAllowed } from './util/admin-network.js';
 import { writeJsonAtomic, completedWrites } from './util/atomic-json.js';
 import * as updateCheck from './util/update-check.js';
 import * as bootWatchdog from './util/boot-watchdog.js';
+import { classifyBootError, renderHoldPage } from './util/boot-errors.js';
 
 import packageJson from '../package.json' with { type: 'json' };
 
@@ -138,6 +139,190 @@ function rebootStub(req, res) {
   res.end('mStream is restarting');
 }
 
+// ── Boot hold ────────────────────────────────────────────────────────────
+// When a FIRST boot fails on something ENVIRONMENTAL — a full disk, a
+// read-only or vanished volume, a damaged database file (util/boot-errors.js
+// draws the line) — exiting is the worst available move: every supervisor
+// around us (s6 in the docker image, the desktop launcher, systemd) restarts
+// a crashed process, so the user gets an infinite banner/crash loop on a
+// dead port, and the actual cause ("disk I/O error") scrolls by unexplained.
+// Instead the boot HOLDS: the configured port is bound, every request
+// answers 503 with the real diagnosis — a human page for browsers, JSON
+// otherwise — and the full boot is retried on a timer. The moment a retry
+// succeeds, serveIt()'s keep-listener path swaps the real app onto the
+// socket, exactly like a soft reboot.
+//
+// Deliberately FIRST boots only: a soft reboot that hits the same failure
+// still exits (with the same diagnosis logged), because the previous life's
+// timers and watchers would otherwise outlive their closed db handle inside
+// the hold — see the classifier call site. A supervised install restarts
+// once and lands right here; an unsupervised one dies with the reason on
+// its last lines. Non-environmental failures crash precisely as before.
+//
+// Holding is the whole state: bootHoldMemory is non-null exactly while the
+// boot is held (its retries included), and onListening clears it the moment
+// a boot completes. Exactly one retry timer is ever pending — each timer
+// runs one retry, and only that retry's failure arms the next.
+let bootHoldMemory = null;  // { since, attempts, lastHeadline, diagnosis }
+
+function bootHoldRetryMs() {
+  // Test hook: the integration suite can't wait 15 s per retry.
+  const n = parseInt(process.env.MSTREAM_BOOT_HOLD_RETRY_MS, 10);
+  return Number.isFinite(n) ? Math.max(250, n) : 15000;
+}
+
+function bootHoldRetrySeconds() {
+  return Math.max(1, Math.ceil(bootHoldRetryMs() / 1000));
+}
+
+// The three operator-facing lines of a diagnosis, together — the hold's
+// gated logging and the reboot-path exit must print the same shape.
+function logBootDiagnosis(diagnosis) {
+  winston.error(diagnosis.headline);
+  winston.error(`  ${diagnosis.detail}`);
+  winston.error(`  ${diagnosis.hint}`);
+}
+
+function bootHoldHandler(req, res) {
+  // Defensive null-arm: unreachable today (the handler is only attached
+  // while bootHoldMemory is set), but a throw in a raw 'request' handler
+  // would be an uncaught exception — the one thing a hold must never do.
+  const d = bootHoldMemory ? bootHoldMemory.diagnosis : null;
+  const retrySeconds = bootHoldRetrySeconds();
+  res.statusCode = 503;
+  res.setHeader('Retry-After', String(retrySeconds));
+  res.setHeader('X-MStream-Boot-Hold', d ? d.reason : 'unknown');
+  res.setHeader('Connection', 'close');
+  if ((req.headers.accept || '').includes('text/html')) {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.end(renderHoldPage(d, { retrySeconds }));
+  } else {
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify(d
+      ? { error: d.headline, code: d.reason, detail: d.detail, hint: d.hint }
+      : { error: 'mStream cannot start yet', code: 'unknown' }));
+  }
+}
+
+// Put the not-yet-listening server serveIt already built for this bind on
+// the air as the hold listener. The listener object, its liveSockets
+// bookkeeping and the socket tagging were all wired by serveIt's
+// !keepListener branch — reusing it (instead of building a second one) is
+// what lets the keep-listener swap hand this exact socket to the app on
+// recovery. If the bind itself fails there is nothing to hold WITH: reject
+// with the ORIGINAL boot error and let the wrapper exit non-zero, the
+// pre-hold behaviour.
+function adoptHoldListener(bind, cause) {
+  return new Promise((resolve, reject) => {
+    const held = server;
+    if (!held || held.listening) {
+      // Can't happen on the paths that lead here (see enterBootHold); bail
+      // to the pre-hold behaviour rather than crash with a puzzle.
+      return reject(cause);
+    }
+    held.on('request', bootHoldHandler);
+    let bound = false;
+    held.on('error', (err) => {
+      if (!bound) {
+        winston.error(`Cannot hold the boot: ${bindLabel(bind)} is unavailable (${err.code || err.message}) — giving up with the original error`);
+        reject(cause);
+        return;
+      }
+      // Post-bind errors mirror the real listener's handler, which never
+      // attaches to a hold-born socket (recovery takes the keep-listener
+      // path, which returns before registering it): ignore a superseded
+      // instance, treat anything else as fatal.
+      if (held !== server) {
+        winston.warn(`Ignoring '${err.code || err.message}' from a superseded server instance`);
+        try { held.close(); } catch (_) { /* already closed */ }
+        return;
+      }
+      winston.error(`Server error: ${err.message}`, { stack: err });
+      try { fs.writeSync(2, `mStream fatal: ${err.message}\n`); } catch (_) { /* stderr gone */ }
+      process.exit(1);
+    });
+    held.once('listening', () => {
+      bound = true;
+      currentBind = bind;
+      resolve();
+    });
+    held.listen(bind.port, bind.address);
+  });
+}
+
+async function enterBootHold(configFile, bind, diagnosis, cause) {
+  // The failure can leave a half-open handle behind (initDB assigns db
+  // before the first pragma runs). Release it — and the caches a partial
+  // init may have filled — so the hold pins nothing: on Windows an open
+  // handle blocks the operator from replacing a damaged mstream.db, the
+  // very fix the hold page asks for.
+  dbManager.close();
+
+  if (!bootHoldMemory) {
+    bootHoldMemory = { since: Date.now(), attempts: 0, lastHeadline: null, diagnosis: null };
+  }
+  const mem = bootHoldMemory;
+  mem.attempts += 1;
+  mem.diagnosis = diagnosis;
+
+  // Loud once, again whenever the diagnosis CHANGES (the disk filled, then
+  // the volume vanished...), and a heartbeat every 20 attempts (~5 min at
+  // the default interval) — so a long hold can't scroll out of the logs,
+  // and can't flood them either (the admin live-log ring is finite).
+  const changed = diagnosis.headline !== mem.lastHeadline;
+  if (changed || mem.attempts % 20 === 1) {
+    logBootDiagnosis(diagnosis);
+    if (changed) { winston.error('The underlying boot error follows for the record', { stack: cause }); }
+    winston.error(`Boot is HOLDING on ${bindLabel(currentBind || bind)} — all requests answer 503 with the diagnosis above; retrying every ${bootHoldRetrySeconds()}s until it is fixed (attempt ${mem.attempts})`);
+    mem.lastHeadline = diagnosis.headline;
+  }
+
+  if (server && server.listening) {
+    // Already on the air (a failed retry re-entering, or a retry whose
+    // config read failed): refresh the handler — off() first keeps the
+    // attach count at exactly one, and is a no-op when not attached.
+    server.off('request', bootHoldHandler);
+    server.on('request', bootHoldHandler);
+  } else {
+    await adoptHoldListener(bind, cause);
+  }
+
+  // The diagnosis handler stays attached THROUGH the retry (no "restarting"
+  // stub flash, and a retry that blocks on a dead network mount leaves the
+  // truthful page up instead of a stale stub); serveIt's keep-listener swap
+  // detaches it on success.
+  setTimeout(() => {
+    retryBoot(configFile).catch((err) => {
+      // retryBoot handles serveIt's rejection itself; reaching here means
+      // the retry plumbing broke — nothing is scheduled anymore, so limping
+      // on would strand the process in a hold that never retries.
+      winston.error('Boot-hold retry machinery failed', { stack: err });
+      try { fs.writeSync(2, `mStream fatal: boot-hold retry failed: ${err.message}\n`); } catch (_) { /* stderr gone */ }
+      process.exit(1);
+    });
+  }, bootHoldRetryMs());
+}
+
+async function retryBoot(configFile) {
+  // Belt for a timer that somehow outlives its hold (success clears the
+  // memory in onListening): re-running serveIt against a healthy server
+  // would close its database out from under it.
+  if (!bootHoldMemory) { return; }
+  try {
+    await serveIt(configFile, { relisten: currentBind });
+  } catch (err) {
+    // The failure moved — from environmental to something the classifier
+    // refuses to hold (a migration bug, bad certs). Same contract as a
+    // failed first boot: say it and exit non-zero.
+    winston.error('mStream failed to start', { stack: err });
+    try { fs.writeSync(2, `mStream fatal: ${err.message}\n`); } catch (_) { /* stderr gone */ }
+    process.exit(1);
+  }
+  // A holdable re-failure re-entered enterBootHold (which armed the next
+  // retry); a success ran onListening, which clears bootHoldMemory. Either
+  // way this invocation's work is done.
+}
+
 // Put a rejected bind change back: the previous port/address into the config
 // file (atomically — the admin's own saves go through the same writer), so
 // the next start doesn't fail on the value this one just refused.
@@ -205,18 +390,39 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     configWritesAtRead = completedWrites(configFile);
     await config.setup(configFile);
   } catch (err) {
+    if (bootHoldMemory) {
+      // A hold retry: the config usually shares the volume with the database
+      // (the docker layout mounts both under /config), so the very failure
+      // being held can make the config read/validate/persist throw too — an
+      // exit here would tear down an active, correctly-diagnosing hold and
+      // resume the supervisor crash loop. Stay held on the socket we have
+      // and say what the retry hit; the next retry re-reads the file.
+      await enterBootHold(configFile, currentBind, {
+        reason: 'config',
+        headline: 'mStream cannot start: reading its config file failed during a retry.',
+        detail: `${configFile} — ${err.message}`,
+        hint: 'If the config was just edited, fix it; if its volume is the one that failed, fixing the volume clears this too.',
+      }, err);
+      return;
+    }
     // A permission/read-only failure is NOT a malformed config, and saying so
     // sends the user hunting through a file that is usually fine (or absent):
     // name the real cause instead. dataRoot already redirects writable state
     // away from a read-only app (util/esm-helpers.js), so reaching this means
     // the chosen location itself is unwritable — an explicit -j/MSTREAM_CONFIG
     // pointing somewhere read-only, or a container mount without permission.
+    // A full disk gets its own words for the same reason: config.setup also
+    // creates storage directories and persists generated ids, and "Failed to
+    // validate" would point the operator at entirely the wrong thing.
     // (Desktop-launch users see the launcher's own boot-failure dialog; this
     // message is what its server log carries.)
     const denied = err.code === 'EROFS' || err.code === 'EACCES' || err.code === 'EPERM';
+    const noSpace = err.code === 'ENOSPC' || err.code === 'EDQUOT';
     winston.error(denied
       ? `mStream could not start — it can't write to ${configFile}: the location is read-only or permission was denied (${err.message})`
-      : 'Failed to validate config file', { stack: err });
+      : noSpace
+        ? `mStream could not start — the disk is full (${err.message}${err.path ? ` at ${err.path}` : ''})`
+        : 'Failed to validate config file', { stack: err });
     process.exit(1);
   }
 
@@ -388,10 +594,45 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   // 'exit' hook nor its signal handlers can run). Must happen BEFORE
   // initDB(): an orphan still writing would lock-fight this boot's
   // migrations, and a migration failure aborts the boot.
-  reapOrphanedScanner(config.program.storage.dbDirectory);
+  //
+  // Both the reap and the database open can fail for reasons that are the
+  // MACHINE's, not this build's — a full disk (SQLITE_IOERR_SHMSIZE at the
+  // WAL pragma was the 2026-08-25 production incident), a read-only or
+  // unmounted volume, a damaged db file. Those hold the boot (see Boot hold
+  // above) instead of crashing into the supervisor's restart loop; anything
+  // the classifier does not recognize as environmental rethrows and crashes
+  // exactly as before.
+  try {
+    // Skipped on hold retries: the first attempt already reaped, a booted
+    // server is the only thing that spawns scanners (so no new orphan can
+    // appear mid-hold), and the reap's deliberately synchronous process
+    // probes (multi-second on Windows) would stall the very event loop
+    // serving the diagnosis page every retry.
+    if (!bootHoldMemory) {
+      reapOrphanedScanner(config.program.storage.dbDirectory);
+    }
 
-  // Setup DB
-  dbManager.initDB();
+    // Setup DB
+    dbManager.initDB();
+  } catch (err) {
+    const diagnosis = classifyBootError(err, config.program.storage.dbDirectory);
+    if (!diagnosis) { throw err; }
+    if (relisten !== null && bootHoldMemory === null) {
+      // A REBOOT's re-serve, not a fresh boot or a hold retry (holds and
+      // their retries are exactly the bootHoldMemory-set states): the
+      // previous life's task-queue timers, watchers and in-flight handlers
+      // are still armed, and initDB already closed their database handle —
+      // holding here would leave them to crash into a dead db minutes later
+      // (there is no global uncaughtException net). Keep the reboot contract
+      // (exit non-zero) but say WHY first; a supervised install restarts
+      // once and that fresh boot lands in the hold below with the same
+      // diagnosis.
+      logBootDiagnosis(diagnosis);
+      throw err;
+    }
+    await enterBootHold(configFile, bind, diagnosis, err);
+    return;
+  }
 
   // The separate music-discovery DB opens at boot only when collection is
   // enabled (the admin toggle initializes it on demand otherwise). Failure
@@ -752,6 +993,11 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     // watchdog's attempt counter (armed pre-boot in cli-boot-wrapper.js)
     // starts over. Cheap no-op everywhere the guard never ran.
     bootWatchdog.markBootOk();
+    if (bootHoldMemory) {
+      const heldFor = Math.round((Date.now() - bootHoldMemory.since) / 1000);
+      winston.info(`Boot hold cleared: mStream started after ${heldFor}s and ${bootHoldMemory.attempts} ${bootHoldMemory.attempts === 1 ? 'retry' : 'retries'}`);
+      bootHoldMemory = null;
+    }
     winston.info(`Access mStream locally: ${protocol}://localhost:${config.program.port}`);
 
     // A settings change landed while the reboot above was already past its
@@ -880,6 +1126,9 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     // socket was created stay in place; nothing about them is per-app.
     winston.info(`Reboot: bind unchanged (${bindLabel(bind)}) — keeping the listening socket`);
     server.off('request', rebootStub);
+    // A recovering boot hold keeps its diagnosis handler attached through
+    // the retry (see enterBootHold) — this swap is where it comes off.
+    server.off('request', bootHoldHandler);
     server.on('request', mstream);
     // Fire-and-forget on purpose: same contract as the 'listening' event
     // dispatch below (a rejection surfaces the same way in both paths).

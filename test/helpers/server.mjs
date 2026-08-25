@@ -17,7 +17,7 @@ import { ensureFixtures } from './fixtures.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
-function findFreePort() {
+export function findFreePort() {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
     srv.unref();
@@ -50,7 +50,20 @@ async function waitForReady(baseUrl, { timeoutMs = 90_000, getExitError = () => 
     try {
       const r = await fetch(`${baseUrl}/api/`);
       if (r.status < 500) { return; }
-    } catch (err) { lastErr = err; }
+      // A boot hold (server.js) answers 503 with the process ALIVE, so
+      // neither the exit check nor the timeout would ever name the cause —
+      // every affected test would burn the full budget and report
+      // "unknown". Treat it as the terminal boot failure it is and
+      // surface the server's own diagnosis.
+      const holdReason = r.headers.get('x-mstream-boot-hold');
+      if (holdReason) {
+        const body = await r.json().catch(() => null);
+        throw new Error(`server is in a boot hold (${holdReason}): ${body?.error || ''} ${body?.detail || ''}`.trim());
+      }
+    } catch (err) {
+      if (/boot hold/.test(err.message)) { throw err; }
+      lastErr = err;
+    }
     await sleep(50);
   }
   throw new Error(`server not ready within ${timeoutMs}ms: ${lastErr?.message || 'unknown'}`);
