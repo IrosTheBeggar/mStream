@@ -94,6 +94,14 @@ describe('discovery p2p watchdog: an over-ceiling sidecar is restarted through c
       { timeoutMs: 15000, what: 'the watchdog to kill the over-ceiling sidecar' },
     );
 
+    // While the sidecar is down, the status route must SAY that recovery
+    // owns it — the field the panel renders as "reconnecting, attempt N".
+    await pollUntil(async () => {
+      const st = await statusOf();
+      if (st.running) { return true; } // recovery already won the race — fine
+      return st.recovery && (st.recovery.attempts >= 1 || st.recovery.retryPending) ? true : null;
+    }, { timeoutMs: 10000, what: 'the status route to report recovery in progress' });
+
     // Crash recovery must bring back a NEW process, joined, same identity —
     // the whole #880 contract, triggered by the watchdog instead of an OOM.
     const recovered = await pollUntil(async () => {
@@ -105,6 +113,12 @@ describe('discovery p2p watchdog: an over-ceiling sidecar is restarted through c
 
     assert.equal(recovered.s.endpointId, healthy.endpointId,
       'a watchdog restart must keep the persisted endpoint identity');
+
+    // The breach is a countable event, not just a log line.
+    const st = await statusOf();
+    assert.ok(st.watchdog.restarts >= 1,
+      `the status route must count watchdog restarts (saw ${st.watchdog.restarts})`);
+    assert.equal(st.watchdog.maxRssMb, 1, 'the route echoes the configured ceiling');
   });
 
   test('the cycle repeats without orphan accumulation', async () => {
@@ -156,5 +170,15 @@ describe('discovery p2p watchdog: the default ceiling never fires on a healthy s
     assert.equal(s.joined, true, 'still joined');
     const pids = sidecarPids(dataDir);
     assert.deepEqual(pids, [pid], 'same single sidecar process — the watchdog never fired');
+
+    // Observability contract: a real reading was taken and surfaced (this
+    // doubles as the platform RSS-reader proof — null would mean the reader
+    // stood down), nothing was restarted, and the default ceiling is echoed.
+    assert.ok(typeof s.watchdog.lastRssMb === 'number' && s.watchdog.lastRssMb > 1,
+      `expected a real RSS reading, saw ${JSON.stringify(s.watchdog)}`);
+    assert.equal(s.watchdog.restarts, 0, 'no watchdog restarts on a healthy sidecar');
+    assert.equal(s.watchdog.maxRssMb, 256, 'default ceiling echoed');
+    assert.deepEqual(s.recovery, { attempts: 0, retryPending: false },
+      'recovery idle on a healthy stack');
   });
 });

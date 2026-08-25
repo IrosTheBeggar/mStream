@@ -7597,13 +7597,24 @@ const discoveryView = Vue.component('discovery-view', {
                   <p><b>Network:</b>
                     <span v-if="discoveryP2p.status.neighbors > 0" style="color: #2e7d32;">connected
                       — {{ discoveryP2p.status.neighbors }} mesh neighbor{{ discoveryP2p.status.neighbors === 1 ? '' : 's' }}</span>
+                    <span v-else-if="meshRecovering" style="color: #c62828;">reconnecting — the sidecar died and
+                      is being replayed automatically (attempt {{ discoveryP2p.status.recovery.attempts }})</span>
                     <span v-else-if="discoveryP2p.status.joined" style="color: #e65100;">joined, waiting for
                       neighbors — the mesh weaves in within a minute or two of another server coming online</span>
                     <span v-else>not joined yet</span>
                   </p>
+                  <p v-if="discoveryP2p.status.watchdog && discoveryP2p.status.watchdog.lastRssMb !== null"><b>Sidecar memory:</b>
+                    {{ discoveryP2p.status.watchdog.lastRssMb.toFixed(0) }} MB resident<span
+                      v-if="discoveryP2p.status.watchdog.maxRssMb > 0"> — auto-restarts over {{ discoveryP2p.status.watchdog.maxRssMb }} MB</span><span
+                      v-else style="color: #e65100;"> — memory watchdog off</span><span
+                      v-if="discoveryP2p.status.watchdog.restarts > 0" style="color: #e65100;"> ·
+                      {{ discoveryP2p.status.watchdog.restarts }} watchdog restart{{ discoveryP2p.status.watchdog.restarts === 1 ? '' : 's' }} since boot</span>
+                  </p>
                   <div v-if="meshSearching" style="max-width: 480px;">
                     <div class="progress" style="margin: 4px 0 6px 0;"><div class="indeterminate"></div></div>
-                    <span style="color: #757575; font-size: 0.85em;">searching for peers — this page updates itself every few seconds</span>
+                    <span style="color: #757575; font-size: 0.85em;">{{ meshRecovering
+                      ? 'reconnecting — crash recovery replays the stack on a widening ladder; no action needed'
+                      : 'searching for peers — this page updates itself every few seconds' }}</span>
                   </div>
                   <p v-if="discoveryP2p.status.ticket" style="margin-bottom: 4px;"><b>Your ticket</b> — a friend pastes this
                   into the box below on <i>their</i> Discovery page to befriend this server:<br>
@@ -7699,6 +7710,18 @@ const discoveryView = Vue.component('discovery-view', {
       const s = this.discoveryP2p.status;
       return !!(s && s.enabled === true
         && (!s.running || !s.joined || (s.neighbors || 0) === 0));
+    },
+    // Narrower than meshSearching: crash recovery currently owns the
+    // sidecar (#880's replay ladder — attempts zero on success). Rendered
+    // as its own state so a dead sidecar reads "reconnecting, attempt N"
+    // instead of masquerading as the indistinguishable-from-startup
+    // "searching for peers" (the 6h45m outage was invisible for exactly
+    // that reason).
+    meshRecovering: function() {
+      const s = this.discoveryP2p.status;
+      return !!(s && s.enabled === true && s.recovery
+        && (s.recovery.attempts > 0 || s.recovery.retryPending)
+        && (s.neighbors || 0) === 0);
     },
     // Case-insensitive substring match over what the operator can see
     // (name, description) plus the endpoint id for exactness. Preserves
