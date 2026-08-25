@@ -54,36 +54,81 @@ const MAX_CAPACITY = 10000;
 // the configured value via setBufferCapacity().
 const BOOT_DEFAULT_CAPACITY = 500;
 
-let ring = new Array(BOOT_DEFAULT_CAPACITY);
-let ringCapacity = BOOT_DEFAULT_CAPACITY;
-let ringHead = 0;   // index of the next slot to write
-let ringCount = 0;  // number of valid entries currently stored
-let seqCounter = 0; // monotonic id so clients can ask "entries after N"
+// The discovery/p2p ring's fixed capacity — deliberately not a config knob.
+// Worst case is capacity × MAX_ENTRY_LEN ≈ 2MB, but real discovery lines run
+// ~100–200 bytes, so a full ring is ~150KB.
+const P2P_RING_CAPACITY = 500;
 
-function pushEntry(level, message) {
-  if (ringCapacity <= 0) { return; }
-  if (message.length > MAX_ENTRY_LEN) {
-    message = message.slice(0, MAX_ENTRY_LEN) + '… [truncated]';
+// One fixed-capacity circular buffer of recent log entries. Two instances
+// below: the main ring behind the admin live-log viewer, and a discovery/p2p
+// ring behind the Discovery panel's Activity feed — its own ring so a chatty
+// scan can never wash mesh events out of the feed.
+class LogRing {
+  constructor(capacity) {
+    this.ring = new Array(capacity);
+    this.capacity = capacity;
+    this.head = 0;       // index of the next slot to write
+    this.count = 0;      // number of valid entries currently stored
+    this.seqCounter = 0; // monotonic id so clients can ask "entries after N"
   }
-  seqCounter += 1;
-  ring[ringHead] = { seq: seqCounter, t: new Date().toISOString(), level, message };
-  ringHead = (ringHead + 1) % ringCapacity;
-  if (ringCount < ringCapacity) { ringCount += 1; }
+
+  push(level, message) {
+    if (this.capacity <= 0) { return; }
+    if (message.length > MAX_ENTRY_LEN) {
+      message = message.slice(0, MAX_ENTRY_LEN) + '… [truncated]';
+    }
+    this.seqCounter += 1;
+    this.ring[this.head] = { seq: this.seqCounter, t: new Date().toISOString(), level, message };
+    this.head = (this.head + 1) % this.capacity;
+    if (this.count < this.capacity) { this.count += 1; }
+  }
+
+  // Entries oldest→newest. `sinceSeq` returns only entries with a greater seq
+  // (what the live poll uses); 0 returns the whole buffer.
+  snapshot(sinceSeq) {
+    const out = [];
+    if (this.capacity <= 0 || this.count === 0) { return out; }
+    // Oldest valid entry sits `count` slots behind the write head.
+    const start = (this.head - this.count + this.capacity * 2) % this.capacity;
+    for (let i = 0; i < this.count; i++) {
+      const e = this.ring[(start + i) % this.capacity];
+      if (e && e.seq > sinceSeq) { out.push(e); }
+    }
+    return out;
+  }
+
+  // The poll contract shared by both ring endpoints: a stale/out-of-range
+  // cursor (e.g. a client holding a high seq from before a server restart
+  // reset the counter) falls back to the full buffer so the view recovers
+  // instead of showing nothing.
+  read(sinceSeq) {
+    let since = Number(sinceSeq) || 0;
+    if (since < 0 || since > this.seqCounter) { since = 0; }
+    return { entries: this.snapshot(since), lastSeq: this.seqCounter, capacity: this.capacity };
+  }
+
+  resize(capacity) {
+    const keep = capacity === 0 ? [] : this.snapshot(0).slice(-capacity);
+    this.ring = new Array(capacity);
+    this.capacity = capacity;
+    this.head = 0;
+    this.count = 0;
+    for (const e of keep) {
+      this.ring[this.head] = e;
+      this.head = (this.head + 1) % this.capacity;
+      this.count += 1;
+    }
+  }
 }
 
-// Entries oldest→newest. `sinceSeq` returns only entries with a greater seq
-// (what the live poll uses); 0 returns the whole buffer.
-function snapshot(sinceSeq) {
-  const out = [];
-  if (ringCapacity <= 0 || ringCount === 0) { return out; }
-  // Oldest valid entry sits `ringCount` slots behind the write head.
-  const start = (ringHead - ringCount + ringCapacity * 2) % ringCapacity;
-  for (let i = 0; i < ringCount; i++) {
-    const e = ring[(start + i) % ringCapacity];
-    if (e && e.seq > sinceSeq) { out.push(e); }
-  }
-  return out;
-}
+const mainRing = new LogRing(BOOT_DEFAULT_CAPACITY);
+const p2pRing = new LogRing(P2P_RING_CAPACITY);
+
+// Every discovery-stack module logs under a bracketed prefix, and nothing
+// outside the stack uses these ([discovery-p2p], [discovery-p2p-stack],
+// [discovery-peer-dbs], [discovery-catalog], [discovery-seeds],
+// [p2p-sidecar]) — so line-start prefix matching IS the event filter.
+const P2P_LINE = /^\[(discovery-|p2p-sidecar)/;
 
 // winston re-exports the winston-transport base class as winston.Transport,
 // so we don't need a separate winston-transport dependency to subclass it.
@@ -103,7 +148,8 @@ class MemoryRingTransport extends winston.Transport {
           : (info.stack.stack || info.stack.message || '');
         if (stackText) { message += os.EOL + stackText; }
       }
-      pushEntry(level, message);
+      mainRing.push(level, message);
+      if (P2P_LINE.test(message)) { p2pRing.push(level, message); }
     } catch { /* logging must never throw */ }
     callback();
   }
@@ -205,28 +251,22 @@ export function reset() {
 // buffer is independent of whether logs are written to disk.
 export function setBufferCapacity(n) {
   const next = Math.max(0, Math.min(MAX_CAPACITY, Math.floor(Number(n) || 0)));
-  if (next === ringCapacity) { return; }
-
-  const keep = next === 0 ? [] : snapshot(0).slice(-next);
-  ring = new Array(next);
-  ringCapacity = next;
-  ringHead = 0;
-  ringCount = 0;
-  for (const e of keep) {
-    ring[ringHead] = e;
-    ringHead = (ringHead + 1) % ringCapacity;
-    ringCount += 1;
-  }
+  if (next === mainRing.capacity) { return; }
+  mainRing.resize(next);
 }
 
 // Read recent log entries for the admin live-log viewer. `sinceSeq` is the
 // highest seq the client has already seen; entries newer than it are returned
 // (oldest→newest) along with the current `lastSeq` cursor and the buffer
-// `capacity`. A stale/out-of-range cursor (e.g. a client holding a high seq
-// from before a server restart reset the counter to 0) falls back to the full
-// buffer so the view recovers instead of showing nothing.
+// `capacity` (see LogRing.read for the stale-cursor recovery contract).
 export function getRecentLogs(sinceSeq) {
-  let since = Number(sinceSeq) || 0;
-  if (since < 0 || since > seqCounter) { since = 0; }
-  return { entries: snapshot(since), lastSeq: seqCounter, capacity: ringCapacity };
+  return mainRing.read(sinceSeq);
+}
+
+// The discovery/p2p slice of the log stream, from its own fixed-size ring —
+// the Discovery panel's Activity feed. Same poll contract as getRecentLogs;
+// the two rings' seq counters are independent, so cursors from one endpoint
+// mean nothing at the other.
+export function getP2pActivity(sinceSeq) {
+  return p2pRing.read(sinceSeq);
 }

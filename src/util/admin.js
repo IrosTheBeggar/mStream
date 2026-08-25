@@ -718,6 +718,17 @@ export async function editRotationDays(val) {
   config.program.discoveryP2p.rotationDays = val;
 }
 
+// RSS ceiling (MB) for the sidecar memory watchdog (0 = watchdog off).
+// Live: the mesh-health watch reads the config fresh every tick, so the
+// next tick enforces the new ceiling — no restart, no stack bounce.
+export async function editSidecarMaxRssMb(val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.discoveryP2p) { loadConfig.discoveryP2p = {}; }
+  loadConfig.discoveryP2p.sidecarMaxRssMb = val;
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryP2p.sidecarMaxRssMb = val;
+}
+
 // Append a bootstrap peer (deduplicated) so a friend joined through the
 // UI survives restarts — the join RPC itself is session-only.
 export async function editAddBootstrapPeer(val) {

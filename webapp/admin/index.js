@@ -781,7 +781,7 @@ const P2PIDENTITY = { serverName: '', serverDescription: '' };
 // Same shared-object pattern (and the same must-be-hoisted TDZ rule) for
 // the editable p2p settings: the Discovery card fills it from the status
 // route, the max-storage modal edits it.
-const P2PSETTINGS = { maxPeerDbStorageMb: 500, autoFetchCount: 6, rotationDays: 7, peerRetentionDays: 30 };
+const P2PSETTINGS = { maxPeerDbStorageMb: 500, autoFetchCount: 6, rotationDays: 7, peerRetentionDays: 30, sidecarMaxRssMb: 256 };
 
 const foldersView = Vue.component('folders-view', {
   data() {
@@ -7551,7 +7551,16 @@ const discoveryView = Vue.component('discovery-view', {
       p2pToggling: false,
       peerFilter: '',
       friendTicket: '',
-      joinPending: false
+      joinPending: false,
+      // Which header pane is showing (mesh map by default) and how the
+      // server list renders. Session-local by design — a page load lands
+      // everyone on the same view.
+      headerTab: 'mesh',
+      listMode: 'cards',
+      // Activity feed: delta-polled from the dedicated p2p log ring. seq
+      // cursors are server-side; entries accumulate here while the tab is
+      // open (capped client-side to the ring's own size).
+      p2pActivity: { entries: [], lastSeq: 0 }
     };
   },
   template: `
@@ -7588,75 +7597,234 @@ const discoveryView = Vue.component('discovery-view', {
                   <p v-if="!discoveryP2p.status.binaryFound" style="color: #b71c1c;">
                     The p2p-sidecar binary was not found for this platform — the network is unavailable.
                   </p>
-                  <p><b>Endpoint:</b> <code style="word-break: break-all;">{{ discoveryP2p.status.endpointId || '(sidecar not running yet)' }}</code></p>
-                  <p><b>Announcing as:</b> {{ p2pIdentity.serverName }}
-                    <span v-if="p2pIdentity.serverDescription"> — {{ p2pIdentity.serverDescription }}</span>
-                    <span v-else style="color: #9e9e9e;"> — no description (other servers see only the name)</span>
-                    [<a v-on:click="openModal('edit-p2p-identity-modal')">{{ t('admin.settings.edit') }}</a>]
-                  </p>
-                  <p><b>Network:</b>
-                    <span v-if="discoveryP2p.status.neighbors > 0" style="color: #2e7d32;">connected
-                      — {{ discoveryP2p.status.neighbors }} mesh neighbor{{ discoveryP2p.status.neighbors === 1 ? '' : 's' }}</span>
-                    <span v-else-if="meshRecovering" style="color: #c62828;">reconnecting — the sidecar died and
-                      is being replayed automatically (attempt {{ discoveryP2p.status.recovery.attempts }})</span>
-                    <span v-else-if="discoveryP2p.status.joined" style="color: #e65100;">joined, waiting for
-                      neighbors — the mesh weaves in within a minute or two of another server coming online</span>
-                    <span v-else>not joined yet</span>
-                  </p>
-                  <p v-if="discoveryP2p.status.watchdog && discoveryP2p.status.watchdog.lastRssMb !== null"><b>Sidecar memory:</b>
-                    {{ discoveryP2p.status.watchdog.lastRssMb.toFixed(0) }} MB resident<span
-                      v-if="discoveryP2p.status.watchdog.maxRssMb > 0"> — auto-restarts over {{ discoveryP2p.status.watchdog.maxRssMb }} MB</span><span
-                      v-else style="color: #e65100;"> — memory watchdog off</span><span
-                      v-if="discoveryP2p.status.watchdog.restarts > 0" style="color: #e65100;"> ·
-                      {{ discoveryP2p.status.watchdog.restarts }} watchdog restart{{ discoveryP2p.status.watchdog.restarts === 1 ? '' : 's' }} since boot</span>
-                  </p>
-                  <div v-if="meshSearching" style="max-width: 480px;">
-                    <div class="progress" style="margin: 4px 0 6px 0;"><div class="indeterminate"></div></div>
-                    <span style="color: #757575; font-size: 0.85em;">{{ meshRecovering
-                      ? 'reconnecting — crash recovery replays the stack on a widening ladder; no action needed'
-                      : 'searching for peers — this page updates itself every few seconds' }}</span>
+                  <div style="background: #2a2a34; border-radius: 2px; padding: 16px 20px; color: #ddd; margin-bottom: 14px;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap;">
+                      <div style="display: flex; align-items: center; gap: 8px; font-size: 0.9em; color: #9e9ea8; flex-wrap: wrap;">
+                        <span v-if="discoveryP2p.status.neighbors > 0" style="display: inline-flex; align-items: center; gap: 7px;">
+                          <span style="width: 9px; height: 9px; border-radius: 50%; background: #2e7d32; flex-shrink: 0;"></span>
+                          <span style="color: #fff; font-weight: 600;">connected</span>
+                          <span>— {{ discoveryP2p.status.neighbors }} mesh neighbor{{ discoveryP2p.status.neighbors === 1 ? '' : 's' }}</span>
+                        </span>
+                        <span v-else-if="meshRecovering" style="display: inline-flex; align-items: center; gap: 7px;">
+                          <span style="width: 9px; height: 9px; border-radius: 50%; background: #ef5350; flex-shrink: 0;"></span>
+                          <span style="color: #ef9a9a; font-weight: 600;">reconnecting</span>
+                          <span>— the sidecar died and is being replayed (attempt {{ discoveryP2p.status.recovery.attempts }})</span>
+                        </span>
+                        <span v-else-if="discoveryP2p.status.joined" style="display: inline-flex; align-items: center; gap: 7px;">
+                          <span style="width: 9px; height: 9px; border-radius: 50%; background: #ffb74d; flex-shrink: 0;"></span>
+                          <span style="color: #ffcc80; font-weight: 600;">joined, waiting for neighbors</span>
+                        </span>
+                        <span v-else style="display: inline-flex; align-items: center; gap: 7px;">
+                          <span style="width: 9px; height: 9px; border-radius: 50%; background: #666672; flex-shrink: 0;"></span>
+                          <span style="font-weight: 600;">not joined yet</span>
+                        </span>
+                        <span v-if="discoveryP2p.status.watchdog && discoveryP2p.status.watchdog.lastRssMb !== null">
+                          · sidecar {{ discoveryP2p.status.watchdog.lastRssMb.toFixed(0) }} MB<span
+                            v-if="discoveryP2p.status.watchdog.restarts > 0" style="color: #ffcc80;"> ({{ discoveryP2p.status.watchdog.restarts }} watchdog restart{{ discoveryP2p.status.watchdog.restarts === 1 ? '' : 's' }})</span>
+                        </span>
+                        <span>· announcing as <span style="color: #ddd; font-weight: 600;">{{ p2pIdentity.serverName }}</span>
+                          [<a style="color: #90caf9;" v-on:click="openModal('edit-p2p-identity-modal')">{{ t('admin.settings.edit') }}</a>]</span>
+                      </div>
+                      <div style="display: flex; gap: 12px; font-size: 0.9em; flex-shrink: 0;">
+                        <span style="color: #666672;">[<a style="color: #90caf9;" v-on:click="loadDiscoveryP2p()">Refresh</a>]</span>
+                        <span style="color: #666672;">[<a style="color: #ef9a9a;" v-on:click="disableP2p()">Disable</a>]</span>
+                      </div>
+                    </div>
+                    <div v-if="meshSearching" style="max-width: 520px; margin-top: 8px;">
+                      <div class="progress" style="margin: 0 0 4px 0; background-color: #3a3a47;"><div class="indeterminate"></div></div>
+                      <span style="color: #9e9ea8; font-size: 0.85em;">{{ meshRecovering
+                        ? 'reconnecting — crash recovery replays the stack on a widening ladder; no action needed'
+                        : 'searching for peers — this page updates itself every few seconds' }}</span>
+                    </div>
+                    <div style="display: flex; gap: 8px; margin-top: 12px; border-bottom: 1px solid #3a3a47; padding-bottom: 10px; flex-wrap: wrap;">
+                      <div v-on:click="headerTab = 'mesh'" :style="headerTabStyle('mesh')">Mesh</div>
+                      <div v-on:click="headerTab = 'stats'" :style="headerTabStyle('stats')">Stats</div>
+                      <div v-on:click="headerTab = 'activity'; loadDiscoveryActivity()" :style="headerTabStyle('activity')">Activity</div>
+                      <div v-on:click="headerTab = 'invite'" :style="headerTabStyle('invite')">Invite</div>
+                      <div v-on:click="headerTab = 'config'" :style="headerTabStyle('config')">Config</div>
+                    </div>
+                    <div v-if="headerTab === 'mesh'" style="display: flex; gap: 20px; align-items: center; min-height: 200px; flex-wrap: wrap;">
+                      <svg viewBox="0 0 300 210" width="300" height="210" style="flex-shrink: 0;">
+                        <line v-for="n in meshMap.neighbors" :key="'l-' + n.id" x1="150" y1="105"
+                          :x2="n.x" :y2="n.y" stroke="#4a7c59" stroke-width="2"></line>
+                        <circle v-for="n in meshMap.outer" :key="'o-' + n.id" :cx="n.x" :cy="n.y" r="7"
+                          fill="none" :stroke="n.incompatible ? '#8a6d3b' : '#666672'" stroke-width="1.5"
+                          stroke-dasharray="2 3"></circle>
+                        <circle v-for="n in meshMap.neighbors" :key="'n-' + n.id" :cx="n.x" :cy="n.y" r="10"
+                          fill="#2e7d32"></circle>
+                        <circle cx="150" cy="105" r="18" fill="#EEE" stroke="#2e7d32" stroke-width="3"></circle>
+                        <text x="150" y="109" text-anchor="middle" font-size="11" font-weight="700"
+                          fill="#2a2a34" font-family="inherit">you</text>
+                        <text v-for="n in meshMap.neighbors" :key="'nt-' + n.id" :x="n.lx" :y="n.ly"
+                          text-anchor="middle" font-size="10" fill="#bdbdc6" font-family="inherit">{{ n.label }}</text>
+                        <text v-for="n in meshMap.outer" :key="'ot-' + n.id" :x="n.lx" :y="n.ly"
+                          text-anchor="middle" font-size="9" :fill="n.incompatible ? '#a08a5a' : '#8a8a96'"
+                          font-family="inherit">{{ n.label }}</text>
+                      </svg>
+                      <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.85em; min-width: 220px;">
+                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; background: #2e7d32; flex-shrink: 0;"></span><span style="color: #bdbdc6;">gossip link — live mesh neighbor</span></div>
+                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; border: 1.5px dashed #666672; box-sizing: border-box; flex-shrink: 0;"></span><span style="color: #bdbdc6;">known, not currently linked</span></div>
+                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; border: 1.5px dashed #a08a5a; box-sizing: border-box; flex-shrink: 0;"></span><span style="color: #bdbdc6;">incompatible model</span></div>
+                        <div style="color: #9e9ea8; line-height: 1.5; margin-top: 4px;" v-if="heldPeers.length > 0">You hold
+                          {{ heldPeers.length }} snapshot{{ heldPeers.length === 1 ? '' : 's' }} from these servers and seed
+                          {{ heldPeers.length === 1 ? 'it' : 'them' }} back to the mesh.</div>
+                        <div style="color: #666672; font-size: 0.95em;" v-if="meshMap.overflow > 0">+{{ meshMap.overflow }} more
+                          server{{ meshMap.overflow === 1 ? '' : 's' }} not drawn</div>
+                      </div>
+                    </div>
+                    <div v-if="headerTab === 'stats'" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; min-height: 200px; padding-top: 12px; align-content: start;">
+                      <div style="border: 1px solid #3a3a47; border-radius: 2px; padding: 12px 14px;">
+                        <div style="font-size: 1.3em; font-weight: 700; color: #fff;">{{ discoveryP2p.status.neighbors }}</div>
+                        <div style="font-size: 0.85em; color: #9e9ea8; margin-top: 2px;">mesh neighbors</div>
+                        <div style="font-size: 0.8em; color: #666672; margin-top: 4px;">live gossip links</div>
+                      </div>
+                      <div style="border: 1px solid #3a3a47; border-radius: 2px; padding: 12px 14px;">
+                        <div style="font-size: 1.3em; font-weight: 700; color: #fff;">{{ knownServersTotal }}</div>
+                        <div style="font-size: 0.85em; color: #9e9ea8; margin-top: 2px;">servers known</div>
+                        <div style="font-size: 0.8em; color: #666672; margin-top: 4px;">{{ discoveryP2p.hiddenIncompatible }} hidden ·
+                          {{ (discoveryP2p.status.blockedPeers || []).length }} blocked</div>
+                      </div>
+                      <div style="border: 1px solid #3a3a47; border-radius: 2px; padding: 12px 14px;">
+                        <div style="font-size: 1.3em; font-weight: 700; color: #fff;">{{ heldPeers.length }}<span
+                          v-if="discoveryP2p.status.autoFetchCount > 0" style="font-size: 0.7em; color: #9e9ea8;"> of {{ discoveryP2p.status.autoFetchCount }}</span></div>
+                        <div style="font-size: 0.85em; color: #9e9ea8; margin-top: 2px;">snapshots held</div>
+                        <div style="font-size: 0.8em; color: #666672; margin-top: 4px;" v-if="discoveryP2p.storage">
+                          {{ discoveryBytes(discoveryP2p.storage.usedBytes) }} of {{ discoveryBytes(discoveryP2p.storage.capBytes) }}</div>
+                      </div>
+                      <div style="border: 1px solid #3a3a47; border-radius: 2px; padding: 12px 14px;">
+                        <div style="font-size: 1.3em; font-weight: 700; color: #fff;">{{ heldTrackTotal.toLocaleString() }}</div>
+                        <div style="font-size: 0.85em; color: #9e9ea8; margin-top: 2px;">peer tracks searchable</div>
+                        <div style="font-size: 0.8em; color: #666672; margin-top: 4px;">across {{ heldPeers.length }} held
+                          librar{{ heldPeers.length === 1 ? 'y' : 'ies' }}</div>
+                      </div>
+                      <div style="border: 1px solid #3a3a47; border-radius: 2px; padding: 12px 14px;">
+                        <div style="font-size: 1.3em; font-weight: 700; color: #fff;">{{ discoveryP2p.status.watchdog && discoveryP2p.status.watchdog.lastRssMb !== null
+                          ? discoveryP2p.status.watchdog.lastRssMb.toFixed(0) + ' MB' : '—' }}</div>
+                        <div style="font-size: 0.85em; color: #9e9ea8; margin-top: 2px;">sidecar memory</div>
+                        <div style="font-size: 0.8em; color: #666672; margin-top: 4px;">{{ discoveryP2p.status.watchdog && discoveryP2p.status.watchdog.maxRssMb > 0
+                          ? 'ceiling ' + discoveryP2p.status.watchdog.maxRssMb + ' MB · ' + discoveryP2p.status.watchdog.restarts + ' restart' + (discoveryP2p.status.watchdog.restarts === 1 ? '' : 's')
+                          : 'watchdog off' }}</div>
+                      </div>
+                      <div style="border: 1px solid #3a3a47; border-radius: 2px; padding: 12px 14px;">
+                        <div style="font-size: 1.3em; font-weight: 700; color: #fff;">{{ heldPeers.length }}</div>
+                        <div style="font-size: 0.85em; color: #9e9ea8; margin-top: 2px;">seeding</div>
+                        <div style="font-size: 0.8em; color: #666672; margin-top: 4px;">snapshots served back to the mesh</div>
+                      </div>
+                    </div>
+                    <div v-if="headerTab === 'activity'" style="min-height: 200px; padding-top: 12px;">
+                      <div v-if="activityFeed.length === 0" style="color: #9e9ea8; font-size: 0.85em; padding-top: 8px;">
+                        Nothing yet — mesh joins, snapshot fetches, rotation and recovery events land here as they happen.</div>
+                      <div v-else style="max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; font-family: monospace; font-size: 0.8em;">
+                        <div v-for="e in activityFeed" :key="e.seq" style="color: #bdbdc6; line-height: 1.45; word-break: break-word;">
+                          <span style="color: #666672;">{{ discoveryLogTime(e.t) }}</span>
+                          <span :style="e.level === 'warn' || e.level === 'error' ? 'color: #ffcc80;' : ''"> {{ e.message }}</span>
+                        </div>
+                      </div>
+                      <div style="font-size: 0.75em; color: #666672; margin-top: 8px;">newest first · held in memory only — the
+                      full history lives in the server logs</div>
+                    </div>
+                    <div v-if="headerTab === 'invite'" style="min-height: 200px; padding-top: 12px;">
+                      <p style="font-size: 0.85em; color: #9e9ea8; margin: 0 0 8px 0;"><b style="color: #fff;">Endpoint:</b>
+                        <code style="word-break: break-all; color: #8a8a96;">{{ discoveryP2p.status.endpointId || '(sidecar not running yet)' }}</code></p>
+                      <p v-if="discoveryP2p.status.ticket" style="margin-bottom: 4px; font-size: 0.85em; color: #9e9ea8;"><b style="color: #fff;">Your ticket</b>
+                        — a friend pastes this into the box below on <i>their</i> Discovery page to befriend this server:<br>
+                        <textarea readonly rows="2" style="width:100%; font-size: 0.8em; color: #bdbdc6; border-color: #505061;" onclick="this.select()">{{ discoveryP2p.status.ticket }}</textarea>
+                      </p>
+                      <p style="margin: 8px 0 2px 0; font-size: 0.85em; color: #9e9ea8;"><b style="color: #fff;">Befriend a server</b>
+                        — paste the ticket from a friend's Discovery page (saved to your config, so the friendship survives restarts):</p>
+                      <div style="display: flex; gap: 8px; max-width: 640px; align-items: center; margin-bottom: 8px;">
+                        <input v-model="friendTicket" id="p2p-friend-ticket" type="text" placeholder="endpoint…"
+                          style="flex: 1; margin: 0; color: #ddd; border-bottom: 1px solid #7f7f9a;" v-on:keyup.enter="discoveryJoinPeer()">
+                        <a v-on:click="discoveryJoinPeer()" :class="{disabled: joinPending || !friendTicket.trim()}"
+                          class="waves-effect waves-light btn green" style="flex-shrink: 0;">
+                          {{ joinPending ? 'Joining…' : 'Join' }}</a>
+                      </div>
+                    </div>
+                    <div v-if="headerTab === 'config'" style="min-height: 200px; padding-top: 6px;">
+                      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0 28px;">
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #3a3a47; font-size: 0.85em;">
+                          <span style="color: #9e9ea8;">Snapshot storage cap</span>
+                          <span style="color: #ddd; text-align: right;"><b>{{ discoveryP2p.status.maxPeerDbStorageMb }} MB</b>
+                            [<a style="color: #90caf9;" v-on:click="openModal('edit-p2p-max-storage-modal')">{{ t('admin.settings.edit') }}</a>]</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #3a3a47; font-size: 0.85em;">
+                          <span style="color: #9e9ea8;">Forget offline servers</span>
+                          <span style="color: #ddd; text-align: right;"><b>{{ discoveryP2p.status.peerRetentionDays > 0
+                            ? 'after ' + discoveryP2p.status.peerRetentionDays + ' days of silence' : 'never' }}</b>
+                            [<a style="color: #90caf9;" v-on:click="openModal('edit-p2p-peer-retention-modal')">{{ t('admin.settings.edit') }}</a>]</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #3a3a47; font-size: 0.85em;">
+                          <span style="color: #9e9ea8;">Auto-fetch snapshots</span>
+                          <span style="color: #ddd; text-align: right;"><b>{{ discoveryP2p.autoFetch === false ? 'off'
+                            : discoveryP2p.status.autoFetchCount === 0 ? 'on — 0 servers (downloads paused)'
+                            : 'up to ' + discoveryP2p.status.autoFetchCount + ' servers' }}</b>
+                            [<a style="color: #90caf9;" v-on:click="openModal('edit-p2p-auto-fetch-count-modal')">{{ t('admin.settings.edit') }}</a>]</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #3a3a47; font-size: 0.85em;">
+                          <span style="color: #9e9ea8;">Rotate downloads</span>
+                          <span style="color: #ddd; text-align: right;"><b>{{ discoveryP2p.status.rotationDays > 0
+                            ? 'after ' + discoveryP2p.status.rotationDays + ' days' : 'never' }}</b>
+                            [<a style="color: #90caf9;" v-on:click="openModal('edit-p2p-rotation-modal')">{{ t('admin.settings.edit') }}</a>]</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #3a3a47; font-size: 0.85em;">
+                          <span style="color: #9e9ea8;">Community seeds</span>
+                          <span style="color: #ddd; text-align: right;"><b>{{ discoveryP2p.status.communitySeeds ? 'on — public network' : 'off — friends only' }}</b></span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #3a3a47; font-size: 0.85em;">
+                          <span style="color: #9e9ea8;">Sidecar memory ceiling</span>
+                          <span style="color: #ddd; text-align: right;"><b>{{ discoveryP2p.status.watchdog && discoveryP2p.status.watchdog.maxRssMb > 0
+                            ? discoveryP2p.status.watchdog.maxRssMb + ' MB' : 'watchdog off' }}</b>
+                            [<a style="color: #90caf9;" v-on:click="openModal('edit-p2p-sidecar-max-rss-modal')">{{ t('admin.settings.edit') }}</a>]</span>
+                        </div>
+                      </div>
+                      <div style="font-size: 0.8em; color: #666672; margin-top: 10px;">Rotation only ever swaps a stale unpinned
+                      download for a new server — it never deletes without replacing. Incompatible-model servers are hidden from
+                      the list below; the [show] link reveals them.</div>
+                    </div>
                   </div>
-                  <p v-if="discoveryP2p.status.ticket" style="margin-bottom: 4px;"><b>Your ticket</b> — a friend pastes this
-                  into the box below on <i>their</i> Discovery page to befriend this server:<br>
-                    <textarea readonly rows="2" style="width:100%; font-size: 0.8em;" onclick="this.select()">{{ discoveryP2p.status.ticket }}</textarea>
-                  </p>
-                  <p style="margin: 8px 0 2px 0;"><b>Befriend a server</b> — paste the ticket from a friend's Discovery page
-                  (saved to your config, so the friendship survives restarts):</p>
-                  <div style="display: flex; gap: 8px; max-width: 640px; align-items: center; margin-bottom: 8px;">
-                    <input v-model="friendTicket" id="p2p-friend-ticket" type="text" placeholder="endpoint…"
-                      style="flex: 1; margin: 0;" v-on:keyup.enter="discoveryJoinPeer()">
-                    <a v-on:click="discoveryJoinPeer()" :class="{disabled: joinPending || !friendTicket.trim()}"
-                      class="waves-effect waves-light btn green" style="flex-shrink: 0;">
-                      {{ joinPending ? 'Joining…' : 'Join' }}</a>
+                  <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 2px 0;">
+                    <b>Servers you follow</b>
+                    <div style="display: inline-flex; border: 1px solid #bdbdbd; border-radius: 2px; overflow: hidden;">
+                      <div v-on:click="listMode = 'cards'" :style="listBtnStyle('cards')">cards</div>
+                      <div v-on:click="listMode = 'list'" :style="listBtnStyle('list')">list</div>
+                    </div>
                   </div>
-                  <p v-if="discoveryP2p.storage"><b>Peer snapshots:</b>
-                    {{ discoveryBytes(discoveryP2p.storage.usedBytes) }} of {{ discoveryBytes(discoveryP2p.storage.capBytes) }} used
-                    [<a v-on:click="openModal('edit-p2p-max-storage-modal')">{{ t('admin.settings.edit') }}</a>]
-                    — auto-fetch {{ discoveryP2p.autoFetch === false ? 'off'
-                      : discoveryP2p.status.autoFetchCount === 0 ? 'on (0 servers — automatic downloads paused)'
-                      : 'on (up to ' + discoveryP2p.status.autoFetchCount + ' servers)' }}
-                    [<a v-on:click="openModal('edit-p2p-auto-fetch-count-modal')">{{ t('admin.settings.edit') }}</a>]
-                    — community seeds {{ discoveryP2p.status.communitySeeds ? 'on (public network)' : 'off (friends only)' }}
-                  </p>
-                  <p><b>Forget offline servers:</b>
-                    {{ discoveryP2p.status.peerRetentionDays > 0
-                      ? 'after ' + discoveryP2p.status.peerRetentionDays + ' days of silence'
-                      : 'never (offline servers stay listed forever)' }}
-                    [<a v-on:click="openModal('edit-p2p-peer-retention-modal')">{{ t('admin.settings.edit') }}</a>]
-                  </p>
-                  <p><b>Rotate downloads:</b>
-                    {{ discoveryP2p.status.rotationDays > 0
-                      ? 'swap the oldest unpinned download for a new server after ' + discoveryP2p.status.rotationDays + ' days'
-                      : 'never (downloads stay until removed by hand)' }}
-                    [<a v-on:click="openModal('edit-p2p-rotation-modal')">{{ t('admin.settings.edit') }}</a>]
-                  </p>
                   <div v-if="discoveryP2p.peers.length > 5" class="input-field" style="max-width: 360px; margin: 4px 0 0 0;">
                     <input v-model="peerFilter" id="p2p-peer-filter" type="text" placeholder="Search servers — name or description">
                   </div>
                   <p v-if="peerFilter && discoveryP2p.peers.length > 0" style="color: #757575; font-size: 0.85em; margin: 2px 0;">
                     {{ filteredPeers.length }} of {{ discoveryP2p.peers.length }} servers
                   </p>
-                  <table v-if="filteredPeers.length > 0">
+                  <div v-if="listMode === 'cards' && filteredPeers.length > 0"
+                    style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin: 8px 0;">
+                    <div v-for="peer in filteredPeers" :key="'card-' + peer.from"
+                      :style="'border: 1px solid #e0e0e0; border-radius: 2px; padding: 12px 14px; display: flex; flex-direction: column; gap: 7px;' + (peer.online ? '' : ' opacity: 0.75;')">
+                      <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+                        <b style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ peer.payload.name || (peer.from.slice(0, 12) + '…') }}</b>
+                        <span :title="peer.updatedAt" style="display: inline-flex; align-items: center; gap: 5px; font-size: 0.8em; flex-shrink: 0;">
+                          <span :style="'width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: ' + (peer.online ? '#2e7d32' : '#9e9e9e') + ';'"></span>
+                          {{ peer.online ? 'online' : 'offline' + discoveryAge(peer.updatedAt) }}</span>
+                      </div>
+                      <div v-if="peer.payload.description" style="color: #757575; font-size: 0.85em;">{{ peer.payload.description }}</div>
+                      <div style="color: #616161; font-size: 0.85em;">{{ peer.payload.rowCount }} tracks
+                        · {{ peer.seeders }} seeder{{ peer.seeders === 1 ? '' : 's' }}</div>
+                      <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                        <span v-if="peer.fetched" :style="'padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; background: ' + (peer.fetched.stale ? '#fff8e1; color: #8d6e00' : '#e8f5e9; color: #2e7d32') + ';'">
+                          {{ peer.fetched.stale ? 'update available' : 'downloaded' }}</span>
+                        <span v-else style="padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; background: #f5f5f5; color: #757575;">not downloaded</span>
+                        <span v-if="peer.fetched && peer.fetched.pinned" style="padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; background: #ececf2; color: #505061;">pinned</span>
+                        <span v-if="peer.compatible === false" style="padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; background: #fff3e0; color: #a06010;">incompatible model</span>
+                      </div>
+                      <div style="display: flex; gap: 10px; font-size: 0.85em; border-top: 1px solid #eee; padding-top: 7px; flex-wrap: wrap;">
+                        <span>[<a v-on:click="discoveryFetchPeer(peer.from)">{{ peer.fetched ? 'Update' : 'Download' }}</a>]</span>
+                        <span v-if="peer.fetched">[<a v-on:click="discoveryRemovePeer(peer.from)">Remove</a>]</span>
+                        <span v-if="peer.fetched">[<a v-on:click="discoveryPinPeer(peer.from, !peer.fetched.pinned)">{{ peer.fetched.pinned ? 'Unpin' : 'Pin' }}</a>]</span>
+                        <span v-if="!peer.online && !peer.fetched">[<a v-on:click="discoveryForgetPeer(peer.from)">Forget</a>]</span>
+                        <span>[<a v-on:click="discoveryBlockPeer(peer.from)" style="color: #b71c1c;">Block</a>]</span>
+                      </div>
+                    </div>
+                  </div>
+                  <table v-else-if="filteredPeers.length > 0">
                     <thead><tr><th>Server</th><th>Tracks</th><th>Seeders</th><th>Online</th><th>Model</th><th>Downloaded</th><th></th></tr></thead>
                     <tbody>
                       <tr v-for="peer in filteredPeers" :key="peer.from">
@@ -7701,8 +7869,6 @@ const discoveryView = Vue.component('discovery-view', {
                       <code>{{ id.slice(0, 12) }}…</code> [<a v-on:click="discoveryUnblockPeer(id)">Unblock</a>]
                     </span>
                   </p>
-                  <p>[<a v-on:click="loadDiscoveryP2p()">Refresh</a>]
-                  [<a v-on:click="disableP2p()" style="color: #b71c1c;">Disable</a>]</p>
                 </div>
               </div>
             </div>
@@ -7743,6 +7909,66 @@ const discoveryView = Vue.component('discovery-view', {
         || (p.payload.description || '').toLowerCase().includes(q)
         || p.from.toLowerCase().includes(q));
     },
+    heldPeers: function() {
+      return this.discoveryP2p.peers.filter((p) => p.fetched);
+    },
+    // Newest first for the Activity tab; display capped so the DOM stays
+    // small even after a long-open tab accumulates the whole ring.
+    activityFeed: function() {
+      return this.p2pActivity.entries.slice(-200).reverse();
+    },
+    heldTrackTotal: function() {
+      return this.heldPeers.reduce((sum, p) => sum + (Number(p.payload.rowCount) || 0), 0);
+    },
+    // "Known" counts what the catalog holds, whether or not the
+    // incompatible filter is hiding some of it from the list.
+    knownServersTotal: function() {
+      return this.discoveryP2p.peers.length
+        + (this.discoveryP2p.showIncompatible ? 0 : this.discoveryP2p.hiddenIncompatible);
+    },
+    // Node positions for the mesh map SVG (300×210, you at 150,105).
+    // Neighbors (from status.neighborIds, protocol-bounded to the gossip
+    // fan-out) sit on an inner ring with solid links; every other catalog
+    // peer is a dashed dot on the outer ring, amber when its embedding
+    // model is incompatible. Deterministic layout — sorted by id — so the
+    // 10s poll never makes the map jiggle. The map draws what the list
+    // shows: peers hidden by the incompatible filter aren't drawn either.
+    meshMap: function() {
+      const CX = 150; const CY = 105;
+      const byId = {};
+      for (const p of this.discoveryP2p.peers) { byId[p.from] = p; }
+      const label = (id) => {
+        const known = byId[id];
+        const name = known && known.payload.name ? known.payload.name : id.slice(0, 8) + '…';
+        return name.length > 18 ? name.slice(0, 17) + '…' : name;
+      };
+      const place = (ids, radius, labelRadius, startDeg) => ids.map((id, i) => {
+        const a = ((startDeg + (360 / Math.max(ids.length, 1)) * i) * Math.PI) / 180;
+        const lr = labelRadius + (Math.sin(a) > 0.3 ? 8 : 0); // below-center labels clear their node
+        return {
+          id,
+          x: Math.round(CX + radius * Math.cos(a)),
+          y: Math.round(CY + radius * Math.sin(a)),
+          lx: Math.round(CX + lr * Math.cos(a)),
+          ly: Math.round(CY + lr * Math.sin(a)),
+          label: label(id),
+          incompatible: !!(byId[id] && byId[id].compatible === false),
+        };
+      });
+      const neighborIds = [...(this.discoveryP2p.status.neighborIds || [])].sort().slice(0, 8);
+      const neighborSet = new Set(neighborIds);
+      const outerAll = this.discoveryP2p.peers
+        .filter((p) => !neighborSet.has(p.from))
+        .map((p) => p.from).sort();
+      const outerIds = outerAll.slice(0, 8);
+      return {
+        // Neighbors fan out from the top, catalog dots from the bottom —
+        // sparse maps (one node per ring) then never collide label-wise.
+        neighbors: place(neighborIds, 58, 82, -90),
+        outer: place(outerIds, 88, 100, 114),
+        overflow: outerAll.length - outerIds.length,
+      };
+    },
   },
   created: async function () {
     this.loadDiscoveryP2p();
@@ -7755,6 +7981,7 @@ const discoveryView = Vue.component('discovery-view', {
       if (document.hidden || this.p2pToggling) { return; }
       if (!this.discoveryP2p.status || this.discoveryP2p.status.enabled !== true) { return; }
       this.loadDiscoveryP2p(true);
+      if (this.headerTab === 'activity') { this.loadDiscoveryActivity(); }
     }, 10000);
   },
   beforeDestroy: function () {
@@ -7764,6 +7991,18 @@ const discoveryView = Vue.component('discovery-view', {
     openModal: function(modalView) {
       modVM.currentViewModal = modalView;
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    headerTabStyle: function(tab) {
+      const base = 'padding: 6px 16px; border-radius: 2px; font-size: 0.85em; font-weight: 600; cursor: pointer; letter-spacing: 0.4px; ';
+      return base + (this.headerTab === tab
+        ? 'background: #505061; color: #fff;'
+        : 'background: transparent; color: #9e9ea8; border: 1px solid #3a3a47;');
+    },
+    listBtnStyle: function(mode) {
+      const base = 'padding: 4px 14px; font-size: 0.85em; font-weight: 600; cursor: pointer; ';
+      return base + (this.listMode === mode
+        ? 'background: #505061; color: #fff;'
+        : 'background: #fff; color: #616161;');
     },
     // The consent moment. What used to be "edit the config file and
     // restart" is now this dialog — it must say what enabling actually
@@ -7859,6 +8098,30 @@ const discoveryView = Vue.component('discovery-view', {
         ]
       });
     },
+    loadDiscoveryActivity: async function() {
+      try {
+        const r = (await API.axios({
+          method: 'GET',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/activity?since=${this.p2pActivity.lastSeq}`
+        })).data;
+        // lastSeq below the cursor means the server restarted and its seq
+        // counter reset — start the accumulation over instead of appending
+        // a second copy of history.
+        if (r.lastSeq < this.p2pActivity.lastSeq) { this.p2pActivity.entries = []; }
+        this.p2pActivity.entries.push(...r.entries);
+        if (this.p2pActivity.entries.length > 500) {
+          this.p2pActivity.entries.splice(0, this.p2pActivity.entries.length - 500);
+        }
+        this.p2pActivity.lastSeq = r.lastSeq;
+      } catch (err) { /* quiet — the 10s poll or next tab click retries */ }
+    },
+    discoveryLogTime: function(iso) {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) { return iso; }
+      const sameDay = d.toDateString() === new Date().toDateString();
+      return sameDay ? d.toTimeString().slice(0, 8)
+        : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${d.toTimeString().slice(0, 5)}`;
+    },
     discoveryToggleIncompatible: async function() {
       // Server-side filter, so the toggle re-fetches rather than un-hiding
       // stale client state.
@@ -7879,6 +8142,7 @@ const discoveryView = Vue.component('discovery-view', {
         if (typeof status.peerRetentionDays === 'number') { P2PSETTINGS.peerRetentionDays = status.peerRetentionDays; }
         if (typeof status.autoFetchCount === 'number') { P2PSETTINGS.autoFetchCount = status.autoFetchCount; }
         if (typeof status.rotationDays === 'number') { P2PSETTINGS.rotationDays = status.rotationDays; }
+        if (status.watchdog && typeof status.watchdog.maxRssMb === 'number') { P2PSETTINGS.sidecarMaxRssMb = status.watchdog.maxRssMb; }
         if (status.enabled === true) {
           const cat = (await API.axios({
             method: 'GET',
@@ -9447,6 +9711,67 @@ const editP2pRotationView = Vue.component('edit-p2p-rotation-modal', {
         });
 
         P2PSETTINGS.rotationDays = Number(this.editValue);
+
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+
+        iziToast.success({
+          title: t('admin.settings.updated'),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } catch(err) {
+        iziToast.error({
+          title: t('admin.modal.updateFailed'),
+          message: escHtml(err.response?.data?.error || ''),
+          position: 'topCenter',
+          timeout: 3500
+        });
+      } finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+const editP2pSidecarMaxRssView = Vue.component('edit-p2p-sidecar-max-rss-modal', {
+  data() {
+    return {
+      submitPending: false,
+      editValue: P2PSETTINGS.sidecarMaxRssMb
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Sidecar memory ceiling</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-p2p-sidecar-max-rss" required type="number" min="0" max="100000">
+          <label for="edit-p2p-sidecar-max-rss">Max resident memory (MB)</label>
+          <span class="helper-text">If the p2p-sidecar's memory grows past this, the watchdog restarts it automatically — the mesh reweaves within a minute and downloads are unaffected. Applies from the next health check, no restart needed. 0 turns the watchdog off.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/discovery/p2p/sidecar-max-rss`,
+          data: { sidecarMaxRssMb: Number(this.editValue) }
+        });
+
+        P2PSETTINGS.sidecarMaxRssMb = Number(this.editValue);
 
         M.Modal.getInstance(document.getElementById('admin-modal')).close();
 

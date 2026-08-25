@@ -199,7 +199,9 @@ describe('discovery p2p — route gating (no sidecar needed)', () => {
       ['POST', 'peer-dbs/fetch', { endpointId: 'a'.repeat(64) }],
       ['POST', 'peer-dbs/remove', { endpointId: 'a'.repeat(64) }],
       ['POST', 'description', { description: 'nope' }],
+      ['POST', 'sidecar-max-rss', { sidecarMaxRssMb: 512 }],
       ['GET', 'catalog', undefined],
+      ['GET', 'activity', undefined],
     ]) {
       const r = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/${route}`, {
         method,
@@ -226,6 +228,41 @@ describe('discovery p2p — enabled, validation contract', () => {
     const r = await fetch(`${server.baseUrl}/api/v1/ping`);
     assert.equal(r.status, 200);
     assert.equal((await r.json()).discoveryP2p, true);
+  });
+
+  test('status exposes neighborIds as an array — empty with no mesh', async () => {
+    // The panel's mesh map renders from this; before any peer joins (or
+    // where no sidecar binary exists at all) it must be a clean [] rather
+    // than absent, so the SVG math never branches on undefined.
+    const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+    assert.ok(Array.isArray(s.neighborIds), 'neighborIds is always an array');
+    assert.equal(s.neighborIds.length, 0, 'no mesh yet — nobody listed');
+  });
+
+  test('sidecar-max-rss: a valid ceiling saves live and reads back; junk is 400', async () => {
+    const url = `${server.baseUrl}/api/v1/admin/discovery/p2p/sidecar-max-rss`;
+    const post = (body) => fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    const ok = await post({ sidecarMaxRssMb: 384 });
+    assert.equal(ok.status, 200);
+    let s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+    assert.equal(s.watchdog.maxRssMb, 384, 'the watchdog ceiling reflects the write immediately');
+
+    // 0 is the documented off switch, not an error.
+    assert.equal((await post({ sidecarMaxRssMb: 0 })).status, 200);
+    s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+    assert.equal(s.watchdog.maxRssMb, 0, '0 = watchdog off');
+
+    for (const body of [{}, { sidecarMaxRssMb: -1 }, { sidecarMaxRssMb: 1.5 },
+      { sidecarMaxRssMb: 'lots' }, { sidecarMaxRssMb: 100001 }]) {
+      const r = await post(body);
+      assert.equal(r.status, 400, `body ${JSON.stringify(body)} should be 400`);
+    }
+    s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+    assert.equal(s.watchdog.maxRssMb, 0, 'rejected writes change nothing');
   });
 
   test('publish and announce are 404 until an export snapshot has been built', async () => {
@@ -377,6 +414,29 @@ describe('discovery p2p — enabled, validation contract', () => {
     assert.equal(heard.payload.hash, ann.hash);
     assert.equal(heard.payload.name, 'Gossip Test Server');
     assert.ok(Number.isInteger(heard.payload.snapshotSeq));
+
+    // The server saw the same link from its side: the peer's endpoint id
+    // shows up in status.neighborIds (the panel's mesh map draws from
+    // this). Event-tracked, so poll — the neighbor event may land a beat
+    // after the announcement round-trips.
+    const withNeighbor = await pollUntil(async () => {
+      const s = await (await fetch(api('status'))).json();
+      return s.neighborIds.includes(peer.endpointId) ? s : null;
+    }, { what: 'the peer to appear in status.neighborIds' });
+    assert.ok(withNeighbor.neighbors >= 1, 'the count agrees a link exists');
+
+    // And the Activity feed heard about it: the dedicated p2p log ring
+    // carries the neighbor-up line — and ONLY prefixed discovery lines,
+    // even though this server has logged plenty of non-discovery lines
+    // since boot (the wash-in negative control).
+    const activity = await (await fetch(api('activity'))).json();
+    assert.ok(activity.entries.length > 0, 'the feed has entries');
+    assert.ok(activity.entries.every((e) => /^\[(discovery-|p2p-sidecar)/.test(e.message)),
+      'every feed entry is a discovery/p2p line — boot noise stays out');
+    assert.ok(activity.entries.some((e) =>
+      e.message.includes('mesh neighbor up') && e.message.includes(peer.endpointId.slice(0, 12))),
+    'the neighbor-up event for this peer is in the feed');
+    assert.ok(Number.isInteger(activity.lastSeq), 'delta-poll cursor present');
 
     // Ticketless fetch: hash + provider from the announcement, address
     // resolution via the peer's memory lookup (seeded by the join ticket).

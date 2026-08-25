@@ -40,6 +40,21 @@ import * as config from './config.js';
 // The catalog module (discovery-catalog.js) is the main subscriber.
 export const events = new EventEmitter();
 
+// Who the sidecar is gossiping with right now, tracked from its 'neighbor'
+// events. hyparview caps the active view (5 by default), so this set is
+// protocol-bounded — it can never grow past the mesh fan-out no matter how
+// many servers exist. Best-effort by nature: the count in the sidecar's
+// status reply stays the authority for "how many"; this answers "who".
+const neighborIds = new Set();
+events.on('neighbor', (msg) => {
+  if (typeof msg.id !== 'string' || msg.id === '') { return; }
+  if (msg.up === true) { neighborIds.add(msg.id); } else { neighborIds.delete(msg.id); }
+  // Feeds the panel's Activity ring (and plain log readers). Self-throttling:
+  // the active view caps how many links exist to churn.
+  winston.info(`[discovery-p2p] mesh neighbor ${msg.up === true ? 'up' : 'down'}: ${msg.id.slice(0, 12)}…`);
+});
+export function getNeighborIds() { return [...neighborIds]; }
+
 // Unexpected-death hook, set by the stack (discovery-p2p-stack.js).
 //
 // The sidecar is a child process, so an OOM kill, a panic, or an operator's
@@ -343,6 +358,9 @@ function teardown(why) {
   proc = null;
   endpointId = null;
   endpointTicket = null;
+  // The mesh dies with the process — a fresh sidecar re-reports its
+  // neighbors as they weave back in.
+  neighborIds.clear();
   for (const [, waiter] of pending) {
     clearTimeout(waiter.timer);
     waiter.reject(new Error(`p2p-sidecar ${why}`));
