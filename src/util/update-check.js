@@ -25,18 +25,23 @@
 //
 // Modes (config: updates.mode, live-read so admin toggles need no reboot):
 //   notify - check only; every download/install is user-initiated
-//   stage  - (default) background-stage for managed installs and
-//            background-download the Windows installer; applying still takes
-//            a restart / a click
-//   auto   - additionally apply when idle: under the launcher, by flagging
-//            applyRequested in the status file (the launcher restarts into
-//            the staged version); headless, by exiting 0 so the supervisor's
-//            restart lands on the new version via the flipped `current`
-//            link — but ONLY when a restart-on-clean-exit supervisor is
-//            actually detectable (detectSupervisor: MSTREAM_SUPERVISED,
-//            pm2, systemd with Restart=always/on-success). Unsupervised,
-//            auto degrades to stage-and-log: exiting would be an outage,
-//            not an apply.
+//   stage  - background-stage for managed installs and background-download
+//            the Windows installer; applying still takes a restart / a click
+//   auto   - (default) additionally apply when idle: under the launcher, by
+//            flagging applyRequested in the status file (the launcher
+//            restarts into the staged version); headless, by exiting 0 so
+//            the supervisor's restart lands on the new version via the
+//            flipped `current` link — but ONLY when a restart-on-clean-exit
+//            supervisor is actually detectable (detectSupervisor:
+//            MSTREAM_SUPERVISED, pm2, systemd with Restart=always/
+//            on-success). Unsupervised, auto degrades to stage-and-log:
+//            exiting would be an outage, not an apply. "Idle" means no
+//            in-flight responses, no scan, AND a quiet window since the
+//            last user request (IDLE_QUIET_MS) — auto became the default
+//            only once the full recovery ladder shipped (pre-flip
+//            --boot-probe refusal; the launcher and headless boot
+//            watchdogs' rollback-and-hold; supervision gating), so a bad
+//            release self-heals to the next good one at every stage.
 //
 // Boot-failure holds (update-hold.json, beside the status file): when an
 // applied update crashes before it ever serves, the launcher's boot
@@ -79,6 +84,16 @@ const STAGE_TIMEOUT_MS = 30 * 60 * 1000; // a bundle download on a slow link
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // daily
 const BOOT_CHECK_DELAY_MS = 30 * 1000;
 const AUTO_APPLY_POLL_MS = 15 * 60 * 1000;
+// auto's idle gate demands QUIET, not merely "no bytes in flight": an
+// actively browsing user has no in-flight response at most instants, and a
+// restart under them is exactly the rudeness auto-by-default must not
+// have. The env override exists for the integration tests and for
+// operators who want snappier applies on a box nobody browses.
+const IDLE_QUIET_MS = 10 * 60 * 1000;
+function idleQuietMs() {
+  const v = Number(process.env.MSTREAM_UPDATE_IDLE_QUIET_MS);
+  return Number.isFinite(v) && v >= 0 ? v : IDLE_QUIET_MS;
+}
 
 // ── Pure helpers (unit-tested with injected fs) ─────────────────────────────
 // compareVersions / parseBundleName / the hold-file readers live in
@@ -185,7 +200,10 @@ export function detectInstallMethod({
 // ── Module state ────────────────────────────────────────────────────────────
 
 let _install = null;        // { method, root? } — detected once per process
-let _hooks = { hasBusySockets: () => false, isScanning: () => false };
+// msSinceActivity defaults to "forever quiet": a caller that wires no
+// activity clock (tests driving setup() directly) keeps pre-quiet-gate
+// behavior rather than never applying.
+let _hooks = { hasBusySockets: () => false, isScanning: () => false, msSinceActivity: () => Infinity };
 let _bootTimer = null;
 let _checkTimer = null;
 let _applyTimer = null;
@@ -224,7 +242,7 @@ const state = {
 };
 
 function updatesConfig() {
-  return config.program?.updates || { check: true, mode: 'stage', skipVersion: '' };
+  return config.program?.updates || { check: true, mode: 'auto', skipVersion: '' };
 }
 
 // The operator held this version back (updates.skipVersion — the companion
@@ -807,8 +825,10 @@ async function pruneOldVersions(root) {
 // ── Applying ────────────────────────────────────────────────────────────────
 
 function idle() {
-  try { return !_hooks.hasBusySockets() && !_hooks.isScanning(); }
-  catch { return false; }
+  try {
+    return !_hooks.hasBusySockets() && !_hooks.isScanning()
+      && _hooks.msSinceActivity() >= idleQuietMs();
+  } catch { return false; }
 }
 
 // The human clicked "restart to update" in the webapp. Managed under the
@@ -1093,7 +1113,13 @@ export function setup(mstream, hooks = {}) {
   if (_bootTimer.unref) { _bootTimer.unref(); }
   _checkTimer = setInterval(() => { checkNow().catch(() => {}); }, CHECK_INTERVAL_MS);
   if (_checkTimer.unref) { _checkTimer.unref(); }
-  _applyTimer = setInterval(() => { maybeAutoApply(); }, AUTO_APPLY_POLL_MS);
+  // The apply poll paces itself to the idle gate's quiet window when that
+  // is the shorter of the two: once a server has been quiet for the window,
+  // the arm should land within roughly one more window — not up to 15
+  // minutes later. (Every request is activity — including "check now" —
+  // so the TIMER is what fires the arm on a genuinely idle box.)
+  _applyTimer = setInterval(() => { maybeAutoApply(); },
+    Math.max(1000, Math.min(AUTO_APPLY_POLL_MS, idleQuietMs())));
   if (_applyTimer.unref) { _applyTimer.unref(); }
 }
 

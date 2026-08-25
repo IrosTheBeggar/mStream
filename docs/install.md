@@ -51,27 +51,37 @@ manages its own folder.
 ## Automatic updates
 
 mStream checks the release feed once a day (plus once shortly after boot)
-and, by default, **downloads new versions in the background and applies them
-on the next restart**: installs made by the one-liner stage the new version
-beside the running one and flip `current`, so any restart — the tray menu,
-a reboot, a service restart — lands on it. Windows `setup.exe` installs
-download the verified installer; applying it is one click. The admin panel's
-About page shows the state and holds the controls:
+and, by default, **updates itself**: new versions download in the
+background, stage beside the running one behind `current`, and apply on
+their own once the server is genuinely idle — nothing streaming, no scan
+running, and a quiet stretch (about ten minutes) since the last request,
+so a restart never lands under someone actively browsing. Under the tray
+app the restart is seamless; a `.pkg` install downloads the verified
+installer and waits for your click (Installer.app needs a human). The
+admin panel's About page shows the state and holds the controls:
 
-- `updates.mode` — `notify` (report only, download nothing), `stage`
-  (the default, described above), or `auto` (additionally restart into the
-  update once the server is idle — no active streams, no scan running).
-  On a headless install, `auto` applies by exiting with code 0 so the
-  process supervisor's restart lands on the new version — but only when a
-  supervisor that restarts on a clean exit is actually detectable: pm2, or
-  systemd with `Restart=always`/`on-success` (the default `Restart=no` and
-  `on-failure` don't restart an exit 0, so they don't count). For
-  supervisors mStream can't see — a docker `--restart` policy, runit, your
-  own wrapper loop — set `MSTREAM_SUPERVISED=1`. With nothing detected,
-  `auto` behaves like `stage` and says so in the log and the admin panel:
-  exiting would be an outage, not an apply.
+- `updates.mode` — `auto` (the default, described above), `stage`
+  (download and stage only; applying takes a restart or a click — the
+  previous default), or `notify` (report only, download nothing). A mode
+  set in the config stays exactly as set — the default only fills the
+  blank. On a headless install, `auto` applies by exiting with code 0 so
+  the process supervisor's restart lands on the new version — but only
+  when a supervisor that restarts on a clean exit is actually detectable:
+  pm2, or systemd with `Restart=always`/`on-success` (the default
+  `Restart=no` and `on-failure` don't restart an exit 0, so they don't
+  count). For supervisors mStream can't see — a docker `--restart` policy,
+  runit, your own wrapper loop — set `MSTREAM_SUPERVISED=1`. With nothing
+  detected, `auto` behaves like `stage` and says so in the log and the
+  admin panel: exiting would be an outage, not an apply.
 - `updates.check` — set `false` and mStream never phones home; the admin
   panel's "check now" button still works on demand.
+
+Auto became the default only once the whole recovery ladder was in place:
+a release is sha256-verified and boot-probed **before** it can take over a
+working install, and one that still crashes at first boot is rolled back
+and held automatically — by the tray app on desktops, by the server binary
+itself headless — until a newer release ships. A bad release followed by a
+fixed one heals end to end with no operator action.
 
 The check and the downloads honor `MSTREAM_RELEASE_BASE` for mirrors, verify
 every download against the release's `manifest.json` sha256s, and only ever
