@@ -56,6 +56,9 @@ pub struct RollbackPlan {
     /// macOS: the ~/Applications copy this launcher runs from, whose
     /// contents (refreshed to the failed version at stage time) must be
     /// restored from target_bundle. None when running from a versioned dir.
+    /// Only macOS execute code reads it — planning stays one shared,
+    /// cross-platform-tested path, so other targets carry the field unread.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub apps_copy: Option<PathBuf>,
 }
 

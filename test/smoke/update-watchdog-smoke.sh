@@ -51,7 +51,12 @@ SMOKE="${TMPDIR:-/tmp}/mstream-watchdog-smoke-$$"
 FAKEHOME="$SMOKE/home"
 ROOT="$SMOKE/root"
 DATA="$FAKEHOME/$DATA_REL"
-trap 'pkill -f "^$ROOT/" 2>/dev/null; sleep 1; pkill -9 -f "^$ROOT/" 2>/dev/null; rm -rf "$SMOKE"' EXIT INT TERM
+# Cleanup matches the path ANYWHERE in the command line, not ^-anchored:
+# the stub servers are #!/bin/sh scripts, so their argv starts with
+# "/bin/sh " and an anchored pattern would kill the launcher but leak the
+# stub (it ignores stdin, so the supervision EOF cannot reap it either).
+# $ROOT is a unique scratch path — unanchored is still precise.
+trap 'pkill -f "$ROOT/" 2>/dev/null; sleep 1; pkill -9 -f "$ROOT/" 2>/dev/null; rm -rf "$SMOKE"' EXIT INT TERM
 mkdir -p "$FAKEHOME" "$ROOT" "$DATA"
 # The watchdog resolves its own exe path, so everything it writes is in
 # CANONICAL form (macOS: /var -> /private/var). Compare in the same form.
