@@ -3619,7 +3619,7 @@ const infoView = Vue.component('info-view', {
                     <td colspan="2" style="color:#c62828;">{{update.s.error}}</td>
                   </tr>
                   <tr>
-                    <td><b title="notify: report only. stage (default): download updates in the background; applying still takes a restart or a click. auto: additionally restart into the update when the server is idle (headless installs need a process supervisor that restarts mStream).">Mode:</b> {{update.s.mode}}</td>
+                    <td><b title="notify: report only. stage: download updates in the background; applying still takes a restart or a click. auto (default): additionally restart into the update once the server is idle - nothing streaming, no scan, and a quiet stretch since the last request. Headless installs self-apply only when a supervisor that restarts mStream is detected; otherwise auto downloads and waits for the next restart.">Mode:</b> {{update.s.mode}}</td>
                     <td>[<a v-on:click="updCycleMode()">change</a>]</td>
                   </tr>
                   <tr>

@@ -103,6 +103,10 @@ let configWritesAtRead = 0;
 // = "not fully booted yet", which idle() treats as busy — auto-apply never
 // fires into a half-started server).
 let taskQueueMod = null;
+// When a request last touched this server (the auto-update idle gate's
+// quiet-window clock — see the middleware that maintains it). Module scope
+// on purpose: a soft reboot() must not reset a user's recency to zero.
+let lastUserRequestAt = Date.now();
 // Bumped by every reboot(); each request tags its socket with the generation
 // serving it, so reboot()'s grace-period sweep can tell "still busy with an
 // OLD-app response" (destroy: that handler must not live on) from "idle
@@ -358,6 +362,22 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     );
     next();
   });
+  // Activity clock for auto-update's idle gate (update-check.js): an auto
+  // restart must wait out a QUIET window, not just "no bytes in flight" —
+  // an actively browsing user has no in-flight response at most instants.
+  // Every request refreshes the clock EXCEPT the admin card's own
+  // update-status poll (GET /api/v1/admin/update, every 5s while the About
+  // page is open): the surface that DISPLAYS an update must never be the
+  // reason it cannot apply. An idle player tab makes no periodic requests
+  // (the jukebox and server-audio polls only run while those modes are in
+  // use — which genuinely is activity), so an open-but-abandoned tab goes
+  // quiet on its own.
+  mstream.use((req, res, next) => {
+    if (!(req.method === 'GET' && req.path === '/api/v1/admin/update')) {
+      lastUserRequestAt = Date.now();
+    }
+    next();
+  });
   // Trust Proxy
   if (config.program.trustProxy) {
     mstream.set("trust proxy", true);
@@ -573,13 +593,17 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   transcode.setup(mstream);
   updateCheck.setup(mstream, {
     // Idle = safe to restart into a staged update: no socket carrying an
-    // in-flight response (the same tagging reboot()'s drain sweep uses) and
-    // no scan running. Conservative before boot completes.
+    // in-flight response (the same tagging reboot()'s drain sweep uses),
+    // no scan running, AND a quiet window since the last user request (the
+    // activity-clock middleware above) — in-flight alone misses an actively
+    // browsing user, who has no response in flight at most instants.
+    // Conservative before boot completes.
     hasBusySockets: () => {
       for (const s of liveSockets) { if (s._mstreamBusy) { return true; } }
       return false;
     },
     isScanning: () => (taskQueueMod ? taskQueueMod.isScanning() : true),
+    msSinceActivity: () => Date.now() - lastUserRequestAt,
   });
   scrobblerApi.setup(mstream);
   remoteApi.setupAfterAuth(mstream, server);

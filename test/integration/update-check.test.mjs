@@ -136,7 +136,8 @@ test('managed round-trip: check, auto-stage, current flip, tamper refusal, live 
     assert.equal(s.current, packageJson.version);
     assert.equal(s.staged, false);
 
-    // Check: finds 9.9.9 and (mode=stage default) starts staging on its own.
+    // Check: finds 9.9.9 and (default mode: staging is part of both stage
+    // and auto) starts the download on its own.
     const check = await (await fetch(`${srv.baseUrl}/api/v1/admin/update/check`, { method: 'POST' })).json();
     assert.equal(check.available, true);
     assert.equal(check.latest, '9.9.9');
@@ -278,7 +279,7 @@ test('boot-failure holds: held version never stages, a newer release supersedes 
       let s = await (await fetch(`${srv.baseUrl}/api/v1/admin/update`)).json();
       assert.deepEqual(s.heldVersions, ['9.9.20']);
 
-      // The held version is reported but never staged (mode=stage default
+      // The held version is reported but never staged (the default mode
       // would otherwise download and flip on this very check).
       s = await (await fetch(`${srv.baseUrl}/api/v1/admin/update/check`, { method: 'POST' })).json();
       assert.equal(s.available, true);
@@ -402,7 +403,7 @@ test('auto mode without a supervisor stages but never self-exits', { skip: posix
     await publish('9.9.30');
     const srv = await startServer({
       waitForScan: true,   // the idle gate must be about supervision, not the boot scan
-      env: scrubSupervision(envFor(home)),
+      env: { ...scrubSupervision(envFor(home)), MSTREAM_UPDATE_IDLE_QUIET_MS: '0' },
       extraConfig: { updates: { mode: 'auto', check: true } },
     });
     try {
@@ -428,13 +429,49 @@ test('auto mode without a supervisor stages but never self-exits', { skip: posix
   }
 });
 
+test('the idle gate holds an armed apply until a quiet window elapses', { skip: posixOnly }, async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-upd-quiet-'));
+  try {
+    await publish('9.9.60');
+    const srv = await startServer({
+      waitForScan: true,
+      // A short but real quiet window: recent activity must block the arm,
+      // and its expiry must release it. The status poll itself is excluded
+      // from the activity clock (GET /api/v1/admin/update), so polling for
+      // the outcome cannot keep the server "active".
+      env: { ...scrubSupervision(envFor(home)), MSTREAM_UPDATE_IDLE_QUIET_MS: '6000' },
+      extraArgs: ['--supervised'], stdin: 'pipe',
+      extraConfig: { updates: { mode: 'auto', check: true } },
+    });
+    try {
+      await fetch(`${srv.baseUrl}/api/v1/admin/update/check`, { method: 'POST' });
+      await pollStatus(srv.baseUrl, (x) => x.staged && x.stagedVersion === '9.9.60');
+      // Fresh activity (a normal request): the quiet window has not
+      // elapsed, so nothing may arm — the apply poll is paced to the
+      // window, so give it one full cycle to prove the restraint.
+      await fetch(`${srv.baseUrl}/api/`);
+      await sleep(2000);
+      let s = await (await fetch(`${srv.baseUrl}/api/v1/admin/update`)).json();
+      assert.equal(s.applyRequested, false, 'an active server must not arm the apply');
+      // Go quiet (only excluded status polls from here): the timer arms it
+      // within roughly one window past the quiet threshold.
+      s = await pollStatus(srv.baseUrl, (x) => x.applyRequested === true, 20_000);
+      assert.equal(s.stagedVersion, '9.9.60');
+    } finally {
+      await srv.stop();
+    }
+  } finally {
+    await fs.rm(home, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 test('supervised auto mode arms the launcher through the status file', { skip: posixOnly }, async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-upd-arm-'));
   try {
     await publish('9.9.50');
     const srv = await startServer({
       waitForScan: true,   // idle must gate on supervision state, not the boot scan
-      env: scrubSupervision(envFor(home)),
+      env: { ...scrubSupervision(envFor(home)), MSTREAM_UPDATE_IDLE_QUIET_MS: '0' },
       extraArgs: ['--supervised'], stdin: 'pipe',
       extraConfig: { updates: { mode: 'auto', check: true } },
     });
@@ -476,7 +513,7 @@ test('auto mode with MSTREAM_SUPERVISED=1 applies by exiting 0', { skip: posixOn
     await publish('9.9.31');
     const srv = await startServer({
       waitForScan: true,
-      env: { ...scrubSupervision(envFor(home)), MSTREAM_SUPERVISED: '1' },
+      env: { ...scrubSupervision(envFor(home)), MSTREAM_SUPERVISED: '1', MSTREAM_UPDATE_IDLE_QUIET_MS: '0' },
       extraConfig: { updates: { mode: 'auto', check: true } },
     });
     try {

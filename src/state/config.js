@@ -343,14 +343,24 @@ const updatesOptions = Joi.object({
   // works, it is only the schedule that stops.
   check: Joi.boolean().default(true),
   // notify: report only, download nothing until a human clicks.
-  // stage (default): background-download the new version - managed installs
-  //   stage it behind $ROOT/current, Windows setup.exe installs download the
+  // stage: background-download the new version - managed installs stage it
+  //   behind $ROOT/current, Windows setup.exe installs download the
   //   verified installer - but applying still takes a restart or a click.
-  // auto: additionally apply when the server is idle (no busy connections,
-  //   no scan): under the tray launcher by asking it to restart into the
-  //   staged version; headless by exiting 0, which expects a process
-  //   supervisor (systemd/pm2) configured to start mStream again.
-  mode: Joi.string().valid('notify', 'stage', 'auto').default('stage'),
+  // auto (default): additionally apply once the server is genuinely idle
+  //   (no busy connections, no scan, and a quiet window since the last user
+  //   request): under the tray launcher by asking it to restart into the
+  //   staged version; headless by exiting 0 - but only when a supervisor
+  //   that restarts on a clean exit is detectable (pm2, systemd with
+  //   Restart=always/on-success, or MSTREAM_SUPERVISED=1) - otherwise auto
+  //   behaves like stage. Default flipped to auto only after the full
+  //   recovery ladder shipped: the installers' pre-flip --boot-probe
+  //   refusal, and the launcher/headless boot watchdogs that roll a
+  //   crash-at-boot release back and hold it until a fixed release ships -
+  //   a bad release self-heals to the next good one with no operator
+  //   action. A config that pins mode keeps its choice (Joi defaults never
+  //   override an explicit value); .pkg installs stay download-only under
+  //   auto by design (Installer.app needs a human).
+  mode: Joi.string().valid('notify', 'stage', 'auto').default('auto'),
   // Hold one version back: report it, never stage or apply it. The
   // companion of a manual rollback (docs/install.md) — without it the next
   // daily check would silently re-stage the very release the operator just
