@@ -240,6 +240,37 @@ jobs:
           try { & .\install.ps1 *>&1 | Out-Null; throw "installed a bundle that cannot boot" } catch { if ("$_" -notmatch 'would not BOOT') { throw } }
           $j3 = Get-Item "$env:RUNNER_TEMP\app\current" -Force
           if (($j3.Target | Select-Object -First 1) -notmatch 'mStream-9\.9\.9-win-x64$') { throw "current moved off 9.9.9 after probe refusal: $($j3.Target)" }
+          # relaunch arming: with a LAUNCHER this script owns running the
+          # old version, a fresh install must arm update-status.json for the
+          # tray to consume (never kill anything itself). Real exe required
+          # (a stopped/fake one skips the block silently); rustc again.
+          Set-Content idle.rs 'fn main(){loop{std::thread::sleep(std::time::Duration::from_secs(9));}}'
+          rustc -O --crate-name idlestub idle.rs -o "$env:RUNNER_TEMP\app\mStream-9.9.9-win-x64\mStream.exe" 2>rustc2.err
+          if ($LASTEXITCODE -ne 0) { Get-Content rustc2.err; throw "idle stub build failed" }
+          $stub = Start-Process -FilePath "$env:RUNNER_TEMP\app\mStream-9.9.9-win-x64\mStream.exe" -PassThru
+          Start-Sleep -Seconds 1
+          if ($stub.HasExited) { throw "seeded launcher stub is not running - the arming test would be vacuous" }
+          # The upgrade bundle's server must PASS -V and the deep probe, or
+          # the pre-flip refusals (correctly) fire before arming can happen.
+          Set-Content ok.rs 'fn main(){let a=std::env::args().nth(1);if a.as_deref()==Some("-V"){println!("9.9.12");return;}if a.as_deref()==Some("--boot-probe"){println!("boot-probe: ok");return;}}'
+          rustc -O --crate-name okstub ok.rs -o ok-server.exe 2>rustc3.err
+          if ($LASTEXITCODE -ne 0) { Get-Content rustc3.err; throw "ok stub build failed" }
+          $pb2 = 'mStream-9.9.12-win-x64'
+          Remove-Item rel\mStream-*.zip, rel\manifest.json -Force
+          Push-Location rel
+          New-Item -ItemType Directory -Force $pb2 | Out-Null
+          Copy-Item ..\ok-server.exe "$pb2\mstream-server.exe"
+          Set-Content "$pb2\README.txt" 'fake'
+          python3 -m zipfile -c "$pb2.zip" $pb2
+          Remove-Item -Recurse -Force $pb2
+          Pop-Location
+          bash scripts/release-manifest.sh 9.9.12 rel
+          $armOut = & .\install.ps1 *>&1 | Out-String
+          if ($armOut -notmatch 'restarts into 9\.9\.12 within a minute') { throw "arming note missing: $armOut" }
+          $armDoc = Get-Content "$env:LOCALAPPDATA\mStream\update-status.json" -Raw | ConvertFrom-Json
+          if (-not $armDoc.applyRequested -or $armDoc.stagedVersion -ne '9.9.12') { throw "status file not armed: $($armDoc | ConvertTo-Json -Compress)" }
+          Stop-Process -Id $stub.Id -Force
+          Start-Sleep -Seconds 1
           # uninstall
           $env:MSTREAM_UNINSTALL = '1'
           & .\install.ps1 *>&1 | Tee-Object -Variable un
