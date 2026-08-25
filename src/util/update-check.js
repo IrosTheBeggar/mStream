@@ -30,9 +30,13 @@
 //            a restart / a click
 //   auto   - additionally apply when idle: under the launcher, by flagging
 //            applyRequested in the status file (the launcher restarts into
-//            the staged version); headless, by exiting 0 — documented as
-//            "auto expects a process supervisor" (systemd/pm2 restart lands
-//            on the new version via the flipped `current` link)
+//            the staged version); headless, by exiting 0 so the supervisor's
+//            restart lands on the new version via the flipped `current`
+//            link — but ONLY when a restart-on-clean-exit supervisor is
+//            actually detectable (detectSupervisor: MSTREAM_SUPERVISED,
+//            pm2, systemd with Restart=always/on-success). Unsupervised,
+//            auto degrades to stage-and-log: exiting would be an outage,
+//            not an apply.
 //
 // Boot-failure holds (update-hold.json, beside the status file): when an
 // applied update crashes before it ever serves, the launcher's boot
@@ -48,13 +52,20 @@
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import winston from 'winston';
 import * as config from '../state/config.js';
 import { writeJsonAtomic } from './atomic-json.js';
 import { downloadToFile, computeFileChecksum } from './ffmpeg-bootstrap.js';
 import { appRoot, isBunStandalone, userDataHome, underSystemPrefix } from './esm-helpers.js';
+import { VERSION_RE, compareVersions, parseBundleName, HOLD_FILE, readHoldEntries } from './update-shared.js';
 import packageJson from '../../package.json' with { type: 'json' };
+
+// The pure halves live in update-shared.js so the pre-boot headless guard
+// (boot-watchdog.js) can speak the same contract without importing this
+// module's heavy dependencies; re-exported here so every existing consumer
+// (tests included) keeps its import path.
+export { compareVersions, parseBundleName } from './update-shared.js';
 
 const REPO = 'IrosTheBeggar/mStream';
 const LATEST_BASE = `https://github.com/${REPO}/releases/latest/download`;
@@ -68,29 +79,10 @@ const STAGE_TIMEOUT_MS = 30 * 60 * 1000; // a bundle download on a slow link
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // daily
 const BOOT_CHECK_DELAY_MS = 30 * 1000;
 const AUTO_APPLY_POLL_MS = 15 * 60 * 1000;
-// Shared with rust-launcher/src/rollback.rs — one file, two writers who
-// never overlap (the launcher appends only while no server runs).
-const HOLD_FILE = 'update-hold.json';
-const MAX_HELD = 8;
 
 // ── Pure helpers (unit-tested with injected fs) ─────────────────────────────
-
-const VERSION_RE = /^(\d+)\.(\d+)\.(\d+)$/;
-
-// Strict numeric-triple compare. Returns <0, 0, >0 — or null when either
-// side is not a plain X.Y.Z (prerelease-shaped strings are refused on
-// purpose: releases are always bare triples, so anything else in a manifest
-// is not a version to act on).
-export function compareVersions(a, b) {
-  const ma = VERSION_RE.exec(a);
-  const mb = VERSION_RE.exec(b);
-  if (!ma || !mb) { return null; }
-  for (let i = 1; i <= 3; i++) {
-    const d = Number(ma[i]) - Number(mb[i]);
-    if (d !== 0) { return d; }
-  }
-  return 0;
-}
+// compareVersions / parseBundleName / the hold-file readers live in
+// update-shared.js (see the import note above).
 
 // The release manifest contract (scripts/release-manifest.sh). `name` guards
 // against a non-mStream release capturing the GitHub "latest" pointer (the
@@ -108,12 +100,6 @@ export function validateManifest(m) {
     return { ok: false, reason: 'manifest assets are malformed' };
   }
   return { ok: true };
-}
-
-// mStream-<version>-<key>[.zip] -> { version, key }, or null.
-export function parseBundleName(name) {
-  const m = /^mStream-(\d+\.\d+\.\d+)-((?:darwin|linux|win)-[a-z0-9]+(?:-musl)?)(?:\.zip)?$/.exec(name);
-  return m ? { version: m[1], key: m[2] } : null;
 }
 
 // Where and how is this server installed? Decides what an update can DO:
@@ -231,6 +217,10 @@ const state = {
   skipped: false,           // latest === updates.skipVersion: report, never act
   held: false,              // latest failed to boot after a previous update: report, never act
   heldVersions: [],         // every version the boot watchdog has held (update-hold.json)
+  // Headless managed installs in auto mode: how the exit-0 apply would be
+  // restarted ('env' | 'pm2' | 'systemd'), or 'none' — in which case auto
+  // stages but never self-exits. null until the question has come up.
+  headlessSupervisor: null,
 };
 
 function updatesConfig() {
@@ -249,6 +239,72 @@ function supervisedByLauncher() {
   return process.argv.includes('--supervised');
 }
 
+// ── Supervision detection (auto mode, headless) ─────────────────────────────
+// auto's headless apply is exit(0) + "the supervisor starts mStream again"
+// (scheduleHeadlessExit). With no supervisor that exit IS an outage — a
+// server someone runs in tmux would vanish mid-day, minutes after a release
+// ships. Detection is deliberately conservative: only signals that imply a
+// restart actually FOLLOWS a clean exit count.
+//
+//   MSTREAM_SUPERVISED  the operator's word (any value but '' / '0') — for
+//                       supervisors this list can't see (docker restart
+//                       policies, runit, a bespoke wrapper loop)
+//   pm2                 pm_id in the env; pm2 autorestarts by default
+//   systemd             INVOCATION_ID plus the unit's Restart= policy being
+//                       always/on-success (unit name read from
+//                       /proc/self/cgroup, policy from `systemctl show`).
+//                       A bare INVOCATION_ID is NOT enough: systemd's
+//                       default is Restart=no, where exit 0 leaves the unit
+//                       dead — the very outage this gate exists to prevent.
+//                       on-failure also doesn't count: exit 0 is a success.
+//
+// Injected for tests; production goes through supervisorInfo(), which
+// caches — none of these facts can change for the lifetime of our pid.
+export function detectSupervisor({
+  env = process.env,
+  platform = process.platform,
+  readCgroup = () => fs.readFileSync('/proc/self/cgroup', 'utf8'),
+  queryRestart = (unit, userScope) => {
+    const args = userScope
+      ? ['--user', 'show', '-p', 'Restart', '--value', unit]
+      : ['show', '-p', 'Restart', '--value', unit];
+    const r = spawnSync('systemctl', args, { timeout: 5000, encoding: 'utf8' });
+    return r.status === 0 ? String(r.stdout).trim() : null;
+  },
+} = {}) {
+  if (env.MSTREAM_SUPERVISED && env.MSTREAM_SUPERVISED !== '0') {
+    return { supervised: true, via: 'env' };
+  }
+  // pm2 numbers its processes from 0, so pm_id='0' counts; an exported-but-
+  // EMPTY variable reads as unset (the convention everywhere else here).
+  if (env.pm_id != null && env.pm_id !== '') {
+    return { supervised: true, via: 'pm2' };
+  }
+  if (platform === 'linux' && env.INVOCATION_ID) {
+    try {
+      // cgroup v2: "0::/system.slice/mstream.service" — the unit is the
+      // LAST .service segment (a Delegate= sub-cgroup can sit below it;
+      // .scope units have no restart policy and rightly never match).
+      const line = String(readCgroup()).split('\n').find((l) => l.includes('::')) || '';
+      const cgPath = line.slice(line.indexOf('::') + 2);
+      const segments = cgPath.split('/').filter(Boolean);
+      const unit = [...segments].reverse().find((s) => s.endsWith('.service') && !s.startsWith('user@'));
+      const userScope = segments.some((s) => s === 'user.slice' || s.startsWith('user@'));
+      const policy = unit ? queryRestart(unit, userScope) : null;
+      if (policy === 'always' || policy === 'on-success') {
+        return { supervised: true, via: 'systemd' };
+      }
+    } catch { /* no cgroup / no systemctl: fall through to undetected */ }
+  }
+  return { supervised: false, via: null };
+}
+
+let _supervisor = null;
+function supervisorInfo() {
+  if (!_supervisor) { _supervisor = detectSupervisor(); }
+  return _supervisor;
+}
+
 export function statusFilePath() {
   return path.join(userDataHome(), 'update-status.json');
 }
@@ -257,19 +313,10 @@ export function holdFilePath() {
   return path.join(userDataHome(), HOLD_FILE);
 }
 
-// The launcher's boot watchdog wrote this after rolling an update back.
-// Read tolerantly — the file is our own, but absent/newer-schema/mangled
-// must all read as "nothing held", never as a crash.
+// A watchdog (the launcher's, or the headless boot guard's) wrote this
+// after rolling an update back. Tolerant parse lives in update-shared.js.
 function readHolds() {
-  try {
-    const doc = JSON.parse(fs.readFileSync(holdFilePath(), 'utf8'));
-    if (!doc || !Array.isArray(doc.held)) { return []; }
-    return doc.held
-      .filter((h) => h && typeof h.version === 'string' && VERSION_RE.test(h.version))
-      .slice(0, MAX_HELD);
-  } catch {
-    return [];
-  }
+  return readHoldEntries(userDataHome());
 }
 
 // Cached in state.heldVersions (refreshHolds) so the status poll doesn't
@@ -788,6 +835,15 @@ export async function requestApply() {
   state.applyRequestedAt = new Date().toISOString();
   await writeStatus();
   if (m.method === 'managed' && !supervisedByLauncher()) {
+    // An explicit human click still exits — the admin asked for a restart
+    // and is watching — but with no supervisor detected the "restart" half
+    // is theirs to perform, so say it loudly first.
+    const sup = supervisorInfo();
+    state.headlessSupervisor = sup.supervised ? sup.via : 'none';
+    if (!sup.supervised) {
+      winston.warn('[update] Applying on an explicit admin request with NO supervisor detected - '
+        + 'mStream stays stopped until it is started again');
+    }
     scheduleHeadlessExit('an admin requested the update');
     return { exiting: true };
   }
@@ -805,6 +861,7 @@ function scheduleHeadlessExit(why) {
 }
 
 // auto mode: apply on our own once nothing is streaming and no scan runs.
+let _noSupervisorLoggedFor = null;
 function maybeAutoApply() {
   if (updatesConfig().mode !== 'auto' || !state.staged || state.applyRequested) { return; }
   if (isSkipped(state.stagedVersion) || isHeld(state.stagedVersion)) { return; }
@@ -812,7 +869,23 @@ function maybeAutoApply() {
   if (m.method !== 'managed' && m.method !== 'inno') { return; }
   if (!idle()) { return; }
   if (m.method === 'managed' && !supervisedByLauncher()) {
-    scheduleHeadlessExit('auto mode, server idle');
+    // Headless apply = exit(0), which is only an APPLY when something
+    // restarts us afterwards. Without a detectable restart-on-clean-exit
+    // supervisor, exiting is an outage — so behave as `stage` instead
+    // (the update is staged and flipped; whatever restart comes next lands
+    // on it) and say so once per staged version, not every 15-minute poll.
+    const sup = supervisorInfo();
+    state.headlessSupervisor = sup.supervised ? sup.via : 'none';
+    if (!sup.supervised) {
+      if (_noSupervisorLoggedFor !== state.stagedVersion) {
+        _noSupervisorLoggedFor = state.stagedVersion;
+        winston.info(`[update] mStream ${state.stagedVersion} is staged and applies on the next restart. `
+          + 'Auto mode found no supervisor that would restart mStream after a self-exit '
+          + '(set MSTREAM_SUPERVISED=1 if one really is in charge).');
+      }
+      return;
+    }
+    scheduleHeadlessExit(`auto mode, server idle (supervisor: ${sup.via})`);
     return;
   }
   // Launcher-supervised (managed restart, or inno silent install): flag it;
@@ -1031,7 +1104,10 @@ export function stopForTests() {
   _install = null;
   _checking = null;
   _exiting = false;
+  _supervisor = null;
+  _noSupervisorLoggedFor = null;
   state.skipped = false; state.held = false; state.heldVersions = [];
+  state.headlessSupervisor = null;
   state.latest = null; state.available = false; state.staged = false;
   state.stagedVersion = null; state.applyRequested = false; state.applyRequestedAt = null; state.error = null;
   state.installerPath = null; state.downloadUrl = null; state.notifyOnly = false;

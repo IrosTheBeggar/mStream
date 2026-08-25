@@ -5,6 +5,7 @@ import {
   validateManifest,
   parseBundleName,
   detectInstallMethod,
+  detectSupervisor,
 } from '../../src/util/update-check.js';
 
 // ── compareVersions ──────────────────────────────────────────────────────────
@@ -256,4 +257,72 @@ test('a hand-extracted bundle with no current anywhere is portable', () => {
     fsx: fakeFs([]),
   });
   assert.equal(r.method, 'portable');
+});
+
+// ── detectSupervisor ─────────────────────────────────────────────────────────
+// The auto-mode headless gate: exit(0) counts as an APPLY only when
+// something restarts us afterwards. Only signals implying restart-on-clean-
+// exit may pass — a false positive here is a silent outage.
+
+function sup(env, extra = {}) {
+  return detectSupervisor({
+    env,
+    platform: extra.platform ?? 'linux',
+    readCgroup: extra.readCgroup ?? (() => { throw new Error('no cgroup'); }),
+    queryRestart: extra.queryRestart ?? (() => null),
+  });
+}
+
+test('nothing detectable = unsupervised; empty env vars read as unset', () => {
+  assert.deepEqual(sup({}), { supervised: false, via: null });
+  assert.deepEqual(sup({ MSTREAM_SUPERVISED: '' }), { supervised: false, via: null });
+  assert.deepEqual(sup({ MSTREAM_SUPERVISED: '0' }), { supervised: false, via: null });
+  assert.deepEqual(sup({ pm_id: '' }), { supervised: false, via: null });
+  assert.deepEqual(sup({ INVOCATION_ID: '' }), { supervised: false, via: null });
+});
+
+test('MSTREAM_SUPERVISED is the operator override; pm2 numbers from 0', () => {
+  assert.deepEqual(sup({ MSTREAM_SUPERVISED: '1' }), { supervised: true, via: 'env' });
+  assert.deepEqual(sup({ MSTREAM_SUPERVISED: 'yes' }), { supervised: true, via: 'env' });
+  assert.deepEqual(sup({ pm_id: '0' }), { supervised: true, via: 'pm2' });
+  assert.deepEqual(sup({ pm_id: '7' }), { supervised: true, via: 'pm2' });
+});
+
+test('systemd counts only with a restart-on-clean-exit policy', () => {
+  const env = { INVOCATION_ID: 'abc123' };
+  const system = () => '0::/system.slice/mstream.service\n';
+  const calls = [];
+  const q = (policy) => (unit, userScope) => { calls.push([unit, userScope]); return policy; };
+  assert.deepEqual(sup(env, { readCgroup: system, queryRestart: q('always') }),
+    { supervised: true, via: 'systemd' });
+  assert.deepEqual(calls.at(-1), ['mstream.service', false]);
+  assert.deepEqual(sup(env, { readCgroup: system, queryRestart: q('on-success') }),
+    { supervised: true, via: 'systemd' });
+  // Restart=no is systemd's DEFAULT, and on-failure ignores exit 0 — both
+  // leave the unit dead after a clean exit, so neither may count.
+  assert.equal(sup(env, { readCgroup: system, queryRestart: q('no') }).supervised, false);
+  assert.equal(sup(env, { readCgroup: system, queryRestart: q('on-failure') }).supervised, false);
+  // Query failure (no systemctl, no permission) is conservative: undetected.
+  assert.equal(sup(env, { readCgroup: system, queryRestart: () => null }).supervised, false);
+});
+
+test('systemd unit parsing: user units, Delegate= sub-cgroups, scopes, garbage', () => {
+  const env = { INVOCATION_ID: 'abc123' };
+  const calls = [];
+  const q = (unit, userScope) => { calls.push([unit, userScope]); return 'always'; };
+  // A user service: queried with --user, and user@N.service is NOT the unit.
+  const user = () => '0::/user.slice/user-1000.slice/user@1000.service/app.slice/mstream.service\n';
+  assert.equal(sup(env, { readCgroup: user, queryRestart: q }).supervised, true);
+  assert.deepEqual(calls.at(-1), ['mstream.service', true]);
+  // A Delegate= sub-cgroup below the unit still resolves to the unit.
+  const delegated = () => '0::/system.slice/mstream.service/payload\n';
+  assert.equal(sup(env, { readCgroup: delegated, queryRestart: q }).supervised, true);
+  assert.deepEqual(calls.at(-1), ['mstream.service', false]);
+  // A scope (systemd-run --scope) has no restart policy: never supervised.
+  const scope = () => '0::/user.slice/user-1000.slice/user@1000.service/run-u123.scope\n';
+  assert.equal(sup(env, { readCgroup: scope, queryRestart: q }).supervised, false);
+  // Unreadable cgroup: conservative.
+  assert.equal(sup(env, { readCgroup: () => { throw new Error('nope'); }, queryRestart: q }).supervised, false);
+  // INVOCATION_ID outside linux says nothing.
+  assert.equal(sup(env, { platform: 'darwin', readCgroup: () => '0::/x.service', queryRestart: q }).supervised, false);
 });

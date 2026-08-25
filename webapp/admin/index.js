@@ -3488,7 +3488,15 @@ const infoView = Vue.component('info-view', {
       if (s.held) { return 'held back - it failed to start after a previous update and was rolled back; a newer release clears this automatically'; }
       if (s.downloading) { return 'downloading...'; }
       const stagedIsLatest = s.staged && s.stagedVersion === s.latest;
-      if (stagedIsLatest && s.method === 'managed') { return 'downloaded and staged; it takes over on the next restart'; }
+      if (stagedIsLatest && s.method === 'managed') {
+        // auto on a headless install with no restart-on-exit supervisor:
+        // the server deliberately does not self-exit (that would be an
+        // outage, not an apply) - the truth is "next restart", plus why.
+        if (s.mode === 'auto' && s.headlessSupervisor === 'none') {
+          return 'downloaded and staged; auto found no supervisor to restart under, so it takes over on the next restart';
+        }
+        return 'downloaded and staged; it takes over on the next restart';
+      }
       if (stagedIsLatest && s.method === 'inno') { return 'installer downloaded and verified'; }
       if (stagedIsLatest && s.method === 'pkg') { return 'installer downloaded; the running app keeps playing until you restart it after installing'; }
       if (s.method === 'managed' || s.method === 'inno') { return 'not downloaded yet'; }
