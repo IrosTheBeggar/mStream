@@ -88,8 +88,20 @@ const MAX_SEEDS = 20;            // sanity cap on a fetched list
 const MAX_TICKET_LEN = 4096;
 // Mesh-health watch: if we're joined but have heard nobody for this long,
 // re-resolve (fresh remote fetch) and re-join — covers seed rotation that
-// happened after this release shipped.
-const HEALTH_INTERVAL_MS = 5 * 60 * 1000;
+// happened after this release shipped. The same tick carries the sidecar
+// memory watchdog below. Env override mirrors MSTREAM_TEST_DISCOVERY_ROTATE_MS.
+const HEALTH_INTERVAL_MS =
+  Number(process.env.MSTREAM_TEST_DISCOVERY_HEALTH_MS) || 5 * 60 * 1000;
+
+// Sidecar memory watchdog state, surfaced for the p2p status route. The
+// counter is per-process (not persisted): it exists so a RECURRING breach
+// reads as a pattern in the admin panel instead of a mystery of repeating
+// one-off log lines.
+let watchdogRestarts = 0;
+let lastSidecarRssMb = null;
+export function getWatchdogState() {
+  return { restarts: watchdogRestarts, lastRssMb: lastSidecarRssMb };
+}
 
 function cachePath() {
   return path.join(config.program.storage.dbDirectory, 'discovery-p2p', 'seeds-cache.json');
@@ -220,6 +232,27 @@ export function startMeshHealthWatch() {
   watchTimer = setInterval(async () => {
     try {
       if (!discoveryP2p.isRunning()) { return; }
+      // Memory watchdog FIRST — it must run on every tick, and the mesh
+      // checks below early-return on a healthy mesh (a mesh-healthy sidecar
+      // can still be a bloating one; that combination was exactly the #880
+      // outage's first 102 hours). On breach: kill and stand back — the
+      // exit classifies as unexpected, crash recovery replays the whole
+      // stack, and this watch's next ticks see a fresh sidecar. Ceiling 0
+      // disables. A null reading (unsupported platform, exit race) stands
+      // down rather than guessing.
+      const ceiling = config.program.discoveryP2p.sidecarMaxRssMb;
+      if (ceiling > 0) {
+        const rss = await discoveryP2p.sidecarRssMb();
+        lastSidecarRssMb = rss;
+        if (rss !== null && rss > ceiling) {
+          watchdogRestarts += 1;
+          winston.warn(`[discovery-seeds] sidecar RSS ${Math.round(rss)}MB exceeds the `
+            + `${ceiling}MB ceiling (discoveryP2p.sidecarMaxRssMb) — killing it so crash `
+            + `recovery replays the stack (watchdog restart #${watchdogRestarts})`);
+          discoveryP2p.killSidecarForRestart();
+          return;
+        }
+      }
       const s = await discoveryP2p.status();
       if (s.joined && s.neighbors > 0) { return; }
       const bootstrap = await resolveBootstrap({ forceRefresh: true });

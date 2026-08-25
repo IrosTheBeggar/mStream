@@ -471,6 +471,17 @@ const discoveryP2pOptions = Joi.object({
   autoFetch: Joi.boolean().default(true),
   autoFetchCount: Joi.number().integer().min(0).max(50).default(6),
   maxPeerDbStorageMb: Joi.number().integer().min(10).max(100000).default(500),
+  // Sidecar memory watchdog: when the p2p-sidecar's resident set exceeds
+  // this many MB, the mesh-health watch kills it and lets crash recovery
+  // replay the stack — a planned ~6s blip with a loud log line, instead of
+  // the container's OOM killer choosing a victim hours later (the #880
+  // outage: a leaking sidecar quietly out-grew the entire server on a
+  // ~102-hour fuse). A healthy sidecar sits at 20–30MB, so the default is
+  // ~10x headroom. 0 disables the watchdog (rotationDays' 0=off
+  // convention). Deliberately no minimum above that: tests force a breach
+  // by setting it to 1, and an operator picking a too-small ceiling gets a
+  // visible restart-per-watch-tick, not a silent failure.
+  sidecarMaxRssMb: Joi.number().integer().min(0).max(100000).default(256),
   // Rotation: once a full shelf's snapshot has been held this many days,
   // the hourly pass may SWAP it (never just drop it) for a catalog peer we
   // don't hold yet, so network suggestions cycle instead of freezing on
