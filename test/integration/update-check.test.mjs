@@ -428,6 +428,48 @@ test('auto mode without a supervisor stages but never self-exits', { skip: posix
   }
 });
 
+test('supervised auto mode arms the launcher through the status file', { skip: posixOnly }, async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-upd-arm-'));
+  try {
+    await publish('9.9.50');
+    const srv = await startServer({
+      waitForScan: true,   // idle must gate on supervision state, not the boot scan
+      env: scrubSupervision(envFor(home)),
+      extraArgs: ['--supervised'], stdin: 'pipe',
+      extraConfig: { updates: { mode: 'auto', check: true } },
+    });
+    try {
+      await fetch(`${srv.baseUrl}/api/v1/admin/update/check`, { method: 'POST' });
+      await pollStatus(srv.baseUrl, (x) => x.staged && x.stagedVersion === '9.9.50');
+      // The launcher contract: the on-disk file carries the arm plus a
+      // FRESH per-request token (the launcher retries a failed apply only
+      // when a new token appears - update-watchdog/apply smokes drive the
+      // consuming side with the real binary).
+      const statusPath = path.join(dataHomeOf(home), 'update-status.json');
+      const start = Date.now();
+      let doc = null;
+      while (Date.now() - start < 15_000) {
+        try {
+          doc = JSON.parse(await fs.readFile(statusPath, 'utf8'));
+          if (doc.applyRequested === true) { break; }
+        } catch { /* not written yet */ }
+        await sleep(150);
+      }
+      assert.equal(doc?.applyRequested, true, `status file never armed: ${JSON.stringify(doc)}`);
+      assert.equal(doc.stagedVersion, '9.9.50');
+      assert.ok(!Number.isNaN(Date.parse(doc.applyRequestedAt)), `token must be a timestamp: ${doc.applyRequestedAt}`);
+      // Supervised = the LAUNCHER restarts us; the server itself must not
+      // exit (that is the headless branch's move, gated separately).
+      await sleep(3000);
+      assert.equal(srv.proc.exitCode, null, 'a supervised server must never self-exit');
+    } finally {
+      await srv.stop();
+    }
+  } finally {
+    await fs.rm(home, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 test('auto mode with MSTREAM_SUPERVISED=1 applies by exiting 0', { skip: posixOnly }, async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-upd-sup-'));
   try {

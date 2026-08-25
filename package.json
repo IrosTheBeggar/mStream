@@ -40,6 +40,7 @@
     "test:smoke:windows": "node test/smoke/windows-native-daemons.mjs",
     "test:smoke:update-watchdog": "sh test/smoke/update-watchdog-smoke.sh",
     "test:smoke:update-watchdog:win": "powershell -NoProfile -ExecutionPolicy Bypass -File test/smoke/update-watchdog-smoke.ps1",
+    "test:smoke:update-apply": "sh test/smoke/update-apply-smoke.sh",
     "test:smoke:boot-probe:win51": "powershell -NoProfile -ExecutionPolicy Bypass -File test/smoke/boot-probe-51-smoke.ps1",
     "fetch-p2p-sidecar": "node scripts/fetch-p2p-sidecar.mjs",
     "fetch-mstream-player": "node scripts/fetch-mstream-player.mjs",
