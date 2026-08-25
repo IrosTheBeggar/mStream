@@ -7862,46 +7862,46 @@ const discoveryView = Vue.component('discovery-view', {
                   <p v-if="!discoveryP2p.status.binaryFound" style="color: #b71c1c;">
                     The p2p-sidecar binary was not found for this platform — the network is unavailable.
                   </p>
-                  <div style="background: #2a2a34; border-radius: 2px; padding: 16px 20px; color: #ddd; margin-bottom: 14px;">
+                  <div style="border: 1px solid #e0e0e0; border-radius: 2px; padding: 16px 20px; margin-bottom: 14px;">
                     <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap;">
-                      <div style="display: flex; align-items: center; gap: 8px; font-size: 0.9em; color: #9e9ea8; flex-wrap: wrap;">
+                      <div style="display: flex; align-items: center; gap: 8px; font-size: 0.9em; color: #616161; flex-wrap: wrap;">
                         <span v-if="discoveryP2p.status.neighbors > 0" style="display: inline-flex; align-items: center; gap: 7px;">
                           <span style="width: 9px; height: 9px; border-radius: 50%; background: #2e7d32; flex-shrink: 0;"></span>
-                          <span style="color: #fff; font-weight: 600;">connected</span>
+                          <span style="color: #2e7d32; font-weight: 600;">connected</span>
                           <span>— {{ discoveryP2p.status.neighbors }} mesh neighbor{{ discoveryP2p.status.neighbors === 1 ? '' : 's' }}</span>
                         </span>
                         <span v-else-if="meshRecovering" style="display: inline-flex; align-items: center; gap: 7px;">
-                          <span style="width: 9px; height: 9px; border-radius: 50%; background: #ef5350; flex-shrink: 0;"></span>
-                          <span style="color: #ef9a9a; font-weight: 600;">reconnecting</span>
+                          <span style="width: 9px; height: 9px; border-radius: 50%; background: #c62828; flex-shrink: 0;"></span>
+                          <span style="color: #c62828; font-weight: 600;">reconnecting</span>
                           <span>— the sidecar died and is being replayed (attempt {{ discoveryP2p.status.recovery.attempts }})</span>
                         </span>
                         <span v-else-if="discoveryP2p.status.joined" style="display: inline-flex; align-items: center; gap: 7px;">
-                          <span style="width: 9px; height: 9px; border-radius: 50%; background: #ffb74d; flex-shrink: 0;"></span>
-                          <span style="color: #ffcc80; font-weight: 600;">joined, waiting for neighbors</span>
+                          <span style="width: 9px; height: 9px; border-radius: 50%; background: #e65100; flex-shrink: 0;"></span>
+                          <span style="color: #e65100; font-weight: 600;">joined, waiting for neighbors</span>
                         </span>
                         <span v-else style="display: inline-flex; align-items: center; gap: 7px;">
-                          <span style="width: 9px; height: 9px; border-radius: 50%; background: #666672; flex-shrink: 0;"></span>
+                          <span style="width: 9px; height: 9px; border-radius: 50%; background: #9e9e9e; flex-shrink: 0;"></span>
                           <span style="font-weight: 600;">not joined yet</span>
                         </span>
                         <span v-if="discoveryP2p.status.watchdog && discoveryP2p.status.watchdog.lastRssMb !== null">
                           · sidecar {{ discoveryP2p.status.watchdog.lastRssMb.toFixed(0) }} MB<span
-                            v-if="discoveryP2p.status.watchdog.restarts > 0" style="color: #ffcc80;"> ({{ discoveryP2p.status.watchdog.restarts }} watchdog restart{{ discoveryP2p.status.watchdog.restarts === 1 ? '' : 's' }})</span>
+                            v-if="discoveryP2p.status.watchdog.restarts > 0" style="color: #e65100;"> ({{ discoveryP2p.status.watchdog.restarts }} watchdog restart{{ discoveryP2p.status.watchdog.restarts === 1 ? '' : 's' }})</span>
                         </span>
-                        <span>· announcing as <span style="color: #ddd; font-weight: 600;">{{ p2pIdentity.serverName }}</span>
-                          [<a style="color: #90caf9;" v-on:click="openModal('edit-p2p-identity-modal')">{{ t('admin.settings.edit') }}</a>]</span>
+                        <span>· announcing as <span style="color: #212121; font-weight: 600;">{{ p2pIdentity.serverName }}</span>
+                          [<a v-on:click="openModal('edit-p2p-identity-modal')">{{ t('admin.settings.edit') }}</a>]</span>
                       </div>
                       <div style="display: flex; gap: 12px; font-size: 0.9em; flex-shrink: 0;">
-                        <span style="color: #666672;">[<a style="color: #90caf9;" v-on:click="loadDiscoveryP2p()">Refresh</a>]</span>
-                        <span style="color: #666672;">[<a style="color: #ef9a9a;" v-on:click="disableP2p()">Disable</a>]</span>
+                        <span style="color: #9e9e9e;">[<a v-on:click="loadDiscoveryP2p()">Refresh</a>]</span>
+                        <span style="color: #9e9e9e;">[<a style="color: #b71c1c;" v-on:click="disableP2p()">Disable</a>]</span>
                       </div>
                     </div>
                     <div v-if="meshSearching" style="max-width: 520px; margin-top: 8px;">
-                      <div class="progress" style="margin: 0 0 4px 0; background-color: #3a3a47;"><div class="indeterminate"></div></div>
-                      <span style="color: #9e9ea8; font-size: 0.85em;">{{ meshRecovering
+                      <div class="progress" style="margin: 0 0 4px 0;"><div class="indeterminate"></div></div>
+                      <span style="color: #757575; font-size: 0.85em;">{{ meshRecovering
                         ? 'reconnecting — crash recovery replays the stack on a widening ladder; no action needed'
                         : 'searching for peers — this page updates itself every few seconds' }}</span>
                     </div>
-                    <div style="display: flex; gap: 8px; margin-top: 12px; border-bottom: 1px solid #3a3a47; padding-bottom: 10px; flex-wrap: wrap;">
+                    <div style="display: flex; gap: 8px; margin-top: 12px; border-bottom: 1px solid #e0e0e0; padding-bottom: 10px; flex-wrap: wrap;">
                       <div v-on:click="headerTab = 'mesh'" :style="headerTabStyle('mesh')">Mesh</div>
                       <div v-on:click="headerTab = 'stats'" :style="headerTabStyle('stats')">Stats</div>
                       <div v-on:click="headerTab = 'activity'; loadDiscoveryActivity()" :style="headerTabStyle('activity')">Activity</div>
@@ -7909,7 +7909,8 @@ const discoveryView = Vue.component('discovery-view', {
                       <div v-on:click="headerTab = 'config'" :style="headerTabStyle('config')">Config</div>
                     </div>
                     <div v-if="headerTab === 'mesh'" style="display: flex; gap: 20px; align-items: center; min-height: 200px; flex-wrap: wrap;">
-                      <svg viewBox="0 0 300 210" width="300" height="210" style="flex-shrink: 0; max-width: 100%; height: auto;">
+                      <div style="background: #2a2a34; border-radius: 2px; padding: 8px; flex-shrink: 0; max-width: 100%; box-sizing: border-box; line-height: 0;">
+                      <svg viewBox="0 0 300 210" width="300" height="210" style="max-width: 100%; height: auto;">
                         <line v-for="n in meshMap.neighbors" :key="'l-' + n.id" x1="150" y1="105"
                           :x2="n.x" :y2="n.y" stroke="#4a7c59" stroke-width="2"></line>
                         <circle v-for="n in meshMap.outer" :key="'o-' + n.id" :cx="n.x" :cy="n.y" r="7"
@@ -7926,80 +7927,81 @@ const discoveryView = Vue.component('discovery-view', {
                           text-anchor="middle" font-size="9" :fill="n.incompatible ? '#a08a5a' : '#8a8a96'"
                           font-family="inherit">{{ n.label }}</text>
                       </svg>
+                      </div>
                       <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.85em; min-width: 220px;">
-                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; background: #2e7d32; flex-shrink: 0;"></span><span style="color: #bdbdc6;">gossip link — live mesh neighbor</span></div>
-                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; border: 1.5px dashed #666672; box-sizing: border-box; flex-shrink: 0;"></span><span style="color: #bdbdc6;">known, not currently linked</span></div>
-                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; border: 1.5px dashed #a08a5a; box-sizing: border-box; flex-shrink: 0;"></span><span style="color: #bdbdc6;">incompatible model</span></div>
-                        <div style="color: #9e9ea8; line-height: 1.5; margin-top: 4px;" v-if="heldPeers.length > 0">You hold
+                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; background: #2e7d32; flex-shrink: 0;"></span><span style="color: #616161;">gossip link — live mesh neighbor</span></div>
+                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; border: 1.5px dashed #9e9e9e; box-sizing: border-box; flex-shrink: 0;"></span><span style="color: #616161;">known, not currently linked</span></div>
+                        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 10px; height: 10px; border-radius: 50%; border: 1.5px dashed #a06010; box-sizing: border-box; flex-shrink: 0;"></span><span style="color: #616161;">incompatible model</span></div>
+                        <div style="color: #757575; line-height: 1.5; margin-top: 4px;" v-if="heldPeers.length > 0">You hold
                           {{ heldPeers.length }} snapshot{{ heldPeers.length === 1 ? '' : 's' }} from these servers and seed
                           {{ heldPeers.length === 1 ? 'it' : 'them' }} back to the mesh.</div>
-                        <div style="color: #666672; font-size: 0.95em;" v-if="meshMap.overflow > 0">+{{ meshMap.overflow }} more
+                        <div style="color: #9e9e9e; font-size: 0.95em;" v-if="meshMap.overflow > 0">+{{ meshMap.overflow }} more
                           server{{ meshMap.overflow === 1 ? '' : 's' }} not drawn</div>
                       </div>
                     </div>
                     <div v-if="headerTab === 'stats'" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; min-height: 200px; padding-top: 12px; align-content: start;">
-                      <div style="border: 1px solid #3a3a47; border-radius: 2px; padding: 12px 14px;">
-                        <div style="font-size: 1.3em; font-weight: 700; color: #fff;">{{ discoveryP2p.status.neighbors }}</div>
-                        <div style="font-size: 0.85em; color: #9e9ea8; margin-top: 2px;">mesh neighbors</div>
-                        <div style="font-size: 0.8em; color: #666672; margin-top: 4px;">live gossip links</div>
+                      <div style="border: 1px solid #e0e0e0; border-radius: 2px; padding: 12px 14px;">
+                        <div style="font-size: 1.3em; font-weight: 700; color: #212121;">{{ discoveryP2p.status.neighbors }}</div>
+                        <div style="font-size: 0.85em; color: #757575; margin-top: 2px;">mesh neighbors</div>
+                        <div style="font-size: 0.8em; color: #9e9e9e; margin-top: 4px;">live gossip links</div>
                       </div>
-                      <div style="border: 1px solid #3a3a47; border-radius: 2px; padding: 12px 14px;">
-                        <div style="font-size: 1.3em; font-weight: 700; color: #fff;">{{ knownServersTotal }}</div>
-                        <div style="font-size: 0.85em; color: #9e9ea8; margin-top: 2px;">servers known</div>
-                        <div style="font-size: 0.8em; color: #666672; margin-top: 4px;">{{ discoveryP2p.hiddenIncompatible }} hidden ·
+                      <div style="border: 1px solid #e0e0e0; border-radius: 2px; padding: 12px 14px;">
+                        <div style="font-size: 1.3em; font-weight: 700; color: #212121;">{{ knownServersTotal }}</div>
+                        <div style="font-size: 0.85em; color: #757575; margin-top: 2px;">servers known</div>
+                        <div style="font-size: 0.8em; color: #9e9e9e; margin-top: 4px;">{{ discoveryP2p.hiddenIncompatible }} hidden ·
                           {{ (discoveryP2p.status.blockedPeers || []).length }} blocked</div>
                       </div>
-                      <div style="border: 1px solid #3a3a47; border-radius: 2px; padding: 12px 14px;">
-                        <div style="font-size: 1.3em; font-weight: 700; color: #fff;">{{ heldPeers.length }}<span
-                          v-if="discoveryP2p.status.autoFetchCount > 0" style="font-size: 0.7em; color: #9e9ea8;"> of {{ discoveryP2p.status.autoFetchCount }}</span></div>
-                        <div style="font-size: 0.85em; color: #9e9ea8; margin-top: 2px;">snapshots held</div>
-                        <div style="font-size: 0.8em; color: #666672; margin-top: 4px;" v-if="discoveryP2p.storage">
+                      <div style="border: 1px solid #e0e0e0; border-radius: 2px; padding: 12px 14px;">
+                        <div style="font-size: 1.3em; font-weight: 700; color: #212121;">{{ heldPeers.length }}<span
+                          v-if="discoveryP2p.status.autoFetchCount > 0" style="font-size: 0.7em; color: #757575;"> of {{ discoveryP2p.status.autoFetchCount }}</span></div>
+                        <div style="font-size: 0.85em; color: #757575; margin-top: 2px;">snapshots held</div>
+                        <div style="font-size: 0.8em; color: #9e9e9e; margin-top: 4px;" v-if="discoveryP2p.storage">
                           {{ discoveryBytes(discoveryP2p.storage.usedBytes) }} of {{ discoveryBytes(discoveryP2p.storage.capBytes) }}</div>
                       </div>
-                      <div style="border: 1px solid #3a3a47; border-radius: 2px; padding: 12px 14px;">
-                        <div style="font-size: 1.3em; font-weight: 700; color: #fff;">{{ heldTrackTotal.toLocaleString() }}</div>
-                        <div style="font-size: 0.85em; color: #9e9ea8; margin-top: 2px;">peer tracks searchable</div>
-                        <div style="font-size: 0.8em; color: #666672; margin-top: 4px;">across {{ heldPeers.length }} held
+                      <div style="border: 1px solid #e0e0e0; border-radius: 2px; padding: 12px 14px;">
+                        <div style="font-size: 1.3em; font-weight: 700; color: #212121;">{{ heldTrackTotal.toLocaleString() }}</div>
+                        <div style="font-size: 0.85em; color: #757575; margin-top: 2px;">peer tracks searchable</div>
+                        <div style="font-size: 0.8em; color: #9e9e9e; margin-top: 4px;">across {{ heldPeers.length }} held
                           librar{{ heldPeers.length === 1 ? 'y' : 'ies' }}</div>
                       </div>
-                      <div style="border: 1px solid #3a3a47; border-radius: 2px; padding: 12px 14px;">
-                        <div style="font-size: 1.3em; font-weight: 700; color: #fff;">{{ discoveryP2p.status.watchdog && discoveryP2p.status.watchdog.lastRssMb !== null
+                      <div style="border: 1px solid #e0e0e0; border-radius: 2px; padding: 12px 14px;">
+                        <div style="font-size: 1.3em; font-weight: 700; color: #212121;">{{ discoveryP2p.status.watchdog && discoveryP2p.status.watchdog.lastRssMb !== null
                           ? discoveryP2p.status.watchdog.lastRssMb.toFixed(0) + ' MB' : '—' }}</div>
-                        <div style="font-size: 0.85em; color: #9e9ea8; margin-top: 2px;">sidecar memory</div>
-                        <div style="font-size: 0.8em; color: #666672; margin-top: 4px;">{{ discoveryP2p.status.watchdog && discoveryP2p.status.watchdog.maxRssMb > 0
+                        <div style="font-size: 0.85em; color: #757575; margin-top: 2px;">sidecar memory</div>
+                        <div style="font-size: 0.8em; color: #9e9e9e; margin-top: 4px;">{{ discoveryP2p.status.watchdog && discoveryP2p.status.watchdog.maxRssMb > 0
                           ? 'ceiling ' + discoveryP2p.status.watchdog.maxRssMb + ' MB · ' + discoveryP2p.status.watchdog.restarts + ' restart' + (discoveryP2p.status.watchdog.restarts === 1 ? '' : 's')
                           : 'watchdog off' }}</div>
                       </div>
-                      <div style="border: 1px solid #3a3a47; border-radius: 2px; padding: 12px 14px;">
-                        <div style="font-size: 1.3em; font-weight: 700; color: #fff;">{{ heldPeers.length }}</div>
-                        <div style="font-size: 0.85em; color: #9e9ea8; margin-top: 2px;">seeding</div>
-                        <div style="font-size: 0.8em; color: #666672; margin-top: 4px;">snapshots served back to the mesh</div>
+                      <div style="border: 1px solid #e0e0e0; border-radius: 2px; padding: 12px 14px;">
+                        <div style="font-size: 1.3em; font-weight: 700; color: #212121;">{{ heldPeers.length }}</div>
+                        <div style="font-size: 0.85em; color: #757575; margin-top: 2px;">seeding</div>
+                        <div style="font-size: 0.8em; color: #9e9e9e; margin-top: 4px;">snapshots served back to the mesh</div>
                       </div>
                     </div>
                     <div v-if="headerTab === 'activity'" style="min-height: 200px; padding-top: 12px;">
-                      <div v-if="activityFeed.length === 0" style="color: #9e9ea8; font-size: 0.85em; padding-top: 8px;">
+                      <div v-if="activityFeed.length === 0" style="color: #757575; font-size: 0.85em; padding-top: 8px;">
                         Nothing yet — mesh joins, snapshot fetches, rotation and recovery events land here as they happen.</div>
                       <div v-else style="max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; font-family: monospace; font-size: 0.8em;">
-                        <div v-for="e in activityFeed" :key="e.seq" style="color: #bdbdc6; line-height: 1.45; word-break: break-word;">
-                          <span style="color: #666672;">{{ discoveryLogTime(e.t) }}</span>
-                          <span :style="e.level === 'warn' || e.level === 'error' ? 'color: #ffcc80;' : ''"> {{ e.message }}</span>
+                        <div v-for="e in activityFeed" :key="e.seq" style="color: #424242; line-height: 1.45; word-break: break-word;">
+                          <span style="color: #9e9e9e;">{{ discoveryLogTime(e.t) }}</span>
+                          <span :style="e.level === 'warn' || e.level === 'error' ? 'color: #e65100;' : ''"> {{ e.message }}</span>
                         </div>
                       </div>
-                      <div style="font-size: 0.75em; color: #666672; margin-top: 8px;">newest first · held in memory only — the
+                      <div style="font-size: 0.75em; color: #9e9e9e; margin-top: 8px;">newest first · held in memory only — the
                       full history lives in the server logs</div>
                     </div>
                     <div v-if="headerTab === 'invite'" style="min-height: 200px; padding-top: 12px;">
-                      <p style="font-size: 0.85em; color: #9e9ea8; margin: 0 0 8px 0;"><b style="color: #fff;">Endpoint:</b>
-                        <code style="word-break: break-all; color: #8a8a96;">{{ discoveryP2p.status.endpointId || '(sidecar not running yet)' }}</code></p>
-                      <p v-if="discoveryP2p.status.ticket" style="margin-bottom: 4px; font-size: 0.85em; color: #9e9ea8;"><b style="color: #fff;">Your ticket</b>
+                      <p style="font-size: 0.85em; color: #616161; margin: 0 0 8px 0;"><b style="color: #212121;">Endpoint:</b>
+                        <code style="word-break: break-all; color: #757575;">{{ discoveryP2p.status.endpointId || '(sidecar not running yet)' }}</code></p>
+                      <p v-if="discoveryP2p.status.ticket" style="margin-bottom: 4px; font-size: 0.85em; color: #616161;"><b style="color: #212121;">Your ticket</b>
                         — a friend pastes this into the box below on <i>their</i> Discovery page to befriend this server:<br>
-                        <textarea readonly rows="2" style="width:100%; font-size: 0.8em; color: #bdbdc6; border-color: #505061;" onclick="this.select()">{{ discoveryP2p.status.ticket }}</textarea>
+                        <textarea readonly rows="2" style="width:100%; font-size: 0.8em;" onclick="this.select()">{{ discoveryP2p.status.ticket }}</textarea>
                       </p>
-                      <p style="margin: 8px 0 2px 0; font-size: 0.85em; color: #9e9ea8;"><b style="color: #fff;">Befriend a server</b>
+                      <p style="margin: 8px 0 2px 0; font-size: 0.85em; color: #616161;"><b style="color: #212121;">Befriend a server</b>
                         — paste the ticket from a friend's Discovery page (saved to your config, so the friendship survives restarts):</p>
                       <div style="display: flex; gap: 8px; max-width: 640px; align-items: center; margin-bottom: 8px;">
                         <input v-model="friendTicket" id="p2p-friend-ticket" type="text" placeholder="endpoint…"
-                          style="flex: 1; margin: 0; color: #ddd; border-bottom: 1px solid #7f7f9a;" v-on:keyup.enter="discoveryJoinPeer()">
+                          style="flex: 1; margin: 0;" v-on:keyup.enter="discoveryJoinPeer()">
                         <a v-on:click="discoveryJoinPeer()" :class="{disabled: joinPending || !friendTicket.trim()}"
                           class="waves-effect waves-light btn green" style="flex-shrink: 0;">
                           {{ joinPending ? 'Joining…' : 'Join' }}</a>
@@ -8007,42 +8009,42 @@ const discoveryView = Vue.component('discovery-view', {
                     </div>
                     <div v-if="headerTab === 'config'" style="min-height: 200px; padding-top: 6px;">
                       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 0 28px;">
-                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #3a3a47; font-size: 0.85em;">
-                          <span style="color: #9e9ea8;">Snapshot storage cap</span>
-                          <span style="color: #ddd; text-align: right;"><b>{{ discoveryP2p.status.maxPeerDbStorageMb }} MB</b>
-                            [<a style="color: #90caf9;" v-on:click="openModal('edit-p2p-max-storage-modal')">{{ t('admin.settings.edit') }}</a>]</span>
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #eee; font-size: 0.85em;">
+                          <span style="color: #757575;">Snapshot storage cap</span>
+                          <span style="color: #212121; text-align: right;"><b>{{ discoveryP2p.status.maxPeerDbStorageMb }} MB</b>
+                            [<a v-on:click="openModal('edit-p2p-max-storage-modal')">{{ t('admin.settings.edit') }}</a>]</span>
                         </div>
-                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #3a3a47; font-size: 0.85em;">
-                          <span style="color: #9e9ea8;">Forget offline servers</span>
-                          <span style="color: #ddd; text-align: right;"><b>{{ discoveryP2p.status.peerRetentionDays > 0
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #eee; font-size: 0.85em;">
+                          <span style="color: #757575;">Forget offline servers</span>
+                          <span style="color: #212121; text-align: right;"><b>{{ discoveryP2p.status.peerRetentionDays > 0
                             ? 'after ' + discoveryP2p.status.peerRetentionDays + ' days of silence' : 'never' }}</b>
-                            [<a style="color: #90caf9;" v-on:click="openModal('edit-p2p-peer-retention-modal')">{{ t('admin.settings.edit') }}</a>]</span>
+                            [<a v-on:click="openModal('edit-p2p-peer-retention-modal')">{{ t('admin.settings.edit') }}</a>]</span>
                         </div>
-                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #3a3a47; font-size: 0.85em;">
-                          <span style="color: #9e9ea8;">Auto-fetch snapshots</span>
-                          <span style="color: #ddd; text-align: right;"><b>{{ discoveryP2p.autoFetch === false ? 'off'
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #eee; font-size: 0.85em;">
+                          <span style="color: #757575;">Auto-fetch snapshots</span>
+                          <span style="color: #212121; text-align: right;"><b>{{ discoveryP2p.autoFetch === false ? 'off'
                             : discoveryP2p.status.autoFetchCount === 0 ? 'on — 0 servers (downloads paused)'
                             : 'up to ' + discoveryP2p.status.autoFetchCount + ' servers' }}</b>
-                            [<a style="color: #90caf9;" v-on:click="openModal('edit-p2p-auto-fetch-count-modal')">{{ t('admin.settings.edit') }}</a>]</span>
+                            [<a v-on:click="openModal('edit-p2p-auto-fetch-count-modal')">{{ t('admin.settings.edit') }}</a>]</span>
                         </div>
-                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #3a3a47; font-size: 0.85em;">
-                          <span style="color: #9e9ea8;">Rotate downloads</span>
-                          <span style="color: #ddd; text-align: right;"><b>{{ discoveryP2p.status.rotationDays > 0
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #eee; font-size: 0.85em;">
+                          <span style="color: #757575;">Rotate downloads</span>
+                          <span style="color: #212121; text-align: right;"><b>{{ discoveryP2p.status.rotationDays > 0
                             ? 'after ' + discoveryP2p.status.rotationDays + ' days' : 'never' }}</b>
-                            [<a style="color: #90caf9;" v-on:click="openModal('edit-p2p-rotation-modal')">{{ t('admin.settings.edit') }}</a>]</span>
+                            [<a v-on:click="openModal('edit-p2p-rotation-modal')">{{ t('admin.settings.edit') }}</a>]</span>
                         </div>
-                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #3a3a47; font-size: 0.85em;">
-                          <span style="color: #9e9ea8;">Community seeds</span>
-                          <span style="color: #ddd; text-align: right;"><b>{{ discoveryP2p.status.communitySeeds ? 'on — public network' : 'off — friends only' }}</b></span>
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #eee; font-size: 0.85em;">
+                          <span style="color: #757575;">Community seeds</span>
+                          <span style="color: #212121; text-align: right;"><b>{{ discoveryP2p.status.communitySeeds ? 'on — public network' : 'off — friends only' }}</b></span>
                         </div>
-                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #3a3a47; font-size: 0.85em;">
-                          <span style="color: #9e9ea8;">Sidecar memory ceiling</span>
-                          <span style="color: #ddd; text-align: right;"><b>{{ discoveryP2p.status.watchdog && discoveryP2p.status.watchdog.maxRssMb > 0
+                        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid #eee; font-size: 0.85em;">
+                          <span style="color: #757575;">Sidecar memory ceiling</span>
+                          <span style="color: #212121; text-align: right;"><b>{{ discoveryP2p.status.watchdog && discoveryP2p.status.watchdog.maxRssMb > 0
                             ? discoveryP2p.status.watchdog.maxRssMb + ' MB' : 'watchdog off' }}</b>
-                            [<a style="color: #90caf9;" v-on:click="openModal('edit-p2p-sidecar-max-rss-modal')">{{ t('admin.settings.edit') }}</a>]</span>
+                            [<a v-on:click="openModal('edit-p2p-sidecar-max-rss-modal')">{{ t('admin.settings.edit') }}</a>]</span>
                         </div>
                       </div>
-                      <div style="font-size: 0.8em; color: #666672; margin-top: 10px;">Rotation only ever swaps a stale unpinned
+                      <div style="font-size: 0.8em; color: #9e9e9e; margin-top: 10px;">Rotation only ever swaps a stale unpinned
                       download for a new server — it never deletes without replacing. Incompatible-model servers are hidden from
                       the list below; the [show] link reveals them.</div>
                     </div>
@@ -8263,7 +8265,7 @@ const discoveryView = Vue.component('discovery-view', {
       const base = 'padding: 6px 16px; border-radius: 2px; font-size: 0.85em; font-weight: 600; cursor: pointer; letter-spacing: 0.4px; ';
       return base + (this.headerTab === tab
         ? 'background: #505061; color: #fff;'
-        : 'background: transparent; color: #9e9ea8; border: 1px solid #3a3a47;');
+        : 'background: transparent; color: #616161; border: 1px solid #e0e0e0;');
     },
     listBtnStyle: function(mode) {
       const base = 'padding: 4px 14px; font-size: 0.85em; font-weight: 600; cursor: pointer; ';
