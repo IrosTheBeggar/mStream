@@ -4795,6 +4795,14 @@ paths:
                   pattern: "[a-zA-Z0-9-]+"
                 autoAccess: { type: boolean, default: false }
                 isAudioBooks: { type: boolean, default: false }
+                followSymlinks:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Set the per-library follow-symlinks flag at creation, so
+                    the library's first scan already honors it (setting it
+                    afterwards via /admin/directory/follow-symlinks races the
+                    scan the add queues).
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "405": { $ref: "#/components/responses/AdminLocked" }

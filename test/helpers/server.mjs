@@ -220,7 +220,10 @@ export async function startServer(opts = {}) {
     folders: {
       testlib: { root: musicDir },
       ...Object.fromEntries(
-        Object.entries(extraFolders).map(([name, root]) => [name, { root }])
+        // A string value is the folder root; an object value passes
+        // through whole (root, type, followSymlinks, ...).
+        Object.entries(extraFolders).map(([name, v]) =>
+          [name, typeof v === 'string' ? { root: v } : v])
       ),
     },
     storage: {

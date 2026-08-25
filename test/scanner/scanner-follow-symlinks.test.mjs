@@ -263,3 +263,49 @@ describe('V21 per-library followSymlinks', () => {
       `the symlinked track must be indexed by the FIRST scan; got ${JSON.stringify(titles)}`);
   });
 });
+
+// The OTHER way a library is born: config-file folders, migrated into
+// SQLite at boot (the standard Docker/headless setup). The config schema
+// now carries followSymlinks per folder, and the migration INSERT applies
+// it — so the library's first-ever boot scan follows links, with no admin
+// UI involved at any point.
+describe('config-file folders carry followSymlinks at creation', () => {
+  let server2;
+  let lib2;
+
+  before(async () => {
+    if (!symlinkWorks) { return; }
+    lib2 = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-sym-cfg-'));
+    await makeFlac(path.join(lib2, 'inside3.flac'), 'Inside Three');
+    await fs.symlink(path.join(outsideDir, 'outside.flac'),
+                     path.join(lib2,      'linked3.flac'));
+    // No users: endpoints stay open, mirroring a fresh headless install.
+    server2 = await startServer({
+      dlnaMode: 'disabled',
+      extraFolders: { symcfg: { root: lib2, followSymlinks: true } },
+    });
+  });
+
+  after(async () => {
+    if (server2) { await server2.stop(); }
+    if (lib2) { await fs.rm(lib2, { recursive: true, force: true }).catch(() => {}); }
+  });
+
+  test('the boot scan follows the link and the flag reads back', async (t) => {
+    if (!symlinkWorks) { t.skip('symlink creation denied on this host'); return; }
+
+    const dirs = await (await fetch(`${server2.baseUrl}/api/v1/admin/directories`)).json();
+    assert.equal(dirs.symcfg.followSymlinks, true,
+      'the config flag must land on the library row');
+
+    const sr = await fetch(`${server2.baseUrl}/api/v1/db/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ search: 'Track', noArtists: true, noAlbums: true, noFiles: true }),
+    });
+    const hits = ((await sr.json()).title || []).filter(s => (s.filepath || '').startsWith('symcfg/'));
+    const titles = hits.map(s => s.name.replace(/^.*? - /, '')).sort();
+    assert.ok(titles.includes('Outside Track'),
+      `the boot scan must index the symlinked track; got ${JSON.stringify(titles)}`);
+  });
+});

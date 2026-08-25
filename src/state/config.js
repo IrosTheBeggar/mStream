@@ -746,6 +746,12 @@ const schema = Joi.object({
     Joi.object({
       root: Joi.string().required(),
       type: Joi.string().valid('music', 'audio-books').default('music'),
+      // Honored at library creation (the config→SQLite migration), so
+      // the FIRST scan already follows symlinks — config-managed
+      // installs get the same at-birth semantics as the admin API's
+      // followSymlinks parameter. Editable later per library from the
+      // admin Directories page.
+      followSymlinks: Joi.boolean().default(false),
     })
   ).default({}),
   users: Joi.object().pattern(
