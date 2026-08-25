@@ -628,8 +628,22 @@ export function setup(mstream) {
     }).sort((a, b) => (b.seeders - a.seeders)
       || (b.online - a.online)
       || ((b.payload.rowCount || 0) - (a.payload.rowCount || 0)));
+    // Hide-by-default: an UNHELD catalog peer whose announced model cannot
+    // power the local similar search is dead weight in the listing — and
+    // test networks' throwaway announcements (the "Stranger" ghosts,
+    // modelId test-model) land exactly in this class, so they stop
+    // cluttering real servers' panels. Held/pinned peers always show
+    // (they occupy the operator's shelf; hiding owned state would
+    // mislead), unknown compatibility (no local model yet) hides nothing,
+    // and ?includeIncompatible=1 shows everything — the blocklist and
+    // debugging still need eyes on the full catalog.
+    const includeIncompatible = req.query.includeIncompatible === '1';
+    const visible = includeIncompatible
+      ? peers
+      : peers.filter((peer) => peer.compatible !== false || peer.fetched !== null);
     res.json({
-      peers,
+      peers: visible,
+      hiddenIncompatible: peers.length - visible.length,
       localModelId: localModel,
       autoFetch: config.program.discoveryP2p.autoFetch,
       storage: {
