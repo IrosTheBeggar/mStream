@@ -7546,7 +7546,7 @@ const backupView = Vue.component('backup-view', {
 const discoveryView = Vue.component('discovery-view', {
   data() {
     return {
-      discoveryP2p: { loaded: false, status: null, peers: [], storage: null, autoFetch: false },
+      discoveryP2p: { loaded: false, status: null, peers: [], storage: null, autoFetch: false, hiddenIncompatible: 0, showIncompatible: false },
       p2pIdentity: P2PIDENTITY,
       p2pToggling: false,
       peerFilter: '',
@@ -7684,7 +7684,16 @@ const discoveryView = Vue.component('discovery-view', {
                   </table>
                   <p v-else-if="discoveryP2p.peers.length > 0">No servers match
                     &ldquo;{{ peerFilter }}&rdquo; — [<a v-on:click="peerFilter = ''">clear</a>]</p>
-                  <p v-else>No servers heard yet — paste a friend's ticket above and give gossip a minute.</p>
+                  <p v-else-if="discoveryP2p.hiddenIncompatible === 0">No servers heard yet — paste a friend's ticket above and give gossip a minute.</p>
+                  <p v-if="discoveryP2p.hiddenIncompatible > 0 || discoveryP2p.showIncompatible"
+                    style="color: #757575; font-size: 0.9em;">
+                    <span v-if="discoveryP2p.hiddenIncompatible > 0">{{ discoveryP2p.hiddenIncompatible }}
+                      server{{ discoveryP2p.hiddenIncompatible === 1 ? '' : 's' }} hidden — incompatible embedding
+                      model (their libraries can't power this server's similar-search)
+                      [<a v-on:click="discoveryToggleIncompatible()">show</a>]</span>
+                    <span v-else>showing incompatible servers
+                      [<a v-on:click="discoveryToggleIncompatible()">hide</a>]</span>
+                  </p>
                   <p v-if="discoveryP2p.status.blockedPeers && discoveryP2p.status.blockedPeers.length > 0"
                     style="color: #757575; font-size: 0.9em;">
                     <b>Blocked servers</b> — announcements ignored, snapshots never fetched:<br>
@@ -7850,6 +7859,12 @@ const discoveryView = Vue.component('discovery-view', {
         ]
       });
     },
+    discoveryToggleIncompatible: async function() {
+      // Server-side filter, so the toggle re-fetches rather than un-hiding
+      // stale client state.
+      this.discoveryP2p.showIncompatible = !this.discoveryP2p.showIncompatible;
+      await this.loadDiscoveryP2p(true);
+    },
     loadDiscoveryP2p: async function(quiet) {
       try {
         const status = (await API.axios({
@@ -7866,9 +7881,11 @@ const discoveryView = Vue.component('discovery-view', {
         if (typeof status.rotationDays === 'number') { P2PSETTINGS.rotationDays = status.rotationDays; }
         if (status.enabled === true) {
           const cat = (await API.axios({
-            method: 'GET', url: `${API.url()}/api/v1/admin/discovery/p2p/catalog`
+            method: 'GET',
+            url: `${API.url()}/api/v1/admin/discovery/p2p/catalog${this.discoveryP2p.showIncompatible ? '?includeIncompatible=1' : ''}`
           })).data;
           this.discoveryP2p.peers = cat.peers;
+          this.discoveryP2p.hiddenIncompatible = cat.hiddenIncompatible || 0;
           this.discoveryP2p.storage = cat.storage;
           this.discoveryP2p.autoFetch = cat.autoFetch;
         }
