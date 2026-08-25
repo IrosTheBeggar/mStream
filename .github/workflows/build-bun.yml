@@ -1067,9 +1067,17 @@ jobs:
           # plist); ditto preserves the signed bundle bit-exactly.
           rm -rf pkgwork/root && mkdir -p pkgwork/root
           ditto "$APP" pkgwork/root/mStream.app
+          # postinstall (build/pkg-postinstall.sh): restart a RUNNING
+          # mStream into the freshly installed copy — terminate the
+          # launcher by exact path (the supervision pipe stops its server
+          # gracefully), relaunch as the console user with --takeover.
+          # Without it the pkg is a pure payload swap and the old version
+          # keeps serving until a manual Quit + reopen.
+          mkdir -p pkgwork/scripts
+          install -m 755 build/pkg-postinstall.sh pkgwork/scripts/postinstall
           pkgbuild --analyze --root pkgwork/root pkgwork/component.plist
           /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" pkgwork/component.plist
-          pkgbuild --root pkgwork/root --component-plist pkgwork/component.plist --install-location /Applications --identifier io.mstream.server --version "$VER" pkgwork/component.pkg
+          pkgbuild --root pkgwork/root --component-plist pkgwork/component.plist --scripts pkgwork/scripts --install-location /Applications --identifier io.mstream.server --version "$VER" pkgwork/component.pkg
           case "$KEY" in
             darwin-arm64) ARCHS="arm64" ;;
             *)            ARCHS="x86_64,arm64" ;;   # x64 payload runs under Rosetta
@@ -1177,8 +1185,37 @@ jobs:
           set -euo pipefail
           VER=$(node -pe "require('./package.json').version")
           PKG="dist/installer/mStream-$VER-darwin-arm64.pkg"
+          # Seed a RUNNING "old version" at the exact path the payload
+          # replaces, so the postinstall's restart path (terminate old,
+          # relaunch new as the console user) is proven here — not just its
+          # nothing-running no-op. A COMPILED stub, never a copied system
+          # binary: AMFI SIGKILLs a platform-signed binary run from inside a
+          # foreign .app (measured — a copied /bin/sleep dies at exec with
+          # 137, which would make this whole seed silently vacuous).
+          printf '#include <unistd.h>\nint main(void){for(;;)sleep(9);return 0;}\n' | cc -x c - -o old-stub
+          sudo mkdir -p /Applications/mStream.app/Contents/MacOS
+          sudo cp old-stub /Applications/mStream.app/Contents/MacOS/mStream
+          /Applications/mStream.app/Contents/MacOS/mStream &
+          OLD_PID=$!
+          sleep 1
+          kill -0 "$OLD_PID" 2>/dev/null || { echo "::error::the seeded old instance is not running - the restart-path test would be vacuous"; exit 1; }
           sudo installer -pkg "$PKG" -target /
           test -d /Applications/mStream.app || { echo "::error::pkg install did not produce /Applications/mStream.app"; exit 1; }
+          if kill -0 "$OLD_PID" 2>/dev/null; then
+            echo "::error::postinstall left the old running instance alive"; exit 1
+          fi
+          NEW=0
+          for i in $(seq 1 15); do
+            pgrep -f "^/Applications/mStream.app/Contents/MacOS/mStream" >/dev/null 2>&1 && { NEW=1; break; }
+            sleep 1
+          done
+          [ "$NEW" = "1" ] || { echo "::error::postinstall did not relaunch mStream"; exit 1; }
+          echo "postinstall restarted the running instance into the new app"
+          # Quiet the relaunched app before the deterministic half below
+          # (its server would otherwise boot on the runner's default port).
+          pkill -f "^/Applications/mStream.app/Contents/MacOS/" 2>/dev/null || true
+          sleep 2
+          pkill -9 -f "^/Applications/mStream.app/Contents/MacOS/" 2>/dev/null || true
           test -e /Applications/mStream.app/Contents/MacOS/webapp/index.html || { echo "::error::webapp symlink broken after pkg install"; exit 1; }
           OUT=$(/Applications/mStream.app/Contents/MacOS/mstream-server -V)
           echo "installed server -V -> $OUT"

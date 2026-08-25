@@ -43,10 +43,15 @@ mirrors). Older versions are kept beside `current` for rollback — once mStream
 is no longer running from one, delete it whenever you like.
 
 Re-running to upgrade re-points the app-menu / Start Menu entry and the
-login item at the new version, but never stops a running mStream: Quit it
-from the tray icon and start it again to switch. A copy you extracted by hand
-somewhere else (or run with `--portable`) is left untouched — the script only
-manages its own folder.
+login item at the new version — and if the tray app is running from a copy
+the script manages, it restarts itself into the new version within a
+minute (the script only asks; the tray performs its usual graceful stop
+and takeover — set `MSTREAM_NO_RELAUNCH=1` to leave it on the old version
+until you restart it yourself). The macOS `.pkg` and Windows `setup.exe`
+do the equivalent themselves. What is never touched: a headless
+`mstream-server` you started (any installer only ever tells you about it),
+and a copy you extracted by hand somewhere else (or run with `--portable`)
+— the script only manages its own folder.
 
 ## Automatic updates
 

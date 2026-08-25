@@ -377,6 +377,7 @@ fi
 # told that the running instance stays on the OLD version until they quit
 # it - nothing here can (or should) kill their server under them.
 running_from=""
+running_owned_launcher=""
 if command -v ps >/dev/null 2>&1; then
     # `ps -A -o pid=,args=` - the POSIX spelling - NOT `pgrep -a` and NOT
     # `ps -ax`: on macOS/BSD pgrep, -a means "include ancestors" and prints
@@ -397,8 +398,21 @@ if command -v ps >/dev/null 2>&1; then
         # Skip the version this run is installing (a real path never goes
         # through the `current` symlink, so compare against the bundle dir).
         case "$exe" in
-            "$ROOT/$bundle/"*|"$ROOT/current/"*|"") ;;
-            *) running_from="$exe"; break ;;
+            "$ROOT/$bundle/"*|"$ROOT/current/"*|"") continue ;;
+        esac
+        [ -z "$running_from" ] && running_from="$exe"
+        # A LAUNCHER running from a copy this script owns can be asked to
+        # restart itself into the new version (see the arming step below) —
+        # keep scanning rather than break, so a server matched first does
+        # not hide it.
+        case "$exe" in
+            */mstream-desktop|*/MacOS/mStream)
+                case "$exe" in
+                    "$ROOT/"*) running_owned_launcher="$exe" ;;
+                    "$HOME/Applications/mStream.app/"*)
+                        apps_copy_is_ours && running_owned_launcher="$exe" ;;
+                esac
+                ;;
         esac
     done
 fi
@@ -598,10 +612,36 @@ if [ -n "$installed_fresh" ]; then
     echo "installed mStream $version to $ROOT/$bundle"
 fi
 [ -n "$desktop_note" ] && echo "  $desktop_note"
+
+# A LAUNCHER this script manages is running the old version: ask IT to
+# restart into the new one, through the same armed-status-file contract the
+# in-app updater uses — the tray polls update-status.json once a minute and
+# performs the graceful stop + takeover itself (src/util/update-check.js is
+# the contract's writer-side twin; rust-launcher/src/tray_app.rs consumes
+# it, with every guard it applies to the in-app flow: never into a version
+# held after a failed boot, never into its own version, only while its
+# server is actually up). The installer itself still never kills anything —
+# a headless server, or any copy we don't own, keeps the NOTE below.
+relaunched_note=""
+if [ -n "$installed_fresh" ] && [ -n "$running_owned_launcher" ] && [ -z "${MSTREAM_NO_RELAUNCH:-}" ]; then
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    mkdir -p "$data_home"
+    tmp_status="$data_home/.update-status-installer-$$"
+    # No `current` field on purpose: the launcher treats an absent current
+    # as "staged version is new" — this script cannot know the running
+    # version, and must not guess at it.
+    printf '{"schema":1,"latest":"%s","available":true,"method":"managed","staged":true,"stagedVersion":"%s","applyRequested":true,"applyRequestedAt":"%s"}\n' \
+        "$version" "$version" "$now" > "$tmp_status"
+    mv "$tmp_status" "$data_home/update-status.json"
+    relaunched_note=1
+    echo "  the running mStream restarts into $version within a minute (its tray does the"
+    echo "  switch; set MSTREAM_NO_RELAUNCH=1 to leave it on the old version instead)"
+fi
+
 # An instance running from somewhere else stays on its own version until
 # it is restarted - the script never kills a user's server. Say so, with
 # the exact path, instead of letting "installed" imply "upgraded".
-if [ -n "$running_from" ]; then
+if [ -n "$running_from" ] && [ -z "$relaunched_note" ]; then
     echo "  NOTE: mStream is currently running from $running_from" >&2
     echo "        it keeps running that version until you Quit it (tray menu) and start" >&2
     echo "        the new one - the app menu / Start Menu entry now points at $version." >&2

@@ -539,6 +539,80 @@ test('auto mode with MSTREAM_SUPERVISED=1 applies by exiting 0', { skip: posixOn
   }
 });
 
+test('install.sh over a running managed launcher arms the tray restart', { skip: posixOnly }, async (t) => {
+  // The fake "running launcher" must be a real binary at the owned path
+  // (argv[0] is what the ps scan matches) — compiled, never a copied
+  // system binary: AMFI SIGKILLs platform-signed binaries run from foreign
+  // trees, which silently vacates the test.
+  const cc = spawnSync('cc', ['--version']);
+  if (cc.status !== 0) { t.skip('no C compiler for the launcher stub'); return; }
+  // realpath'd: install.sh canonicalizes its ROOT (macOS /var ->
+  // /private/var), and the running-launcher ownership check is a string
+  // prefix on the stub's reported path — both sides must be canonical.
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-inst-arm-')));
+  let stub = null;
+  try {
+    const root = path.join(home, 'app');
+    const oldBundle = path.join(root, `mStream-0.0.1-${hostKey()}`);
+    await fs.mkdir(oldBundle, { recursive: true });
+    const face = path.join(oldBundle, 'mstream-desktop');
+    const ccRun = spawnSync('sh', ['-c',
+      `printf '#include <unistd.h>\\nint main(void){for(;;)sleep(9);return 0;}\\n' | cc -x c - -o '${face}'`]);
+    assert.equal(ccRun.status, 0, `stub compile failed: ${ccRun.stderr}`);
+    const { spawn } = await import('node:child_process');
+    stub = spawn(face, [], { stdio: 'ignore', detached: true });
+    // unref, or the child handle keeps the test runner's event loop alive
+    // forever after the assertions pass (measured: the run hung at exit).
+    stub.unref();
+    await sleep(500);
+    assert.equal(stub.exitCode, null, 'the fake launcher must actually be running');
+
+    const env = {
+      ...process.env,
+      HOME: home,
+      XDG_DATA_HOME: path.join(home, '.local', 'share'),
+      MSTREAM_RELEASE_BASE: `http://127.0.0.1:${relPort}`,
+      MSTREAM_INSTALL_DIR: root,
+      MSTREAM_NO_DESKTOP: '1',
+    };
+    // ASYNC spawn, never spawnSync: the fake release feed serves from THIS
+    // process's event loop, and a sync wait deadlocks install.sh's curl
+    // against the very server it downloads from (measured: a permanent
+    // hang, immune even to spawnSync's timeout).
+    const runInstall = (extraEnv = {}) => new Promise((resolve) => {
+      const p = spawn('sh', [path.join(REPO_ROOT, 'install.sh')], { env: { ...env, ...extraEnv } });
+      let stdout = ''; let stderr = '';
+      p.stdout.on('data', (d) => { stdout += d; });
+      p.stderr.on('data', (d) => { stderr += d; });
+      const t = setTimeout(() => p.kill('SIGKILL'), 120_000);
+      p.on('close', (status) => { clearTimeout(t); resolve({ status, stdout, stderr }); });
+    });
+    await publish('9.9.70');
+    const r = await runInstall();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /restarts into 9\.9\.70 within a minute/);
+    assert.doesNotMatch(r.stderr, /keeps running that version/);
+    const statusDoc = JSON.parse(await fs.readFile(path.join(dataHomeOf(home), 'update-status.json'), 'utf8'));
+    assert.equal(statusDoc.applyRequested, true);
+    assert.equal(statusDoc.stagedVersion, '9.9.70');
+    assert.equal(statusDoc.method, 'managed');
+    assert.ok(!Number.isNaN(Date.parse(statusDoc.applyRequestedAt)),
+      `token must be a timestamp: ${statusDoc.applyRequestedAt}`);
+
+    // Opt-out: MSTREAM_NO_RELAUNCH keeps today's told-not-touched note and
+    // leaves the status file un-armed for the new version.
+    await publish('9.9.71');
+    const r2 = await runInstall({ MSTREAM_NO_RELAUNCH: '1' });
+    assert.equal(r2.status, 0, r2.stdout + r2.stderr);
+    assert.match(r2.stderr, /keeps running that version/);
+    const statusDoc2 = JSON.parse(await fs.readFile(path.join(dataHomeOf(home), 'update-status.json'), 'utf8'));
+    assert.equal(statusDoc2.stagedVersion, '9.9.70', 'opt-out must not re-arm for the new version');
+  } finally {
+    if (stub && stub.exitCode === null) { stub.kill('SIGKILL'); }
+    await fs.rm(home, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 test('non-managed installs refuse staging; apply refuses with nothing staged', { skip: posixOnly }, async () => {
   await publish('9.9.9');
   const env = updEnv();
