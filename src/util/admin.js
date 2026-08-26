@@ -82,6 +82,26 @@ function mergeChanges(current, base, mine) {
   return out;
 }
 
+// ── One-time onboarding marker ───────────────────────────────────────────────
+
+// Written the moment the FIRST library or FIRST user lands (both call this;
+// it self-no-ops after the first write). The launcher reads the raw config
+// file for this flag to decide whether to auto-open the setup wizard, and
+// the boot log's setup invitation keys off it too — one source of truth the
+// SERVER owns; the wizard itself never touches the config. updateJsonAtomic
+// so a racing settings save can't resurrect a pre-write document. The
+// in-memory mirror keeps this boot's invitation logic coherent without a
+// reboot; no reboot is requested — nothing running consumes the flag live.
+export async function markSetupComplete() {
+  if (config.program.setupComplete) { return; }
+  config.program.setupComplete = true;
+  await updateJsonAtomic(config.configFile, (current) => {
+    current.setupComplete = true;
+    return current;
+  });
+  winston.info('First-run setup marker written (setupComplete: true)');
+}
+
 // ── Directory / Library management (now in SQLite) ──────────────────────────
 
 export async function addDirectory(directory, vpath, autoAccess, isAudioBooks, followSymlinks, mstream) {
@@ -114,6 +134,7 @@ export async function addDirectory(directory, vpath, autoAccess, isAudioBooks, f
   }
 
   db.invalidateCache();
+  await markSetupComplete();
 
   // Add to express routing
   mstream.use(`/media/${vpath}/`, express.static(directory));
@@ -285,6 +306,7 @@ export async function addUser(username, password, admin, vpaths, allowMkdir, all
   }
 
   db.invalidateCache();
+  await markSetupComplete();
 }
 
 export async function deleteUser(username) {

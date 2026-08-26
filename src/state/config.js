@@ -752,6 +752,13 @@ const schema = Joi.object({
   downloadSizeLimit: Joi.string().pattern(/^(0|[0-9]+(\.[0-9]+)?(KB|MB|GB))$/i).default('0'),
   db: dbOptions.default(dbOptions.validate({}).value),
   compression: compressionOptions.default(compressionOptions.validate({}).value),
+  // One-time onboarding marker: the launcher auto-opens the setup wizard
+  // while this is false/absent, and the server's boot log prints the setup
+  // invitation. Written true by util/admin.js markSetupComplete() the moment
+  // the FIRST library or FIRST user lands (and backfilled at boot for
+  // installs that predate the flag — see serveIt). Never unset: deleting
+  // every folder later must not resurrect first-run behavior.
+  setupComplete: Joi.boolean().default(false),
   folders: Joi.object().pattern(
     Joi.string(),
     Joi.object({

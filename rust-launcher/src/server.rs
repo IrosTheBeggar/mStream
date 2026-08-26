@@ -117,9 +117,23 @@ fn probe_mstream(addr: &SocketAddr) -> bool {
         }
     }
     let text = String::from_utf8_lossy(&buf);
-    let status_ok = text
-        .lines()
-        .next()
-        .is_some_and(|l| l.starts_with("HTTP/") && l.contains(" 200"));
-    status_ok && text.contains("mStream")
+    let status = text.lines().next().unwrap_or("");
+    if !status.starts_with("HTTP/") {
+        return false;
+    }
+    // 200 + the webapp title = the open/public root. A server with accounts
+    // answers `/` with 302 → /login instead — equally mStream, and treating
+    // it as not-up left the tray stuck on "Starting…" for every
+    // password-protected install (found by the setupComplete two-boot
+    // smoke; the announce and status line both hang off this probe).
+    if status.contains(" 200") {
+        return text.contains("mStream");
+    }
+    if status.contains(" 302") || status.contains(" 303") || status.contains(" 307") {
+        return text
+            .lines()
+            .take_while(|l| !l.is_empty())
+            .any(|l| l.to_ascii_lowercase().starts_with("location:") && l.contains("/login"));
+    }
+    false
 }

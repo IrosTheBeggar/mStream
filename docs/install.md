@@ -139,19 +139,17 @@ directly, with `manifest.json` holding their sha256s:
 Windows, `mStream.app` on macOS, `mstream-desktop` on Linux — starts the
 server in the background, puts an mStream icon in your tray / menu bar
 (a status line — "Running · up 3h 12m", or Starting… / Stopped — then Open
-Admin Panel · Quick Connect · Set up mStream · Start at login · View logs ·
+Admin Panel · Quick Connect · Start at login · View logs ·
 Restart server · Quit), and opens your browser at the player. Start-at-login
-is on by default; one click in the tray menu turns it off. **Set up mStream**
-opens a terminal running the guided setup wizard (the bundled
-`mstream-player setup`) — music folders, admin account, extras. It is
-one-time onboarding: on a first install it opens by itself, and once the
-server is set up the menu item greys out (the wizard itself declines
-configured servers) — everything after that lives in the admin panel. On
-macOS it
-opens in the bundled mStream console (Ghostty, with the mStream Dock icon),
-which draws the wizard's artwork and Quick Connect QR as real pixels;
-without the console it falls back to Terminal.app, and Windows prefers
-Windows Terminal. **Quick Connect** opens the same way on macOS and Windows —
+is on by default; one click in the tray menu turns it off. On a **first
+install** the tray opens the guided setup wizard by itself (the bundled
+`mstream-player setup` — music folders, admin account, extras) in a real
+terminal: the bundled mStream console (Ghostty, with the mStream Dock icon)
+on macOS, which draws the wizard's artwork and Quick Connect QR as real
+pixels; Terminal.app without the console, and Windows Terminal on Windows.
+The wizard is one-time onboarding — the server records `setupComplete` in
+its config the moment the first folder or account lands, and everything
+after that lives in the admin panel. **Quick Connect** opens the same way on macOS and Windows —
 the wizard's pairing page (a scannable pixel QR plus the app links) in a
 terminal window; on Linux, or when an install has no player binary, it opens
 the web player's Quick Connect modal instead. Headless installs get the
