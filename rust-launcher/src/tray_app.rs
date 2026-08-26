@@ -693,7 +693,33 @@ pub fn run(args: LauncherArgs) -> ! {
                         }
                         if announce && !opened {
                             opened = true;
-                            let _ = open::that_detached(target);
+                            // First install (no music folders yet): open the
+                            // guided terminal wizard itself — the same
+                            // surface as the tray's "Set up mStream" — on
+                            // the platforms with a terminal story. The
+                            // browser admin panel stays the fallback (no
+                            // player binary, or the terminal launch failed)
+                            // and the linux behavior; configured installs
+                            // keep opening the player as always. The
+                            // announce gates (--takeover, --autostarted,
+                            // --no-open) suppress this exactly like the
+                            // browser pop — an update relaunch must never
+                            // pop a terminal.
+                            let mut wizard_opened = false;
+                            if target.ends_with("/admin") && cfg!(any(target_os = "macos", windows)) {
+                                if let Some(player) = player_bin.as_deref() {
+                                    match platform::open_wizard_terminal(player, &url, &data_home, console.as_ref(), platform::WizardPage::Setup) {
+                                        Ok(via) => {
+                                            log.line(&format!("first-run announce: setup wizard opened via {via}"));
+                                            wizard_opened = true;
+                                        }
+                                        Err(e) => log.line(&format!("first-run announce: wizard failed ({e}) - opening the admin panel")),
+                                    }
+                                }
+                            }
+                            if !wizard_opened {
+                                let _ = open::that_detached(target);
+                            }
                         }
                     }
                 }
