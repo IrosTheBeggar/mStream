@@ -11,6 +11,7 @@ import https from 'https';
 import net from 'net';
 import crypto from 'crypto';
 import { dataRoot, usingFallbackDataRoot } from './util/esm-helpers.js';
+import { installedPlayerPath, playerLoadableHere } from './util/mstream-player-bootstrap.js';
 
 import * as dbApi from './api/db.js';
 import * as discoveryApi from './api/discovery.js';
@@ -753,6 +754,22 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     // starts over. Cheap no-op everywhere the guard never ran.
     bootWatchdog.markBootOk();
     winston.info(`Access mStream locally: ${protocol}://localhost:${config.program.port}`);
+
+    // First-boot invitation. No folders AND no accounts means genuinely
+    // untouched — a deliberate public-mode server has folders, so it never
+    // sees this after setup. The terminal-wizard line appears only when the
+    // player binary is already on this machine (bundles ship it; musl and
+    // docker hosts have no build and get the browser line alone) AND its
+    // libraries load here (headless linux without ALSA can't even run its
+    // --version) — checking is a stat plus at most one ldconfig, never a
+    // download.
+    if (Object.keys(config.program.folders || {}).length === 0 && dbManager.getAllUsers().length === 0) {
+      winston.info('This server is not set up yet — open the address above in a browser to add music folders and an admin account.');
+      const wizard = installedPlayerPath();
+      if (wizard && playerLoadableHere()) {
+        winston.info(`Prefer a guided terminal setup? Run: "${wizard}" setup --server ${protocol}://localhost:${config.program.port}`);
+      }
+    }
 
     // A settings change landed while the reboot above was already past its
     // config read (see rebootPending): go straight around again rather than

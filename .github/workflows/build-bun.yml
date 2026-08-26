@@ -1641,6 +1641,46 @@ jobs:
           echo "$OUT" | grep -Eq '^mstream-player [0-9]+\.[0-9]+\.[0-9]+' || { echo "::error::staged mstream-player --version produced no/invalid output"; echo "$OUT"; exit 1; }
           echo "OK: staged mstream-player executes ($(basename "$PL"))"
 
+      - name: Smoke test first-run invitation (fresh boot)
+        # The first-boot wizard invitation (server.js onListening): a
+        # pristine install must print the "not set up yet" browser line
+        # and - where the staged player can actually load - the exact
+        # runnable `"<player>" setup --server` command. Runs on a COPY of
+        # the staged bundle: the smoke battery above boots the bundle in
+        # place, so its save/ is no longer pristine. Kept as its own step
+        # on purpose - the main smoke's run block sits near the workflow
+        # expression cap.
+        if: matrix.smoke
+        shell: bash
+        run: |
+          D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
+          cp -R "$D" "$RUNNER_TEMP/inv"
+          case "${{ matrix.key }}" in
+            darwin-*) SRV="$RUNNER_TEMP/inv/mStream.app/Contents/MacOS/mstream-server" ;;
+            win-*)    SRV="$RUNNER_TEMP/inv/mstream-server.exe" ;;
+            *)        SRV="$RUNNER_TEMP/inv/mstream-server" ;;
+          esac
+          printf '{ "port": 3123, "address": "127.0.0.1" }' > "$RUNNER_TEMP/inv-config.json"
+          L="$RUNNER_TEMP/inv-boot.log"
+          "$SRV" -j "$RUNNER_TEMP/inv-config.json" > "$L" 2>&1 &
+          SPID=$!
+          for i in $(seq 1 40); do grep -q "Access mStream locally" "$L" 2>/dev/null && break; sleep 1; done
+          kill $SPID 2>/dev/null || true
+          grep -q "Access mStream locally: http://localhost:3123" "$L" || { echo "::error::fresh boot never listened"; tail -40 "$L"; exit 1; }
+          grep -q "not set up yet" "$L" || { echo "::error::first-run line missing on a pristine boot"; tail -40 "$L"; exit 1; }
+          WANT_WIZARD=yes
+          case "${{ matrix.key }}" in
+            linux-*) ldconfig -p 2>/dev/null | grep -q libasound.so.2 || WANT_WIZARD=no ;;
+          esac
+          if [ "$WANT_WIZARD" = yes ]; then
+            grep -q 'setup --server http://localhost:3123' "$L" || { echo "::error::wizard invitation missing (player staged and loadable)"; tail -40 "$L"; exit 1; }
+            PL=$(sed -n 's/.*Run: "\(.*\)" setup --server.*/\1/p' "$L" | head -1)
+            [ -f "$PL" ] || { echo "::error::printed wizard path does not exist: $PL"; exit 1; }
+            echo "OK: invitation printed a real player at $PL"
+          else
+            grep -q 'setup --server' "$L" && { echo "::error::wizard line printed but this runner has no libasound"; exit 1; }
+            echo "OK: no libasound on this runner - wizard line correctly suppressed"
+          fi
       - name: Smoke test desktop launcher (spawn + supervise + no-orphan)
         # The launcher IS the bundle's double-click face now. Prove the
         # integrated shape on each native leg: launcher finds its

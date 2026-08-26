@@ -34,7 +34,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-import { ensurePlayer, manifestEntry, canAutoFetch, deriveAssetUrl, playerKey, reset } from '../../src/util/mstream-player-bootstrap.js';
+import { ensurePlayer, manifestEntry, canAutoFetch, deriveAssetUrl, playerKey, installedPlayerPath, playerLoadableHere, reset } from '../../src/util/mstream-player-bootstrap.js';
 
 const KEY = playerKey();
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
@@ -111,6 +111,32 @@ describe('mstream-player-bootstrap: manifest-pinned fetch', () => {
     // server (exactly how an air-gapped mirror would). Tests probing the
     // override/refusal behavior adjust this themselves.
     process.env.MSTREAM_PLAYER_BASE = baseUrl;
+  });
+
+  test('installedPlayerPath: bundled copy wins, managed is the fallback, absence is null — and it never fetches', () => {
+    const bundledDir = path.join(tmpRoot, 'present-bundled');
+    const installDir = path.join(tmpRoot, 'present-managed');
+    fs.mkdirSync(bundledDir, { recursive: true });
+    fs.mkdirSync(installDir, { recursive: true });
+
+    assert.equal(installedPlayerPath({ bundledDir, installDir }), null);
+
+    fs.writeFileSync(path.join(installDir, KEY), GOOD_BODY);
+    assert.equal(installedPlayerPath({ bundledDir, installDir }), path.join(installDir, KEY));
+
+    fs.writeFileSync(path.join(bundledDir, KEY), GOOD_BODY);
+    assert.equal(installedPlayerPath({ bundledDir, installDir }), path.join(bundledDir, KEY));
+
+    // Boot-time messaging must never cost a network round-trip.
+    assert.deepEqual(hits, []);
+  });
+
+  test('playerLoadableHere: non-linux is always loadable; linux answers from ldconfig', () => {
+    const loadable = playerLoadableHere();
+    assert.equal(typeof loadable, 'boolean');
+    if (process.platform !== 'linux') {
+      assert.equal(loadable, true, 'CoreAudio/WASAPI hosts never gate the invitation');
+    }
   });
 
   test('happy path: downloads (from the pinned file name), verifies, installs, and writes the receipt', async () => {

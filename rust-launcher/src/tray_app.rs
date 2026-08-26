@@ -89,6 +89,10 @@ pub fn run(args: LauncherArgs) -> ! {
     let server_dir = bin.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
     let config = paths::resolve_config_path(&args.server_args, &server_dir);
     let ep = paths::read_endpoint(&config);
+    // The terminal setup wizard the "Set up mStream" item runs — resolved
+    // once, like the server binary: an install doesn't gain or lose its
+    // bundled player mid-session.
+    let player_bin = paths::find_player_bin(&bin, &data_home);
 
     // ── Single instance: the lock lives in the data home, so two launchers
     // managing the same data/port exclude each other (two --portable
@@ -347,6 +351,11 @@ pub fn run(args: LauncherArgs) -> ! {
                 upd_text = utext;
                 let open_item = MenuItem::with_id("open", "Open mStream", true, None);
                 let qc_item = MenuItem::with_id("quick-connect", "Quick Connect", true, None);
+                // Guided first-run setup (folders, account, extras) in a real
+                // terminal. Stays useful after first run — the wizard seeds
+                // itself from the server's committed state — so it is always
+                // offered, greyed only when this install has no player binary.
+                let setup_item = MenuItem::with_id("setup", "Set up mStream", player_bin.is_some(), None);
                 let auto_item =
                     CheckMenuItem::with_id("autostart", "Start at login", true, autostart::is_enabled(), None);
                 let logs_item = MenuItem::with_id("logs", "View logs", true, None);
@@ -357,6 +366,7 @@ pub fn run(args: LauncherArgs) -> ! {
                 let _ = menu.append(&PredefinedMenuItem::separator());
                 let _ = menu.append(&open_item);
                 let _ = menu.append(&qc_item);
+                let _ = menu.append(&setup_item);
                 let _ = menu.append(&PredefinedMenuItem::separator());
                 let _ = menu.append(&auto_item);
                 let _ = menu.append(&PredefinedMenuItem::separator());
@@ -495,6 +505,19 @@ pub fn run(args: LauncherArgs) -> ! {
                         // The web UI opens its Quick Connect modal on this
                         // hash (webapp/assets/js/quick-connect.js).
                         let _ = open::that_detached(format!("{url}/#quick-connect"));
+                    }
+                    "setup" => {
+                        log.line("menu: set up mstream");
+                        match player_bin.as_deref() {
+                            Some(player) => {
+                                if let Err(e) = platform::open_setup_terminal(player, &url, &data_home) {
+                                    log.line(&format!("setup wizard failed: {e}"));
+                                }
+                            }
+                            // Unreachable through the menu (the item is
+                            // disabled), kept for the record.
+                            None => log.line("setup wizard unavailable: no mstream-player binary in this install"),
+                        }
                     }
                     "autostart" => {
                         // muda toggles the checkbox before we hear about it,

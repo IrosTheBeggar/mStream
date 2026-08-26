@@ -283,6 +283,87 @@ pub fn open_logs_terminal(logs_dir: &std::path::Path) -> Result<(), String> {
     }
 }
 
+/// Run the bundled terminal player's setup wizard in a fresh terminal
+/// window, pointed at this launcher's server. Same per-OS "what is a
+/// terminal" seams as open_logs_terminal; the caller logs a failure — a
+/// missing terminal emulator must never take the tray down.
+pub fn open_setup_terminal(
+    player_bin: &std::path::Path,
+    server_url: &str,
+    scratch_dir: &std::path::Path,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Terminal.app opens an executable .command file as a document — no
+        // AppleEvents automation consent (see open_logs_terminal). The CSI 8
+        // resize asks for the window the wizard's two-column pages were
+        // designed around; Terminal.app honors it, and a terminal that
+        // doesn't just keeps its size (the wizard reflows).
+        let script = scratch_dir.join("setup-mstream.command");
+        let body = format!(
+            "#!/bin/sh\n# Written by mStream's tray 'Set up mStream' item - safe to delete.\nprintf '\\033[8;42;120t'\nclear\nexec {player} setup --server {url}\n",
+            player = sh_quote(player_bin),
+            url = sh_quote_str(server_url),
+        );
+        std::fs::write(&script, body).map_err(|e| format!("write {}: {e}", script.display()))?;
+        let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
+        std::process::Command::new("/usr/bin/open")
+            .arg(&script)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("open {}: {e}", script.display()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = scratch_dir; // no script file on this path
+        // Windows Terminal first (App Execution Alias on PATH, preinstalled
+        // on Win11): it draws the wizard's pixel art via sixel. Without it,
+        // a fresh conhost window still runs the wizard — crossterm enables
+        // VT there and the art degrades to half-blocks.
+        if std::process::Command::new("wt.exe")
+            .arg(player_bin)
+            .args(["setup", "--server", server_url])
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        std::process::Command::new(player_bin)
+            .args(["setup", "--server", server_url])
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("spawn {}: {e}", player_bin.display()))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = scratch_dir; // no script file on this path
+        let cmd = format!(
+            "exec {player} setup --server {url}",
+            player = sh_quote(player_bin),
+            url = sh_quote_str(server_url),
+        );
+        let candidates = [
+            ("x-terminal-emulator", ["-e", "sh", "-c", cmd.as_str()]),
+            ("gnome-terminal", ["--", "sh", "-c", cmd.as_str()]),
+            ("konsole", ["-e", "sh", "-c", cmd.as_str()]),
+            ("xfce4-terminal", ["-x", "sh", "-c", cmd.as_str()]),
+            ("xterm", ["-e", "sh", "-c", cmd.as_str()]),
+        ];
+        for (bin, args) in candidates {
+            if std::process::Command::new(bin).args(args).spawn().is_ok() {
+                return Ok(());
+            }
+        }
+        Err("no terminal emulator found (tried x-terminal-emulator, gnome-terminal, \
+             konsole, xfce4-terminal, xterm)"
+            .to_string())
+    }
+}
+
 /// Start the NEW launcher for the apply-update handoff, detached, and return
 /// so the caller can exit. Always passes `--takeover`: the new instance
 /// retries the single-instance lock briefly (we still hold it for the last
@@ -425,7 +506,12 @@ pub fn spawn_installer_detached(installer: &std::path::Path, silent: bool) -> Re
 /// home ("Application Support") guarantees a space.
 #[cfg(unix)]
 fn sh_quote(p: &std::path::Path) -> String {
-    format!("'{}'", p.display().to_string().replace('\'', "'\\''"))
+    sh_quote_str(&p.display().to_string())
+}
+
+#[cfg(unix)]
+fn sh_quote_str(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -438,5 +524,20 @@ mod tests {
         std::fs::write(dir.join("launcher.log"), "[demo] launcher.log content\n").unwrap();
         std::fs::write(dir.join("server-console.log"), "[demo] server-console.log content\n").unwrap();
         super::open_logs_terminal(&dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "spawns a real Terminal window - run manually with --ignored"]
+    fn manual_open_setup_terminal() {
+        // MSTREAM_DEMO_PLAYER = a real player binary; MSTREAM_DEMO_SERVER =
+        // the URL to point its wizard at.
+        let player = std::path::PathBuf::from(
+            std::env::var("MSTREAM_DEMO_PLAYER").expect("set MSTREAM_DEMO_PLAYER"),
+        );
+        let url = std::env::var("MSTREAM_DEMO_SERVER")
+            .unwrap_or_else(|_| "http://localhost:3000".into());
+        let dir = std::env::temp_dir().join("mstream-setup-demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        super::open_setup_terminal(&player, &url, &dir).unwrap();
     }
 }

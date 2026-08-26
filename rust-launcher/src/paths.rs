@@ -207,6 +207,41 @@ pub fn browse_target(config: &Path, ep: &Endpoint) -> String {
     }
 }
 
+/// The platform key of the terminal player binary — mirrors playerKey() in
+/// src/util/mstream-player-bootstrap.js (the manifest and the bundle are
+/// keyed by the full filename). No musl arm: launcher builds are glibc-only,
+/// and musl bundles are headless.
+pub fn player_key() -> String {
+    let plat = if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(windows) {
+        "win32"
+    } else {
+        "linux"
+    };
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        other => other,
+    };
+    let ext = if cfg!(windows) { ".exe" } else { "" };
+    format!("mstream-player-{plat}-{arch}{ext}")
+}
+
+/// The terminal player for the "Set up mStream" item: the copy build-bun
+/// stages next to the server binary in every desktop bundle, else one the
+/// server's runtime fetch installed in the shared data home. None disables
+/// the item — a greyed entry beats a terminal window that dies instantly.
+pub fn find_player_bin(server_bin: &Path, data_home: &Path) -> Option<PathBuf> {
+    let key = player_key();
+    let bundled = server_bin.parent()?.join("bin").join("mstream-player").join(&key);
+    if bundled.exists() {
+        return Some(bundled);
+    }
+    let managed = data_home.join("bin").join("mstream-player").join(&key);
+    managed.exists().then_some(managed)
+}
+
 /// Escape a literal string for use inside a POSIX ERE (the pgrep -f
 /// patterns built from filesystem paths): a HOME containing '+', '?',
 /// '(' or brackets must match itself — a metacharacter that COMPILES but
@@ -420,6 +455,47 @@ mod tests {
         let out = read_endpoint(&p);
         let _ = std::fs::remove_file(&p);
         out
+    }
+
+    #[test]
+    fn player_key_matches_node_bootstrap_shape() {
+        // The manifest and the bundle are keyed by the full filename; this
+        // must stay in lockstep with playerKey() in
+        // src/util/mstream-player-bootstrap.js.
+        let key = player_key();
+        #[cfg(target_os = "macos")]
+        assert!(key.starts_with("mstream-player-darwin-"), "{key}");
+        #[cfg(windows)]
+        {
+            assert!(key.starts_with("mstream-player-win32-"), "{key}");
+            assert!(key.ends_with(".exe"), "{key}");
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        assert!(key.starts_with("mstream-player-linux-"), "{key}");
+        assert!(!key.contains("x86_64") && !key.contains("aarch64"), "node arch names, not Rust's: {key}");
+    }
+
+    #[test]
+    fn find_player_bin_prefers_bundled_then_managed() {
+        let root = env::temp_dir().join(format!("mstream-launcher-player-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bundle = root.join("bundle");
+        let home = root.join("home");
+        let key = player_key();
+        let server = bundle.join("mstream-server");
+        std::fs::create_dir_all(bundle.join("bin/mstream-player")).unwrap();
+        std::fs::create_dir_all(home.join("bin/mstream-player")).unwrap();
+
+        assert_eq!(find_player_bin(&server, &home), None, "neither copy exists yet");
+
+        let managed = home.join("bin/mstream-player").join(&key);
+        std::fs::write(&managed, b"x").unwrap();
+        assert_eq!(find_player_bin(&server, &home), Some(managed), "managed fallback");
+
+        let bundled = bundle.join("bin/mstream-player").join(&key);
+        std::fs::write(&bundled, b"x").unwrap();
+        assert_eq!(find_player_bin(&server, &home), Some(bundled), "bundled copy wins");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
