@@ -2,39 +2,39 @@
   "family": "mstream-player",
   "schema": 2,
   "repo": "IrosTheBeggar/mstream-terminal-player",
-  "tag": "v0.4.1",
-  "builtFrom": "62b06a74fefd6989ac875323366835b6f8134ed5",
-  "release": "https://github.com/IrosTheBeggar/mstream-terminal-player/releases/tag/v0.4.1",
+  "tag": "v0.5.0",
+  "builtFrom": "b4293b5dbfa9efb1fda73f76896f5e90148ea10a",
+  "release": "https://github.com/IrosTheBeggar/mstream-terminal-player/releases/tag/v0.5.0",
   "assets": {
     "mstream-player-darwin-arm64": {
       "file": "mstream-player-darwin-arm64",
-      "sha256": "0511de551fba4c66c1bb432c57e7fa9a3e491fdc27ddc284acbf77458c13e1c6",
-      "size": 20772064
+      "sha256": "c7d1b57c137245f1d298289a7f6bf361fefff80e199f0d328e6878e033c82840",
+      "size": 20772016
     },
     "mstream-player-darwin-x64": {
       "file": "mstream-player-darwin-x64",
-      "sha256": "5d2a245b98e1a4b6871633c97fecda2509f0f38038fda0a2ff8b5066e0f45e9c",
-      "size": 23547856
+      "sha256": "1dd6abac554974241c800578b5f123161deea0b2b567db6156a1840435501851",
+      "size": 23547952
     },
     "mstream-player-linux-arm": {
       "file": "mstream-player-linux-arm",
-      "sha256": "7f269e22d1c816774d6ba5ad87342761fe51afe22e6e971417f693df5aeef861",
-      "size": 23715980
+      "sha256": "df7a88f47686ff6a2852c0af7fe6f8670d700d1364df2581931e49a14a0402e4",
+      "size": 23716004
     },
     "mstream-player-linux-arm64": {
       "file": "mstream-player-linux-arm64",
-      "sha256": "c9dc3bde687775779624d704a48c8d7933b42516638a2ebeed02c1a1871a3d9f",
-      "size": 25163240
+      "sha256": "65f0e65cd40585d9a92d0988d4585d62736f6c97f8412f6d70bae1655cd48ab7",
+      "size": 25138696
     },
     "mstream-player-linux-x64": {
       "file": "mstream-player-linux-x64",
-      "sha256": "51c534a557753f593387ecbd739375bdb1a4be72253c665dc80c21f20200f6d4",
+      "sha256": "a41fa4938dca958bf567461db54e9384b1bf1a3a65e16c9491ac7cd32c2c8566",
       "size": 29447672
     },
     "mstream-player-win32-x64.exe": {
       "file": "mstream-player-win32-x64.exe",
-      "sha256": "b7d766b3527f46ee6278be142ea5522485ec1b07dc6ace1ae105bc1753adc2f4",
-      "size": 25936384
+      "sha256": "893af65ba09e72763eda8d7a2f0081bf6d2efba6705f60c95ee823c14f4fab42",
+      "size": 26040320
     }
   }
 }
