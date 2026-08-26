@@ -61,6 +61,7 @@ import * as backupManager from './backup/manager.js';
 import { classifyError } from './util/web-error.js';
 import { isAdminAllowed } from './util/admin-network.js';
 import { writeJsonAtomic, completedWrites } from './util/atomic-json.js';
+import * as adminUtil from './util/admin.js';
 import * as updateCheck from './util/update-check.js';
 import * as bootWatchdog from './util/boot-watchdog.js';
 
@@ -398,6 +399,26 @@ export async function serveIt(configFile, { relisten = null } = {}) {
 
   // Setup DB
   dbManager.initDB();
+
+  // Backfill the one-time onboarding marker for installs that predate it:
+  // any library or any user means this server was set up long ago, and the
+  // flag's absence must not greet an upgrader (or a config restored beside
+  // an existing database) with first-run behavior. Best-effort — a
+  // read-only config just means the boot log re-invites, which is noise,
+  // not damage.
+  if (!config.program.setupComplete
+      && (dbManager.getAllLibraries().length > 0 || dbManager.getAllUsers().length > 0)) {
+    // Awaited on purpose: the launcher reads the flag from the config file
+    // when its health probe reports the server up, and an upgrader's very
+    // first boot of a flag-aware build must have the backfill ON DISK
+    // before listen — a fire-and-forget write raced that read, and losing
+    // it would greet a years-old install with the first-run wizard.
+    try {
+      await adminUtil.markSetupComplete();
+    } catch (err) {
+      winston.warn(`could not backfill setupComplete: ${err.message}`);
+    }
+  }
 
   // The separate music-discovery DB opens at boot only when collection is
   // enabled (the admin toggle initializes it on demand otherwise). Failure
@@ -760,15 +781,16 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     bootWatchdog.markBootOk();
     winston.info(`Access mStream locally: ${protocol}://localhost:${config.program.port}`);
 
-    // First-boot invitation. No folders AND no accounts means genuinely
-    // untouched — a deliberate public-mode server has folders, so it never
-    // sees this after setup. The terminal-wizard line appears only when the
+    // First-boot invitation, keyed to the one-time setupComplete marker
+    // (util/admin.js markSetupComplete — written at the first library or
+    // first user, backfilled above for installs that predate the flag).
+    // The terminal-wizard line appears only when the
     // player binary is already on this machine (bundles ship it; musl and
     // docker hosts have no build and get the browser line alone) AND its
     // libraries load here (headless linux without ALSA can't even run its
     // --version) — checking is a stat plus at most one ldconfig, never a
     // download.
-    if (Object.keys(config.program.folders || {}).length === 0 && dbManager.getAllUsers().length === 0) {
+    if (!config.program.setupComplete) {
       winston.info('This server is not set up yet — open the address above in a browser to add music folders and an admin account.');
       const wizard = installedPlayerPath();
       if (wizard && playerLoadableHere()) {

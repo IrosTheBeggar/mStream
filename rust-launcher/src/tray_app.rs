@@ -356,13 +356,8 @@ pub fn run(args: LauncherArgs) -> ! {
                     update_item_view(upd.as_ref(), &updates_dir(), relaunch_target_exists(exe_real.as_deref()));
                 let update = MenuItem::with_id("update", utext.clone(), uaction != UpdateAction::None, None);
                 upd_text = utext;
-                let open_item = MenuItem::with_id("open", "Open mStream", true, None);
+                let open_item = MenuItem::with_id("open", "Open Admin Panel", true, None);
                 let qc_item = MenuItem::with_id("quick-connect", "Quick Connect", true, None);
-                // Guided first-run setup (folders, account, extras) in a real
-                // terminal. Stays useful after first run — the wizard seeds
-                // itself from the server's committed state — so it is always
-                // offered, greyed only when this install has no player binary.
-                let setup_item = MenuItem::with_id("setup", "Set up mStream", player_bin.is_some(), None);
                 let auto_item =
                     CheckMenuItem::with_id("autostart", "Start at login", true, autostart::is_enabled(), None);
                 let logs_item = MenuItem::with_id("logs", "View logs", true, None);
@@ -373,7 +368,6 @@ pub fn run(args: LauncherArgs) -> ! {
                 let _ = menu.append(&PredefinedMenuItem::separator());
                 let _ = menu.append(&open_item);
                 let _ = menu.append(&qc_item);
-                let _ = menu.append(&setup_item);
                 let _ = menu.append(&PredefinedMenuItem::separator());
                 let _ = menu.append(&auto_item);
                 let _ = menu.append(&PredefinedMenuItem::separator());
@@ -506,25 +500,34 @@ pub fn run(args: LauncherArgs) -> ! {
                 }
                 AppEvent::Menu(id) => match id.as_str() {
                     "open" => {
-                        let _ = open::that_detached(url.clone());
+                        // The admin panel, explicitly — the tray is the
+                        // operator's surface, and listening happens in the
+                        // apps/players. (The post-boot browser announce keeps
+                        // its own routing: paths::browse_target.)
+                        let _ = open::that_detached(format!("{url}/admin"));
                     }
                     "quick-connect" => {
-                        // The web UI opens its Quick Connect modal on this
-                        // hash (webapp/assets/js/quick-connect.js).
-                        let _ = open::that_detached(format!("{url}/#quick-connect"));
-                    }
-                    "setup" => {
-                        log.line("menu: set up mstream");
-                        match player_bin.as_deref() {
-                            Some(player) => {
-                                match platform::open_setup_terminal(player, &url, &data_home, console.as_ref()) {
-                                    Ok(via) => log.line(&format!("setup wizard opened via {via}")),
-                                    Err(e) => log.line(&format!("setup wizard failed: {e}")),
+                        // The wizard's Quick Connect page (pixel pairing QR)
+                        // in a real terminal on the desktop platforms; the
+                        // webapp's modal hash stays the linux behavior
+                        // (webapp/assets/js/quick-connect.js) and the
+                        // fallback when this install has no player binary or
+                        // the terminal launch itself fails.
+                        log.line("menu: quick connect");
+                        let mut opened = false;
+                        if cfg!(any(target_os = "macos", windows)) {
+                            if let Some(player) = player_bin.as_deref() {
+                                match platform::open_wizard_terminal(player, &url, &data_home, console.as_ref(), platform::WizardPage::QuickConnect) {
+                                    Ok(via) => {
+                                        log.line(&format!("quick connect opened via {via}"));
+                                        opened = true;
+                                    }
+                                    Err(e) => log.line(&format!("quick connect terminal failed: {e} - falling back to the webapp")),
                                 }
                             }
-                            // Unreachable through the menu (the item is
-                            // disabled), kept for the record.
-                            None => log.line("setup wizard unavailable: no mstream-player binary in this install"),
+                        }
+                        if !opened {
+                            let _ = open::that_detached(format!("{url}/#quick-connect"));
                         }
                     }
                     "autostart" => {
@@ -670,7 +673,33 @@ pub fn run(args: LauncherArgs) -> ! {
                         }
                         if announce && !opened {
                             opened = true;
-                            let _ = open::that_detached(target);
+                            // First install (no music folders yet): open the
+                            // guided terminal wizard itself — the same
+                            // surface as the tray's "Set up mStream" — on
+                            // the platforms with a terminal story. The
+                            // browser admin panel stays the fallback (no
+                            // player binary, or the terminal launch failed)
+                            // and the linux behavior; configured installs
+                            // keep opening the player as always. The
+                            // announce gates (--takeover, --autostarted,
+                            // --no-open) suppress this exactly like the
+                            // browser pop — an update relaunch must never
+                            // pop a terminal.
+                            let mut wizard_opened = false;
+                            if target.ends_with("/admin") && cfg!(any(target_os = "macos", windows)) {
+                                if let Some(player) = player_bin.as_deref() {
+                                    match platform::open_wizard_terminal(player, &url, &data_home, console.as_ref(), platform::WizardPage::Setup) {
+                                        Ok(via) => {
+                                            log.line(&format!("first-run announce: setup wizard opened via {via}"));
+                                            wizard_opened = true;
+                                        }
+                                        Err(e) => log.line(&format!("first-run announce: wizard failed ({e}) - opening the admin panel")),
+                                    }
+                                }
+                            }
+                            if !wizard_opened {
+                                let _ = open::that_detached(target);
+                            }
                         }
                     }
                 }

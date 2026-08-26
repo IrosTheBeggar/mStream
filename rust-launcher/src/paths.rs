@@ -187,25 +187,38 @@ pub fn server_url(ep: &Endpoint) -> String {
     }
 }
 
-/// Whether the config declares any music folders. Unreadable or absent
-/// config counts as unconfigured — on a true first run the file appears
-/// mid-boot, and the right answer is the same either way.
-pub fn library_is_configured(config: &Path) -> bool {
-    std::fs::read_to_string(config)
+/// Whether this install has been through first-run setup, per the config's
+/// one-time `setupComplete` marker — written by the SERVER the moment the
+/// first library or first user lands (util/admin.js markSetupComplete), and
+/// backfilled at boot for installs that predate it. The legacy `folders`
+/// check rides along as a belt: an older server never writes the flag, but
+/// old-style configs still carry their folders, so a new launcher over an
+/// old configured install doesn't re-run first-run behavior. Unreadable or
+/// absent config counts as not-set-up — on a true first run the file
+/// appears mid-boot, and the right answer is the same either way.
+pub fn setup_complete(config: &Path) -> bool {
+    let Some(v) = std::fs::read_to_string(config)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(s.trim_start_matches('\u{feff}')).ok())
-        .and_then(|v| v.get("folders").and_then(|f| f.as_object().map(|o| !o.is_empty())))
-        .unwrap_or(false)
+    else {
+        return false;
+    };
+    if v.get("setupComplete").and_then(|b| b.as_bool()) == Some(true) {
+        return true;
+    }
+    v.get("folders").and_then(|f| f.as_object().map(|o| !o.is_empty())).unwrap_or(false)
 }
 
 /// Where a launcher-initiated browser open should land (the announce after
-/// boot, a second instance yielding, a macOS reopen): the player when there
-/// is music, the ADMIN PANEL when the library has no folders yet — a fresh
-/// install's player is a dead end, and the admin panel is where folders get
-/// added. The tray's explicit "Open mStream" item stays literal (always the
-/// player) so the menu does what it says.
+/// boot, a second instance yielding, a macOS reopen): the player once setup
+/// has happened, the ADMIN PANEL before it — a fresh install's player is a
+/// dead end. (The post-boot announce goes further and opens the setup
+/// wizard itself on fresh installs; this is its browser fallback and every
+/// other gesture's routing.) The tray's explicit "Open Admin Panel" item
+/// does NOT route through this — it always opens /admin, literally what it
+/// says.
 pub fn browse_target(config: &Path, ep: &Endpoint) -> String {
-    if library_is_configured(config) {
+    if setup_complete(config) {
         server_url(ep)
     } else {
         format!("{}/admin", server_url(ep))
@@ -554,6 +567,30 @@ mod tests {
     }
 
     #[test]
+    fn setup_complete_reads_the_flag_with_a_legacy_folders_belt() {
+        let p = env::temp_dir().join(format!("mstream-launcher-setup-{}.json", std::process::id()));
+        // Absent config = a true first run (the server writes it mid-boot).
+        let _ = std::fs::remove_file(&p);
+        assert!(!setup_complete(&p));
+        // Fresh modern config: no flag, no folders.
+        std::fs::write(&p, "{ \"port\": 3000 }").unwrap();
+        assert!(!setup_complete(&p));
+        // The server wrote the one-time marker.
+        std::fs::write(&p, "{ \"setupComplete\": true }").unwrap();
+        assert!(setup_complete(&p));
+        // An explicit false stays false (never written by us, but honest).
+        std::fs::write(&p, "{ \"setupComplete\": false }").unwrap();
+        assert!(!setup_complete(&p));
+        // Legacy belt: an OLD server never writes the flag, but old-style
+        // configs still carry their folders.
+        std::fs::write(&p, "{ \"folders\": { \"m\": { \"root\": \"/x\" } } }").unwrap();
+        assert!(setup_complete(&p));
+        std::fs::write(&p, "{ \"folders\": {} }").unwrap();
+        assert!(!setup_complete(&p));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
     fn find_console_app_walks_bundle_then_install_root() {
         let root = env::temp_dir().join(format!("mstream-launcher-console-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -615,9 +652,9 @@ mod tests {
         // server strips it before parsing, so this side must too — a BOM'd
         // port must not send the launcher probing the 3000 fallback.
         let p = env::temp_dir().join(format!("mstream-launcher-bom-{}.json", std::process::id()));
-        std::fs::write(&p, "\u{feff}{ \"port\": 8123, \"folders\": { \"m\": { \"root\": \"/x\" } } }").unwrap();
+        std::fs::write(&p, "\u{feff}{ \"port\": 8123, \"setupComplete\": true }").unwrap();
         assert_eq!(read_endpoint(&p).port, 8123);
-        assert!(library_is_configured(&p));
+        assert!(setup_complete(&p));
         let _ = std::fs::remove_file(&p);
     }
 
@@ -686,26 +723,22 @@ mod tests {
 
     #[test]
     fn library_configured_detection() {
+        // Garbage shapes must read as not-set-up, never panic.
         let dir = env::temp_dir();
         let f = |name: &str, body: &str| {
             let p = dir.join(format!("mstream-lib-{}-{}.json", std::process::id(), name));
             std::fs::write(&p, body).unwrap();
             p
         };
-        assert!(!library_is_configured(Path::new("/definitely/not/there.json")), "absent config = unconfigured");
-        let empty = f("empty", "{}");
-        assert!(!library_is_configured(&empty), "no folders key = unconfigured");
-        let bare = f("bare", r#"{"folders":{}}"#);
-        assert!(!library_is_configured(&bare), "empty folders object = unconfigured");
         let garbage = f("garbage", r#"{"folders":"nope"}"#);
-        assert!(!library_is_configured(&garbage), "non-object folders = unconfigured");
-        let real = f("real", r#"{"folders":{"music":{"root":"/m"}}}"#);
-        assert!(library_is_configured(&real));
-        for p in [empty, bare, garbage, real] { let _ = std::fs::remove_file(p); }
+        assert!(!setup_complete(&garbage), "non-object folders = not set up");
+        let flag_garbage = f("flaggarbage", r#"{"setupComplete":"yes"}"#);
+        assert!(!setup_complete(&flag_garbage), "non-bool flag = not set up");
+        for p in [garbage, flag_garbage] { let _ = std::fs::remove_file(p); }
     }
 
     #[test]
-    fn browse_target_lands_on_admin_until_folders_exist() {
+    fn browse_target_lands_on_admin_until_setup_completes() {
         let ep = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOCALHOST), port: 3000 };
         assert_eq!(browse_target(Path::new("/nope.json"), &ep), "http://localhost:3000/admin");
         let p = env::temp_dir().join(format!("mstream-bt-{}.json", std::process::id()));
