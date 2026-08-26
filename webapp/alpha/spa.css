@@ -1485,7 +1485,11 @@ select {
 .autodj-root {
   max-width: 560px;
   margin: 0 auto;
-  padding: 16px 12px 32px;
+  /* Generous bottom padding: #filelist is the scroller and the panel
+     is its only child, so this is the sole source of clearance at the
+     scroll end. 32px left the last row grazing the bottom edge once
+     the Filters section grew. */
+  padding: 16px 12px 56px;
   color: #F5F7FA;
 }
 
@@ -1548,7 +1552,10 @@ select {
   background: #262a33;
   border: 1px solid #444c56;
   border-radius: 8px;
-  padding: 4px 16px;
+  /* Extra bottom padding so the last row's controls aren't flush
+     against the card border — the top gets its air from the first
+     section heading's own margin. */
+  padding: 4px 16px 12px;
 }
 .autodj-section-heading {
   font-size: 11px;
@@ -1914,6 +1921,58 @@ select {
   font-size: 12px;
   color: #8a8f99;
   font-style: italic;
+}
+
+/* Track-length window — two minute fields side by side plus an
+   "include unknown length" checkbox. Reuses .dj-filter-input for the
+   field chrome; the additions below are the two-up layout, the
+   per-field caption, and the checkbox row. */
+.dj-duration-inputs {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+}
+.dj-duration-field {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.dj-duration-field-label {
+  font-size: 12px;
+  color: #8c919a;
+}
+/* .dj-filter-input carries margin-top for the stacked keyword/genre
+   layout; here the caption above already provides the gap. */
+.dj-duration-num {
+  margin-top: 4px;
+}
+/* Hide the spinner arrows — cramped at this width, and with
+   step="any" they'd step by a meaningless 1-minute default. */
+.dj-duration-num::-webkit-inner-spin-button,
+.dj-duration-num::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
+}
+.dj-duration-num {
+  -moz-appearance: textfield;
+}
+/* Unknown-length row — same shape as .dj-filter-head (caption left,
+   .toggle-sw switch right) so it reads as one of the panel's toggles
+   rather than a stray control. The switch itself needs no rules here;
+   .toggle-sw already handles sizing and the Materialize suppression. */
+.dj-duration-unknown {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 12px;
+  width: 100%;
+}
+.dj-duration-unknown-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #F5F7FA;
 }
 
 /* Now-playing BPM/key pills — sit alongside the existing metadata

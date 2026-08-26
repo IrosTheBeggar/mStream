@@ -81,7 +81,9 @@ import { HASH_GENERATION } from './audio-hash.js';
 // V63 indexes cue_points.library_id and play_events.library_id so the
 // library-delete cascade seeks instead of scanning. See SCHEMA_V63.
 // V64 indexes tracks.year so the DLNA By-Year browse seeks. See SCHEMA_V64.
-export const SCHEMA_VERSION = 66;
+// V67 indexes tracks.duration so the Auto-DJ track-length window seeks
+// instead of scanning. See SCHEMA_V67.
+export const SCHEMA_VERSION = 67;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2392,6 +2394,25 @@ export const SCHEMA_V66 = `
   SELECT 1;
 `;
 
+// V67: index tracks.duration for the Auto-DJ track-length window.
+//
+// POST /api/v1/db/random-songs gained minDuration/maxDuration, which
+// compose into the ALWAYS-ON base conditions — so unlike the BPM/key
+// filters the clause is present on EVERY query the route runs, in
+// simple mode and on all ten waterfall steps. A "2 to 6 minutes"
+// window is highly selective on a real library; without an index each
+// of those queries re-scans tracks to evaluate it.
+//
+// Same shape and rationale as V33's idx_tracks_bpm / idx_tracks_musical_key
+// (single column, no library_id composite — libraryFilter's own clause
+// already narrows and SQLite picks the most selective single-column
+// index). Non-rescanRequired: pure read-side optimisation, no schema
+// shape change, and duration has been populated by both scanners since
+// V1.
+export const SCHEMA_V67 = `
+  CREATE INDEX IF NOT EXISTS idx_tracks_duration ON tracks(duration);
+`;
+
 export const SCHEMA_V58 = `
   ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
 `;
@@ -2777,4 +2798,9 @@ export const MIGRATIONS = [
   // INFO, and only a re-parse can backfill the NULLs older builds left.
   // See SCHEMA_V66.
   { version: 66, sql: SCHEMA_V66, rescanRequired: true },
+  // V67 indexes tracks.duration for the Auto-DJ track-length window
+  // (minDuration / maxDuration on POST /api/v1/db/random-songs). That
+  // filter is an always-on base condition, so the clause is on every
+  // query the route runs. Index-only, no rescan. See SCHEMA_V67.
+  { version: 67, sql: SCHEMA_V67 },
 ];

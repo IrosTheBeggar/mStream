@@ -333,6 +333,78 @@ describe('songBlocked', () => {
   });
 });
 
+describe('songBlocked — track-length window', () => {
+  // Bounds are SECONDS; 0 on a side means "no bound there". Mirrors
+  // src/api/random.js's buildDurationFilter, including the NULL rule —
+  // this branch deliberately does NOT follow the "unknown passes
+  // through" convention the BPM/harmonic branches use, because the
+  // server hard-excludes unknown-duration rows unless the request
+  // opted in.
+  const on = { durationEnabled: true, minDuration: 120, maxDuration: 600 };
+
+  test('inside the window passes', () => {
+    assert.equal(AUTODJ.songBlocked({ duration: 300 }, on), false);
+  });
+
+  test('bounds are inclusive on both edges', () => {
+    assert.equal(AUTODJ.songBlocked({ duration: 120 }, on), false);
+    assert.equal(AUTODJ.songBlocked({ duration: 600 }, on), false);
+  });
+
+  test('shorter than min → blocked', () => {
+    assert.equal(AUTODJ.songBlocked({ duration: 30 }, on), true);
+  });
+
+  test('longer than max → blocked', () => {
+    assert.equal(AUTODJ.songBlocked({ duration: 900 }, on), true);
+  });
+
+  test('unknown duration → blocked by default', () => {
+    // Regression guard: `Number(null)` is 0, which IS finite, so a
+    // naive coercion reads a NULL duration as a zero-second track and
+    // sends it down the range branch instead of the unknown branch.
+    // Both null and a missing field must take the unknown path.
+    assert.equal(AUTODJ.songBlocked({ duration: null }, on), true);
+    assert.equal(AUTODJ.songBlocked({}, on), true);
+  });
+
+  test('unknown duration passes when allowUnknownDuration is on', () => {
+    const opts = { ...on, allowUnknownDuration: true };
+    assert.equal(AUTODJ.songBlocked({ duration: null }, opts), false);
+    assert.equal(AUTODJ.songBlocked({}, opts), false);
+  });
+
+  test('allowUnknownDuration does not relax the window for known rows', () => {
+    const opts = { ...on, allowUnknownDuration: true };
+    assert.equal(AUTODJ.songBlocked({ duration: 30 }, opts), true);
+    assert.equal(AUTODJ.songBlocked({ duration: 900 }, opts), true);
+  });
+
+  test('min-only window leaves the upper side open', () => {
+    const opts = { durationEnabled: true, minDuration: 120, maxDuration: 0 };
+    assert.equal(AUTODJ.songBlocked({ duration: 30 }, opts), true);
+    assert.equal(AUTODJ.songBlocked({ duration: 9000 }, opts), false);
+  });
+
+  test('max-only window leaves the lower side open', () => {
+    const opts = { durationEnabled: true, minDuration: 0, maxDuration: 600 };
+    assert.equal(AUTODJ.songBlocked({ duration: 30 }, opts), false);
+    assert.equal(AUTODJ.songBlocked({ duration: 9000 }, opts), true);
+  });
+
+  test('toggle off → never blocks, even out of range', () => {
+    assert.equal(AUTODJ.songBlocked({ duration: 30 }, { ...on, durationEnabled: false }), false);
+  });
+
+  test('toggled on with no bounds → never blocks', () => {
+    // "Turned it on but haven't typed anything yet" grace, matching
+    // the empty-word-list / empty-genre-list branches above.
+    const opts = { durationEnabled: true, minDuration: 0, maxDuration: 0 };
+    assert.equal(AUTODJ.songBlocked({ duration: 30 }, opts), false);
+    assert.equal(AUTODJ.songBlocked({ duration: null }, opts), false);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────
 // State + persistence
 // ─────────────────────────────────────────────────────────────────────
@@ -366,6 +438,86 @@ describe('state defaults on fresh boot', () => {
 
   test('camelotAnchor defaults to null', () => {
     assert.equal(AUTODJ.state.camelotAnchor, null);
+  });
+
+  test('track-length window defaults to off with no bounds', () => {
+    assert.equal(AUTODJ.state.djDurationEnabled, false);
+    assert.equal(AUTODJ.state.djMinDuration, 0);
+    assert.equal(AUTODJ.state.djMaxDuration, 0);
+    // Default OFF — unknown-length tracks are excluded unless the
+    // user opts in, matching the server's allowUnknownDuration default.
+    assert.equal(AUTODJ.state.djAllowUnknownDuration, false);
+  });
+});
+
+describe('setDurationBounds', () => {
+  test('persists both bounds and returns what was stored', () => {
+    const out = AUTODJ.setDurationBounds(120, 600, 'min');
+    assert.deepEqual(out, { min: 120, max: 600 });
+    assert.equal(AUTODJ.state.djMinDuration, 120);
+    assert.equal(AUTODJ.state.djMaxDuration, 600);
+    assert.equal(localStorage.getItem('mstream-dj-djMinDuration'), '120');
+    assert.equal(localStorage.getItem('mstream-dj-djMaxDuration'), '600');
+  });
+
+  test('blank / negative / non-numeric collapse to the 0 "no bound" sentinel', () => {
+    assert.deepEqual(AUTODJ.setDurationBounds('', '', 'min'), { min: 0, max: 0 });
+    assert.deepEqual(AUTODJ.setDurationBounds(-5, -1, 'min'), { min: 0, max: 0 });
+    assert.deepEqual(AUTODJ.setDurationBounds('abc', undefined, 'min'), { min: 0, max: 0 });
+  });
+
+  test('rounds to whole seconds', () => {
+    assert.deepEqual(AUTODJ.setDurationBounds(120.4, 600.6, 'min'), { min: 120, max: 601 });
+  });
+
+  test('clamps to DURATION_MAX_SECONDS', () => {
+    const cap = AUTODJ._internals.DURATION_MAX_SECONDS;
+    assert.deepEqual(AUTODJ.setDurationBounds(999999, 999999, 'min'), { min: cap, max: cap });
+  });
+
+  test('the cap matches the server Joi bound', () => {
+    // Drift here means the panel would happily persist a value the
+    // route rejects with a 400 on every pick.
+    assert.equal(AUTODJ._internals.DURATION_MAX_SECONDS, 86400);
+  });
+
+  test('backwards window pushes the bound the user did NOT edit', () => {
+    // prefer 'min' → the typed min wins and max is dragged up.
+    assert.deepEqual(AUTODJ.setDurationBounds(600, 120, 'min'), { min: 600, max: 600 });
+    // prefer 'max' → the typed max wins and min is pulled down.
+    assert.deepEqual(AUTODJ.setDurationBounds(600, 120, 'max'), { min: 120, max: 120 });
+  });
+
+  test('a single bound is never pushed (nothing to be backwards against)', () => {
+    assert.deepEqual(AUTODJ.setDurationBounds(600, 0, 'min'), { min: 600, max: 0 });
+    assert.deepEqual(AUTODJ.setDurationBounds(0, 120, 'max'), { min: 0, max: 120 });
+  });
+
+  test('never emits a backwards window the server would 400', () => {
+    for (const prefer of ['min', 'max']) {
+      for (const [a, b] of [[600, 120], [1, 86400], [86400, 1], [300, 300]]) {
+        const { min, max } = AUTODJ.setDurationBounds(a, b, prefer);
+        if (min > 0 && max > 0) {
+          assert.ok(min <= max, `${a}/${b} prefer=${prefer} produced ${min} > ${max}`);
+        }
+      }
+    }
+  });
+
+  test('does not touch the enable toggle', () => {
+    // Bounds survive toggling, same as the keyword word-list and the
+    // genre list.
+    AUTODJ.setState({ djDurationEnabled: true });
+    AUTODJ.setDurationBounds(120, 600, 'min');
+    assert.equal(AUTODJ.state.djDurationEnabled, true);
+  });
+
+  test('bounds clamp on rehydrate', () => {
+    localStorage.setItem('mstream-dj-djMinDuration', '999999');
+    localStorage.setItem('mstream-dj-djMaxDuration', '-4');
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djMinDuration, AUTODJ._internals.DURATION_MAX_SECONDS);
+    assert.equal(AUTODJ.state.djMaxDuration, 0);
   });
 });
 
@@ -451,6 +603,16 @@ describe('reset()', () => {
     assert.equal(AUTODJ.state.similar, true);
     assert.equal(AUTODJ.state.bpmContinuity, true);
     assert.equal(AUTODJ.state.bpmTolerance, 12);
+  });
+
+  test('preserves the track-length window (a preference, not session state)', () => {
+    AUTODJ.setState({ djDurationEnabled: true, djAllowUnknownDuration: true });
+    AUTODJ.setDurationBounds(120, 600, 'min');
+    AUTODJ.reset();
+    assert.equal(AUTODJ.state.djDurationEnabled, true);
+    assert.equal(AUTODJ.state.djMinDuration, 120);
+    assert.equal(AUTODJ.state.djMaxDuration, 600);
+    assert.equal(AUTODJ.state.djAllowUnknownDuration, true);
   });
 });
 

@@ -160,8 +160,8 @@
   //      whether the caller passes the flat velvet shape or the
   //      kebab-case wire shape from renderMetadataObj.
   //
-  // `song` shape: `{ bpm, musical_key | 'musical-key', title, artist,
-  // album, filepath }` or any object with those fields readable.
+  // `song` shape: `{ bpm, musical_key | 'musical-key', duration, title,
+  // artist, album, filepath }` or any object with those fields readable.
   // Truthy `bpm` on the song means we KNOW the song's tempo; falsy
   // means unknown → pass-through, server is already filtering at the
   // SQL layer.
@@ -235,6 +235,40 @@
       }
     }
 
+    // Track-length window — defence-in-depth against the server's
+    // pick, mirroring the genre branch above. The server already
+    // enforces this as an always-on base condition, so a survivor of
+    // that filter should never block here under normal operation; the
+    // case this catches is a rescan landing between the server's
+    // SELECT and this client reading the metadata.
+    //
+    // Semantics track buildDurationFilter exactly:
+    //   • bounds are SECONDS; 0 on a side means no bound there
+    //   • unknown duration (null / non-finite) is BLOCKED unless
+    //     `allowUnknownDuration` is on — which is why this branch does
+    //     NOT follow the "untagged passes through" rule the BPM and
+    //     harmonic branches below use. Those relax toward the server's
+    //     own tier fallback; this one is a hard filter with no tier.
+    if (o.durationEnabled) {
+      const min = Number.isFinite(o.minDuration) ? o.minDuration : 0;
+      const max = Number.isFinite(o.maxDuration) ? o.maxDuration : 0;
+      if (min > 0 || max > 0) {
+        // NOT `Number(song.duration)`: Number(null) is 0, which is
+        // finite, so an unknown duration would read as a zero-second
+        // track and fail every min bound instead of taking the
+        // unknown branch. Same trap the player's curBpm guards
+        // against. isFinite on the RAW value routes null / undefined /
+        // non-numeric straight to "unknown".
+        const dur = Number.isFinite(song.duration) ? song.duration : null;
+        if (dur === null) {
+          if (!o.allowUnknownDuration) { return true; }
+        } else {
+          if (min > 0 && dur < min) { return true; }
+          if (max > 0 && dur > max) { return true; }
+        }
+      }
+    }
+
     // BPM continuity — only block when there IS a reference BPM AND
     // the candidate actually has BPM data that falls outside all
     // octave windows. Untagged songs pass through.
@@ -284,6 +318,7 @@
   const IGNORE_LIST_LIMIT = 500;        // mirrors src/api/random.js Joi.array().max(500); defensive in case a future server bug ships an unbounded ignoreList
   const DEFAULT_BPM_TOLERANCE = 8;
   const GENRE_LIST_LIMIT = 200;         // sanity cap on the genre whitelist/blacklist (mirrors Joi)
+  const DURATION_MAX_SECONDS = 86400;   // mirrors src/api/random.js Joi.number().max(86400) — 24h
   const GENRES_CACHE_TTL_MS = 5 * 60 * 1000;  // 5 min — popover dropdown content
   const GENRE_MODES = Object.freeze(['whitelist', 'blacklist']);
 
@@ -403,6 +438,24 @@
         ? _read('djGenreMode', null)
         : 'whitelist',
       djGenres:       Array.isArray(_read('djGenres', null)) ? _read('djGenres', null) : [],
+      // Track-length window. Stored in SECONDS to match the wire units
+      // (tracks.duration is REAL seconds and so is metadata.duration);
+      // the panel renders and edits minutes and converts at the edge.
+      //
+      // 0 on either side means "no bound on this side" — the same
+      // sentinel djMinRating uses for its "Any" option, and the reason
+      // _readNumber exists (a naive `Number(x) || default` would eat a
+      // legitimate 0). The player only puts a bound on the wire when
+      // it is > 0.
+      //
+      // `djAllowUnknownDuration` mirrors the server's
+      // allowUnknownDuration: false (default) drops tracks whose
+      // duration the scanner never read, true keeps them. It is only
+      // consulted when a bound is actually set.
+      djDurationEnabled:      !!_read('djDurationEnabled', false),
+      djMinDuration:          _readNumber('djMinDuration', 0, 0, DURATION_MAX_SECONDS),
+      djMaxDuration:          _readNumber('djMaxDuration', 0, 0, DURATION_MAX_SECONDS),
+      djAllowUnknownDuration: !!_read('djAllowUnknownDuration', false),
       // Sonic similarity (discovery embeddings, PR #697 server API).
       // `sonicMinSimilarity` is the RAW cosine threshold the server
       // takes; the panel slider maps a perceptual scale onto it.
@@ -903,6 +956,48 @@
     return true;
   }
 
+  // ── Track-length window ──────────────────────────────────────────
+  //
+  // Single commit point for both bounds, in SECONDS. Callers hand over
+  // whatever the user typed and get back the pair that was actually
+  // persisted, so a panel can write the clamped values straight back
+  // into its inputs instead of showing something the next request
+  // won't send.
+  //
+  // Three rules, applied in order:
+  //   1. Each bound is clamped to [0, DURATION_MAX_SECONDS]. Blank /
+  //      negative / non-numeric all collapse to 0, which means "no
+  //      bound on this side" (same sentinel djMinRating uses for
+  //      "Any"). Fractional seconds are rounded — the DB stores REAL
+  //      but nobody filters on sub-second boundaries.
+  //   2. A backwards window (min > max, both real) is PUSHED apart
+  //      rather than rejected. `prefer` names the bound to keep: the
+  //      side the user just edited. The server 403s a backwards
+  //      window, and because the duration filter is never relaxed by
+  //      the waterfall that 403 would break every pick for the rest
+  //      of the session — repairing here means the UI can't put the
+  //      session into that state at all.
+  //   3. Both bounds are written together, so the pair is never
+  //      momentarily inconsistent in localStorage.
+  //
+  // Note this does NOT touch djDurationEnabled: bounds survive the
+  // toggle, matching how the keyword word-list and genre list survive
+  // theirs.
+  function setDurationBounds(minSeconds, maxSeconds, prefer) {
+    const clamp = (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) { return 0; }
+      return Math.min(DURATION_MAX_SECONDS, Math.round(n));
+    };
+    let min = clamp(minSeconds);
+    let max = clamp(maxSeconds);
+    if (min > 0 && max > 0 && min > max) {
+      if (prefer === 'max') { min = max; } else { max = min; }
+    }
+    setState({ djMinDuration: min, djMaxDuration: max });
+    return { min, max };
+  }
+
   // ── Genres-list fetch cache ─────────────────────────────────────
   //
   // The popover/dropdown content (the SET of genres in the library)
@@ -1016,6 +1111,12 @@
     getGenreMode,
     setGenreMode,
 
+    // Track-length window (toggle on state.djDurationEnabled, unknown
+    // policy on state.djAllowUnknownDuration — both plain setState
+    // flags; the bounds go through this helper because they clamp and
+    // constrain each other).
+    setDurationBounds,
+
     // Library genres-list cache (5-min TTL; populated by m.js's
     // panel-open lifecycle from /api/v1/db/genres).
     getCachedGenresList,
@@ -1039,6 +1140,7 @@
       GENRE_LIST_LIMIT,
       GENRES_CACHE_TTL_MS,
       GENRE_MODES,
+      DURATION_MAX_SECONDS,
       // Re-read state from localStorage (tests seed LS then probe).
       rehydrate: _rehydrate,
     },

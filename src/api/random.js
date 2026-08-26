@@ -21,6 +21,12 @@
 //     (audit M5 — any BPM/key param used to disable bounding, and the
 //     terminal step then materialised the whole library per pick).
 //
+// Orthogonal to both modes are the ALWAYS-ON base conditions — the
+// genre filter, the sonic-similarity pool, and the duration window.
+// The waterfall relaxes BPM/key/artist constraints WITHIN them and
+// never relaxes them, so an over-narrow one 400s rather than serving
+// a pick outside the user's stated promise.
+//
 // The `ignoreList` the client round-trips holds the last-served TRACK
 // IDS (newest last). Pre-rework lists held candidate-set INDICES, which
 // pointed at different tracks on every call as filters and the library
@@ -188,6 +194,65 @@ export function buildGenreFilter(opts) {
     )`);
     params.push(...opts.genres);
   }
+
+  return { clauses, params };
+}
+
+// ── Duration filter (track-length window) ───────────────────────────────────
+//
+// `minDuration` / `maxDuration` are SECONDS, matching the units of
+// tracks.duration (REAL) and the `duration` field renderMetadataObj
+// puts on the wire. Both bounds are independent and optional — a
+// request can send one, both, or neither.
+//
+// Composed at the BASE-CONDITIONS layer of runRandomSongs alongside
+// the genre filter, so it applies through simple mode AND every
+// waterfall step. Like the genre filter it is "always on" — the
+// waterfall never relaxes it. That's deliberate: "don't play anything
+// under two minutes" is a hard promise (skip interludes, skit tracks,
+// silent outros) in the same way "only these genres" is, and a filter
+// that quietly lapsed on the terminal step would hand the user the
+// exact 30-second interlude they excluded. When nothing survives the
+// route 400s rather than playing out of range.
+//
+// NULL handling is the `allowUnknownDuration` axis:
+//   • false / absent (DEFAULT) — NULL-duration rows are EXCLUDED. A
+//     track whose length the scanner couldn't read can't be shown to
+//     satisfy the bound, and the same reasoning already governs
+//     buildBpmKeyFilter (any BPM/key filter implicitly requires the
+//     column non-null) and the genre whitelist (untagged tracks are
+//     blocked).
+//   • true — NULL-duration rows are ALLOWED through as a third
+//     alternative alongside the range. For libraries the scanner only
+//     partially covers, excluding unknowns can shrink the pool far
+//     more than the user intended; this opts back into "unknown is
+//     fine, just keep the ones I know are wrong out".
+//
+// Both bounds missing → no-op regardless of allowUnknownDuration (an
+// "allow unknowns" flag with no window to apply it to constrains
+// nothing).
+export function buildDurationFilter(opts) {
+  const clauses = [];
+  const params = [];
+
+  const hasMin = Number.isFinite(Number(opts.minDuration)) && Number(opts.minDuration) > 0;
+  const hasMax = Number.isFinite(Number(opts.maxDuration)) && Number(opts.maxDuration) > 0;
+  if (!hasMin && !hasMax) { return { clauses, params }; }
+
+  const range = [];
+  if (hasMin) { range.push('t.duration >= ?'); }
+  if (hasMax) { range.push('t.duration <= ?'); }
+  // `t.duration IS NOT NULL AND` is redundant in front of a >=/<=
+  // comparison (NULL >= x is NULL, which WHERE treats as false), but
+  // it is kept explicit so the exclude-unknowns intent is readable in
+  // the emitted SQL and in EXPLAIN output.
+  const inRange = `t.duration IS NOT NULL AND ${range.join(' AND ')}`;
+
+  clauses.push(opts.allowUnknownDuration === true
+    ? `(t.duration IS NULL OR (${inRange}))`
+    : `(${inRange})`);
+  if (hasMin) { params.push(Number(opts.minDuration)); }
+  if (hasMax) { params.push(Number(opts.maxDuration)); }
 
   return { clauses, params };
 }
@@ -570,6 +635,19 @@ export function runRandomSongs(req, body) {
   if (genre.clauses.length > 0) {
     baseConditions.push(...genre.clauses);
     baseParams.push(...genre.params);
+  }
+
+  // Track-length window — the other ALWAYS-ON base condition (see
+  // buildDurationFilter). Unknown-duration rows are excluded unless the
+  // request opts in via allowUnknownDuration. Both bounds absent → no-op.
+  const duration = buildDurationFilter({
+    minDuration: body.minDuration,
+    maxDuration: body.maxDuration,
+    allowUnknownDuration: body.allowUnknownDuration,
+  });
+  if (duration.clauses.length > 0) {
+    baseConditions.push(...duration.clauses);
+    baseParams.push(...duration.params);
   }
 
   // Playlist files indexed as tracks (supportedAudioFiles m3u) are never
@@ -994,6 +1072,20 @@ export function setup(mstream) {
       // selects a small subset.
       genres: Joi.array().items(Joi.string().min(1).max(200)).max(200).optional(),
       genreMode: Joi.string().valid('whitelist', 'blacklist').default('whitelist'),
+      // Track-length window, in SECONDS (the units of tracks.duration and
+      // of the `duration` field on the wire). Both bounds are independent
+      // and optional; 0 means "no bound on this side" so a client can send
+      // a persisted zero without meaning it. The 86400 ceiling (24h) is
+      // generous headroom over the longest real audiobook chapter — like
+      // the BPM bounds it exists to reject garbage loudly rather than
+      // silently emit a clause that matches nothing.
+      //
+      // `allowUnknownDuration` flips NULL handling: absent/false excludes
+      // rows the scanner couldn't read a length from, true lets them
+      // through alongside the in-range rows. See buildDurationFilter.
+      minDuration: Joi.number().min(0).max(86400).optional(),
+      maxDuration: Joi.number().min(0).max(86400).optional(),
+      allowUnknownDuration: Joi.boolean().optional(),
       // Sonic similarity (discovery embeddings) — both-or-neither, enforced
       // by the .and() below.
       //   • similarTo:     1-8 file paths. One = plain seed; several average
@@ -1007,7 +1099,21 @@ export function setup(mstream) {
       //                    this; the API takes the raw value.)
       similarTo: Joi.array().items(Joi.string()).min(1).max(8).optional(),
       minSimilarity: Joi.number().min(0).max(1).optional(),
-    }).and('similarTo', 'minSimilarity');
+    }).and('similarTo', 'minSimilarity')
+      // Backwards duration window ({minDuration: 600, maxDuration: 60}) is
+      // the same class of typo as a backwards bpmRange: it produces a
+      // clause that matches nothing, and because the duration filter is
+      // never relaxed by the waterfall it would 400 every pick for the
+      // rest of the session with no hint as to why. Reject at the
+      // boundary. Only fires when BOTH bounds are real (>0) — a lone
+      // bound, or a persisted 0 meaning "no bound", constrains nothing
+      // on its side and can't be backwards.
+      .custom((v, helpers) => {
+        if (v.minDuration > 0 && v.maxDuration > 0 && v.minDuration > v.maxDuration) {
+          return helpers.error('any.custom', { message: 'minDuration must be <= maxDuration' });
+        }
+        return v;
+      }, 'duration window ordering');
     const { value } = joiValidate(schema, req.body || {});
 
     res.json(runRandomSongs(req, value));
