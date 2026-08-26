@@ -1,6 +1,28 @@
 # Release Instructions
 
-Getting github actions to properly work requires a specific set of steps.
+Cutting a release is one command:
+
+```shell
+sh scripts/release.sh X.Y.Z --watch
+```
+
+It runs the whole ritual below — preflight (clean up-to-date master, gh
+authed, version sane and untagged), bump + push, wait for the launcher
+binaries commit, tag the right SHA, confirm the tag build started — and
+with `--watch` rides the build and summarizes the draft. If GitHub drops a
+push or tag event (it happens — v6.24.0 shipped through an Actions outage),
+the script falls back to `gh workflow run` on the same ref, which is
+semantically identical. `--dry-run` stops after preflight; the script is
+safe to re-run after any failure — it refuses or skips whatever already
+happened.
+
+The one thing it never does is publish: the tag build leaves a **draft**
+release. Review it, then publish by hand — publishing is what makes the
+version visible to every install's next update check, and it fires the
+downstream jobs (npm publish, demo deploy, website version stamp).
+
+## The ritual the script encodes (by hand, if you ever need it)
+
 The order matters: the release tag must land on a commit whose committed
 launcher binaries were built for THAT version — the tag build asserts it
 and fails otherwise.
