@@ -1,7 +1,11 @@
 # Bundled Ghostty console (macOS)
 
 `manifest.json` pins the [Ghostty](https://ghostty.org) release the macOS
-bundles ship as `console/Ghostty.app`, beside `mStream.app`. The bundler
+bundles ship as `console/Ghostty.app`, beside `mStream.app`. The .pkg
+installer carries the same app as its own component (`io.mstream.console`,
+payload at `/Library/Application Support/mStream/console/` — a pkg install
+has no versioned bundle dir, so the launcher checks that fixed system path
+third). The bundler
 (`scripts/build-bun.mjs`) downloads the pinned `Ghostty.dmg` from
 `https://release.files.ghostty.org/<version>/`, refuses anything that does
 not hash to the pinned sha256, extracts the app, and asserts its
