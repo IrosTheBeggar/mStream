@@ -1689,6 +1689,7 @@ jobs:
         run: |
           D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
           cp -R "$D" "$RUNNER_TEMP/inv"
+          rm -rf "$RUNNER_TEMP/inv/save"   # the copy must be DB-pristine too: the main smoke's library would trip the setupComplete backfill
           case "${{ matrix.key }}" in
             darwin-*) SRV="$RUNNER_TEMP/inv/mStream.app/Contents/MacOS/mstream-server" ;;
             win-*)    SRV="$RUNNER_TEMP/inv/mstream-server.exe" ;;
