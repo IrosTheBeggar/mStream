@@ -6,9 +6,9 @@ const VUEPLAYERCORE = (() => {
   };
 
   mstreamModule.altLayout = {
-    'moveMeta': false,
+    'moveMeta': true,
     'audioBookCtrls': false,
-    'flipPlayer': false,
+    'flipPlayer': true,
     'compressArt': false,
     'hideTopBar': false,
     'waveformBar': true
@@ -16,17 +16,12 @@ const VUEPLAYERCORE = (() => {
 
   try {
     const altLayout = JSON.parse(localStorage.getItem('altLayout'));
-    mstreamModule.altLayout.flipPlayer = typeof altLayout.flipPlayer === 'boolean' ? altLayout.flipPlayer : false;
+    mstreamModule.altLayout.flipPlayer = typeof altLayout.flipPlayer === 'boolean' ? altLayout.flipPlayer : true;
     mstreamModule.altLayout.audioBookCtrls = typeof altLayout.audioBookCtrls === 'boolean' ? altLayout.audioBookCtrls : false;
-    mstreamModule.altLayout.moveMeta = typeof altLayout.moveMeta === 'boolean' ? altLayout.moveMeta : false;
+    mstreamModule.altLayout.moveMeta = typeof altLayout.moveMeta === 'boolean' ? altLayout.moveMeta : true;
     mstreamModule.altLayout.compressArt = typeof altLayout.compressArt === 'boolean' ? altLayout.compressArt : false;
     mstreamModule.altLayout.hideTopBar = typeof altLayout.hideTopBar === 'boolean' ? altLayout.hideTopBar : false;
     mstreamModule.altLayout.waveformBar = typeof altLayout.waveformBar === 'boolean' ? altLayout.waveformBar : true;
-
-    if (altLayout.flipPlayer === true) {
-      document.getElementById('content').classList.add('col-rev');
-      document.getElementById('flip-me').classList.add('col-rev');
-    }
 
     // When the top bar is disabled, mark the body so CSS can:
     //   - hide #nav-bar
@@ -37,6 +32,14 @@ const VUEPLAYERCORE = (() => {
       document.body.classList.add('top-bar-hidden');
     }
   } catch (e) {}
+
+  // Apply the resolved player position. This runs outside the try/catch above so
+  // it also fires on a fresh browser with no stored altLayout, where flipPlayer
+  // now defaults to true.
+  if (mstreamModule.altLayout.flipPlayer === true) {
+    document.getElementById('content').classList.add('col-rev');
+    document.getElementById('flip-me').classList.add('col-rev');
+  }
 
   const replayGainPreGainSettings = [
     -15.0,
