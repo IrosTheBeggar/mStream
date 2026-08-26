@@ -473,6 +473,103 @@ if (!t.musl) {
   }
 }
 
+// ── Ghostty console (macOS only) ─────────────────────────────────────────────
+// The setup wizard's first-class terminal: Apple's Terminal.app has no pixel
+// protocol, so without this every default-terminal mac user gets character-art
+// fallbacks. The pinned Ghostty.dmg (bin/ghostty/manifest.json) is downloaded,
+// sha-verified, and its Ghostty.app staged BESIDE mStream.app at console/ —
+// never nested, never re-signed: the app ships byte-identical so Mitchell
+// Hashimoto's notarization stays intact, and CI's sign step (scoped to
+// mStream.app) never touches it. The tray prefers it for "Set up mStream" and
+// falls back to Terminal.app when absent.
+if (isMac) {
+  const skipConsole = (why) => {
+    if (process.env.CI && !process.env.MSTREAM_ALLOW_MISSING_CONSOLE) {
+      console.error(`  FATAL: ghostty console staging failed for ${key}: ${why} (set MSTREAM_ALLOW_MISSING_CONSOLE=1 to bundle without it on purpose)`);
+      process.exit(1);
+    }
+    console.warn(`  ghostty console not staged (${why}) — Setup falls back to Terminal.app`);
+  };
+  let gm = null;
+  try {
+    gm = JSON.parse(readFileSync(join(root, 'bin', 'ghostty', 'manifest.json'), 'utf8'));
+  } catch (_err) {
+    // unreadable/absent manifest = the same no-pin skip below
+  }
+  const TOKEN = /^[A-Za-z0-9._-]+$/;
+  if (!gm || !TOKEN.test(gm.version || '') || !TOKEN.test(gm.file || '')
+      || !/^[0-9a-f]{64}$/.test(gm.sha256 || '') || !Number.isInteger(gm.size) || gm.size <= 0
+      || !/^[A-Z0-9]{10}$/.test(gm.teamId || '')) {
+    skipConsole('bin/ghostty/manifest.json missing or malformed');
+  } else if (process.platform !== 'darwin') {
+    skipConsole('dmg extraction needs a macOS build host (hdiutil)');
+  } else {
+    const base = (process.env.MSTREAM_CONSOLE_BASE || '').replace(/\/+$/, '');
+    const url = base ? `${base}/${gm.file}` : `https://release.files.ghostty.org/${gm.version}/${gm.file}`;
+    const cacheDir = join(root, 'dist', 'console-cache');
+    mkdirSync(cacheDir, { recursive: true });
+    const cached = join(cacheDir, `${gm.sha256.slice(0, 12)}-${gm.file}`);
+    let ok = existsSync(cached)
+      && createHash('sha256').update(readFileSync(cached)).digest('hex') === gm.sha256;
+    if (!ok) {
+      console.log(`  fetching ghostty console: ${url}`);
+      try {
+        const res = await fetch(url, { redirect: 'follow' });
+        if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
+        const bytes = Buffer.from(await res.arrayBuffer());
+        const gotSha = createHash('sha256').update(bytes).digest('hex');
+        if (gotSha !== gm.sha256 || bytes.length !== gm.size) {
+          // A hash mismatch is NEVER skippable — wrong bytes must not ship,
+          // and must not poison the cache.
+          console.error(`  FATAL: ${gm.file} failed verification (sha ${gotSha.slice(0, 12)}… vs pinned ${gm.sha256.slice(0, 12)}…, ${bytes.length} vs ${gm.size} bytes)`);
+          process.exit(1);
+        }
+        writeFileSync(cached, bytes);
+        ok = true;
+      } catch (err) {
+        skipConsole(`download failed: ${err.message}`);
+      }
+    }
+    if (ok) {
+      const mnt = join(root, 'dist', `console-mnt-${key}`);
+      rmSync(mnt, { recursive: true, force: true });
+      const attach = spawnSync('hdiutil', ['attach', '-nobrowse', '-readonly', '-mountpoint', mnt, cached], { stdio: 'pipe' });
+      if (attach.status !== 0) {
+        skipConsole(`hdiutil attach failed: ${attach.stderr}`);
+      } else {
+        try {
+          const src = join(mnt, 'Ghostty.app');
+          const dest = join(stageDir, 'console', 'Ghostty.app');
+          mkdirSync(join(stageDir, 'console'), { recursive: true });
+          rmSync(dest, { recursive: true, force: true });
+          // ditto, not cpSync: the .app's framework symlinks and resource
+          // forks must survive exactly, and ditto is the macOS tool for it.
+          const copy = spawnSync('ditto', [src, dest], { stdio: 'pipe' });
+          if (copy.status !== 0) { throw new Error(`ditto: ${copy.stderr}`); }
+          // The pin covers the dmg's bytes; assert the signer on the staged
+          // app too, so a re-signed upstream re-release under a reused
+          // version can never slide through a manifest edit unnoticed.
+          const sig = spawnSync('codesign', ['-dv', dest], { stdio: 'pipe', encoding: 'utf8' });
+          const team = (sig.stderr.match(/TeamIdentifier=([A-Z0-9]{10})/) || [])[1];
+          if (team !== gm.teamId) { throw new Error(`TeamIdentifier ${team} != pinned ${gm.teamId}`); }
+          const verify = spawnSync('codesign', ['--verify', '--strict', dest], { stdio: 'pipe', encoding: 'utf8' });
+          if (verify.status !== 0) { throw new Error(`codesign --verify: ${verify.stderr}`); }
+          // MIT: the license travels with the software (the app carries none).
+          cpSync(join(root, 'bin', 'ghostty', 'LICENSE'), join(stageDir, 'console', 'GHOSTTY-LICENSE.txt'));
+          console.log(`  staged ghostty console ${gm.version}: console/Ghostty.app (signed ${gm.teamId}, dmg sha verified)`);
+        } catch (err) {
+          rmSync(join(stageDir, 'console'), { recursive: true, force: true });
+          console.error(`  FATAL: ghostty console staging failed after a verified download: ${err.message}`);
+          process.exit(1);
+        } finally {
+          spawnSync('hdiutil', ['detach', mnt, '-force'], { stdio: 'pipe' });
+          rmSync(mnt, { recursive: true, force: true });
+        }
+      }
+    }
+  }
+}
+
 // Iroh remote-access tunnel: @number0/iroh ships as a NAPI-RS *native addon*
 // (prebuilt .node), not a spawned exe like the rust sidecars. A Bun standalone
 // binary can't resolve it from node_modules, so we stage the target's .node next

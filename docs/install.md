@@ -8,7 +8,11 @@ runtime — no Node.js install.
 
 A bundle is a **folder**, not a single file: the desktop launcher, the server
 binary (`mstream-server`), `webapp/` (the UI), and `bin/` (sidecar binaries).
-Keep them together; the bundle itself can live anywhere.
+macOS bundles also carry `console/Ghostty.app` — a pinned, untouched copy of
+the [Ghostty](https://ghostty.org) terminal (MIT; its license ships beside it)
+that the tray's setup wizard opens in, because Apple's Terminal.app can't
+draw the wizard's pixel artwork. Keep them together; the bundle itself can
+live anywhere.
 
 ## Install with one command
 
@@ -140,9 +144,12 @@ Restart server · Quit), and opens your browser at the player. Start-at-login
 is on by default; one click in the tray menu turns it off. **Set up mStream**
 opens a terminal running the guided setup wizard (the bundled
 `mstream-player setup`) — music folders, admin account, extras — and stays
-useful later: reopened, it picks up what the server already has. Headless
-installs get the same invitation as a boot log line whenever the server has
-no folders and no accounts yet.
+useful later: reopened, it picks up what the server already has. On macOS it
+opens in the bundled mStream console (Ghostty, with the mStream Dock icon),
+which draws the wizard's artwork and Quick Connect QR as real pixels;
+without the console it falls back to Terminal.app, and Windows prefers
+Windows Terminal. Headless installs get the same invitation as a boot log
+line whenever the server has no folders and no accounts yet.
 
 **Terminal users lose nothing.** The same desktop binary run from a terminal
 behaves exactly like the server itself (same flags, output, and exit codes) —
