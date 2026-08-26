@@ -231,6 +231,34 @@ export function buildGenreFilter(opts) {
 // Both bounds missing → no-op regardless of allowUnknownDuration (an
 // "allow unknowns" flag with no window to apply it to constrains
 // nothing).
+//
+// ── There is deliberately NO index on tracks.duration ───────────────────────
+//
+// The obvious companion to this filter is `CREATE INDEX ... ON
+// tracks(duration)`, mirroring V33's idx_tracks_bpm. It was built,
+// measured against the real route at 100k tracks, and REJECTED —
+// it makes the common case slower. Two runs, phase order reversed the
+// second time to rule out cache warming, median of 25 picks:
+//
+//   window                        with idx   without   ratio
+//   broad  2-6 min   (~86% pass)    99 ms      41 ms    0.41x  ← slower
+//   broad + allowUnknown            99 ms      40 ms    0.40x  ← slower
+//   narrow <60s      (~5% pass)      6.5 ms    15.6 ms  2.41x
+//   very narrow >20m (~1% pass)      1.8 ms    12.4 ms  6.85x
+//
+// The route ends every candidate query in `ORDER BY [tier,] RANDOM()
+// LIMIT n`, which must visit every row passing WHERE. For a selective
+// window the index skips most of the table and wins big; for a broad
+// one the planner still takes it (ANALYZE run, stats present) and pays
+// ~86k index seeks plus row lookups where a sequential scan would do.
+//
+// The trade is backwards: it optimises windows that are already fast in
+// absolute terms (12 ms → 2 ms, on a once-per-song call — worth nothing)
+// and pessimises the slowest, most likely setting. "2 to 6 minutes" is
+// the default mental model for "normal songs". 41 ms unindexed at 100k
+// tracks is fine; 99 ms indexed is a regression for no user-visible gain.
+//
+// If you are about to add that index: re-run the measurement first.
 export function buildDurationFilter(opts) {
   const clauses = [];
   const params = [];
