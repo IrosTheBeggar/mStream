@@ -408,9 +408,16 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   // not damage.
   if (!config.program.setupComplete
       && (dbManager.getAllLibraries().length > 0 || dbManager.getAllUsers().length > 0)) {
-    adminUtil.markSetupComplete().catch((err) => {
+    // Awaited on purpose: the launcher reads the flag from the config file
+    // when its health probe reports the server up, and an upgrader's very
+    // first boot of a flag-aware build must have the backfill ON DISK
+    // before listen — a fire-and-forget write raced that read, and losing
+    // it would greet a years-old install with the first-run wizard.
+    try {
+      await adminUtil.markSetupComplete();
+    } catch (err) {
       winston.warn(`could not backfill setupComplete: ${err.message}`);
-    });
+    }
   }
 
   // The separate music-discovery DB opens at boot only when collection is
