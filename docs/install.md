@@ -143,8 +143,11 @@ Admin Panel · Quick Connect · Set up mStream · Start at login · View logs ·
 Restart server · Quit), and opens your browser at the player. Start-at-login
 is on by default; one click in the tray menu turns it off. **Set up mStream**
 opens a terminal running the guided setup wizard (the bundled
-`mstream-player setup`) — music folders, admin account, extras — and stays
-useful later: reopened, it picks up what the server already has. On macOS it
+`mstream-player setup`) — music folders, admin account, extras. It is
+one-time onboarding: on a first install it opens by itself, and once the
+server is set up the menu item greys out (the wizard itself declines
+configured servers) — everything after that lives in the admin panel. On
+macOS it
 opens in the bundled mStream console (Ghostty, with the mStream Dock icon),
 which draws the wizard's artwork and Quick Connect QR as real pixels;
 without the console it falls back to Terminal.app, and Windows prefers

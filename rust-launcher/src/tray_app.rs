@@ -304,6 +304,7 @@ pub fn run(args: LauncherArgs) -> ! {
     // Update-awareness: the server's checker writes update-status.json in
     // the shared data home; the tray re-reads it on every minute tick.
     let mut update_item: Option<MenuItem> = None;
+    let mut setup_item_slot: Option<MenuItem> = None;
     let mut upd: Option<paths::UpdateStatus> = paths::read_update_status();
     let mut upd_text = String::new();
     // The apply request we last ACTED on (the file's applyRequestedAt, else
@@ -358,11 +359,19 @@ pub fn run(args: LauncherArgs) -> ! {
                 upd_text = utext;
                 let open_item = MenuItem::with_id("open", "Open Admin Panel", true, None);
                 let qc_item = MenuItem::with_id("quick-connect", "Quick Connect", true, None);
-                // Guided first-run setup (folders, account, extras) in a real
-                // terminal. Stays useful after first run — the wizard seeds
-                // itself from the server's committed state — so it is always
-                // offered, greyed only when this install has no player binary.
-                let setup_item = MenuItem::with_id("setup", "Set up mStream", player_bin.is_some(), None);
+                // Guided first-run setup (folders, account, extras) in a
+                // real terminal — ONE-TIME onboarding by design (operator
+                // decision, PR #915): once the library is configured the
+                // item greys out, because post-setup work belongs to the
+                // admin panel; the wizard itself parks on configured
+                // servers as the backstop. Also greyed when this install
+                // has no player binary. Re-checked each minute tick.
+                let setup_item = MenuItem::with_id(
+                    "setup",
+                    "Set up mStream",
+                    player_bin.is_some() && !paths::library_is_configured(&config),
+                    None,
+                );
                 let auto_item =
                     CheckMenuItem::with_id("autostart", "Start at login", true, autostart::is_enabled(), None);
                 let logs_item = MenuItem::with_id("logs", "View logs", true, None);
@@ -374,6 +383,7 @@ pub fn run(args: LauncherArgs) -> ! {
                 let _ = menu.append(&open_item);
                 let _ = menu.append(&qc_item);
                 let _ = menu.append(&setup_item);
+                setup_item_slot = Some(setup_item);
                 let _ = menu.append(&PredefinedMenuItem::separator());
                 let _ = menu.append(&auto_item);
                 let _ = menu.append(&PredefinedMenuItem::separator());
@@ -502,6 +512,12 @@ pub fn run(args: LauncherArgs) -> ! {
                     {
                         status_rendered_at = Some(now);
                         show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
+                    }
+                    // The one-time wizard's launch point follows the library
+                    // state (a cheap config read at minute cadence): the
+                    // setup that just finished greys its own menu item.
+                    if let Some(item) = &setup_item_slot {
+                        item.set_enabled(player_bin.is_some() && !paths::library_is_configured(&config_loop));
                     }
                 }
                 AppEvent::Menu(id) => match id.as_str() {
