@@ -1109,6 +1109,29 @@ jobs:
           pkgbuild --analyze --root pkgwork/root pkgwork/component.plist
           /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" pkgwork/component.plist
           pkgbuild --root pkgwork/root --component-plist pkgwork/component.plist --scripts pkgwork/scripts --install-location /Applications --identifier io.mstream.server --version "$VER" pkgwork/component.pkg
+          # Second component: the bundled Ghostty console (bin/ghostty/).
+          # Its payload root maps to /Library/Application Support/mStream -
+          # the fixed system path the launcher checks third
+          # (rust-launcher paths.rs find_console_app): a pkg install has no
+          # versioned bundle dir and no `current` link. The app ships
+          # byte-identical (ditto, relocatable=false, never re-signed), so
+          # Ghostty's own notarization rides along inside our pkg.
+          CONSOLE_LINE=""
+          CONSOLE_CHOICE=""
+          CONSOLE_REF=""
+          if [ -d "$D/console/Ghostty.app" ]; then
+            rm -rf pkgwork/console-root && mkdir -p pkgwork/console-root/console
+            ditto "$D/console/Ghostty.app" pkgwork/console-root/console/Ghostty.app
+            cp "$D/console/GHOSTTY-LICENSE.txt" pkgwork/console-root/console/
+            pkgbuild --analyze --root pkgwork/console-root pkgwork/console.plist
+            /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" pkgwork/console.plist
+            pkgbuild --root pkgwork/console-root --component-plist pkgwork/console.plist --install-location "/Library/Application Support/mStream" --identifier io.mstream.console --version "$VER" pkgwork/console.pkg
+            CONSOLE_LINE='<line choice="io.mstream.console"/>'
+            CONSOLE_CHOICE='<choice id="io.mstream.console" visible="false"><pkg-ref id="io.mstream.console"/></choice>'
+            CONSOLE_REF="<pkg-ref id=\"io.mstream.console\" version=\"$VER\" onConclusion=\"none\">console.pkg</pkg-ref>"
+          else
+            echo "::warning::no console in the staged bundle - the pkg ships without io.mstream.console"
+          fi
           case "$KEY" in
             darwin-arm64) ARCHS="arm64" ;;
             *)            ARCHS="x86_64,arm64" ;;   # x64 payload runs under Rosetta
@@ -1120,9 +1143,10 @@ jobs:
             <options customize="never" require-scripts="false" hostArchitectures="$ARCHS"/>
             <volume-check><allowed-os-versions><os-version min="11.0"/></allowed-os-versions></volume-check>
             <domains enable_localSystem="true"/>
-            <choices-outline><line choice="default"><line choice="io.mstream.server"/></line></choices-outline>
+            <choices-outline><line choice="default"><line choice="io.mstream.server"/>$CONSOLE_LINE</line></choices-outline>
             <choice id="default"/>
             <choice id="io.mstream.server" visible="false"><pkg-ref id="io.mstream.server"/></choice>
+            $CONSOLE_CHOICE$CONSOLE_REF
             <pkg-ref id="io.mstream.server" version="$VER" onConclusion="none">component.pkg</pkg-ref>
           </installer-gui-script>
           EOF
@@ -1232,6 +1256,14 @@ jobs:
           kill -0 "$OLD_PID" 2>/dev/null || { echo "::error::the seeded old instance is not running - the restart-path test would be vacuous"; exit 1; }
           sudo installer -pkg "$PKG" -target /
           test -d /Applications/mStream.app || { echo "::error::pkg install did not produce /Applications/mStream.app"; exit 1; }
+          CONSOLE_APP="/Library/Application Support/mStream/console/Ghostty.app"
+          test -d "$CONSOLE_APP" || { echo "::error::pkg install did not produce $CONSOLE_APP"; exit 1; }
+          codesign --verify --strict "$CONSOLE_APP" || { echo "::error::bundled console signature broken after pkg install"; exit 1; }
+          # File-first, not `--version | head -1`: this step runs under
+          # pipefail, and head closing the pipe early would fail a healthy
+          # multi-line --version with SIGPIPE.
+          "$CONSOLE_APP/Contents/MacOS/ghostty" --version > "$RUNNER_TEMP/console-version.txt" 2>&1
+          head -1 "$RUNNER_TEMP/console-version.txt"
           if kill -0 "$OLD_PID" 2>/dev/null; then
             echo "::error::postinstall left the old running instance alive"; exit 1
           fi
@@ -1265,6 +1297,8 @@ jobs:
           echo "pkg-installed server served 200 on :3557"
           sudo rm -rf /Applications/mStream.app
           sudo pkgutil --forget io.mstream.server
+          sudo rm -rf "/Library/Application Support/mStream/console"
+          sudo pkgutil --forget io.mstream.console
           echo "PKG INSTALL SMOKE OK"
 
       # darwin-x64 is the one shipped artifact whose binaries never execute

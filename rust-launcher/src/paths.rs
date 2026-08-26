@@ -262,17 +262,23 @@ pub struct ConsoleLaunch {
 
 /// The bundled Ghostty console — macOS bundles stage it at
 /// console/Ghostty.app BESIDE mStream.app (never inside: both notarization
-/// seals stay independent; scripts/build-bun.mjs). Two layouts can hold one:
-/// running out of the versioned bundle dir itself (an ancestor of the server
-/// binary), and the ~/Applications copy of mStream.app, whose versioned dir
-/// is wherever the install root's `current` link points. None on the other
-/// platforms and on consoleless installs — the caller falls back to the
-/// Terminal.app path.
+/// seals stay independent; scripts/build-bun.mjs). Three layouts can hold
+/// one, checked most-specific first: running out of the versioned bundle dir
+/// itself (an ancestor of the server binary); the ~/Applications copy of
+/// mStream.app, whose versioned dir is wherever the install root's `current`
+/// link points; and the .pkg install, whose io.mstream.console component
+/// lands at the fixed system path (/Applications/mStream.app has no
+/// versioned dir or current link at all). None on the other platforms and
+/// on consoleless installs — the caller falls back to the Terminal.app path.
 pub fn find_console_app(server_bin: &Path) -> Option<PathBuf> {
-    find_console_app_in(server_bin, &data_home().join("app"))
+    find_console_app_in(
+        server_bin,
+        &data_home().join("app"),
+        Path::new("/Library/Application Support/mStream"),
+    )
 }
 
-fn find_console_app_in(server_bin: &Path, install_root: &Path) -> Option<PathBuf> {
+fn find_console_app_in(server_bin: &Path, install_root: &Path, system_root: &Path) -> Option<PathBuf> {
     let ghostty = |app: &Path| app.join("Contents").join("MacOS").join("ghostty");
     let mut dir = server_bin.parent();
     for _ in 0..6 {
@@ -284,7 +290,11 @@ fn find_console_app_in(server_bin: &Path, install_root: &Path) -> Option<PathBuf
         dir = d.parent();
     }
     let current = install_root.join("current").join("console").join("Ghostty.app");
-    ghostty(&current).exists().then_some(current)
+    if ghostty(&current).exists() {
+        return Some(current);
+    }
+    let system = system_root.join("console").join("Ghostty.app");
+    ghostty(&system).exists().then_some(system)
 }
 
 /// Escape a literal string for use inside a POSIX ERE (the pgrep -f
@@ -550,32 +560,50 @@ mod tests {
         let bundle = root.join("mStream-9.9.9-darwin-arm64");
         let server = bundle.join("mStream.app/Contents/MacOS/mstream-server");
         let install_root = root.join("approot");
+        let system_root = root.join("syslib");
         std::fs::create_dir_all(server.parent().unwrap()).unwrap();
-        assert_eq!(find_console_app_in(&server, &install_root), None, "nothing staged yet");
+        assert_eq!(find_console_app_in(&server, &install_root, &system_root), None, "nothing staged yet");
 
         let ghostty_bin_dir = bundle.join("console/Ghostty.app/Contents/MacOS");
         std::fs::create_dir_all(&ghostty_bin_dir).unwrap();
         std::fs::write(ghostty_bin_dir.join("ghostty"), b"x").unwrap();
         assert_eq!(
-            find_console_app_in(&server, &install_root),
+            find_console_app_in(&server, &install_root, &system_root),
             Some(bundle.join("console/Ghostty.app")),
             "ancestor walk finds the bundle's console"
         );
 
-        // The ~/Applications copy: the server binary is inside the copied
-        // .app, nowhere near console/ — resolution goes through the install
-        // root's `current` link (unix-only mechanics, like the install).
+        // The .pkg layout: the server binary is inside /Applications'
+        // mStream.app, with NO versioned dir and NO current link — the
+        // io.mstream.console component's fixed system path is the answer.
+        let apps_copy = root.join("Applications/mStream.app/Contents/MacOS/mstream-server");
+        std::fs::create_dir_all(apps_copy.parent().unwrap()).unwrap();
+        assert_eq!(
+            find_console_app_in(&apps_copy, &install_root, &system_root),
+            None,
+            "no current link and no system console yet"
+        );
+        let sys_bin_dir = system_root.join("console/Ghostty.app/Contents/MacOS");
+        std::fs::create_dir_all(&sys_bin_dir).unwrap();
+        std::fs::write(sys_bin_dir.join("ghostty"), b"x").unwrap();
+        assert_eq!(
+            find_console_app_in(&apps_copy, &install_root, &system_root),
+            Some(system_root.join("console/Ghostty.app")),
+            "the pkg install resolves through the system path"
+        );
+
+        // The ~/Applications copy of a SCRIPT install: resolution goes
+        // through the install root's `current` link, which outranks the
+        // system path when both exist (unix-only mechanics, like the
+        // install).
         #[cfg(unix)]
         {
-            let apps_copy = root.join("Applications/mStream.app/Contents/MacOS/mstream-server");
-            std::fs::create_dir_all(apps_copy.parent().unwrap()).unwrap();
-            assert_eq!(find_console_app_in(&apps_copy, &install_root), None, "no current link yet");
             std::fs::create_dir_all(&install_root).unwrap();
             std::os::unix::fs::symlink(&bundle, install_root.join("current")).unwrap();
             assert_eq!(
-                find_console_app_in(&apps_copy, &install_root),
+                find_console_app_in(&apps_copy, &install_root, &system_root),
                 Some(install_root.join("current/console/Ghostty.app")),
-                "the ~/Applications copy resolves through current"
+                "the current link outranks the pkg system path"
             );
         }
         let _ = std::fs::remove_dir_all(&root);
