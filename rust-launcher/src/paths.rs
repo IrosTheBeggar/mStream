@@ -202,8 +202,8 @@ pub fn library_is_configured(config: &Path) -> bool {
 /// boot, a second instance yielding, a macOS reopen): the player when there
 /// is music, the ADMIN PANEL when the library has no folders yet — a fresh
 /// install's player is a dead end, and the admin panel is where folders get
-/// added. The tray's explicit "Open mStream" item stays literal (always the
-/// player) so the menu does what it says.
+/// added. The tray's explicit "Open Admin Panel" item does NOT route
+/// through this — it always opens /admin, literally what it says.
 pub fn browse_target(config: &Path, ep: &Endpoint) -> String {
     if library_is_configured(config) {
         server_url(ep)

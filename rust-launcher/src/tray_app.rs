@@ -356,7 +356,7 @@ pub fn run(args: LauncherArgs) -> ! {
                     update_item_view(upd.as_ref(), &updates_dir(), relaunch_target_exists(exe_real.as_deref()));
                 let update = MenuItem::with_id("update", utext.clone(), uaction != UpdateAction::None, None);
                 upd_text = utext;
-                let open_item = MenuItem::with_id("open", "Open mStream", true, None);
+                let open_item = MenuItem::with_id("open", "Open Admin Panel", true, None);
                 let qc_item = MenuItem::with_id("quick-connect", "Quick Connect", true, None);
                 // Guided first-run setup (folders, account, extras) in a real
                 // terminal. Stays useful after first run — the wizard seeds
@@ -506,7 +506,11 @@ pub fn run(args: LauncherArgs) -> ! {
                 }
                 AppEvent::Menu(id) => match id.as_str() {
                     "open" => {
-                        let _ = open::that_detached(url.clone());
+                        // The admin panel, explicitly — the tray is the
+                        // operator's surface, and listening happens in the
+                        // apps/players. (The post-boot browser announce keeps
+                        // its own routing: paths::browse_target.)
+                        let _ = open::that_detached(format!("{url}/admin"));
                     }
                     "quick-connect" => {
                         // The wizard's Quick Connect page (pixel pairing QR)

@@ -139,7 +139,7 @@ directly, with `manifest.json` holding their sha256s:
 Windows, `mStream.app` on macOS, `mstream-desktop` on Linux — starts the
 server in the background, puts an mStream icon in your tray / menu bar
 (a status line — "Running · up 3h 12m", or Starting… / Stopped — then Open
-mStream · Quick Connect · Set up mStream · Start at login · View logs ·
+Admin Panel · Quick Connect · Set up mStream · Start at login · View logs ·
 Restart server · Quit), and opens your browser at the player. Start-at-login
 is on by default; one click in the tray menu turns it off. **Set up mStream**
 opens a terminal running the guided setup wizard (the bundled
