@@ -215,9 +215,14 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     // (Desktop-launch users see the launcher's own boot-failure dialog; this
     // message is what its server log carries.)
     const denied = err.code === 'EROFS' || err.code === 'EACCES' || err.code === 'EPERM';
+    // EJSONPARSE (util/atomic-json.js readJsonFile): the config file itself
+    // is broken JSON — say so with the path, don't bury it under the generic
+    // validate line (a hand-edited config on Windows is the common case).
     winston.error(denied
       ? `mStream could not start — it can't write to ${configFile}: the location is read-only or permission was denied (${err.message})`
-      : 'Failed to validate config file', { stack: err });
+      : err.code === 'EJSONPARSE'
+        ? `mStream could not start — config file ${err.message}`
+        : 'Failed to validate config file', { stack: err });
     process.exit(1);
   }
 

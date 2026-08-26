@@ -31,6 +31,7 @@
 // server is still serving).
 import fs from 'fs';
 import path from 'path';
+import { stripBom } from './atomic-json.js';
 
 const PROBE_TIMEOUT_MS = 30_000;
 
@@ -77,7 +78,7 @@ export async function runBootProbe(configPath) {
     let raw;
     try {
       raw = fs.readFileSync(configPath, 'utf8');
-      parsed = JSON.parse(raw);
+      parsed = JSON.parse(stripBom(raw));
     } catch (err) {
       clearTimeout(timer);
       return fail(`config ${configPath} did not parse: ${err.message}`);

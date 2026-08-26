@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import Joi from 'joi';
 import winston from 'winston';
 import { appRoot, dataRoot } from '../util/esm-helpers.js';
+import { readJsonFile } from '../util/atomic-json.js';
 import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
 import { CLIENT_TYPE, ENABLED_FOR } from '../torrent/constants.js';
 import { EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL, RETIRED_EMBEDDING_MODELS }
@@ -821,7 +822,7 @@ export async function setup(configFileArg) {
     await fs.writeFile(configFileArg, JSON.stringify({}), 'utf8');
   }
 
-  const programData = JSON.parse(await fs.readFile(configFileArg, 'utf8'));
+  const programData = await readJsonFile(configFileArg);
   configFile = configFileArg;
 
   // Verify paths are real
@@ -963,7 +964,7 @@ export async function setup(configFileArg) {
   // Persist a stable DLNA UUID so renderers recognise the server across reboots
   if (!program.dlna.uuid) {
     program.dlna.uuid = crypto.randomUUID();
-    const rawConfig = JSON.parse(await fs.readFile(configFileArg, 'utf8'));
+    const rawConfig = await readJsonFile(configFileArg);
     if (!rawConfig.dlna) { rawConfig.dlna = {}; }
     rawConfig.dlna.uuid = program.dlna.uuid;
     await fs.writeFile(configFileArg, JSON.stringify(rawConfig, null, 2), 'utf8');
@@ -1007,7 +1008,7 @@ export async function setup(configFileArg) {
   // pattern as dlna.uuid above.
   if (!program.discovery.mdns.instanceId) {
     program.discovery.mdns.instanceId = crypto.randomUUID();
-    const rawConfig = JSON.parse(await fs.readFile(configFileArg, 'utf8'));
+    const rawConfig = await readJsonFile(configFileArg);
     if (!rawConfig.discovery) { rawConfig.discovery = {}; }
     if (!rawConfig.discovery.mdns) { rawConfig.discovery.mdns = {}; }
     rawConfig.discovery.mdns.instanceId = program.discovery.mdns.instanceId;

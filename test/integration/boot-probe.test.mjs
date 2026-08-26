@@ -83,6 +83,25 @@ test('a config this build cannot parse or validate fails the probe with the sent
   }
 });
 
+test('a BOM\'d config parses — the probe must agree with the boot on PowerShell-written files', async () => {
+  // PowerShell 5.1's `Set-Content -Encoding UTF8` prepends a UTF-8 BOM
+  // (mStream#908's Windows smoke). The boot strips it (util/atomic-json.js
+  // stripBom); the probe must too, or a config the real boot accepts would
+  // block staging as "a config this build refuses".
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-probe-bom-'));
+  try {
+    const conf = path.join(home, 'bom.json');
+    await fs.writeFile(conf, '﻿' + JSON.stringify({ port: 3999 }), 'utf8');
+    const r = runProbe(home, ['-j', conf]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /^boot-probe: ok /m);
+    // Purity holds: the probe reads tolerantly but never rewrites the file.
+    assert.equal((await fs.readFile(conf, 'utf8')).charCodeAt(0), 0xFEFF);
+  } finally {
+    await fs.rm(home, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 test('a database from this build\'s future fails the probe; a current one passes', async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-probe-db-'));
   try {

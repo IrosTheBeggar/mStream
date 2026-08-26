@@ -123,9 +123,14 @@ pub struct Endpoint {
 /// run — the server generates it — and these defaults are exactly what that
 /// generated config yields.
 pub fn read_endpoint(config: &Path) -> Endpoint {
+    // trim_start_matches('\u{feff}'): PowerShell 5.1's `Set-Content -Encoding
+    // UTF8` writes a BOM and serde_json refuses it — the server side strips it
+    // too (util/atomic-json.js stripBom), and the two sides must read the SAME
+    // config the same way, or a BOM'd port lands the server on 8000 while the
+    // launcher probes the 3000 fallback forever.
     let v = std::fs::read_to_string(config)
         .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s.trim_start_matches('\u{feff}')).ok());
     let port = v
         .as_ref()
         .and_then(|v| v.get("port"))
@@ -188,7 +193,7 @@ pub fn server_url(ep: &Endpoint) -> String {
 pub fn library_is_configured(config: &Path) -> bool {
     std::fs::read_to_string(config)
         .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s.trim_start_matches('\u{feff}')).ok())
         .and_then(|v| v.get("folders").and_then(|f| f.as_object().map(|o| !o.is_empty())))
         .unwrap_or(false)
 }
@@ -496,6 +501,18 @@ mod tests {
         std::fs::write(&bundled, b"x").unwrap();
         assert_eq!(find_player_bin(&server, &home), Some(bundled), "bundled copy wins");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bom_from_powershell_utf8_is_tolerated() {
+        // PowerShell 5.1's `Set-Content -Encoding UTF8` prepends a BOM; the
+        // server strips it before parsing, so this side must too — a BOM'd
+        // port must not send the launcher probing the 3000 fallback.
+        let p = env::temp_dir().join(format!("mstream-launcher-bom-{}.json", std::process::id()));
+        std::fs::write(&p, "\u{feff}{ \"port\": 8123, \"folders\": { \"m\": { \"root\": \"/x\" } } }").unwrap();
+        assert_eq!(read_endpoint(&p).port, 8123);
+        assert!(library_is_configured(&p));
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]
