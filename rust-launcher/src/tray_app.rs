@@ -509,15 +509,34 @@ pub fn run(args: LauncherArgs) -> ! {
                         let _ = open::that_detached(url.clone());
                     }
                     "quick-connect" => {
-                        // The web UI opens its Quick Connect modal on this
-                        // hash (webapp/assets/js/quick-connect.js).
-                        let _ = open::that_detached(format!("{url}/#quick-connect"));
+                        // The wizard's Quick Connect page (pixel pairing QR)
+                        // in a real terminal on the desktop platforms; the
+                        // webapp's modal hash stays the linux behavior
+                        // (webapp/assets/js/quick-connect.js) and the
+                        // fallback when this install has no player binary or
+                        // the terminal launch itself fails.
+                        log.line("menu: quick connect");
+                        let mut opened = false;
+                        if cfg!(any(target_os = "macos", windows)) {
+                            if let Some(player) = player_bin.as_deref() {
+                                match platform::open_wizard_terminal(player, &url, &data_home, console.as_ref(), platform::WizardPage::QuickConnect) {
+                                    Ok(via) => {
+                                        log.line(&format!("quick connect opened via {via}"));
+                                        opened = true;
+                                    }
+                                    Err(e) => log.line(&format!("quick connect terminal failed: {e} - falling back to the webapp")),
+                                }
+                            }
+                        }
+                        if !opened {
+                            let _ = open::that_detached(format!("{url}/#quick-connect"));
+                        }
                     }
                     "setup" => {
                         log.line("menu: set up mstream");
                         match player_bin.as_deref() {
                             Some(player) => {
-                                match platform::open_setup_terminal(player, &url, &data_home, console.as_ref()) {
+                                match platform::open_wizard_terminal(player, &url, &data_home, console.as_ref(), platform::WizardPage::Setup) {
                                     Ok(via) => log.line(&format!("setup wizard opened via {via}")),
                                     Err(e) => log.line(&format!("setup wizard failed: {e}")),
                                 }
