@@ -93,6 +93,13 @@ pub fn run(args: LauncherArgs) -> ! {
     // once, like the server binary: an install doesn't gain or lose its
     // bundled player mid-session.
     let player_bin = paths::find_player_bin(&bin, &data_home);
+    // The bundled Ghostty console (macOS bundles stage it at console/ beside
+    // mStream.app; other platforms simply never find one). Its Dock icon is
+    // mStream's own icns out of the .app — cosmetic, so absence is fine.
+    let console = paths::find_console_app(&bin).map(|ghostty_app| {
+        let icns = server_dir.join("..").join("Resources").join("mStream.icns");
+        paths::ConsoleLaunch { ghostty_app, icon_icns: icns.exists().then_some(icns) }
+    });
 
     // ── Single instance: the lock lives in the data home, so two launchers
     // managing the same data/port exclude each other (two --portable
@@ -510,8 +517,9 @@ pub fn run(args: LauncherArgs) -> ! {
                         log.line("menu: set up mstream");
                         match player_bin.as_deref() {
                             Some(player) => {
-                                if let Err(e) = platform::open_setup_terminal(player, &url, &data_home) {
-                                    log.line(&format!("setup wizard failed: {e}"));
+                                match platform::open_setup_terminal(player, &url, &data_home, console.as_ref()) {
+                                    Ok(via) => log.line(&format!("setup wizard opened via {via}")),
+                                    Err(e) => log.line(&format!("setup wizard failed: {e}")),
                                 }
                             }
                             // Unreachable through the menu (the item is

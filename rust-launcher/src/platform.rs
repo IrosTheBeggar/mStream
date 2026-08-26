@@ -286,15 +286,32 @@ pub fn open_logs_terminal(logs_dir: &std::path::Path) -> Result<(), String> {
 /// Run the bundled terminal player's setup wizard in a fresh terminal
 /// window, pointed at this launcher's server. Same per-OS "what is a
 /// terminal" seams as open_logs_terminal; the caller logs a failure — a
-/// missing terminal emulator must never take the tray down.
+/// missing terminal emulator must never take the tray down. Ok carries
+/// WHICH surface opened (support surface: "it opened in Terminal, not the
+/// mStream console — why?" should be one log line away).
+///
+/// `console`: the bundled Ghostty (macOS bundles only, resolved by
+/// paths::find_console_app) — preferred over Terminal.app because Apple's
+/// terminal has no pixel protocol at all, so the wizard's wordmark and QR
+/// degrade to character art there. Ignored on the other platforms.
 pub fn open_setup_terminal(
     player_bin: &std::path::Path,
     server_url: &str,
     scratch_dir: &std::path::Path,
-) -> Result<(), String> {
+    console: Option<&crate::paths::ConsoleLaunch>,
+) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         use std::os::unix::fs::PermissionsExt;
+        let mut console_note = String::new();
+        if let Some(c) = console {
+            match spawn_ghostty_setup(c, player_bin, server_url, scratch_dir) {
+                Ok(()) => return Ok("bundled Ghostty console".into()),
+                // A broken bundled console must degrade to Terminal.app, not
+                // dead-end the button — but the reason rides along.
+                Err(e) => console_note = format!(" (bundled console failed: {e})"),
+            }
+        }
         // Terminal.app opens an executable .command file as a document — no
         // AppleEvents automation consent (see open_logs_terminal). The CSI 8
         // resize asks for the window the wizard's two-column pages were
@@ -311,7 +328,7 @@ pub fn open_setup_terminal(
         std::process::Command::new("/usr/bin/open")
             .arg(&script)
             .spawn()
-            .map(|_| ())
+            .map(|_| format!("Terminal.app{console_note}"))
             .map_err(|e| format!("open {}: {e}", script.display()))
     }
     #[cfg(windows)]
@@ -322,25 +339,26 @@ pub fn open_setup_terminal(
         // on Win11): it draws the wizard's pixel art via sixel. Without it,
         // a fresh conhost window still runs the wizard — crossterm enables
         // VT there and the art degrades to half-blocks.
+        let _ = console;
         if std::process::Command::new("wt.exe")
             .arg(player_bin)
             .args(["setup", "--server", server_url])
             .spawn()
             .is_ok()
         {
-            return Ok(());
+            return Ok("wt.exe".into());
         }
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
         std::process::Command::new(player_bin)
             .args(["setup", "--server", server_url])
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
-            .map(|_| ())
+            .map(|_| "conhost fallback".into())
             .map_err(|e| format!("spawn {}: {e}", player_bin.display()))
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let _ = scratch_dir; // no script file on this path
+        let _ = (scratch_dir, console); // no script file / no bundled console here
         let cmd = format!(
             "exec {player} setup --server {url}",
             player = sh_quote(player_bin),
@@ -355,13 +373,78 @@ pub fn open_setup_terminal(
         ];
         for (bin, args) in candidates {
             if std::process::Command::new(bin).args(args).spawn().is_ok() {
-                return Ok(());
+                return Ok(bin.into());
             }
         }
         Err("no terminal emulator found (tried x-terminal-emulator, gnome-terminal, \
              konsole, xfce4-terminal, xterm)"
             .to_string())
     }
+}
+
+/// Write the config and launch the bundled Ghostty console running the
+/// wizard. Everything rides in the CONFIG FILE, never `-e`: Ghostty confirms
+/// argument-passed commands with an "Allow Ghostty to execute…" dialog (its
+/// anti-injection guard) but treats config-declared commands as user-trusted
+/// and prompts for nothing (probed 2026-08-24, player PLAN.md Phase 8).
+/// XDG_CONFIG_HOME is scoped to the spawn, so a user's own Ghostty install
+/// keeps its own configuration untouched.
+#[cfg(target_os = "macos")]
+fn spawn_ghostty_setup(
+    console: &crate::paths::ConsoleLaunch,
+    player_bin: &std::path::Path,
+    server_url: &str,
+    scratch_dir: &std::path::Path,
+) -> Result<(), String> {
+    let bin = console.ghostty_app.join("Contents").join("MacOS").join("ghostty");
+    if !bin.exists() {
+        return Err(format!("no ghostty binary at {}", bin.display()));
+    }
+    let cfg_home = scratch_dir.join("console-config");
+    let cfg_dir = cfg_home.join("ghostty");
+    std::fs::create_dir_all(&cfg_dir).map_err(|e| format!("mkdir {}: {e}", cfg_dir.display()))?;
+    let cfg = cfg_dir.join("config");
+    std::fs::write(&cfg, ghostty_setup_config(console, player_bin, server_url))
+        .map_err(|e| format!("write {}: {e}", cfg.display()))?;
+    std::process::Command::new(&bin)
+        .env("XDG_CONFIG_HOME", &cfg_home)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("spawn {}: {e}", bin.display()))
+}
+
+/// The console's config, regenerated on every click so it always reflects
+/// this build's idea of the paths. `command` uses the explicit `shell:`
+/// prefix — the value runs via `/bin/sh -c`, so the sh-quoting handles the
+/// "Application Support" spaces every managed install has.
+/// `quit-after-last-window-closed` keeps the console from lingering in the
+/// Dock as a windowless app after the wizard exits; `macos-icon = custom`
+/// puts the mStream mark on that Dock tile while it lives.
+#[cfg(target_os = "macos")]
+fn ghostty_setup_config(
+    console: &crate::paths::ConsoleLaunch,
+    player_bin: &std::path::Path,
+    server_url: &str,
+) -> String {
+    let mut body = String::from(
+        "# Written by mStream's tray 'Set up mStream' item - safe to delete.\n\
+         auto-update = off\n\
+         title = mStream Setup\n\
+         window-width = 120\n\
+         window-height = 42\n\
+         confirm-close-surface = false\n\
+         quit-after-last-window-closed = true\n",
+    );
+    if let Some(icns) = &console.icon_icns {
+        // Config values run to end of line — a spaced path needs no quoting.
+        body.push_str(&format!("macos-icon = custom\nmacos-custom-icon = {}\n", icns.display()));
+    }
+    body.push_str(&format!(
+        "command = shell:{player} setup --server {url}\n",
+        player = sh_quote(player_bin),
+        url = sh_quote_str(server_url),
+    ));
+    body
 }
 
 /// Start the NEW launcher for the apply-update handoff, detached, and return
@@ -517,6 +600,35 @@ fn sh_quote_str(s: &str) -> String {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     #[test]
+    fn ghostty_config_quotes_spaced_paths_and_never_uses_dash_e() {
+        let c = crate::paths::ConsoleLaunch {
+            ghostty_app: "/tmp/x/Ghostty.app".into(),
+            icon_icns: Some("/App Root/Resources/mStream.icns".into()),
+        };
+        let cfg = super::ghostty_setup_config(
+            &c,
+            std::path::Path::new("/Application Support/bin/mstream-player"),
+            "http://localhost:3000",
+        );
+        // shell: + sh-quoting is what survives "Application Support" spaces;
+        // the command must live in the CONFIG, never a -e argument (consent
+        // dialog).
+        assert!(
+            cfg.contains("command = shell:'/Application Support/bin/mstream-player' setup --server 'http://localhost:3000'"),
+            "{cfg}"
+        );
+        // Config values run to end of line — the spaced icns path rides raw.
+        assert!(cfg.contains("macos-custom-icon = /App Root/Resources/mStream.icns\n"), "{cfg}");
+        assert!(cfg.contains("macos-icon = custom\n"), "{cfg}");
+        assert!(cfg.contains("auto-update = off\n"), "{cfg}");
+        assert!(cfg.contains("quit-after-last-window-closed = true\n"), "{cfg}");
+
+        let plain = crate::paths::ConsoleLaunch { ghostty_app: "/t/G.app".into(), icon_icns: None };
+        let cfg2 = super::ghostty_setup_config(&plain, std::path::Path::new("/p"), "http://x:1");
+        assert!(!cfg2.contains("macos-icon"), "no icns means Ghostty keeps its own icon: {cfg2}");
+    }
+
+    #[test]
     #[ignore = "spawns a real Terminal window - run manually with --ignored"]
     fn manual_open_logs_terminal() {
         let dir = std::env::temp_dir().join("mstream-viewlogs-demo").join("logs");
@@ -530,14 +642,22 @@ mod tests {
     #[ignore = "spawns a real Terminal window - run manually with --ignored"]
     fn manual_open_setup_terminal() {
         // MSTREAM_DEMO_PLAYER = a real player binary; MSTREAM_DEMO_SERVER =
-        // the URL to point its wizard at.
+        // the URL to point its wizard at; MSTREAM_DEMO_CONSOLE = optionally,
+        // a Ghostty.app to prefer (with MSTREAM_DEMO_ICNS for the Dock icon).
         let player = std::path::PathBuf::from(
             std::env::var("MSTREAM_DEMO_PLAYER").expect("set MSTREAM_DEMO_PLAYER"),
         );
         let url = std::env::var("MSTREAM_DEMO_SERVER")
             .unwrap_or_else(|_| "http://localhost:3000".into());
+        let console = std::env::var("MSTREAM_DEMO_CONSOLE").ok().map(|app| {
+            crate::paths::ConsoleLaunch {
+                ghostty_app: std::path::PathBuf::from(app),
+                icon_icns: std::env::var("MSTREAM_DEMO_ICNS").ok().map(std::path::PathBuf::from),
+            }
+        });
         let dir = std::env::temp_dir().join("mstream-setup-demo");
         std::fs::create_dir_all(&dir).unwrap();
-        super::open_setup_terminal(&player, &url, &dir).unwrap();
+        let via = super::open_setup_terminal(&player, &url, &dir, console.as_ref()).unwrap();
+        eprintln!("opened via {via}");
     }
 }
