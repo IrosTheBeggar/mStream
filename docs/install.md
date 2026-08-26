@@ -140,7 +140,8 @@ Windows, `mStream.app` on macOS, `mstream-desktop` on Linux — starts the
 server in the background, puts an mStream icon in your tray / menu bar
 (a status line — "Running · up 3h 12m", or Starting… / Stopped — then Open
 Admin Panel · Quick Connect · Start at login · View logs ·
-Restart server · Quit), and opens your browser at the player. Start-at-login
+Restart server · Quit). Boots are quiet once set up — re-click the app icon
+(or launch it again) whenever you want the player in your browser. Start-at-login
 is on by default; one click in the tray menu turns it off. On a **first
 install** the tray opens the guided setup wizard by itself (the bundled
 `mstream-player setup` — music folders, admin account, extras) in a real

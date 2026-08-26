@@ -673,32 +673,38 @@ pub fn run(args: LauncherArgs) -> ! {
                         }
                         if announce && !opened {
                             opened = true;
-                            // First install (no music folders yet): open the
-                            // guided terminal wizard itself — the same
-                            // surface as the tray's "Set up mStream" — on
-                            // the platforms with a terminal story. The
-                            // browser admin panel stays the fallback (no
-                            // player binary, or the terminal launch failed)
-                            // and the linux behavior; configured installs
-                            // keep opening the player as always. The
-                            // announce gates (--takeover, --autostarted,
-                            // --no-open) suppress this exactly like the
-                            // browser pop — an update relaunch must never
-                            // pop a terminal.
-                            let mut wizard_opened = false;
-                            if target.ends_with("/admin") && cfg!(any(target_os = "macos", windows)) {
-                                if let Some(player) = player_bin.as_deref() {
-                                    match platform::open_wizard_terminal(player, &url, &data_home, console.as_ref(), platform::WizardPage::Setup) {
-                                        Ok(via) => {
-                                            log.line(&format!("first-run announce: setup wizard opened via {via}"));
-                                            wizard_opened = true;
+                            // First install: open the guided terminal wizard
+                            // (browser admin panel as the fallback when no
+                            // player binary exists or the terminal launch
+                            // failed, and as the linux path). CONFIGURED
+                            // installs boot QUIETLY — the wizard quick-start
+                            // superseded the old open-the-player-on-every-
+                            // boot announce (operator decision, pre-6.24):
+                            // the player stays one deliberate gesture away
+                            // (re-click the app / second launch) and the
+                            // tray menu holds the admin panel. The announce
+                            // gates (--takeover, --autostarted, --no-open)
+                            // suppress the first-run open exactly like the
+                            // old browser pop — an update relaunch must
+                            // never pop a terminal.
+                            if target.ends_with("/admin") {
+                                let mut wizard_opened = false;
+                                if cfg!(any(target_os = "macos", windows)) {
+                                    if let Some(player) = player_bin.as_deref() {
+                                        match platform::open_wizard_terminal(player, &url, &data_home, console.as_ref(), platform::WizardPage::Setup) {
+                                            Ok(via) => {
+                                                log.line(&format!("first-run announce: setup wizard opened via {via}"));
+                                                wizard_opened = true;
+                                            }
+                                            Err(e) => log.line(&format!("first-run announce: wizard failed ({e}) - opening the admin panel")),
                                         }
-                                        Err(e) => log.line(&format!("first-run announce: wizard failed ({e}) - opening the admin panel")),
                                     }
                                 }
-                            }
-                            if !wizard_opened {
-                                let _ = open::that_detached(target);
+                                if !wizard_opened {
+                                    let _ = open::that_detached(target);
+                                }
+                            } else {
+                                log.line("boot announce: quiet (already set up)");
                             }
                         }
                     }
