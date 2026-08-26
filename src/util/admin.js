@@ -18,7 +18,7 @@ import * as subsonicServer from '../subsonic/subsonic-server.js';
 import { getDirname } from './esm-helpers.js';
 import { launchWorker } from './worker-process.js';
 import { invalidateWhitelistCache } from './admin-network.js';
-import { updateJsonAtomic, completedWrites } from './atomic-json.js';
+import { updateJsonAtomic, completedWrites, readJsonFile } from './atomic-json.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -43,7 +43,7 @@ const __dirname = getDirname(import.meta.url);
 const loaded = new WeakMap();   // returned object -> { file, base (deep clone), writes }
 
 export async function loadFile(file) {
-  const doc = JSON.parse(await fs.readFile(file, 'utf-8'));
+  const doc = await readJsonFile(file);
   if (doc && typeof doc === 'object') {
     loaded.set(doc, { file: path.resolve(file), base: structuredClone(doc), writes: completedWrites(file) });
   }

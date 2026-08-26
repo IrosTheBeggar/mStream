@@ -25,6 +25,29 @@ const chains = new Map();   // absolute path -> tail of the write chain
 const completed = new Map(); // absolute path -> number of writes that have landed
 let seq = 0;
 
+// A UTF-8 BOM survives readFile('utf8') as a leading U+FEFF, and JSON.parse
+// refuses it — and PowerShell 5.1's `Set-Content -Encoding UTF8` writes one,
+// so a hand-edited config on Windows is the common case here, not a corner
+// (found by mStream#908's Windows smoke). Strip it wherever a JSON file the
+// user may have written by hand is read.
+export function stripBom(text) {
+  return text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
+}
+
+// Read + parse a user-editable JSON file: BOM-tolerant, and a parse failure
+// names the file and says it is invalid JSON (code EJSONPARSE) instead of
+// surfacing a bare SyntaxError with no path in it.
+export async function readJsonFile(file) {
+  const text = stripBom(await fs.readFile(file, 'utf8'));
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    const wrapped = new Error(`${file} is not valid JSON: ${err.message}`);
+    wrapped.code = 'EJSONPARSE';
+    throw wrapped;
+  }
+}
+
 // How many writes to `file` have COMPLETED (rename done). A reader that
 // captures this before reading and compares afterwards knows whether a write
 // may have landed after its read — server.js's reboot uses it to decide
