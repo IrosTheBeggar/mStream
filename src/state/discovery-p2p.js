@@ -37,6 +37,12 @@ import * as config from './config.js';
 //   'announcement' → { from, payload }   a peer's signed catalog announcement
 //                                        (signature already verified in Rust)
 //   'neighbor'     → { up, id }          gossip mesh membership changes
+//   'dm'           → { from, payload }   a direct message from a peer. `from`
+//                                        is the QUIC-authenticated endpoint
+//                                        id; payload is size-capped but
+//                                        otherwise UNVALIDATED JSON — the
+//                                        consumer (federation requests)
+//                                        owns content validation.
 // The catalog module (discovery-catalog.js) is the main subscriber.
 export const events = new EventEmitter();
 
@@ -437,6 +443,31 @@ export function setHolds(hashes) {
 export function forget(hash) {
   if (!isRunning()) { return Promise.resolve({ forgotten: false, offline: true }); }
   return rpc('forget', { hash });
+}
+
+// ── Direct messages (federation requests transport) ─────────────────────────
+
+// A dm dial can take the full 25s connect budget against an offline peer.
+const DM_TIMEOUT_MS = 40 * 1000;
+
+// Send one addressed message. `to` = endpoint ticket or bare endpoint id
+// (catalog entries are bare ids; N0 discovery resolves them). Resolves
+// { delivered: true } when the peer accepted, { delivered: false, reason }
+// when the peer was reached and REFUSED (not-accepting / rate-limited /
+// too-large / malformed — terminal, don't retry), and REJECTS when the
+// peer was never reached (offline, or a build without the DM protocol).
+export async function sendDm(to, payload) {
+  await start();
+  return rpc('dm', { to, payload }, DM_TIMEOUT_MS);
+}
+
+// Inbound-DM policy: the sidecar boots fail-closed and refuses DMs at the
+// transport until this says otherwise, so senders get an immediate typed
+// refusal instead of silence. Lenient offline — the flag is re-pushed on
+// every stack start.
+export function setDmAccept(accept) {
+  if (!isRunning()) { return Promise.resolve({ set: false, offline: true }); }
+  return rpc('setDmAccept', { accept: accept === true });
 }
 
 // The blob hash of our own currently-published snapshot (null before the
