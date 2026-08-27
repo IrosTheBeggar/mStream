@@ -1615,6 +1615,14 @@ paths:
         a known-wrong pick. The route always returns exactly one song
         (or 400 if scope is empty).
 
+        `genres` and the `minDuration` / `maxDuration` window are
+        ALWAYS-ON base conditions rather than waterfall steps: every
+        query the route runs carries them, including the terminal
+        unrestricted step. An over-narrow one therefore 400s instead of
+        being relaxed away — that is deliberate, since "only these
+        genres" and "nothing under two minutes" are promises a relaxed
+        pick would break.
+
         Musical keys are Camelot codes (`1A`..`12B`). The server expands
         each code to all known raw-key spellings — `8A` matches stored
         values "A minor", "Am", "Amin", or literal "8A" — so tags from
@@ -1748,6 +1756,44 @@ paths:
                         `track_genres` rows are BLOCKED. `blacklist`
                         skips tracks with any matching genre; tracks
                         with no `track_genres` rows are ALLOWED.
+                    minDuration:
+                      type: number
+                      minimum: 0
+                      maximum: 86400
+                      description: |
+                        Lower bound of the track-length window, in
+                        SECONDS (the units of `tracks.duration` and of
+                        the `duration` field in the response). `0` or
+                        omitted means no lower bound. Like `genres`
+                        this is an ALWAYS-ON base condition — the
+                        waterfall never relaxes it, so an over-narrow
+                        window produces a 400 rather than a pick
+                        outside the window.
+                    maxDuration:
+                      type: number
+                      minimum: 0
+                      maximum: 86400
+                      description: |
+                        Upper bound of the track-length window, in
+                        SECONDS. `0` or omitted means no upper bound.
+                        Independent of `minDuration` — send either,
+                        both, or neither. Sending both with
+                        `minDuration` > `maxDuration` returns 403.
+                    allowUnknownDuration:
+                      type: boolean
+                      default: false
+                      description: |
+                        NULL-handling for the track-length window.
+                        Default `false` EXCLUDES tracks whose
+                        `duration` the scanner never read — a track of
+                        unknown length can't be shown to satisfy the
+                        window, the same rule the BPM/key filters and
+                        the genre whitelist already apply. Set `true`
+                        to let unknown-length tracks through alongside
+                        the in-range ones, which matters on partially
+                        scanned libraries where excluding them shrinks
+                        the pool more than intended. Ignored when
+                        neither bound is set.
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":

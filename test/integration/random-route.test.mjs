@@ -31,6 +31,7 @@ import {
   expandCamelotCodes,
   buildBpmKeyFilter,
   buildGenreFilter,
+  buildDurationFilter,
   applyTierFilter,
 } from '../../src/api/random.js';
 
@@ -333,6 +334,77 @@ describe('buildGenreFilter', () => {
   });
 });
 
+describe('buildDurationFilter', () => {
+  test('no bounds → no clauses', () => {
+    assert.deepEqual(buildDurationFilter({}), { clauses: [], params: [] });
+    assert.deepEqual(buildDurationFilter({ minDuration: undefined, maxDuration: null }),
+      { clauses: [], params: [] });
+  });
+
+  test('0 on both sides is the "no bound" sentinel, not a real window', () => {
+    // The webapp persists 0 for "no limit on this side" (mirrors
+    // djMinRating's "Any"). A literal 0-second floor would be
+    // meaningless anyway, so treating it as absent keeps a stale
+    // persisted zero from emitting a clause.
+    assert.deepEqual(buildDurationFilter({ minDuration: 0, maxDuration: 0 }),
+      { clauses: [], params: [] });
+  });
+
+  test('min only → one clause, lower bound bound once', () => {
+    const { clauses, params } = buildDurationFilter({ minDuration: 120 });
+    assert.equal(clauses.length, 1);
+    assert.match(clauses[0], /t\.duration >= \?/);
+    assert.doesNotMatch(clauses[0], /<=/);
+    assert.deepEqual(params, [120]);
+  });
+
+  test('max only → one clause, upper bound bound once', () => {
+    const { clauses, params } = buildDurationFilter({ maxDuration: 600 });
+    assert.equal(clauses.length, 1);
+    assert.match(clauses[0], /t\.duration <= \?/);
+    assert.doesNotMatch(clauses[0], />=/);
+    assert.deepEqual(params, [600]);
+  });
+
+  test('both bounds → single clause, params in min-then-max order', () => {
+    // Bind order has to match placeholder order or the window silently
+    // inverts. Asserting the array directly locks that in.
+    const { clauses, params } = buildDurationFilter({ minDuration: 120, maxDuration: 600 });
+    assert.equal(clauses.length, 1);
+    assert.match(clauses[0], /t\.duration >= \? AND t\.duration <= \?/);
+    assert.deepEqual(params, [120, 600]);
+  });
+
+  test('default excludes NULL duration', () => {
+    const { clauses } = buildDurationFilter({ minDuration: 120, maxDuration: 600 });
+    assert.match(clauses[0], /t\.duration IS NOT NULL/);
+    assert.doesNotMatch(clauses[0], /IS NULL/);
+  });
+
+  test('allowUnknownDuration adds an IS NULL alternative', () => {
+    const { clauses, params } = buildDurationFilter({
+      minDuration: 120, maxDuration: 600, allowUnknownDuration: true,
+    });
+    assert.equal(clauses.length, 1);
+    assert.match(clauses[0], /t\.duration IS NULL OR/);
+    // Params are unchanged — the NULL branch binds nothing.
+    assert.deepEqual(params, [120, 600]);
+  });
+
+  test('allowUnknownDuration without bounds is still a no-op', () => {
+    // "Allow unknowns" with no window to apply it to constrains
+    // nothing — it must not emit a bare `duration IS NULL` clause,
+    // which would invert into "only unknown-length tracks".
+    assert.deepEqual(buildDurationFilter({ allowUnknownDuration: true }),
+      { clauses: [], params: [] });
+  });
+
+  test('numeric strings are coerced (defence-in-depth for non-Joi callers)', () => {
+    const { params } = buildDurationFilter({ minDuration: '120', maxDuration: '600' });
+    assert.deepEqual(params, [120, 600]);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────
 // Integration tests — booted server + seeded DB.
 // ─────────────────────────────────────────────────────────────────────
@@ -437,24 +509,33 @@ function seedDB(dbPath) {
 
   const insT = db.prepare(`
     INSERT INTO tracks (filepath, library_id, title, artist_id, album_id, year, format,
-                        file_hash, audio_hash, modified, scan_id, bpm, musical_key, bpm_source)
-    VALUES (?, ?, ?, ?, ?, 2020, 'flac', ?, ?, ?, 'seed', ?, ?, ?)
+                        file_hash, audio_hash, modified, scan_id, bpm, musical_key, bpm_source,
+                        duration)
+    VALUES (?, ?, ?, ?, ?, 2020, 'flac', ?, ?, ?, 'seed', ?, ?, ?, ?)
   `);
   let ts = 1700000000000;
+  // `duration` is SECONDS (REAL), spread so the track-length window
+  // tests below can carve clean, non-overlapping sets:
+  //   < 200s      : t1 (30)
+  //   200s-300s   : t6 (200), t3 (240), t4 (300)
+  //   150s        : t2 — inside a 120-300 window, outside 200-300
+  //   > 300s      : t8 (600), t5 (1800)
+  //   NULL        : t7 — the unknown-length row every allowUnknownDuration
+  //                 assertion pivots on.
   const rows = [
-    ['t1.flac', 't1', 124,  'A minor', 'tag'],
-    ['t2.flac', 't2', 125,  'Am',      'tag'],
-    ['t3.flac', 't3', 128,  'C major', 'tag'],
-    ['t4.flac', 't4', 140,  'A minor', 'tag'],
-    ['t5.flac', 't5', 200,  'A minor', 'tag'],
-    ['t6.flac', 't6', null, 'A minor', 'tag'],
-    ['t7.flac', 't7', 125,  null,      'tag'],
-    ['t8.flac', 't8', null, null,      null],
+    ['t1.flac', 't1', 124,  'A minor', 'tag', 30],
+    ['t2.flac', 't2', 125,  'Am',      'tag', 150],
+    ['t3.flac', 't3', 128,  'C major', 'tag', 240],
+    ['t4.flac', 't4', 140,  'A minor', 'tag', 300],
+    ['t5.flac', 't5', 200,  'A minor', 'tag', 1800],
+    ['t6.flac', 't6', null, 'A minor', 'tag', 200],
+    ['t7.flac', 't7', 125,  null,      'tag', null],
+    ['t8.flac', 't8', null, null,      null,  600],
   ];
   const trackIds = {};
   for (let i = 0; i < rows.length; i++) {
-    const [filepath, title, bpm, key, src] = rows[i];
-    const res = insT.run(filepath, lib1, title, aid, albId, `h${i}`, `a${i}`, ts++, bpm, key, src);
+    const [filepath, title, bpm, key, src, duration] = rows[i];
+    const res = insT.run(filepath, lib1, title, aid, albId, `h${i}`, `a${i}`, ts++, bpm, key, src, duration);
     trackIds[title] = Number(res.lastInsertRowid);
   }
 
@@ -1320,6 +1401,170 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     assert.equal(r.status, 200);
     assert.equal(pickedTitle(r), 't8');
     assert.deepEqual(r.body.songs[0].metadata.genres, []);
+  });
+
+  // ── Track-length window (minDuration / maxDuration) ───────────────
+  //
+  // Seed durations: t1=30 t2=150 t3=240 t4=300 t5=1800 t6=200
+  //                 t7=NULL t8=600
+  //
+  // Each assertion samples several picks rather than one — the route
+  // picks randomly from the surviving pool, so a single 200 proves
+  // only that SOMETHING matched, not that the excluded rows are
+  // actually gone.
+
+  // Sample N picks and return the set of distinct titles served.
+  async function pickedTitlesOver(body, n = 20) {
+    const seen = new Set();
+    for (let i = 0; i < n; i++) {
+      const r = await randomReq(server.baseUrl, body);
+      assert.equal(r.status, 200, `pick ${i} failed: ${JSON.stringify(r.body)}`);
+      seen.add(pickedTitle(r));
+    }
+    return seen;
+  }
+
+  test('minDuration excludes shorter tracks', async () => {
+    const seen = await pickedTitlesOver({ minDuration: 200 });
+    // t1 (30) and t2 (150) are below the floor; t7 is NULL and
+    // excluded by default.
+    for (const excluded of ['t1', 't2', 't7']) {
+      assert.ok(!seen.has(excluded), `${excluded} survived minDuration=200 (saw ${[...seen]})`);
+    }
+    assert.ok(seen.size > 0);
+  });
+
+  test('maxDuration excludes longer tracks', async () => {
+    const seen = await pickedTitlesOver({ maxDuration: 300 });
+    for (const excluded of ['t5', 't8', 't7']) {
+      assert.ok(!seen.has(excluded), `${excluded} survived maxDuration=300 (saw ${[...seen]})`);
+    }
+    assert.ok(seen.size > 0);
+  });
+
+  test('both bounds narrow to the window', async () => {
+    // 200-300 inclusive → exactly {t6 (200), t3 (240), t4 (300)}.
+    const seen = await pickedTitlesOver({ minDuration: 200, maxDuration: 300 }, 30);
+    for (const title of seen) {
+      assert.ok(['t3', 't4', 't6'].includes(title),
+        `${title} is outside the 200-300s window`);
+    }
+  });
+
+  test('bounds are inclusive on both edges', async () => {
+    // A window of exactly [300, 300] must still match t4 (300s) — an
+    // off-by-one to `>` / `<` would empty the pool and 400.
+    const r = await randomReq(server.baseUrl, { minDuration: 300, maxDuration: 300 });
+    assert.equal(r.status, 200);
+    assert.equal(pickedTitle(r), 't4');
+  });
+
+  test('NULL-duration tracks are excluded by default', async () => {
+    // Cool down every known-duration track. Without a duration filter
+    // that forces t7 (the NULL row); WITH one, t7 is out of scope, so
+    // the route falls back to repeating a cooled-but-in-range row
+    // rather than serving t7.
+    const ids = trackIdsByTitle();
+    const ignore = Object.entries(ids).filter(([t]) => t !== 't7').map(([, id]) => id);
+    const seen = await pickedTitlesOver({ minDuration: 100, maxDuration: 2000, ignoreList: ignore }, 15);
+    assert.ok(!seen.has('t7'), `t7 (NULL duration) was served (saw ${[...seen]})`);
+  });
+
+  test('allowUnknownDuration lets NULL-duration tracks through', async () => {
+    // Same cooldown as above — now t7 is the only id-fresh row, so
+    // opting unknowns in must surface it.
+    const ids = trackIdsByTitle();
+    const ignore = Object.entries(ids).filter(([t]) => t !== 't7').map(([, id]) => id);
+    const seen = await pickedTitlesOver({
+      minDuration: 100, maxDuration: 2000, allowUnknownDuration: true, ignoreList: ignore,
+    }, 15);
+    assert.ok(seen.has('t7'), `t7 never served with allowUnknownDuration (saw ${[...seen]})`);
+  });
+
+  test('allowUnknownDuration does not widen the in-range rules', async () => {
+    // Opting unknowns in must add the NULL row, not relax the window
+    // for rows that DO have a duration.
+    const seen = await pickedTitlesOver({
+      minDuration: 200, maxDuration: 300, allowUnknownDuration: true,
+    }, 30);
+    for (const title of seen) {
+      assert.ok(['t3', 't4', 't6', 't7'].includes(title),
+        `${title} is outside the 200-300s window (+unknown)`);
+    }
+  });
+
+  test('allowUnknownDuration alone (no bounds) is a no-op', async () => {
+    // No window → nothing to allow into. The flag must not turn into
+    // "only unknown-length tracks", so a known-duration row still has
+    // to be reachable: cool everything except t4 and require it.
+    const ids = trackIdsByTitle();
+    const ignore = Object.entries(ids).filter(([t]) => t !== 't4').map(([, id]) => id);
+    const r = await randomReq(server.baseUrl, { allowUnknownDuration: true, ignoreList: ignore });
+    assert.equal(r.status, 200);
+    assert.equal(pickedTitle(r), 't4');
+  });
+
+  test('the window is never relaxed by the waterfall', async () => {
+    // This is the always-on contract. bpmRanges 999-1000 matches
+    // nothing, so the chain walks all the way down to its terminal
+    // `unrestricted` step — which drops BPM but must NOT drop the
+    // duration window. Only t5 (1800) is >= 1000s.
+    const seen = await pickedTitlesOver({
+      bpmRanges: [{ min: 999, max: 1000 }],
+      bpmRangesWide: [{ min: 990, max: 1000 }],
+      minDuration: 1000,
+    }, 15);
+    assert.deepEqual([...seen], ['t5'],
+      `waterfall relaxed the duration window (saw ${[...seen]})`);
+  });
+
+  test('an impossible window 400s rather than serving out-of-range', async () => {
+    // 3000s floor is above every seeded track. Failing loud is the
+    // point: a relaxed pick would break the user's stated promise.
+    const r = await randomReq(server.baseUrl, { minDuration: 3000 });
+    assert.equal(r.status, 400);
+  });
+
+  test('minDuration > maxDuration → 400', async () => {
+    // Backwards window is the common typo and produces a clause that
+    // matches nothing; rejected at the Joi boundary like a backwards
+    // bpmRange.
+    const r = await randomReq(server.baseUrl, { minDuration: 600, maxDuration: 60 });
+    assert.equal(r.status, 400);
+  });
+
+  test('0 bounds are treated as "no limit", not a zero-length window', async () => {
+    // The webapp persists 0 for an empty field. A naive filter would
+    // read {min:0,max:0} as "exactly zero seconds" and 400 every pick.
+    const r = await randomReq(server.baseUrl, { minDuration: 0, maxDuration: 0 });
+    assert.equal(r.status, 200);
+  });
+
+  test('out-of-range bounds are rejected', async () => {
+    for (const body of [{ minDuration: -1 }, { maxDuration: 86401 }]) {
+      const r = await randomReq(server.baseUrl, body);
+      assert.equal(r.status, 400, `expected 400 for ${JSON.stringify(body)}`);
+    }
+  });
+
+  test('duration params alone stay in simple mode and still cool down', async () => {
+    // No BPM/key/artist params → the route skips the waterfall
+    // entirely. The duration window rides on the base conditions, so
+    // the simple-mode ignoreList round-trip has to keep working.
+    const first = await randomReq(server.baseUrl, { minDuration: 200, ignoreList: [] });
+    assert.equal(first.status, 200);
+    assert.equal(first.body.ignoreList.length, 1);
+    const second = await randomReq(server.baseUrl, {
+      minDuration: 200, ignoreList: first.body.ignoreList,
+    });
+    assert.equal(second.status, 200);
+    assert.notEqual(pickedTitle(second), pickedTitle(first));
+  });
+
+  test('duration composes with the genre filter (both always-on)', async () => {
+    // Rock is t4 (300) and t5 (1800). A 300s ceiling leaves only t4.
+    const seen = await pickedTitlesOver({ genres: ['Rock'], maxDuration: 300 }, 15);
+    assert.deepEqual([...seen], ['t4']);
   });
 });
 

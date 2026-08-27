@@ -221,6 +221,27 @@ const MSTREAMPLAYER = (() => {
       body.genreMode = AUTODJ.state.djGenreMode;
     }
 
+    // Track-length window — server-applied as an always-on base
+    // condition (src/api/random.js's buildDurationFilter). State holds
+    // SECONDS with 0 meaning "no bound on this side", so each bound is
+    // only put on the wire when it's a real constraint; sending a bare
+    // 0 would be a no-op server-side but muddies the payload.
+    //
+    // allowUnknownDuration rides along only when a bound is actually
+    // set — on its own it constrains nothing, and the server ignores
+    // it in that case anyway.
+    if (autodjLoaded && AUTODJ.state.djDurationEnabled) {
+      const minDur = Number(AUTODJ.state.djMinDuration);
+      const maxDur = Number(AUTODJ.state.djMaxDuration);
+      const haveMin = Number.isFinite(minDur) && minDur > 0;
+      const haveMax = Number.isFinite(maxDur) && maxDur > 0;
+      if (haveMin) { body.minDuration = minDur; }
+      if (haveMax) { body.maxDuration = maxDur; }
+      if (haveMin || haveMax) {
+        body.allowUnknownDuration = !!AUTODJ.state.djAllowUnknownDuration;
+      }
+    }
+
     // Sonic similarity — constrain picks to the discovery-embedding
     // neighborhood of the session anchor (PR #697 server API). Gated on
     // the ping capability flag so feature-off servers never receive the
@@ -379,6 +400,18 @@ const MSTREAMPLAYER = (() => {
             err.djToast = { title: t('autoDJ.sonicToastTitle'), message: t('autoDJ.sonicSeedUnanalyzed') };
           }
         }
+        // The duration window is an always-on server filter, so an
+        // over-narrow one 400s every pick for the rest of the session.
+        // The generic "Auto DJ Failed" gives the user nothing to act
+        // on; name the filter that's most likely at fault. Only when
+        // no more specific story (sonic) already claimed the error.
+        if (err?.name !== 'AbortError' && !err.djToast
+            && (body.minDuration || body.maxDuration)) {
+          err.djToast = {
+            title: t('autoDJ.durationToastTitle'),
+            message: t('autoDJ.durationNoMatch'),
+          };
+        }
         throw err;
       }
       lastResponse = res;
@@ -419,6 +452,14 @@ const MSTREAMPLAYER = (() => {
             genreEnabled: AUTODJ.state.djGenreEnabled,
             genreMode: AUTODJ.state.djGenreMode,
             genres: AUTODJ.state.djGenres,
+            // Track-length window — same defence-in-depth rationale as
+            // the genre filter: the server already enforces it as a
+            // base condition, this catches a rescan changing the row
+            // between the server's SELECT and our read.
+            durationEnabled: AUTODJ.state.djDurationEnabled,
+            minDuration: AUTODJ.state.djMinDuration,
+            maxDuration: AUTODJ.state.djMaxDuration,
+            allowUnknownDuration: AUTODJ.state.djAllowUnknownDuration,
           })
         : false;
       if (!blocked) { picked = song; break; }

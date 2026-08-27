@@ -4225,6 +4225,95 @@ async function autoDjPanel() {
       </div>
     </div>`;
 
+  // ── Track-length window ────────────────────────────────────────
+  //
+  // Toggle + two bounds + an unknown-length switch. AUTODJ stores
+  // SECONDS (wire units); the inputs are MINUTES because that's how
+  // people think about track length, and the handlers convert at the
+  // edge (Math.round(minutes * 60), so 0.5 → 30s).
+  //
+  // `step="any"` rather than a fixed grid: the conversion accepts any
+  // decimal, so a grid would mark perfectly valid entries like 1.25 or
+  // 0.1 as :invalid — asserting a constraint the code doesn't have,
+  // and one that would start rendering as an error the moment anything
+  // styles :invalid. The spinner arrows are hidden in CSS, so there is
+  // no stepping affordance a grid would serve anyway.
+  //
+  // An empty / 0 field means "no bound on this side", so a user can
+  // set only a floor or only a ceiling. Both empty is a no-op even
+  // with the toggle on — same "toggled on but nothing entered yet"
+  // grace the keyword and genre filters give.
+  //
+  // The unknown-length switch maps to the server's
+  // allowUnknownDuration. Default off = tracks the scanner never read
+  // a length from are excluded, which is the strict reading of the
+  // window; on = they ride along. Worth surfacing because a partially
+  // scanned library can otherwise lose far more of the pool than the
+  // user expects.
+  //
+  // It reuses the panel-wide `.toggle-sw` switch (text left, control
+  // right) rather than a native checkbox: every other on/off control
+  // in this panel is that switch, and .toggle-sw already carries the
+  // Materialize suppression a bare checkbox would need to re-solve.
+  // Like the other .toggle-sw rows the caption is a sibling div, not
+  // a wrapping <label>, so the input gets aria-labelledby.
+  const _secToMin = (s) => {
+    const n = Number(s);
+    if (!Number.isFinite(n) || n <= 0) { return ''; }
+    // Trim the float tail: 150s → 2.5, 120s → 2 (not 2.0).
+    return String(Math.round((n / 60) * 100) / 100);
+  };
+  const durationOn = AUTODJ.state.djDurationEnabled;
+  const durationFilterRow = `
+    <div class="autodj-opt-row autodj-opt-col">
+      <div class="dj-filter-head">
+        <div>
+          <div class="autodj-opt-label" id="dj-duration-label">${t('autoDJ.durationFilterLabel')}</div>
+          <div class="autodj-opt-hint">${t('autoDJ.durationFilterHint')}</div>
+        </div>
+        <label class="toggle-sw">
+          <input type="checkbox" id="dj-duration-on" aria-labelledby="dj-duration-label" ${durationOn ? 'checked' : ''}>
+          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
+        </label>
+      </div>
+      <div class="dj-duration-inputs">
+        <label class="dj-duration-field">
+          <span class="dj-duration-field-label">${t('autoDJ.durationMinLabel')}</span>
+          <input
+            type="number"
+            class="dj-filter-input dj-duration-num"
+            id="dj-duration-min"
+            min="0" max="1440" step="any"
+            placeholder="${escapeHtml(t('autoDJ.durationNoLimit'))}"
+            value="${escapeHtml(_secToMin(AUTODJ.state.djMinDuration))}"
+            ${durationOn ? '' : 'disabled'}
+            aria-label="${escapeHtml(t('autoDJ.durationMinInputLabel'))}">
+        </label>
+        <label class="dj-duration-field">
+          <span class="dj-duration-field-label">${t('autoDJ.durationMaxLabel')}</span>
+          <input
+            type="number"
+            class="dj-filter-input dj-duration-num"
+            id="dj-duration-max"
+            min="0" max="1440" step="any"
+            placeholder="${escapeHtml(t('autoDJ.durationNoLimit'))}"
+            value="${escapeHtml(_secToMin(AUTODJ.state.djMaxDuration))}"
+            ${durationOn ? '' : 'disabled'}
+            aria-label="${escapeHtml(t('autoDJ.durationMaxInputLabel'))}">
+        </label>
+      </div>
+      <div class="dj-duration-unknown">
+        <div>
+          <div class="dj-duration-unknown-label" id="dj-duration-unknown-label">${t('autoDJ.durationUnknownLabel')}</div>
+          <div class="autodj-opt-hint">${t('autoDJ.durationUnknownHint')}</div>
+        </div>
+        <label class="toggle-sw">
+          <input type="checkbox" id="dj-duration-unknown" aria-labelledby="dj-duration-unknown-label" ${AUTODJ.state.djAllowUnknownDuration ? 'checked' : ''} ${durationOn ? '' : 'disabled'}>
+          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
+        </label>
+      </div>
+    </div>`;
+
   // ── Sonic similarity (discovery embeddings) ─────────────────────
   //
   // Server capability comes from the ping response (same flag that
@@ -4337,6 +4426,7 @@ async function autoDjPanel() {
         <h4 class="autodj-section-heading">${t('autoDJ.sectionFilters')}</h4>
         ${keywordFilterRow}
         ${genreFilterRow}
+        ${durationFilterRow}
       </div>
     </div>`;
 
@@ -4759,6 +4849,62 @@ async function autoDjPanel() {
     AUTODJ.removeGenre(btn.dataset.genre);
     _renderGenreTags();
   }, { signal: _autoDjPanelSignal });
+
+  // ── Track-length window ────────────────────────────────────────
+  //
+  // Four controls. The inputs are MINUTES and AUTODJ stores SECONDS,
+  // so this layer converts and AUTODJ.setDurationBounds does the
+  // clamping + backwards-window repair (it owns those rules so they
+  // hold for any caller, not just this panel).
+  const durOnEl      = document.getElementById('dj-duration-on');
+  const durMinEl     = document.getElementById('dj-duration-min');
+  const durMaxEl     = document.getElementById('dj-duration-max');
+  const durUnknownEl = document.getElementById('dj-duration-unknown');
+
+  // Minutes (as typed) → seconds. A blank field gives Number('') === 0,
+  // which is exactly the "no bound on this side" sentinel; the guard
+  // makes that intentional rather than incidental and also absorbs a
+  // typed '-' or 'e'.
+  function _minutesToSeconds(raw) {
+    const mins = Number(raw);
+    if (!Number.isFinite(mins) || mins <= 0) { return 0; }
+    return Math.round(mins * 60);
+  }
+
+  // `edited` names the side the user just changed — setDurationBounds
+  // keeps that one and pushes the other, so the repair never fights
+  // the field being typed in. Persisted values are written back so the
+  // inputs always show what the next request will actually send.
+  function _commitDuration(edited) {
+    const { min, max } = AUTODJ.setDurationBounds(
+      _minutesToSeconds(durMinEl.value),
+      _minutesToSeconds(durMaxEl.value),
+      edited === 'max' ? 'max' : 'min',
+    );
+    durMinEl.value = _secToMin(min);
+    durMaxEl.value = _secToMin(max);
+  }
+
+  // Toggle gates the three inputs. The bounds survive toggling so the
+  // user can flip the feature off and back on without re-entering
+  // them — same contract the keyword and genre filters give.
+  durOnEl.onchange = (e) => {
+    const on = !!e.target.checked;
+    AUTODJ.setState({ djDurationEnabled: on });
+    durMinEl.disabled = !on;
+    durMaxEl.disabled = !on;
+    durUnknownEl.disabled = !on;
+  };
+
+  // `change` (not `input`) so the commit fires on blur / Enter rather
+  // than mid-typing — otherwise "12" would clamp-and-rewrite the
+  // moment the user typed "1".
+  durMinEl.onchange = () => { _commitDuration('min'); };
+  durMaxEl.onchange = () => { _commitDuration('max'); };
+
+  durUnknownEl.onchange = (e) => {
+    AUTODJ.setState({ djAllowUnknownDuration: !!e.target.checked });
+  };
 
   // Initial sync — the `ignoreVPaths` legacy global IS still read by
   // every browse/search panel in m.js, so we keep it in lockstep with
