@@ -780,7 +780,14 @@ export function setup(mstream) {
   // deliberately leaves collection on — local Discover/similar features
   // don't depend on the network. NOT behind requireP2pEnabled, obviously.
   mstream.post("/api/v1/admin/discovery/p2p/enabled", async (req, res) => {
-    const schema = Joi.object({ enabled: Joi.boolean().required() });
+    const schema = Joi.object({
+      enabled: Joi.boolean().required(),
+      // The enable-flow checkbox: also open the federation-requests inbox,
+      // which requires the federation feature itself — this orchestrates
+      // both. Only meaningful with enabled=true; a partial federation
+      // failure leaves discovery ON and reports the cause in the response.
+      acceptFederationRequests: Joi.boolean().optional(),
+    });
     joiValidate(schema, req.body);
     const stack = await import('../state/discovery-p2p-stack.js');
 
@@ -821,7 +828,59 @@ export function setup(mstream) {
       await stack.stopDiscoveryP2pStack().catch(() => {});
       throw new WebError(`failed to start the discovery network: ${err.message}`, 500);
     }
-    res.json({ enabled: true, collectForced });
+
+    // The "also accept federation requests" checkbox: turn federation on
+    // (endpoint included) and open the inbox, atomically from the UI's
+    // point of view. Discovery is already up and STAYS up on failure here
+    // — the checkbox is an add-on, not a condition; the operator gets the
+    // cause in `federationError` and can retry from the Federation tab.
+    let federationError = null;
+    if (req.body.acceptFederationRequests === true) {
+      const prior = {
+        enabled: config.program.federation.enabled === true,
+        acceptRequests: config.program.federation.acceptRequests === true,
+      };
+      try {
+        const raw = await admin.loadFile(config.configFile);
+        if (!raw.federation) { raw.federation = {}; }
+        raw.federation.enabled = true;
+        raw.federation.acceptRequests = true;
+        await admin.saveFile(raw, config.configFile);
+        config.program.federation.enabled = true;
+        config.program.federation.acceptRequests = true;
+
+        const federation = await import('../state/federation.js');
+        await federation.start({
+          targetPort: config.program.port,
+          secretKey: config.program.federation.secretKey,
+        });
+        const engine = await import('../state/federation-requests.js');
+        await engine.pushAcceptPolicy();
+        winston.info(`discovery P2P enabled with the federation-requests inbox by admin '${req.user?.username}'`);
+      } catch (err) {
+        winston.warn(`federation-inbox enable failed for admin '${req.user?.username}' — discovery stays on: ${err.message}`);
+        federationError = err.message;
+        // Roll the federation flags back to what they were — never
+        // disable a federation the operator had on before this call.
+        try {
+          const raw = await admin.loadFile(config.configFile);
+          if (!raw.federation) { raw.federation = {}; }
+          raw.federation.enabled = prior.enabled;
+          raw.federation.acceptRequests = prior.acceptRequests;
+          await admin.saveFile(raw, config.configFile);
+        } catch (rollbackErr) {
+          winston.warn(`federation flag rollback failed: ${rollbackErr.message}`);
+        }
+        config.program.federation.enabled = prior.enabled;
+        config.program.federation.acceptRequests = prior.acceptRequests;
+      }
+    }
+    res.json({
+      enabled: true, collectForced,
+      ...(req.body.acceptFederationRequests === true
+        ? { acceptRequests: federationError === null, ...(federationError ? { federationError } : {}) }
+        : {}),
+    });
   });
 
   // Disk cap for fetched peer snapshots. Live: the fetch paths read the
