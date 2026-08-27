@@ -142,11 +142,20 @@ export async function startDiscoveryP2pStack() {
     const p2p = await import('./discovery-p2p.js');
     const catalog = await import('./discovery-catalog.js');
     const seeds = await import('./discovery-seeds.js');
+    const fedRequests = await import('./federation-requests.js');
     catalog.subscribe();
+    // Federation requests ride the same event pipe (dm + announcement) —
+    // subscribed before the spawn for the same reason as the catalog, and
+    // idempotent the same way.
+    fedRequests.subscribe();
     // Armed BEFORE the spawn, so a sidecar that dies seconds into its life
     // is covered too. Idempotent — re-registering just replaces the slot.
     p2p.setUnexpectedExitHandler(scheduleRecovery);
     await p2p.start();
+    // The sidecar boots refusing DMs; push the operator's inbox policy (or
+    // the open-for-replies window) down now that it's up. A failure here
+    // only means the inbox stays closed — never a failed start.
+    await fedRequests.pushAcceptPolicy();
     // Two-phase bootstrap. Phase one joins the topic IMMEDIATELY with
     // what's known locally (baked seeds + cached list + the operator's
     // bootstrapPeers) — the subscription must never wait on a network

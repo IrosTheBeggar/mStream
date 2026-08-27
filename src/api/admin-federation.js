@@ -99,6 +99,9 @@ export function register(mstream) {
       online: relayUrl !== null, relayUrl,
       // What the mint dialog pre-fills; per-key values live on the key rows.
       limitDefaults: config.program.federation.limits,
+      // The federation-requests inbox (V67): whether discovery peers may
+      // send this server pairing requests.
+      acceptRequests: config.program.federation.acceptRequests === true,
     });
   });
 
@@ -233,6 +236,146 @@ export function register(mstream) {
     }
     winston.info(`[federation] ${req.user.username} reset the endpoint binding on key id=${req.params.id}`);
     res.json({});
+  });
+
+  // ── Federation requests (in-network pairing over discovery DMs) ─────
+  //
+  // The engine (state/federation-requests.js) throws plain Errors; these
+  // routes map them: unknown rows 404, state/feature conflicts 409,
+  // everything else 400. Dynamic imports keep the p2p modules unloaded
+  // until the feature is actually touched, same as the federation imports
+  // above.
+
+  function requestError(err) {
+    if (/not found/i.test(err.message)) { return new WebError(err.message, 404); }
+    if (/not enabled|not running|already|cannot (accept|reject|cancel)/i.test(err.message)) {
+      return new WebError(err.message, 409);
+    }
+    return new WebError(err.message, 400);
+  }
+
+  mstream.get('/api/v1/admin/federation/requests', async (req, res) => {
+    const reqDb = await import('../db/federation-requests.js');
+    res.json({
+      acceptRequests: config.program.federation.acceptRequests === true,
+      requests: reqDb.listRequests(),
+    });
+  });
+
+  mstream.post('/api/v1/admin/federation/requests', async (req, res) => {
+    const schema = Joi.object({
+      endpointId: Joi.string().min(16).max(128).required(),
+      message: Joi.string().max(500).allow('').optional(),
+      offerVpaths: Joi.array().items(Joi.string()).max(32).unique().default([]),
+    });
+    joiValidate(schema, req.body);
+    // Offered names must exist NOW so a typo fails the compose, not the
+    // grant-back two DMs later (deleted-meanwhile is still handled there).
+    for (const name of req.body.offerVpaths || []) {
+      if (!db.getLibraryByName(name)) { throw new WebError(`Unknown library: ${name}`, 404); }
+    }
+    const engine = await import('../state/federation-requests.js');
+    try {
+      const row = await engine.compose({
+        peerEndpointId: req.body.endpointId,
+        message: req.body.message || null,
+        offeredLibraries: req.body.offerVpaths || [],
+      });
+      winston.info(`[federation] ${req.user.username} sent a federation request to ${req.body.endpointId.slice(0, 12)}…`);
+      res.json(row);
+    } catch (err) {
+      winston.warn(`[federation] ${req.user.username} compose failed: ${err.message}`);
+      throw requestError(err);
+    }
+  });
+
+  mstream.post('/api/v1/admin/federation/requests/:id/accept', async (req, res) => {
+    joiValidate(Joi.object({ id: Joi.number().integer().min(1).required() }), req.params);
+    joiValidate(Joi.object({
+      vpaths: Joi.array().items(Joi.string()).min(1).unique().required(),
+      ...limitsSchema,
+      expiresAt: expirySchema,
+      acceptTheirOffer: Joi.boolean().default(true),
+    }), req.body);
+
+    const libraryIds = req.body.vpaths.map((name) => {
+      const lib = db.getLibraryByName(name);
+      if (!lib) { throw new WebError(`Unknown library: ${name}`, 404); }
+      return lib.id;
+    });
+    const engine = await import('../state/federation-requests.js');
+    try {
+      const row = await engine.accept(Number(req.params.id), {
+        libraryIds,
+        vpathNames: req.body.vpaths,
+        limits: resolveLimits(req.body),
+        expiresAt: normalizeExpiry(req.body.expiresAt),
+        acceptTheirOffer: req.body.acceptTheirOffer !== false,
+      });
+      winston.info(`[federation] ${req.user.username} accepted federation request id=${req.params.id}`);
+      res.json(row);
+    } catch (err) {
+      winston.warn(`[federation] ${req.user.username} accept failed for request id=${req.params.id}: ${err.message}`);
+      throw requestError(err);
+    }
+  });
+
+  mstream.post('/api/v1/admin/federation/requests/:id/reject', async (req, res) => {
+    joiValidate(Joi.object({ id: Joi.number().integer().min(1).required() }), req.params);
+    joiValidate(Joi.object({ reason: Joi.string().max(200).allow('').optional() }), req.body);
+    const engine = await import('../state/federation-requests.js');
+    try {
+      const row = await engine.reject(Number(req.params.id), req.body.reason || null);
+      winston.info(`[federation] ${req.user.username} rejected federation request id=${req.params.id}`);
+      res.json(row);
+    } catch (err) {
+      throw requestError(err);
+    }
+  });
+
+  mstream.post('/api/v1/admin/federation/requests/:id/cancel', async (req, res) => {
+    joiValidate(Joi.object({ id: Joi.number().integer().min(1).required() }), req.params);
+    const engine = await import('../state/federation-requests.js');
+    try {
+      const row = await engine.cancel(Number(req.params.id));
+      winston.info(`[federation] ${req.user.username} cancelled federation request id=${req.params.id}`);
+      res.json(row);
+    } catch (err) {
+      throw requestError(err);
+    }
+  });
+
+  // Dismiss a finished record. Live exchanges must be cancelled/rejected
+  // first — deleting one mid-flight would orphan its retry state.
+  mstream.delete('/api/v1/admin/federation/requests/:id', async (req, res) => {
+    joiValidate(Joi.object({ id: Joi.number().integer().min(1).required() }), req.params);
+    const reqDb = await import('../db/federation-requests.js');
+    const row = reqDb.getRequestById(Number(req.params.id));
+    if (!row) { throw new WebError('Request not found', 404); }
+    if (reqDb.ACTIVE_STATES.includes(row.state)) {
+      throw new WebError(`cannot dismiss a request in state '${row.state}' — cancel or reject it first`, 409);
+    }
+    reqDb.deleteRequest(row.id);
+    winston.info(`[federation] ${req.user.username} dismissed federation request id=${row.id} (${row.state})`);
+    res.json({});
+  });
+
+  // The inbox switch, live: persists federation.acceptRequests and pushes
+  // the DM-accept policy down to the sidecar in the same breath.
+  mstream.post('/api/v1/admin/federation/accept-requests', async (req, res) => {
+    joiValidate(Joi.object({ enabled: Joi.boolean().required() }), req.body);
+    const enabled = req.body.enabled;
+
+    const raw = await admin.loadFile(config.configFile);
+    if (!raw.federation) { raw.federation = {}; }
+    raw.federation.acceptRequests = enabled;
+    await admin.saveFile(raw, config.configFile);
+    config.program.federation.acceptRequests = enabled;
+
+    const engine = await import('../state/federation-requests.js');
+    await engine.pushAcceptPolicy();
+    winston.info(`[federation] ${req.user.username} turned the federation-requests inbox ${enabled ? 'on' : 'off'}`);
+    res.json({ acceptRequests: enabled });
   });
 
   // ── Peers (servers this one can read) ──────────────────────────────

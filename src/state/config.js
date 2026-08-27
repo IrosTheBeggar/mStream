@@ -448,6 +448,13 @@ const federationOptions = Joi.object({
   secretKey: Joi.string().optional(),
   serverName: Joi.string().max(64).allow('').default(''),
   limits: federationLimitsOptions.default(federationLimitsOptions.validate({}).value),
+  // The federation-requests inbox: whether OTHER discovery peers may send
+  // this server pairing requests over the DM transport. Opt-in (default
+  // off) — the sidecar's DM handler is fail-closed until the stack pushes
+  // this flag down via setDmAccept. Gates NEW inbound requests only:
+  // replies to this server's own outbound requests always pass (see
+  // pushAcceptPolicy in state/federation-requests.js).
+  acceptRequests: Joi.boolean().default(false),
 });
 
 // The music-discovery P2P layer (p2p-sidecar: iroh-blobs snapshot sharing

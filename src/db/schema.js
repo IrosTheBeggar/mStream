@@ -81,7 +81,7 @@ import { HASH_GENERATION } from './audio-hash.js';
 // V63 indexes cue_points.library_id and play_events.library_id so the
 // library-delete cascade seeks instead of scanning. See SCHEMA_V63.
 // V64 indexes tracks.year so the DLNA By-Year browse seeks. See SCHEMA_V64.
-export const SCHEMA_VERSION = 66;
+export const SCHEMA_VERSION = 67;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2392,6 +2392,65 @@ export const SCHEMA_V66 = `
   SELECT 1;
 `;
 
+// ── Federation requests (V67) ───────────────────────────────────────────────
+//
+// In-network federation requests: an operator who found a server on the
+// public discovery network asks it for a federation pairing over the
+// sidecar's DM transport, and the whole exchange — request, accept +
+// ticket, mutual grant-back — is tracked in one table serving both roles.
+//
+// One row per request per side. `direction` says which role this server
+// plays: 'out' = we composed it (peer_endpoint_id is the recipient),
+// 'in' = it arrived in our inbox (peer_endpoint_id is the sender, and
+// peer_name/message are the sender's SELF-ASSERTED, length-capped strings —
+// display them as untrusted; the identity anchor is the endpoint id).
+//
+// States (TEXT, no CHECK — the state machine lives in
+// src/state/federation-requests.js and new states must not need a
+// migration):
+//   out: pending-delivery → delivered → granting → completed
+//        terminals: rejected | refused | expired | cancelled
+//   in:  received → accepted → granting → completed
+//        terminals: rejected | expired | cancelled (sender withdrew) | blocked
+// 'granting' is the mutual-exchange middle: an OUT row in granting OWES the
+// grant DM (retried via next_attempt_at); an IN row in granting is WAITING
+// for the peer's grant to arrive. fail_count/next_attempt_at drive the
+// retry ladder for whichever DM the row currently owes.
+//
+// offered_libraries is a JSON array of library NAMES: on an OUT row, ours
+// (what we'll grant back on accept); on an IN row, theirs (what the sender
+// says it will grant us). accept_their_offer records the accept-dialog
+// choice so a re-delivered grant after the accept knows whether it was
+// wanted. minted_key_id / created_peer_id link what the exchange produced;
+// SET NULL keeps the audit row alive when a key or peer is later revoked.
+//
+// expires_at is NOT NULL by design: every request carries its TTL from
+// birth (14 days), after which the sweep marks non-terminal rows expired.
+export const SCHEMA_V67 = `
+  CREATE TABLE IF NOT EXISTS federation_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid TEXT NOT NULL UNIQUE,
+    direction TEXT NOT NULL CHECK (direction IN ('in', 'out')),
+    peer_endpoint_id TEXT NOT NULL,
+    peer_name TEXT,
+    message TEXT,
+    offered_libraries TEXT NOT NULL DEFAULT '[]',
+    accept_their_offer INTEGER NOT NULL DEFAULT 1,
+    state TEXT NOT NULL,
+    reject_reason TEXT,
+    fail_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    minted_key_id INTEGER REFERENCES federation_keys(id) ON DELETE SET NULL,
+    created_peer_id INTEGER REFERENCES federation_peers(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_federation_requests_peer
+    ON federation_requests(peer_endpoint_id);
+`;
+
 export const SCHEMA_V58 = `
   ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
 `;
@@ -2777,4 +2836,8 @@ export const MIGRATIONS = [
   // INFO, and only a re-parse can backfill the NULLs older builds left.
   // See SCHEMA_V66.
   { version: 66, sql: SCHEMA_V66, rescanRequired: true },
+  // V67 adds the federation_requests table — in-network federation
+  // requests over the discovery DM transport. Pure new table + index, no
+  // rescan. See SCHEMA_V67.
+  { version: 67, sql: SCHEMA_V67 },
 ];

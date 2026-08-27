@@ -6089,6 +6089,7 @@ paths:
                       streamKbps: { type: integer }
                       dailyMb: { type: integer }
                       maxStreams: { type: integer }
+                  acceptRequests: { type: boolean, description: "Whether the federation-requests inbox is open (federation.acceptRequests)" }
         "405": { $ref: "#/components/responses/AdminLocked" }
     post:
       tags: [Federation]
@@ -6235,6 +6236,158 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "404": { description: Key not found. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/requests:
+    get:
+      tags: [Federation]
+      summary: List federation requests (both directions)
+      description: Every tracked exchange — outbound requests this server composed and inbound ones in its opt-in inbox. `peer_name` and `message` on inbound rows are the sender's self-asserted strings; display them as untrusted (the identity anchor is `peer_endpoint_id`).
+      responses:
+        "200":
+          description: The inbox flag plus request rows, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  acceptRequests: { type: boolean }
+                  requests:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        uuid: { type: string }
+                        direction: { type: string, enum: [in, out] }
+                        peer_endpoint_id: { type: string }
+                        peer_name: { type: string, nullable: true }
+                        message: { type: string, nullable: true }
+                        offered_libraries: { type: array, items: { type: string } }
+                        state: { type: string, description: "pending-delivery / delivered / received / accepted / granting / completed / rejected / refused / expired / cancelled / blocked" }
+                        reject_reason: { type: string, nullable: true }
+                        fail_count: { type: integer }
+                        next_attempt_at: { type: string, nullable: true }
+                        minted_key_id: { type: integer, nullable: true }
+                        created_peer_id: { type: integer, nullable: true }
+                        created_at: { type: string }
+                        expires_at: { type: string }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+    post:
+      tags: [Federation]
+      summary: Send a federation request to a discovery peer
+      description: "Composes and queues the request over the discovery DM transport, retrying with backoff until delivered, refused, or expired (14-day TTL). No credential travels in the request — tickets only flow after the peer explicitly accepts. Requires the discovery network AND federation to be enabled. `offerVpaths` is what THIS server will grant back on accept (may be empty for a one-way ask)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpointId]
+              properties:
+                endpointId: { type: string, description: The peer's discovery endpoint id (a catalog row) }
+                message: { type: string, maxLength: 500 }
+                offerVpaths: { type: array, maxItems: 32, items: { type: string } }
+      responses:
+        "200":
+          description: The created request row (state `pending-delivery`).
+        "404": { description: Unknown offered library. }
+        "409": { description: "Feature not enabled, peer blocked, or a request to this peer is already live." }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/requests/{id}/accept:
+    post:
+      tags: [Federation]
+      summary: Accept an inbox request (mints the key, sends the ticket)
+      description: "Mints a key scoped to the chosen libraries — the limit fields pre-fill from `federation.limits` exactly like a manual mint — and owes the sender a `federation-accept` DM carrying the swap-ready ticket. With `acceptTheirOffer` (default true) the exchange stays open until their grant-back arrives; declining completes it one-way. Requires the federation endpoint to be running."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vpaths]
+              properties:
+                vpaths: { type: array, minItems: 1, items: { type: string } }
+                streamKbps: { type: integer, minimum: 0 }
+                dailyMb: { type: integer, minimum: 0 }
+                maxStreams: { type: integer, minimum: 0 }
+                expiresAt: { type: string, format: date-time, nullable: true }
+                acceptTheirOffer: { type: boolean, default: true }
+      responses:
+        "200":
+          description: The updated request row (state `accepted`).
+        "404": { description: Request or library not found. }
+        "409": { description: "Wrong state, federation off, or its endpoint not running." }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/requests/{id}/reject:
+    post:
+      tags: [Federation]
+      summary: Reject an inbox request
+      description: "Marks it rejected, sends a best-effort courtesy DM (with the optional reason), and tombstones the sender for 7 days — new requests from them are dropped without troubling the inbox."
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 200 }
+      responses:
+        "200":
+          description: The updated request row.
+        "404": { description: Request not found. }
+        "409": { description: Wrong state. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/requests/{id}/cancel:
+    post:
+      tags: [Federation]
+      summary: Withdraw an outbound request
+      description: Cancels a pending or delivered request; a delivered one also gets a best-effort courtesy withdraw DM so the peer's inbox can clear itself.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: The updated request row.
+        "404": { description: Request not found. }
+        "409": { description: Wrong state. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/requests/{id}:
+    delete:
+      tags: [Federation]
+      summary: Dismiss a finished request record
+      description: Deletes a terminal-state row from the list. Live exchanges must be cancelled or rejected first.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404": { description: Request not found. }
+        "409": { description: The request is still live. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/federation/accept-requests:
+    post:
+      tags: [Federation]
+      summary: Toggle the federation-requests inbox (live)
+      description: "Persists `federation.acceptRequests` and pushes the DM-accept policy down to the discovery sidecar in the same call. Off is the default — the sidecar refuses request DMs at the transport until this opts in. Replies to this server's own outbound requests are unaffected (their window opens automatically while an exchange is live)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: The stored flag.
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/federation/peers:
