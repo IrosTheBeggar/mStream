@@ -12,6 +12,9 @@
  *  - IN happy path: request lands (sanitized), operator accepts with
  *    custom limits → peer gets the accept ticket (limits on the minted
  *    key) → peer grants back → completed;
+ *  - concurrent duplicate accepts — an operator double-click, or a peer
+ *    double-sending its accept DM — mint exactly ONE key (the check→mint
+ *    stretch must not yield between reading the row and advancing it);
  *  - reject sends the courtesy DM and tombstones the peer for 7 days
  *    (the next request from them is dropped without a row);
  *  - cancel sends the courtesy withdraw;
@@ -230,6 +233,63 @@ const SIDECAR_BIN = resolveSidecarBinary();
     });
     await pollUntil(() => reqDb.getRequestById(row.id).state === 'completed', { what: 'completed state' });
     assert.ok(reqDb.getRequestById(row.id).created_peer_id, 'their grant made them our peer');
+  });
+
+  test('RACE: two concurrent operator accepts mint exactly one key', { timeout: 60000 }, async (t) => {
+    if (gate(t)) { return; }
+    // A synthetic sender straight off the events bus — the race under test
+    // is engine-internal, no wire needed (and no rate-limit spend on bob).
+    const racer = 'ab'.repeat(32);
+    p2p.events.emit('dm', { from: racer, payload: { type: 'federation-request', uuid: 'race-op-accept-1', name: 'Racer' } });
+    const row = await pollUntil(() => reqDb.getRequestByUuid('race-op-accept-1'), { what: 'race inbox row' });
+
+    const keysBefore = fedDb.getFederationKeys().length;
+    const opts = {
+      libraryIds: [libId], vpathNames: ['music'],
+      limits: { streamKbps: 0, dailyMb: 0, maxStreams: 0 },
+      expiresAt: null, acceptTheirOffer: false,
+    };
+    // A double-click: both calls enter in the same tick. Unless the engine
+    // keeps the state-check→mint stretch synchronous, both pass the check.
+    const results = await Promise.allSettled([engine.accept(row.id, opts), engine.accept(row.id, opts)]);
+    assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1, 'exactly one accept wins');
+    assert.match(results.find((r) => r.status === 'rejected').reason.message, /cannot accept/);
+    assert.equal(fedDb.getFederationKeys().length - keysBefore, 1, 'exactly one key minted');
+    const done = reqDb.getRequestById(row.id);
+    assert.equal(done.state, 'accepted');
+    assert.ok(fedDb.getFederationKeyById(done.minted_key_id), 'the row references the surviving key');
+
+    // Tidy: this exchange goes nowhere (fake peer) — drop it so later tests'
+    // transport-window and count math stay clean.
+    fedDb.deleteFederationKey(done.minted_key_id);
+    reqDb.deleteRequest(row.id);
+    await engine.pushAcceptPolicy();
+  });
+
+  test('RACE: a double-sent peer accept mints exactly one grant-back key', { timeout: 60000 }, async (t) => {
+    if (gate(t)) { return; }
+    const racePeer = 'cd'.repeat(32);
+    const row = await engine.compose({ peerEndpointId: racePeer, offeredLibraries: ['music'] });
+    // The background dial to a nonexistent id fails on its own clock; the
+    // row stays 'pending-delivery', which handleAccept legitimately acts on.
+    const keysBefore = fedDb.getFederationKeys().length;
+    const peersBefore = fedDb.getFederationPeers().length;
+    const payload = { type: 'federation-accept', uuid: row.uuid, ticket: bobTicket('fedk_race_bob', 'Race Bob'), wantOffer: true };
+    // The same accept delivered twice back-to-back: both handlers pass the
+    // state check before either mints unless the engine re-reads after its
+    // awaits (addPeerFromTicket yields).
+    p2p.events.emit('dm', { from: racePeer, payload });
+    p2p.events.emit('dm', { from: racePeer, payload });
+    await pollUntil(() => ['granting', 'completed'].includes(reqDb.getRequestById(row.id).state), { what: 'granting state' });
+    await new Promise((r) => setTimeout(r, 500)); // let the losing handler finish
+    assert.equal(fedDb.getFederationPeers().length - peersBefore, 1, 'one peer (UNIQUE api_key dedupe)');
+    assert.equal(fedDb.getFederationKeys().length - keysBefore, 1, 'exactly one grant-back key minted');
+    const done = reqDb.getRequestById(row.id);
+    assert.ok(fedDb.getFederationKeyById(done.minted_key_id), 'the row references the surviving key');
+
+    fedDb.deleteFederationKey(done.minted_key_id);
+    reqDb.deleteRequest(row.id);
+    await engine.pushAcceptPolicy();
   });
 
   test('reject sends the courtesy DM and tombstones the peer', { timeout: 60000 }, async (t) => {

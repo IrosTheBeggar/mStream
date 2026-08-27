@@ -115,6 +115,10 @@ export async function pushAcceptPolicy() {
 // accept (may be empty = one-way ask). Throws plain Errors; the admin
 // route maps them onto status codes.
 export async function compose({ peerEndpointId, message = null, offeredLibraries = [] }) {
+  // Import before the guards: the stretch from the one-active-request check
+  // down to createRequest must stay synchronous, or two racing composes (a
+  // double-click) could both pass the guard and queue duplicate rows.
+  const catalog = await import('./discovery-catalog.js');
   if (config.program.discoveryP2p.enabled !== true) { throw new Error('the discovery network is not enabled'); }
   if (config.program.federation.enabled !== true) { throw new Error('federation is not enabled'); }
   if (config.program.discoveryP2p.blockedPeers.includes(peerEndpointId)) {
@@ -124,7 +128,6 @@ export async function compose({ peerEndpointId, message = null, offeredLibraries
     && r.peer_endpoint_id === peerEndpointId && reqDb.ACTIVE_STATES.includes(r.state));
   if (existing) { throw new Error(`a request to this peer is already ${existing.state}`); }
 
-  const catalog = await import('./discovery-catalog.js');
   const peerName = catalog.get(peerEndpointId)?.payload?.name || null;
   const row = reqDb.createRequest({
     uuid: crypto.randomUUID(),
@@ -169,6 +172,11 @@ export function cancel(id) {
 // carrying the swap-ready ticket. acceptTheirOffer records whether we
 // expect their grant-back after our accept lands.
 export async function accept(id, { libraryIds, vpathNames, limits, expiresAt = null, acceptTheirOffer = true }) {
+  // Import first: the read→check→mint→update stretch below is synchronous,
+  // so two racing accepts (an operator double-click) cannot both pass the
+  // state check and double-mint — the loser reads 'accepted' and throws.
+  // reject() and cancel() get the same guarantee free by having no awaits.
+  const federation = await import('./federation.js');
   const row = reqDb.getRequestById(id);
   if (!row || row.direction !== 'in') { throw new Error('Request not found'); }
   if (row.state !== 'received') { throw new Error(`cannot accept a request in state '${row.state}'`); }
@@ -176,7 +184,6 @@ export async function accept(id, { libraryIds, vpathNames, limits, expiresAt = n
     throw new Error('this peer is blocked'); // blocked after the request landed
   }
   if (config.program.federation.enabled !== true) { throw new Error('federation is not enabled'); }
-  const federation = await import('./federation.js');
   if (!federation.getEndpointTicket()) { throw new Error('the federation endpoint is not running'); }
 
   const keyName = `request: ${row.peer_name || row.peer_endpoint_id.slice(0, 12)}`.slice(0, 64);
@@ -468,7 +475,7 @@ function rowForSender(from, uuid, direction, verb) {
 // read them), and if we offered libraries — and they said they want them —
 // we now owe the grant-back.
 async function handleAccept(from, payload) {
-  const row = rowForSender(from, payload.uuid, 'out', 'accept');
+  let row = rowForSender(from, payload.uuid, 'out', 'accept');
   if (!row) { return; }
   if (['granting', 'completed'].includes(row.state)) { return; } // idempotent re-delivery
   if (!['pending-delivery', 'delivered'].includes(row.state)) {
@@ -477,6 +484,11 @@ async function handleAccept(from, payload) {
   }
   const peerId = await addPeerFromTicket(row, payload.ticket, 'accept');
   if (peerId === null) { return; }
+  // addPeerFromTicket yielded: a rapid duplicate of this accept may have
+  // advanced the row meanwhile — re-read so only one handler mints the
+  // grant-back (everything from here to updateRequest is synchronous).
+  row = reqDb.getRequestById(row.id);
+  if (!row || !['pending-delivery', 'delivered'].includes(row.state)) { return; }
 
   const wantOffer = payload.wantOffer !== false;
   const grantNames = wantOffer ? row.offered_libraries : [];
