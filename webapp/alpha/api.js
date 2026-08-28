@@ -226,6 +226,50 @@ const MSTREAMAPI = (() => {
     return req('POST', mstreamModule.currentServer.host + 'api/v1/db/genre-songs', postObject);
   }
 
+  ///////////////////// Federation: browsing a PEER's library
+  //
+  // Every call below is the LOCAL call above it, re-pointed at one peer via
+  // the server's browse proxy (src/api/federation-browse.js). Same request
+  // bodies, same response shapes — which is the whole point: a peer view
+  // can reuse the local renderers instead of forking them.
+  //
+  // ignoreVPaths is deliberately NOT forwarded. It names vpaths in OUR
+  // library, and the peer's namespace is its own; the peer already scopes
+  // every answer to the libraries our key was granted.
+
+  function peerReq(peerId, method, apiPath, postObject) {
+    const url = `${mstreamModule.currentServer.host}api/v1/federation/peers/${encodeURIComponent(peerId)}/api/${apiPath}`;
+    return req(method, url, postObject);
+  }
+
+  // The peers this user may browse. Never carries api_key or the endpoint
+  // ticket — that projection is admin-only.
+  mstreamModule.federationPeers = () => {
+    return req('GET', mstreamModule.currentServer.host + 'api/v1/federation/peers', false);
+  };
+
+  // A peer's cover art, through the art proxy. `token` is the LOCAL token
+  // (the proxy strips it before dialing, so it never reaches the peer) —
+  // <img> tags can't set headers, same as every other art URL in the app.
+  mstreamModule.peerArtUrl = (peerId, artFile, compress) => {
+    let url = `${mstreamModule.currentServer.host}api/v1/federation/peers/${encodeURIComponent(peerId)}/art/${encodeURIComponent(artFile)}?`;
+    if (compress) { url += `compress=${encodeURIComponent(compress)}&`; }
+    return url + `token=${encodeURIComponent(mstreamModule.currentServer.token)}`;
+  };
+
+  mstreamModule.peer = {
+    dirparser: (peerId, directory) => peerReq(peerId, 'POST', 'api/v1/file-explorer', { directory }),
+    recursiveScan: (peerId, directory) => peerReq(peerId, 'POST', 'api/v1/file-explorer/recursive', { directory }),
+    search: (peerId, postObject) => peerReq(peerId, 'POST', 'api/v1/db/search', postObject),
+    artists: (peerId, postObject) => peerReq(peerId, 'POST', 'api/v1/db/artists', postObject || {}),
+    albums: (peerId, postObject) => peerReq(peerId, 'POST', 'api/v1/db/albums', postObject || {}),
+    artistAlbums: (peerId, postObject) => peerReq(peerId, 'POST', 'api/v1/db/artists-albums', postObject),
+    albumSongs: (peerId, postObject) => peerReq(peerId, 'POST', 'api/v1/db/album-songs', postObject),
+    genres: (peerId, postObject) => peerReq(peerId, 'POST', 'api/v1/db/genres', postObject || {}),
+    genreSongs: (peerId, postObject) => peerReq(peerId, 'POST', 'api/v1/db/genre-songs', postObject),
+    recentlyAdded: (peerId, limit) => peerReq(peerId, 'POST', 'api/v1/db/recent/added', { limit: limit || 100 }),
+  };
+
   mstreamModule.searchAlbumArt = (postObject) => {
     return req('POST', mstreamModule.currentServer.host + 'api/v1/album-art/search', postObject);
   }

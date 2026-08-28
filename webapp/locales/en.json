@@ -650,5 +650,21 @@
   "admin.modal.creating": "Creating ...",
   "admin.modal.inviteExpiry": "Invite tokens expire in 30 min",
   "admin.modal.copyClipboard": "Copy To Clipboard",
-  "admin.modal.nothingToFederate": "Nothing to Federate"
+  "admin.modal.nothingToFederate": "Nothing to Federate",
+  "peers.unreachable": "unreachable",
+  "peers.searchHeader": "On {{name}}",
+  "peers.noPlaylist": "Peer tracks can't be added to playlists",
+  "peers.noDownload": "Peer folders can't be downloaded",
+  "search.noResults": "No Results Found",
+  "server.thisServer": "This server",
+  "server.readOnlyNote": "Browsing {{name}} — read-only. You can play and queue its music, but not change anything.",
+  "search.federated": "Search federated servers",
+  "search.onThisServer": "On this server",
+  "playlist.federatedSkipped": "Federated tracks aren't saved to the live playlist",
+  "playlist.cannotSaveMixed": "Can't save a playlist with federated tracks",
+  "playlist.federatedCount": {
+    "one": "1 track in the queue lives on another server",
+    "other": "{{count}} tracks in the queue live on another server"
+  },
+  "share.cannotShareMixed": "Can't share a queue with federated tracks"
 }

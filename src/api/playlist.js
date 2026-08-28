@@ -53,6 +53,13 @@ export function setup(mstream) {
       federationDiscovery: config.program.federation.enabled === true
         && config.program.scanOptions.collectDiscoveryData === true
         && fedDb.getFederationPeers().some((p) => p.use_discovery === 1),
+      // Browsing a peer's library (api/federation-browse.js): the Peers
+      // panel and the peer roots in the file explorer. Same no-probe
+      // contract as the discovery flags — an older build omits the key and
+      // the webapp simply never offers the feature. Requires a peer to
+      // browse, so a federation-enabled server with none stays quiet.
+      federationBrowse: config.program.federation.enabled === true
+        && fedDb.getFederationPeers().length > 0,
       vpathMetaData: {}
     };
 

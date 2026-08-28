@@ -59,8 +59,18 @@ const ALLOWED_EXACT = new Set([
 const ALLOWED_GET_PREFIXES = ['/media/', '/album-art/'];
 
 export function isFederationPathAllowed(req) {
-  if (ALLOWED_EXACT.has(`${req.method} ${req.path}`)) { return true; }
-  if (req.method === 'GET' && ALLOWED_GET_PREFIXES.some((p) => req.path.startsWith(p))) { return true; }
+  return isFederationRouteAllowed(req.method, req.path);
+}
+
+// Same decision, addressable by (method, path) instead of a live request.
+// The OUTBOUND browse proxy (api/federation-browse.js) forwards local-user
+// calls to a peer's allowlisted routes, and it screens the path against
+// THIS list before dialing: a peer re-checks its own copy anyway, but
+// sharing one table means the two directions can never drift into a route
+// we proxy to but no peer will answer (or worse, the reverse).
+export function isFederationRouteAllowed(method, path) {
+  if (ALLOWED_EXACT.has(`${method} ${path}`)) { return true; }
+  if (method === 'GET' && ALLOWED_GET_PREFIXES.some((p) => path.startsWith(p))) { return true; }
   return false;
 }
 

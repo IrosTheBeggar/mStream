@@ -36,6 +36,7 @@ import * as discoveryDb from './db/discovery-db.js';
 import { reapOrphanedScanner } from './db/scan-pidfile.js';
 // scanner.js removed — parser now writes directly to SQLite
 import * as federationApi from './api/federation.js';
+import * as federationBrowseApi from './api/federation-browse.js';
 import * as federationDiscoveryApi from './api/federation-discovery.js';
 import * as federationLimitsApi from './api/federation-limits.js';
 import * as federationStreamApi from './api/federation-stream.js';
@@ -638,6 +639,7 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   federationApi.setup(mstream);
   federationDiscoveryApi.setup(mstream);
   federationStreamApi.setup(mstream);
+  federationBrowseApi.setup(mstream);
   ytdlApi.setup(mstream);
   torrentApi.setup(mstream);
   albumArtApi.setup(mstream);

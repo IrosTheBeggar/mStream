@@ -100,6 +100,116 @@ var programState = [];
 
 let curFileTracker;
 
+///////////////////////// Federation: which server the app is pointed at
+//
+// `peerContext` is the server the app is showing — null for this one, set by
+// the top-bar dropdown (see the server switcher further down). It is read
+// AMBIENTLY by the render helpers and by browseApi() below, so one set of
+// renderers and one set of browse calls serve both sides instead of a forked
+// peer universe.
+//
+// Every row a peer view renders also carries `data-peer`, and the CLICK
+// handlers read that attribute rather than the ambient context. Two
+// reasons: the DB-search panel mixes local and peer hits in one list, where
+// the ambient context is null and the attribute is the only truth; and a
+// row clicked after an async re-render is guaranteed to act on the peer it
+// was drawn for.
+//
+// Handlers that NAVIGATE (open an album, an artist, a folder) adopt the
+// row's peer first, which is what lets a peer album opened from search go
+// on browsing that peer. Handlers that merely QUEUE read the attribute and
+// leave the context alone — playing a peer track from a mixed search list
+// must not move the browser onto that peer.
+let peerContext = null;
+// id -> { id, name }. addFederationSongWizard wants a display name for the
+// queue row and a row only carries the id. Filled by loadServerSwitcher()
+// and by anything else that learns a peer's name (e.g. search attribution).
+const knownPeers = new Map();
+
+function rememberPeer(peer) {
+  if (peer && peer.id !== undefined && peer.id !== null) {
+    knownPeers.set(Number(peer.id), { id: Number(peer.id), name: peer.name || 'peer' });
+  }
+  return peer;
+}
+
+// Rendered into every row while a peer view is open.
+function peerAttr(peer) {
+  const p = peer === undefined ? peerContext : peer;
+  return p ? ` data-peer="${escapeHtml(p.id)}"` : '';
+}
+
+// The peer a clicked row belongs to, or null when the row is local.
+function peerOf(el) {
+  const raw = el && el.getAttribute ? el.getAttribute('data-peer') : null;
+  if (!raw) { return null; }
+  const id = Number(raw);
+  return knownPeers.get(id) || { id: id, name: 'peer' };
+}
+
+// Point the app at whatever server the clicked row came from — used by the
+// handlers that NAVIGATE. A federated hit in a multi-server search result is
+// the one place a row can disagree with the dropdown, and following it moves
+// the whole app (dropdown, nav, read-only note) onto that server rather than
+// leaving a half-switched UI. The queueing handlers use peerOf() instead and
+// leave the context alone.
+function adoptPeer(el) {
+  const next = peerOf(el);
+  const changed = (next ? next.id : null) !== (peerContext ? peerContext.id : null);
+  peerContext = next;
+  if (changed) { applyServerContext(); }
+  return peerContext;
+}
+
+// One browse call, routed to the peer being browsed or to this server.
+// The peer wrappers in api.js mirror the local names exactly, so the only
+// difference at the call site is which server answers.
+function browseApi(name, postObject) {
+  if (peerContext) { return MSTREAMAPI.peer[name](peerContext.id, postObject); }
+  return MSTREAMAPI[name](postObject);
+}
+
+// vpaths to hide, for a LOCAL call only. The Auto-DJ folder filter names
+// vpaths in this library; a peer's namespace is its own, and the peer
+// already scopes every answer to the libraries our key was granted.
+function localIgnoreVPaths() {
+  if (peerContext) { return undefined; }
+  return Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
+    return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
+  });
+}
+
+// Album-art URL for the panel being rendered: this server's /album-art, or
+// a peer's art through the proxy.
+function artUrl(artFile, compress) {
+  if (!artFile) { return null; }
+  if (peerContext) { return MSTREAMAPI.peerArtUrl(peerContext.id, artFile, compress); }
+  return `${MSTREAMAPI.currentServer.host}album-art/${escapeHtml(artFile)}?${compress ? `compress=${compress}&` : ''}token=${MSTREAMAPI.currentServer.token}`;
+}
+
+// The `aa` argument createMusicFileHtml expects: a full src attribute for
+// the panel's server, or the bundled default cover.
+function artImgAttr(artFile, compress) {
+  const url = artUrl(artFile, compress);
+  return url ? `src="${url}"` : 'src="assets/img/default.png"';
+}
+
+// Queue a row that may live on a peer. Peer tracks bypass addSongWizard
+// entirely (see addFederationSongWizard) — transcode, waveform prefetch,
+// live-playlist save and metadata lookup all resolve against the LOCAL
+// library, and this path is in the peer's namespace.
+function queueRow(peer, filepath, metadata, position) {
+  const meta = metadata || {};
+  const hasMeta = Object.keys(meta).length > 0;
+  if (peer) {
+    VUEPLAYERCORE.addFederationSongWizard(peer, filepath, meta, true, position);
+    return;
+  }
+  // lookupMetadata only when the row carried none — the same bargain
+  // searchFileClick strikes, and what the browse panels have always done.
+  VUEPLAYERCORE.addSongWizard(filepath, meta, !hasMeta, position);
+}
+
 const entityMap = {
   '&': '&amp;',
   '<': '&lt;',
@@ -118,11 +228,9 @@ function escapeHtml (string) {
 }
 
 function renderAlbum(id, artist, name, albumArtFile, year) {
-  const artSrc = albumArtFile
-    ? `${MSTREAMAPI.currentServer.host}album-art/${escapeHtml(albumArtFile)}?${VUEPLAYERCORE.altLayout.compressArt ? 'compress=l&' : ''}token=${MSTREAMAPI.currentServer.token}`
-    : null;
+  const artSrc = artUrl(albumArtFile, VUEPLAYERCORE.altLayout.compressArt ? 'l' : undefined);
 
-  return `<div class="album-grid-card" ${year ? `data-year="${escapeHtml(year)}"` : ''} ${artist ? `data-artist="${escapeHtml(artist)}"` : ''} ${id ? `data-album="${escapeHtml(id)}"` : ''} onclick="getAlbumsOnClick(this);">
+  return `<div class="album-grid-card"${peerAttr()} ${year ? `data-year="${escapeHtml(year)}"` : ''} ${artist ? `data-artist="${escapeHtml(artist)}"` : ''} ${id ? `data-album="${escapeHtml(id)}"` : ''} onclick="getAlbumsOnClick(this);">
     <div class="album-grid-art">
       ${artSrc
         ? `<img loading="lazy" src="${artSrc}">`
@@ -140,7 +248,7 @@ function renderAlbum(id, artist, name, albumArtFile, year) {
 
 function renderArtist(artist) {
   return `<li class="collection-item">
-      <div data-artist="${escapeHtml(artist)}" class="artistz" onclick="getArtistz(this)">${escapeHtml(artist)}</div>
+      <div data-artist="${escapeHtml(artist)}"${peerAttr()} class="artistz" onclick="getArtistz(this)">${escapeHtml(artist)}</div>
     </li>`;
 }
 
@@ -164,7 +272,7 @@ function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
 
 function createMusicFileHtml(fileLocation, title, aa, rating, subtitle) {
   return `<li class="collection-item">
-    <div data-file_location="${escapeHtml(fileLocation)}" class="filez ${aa ? 'flex2' : ''}" onclick="onFileClick(this);">
+    <div data-file_location="${escapeHtml(fileLocation)}"${peerAttr()} class="filez ${aa ? 'flex2' : ''}" onclick="onFileClick(this);">
       ${aa ? `<img loading="lazy" class="album-art-box" ${aa}>` : '<svg class="music-image" height="18" width="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M9 37.5c-3.584 0-6.5-2.916-6.5-6.5s2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V5.429l25-3.846V29c0 3.584-2.916 6.5-6.5 6.5s-6.5-2.916-6.5-6.5 2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V11.023l-19 2.931V31c0 3.584-2.916 6.5-6.5 6.5z" fill="#8bb7f0"/><path d="M37 2.166V29c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V10.441l-1.152.178-18 2.776-.848.13V31c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V5.858l24-3.692M38 1L12 5v19.683A6.962 6.962 0 009 24a7 7 0 107 7V14.383l18-2.776v11.076A6.962 6.962 0 0031 22a7 7 0 107 7V1z" fill="#4e7ab5"/></svg>'} 
       <span>
         ${subtitle !== undefined ? `<b>` : ''}
@@ -173,10 +281,10 @@ function createMusicFileHtml(fileLocation, title, aa, rating, subtitle) {
       </span>
     </div>
     <div class="song-button-box">
-      <span title="Play Now" onclick="playNow(this);" data-file_location="${escapeHtml(fileLocation)}" class="songDropdown">
+      <span title="Play Now" onclick="playNow(this);" data-file_location="${escapeHtml(fileLocation)}"${peerAttr()} class="songDropdown">
         <svg xmlns="http://www.w3.org/2000/svg" height="14" width="14" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
       </span>
-      <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(fileLocation)}" class="fileAddToPlaylist">
+      <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(fileLocation)}"${peerAttr()} class="fileAddToPlaylist">
         <svg class="pop-f" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362"><path class="pop-f" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>
       </span>
     </div>
@@ -185,15 +293,15 @@ function createMusicFileHtml(fileLocation, title, aa, rating, subtitle) {
 
 function renderDirHtml(name) {
   return `<li class="collection-item">
-    <div data-directory="${escapeHtml(name)}" class="dirz" onclick="handleDirClick(this);">
+    <div data-directory="${escapeHtml(name)}"${peerAttr()} class="dirz" onclick="handleDirClick(this);">
       <svg class="folder-image" viewBox="0 0 48 48" version="1.0" xmlns="http://www.w3.org/2000/svg"><path fill="#FFA000" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/><path fill="#FFCA28" d="M42.2 18H15.3c-1.9 0-3.6 1.4-3.9 3.3L8 40h31.7c1.9 0 3.6-1.4 3.9-3.3l2.5-14c.5-2.4-1.4-4.7-3.9-4.7z"/></svg>
       <span class="item-text">${escapeHtml(name)}</span>
     </div>
     <div class="song-button-box">
-      <span style="padding-top:1px;" title="Add All To Queue" class="songDropdown" onclick="recursiveAddDir(this);" data-directory="${escapeHtml(name)}">
+      <span style="padding-top:1px;" title="Add All To Queue" class="songDropdown" onclick="recursiveAddDir(this);" data-directory="${escapeHtml(name)}"${peerAttr()}>
         <svg xmlns="http://www.w3.org/2000/svg" height="10" width="10" viewBox="0 0 1280 1276"><path d="M6760 12747 c-80 -5 -440 -10 -800 -11 -701 -2 -734 -4 -943 -57 -330 -84 -569 -281 -681 -563 -103 -256 -131 -705 -92 -1466 12 -241 16 -531 16 -1232 l0 -917 -1587 -4 c-1561 -3 -1590 -3 -1703 -24 -342 -62 -530 -149 -692 -322 -158 -167 -235 -377 -244 -666 -43 -1404 -42 -1813 7 -2355 21 -235 91 -400 233 -548 275 -287 730 -389 1591 -353 1225 51 2103 53 2330 7 l60 -12 6 -1489 c6 -1559 6 -1548 49 -1780 100 -535 405 -835 933 -921 88 -14 252 -17 1162 -24 591 -4 1099 -4 1148 1 159 16 312 56 422 112 118 59 259 181 333 290 118 170 195 415 227 722 18 173 21 593 6 860 -26 444 -32 678 -34 1432 l-2 811 54 7 c30 4 781 6 1670 5 1448 -2 1625 -1 1703 14 151 28 294 87 403 168 214 159 335 367 385 666 15 85 29 393 30 627 0 105 4 242 10 305 43 533 49 1047 15 1338 -44 386 -144 644 -325 835 -131 140 -278 220 -493 270 -92 21 -98 21 -1772 24 l-1680 3 3 1608 c2 1148 0 1635 -8 1706 -49 424 -255 701 -625 841 -243 91 -633 124 -1115 92z" transform="matrix(.1 0 0 -.1 0 1276)"/></svg>
       </span>
-      <span data-directory="${escapeHtml(name)}" title="Download Directory" class="downloadDir" onclick="recursiveFileDownload(this);">
+      <span data-directory="${escapeHtml(name)}"${peerAttr()} title="Download Directory" class="downloadDir" onclick="recursiveFileDownload(this);">
         <svg width="13" height="13" viewBox="0 0 2048 2048" xmlns="http://www.w3.org/2000/svg"><path d="M1803 960q0 53-37 90l-651 652q-39 37-91 37-53 0-90-37l-651-652q-38-36-38-90 0-53 38-91l74-75q39-37 91-37 53 0 90 37l294 294v-704q0-52 38-90t90-38h128q52 0 90 38t38 90v704l294-294q37-37 90-37 52 0 91 37l75 75q37 39 37 91z"/></svg>
       </span>
     </div>
@@ -244,8 +352,10 @@ function setBrowserRootPanel(panelName, showBar) {
   document.getElementById('upload_btn').classList.add('super-hide');
   document.getElementById('mkdir_btn').classList.add('super-hide');
 
+  // Inside a peer view every panel says whose library it is showing.
+  const label = peerContext ? `${escapeHtml(peerContext.name)} &middot; ${panelName}` : panelName;
   ([...document.getElementsByClassName('panel_one_name')]).forEach(el => {
-    el.innerHTML = panelName;
+    el.innerHTML = label;
   });
 
   currentBrowsingList = [];
@@ -268,7 +378,9 @@ async function senddir(root) {
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
   try {
-    const response = await MSTREAMAPI.dirparser(directoryString);
+    const response = peerContext
+      ? await MSTREAMAPI.peer.dirparser(peerContext.id, directoryString)
+      : await MSTREAMAPI.dirparser(directoryString);
     document.getElementById('directoryName').innerHTML = escapeHtml(response.path);
 
     if(root === true && response.path.length > 1) {
@@ -283,7 +395,9 @@ async function senddir(root) {
     // Show upload and mkdir buttons only when inside a vpath (not at root)
     const uploadBtn = document.getElementById('upload_btn');
     const mkdirBtn = document.getElementById('mkdir_btn');
-    if (fileExplorerArray.length > 0) {
+    // Both are writes, and a federation key carries no write permission —
+    // the peer's allowlist stops at reads, so never offer them there.
+    if (fileExplorerArray.length > 0 && !peerContext) {
       uploadBtn.classList.remove('super-hide');
       if (MSTREAMAPI.currentServer.noMkdir === true) {
         mkdirBtn.classList.add('super-hide');
@@ -351,6 +465,7 @@ if (typeof(Storage) !== "undefined" && localStorage.getItem("token")) {
 }
 
 function handleDirClick(el){
+  adoptPeer(el);
   fileExplorerArray.push(el.getAttribute('data-directory'));
   programState.push({
     state: 'fileExplorer',
@@ -377,47 +492,65 @@ function boilerplateFailure(err) {
 }
 
 function onFileClick(el) {
+  const peer = peerOf(el);
   // Sonic Path song-capture: an armed picker takes the next SINGLE row
   // click; bulk actions never come through here, so they queue normally.
   if (VUEPLAYERCORE.songCapture) {
+    // A peer track can't seed a path — the arc is computed from embeddings
+    // in the LOCAL index, and this filepath is in the peer's namespace.
+    // Say so and leave the picker armed for a local row.
+    if (peer) {
+      iziToast.warning({ title: t('sonicPath.federatedTrack'), position: 'topCenter', timeout: 3000 });
+      return;
+    }
     const capture = VUEPLAYERCORE.songCapture;
     VUEPLAYERCORE.songCapture = null;
     capture({ filepath: el.getAttribute("data-file_location") });
     return;
   }
-  VUEPLAYERCORE.addSongWizard(el.getAttribute("data-file_location"), {}, true);
+  queueRow(peer, el.getAttribute("data-file_location"));
 }
 
-// Metadata for the current DB-search results, keyed by (raw) filepath. The
-// search API returns the full canonical metadata object inline on track hits,
-// so the search-result handlers below enqueue with it directly and skip the
-// per-click /api/v1/db/metadata round-trip that the shared onFileClick/playNow
-// (used by the file browser, which has no inline metadata) still perform.
-// Rebuilt on every search in submitSearchForm().
+// Metadata for the current DB-search results, keyed by (peer, raw filepath).
+// The search API returns the full canonical metadata object inline on track
+// hits, so the search-result handlers below enqueue with it directly and skip
+// the per-click /api/v1/db/metadata round-trip that the shared
+// onFileClick/playNow (used by the file browser, which has no inline
+// metadata) still perform. Rebuilt on every search in submitSearchForm().
+//
+// The peer is part of the key because results from several servers share one
+// list, and two libraries can easily hold the same "music/Artist/01.flac".
 let searchResultMetadata = {};
 
+function searchKey(peerId, filepath) {
+  return `${peerId === undefined || peerId === null ? '' : peerId}:${filepath}`;
+}
+
 // Search-result variants of onFileClick / playNow: enqueue with the inline
-// metadata when we have it (so addSongWizard skips the lookup), else fall back
-// to a server lookup (lookupMetadata=true) for safety.
+// metadata when we have it (so the wizard skips the lookup), else fall back
+// to a server lookup for safety. A row from a peer queues over the bridge.
 function searchFileClick(el) {
+  const peer = peerOf(el);
   const fp = el.getAttribute("data-file_location");
-  const meta = searchResultMetadata[fp];
-  VUEPLAYERCORE.addSongWizard(fp, meta || {}, !meta);
+  queueRow(peer, fp, searchResultMetadata[searchKey(peer && peer.id, fp)]);
 }
 
 function searchPlayNow(el) {
+  const peer = peerOf(el);
   const fp = el.getAttribute("data-file_location");
-  const meta = searchResultMetadata[fp];
-  VUEPLAYERCORE.addSongWizard(fp, meta || {}, !meta, MSTREAMPLAYER.positionCache.val + 1);
+  queueRow(peer, fp, searchResultMetadata[searchKey(peer && peer.id, fp)], MSTREAMPLAYER.positionCache.val + 1);
 }
 
 async function recursiveAddDir(el) {
+  const peer = adoptPeer(el);
   try {
     const directoryString = getDirectoryString2(el);
-    const res = await MSTREAMAPI.recursiveScan(directoryString);
-    addAllSongs(res);
+    const res = peer
+      ? await MSTREAMAPI.peer.recursiveScan(peer.id, directoryString)
+      : await MSTREAMAPI.recursiveScan(directoryString);
+    res.forEach(fp => queueRow(peer, fp));
   } catch(err) {
-    boilerplateFailure(err);   
+    boilerplateFailure(err);
   }
 }
 
@@ -459,7 +592,7 @@ async function addFilePlaylist(el) {
 
 function addAll() {
   ([...document.getElementsByClassName('filez')]).forEach(el => {
-    VUEPLAYERCORE.addSongWizard(el.getAttribute("data-file_location"), {}, true);
+    queueRow(peerOf(el), el.getAttribute("data-file_location"));
   });
 }
 
@@ -473,17 +606,18 @@ async function queueAlbum(cardEl) {
   const album = cardEl.getAttribute('data-album') || null;
   const artist = cardEl.getAttribute('data-artist') || null;
   const year = cardEl.getAttribute('data-year') || null;
+  const peer = adoptPeer(cardEl);
 
   try {
-    const response = await MSTREAMAPI.albumSongs({
+    const response = await browseApi('albumSongs', {
       album,
       artist,
       year,
-      ignoreVPaths: Object.keys(MSTREAMPLAYER.ignoreVPaths).filter(v => MSTREAMPLAYER.ignoreVPaths[v] === true)
+      ignoreVPaths: localIgnoreVPaths()
     });
 
     response.forEach(song => {
-      VUEPLAYERCORE.addSongWizard(song.filepath, song.metadata || {}, true);
+      queueRow(peer, song.filepath, song.metadata || {});
     });
 
     iziToast.success({
@@ -498,7 +632,7 @@ async function queueAlbum(cardEl) {
 }
 
 function playNow(el) {
-  VUEPLAYERCORE.addSongWizard(el.getAttribute("data-file_location"), {}, true, MSTREAMPLAYER.positionCache.val + 1);
+  queueRow(peerOf(el), el.getAttribute("data-file_location"), undefined, MSTREAMPLAYER.positionCache.val + 1);
 }
 
 async function init() {
@@ -539,6 +673,11 @@ async function init() {
     // only when the server has the route (never probed).
     MSTREAMAPI.currentServer.discoveryPath = response.discoveryPath === true;
     document.getElementById('nav-sonic-path').classList.toggle('super-hide', response.discoveryPath !== true);
+
+    // Federation: is there another server to point this app at? The flag
+    // means "federation is on AND at least one peer is paired" — no probing.
+    MSTREAMAPI.currentServer.federationBrowse = response.federationBrowse === true;
+    if (MSTREAMAPI.currentServer.federationBrowse) { loadServerSwitcher(); }
 
     if (response.transcode) {
       MSTREAMPLAYER.transcodeOptions.serverEnabled = true;
@@ -603,6 +742,14 @@ async function init() {
 // never appeared. Removed entirely.
 
 function createPopper3(el) {
+  // Playlists store paths against THIS library — a peer's path would save
+  // as a row that resolves to nothing. Say so instead of opening a picker
+  // whose every option fails on submit (the same bargain the rating popper
+  // strikes on peer tracks in vp.js).
+  if (peerOf(el)) {
+    iziToast.info({ title: t('peers.noPlaylist'), position: 'topCenter', timeout: 2500 });
+    return;
+  }
   if (curFileTracker === el.getAttribute("data-file_location")) {
     curFileTracker = undefined;
     document.getElementById("pop-f").style.visibility = "hidden";
@@ -2436,6 +2583,13 @@ function downloadPlaylist() {
 }
 
 function recursiveFileDownload(el) {
+  // /api/v1/download/directory zips a path in THIS library. Downloading a
+  // peer's folder would need a second proxy (and the peer's own consent);
+  // until then, be honest rather than serve an empty archive.
+  if (peerOf(el)) {
+    iziToast.info({ title: t('peers.noDownload'), position: 'topCenter', timeout: 2500 });
+    return;
+  }
   const directoryString = getDirectoryString2(el);
   document.getElementById('downform').action = "api/v1/download/directory?token=" + MSTREAMAPI.currentServer.token;
 
@@ -2818,12 +2972,9 @@ async function setLivePlaylist() {
         VUEPLAYERCORE.addSongWizard(value.filepath, value.metadata, false, undefined, false, true);
       });  
     } else {
-      // save current queue
-      const songs = [];
-      for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-        songs.push(MSTREAMPLAYER.playlist[i].filepath);
-      }
-      MSTREAMAPI.savePlaylist(livePlaylistName, songs, true);
+      // Seed the playlist from the current queue — federated tracks left
+      // out, same as every later re-save (vp.js localQueueFilepaths).
+      MSTREAMAPI.savePlaylist(livePlaylistName, VUEPLAYERCORE.localQueueFilepaths(), true);
     }
 
     document.getElementById('set_live_playlist').classList.remove('green');
@@ -2840,7 +2991,28 @@ async function setLivePlaylist() {
   }
 }
 
+// Tracks in the queue that live on a federated server. Playlists and shares
+// both resolve paths against THIS library, so neither can carry one.
+function federatedTracksInQueue() {
+  return MSTREAMPLAYER.playlist.filter(song => song.federation);
+}
+
+// Refuse an action that would have to write federated paths, naming the
+// count so the user can find them. Returns true when it refused.
+function refuseMixedQueue(titleKey) {
+  const mixed = federatedTracksInQueue();
+  if (mixed.length === 0) { return false; }
+  iziToast.warning({
+    title: t(titleKey),
+    message: t('playlist.federatedCount', { count: mixed.length }),
+    position: 'topCenter',
+    timeout: 5000
+  });
+  return true;
+}
+
 async function savePlaylist() {
+  if (refuseMixedQueue('playlist.cannotSaveMixed')) { return; }
   if (MSTREAMPLAYER.playlist.length == 0) {
     iziToast.warning({
       title: t('toast.noPlaylistToSave'),
@@ -2890,11 +3062,7 @@ async function getAllArtists() {
   programState = [{ state: 'allArtists' }];
 
   try {
-    const response = await MSTREAMAPI.artists({
-      ignoreVPaths: Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
-        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
-      })
-    });
+    const response = await browseApi('artists', { ignoreVPaths: localIgnoreVPaths() });
 
     // parse through the json array and make an array of corresponding divs
     let artists = '<ul class="collection">';
@@ -2912,6 +3080,7 @@ async function getAllArtists() {
 }
 
 function getArtistz(el) {
+  adoptPeer(el);
   const artist = el.getAttribute('data-artist');
   programState.push({
     state: 'artist',
@@ -2929,12 +3098,7 @@ async function getArtistsAlbums(artist) {
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
   try {
-    const response = await MSTREAMAPI.artistAlbums({
-      artist: artist,
-      ignoreVPaths: Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
-        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
-      })
-    });
+    const response = await browseApi('artistAlbums', { artist: artist, ignoreVPaths: localIgnoreVPaths() });
 
     let albums = '<div class="album-grid">';
     response.albums.forEach(value => {
@@ -2958,12 +3122,12 @@ async function getAllGenres() {
   programState = [{ state: 'allGenres' }];
 
   try {
-    const response = await MSTREAMAPI.genres();
+    const response = await browseApi('genres', {});
 
     let html = '<ul class="collection">';
     response.genres.forEach(value => {
       html += `<li class="collection-item">
-        <div data-genre="${escapeHtml(value.name)}" class="artistz" onclick="getGenreSongsList(this)">
+        <div data-genre="${escapeHtml(value.name)}"${peerAttr()} class="artistz" onclick="getGenreSongsList(this)">
           ${escapeHtml(value.name)} <span style="color:#888;font-size:13px;">(${value.track_count})</span>
         </div>
       </li>`;
@@ -2978,6 +3142,7 @@ async function getAllGenres() {
 }
 
 function getGenreSongsList(el) {
+  adoptPeer(el);
   const genre = el.getAttribute('data-genre');
   programState.push({
     state: 'genre',
@@ -2994,7 +3159,7 @@ async function getGenreSongs(genre) {
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
   try {
-    const response = await MSTREAMAPI.genreSongs({ genre: genre });
+    const response = await browseApi('genreSongs', { genre: genre });
 
     let songs = '<ul class="collection">';
     response.forEach(song => {
@@ -3023,11 +3188,7 @@ async function getAllAlbums() {
   programState = [{ state: 'allAlbums' }];
 
   try {
-    const response = await MSTREAMAPI.albums({
-      ignoreVPaths: Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
-        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
-      })
-    });
+    const response = await browseApi('albums', { ignoreVPaths: localIgnoreVPaths() });
 
     let albums = '<div class="album-grid">';
     response.albums.forEach(value => {
@@ -3049,6 +3210,7 @@ async function getAllAlbums() {
 }
 
 function getAlbumsOnClick(el) {
+  adoptPeer(el);
   getAlbumSongs(
     el.hasAttribute('data-album') ? el.getAttribute('data-album') : null,
     el.hasAttribute('data-artist') ? el.getAttribute('data-artist') : null,
@@ -3072,13 +3234,11 @@ async function getAlbumSongs(album, artist, year) {
   document.getElementById('localSearchBar').value = '';
 
   try {
-    const response = await MSTREAMAPI.albumSongs({
+    const response = await browseApi('albumSongs', {
       album,
       artist,
       year,
-      ignoreVPaths: Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
-        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
-      })
+      ignoreVPaths: localIgnoreVPaths()
     });
   
     //parse through the json array and make an array of corresponding divs
@@ -3124,7 +3284,7 @@ async function getRatedSongs() {
 
       files += createMusicFileHtml(value.filepath,
         value.metadata.title ? value.metadata.title : value.filepath.split('/').pop(),
-        value.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${escapeHtml(value.metadata['album-art'])}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`,
+        artImgAttr(value.metadata['album-art'], 's'),
         rating,
         value.metadata.artist ? value.metadata.artist : '');
     });
@@ -3166,7 +3326,7 @@ async function redoRecentlyPlayed() {
 
       filelist += createMusicFileHtml(el.filepath,
         el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop(),
-        el.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${escapeHtml(el.metadata['album-art'])}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`,
+        artImgAttr(el.metadata['album-art'], 's'),
         undefined,
         el.metadata.artist ? el.metadata.artist : '');
     });
@@ -3216,7 +3376,7 @@ async function redoMostPlayed() {
 
       filelist += createMusicFileHtml(el.filepath,
         el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop(),
-        el.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${escapeHtml(el.metadata['album-art'])}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`,
+        artImgAttr(el.metadata['album-art'], 's'),
         undefined,
         el.metadata.artist ? `${el.metadata.artist} [${el.metadata['play-count']} plays]` : `[${el.metadata['play-count']} plays]`);
     });
@@ -3247,14 +3407,13 @@ function getRecentlyAdded() {
 
 async function redoRecentlyAdded() {
   currentBrowsingList = [];
-  programState = [{ state: 'recentlyAdded'}];
+  programState = [{ state: 'recentlyAdded' }];
 
   try {
-    const response = await MSTREAMAPI.getRecentlyAdded(
-      document.getElementById('recently-added-limit').value,
-      Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
-        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
-      }));
+    const limit = document.getElementById('recently-added-limit').value;
+    const response = peerContext
+      ? await MSTREAMAPI.peer.recentlyAdded(peerContext.id, limit)
+      : await MSTREAMAPI.getRecentlyAdded(limit, localIgnoreVPaths());
 
     //parse through the json array and make an array of corresponding divs
     let filelist = '<ul class="collection">';
@@ -3266,7 +3425,7 @@ async function redoRecentlyAdded() {
 
       filelist += createMusicFileHtml(el.filepath,
         el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop(),
-        el.metadata['album-art'] ? `src="${MSTREAMAPI.currentServer.host}album-art/${escapeHtml(el.metadata['album-art'])}?compress=s&token=${MSTREAMAPI.currentServer.token}"` : `src="assets/img/default.png"`,
+        artImgAttr(el.metadata['album-art'], 's'),
         undefined,
         el.metadata.artist ? el.metadata.artist : '');
     });
@@ -3545,6 +3704,9 @@ async function revokeSubsonicApiKey(id) {
 
 //////////////////////////  Share playlists
 async function submitShareForm() {
+  // A share serves LOCAL paths to an anonymous visitor with no federation
+  // key of their own — there is no way to hand a peer's track through it.
+  if (refuseMixedQueue('share.cannotShareMixed')) { return; }
   try {
     document.getElementById('share_it').disabled = true;
     const shareTimeInDays = document.getElementById('share_time').value;
@@ -5009,7 +5171,7 @@ function runLocalSearch(el) {
 
 //////////////////////// Search
 const searchToggles = (() => {
-  const defaults = { albums: true, artists: true, files: false, titles: true, lyrics: true };
+  const defaults = { albums: true, artists: true, files: false, titles: true, lyrics: true, federated: false };
   try {
     const saved = JSON.parse(localStorage.getItem('mstream-search-toggles'));
     // Merge OVER defaults so a toggle added in a later release (e.g. `lyrics`)
@@ -5095,6 +5257,12 @@ function setupSearchPanel(searchTerm) {
         <span>Lyrics</span>
       </label>
     </div>
+    ${federatedSearchOffered() ? `<div class="flex">
+      <label class="grow" for="search-federated">
+        <input ${(searchToggles.federated === true ? 'checked' : '')} id="search-federated" class="filled-in" type="checkbox">
+        <span>${escapeHtml(t('search.federated'))}</span>
+      </label>
+    </div>` : ''}
     <div id="search-results"></div>`;
 
   document.getElementById('search_folders').value = '';
@@ -5103,6 +5271,14 @@ function setupSearchPanel(searchTerm) {
   if (searchTerm) {
     submitSearchForm();
   }
+}
+
+// The multi-server search is offered only while pointed at THIS server:
+// asking a peer to search its peers is not something federation does (and
+// the proxy is deliberately not chainable), so from a federated server the
+// search box searches that server alone.
+function federatedSearchOffered() {
+  return MSTREAMAPI.currentServer.federationBrowse === true && !peerContext;
 }
 
 async function submitSearchForm() {
@@ -5126,61 +5302,283 @@ async function submitSearchForm() {
     searchToggles.titles = document.getElementById("search-in-titles").checked;
     if (document.getElementById("search-in-lyrics") && document.getElementById("search-in-lyrics").checked === false) { postObject.noLyrics = true; }
     searchToggles.lyrics = document.getElementById("search-in-lyrics").checked;
+    const fedBox = document.getElementById("search-federated");
+    if (fedBox) { searchToggles.federated = fedBox.checked; }
 
     try { localStorage.setItem('mstream-search-toggles', JSON.stringify(searchToggles)); } catch (_e) {}
 
-    const res = await MSTREAMAPI.search(postObject);
+    // Searching a federated server searches THAT server; ignoreVPaths is
+    // dropped for it by peerReq, since it names libraries in our config.
+    const res = await browseApi('search', postObject);
 
     if (programState[0].state === 'searchPanel') {
       programState[0].searchTerm = postObject.search;
     }
 
-    let noResultsFlag = true;
-
     // Reset the per-search metadata lookup the search-result handlers read.
     searchResultMetadata = {};
 
-    // Populate list
-    let searchList = '<ul class="collection">';
-    Object.keys(res).forEach((key) => {
-      res[key].forEach((value, i) => {
-        noResultsFlag = false;
+    // Only label the local block when there is something to tell it apart
+    // FROM — a plain single-server search should not grow a header.
+    const fanOut = federatedSearchOffered() && searchToggles.federated === true;
+    const localHtml = renderSearchResults(res, null);
+    const localHeader = (fanOut && localHtml) ? serverResultHeader(t('search.onThisServer')) : '';
 
-        // Track-level hits (title/files/lyrics) now carry the full metadata
-        // object inline — stash it so searchFileClick/searchPlayNow can
-        // enqueue without a second /api/v1/db/metadata round-trip.
-        if (value.filepath && value.metadata) {
-          searchResultMetadata[value.filepath] = value.metadata;
-        }
+    // Three slots: this server's results, a block per peer as each answers,
+    // and an empty-state that any result — local or remote — hides.
+    document.getElementById('search-results').innerHTML =
+      `<div id="search-results-local">${localHeader}${localHtml}</div>` +
+      '<div id="search-results-peers"></div>' +
+      `<div id="search-results-empty" class="${localHtml ? 'super-hide' : ''}"><h5>${t('search.noResults')}</h5></div>`;
 
-        // perform some operation on a value;
-        searchList += `<li class="collection-item">
-          <div onclick="${searchMap[key].func}(this);" data-${searchMap[key].data}="${escapeHtml(value.filepath ? value.filepath : value.name)}" class="${searchMap[key].class} left">
-            <b>${searchMap[key].name}:</b> ${escapeHtml(value.name)}${key === 'lyrics' && value.snippet ? `<br><small class="grey-text">${escapeHtml(value.snippet)}</small>` : ''}
-          </div>
-          ${
-            key === 'files' || key === 'title' || key === 'lyrics' ? `<div class="song-button-box">
-            <span title="Play Now" onclick="searchPlayNow(this);" data-file_location="${escapeHtml(value.filepath)}" class="songDropdown">
-              <svg xmlns="http://www.w3.org/2000/svg" height="12" width="12" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
-            </span>
-            <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(value.filepath)}" class="fileAddToPlaylist">
-              <svg class="pop-f" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362"><path class="pop-f" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>
-            </span>
-          </div>` : ''
-          }
-        </li>`;
-      });
-    });
-
-    searchList += '</ul>'
-    
-    if (noResultsFlag === true) {
-      searchList = '<h5>No Results Found</h5>';
-    }
-
-    document.getElementById('search-results').innerHTML = searchList;
+    // The same query, asked of every paired server. Fire-and-forget: this
+    // server's results are already on screen, so a slow or dead peer costs
+    // nothing but its own block.
+    if (fanOut) { searchPeers(postObject); }
   }catch(err) {
     boilerplateFailure(err);
+  }
+}
+
+// Render one search response as a collection. `peer` null = this server;
+// otherwise every row carries the peer, so the queue handlers stream it
+// over the federation bridge instead of resolving the path locally.
+function renderSearchResults(res, peer) {
+  let rows = '';
+  Object.keys(res || {}).forEach((key) => {
+    // A peer may run a different version and answer with a category this
+    // build has no renderer for. Skip it rather than throw away the rest.
+    if (!searchMap[key]) { return; }
+    (res[key] || []).forEach((value) => {
+      // Track-level hits (title/files/lyrics) carry the full metadata object
+      // inline — stash it so searchFileClick/searchPlayNow can enqueue
+      // without a second metadata round-trip.
+      if (value.filepath && value.metadata) {
+        searchResultMetadata[searchKey(peer && peer.id, value.filepath)] = value.metadata;
+      }
+      rows += renderSearchRow(key, value, peer);
+    });
+  });
+  return rows ? `<ul class="collection">${rows}</ul>` : '';
+}
+
+function renderSearchRow(key, value, peer) {
+  const attr = peerAttr(peer || null);
+  const isTrack = key === 'files' || key === 'title' || key === 'lyrics';
+  return `<li class="collection-item">
+    <div onclick="${searchMap[key].func}(this);" data-${searchMap[key].data}="${escapeHtml(value.filepath ? value.filepath : value.name)}"${attr} class="${searchMap[key].class} left">
+      <b>${searchMap[key].name}:</b> ${escapeHtml(value.name)}${key === 'lyrics' && value.snippet ? `<br><small class="grey-text">${escapeHtml(value.snippet)}</small>` : ''}
+    </div>
+    ${isTrack ? `<div class="song-button-box">
+      <span title="Play Now" onclick="searchPlayNow(this);" data-file_location="${escapeHtml(value.filepath)}"${attr} class="songDropdown">
+        <svg xmlns="http://www.w3.org/2000/svg" height="12" width="12" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
+      </span>
+      <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(value.filepath)}"${attr} class="fileAddToPlaylist">
+        <svg class="pop-f" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362"><path class="pop-f" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>
+      </span>
+    </div>` : ''}
+  </li>`;
+}
+
+// Which server a result block came from. Every block gets one whenever the
+// search spans more than one server, this one included — an unlabelled block
+// next to labelled ones would be the ambiguous case.
+function serverResultHeader(title, note) {
+  return `<div style="padding:12px 12px 2px;font-size:13px;font-weight:600;color:#8bb7f0;">
+    ${escapeHtml(title)}${note ? ` <span style="color:#999;font-weight:400;">&mdash; ${escapeHtml(note)}</span>` : ''}
+  </div>`;
+}
+
+function peerSearchHeader(peer, note) {
+  return serverResultHeader(t('peers.searchHeader', { name: peer.name }), note);
+}
+
+// Ask every paired server the query the user just ran, and append each
+// answer under its own header. Never merged into one list: where a result
+// lives decides whether it can be queued as a local file, added to a
+// playlist, rated, or used as a Sonic Path seed — so the answer is always
+// on screen next to the result.
+async function searchPeers(postObject) {
+  // Fast bail before the peer lookup: the search panel is not on screen.
+  if (!document.getElementById('search-results-peers')) { return; }
+
+  let peers = [];
+  try {
+    peers = (await MSTREAMAPI.federationPeers()).peers || [];
+    peers.forEach(rememberPeer);
+  } catch (err) {
+    console.warn('federation peers unavailable for search', err);
+    return;
+  }
+  if (peers.length === 0) { return; }
+
+  // ignoreVPaths names libraries in OUR config; a peer's namespace is its
+  // own, and it already scopes every answer to what our key was granted.
+  const body = { ...postObject };
+  delete body.ignoreVPaths;
+  const term = postObject.search;
+
+  await Promise.all(peers.map(async (peer) => {
+    let res;
+    try {
+      res = await MSTREAMAPI.peer.search(peer.id, body);
+    } catch (err) {
+      console.warn(`federation search failed on peer ${peer.id}`, err);
+      // One unreachable peer is a footnote on the results, not a failed
+      // search — say which peer is missing rather than come up silently
+      // short.
+      peerResultSlot(term)?.insertAdjacentHTML('beforeend', peerSearchHeader(peer, t('peers.unreachable')));
+      return;
+    }
+
+    // The user may have moved on — a new query, or a different panel.
+    const slot = peerResultSlot(term);
+    if (!slot) { return; }
+    const html = renderSearchResults(res, peer);
+    if (!html) { return; }
+
+    const empty = document.getElementById('search-results-empty');
+    if (empty) { empty.classList.add('super-hide'); }
+    slot.insertAdjacentHTML('beforeend', peerSearchHeader(peer) + html);
+  }));
+}
+
+// Where a late-arriving peer answer should land, or null if it should be
+// dropped. Looked up FRESH each time: submitSearchForm rebuilds the results
+// DOM on every run, so a node captured before the fetch may already be
+// detached — and re-running the same term would otherwise pass a
+// value-only guard and append into nothing.
+function peerResultSlot(term) {
+  const input = document.getElementById('search-term');
+  if (!input || input.value !== term) { return null; }
+  return document.getElementById('search-results-peers');
+}
+
+///////////////////// Federation: the server switcher
+//
+// The app points at ONE server at a time. The top-bar dropdown chooses it;
+// everything else — the nav, the panels, the queue handlers — follows from
+// `peerContext`. There is no "peers" destination to visit: browsing a
+// federated server IS the normal app, pointed somewhere else.
+//
+// A federated server is READ-ONLY (a federation key carries no write
+// permission, and the peer's allowlist stops at reads) and answers only for
+// its own library — none of our playlists, none of our per-user stats. Nav
+// entries that depend on either are marked `.local-only` in index.html and
+// hidden while a peer is selected, so the UI never offers something that
+// cannot work. The left-nav note says why.
+//
+// The dropdown appears only when the ping's federationBrowse flag says
+// there is somewhere else to go (federation on, at least one peer).
+
+// Every top-level panel, keyed by the programState name it sets.
+const PANELS_BY_STATE = {
+  fileExplorer: () => loadFileExplorer(),
+  allPlaylists: () => getAllPlaylists(),
+  allAlbums: () => getAllAlbums(),
+  allArtists: () => getAllArtists(),
+  allGenres: () => getAllGenres(),
+  recentlyAdded: () => getRecentlyAdded(),
+  recentlyPlayed: () => getRecentlyPlayed(),
+  mostPlayed: () => getMostPlayed(),
+  allRated: () => getRatedSongs(),
+  searchPanel: () => setupSearchPanel(),
+};
+
+// Which of those a federated server can actually answer: its library, and
+// nothing that lives in our own user rows. Playlists and the three stats
+// panels are ours alone; the rest map onto routes on the peer's allowlist.
+const PEER_CAPABLE_STATES = new Set([
+  'fileExplorer', 'allAlbums', 'allArtists', 'allGenres', 'recentlyAdded', 'searchPanel',
+]);
+
+// Fill the top-bar dropdown. Called once from init(), only when the ping
+// advertised federationBrowse.
+async function loadServerSwitcher() {
+  const wrap = document.getElementById('server-select-wrap');
+  const select = document.getElementById('server-select');
+  if (!wrap || !select) { return; }
+
+  let peers = [];
+  try {
+    peers = (await MSTREAMAPI.federationPeers()).peers || [];
+  } catch (err) {
+    // Federation off or the route unreachable: leave the dropdown hidden
+    // and the app exactly as it was.
+    console.warn('federation peers unavailable for the server switcher', err);
+    return;
+  }
+  if (peers.length === 0) { return; }
+
+  peers.forEach(rememberPeer);
+  let html = `<option value="">${escapeHtml(t('server.thisServer'))}</option>`;
+  peers.forEach(p => {
+    html += `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`;
+  });
+  select.innerHTML = html;
+  wrap.classList.remove('super-hide');
+}
+
+function onServerChange(el) {
+  switchServer(el.value === '' ? null : Number(el.value));
+}
+
+// Point the app at a server. `peerId` null = this one.
+function switchServer(peerId) {
+  const next = peerId === null
+    ? null
+    : (knownPeers.get(Number(peerId)) || { id: Number(peerId), name: 'peer' });
+  if ((next ? next.id : null) === (peerContext ? peerContext.id : null)) { return; }
+
+  peerContext = next;
+  applyServerContext();
+
+  // Stay on the same panel when the new server can answer it; otherwise
+  // fall back to the file explorer, which every server has.
+  const previous = programState[0];
+  const current = previous ? previous.state : 'fileExplorer';
+  const keep = PANELS_BY_STATE[current] && (!peerContext || PEER_CAPABLE_STATES.has(current));
+  const landing = keep ? current : 'fileExplorer';
+
+  // The explorer's breadcrumb is a path in the OLD server's namespace.
+  fileExplorerArray = [];
+  highlightNavPanel(landing);
+
+  // Carry a query across: switching servers with a search on screen means
+  // "run that again over there", not "start over with an empty box".
+  if (landing === 'searchPanel' && previous && previous.searchTerm) {
+    setupSearchPanel(previous.searchTerm);
+    return;
+  }
+  PANELS_BY_STATE[landing]();
+}
+
+// Move the sidebar's selected marker onto the entry that owns a panel, so a
+// server switch that had to change panels doesn't leave the old one lit.
+function highlightNavPanel(state) {
+  const target = document.querySelector(`.side-nav-item[data-panel="${state}"]`);
+  if (!target) { return; }
+  document.querySelectorAll('.side-nav-item').forEach(el => el.classList.remove('select'));
+  target.classList.add('select');
+}
+
+// Sync the chrome to `peerContext`: the dropdown's selection, the nav
+// entries a federated server cannot serve, and the read-only note. Derives
+// everything from the current context, so it is safe to call at any time.
+function applyServerContext() {
+  const select = document.getElementById('server-select');
+  const want = peerContext ? String(peerContext.id) : '';
+  if (select && select.value !== want) { select.value = want; }
+
+  // One class does the whole job (see spa.css): it hides every .local-only
+  // nav entry and reveals the read-only note. A body class rather than a
+  // per-item toggle, so it composes with the flag gates that already hide
+  // some entries (Sonic Path) instead of un-hiding them on the way back.
+  document.body.classList.toggle('on-federated-server', !!peerContext);
+
+  const note = document.getElementById('nav-readonly-note');
+  if (note && peerContext) {
+    note.textContent = t('server.readOnlyNote', { name: peerContext.name });
   }
 }
 

@@ -1,6 +1,26 @@
 const VUEPLAYERCORE = (() => {
   const mstreamModule = {};
 
+  // A playlist lives on THIS server and stores paths in ITS namespace, so a
+  // federated track can never be saved into one. Every live-playlist re-save
+  // rebuilds from the whole queue, which may hold peer tracks — drop them,
+  // and say so once so the user knows the saved playlist is not exactly what
+  // is on screen. Once per page load on purpose: this fires on every drag,
+  // remove and insert, and a toast per drag would be noise.
+  let warnedMixedQueue = false;
+  function localQueueFilepaths() {
+    const all = MSTREAMPLAYER.playlist;
+    const local = all.filter(song => !song.federation);
+    if (local.length !== all.length && !warnedMixedQueue) {
+      warnedMixedQueue = true;
+      iziToast.info({ title: t('playlist.federatedSkipped'), position: 'topCenter', timeout: 4000 });
+    }
+    return local.map(song => song.filepath);
+  }
+  // m.js starts and clears live playlists too, and every one of those paths
+  // re-saves the whole queue — they all have to go through the same filter.
+  mstreamModule.localQueueFilepaths = localQueueFilepaths;
+
   mstreamModule.livePlaylist = {
     name: false
   };
@@ -239,11 +259,7 @@ const VUEPLAYERCORE = (() => {
         document.getElementById("pop").style.visibility = "hidden";
         MSTREAMPLAYER.resetPositionCache();
         if (mstreamModule.livePlaylist.name) {
-          const songs = [];
-          for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-            songs.push(MSTREAMPLAYER.playlist[i].filepath);
-          }
-          MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name,songs, true);
+          MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name, localQueueFilepaths(), true);
         }
       },
       clearRating: async function () {
@@ -464,11 +480,7 @@ const VUEPLAYERCORE = (() => {
       removeSong: function (event) {
         MSTREAMPLAYER.removeSongAtPosition(this.index, false);
         if (mstreamModule.livePlaylist.name) {
-          const songs = [];
-          for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-            songs.push(MSTREAMPLAYER.playlist[i].filepath);
-          }
-          MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name,songs, true);
+          MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name, localQueueFilepaths(), true);
         }
       },
       downloadSong: function (event) {
@@ -604,6 +616,12 @@ const VUEPLAYERCORE = (() => {
     props: ['index', 'playlist'],
     methods: {
       addToPlaylist: async function(event) { 
+        // Same rule as the browse rows' add-to-playlist button (m.js): a
+        // peer path would save as a row that resolves to nothing here.
+        if (cps && cps.federation) {
+          iziToast.info({ title: t('peers.noPlaylist'), position: 'topCenter', timeout: 2500 });
+          return;
+        }
         try {
           await MSTREAMAPI.addToPlaylist(this.playlist.name, cps.filepath);
           iziToast.success({
@@ -948,11 +966,7 @@ const VUEPLAYERCORE = (() => {
     if (position) {
       MSTREAMPLAYER.insertSongAt(newSong, position, true);
       if (mstreamModule.livePlaylist.name) {
-        const songs = [];
-        for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-          songs.push(MSTREAMPLAYER.playlist[i].filepath);
-        }
-        MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name,songs, true);
+        MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name, localQueueFilepaths(), true);
       }
     } else {
       MSTREAMPLAYER.addSong(newSong, autoPlayOff);
@@ -1008,29 +1022,34 @@ const VUEPLAYERCORE = (() => {
   // resolves paths against the LOCAL library, and this path lives in the
   // peer's vpath namespace. The `federation` marker on the song object is
   // what the degrade guards key on (waveform skip, Discover clear).
-  mstreamModule.addFederationSongWizard = (peer, remotePath, metadata, autoPlayOff) => {
+  // `position` (added for the peer-browse panels) inserts and plays, the
+  // way addSongWizard's own position argument does — without it a peer row
+  // could only ever be appended, so "Play Now" did nothing on peer tracks.
+  mstreamModule.addFederationSongWizard = (peer, remotePath, metadata, autoPlayOff, position) => {
     let escaped = remotePath.replace(/\%/g, '%25').replace(/\#/g, '%23').replace(/\?/g, '%3F');
     if (escaped.charAt(0) === '/') { escaped = escaped.substr(1); }
     let url = `${MSTREAMAPI.currentServer.host}api/v1/federation/peers/${peer.id}/stream/${escaped}?`;
     if (MSTREAMAPI.currentServer.token) { url += 'token=' + MSTREAMAPI.currentServer.token; }
-    MSTREAMPLAYER.addSong({
+    const newSong = {
       url: url,
       rawFilePath: remotePath,
       filepath: remotePath,
       metadata: metadata || {},
       authToken: MSTREAMAPI.currentServer.token,
       federation: { peerId: peer.id, peerName: peer.name || 'peer' },
-    }, autoPlayOff);
+    };
+
+    if (position) {
+      MSTREAMPLAYER.insertSongAt(newSong, position, true);
+      return;
+    }
+    MSTREAMPLAYER.addSong(newSong, autoPlayOff);
   };
 
   mstreamModule.clearQueue = async() => {
     MSTREAMPLAYER.clearPlaylist();
     if (mstreamModule.livePlaylist.name) {
-      const songs = [];
-      for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-        songs.push(MSTREAMPLAYER.playlist[i].filepath);
-      }
-      MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name,songs, true);
+      MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name, localQueueFilepaths(), true);
     }
   }
 

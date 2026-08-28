@@ -478,6 +478,13 @@
     </div>
     <div id="scan-progress-wrap" class="spc-wrap"></div>
     <div class="nav-bar-right">
+      <!-- Server picker — hidden until the ping advertises federationBrowse
+           (federation on, at least one paired peer). Choosing a federated
+           server points the WHOLE app at it; see the switcher in m.js. -->
+      <div id="server-select-wrap" class="nav-server-wrap super-hide">
+        <select id="server-select" class="nav-server-select" onchange="onServerChange(this);"
+          aria-label="Server" title="Server"></select>
+      </div>
       <!-- Quick Connect (Iroh) — hidden until quick-connect.js confirms the
            server publishes a pairing code (GET /api/v1/iroh/code). Demo-only. -->
       <button type="button" id="quick-connect-btn" onclick="QUICKCONNECT.open()"
@@ -562,75 +569,76 @@
     <div style="display: none;" class="side-nav-header">
       <button class="my-waves" data-i18n="nav.nowPlaying">Now Playing</button>
     </div>
+    <div id="nav-readonly-note" class="side-nav-note"></div>
     <div class="side-nav-header">
       <span data-i18n="nav.music">Music</span>
     </div>
-    <div class="side-nav-item select my-waves" onclick="changeView(loadFileExplorer, this)">
+    <div class="side-nav-item select my-waves" onclick="changeView(loadFileExplorer, this)" data-panel="fileExplorer">
       <?xml version="1.0" encoding="utf-8"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="6 6 40 40" style="enable-background:new 0 0 48 48"><path d="M16.516 20.688C16.266 21.25 12 31.906 12 31.906V17c0-.55.45-1 1-1h1.334l.35-1.052C14.857 14.427 15.45 14 16 14h5c.55 0 1.143.427 1.316.948l.35 1.052H32c.55 0 1 .45 1 1v3H17.5c-.275 0-.734.125-.984.688zM41 21H19c-.55 0-1.167.418-1.371.929l-5.258 13.143c-.204.51.079.928.629.928h22c.55 0 1.167-.418 1.371-.929l5.258-13.143c.204-.51-.079-.928-.629-.928z"/></svg>
       <span data-i18n="nav.fileExplorer">File Explorer</span>
     </div>
-    <div class="side-nav-item my-waves" onclick="changeView(getAllPlaylists, this)">
+    <div class="local-only side-nav-item my-waves" onclick="changeView(getAllPlaylists, this)" data-panel="allPlaylists">
       <?xml version="1.0" encoding="utf-8"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="8 5 38 38" style="enable-background:new 0 0 48 48"><path d="M37.192 23.032c-.847.339-.179-.339-.179-.339s1.422-2.092.406-3.786c-.793-1.321-3.338-1.075-4.42-1.669v14.154c0 .037-.016.07-.022.106-.154 1.504-1.607 3.034-3.696 3.712-2.559.829-5.102.063-5.678-1.711-.574-1.774 1.034-3.887 3.595-4.717.66-.189 2.207-.439 2.801-.193V12.607a.609.609 0 0 1 .608-.607h1.785c.336 0 .608.273.608.607v.549c1.542 1.004 6.18 1.455 6.851 4.139.805 3.225-1.813 5.398-2.659 5.737zM12.5 20H28v-3H12.5c-.275 0-.5.225-.5.5v2c0 .275.225.5.5.5zm0 6H28v-3H12.5c-.275 0-.5.225-.5.5v2c0 .275.225.5.5.5zm10.125 3H12.5c-.275 0-.5.225-.5.5v2c0 .275.225.5.5.5h8.551c.176-1.075.728-2.113 1.574-3z"/></svg>
       <span data-i18n="nav.playlists">Playlists</span>
     </div>
-    <div class="side-nav-item my-waves" onclick="changeView(getAllAlbums, this)">
+    <div class="side-nav-item my-waves" onclick="changeView(getAllAlbums, this)" data-panel="allAlbums">
       <?xml version="1.0" encoding="utf-8"?><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="10 12 28 28" style="enable-background:new 0 0 48 48"><path d="M11 17v14a1 1 0 0 1-1-1V18a1 1 0 0 1 1-1zM37 17v14a1 1 0 0 0 1-1V18a1 1 0 0 0-1-1zM13 16h1v16h-1a1 1 0 0 1-1-1V17a1 1 0 0 1 1-1zM35 16h-1v16h1a1 1 0 0 0 1-1V17a1 1 0 0 0-1-1zM32 15H16c-.55 0-1 .45-1 1v16c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V16c0-.55-.45-1-1-1zm-3 12c0 1.469-2.022 1.71-2.301 1.71-.846 0-1.55-.395-1.752-1.02-.276-.852.461-1.796 1.607-2.218.649-.238 1.446-.155 1.446-.146v-4.407l-6 1.369V28c0 1.813-2.102 2.057-2.417 2.057-.816 0-1.44-.374-1.629-.955-.271-.835.441-1.77 1.603-2.174.646-.225 1.443-.137 1.443-.131v-6.604c0-.245.072-.469.291-.529l7.491-1.854-.039-.01c.218 0 .257.169.257.393V27z"/></svg>
       <span data-i18n="nav.albums">Albums</span>
     </div>
-    <div class="side-nav-item my-waves" onclick="changeView(getAllArtists, this)">
+    <div class="side-nav-item my-waves" onclick="changeView(getAllArtists, this)" data-panel="allArtists">
       <?xml version="1.0" encoding="utf-8"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"><path d="M611.4 34.4c92-46.8 206.7-25.7 276.3 58.1 66.9 80.5 71.4 193.8 18.5 278.4-13.2.1-27-2.3-41.2-6.6-56-17.1-114.7-64.1-161.8-122.1-47.3-58.2-82-126-90.1-184.6-1-8-1.6-15.7-1.7-23.2zM146.8 678c-.7 41.6 19.8 64.6 59 71l431.9-297.1C578.1 413.3 527.3 349.7 501 282.7L146.8 678zm14.1 94.3c-35.9 38.4-46.8 78.1-38.3 107.7 3.5 12.1 10.4 22.5 20.2 30.3 10.4 8.3 24.5 13.8 41.6 15.3 58.5 5.1 146-33.6 248.3-150.9 102.8-118 195.4-173.9 271.3-187.5 45.9-8.2 86.3-1.4 119.7 16.6 33.4 18 59.4 47 76.7 83.1 27 56.4 32.6 130.2 12 205.2l-60-17.2c16.3-59.8 12.6-117.4-7.9-160-11.5-24-28.4-43.1-49.8-54.6-21.5-11.5-48.3-15.8-79.9-10.1-63.2 11.4-143 61-235.4 167-117.5 134.9-224.8 178.7-300 172.2-29.6-2.6-54.8-12.8-74.6-28.4-20.4-16.1-34.7-37.9-41.9-63.2-14.3-50.1.3-113.2 53.1-169.7l44.9 44.2zM871.5 412c-69.8-23.6-139.6-79.4-194.4-146.8-49.9-61.3-88.3-133.3-103.8-200.3-41 51.7-57.7 118-48.6 181.6 25.1 77.2 90.1 157.1 162.7 191.2 60.8 18 127.9 10 184.1-25.7z"/></svg>
       <span data-i18n="nav.artists">Artists</span>
     </div>
-    <div class="side-nav-item my-waves" onclick="changeView(getAllGenres, this)">
+    <div class="side-nav-item my-waves" onclick="changeView(getAllGenres, this)" data-panel="allGenres">
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="#FFF"><path d="M0 0h24v24H0z" fill="none"/><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
       <span data-i18n="nav.genres">Genres</span>
     </div>
-    <div onclick="changeView(getRecentlyAdded, this)" class="side-nav-item my-waves">
+    <div onclick="changeView(getRecentlyAdded, this)" data-panel="recentlyAdded" class="side-nav-item my-waves">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="22" height="22"><path d="M256 8C119 8 8 119 8 256s111 248 248 248 248-111 248-248S393 8 256 8zm0 448c-110.5 0-200-89.5-200-200S145.5 56 256 56s200 89.5 200 200-89.5 200-200 200zm61.8-104.4l-84.9-61.7c-3.1-2.3-4.9-5.9-4.9-9.7V116c0-6.6 5.4-12 12-12h32c6.6 0 12 5.4 12 12v141.7l66.8 48.6c5.4 3.9 6.5 11.4 2.6 16.8L334.6 349c-3.9 5.3-11.4 6.5-16.8 2.6z"/></svg>
       <span data-i18n="nav.recentAdded">Recent Added</span>
     </div>
-    <div onclick="changeView(getRecentlyPlayed, this)" class="side-nav-item my-waves">
+    <div onclick="changeView(getRecentlyPlayed, this)" data-panel="recentlyPlayed" class="local-only side-nav-item my-waves">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="22" height="22"><path d="M256 8C119 8 8 119 8 256s111 248 248 248 248-111 248-248S393 8 256 8zm0 448c-110.5 0-200-89.5-200-200S145.5 56 256 56s200 89.5 200 200-89.5 200-200 200zm61.8-104.4l-84.9-61.7c-3.1-2.3-4.9-5.9-4.9-9.7V116c0-6.6 5.4-12 12-12h32c6.6 0 12 5.4 12 12v141.7l66.8 48.6c5.4 3.9 6.5 11.4 2.6 16.8L334.6 349c-3.9 5.3-11.4 6.5-16.8 2.6z"/></svg>
       <span data-i18n="nav.recentlyPlayed">Recently Played</span>
     </div>
-    <div onclick="changeView(getMostPlayed, this)" class="side-nav-item my-waves">
+    <div onclick="changeView(getMostPlayed, this)" data-panel="mostPlayed" class="local-only side-nav-item my-waves">
       <svg xmlns="http://www.w3.org/2000/svg" height="22px" viewBox="0 0 24 24" width="22px" fill="#FFFFFF"><path d="M0 0h24v24H0z" fill="none"/><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
       <span data-i18n="nav.mostPlayed">Most Played</span>
     </div>
-    <div class="side-nav-item my-waves" onclick="changeView(getRatedSongs, this)">
+    <div class="local-only side-nav-item my-waves" onclick="changeView(getRatedSongs, this)" data-panel="allRated">
       <?xml version="1.0" encoding="iso-8859-1"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="-3 0 62 62" style="enable-background:new 0 0 53.867 53.867"><path style="fill:#efce4a" d="M26.934 1.318l8.322 16.864 18.611 2.705L40.4 34.013l3.179 18.536-16.645-8.751-16.646 8.751 3.179-18.536L0 20.887l18.611-2.705z"/></svg>
       <span data-i18n="nav.rated">Rated</span>
     </div>
-    <div class="side-nav-item my-waves" onclick="changeView(setupSearchPanel, this)">
+    <div class="side-nav-item my-waves" onclick="changeView(setupSearchPanel, this)" data-panel="searchPanel">
       <svg viewBox="-150 -50 1224 1174" height="24" width="24" xmlns="http://www.w3.org/2000/svg"><path d="M960 832L710.875 582.875C746.438 524.812 768 457.156 768 384 768 171.969 596 0 384 0 171.969 0 0 171.969 0 384c0 212 171.969 384 384 384 73.156 0 140.812-21.562 198.875-57L832 960c17.5 17.5 46.5 17.375 64 0l64-64c17.5-17.5 17.5-46.5 0-64zM384 640c-141.375 0-256-114.625-256-256s114.625-256 256-256 256 114.625 256 256-114.625 256-256 256z"></path></svg>
       <span data-i18n="nav.search">Search</span>
     </div>
     <div class="side-nav-header">
       <span data-i18n="nav.system">System</span>
     </div>
-    <div onclick="changeView(getMobilePanel, this);" class="side-nav-item my-waves">
+    <div onclick="changeView(getMobilePanel, this);" class="local-only side-nav-item my-waves">
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M15.5 1h-8C6.12 1 5 2.12 5 3.5v17C5 21.88 6.12 23 7.5 23h8c1.38 0 2.5-1.12 2.5-2.5v-17C18 2.12 16.88 1 15.5 1zm-4 21c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm4.5-4H7V4h9v14z"/><path d="M0 0h24v24H0z" fill="none"/></svg>
       <span data-i18n="nav.apps">Apps</span>
     </div>
-    <div class="side-nav-item my-waves" onclick="changeView(setupAddTorrentPanel, this);">
+    <div class="local-only side-nav-item my-waves" onclick="changeView(setupAddTorrentPanel, this);">
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#DDD" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/><line x1="12" y1="3" x2="12" y2="15"/><path d="M3 17v2a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-2"/></svg>
       <span>Add Torrent</span>
     </div>
-    <div class="side-nav-item my-waves" onclick="changeView(autoDjPanel, this);">
+    <div class="local-only side-nav-item my-waves" onclick="changeView(autoDjPanel, this);">
       <svg xmlns="http://www.w3.org/2000/svg" fill="#DDD" width="24" height="24" viewBox="0 0 55.334 55.334"><g><circle cx="27.667" cy="27.667" r="3.618"/><path d="M27.667 0C12.387 0 0 12.387 0 27.667s12.387 27.667 27.667 27.667 27.667-12.387 27.667-27.667S42.947 0 27.667 0zM17.118 6.881a23.213 23.213 0 0111.214-2.509c.367.01.619.922.564 2.025l-.282 5.677c-.055 1.103-.289 1.986-.523 1.979a13.577 13.577 0 00-6.027 1.196c-1.007.455-2.212.184-2.774-.767l-2.896-4.897c-.562-.951-.261-2.203.724-2.704zm-1.132 10.414l-4.278-3.742c-.832-.727-.918-1.994-.119-2.756l.057-.053c.802-.76 2.059-.605 2.737.266l3.494 4.484c.679.871.837 1.889.391 2.314-.447.427-1.45.214-2.282-.513zm1.891 10.372c0-5.407 4.383-9.79 9.79-9.79s9.79 4.383 9.79 9.79-4.383 9.79-9.79 9.79-9.79-4.383-9.79-9.79zM38.17 48.476a23.21 23.21 0 01-11.244 2.484c-.409-.013-.692-.929-.632-2.032l.31-5.676c.061-1.103.322-1.981.586-1.972a13.596 13.596 0 005.656-1.01c1.022-.42 2.275-.144 2.877.782l3.101 4.77c.602.925.332 2.155-.654 2.654zm5.449-3.82c-.766.72-2.005.551-2.703-.305l-3.59-4.407c-.698-.856-.876-1.848-.435-2.255.442-.407 1.443-.179 2.274.549l4.28 3.744c.832.727.941 1.954.174 2.674z"/></g></svg>
       <span data-i18n="nav.autoDJ">Auto DJ</span>
     </div>
     <!-- Sonic Path — hidden until the ping advertises discoveryPath
          (server has POST /api/v1/discovery/local/path). -->
-    <div id="nav-sonic-path" class="side-nav-item my-waves super-hide" onclick="changeView(sonicPathPanel, this);">
+    <div id="nav-sonic-path" class="local-only side-nav-item my-waves super-hide" onclick="changeView(sonicPathPanel, this);">
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="#DDD" d="M19 15.18V7c0-2.21-1.79-4-4-4s-4 1.79-4 4v10c0 1.1-.9 2-2 2s-2-.9-2-2V8.82C8.16 8.4 9 7.3 9 6c0-1.66-1.34-3-3-3S3 4.34 3 6c0 1.3.84 2.4 2 2.82V17c0 2.21 1.79 4 4 4s4-1.79 4-4V7c0-1.1.9-2 2-2s2 .9 2 2v8.18c-1.16.42-2 1.52-2 2.82 0 1.66 1.34 3 3 3s3-1.34 3-3c0-1.3-.84-2.4-2-2.82z"/></svg>
       <span data-i18n="nav.sonicPath">Sonic Path</span>
     </div>
-    <div class="side-nav-item my-waves" onclick="changeView(setupTranscodePanel, this);">
+    <div class="local-only side-nav-item my-waves" onclick="changeView(setupTranscodePanel, this);">
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 48 48"><path id="ffmpeg-logo" fill="none" stroke="#DDD" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" d="M8.5 8.5h9l-9 9v11l20-20h11l-31 31h11l20-20v11l-9 9h9"/></svg>
       <span data-i18n="nav.transcode">Transcode</span>
     </div>
-    <div class="side-nav-item my-waves" onclick="changeView(setupJukeboxPanel, this);">
+    <div class="local-only side-nav-item my-waves" onclick="changeView(setupJukeboxPanel, this);">
       <svg v-bind:class="{ 'aux-button-active-2': jukebox.live }" height="24" width="24" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" x="0px" y="0px" viewBox="0 0 65 65" enable-background="new 0 0 65 65" xml:space="preserve"><g><path d="M36.1,14.4c-1.4-1.4-3.9-1.4-5.3,0L1.1,44.1c-1.4,1.4-1.4,3.8,0,5.3l14.5,14.5c0.7,0.7,1.6,1.1,2.6,1.1   c1,0,1.9-0.4,2.6-1.1l29.7-29.7c1.5-1.4,1.5-3.8,0-5.3L36.1,14.4z M49.5,33.2L19.8,62.9c-0.8,0.8-2.3,0.8-3.2,0L2.1,48.3   c-0.9-0.9-0.9-2.3,0-3.2l29.7-29.7c0.4-0.4,1-0.7,1.6-0.7c0.6,0,1.2,0.2,1.6,0.7L49.5,30C50.4,30.9,50.4,32.3,49.5,33.2z"></path><rect x="32.4" y="19.5" transform="matrix(0.707 0.7072 -0.7072 0.707 24.3992 -18.4628)" width="4.2" height="1.5"></rect><rect x="42.7" y="29.8" transform="matrix(-0.7072 -0.707 0.707 -0.7072 54.8735 83.7577)" width="4.2" height="1.5"></rect><rect x="14.7" y="37.1" transform="matrix(0.7071 0.7071 -0.7071 0.7071 31.7025 -0.8228)" width="4.2" height="1.5"></rect><rect x="25" y="47.4" transform="matrix(-0.7071 -0.7071 0.7071 -0.7071 12.2855 101.3977)" width="4.2" height="1.5"></rect><rect x="19.9" y="42.3" transform="matrix(0.7071 0.7071 -0.7071 0.7071 36.8513 -2.9555)" width="4.2" height="1.5"></rect><rect x="11.7" y="40.2" transform="matrix(0.7071 0.7071 -0.7071 0.7071 32.9629 2.2207)" width="4.2" height="1.5"></rect><rect x="22" y="50.5" transform="matrix(-0.707 -0.7072 0.7072 -0.707 4.9277 104.4377)" width="4.2" height="1.5"></rect><rect x="16.8" y="45.3" transform="matrix(0.7071 0.7071 -0.7071 0.7071 38.1117 8.766792e-002)" width="4.2" height="1.5"></rect><rect x="8.6" y="43.2" transform="matrix(0.7071 0.7071 -0.7071 0.7071 34.2235 5.2638)" width="4.2" height="1.5"></rect><rect x="18.9" y="53.5" transform="matrix(-0.7072 -0.707 0.707 -0.7072 -2.4064 107.4868)" width="4.2" height="1.5"></rect><rect x="13.8" y="48.3" transform="matrix(-0.707 -0.7072 0.7072 -0.707 -7.5673 95.0498)" width="4.2" height="1.5"></rect><rect x="10.8" y="51.4" transform="matrix(-0.7072 -0.707 0.707 -0.7072 -14.9034 98.0997)" width="4.2" height="1.5"></rect><path d="M35.4,38.8c-1.1,1.1-2.4,1.7-3.9,1.9l0.2,1.5c1.8-0.2,3.5-1,4.8-2.3c1.3-1.3,2.1-3,2.3-4.8l-1.5-0.2   C37.1,36.4,36.5,37.8,35.4,38.8z"></path><path d="M31.7,26.2l-0.2,1.5c1.5,0.2,2.8,0.8,3.9,1.9c1.1,1.1,1.7,2.4,1.9,3.9l1.5-0.2c-0.2-1.8-1-3.5-2.3-4.8   C35.2,27.2,33.5,26.4,31.7,26.2z"></path><path d="M26.2,29.6c1.1-1.1,2.4-1.7,3.9-1.9l-0.2-1.5c-1.8,0.2-3.5,1-4.8,2.3c-1.3,1.3-2.1,3-2.3,4.8l1.5,0.2   C24.5,32,25.1,30.6,26.2,29.6z"></path><path d="M24.3,34.9l-1.5,0.2c0.2,1.8,1,3.5,2.3,4.8c1.3,1.3,3,2.1,4.8,2.3l0.2-1.5c-1.5-0.2-2.9-0.8-3.9-1.9   C25.1,37.8,24.5,36.4,24.3,34.9z"></path><path d="M43.4,0v1.5c11.1,0,20.1,9,20.1,20.1H65C65,9.7,55.3,0,43.4,0z"></path><path d="M43.4,7.4v1.5c7,0,12.7,5.7,12.7,12.7h1.5C57.6,13.8,51.2,7.4,43.4,7.4z"></path><path d="M48.6,21.6h1.5c0-3.7-3-6.7-6.7-6.7v1.5C46.3,16.4,48.6,18.7,48.6,21.6z"></path></g></svg>
       <span data-i18n="nav.jukebox">Jukebox</span>
     </div>
