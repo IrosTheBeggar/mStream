@@ -52,8 +52,15 @@ const MSTREAMPLAYER = (() => {
   // This is a placeholder function that the API layer can take hold of to implement the scrobble call
   let scrobbleTimer;
   mstreamModule.scrobble = () => {
+    const song = mstreamModule.getCurrentSong();
+    if (!song) { return; }
+    // A federated track's path lives in the PEER's vpath namespace, so
+    // scrobble-by-filepath cannot resolve it against this library — it
+    // just errors 30 seconds into every peer track. Same degrade rule as
+    // the waveform, rating and Sonic Path guards.
+    if (song.federation) { return; }
     MSTREAMAPI.scrobbleByFilePath(
-      mstreamModule.getCurrentSong().rawFilePath, 
+      song.rawFilePath,
       (response, error) => {});
   }
 

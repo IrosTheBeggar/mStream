@@ -115,6 +115,14 @@ export function buildClientBootPayload(user) {
     federationDiscovery: config.program.federation.enabled === true
       && config.program.scanOptions.collectDiscoveryData === true
       && fedDb.getFederationPeers().some((p) => p.use_discovery === 1),
+    // Browsing a peer's library (api/federation-browse.js): the top-bar
+    // server switcher. Same no-probe contract as the discovery flags — an
+    // older build omits the key and the client simply never offers the
+    // feature. Requires a peer to browse, so a federation-enabled server
+    // with none stays quiet. Caller-scoped for the same reason
+    // federationDiscovery is: it reports live peer RELATIONSHIPS.
+    federationBrowse: config.program.federation.enabled === true
+      && fedDb.getFederationPeers().length > 0,
     vpathMetaData: {}
   };
 
