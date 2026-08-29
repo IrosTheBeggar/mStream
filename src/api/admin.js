@@ -1097,7 +1097,11 @@ export function setup(mstream) {
 
     const outDir = path.join(config.program.storage.dbDirectory, 'discovery-peers');
     try {
-      res.json(await discoveryP2p.fetch(addressing, outDir, maxBytes));
+      // No hold: this raw route delivers a file, not a shelf membership —
+      // nothing here would ever forget() the blob, so rooting it in the
+      // sidecar store would pin those bytes forever. Un-held store copies
+      // age out with GC; the exported file is the deliverable.
+      res.json(await discoveryP2p.fetch(addressing, outDir, { maxBytes }));
     } catch (err) {
       winston.warn(`discovery P2P fetch failed for admin '${req.user?.username}' (${label}): ${err.message}`);
       throw new WebError(`fetch failed: ${err.message}`, 500);

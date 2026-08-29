@@ -268,12 +268,16 @@ export async function fetchPeer(endpointId, { pinned = false } = {}) {
   const maxFetchBytes = announcedSize > 0
     ? announcedSize
     : storageCapBytes() - (totalBytes() - (existing ? existing.sizeBytes : 0));
+  // hold: shelf snapshots are what the holds beacon advertises, so the
+  // sidecar must keep the blob GC-rooted for as long as we claim to seed
+  // it. Every removal path (replace-on-update, removePeerDb, the reject
+  // below) releases it via forget().
   const fetched = await discoveryP2p.fetch(
     providers.length > 1
       ? { hash: entry.payload.hash, providers }
       : { hash: entry.payload.hash, provider: endpointId },
     peerDbDir(),
-    maxFetchBytes,
+    { maxBytes: maxFetchBytes, hold: true },
   );
 
   // The bytes on disk are the only size that counts. Re-run the admission
@@ -305,8 +309,16 @@ export async function fetchPeer(endpointId, { pinned = false } = {}) {
   try {
     inspected = inspectSnapshot(fetched.path);
   } catch (err) {
-    // Failed validation = not a snapshot we can use; don't leave it around.
-    try { fs.rmSync(fetched.path, { force: true }); } catch (_rmErr) { /* best effort */ }
+    // Failed validation = not a snapshot we can use; don't leave it around
+    // — neither the exported file nor the held blob in the sidecar store
+    // (the fetch above rooted it with hold:true; without the forget it
+    // would stay pinned forever). Same-blob refreshes keep both: the file
+    // IS the held copy.
+    if (!(existing && existing.hash === fetched.hash)) {
+      try { fs.rmSync(fetched.path, { force: true }); } catch (_rmErr) { /* best effort */ }
+      discoveryP2p.forget(fetched.hash)
+        .catch((fErr) => winston.debug(`[discovery-peer-dbs] forget invalid blob: ${fErr.message}`));
+    }
     throw new Error(`peer sent an invalid snapshot: ${err.message}`, { cause: err });
   }
 
@@ -392,6 +404,68 @@ export function pushHolds() {
   }
   discoveryP2p.setHolds([...hashes])
     .catch((err) => winston.debug(`[discovery-peer-dbs] holds push failed: ${err.message}`));
+}
+
+// Re-root every shelf snapshot in the sidecar's blob store, then beacon the
+// hold-set. Two truths this restores at every stack start:
+//
+//  - A fresh sidecar process serves only what its store still holds, and
+//    before sidecar v1.0.4 fetched blobs had NO GC root at all — an
+//    upgraded server's held snapshots are typically gone from the store
+//    while the holds beacon advertises them, so peers' swarm fetches from
+//    us dial in and fail. publish() re-imports the exported file
+//    (content-addressed: same bytes, same hash, now tagged — on every
+//    sidecar version) at the price of one file hash per entry per start.
+//  - A server with a shelf but no own snapshot never reached the
+//    announce-path pushHolds, so its beacon stayed silent all session.
+//
+// Deliberately reads peer-dbs.json ITSELF instead of going through
+// ensureLoaded()/pushHolds(): this runs at stack start, and tripping the
+// lazy registry latch this early would freeze a pre-boot view of the shelf
+// before anything else (the similarity suite hand-seeds it post-boot) had
+// written it. The file is byte-for-byte what the lazy load reads later, and
+// save() rewrites it on every mutation, so disk is never behind memory.
+//
+// Never throws: a per-entry failure is logged and skipped — a snapshot we
+// can't re-import is one we quietly stop advertising, which is exactly the
+// honest outcome. A file that no longer hashes to its registry entry
+// (on-disk drift) is likewise not advertised, and the accidental re-import
+// is released again.
+export async function reseedShelf() {
+  let entries = [];
+  try {
+    entries = JSON.parse(fs.readFileSync(registryPath(), 'utf8'));
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      winston.warn(`discovery peer-db registry unreadable for reseed (${err.message})`);
+    }
+  }
+  const held = [];
+  for (const e of Array.isArray(entries) ? entries : []) {
+    if (!e || !e.hash || !e.path || !fs.existsSync(e.path)) { continue; }
+    try {
+      const pub = await discoveryP2p.publish(e.path);
+      if (pub.hash === e.hash) {
+        held.push(e.hash);
+      } else {
+        winston.warn(`[discovery-peer-dbs] held snapshot ${String(e.endpointId).slice(0, 12)}… drifted `
+          + `on disk (file is ${String(pub.hash).slice(0, 12)}…, registry says ${e.hash.slice(0, 12)}…) `
+          + `— not advertising it`);
+        discoveryP2p.forget(pub.hash)
+          .catch((fErr) => winston.debug(`[discovery-peer-dbs] forget drifted reseed: ${fErr.message}`));
+      }
+    } catch (err) {
+      winston.warn(`[discovery-peer-dbs] reseed of held snapshot ${String(e.endpointId).slice(0, 12)}… `
+        + `failed (it stays on the shelf but won't be served): ${err.message}`);
+    }
+  }
+  if (held.length > 0) {
+    winston.info(`[discovery-peer-dbs] re-seeded ${held.length} held snapshot(s) into the sidecar store`);
+    const own = discoveryP2p.getOwnSnapshotHash();
+    discoveryP2p.setHolds([...new Set(own ? [own, ...held] : held)])
+      .catch((err) => winston.debug(`[discovery-peer-dbs] holds push after reseed failed: ${err.message}`));
+  }
+  return held.length;
 }
 
 function openPeerDb(entry) {
