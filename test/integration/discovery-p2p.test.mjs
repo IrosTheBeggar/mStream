@@ -871,6 +871,296 @@ describe('discovery p2p — similarity search + novelty filter', () => {
   });
 });
 
+// ── Announced size is a claim, not a fact ────────────────────────────────────
+// The storage-cap and disk-floor pre-checks trust the ANNOUNCED size; the
+// blob behind the hash can be arbitrarily larger. fetchPeer must reject a
+// snapshot whose real bytes exceed the claim (and ≥v1.0.4 sidecars abort
+// the transfer itself at the maxBytes ceiling — either failure mode ends
+// here). An honest byte-exact announcement must keep fetching fine.
+(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — announced-size lie', () => {
+  let server;
+  let peer;
+  let dir;
+
+  before(async () => {
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: false,
+      extraConfig: { discoveryP2p: { enabled: true, autoFetch: false } },
+    });
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-p2p-lie-'));
+    peer = new RawSidecar(SIDECAR_BIN, path.join(dir, 'sidecar'));
+    await peer.ready;
+  });
+  after(async () => {
+    if (peer) { await peer.stop(); }
+    if (server) { await server.stop(); }
+    if (dir) { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('honest exact size fetches; an under-announced blob is rejected and the old copy survives', async () => {
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+      return s.running && s.ticket ? s : null;
+    }, { what: 'server sidecar to boot' });
+    await peer.rpc('join', { bootstrap: [status.ticket] });
+    await peer.waitForEvent('neighbor', (e) => e.up === true);
+
+    const manualFetch = () => fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/peer-dbs/fetch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpointId: peer.endpointId }),
+    });
+    const catalogHash = (hash) => pollUntil(async () => {
+      const c = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/catalog`)).json();
+      const entry = c.peers.find((p) => p.from === peer.endpointId);
+      return entry?.payload.hash === hash ? entry : null;
+    }, { what: `catalog to carry announcement for ${hash.slice(0, 12)}…` });
+
+    // Round 1 — honest: announced size is the publish stat, byte-exact.
+    const honest = makeSnapshotFile(path.join(dir, 'honest.db'), {
+      tracks: [{ artist: 'Honest Artist', title: 'True Size', vec: [1, 0, 0, 0] }],
+    });
+    const pub1 = await peer.rpc('publish', { path: honest });
+    await peer.rpc('announce', {
+      payload: { hash: pub1.hash, size: pub1.size, rowCount: 1,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 1, name: 'Sizer' },
+    });
+    await catalogHash(pub1.hash);
+    const ok = await manualFetch();
+    assert.equal(ok.status, 200, 'a byte-exact announcement must not trip the ceiling');
+    const record = await ok.json();
+    assert.equal(record.hash, pub1.hash);
+    assert.equal(record.sizeBytes, pub1.size, 'the shelf records the bytes on disk');
+
+    // Round 2 — the lie: a bigger valid snapshot announced as 100 bytes.
+    // A capped sidecar aborts the transfer; an uncapped one delivers and
+    // the on-disk re-check rejects. Both must refuse the swap.
+    const big = makeSnapshotFile(path.join(dir, 'big.db'), {
+      tracks: Array.from({ length: 60 }, (_, i) => (
+        { artist: `Filler ${i}`, title: `Pad Track ${i}`, vec: [0, 1, 0, 0] })),
+    });
+    const pub2 = await peer.rpc('publish', { path: big });
+    assert.ok(pub2.size > 100, 'the lie needs a blob genuinely bigger than the claim');
+    await peer.rpc('announce', {
+      payload: { hash: pub2.hash, size: 100, rowCount: 60,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 2, name: 'Sizer' },
+    });
+    await catalogHash(pub2.hash);
+    const refused = await manualFetch();
+    assert.equal(refused.status, 500);
+    assert.match((await refused.json()).error, /maxBytes|announced \d+ bytes but sent/i,
+      'the refusal names the size mismatch (sidecar ceiling or on-disk re-check)');
+
+    // The held seq-1 snapshot survives the refused refresh untouched, and
+    // the liar's bytes are not on disk.
+    const shelf = await (await fetch(`${server.baseUrl}/api/v1/discovery/p2p/peer-dbs`)).json();
+    assert.equal(shelf.peerDbs.length, 1);
+    assert.equal(shelf.peerDbs[0].rowCount, 1, 'the old copy stays on the shelf');
+    assert.equal(shelf.peerDbs[0].sizeBytes, pub1.size, 'shelf accounting still describes the old bytes');
+    const liarFile = path.join(server.tmpDir, 'db', 'discovery-peers', `${pub2.hash.slice(0, 16)}.db`);
+    assert.ok(!fs.existsSync(liarFile), 'the over-announced blob must not be left on disk');
+  });
+});
+
+// ── Boot re-seed: advertised holds must be servable ─────────────────────────
+// A fresh sidecar process serves only what its blob store still holds, and
+// fetched blobs used to have no GC root at all — so a rebooted server's
+// holds beacon advertised snapshots its store had already swept. The stack
+// now re-imports every shelf file at start (reseedShelf) and beacons the
+// hold-set. Proof shape: the ORIGIN of a held snapshot is long gone; a
+// third party fetching {hash, provider: server} can only succeed if the
+// re-import actually rooted the bytes in the server's own store.
+(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — boot reseed serves held snapshots', () => {
+  let server;
+  let helper;   // publishes the blob to learn its content hash, then leaves
+  let leecher;  // fetches from the SERVER after boot
+  let dir;
+  let heldFile;
+  let heldHash;
+  const HELD_ID = 'a'.repeat(64);
+
+  before(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-p2p-reseed-'));
+    const stateDir = path.join(dir, 'state');
+    const dbDir = path.join(stateDir, 'db');
+
+    // Build the snapshot ONCE and learn its content hash from a throwaway
+    // sidecar (content addressing: same bytes = same hash everywhere).
+    const original = makeSnapshotFile(path.join(dir, 'origin.db'), {
+      modelId: 'test-model',
+      tracks: [{ artist: 'Held Artist', title: 'Survivor', vec: [1, 0, 0, 0] }],
+    });
+    helper = new RawSidecar(SIDECAR_BIN, path.join(dir, 'helper'));
+    await helper.ready;
+    const pub = await helper.rpc('publish', { path: original });
+    heldHash = pub.hash;
+    await helper.stop();
+    helper = null; // the origin is now GONE from the network
+
+    // Pre-seed the server's shelf with that exact file, then boot.
+    heldFile = path.join(dbDir, 'discovery-peers', `${heldHash.slice(0, 16)}.db`);
+    fs.mkdirSync(path.dirname(heldFile), { recursive: true });
+    fs.copyFileSync(original, heldFile);
+    fs.mkdirSync(path.join(dbDir, 'discovery-p2p'), { recursive: true });
+    fs.writeFileSync(path.join(dbDir, 'discovery-p2p', 'peer-dbs.json'), JSON.stringify([{
+      endpointId: HELD_ID, hash: heldHash, path: heldFile, snapshotSeq: 1,
+      modelId: 'test-model', modelVersion: '1', rowCount: 1,
+      sizeBytes: fs.statSync(heldFile).size, name: 'Held Peer',
+      fetchedAt: new Date().toISOString(), firstFetchedAt: new Date().toISOString(),
+      pinned: true,
+    }], null, 2));
+
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: false,
+      extraConfig: {
+        storage: {
+          albumArtDirectory: path.join(stateDir, 'image-cache'),
+          dbDirectory: dbDir,
+          logsDirectory: path.join(stateDir, 'logs'),
+          syncConfigDirectory: path.join(stateDir, 'sync'),
+          waveformCacheDirectory: path.join(stateDir, 'waveform-cache'),
+        },
+        discoveryP2p: { enabled: true, autoFetch: false },
+      },
+    });
+    leecher = new RawSidecar(SIDECAR_BIN, path.join(dir, 'leecher'));
+    await leecher.ready;
+  });
+  after(async () => {
+    if (helper) { await helper.stop(); }
+    if (leecher) { await leecher.stop(); }
+    if (server) { await server.stop(); }
+    if (dir) { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('a third party can fetch a held snapshot FROM the server after a cold boot', async () => {
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+      return s.running && s.ticket ? s : null;
+    }, { what: 'server sidecar to boot' });
+    await leecher.rpc('join', { bootstrap: [status.ticket] });
+    await leecher.waitForEvent('neighbor', (e) => e.up === true);
+
+    // The core proof: the origin is gone, so these bytes can only come out
+    // of the server's own store — i.e. the boot re-import worked.
+    const got = await leecher.rpc('fetch', {
+      hash: heldHash, provider: status.endpointId, outDir: path.join(dir, 'leeched'),
+    });
+    assert.equal(got.hash, heldHash);
+    assert.deepEqual(fs.readFileSync(got.path), fs.readFileSync(heldFile),
+      'served bytes must be the held snapshot, byte for byte');
+
+    // And the hold is ADVERTISED: this server has no own snapshot, so the
+    // only pusher of the beacon is reseedShelf — heard within one 60s
+    // re-beacon period of meshing.
+    const beacon = await leecher.waitForEvent('holds',
+      (e) => e.from === status.endpointId && Array.isArray(e.holds) && e.holds.includes(heldHash),
+      75000);
+    assert.ok(beacon, 'the reseeded hold must appear in the holds beacon');
+  });
+});
+
+// ── Auto-fetch model gate: incompatible announcements are not downloaded ────
+// With a LOCAL embedding model established, reconcile must skip catalog
+// peers announcing a different model (their rows are unsearchable — WHERE
+// model_id = ours) while still fetching matching ones from the same pass.
+// The manual admin fetch stays the deliberate escape hatch. Policy details
+// are unit-tested (modelCompatible/planRotation); this proves the reconcile
+// wiring: getMeta('embedding_model_id') → skip → no shelf entry.
+(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — auto-fetch model gate', () => {
+  let server;
+  let alien;   // announces modelId 'alien-model' — must NOT be auto-fetched
+  let match;   // announces modelId 'test-model'  — must be auto-fetched
+  let dir;
+
+  before(async () => {
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: true,
+      env: { MSTREAM_TEST_DISCOVERY_DEBOUNCE_MS: '750' },
+      extraConfig: {
+        discoveryP2p: { enabled: true },
+        scanOptions: { collectDiscoveryData: true },
+      },
+    });
+    // Establish the local model the gate compares against (the embedding
+    // worker's job in production — direct meta write per the similarity
+    // suite's seeding precedent).
+    const ddb = new DatabaseSync(path.join(server.tmpDir, 'db', 'discovery.db'));
+    ddb.prepare("INSERT OR REPLACE INTO discovery_meta (key, value) VALUES ('embedding_model_id', 'test-model')").run();
+    ddb.close();
+
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-p2p-gate-'));
+    alien = new RawSidecar(SIDECAR_BIN, path.join(dir, 'alien'));
+    match = new RawSidecar(SIDECAR_BIN, path.join(dir, 'match'));
+    await alien.ready;
+    await match.ready;
+  });
+  after(async () => {
+    if (alien) { await alien.stop(); }
+    if (match) { await match.stop(); }
+    if (server) { await server.stop(); }
+    if (dir) { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('one reconcile pass: matching model fetched, alien model skipped; manual fetch still works', async () => {
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+      return s.running && s.ticket ? s : null;
+    }, { what: 'server sidecar to boot' });
+    await alien.rpc('join', { bootstrap: [status.ticket] });
+    await match.rpc('join', { bootstrap: [status.ticket] });
+    await alien.waitForEvent('neighbor', (e) => e.up === true);
+    await match.waitForEvent('neighbor', (e) => e.up === true);
+
+    const alienSnap = makeSnapshotFile(path.join(dir, 'alien.db'), {
+      modelId: 'alien-model',
+      tracks: [{ artist: 'Alien Artist', title: 'Other Space', vec: [1, 0, 0, 0] }],
+    });
+    const alienPub = await alien.rpc('publish', { path: alienSnap });
+    await alien.rpc('announce', {
+      payload: { hash: alienPub.hash, size: alienPub.size, rowCount: 1,
+        modelId: 'alien-model', modelVersion: '1', snapshotSeq: 1, name: 'Alien' },
+    });
+    const matchSnap = makeSnapshotFile(path.join(dir, 'match.db'), {
+      modelId: 'test-model',
+      tracks: [{ artist: 'Match Artist', title: 'Same Space', vec: [0, 1, 0, 0] }],
+    });
+    const matchPub = await match.rpc('publish', { path: matchSnap });
+    await match.rpc('announce', {
+      payload: { hash: matchPub.hash, size: matchPub.size, rowCount: 1,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 1, name: 'Match' },
+    });
+
+    // Both are in the catalog before the debounced reconcile fires. The
+    // admin route HIDES incompatible-model peers once a local model exists
+    // (its own suite covers that), so the alien registers as a bump in
+    // hiddenIncompatible rather than a visible row.
+    await pollUntil(async () => {
+      const c = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/catalog`)).json();
+      const froms = c.peers.map((p) => p.from);
+      const alienHeard = froms.includes(alien.endpointId) || c.hiddenIncompatible >= 1;
+      return froms.includes(match.endpointId) && alienHeard ? c : null;
+    }, { what: 'both announcements in the catalog' });
+
+    // …and the pass that downloads the match must leave the alien alone.
+    const shelfIds = async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/discovery/p2p/peer-dbs`)).json();
+      return s.peerDbs.map((p) => p.endpointId);
+    };
+    await pollUntil(async () => (await shelfIds()).includes(match.endpointId) || null,
+      { timeoutMs: 30000, what: 'auto-fetch to download the matching-model peer' });
+    assert.ok(!(await shelfIds()).includes(alien.endpointId),
+      'the alien-model peer must not be auto-fetched');
+
+    // The deliberate escape hatch: a manual admin fetch of the alien works.
+    const manual = await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/peer-dbs/fetch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpointId: alien.endpointId }),
+    });
+    assert.equal(manual.status, 200, 'manual fetch must bypass the model gate');
+    assert.ok((await shelfIds()).includes(alien.endpointId));
+  });
+});
+
 // ── Shelf rotation: membership cycles instead of freezing ───────────────────
 // A FULL shelf (registry pre-crafted with two long-held snapshots, count=2)
 // must SWAP its oldest unpinned entry for a newly announced peer — the

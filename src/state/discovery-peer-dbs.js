@@ -7,12 +7,14 @@
 //
 // Auto-fetch turns the catalog into a working library shelf without admin
 // babysitting: on boot (and as announcements arrive) reconcile() downloads
-// as many of the most useful peers as fit — model-compatible first, then
-// online-now, then biggest — and re-fetches a peer whose announced
-// snapshotSeq moved past our copy. The monotonic seq (not wall clocks) is
-// what makes "is our copy stale?" a safe comparison. Guardrails: peer-count
-// target, total-storage cap, a free-disk floor, and the blockedPeers config
-// list.
+// as many of the most useful peers as fit — model-compatible only (see
+// modelCompatible; incompatible snapshots are unsearchable dead weight
+// unless the config opts back in), then online-now first, then biggest —
+// and re-fetches a peer whose announced snapshotSeq moved past our copy.
+// The monotonic seq (not wall clocks) is what makes "is our copy stale?" a
+// safe comparison. Guardrails: peer-count target, total-storage cap, a
+// free-disk floor, the blockedPeers config list, and a per-fetch byte
+// ceiling that treats the announced size as a claim, not a fact.
 //
 // Rotation (rotatePeerDbs, hourly) keeps the shelf's MEMBERSHIP fresh once
 // it's full: swap the least-useful long-held snapshot (rotationDays age,
@@ -33,7 +35,7 @@ import * as config from './config.js';
 import * as discoveryDb from '../db/discovery-db.js';
 import * as discoveryP2p from './discovery-p2p.js';
 import * as discoveryCatalog from './discovery-catalog.js';
-import { candidateOrder, planRotation } from './discovery-peer-rotation.js';
+import { candidateOrder, modelCompatible, planRotation } from './discovery-peer-rotation.js';
 
 const REGISTRY_FILE = 'peer-dbs.json';
 const SNAPSHOT_FORMAT_VERSION = 1; // must match discovery-export.js
@@ -252,19 +254,71 @@ export async function fetchPeer(endpointId, { pinned = false } = {}) {
   const providerSet = new Set([endpointId, ...discoveryCatalog.holdersOf(entry.payload.hash)]);
   providerSet.delete(discoveryP2p.getEndpointId());
   const providers = [...providerSet].filter((p) => !blocked.has(p));
+  // Byte ceiling for the transfer itself. Everything above trusted the
+  // ANNOUNCED size, which the announcer controls — the blob behind the hash
+  // can be arbitrarily larger, and the sidecar's blob store lives on the
+  // same volume as everything else, so an uncapped transfer is a disk-fill
+  // handed to any catalog peer (this box already died of a full disk once).
+  // An honest announcement is byte-exact (it's the stat of the published
+  // file), so the announced size IS the cap; a legacy size-less
+  // announcement falls back to the storage headroom this fetch was
+  // admitted under. Sidecars ≥ v1.0.4 abort the transfer at the ceiling;
+  // v1.0.3 ignores the extra param, which is why the on-disk re-check
+  // below stays load-bearing.
+  const maxFetchBytes = announcedSize > 0
+    ? announcedSize
+    : storageCapBytes() - (totalBytes() - (existing ? existing.sizeBytes : 0));
+  // hold: shelf snapshots are what the holds beacon advertises, so the
+  // sidecar must keep the blob GC-rooted for as long as we claim to seed
+  // it. Every removal path (replace-on-update, removePeerDb, the reject
+  // below) releases it via forget().
   const fetched = await discoveryP2p.fetch(
     providers.length > 1
       ? { hash: entry.payload.hash, providers }
       : { hash: entry.payload.hash, provider: endpointId },
     peerDbDir(),
+    { maxBytes: maxFetchBytes, hold: true },
   );
+
+  // The bytes on disk are the only size that counts. Re-run the admission
+  // checks against them: an over-announced blob (actual > claimed) is a
+  // lying peer, and an actual total past the storage cap must not be kept
+  // no matter what the claim was. Same-blob refreshes are exempt from the
+  // delete (fetched.path IS the held file when the hash didn't change —
+  // removing it would orphan the live registry entry).
+  let actualBytes;
+  try {
+    actualBytes = fs.statSync(fetched.path).size;
+  } catch (_statErr) {
+    actualBytes = Number(fetched.size) || 0;
+  }
+  const overAnnounced = announcedSize > 0 && actualBytes > announcedSize;
+  const projectedActual = totalBytes() - (existing ? existing.sizeBytes : 0) + actualBytes;
+  if (overAnnounced || projectedActual > storageCapBytes()) {
+    if (!(existing && existing.hash === fetched.hash)) {
+      try { fs.rmSync(fetched.path, { force: true }); } catch (_rmErr) { /* best effort */ }
+      discoveryP2p.forget(fetched.hash)
+        .catch((err) => winston.debug(`[discovery-peer-dbs] forget oversized blob: ${err.message}`));
+    }
+    throw new Error(overAnnounced
+      ? `peer announced ${announcedSize} bytes but sent ${actualBytes} — rejecting the snapshot`
+      : `snapshot is ${actualBytes} bytes on disk — over the peer-DB storage cap; rejecting`);
+  }
 
   let inspected;
   try {
     inspected = inspectSnapshot(fetched.path);
   } catch (err) {
-    // Failed validation = not a snapshot we can use; don't leave it around.
-    try { fs.rmSync(fetched.path, { force: true }); } catch (_rmErr) { /* best effort */ }
+    // Failed validation = not a snapshot we can use; don't leave it around
+    // — neither the exported file nor the held blob in the sidecar store
+    // (the fetch above rooted it with hold:true; without the forget it
+    // would stay pinned forever). Same-blob refreshes keep both: the file
+    // IS the held copy.
+    if (!(existing && existing.hash === fetched.hash)) {
+      try { fs.rmSync(fetched.path, { force: true }); } catch (_rmErr) { /* best effort */ }
+      discoveryP2p.forget(fetched.hash)
+        .catch((fErr) => winston.debug(`[discovery-peer-dbs] forget invalid blob: ${fErr.message}`));
+    }
     throw new Error(`peer sent an invalid snapshot: ${err.message}`, { cause: err });
   }
 
@@ -287,7 +341,7 @@ export async function fetchPeer(endpointId, { pinned = false } = {}) {
     modelId: inspected.modelId,
     modelVersion: inspected.modelVersion,
     rowCount: inspected.rowCount,
-    sizeBytes: fetched.size,
+    sizeBytes: actualBytes,
     name: entry.payload.name || '',
     fetchedAt: new Date().toISOString(),
     // The MEMBERSHIP clock (rotation's aging signal) — carried over on a
@@ -350,6 +404,68 @@ export function pushHolds() {
   }
   discoveryP2p.setHolds([...hashes])
     .catch((err) => winston.debug(`[discovery-peer-dbs] holds push failed: ${err.message}`));
+}
+
+// Re-root every shelf snapshot in the sidecar's blob store, then beacon the
+// hold-set. Two truths this restores at every stack start:
+//
+//  - A fresh sidecar process serves only what its store still holds, and
+//    before sidecar v1.0.4 fetched blobs had NO GC root at all — an
+//    upgraded server's held snapshots are typically gone from the store
+//    while the holds beacon advertises them, so peers' swarm fetches from
+//    us dial in and fail. publish() re-imports the exported file
+//    (content-addressed: same bytes, same hash, now tagged — on every
+//    sidecar version) at the price of one file hash per entry per start.
+//  - A server with a shelf but no own snapshot never reached the
+//    announce-path pushHolds, so its beacon stayed silent all session.
+//
+// Deliberately reads peer-dbs.json ITSELF instead of going through
+// ensureLoaded()/pushHolds(): this runs at stack start, and tripping the
+// lazy registry latch this early would freeze a pre-boot view of the shelf
+// before anything else (the similarity suite hand-seeds it post-boot) had
+// written it. The file is byte-for-byte what the lazy load reads later, and
+// save() rewrites it on every mutation, so disk is never behind memory.
+//
+// Never throws: a per-entry failure is logged and skipped — a snapshot we
+// can't re-import is one we quietly stop advertising, which is exactly the
+// honest outcome. A file that no longer hashes to its registry entry
+// (on-disk drift) is likewise not advertised, and the accidental re-import
+// is released again.
+export async function reseedShelf() {
+  let entries = [];
+  try {
+    entries = JSON.parse(fs.readFileSync(registryPath(), 'utf8'));
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      winston.warn(`discovery peer-db registry unreadable for reseed (${err.message})`);
+    }
+  }
+  const held = [];
+  for (const e of Array.isArray(entries) ? entries : []) {
+    if (!e || !e.hash || !e.path || !fs.existsSync(e.path)) { continue; }
+    try {
+      const pub = await discoveryP2p.publish(e.path);
+      if (pub.hash === e.hash) {
+        held.push(e.hash);
+      } else {
+        winston.warn(`[discovery-peer-dbs] held snapshot ${String(e.endpointId).slice(0, 12)}… drifted `
+          + `on disk (file is ${String(pub.hash).slice(0, 12)}…, registry says ${e.hash.slice(0, 12)}…) `
+          + `— not advertising it`);
+        discoveryP2p.forget(pub.hash)
+          .catch((fErr) => winston.debug(`[discovery-peer-dbs] forget drifted reseed: ${fErr.message}`));
+      }
+    } catch (err) {
+      winston.warn(`[discovery-peer-dbs] reseed of held snapshot ${String(e.endpointId).slice(0, 12)}… `
+        + `failed (it stays on the shelf but won't be served): ${err.message}`);
+    }
+  }
+  if (held.length > 0) {
+    winston.info(`[discovery-peer-dbs] re-seeded ${held.length} held snapshot(s) into the sidecar store`);
+    const own = discoveryP2p.getOwnSnapshotHash();
+    discoveryP2p.setHolds([...new Set(own ? [own, ...held] : held)])
+      .catch((err) => winston.debug(`[discovery-peer-dbs] holds push after reseed failed: ${err.message}`));
+  }
+  return held.length;
 }
 
 function openPeerDb(entry) {
@@ -495,14 +611,21 @@ export async function reconcile() {
     if (room > 0) {
       const localModel = discoveryDb.openDiscoveryDbIfExists()
         ? discoveryDb.getMeta('embedding_model_id') : null;
+      const allowIncompat = config.program.discoveryP2p.autoFetchIncompatibleModels;
       const capBytes = storageCapBytes();
       let projectedBytes = totalBytes();
       let picked = 0;
       let skippedForSpace = 0;
+      let skippedForModel = 0;
       for (const c of discoveryCatalog.list()
         .filter((x) => !registry.has(x.from) && !isBlocked(x.from))
         .sort(candidateOrder(localModel))) {
         if (picked >= room) { break; }
+        // Auto-fetch only, not a fetch failure: an incompatible snapshot is
+        // unsearchable here, so skipping it burns no backoff and the manual
+        // admin fetch stays available. (Stale-refreshes above are exempt —
+        // what's already ON the shelf keeps refreshing until removed.)
+        if (!modelCompatible(c.payload, localModel, allowIncompat)) { skippedForModel += 1; continue; }
         const announced = c.payload.size || 0;
         if (projectedBytes + announced > capBytes) { skippedForSpace += 1; continue; }
         projectedBytes += announced;
@@ -512,6 +635,10 @@ export async function reconcile() {
       if (skippedForSpace > 0) {
         winston.debug(`[discovery-peer-dbs] skipped ${skippedForSpace} catalog peer(s) whose announced `
           + `size does not fit under the ${config.program.discoveryP2p.maxPeerDbStorageMb}MB cap`);
+      }
+      if (skippedForModel > 0) {
+        winston.debug(`[discovery-peer-dbs] skipped ${skippedForModel} catalog peer(s) announcing a `
+          + `different embedding model (autoFetchIncompatibleModels is off)`);
       }
     }
 
@@ -603,6 +730,7 @@ export async function rotatePeerDbs() {
       autoFetch: cfg.autoFetch,
       autoFetchCount: cfg.autoFetchCount,
       capBytes: storageCapBytes(),
+      allowIncompatibleModels: cfg.autoFetchIncompatibleModels,
       isBlocked,
       inBackoff: inFetchBackoff,
       seederCountOf: (hash) => discoveryCatalog.seederCount(hash),

@@ -24,6 +24,7 @@ import {
   planRotation,
   candidateOrder,
   rotationCandidateOrder,
+  modelCompatible,
   ONLINE_WINDOW_MS,
 } from '../../src/state/discovery-peer-rotation.js';
 
@@ -200,14 +201,51 @@ describe('planRotation — candidate choice', () => {
   });
 
   test('novelty ties fall through to the usefulness order (model-compatible first)', () => {
+    // allowIncompatibleModels keeps the other-model candidate in the POOL,
+    // so this exercises the ordering — without it the model gate would
+    // remove 'd' before the sort ever ran.
     const plan = planRotation(inputs({
       localModel: 'model-x',
+      allowIncompatibleModels: true,
       catalog: [
         cat('d', { modelId: 'other-model', rowCount: 99999 }),
         cat('e', { modelId: 'model-x', rowCount: 1 }),
       ],
     }));
     assert.equal(plan.fetchId, id('e'));
+  });
+});
+
+describe('planRotation — model gate', () => {
+  test('an incompatible candidate is not a candidate at all by default', () => {
+    assert.equal(planRotation(inputs({
+      localModel: 'model-x',
+      catalog: [cat('d', { modelId: 'other-model', rowCount: 99999 })],
+    })), null, 'rotation must not swap a searchable snapshot for dead weight');
+  });
+
+  test('a peer that never embedded (empty modelId) counts as incompatible', () => {
+    assert.equal(planRotation(inputs({
+      localModel: 'model-x',
+      catalog: [cat('d', { modelId: '' })],
+    })), null);
+  });
+
+  test('allowIncompatibleModels opts back in', () => {
+    const plan = planRotation(inputs({
+      localModel: 'model-x',
+      allowIncompatibleModels: true,
+      catalog: [cat('d', { modelId: 'other-model' })],
+    }));
+    assert.equal(plan?.fetchId, id('d'));
+  });
+
+  test('no local model = no compatibility signal; every candidate passes', () => {
+    const plan = planRotation(inputs({
+      localModel: null,
+      catalog: [cat('d', { modelId: 'other-model' })],
+    }));
+    assert.equal(plan?.fetchId, id('d'));
   });
 });
 
@@ -303,5 +341,17 @@ describe('order helpers', () => {
 
   test('the online window matches the announce cadence', () => {
     assert.equal(ONLINE_WINDOW_MS, 90 * 1000);
+  });
+
+  test('modelCompatible: match, mismatch, empty, no-signal, escape hatch', () => {
+    assert.equal(modelCompatible({ modelId: 'model-x' }, 'model-x'), true);
+    assert.equal(modelCompatible({ modelId: 'other' }, 'model-x'), false);
+    assert.equal(modelCompatible({ modelId: '' }, 'model-x'), false,
+      'a never-embedded peer is incompatible with any established model');
+    assert.equal(modelCompatible({}, 'model-x'), false);
+    assert.equal(modelCompatible({ modelId: 'other' }, null), true,
+      'no local model = no signal, everyone passes');
+    assert.equal(modelCompatible({ modelId: 'other' }, 'model-x', true), true,
+      'allowIncompatible overrides the gate');
   });
 });
