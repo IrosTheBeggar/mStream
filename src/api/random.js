@@ -42,11 +42,13 @@
 // separate PR — there's no library-aware Last.fm proxy yet, so wiring
 // it here would only test the SQL path.
 
+import { createHash } from 'node:crypto';
+
 import Joi from 'joi';
 import * as db from '../db/manager.js';
 import * as sim from '../db/discovery-similarity.js';
 import { renderMetadataObj, libraryFilter, trackQuery, fetchGenresForTrack } from './db.js';
-import { requireIndex, resolveSeedTrack } from './discovery.js';
+import { requireIndex, resolveSeedTrack, decodeSeedVector } from './discovery.js';
 import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 
@@ -580,18 +582,47 @@ function buildSonicPool(req, body) {
 
   const vecs = [];
   const seedHashes = [];
-  for (const p of body.similarTo) {
-    const row = resolveSeedTrack(req, p, 'random-songs sonic');
-    const canonHash = row.audio_hash || row.file_hash;
-    const entry = canonHash ? index.byHash.get(canonHash) : null;
-    if (!entry) {
-      throw new WebError('Sonic seed track has not been analyzed yet', 400);
+  let seedKey;
+
+  if (body.similarToVector) {
+    // A seed from somewhere this server can't see — the caller averaged the
+    // vectors of what is playing (possibly across several servers) and sent
+    // the result. Nothing downstream of the pool cares where a vector came
+    // from, so only the decode and the model check are new.
+    //
+    // A mismatch is a hard 400 here, unlike the federation peer route's soft
+    // `modelMismatch`. That route answers a RANKING, where "no results" is a
+    // truthful empty answer; this one answers "what do I play next", and
+    // comparing across model spaces would return confident nonsense — tracks
+    // with no real relationship to the seed. The caller is expected to have
+    // read this server's model id first and skip it when it disagrees, so
+    // reaching here at all is a bug worth surfacing.
+    if (body.similarToModelId !== index.modelId) {
+      throw new WebError(
+        `Sonic seed is from model '${body.similarToModelId}', this library is indexed with '${index.modelId}'`, 400);
     }
-    vecs.push(entry.vec);
-    seedHashes.push(canonHash);
+    if (index.dim === null) {
+      throw new WebError('No tracks have been analyzed yet', 400);
+    }
+    vecs.push(decodeSeedVector(index, body.similarToVector));
+    // Content-addressed so the pool cache behaves exactly as it does for the
+    // filepath form: the same vector and threshold hit the same entry.
+    seedKey = `vec:${createHash('sha1').update(body.similarToVector).digest('hex')}`;
+  } else {
+    for (const p of body.similarTo) {
+      const row = resolveSeedTrack(req, p, 'random-songs sonic');
+      const canonHash = row.audio_hash || row.file_hash;
+      const entry = canonHash ? index.byHash.get(canonHash) : null;
+      if (!entry) {
+        throw new WebError('Sonic seed track has not been analyzed yet', 400);
+      }
+      vecs.push(entry.vec);
+      seedHashes.push(canonHash);
+    }
+    seedKey = [...seedHashes].sort().join('|');
   }
 
-  const cacheKey = `${[...seedHashes].sort().join('|')}@${body.minSimilarity}`;
+  const cacheKey = `${seedKey}@${body.minSimilarity}`;
   let perIndex = sonicPoolCache.get(index);
   if (!perIndex) { perIndex = new Map(); sonicPoolCache.set(index, perIndex); }
   const hit = perIndex.get(cacheKey);
@@ -605,6 +636,10 @@ function buildSonicPool(req, body) {
   // The seeds are the session's recent picks (rolling anchor) or the
   // currently-playing song (locked anchor) — Auto-DJ must never answer
   // "what's next" with "the song you just played".
+  //
+  // A vector seed carries no hashes, so this protection does not apply to it
+  // and `ignoreList` becomes the only thing keeping the DJ off the song that
+  // is playing. Callers using similarToVector MUST send one.
   for (const h of seedHashes) { allowed.delete(h); }
   // The JSON form is what the SQL pool constraint binds (json_each) —
   // stringified once here so locked-anchor picks don't re-serialize a
@@ -642,7 +677,8 @@ export function runRandomSongs(req, body) {
 
   // Sonic pool first — it can 403/404/400 on its own and there's no point
   // running SQL when the seed itself is bad.
-  const sonic = (Array.isArray(body.similarTo) && body.similarTo.length > 0)
+  const sonic = ((Array.isArray(body.similarTo) && body.similarTo.length > 0)
+      || body.similarToVector)
     ? buildSonicPool(req, body)
     : null;
 
@@ -1125,9 +1161,34 @@ export function setup(mstream) {
       //                    (EffNet reality: same-artist ≈ .6-.9, cross ≈
       //                    .3-.7 — the client maps a perceptual slider onto
       //                    this; the API takes the raw value.)
+      //   • similarToVector / similarToModelId: the same seed as a raw
+      //                    vector, for a caller whose seed lives on a
+      //                    DIFFERENT server — a filepath means nothing here,
+      //                    but a vector does. Base64 of dim × float32
+      //                    little-endian, same wire form the federation peer
+      //                    route takes. The model id is required and must
+      //                    match this library's: vectors only compare within
+      //                    one model space, and a silent cross-space compare
+      //                    returns confident nonsense.
       similarTo: Joi.array().items(Joi.string()).min(1).max(8).optional(),
+      similarToVector: Joi.string().base64().optional(),
+      similarToModelId: Joi.string().optional(),
       minSimilarity: Joi.number().min(0).max(1).optional(),
-    }).and('similarTo', 'minSimilarity')
+      // One seed form or the other, never both — they would disagree.
+      // Each form carries its own required peers; `.and()` can't express that
+      // (it would demand the peers of BOTH forms at once), so this is .with()
+      // one way plus an explicit check that a threshold never arrives without
+      // a seed to apply it to.
+    }).oxor('similarTo', 'similarToVector')
+      .with('similarTo', 'minSimilarity')
+      .with('similarToVector', ['similarToModelId', 'minSimilarity'])
+      .custom((v, helpers) => {
+        if (v.minSimilarity !== undefined
+            && v.similarTo === undefined && v.similarToVector === undefined) {
+          return helpers.error('any.custom', { message: 'minSimilarity needs a seed: similarTo or similarToVector' });
+        }
+        return v;
+      }, 'sonic seed pairing')
       // Backwards duration window ({minDuration: 600, maxDuration: 60}) is
       // the same class of typo as a backwards bpmRange: it produces a
       // clause that matches nothing, and because the duration filter is
