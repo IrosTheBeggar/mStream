@@ -2,39 +2,39 @@
   "family": "p2p-sidecar",
   "schema": 2,
   "repo": "IrosTheBeggar/mstream-p2p-sidecar",
-  "tag": "v1.0.3",
-  "builtFrom": "150cef8d6fedf008c5343a8864e7f4845708d6db",
-  "workflowRun": "https://github.com/IrosTheBeggar/mstream-p2p-sidecar/actions/runs/33089369278",
+  "tag": "v1.0.4",
+  "builtFrom": "593e2c4dd7821064ebd456ec180922e3ec59cf02",
+  "workflowRun": "https://github.com/IrosTheBeggar/mstream-p2p-sidecar/actions/runs/33254927533",
   "assets": {
     "p2p-sidecar-win32-x64.exe": {
       "file": "p2p-sidecar-win32-x64.exe",
-      "sha256": "5913952b63849cf7d77b1b5f6a1a1fd098460dcf9dc4f0aaa8434f8bce532cb8",
-      "size": 7047680
+      "sha256": "ac1c57c982bbd2285b8620d5539e857a818a77740c25d548925007ce52d58538",
+      "size": 7069184
     },
     "p2p-sidecar-darwin-x64": {
       "file": "p2p-sidecar-darwin-x64",
-      "sha256": "f9cee6868ccd03aab9574598a4d126bbc7c3c7d375732d4a7f79dbadc4ace80a",
-      "size": 7387480
+      "sha256": "ccfc14e246c0518261b0e24c40e1cfbc701a104dd92a1bfeb38912a3b93bd518",
+      "size": 7412160
     },
     "p2p-sidecar-darwin-arm64": {
       "file": "p2p-sidecar-darwin-arm64",
-      "sha256": "a3b73658c5756f7b65a6f88e6289be90fdd07a9cbd4d5045045353d71a60d489",
-      "size": 6296128
+      "sha256": "103dd6ea1967457429d45f576ea6d3cf08c11d8b646ea3d4539a367af93a31c2",
+      "size": 6312688
     },
     "p2p-sidecar-linux-x64": {
       "file": "p2p-sidecar-linux-x64",
-      "sha256": "01be5b87838f9d1f46ed640a05a7429956915d52192aff96188762730d3df65e",
-      "size": 8559424
+      "sha256": "6809a30b134459178762fd365ffdac434dc3657d198e321540bfbbd5c5a71d98",
+      "size": 8582120
     },
     "p2p-sidecar-linux-arm64": {
       "file": "p2p-sidecar-linux-arm64",
-      "sha256": "2d8704e7ddeae19acc27e04530e902a3d9d9663cb7efdc5f998c2f37d50799ca",
-      "size": 7533488
+      "sha256": "a527ebd39f2bbc4df9efccb96f6a36284004cdf2f59a764f73c5f22a8a8d3f03",
+      "size": 7553968
     },
     "p2p-sidecar-linux-arm": {
       "file": "p2p-sidecar-linux-arm",
-      "sha256": "ae720f1c2f20fb588d66908da9d3b362bbfd02cc71d2545a90c365c7a7eb180a",
-      "size": 7325536
+      "sha256": "30cfb2ecb675aee5f0709c90818650e30a76094cd72c46b327ff6262069ad362",
+      "size": 7346016
     }
   }
 }
