@@ -1076,7 +1076,10 @@ export function setup(mstream) {
 
     let addressing;
     let label;
+    let maxBytes;
     if (req.body.ticket) {
+      // Ticket = a manual hand-off from someone the admin already trusts;
+      // no announced size exists to bound it, so it stays uncapped.
       addressing = { ticket: req.body.ticket };
       label = `ticket ${req.body.ticket.slice(0, 32)}…`;
     } else {
@@ -1086,11 +1089,15 @@ export function setup(mstream) {
       }
       addressing = { hash: entry.payload.hash, provider: entry.from };
       label = `peer ${req.body.endpointId.slice(0, 12)}…`;
+      // The catalog flow rides the peer's own announcement, so hold the
+      // transfer to the size it claimed — the same ceiling fetchPeer uses
+      // (sidecars ≥ v1.0.4 abort past it; older ones ignore the param).
+      maxBytes = entry.payload.size > 0 ? entry.payload.size : undefined;
     }
 
     const outDir = path.join(config.program.storage.dbDirectory, 'discovery-peers');
     try {
-      res.json(await discoveryP2p.fetch(addressing, outDir));
+      res.json(await discoveryP2p.fetch(addressing, outDir, maxBytes));
     } catch (err) {
       winston.warn(`discovery P2P fetch failed for admin '${req.user?.username}' (${label}): ${err.message}`);
       throw new WebError(`fetch failed: ${err.message}`, 500);

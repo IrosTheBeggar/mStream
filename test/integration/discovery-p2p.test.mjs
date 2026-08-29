@@ -871,6 +871,96 @@ describe('discovery p2p — similarity search + novelty filter', () => {
   });
 });
 
+// ── Announced size is a claim, not a fact ────────────────────────────────────
+// The storage-cap and disk-floor pre-checks trust the ANNOUNCED size; the
+// blob behind the hash can be arbitrarily larger. fetchPeer must reject a
+// snapshot whose real bytes exceed the claim (and ≥v1.0.4 sidecars abort
+// the transfer itself at the maxBytes ceiling — either failure mode ends
+// here). An honest byte-exact announcement must keep fetching fine.
+(SIDECAR_BIN ? describe : describe.skip)('discovery p2p — announced-size lie', () => {
+  let server;
+  let peer;
+  let dir;
+
+  before(async () => {
+    server = await startServer({
+      dlnaMode: 'disabled', waitForScan: false,
+      extraConfig: { discoveryP2p: { enabled: true, autoFetch: false } },
+    });
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-p2p-lie-'));
+    peer = new RawSidecar(SIDECAR_BIN, path.join(dir, 'sidecar'));
+    await peer.ready;
+  });
+  after(async () => {
+    if (peer) { await peer.stop(); }
+    if (server) { await server.stop(); }
+    if (dir) { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('honest exact size fetches; an under-announced blob is rejected and the old copy survives', async () => {
+    const status = await pollUntil(async () => {
+      const s = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/status`)).json();
+      return s.running && s.ticket ? s : null;
+    }, { what: 'server sidecar to boot' });
+    await peer.rpc('join', { bootstrap: [status.ticket] });
+    await peer.waitForEvent('neighbor', (e) => e.up === true);
+
+    const manualFetch = () => fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/peer-dbs/fetch`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpointId: peer.endpointId }),
+    });
+    const catalogHash = (hash) => pollUntil(async () => {
+      const c = await (await fetch(`${server.baseUrl}/api/v1/admin/discovery/p2p/catalog`)).json();
+      const entry = c.peers.find((p) => p.from === peer.endpointId);
+      return entry?.payload.hash === hash ? entry : null;
+    }, { what: `catalog to carry announcement for ${hash.slice(0, 12)}…` });
+
+    // Round 1 — honest: announced size is the publish stat, byte-exact.
+    const honest = makeSnapshotFile(path.join(dir, 'honest.db'), {
+      tracks: [{ artist: 'Honest Artist', title: 'True Size', vec: [1, 0, 0, 0] }],
+    });
+    const pub1 = await peer.rpc('publish', { path: honest });
+    await peer.rpc('announce', {
+      payload: { hash: pub1.hash, size: pub1.size, rowCount: 1,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 1, name: 'Sizer' },
+    });
+    await catalogHash(pub1.hash);
+    const ok = await manualFetch();
+    assert.equal(ok.status, 200, 'a byte-exact announcement must not trip the ceiling');
+    const record = await ok.json();
+    assert.equal(record.hash, pub1.hash);
+    assert.equal(record.sizeBytes, pub1.size, 'the shelf records the bytes on disk');
+
+    // Round 2 — the lie: a bigger valid snapshot announced as 100 bytes.
+    // A capped sidecar aborts the transfer; an uncapped one delivers and
+    // the on-disk re-check rejects. Both must refuse the swap.
+    const big = makeSnapshotFile(path.join(dir, 'big.db'), {
+      tracks: Array.from({ length: 60 }, (_, i) => (
+        { artist: `Filler ${i}`, title: `Pad Track ${i}`, vec: [0, 1, 0, 0] })),
+    });
+    const pub2 = await peer.rpc('publish', { path: big });
+    assert.ok(pub2.size > 100, 'the lie needs a blob genuinely bigger than the claim');
+    await peer.rpc('announce', {
+      payload: { hash: pub2.hash, size: 100, rowCount: 60,
+        modelId: 'test-model', modelVersion: '1', snapshotSeq: 2, name: 'Sizer' },
+    });
+    await catalogHash(pub2.hash);
+    const refused = await manualFetch();
+    assert.equal(refused.status, 500);
+    assert.match((await refused.json()).error, /maxBytes|announced \d+ bytes but sent/i,
+      'the refusal names the size mismatch (sidecar ceiling or on-disk re-check)');
+
+    // The held seq-1 snapshot survives the refused refresh untouched, and
+    // the liar's bytes are not on disk.
+    const shelf = await (await fetch(`${server.baseUrl}/api/v1/discovery/p2p/peer-dbs`)).json();
+    assert.equal(shelf.peerDbs.length, 1);
+    assert.equal(shelf.peerDbs[0].rowCount, 1, 'the old copy stays on the shelf');
+    assert.equal(shelf.peerDbs[0].sizeBytes, pub1.size, 'shelf accounting still describes the old bytes');
+    const liarFile = path.join(server.tmpDir, 'db', 'discovery-peers', `${pub2.hash.slice(0, 16)}.db`);
+    assert.ok(!fs.existsSync(liarFile), 'the over-announced blob must not be left on disk');
+  });
+});
+
 // ── Shelf rotation: membership cycles instead of freezing ───────────────────
 // A FULL shelf (registry pre-crafted with two long-held snapshots, count=2)
 // must SWAP its oldest unpinned entry for a newly announced peer — the

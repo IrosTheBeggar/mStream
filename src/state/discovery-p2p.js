@@ -403,10 +403,17 @@ export async function publish(filePath) {
 // Fetch a blob into outDir. Returns { hash, size, path }. Addressing is
 // either { ticket } (full self-contained address) or { hash, provider }
 // (the catalog flow — provider resolves via the sidecar's address book /
-// discovery).
-export async function fetch(addressing, outDir) {
+// discovery). maxBytes (optional) is the transfer's byte ceiling: sidecars
+// ≥ v1.0.4 abort the download the moment it's crossed, so a peer that
+// announced a small snapshot can't stream an arbitrarily large blob into
+// the store (disk-fill DoS). Older sidecars ignore the extra key (the
+// request struct tolerates unknown fields), so the caller must keep its
+// own post-download size check as the fallback bound.
+export async function fetch(addressing, outDir, maxBytes) {
   await start();
-  return rpc('fetch', { ...addressing, outDir }, FETCH_TIMEOUT_MS);
+  const params = { ...addressing, outDir };
+  if (Number.isFinite(maxBytes) && maxBytes > 0) { params.maxBytes = Math.floor(maxBytes); }
+  return rpc('fetch', params, FETCH_TIMEOUT_MS);
 }
 
 export async function status() {

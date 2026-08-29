@@ -488,6 +488,12 @@ const discoveryP2pOptions = Joi.object({
   // below still applies — the shelf stops at whichever limit hits first.
   autoFetch: Joi.boolean().default(true),
   autoFetchCount: Joi.number().integer().min(0).max(50).default(6),
+  // Auto-fetch only pulls snapshots whose announced embedding model matches
+  // ours — the similarity search reads nothing else, so an incompatible
+  // snapshot is dead weight that still costs disk and a download. Flip on
+  // to opt back in (migration readiness, or seeding the swarm with blobs
+  // you can't search); the manual admin fetch always works regardless.
+  autoFetchIncompatibleModels: Joi.boolean().default(false),
   maxPeerDbStorageMb: Joi.number().integer().min(10).max(100000).default(500),
   // Sidecar memory watchdog: when the p2p-sidecar's resident set exceeds
   // this many MB, the mesh-health watch kills it and lets crash recovery

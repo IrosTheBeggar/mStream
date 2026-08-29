@@ -29,6 +29,20 @@
 // re-broadcast every ~15s; 90s tolerates a few missed rounds.
 export const ONLINE_WINDOW_MS = 90 * 1000;
 
+// Is a candidate's announced embedding space one we can actually search?
+// The similarity route only ever reads rows WHERE model_id = ours, so a
+// snapshot from another model (or from a server that never embedded — empty
+// modelId) is pure dead weight on the shelf. AUTO paths (reconcile top-up,
+// rotation) therefore skip incompatible candidates by default; the config
+// escape hatch (discoveryP2p.autoFetchIncompatibleModels) and the manual
+// admin fetch both exist for the deliberate cases — migration readiness,
+// or seeding the swarm with snapshots we can't search ourselves. No local
+// model established yet = no compatibility signal; everyone passes.
+export function modelCompatible(payload, localModel, allowIncompatible = false) {
+  if (allowIncompatible || !localModel) { return true; }
+  return (payload.modelId || '') === localModel;
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Missing/garbage timestamps parse to 0 = "the beginning of time". For
@@ -42,10 +56,10 @@ function ts(value) {
 }
 
 // Sort candidates by usefulness: peers whose announced embedding model
-// matches ours first (an incompatible snapshot is dead weight for the
-// similar search until a migration lands — still fetchable, just last in
-// line), then peers we can hear right now, then by library size. No local
-// model established yet = no compatibility signal; everyone ties.
+// matches ours first, then peers we can hear right now, then by library
+// size. The model term only bites when incompatible candidates are in the
+// pool at all — i.e. when autoFetchIncompatibleModels opted back in, or no
+// local model exists yet (no compatibility signal; everyone ties).
 export function candidateOrder(localModel, now = Date.now()) {
   return (a, b) => {
     if (localModel) {
@@ -110,6 +124,9 @@ function evictionOrder(catalogByFrom, seederCountOf, now) {
 //   autoFetch/autoFetchCount   rotation is an auto-fetch behavior: a paused
 //                  shelf (feature off, or count 0) must not keep swapping
 //   capBytes       the storage cap; a candidate must fit AFTER the eviction
+//   allowIncompatibleModels    config escape hatch: rotation is an AUTO
+//                  fetch, so model-incompatible candidates are not
+//                  candidates unless the operator opted back in
 //   isBlocked / inBackoff / seederCountOf   injected lookups (pure-testable)
 //
 // evictFirst is true when the incoming snapshot only fits once the evictee's
@@ -120,6 +137,7 @@ function evictionOrder(catalogByFrom, seederCountOf, now) {
 export function planRotation({
   shelf, catalog, ledger, localModel, now,
   rotationDays, autoFetch, autoFetchCount, capBytes,
+  allowIncompatibleModels = false,
   isBlocked = () => false,
   inBackoff = () => false,
   seederCountOf = () => 0,
@@ -139,6 +157,7 @@ export function planRotation({
     || seederCountOf(c.payload.hash || '') > 0;
   const candidates = catalog
     .filter((c) => !held.has(c.from) && !isBlocked(c.from) && !inBackoff(c.from)
+      && modelCompatible(c.payload, localModel, allowIncompatibleModels)
       && fetchable(c))
     .sort(rotationCandidateOrder(ledger, localModel, now));
   if (candidates.length === 0) { return null; }
