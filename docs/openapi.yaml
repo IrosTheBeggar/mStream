@@ -940,12 +940,35 @@ paths:
   /api:
     get:
       tags: [System]
-      summary: API version discovery
-      description: Returns the server version and the list of available API versions.
+      summary: Layered server info (version, capabilities, boot payload)
+      description: |
+        One endpoint, three layers, keyed off the credentials presented:
+
+        * **No credentials** — the public base only: server version, API
+          versions, and capability booleans. Deliberately public so a
+          client adding a server can probe "is this an mStream server,
+          which version" before authenticating.
+        * **Authenticated** (JWT, public-access mode, jukebox session, or
+          an `x-federation-key`) — adds `user`: identity plus the client
+          boot payload `/api/v1/ping` has always served (vpaths,
+          transcode, permission flags, discovery flags, vpathMetaData),
+          scoped to the caller. Note: unlike ping, no `playlists` —
+          fetch those from the playlist routes.
+        * **Admin** — adds `admin`: cheap support/debug facts (uptime,
+          runtime versions, DB schema version). Never present for
+          federation keys or jukebox sessions.
+
+        Credentials that are **present but invalid** get `401` (`403` for
+        a federation key off its route allowlist) — never a silent
+        downgrade to the public layer, so a client with an expired token
+        sees the error and re-authenticates. Share tokens receive the
+        public layer only.
+
+        Supersedes `/api/v1/ping` for new clients.
       security: []
       responses:
         "200":
-          description: Version info.
+          description: Layered server info.
           content:
             application/json:
               schema:
@@ -961,7 +984,8 @@ paths:
                     type: object
                     description: >
                       Capability flags a client can gate UI on without an extra
-                      round-trip.
+                      round-trip. Public — surface existence and readiness
+                      booleans only, never counts or names.
                     properties:
                       subsonic:
                         type: boolean
@@ -970,26 +994,64 @@ paths:
                         type: boolean
                         description: >
                           Whether a sonic-similarity query would find anything
-                          right now. Distinct from the ping's `discovery` flag,
-                          which reports only that the feature is enabled: a
-                          server can have discovery on with an unfinished scan,
-                          in which case similarity queries fail against an empty
-                          pool. A boolean rather than a count because this
-                          endpoint is public.
+                          right now. Distinct from the boot payload's
+                          `discovery` flag, which reports only that the feature
+                          is enabled: a server can have discovery on with an
+                          unfinished scan, in which case similarity queries
+                          fail against an empty pool. A boolean rather than a
+                          count because this layer is public.
+                  user:
+                    type: object
+                    description: >
+                      Present only for authenticated callers. The client boot
+                      payload (see /api/v1/ping's schema for the shared
+                      fields, minus `playlists`) plus the identity fields
+                      below.
+                    properties:
+                      username: { type: string }
+                      admin: { type: boolean }
+                      federation:
+                        type: boolean
+                        description: True when authenticated by a federation key.
+                  admin:
+                    type: object
+                    description: Present only for admin callers.
+                    properties:
+                      uptime:
+                        type: integer
+                        description: Server process uptime in whole seconds.
+                      nodeVersion: { type: string }
+                      platform: { type: string }
+                      dbSchemaVersion:
+                        type: integer
+                        description: The live database's PRAGMA user_version.
+                      lockAdmin: { type: boolean }
               example:
                 server: "6.22.0"
                 apiVersions: ["1"]
                 features:
                   subsonic: false
                   discoveryReady: true
+        "401":
+          description: A token or federation key was presented but is invalid.
+        "403":
+          description: Valid federation key, but the route is off its allowlist.
 
   /api/v1/ping:
     get:
       tags: [System]
-      summary: Bootstrap payload
+      summary: Bootstrap payload (deprecated — use GET /api)
+      deprecated: true
       description: |
         Returns everything the webapp needs on load: the user's libraries, their playlists,
         transcode capabilities, and server-level flags. Called once after login.
+
+        **Deprecated**: new clients should read the same payload from the
+        layered `GET /api` endpoint's `user` object (which also carries the
+        server version and public capability flags — but not `playlists`,
+        which stay playlist-route territory). This route is kept
+        indefinitely for existing clients and shares its payload builder
+        with `GET /api`, so the two cannot drift.
       responses:
         "200":
           description: Bootstrap info.
