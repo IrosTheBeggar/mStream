@@ -157,10 +157,14 @@ export function setup(mstream) {
       ...buildClientBootPayload(user),
     };
 
-    // ── Layer 3: admin only ────────────────────────────────────────────
-    // user.admin is false by construction for federation keys, jukebox
-    // sessions, and the lockAdmin public-mode user, so gating on the flag
-    // alone is sufficient. Cheap support/debug facts; grows as needed.
+    // ── Layer 3: admin only, and only while the admin API is usable ────
+    // user.admin is false by construction for federation keys and jukebox
+    // sessions. lockAdmin gates the layer EXPLICITLY: a real is_admin
+    // account keeps user.admin=true under the lock (an identity fact),
+    // but with the admin API refusing everything there are no admin
+    // params to serve — the layer's ABSENCE alongside user.admin=true is
+    // how a client tells "locked" from "not an admin". (The public-mode
+    // user is already demoted to admin=false under the lock.)
     //
     // DELIBERATE: in public-access mode (no users, lockAdmin off) this
     // layer is visible to anonymous callers — public mode IS admin
@@ -168,13 +172,12 @@ export function setup(mstream) {
     // and /api/ pretending otherwise would be the one inconsistent route.
     // Operators who expose a no-users server and want this hidden have
     // the same lever as for everything else: lockAdmin.
-    if (user.admin === true) {
+    if (user.admin === true && config.program.lockAdmin !== true) {
       info.admin = {
         uptime: Math.floor(process.uptime()),
         nodeVersion: process.version,
         platform: process.platform,
         dbSchemaVersion: db.getDB().prepare('PRAGMA user_version').get().user_version,
-        lockAdmin: config.program.lockAdmin === true,
       };
     }
 

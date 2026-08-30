@@ -963,7 +963,10 @@ paths:
           new enough to have this endpoint).
         * **Admin** — adds `admin`: cheap support/debug facts (uptime,
           runtime versions, DB schema version). Never present for
-          federation keys or jukebox sessions.
+          federation keys or jukebox sessions — and never while the admin
+          API is locked (`lockAdmin`): an admin account then still shows
+          `user.admin: true` (identity) but no `admin` object, which is
+          how a client tells "locked" from "not an admin".
 
         Credentials that are **present but invalid** get `401` (`403` for
         a federation key off its route allowlist) — never a silent
@@ -1045,7 +1048,9 @@ paths:
                         description: True when authenticated by a federation key.
                   admin:
                     type: object
-                    description: Present only for admin callers.
+                    description: >
+                      Present only for admin callers, and only while the
+                      admin API is unlocked.
                     properties:
                       uptime:
                         type: integer
@@ -1055,7 +1060,6 @@ paths:
                       dbSchemaVersion:
                         type: integer
                         description: The live database's PRAGMA user_version.
-                      lockAdmin: { type: boolean }
               example:
                 server: "6.22.0"
                 apiVersions: ["1"]

@@ -33,15 +33,50 @@
  *  - public mode (no users)        → user + admin layers, matching how
  *    public mode behaves everywhere else (deliberate — public mode IS
  *    admin on every other route; lockAdmin is the hardening lever);
- *  - public mode + lockAdmin       → demoted user layer, no admin layer.
+ *  - public mode + lockAdmin       → demoted user layer, no admin layer;
+ *  - REAL admin + lockAdmin        → user.admin stays true (identity),
+ *    but a locked admin API serves NO admin params — the layer's absence
+ *    beside user.admin=true is how a client tells "locked" from "not an
+ *    admin" (two boots on one data dir: the lock refuses the admin API,
+ *    so the account must predate it).
  */
 
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import net from 'node:net';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import jwt from 'jsonwebtoken';
 import { startServer } from '../helpers/server.mjs';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.unref();
+    s.on('error', reject);
+    s.listen(0, '127.0.0.1', () => {
+      const { port } = s.address();
+      s.close(() => resolve(port));
+    });
+  });
+}
+
+async function pollReady(base, getExitCode, timeoutMs = 90_000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (getExitCode() !== null) { throw new Error(`server exited with code ${getExitCode()}`); }
+    try {
+      const r = await fetch(`${base}/api/`);
+      if (r.status < 500) { return; }
+    } catch { /* not up yet */ }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error(`server never became ready within ${timeoutMs}ms`);
+}
 
 describe('layered /api/ server info', () => {
   let srv;
@@ -144,7 +179,6 @@ describe('layered /api/ server info', () => {
     assert.equal(typeof j.admin.platform, 'string');
     assert.ok(Number.isInteger(j.admin.dbSchemaVersion) && j.admin.dbSchemaVersion >= 67,
       'live PRAGMA user_version');
-    assert.equal(j.admin.lockAdmin, false);
   });
 
   test('drift-lock: ping === /api/ user half + features half (modulo legacy/identity)', async () => {
@@ -249,7 +283,6 @@ describe('layered /api/ in public-access mode', () => {
       assert.equal(j.user.admin, true, 'public mode is effectively admin');
       assert.equal(j.user.federation, false);
       assert.ok(j.admin, 'admin layer present in public mode');
-      assert.equal(j.admin.lockAdmin, false);
     } finally {
       await pub.stop();
     }
@@ -264,6 +297,53 @@ describe('layered /api/ in public-access mode', () => {
       assert.ok(!('admin' in j), 'no admin layer under lockAdmin');
     } finally {
       await locked.stop();
+    }
+  });
+
+  test('a REAL admin under lockAdmin: identity stays true, NO admin layer', { timeout: 180000 }, async () => {
+    // lockAdmin refuses the admin API, so the admin account must exist
+    // BEFORE the lock — the real-world shape: a running server gets
+    // locked and rebooted. Boot 1 creates the admin; boot 2 reuses the
+    // same data dir with the lock on.
+    const srv1 = await startServer({
+      waitForScan: false,
+      users: [{ username: 'boss', password: 'pw', admin: true }],
+    });
+    const { tmpDir } = srv1;
+    // Keep the data dir: kill the child directly (the helper's stop()
+    // would delete tmpDir).
+    srv1.proc.kill('SIGKILL');
+    await new Promise((r) => srv1.proc.once('exit', r));
+
+    const cfgPath = path.join(tmpDir, 'config.json');
+    const cfg = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
+    cfg.lockAdmin = true;
+    // Fresh port — Windows can race re-binding a just-killed listener;
+    // the identity lives in the data dir, not the port.
+    cfg.port = await freePort();
+    await fs.writeFile(cfgPath, JSON.stringify(cfg, null, 2));
+
+    const proc2 = spawn(process.execPath, ['cli-boot-wrapper.js', '-j', cfgPath],
+      { cwd: REPO_ROOT, stdio: 'ignore' });
+    const base = `http://127.0.0.1:${cfg.port}`;
+    try {
+      await pollReady(base, () => proc2.exitCode);
+      const loginR = await fetch(`${base}/api/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'boss', password: 'pw' }),
+      });
+      assert.equal(loginR.status, 200, 'login still works under lockAdmin');
+      const { token } = await loginR.json();
+
+      const j = await (await fetch(`${base}/api/`, { headers: { 'x-access-token': token } })).json();
+      assert.equal(j.user.admin, true, 'the identity fact survives the lock');
+      assert.ok(!('admin' in j), 'a locked admin API serves no admin params');
+      assert.ok(j.user, 'the user layer itself is unaffected');
+    } finally {
+      try { proc2.kill('SIGKILL'); } catch { /* already gone */ }
+      await new Promise((r) => { if (proc2.exitCode !== null) { r(); } else { proc2.once('exit', r); } });
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   });
 });
