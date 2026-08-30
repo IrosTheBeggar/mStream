@@ -1,25 +1,24 @@
 /**
  * The layered GET /api/ endpoint (src/api/server-info.js) — the auth matrix.
  *
- * The endpoint sits BEFORE the auth wall and resolves credentials itself
- * (authApi.resolveOptionalUser), so this suite pins the full contract
- * against real spawned servers:
+ * The endpoint sits BEHIND the auth wall, and the tokenless 401 is a
+ * CLIENT-FACING CONTRACT: third-party mobile apps probe /api/ (as they
+ * always probed ping) with no token and read 401 as "show the login
+ * form" / 200 as "public server". This suite pins that plus the full
+ * layer matrix against real spawned servers:
  *
- *  - users-server, no credentials  → 200, base layer ONLY, WITH `server`
- *    (the version is the anonymous probe's payload) and the server-wide
- *    capability `features` (no `subsonic` — removed);
- *  - present-but-invalid token     → 401 (an error, never a silent
- *    downgrade to the public layer);
- *  - plain user                    → base WITHOUT `server` (authenticated
- *    sessions don't re-learn the version) + `user` (the caller-scoped
- *    half of the ping payload — capabilities live in `features`), no
- *    `admin`;
+ *  - users-server, no credentials  → 401 (the login-detection signal —
+ *    NEVER an anonymous 200; #932 briefly broke this);
+ *  - present-but-invalid token     → 401;
+ *  - plain user                    → base (`server`, `apiVersions`, the
+ *    capability `features` — no `subsonic`, removed) + `user` (the
+ *    caller-scoped half of the ping payload), no `admin`;
  *  - admin user                    → base + `user` + `admin`;
  *  - ping parity                   → /api/'s `user` object equals
  *    /api/v1/ping's body (minus playlists / identity fields) — the
  *    drift-lock on the shared payload builder;
- *  - share token                   → base only (shares fetch a playlist,
- *    they are not a session);
+ *  - share token                   → 401 (shares fetch a playlist, they
+ *    are not a session — the wall's path gating covers /api/ like ping);
  *  - federation key                → base + `user` scoped to the key's
  *    grants, `federation: true`, never `admin` — the mobile-app
  *    "version and capabilities over federation" deliverable;
@@ -108,11 +107,26 @@ describe('layered /api/ server info', () => {
 
   after(async () => { await srv?.stop(); });
 
-  test('no credentials on a users-server: the base layer ONLY, with the version', async () => {
+  test('no credentials on a users-server: 401 — the login-detection contract', async () => {
+    // THE contract this endpoint must never lose again: third-party
+    // clients probe /api/ tokenless and read 401 as "authenticate first".
+    // An anonymous 200 here makes every server look public (#932's
+    // regression). Public-access mode is the one place tokenless gets a
+    // 200 — pinned in the public-mode suite below.
     const r = await api();
-    assert.equal(r.status, 200, 'the bottom layer is public');
+    assert.equal(r.status, 401, 'tokenless on a users-server MUST 401');
+  });
+
+  test('a presented-but-invalid token is a 401, not a downgrade', async () => {
+    const r = await api({ 'x-access-token': 'not-a-jwt' });
+    assert.equal(r.status, 401);
+  });
+
+  test('plain user: base + user layer, no admin layer', async () => {
+    const r = await api({ 'x-access-token': userToken });
+    assert.equal(r.status, 200);
     const j = await r.json();
-    assert.equal(typeof j.server, 'string', 'the anonymous probe gets the version');
+    assert.equal(typeof j.server, 'string', 'every authenticated response carries the version');
     assert.match(j.server, /^\d+\.\d+\.\d+/);
     assert.deepEqual(j.apiVersions, ['1']);
     assert.ok(!('subsonic' in j.features), 'subsonic flag removed (feature on its way out)');
@@ -121,21 +135,6 @@ describe('layered /api/ server info', () => {
     assert.equal(j.features.discoveryP2p, false);
     assert.ok('transcode' in j.features, 'transcode capability is a server fact');
     assert.equal(typeof j.features.supportedAudioFiles, 'object');
-    assert.ok(!('user' in j), 'no user layer without credentials');
-    assert.ok(!('admin' in j), 'no admin layer without credentials');
-  });
-
-  test('a presented-but-invalid token is a 401, not a downgrade', async () => {
-    const r = await api({ 'x-access-token': 'not-a-jwt' });
-    assert.equal(r.status, 401);
-  });
-
-  test('plain user: base (no version) + user layer, no admin layer', async () => {
-    const r = await api({ 'x-access-token': userToken });
-    assert.equal(r.status, 200);
-    const j = await r.json();
-    assert.ok(!('server' in j), 'authenticated callers do not get the version');
-    assert.ok(j.features, 'capabilities still ride along');
     assert.equal(j.user.username, 'pleb');
     assert.equal(j.user.admin, false);
     assert.equal(j.user.federation, false);
@@ -170,7 +169,7 @@ describe('layered /api/ server info', () => {
     const r = await api({ 'x-access-token': adminToken });
     assert.equal(r.status, 200);
     const j = await r.json();
-    assert.ok(!('server' in j), 'not even admins re-learn the version here');
+    assert.equal(typeof j.server, 'string');
     assert.equal(j.user.username, 'boss');
     assert.equal(j.user.admin, true);
     assert.ok(j.admin, 'admin layer present');
@@ -202,7 +201,7 @@ describe('layered /api/ server info', () => {
       'ping is exactly the two shared builders flattened — any drift is a bug');
   });
 
-  test('share token: base layer only', async () => {
+  test('share token: 401 — shares fetch a playlist, they are not a session', async () => {
     const shareR = await fetch(`${srv.baseUrl}/api/v1/share`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-access-token': userToken },
@@ -212,13 +211,10 @@ describe('layered /api/ server info', () => {
     const { token } = await shareR.json();
     assert.ok(token, 'share creation returns its token');
 
+    // The wall's share-token path gating covers /api/ like it covers
+    // ping: shares can only fetch their playlist's routes.
     const r = await api({ 'x-access-token': token });
-    assert.equal(r.status, 200);
-    const j = await r.json();
-    assert.ok(!('server' in j), 'a share token counts as presented credentials — no version');
-    assert.ok(j.features, 'capabilities still served');
-    assert.ok(!('user' in j), 'a share token is not a session');
-    assert.ok(!('admin' in j));
+    assert.equal(r.status, 401);
   });
 
   test('federation key: scoped user layer, never admin — and the allowlist stays tight', async () => {
@@ -231,13 +227,12 @@ describe('layered /api/ server info', () => {
     const { key } = await mintR.json();
     assert.match(key, /^fedk_/);
 
-    // The deliverable: a federated caller reads capabilities (+ its
-    // scoped view). The VERSION it gets by probing without the key —
-    // the tokenless case above — since keyed calls are authenticated.
+    // The deliverable: a federated caller reads the version and
+    // capabilities with its key, plus its granted-library view.
     const r = await api({ 'x-federation-key': key });
     assert.equal(r.status, 200);
     const j = await r.json();
-    assert.ok(!('server' in j), 'a keyed call is authenticated — no version');
+    assert.equal(typeof j.server, 'string', 'version visible over federation');
     assert.ok(j.features, 'capabilities visible over federation');
     assert.equal(typeof j.features.discovery, 'boolean');
     assert.equal(j.user.federation, true);
@@ -278,7 +273,7 @@ describe('layered /api/ in public-access mode', () => {
     try {
       const j = await (await fetch(`${pub.baseUrl}/api/`)).json();
       assert.equal(typeof j.server, 'string',
-        'no credentials presented → the probe still gets the version, even in public mode');
+        'the tokenless probe gets a 200 + version ONLY in public mode — the "no login needed" answer');
       assert.equal(j.user.username, 'mstream-user');
       assert.equal(j.user.admin, true, 'public mode is effectively admin');
       assert.equal(j.user.federation, false);

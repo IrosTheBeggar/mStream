@@ -1,47 +1,47 @@
-// GET /api/ — the layered server-info endpoint.
+// GET /api/ — the layered server-info endpoint. Sits BEHIND the auth
+// wall, and that placement is a CLIENT-FACING API CONTRACT, not an
+// accident of mounting order:
 //
-// One endpoint, three layers, built ADDITIVELY (base → +user → +admin).
-// Never build this response by filtering a full object down: an additive
-// bug omits a field, a filtering bug discloses everything.
+//   ⚠ Tokenless GET /api/ on a server with users MUST return 401.
+//   Third-party mobile clients probe this endpoint (like ping before it)
+//   with no token to decide whether to show a login form — 401 means
+//   "authenticate first", 200 means public-access mode. #932 briefly
+//   mounted this route before the wall with an anonymous base layer and
+//   broke exactly that detection (every server answered 200, so every
+//   server looked public). Do not make this endpoint anonymous again.
 //
-//   Base (always): `apiVersions` + `features` — server-wide capability
-//     facts (see buildFeatures). `server` (the version) is included ONLY
-//     when the request carries no credentials at all: the anonymous
-//     probe surface ("is this an mStream server, which version") is the
-//     one place a client needs it, and an authenticated session doesn't
-//     re-learn its server's version on every call. This layer is
-//     deliberately public and must stay allocation-cheap: config reads
-//     and the guarded one-row discovery probe, nothing an anonymous
-//     caller can use to make the server do work. Rule for what may
-//     appear here: config/capability facts only — no counts, no
-//     library or content names, no identity.
+// For authenticated callers (valid JWT, public-access mode, jukebox
+// session, or a federation key — the wall resolves all of them), the
+// response is built ADDITIVELY in three layers. Never build it by
+// filtering a full object down: an additive bug omits a field, a
+// filtering bug discloses everything.
 //
-//   Layer 2 (valid JWT, public-access mode, jukebox session, or a
-//   federation key): adds `user` — identity plus the CALLER-SCOPED boot
-//   payload (vpaths, permission flags, federationDiscovery,
-//   vpathMetaData). Server-wide capabilities live in `features`, not
-//   here; ping's frozen contract still carries both halves flat (see
-//   buildClientBootPayload).
+//   Base: `server` (the version), `apiVersions`, and `features` —
+//     server-wide capability facts (see buildFeatures). Visible to every
+//     authenticated caller including federated peers; rule for what may
+//     appear: config/capability facts only — no counts, no library or
+//     content names, no identity.
 //
-//   Layer 3 (admin only — never federation, never jukebox): adds `admin`
-//   — cheap support/debug facts. Mostly a framework hook today.
+//   `user`: identity plus the CALLER-SCOPED boot payload (vpaths,
+//     permission flags, federationDiscovery, vpathMetaData), scoped
+//     exactly as ping scopes it.
 //
-// Auth contract: a request with NO credentials gets the base (with
-// `server`); a request with PRESENT-but-invalid credentials gets 401
-// (403 for a federation key off its allowlist) — a bad token is an error
-// the client must see, never a silent downgrade to the public layer (a
-// webapp with an expired cookie needs the 401 to know to re-login).
-// Share tokens get the base layer, without `server` (they are presented
-// credentials, just not a session). A federated client that wants the
-// version probes WITHOUT its key header — the anonymous base — and sends
-// the key when it wants its scoped view.
+//   `admin`: cheap support/debug facts. Admin callers only — never
+//     federation keys or jukebox sessions — and never while lockAdmin
+//     is on: a locked admin API serves no admin params, so an is_admin
+//     account under the lock sees user.admin=true (identity) with no
+//     admin object, which is how a client tells "locked" from "not an
+//     admin". In public-access mode (no users, lockAdmin off) the layer
+//     is visible to tokenless callers — deliberate: public mode IS
+//     admin on every other route, and lockAdmin is the hardening lever.
 //
-// Mounted BEFORE the auth wall (see server.js) so it owns its auth via
-// resolveOptionalUser(); /api/v1/ping stays behind the wall unchanged and
-// composes its frozen flat payload from the two builders below — one
-// source of truth, zero drift between the two routes. Ping is deprecated
-// in favor of this endpoint but kept indefinitely: older mobile clients,
-// CI liveness probes, and the torrent/velvet webapps still call it.
+// Federation keys reach this route via their allowlist ('GET /api' +
+// 'GET /api/' in federation-auth.js) and get the version plus their
+// granted-library view — the mobile app's "what can this peer do" call.
+// Share tokens get the wall's path-gating and cannot call this (401),
+// same as ping. /api/v1/ping is deprecated in favor of this endpoint
+// but kept indefinitely; it composes its frozen flat payload from the
+// two builders below — one source of truth, zero drift.
 
 import packageJson from '../../package.json' with { type: 'json' };
 import * as config from '../state/config.js';
@@ -49,11 +49,9 @@ import * as db from '../db/manager.js';
 import * as fedDb from '../db/federation.js';
 import * as sim from '../db/discovery-similarity.js';
 import * as transcode from './transcode.js';
-import * as authApi from './auth.js';
 
-// Server-wide capability facts — the public `features` object. Everything
-// here is a config/capability fact safe for anonymous eyes (the public
-// rule above); nothing is caller-scoped.
+// Server-wide capability facts — the `features` object. Everything here
+// is a config/capability fact (the rule above); nothing is caller-scoped.
 export function buildFeatures() {
   // Signal "transcoding available" only when ffmpeg actually resolved
   // (bundled binaries ready OR system-PATH fallback succeeded).
@@ -73,9 +71,8 @@ export function buildFeatures() {
     // similarTo/minSimilarity, every pick 400s on the empty pool, and the
     // queue silently stops advancing.
     //
-    // A boolean, not a count: this layer is public, and how many tracks
-    // are analysed is library-size information. Clients only need to know
-    // whether to offer the feature.
+    // A boolean, not a count: how many tracks are analysed is
+    // library-size information no client needs.
     discoveryReady: sim.hasEmbeddings(),
     // The Discover panel has a server to talk to (no /api/v1/discovery/*
     // probes needed — flags, never probes, is the house rule).
@@ -92,7 +89,7 @@ export function buildFeatures() {
 
 // The CALLER-SCOPED half of the old ping payload: what this user (or
 // federation key, or public-mode caller) may see and do. Server-wide
-// capabilities moved to buildFeatures(); ping composes both halves (plus
+// capabilities live in buildFeatures(); ping composes both halves (plus
 // its legacy fields) back into its frozen flat shape:
 //   - `playlists`            — a resource (the playlist routes), not a
 //                              server capability;
@@ -114,8 +111,7 @@ export function buildClientBootPayload(user) {
     // "From your peers" in the Discover panel: needs local embeddings (the
     // seed vector comes from our discovery.db) plus at least one federated
     // peer that hasn't opted out of discovery. Caller-scoped by nature —
-    // it reflects this server's live peer RELATIONSHIPS, which is not a
-    // fact for the anonymous features object.
+    // it reflects this server's live peer RELATIONSHIPS.
     federationDiscovery: config.program.federation.enabled === true
       && config.program.scanOptions.collectDiscoveryData === true
       && fedDb.getFederationPeers().some((p) => p.use_discovery === 1),
@@ -135,21 +131,18 @@ export function buildClientBootPayload(user) {
 
 export function setup(mstream) {
   mstream.get('/api/', (req, res) => {
-    // Throws 401 on a presented-but-bad token/key (403 for a federation
-    // key off its allowlist); returns null for "no credentials at all"
-    // and for share tokens.
-    const user = authApi.resolveOptionalUser(req);
+    // Behind the wall: req.user is always resolved (or the wall already
+    // threw the 401 the tokenless-probe contract depends on).
+    const user = req.user;
 
-    // ── Base layer: always ─────────────────────────────────────────────
+    // ── Base ───────────────────────────────────────────────────────────
     const info = {
-      // The version is the anonymous probe's payload — see the header.
-      ...(authApi.credentialsPresented(req) ? {} : { server: packageJson.version }),
+      server: packageJson.version,
       apiVersions: ["1"],
       features: buildFeatures(),
     };
-    if (!user) { return res.json(info); }
 
-    // ── Layer 2: any authenticated caller ──────────────────────────────
+    // ── `user`: caller-scoped ──────────────────────────────────────────
     info.user = {
       username: user.username,
       admin: user.admin === true,
@@ -157,21 +150,8 @@ export function setup(mstream) {
       ...buildClientBootPayload(user),
     };
 
-    // ── Layer 3: admin only, and only while the admin API is usable ────
-    // user.admin is false by construction for federation keys and jukebox
-    // sessions. lockAdmin gates the layer EXPLICITLY: a real is_admin
-    // account keeps user.admin=true under the lock (an identity fact),
-    // but with the admin API refusing everything there are no admin
-    // params to serve — the layer's ABSENCE alongside user.admin=true is
-    // how a client tells "locked" from "not an admin". (The public-mode
-    // user is already demoted to admin=false under the lock.)
-    //
-    // DELIBERATE: in public-access mode (no users, lockAdmin off) this
-    // layer is visible to anonymous callers — public mode IS admin
-    // everywhere else on the server (the whole /admin surface is open),
-    // and /api/ pretending otherwise would be the one inconsistent route.
-    // Operators who expose a no-users server and want this hidden have
-    // the same lever as for everything else: lockAdmin.
+    // ── `admin`: admin only, and only while the admin API is usable ────
+    // (See the header for the lockAdmin and public-mode reasoning.)
     if (user.admin === true && config.program.lockAdmin !== true) {
       info.admin = {
         uptime: Math.floor(process.uptime()),

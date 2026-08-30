@@ -102,10 +102,7 @@ export function setup(mstream) {
   });
 }
 
-// The token slots, in precedence order. ONE definition — the wall,
-// resolveOptionalUser, and credentialsPresented must always agree on
-// where a token can ride, or "present but invalid" and "absent" drift
-// apart between the wall and the optional-auth endpoint.
+// The token slots, in precedence order.
 function readToken(req) {
   return req.body?.token || req.query?.token || req.headers?.['x-access-token'] || req.cookies?.['x-access-token'];
 }
@@ -205,48 +202,9 @@ function buildRealUser(decoded) {
   };
 }
 
-// ── Optional-auth resolution ────────────────────────────────────────────────
-// For routes mounted BEFORE the wall whose bottom layer is public (the
-// layered GET /api/ in server-info.js). Same branch ORDER as the wall —
-// federation first is load-bearing for exactly the reason documented there.
-//
-// Contract:
-//   - no credentials at all → null (caller serves its public layer);
-//   - share token → null (they exist to fetch one playlist, not to
-//     identify a session; the wall path-gates them, this endpoint just
-//     treats them as anonymous);
-//   - presented-but-invalid token/key → throws the same 401 the wall
-//     throws (403 for a federation key off its allowlist). A bad
-//     credential must surface as an error, never silently downgrade to
-//     the public layer — a client with an expired token needs the 401
-//     to know to re-authenticate.
-export function resolveOptionalUser(req) {
-  const fedKey = req.headers['x-federation-key'];
-  if (typeof fedKey === 'string' && fedKey.length > 0) {
-    return federationAuth.authenticateFederationKey(fedKey, req);
-  }
-
-  if (db.getAllUsers().length === 0) { return buildPublicModeUser(); }
-
-  const token = readToken(req);
-  if (!token) { return null; }
-
-  const decoded = verifyToken(token, req);
-  if (decoded.jukebox === true && decoded.username) {
-    return buildJukeboxUser(decoded, token);
-  }
-  if (decoded.shareToken === true) { return null; }
-  return buildRealUser(decoded);
-}
-
-// Whether the request PRESENTED any credential (a federation key or a
-// token in any slot), regardless of validity or what it resolves to.
-// The layered /api/ uses this for its "the version is the anonymous
-// probe's payload" rule: `server` appears only when this is false. Note
-// the deliberate asymmetry with resolveOptionalUser: a share token
-// resolves to null (anonymous data-wise) but still counts as presented.
-export function credentialsPresented(req) {
-  const fedKey = req.headers['x-federation-key'];
-  if (typeof fedKey === 'string' && fedKey.length > 0) { return true; }
-  return Boolean(readToken(req));
-}
+// NOTE (history, do not repeat): #932 briefly exported an optional-auth
+// resolver here so GET /api/ could serve an anonymous public layer from
+// before the wall. That broke third-party clients, which probe /api/
+// tokenless and read the 401 as "this server requires login". The
+// endpoint lives behind the wall again; if some future route genuinely
+// needs optional auth, it must not be one that clients auth-probe.

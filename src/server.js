@@ -598,13 +598,6 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   // http.Server started in the post-boot hook below.
   if (config.program.subsonic.mode === 'same-port') { subsonicApi.setup(mstream); }
 
-  // GET /api/ — the layered server-info endpoint. Mounted BEFORE the wall
-  // because its bottom layer (version + capability booleans) is
-  // deliberately public; it resolves optional credentials itself via
-  // authApi.resolveOptionalUser (see api/server-info.js for the layer
-  // contract).
-  serverInfoApi.setup(mstream);
-
   // Everything below this line requires authentication
   authApi.setup(mstream);
 
@@ -612,6 +605,13 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   // (needs req.user.federation) and before every route/static mount whose
   // responses it meters.
   federationLimitsApi.setup(mstream);
+
+  // GET /api/ — the layered server-info endpoint. Deliberately BEHIND the
+  // wall: tokenless requests on a users-server MUST 401 — third-party
+  // clients probe this to decide whether to show a login form. That 401
+  // is client-facing API surface, not an accident of ordering (see the
+  // header of api/server-info.js before ever moving this).
+  serverInfoApi.setup(mstream);
 
   adminApi.setup(mstream);
   irohApi.setup(mstream);
