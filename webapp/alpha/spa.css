@@ -2354,3 +2354,16 @@ body.on-federated-server .side-nav-item.local-only {
 body.on-federated-server .side-nav-note {
   display: block;
 }
+
+/* The escape hatch back to this server, shown inside the read-only note. It
+   lives in the side-nav so it survives top-bar-hidden (which hides the top-bar
+   switcher), the one state where a federated search hit could otherwise strand
+   you on a peer with no visible way home. */
+.nav-note-back {
+  display: inline-block;
+  margin-top: 6px;
+  color: #657ee4;
+  font-weight: bold;
+  cursor: pointer;
+  text-decoration: underline;
+}

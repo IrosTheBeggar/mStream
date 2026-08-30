@@ -200,7 +200,9 @@ const VUEPLAYERCORE = (() => {
         if (!this.meta['album-art']) {
           return 'assets/img/default.png';
         }
-        return MSTREAMAPI.currentServer.host + `album-art/${this.meta['album-art']}?compress=l&token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
+        // The playing track may live on a peer while the app is pointed home;
+        // songArtUrl branches on the song's own federation, not peerContext.
+        return songArtUrl(this.meta['album-art'], MSTREAMPLAYER.getCurrentSong(), 'l');
       },
       // "A minor (8A)" / "8A" / "A minor" depending on what's
       // resolvable from the raw key tag. AUTODJ.toCamelot accepts
@@ -247,12 +249,20 @@ const VUEPLAYERCORE = (() => {
       goToArtist: function() {
         const el = document.createElement('DIV');
         el.setAttribute('data-artist', this.meta.artist);
+        // The now-playing track may be a peer's; carry its peer so getArtistz's
+        // adoptPeer looks the artist up on the right server, not the local one.
+        const song = MSTREAMPLAYER.getCurrentSong();
+        if (song && song.federation) { el.setAttribute('data-peer', song.federation.peerId); }
         getArtistz(el);
       },
       goToAlbum: function() {
         const el = document.createElement('DIV');
         el.setAttribute('data-album', this.meta.album);
         el.setAttribute('data-year', this.meta.year);
+        // Carry the playing track's peer (if any) so the album resolves on that
+        // server; without it adoptPeer flips the app home and finds nothing.
+        const song = MSTREAMPLAYER.getCurrentSong();
+        if (song && song.federation) { el.setAttribute('data-peer', song.federation.peerId); }
         getAlbumsOnClick(el);
       },
       checkMove: function (event) {
@@ -590,7 +600,7 @@ const VUEPLAYERCORE = (() => {
       },
       albumArt: function () {
         if (this.song.metadata && this.song.metadata['album-art']) {
-          return MSTREAMAPI.currentServer.host + 'album-art/' + this.song.metadata['album-art'] + '?compress=s&token=' + (this.song.authToken || MSTREAMAPI.currentServer.token);
+          return songArtUrl(this.song.metadata['album-art'], this.song, 's');
         }
         return null;
       },
@@ -738,7 +748,9 @@ const VUEPLAYERCORE = (() => {
         if (!this.meta['album-art']) {
           return 'assets/img/default.png';
         }
-        return MSTREAMAPI.currentServer.host + `album-art/${this.meta['album-art']}?compress=l&token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
+        // The playing track may live on a peer while the app is pointed home;
+        // songArtUrl branches on the song's own federation, not peerContext.
+        return songArtUrl(this.meta['album-art'], MSTREAMPLAYER.getCurrentSong(), 'l');
       },
       // Mirrors the queue-item Vue's djKeyLabel — both Vue instances
       // bind `meta` to MSTREAMPLAYER.playerStats.metadata. See the
@@ -797,12 +809,20 @@ const VUEPLAYERCORE = (() => {
       goToArtist: function() {
         const el = document.createElement('DIV');
         el.setAttribute('data-artist', this.meta.artist);
+        // The now-playing track may be a peer's; carry its peer so getArtistz's
+        // adoptPeer looks the artist up on the right server, not the local one.
+        const song = MSTREAMPLAYER.getCurrentSong();
+        if (song && song.federation) { el.setAttribute('data-peer', song.federation.peerId); }
         getArtistz(el);
       },
       goToAlbum: function() {
         const el = document.createElement('DIV');
         el.setAttribute('data-album', this.meta.album);
         el.setAttribute('data-year', this.meta.year);
+        // Carry the playing track's peer (if any) so the album resolves on that
+        // server; without it adoptPeer flips the app home and finds nothing.
+        const song = MSTREAMPLAYER.getCurrentSong();
+        if (song && song.federation) { el.setAttribute('data-peer', song.federation.peerId); }
         getAlbumsOnClick(el);
       },
       goForward: function(seconds) {
@@ -1039,7 +1059,10 @@ const VUEPLAYERCORE = (() => {
       federation: { peerId: peer.id, peerName: peer.name || 'peer' },
     };
 
-    if (position) {
+    // position 0 is a real insert index (Play Now onto an empty queue); a bare
+    // `if (position)` treated it as "no position" and fell through to a paused
+    // append.
+    if (position !== undefined) {
       MSTREAMPLAYER.insertSongAt(newSong, position, true);
       return;
     }

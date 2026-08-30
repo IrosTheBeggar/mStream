@@ -194,6 +194,19 @@ function artImgAttr(artFile, compress) {
   return url ? `src="${url}"` : 'src="assets/img/default.png"';
 }
 
+// Album-art URL for a specific SONG (queue row / now-playing card), which may
+// be a peer track. Unlike artUrl(), the peer identity comes from the song
+// itself (song.federation), not the ambient peerContext — a peer track can be
+// playing while the app is pointed back at this server. The caller guards the
+// no-art case (its two consumers differ: bundled default cover vs. null).
+function songArtUrl(artFile, song, compress) {
+  if (song && song.federation) {
+    return MSTREAMAPI.peerArtUrl(song.federation.peerId, artFile, compress);
+  }
+  const token = (song && song.authToken) || MSTREAMAPI.currentServer.token;
+  return `${MSTREAMAPI.currentServer.host}album-art/${artFile}?compress=${compress}&token=${token}`;
+}
+
 // Queue a row that may live on a peer. Peer tracks bypass addSongWizard
 // entirely (see addFederationSongWizard) — transcode, waveform prefetch,
 // live-playlist save and metadata lookup all resolve against the LOCAL
@@ -202,7 +215,10 @@ function queueRow(peer, filepath, metadata, position) {
   const meta = metadata || {};
   const hasMeta = Object.keys(meta).length > 0;
   if (peer) {
-    VUEPLAYERCORE.addFederationSongWizard(peer, filepath, meta, true, position);
+    // autoPlayOff mirrors the local branch (!hasMeta): a peer row normally
+    // carries metadata, so it should autoplay onto an empty queue just like a
+    // local one. Hard-coding true left peer tracks loaded but paused.
+    VUEPLAYERCORE.addFederationSongWizard(peer, filepath, meta, !hasMeta, position);
     return;
   }
   // lookupMetadata only when the row carried none — the same bargain
@@ -5296,9 +5312,10 @@ async function submitSearchForm() {
 
     const postObject = {
       search: document.getElementById('search-term').value,
-      ignoreVPaths: Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
-        return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
-      })
+      // Auto-DJ folder filter. localIgnoreVPaths() returns undefined on a peer
+      // (those vpaths name OUR libraries, so a name collision would silently
+      // empty the peer's results and leak our library names), so it's dropped.
+      ignoreVPaths: localIgnoreVPaths()
     };
     
     if (document.getElementById("search-in-artists") && document.getElementById("search-in-artists").checked === false) { postObject.noArtists = true; }
@@ -5316,8 +5333,8 @@ async function submitSearchForm() {
 
     try { localStorage.setItem('mstream-search-toggles', JSON.stringify(searchToggles)); } catch (_e) {}
 
-    // Searching a federated server searches THAT server; ignoreVPaths is
-    // dropped for it by peerReq, since it names libraries in our config.
+    // Searching a federated server searches THAT server (localIgnoreVPaths()
+    // above already dropped the local folder filter for the peer case).
     const res = await browseApi('search', postObject);
 
     if (programState[0].state === 'searchPanel') {
@@ -5579,7 +5596,18 @@ function highlightNavPanel(state) {
 function applyServerContext() {
   const select = document.getElementById('server-select');
   const want = peerContext ? String(peerContext.id) : '';
-  if (select && select.value !== want) { select.value = want; }
+  if (select) {
+    // loadServerSwitcher() builds the <option>s once at init, so a peer paired
+    // later (adopted via a federated search hit) has none — then select.value =
+    // id leaves selectedIndex -1 and the dropdown blank. Add the option first.
+    if (peerContext && !Array.from(select.options).some(o => o.value === want)) {
+      const opt = document.createElement('option');
+      opt.value = want;
+      opt.textContent = peerContext.name;
+      select.appendChild(opt);
+    }
+    if (select.value !== want) { select.value = want; }
+  }
 
   // One class does the whole job (see spa.css): it hides every .local-only
   // nav entry and reveals the read-only note. A body class rather than a
@@ -5589,7 +5617,16 @@ function applyServerContext() {
 
   const note = document.getElementById('nav-readonly-note');
   if (note && peerContext) {
+    // Built as DOM nodes, never innerHTML — peerContext.name is peer-controlled.
+    // The "back" link is the only way home when the top bar (and its switcher)
+    // is hidden, since this note stays visible in the always-shown side-nav.
     note.textContent = t('server.readOnlyNote', { name: peerContext.name });
+    const back = document.createElement('a');
+    back.className = 'nav-note-back';
+    back.textContent = t('server.backToThisServer');
+    back.onclick = () => switchServer(null);
+    note.appendChild(document.createElement('br'));
+    note.appendChild(back);
   }
 }
 
