@@ -66,6 +66,12 @@ const ADMINDATA = (() => {
   // The key row the edit-limits modal is acting on (modals are global
   // components, so per-row context rides shared state, not props).
   module.federationLimitsTarget = { key: null };
+  // Federation requests (in-network pairing over discovery DMs, V67).
+  // Shared between the Federation tab's Requests card and the discovery
+  // catalog's relationship chips.
+  module.federationRequests = { list: [], acceptRequests: false };
+  module.federationRequestTarget = { row: null }; // accept modal context
+  module.federationComposeTarget = { peer: null }; // compose modal context
   // torrent (UX-layer settings — client + whitelist gating)
   module.torrentParams = {
     client:       'disabled',
@@ -340,6 +346,17 @@ const ADMINDATA = (() => {
         url: `${API.url()}/api/v1/admin/federation/peers`
       });
       module.federationPeers.list = res.data;
+    } catch (err) {}
+  }
+
+  module.getFederationRequests = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/federation/requests`
+      });
+      module.federationRequests.list = res.data.requests;
+      module.federationRequests.acceptRequests = res.data.acceptRequests === true;
     } catch (err) {}
   }
 
@@ -3948,7 +3965,10 @@ const federationView = Vue.component('federation-view', {
       fed: ADMINDATA.federationParams,
       keys: ADMINDATA.federationKeys,
       peers: ADMINDATA.federationPeers,
+      requests: ADMINDATA.federationRequests,
       togglePending: false,
+      inboxPending: false,
+      reqPollTimer: null,
       // Add-peer form state
       peerTicket: '',
       peerName: '',
@@ -3958,6 +3978,10 @@ const federationView = Vue.component('federation-view', {
     };
   },
   computed: {
+    // Rows waiting on a human here — what the Requests card badge counts.
+    pendingInbound() {
+      return this.requests.list.filter((r) => r.direction === 'in' && r.state === 'received').length;
+    },
     // Client-side preview of a pasted ticket: decode mstrfed1:<base64url(JSON)>
     // just enough to show who/what before the admin commits. Parse errors
     // return null and the UI shows a gentle "doesn't look right" hint.
@@ -3986,6 +4010,7 @@ const federationView = Vue.component('federation-view', {
       ADMINDATA.getFederation();
       ADMINDATA.getFederationKeys();
       ADMINDATA.getFederationPeers();
+      ADMINDATA.getFederationRequests();
     },
     setRowPending(id, val) { Vue.set(this.rowPending, id, val); },
     async toggle() {
@@ -4119,9 +4144,154 @@ const federationView = Vue.component('federation-view', {
       if (peer.last_status) { return '#c62828'; }
       return '#9e9e9e';
     },
+    // ── Federation requests (the Requests card) ──────────────────────
+    // One chip vocabulary for every state: the pair is [family, label],
+    // family picks the pastel. Kept as data so the state→UI matrix in the
+    // design doc stays checkable against one table here.
+    reqChip(r) {
+      const map = {
+        'out:pending-delivery': ['wait', 'sending…'],
+        'out:delivered': ['wait', 'waiting on them'],
+        'out:granting': ['wait', 'sharing back…'],
+        'in:received': ['theirs', 'needs your answer'],
+        'in:accepted': ['wait', 'sending your ticket…'],
+        'in:granting': ['wait', 'waiting on their share'],
+        'out:rejected': ['dead', 'declined'],
+        'in:rejected': ['dead', 'you declined'],
+        'out:refused': ['dead', 'their inbox is closed'],
+      };
+      const any = { completed: ['good', 'federated'], cancelled: ['mute', 'withdrawn'], expired: ['mute', 'expired'] };
+      return map[`${r.direction}:${r.state}`] || any[r.state] || ['mute', r.state];
+    },
+    reqChipStyle(fam) {
+      const pal = {
+        wait: '#fff8e1;color:#8d6e00', theirs: '#e8eaf6;color:#3949ab',
+        good: '#e8f5e9;color:#2e7d32', dead: '#fdecea;color:#b71c1c',
+        mute: '#f5f5f5;color:#757575',
+      };
+      return `display:inline-block;padding:2px 9px;border-radius:10px;font-size:0.78em;font-weight:600;white-space:nowrap;background:${pal[fam] || pal.mute}`;
+    },
+    // Retry info replaces a retry button: rendered straight off the
+    // engine's ladder state, never re-implemented client-side.
+    reqRetryLine(r) {
+      const sending = (r.direction === 'out' && ['pending-delivery', 'granting'].includes(r.state))
+        || (r.direction === 'in' && r.state === 'accepted');
+      if (!sending || !r.fail_count || !r.next_attempt_at) { return null; }
+      const ms = new Date(r.next_attempt_at.replace(' ', 'T') + 'Z').getTime() - Date.now();
+      let eta = 'any moment now';
+      if (Number.isFinite(ms) && ms > 45000) {
+        const min = Math.round(ms / 60000);
+        eta = min < 90 ? `in ~${min} min` : `in ~${Math.round(min / 60)} h`;
+      }
+      return `retry #${r.fail_count + 1} ${eta}`;
+    },
+    reqAge(r) {
+      const ms = Date.now() - new Date(String(r.created_at).replace(' ', 'T') + 'Z').getTime();
+      if (!Number.isFinite(ms) || ms < 90000) { return 'now'; }
+      const min = Math.round(ms / 60000);
+      if (min < 90) { return `${min} min`; }
+      const h = Math.round(min / 60);
+      if (h < 36) { return `${h} h`; }
+      return `${Math.round(h / 24)} d`;
+    },
+    fp(id) { return String(id || '').slice(0, 12) + '…'; },
+    reqPeerFor(r) {
+      return r.created_peer_id ? this.peers.list.find((p) => p.id === r.created_peer_id) : null;
+    },
+    async toggleInbox() {
+      this.inboxPending = true;
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/federation/accept-requests`,
+          data: { enabled: !this.requests.acceptRequests },
+        });
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: 'Failed to update the request inbox setting.' });
+      }
+      await ADMINDATA.getFederationRequests(); // mirror the server's truth
+      this.inboxPending = false;
+    },
+    openAcceptModal(r) {
+      ADMINDATA.federationRequestTarget.row = r;
+      modVM.currentViewModal = 'federation-request-accept-modal';
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    rejectRequest(r) {
+      // peer_name is self-asserted by the remote server — it only ever
+      // reaches toast HTML through escHtml (R1).
+      const who = escHtml(r.peer_name || this.fp(r.peer_endpoint_id));
+      iziToast.question({
+        timeout: 30000, close: false, overlayClose: true, overlay: true,
+        displayMode: 'once', id: 'question', zindex: 99999, layout: 2, maxWidth: 600,
+        title: `<b>Reject the request from ${who}?</b>`
+          + `<div style="margin:10px 0 2px"><input id="fedreq-reject-reason" type="text" maxlength="200" placeholder="Reason (optional, sent to them)" style="width:100%"></div>`
+          + `<div style="font-size:0.85em;color:#616161;margin-top:6px">Further requests from this server are ignored for 7 days.</div>`,
+        position: 'center',
+        buttons: [
+          [`<button><b>Reject</b></button>`, async (instance, toast) => {
+            const reason = (document.getElementById('fedreq-reject-reason')?.value || '').trim();
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            this.setRowPending(r.id, true);
+            try {
+              await API.axios({
+                method: 'POST',
+                url: `${API.url()}/api/v1/admin/federation/requests/${r.id}/reject`,
+                data: reason ? { reason } : {},
+              });
+              iziToast.success({ title: 'Rejected', message: `${who} was told no${reason ? '' : ' (no reason given)'}.`, position: 'topCenter', timeout: 3500 });
+            } catch (e) {
+              iziToast.error({ title: 'Error', message: escHtml(e.response?.data?.error || 'Failed to reject the request.'), position: 'topCenter', timeout: 4000 });
+            }
+            await ADMINDATA.getFederationRequests();
+            this.setRowPending(r.id, false);
+          }, true],
+          [`<button>Go Back</button>`, (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+          }],
+        ],
+      });
+    },
+    async cancelRequest(r) {
+      this.setRowPending(r.id, true);
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/federation/requests/${r.id}/cancel` });
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: escHtml(e.response?.data?.error || 'Failed to withdraw the request.'), position: 'topCenter', timeout: 4000 });
+      }
+      await ADMINDATA.getFederationRequests();
+      this.setRowPending(r.id, false);
+    },
+    async dismissRequest(r) {
+      this.setRowPending(r.id, true);
+      try {
+        await API.axios({ method: 'DELETE', url: `${API.url()}/api/v1/admin/federation/requests/${r.id}` });
+      } catch (e) {
+        iziToast.error({ title: 'Error', message: escHtml(e.response?.data?.error || 'Failed to dismiss the request.'), position: 'topCenter', timeout: 4000 });
+      }
+      await ADMINDATA.getFederationRequests();
+      this.setRowPending(r.id, false);
+    },
+    scrollToPeers() {
+      document.getElementById('fed-peers-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    },
     fmtDate(s) { return s ? s.replace('T', ' ').slice(0, 16) : '—'; },
   },
-  mounted() { this.refresh(); },
+  mounted() {
+    this.refresh();
+    // Inbound requests and DM-driven state advances land without a user
+    // action here — poll quietly while the tab is on screen so they appear
+    // without a manual reload (same guard as the discovery card's poll).
+    this.reqPollTimer = setInterval(() => {
+      if (document.hidden) { return; }
+      if (this.fed.enabled !== true) { return; }
+      ADMINDATA.getFederationRequests();
+      ADMINDATA.getFederationPeers();
+    }, 30000);
+  },
+  beforeDestroy() {
+    if (this.reqPollTimer) { clearInterval(this.reqPollTimer); this.reqPollTimer = null; }
+  },
   template: `
     <div v-if="fedTS.ts === 0" class="row">
       <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
@@ -4146,6 +4316,65 @@ const federationView = Vue.component('federation-view', {
               <a v-on:click="toggle()" :class="{disabled: togglePending}" class="waves-effect waves-light btn right">
                 {{ fed.enabled ? 'Turn Off' : 'Turn On' }}
               </a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="fed.enabled" class="row">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Federation Requests
+                <span v-if="pendingInbound > 0" style="display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;border-radius:11px;background:#ef5350;color:#fff;font-size:0.55em;font-weight:700;padding:0 7px;vertical-align:4px">{{ pendingInbound }}</span>
+              </span>
+              <p style="font-size:0.9em;color:#777">Servers on the discovery network can ask to pair with you here — and this is where your own asks live. No access changes hands until a request is accepted.</p>
+              <div style="display:flex;align-items:center;gap:14px;margin:6px 0 14px;flex-wrap:wrap">
+                <div class="switch"><label>
+                  <input type="checkbox" :checked="requests.acceptRequests" :disabled="inboxPending" v-on:change="toggleInbox()"/>
+                  <span class="lever"></span>
+                </label></div>
+                <span>Accept requests from the discovery network</span>
+                <span style="font-size:0.85em;color:#777">— off by default; when off, new requests are refused at the transport, but answers to <i>your</i> requests still arrive.</span>
+              </div>
+              <p v-if="requests.acceptRequests && pendingInbound >= 50" style="font-size:0.9em;color:#8d6e00">Inbox is full — new requests are refused until you act on these.</p>
+              <div v-if="requests.list.length > 0" style="overflow-x:auto">
+              <table class="striped">
+                <thead><tr><th>Server</th><th>Message / Offer</th><th>Status</th><th style="width:90px">Age</th><th style="width:220px"></th></tr></thead>
+                <tbody>
+                  <tr v-for="r in requests.list" :key="r.id">
+                    <td>
+                      <b>{{ r.peer_name || '(unnamed server)' }}</b>
+                      <div style="font-family:monospace;font-size:0.78em;color:#757575">{{ fp(r.peer_endpoint_id) }}</div>
+                    </td>
+                    <td style="max-width:290px;font-size:0.9em">
+                      <div v-if="r.message" style="color:#424242">“{{ r.message }}”</div>
+                      <div v-if="r.direction === 'in'" style="color:#777">{{ r.offered_libraries.length ? 'offers: ' + r.offered_libraries.join(', ') : 'offers nothing' }}</div>
+                      <div v-else style="color:#777">{{ r.offered_libraries.length ? 'you offered: ' + r.offered_libraries.join(', ') : 'you offered nothing' }}</div>
+                    </td>
+                    <td style="font-size:0.95em">
+                      <span :style="reqChipStyle(reqChip(r)[0])">{{ reqChip(r)[1] }}</span>
+                      <div v-if="reqRetryLine(r)" style="font-size:0.8em;color:#8d6e00;margin-top:3px">{{ reqRetryLine(r) }}</div>
+                      <div v-if="r.direction === 'out' && r.state === 'rejected' && r.reject_reason" style="font-size:0.85em;color:#757575;margin-top:3px">“{{ r.reject_reason }}”</div>
+                      <div v-if="r.direction === 'in' && r.state === 'rejected'" style="font-size:0.8em;color:#757575;margin-top:3px">requests from this server are ignored for 7 days</div>
+                      <div v-if="r.state === 'completed' && reqPeerFor(r)" style="font-size:0.85em;margin-top:3px"><a v-on:click="scrollToPeers()" style="cursor:pointer">view peer</a></div>
+                    </td>
+                    <td style="font-size:0.9em">{{ reqAge(r) }}</td>
+                    <td class="right-align">
+                      <template v-if="r.direction === 'in' && r.state === 'received'">
+                        <a class="btn-small green waves-effect" :class="{disabled: rowPending[r.id]}" v-on:click="openAcceptModal(r)">Accept…</a>
+                        <a class="btn-flat btn-small waves-effect" :class="{disabled: rowPending[r.id]}" v-on:click="rejectRequest(r)">Reject</a>
+                      </template>
+                      <a v-else-if="r.direction === 'out' && ['pending-delivery', 'delivered'].includes(r.state)"
+                        class="btn-flat btn-small waves-effect" :class="{disabled: rowPending[r.id]}" v-on:click="cancelRequest(r)">Cancel</a>
+                      <a v-else-if="['completed', 'rejected', 'refused', 'cancelled', 'expired'].includes(r.state)"
+                        class="btn-flat btn-small waves-effect" :class="{disabled: rowPending[r.id]}" v-on:click="dismissRequest(r)">Dismiss</a>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              </div>
+              <p v-else-if="requests.acceptRequests" style="color:#777">No requests yet — servers on the discovery network can find you here.</p>
             </div>
           </div>
         </div>
@@ -4193,7 +4422,7 @@ const federationView = Vue.component('federation-view', {
 
       <div v-if="fed.enabled" class="row">
         <div class="col s12">
-          <div class="card">
+          <div class="card" id="fed-peers-card">
             <div class="card-content">
               <span class="card-title">Peers — Servers You Can Read</span>
               <table v-if="peers.list.length > 0" class="striped">
@@ -7820,6 +8049,10 @@ const discoveryView = Vue.component('discovery-view', {
   data() {
     return {
       discoveryP2p: { loaded: false, status: null, peers: [], storage: null, autoFetch: false, hiddenIncompatible: 0, showIncompatible: false },
+      // Federation-request state for the catalog's relationship chips and
+      // the "Federate…" action (shared stores with the Federation tab).
+      fedRequests: ADMINDATA.federationRequests,
+      fed: ADMINDATA.federationParams,
       p2pIdentity: P2PIDENTITY,
       p2pToggling: false,
       peerFilter: '',
@@ -8055,9 +8288,14 @@ const discoveryView = Vue.component('discovery-view', {
                         <span v-else style="padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; background: #f5f5f5; color: #757575;">not downloaded</span>
                         <span v-if="peer.fetched && peer.fetched.pinned" style="padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; background: #ececf2; color: #505061;">pinned</span>
                         <span v-if="peer.compatible === false" style="padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; background: #fff3e0; color: #a06010;">incompatible model</span>
+                        <span v-if="fedReqStateFor(peer.from) === 'federated'" style="padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; background: #e8f5e9; color: #2e7d32;">federated</span>
+                        <span v-else-if="fedReqStateFor(peer.from) === 'theirs'" style="padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; background: #e8eaf6; color: #3949ab;">they asked you</span>
+                        <span v-else-if="fedReqStateFor(peer.from) === 'sent'" style="padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; background: #fff8e1; color: #8d6e00;">request sent</span>
                       </div>
                       <div style="display: flex; gap: 10px; font-size: 0.85em; border-top: 1px solid #eee; padding-top: 7px; flex-wrap: wrap;">
                         <span>[<a v-on:click="discoveryFetchPeer(peer.from)">{{ peer.fetched ? 'Update' : 'Download' }}</a>]</span>
+                        <span v-if="fed.available !== false && fedReqStateFor(peer.from) === null">[<a v-on:click="openFederateModal(peer)">Federate…</a>]</span>
+                        <span v-if="fedReqStateFor(peer.from) === 'theirs'">[<a v-on:click="goToFederationTab()">Review their request</a>]</span>
                         <span v-if="peer.fetched">[<a v-on:click="discoveryRemovePeer(peer.from)">Remove</a>]</span>
                         <span v-if="peer.fetched">[<a v-on:click="discoveryPinPeer(peer.from, !peer.fetched.pinned)">{{ peer.fetched.pinned ? 'Unpin' : 'Pin' }}</a>]</span>
                         <span v-if="!peer.online && !peer.fetched">[<a v-on:click="discoveryForgetPeer(peer.from)">Forget</a>]</span>
@@ -8084,6 +8322,10 @@ const discoveryView = Vue.component('discovery-view', {
                         </td>
                         <td>
                           [<a v-on:click="discoveryFetchPeer(peer.from)">{{ peer.fetched ? 'Update' : 'Download' }}</a>]
+                          <span v-if="fed.available !== false && fedReqStateFor(peer.from) === null">[<a v-on:click="openFederateModal(peer)">Federate…</a>]</span>
+                          <span v-if="fedReqStateFor(peer.from) === 'theirs'">[<a v-on:click="goToFederationTab()">Review their request</a>]</span>
+                          <span v-else-if="fedReqStateFor(peer.from) === 'federated'" style="padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; background: #e8f5e9; color: #2e7d32;">federated</span>
+                          <span v-else-if="fedReqStateFor(peer.from) === 'sent'" style="padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 600; background: #fff8e1; color: #8d6e00;">request sent</span>
                           <span v-if="peer.fetched">[<a v-on:click="discoveryRemovePeer(peer.from)">Remove</a>]</span>
                           <span v-if="peer.fetched">[<a v-on:click="discoveryPinPeer(peer.from, !peer.fetched.pinned)">{{ peer.fetched.pinned ? 'Unpin' : 'Pin' }}</a>]</span>
                           <span v-if="!peer.online && !peer.fetched">[<a v-on:click="discoveryForgetPeer(peer.from)">Forget</a>]</span>
@@ -8218,23 +8460,49 @@ const discoveryView = Vue.component('discovery-view', {
         zindex: 99999,
         layout: 2,
         maxWidth: 600,
-        title: `<b>Join the discovery network?</b> Your server will publish a metadata-only snapshot of its music library (never audio files) to the public discovery network, with your server's name and description visible to everyone. Music-discovery data collection will also be enabled.`,
+        // Body + opt-in in `message` (not `title`) so the toast grows to fit
+        // instead of overlapping the buttons. The checkbox's immediate
+        // sibling is a <div>, NOT a <span>: Materialize globally styles
+        // `[type=checkbox] + span` (drawing its own box/checkmark and a 35px
+        // pad), which — combined with the opacity override that un-hides the
+        // native input — rendered TWO checkboxes and broke the box model.
+        // A <div> sibling sidesteps that rule; one clean native checkbox.
+        title: `<b>Join the discovery network?</b>`,
+        message: `Your server will publish a metadata-only snapshot of its music library (never audio files) to the public discovery network, with your server's name and description visible to everyone. Music-discovery data collection will also be enabled.`
+          + `<div style="margin-top:12px; padding:10px 12px; background:#f5f5f5; border-radius:3px;">`
+          + `<label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer; margin:0;">`
+          + `<input id="fedreq-enable-inbox" type="checkbox" style="position:static; opacity:1; pointer-events:auto; width:16px; height:16px; margin:2px 0 0 0; flex-shrink:0;"/>`
+          + `<div style="flex:1;">Also let other servers send me <b>federation requests</b> — invitations to share libraries. Nothing is shared unless you approve each one. <span style="color:#616161;">(Turns federation on.)</span></div>`
+          + `</label></div>`,
         position: 'center',
         buttons: [
           [`<button><b>Enable</b></button>`, async (instance, toast) => {
+            const wantInbox = document.getElementById('fedreq-enable-inbox')?.checked === true;
             instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
             this.p2pToggling = true;
             try {
-              await API.axios({
+              const res = await API.axios({
                 method: 'POST',
                 url: `${API.url()}/api/v1/admin/discovery/p2p/enabled`,
-                data: { enabled: true }
+                data: wantInbox ? { enabled: true, acceptFederationRequests: true } : { enabled: true }
               });
               iziToast.success({
                 title: 'Discovery network enabled',
-                message: 'Give the mesh a minute to weave in.',
+                message: res.data?.acceptRequests === true
+                  ? 'Give the mesh a minute to weave in. The request inbox is on — see the Federation tab.'
+                  : 'Give the mesh a minute to weave in.',
                 position: 'topCenter', timeout: 4000
               });
+              // Partial failure: discovery genuinely came up, but the
+              // federation/inbox half failed and its flags were rolled
+              // back server-side — say exactly that, never "it all failed".
+              if (wantInbox && res.data?.federationError) {
+                iziToast.warning({
+                  title: `Discovery is on, but the request inbox didn't start`,
+                  message: `${escHtml(res.data.federationError)} — discovery works normally; you can retry the inbox from the Federation tab.`,
+                  position: 'topCenter', timeout: 8000
+                });
+              }
               await this.loadDiscoveryP2p();
               // Straight into naming the server: 'mStream' next to 18k
               // other 'mStream's is the first thing everyone would want
@@ -8363,6 +8631,11 @@ const discoveryView = Vue.component('discovery-view', {
           this.discoveryP2p.hiddenIncompatible = cat.hiddenIncompatible || 0;
           this.discoveryP2p.storage = cat.storage;
           this.discoveryP2p.autoFetch = cat.autoFetch;
+          // The catalog's relationship chips and the Federate… gate read
+          // these shared stores — fill them here so they work without the
+          // Federation tab having ever been opened.
+          ADMINDATA.getFederationRequests();
+          ADMINDATA.getFederation();
         }
       } catch (err) {
         if (quiet !== true) {
@@ -8370,6 +8643,25 @@ const discoveryView = Vue.component('discovery-view', {
         }
       }
       this.discoveryP2p.loaded = true;
+    },
+    // ── Federation-request hooks on the catalog ──────────────────────
+    // Relationship chip for a catalog row, derived purely client-side
+    // from the shared requests store. Priority: an existing pairing beats
+    // a pending inbound beats a live outbound.
+    fedReqStateFor: function(endpointId) {
+      const rows = this.fedRequests.list.filter((r) => r.peer_endpoint_id === endpointId);
+      if (rows.some((r) => r.state === 'completed')) { return 'federated'; }
+      if (rows.some((r) => r.direction === 'in' && ['received', 'accepted', 'granting'].includes(r.state))) { return 'theirs'; }
+      if (rows.some((r) => r.direction === 'out' && ['pending-delivery', 'delivered', 'granting'].includes(r.state))) { return 'sent'; }
+      return null;
+    },
+    openFederateModal: function(peer) {
+      ADMINDATA.federationComposeTarget.peer = { from: peer.from, name: peer.payload.name || null };
+      this.openModal('federation-request-compose-modal');
+    },
+    goToFederationTab: function() {
+      const el = document.querySelector('.side-nav-item[onclick*="federation-view"]');
+      if (el) { changeView('federation-view', el); }
     },
     discoveryFetchPeer: async function(endpointId) {
       try {
@@ -10471,6 +10763,182 @@ const federationEditLimitsModal = Vue.component('federation-edit-limits-modal', 
   },
 });
 
+// Accept modal for a federation request: the New Ticket modal reshaped
+// around a known counterparty — accepting IS minting, plus one decision
+// about their offer. Nothing is pre-checked (they initiated; the operator
+// chooses deliberately, unlike compose where we pre-check our own offer).
+// Row context rides ADMINDATA.federationRequestTarget, same pattern as the
+// edit-limits modal above.
+const federationRequestAcceptModal = Vue.component('federation-request-accept-modal', {
+  data() {
+    const d = ADMINDATA.federationParams.limitDefaults || { streamKbps: 8000, dailyMb: 2048, maxStreams: 3 };
+    return {
+      r: ADMINDATA.federationRequestTarget.row || {},
+      directories: ADMINDATA.folders,
+      selected: [],
+      streamKbps: d.streamKbps,
+      dailyMb: d.dailyMb,
+      maxStreams: d.maxStreams,
+      expireDays: 0,
+      acceptTheirOffer: true,
+      submitPending: false,
+    };
+  },
+  computed: {
+    peerFp() { return String(this.r.peer_endpoint_id || '').slice(0, 12) + '…'; },
+    theirOffer() { return Array.isArray(this.r.offered_libraries) ? this.r.offered_libraries : []; },
+  },
+  template: `
+    <form @submit.prevent="accept">
+      <div class="modal-content">
+        <h4>Accept — share libraries with {{ r.peer_name || '(unnamed server)' }}</h4>
+        <p style="margin:0 0 6px;font-family:monospace;font-size:0.8em;color:#757575">{{ peerFp }}</p>
+        <p v-if="r.message" style="font-size:0.9em;color:#616161;background:#f5f5f5;padding:8px 10px;border-radius:3px">“{{ r.message }}”</p>
+        <p style="margin:14px 0 4px"><b>Libraries they can read:</b></p>
+        <p v-for="(cfg, vpath) in directories" :key="vpath" style="margin:4px 0">
+          <label><input type="checkbox" v-model="selected" :value="vpath"/><span>{{ vpath }}</span></label>
+        </p>
+        <p style="margin:16px 0 4px"><b>Bandwidth limits</b> <span style="color:#777;font-size:0.85em">— 0 means unlimited</span></p>
+        <div class="row" style="margin-bottom:0">
+          <div class="input-field col s3">
+            <input id="fedreq-limit-kbps" type="number" min="0" v-model.number="streamKbps"/>
+            <label for="fedreq-limit-kbps" class="active">Stream rate (kbps)</label>
+          </div>
+          <div class="input-field col s3">
+            <input id="fedreq-limit-daily" type="number" min="0" v-model.number="dailyMb"/>
+            <label for="fedreq-limit-daily" class="active">Daily quota (MB)</label>
+          </div>
+          <div class="input-field col s3">
+            <input id="fedreq-limit-streams" type="number" min="0" v-model.number="maxStreams"/>
+            <label for="fedreq-limit-streams" class="active">Max streams</label>
+          </div>
+          <div class="input-field col s3">
+            <input id="fedreq-limit-expire" type="number" min="0" v-model.number="expireDays"/>
+            <label for="fedreq-limit-expire" class="active">Expires (days)</label>
+          </div>
+        </div>
+        <p v-if="theirOffer.length" style="margin:14px 0 4px">
+          <label><input type="checkbox" v-model="acceptTheirOffer"/><span>Add their libraries too (<b>{{ theirOffer.join(', ') }}</b>) when they share back</span></label>
+        </p>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect btn-flat">Cancel</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending || selected.length === 0">
+          {{ submitPending ? 'Accepting…' : 'Accept & Send Ticket' }}
+        </button>
+      </div>
+    </form>`,
+  methods: {
+    accept: async function() {
+      this.submitPending = true;
+      try {
+        const data = {
+          vpaths: this.selected,
+          streamKbps: Number(this.streamKbps) || 0,
+          dailyMb: Number(this.dailyMb) || 0,
+          maxStreams: Number(this.maxStreams) || 0,
+          acceptTheirOffer: this.acceptTheirOffer === true,
+        };
+        const days = Number(this.expireDays) || 0;
+        if (days > 0) { data.expiresAt = new Date(Date.now() + days * 86400000).toISOString(); }
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/federation/requests/${this.r.id}/accept`,
+          data,
+        });
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+        iziToast.success({
+          title: 'Accepted',
+          message: 'Your ticket is on its way' + (this.acceptTheirOffer && this.theirOffer.length ? ' — their share-back will appear under Peers.' : '.'),
+          position: 'topCenter', timeout: 4000,
+        });
+      } catch (err) {
+        // 404/409 usually means the request was withdrawn or already
+        // handled meanwhile — the refetch below makes the table tell the truth.
+        iziToast.error({
+          title: 'Could not accept',
+          message: escHtml(err.response?.data?.error || 'The request may have been withdrawn.'),
+          position: 'topCenter', timeout: 4500,
+        });
+      } finally {
+        this.submitPending = false;
+        ADMINDATA.getFederationRequests();
+        ADMINDATA.getFederationKeys(); // accepting mints a key
+      }
+    },
+  },
+});
+
+// Compose modal: ask a discovered server to federate. Reached from the
+// catalog's "Federate…" action; peer context rides federationComposeTarget.
+// Every library is pre-checked (mutual-by-default with offer-at-compose);
+// unchecking all is a one-way ask. No credentials move at this step.
+const federationRequestComposeModal = Vue.component('federation-request-compose-modal', {
+  data() {
+    return {
+      p: ADMINDATA.federationComposeTarget.peer || {},
+      directories: ADMINDATA.folders,
+      selected: Object.keys(ADMINDATA.folders),
+      message: '',
+      submitPending: false,
+    };
+  },
+  computed: {
+    peerLabel() { return this.p.name || (String(this.p.from || '').slice(0, 12) + '…'); },
+  },
+  template: `
+    <form @submit.prevent="send">
+      <div class="modal-content">
+        <h4>Ask {{ peerLabel }} to federate</h4>
+        <p style="font-size:0.9em;color:#616161;margin:0 0 14px">Sends a request over the discovery network. <b>No access is exchanged now</b> — they see your name, message, and offer, and libraries are only shared if they accept.</p>
+        <div class="input-field">
+          <textarea id="fedreq-compose-msg" class="materialize-textarea" v-model="message" maxlength="500" placeholder="Message (optional)"></textarea>
+          <div style="text-align:right;font-size:0.75em;color:#9e9e9e">{{ message.length }} / 500</div>
+        </div>
+        <p style="margin:8px 0 4px"><b>Libraries you'll share back if they accept:</b></p>
+        <p v-for="(cfg, vpath) in directories" :key="vpath" style="margin:4px 0">
+          <label><input type="checkbox" v-model="selected" :value="vpath"/><span>{{ vpath }}</span></label>
+        </p>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect btn-flat">Cancel</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending">
+          {{ submitPending ? 'Sending…' : 'Send Request' }}
+        </button>
+      </div>
+    </form>`,
+  methods: {
+    send: async function() {
+      this.submitPending = true;
+      try {
+        const data = { endpointId: this.p.from, offerVpaths: this.selected };
+        if (this.message.trim()) { data.message = this.message.trim(); }
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/federation/requests`,
+          data,
+        });
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+        iziToast.success({
+          title: 'Request sent',
+          message: `${escHtml(this.peerLabel)} will see it when they're online — track it on the Federation tab.`,
+          position: 'topCenter', timeout: 4000,
+        });
+      } catch (err) {
+        // Covers the duplicate guard (409 "already …") and federation-off.
+        iziToast.error({
+          title: 'Could not send the request',
+          message: escHtml(err.response?.data?.error || 'Unknown error'),
+          position: 'topCenter', timeout: 4500,
+        });
+      } finally {
+        this.submitPending = false;
+        ADMINDATA.getFederationRequests();
+      }
+    },
+  },
+});
+
 const nullModal = Vue.component('null-modal', {
   template: '<div>NULL MODAL ERROR: How did you get here?</div>'
 });
@@ -11045,6 +11513,8 @@ const modVM = new Vue({
     'lastfm-modal': lastFMModal,
     'federation-new-ticket-modal': federationNewTicketModal,
     'federation-edit-limits-modal': federationEditLimitsModal,
+    'federation-request-accept-modal': federationRequestAcceptModal,
+    'federation-request-compose-modal': federationRequestComposeModal,
     'edit-rust-player-port-modal': editRustPlayerPortModal,
     'edit-album-art-services-modal': editAlbumArtServicesModal,
     'edit-log-buffer-size-modal': editLogBufferSizeModal,
