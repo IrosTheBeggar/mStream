@@ -2302,3 +2302,81 @@ select {
 .hotkey-btn { cursor: pointer; font-size: 12px; text-transform: uppercase; opacity: 0.7; min-width: 52px; text-align: right; }
 .hotkey-btn:hover { opacity: 1; }
 .hotkeys-disabled { opacity: 0.4; pointer-events: none; }
+
+/* ── Federation: the server picker + read-only chrome ──────────────────────
+   The app points at one server at a time. `body.on-federated-server` is the
+   single switch: it hides every nav entry a federated server cannot serve
+   and reveals the read-only note. Driven by a BODY class rather than by
+   toggling .super-hide on each item, so it composes with the flag gates
+   that already hide some entries (Sonic Path) instead of fighting them. */
+.nav-server-wrap {
+  display: flex;
+  align-items: center;
+  margin-right: 12px;
+}
+
+.nav-server-select {
+  padding: 6px 10px;
+  background-color: #262a33;
+  color: #F5F7FA;
+  border: 1px solid #444c56;
+  border-radius: 4px;
+  font-family: 'Jura', sans-serif;
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+  min-width: 150px;
+  display: block;
+  height: auto;
+}
+
+.nav-server-select:hover,
+.nav-server-select:focus {
+  border-color: #657ee4;
+  outline: none;
+}
+
+body.on-federated-server .side-nav-item.local-only {
+  display: none !important;
+}
+
+.side-nav-note {
+  display: none;
+  padding: 8px 14px;
+  margin: 4px 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #d6b45f;
+  background-color: rgba(214, 180, 95, 0.1);
+  border-left: 3px solid #d6b45f;
+}
+
+body.on-federated-server .side-nav-note {
+  display: block;
+}
+
+/* The escape hatch back to this server, shown inside the read-only note. It
+   lives in the side-nav so it survives top-bar-hidden (which hides the top-bar
+   switcher), the one state where a federated search hit could otherwise strand
+   you on a peer with no visible way home. */
+.nav-note-back {
+  display: inline-block;
+  margin-top: 6px;
+  color: #657ee4;
+  font-weight: bold;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* Header above each server's block in a multi-server search result. */
+.search-server-header {
+  padding: 12px 12px 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #8bb7f0;
+}
+
+.search-server-note {
+  color: #999;
+  font-weight: 400;
+}

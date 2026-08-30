@@ -1,6 +1,36 @@
 const VUEPLAYERCORE = (() => {
   const mstreamModule = {};
 
+  // A playlist lives on THIS server and stores paths in ITS namespace, so a
+  // federated track can never be saved into one. Every live-playlist re-save
+  // rebuilds from the whole queue, which may hold peer tracks — drop them,
+  // and say so once so the user knows the saved playlist is not exactly what
+  // is on screen. Once per page load on purpose: this fires on every drag,
+  // remove and insert, and a toast per drag would be noise.
+  let warnedMixedQueue = false;
+  function localQueueFilepaths() {
+    const all = MSTREAMPLAYER.playlist;
+    const local = all.filter(song => !song.federation);
+    if (local.length !== all.length && !warnedMixedQueue) {
+      warnedMixedQueue = true;
+      iziToast.info({ title: t('playlist.federatedSkipped'), position: 'topCenter', timeout: 4000 });
+    }
+    return local.map(song => song.filepath);
+  }
+  // m.js starts and clears live playlists too, and every one of those paths
+  // re-saves the whole queue — they all have to go through the same filter.
+  mstreamModule.localQueueFilepaths = localQueueFilepaths;
+
+  // Re-persist the live playlist to the local-only tracks now queued. THE one
+  // place every queue mutation re-saves, so a new mutation site can't forget
+  // the federation filter the way the live-playlist START once did.
+  function saveLiveQueue() {
+    if (mstreamModule.livePlaylist.name) {
+      MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name, localQueueFilepaths(), true);
+    }
+  }
+  mstreamModule.saveLiveQueue = saveLiveQueue;
+
   mstreamModule.livePlaylist = {
     name: false
   };
@@ -180,7 +210,9 @@ const VUEPLAYERCORE = (() => {
         if (!this.meta['album-art']) {
           return 'assets/img/default.png';
         }
-        return MSTREAMAPI.currentServer.host + `album-art/${this.meta['album-art']}?compress=l&token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
+        // The playing track may live on a peer while the app is pointed home;
+        // songArtUrl branches on the song's own federation, not peerContext.
+        return songArtUrl(this.meta['album-art'], MSTREAMPLAYER.getCurrentSong(), 'l');
       },
       // "A minor (8A)" / "8A" / "A minor" depending on what's
       // resolvable from the raw key tag. AUTODJ.toCamelot accepts
@@ -227,24 +259,26 @@ const VUEPLAYERCORE = (() => {
       goToArtist: function() {
         const el = document.createElement('DIV');
         el.setAttribute('data-artist', this.meta.artist);
+        // The now-playing track may be a peer's; carry its peer so getArtistz's
+        // adoptPeer looks the artist up on the right server, not the local one.
+        const song = MSTREAMPLAYER.getCurrentSong();
+        if (song && song.federation) { el.setAttribute('data-peer', song.federation.peerId); }
         getArtistz(el);
       },
       goToAlbum: function() {
         const el = document.createElement('DIV');
         el.setAttribute('data-album', this.meta.album);
         el.setAttribute('data-year', this.meta.year);
+        // Carry the playing track's peer (if any) so the album resolves on that
+        // server; without it adoptPeer flips the app home and finds nothing.
+        const song = MSTREAMPLAYER.getCurrentSong();
+        if (song && song.federation) { el.setAttribute('data-peer', song.federation.peerId); }
         getAlbumsOnClick(el);
       },
       checkMove: function (event) {
         document.getElementById("pop").style.visibility = "hidden";
         MSTREAMPLAYER.resetPositionCache();
-        if (mstreamModule.livePlaylist.name) {
-          const songs = [];
-          for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-            songs.push(MSTREAMPLAYER.playlist[i].filepath);
-          }
-          MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name,songs, true);
-        }
+        saveLiveQueue();
       },
       clearRating: async function () {
         try {
@@ -463,13 +497,7 @@ const VUEPLAYERCORE = (() => {
       },
       removeSong: function (event) {
         MSTREAMPLAYER.removeSongAtPosition(this.index, false);
-        if (mstreamModule.livePlaylist.name) {
-          const songs = [];
-          for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-            songs.push(MSTREAMPLAYER.playlist[i].filepath);
-          }
-          MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name,songs, true);
-        }
+        saveLiveQueue();
       },
       downloadSong: function (event) {
         const link = document.createElement("a");
@@ -578,7 +606,7 @@ const VUEPLAYERCORE = (() => {
       },
       albumArt: function () {
         if (this.song.metadata && this.song.metadata['album-art']) {
-          return MSTREAMAPI.currentServer.host + 'album-art/' + this.song.metadata['album-art'] + '?compress=s&token=' + (this.song.authToken || MSTREAMAPI.currentServer.token);
+          return songArtUrl(this.song.metadata['album-art'], this.song, 's');
         }
         return null;
       },
@@ -604,6 +632,12 @@ const VUEPLAYERCORE = (() => {
     props: ['index', 'playlist'],
     methods: {
       addToPlaylist: async function(event) { 
+        // Same rule as the browse rows' add-to-playlist button (m.js): a
+        // peer path would save as a row that resolves to nothing here.
+        if (cps && cps.federation) {
+          iziToast.info({ title: t('peers.noPlaylist'), position: 'topCenter', timeout: 2500 });
+          return;
+        }
         try {
           await MSTREAMAPI.addToPlaylist(this.playlist.name, cps.filepath);
           iziToast.success({
@@ -720,7 +754,9 @@ const VUEPLAYERCORE = (() => {
         if (!this.meta['album-art']) {
           return 'assets/img/default.png';
         }
-        return MSTREAMAPI.currentServer.host + `album-art/${this.meta['album-art']}?compress=l&token=${MSTREAMPLAYER.getCurrentSong().authToken}`;
+        // The playing track may live on a peer while the app is pointed home;
+        // songArtUrl branches on the song's own federation, not peerContext.
+        return songArtUrl(this.meta['album-art'], MSTREAMPLAYER.getCurrentSong(), 'l');
       },
       // Mirrors the queue-item Vue's djKeyLabel — both Vue instances
       // bind `meta` to MSTREAMPLAYER.playerStats.metadata. See the
@@ -779,12 +815,20 @@ const VUEPLAYERCORE = (() => {
       goToArtist: function() {
         const el = document.createElement('DIV');
         el.setAttribute('data-artist', this.meta.artist);
+        // The now-playing track may be a peer's; carry its peer so getArtistz's
+        // adoptPeer looks the artist up on the right server, not the local one.
+        const song = MSTREAMPLAYER.getCurrentSong();
+        if (song && song.federation) { el.setAttribute('data-peer', song.federation.peerId); }
         getArtistz(el);
       },
       goToAlbum: function() {
         const el = document.createElement('DIV');
         el.setAttribute('data-album', this.meta.album);
         el.setAttribute('data-year', this.meta.year);
+        // Carry the playing track's peer (if any) so the album resolves on that
+        // server; without it adoptPeer flips the app home and finds nothing.
+        const song = MSTREAMPLAYER.getCurrentSong();
+        if (song && song.federation) { el.setAttribute('data-peer', song.federation.peerId); }
         getAlbumsOnClick(el);
       },
       goForward: function(seconds) {
@@ -947,13 +991,7 @@ const VUEPLAYERCORE = (() => {
 
     if (position) {
       MSTREAMPLAYER.insertSongAt(newSong, position, true);
-      if (mstreamModule.livePlaylist.name) {
-        const songs = [];
-        for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-          songs.push(MSTREAMPLAYER.playlist[i].filepath);
-        }
-        MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name,songs, true);
-      }
+      saveLiveQueue();
     } else {
       MSTREAMPLAYER.addSong(newSong, autoPlayOff);
       if (mstreamModule.livePlaylist.name && livePlaylist !== false) {
@@ -1008,30 +1046,36 @@ const VUEPLAYERCORE = (() => {
   // resolves paths against the LOCAL library, and this path lives in the
   // peer's vpath namespace. The `federation` marker on the song object is
   // what the degrade guards key on (waveform skip, Discover clear).
-  mstreamModule.addFederationSongWizard = (peer, remotePath, metadata, autoPlayOff) => {
+  // `position` (added for the peer-browse panels) inserts and plays, the
+  // way addSongWizard's own position argument does — without it a peer row
+  // could only ever be appended, so "Play Now" did nothing on peer tracks.
+  mstreamModule.addFederationSongWizard = (peer, remotePath, metadata, autoPlayOff, position) => {
     let escaped = remotePath.replace(/\%/g, '%25').replace(/\#/g, '%23').replace(/\?/g, '%3F');
     if (escaped.charAt(0) === '/') { escaped = escaped.substr(1); }
     let url = `${MSTREAMAPI.currentServer.host}api/v1/federation/peers/${peer.id}/stream/${escaped}?`;
     if (MSTREAMAPI.currentServer.token) { url += 'token=' + MSTREAMAPI.currentServer.token; }
-    MSTREAMPLAYER.addSong({
+    const newSong = {
       url: url,
       rawFilePath: remotePath,
       filepath: remotePath,
       metadata: metadata || {},
       authToken: MSTREAMAPI.currentServer.token,
       federation: { peerId: peer.id, peerName: peer.name || 'peer' },
-    }, autoPlayOff);
+    };
+
+    // position 0 is a real insert index (Play Now onto an empty queue); a bare
+    // `if (position)` treated it as "no position" and fell through to a paused
+    // append.
+    if (position !== undefined) {
+      MSTREAMPLAYER.insertSongAt(newSong, position, true);
+      return;
+    }
+    MSTREAMPLAYER.addSong(newSong, autoPlayOff);
   };
 
   mstreamModule.clearQueue = async() => {
     MSTREAMPLAYER.clearPlaylist();
-    if (mstreamModule.livePlaylist.name) {
-      const songs = [];
-      for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
-        songs.push(MSTREAMPLAYER.playlist[i].filepath);
-      }
-      MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name,songs, true);
-    }
+    saveLiveQueue();
   }
 
   // ── WAVEFORM ────────────────────────────────────────────────────────────────

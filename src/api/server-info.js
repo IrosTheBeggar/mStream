@@ -103,6 +103,10 @@ export function buildClientBootPayload(user) {
   // Get user's library names
   const vpaths = user.vpaths || [];
 
+  // Read the peer list once — both federation flags below need it.
+  const federationEnabled = config.program.federation.enabled === true;
+  const federationPeers = federationEnabled ? fedDb.getFederationPeers() : [];
+
   const payload = {
     vpaths,
     noMkdir: config.program.noMkdir || user.allow_mkdir === false || user.allow_mkdir === 0,
@@ -112,9 +116,16 @@ export function buildClientBootPayload(user) {
     // seed vector comes from our discovery.db) plus at least one federated
     // peer that hasn't opted out of discovery. Caller-scoped by nature —
     // it reflects this server's live peer RELATIONSHIPS.
-    federationDiscovery: config.program.federation.enabled === true
+    federationDiscovery: federationEnabled
       && config.program.scanOptions.collectDiscoveryData === true
-      && fedDb.getFederationPeers().some((p) => p.use_discovery === 1),
+      && federationPeers.some((peer) => peer.use_discovery === 1),
+    // Browsing a peer's library (api/federation-browse.js): the top-bar
+    // server switcher. Same no-probe contract as the discovery flags — an
+    // older build omits the key and the client simply never offers the
+    // feature. Requires a peer to browse, so a federation-enabled server
+    // with none stays quiet. Caller-scoped for the same reason
+    // federationDiscovery is: it reports live peer RELATIONSHIPS.
+    federationBrowse: federationEnabled && federationPeers.length > 0,
     vpathMetaData: {}
   };
 

@@ -66,8 +66,23 @@ const ALLOWED_EXACT = new Set([
 const ALLOWED_GET_PREFIXES = ['/media/', '/album-art/'];
 
 export function isFederationPathAllowed(req) {
-  if (ALLOWED_EXACT.has(`${req.method} ${req.path}`)) { return true; }
-  if (req.method === 'GET' && ALLOWED_GET_PREFIXES.some((p) => req.path.startsWith(p))) { return true; }
+  return isFederationRouteAllowed(req.method, req.path);
+}
+
+// Same decision, addressable by (method, path) instead of a live request.
+// The OUTBOUND browse proxy (api/federation-browse.js) forwards local-user
+// calls to a peer's allowlisted routes, and it screens the path against
+// THIS list before dialing: a peer re-checks its own copy anyway, but
+// sharing one table means the two directions can never drift into a route
+// we proxy to but no peer will answer (or worse, the reverse).
+// `exactOnly` drops the media/art prefixes. The OUTBOUND browse proxy only
+// forwards the exact db/file-explorer reads (the byte trees have their own
+// dedicated stream and art proxies), so it screens exactOnly and never inherits
+// /media//album-art as a second path. Inbound auth leaves it false — a paired
+// peer legitimately streams and fetches art from us over those prefixes.
+export function isFederationRouteAllowed(method, path, { exactOnly = false } = {}) {
+  if (ALLOWED_EXACT.has(`${method} ${path}`)) { return true; }
+  if (!exactOnly && method === 'GET' && ALLOWED_GET_PREFIXES.some((p) => path.startsWith(p))) { return true; }
   return false;
 }
 

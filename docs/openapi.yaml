@@ -950,7 +950,7 @@ paths:
           discoveryP2p, discoveryReady).
         * **`user`** — identity plus the CALLER-SCOPED half of the ping
           boot payload (vpaths, permission flags, federationDiscovery,
-          vpathMetaData). Unlike ping, no `playlists` (fetch those from
+          federationBrowse, vpathMetaData). Unlike ping, no `playlists` (fetch those from
           the playlist routes), no `allowYoutubeDownload` (velvet-only;
           always `!noUpload`), and no `discoveryPath` (always identical
           to `discovery` on servers new enough to have this endpoint).
@@ -1030,8 +1030,9 @@ paths:
                     description: >
                       Present only for authenticated callers. The
                       caller-scoped half of the ping boot payload (vpaths,
-                      permission flags, federationDiscovery, vpathMetaData)
-                      plus the identity fields below.
+                      permission flags, federationDiscovery,
+                      federationBrowse, vpathMetaData) plus the identity
+                      fields below.
                     properties:
                       username: { type: string }
                       admin: { type: boolean }
@@ -6143,6 +6144,144 @@ paths:
           description: Malformed vector (wrong length for the model space, non-finite values, zero vector, bad base64).
         "403":
           description: Discovery data collection is disabled on this server.
+
+  /api/v1/federation/peers:
+    get:
+      tags: [Federation]
+      summary: Peers this user can browse
+      description: |
+        The read-only projection of the paired servers, for the webapp's
+        Peers panel and the peer roots in the file explorer. Deliberately
+        NOT the admin route's payload: `api_key` and `endpoint_ticket` are
+        credentials and never appear here. Any logged-in user may call it —
+        browsing a peer is not an admin action. Nothing dials, so listing is
+        free; `lastSeen`/`lastStatus` are whatever the last admin
+        test-connection left on the row.
+
+        The ping's `federationBrowse` flag tells a client whether to offer
+        any of this (federation on, at least one peer), so clients never
+        probe.
+      responses:
+        "200":
+          description: The peers, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  peers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        name: { type: string }
+                        lastSeen: { type: string, nullable: true, description: "Last successful contact (SQLite datetime), or null" }
+                        lastStatus: { type: string, nullable: true, description: "'ok' or an error string from the last test-connection" }
+                        useDiscovery: { type: boolean, description: Whether this server sends the peer similarity queries }
+        "403":
+          description: Federation is disabled on this server.
+
+  /api/v1/federation/peers/{id}/api/{path}:
+    post:
+      tags: [Federation]
+      summary: Run one allowlisted read on a peer
+      description: |
+        The browsing half of federation: executes ONE read against a peer
+        and pipes its answer back, so the webapp can call `db/albums`,
+        `db/artists`, `db/genres`, `db/search`, `db/album-songs`,
+        `db/genre-songs`, `db/recent/added` or `file-explorer` against a
+        peer with exactly the shapes it uses locally.
+
+        The requested route is screened against the SHARED inbound allowlist
+        (`api/federation-auth.js`) before anything is dialed — the same
+        table that decides what a peer may ask of US, so the two directions
+        cannot drift. That screen is not the security boundary: the peer
+        re-checks its own copy, and the peer's auth wall plus the grants on
+        our key decide what is actually readable. A path segment of `.` or
+        `..` is rejected outright (400) before the screen or any dial, so a
+        traversal attempt cannot slip past a prefix-allowlisted route.
+
+        Method and path address the PEER's API (e.g.
+        `/api/v1/federation/peers/3/api/api/v1/db/albums`). Query strings
+        are NOT forwarded — the webapp appends this server's `?token=` to
+        its URLs, and that token must never reach a peer. Bodies are
+        re-serialized from the parsed JSON request.
+
+        Takes normal local-user auth and is NOT callable with a federation
+        key, so a peer can never chain proxies through this server.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer }, description: Peer row id }
+        - name: path
+          in: path
+          required: true
+          schema: { type: string }
+          description: "The route ON THE PEER, spanning multiple segments (e.g. api/v1/db/albums)"
+      requestBody:
+        required: false
+        description: Forwarded to the peer as JSON — whatever the target route expects.
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: "The peer's response, status and content-type forwarded verbatim."
+        "400":
+          description: "The path contains a '.' or '..' segment."
+        "403":
+          description: "Federation is disabled, or the route is not on the federation allowlist."
+        "404":
+          description: "Unknown peer id (or the peer answered 404)."
+        "502":
+          description: "Peer unreachable — the dial + response deadline (15s) was exceeded."
+    get:
+      tags: [Federation]
+      summary: Run one allowlisted GET read on a peer
+      description: |
+        The GET half of the browse proxy — the route mirrors the peer's own
+        verb, so GET routes like `db/status` or `federation/health` come
+        through here. Same screening, auth, and error contract as the POST
+        form above.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer }, description: Peer row id }
+        - { name: path, in: path, required: true, schema: { type: string }, description: "The GET route ON THE PEER (e.g. api/v1/federation/health)" }
+      responses:
+        "200":
+          description: "The peer's response, status and content-type forwarded verbatim."
+        "400":
+          description: "The path contains a '.' or '..' segment."
+        "403":
+          description: "Federation is disabled, or the route is not on the federation allowlist."
+        "404":
+          description: "Unknown peer id (or the peer answered 404)."
+        "502":
+          description: "Peer unreachable — the dial + response deadline (15s) was exceeded."
+
+  /api/v1/federation/peers/{id}/art/{path}:
+    get:
+      tags: [Federation]
+      summary: A peer's album art
+      description: |
+        Serves cover art from a peer's `/album-art/<file>`, so rows in a
+        peer view render their real covers instead of the placeholder.
+        `compress` is forwarded (the only query param that is); the local
+        `?token=` authenticates the caller here and is stripped before the
+        dial. Conditional request headers are forwarded, so a cached cover
+        still revalidates with a 304.
+
+        `content-length` is deliberately not copied back: the peer gzips
+        its responses and fetch decompresses them, so the peer's length
+        would describe bytes this server is no longer sending.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer }, description: Peer row id }
+        - { name: path, in: path, required: true, schema: { type: string }, description: Art filename in the PEER's art store }
+        - { name: compress, in: query, required: false, schema: { type: string, enum: [s, m, l] }, description: Forwarded to the peer }
+      responses:
+        "200": { description: The image bytes from the peer. }
+        "304": { description: "Not modified — the peer's answer to a conditional request." }
+        "403": { description: Federation is disabled on this server. }
+        "404": { description: "Unknown peer id, or the peer has no such art file." }
+        "502": { description: "Peer unreachable — the 15s deadline was exceeded." }
 
   /api/v1/federation/peers/{id}/stream/{path}:
     get:
