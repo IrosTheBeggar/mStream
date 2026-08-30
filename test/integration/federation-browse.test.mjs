@@ -28,11 +28,31 @@ import os from 'node:os';
 import path from 'node:path';
 import { startServer } from '../helpers/server.mjs';
 import { buildFederationTicket } from '../../src/state/federation.js';
+import http from 'node:http';
 
 let irohAvailable = true;
 try { await import('@number0/iroh'); } catch { irohAvailable = false; }
 
 const json = (token) => ({ 'Content-Type': 'application/json', 'x-access-token': token });
+
+// A GET that sends the request-target verbatim. fetch/WHATWG resolves `.`/`..`
+// segments (even percent-encoded like %2e%2e) client-side, so a literal
+// traversal segment only reaches the server through a low-level client.
+function rawGet(baseUrl, rawPath, headers = {}) {
+  const u = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: u.hostname, port: u.port, path: rawPath, method: 'GET', headers },
+      (res) => {
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => resolve({ status: res.statusCode, body }));
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
 
 describe('federation browse proxy — guards', () => {
   let srv, libDir, adminToken, peerId;
@@ -119,11 +139,26 @@ describe('federation browse proxy — guards', () => {
     });
     assert.equal(stats.status, 403);
 
-    // Path traversal is not resolved, so it simply misses the allowlist.
-    const traverse = await fetch(`${srv.baseUrl}/api/v1/federation/peers/${peerId}/api/api/v1/db/../../etc/passwd`, {
-      headers: json(adminToken),
-    });
-    assert.equal(traverse.status, 403);
+    // A `..` path segment is rejected (400) before the allowlist screen or any
+    // dial. Sent raw (see rawGet): fetch resolves the `..` away client-side, so
+    // the old fetch form 403'd for the wrong reason — the server never saw a
+    // `..` at all.
+    const traverse = await rawGet(
+      srv.baseUrl,
+      `/api/v1/federation/peers/${peerId}/api/api/v1/db/../../etc/passwd`,
+      { 'x-access-token': adminToken },
+    );
+    assert.equal(traverse.status, 400);
+
+    // The shape that made this matter: a prefix-allowlisted path (/media/) with
+    // a `..` that undici would normalize on the wire into an off-allowlist
+    // route. Must be refused before the peer is dialed.
+    const prefixTraverse = await rawGet(
+      srv.baseUrl,
+      `/api/v1/federation/peers/${peerId}/api/media/../api/v1/db/rated`,
+      { 'x-access-token': adminToken },
+    );
+    assert.equal(prefixTraverse.status, 400);
 
     // Same answer for a peer that does not exist: the route is screened
     // first, so an off-allowlist path never reaches the database.
@@ -310,12 +345,19 @@ describe('federation browse proxy over iroh (B reads A)', {
     // Files. Albums and the explorer are covered above; these are the rest,
     // pinned here because each one is a separate entry in the allowlist and
     // a typo in the webapp's peer wrappers would 403 silently.
+    // Includes the album/genre drill-downs (getAlbumSongs / getGenreSongs) and
+    // the recursive Add-All — each is its own allowlist entry the peer wrappers
+    // call, and dropping one would 403 silently in the UI. Empty-result requests
+    // keep the assertions independent of A's fixture content.
     const calls = [
       ['api/v1/db/artists', '{}', b => Array.isArray(b.artists)],
       ['api/v1/db/genres', '{}', b => Array.isArray(b.genres)],
       ['api/v1/db/recent/added', JSON.stringify({ limit: '100' }), b => Array.isArray(b)],
       ['api/v1/db/search', JSON.stringify({ search: 'a' }), b => typeof b === 'object'],
       ['api/v1/db/artists-albums', JSON.stringify({ artist: 'Icarus' }), b => Array.isArray(b.albums)],
+      ['api/v1/db/album-songs', JSON.stringify({ album: 'zzz-none', artist: null, year: null }), b => Array.isArray(b)],
+      ['api/v1/db/genre-songs', JSON.stringify({ genre: 'zzz-none' }), b => Array.isArray(b)],
+      ['api/v1/file-explorer/recursive', JSON.stringify({ directory: '/ashared' }), b => typeof b === 'object' && b !== null],
     ];
 
     for (const [route, body, shapeOk] of calls) {

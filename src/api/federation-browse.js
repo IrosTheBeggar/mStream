@@ -67,10 +67,15 @@ function requirePeer(id) {
 
 // Express 5 named wildcards hand back decoded segments; re-encode each so
 // the upstream URL survives spaces, #, %, ? in names exactly like the
-// webapp's own escaping does. Segments are joined, never resolved — a
-// `..` survives as the literal text `..` and simply fails the allowlist.
+// webapp's own escaping does. A `.` or `..` segment is rejected outright:
+// undici resolves them on the wire, which for a prefix-allowlisted route
+// (/media/, /album-art/) would let `/media/../api/v1/db/rated` slip past the
+// startsWith screen and dial the peer for a route we would never proxy.
 function remotePathFrom(params) {
   const segments = Array.isArray(params) ? params : String(params).split('/');
+  if (segments.some((s) => s === '.' || s === '..')) {
+    throw new WebError('Invalid path', 400);
+  }
   return segments.map(encodeURIComponent).join('/');
 }
 
@@ -132,8 +137,12 @@ export function setup(mstream) {
     // Screen the route BEFORE looking the peer up: a request we would never
     // proxy is answered the same way whether or not the peer exists, and
     // nothing touches the database on the way to that answer.
+    // exactOnly: this proxy forwards only the exact db/file-explorer reads.
+    // The /media and /album-art byte trees have their own dedicated stream and
+    // art proxies, so the API proxy must not inherit them as a second,
+    // range-less path.
     const remotePath = `/${remotePathFrom(req.params.path)}`;
-    if (!isFederationRouteAllowed(req.method, remotePath)) {
+    if (!isFederationRouteAllowed(req.method, remotePath, { exactOnly: true })) {
       // Not a probing signal the way a bad key is — this is an authenticated
       // local user — but it is the only place a webapp bug that asks a peer
       // for a route no peer serves becomes visible, so log it.
@@ -168,9 +177,11 @@ export function setup(mstream) {
   // art is small, and the browser only ever revalidates it.
   mstream.get('/api/v1/federation/peers/:id/art/*path', async (req, res) => {
     requireFederation();
+    // Build (and validate) the path before the peer lookup, so a bad path is
+    // refused without touching the database — as the API proxy does.
+    const remotePath = `/album-art/${remotePathFrom(req.params.path)}`;
     const peer = requirePeer(req.params.id);
 
-    const remotePath = `/album-art/${remotePathFrom(req.params.path)}`;
     const headers = {};
     for (const h of FORWARD_REQ_ART) {
       if (req.headers[h]) { headers[h] = req.headers[h]; }
