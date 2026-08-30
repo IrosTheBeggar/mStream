@@ -2367,3 +2367,16 @@ body.on-federated-server .side-nav-note {
   cursor: pointer;
   text-decoration: underline;
 }
+
+/* Header above each server's block in a multi-server search result. */
+.search-server-header {
+  padding: 12px 12px 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #8bb7f0;
+}
+
+.search-server-note {
+  color: #999;
+  font-weight: 400;
+}
