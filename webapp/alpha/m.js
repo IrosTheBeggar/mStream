@@ -121,6 +121,13 @@ let curFileTracker;
 // leave the context alone — playing a peer track from a mixed search list
 // must not move the browser onto that peer.
 let peerContext = null;
+
+// Bumped whenever the app changes which server it points at (switchServer /
+// adoptPeer). A panel loader captures it before its await and bails if it
+// changed while the request was in flight, so a slow response from the old
+// server can't overwrite the new panel or get its rows stamped with the new
+// server's peer id.
+let browseGeneration = 0;
 // id -> { id, name }. addFederationSongWizard wants a display name for the
 // queue row and a row only carries the id. Filled by loadServerSwitcher()
 // and by anything else that learns a peer's name (e.g. search attribution).
@@ -157,7 +164,7 @@ function adoptPeer(el) {
   const next = peerOf(el);
   const changed = (next ? next.id : null) !== (peerContext ? peerContext.id : null);
   peerContext = next;
-  if (changed) { applyServerContext(); }
+  if (changed) { browseGeneration++; applyServerContext(); }
   return peerContext;
 }
 
@@ -393,10 +400,12 @@ async function senddir(root) {
   const directoryString = root === true ? '~' : getFileExplorerPath();
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
+  const gen = browseGeneration;
   try {
     const response = peerContext
       ? await MSTREAMAPI.peer.dirparser(peerContext.id, directoryString)
       : await MSTREAMAPI.dirparser(directoryString);
+    if (gen !== browseGeneration) { return; }
     document.getElementById('directoryName').innerHTML = escapeHtml(response.path);
 
     if(root === true && response.path.length > 1) {
@@ -3082,8 +3091,10 @@ async function getAllArtists() {
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   programState = [{ state: 'allArtists' }];
 
+  const gen = browseGeneration;
   try {
     const response = await browseApi('artists', { ignoreVPaths: localIgnoreVPaths() });
+    if (gen !== browseGeneration) { return; }
 
     // parse through the json array and make an array of corresponding divs
     let artists = '<ul class="collection">';
@@ -3118,8 +3129,10 @@ async function getArtistsAlbums(artist) {
   document.getElementById('directoryName').innerHTML = t('label.artist') + ' ' + escapeHtml(artist);
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
+  const gen = browseGeneration;
   try {
     const response = await browseApi('artistAlbums', { artist: artist, ignoreVPaths: localIgnoreVPaths() });
+    if (gen !== browseGeneration) { return; }
 
     let albums = '<div class="album-grid">';
     response.albums.forEach(value => {
@@ -3142,8 +3155,10 @@ async function getAllGenres() {
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   programState = [{ state: 'allGenres' }];
 
+  const gen = browseGeneration;
   try {
     const response = await browseApi('genres', {});
+    if (gen !== browseGeneration) { return; }
 
     let html = '<ul class="collection">';
     response.genres.forEach(value => {
@@ -3179,8 +3194,10 @@ async function getGenreSongs(genre) {
   document.getElementById('directoryName').innerHTML = t('label.genre') + ' ' + escapeHtml(genre);
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
+  const gen = browseGeneration;
   try {
     const response = await browseApi('genreSongs', { genre: genre });
+    if (gen !== browseGeneration) { return; }
 
     let songs = '<ul class="collection">';
     response.forEach(song => {
@@ -3208,8 +3225,10 @@ async function getAllAlbums() {
   
   programState = [{ state: 'allAlbums' }];
 
+  const gen = browseGeneration;
   try {
     const response = await browseApi('albums', { ignoreVPaths: localIgnoreVPaths() });
+    if (gen !== browseGeneration) { return; }
 
     let albums = '<div class="album-grid">';
     response.albums.forEach(value => {
@@ -3254,6 +3273,7 @@ async function getAlbumSongs(album, artist, year) {
 
   document.getElementById('localSearchBar').value = '';
 
+  const gen = browseGeneration;
   try {
     const response = await browseApi('albumSongs', {
       album,
@@ -3261,7 +3281,8 @@ async function getAlbumSongs(album, artist, year) {
       year,
       ignoreVPaths: localIgnoreVPaths()
     });
-  
+    if (gen !== browseGeneration) { return; }
+
     //parse through the json array and make an array of corresponding divs
     let files = '<ul class="collection">';
     response.forEach(song => {
@@ -3283,12 +3304,14 @@ async function getRatedSongs() {
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   programState = [{ state: 'allRated' }];
 
+  const gen = browseGeneration;
   try {
     const response = await MSTREAMAPI.getRated({
       ignoreVPaths: Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
         return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
       })
     });
+    if (gen !== browseGeneration) { return; }
     //parse through the json array and make an array of corresponding divs
     let files = '';
     response.forEach(value => {
@@ -3330,12 +3353,14 @@ async function redoRecentlyPlayed() {
   currentBrowsingList = [];
   programState = [{ state: 'recentlyPlayed'}];
 
+  const gen = browseGeneration;
   try {
     const response = await MSTREAMAPI.getRecentlyPlayed(
       document.getElementById('recently-played-limit').value,
       Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
         return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
       }));
+    if (gen !== browseGeneration) { return; }
 
     //parse through the json array and make an array of corresponding divs
     let filelist = '<ul class="collection">';
@@ -3380,12 +3405,14 @@ async function redoMostPlayed() {
   currentBrowsingList = [];
   programState = [{ state: 'mostPlayed'}];
 
+  const gen = browseGeneration;
   try {
     const response = await MSTREAMAPI.getMostPlayed(
       document.getElementById('most-played-limit').value,
       Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
         return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
       }));
+    if (gen !== browseGeneration) { return; }
 
     //parse through the json array and make an array of corresponding divs
     let filelist = '<ul class="collection">';
@@ -3430,11 +3457,13 @@ async function redoRecentlyAdded() {
   currentBrowsingList = [];
   programState = [{ state: 'recentlyAdded' }];
 
+  const gen = browseGeneration;
   try {
     const limit = document.getElementById('recently-added-limit').value;
     const response = peerContext
       ? await MSTREAMAPI.peer.recentlyAdded(peerContext.id, limit)
       : await MSTREAMAPI.getRecentlyAdded(limit, localIgnoreVPaths());
+    if (gen !== browseGeneration) { return; }
 
     //parse through the json array and make an array of corresponding divs
     let filelist = '<ul class="collection">';
@@ -5559,6 +5588,8 @@ function switchServer(peerId) {
   if ((next ? next.id : null) === (peerContext ? peerContext.id : null)) { return; }
 
   peerContext = next;
+  // Any browse load still in flight belongs to the old server; supersede it.
+  browseGeneration++;
   applyServerContext();
 
   // Stay on the same panel when the new server can answer it; otherwise
