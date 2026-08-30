@@ -77,6 +77,34 @@ function l2normalize(v) {
  *   artists: Map<artistName, { vec, analyzedCount, topTags }>,
  * }
  */
+/// Cheapest possible "would a similarity query find anything?" — one indexed
+/// existence check, no vector decode, no index build.
+///
+/// Deliberately NOT getIndex(): that rebuilds the in-memory index whenever the
+/// cache is stale, and the only caller of this is the PUBLIC /api/ endpoint.
+/// Letting an unauthenticated request force an index build would be a free
+/// amplification vector on a large library.
+///
+/// Returns false when discovery is switched off, the DB has never been
+/// created, or nothing has been embedded yet for the configured model — which
+/// are the three ways a client asking "can I use sonic similarity" gets the
+/// same practical answer: not right now.
+export function hasEmbeddings() {
+  if (config.program.scanOptions.collectDiscoveryData !== true) { return false; }
+  try {
+    const ddb = discoveryDb.openDiscoveryDbIfExists();
+    if (!ddb) { return false; }
+    const row = ddb.prepare(
+      'SELECT 1 FROM discovery_tracks WHERE embedding IS NOT NULL AND model_id = ? LIMIT 1'
+    ).get(config.program.scanOptions.discoveryModel);
+    return row !== undefined;
+  } catch (err) {
+    // Never let a capability probe take down the endpoint that reports it.
+    winston.warn(`[discovery] readiness check failed: ${err.message}`);
+    return false;
+  }
+}
+
 export function getIndex() {
   const ddb = discoveryDb.openDiscoveryDbIfExists();
   if (!ddb) { return null; }
