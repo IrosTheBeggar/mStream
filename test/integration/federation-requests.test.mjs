@@ -33,7 +33,10 @@
  *    handleAccept);
  *  - a late accept landing on a cancelled request is nacked with a
  *    re-sent withdraw, so the accepter can unwind even when the original
- *    courtesy never landed;
+ *    courtesy never landed — and the SECOND nack site too: a cancel that
+ *    wins the race inside the accept handler's own await window (ticket
+ *    already consumed → the documented zombie peer, but no grant-back,
+ *    no resurrection, and the nack still goes out);
  *  - a rate-limited refusal from a real sidecar stays TRANSIENT: the row
  *    keeps retrying instead of going terminal (pins the engine's reading
  *    of the sidecar's literal reason string, end to end).
@@ -574,6 +577,59 @@ const SIDECAR_BIN = resolveSidecarBinary();
       await engine.pushAcceptPolicy();
     } finally {
       await frank.stop();
+    }
+  });
+
+  test('RACE: a cancel inside the accept handler\'s await window is nacked too', { timeout: 60000 }, async (t) => {
+    if (gate(t)) { return; }
+    // The OTHER nack site: the accept passes handleAccept's early state
+    // check, suspends at addPeerFromTicket's await — and the operator's
+    // cancel (zero awaits) completes inside that suspension. The handler
+    // has already consumed the ticket, so the documented zombie peer is
+    // added; the re-read must then stop everything else and still nack.
+    const grace = new RawSidecar(SIDECAR_BIN, path.join(tmpDir, 'grace'));
+    try {
+      await grace.ready;
+      await grace.rpc('setDmAccept', { accept: true }); // grace must be able to RECEIVE the nack
+      await p2p.join([grace.ticket]);
+
+      // Seed the OUT row directly (no request DM ever sent): cancel from
+      // 'pending-delivery' sends no courtesy, so the ONLY withdraw grace
+      // can ever see is the nack from inside the handler.
+      const uuid = 'nack-race-0001';
+      const row = reqDb.createRequest({
+        uuid, direction: 'out', peerEndpointId: grace.endpointId,
+        offeredLibraries: ['music'], state: 'pending-delivery', ttlSeconds: 3600,
+      });
+      const peersBefore = fedDb.getFederationPeers().length;
+      const keysBefore = fedDb.getFederationKeys().length;
+
+      // Same-tick: the emit's handler suspends at the dynamic import; the
+      // cancel runs to completion before microtasks resume it.
+      p2p.events.emit('dm', {
+        from: grace.endpointId,
+        payload: { type: 'federation-accept', uuid, ticket: bobTicket('fedk_nack_race', 'Grace'), wantOffer: true },
+      });
+      engine.cancel(row.id);
+      assert.equal(reqDb.getRequestById(row.id).state, 'cancelled', 'the cancel won synchronously');
+
+      // The resumed handler must nack over the real wire…
+      await grace.waitForEvent('dm', (e) => e.payload?.type === 'federation-withdraw' && e.payload.uuid === uuid);
+      await new Promise((r) => setTimeout(r, 300)); // give a wrong late write time to betray itself
+      // …and leave the dead exchange dead: no resurrection, no grant-back
+      // minted (the row offered 'music', so a stomp would mint), and the
+      // one deliberate leftover is the logged zombie peer.
+      assert.equal(reqDb.getRequestById(row.id).state, 'cancelled', 'no resurrection past the cancel');
+      assert.equal(fedDb.getFederationKeys().length, keysBefore, 'no grant-back key for a dead exchange');
+      assert.equal(fedDb.getFederationPeers().length, peersBefore + 1,
+        'the consumed ticket left the documented (logged) zombie peer');
+
+      const zombie = fedDb.getFederationPeers().find((p) => p.api_key === 'fedk_nack_race');
+      if (zombie) { fedDb.deleteFederationPeer(zombie.id); }
+      reqDb.deleteRequest(row.id);
+      await engine.pushAcceptPolicy();
+    } finally {
+      await grace.stop();
     }
   });
 
