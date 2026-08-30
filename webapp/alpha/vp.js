@@ -21,6 +21,16 @@ const VUEPLAYERCORE = (() => {
   // re-saves the whole queue — they all have to go through the same filter.
   mstreamModule.localQueueFilepaths = localQueueFilepaths;
 
+  // Re-persist the live playlist to the local-only tracks now queued. THE one
+  // place every queue mutation re-saves, so a new mutation site can't forget
+  // the federation filter the way the live-playlist START once did.
+  function saveLiveQueue() {
+    if (mstreamModule.livePlaylist.name) {
+      MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name, localQueueFilepaths(), true);
+    }
+  }
+  mstreamModule.saveLiveQueue = saveLiveQueue;
+
   mstreamModule.livePlaylist = {
     name: false
   };
@@ -268,9 +278,7 @@ const VUEPLAYERCORE = (() => {
       checkMove: function (event) {
         document.getElementById("pop").style.visibility = "hidden";
         MSTREAMPLAYER.resetPositionCache();
-        if (mstreamModule.livePlaylist.name) {
-          MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name, localQueueFilepaths(), true);
-        }
+        saveLiveQueue();
       },
       clearRating: async function () {
         try {
@@ -489,9 +497,7 @@ const VUEPLAYERCORE = (() => {
       },
       removeSong: function (event) {
         MSTREAMPLAYER.removeSongAtPosition(this.index, false);
-        if (mstreamModule.livePlaylist.name) {
-          MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name, localQueueFilepaths(), true);
-        }
+        saveLiveQueue();
       },
       downloadSong: function (event) {
         const link = document.createElement("a");
@@ -985,9 +991,7 @@ const VUEPLAYERCORE = (() => {
 
     if (position) {
       MSTREAMPLAYER.insertSongAt(newSong, position, true);
-      if (mstreamModule.livePlaylist.name) {
-        MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name, localQueueFilepaths(), true);
-      }
+      saveLiveQueue();
     } else {
       MSTREAMPLAYER.addSong(newSong, autoPlayOff);
       if (mstreamModule.livePlaylist.name && livePlaylist !== false) {
@@ -1071,9 +1075,7 @@ const VUEPLAYERCORE = (() => {
 
   mstreamModule.clearQueue = async() => {
     MSTREAMPLAYER.clearPlaylist();
-    if (mstreamModule.livePlaylist.name) {
-      MSTREAMAPI.savePlaylist(mstreamModule.livePlaylist.name, localQueueFilepaths(), true);
-    }
+    saveLiveQueue();
   }
 
   // ── WAVEFORM ────────────────────────────────────────────────────────────────

@@ -128,6 +128,12 @@ let peerContext = null;
 // server can't overwrite the new panel or get its rows stamped with the new
 // server's peer id.
 let browseGeneration = 0;
+
+// Same idea for the multi-server search fan-out: submitSearchForm bumps this,
+// and a peer answer from a superseded run is dropped instead of appended to the
+// current results. Re-submitting the SAME term would otherwise slip past the
+// term-only peerResultSlot check and duplicate every peer block.
+let searchGeneration = 0;
 // id -> { id, name }. addFederationSongWizard wants a display name for the
 // queue row and a row only carries the id. Filled by loadServerSwitcher()
 // and by anything else that learns a peer's name (e.g. search attribution).
@@ -454,6 +460,10 @@ function printdir(response) {
   }
 
   for (const file of response.files) {
+    // .m3u playlists resolve against THIS library's paths and there is no peer
+    // wrapper to load, queue, or download one — skip them on a peer rather than
+    // render rows whose handlers would call local APIs with a peer path.
+    if (file.type === 'm3u' && peerContext) { continue; }
     currentBrowsingList.push({ type: file.type, name: file.name })
     if (file.type === 'm3u') {
       filelist += createFileplaylistHtml(file.name);
@@ -3002,9 +3012,9 @@ async function setLivePlaylist() {
         VUEPLAYERCORE.addSongWizard(value.filepath, value.metadata, false, undefined, false, true);
       });  
     } else {
-      // Seed the playlist from the current queue — federated tracks left
-      // out, same as every later re-save (vp.js localQueueFilepaths).
-      MSTREAMAPI.savePlaylist(livePlaylistName, VUEPLAYERCORE.localQueueFilepaths(), true);
+      // Seed the empty playlist from the current queue (federated tracks left
+      // out — saveLiveQueue routes through localQueueFilepaths).
+      VUEPLAYERCORE.saveLiveQueue();
     }
 
     document.getElementById('set_live_playlist').classList.remove('green');
@@ -5337,6 +5347,9 @@ function federatedSearchOffered() {
 
 async function submitSearchForm() {
   try {
+    // A new search supersedes any in-flight fan-out (and an out-of-order local
+    // render) from a previous submit — see searchGeneration.
+    const searchGen = ++searchGeneration;
     document.getElementById('search-results').innerHTML += '<div class="loading-screen"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>'
 
     const postObject = {
@@ -5365,6 +5378,7 @@ async function submitSearchForm() {
     // Searching a federated server searches THAT server (localIgnoreVPaths()
     // above already dropped the local folder filter for the peer case).
     const res = await browseApi('search', postObject);
+    if (searchGen !== searchGeneration) { return; }
 
     if (programState[0].state === 'searchPanel') {
       programState[0].searchTerm = postObject.search;
@@ -5391,7 +5405,7 @@ async function submitSearchForm() {
     // The same query, asked of every paired server. Fire-and-forget: this
     // server's results are already on screen, so a slow or dead peer costs
     // nothing but its own block.
-    if (fanOut) { searchPeers(postObject); }
+    if (fanOut) { searchPeers(postObject, searchGen); }
   }catch(err) {
     boilerplateFailure(err);
   }
@@ -5441,8 +5455,8 @@ function renderSearchRow(key, value, peer) {
 // search spans more than one server, this one included — an unlabelled block
 // next to labelled ones would be the ambiguous case.
 function serverResultHeader(title, note) {
-  return `<div style="padding:12px 12px 2px;font-size:13px;font-weight:600;color:#8bb7f0;">
-    ${escapeHtml(title)}${note ? ` <span style="color:#999;font-weight:400;">&mdash; ${escapeHtml(note)}</span>` : ''}
+  return `<div class="search-server-header">
+    ${escapeHtml(title)}${note ? ` <span class="search-server-note">&mdash; ${escapeHtml(note)}</span>` : ''}
   </div>`;
 }
 
@@ -5455,7 +5469,7 @@ function peerSearchHeader(peer, note) {
 // lives decides whether it can be queued as a local file, added to a
 // playlist, rated, or used as a Sonic Path seed — so the answer is always
 // on screen next to the result.
-async function searchPeers(postObject) {
+async function searchPeers(postObject, searchGen) {
   // Fast bail before the peer lookup: the search panel is not on screen.
   if (!document.getElementById('search-results-peers')) { return; }
 
@@ -5481,14 +5495,21 @@ async function searchPeers(postObject) {
       res = await MSTREAMAPI.peer.search(peer.id, body);
     } catch (err) {
       console.warn(`federation search failed on peer ${peer.id}`, err);
-      // One unreachable peer is a footnote on the results, not a failed
-      // search — say which peer is missing rather than come up silently
-      // short.
-      peerResultSlot(term)?.insertAdjacentHTML('beforeend', peerSearchHeader(peer, t('peers.unreachable')));
+      if (searchGen !== searchGeneration) { return; }
+      const failSlot = peerResultSlot(term);
+      if (!failSlot) { return; }
+      // An unreachable peer is a footnote on the results, not "no results" —
+      // name the missing peer AND hide the empty-state, so "No Results Found"
+      // never sits next to an "unreachable" note.
+      const failEmpty = document.getElementById('search-results-empty');
+      if (failEmpty) { failEmpty.classList.add('super-hide'); }
+      failSlot.insertAdjacentHTML('beforeend', peerSearchHeader(peer, t('peers.unreachable')));
       return;
     }
 
-    // The user may have moved on — a new query, or a different panel.
+    // The user may have moved on — a new query (searchGen), the same query
+    // re-run, or a different panel.
+    if (searchGen !== searchGeneration) { return; }
     const slot = peerResultSlot(term);
     if (!slot) { return; }
     const html = renderSearchResults(res, peer);
