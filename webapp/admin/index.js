@@ -8460,10 +8460,20 @@ const discoveryView = Vue.component('discovery-view', {
         zindex: 99999,
         layout: 2,
         maxWidth: 600,
-        title: `<b>Join the discovery network?</b> Your server will publish a metadata-only snapshot of its music library (never audio files) to the public discovery network, with your server's name and description visible to everyone. Music-discovery data collection will also be enabled.`
-          + `<div style="margin-top:12px; padding:10px 12px; background:#f5f5f5; border-radius:3px; font-weight:normal;">`
-          + `<label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer;"><input id="fedreq-enable-inbox" type="checkbox" style="position:static; opacity:1; pointer-events:auto; margin-top:3px;"/>`
-          + `<span>Also let other servers send me <b>federation requests</b> — invitations to share libraries. Nothing is shared unless you approve each one. (Turns federation on.)</span></label></div>`,
+        // Body + opt-in in `message` (not `title`) so the toast grows to fit
+        // instead of overlapping the buttons. The checkbox's immediate
+        // sibling is a <div>, NOT a <span>: Materialize globally styles
+        // `[type=checkbox] + span` (drawing its own box/checkmark and a 35px
+        // pad), which — combined with the opacity override that un-hides the
+        // native input — rendered TWO checkboxes and broke the box model.
+        // A <div> sibling sidesteps that rule; one clean native checkbox.
+        title: `<b>Join the discovery network?</b>`,
+        message: `Your server will publish a metadata-only snapshot of its music library (never audio files) to the public discovery network, with your server's name and description visible to everyone. Music-discovery data collection will also be enabled.`
+          + `<div style="margin-top:12px; padding:10px 12px; background:#f5f5f5; border-radius:3px;">`
+          + `<label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer; margin:0;">`
+          + `<input id="fedreq-enable-inbox" type="checkbox" style="position:static; opacity:1; pointer-events:auto; width:16px; height:16px; margin:2px 0 0 0; flex-shrink:0;"/>`
+          + `<div style="flex:1;">Also let other servers send me <b>federation requests</b> — invitations to share libraries. Nothing is shared unless you approve each one. <span style="color:#616161;">(Turns federation on.)</span></div>`
+          + `</label></div>`,
         position: 'center',
         buttons: [
           [`<button><b>Enable</b></button>`, async (instance, toast) => {
