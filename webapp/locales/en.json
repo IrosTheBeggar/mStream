@@ -658,6 +658,7 @@
   "search.noResults": "No Results Found",
   "server.thisServer": "This server",
   "server.readOnlyNote": "Browsing {{name}} — read-only. You can play and queue its music, but not change anything.",
+  "server.backToThisServer": "← Back to this server",
   "search.federated": "Search federated servers",
   "search.onThisServer": "On this server",
   "playlist.federatedSkipped": "Federated tracks aren't saved to the live playlist",
