@@ -46,6 +46,11 @@ on:
         description: 'Run the full notarize+staple round-trip (normally tag-only)'
         type: boolean
         default: false
+      signing-policy:
+        description: "Windows signing policy for this dispatch: test-signing (default) or release-signing (DIAGNOSTIC probe of the real policy/certificate; the run's outputs are never shipped)"
+        type: choice
+        options: [test-signing, release-signing]
+        default: test-signing
 
 jobs:
   # ── The installers' contract with the manifest, checked on every PR. ─────
@@ -759,6 +764,139 @@ jobs:
               exit 1
             }
           }
+
+      # ── Authenticode signing via SignPath (win-x64 leg only) ────────────
+      # Runs AFTER the VersionInfo assert (the bytes are final and their
+      # metadata proven) and BEFORE the smokes and the installer build, so
+      # everything downstream — smoke battery included — exercises the
+      # SIGNED binaries. Mirrors the darwin posture: tags sign with the
+      # Foundation cert behind a manual approval (the job waits; approve
+      # promptly — a paused Windows runner still burns minutes); dispatches
+      # prove the pipeline with the auto-approved test certificate; PRs and
+      # forks ship unsigned; a tag with the token missing fails LOUDLY.
+      # Only the PE set is uploaded (not the whole stage): the artifact
+      # configuration (build/signpath/win-bundle-pes.xml, live copy in the
+      # SignPath UI) describes exactly these five files.
+      - name: Collect Windows PEs for signing (win-x64)
+        if: matrix.key == 'win-x64'
+        id: collect-pes
+        shell: bash
+        env:
+          HAVE_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            if [ "$HAVE_TOKEN" != "true" ]; then
+              echo "::error::tag build with SIGNPATH_API_TOKEN missing — refusing to ship an unsigned Windows release (set the secret, or delete this step to ship unsigned on purpose)"
+              exit 1
+            fi
+            mode=release-signing
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$HAVE_TOKEN" = "true" ]; then
+            # Default probe policy is the self-signed test cert; passing
+            # signing-policy=release-signing turns a dispatch into a
+            # DIAGNOSTIC of the real policy + certificate (e.g. surfacing
+            # SignPath's exact error while the Foundation cert is pending)
+            # without cutting a tag. Dispatch outputs are never shipped.
+            if [ "${{ inputs.signing-policy }}" = "release-signing" ]; then
+              mode=release-signing
+            else
+              mode=test-signing
+            fi
+          else
+            echo "not a tag/dispatch (or no token) — shipping unsigned"
+            mode=skip
+          fi
+          echo "policy=$mode" >> "$GITHUB_OUTPUT"
+          if [ "$mode" = "skip" ]; then exit 0; fi
+          VER4=$(node --input-type=module -e "import {windowsVersion} from './scripts/win-versioninfo.mjs'; import {readFileSync} from 'node:fs'; console.log(windowsVersion(JSON.parse(readFileSync('package.json','utf8')).version))")
+          echo "ver4=$VER4" >> "$GITHUB_OUTPUT"
+          D=$(ls -d dist/stage/mStream-*-win-x64)
+          mkdir -p signing/pe-set/bin/rust-parser signing/pe-set/bin/rust-server-audio signing/pe-set/bin/p2p-sidecar signing/pe-set/bin/iroh
+          cp "$D/mStream.exe" "$D/mstream-server.exe" signing/pe-set/
+          cp "$D/bin/rust-parser/rust-parser-win32-x64.exe" signing/pe-set/bin/rust-parser/
+          cp "$D/bin/rust-server-audio/rust-server-audio-win32-x64.exe" signing/pe-set/bin/rust-server-audio/
+          cp "$D/bin/p2p-sidecar/p2p-sidecar-win32-x64.exe" signing/pe-set/bin/p2p-sidecar/
+          cp "$D/bin/iroh/iroh.win32-x64-msvc.node" signing/pe-set/bin/iroh/
+          echo "collected 6 PEs for $mode (version $VER4)"
+
+      - name: Upload PE set for signing
+        if: matrix.key == 'win-x64' && steps.collect-pes.outputs.policy != 'skip'
+        id: pe-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-pes-unsigned
+          path: signing/pe-set/**
+          if-no-files-found: error
+
+      - name: Submit signing request (PE set)
+        if: matrix.key == 'win-x64' && steps.collect-pes.outputs.policy != 'skip'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: 075a387f-6509-4983-be83-cc89fa5ded20
+          project-slug: mStream
+          signing-policy-slug: ${{ steps.collect-pes.outputs.policy }}
+          artifact-configuration-slug: win-bundle-pes
+          github-artifact-id: ${{ steps.pe-artifact.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 7200
+          output-artifact-directory: signing/pe-signed
+          parameters: |
+            version: "${{ steps.collect-pes.outputs.ver4 }}"
+
+      - name: Apply signed PEs and recut the zip (win-x64)
+        if: matrix.key == 'win-x64' && steps.collect-pes.outputs.policy != 'skip'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Policy-aware signature gate. release-signing chains to a public CA
+          # and must verify Valid on a stock runner. test-signing uses
+          # SignPath's SELF-SIGNED test certificate: the runner does not trust
+          # its root, so Get-AuthenticodeSignature reports UnknownError BY
+          # DESIGN even though the bytes are correctly signed (proving-run
+          # lesson: CN=Test certificate for 'mStream [OSS]'). Accept exactly
+          # that shape in test mode - a signature must exist with a signer -
+          # and everything else (NotSigned, HashMismatch = tampering) still
+          # fails in both modes.
+          $policy = '${{ steps.collect-pes.outputs.policy }}'
+          function Assert-MStreamSignature([string]$path, [string]$what) {
+            $sig = Get-AuthenticodeSignature $path
+            Write-Host "${what}: $($sig.Status) ($($sig.SignerCertificate.Subject))"
+            if ($policy -eq 'release-signing') {
+              if ($sig.Status -ne 'Valid') { Write-Host "::error::signature on $path is $($sig.Status) - release signing must chain to a trusted root"; exit 1 }
+            } else {
+              $signedButUntrustedRoot = ($sig.Status -eq 'UnknownError' -and $null -ne $sig.SignerCertificate)
+              if (-not ($sig.Status -eq 'Valid' -or $signedButUntrustedRoot)) { Write-Host "::error::signature on $path is $($sig.Status) - expected a test-signed PE (Valid, or UnknownError with a signer)"; exit 1 }
+            }
+          }
+          $D = (Get-Item dist/stage/mStream-*-win-x64).FullName
+          $pairs = @(
+            @('signing/pe-signed/mStream.exe', "$D/mStream.exe"),
+            @('signing/pe-signed/mstream-server.exe', "$D/mstream-server.exe"),
+            @('signing/pe-signed/bin/rust-parser/rust-parser-win32-x64.exe', "$D/bin/rust-parser/rust-parser-win32-x64.exe"),
+            @('signing/pe-signed/bin/rust-server-audio/rust-server-audio-win32-x64.exe', "$D/bin/rust-server-audio/rust-server-audio-win32-x64.exe"),
+            @('signing/pe-signed/bin/p2p-sidecar/p2p-sidecar-win32-x64.exe', "$D/bin/p2p-sidecar/p2p-sidecar-win32-x64.exe"),
+            @('signing/pe-signed/bin/iroh/iroh.win32-x64-msvc.node', "$D/bin/iroh/iroh.win32-x64-msvc.node")
+          )
+          foreach ($p in $pairs) {
+            if (-not (Test-Path $p[0])) { Write-Host "::error::signed file missing: $($p[0])"; exit 1 }
+            Copy-Item $p[0] $p[1] -Force
+            Assert-MStreamSignature $p[1] ([System.IO.Path]::GetFileName($p[1]))
+          }
+          # The bundler cut the zip before signing changed the bytes — recut
+          # (same rule as the darwin re-zip; the recut IS what users
+          # download). Mirror the bundler's tool EXACTLY: System32 bsdtar,
+          # never Compress-Archive (backslash entry paths break non-Windows
+          # unzippers) and never PATH `tar` (git-bash GNU tar writes an
+          # uncompressed TAR named .zip — see scripts/build-bun.mjs).
+          $B = [System.IO.Path]::GetFileName($D)
+          Remove-Item "dist/$B.zip" -ErrorAction SilentlyContinue
+          $bsdtar = Join-Path $env:SystemRoot 'System32\tar.exe'
+          & $bsdtar -a -c -f "dist/$B.zip" -C 'dist/stage' $B
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::bsdtar recut failed ($LASTEXITCODE)"; exit 1 }
+          $magic = [System.BitConverter]::ToString((Get-Content "dist/$B.zip" -AsByteStream -TotalCount 4)).Replace('-','')
+          if ($magic -ne '504B0304') { Write-Host "::error::recut dist/$B.zip is not a zip (magic $magic)"; exit 1 }
+          Write-Host "re-zipped dist/$B.zip with signed binaries"
 
       # ── Developer ID signing + notarization (darwin legs only) ──────────
       # Ported from mstream-terminal-player's release.yml, adapted from a
@@ -1936,6 +2074,55 @@ jobs:
           Write-Host "VersionInfo: FileVersion='$fv' Product='$pn' Company='$("$($vi.CompanyName)".Trim())'"
           if ($fv -ne $ver4) { Write-Host "::error::installer FileVersion '$fv' is not '$ver4'"; exit 1 }
           if ($pn -ne 'mStream') { Write-Host "::error::installer ProductName '$pn' is not 'mStream'"; exit 1 }
+
+      # ── Sign the installer itself (SignPath, request #2) ────────────────
+      # The setup.exe was compiled FROM the signed PE set above; Gatekeeper's
+      # Windows cousin (SmartScreen) assesses the INSTALLER's own signature
+      # on download, so it gets its own request against the
+      # `windows-installer` artifact configuration. Same policy the PE set
+      # used (release on tags with manual approval, test on dispatches).
+      - name: Upload installer for signing
+        if: matrix.key == 'win-x64' && steps.collect-pes.outputs.policy != 'skip'
+        id: installer-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-installer-unsigned
+          path: dist/installer/mStream-*-win-x64-setup.exe
+          if-no-files-found: error
+
+      - name: Submit signing request (installer)
+        if: matrix.key == 'win-x64' && steps.collect-pes.outputs.policy != 'skip'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: 075a387f-6509-4983-be83-cc89fa5ded20
+          project-slug: mStream
+          signing-policy-slug: ${{ steps.collect-pes.outputs.policy }}
+          artifact-configuration-slug: windows-installer
+          github-artifact-id: ${{ steps.installer-artifact.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 7200
+          output-artifact-directory: signing/installer-signed
+
+      - name: Apply signed installer
+        if: matrix.key == 'win-x64' && steps.collect-pes.outputs.policy != 'skip'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $signed = Get-Item signing/installer-signed/mStream-*-win-x64-setup.exe
+          Copy-Item $signed.FullName (Join-Path 'dist/installer' $signed.Name) -Force
+          # Same policy-aware gate as the PE set (see that step's comment):
+          # test-signing's self-signed cert reads UnknownError on a stock
+          # runner by design; release-signing must verify Valid.
+          $policy = '${{ steps.collect-pes.outputs.policy }}'
+          $sig = Get-AuthenticodeSignature (Join-Path 'dist/installer' $signed.Name)
+          Write-Host "$($signed.Name): $($sig.Status) ($($sig.SignerCertificate.Subject))"
+          if ($policy -eq 'release-signing') {
+            if ($sig.Status -ne 'Valid') { Write-Host "::error::installer signature is $($sig.Status) - release signing must chain to a trusted root"; exit 1 }
+          } else {
+            $signedButUntrustedRoot = ($sig.Status -eq 'UnknownError' -and $null -ne $sig.SignerCertificate)
+            if (-not ($sig.Status -eq 'Valid' -or $signedButUntrustedRoot)) { Write-Host "::error::installer signature is $($sig.Status) - expected a test-signed installer (Valid, or UnknownError with a signer)"; exit 1 }
+          }
 
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
