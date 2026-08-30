@@ -127,6 +127,15 @@ export async function compose({ peerEndpointId, message = null, offeredLibraries
   const existing = reqDb.listRequests().find((r) => r.direction === 'out'
     && r.peer_endpoint_id === peerEndpointId && reqDb.ACTIVE_STATES.includes(r.state));
   if (existing) { throw new Error(`a request to this peer is already ${existing.state}`); }
+  // Crossing guard: if this peer already has a live inbound request here,
+  // composing back would open a SECOND parallel exchange — four keys for
+  // one relationship. The admin UI steers to the inbox for this case; the
+  // engine refuses so every caller gets the same protection. ("already"
+  // keeps the route's 409 mapping.)
+  if (reqDb.hasActiveFromPeer(peerEndpointId)) {
+    throw new Error('this peer already sent you a federation request — '
+      + 'answer it, or let that exchange finish, before composing a new one');
+  }
 
   const peerName = catalog.get(peerEndpointId)?.payload?.name || null;
   const row = reqDb.createRequest({
@@ -288,12 +297,28 @@ async function attempt(id) {
     const payload = await payloadForRow(row);
     if (!payload) { return; }
 
+    // The dial (and the ticket build above) yield: an operator cancel, a
+    // peer withdraw, a TTL sweep — or the reply to this very DM beating its
+    // own delivery ack — can move the row meanwhile. Writing this attempt's
+    // outcome over that would resurrect a dead row or roll an advanced one
+    // back, so every write below first checks the row still sits where the
+    // attempt found it (and uses the fresh read, not the stale one).
+    const stillCurrent = () => {
+      const now = reqDb.getRequestById(id);
+      if (now && now.state === row.state) { return now; }
+      winston.info(`[federation-requests] ${row.uuid} ${payload.type} outcome dropped — `
+        + `row moved '${row.state}' → '${now ? now.state : 'deleted'}' mid-attempt`);
+      return null;
+    };
+
     let outcome;
     try {
       outcome = await p2p.sendDm(row.peer_endpoint_id, payload);
     } catch (err) {
       // Never reached (offline / pre-DM build / timeout): walk the ladder.
-      const failCount = row.fail_count + 1;
+      const live = stillCurrent();
+      if (!live) { return; }
+      const failCount = live.fail_count + 1;
       const delay = BACKOFF_SECONDS[Math.min(failCount - 1, BACKOFF_SECONDS.length - 1)];
       reqDb.updateRequest(id, { failCount, nextAttemptInSeconds: delay });
       winston.info(`[federation-requests] ${row.uuid} ${payload.type} undeliverable `
@@ -302,7 +327,9 @@ async function attempt(id) {
     }
 
     if (outcome.delivered === true) {
-      const patch = advanceAfterDelivery(row);
+      const fresh = stillCurrent();
+      if (!fresh) { return; }
+      const patch = advanceAfterDelivery(fresh);
       if (patch) { reqDb.updateRequest(id, patch); }
       winston.info(`[federation-requests] ${row.uuid} ${payload.type} delivered to `
         + `${row.peer_endpoint_id.slice(0, 12)}… → ${patch ? patch.state : row.state}`);
@@ -313,10 +340,12 @@ async function attempt(id) {
     // (the peer's typed "no"); rate limiting is always transient; and an
     // accept/grant refusal only means the peer's inbox is momentarily off —
     // they asked for this pairing, so keep trying until the TTL says stop.
+    const now = stillCurrent();
+    if (!now) { return; }
     const transient = outcome.reason === 'rate-limited'
       || (payload.type !== 'federation-request' && outcome.reason === 'not-accepting');
     if (transient) {
-      const failCount = row.fail_count + 1;
+      const failCount = now.fail_count + 1;
       const delay = BACKOFF_SECONDS[Math.min(failCount - 1, BACKOFF_SECONDS.length - 1)];
       reqDb.updateRequest(id, { failCount, nextAttemptInSeconds: delay });
       winston.info(`[federation-requests] ${row.uuid} ${payload.type} refused (${outcome.reason}) — retrying in ${delay}s`);
@@ -327,7 +356,7 @@ async function attempt(id) {
       rejectReason: `transport: ${outcome.reason}`,
       nextAttemptInSeconds: null,
     });
-    revokeUndeliveredKey(row, `refused (${outcome.reason})`);
+    revokeUndeliveredKey(now, `refused (${outcome.reason})`);
     winston.warn(`[federation-requests] ${row.uuid} ${payload.type} refused by `
       + `${row.peer_endpoint_id.slice(0, 12)}… (${outcome.reason}) — terminal`);
   } finally {
@@ -480,6 +509,14 @@ async function handleAccept(from, payload) {
   if (['granting', 'completed'].includes(row.state)) { return; } // idempotent re-delivery
   if (!['pending-delivery', 'delivered'].includes(row.state)) {
     winston.warn(`[federation-requests] ${row.uuid} late accept ignored (state '${row.state}')`);
+    // The accepter minted a live key for a request that no longer stands.
+    // Left unanswered they'd hold it until nothing — their sweep only
+    // revokes UNdelivered credentials. Re-send the withdraw (the original
+    // courtesy, if any, may never have landed) so their handleWithdraw
+    // unwinds the key. Old peers ignore the extra withdraw harmlessly.
+    if (['cancelled', 'expired'].includes(row.state)) {
+      sendCourtesy(row, { type: 'federation-withdraw', uuid: row.uuid });
+    }
     return;
   }
   const peerId = await addPeerFromTicket(row, payload.ticket, 'accept');
@@ -488,7 +525,19 @@ async function handleAccept(from, payload) {
   // advanced the row meanwhile — re-read so only one handler mints the
   // grant-back (everything from here to updateRequest is synchronous).
   row = reqDb.getRequestById(row.id);
-  if (!row || !['pending-delivery', 'delivered'].includes(row.state)) { return; }
+  if (!row || !['pending-delivery', 'delivered'].includes(row.state)) {
+    // A duplicate handler advancing the row is fine (granting/completed —
+    // silent). But an operator cancel (or the TTL) winning this race means
+    // the ticket above was already consumed: a peer row now points at an
+    // exchange we just killed — visible in the panel, where testPeer will
+    // say so. Log it and nack the accepter so it unwinds its side too.
+    if (row && ['cancelled', 'expired'].includes(row.state)) {
+      winston.warn(`[federation-requests] ${row.uuid} accept crossed our ${row.state} row — `
+        + `peer id=${peerId} was already added from its ticket; remove it in the Federation panel if unwanted`);
+      sendCourtesy(row, { type: 'federation-withdraw', uuid: row.uuid });
+    }
+    return;
+  }
 
   const wantOffer = payload.wantOffer !== false;
   const grantNames = wantOffer ? row.offered_libraries : [];
@@ -532,6 +581,18 @@ async function handleGrant(from, payload) {
   }
   const peerId = await addPeerFromTicket(row, payload.ticket, 'grant');
   if (peerId === null) { return; }
+  // addPeerFromTicket yielded: a withdraw from this same peer (or the TTL
+  // sweep) may have closed the row meanwhile — completing over that would
+  // resurrect a terminal row and erase the revocation record. Same guard
+  // as handleAccept's re-read.
+  const fresh = reqDb.getRequestById(row.id);
+  if (!fresh || !['granting', 'accepted'].includes(fresh.state)) {
+    if (fresh && ['cancelled', 'expired'].includes(fresh.state)) {
+      winston.warn(`[federation-requests] ${row.uuid} grant crossed our ${fresh.state} row — `
+        + `peer id=${peerId} was already added from its ticket; remove it in the Federation panel if unwanted`);
+    }
+    return;
+  }
   reqDb.updateRequest(row.id, { state: 'completed', createdPeerId: peerId, nextAttemptInSeconds: null });
   winston.info(`[federation-requests] ${row.uuid} completed — mutual pairing with ${from.slice(0, 12)}…`);
 }
@@ -548,9 +609,41 @@ function handleReject(from, payload) {
 function handleWithdraw(from, payload) {
   const row = rowForSender(from, payload.uuid, 'in', 'withdraw');
   if (!row) { return; }
-  if (row.state !== 'received') { return; }
-  reqDb.updateRequest(row.id, { state: 'cancelled', nextAttemptInSeconds: null });
-  winston.info(`[federation-requests] ${row.uuid} withdrawn by its sender`);
+  if (row.state === 'received') {
+    reqDb.updateRequest(row.id, { state: 'cancelled', nextAttemptInSeconds: null });
+    winston.info(`[federation-requests] ${row.uuid} withdrawn by its sender`);
+    return;
+  }
+  // A withdraw can also cross our accept. The sender can only cancel while
+  // its own row is still pending-delivery/delivered — meaning it never
+  // consumed the ticket we minted, so nobody will ever claim that key, and
+  // the TTL sweep would not revoke it either (it only unwinds UNdelivered
+  // credentials). Honor the withdrawal: revoke the key and close the row.
+  // This branch is also the receiving end of the late-accept nack (see
+  // handleAccept). Completed rows stay untouched — severing a finished
+  // pairing is the operator's call, never a DM's.
+  if (['accepted', 'granting'].includes(row.state)) {
+    reqDb.updateRequest(row.id, { state: 'cancelled', nextAttemptInSeconds: null });
+    if (row.minted_key_id) {
+      try {
+        // Forensics before the delete: a bound key means the "sender never
+        // consumed the ticket" premise was violated — it used the key,
+        // then withdrew. Still honor the withdrawal, but say so.
+        const keyRow = fedDb.getFederationKeyById(row.minted_key_id);
+        if (keyRow?.bound_endpoint_id) {
+          winston.warn(`[federation-requests] ${row.uuid} withdrawing peer had already BOUND key `
+            + `id=${row.minted_key_id} — it consumed the ticket before withdrawing`);
+        }
+        if (fedDb.deleteFederationKey(row.minted_key_id)) {
+          winston.info(`[federation-requests] ${row.uuid} withdrawn after our accept — `
+            + `revoked unclaimed key id=${row.minted_key_id}`);
+        }
+      } catch (err) {
+        winston.warn(`[federation-requests] ${row.uuid} failed to revoke key id=${row.minted_key_id} on withdraw: ${err.message}`);
+      }
+    }
+    winston.info(`[federation-requests] ${row.uuid} withdrawn by its sender after our accept — exchange closed`);
+  }
 }
 
 // Parse a received mstrfed1: ticket and add its issuer as a federation
