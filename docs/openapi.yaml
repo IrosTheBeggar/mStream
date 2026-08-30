@@ -6077,9 +6077,9 @@ paths:
         table that decides what a peer may ask of US, so the two directions
         cannot drift. That screen is not the security boundary: the peer
         re-checks its own copy, and the peer's auth wall plus the grants on
-        our key decide what is actually readable. Path segments are joined,
-        never resolved, so a `..` stays literal text and simply misses the
-        allowlist.
+        our key decide what is actually readable. A path segment of `.` or
+        `..` is rejected outright (400) before the screen or any dial, so a
+        traversal attempt cannot slip past a prefix-allowlisted route.
 
         Method and path address the PEER's API (e.g.
         `/api/v1/federation/peers/3/api/api/v1/db/albums`). Query strings
@@ -6105,6 +6105,30 @@ paths:
       responses:
         "200":
           description: "The peer's response, status and content-type forwarded verbatim."
+        "400":
+          description: "The path contains a '.' or '..' segment."
+        "403":
+          description: "Federation is disabled, or the route is not on the federation allowlist."
+        "404":
+          description: "Unknown peer id (or the peer answered 404)."
+        "502":
+          description: "Peer unreachable — the dial + response deadline (15s) was exceeded."
+    get:
+      tags: [Federation]
+      summary: Run one allowlisted GET read on a peer
+      description: |
+        The GET half of the browse proxy — the route mirrors the peer's own
+        verb, so GET routes like `db/status` or `federation/health` come
+        through here. Same screening, auth, and error contract as the POST
+        form above.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer }, description: Peer row id }
+        - { name: path, in: path, required: true, schema: { type: string }, description: "The GET route ON THE PEER (e.g. api/v1/federation/health)" }
+      responses:
+        "200":
+          description: "The peer's response, status and content-type forwarded verbatim."
+        "400":
+          description: "The path contains a '.' or '..' segment."
         "403":
           description: "Federation is disabled, or the route is not on the federation allowlist."
         "404":

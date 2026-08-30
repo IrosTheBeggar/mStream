@@ -25,6 +25,10 @@ export function setup(mstream) {
     // Get user's library names
     const vpaths = req.user.vpaths || [];
 
+    // Read the peer list once — both the discovery and browse flags need it.
+    const federationEnabled = config.program.federation.enabled === true;
+    const federationPeers = federationEnabled ? fedDb.getFederationPeers() : [];
+
     const returnThis = {
       vpaths,
       playlists: getPlaylists(req.user.id),
@@ -50,16 +54,16 @@ export function setup(mstream) {
       // And again for "From your peers" (/api/v1/discovery/federation/*):
       // needs local embeddings (the seed vector comes from our discovery.db)
       // plus at least one federated peer that hasn't opted out of discovery.
-      federationDiscovery: config.program.federation.enabled === true
+      federationDiscovery: federationEnabled
         && config.program.scanOptions.collectDiscoveryData === true
-        && fedDb.getFederationPeers().some((p) => p.use_discovery === 1),
+        && federationPeers.some((p) => p.use_discovery === 1),
       // Browsing a peer's library (api/federation-browse.js): the Peers
       // panel and the peer roots in the file explorer. Same no-probe
       // contract as the discovery flags — an older build omits the key and
       // the webapp simply never offers the feature. Requires a peer to
       // browse, so a federation-enabled server with none stays quiet.
-      federationBrowse: config.program.federation.enabled === true
-        && fedDb.getFederationPeers().length > 0,
+      federationBrowse: federationEnabled
+        && federationPeers.length > 0,
       vpathMetaData: {}
     };
 
