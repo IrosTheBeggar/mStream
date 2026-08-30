@@ -21,7 +21,22 @@
  *  - a transport-refused cold request goes terminal ('refused');
  *  - an unreachable peer walks the retry ladder instead of dying;
  *  - the inbox toggle gates NEW requests at the verb level while replies
- *    keep flowing (the open-for-replies transport window).
+ *    keep flowing (the open-for-replies transport window);
+ *  - the crossing guard: compose refuses while the same peer has a live
+ *    inbound request here (one exchange per relationship);
+ *  - a withdraw crossing our accept revokes the unclaimed minted key
+ *    (which nothing else would ever clean up — the TTL sweep only unwinds
+ *    UNdelivered credentials) — while a withdraw on a COMPLETED pairing
+ *    changes nothing (terminals absorb; severing is the operator's call);
+ *  - a same-tick grant+withdraw pair cannot resurrect the cancelled row
+ *    to 'completed' (handleGrant re-reads after its await, like
+ *    handleAccept);
+ *  - a late accept landing on a cancelled request is nacked with a
+ *    re-sent withdraw, so the accepter can unwind even when the original
+ *    courtesy never landed;
+ *  - a rate-limited refusal from a real sidecar stays TRANSIENT: the row
+ *    keeps retrying instead of going terminal (pins the engine's reading
+ *    of the sidecar's literal reason string, end to end).
  *
  * ⚠ SIDECAR-VERSION GATE: needs a DM-capable sidecar (≥v1.0.3) — the
  * suite skips wholesale where no binary exists and probe-skips against a
@@ -392,5 +407,210 @@ const SIDECAR_BIN = resolveSidecarBinary();
     assert.equal(got.state, 'pending-delivery', 'still live — not terminal');
     assert.ok(got.next_attempt_at, 'retry armed');
     engine.cancel(row.id); // leave the table quiet for the other tests
+  });
+
+  test('crossing guard: compose refuses while the peer has a live inbound request', { timeout: 60000 }, async (t) => {
+    if (gate(t)) { return; }
+    // Synthetic inbound off the events bus — the guard under test is pure
+    // engine/DB, no wire needed.
+    const crosser = 'ef'.repeat(32);
+    p2p.events.emit('dm', { from: crosser, payload: { type: 'federation-request', uuid: 'cross-guard-01', name: 'Crosser' } });
+    const inRow = await pollUntil(() => reqDb.getRequestByUuid('cross-guard-01'), { what: 'crossing inbox row' });
+
+    await assert.rejects(engine.compose({ peerEndpointId: crosser }), /already sent you/);
+    assert.equal(reqDb.listRequests().filter((r) => r.peer_endpoint_id === crosser).length, 1,
+      'the refused compose left no row behind');
+
+    // A terminal inbound frees the slot: rejecting theirs makes composing
+    // our own legitimate again (the operator changed their mind and leads).
+    await engine.reject(inRow.id);
+    const out = await engine.compose({ peerEndpointId: crosser });
+    assert.equal(out.state, 'pending-delivery');
+
+    // Tidy: both exchanges go nowhere (fake peer).
+    engine.cancel(out.id);
+    reqDb.deleteRequest(out.id);
+    reqDb.deleteRequest(inRow.id);
+    await engine.pushAcceptPolicy();
+  });
+
+  test('withdraw crossing our accept revokes the unclaimed key', { timeout: 60000 }, async (t) => {
+    if (gate(t)) { return; }
+    // A fresh identity so this test's DM budget is its own.
+    const erin = new RawSidecar(SIDECAR_BIN, path.join(tmpDir, 'erin'));
+    try {
+      await erin.ready;
+      await erin.rpc('setDmAccept', { accept: true }); // erin must be able to RECEIVE our accept ticket
+      await p2p.join([erin.ticket]);
+
+      const uuid = 'in-withdraw-001';
+      await erin.rpc('dm', {
+        to: ourTicket,
+        payload: { type: 'federation-request', uuid, name: 'Erin', offer: ['erinshare'] },
+      });
+      const row = await pollUntil(() => reqDb.getRequestByUuid(uuid), { what: 'erin inbox row' });
+
+      await engine.accept(row.id, {
+        libraryIds: [libId], vpathNames: ['music'],
+        limits: { streamKbps: 0, dailyMb: 0, maxStreams: 0 },
+        expiresAt: null, acceptTheirOffer: true,
+      });
+      // The ticket reaches erin and the row settles in 'granting' — the
+      // state whose minted key the TTL sweep deliberately never revokes
+      // (the credential WAS delivered), i.e. the state that used to strand.
+      await erin.waitForEvent('dm', (e) => e.payload?.type === 'federation-accept' && e.payload.uuid === uuid);
+      await pollUntil(() => reqDb.getRequestById(row.id).state === 'granting', { what: 'granting state' });
+      const keyId = reqDb.getRequestById(row.id).minted_key_id;
+      assert.ok(fedDb.getFederationKeyById(keyId), 'the minted key is live before the withdraw');
+
+      // Erin cancelled instead of granting (its cancel can only happen
+      // while its own row never consumed our ticket — the key is claimable
+      // by nobody).
+      await erin.rpc('dm', { to: ourTicket, payload: { type: 'federation-withdraw', uuid } });
+      await pollUntil(() => reqDb.getRequestById(row.id).state === 'cancelled', { what: 'cancelled state' });
+      assert.ok(!fedDb.getFederationKeyById(keyId), 'the unclaimed key was revoked');
+      assert.equal(reqDb.getRequestById(row.id).next_attempt_at, null, 'nothing left owing');
+
+      reqDb.deleteRequest(row.id);
+      await engine.pushAcceptPolicy();
+    } finally {
+      await erin.stop();
+    }
+  });
+
+  test('a withdraw on a completed pairing changes nothing (terminals absorb)', { timeout: 60000 }, async (t) => {
+    if (gate(t)) { return; }
+    // The single most dangerous regression surface of the withdraw-cleanup
+    // branch: it must never grow to include 'completed'. Seeded directly —
+    // the guard under test is pure engine/DB.
+    const peer = '12'.repeat(32);
+    const key = fedDb.createFederationKey('terminal-absorb-test', [libId],
+      { streamKbps: 0, dailyMb: 0, maxStreams: 0 }, null);
+    const row = reqDb.createRequest({
+      uuid: 'in-completed-01', direction: 'in', peerEndpointId: peer,
+      state: 'received', ttlSeconds: 3600,
+    });
+    reqDb.updateRequest(row.id, { state: 'completed', mintedKeyId: key.id });
+
+    p2p.events.emit('dm', { from: peer, payload: { type: 'federation-withdraw', uuid: 'in-completed-01' } });
+    // handleWithdraw runs synchronously inside the emit (no awaits on its
+    // path) — assert directly.
+    assert.equal(reqDb.getRequestById(row.id).state, 'completed', 'the terminal row did not move');
+    assert.ok(fedDb.getFederationKeyById(key.id), 'the delivered credential survives a post-completion withdraw');
+
+    fedDb.deleteFederationKey(key.id);
+    reqDb.deleteRequest(row.id);
+    await engine.pushAcceptPolicy();
+  });
+
+  test('RACE: a same-tick grant+withdraw pair cannot resurrect the row', { timeout: 60000 }, async (t) => {
+    if (gate(t)) { return; }
+    // The row's own authenticated peer sends grant then withdraw
+    // back-to-back (one pipe chunk → both dm events in one macrotask).
+    // handleGrant suspends at addPeerFromTicket's await; handleWithdraw —
+    // no awaits — runs to completion inside that suspension (cancelled +
+    // key revoked). Without the post-await re-read, handleGrant's resume
+    // would stomp 'cancelled' with 'completed', erasing the revocation
+    // record on a row whose credential is dead.
+    const peer = '34'.repeat(32);
+    const key = fedDb.createFederationKey('grant-race-test', [libId],
+      { streamKbps: 0, dailyMb: 0, maxStreams: 0 }, null);
+    const row = reqDb.createRequest({
+      uuid: 'grant-race-001', direction: 'in', peerEndpointId: peer,
+      state: 'received', ttlSeconds: 3600,
+    });
+    reqDb.updateRequest(row.id, { state: 'granting', mintedKeyId: key.id });
+
+    const payloadGrant = { type: 'federation-grant', uuid: 'grant-race-001', ticket: bobTicket('fedk_grant_race', 'Grant Racer') };
+    p2p.events.emit('dm', { from: peer, payload: payloadGrant });
+    p2p.events.emit('dm', { from: peer, payload: { type: 'federation-withdraw', uuid: 'grant-race-001' } });
+
+    await pollUntil(() => reqDb.getRequestById(row.id).state === 'cancelled', { what: 'cancelled state' });
+    await new Promise((r) => setTimeout(r, 300)); // give a stomping resume time to betray itself
+    assert.equal(reqDb.getRequestById(row.id).state, 'cancelled', 'the withdraw stands — no resurrection to completed');
+    assert.ok(!fedDb.getFederationKeyById(key.id), 'the revocation stands');
+
+    // The grant's ticket may have added its peer before the guard bailed —
+    // deliberate (logged for the operator); tidy it here.
+    const zombie = fedDb.getFederationPeers().find((p) => p.api_key === 'fedk_grant_race');
+    if (zombie) { fedDb.deleteFederationPeer(zombie.id); }
+    reqDb.deleteRequest(row.id);
+    await engine.pushAcceptPolicy();
+  });
+
+  test('a late accept after cancel is nacked so the accepter can unwind', { timeout: 60000 }, async (t) => {
+    if (gate(t)) { return; }
+    const frank = new RawSidecar(SIDECAR_BIN, path.join(tmpDir, 'frank'));
+    try {
+      await frank.ready;
+      await frank.rpc('setDmAccept', { accept: true }); // frank must be able to RECEIVE the nack
+      await p2p.join([frank.ticket]);
+
+      const row = await engine.compose({ peerEndpointId: frank.endpointId });
+      await frank.waitForEvent('dm', (e) => e.payload?.type === 'federation-request' && e.payload.uuid === row.uuid);
+      await pollUntil(() => reqDb.getRequestById(row.id).state === 'delivered', { what: 'delivered state' });
+
+      // Cancel with the courtesy withdraw LOST (an offline blip): flip the
+      // row terminal directly instead of engine.cancel(), so the only
+      // withdraw frank can ever see is the nack under test.
+      reqDb.updateRequest(row.id, { state: 'cancelled', nextAttemptInSeconds: null });
+
+      const peersBefore = fedDb.getFederationPeers().length;
+      const keysBefore = fedDb.getFederationKeys().length;
+      // Frank accepted before learning of the cancel — the crossing race.
+      await frank.rpc('dm', {
+        to: ourTicket,
+        payload: { type: 'federation-accept', uuid: row.uuid, ticket: bobTicket('fedk_frank_late', 'Frank'), wantOffer: false },
+      });
+
+      // The late accept is ignored AND answered: frank gets a fresh
+      // withdraw for the uuid, telling it to unwind its minted key.
+      await frank.waitForEvent('dm', (e) => e.payload?.type === 'federation-withdraw' && e.payload.uuid === row.uuid);
+      assert.equal(reqDb.getRequestById(row.id).state, 'cancelled', 'the dead row did not move');
+      assert.equal(fedDb.getFederationPeers().length, peersBefore, 'no peer added from the late ticket');
+      assert.equal(fedDb.getFederationKeys().length, keysBefore, 'nothing minted for a dead exchange');
+
+      reqDb.deleteRequest(row.id);
+      await engine.pushAcceptPolicy();
+    } finally {
+      await frank.stop();
+    }
+  });
+
+  test('a rate-limited refusal is transient: the row retries instead of dying', { timeout: 60000 }, async (t) => {
+    if (gate(t)) { return; }
+    // The engine matches the sidecar's literal 'rate-limited' reason string
+    // across two repos — this pins the round-trip against the real binary:
+    // exhaust a fresh peer's per-remote budget for OUR sender identity,
+    // then let the engine's own send hit the limiter.
+    const dave = new RawSidecar(SIDECAR_BIN, path.join(tmpDir, 'dave'));
+    try {
+      await dave.ready;
+      await dave.rpc('setDmAccept', { accept: true });
+      await p2p.join([dave.ticket]);
+
+      let burned = null;
+      for (let i = 0; i < 40; i++) {
+        const r = await p2p.sendDm(dave.endpointId, { type: 'probe', uuid: `burn-${i}-0000` });
+        if (r.delivered === false) { burned = r; break; }
+      }
+      assert.ok(burned, 'the per-remote budget never tripped — did the sidecar drop its limiter?');
+      assert.equal(burned.reason, 'rate-limited', 'the sidecar still spells the refusal the engine matches on');
+
+      // The window is hot: the engine's first delivery attempt gets the
+      // same typed refusal — and must arm a retry, not go terminal.
+      const row = await engine.compose({ peerEndpointId: dave.endpointId });
+      await pollUntil(() => reqDb.getRequestById(row.id).fail_count === 1, { what: 'rate-limited attempt counted' });
+      const got = reqDb.getRequestById(row.id);
+      assert.equal(got.state, 'pending-delivery', 'transient — still live');
+      assert.equal(got.reject_reason, null, 'no terminal refusal recorded');
+      assert.ok(got.next_attempt_at, 'retry armed');
+
+      engine.cancel(row.id); // pending-delivery cancel sends no courtesy — nothing else to rate-limit
+      reqDb.deleteRequest(row.id);
+      await engine.pushAcceptPolicy();
+    } finally {
+      await dave.stop();
+    }
   });
 });

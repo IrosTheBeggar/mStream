@@ -6292,7 +6292,7 @@ paths:
         "200":
           description: The created request row (state `pending-delivery`).
         "404": { description: Unknown offered library. }
-        "409": { description: "Feature not enabled, peer blocked, or a request to this peer is already live." }
+        "409": { description: "Feature not enabled, peer blocked, a request to this peer is already live, or the peer already has a live request in YOUR inbox (answer it, or let that exchange finish — one exchange per relationship)." }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/federation/requests/{id}/accept:
