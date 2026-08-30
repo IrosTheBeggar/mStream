@@ -942,41 +942,36 @@ paths:
       tags: [System]
       summary: Layered server info (version, capabilities, boot payload)
       description: |
-        One endpoint, three layers, keyed off the credentials presented:
+        The authenticated server-info endpoint, layered by who is asking:
 
-        * **Base** (always): API versions plus `features` — server-wide
-          capability facts. `server` (the version) appears ONLY when the
-          request carries no credentials at all: it is the anonymous
-          probe's payload ("is this an mStream server, which version");
-          authenticated sessions don't re-learn their server's version
-          here. A federated client that wants the version probes without
-          its key header.
-        * **Authenticated** (JWT, public-access mode, jukebox session, or
-          an `x-federation-key`) — adds `user`: identity plus the
-          CALLER-SCOPED half of the ping boot payload (vpaths, permission
-          flags, federationDiscovery, vpathMetaData). Server-wide
-          capabilities (transcode, supportedAudioFiles, discovery,
-          discoveryP2p) live in `features` instead. Unlike ping, no
-          `playlists` (fetch those from the playlist routes), no
-          `allowYoutubeDownload` (velvet-only; always `!noUpload`), and
-          no `discoveryPath` (always identical to `discovery` on servers
-          new enough to have this endpoint).
-        * **Admin** — adds `admin`: cheap support/debug facts (uptime,
-          runtime versions, DB schema version). Never present for
-          federation keys or jukebox sessions — and never while the admin
-          API is locked (`lockAdmin`): an admin account then still shows
+        * **Base** (every authenticated response): `server` (the
+          version), `apiVersions`, and `features` — server-wide
+          capability facts (transcode, supportedAudioFiles, discovery,
+          discoveryP2p, discoveryReady).
+        * **`user`** — identity plus the CALLER-SCOPED half of the ping
+          boot payload (vpaths, permission flags, federationDiscovery,
+          vpathMetaData). Unlike ping, no `playlists` (fetch those from
+          the playlist routes), no `allowYoutubeDownload` (velvet-only;
+          always `!noUpload`), and no `discoveryPath` (always identical
+          to `discovery` on servers new enough to have this endpoint).
+        * **`admin`** — cheap support/debug facts (uptime, runtime
+          versions, DB schema version). Never present for federation
+          keys or jukebox sessions — and never while the admin API is
+          locked (`lockAdmin`): an admin account then still shows
           `user.admin: true` (identity) but no `admin` object, which is
           how a client tells "locked" from "not an admin".
 
-        Credentials that are **present but invalid** get `401` (`403` for
-        a federation key off its route allowlist) — never a silent
-        downgrade to the public layer, so a client with an expired token
-        sees the error and re-authenticates. Share tokens receive the
-        base layer only, without `server` (presented credentials, just
-        not a session).
+        **The 401 is part of the contract**: a request with no (or an
+        invalid) token on a server that has users returns `401` — mobile
+        clients probe this endpoint tokenless to decide whether to show
+        a login form, exactly as they always have with `/api/v1/ping`.
+        On a no-users server (public-access mode) the probe returns
+        `200` with all applicable layers. Share tokens cannot call this
+        route (`401`). Federation keys reach it via their route
+        allowlist and receive the version plus their granted-library
+        view (`403` on any route off that allowlist).
 
         Supersedes `/api/v1/ping` for new clients.
-      security: []
       responses:
         "200":
           description: Layered server info.
@@ -987,10 +982,7 @@ paths:
                 properties:
                   server:
                     type: string
-                    description: >
-                      Server version (from package.json). Present ONLY when
-                      the request carried no credentials — the anonymous
-                      probe's payload.
+                    description: Server version (from package.json).
                   apiVersions:
                     type: array
                     items: { type: string }
@@ -998,9 +990,9 @@ paths:
                     type: object
                     description: >
                       Server-wide capability facts a client can gate UI on
-                      without an extra round-trip. Public — config and
-                      capability facts only: no counts, no library or content
-                      names, no identity.
+                      without an extra round-trip. Config and capability
+                      facts only: no counts, no library or content names,
+                      no identity.
                     properties:
                       discoveryReady:
                         type: boolean
@@ -1070,7 +1062,10 @@ paths:
                   transcode: false
                   supportedAudioFiles: { mp3: true, flac: true }
         "401":
-          description: A token or federation key was presented but is invalid.
+          description: >
+            No token (on a server with users), an invalid token or
+            federation key, or a share token. The tokenless 401 is the
+            login-required signal clients probe for.
         "403":
           description: Valid federation key, but the route is off its allowlist.
 
