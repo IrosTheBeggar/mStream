@@ -666,5 +666,6 @@
     "one": "1 track in the queue lives on another server",
     "other": "{{count}} tracks in the queue live on another server"
   },
-  "share.cannotShareMixed": "Can't share a queue with federated tracks"
+  "share.cannotShareMixed": "Can't share a queue with federated tracks",
+  "download.cannotDownloadMixed": "Can't download a queue with federated tracks"
 }
