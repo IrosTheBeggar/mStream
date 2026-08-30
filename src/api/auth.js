@@ -68,7 +68,7 @@ export function setup(mstream) {
       return next();
     }
 
-    const token = req.body?.token || req.query?.token || req.headers?.['x-access-token'] || req.cookies?.['x-access-token'];
+    const token = readToken(req);
     if (!token) { throw new WebError('Authentication Error', 401); }
     req.token = token;
 
@@ -100,6 +100,14 @@ export function setup(mstream) {
 
     next();
   });
+}
+
+// The token slots, in precedence order. ONE definition — the wall,
+// resolveOptionalUser, and credentialsPresented must always agree on
+// where a token can ride, or "present but invalid" and "absent" drift
+// apart between the wall and the optional-auth endpoint.
+function readToken(req) {
+  return req.body?.token || req.query?.token || req.headers?.['x-access-token'] || req.cookies?.['x-access-token'];
 }
 
 // ── User builders ───────────────────────────────────────────────────────────
@@ -220,7 +228,7 @@ export function resolveOptionalUser(req) {
 
   if (db.getAllUsers().length === 0) { return buildPublicModeUser(); }
 
-  const token = req.body?.token || req.query?.token || req.headers?.['x-access-token'] || req.cookies?.['x-access-token'];
+  const token = readToken(req);
   if (!token) { return null; }
 
   const decoded = verifyToken(token, req);
@@ -229,4 +237,16 @@ export function resolveOptionalUser(req) {
   }
   if (decoded.shareToken === true) { return null; }
   return buildRealUser(decoded);
+}
+
+// Whether the request PRESENTED any credential (a federation key or a
+// token in any slot), regardless of validity or what it resolves to.
+// The layered /api/ uses this for its "the version is the anonymous
+// probe's payload" rule: `server` appears only when this is false. Note
+// the deliberate asymmetry with resolveOptionalUser: a share token
+// resolves to null (anonymous data-wise) but still counts as presented.
+export function credentialsPresented(req) {
+  const fedKey = req.headers['x-federation-key'];
+  if (typeof fedKey === 'string' && fedKey.length > 0) { return true; }
+  return Boolean(readToken(req));
 }

@@ -1,6 +1,6 @@
 import Joi from 'joi';
 import * as db from '../db/manager.js';
-import { buildClientBootPayload } from './server-info.js';
+import { buildClientBootPayload, buildFeatures } from './server-info.js';
 import { joiValidate, resolveId } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 
@@ -9,19 +9,25 @@ export function setup(mstream) {
 
   // ── Ping (initial app load) ─────────────────────────────────────────────
   //
-  // DEPRECATED in favor of the layered GET /api/ (server-info.js), which
-  // nests this same payload under `user` for authenticated callers. Kept
+  // DEPRECATED in favor of the layered GET /api/ (server-info.js). Kept
   // indefinitely: older mobile clients, CI liveness probes, and the
-  // torrent/velvet webapps still boot off it. The payload itself lives in
-  // buildClientBootPayload — ONE builder for both routes, so the two can
-  // never drift — plus three legacy fields the frozen ping contract
-  // carries but the layered endpoint deliberately does not. Both extras
-  // derive from the builder's own output, so no logic is duplicated.
+  // torrent/velvet webapps still boot off it. Ping's FROZEN flat contract
+  // is composed from the same two builders /api/ uses — the caller-scoped
+  // half (buildClientBootPayload → /api/'s `user`) and the server-wide
+  // capabilities (buildFeatures → /api/'s public `features`) — plus three
+  // legacy fields only ping carries. One source of truth, zero drift.
 
   mstream.get('/api/v1/ping', (req, res) => {
     const boot = buildClientBootPayload(req.user);
+    const features = buildFeatures();
     res.json({
       ...boot,
+      // Server-wide capabilities: flat here, under `features` on /api/.
+      // (features.discoveryReady is /api/-only — ping never served it.)
+      transcode: features.transcode,
+      supportedAudioFiles: features.supportedAudioFiles,
+      discovery: features.discovery,
+      discoveryP2p: features.discoveryP2p,
       // A resource (the playlist routes), not a server capability.
       playlists: getPlaylists(req.user.id),
       // VELVET ONLY: velvet's ping consumer still reads it; leaves with velvet.
@@ -30,7 +36,7 @@ export function setup(mstream) {
       // identical to `discovery` on every build carrying this code. The
       // alpha webapp (until it migrates to /api/) and the Flutter app
       // still read it from ping.
-      discoveryPath: boot.discovery,
+      discoveryPath: features.discovery,
     });
   });
 

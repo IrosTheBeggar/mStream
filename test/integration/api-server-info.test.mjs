@@ -5,13 +5,15 @@
  * (authApi.resolveOptionalUser), so this suite pins the full contract
  * against real spawned servers:
  *
- *  - users-server, no credentials  → 200, base layer ONLY (the deliberate
- *    public surface: version + capability booleans, nothing else);
+ *  - users-server, no credentials  → 200, base layer ONLY, WITH `server`
+ *    (the version is the anonymous probe's payload) and the server-wide
+ *    capability `features` (no `subsonic` — removed);
  *  - present-but-invalid token     → 401 (an error, never a silent
  *    downgrade to the public layer);
- *  - plain user                    → base + `user` (the ping boot payload,
- *    minus the legacy playlists / allowYoutubeDownload / discoveryPath
- *    fields), no `admin`;
+ *  - plain user                    → base WITHOUT `server` (authenticated
+ *    sessions don't re-learn the version) + `user` (the caller-scoped
+ *    half of the ping payload — capabilities live in `features`), no
+ *    `admin`;
  *  - admin user                    → base + `user` + `admin`;
  *  - ping parity                   → /api/'s `user` object equals
  *    /api/v1/ping's body (minus playlists / identity fields) — the
@@ -71,15 +73,19 @@ describe('layered /api/ server info', () => {
 
   after(async () => { await srv?.stop(); });
 
-  test('no credentials on a users-server: the base layer ONLY', async () => {
+  test('no credentials on a users-server: the base layer ONLY, with the version', async () => {
     const r = await api();
     assert.equal(r.status, 200, 'the bottom layer is public');
     const j = await r.json();
-    assert.equal(typeof j.server, 'string');
+    assert.equal(typeof j.server, 'string', 'the anonymous probe gets the version');
     assert.match(j.server, /^\d+\.\d+\.\d+/);
     assert.deepEqual(j.apiVersions, ['1']);
-    assert.equal(typeof j.features.subsonic, 'boolean');
+    assert.ok(!('subsonic' in j.features), 'subsonic flag removed (feature on its way out)');
     assert.equal(j.features.discoveryReady, false, 'discovery off in this config');
+    assert.equal(j.features.discovery, false);
+    assert.equal(j.features.discoveryP2p, false);
+    assert.ok('transcode' in j.features, 'transcode capability is a server fact');
+    assert.equal(typeof j.features.supportedAudioFiles, 'object');
     assert.ok(!('user' in j), 'no user layer without credentials');
     assert.ok(!('admin' in j), 'no admin layer without credentials');
   });
@@ -89,10 +95,12 @@ describe('layered /api/ server info', () => {
     assert.equal(r.status, 401);
   });
 
-  test('plain user: base + user layer, no admin layer', async () => {
+  test('plain user: base (no version) + user layer, no admin layer', async () => {
     const r = await api({ 'x-access-token': userToken });
     assert.equal(r.status, 200);
     const j = await r.json();
+    assert.ok(!('server' in j), 'authenticated callers do not get the version');
+    assert.ok(j.features, 'capabilities still ride along');
     assert.equal(j.user.username, 'pleb');
     assert.equal(j.user.admin, false);
     assert.equal(j.user.federation, false);
@@ -100,11 +108,15 @@ describe('layered /api/ server info', () => {
     assert.ok(!('playlists' in j.user), 'playlists are a resource, not a capability');
     assert.ok(!('allowYoutubeDownload' in j.user), 'velvet-only legacy field stays on ping');
     assert.ok(!('discoveryPath' in j.user), 'redundant-with-discovery legacy field stays on ping');
+    for (const cap of ['transcode', 'supportedAudioFiles', 'discovery', 'discoveryP2p']) {
+      assert.ok(!(cap in j.user), `server-wide capability '${cap}' lives in features, not user`);
+    }
     assert.equal(typeof j.user.noUpload, 'boolean');
     assert.equal(typeof j.user.noMkdir, 'boolean');
     assert.equal(typeof j.user.noFileModify, 'boolean');
+    assert.equal(typeof j.user.federationDiscovery, 'boolean',
+      'peer-relationship-derived flag stays caller-scoped');
     assert.ok('testlib' in j.user.vpathMetaData, 'library type metadata rides along');
-    assert.equal(j.user.discovery, false);
     assert.ok(!('admin' in j), 'no admin layer for a non-admin');
 
     // The disclosure contract: `user` is built ADDITIVELY from explicit
@@ -123,6 +135,7 @@ describe('layered /api/ server info', () => {
     const r = await api({ 'x-access-token': adminToken });
     assert.equal(r.status, 200);
     const j = await r.json();
+    assert.ok(!('server' in j), 'not even admins re-learn the version here');
     assert.equal(j.user.username, 'boss');
     assert.equal(j.user.admin, true);
     assert.ok(j.admin, 'admin layer present');
@@ -134,22 +147,25 @@ describe('layered /api/ server info', () => {
     assert.equal(j.admin.lockAdmin, false);
   });
 
-  test('drift-lock: /api/ user layer === ping payload (modulo playlists/identity)', async () => {
-    const fromApi = (await (await api({ 'x-access-token': userToken })).json()).user;
+  test('drift-lock: ping === /api/ user half + features half (modulo legacy/identity)', async () => {
+    const apiJ = await (await api({ 'x-access-token': userToken })).json();
     const pingR = await fetch(`${srv.baseUrl}/api/v1/ping`, { headers: { 'x-access-token': userToken } });
     assert.equal(pingR.status, 200, 'ping unchanged behind the wall');
     const ping = await pingR.json();
 
-    const { username: _u, admin: _a, federation: _f, ...bootFromApi } = fromApi;
-    // Ping's frozen contract = the shared builder + three legacy fields.
+    // Ping's frozen flat contract = the caller-scoped half (/api/'s
+    // `user` minus identity) + the capabilities half (/api/'s `features`
+    // minus the /api/-only discoveryReady) + three legacy fields.
+    const { username: _u, admin: _a, federation: _f, ...userHalf } = apiJ.user;
+    const { discoveryReady: _dr, ...capsHalf } = apiJ.features;
     const { playlists, allowYoutubeDownload, discoveryPath, ...pingRest } = ping;
     assert.ok(Array.isArray(playlists), 'ping still carries playlists');
     assert.equal(allowYoutubeDownload, !ping.noUpload,
       'ping still carries the velvet field, with its historical value');
     assert.equal(discoveryPath, ping.discovery,
       'ping still carries discoveryPath, identical to discovery as always');
-    assert.deepEqual(bootFromApi, pingRest,
-      'both routes serve the SAME builder output — any drift is a bug');
+    assert.deepEqual(pingRest, { ...userHalf, ...capsHalf },
+      'ping is exactly the two shared builders flattened — any drift is a bug');
   });
 
   test('share token: base layer only', async () => {
@@ -165,7 +181,8 @@ describe('layered /api/ server info', () => {
     const r = await api({ 'x-access-token': token });
     assert.equal(r.status, 200);
     const j = await r.json();
-    assert.equal(typeof j.server, 'string');
+    assert.ok(!('server' in j), 'a share token counts as presented credentials — no version');
+    assert.ok(j.features, 'capabilities still served');
     assert.ok(!('user' in j), 'a share token is not a session');
     assert.ok(!('admin' in j));
   });
@@ -180,12 +197,15 @@ describe('layered /api/ server info', () => {
     const { key } = await mintR.json();
     assert.match(key, /^fedk_/);
 
-    // The deliverable: a federated caller reads version + capabilities.
+    // The deliverable: a federated caller reads capabilities (+ its
+    // scoped view). The VERSION it gets by probing without the key —
+    // the tokenless case above — since keyed calls are authenticated.
     const r = await api({ 'x-federation-key': key });
     assert.equal(r.status, 200);
     const j = await r.json();
-    assert.equal(typeof j.server, 'string', 'version visible over federation');
-    assert.equal(typeof j.features.subsonic, 'boolean');
+    assert.ok(!('server' in j), 'a keyed call is authenticated — no version');
+    assert.ok(j.features, 'capabilities visible over federation');
+    assert.equal(typeof j.features.discovery, 'boolean');
     assert.equal(j.user.federation, true);
     assert.equal(j.user.admin, false);
     assert.deepEqual(j.user.vpaths, ['testlib'], 'scoped to the key grants');
@@ -223,6 +243,8 @@ describe('layered /api/ in public-access mode', () => {
     const pub = await startServer({ waitForScan: false });
     try {
       const j = await (await fetch(`${pub.baseUrl}/api/`)).json();
+      assert.equal(typeof j.server, 'string',
+        'no credentials presented → the probe still gets the version, even in public mode');
       assert.equal(j.user.username, 'mstream-user');
       assert.equal(j.user.admin, true, 'public mode is effectively admin');
       assert.equal(j.user.federation, false);

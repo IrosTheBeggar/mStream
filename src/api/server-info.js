@@ -4,36 +4,44 @@
 // Never build this response by filtering a full object down: an additive
 // bug omits a field, a filtering bug discloses everything.
 //
-//   Layer 1 (always, no credentials):
-//     { server, apiVersions, features } — version + capability booleans
-//     only. This layer is deliberately public (mobile clients need a
-//     pre-auth "is this an mStream server, which version" probe when
-//     adding a server) and must stay allocation-cheap: config reads and
-//     the guarded one-row discovery probe, nothing an anonymous caller
-//     can use to make the server do work.
+//   Base (always): `apiVersions` + `features` — server-wide capability
+//     facts (see buildFeatures). `server` (the version) is included ONLY
+//     when the request carries no credentials at all: the anonymous
+//     probe surface ("is this an mStream server, which version") is the
+//     one place a client needs it, and an authenticated session doesn't
+//     re-learn its server's version on every call. This layer is
+//     deliberately public and must stay allocation-cheap: config reads
+//     and the guarded one-row discovery probe, nothing an anonymous
+//     caller can use to make the server do work. Rule for what may
+//     appear here: config/capability facts only — no counts, no
+//     library or content names, no identity.
 //
 //   Layer 2 (valid JWT, public-access mode, jukebox session, or a
-//   federation key): adds `user` — identity plus the client boot payload
-//   that /api/v1/ping has always served (vpaths, transcode, permission
-//   flags, discovery flags, vpathMetaData), scoped to the caller exactly
-//   as ping scopes it — minus ping's three legacy fields (playlists /
-//   allowYoutubeDownload / discoveryPath; see buildClientBootPayload).
+//   federation key): adds `user` — identity plus the CALLER-SCOPED boot
+//   payload (vpaths, permission flags, federationDiscovery,
+//   vpathMetaData). Server-wide capabilities live in `features`, not
+//   here; ping's frozen contract still carries both halves flat (see
+//   buildClientBootPayload).
 //
 //   Layer 3 (admin only — never federation, never jukebox): adds `admin`
 //   — cheap support/debug facts. Mostly a framework hook today.
 //
-// Auth contract: a request with NO credentials gets layer 1; a request
-// with PRESENT-but-invalid credentials gets 401 (403 for a federation key
-// off its allowlist) — a bad token is an error the client must see, never
-// a silent downgrade to the public layer (a webapp with an expired cookie
-// needs the 401 to know to re-login). Share tokens get layer 1 only.
+// Auth contract: a request with NO credentials gets the base (with
+// `server`); a request with PRESENT-but-invalid credentials gets 401
+// (403 for a federation key off its allowlist) — a bad token is an error
+// the client must see, never a silent downgrade to the public layer (a
+// webapp with an expired cookie needs the 401 to know to re-login).
+// Share tokens get the base layer, without `server` (they are presented
+// credentials, just not a session). A federated client that wants the
+// version probes WITHOUT its key header — the anonymous base — and sends
+// the key when it wants its scoped view.
 //
 // Mounted BEFORE the auth wall (see server.js) so it owns its auth via
 // resolveOptionalUser(); /api/v1/ping stays behind the wall unchanged and
-// is now a thin wrapper over buildClientBootPayload() below — one payload
-// builder, zero drift between the two routes. Ping is deprecated in favor
-// of this endpoint but kept indefinitely: older mobile clients, CI
-// liveness probes, and the torrent/velvet webapps still call it.
+// composes its frozen flat payload from the two builders below — one
+// source of truth, zero drift between the two routes. Ping is deprecated
+// in favor of this endpoint but kept indefinitely: older mobile clients,
+// CI liveness probes, and the torrent/velvet webapps still call it.
 
 import packageJson from '../../package.json' with { type: 'json' };
 import * as config from '../state/config.js';
@@ -43,18 +51,10 @@ import * as sim from '../db/discovery-similarity.js';
 import * as transcode from './transcode.js';
 import * as authApi from './auth.js';
 
-// The client boot payload — the object /api/v1/ping has always returned,
-// minus three legacy fields ping composes back on top of this to keep
-// its frozen contract (moved here otherwise verbatim):
-//   - `playlists`            — a resource (the playlist routes), not a
-//                              server capability;
-//   - `allowYoutubeDownload` — velvet-only and always === !noUpload;
-//   - `discoveryPath`        — a historical "this server VERSION has the
-//                              sonic-path route" gate, always ===
-//                              `discovery` on any build carrying this
-//                              code, so on /api/ it says nothing.
-// Field changes here reach BOTH routes — that is the point.
-export function buildClientBootPayload(user) {
+// Server-wide capability facts — the public `features` object. Everything
+// here is a config/capability fact safe for anonymous eyes (the public
+// rule above); nothing is caller-scoped.
+export function buildFeatures() {
   // Signal "transcoding available" only when ffmpeg actually resolved
   // (bundled binaries ready OR system-PATH fallback succeeded).
   let transcodeInfo = false;
@@ -65,26 +65,57 @@ export function buildClientBootPayload(user) {
     };
   }
 
+  return {
+    // Whether a sonic-similarity query would find anything RIGHT NOW.
+    // Distinct from `discovery`, which says the feature is switched on: a
+    // server can have it on with an unfinished scan, and that combination
+    // is exactly what makes clients look broken. Auto DJ sends
+    // similarTo/minSimilarity, every pick 400s on the empty pool, and the
+    // queue silently stops advancing.
+    //
+    // A boolean, not a count: this layer is public, and how many tracks
+    // are analysed is library-size information. Clients only need to know
+    // whether to offer the feature.
+    discoveryReady: sim.hasEmbeddings(),
+    // The Discover panel has a server to talk to (no /api/v1/discovery/*
+    // probes needed — flags, never probes, is the house rule).
+    discovery: config.program.scanOptions.collectDiscoveryData === true,
+    // Same contract for the panel's "From the network" section
+    // (/api/v1/discovery/p2p/*).
+    discoveryP2p: config.program.discoveryP2p.enabled === true,
+    // false, or the server's transcode defaults.
+    transcode: transcodeInfo,
+    // Per-format booleans from config.
+    supportedAudioFiles: config.program.supportedAudioFiles,
+  };
+}
+
+// The CALLER-SCOPED half of the old ping payload: what this user (or
+// federation key, or public-mode caller) may see and do. Server-wide
+// capabilities moved to buildFeatures(); ping composes both halves (plus
+// its legacy fields) back into its frozen flat shape:
+//   - `playlists`            — a resource (the playlist routes), not a
+//                              server capability;
+//   - `allowYoutubeDownload` — velvet-only and always === !noUpload;
+//   - `discoveryPath`        — a historical "this server VERSION has the
+//                              sonic-path route" gate, always ===
+//                              `discovery` on any build carrying this
+//                              code, so on /api/ it says nothing.
+// Field changes in these builders reach BOTH routes — that is the point.
+export function buildClientBootPayload(user) {
   // Get user's library names
   const vpaths = user.vpaths || [];
 
   const payload = {
     vpaths,
-    transcode: transcodeInfo,
     noMkdir: config.program.noMkdir || user.allow_mkdir === false || user.allow_mkdir === 0,
     noUpload: config.program.noUpload || user.allow_upload === false || user.allow_upload === 0,
     noFileModify: config.program.noFileModify || user.allow_file_modify === false || user.allow_file_modify === 0,
-    supportedAudioFiles: config.program.supportedAudioFiles,
-    // Lets the webapp know the Discover panel has a server to talk to
-    // without probing /api/v1/discovery/* (kept collapsed by default, the
-    // panel sends no discovery requests at all until expanded).
-    discovery: config.program.scanOptions.collectDiscoveryData === true,
-    // Same contract for the panel's "From the network" section
-    // (/api/v1/discovery/p2p/*): no flag, no probes.
-    discoveryP2p: config.program.discoveryP2p.enabled === true,
-    // And again for "From your peers" (/api/v1/discovery/federation/*):
-    // needs local embeddings (the seed vector comes from our discovery.db)
-    // plus at least one federated peer that hasn't opted out of discovery.
+    // "From your peers" in the Discover panel: needs local embeddings (the
+    // seed vector comes from our discovery.db) plus at least one federated
+    // peer that hasn't opted out of discovery. Caller-scoped by nature —
+    // it reflects this server's live peer RELATIONSHIPS, which is not a
+    // fact for the anonymous features object.
     federationDiscovery: config.program.federation.enabled === true
       && config.program.scanOptions.collectDiscoveryData === true
       && fedDb.getFederationPeers().some((p) => p.use_discovery === 1),
@@ -104,30 +135,18 @@ export function buildClientBootPayload(user) {
 
 export function setup(mstream) {
   mstream.get('/api/', (req, res) => {
-    // ── Layer 1: always ────────────────────────────────────────────────
-    const info = {
-      server: packageJson.version,
-      apiVersions: ["1"],
-      features: {
-        subsonic: config.program.subsonic.mode !== 'disabled',
-        // Whether a sonic-similarity query would find anything RIGHT NOW.
-        // Distinct from the boot payload's `discovery` flag, which says the
-        // feature is switched on: a server can have it on with an
-        // unfinished scan, and that combination is exactly what makes
-        // clients look broken. Auto DJ sends similarTo/minSimilarity,
-        // every pick 400s on the empty pool, and the queue silently stops
-        // advancing.
-        //
-        // A boolean, not a count: this layer is public, and how many
-        // tracks are analysed is library-size information. Clients only
-        // need to know whether to offer the feature.
-        discoveryReady: sim.hasEmbeddings(),
-      },
-    };
-
     // Throws 401 on a presented-but-bad token/key (403 for a federation
-    // key off its allowlist); returns null for "no credentials at all".
+    // key off its allowlist); returns null for "no credentials at all"
+    // and for share tokens.
     const user = authApi.resolveOptionalUser(req);
+
+    // ── Base layer: always ─────────────────────────────────────────────
+    const info = {
+      // The version is the anonymous probe's payload — see the header.
+      ...(authApi.credentialsPresented(req) ? {} : { server: packageJson.version }),
+      apiVersions: ["1"],
+      features: buildFeatures(),
+    };
     if (!user) { return res.json(info); }
 
     // ── Layer 2: any authenticated caller ──────────────────────────────

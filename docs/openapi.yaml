@@ -944,19 +944,23 @@ paths:
       description: |
         One endpoint, three layers, keyed off the credentials presented:
 
-        * **No credentials** — the public base only: server version, API
-          versions, and capability booleans. Deliberately public so a
-          client adding a server can probe "is this an mStream server,
-          which version" before authenticating.
+        * **Base** (always): API versions plus `features` — server-wide
+          capability facts. `server` (the version) appears ONLY when the
+          request carries no credentials at all: it is the anonymous
+          probe's payload ("is this an mStream server, which version");
+          authenticated sessions don't re-learn their server's version
+          here. A federated client that wants the version probes without
+          its key header.
         * **Authenticated** (JWT, public-access mode, jukebox session, or
-          an `x-federation-key`) — adds `user`: identity plus the client
-          boot payload `/api/v1/ping` has always served (vpaths,
-          transcode, permission flags, discovery flags, vpathMetaData),
-          scoped to the caller. Note: unlike ping, no `playlists` (fetch
-          those from the playlist routes), no `allowYoutubeDownload`
-          (velvet-only; always `!noUpload`), and no `discoveryPath`
-          (always identical to `discovery` on servers new enough to have
-          this endpoint).
+          an `x-federation-key`) — adds `user`: identity plus the
+          CALLER-SCOPED half of the ping boot payload (vpaths, permission
+          flags, federationDiscovery, vpathMetaData). Server-wide
+          capabilities (transcode, supportedAudioFiles, discovery,
+          discoveryP2p) live in `features` instead. Unlike ping, no
+          `playlists` (fetch those from the playlist routes), no
+          `allowYoutubeDownload` (velvet-only; always `!noUpload`), and
+          no `discoveryPath` (always identical to `discovery` on servers
+          new enough to have this endpoint).
         * **Admin** — adds `admin`: cheap support/debug facts (uptime,
           runtime versions, DB schema version). Never present for
           federation keys or jukebox sessions.
@@ -965,7 +969,8 @@ paths:
         a federation key off its route allowlist) — never a silent
         downgrade to the public layer, so a client with an expired token
         sees the error and re-authenticates. Share tokens receive the
-        public layer only.
+        base layer only, without `server` (presented credentials, just
+        not a session).
 
         Supersedes `/api/v1/ping` for new clients.
       security: []
@@ -979,37 +984,59 @@ paths:
                 properties:
                   server:
                     type: string
-                    description: Server version (from package.json).
+                    description: >
+                      Server version (from package.json). Present ONLY when
+                      the request carried no credentials — the anonymous
+                      probe's payload.
                   apiVersions:
                     type: array
                     items: { type: string }
                   features:
                     type: object
                     description: >
-                      Capability flags a client can gate UI on without an extra
-                      round-trip. Public — surface existence and readiness
-                      booleans only, never counts or names.
+                      Server-wide capability facts a client can gate UI on
+                      without an extra round-trip. Public — config and
+                      capability facts only: no counts, no library or content
+                      names, no identity.
                     properties:
-                      subsonic:
-                        type: boolean
-                        description: Whether the Subsonic API surface is mounted.
                       discoveryReady:
                         type: boolean
                         description: >
                           Whether a sonic-similarity query would find anything
-                          right now. Distinct from the boot payload's
-                          `discovery` flag, which reports only that the feature
-                          is enabled: a server can have discovery on with an
-                          unfinished scan, in which case similarity queries
-                          fail against an empty pool. A boolean rather than a
-                          count because this layer is public.
+                          right now. Distinct from the `discovery` flag, which
+                          reports only that the feature is enabled: a server
+                          can have discovery on with an unfinished scan, in
+                          which case similarity queries fail against an empty
+                          pool. A boolean rather than a count because this
+                          layer is public.
+                      discovery:
+                        type: boolean
+                        description: Sonic-similarity collection is enabled.
+                      discoveryP2p:
+                        type: boolean
+                        description: The discovery network feature is enabled.
+                      transcode:
+                        description: >
+                          false when unavailable; otherwise the server's
+                          transcode defaults.
+                        oneOf:
+                          - type: boolean
+                            enum: [false]
+                          - type: object
+                            properties:
+                              defaultCodec: { type: string }
+                              defaultBitrate: { type: string }
+                      supportedAudioFiles:
+                        type: object
+                        description: Per-format booleans from config.
+                        additionalProperties: { type: boolean }
                   user:
                     type: object
                     description: >
-                      Present only for authenticated callers. The client boot
-                      payload (see /api/v1/ping's schema for the shared
-                      fields, minus `playlists`) plus the identity fields
-                      below.
+                      Present only for authenticated callers. The
+                      caller-scoped half of the ping boot payload (vpaths,
+                      permission flags, federationDiscovery, vpathMetaData)
+                      plus the identity fields below.
                     properties:
                       username: { type: string }
                       admin: { type: boolean }
@@ -1033,8 +1060,11 @@ paths:
                 server: "6.22.0"
                 apiVersions: ["1"]
                 features:
-                  subsonic: false
                   discoveryReady: true
+                  discovery: true
+                  discoveryP2p: false
+                  transcode: false
+                  supportedAudioFiles: { mp3: true, flac: true }
         "401":
           description: A token or federation key was presented but is invalid.
         "403":
@@ -1049,14 +1079,16 @@ paths:
         Returns everything the webapp needs on load: the user's libraries, their playlists,
         transcode capabilities, and server-level flags. Called once after login.
 
-        **Deprecated**: new clients should read the same payload from the
-        layered `GET /api` endpoint's `user` object (which also carries the
-        server version and public capability flags — but not `playlists`
-        (playlist-route territory), `allowYoutubeDownload` (velvet-only,
-        always `!noUpload`), or `discoveryPath` (always identical to
-        `discovery`)). This route is kept indefinitely for existing
-        clients and shares its payload builder with `GET /api`, so the
-        two cannot drift.
+        **Deprecated**: new clients should use the layered `GET /api`
+        endpoint instead — this flat payload is split there into the
+        caller-scoped `user` object and the public `features` object
+        (transcode, supportedAudioFiles, discovery, discoveryP2p), and
+        three legacy fields exist only here: `playlists` (playlist-route
+        territory), `allowYoutubeDownload` (velvet-only, always
+        `!noUpload`), and `discoveryPath` (always identical to
+        `discovery`). This route is kept indefinitely for existing
+        clients and is composed from the same builders as `GET /api`, so
+        the two cannot drift.
       responses:
         "200":
           description: Bootstrap info.
