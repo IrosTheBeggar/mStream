@@ -2557,6 +2557,11 @@ async function addToPlaylistUI(playlist) {
 
 /////////////// Download Playlist
 function downloadPlaylist() {
+  // A peer track's rawFilePath resolves only on the peer; posting it to our
+  // local /download/zip would silently drop it, yielding a dishonest archive.
+  // Refuse a mixed queue outright, as savePlaylist/submitShareForm do.
+  if (refuseMixedQueue('download.cannotDownloadMixed')) { return; }
+
   // Loop through array and add each file to the playlist
   const downloadFiles = [];
   for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
@@ -3128,7 +3133,7 @@ async function getAllGenres() {
     response.genres.forEach(value => {
       html += `<li class="collection-item">
         <div data-genre="${escapeHtml(value.name)}"${peerAttr()} class="artistz" onclick="getGenreSongsList(this)">
-          ${escapeHtml(value.name)} <span style="color:#888;font-size:13px;">(${value.track_count})</span>
+          ${escapeHtml(value.name)} <span style="color:#888;font-size:13px;">(${escapeHtml(value.track_count)})</span>
         </div>
       </li>`;
       currentBrowsingList.push({ type: 'genre', name: value.name });
@@ -3518,6 +3523,10 @@ function toggleTranscoding(el, manual){
 
   // Convert playlist
   for (let i = 0; i < MSTREAMPLAYER.playlist.length; i++) {
+    // Peer tracks stream through the federation proxy: there is no transcode
+    // route on the peer, and their URL carries a 'media/' segment this replace
+    // would corrupt into an un-allowlisted path. Leave them untouched.
+    if (MSTREAMPLAYER.playlist[i].federation) { continue; }
     MSTREAMPLAYER.playlist[i].url = MSTREAMPLAYER.playlist[i].url.replace(a, b);
   }
 
@@ -5321,7 +5330,9 @@ async function submitSearchForm() {
     // Only label the local block when there is something to tell it apart
     // FROM — a plain single-server search should not grow a header.
     const fanOut = federatedSearchOffered() && searchToggles.federated === true;
-    const localHtml = renderSearchResults(res, null);
+    // browseApi('search') fetched from peerContext (null = this server), so the
+    // rows must carry that same peer or clicks queue peer paths as local.
+    const localHtml = renderSearchResults(res, peerContext);
     const localHeader = (fanOut && localHtml) ? serverResultHeader(t('search.onThisServer')) : '';
 
     // Three slots: this server's results, a block per peer as each answers,
