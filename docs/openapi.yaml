@@ -950,7 +950,7 @@ paths:
           discoveryP2p, discoveryReady).
         * **`user`** — identity plus the CALLER-SCOPED half of the ping
           boot payload (vpaths, permission flags, federationDiscovery,
-          vpathMetaData). Unlike ping, no `playlists` (fetch those from
+          federationBrowse, vpathMetaData). Unlike ping, no `playlists` (fetch those from
           the playlist routes), no `allowYoutubeDownload` (velvet-only;
           always `!noUpload`), and no `discoveryPath` (always identical
           to `discovery` on servers new enough to have this endpoint).
@@ -1030,8 +1030,9 @@ paths:
                     description: >
                       Present only for authenticated callers. The
                       caller-scoped half of the ping boot payload (vpaths,
-                      permission flags, federationDiscovery, vpathMetaData)
-                      plus the identity fields below.
+                      permission flags, federationDiscovery,
+                      federationBrowse, vpathMetaData) plus the identity
+                      fields below.
                     properties:
                       username: { type: string }
                       admin: { type: boolean }
