@@ -10,7 +10,8 @@
  *  - present-but-invalid token     → 401 (an error, never a silent
  *    downgrade to the public layer);
  *  - plain user                    → base + `user` (the ping boot payload,
- *    minus playlists), no `admin`;
+ *    minus the legacy playlists / allowYoutubeDownload / discoveryPath
+ *    fields), no `admin`;
  *  - admin user                    → base + `user` + `admin`;
  *  - ping parity                   → /api/'s `user` object equals
  *    /api/v1/ping's body (minus playlists / identity fields) — the
@@ -97,6 +98,8 @@ describe('layered /api/ server info', () => {
     assert.equal(j.user.federation, false);
     assert.deepEqual(j.user.vpaths, ['testlib']);
     assert.ok(!('playlists' in j.user), 'playlists are a resource, not a capability');
+    assert.ok(!('allowYoutubeDownload' in j.user), 'velvet-only legacy field stays on ping');
+    assert.ok(!('discoveryPath' in j.user), 'redundant-with-discovery legacy field stays on ping');
     assert.equal(typeof j.user.noUpload, 'boolean');
     assert.equal(typeof j.user.noMkdir, 'boolean');
     assert.equal(typeof j.user.noFileModify, 'boolean');
@@ -138,8 +141,13 @@ describe('layered /api/ server info', () => {
     const ping = await pingR.json();
 
     const { username: _u, admin: _a, federation: _f, ...bootFromApi } = fromApi;
-    const { playlists, ...pingRest } = ping;
+    // Ping's frozen contract = the shared builder + three legacy fields.
+    const { playlists, allowYoutubeDownload, discoveryPath, ...pingRest } = ping;
     assert.ok(Array.isArray(playlists), 'ping still carries playlists');
+    assert.equal(allowYoutubeDownload, !ping.noUpload,
+      'ping still carries the velvet field, with its historical value');
+    assert.equal(discoveryPath, ping.discovery,
+      'ping still carries discoveryPath, identical to discovery as always');
     assert.deepEqual(bootFromApi, pingRest,
       'both routes serve the SAME builder output — any drift is a bug');
   });

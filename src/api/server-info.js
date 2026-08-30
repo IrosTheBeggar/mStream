@@ -16,8 +16,8 @@
 //   federation key): adds `user` — identity plus the client boot payload
 //   that /api/v1/ping has always served (vpaths, transcode, permission
 //   flags, discovery flags, vpathMetaData), scoped to the caller exactly
-//   as ping scopes it. Playlists are deliberately NOT here — they're a
-//   resource (the playlist routes), not a capability.
+//   as ping scopes it — minus ping's three legacy fields (playlists /
+//   allowYoutubeDownload / discoveryPath; see buildClientBootPayload).
 //
 //   Layer 3 (admin only — never federation, never jukebox): adds `admin`
 //   — cheap support/debug facts. Mostly a framework hook today.
@@ -44,11 +44,16 @@ import * as transcode from './transcode.js';
 import * as authApi from './auth.js';
 
 // The client boot payload — the object /api/v1/ping has always returned,
-// minus `playlists` (moved here otherwise verbatim). Ping composes
-// playlists back on top to keep its frozen contract; the layered /api/
-// deliberately does NOT serve them — playlist content is its own
-// resource (the playlist routes), not a server capability. Field changes
-// here reach BOTH routes — that is the point.
+// minus three legacy fields ping composes back on top of this to keep
+// its frozen contract (moved here otherwise verbatim):
+//   - `playlists`            — a resource (the playlist routes), not a
+//                              server capability;
+//   - `allowYoutubeDownload` — velvet-only and always === !noUpload;
+//   - `discoveryPath`        — a historical "this server VERSION has the
+//                              sonic-path route" gate, always ===
+//                              `discovery` on any build carrying this
+//                              code, so on /api/ it says nothing.
+// Field changes here reach BOTH routes — that is the point.
 export function buildClientBootPayload(user) {
   // Signal "transcoding available" only when ffmpeg actually resolved
   // (bundled binaries ready OR system-PATH fallback succeeded).
@@ -69,18 +74,11 @@ export function buildClientBootPayload(user) {
     noMkdir: config.program.noMkdir || user.allow_mkdir === false || user.allow_mkdir === 0,
     noUpload: config.program.noUpload || user.allow_upload === false || user.allow_upload === 0,
     noFileModify: config.program.noFileModify || user.allow_file_modify === false || user.allow_file_modify === 0,
-    // VELVET ONLY: redundant with noUpload — update Velvet UI to use noUpload instead, then remove this
-    allowYoutubeDownload: !(config.program.noUpload || user.allow_upload === false || user.allow_upload === 0),
     supportedAudioFiles: config.program.supportedAudioFiles,
     // Lets the webapp know the Discover panel has a server to talk to
     // without probing /api/v1/discovery/* (kept collapsed by default, the
     // panel sends no discovery requests at all until expanded).
     discovery: config.program.scanOptions.collectDiscoveryData === true,
-    // Sonic path (POST /api/v1/discovery/local/path). Same condition as
-    // `discovery` — the flag's real payload is "this server VERSION has
-    // the route": older builds omit the key entirely, so clients that
-    // never probe (the house rule) simply don't show the feature.
-    discoveryPath: config.program.scanOptions.collectDiscoveryData === true,
     // Same contract for the panel's "From the network" section
     // (/api/v1/discovery/p2p/*): no flag, no probes.
     discoveryP2p: config.program.discoveryP2p.enabled === true,

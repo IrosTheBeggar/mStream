@@ -14,14 +14,23 @@ export function setup(mstream) {
   // indefinitely: older mobile clients, CI liveness probes, and the
   // torrent/velvet webapps still boot off it. The payload itself lives in
   // buildClientBootPayload — ONE builder for both routes, so the two can
-  // never drift — with `playlists` composed back on top here only (the
-  // frozen ping contract carries them; the layered endpoint deliberately
-  // does not).
+  // never drift — plus three legacy fields the frozen ping contract
+  // carries but the layered endpoint deliberately does not. Both extras
+  // derive from the builder's own output, so no logic is duplicated.
 
   mstream.get('/api/v1/ping', (req, res) => {
+    const boot = buildClientBootPayload(req.user);
     res.json({
-      ...buildClientBootPayload(req.user),
+      ...boot,
+      // A resource (the playlist routes), not a server capability.
       playlists: getPlaylists(req.user.id),
+      // VELVET ONLY: velvet's ping consumer still reads it; leaves with velvet.
+      allowYoutubeDownload: !boot.noUpload,
+      // Historical version-gate ("this server has the sonic-path route") —
+      // identical to `discovery` on every build carrying this code. The
+      // alpha webapp (until it migrates to /api/) and the Flutter app
+      // still read it from ping.
+      discoveryPath: boot.discovery,
     });
   });
 
