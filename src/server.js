@@ -35,7 +35,7 @@ import * as dbManager from './db/manager.js';
 import * as discoveryDb from './db/discovery-db.js';
 import { reapOrphanedScanner } from './db/scan-pidfile.js';
 // scanner.js removed — parser now writes directly to SQLite
-import * as sim from './db/discovery-similarity.js';
+import * as serverInfoApi from './api/server-info.js';
 import * as federationApi from './api/federation.js';
 import * as federationDiscoveryApi from './api/federation-discovery.js';
 import * as federationLimitsApi from './api/federation-limits.js';
@@ -66,7 +66,6 @@ import * as adminUtil from './util/admin.js';
 import * as updateCheck from './util/update-check.js';
 import * as bootWatchdog from './util/boot-watchdog.js';
 
-import packageJson from '../package.json' with { type: 'json' };
 
 let mstream;
 let server;
@@ -599,6 +598,13 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   // http.Server started in the post-boot hook below.
   if (config.program.subsonic.mode === 'same-port') { subsonicApi.setup(mstream); }
 
+  // GET /api/ — the layered server-info endpoint. Mounted BEFORE the wall
+  // because its bottom layer (version + capability booleans) is
+  // deliberately public; it resolves optional credentials itself via
+  // authApi.resolveOptionalUser (see api/server-info.js for the layer
+  // contract).
+  serverInfoApi.setup(mstream);
+
   // Everything below this line requires authentication
   authApi.setup(mstream);
 
@@ -683,30 +689,6 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     cuepointsApi.setup(mstream);
     velvetStubs.setup(mstream);
   }
-
-  // Versioned APIs. Includes a small `features` block for the frontend
-  // to gate UI on without an extra round-trip — currently just whether
-  // the Subsonic API surface is mounted (used by the mobile-clients
-  // panel to conditionally render the Subsonic password / API key UI).
-  // Public — no auth required for this endpoint.
-  mstream.get('/api/', (req, res) => res.json({
-    server: packageJson.version,
-    apiVersions: ["1"],
-    features: {
-      subsonic: config.program.subsonic.mode !== 'disabled',
-      // Whether a sonic-similarity query would find anything RIGHT NOW.
-      // Distinct from the ping's `discovery` flag, which says the feature is
-      // switched on: a server can have it on with an unfinished scan, and
-      // that combination is exactly what makes clients look broken. Auto DJ
-      // sends similarTo/minSimilarity, every pick 400s on the empty pool, and
-      // the queue silently stops advancing.
-      //
-      // A boolean, not a count: this endpoint is public, and how many tracks
-      // are analysed is library-size information. Clients only need to know
-      // whether to offer the feature.
-      discoveryReady: sim.hasEmbeddings(),
-    },
-  }));
 
   // album art folder
   mstream.get('/album-art/:file', albumArtApi.serveAlbumArtFile);

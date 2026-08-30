@@ -1,8 +1,6 @@
 import Joi from 'joi';
-import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
-import * as fedDb from '../db/federation.js';
-import * as transcode from './transcode.js';
+import { buildClientBootPayload, buildFeatures } from './server-info.js';
 import { joiValidate, resolveId } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 
@@ -10,61 +8,36 @@ export function setup(mstream) {
   const d = () => db.getDB();
 
   // ── Ping (initial app load) ─────────────────────────────────────────────
+  //
+  // DEPRECATED in favor of the layered GET /api/ (server-info.js). Kept
+  // indefinitely: older mobile clients, CI liveness probes, and the
+  // torrent/velvet webapps still boot off it. Ping's FROZEN flat contract
+  // is composed from the same two builders /api/ uses — the caller-scoped
+  // half (buildClientBootPayload → /api/'s `user`) and the server-wide
+  // capabilities (buildFeatures → /api/'s public `features`) — plus three
+  // legacy fields only ping carries. One source of truth, zero drift.
 
   mstream.get('/api/v1/ping', (req, res) => {
-    // Signal "transcoding available" only when ffmpeg actually resolved
-    // (bundled binaries ready OR system-PATH fallback succeeded).
-    let transcodeInfo = false;
-    if (transcode.isDownloaded() && config.program.transcode) {
-      transcodeInfo = {
-        defaultCodec: config.program.transcode.defaultCodec,
-        defaultBitrate: config.program.transcode.defaultBitrate
-      };
-    }
-
-    // Get user's library names
-    const vpaths = req.user.vpaths || [];
-
-    const returnThis = {
-      vpaths,
+    const boot = buildClientBootPayload(req.user);
+    const features = buildFeatures();
+    res.json({
+      ...boot,
+      // Server-wide capabilities: flat here, under `features` on /api/.
+      // (features.discoveryReady is /api/-only — ping never served it.)
+      transcode: features.transcode,
+      supportedAudioFiles: features.supportedAudioFiles,
+      discovery: features.discovery,
+      discoveryP2p: features.discoveryP2p,
+      // A resource (the playlist routes), not a server capability.
       playlists: getPlaylists(req.user.id),
-      transcode: transcodeInfo,
-      noMkdir: config.program.noMkdir || req.user.allow_mkdir === false || req.user.allow_mkdir === 0,
-      noUpload: config.program.noUpload || req.user.allow_upload === false || req.user.allow_upload === 0,
-      noFileModify: config.program.noFileModify || req.user.allow_file_modify === false || req.user.allow_file_modify === 0,
-      // VELVET ONLY: redundant with noUpload — update Velvet UI to use noUpload instead, then remove this
-      allowYoutubeDownload: !(config.program.noUpload || req.user.allow_upload === false || req.user.allow_upload === 0),
-      supportedAudioFiles: config.program.supportedAudioFiles,
-      // Lets the webapp know the Discover panel has a server to talk to
-      // without probing /api/v1/discovery/* (kept collapsed by default, the
-      // panel sends no discovery requests at all until expanded).
-      discovery: config.program.scanOptions.collectDiscoveryData === true,
-      // Sonic path (POST /api/v1/discovery/local/path). Same condition as
-      // `discovery` — the flag's real payload is "this server VERSION has
-      // the route": older builds omit the key entirely, so clients that
-      // never probe (the house rule) simply don't show the feature.
-      discoveryPath: config.program.scanOptions.collectDiscoveryData === true,
-      // Same contract for the panel's "From the network" section
-      // (/api/v1/discovery/p2p/*): no flag, no probes.
-      discoveryP2p: config.program.discoveryP2p.enabled === true,
-      // And again for "From your peers" (/api/v1/discovery/federation/*):
-      // needs local embeddings (the seed vector comes from our discovery.db)
-      // plus at least one federated peer that hasn't opted out of discovery.
-      federationDiscovery: config.program.federation.enabled === true
-        && config.program.scanOptions.collectDiscoveryData === true
-        && fedDb.getFederationPeers().some((p) => p.use_discovery === 1),
-      vpathMetaData: {}
-    };
-
-    // Get library type metadata
-    for (const vpathName of vpaths) {
-      const lib = db.getLibraryByName(vpathName);
-      if (lib) {
-        returnThis.vpathMetaData[vpathName] = { type: lib.type };
-      }
-    }
-
-    res.json(returnThis);
+      // VELVET ONLY: velvet's ping consumer still reads it; leaves with velvet.
+      allowYoutubeDownload: !boot.noUpload,
+      // Historical version-gate ("this server has the sonic-path route") —
+      // identical to `discovery` on every build carrying this code. The
+      // alpha webapp (until it migrates to /api/) and the Flutter app
+      // still read it from ping.
+      discoveryPath: features.discovery,
+    });
   });
 
   // ── Delete playlist ─────────────────────────────────────────────────────

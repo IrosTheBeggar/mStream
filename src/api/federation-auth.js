@@ -36,6 +36,13 @@ import * as fedDb from '../db/federation.js';
 // (per-user stats — meaningless and privacy-adjacent for a foreign
 // reader) and every write route.
 const ALLOWED_EXACT = new Set([
+  // The layered server-info endpoint (server-info.js): version +
+  // capabilities, plus the key-scoped `user` boot payload — how a
+  // federated client (the mobile app) learns what this peer can do.
+  // Both spellings: it's mounted before the wall and resolves the key
+  // itself, so req.path arrives exactly as the client sent it.
+  'GET /api',
+  'GET /api/',
   'GET /api/v1/db/status',
   'POST /api/v1/db/metadata',
   'POST /api/v1/db/metadata/batch',
