@@ -142,9 +142,22 @@ describe('scanner determinism + parity', () => {
     for (const [engine, runner] of Object.entries(engines)) {
       const { snapshot } = await scanAndSnapshot(`va-collapse-${engine}`, {}, runner);
 
-      assert.equal(snapshot.artists.length, fixtureSummary.expectedArtists,
-        `[${engine}] artists table should hold ${fixtureSummary.expectedArtists} rows, got: ${snapshot.artists.join(', ')}`);
-      assert.ok(snapshot.artists.includes('Various Artists'), `[${engine}] VA row present`);
+      // V71: the artists snapshot carries rows (name + sort/order/count
+      // columns), not bare names.
+      const artistNames = snapshot.artists.map(a => a.name);
+      assert.equal(artistNames.length, fixtureSummary.expectedArtists,
+        `[${engine}] artists table should hold ${fixtureSummary.expectedArtists} rows, got: ${artistNames.join(', ')}`);
+      assert.ok(artistNames.includes('Various Artists'), `[${engine}] VA row present`);
+      // V71 fixture checks: the spelling variant converged on the majority
+      // form, the sort tag landed and drove order_name, nothing left dirty.
+      const formatTest = snapshot.artists.find(a => a.name === 'Format Test');
+      assert.ok(formatTest, `[${engine}] 'format test' merged into 'Format Test'`);
+      assert.ok(!artistNames.includes('format test'), `[${engine}] no lowercase twin row`);
+      const solo = snapshot.artists.find(a => a.name === 'Solo Artist');
+      assert.equal(solo.sort_name, 'Artist, Solo', `[${engine}] ARTISTSORT filled`);
+      assert.equal(solo.order_name, 'artist, solo', `[${engine}] order_name follows the sort tag`);
+      assert.equal(solo.mbz_artist_id, '0a0a0a0a-1111-4222-8333-444444444444', `[${engine}] MUSICBRAINZ_ARTISTID filled`);
+      assert.ok(snapshot.artists.every(a => a.agg_dirty === 0), `[${engine}] no artist left agg_dirty`);
       assert.equal(snapshot.albums.length, fixtureSummary.expectedAlbums,
         `[${engine}] albums table should hold ${fixtureSummary.expectedAlbums} rows, got: ` +
         snapshot.albums.map(a => `${a.name}/${a.artist_name}`).join(', '));

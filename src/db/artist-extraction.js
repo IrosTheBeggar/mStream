@@ -13,6 +13,8 @@
  * (longest / most-specific first) because we do a sequential replace.
  */
 
+import { nameKey } from './name-key.js';
+
 // Delimiters used to split a single-valued ARTIST tag into multiple
 // entries. Applied only to scalar values — multi-valued tags (Vorbis
 // plural ARTIST, ID3v2.4) are honoured natively.
@@ -59,9 +61,17 @@ function normaliseArtistTag(raw) {
   for (const v of values) {
     for (const piece of splitArtistString(v)) { out.push(piece); }
   }
-  // Deduplicate while preserving order (first-seen wins).
+  // Deduplicate while preserving order (first-seen spelling wins). V71:
+  // by identity key, not exact string — "Guns N' Roses / Guns N’ Roses"
+  // is one artist, and two credits for one artist id would otherwise land
+  // as main + featured rows ("X feat. X"). Mirrors resolve_artists_list.
   const seen = new Set();
-  return out.filter(v => (seen.has(v) ? false : (seen.add(v), true)));
+  return out.filter(v => {
+    const key = nameKey(v);
+    if (seen.has(key)) { return false; }
+    seen.add(key);
+    return true;
+  });
 }
 
 /**
@@ -97,7 +107,36 @@ export function extractArtists(common) {
     isCompilation:      !!common.compilation,
     trackArtistDisplay: common.artist      ? String(common.artist)      : (trackArtists[0] || ''),
     albumArtistDisplay: common.albumartist ? String(common.albumartist) : (albumArtists[0] || null),
+    // V71: per-artist sort names and MusicBrainz ids, index-aligned to the
+    // name lists above (empty array = nothing to apply).
+    trackArtistSorts: alignSort(common.artistsort, trackArtists),
+    albumArtistSorts: alignSort(common.albumartistsort, albumArtists),
+    trackArtistMbids: alignIds(common.musicbrainz_artistid, trackArtists),
+    albumArtistMbids: alignIds(common.musicbrainz_albumartistid, albumArtists),
   };
+}
+
+// ARTISTSORT / ALBUMARTISTSORT are single-valued in music-metadata's common
+// block, so a sort name can only be attributed with certainty when the tag
+// names exactly ONE artist. The Rust scanner takes the first sort value
+// under the same one-artist rule — keep both in lock-step.
+function alignSort(sortRaw, names) {
+  if (names.length !== 1 || sortRaw == null) { return []; }
+  const s = String(Array.isArray(sortRaw) ? sortRaw[0] : sortRaw).trim();
+  return s ? [s] : [];
+}
+
+// MUSICBRAINZ_ARTISTID / ALBUMARTISTID are multi-valued (one per artist, in
+// artist order — Picard convention). Applied only when the id count equals
+// the name count, so nothing is ever attributed to the wrong artist; a
+// tagger that joined the ids into one value simply yields no ids. Same
+// rule in rust-parser/src/main.rs.
+function alignIds(idsRaw, names) {
+  if (idsRaw == null || names.length === 0) { return []; }
+  const ids = (Array.isArray(idsRaw) ? idsRaw : [idsRaw])
+    .map((v) => (v == null ? '' : String(v).trim()))
+    .filter(Boolean);
+  return ids.length === names.length ? ids : [];
 }
 
 /**

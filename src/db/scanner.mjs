@@ -17,6 +17,8 @@ import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars, migrateArtistStars, migrateAlbumArtState } from './album-migration.js';
 import { albumKey } from './album-key.js';
 import { refreshDirtyAlbums } from './album-aggregate.js';
+import { refreshDirtyArtists } from './artist-aggregate.js';
+import { nameKey } from './name-key.js';
 import { cleanupOrphans, cleanupStaleArt, reconcileAlbumArt, deleteStaleTracks, VARIOUS_ARTISTS_MBZ_ID } from './orphan-cleanup.js';
 import { isIgnoredDirName, isDotEntry } from './scan-ignore.js';
 import { detectSource } from './source-detect.js';
@@ -182,11 +184,38 @@ const stmts = {
             album_art_file, album_art_source, hash_v
        FROM tracks WHERE filepath = ? AND library_id = ?`
   ),
+  // V71: artists are found by name_key (src/db/name-key.js) — case / quote
+  // variants of one name share a row; the display name is the scan-end
+  // majority of the credits' raw spellings (artist-aggregate.js), so the
+  // name written here is provisional.
   findArtist: db.prepare(
+    'SELECT id FROM artists WHERE name_key = ?'
+  ),
+  // Second probe, by exact name: a row some other writer inserted without
+  // the real key (raw-SQL / fixture inserts keyed by the artists_ai_key
+  // trigger's ASCII approximation, or a key computed by the other engine
+  // over an odd code point). artists.name is UNIQUE, so inserting would
+  // fail the whole batch where this finds the row.
+  findArtistByName: db.prepare(
     'SELECT id FROM artists WHERE name = ?'
   ),
+  // order_name is not written here: the scan-end refresh derives it (the
+  // row is born agg_dirty = 1).
   insertArtist: db.prepare(
-    'INSERT INTO artists (name) VALUES (?)'
+    'INSERT INTO artists (name, name_key) VALUES (?, ?)'
+  ),
+  // V71: ARTISTSORT / MusicBrainz artist id. Converge on the BINARY-smallest
+  // value seen rather than the first written — order-independent, so two
+  // scans (or the two engines) of one library land on the same sort_name
+  // and order_name even when files disagree. The sort fill flags the row:
+  // order_name derives from sort_name.
+  fillArtistSort: db.prepare(
+    `UPDATE artists SET sort_name = ?1, agg_dirty = 1
+      WHERE id = ?2 AND (sort_name IS NULL OR ?1 < sort_name)`
+  ),
+  fillArtistMbz: db.prepare(
+    `UPDATE artists SET mbz_artist_id = ?1
+      WHERE id = ?2 AND (mbz_artist_id IS NULL OR ?1 < mbz_artist_id)`
   ),
   // V70: albums are found by album_key (MBID first, else exact name +
   // album-artist id — src/db/album-key.js). Year is NOT identity any more:
@@ -288,9 +317,18 @@ const stmts = {
   // (which keeps the same track_id and so does NOT cascade-drop them the
   // way the old INSERT OR REPLACE did); without the explicit DELETEs a
   // tag edit that drops an artist/genre would leak the stale M2M row.
+  // V71: tag_name = the raw spelling this credit was tagged with; the artist
+  // aggregate refresh picks the display name from these. One row per
+  // (album, artist, role), so the spelling converges on the BINARY-smallest
+  // one seen (order-independent — the parity snapshot compares it across
+  // engines); the V71 seed copy counts as a spelling seen. The UPDATE arm
+  // fires album_artists_au_agg, so a changed spelling re-votes.
   insertAlbumArtist: db.prepare(
-    `INSERT OR IGNORE INTO album_artists (album_id, artist_id, role, position)
-     VALUES (?, ?, ?, ?)`
+    `INSERT INTO album_artists (album_id, artist_id, role, position, tag_name)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(album_id, artist_id, role) DO UPDATE SET tag_name = excluded.tag_name
+       WHERE excluded.tag_name IS NOT NULL
+         AND (album_artists.tag_name IS NULL OR excluded.tag_name < album_artists.tag_name)`
   ),
   deleteTrackArtists: db.prepare(
     'DELETE FROM track_artists WHERE track_id = ?'
@@ -299,13 +337,14 @@ const stmts = {
     'DELETE FROM track_genres WHERE track_id = ?'
   ),
   insertTrackArtist: db.prepare(
-    `INSERT OR IGNORE INTO track_artists (track_id, artist_id, role, position)
-     VALUES (?, ?, ?, ?)`
+    `INSERT OR IGNORE INTO track_artists (track_id, artist_id, role, position, tag_name)
+     VALUES (?, ?, ?, ?, ?)`
   ),
   // One-shot lookup of the seeded "Various Artists" row id. Used when
-  // the album-artist fallback chain hits the compilation branch.
+  // the album-artist fallback chain hits the compilation branch. V71: by
+  // key, so a tag spelled "various artists" lands on the seed too.
   findVariousArtists: db.prepare(
-    `SELECT id FROM artists WHERE name = 'Various Artists' LIMIT 1`
+    `SELECT id FROM artists WHERE name_key = 'various artists' LIMIT 1`
   ),
   // The OLD album's artist, read while its row still exists — feeds the
   // album-artist star re-home when a re-mint orphans it.
@@ -387,7 +426,8 @@ function getVariousArtistsId() {
   let row = stmts.findVariousArtists.get();
   if (!row) {
     db.prepare(
-      `INSERT OR IGNORE INTO artists (name, mbz_artist_id) VALUES ('Various Artists', ?)`
+      `INSERT OR IGNORE INTO artists (name, name_key, mbz_artist_id)
+       VALUES ('Various Artists', 'various artists', ?)`
     ).run(VARIOUS_ARTISTS_MBZ_ID);
     row = stmts.findVariousArtists.get();
   }
@@ -425,9 +465,10 @@ function migrateHashReferences(oldHash, newHash, opts) {
 
 function findOrCreateArtist(name) {
   if (!name) { return null; }
-  const row = stmts.findArtist.get(name);
+  const key = nameKey(name);
+  const row = stmts.findArtist.get(key) ?? stmts.findArtistByName.get(name);
   if (row) { return row.id; }
-  const result = stmts.insertArtist.run(name);
+  const result = stmts.insertArtist.run(name, key);
   return Number(result.lastInsertRowid);
 }
 
@@ -1149,9 +1190,24 @@ function insertTrack(song) {
   // albums.artist_id so the M2M row isn't empty (keeps the "union via
   // album_artists OR albums.artist_id" query shape from needing two
   // branches for the legacy single-artist case).
-  const albumArtistsForM2M = albumArtistIds.length ? albumArtistIds : (primaryAlbumArtistId ? [primaryAlbumArtistId] : []);
-  for (let i = 0; i < albumArtistsForM2M.length; i++) {
-    stmts.insertAlbumArtist.run(albumId, albumArtistsForM2M[i], 'main', i);
+  // V71: each credit carries the raw spelling it came from (tag_name). The
+  // fallback credit's spelling is the primary track artist's tag when that
+  // is what the chain picked, else the canonical 'Various Artists' — the
+  // seed's own spelling, so untagged compilations vote to keep it (the
+  // refresh pins the seed's name regardless; see artist-aggregate.js).
+  const albumCredits = albumArtistIds.length
+    ? albumArtistIds.map((id, i) => [id, ai.albumArtists[i] ?? null])
+    : (primaryAlbumArtistId
+      ? [[primaryAlbumArtistId,
+        primaryAlbumArtistId === primaryTrackArtistId ? primaryTrackArtistName : 'Various Artists']]
+      : []);
+  // Guarded on the album, like the Rust twin: a track with no ALBUM tag
+  // has credits but no row to hang them on (the upsert form no longer
+  // swallows the NOT NULL violation the way INSERT OR IGNORE did).
+  if (albumId) {
+    for (let i = 0; i < albumCredits.length; i++) {
+      stmts.insertAlbumArtist.run(albumId, albumCredits[i][0], 'main', i, albumCredits[i][1]);
+    }
   }
 
   // track_artists: clear first, then repopulate. Load-bearing under the
@@ -1159,11 +1215,28 @@ function insertTrack(song) {
   // way the old INSERT OR REPLACE did).
   stmts.deleteTrackArtists.run(trackId);
   const trackArtistIds = ai.trackArtists.map(n => findOrCreateArtist(n)).filter(Number.isFinite);
+  const trackArtistTags = ai.trackArtists.slice();
   // Fall back to the primary track artist if the extractor returned
   // nothing (edge case: file with no ARTIST tag at all).
-  if (!trackArtistIds.length && primaryTrackArtistId) { trackArtistIds.push(primaryTrackArtistId); }
+  if (!trackArtistIds.length && primaryTrackArtistId) {
+    trackArtistIds.push(primaryTrackArtistId);
+    trackArtistTags.push(primaryTrackArtistName);
+  }
   for (let i = 0; i < trackArtistIds.length; i++) {
-    stmts.insertTrackArtist.run(trackId, trackArtistIds[i], i === 0 ? 'main' : 'featured', i);
+    stmts.insertTrackArtist.run(trackId, trackArtistIds[i], i === 0 ? 'main' : 'featured', i,
+      trackArtistTags[i] ?? null);
+  }
+
+  // V71: ARTISTSORT / ALBUMARTISTSORT and MusicBrainz artist ids, index-
+  // aligned to the credit lists by the extractor (see alignSort / alignIds
+  // in artist-extraction.js), fill-NULL. Mirrors the Rust scanner.
+  for (let i = 0; i < trackArtistIds.length; i++) {
+    if (ai.trackArtistSorts?.[i]) { stmts.fillArtistSort.run(ai.trackArtistSorts[i], trackArtistIds[i]); }
+    if (ai.trackArtistMbids?.[i]) { stmts.fillArtistMbz.run(ai.trackArtistMbids[i], trackArtistIds[i]); }
+  }
+  for (let i = 0; i < albumArtistIds.length; i++) {
+    if (ai.albumArtistSorts?.[i]) { stmts.fillArtistSort.run(ai.albumArtistSorts[i], albumArtistIds[i]); }
+    if (ai.albumArtistMbids?.[i]) { stmts.fillArtistMbz.run(ai.albumArtistMbids[i], albumArtistIds[i]); }
   }
 
   // Multi-art (V48): clear first, then write the full art set + junctions —
@@ -1727,6 +1800,7 @@ async function run() {
           event: 'scanComplete',
           filesProcessed: 0, filesUnchanged: 0, filesScanned: 0, staleEntriesRemoved: 0,
           movedTracksRehomed: 0, movedRefsRehomed: 0, folderArtLinked: 0, albumsAggregated: 0,
+          artistsAggregated: 0,
         }));
         return;
       }
@@ -1821,6 +1895,10 @@ async function run() {
     // other. Same schema guard + inter-chunk yield as the sweeps above.
     const albumsAggregated = refreshDirtyAlbums(db,
       { yieldBetweenChunks: true, expectedSchemaVersion: schemaVersionAtOpen });
+    // V71: same for artists (display name = majority spelling, order_name,
+    // counts) — after albums, so album_count sees the surviving rows.
+    const artistsAggregated = refreshDirtyArtists(db,
+      { yieldBetweenChunks: true, expectedSchemaVersion: schemaVersionAtOpen });
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
     // to run the waveform post-processor and to print a human-readable summary.
     // Field shapes mirror the rust-parser's emitter:
@@ -1846,8 +1924,9 @@ async function run() {
       movedTracksRehomed: sweep.movedTracks,
       movedRefsRehomed: sweep.movedRefs,
       folderArtLinked,
-      // V70: album rows whose aggregate columns were recomputed this scan.
+      // V70/V71: album / artist rows whose aggregate columns were recomputed.
       albumsAggregated,
+      artistsAggregated,
       // Subtrees the scan could not see (their rows were shielded from
       // cleanup) — surfaced so a permanently unreadable directory is
       // operator-visible in the scan summary, not just a stderr line.

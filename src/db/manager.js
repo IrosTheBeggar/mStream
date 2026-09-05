@@ -7,6 +7,7 @@ import { SCHEMA_VERSION, MIGRATIONS } from './schema.js';
 import { shouldMigrate, migrate } from './migrate-from-loki.js';
 import { normalizeArtistName } from '../util/artist-normalize.js';
 import { albumKey } from './album-key.js';
+import { nameKey } from './name-key.js';
 
 let db = null;
 let clearSharedTimer = null;
@@ -538,11 +539,24 @@ export function inPlaceholders(arr) {
   return '(' + arr.map(() => '?').join(',') + ')';
 }
 
+// Server-side twin of the scanners' find-or-create (the ytdl download path
+// is the only caller). V71: artists are keyed by name_key (src/db/name-key.js),
+// so "beatles" finds the row shown as "Beatles"; the display name of a
+// new row is provisional until the artist aggregate refresh (which ytdl
+// runs inline) picks the majority spelling of its credits.
 export function findOrCreateArtist(name) {
   if (!name) { return null; }
-  const existing = db.prepare('SELECT id FROM artists WHERE name = ?').get(name);
+  const key = nameKey(name);
+  // Key first; then the exact name, for a row some other writer inserted
+  // without the real key (a raw-SQL / fixture insert keyed by the
+  // artists_ai_key trigger's ASCII approximation) — artists.name is UNIQUE,
+  // so inserting would fail where the scanners' exact-name probe does not.
+  const existing = db.prepare('SELECT id FROM artists WHERE name_key = ?').get(key)
+    ?? db.prepare('SELECT id FROM artists WHERE name = ?').get(name);
   if (existing) { return existing.id; }
-  const result = db.prepare('INSERT INTO artists (name) VALUES (?)').run(name);
+  // order_name is left to the artist aggregate refresh (the row is born
+  // agg_dirty and ytdl refreshes inline).
+  const result = db.prepare('INSERT INTO artists (name, name_key) VALUES (?, ?)').run(name, key);
   return Number(result.lastInsertRowid);
 }
 
