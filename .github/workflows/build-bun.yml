@@ -1658,8 +1658,15 @@ jobs:
           #   - fallback/DOA/capability markers: it did not limp there;
           #   - ">= 1 files processed": it parsed the fixture, not a 0-file walk.
           grep -qF "File scan started (Rust)" "$RUN/boot.log" || { echo "FAIL: no 'File scan started (Rust)' — the shipped Rust scanner never ran"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; }
-          if grep -qE "JS fallback|died on arrival|refusing it to protect track identities|retrying with the portable static-musl" "$RUN/boot.log"; then
-            echo "FAIL: the scan degraded (fallback/DOA/capability-refusal marker in boot.log) — the Rust scanner is broken in this bundle"
+          # "protect album identities" is the V70 schema-contract gate: the
+          # committed binaries predate a scanner write-contract bump in THIS
+          # PR. That is the expected state of a contract-bumping PR until its
+          # binaries are rebuilt — dispatch build-rust-parser AND
+          # build-rust-parser-musl on the PR branch, wait for their
+          # "ci: update pre-built rust-parser binaries" commits, and this leg
+          # re-runs green. Never loosen the assert to the JS fallback instead.
+          if grep -qE "JS fallback|died on arrival|refusing it to protect track identities|refusing it to protect album identities|retrying with the portable static-musl" "$RUN/boot.log"; then
+            echo "FAIL: the scan degraded (fallback/DOA/capability-refusal marker in boot.log) — the Rust scanner is broken or stale in this bundle (a schema-contract refusal means: rebuild bin/rust-parser on this branch via the build-rust-parser workflows)"
             echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1
           fi
           grep -qE "Scan complete: [1-9][0-9]* files processed" "$RUN/boot.log" || { echo "FAIL: scan processed 0 files — the fixture wav was not parsed"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; }
