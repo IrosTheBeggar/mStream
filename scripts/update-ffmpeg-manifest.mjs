@@ -4,10 +4,17 @@
 // Usage:
 //   node scripts/update-ffmpeg-manifest.mjs [autobuild-YYYY-MM-DD-HH-MM] [--verify]
 //
-// With no tag argument, pins the newest dated BtbN autobuild. NEVER pins the
-// rolling "latest" tag — its assets are replaced in place, which would break
-// both the sha256 pins and the Smart-App-Control-reputation goal (a stable
-// hash accrues reputation; a rolling one resets weekly).
+// With no tag argument, pins the final BtbN autobuild of the most recent
+// COMPLETED month — the only dated release BtbN keeps: their prune retains
+// the 14 newest dailies plus each month's last build (24 months back) and
+// deletes everything else, so a "newest daily" pin 404s for fresh installs
+// about two weeks after it is committed (the 2026-08-19 pin died on
+// 2026-09-02). A month-end pin outlives any mStream release. See
+// scripts/btbn-retention.mjs. NEVER pins the rolling "latest" tag — its
+// assets are replaced in place, which would break both the sha256 pins and
+// the Smart-App-Control-reputation goal (a stable hash accrues reputation;
+// a rolling one resets weekly). The runtime bootstrap does use `latest` as a
+// checksum-verified FALLBACK when a pinned asset has been pruned anyway.
 //
 // --verify: after assembling, DOWNLOAD every pinned asset and hash it against
 // its pin (~500 MB total). This is the load-bearing check for the monthly
@@ -19,9 +26,8 @@
 // Sources:
 //   - BtbN/FFmpeg-Builds (linux x64/arm64, win x64): the release's own
 //     checksums.sha256 provides the digests; asset sizes come from the
-//     GitHub API. Dated releases are retained in bulk but NOT forever —
-//     re-run this and ship the small manifest PR a few times a year so
-//     fresh installs never chase a pruned tag.
+//     GitHub API. Only month-end releases survive their prune (above), so
+//     the monthly refresh on the 3rd pins the previous month's final build.
 //   - ffmpeg.martin-riedl.de (macOS x64/arm64): /redirect/latest/... 307s
 //     to a versioned /download/... path where a sibling .sha256 lives; the
 //     manifest pins that resolved path + digest so installs never depend on
@@ -33,6 +39,7 @@ import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { pickRetainedTag, isRetainedTag, KEEP_LATEST } from './btbn-retention.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(root, 'bin', 'ffmpeg', 'manifest.json');
@@ -71,16 +78,27 @@ function gh(path) {
 }
 
 async function resolveTag(argTag) {
+  if (argTag && !/^autobuild-[0-9-]+$/.test(argTag)) {
+    throw new Error(`refusing tag '${argTag}' — pin a dated autobuild-* tag, never 'latest'`);
+  }
+  // Every dated release BtbN currently serves — the 14 newest dailies plus
+  // the month-end builds — fits one page.
+  const releases = await gh(`/repos/${BTBN_REPO}/releases?per_page=100`);
+  const tags = releases.map((r) => r.tag_name).filter((t) => /^autobuild-/.test(t));
+  if (tags.length === 0) { throw new Error('no dated autobuild release found'); }
   if (argTag) {
-    if (!/^autobuild-[0-9-]+$/.test(argTag)) {
-      throw new Error(`refusing tag '${argTag}' — pin a dated autobuild-* tag, never 'latest'`);
+    if (!isRetainedTag(argTag, tags)) {
+      const durable = pickRetainedTag(tags);
+      console.warn(
+        `WARNING: ${argTag} is not the final build of a completed month. BtbN deletes such dailies once ` +
+        `${KEEP_LATEST} newer builds exist, so this pin would 404 for fresh installs within ~2 weeks ` +
+        `(the runtime then falls back to BtbN's rolling 'latest'). The durable choice is ${durable || 'n/a'}.`);
     }
     return argTag;
   }
-  const releases = await gh(`/repos/${BTBN_REPO}/releases?per_page=10`);
-  const dated = releases.find((r) => /^autobuild-/.test(r.tag_name));
-  if (!dated) { throw new Error('no dated autobuild release found'); }
-  return dated.tag_name;
+  const tag = pickRetainedTag(tags);
+  if (!tag) { throw new Error('no autobuild release from a completed month found'); }
+  return tag;
 }
 
 // The exact build-flavor selector the bootstrap has always used: plain -gpl

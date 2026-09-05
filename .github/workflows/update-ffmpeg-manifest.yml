@@ -4,12 +4,17 @@
 # review PR when the pins moved. A human merges; nothing lands on master
 # automatically.
 #
-# Why monthly: pins exist so Windows users keep a stable unsigned-binary
-# hash that accrues SmartScreen / Smart App Control reputation — churning
-# weekly would defeat that — while BtbN's bounded retention of dated
-# releases means a pin left for a year could 404 for fresh installs.
-# Monthly threads that needle. The 3rd-of-month at an odd minute dodges
-# GitHub's first-of-month/on-the-hour cron congestion.
+# Why monthly, and why the 3rd: pins exist so Windows users keep a stable
+# unsigned-binary hash that accrues SmartScreen / Smart App Control
+# reputation — churning weekly would defeat that. BtbN's prune keeps only
+# the 14 newest dailies plus each month's FINAL build (24 months back), so
+# the script pins the previous month's final build — the one that outlives
+# any mStream release; a "newest daily" pin 404'd for fresh installs two
+# weeks after being committed. Running on the 3rd means last month is
+# complete and its final build is known; the odd minute dodges GitHub's
+# first-of-month/on-the-hour cron congestion. A pruned pin no longer strands
+# an install: the bootstrap falls back to BtbN's rolling `latest`
+# (checksum-verified) until a manifest with a live pin ships.
 name: Update ffmpeg manifest
 
 on:
@@ -18,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'BtbN tag to pin (autobuild-YYYY-MM-DD-HH-MM); empty = newest dated autobuild'
+        description: 'BtbN tag to pin (autobuild-YYYY-MM-DD-HH-MM); empty = the final build of the last completed month (the one BtbN retains)'
         required: false
         default: ''
 

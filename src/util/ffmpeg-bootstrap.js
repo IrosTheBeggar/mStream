@@ -5,9 +5,21 @@
  * the PINNED manifest committed at bin/ffmpeg/manifest.json — the same trust
  * model as p2p-sidecar-bootstrap: {tag/path, sha256, size} per platform is
  * reviewed text, a download that doesn't hash to its pin is deleted and
- * refused (no fallback, no retry-with-less-verification), and updates ship
- * as a manifest-bump PR (scripts/update-ffmpeg-manifest.mjs) instead of
- * whatever the upstream's rolling "latest" serves that week.
+ * refused (no retry-with-less-verification), and updates ship as a
+ * manifest-bump PR (scripts/update-ffmpeg-manifest.mjs) instead of whatever
+ * the upstream's rolling "latest" serves that week.
+ *
+ * One deliberate exception — a PRUNED pin. BtbN deletes dated autobuild
+ * releases (their util/prunetags.sh keeps the 14 newest plus each month's
+ * final build for 24 months), so a pin can vanish from under an mStream
+ * build that is still being installed fresh: the 2026-08-19 pin 404'd on
+ * 2026-09-02 for every new Linux and Windows install. A pinned asset that
+ * answers 404/410 therefore falls back to the same-platform stable-branch
+ * build from BtbN's rolling `latest` release, verified against THAT
+ * release's checksums.sha256 — an integrity check, not a reviewed pin, and
+ * logged as such. The install receipt records it as a fallback, so the
+ * update check re-converges onto a reviewed pin as soon as a manifest with
+ * a live one ships (and does not churn while the dead tag is still pinned).
  *
  * Why pins and not upstream's own checksum file (the pre-2026-08 design):
  * a rolling build means every refresh hands Windows users a brand-new
@@ -211,7 +223,7 @@ export function pinnedRelease({ manifestDir = MANIFEST_DIR, key = platformKey() 
     const url = MIRROR
       ? `${MIRROR}/${entry.file}`
       : `https://github.com/${m.btbn.repo}/releases/download/${m.btbn.tag}/${entry.file}`;
-    return { source: 'btbn', tag: m.btbn.tag, file: entry.file, url, sha256: entry.sha256, size: entry.size };
+    return { source: 'btbn', repo: m.btbn.repo, tag: m.btbn.tag, file: entry.file, url, sha256: entry.sha256, size: entry.size };
   }
   if (entry.source === 'martinriedl') {
     const files = {};
@@ -261,11 +273,13 @@ function readReceipt(dir) {
   }
 }
 
-async function writeReceipt(dir, release) {
+// `pins` defaults to the manifest's; a fallback install (see
+// installLatestFallback) records its own identity instead.
+async function writeReceipt(dir, release, pins = pinsOf(release)) {
   await writeJsonAtomic(path.join(dir, RECEIPT_FILE), {
     schema: 1,
     family: 'ffmpeg',
-    pins: pinsOf(release),
+    pins,
     installedAt: new Date().toISOString(),
   });
 }
@@ -308,7 +322,9 @@ export function downloadToFile(url, destPath, { maxBytes = null } = {}) {
         }
         if (res.statusCode !== 200) {
           res.resume();
-          return reject(new Error(`HTTP ${res.statusCode} downloading ${u}`));
+          const httpErr = new Error(`HTTP ${res.statusCode} downloading ${u}`);
+          httpErr.statusCode = res.statusCode; // lets a caller tell "gone" (404/410) from "failed"
+          return reject(httpErr);
         }
         const tmp = destPath + '.tmp';
         const out = fs.createWriteStream(tmp);
@@ -362,6 +378,9 @@ export function computeFileChecksum(filePath) {
 
 // ── Extraction ──────────────────────────────────────────────────────────────
 
+// BtbN archives unpack into a directory named after the asset (sans
+// .tar.xz) — for the dated builds and the rolling `latest` ones alike
+// (ffmpeg-n9.0-latest-linux64-gpl-9.0/bin/ffmpeg, checked 2026-09-04).
 function extractTarXz(tarPath, destDir, asset) {
   const prefix = asset.replace(/\.tar\.xz$/, '');
   return new Promise((resolve, reject) => {
@@ -416,28 +435,31 @@ function extractZipUnix(zipPath, destDir, member) {
 
 // Download one file and verify it against its manifest pin: size cap during
 // transfer (wrong bytes aren't worth the disk or the wait), exact size after,
-// sha256 last. Deletes the file and returns false on any miss — the pin is
-// the only authority, there is no fetch-the-checksum fallback.
+// sha256 last. Deletes the file on any miss. Returns { ok: true }, or
+// { ok: false, gone } where `gone` marks an asset the upstream no longer
+// serves at all (HTTP 404/410 — a pruned release): the ONE failure
+// installInto() may answer with the rolling fallback. Every other miss —
+// network, size, digest — is a plain refusal; the pin stays the authority.
 async function downloadPinned(url, destPath, pin, label) {
   try {
     await downloadToFile(url, destPath, { maxBytes: pin.size });
   } catch (e) {
     winston.error(`[ffmpeg-bootstrap] ${label} download failed: ${e.message}`);
-    return false;
+    return { ok: false, gone: e.statusCode === 404 || e.statusCode === 410 };
   }
   const { size } = await fsp.stat(destPath).catch(() => ({ size: -1 }));
   if (size !== pin.size) {
     await fsp.unlink(destPath).catch(() => {});
     winston.error(`[ffmpeg-bootstrap] ${label} is ${size} bytes, manifest pins ${pin.size} — refusing`);
-    return false;
+    return { ok: false, gone: false };
   }
   const actual = await computeFileChecksum(destPath);
   if (actual !== pin.sha256) {
     await fsp.unlink(destPath).catch(() => {});
     winston.error(`[ffmpeg-bootstrap] ${label} does not match its committed pin! Expected ${pin.sha256}, got ${actual} — refusing (a modified or substituted upstream asset fails closed; see bin/ffmpeg/manifest.json)`);
-    return false;
+    return { ok: false, gone: false };
   }
-  return true;
+  return { ok: true };
 }
 
 // macOS: download one binary's .zip into the staging dir, verify against its
@@ -447,7 +469,9 @@ async function downloadPinned(url, destPath, pin, label) {
 // into place.
 async function installMacBinary(pin, stagingDir, member) {
   const zipPath = path.join(stagingDir, `${member}.zip`);
-  if (!(await downloadPinned(pin.url, zipPath, pin, `${member} (macOS)`))) { return false; }
+  // martin-riedl keeps its versioned download paths, so a miss here is a
+  // plain failure — no rolling fallback on this source.
+  if (!(await downloadPinned(pin.url, zipPath, pin, `${member} (macOS)`)).ok) { return false; }
   try {
     await extractZipUnix(zipPath, stagingDir, member);
   } catch (e) {
@@ -458,6 +482,109 @@ async function installMacBinary(pin, stagingDir, member) {
   await fsp.chmod(path.join(stagingDir, member), 0o755).catch(() => {});
   await fsp.unlink(zipPath).catch(() => {});
   return true;
+}
+
+// ── Pruned-pin fallback (BtbN only) ─────────────────────────────────────────
+
+// No pin records a rolling asset's size, so cap it instead: the win64 zip is
+// ~170 MB, anything past this is wrong bytes. The checksum listing is ~5 KB.
+const FALLBACK_MAX_BYTES = 512 * 1024 * 1024;
+const CHECKSUMS_MAX_BYTES = 64 * 1024;
+
+// BtbN asset names. Pinned: ffmpeg-N-<rev>-g<sha>-<plat>-gpl.<ext>. In the
+// rolling `latest` release: ffmpeg-n<maj>.<min>-latest-<plat>-gpl-<maj>.<min>.<ext>
+// (a release branch, updated in place) and ffmpeg-master-latest-<plat>-gpl.<ext>
+// (the master snapshot). The -shared / -lgpl flavors never match these.
+const PINNED_BTBN_RE = /^ffmpeg-N-[0-9]+-g[0-9a-f]+-(linux64|linuxarm64|win64)-gpl\.(tar\.xz|zip)$/;
+const LATEST_STABLE_RE = /^ffmpeg-n([0-9]+)\.([0-9]+)-latest-(linux64|linuxarm64|win64)-gpl-([0-9]+)\.([0-9]+)\.(tar\.xz|zip)$/;
+const LATEST_MASTER_RE = /^ffmpeg-master-latest-(linux64|linuxarm64|win64)-gpl\.(tar\.xz|zip)$/;
+
+/**
+ * Choose the `latest`-release asset that stands in for a pruned pin: the same
+ * platform and flavor (plain static -gpl, same archive type) as the pin, the
+ * newest release-BRANCH build BtbN lists (ffmpeg-n9.0-latest-…) over the
+ * master snapshot, which is taken only when no branch build is listed.
+ * `checksumsText` is that release's checksums.sha256 — every line's name is
+ * token-validated before it can become a URL, every digest must be hex.
+ * Returns { name, sha256, branch } or null. Pure; exported for the tests.
+ */
+export function pickLatestFallback(checksumsText, pinnedFile) {
+  const pinned = PINNED_BTBN_RE.exec(pinnedFile || '');
+  if (!pinned) { return null; }
+  const [, plat, ext] = pinned;
+  let stable = null;
+  let master = null;
+  for (const line of String(checksumsText || '').split('\n')) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 2) { continue; }
+    const digest = parts[0].toLowerCase();
+    const name = parts[1];
+    if (!isSha256(digest) || !TOKEN_RE.test(name)) { continue; }
+    const s = LATEST_STABLE_RE.exec(name);
+    if (s) {
+      if (s[3] !== plat || s[6] !== ext || s[1] !== s[4] || s[2] !== s[5]) { continue; }
+      const version = [Number(s[1]), Number(s[2])];
+      if (!stable || version[0] > stable.version[0] || (version[0] === stable.version[0] && version[1] > stable.version[1])) {
+        stable = { name, sha256: digest, branch: `n${s[1]}.${s[2]}`, version };
+      }
+      continue;
+    }
+    const m = LATEST_MASTER_RE.exec(name);
+    if (m && m[1] === plat && m[2] === ext && !master) {
+      master = { name, sha256: digest, branch: 'master' };
+    }
+  }
+  const pick = stable || master;
+  return pick ? { name: pick.name, sha256: pick.sha256, branch: pick.branch } : null;
+}
+
+// Download the fallback archive into the staging dir, verified against the
+// `latest` release's own checksums.sha256. BtbN replaces those assets in
+// place once a day, so a download that straddles the swap hashes to neither
+// listing: the listing is re-read and the download retried once; a second
+// miss is refused like any other. Returns { file, sha256, branch } or null.
+async function installLatestFallback(release, staging) {
+  const base = MIRROR ? `${MIRROR}/latest` : `https://github.com/${release.repo}/releases/download/latest`;
+  winston.warn(
+    `[ffmpeg-bootstrap] ${release.file} is gone from BtbN release ${release.tag}: BtbN prunes dated autobuilds, ` +
+    'and this mStream build\'s pin has aged out. Falling back to the rolling stable-branch build from BtbN\'s ' +
+    '"latest" release, verified against that release\'s checksums.sha256 (an integrity check, not a reviewed ' +
+    'pin). Update mStream to get a reviewed pin again.');
+  const sumsPath = path.join(staging, 'checksums.sha256');
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let sums;
+    try {
+      await downloadToFile(`${base}/checksums.sha256`, sumsPath, { maxBytes: CHECKSUMS_MAX_BYTES });
+      sums = await fsp.readFile(sumsPath, 'utf8');
+    } catch (e) {
+      winston.error(`[ffmpeg-bootstrap] could not read BtbN's latest checksums.sha256: ${e.message}`);
+      return null;
+    }
+    const pick = pickLatestFallback(sums, release.file);
+    if (!pick) {
+      winston.error(`[ffmpeg-bootstrap] BtbN's latest release lists no build matching ${release.file} — nothing to fall back to`);
+      return null;
+    }
+    const dest = path.join(staging, pick.name);
+    try {
+      await downloadToFile(`${base}/${pick.name}`, dest, { maxBytes: FALLBACK_MAX_BYTES });
+    } catch (e) {
+      winston.error(`[ffmpeg-bootstrap] ${pick.name} download failed: ${e.message}`);
+      return null;
+    }
+    const actual = await computeFileChecksum(dest);
+    if (actual === pick.sha256) {
+      winston.info(`[ffmpeg-bootstrap] Checksum verified against BtbN's latest release (${pick.branch} branch): ${pick.name}`);
+      return { file: pick.name, sha256: pick.sha256, branch: pick.branch };
+    }
+    await fsp.unlink(dest).catch(() => {});
+    if (attempt === 1) {
+      winston.warn(`[ffmpeg-bootstrap] ${pick.name} does not match BtbN's checksums.sha256 — retrying once, the rolling asset may have been replaced mid-download`);
+    } else {
+      winston.error(`[ffmpeg-bootstrap] ${pick.name} does not match BtbN's checksums.sha256 again (expected ${pick.sha256}, got ${actual}) — refusing`);
+    }
+  }
+  return null;
 }
 
 // ── Atomic install swap ─────────────────────────────────────────────────────
@@ -604,6 +731,9 @@ async function installInto(dir) {
   const destFfprobe = path.join(dir, `ffprobe${binaryExt}`);
   const stagedFfmpeg = path.join(staging, `ffmpeg${binaryExt}`);
   const stagedFfprobe = path.join(staging, `ffprobe${binaryExt}`);
+  // Set when the rolling fallback stood in for a pruned pin: the receipt then
+  // records the fallback's identity, not the manifest's (see checkForUpdate).
+  let installedPins = null;
 
   winston.info(`[ffmpeg-bootstrap] Downloading ffmpeg for ${process.platform}/${process.arch}...${MIRROR ? ` (mirror: ${MIRROR})` : ''}`);
 
@@ -614,14 +744,27 @@ async function installInto(dir) {
       if (!(await installMacBinary(release.files.ffprobe, staging, 'ffprobe'))) { return false; }
     } else {
       // BtbN: one archive, verified against its pin before extraction.
-      const archivePath = path.join(staging, release.file);
-      if (!(await downloadPinned(release.url, archivePath, release, release.file))) { return false; }
-      winston.info(`[ffmpeg-bootstrap] Checksum verified against the committed pin (${release.tag})`);
+      let archiveFile = release.file;
+      let archivePath = path.join(staging, release.file);
+      const pinned = await downloadPinned(release.url, archivePath, release, release.file);
+      if (pinned.ok) {
+        winston.info(`[ffmpeg-bootstrap] Checksum verified against the committed pin (${release.tag})`);
+      } else if (pinned.gone) {
+        // The pinned release was pruned upstream (module header): the rolling
+        // stable-branch build beats a fresh install with no ffmpeg at all.
+        const fallback = await installLatestFallback(release, staging);
+        if (!fallback) { return false; }
+        archiveFile = fallback.file;
+        archivePath = path.join(staging, fallback.file);
+        installedPins = { source: 'btbn-latest', forTag: release.tag, file: fallback.file, sha256: fallback.sha256 };
+      } else {
+        return false;
+      }
 
       // Extract
-      if (release.file.endsWith('.tar.xz')) {
-        await extractTarXz(archivePath, staging, release.file);
-      } else if (release.file.endsWith('.zip')) {
+      if (archiveFile.endsWith('.tar.xz')) {
+        await extractTarXz(archivePath, staging, archiveFile);
+      } else if (archiveFile.endsWith('.zip')) {
         await extractZip(archivePath, staging);
       }
 
@@ -657,7 +800,7 @@ async function installInto(dir) {
     // pre-manifest `.checksum` baseline is superseded (its absence alongside
     // a receipt must not read as "operator's"), so drop it.
     try {
-      await writeReceipt(dir, release);
+      await writeReceipt(dir, release, installedPins || pinsOf(release));
       await fsp.rm(path.join(dir, LEGACY_CHECKSUM_FILE), { force: true }).catch(() => {});
     } catch (e) {
       winston.warn(`[ffmpeg-bootstrap] could not write install receipt: ${e.message}`);
@@ -853,6 +996,11 @@ export async function checkForUpdate() {
   // installs (a `.checksum` baseline, or a default-dir install with no
   // marker at all) never match and converge onto the pinned build once.
   if (receipt && JSON.stringify(receipt.pins) === JSON.stringify(pinsOf(release))) return;
+  // A fallback install (the pinned asset had been pruned upstream — see
+  // installLatestFallback) is as current as it can be while the manifest
+  // still pins that same dead tag: trying again would only re-fetch the
+  // rolling build. It converges the moment a manifest with a new tag ships.
+  if (receipt?.pins?.source === 'btbn-latest' && release.source === 'btbn' && receipt.pins.forTag === release.tag) return;
 
   winston.info('[ffmpeg-bootstrap] Manifest pins changed — refreshing the managed ffmpeg install...');
   // The live binaries stay in place (and spawnable) for the whole download:
