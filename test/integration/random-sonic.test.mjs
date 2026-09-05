@@ -374,3 +374,169 @@ describe('sonic seed edge cases', () => {
     assert.ok(second.body.sonic.similarity >= 0.75 - 1e-6, 'pick is inside the requested range');
   });
 });
+
+// ── portable seeds: reading a vector out, taking one in ─────────────────────
+//
+// A client with several servers can't hand server B a filepath that only
+// names a row on server A. These pin the two halves that let the seed travel
+// as a vector instead: /discovery/local/embeddings reads it out, and
+// random-songs' similarToVector takes it in. Same handcrafted 4-d space as
+// above, so every pool is known in advance.
+
+const b64v = (v) => blob(v).toString('base64');
+const TITLE_VEC = { 'Be Somebody': V.seed, 'Rise': V.near, 'Highway': V.mid, 'Neon': V.far, 'Lib2 Song': V.lib2 };
+
+async function embeddings(filePaths, user = 'admin', srv = server) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (user && tokens[user]) { headers['x-access-token'] = tokens[user]; }
+  const r = await fetch(`${srv.baseUrl}/api/v1/discovery/local/embeddings`, {
+    method: 'POST', headers, body: JSON.stringify({ filePaths }),
+  });
+  return { status: r.status, body: await r.json().catch(() => null) };
+}
+
+function decodeB64(s) {
+  const raw = Buffer.from(s, 'base64');
+  const ab = new ArrayBuffer(raw.length);
+  new Uint8Array(ab).set(raw);
+  return new Float32Array(ab);
+}
+
+describe('discovery/local/embeddings — reading a seed out', () => {
+  test('returns the vector behind a path as base64 float32 LE, with the model block', async () => {
+    const { status, body } = await embeddings([SEED_PATH]);
+    assert.equal(status, 200, JSON.stringify(body));
+    assert.deepEqual(body.model, { id: 'test-fake', version: '1' });
+    assert.equal(body.dim, 4);
+    assert.equal(body.tracks.length, 1);
+    const t = body.tracks[0];
+    assert.equal(t.filePath, SEED_PATH);
+    assert.equal(t.notAnalyzed, false);
+    assert.ok(typeof t.audioHash === 'string' && t.audioHash.length > 0);
+    assert.equal(Buffer.from(t.embedding, 'base64').length, 4 * 4, 'dim × float32');
+    const v = decodeB64(t.embedding);
+    for (let i = 0; i < 4; i++) {
+      assert.ok(Math.abs(v[i] - V.seed[i]) < 1e-6, `component ${i}: ${v[i]} vs ${V.seed[i]}`);
+    }
+  });
+
+  test('a scanned but un-embedded path is notAnalyzed with a null embedding, beside analyzed ones', async () => {
+    const { status, body } = await embeddings([SEED_PATH, UNSEEDED_PATH]);
+    assert.equal(status, 200);
+    assert.equal(body.tracks.length, 2);
+    assert.equal(body.tracks[0].notAnalyzed, false);
+    assert.ok(typeof body.tracks[0].embedding === 'string');
+    assert.equal(body.tracks[1].filePath, UNSEEDED_PATH);
+    assert.equal(body.tracks[1].notAnalyzed, true);
+    assert.equal(body.tracks[1].embedding, null);
+  });
+
+  test('unknown path → 404; more than 8 paths or none → 400', async () => {
+    assert.equal((await embeddings(['testlib/nope/missing.mp3'])).status, 404);
+    assert.equal((await embeddings(Array(9).fill(SEED_PATH))).status, 400, '9 paths > cap');
+    assert.equal((await embeddings([])).status, 400, 'empty list');
+  });
+
+  test("other users' vpaths are unreadable (uniform 404)", async () => {
+    const { status } = await embeddings([LIB2_PATH], 'bob');
+    assert.equal(status, 404);
+  });
+
+  test('403 when discovery is disabled', async () => {
+    const { status } = await embeddings([SEED_PATH], null, offServer);
+    assert.equal(status, 403);
+  });
+});
+
+describe('sonic vector seed — taking a seed in', () => {
+  const seedBody = (extra = {}) => ({
+    similarToVector: b64v(V.seed), similarToModelId: 'test-fake', minSimilarity: 0.85, ...extra,
+  });
+
+  test('a vector seed pools like the filepath form, except the seed track itself stays eligible', async () => {
+    // A vector carries no hashes, so nothing is excluded by contract: at
+    // 0.85 the pool is {Be Somebody 1.0, Rise 0.95, Lib2 Song 0.9} — one
+    // wider than the filepath form's {Rise, Lib2 Song}.
+    const { status, body: probe } = await pick(seedBody());
+    assert.equal(status, 200, JSON.stringify(probe));
+    assert.equal(probe.sonic.poolSize, 3);
+    const titles = await pickTitles(seedBody(), 64);
+    assert.deepEqual([...titles].sort(), ['Be Somebody', 'Lib2 Song', 'Rise']);
+
+    // ignoreList — server-issued track ids, a SOFT cooldown that yields to
+    // the full pool once it covers every candidate — is what keeps the DJ
+    // off the song already playing. With the pool at three and one id sent,
+    // two candidates stay fresh, so the seed track is never picked here.
+    const mdb = new DatabaseSync(path.join(server.tmpDir, 'db', 'mstream.db'), { readOnly: true });
+    let seedId;
+    try { seedId = mdb.prepare("SELECT id FROM tracks WHERE title = 'Be Somebody'").get().id; } finally { mdb.close(); }
+    const guarded = await pickTitles(seedBody({ ignoreList: [seedId] }), 40);
+    assert.deepEqual([...guarded].sort(), ['Lib2 Song', 'Rise']);
+  });
+
+  test("the reported similarity is the pick's exact cosine against the vector", async () => {
+    const { body } = await pick(seedBody());
+    const expected = dot(V.seed, TITLE_VEC[body.songs[0].metadata.title]);
+    assert.ok(Math.abs(body.sonic.similarity - expected) < 1e-3,
+      `reported ${body.sonic.similarity} for '${body.songs[0].metadata.title}', exact ${expected}`);
+  });
+
+  test('round trip: a vector read out of this server seeds the same pool as its filepath (plus the seed)', async () => {
+    const { body: out } = await embeddings([SEED_PATH]);
+    const viaVector = await pick({ similarToVector: out.tracks[0].embedding, similarToModelId: 'test-fake', minSimilarity: 0.85 });
+    const viaPath = await pick({ similarTo: [SEED_PATH], minSimilarity: 0.85 });
+    assert.equal(viaVector.status, 200);
+    assert.equal(viaPath.status, 200);
+    assert.equal(viaVector.body.sonic.poolSize, viaPath.body.sonic.poolSize + 1,
+      'the only difference is the seed track itself, which the path form excludes');
+  });
+
+  test('a caller-averaged, un-normalized seed reaches the centroid pool', async () => {
+    // What a multi-server client sends: the mean of two anchors, here left
+    // scaled ×3 — the server re-normalizes, so the pool is the same one the
+    // filepath centroid test reaches (Highway ≈ 0.993, Lib2 Song ≈ 0.997,
+    // Rise ≈ 0.979 at 0.97; the anchors themselves sit at 0.866, out).
+    const mean = new Float32Array(4);
+    for (let i = 0; i < 4; i++) { mean[i] = 3 * (V.seed[i] + V.far[i]) / 2; }
+    const body = { similarToVector: b64v(mean), similarToModelId: 'test-fake', minSimilarity: 0.97 };
+    const { status, body: probe } = await pick(body);
+    assert.equal(status, 200, JSON.stringify(probe));
+    assert.equal(probe.sonic.poolSize, 3);
+    const titles = await pickTitles(body, 64);
+    assert.deepEqual([...titles].sort(), ['Highway', 'Lib2 Song', 'Rise']);
+  });
+
+  test('a model-space mismatch is a hard 400 that names both models', async () => {
+    const { status, body } = await pick(seedBody({ similarToModelId: 'some-other-model' }));
+    assert.equal(status, 400);
+    assert.match(body.error, /some-other-model/);
+    assert.match(body.error, /test-fake/);
+  });
+
+  test('validation: exclusive with similarTo; needs its model id and a threshold; malformed vectors refused', async () => {
+    assert.equal((await pick(seedBody({ similarTo: [SEED_PATH] }))).status, 400, 'both seed forms');
+    assert.equal((await pick({ similarToVector: b64v(V.seed), minSimilarity: 0.85 })).status, 400, 'no model id');
+    assert.equal((await pick({ similarToVector: b64v(V.seed), similarToModelId: 'test-fake' })).status, 400, 'no threshold');
+    const short = await pick(seedBody({ similarToVector: b64v(vec(1, 0, 0)) }));
+    assert.equal(short.status, 400, 'wrong length');
+    assert.match(short.body.error, /float32 values/);
+    const zero = await pick(seedBody({ similarToVector: Buffer.alloc(16).toString('base64') }));
+    assert.equal(zero.status, 400, 'zero vector');
+    assert.match(zero.body.error, /zero vector/);
+    assert.equal((await pick(seedBody({ similarToVector: '!!!not-base64!!!' }))).status, 400, 'not base64');
+  });
+
+  test('restricted user never receives other-library picks from a vector seed', async () => {
+    const titles = await pickTitles(seedBody(), 16, 'bob');
+    for (const t of titles) {
+      assert.ok(['Be Somebody', 'Rise'].includes(t), `'${t}' is outside bob's libraries`);
+    }
+  });
+
+  test('403 when discovery is disabled', async () => {
+    const r = await fetch(`${offServer.baseUrl}${ROUTE}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(seedBody()),
+    });
+    assert.equal(r.status, 403);
+  });
+});
