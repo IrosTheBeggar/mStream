@@ -83,12 +83,12 @@ function buildV47Fixture(db) {
 
 function finishMigrations(db) {
   // Continue the chain from wherever the fixture left it.
+  // Through the shared helper so per-migration JS hooks run: V59 drops
+  // fts_tracks in SQL and recreates it in its hook, and a chain applied
+  // without hooks leaves the FTS triggers pointing at a missing table —
+  // which the next schema-validating ALTER (V68's DROP COLUMN) refuses.
   const current = db.prepare('PRAGMA user_version').get().user_version;
-  for (const m of MIGRATIONS) {
-    if (m.version <= current) { continue; }
-    db.exec(m.sql);
-    db.exec(`PRAGMA user_version = ${m.version}`);
-  }
+  applyAllMigrations(db, { fromVersion: current });
 }
 
 // ── Schema shape ────────────────────────────────────────────────────────────

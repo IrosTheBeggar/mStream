@@ -81,7 +81,7 @@ import { HASH_GENERATION } from './audio-hash.js';
 // V63 indexes cue_points.library_id and play_events.library_id so the
 // library-delete cascade seeks instead of scanning. See SCHEMA_V63.
 // V64 indexes tracks.year so the DLNA By-Year browse seeks. See SCHEMA_V64.
-export const SCHEMA_VERSION = 67;
+export const SCHEMA_VERSION = 68;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -1256,6 +1256,9 @@ export const SCHEMA_V34 = `
 //
 // Forward-only, no rescan required, NULL default keeps the migration
 // invisible to anyone not setting a Subsonic password.
+//
+// Dropped again by V68 after the Subsonic API was removed. Kept so a
+// database anywhere in the V35..V67 window still migrates in sequence.
 export const SCHEMA_V35 = `
   ALTER TABLE users ADD COLUMN subsonic_password_encrypted TEXT DEFAULT NULL;
 `;
@@ -2451,6 +2454,24 @@ export const SCHEMA_V67 = `
     ON federation_requests(peer_endpoint_id);
 `;
 
+// V68: drop users.subsonic_password_encrypted. The Subsonic API — and with
+// it the only reader and writer of this column (the protocol's token-auth
+// path and the Subsonic password setters) — was removed, and
+// config.setup() strips `subsonicSecret`, the HKDF input for the column's
+// AES key, from config.json on first boot. What remains is
+// recoverable-password ciphertext nothing can decrypt: the one piece of
+// Subsonic-era schema worth deleting rather than leaving dormant (the
+// star / bookmark / play-queue / api-key tables are generic user state
+// and stay).
+//
+// Plain `ALTER TABLE ... DROP COLUMN` — the same shape as V34 (SQLite
+// ≥3.35; Node ≥22.5 ships ≥3.45). Nothing indexes, references or triggers
+// on the column, so no table rebuild. Forward-only, no rescan. A pre-V68
+// backup restored onto this build simply re-runs the drop.
+export const SCHEMA_V68 = `
+  ALTER TABLE users DROP COLUMN subsonic_password_encrypted;
+`;
+
 export const SCHEMA_V58 = `
   ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
 `;
@@ -2678,7 +2699,7 @@ export const MIGRATIONS = [
   // Subsonic-specific password storage so token-auth Subsonic clients
   // can connect. Main PBKDF2 password unchanged. NULL default keeps
   // existing behavior for anyone who hasn't set a Subsonic password.
-  // See SCHEMA_V35 for the design rationale.
+  // See SCHEMA_V35 for the design rationale; V68 drops the column again.
   { version: 35, sql: SCHEMA_V35 },
   // V36 adds tracks.source — open-enum provenance label. The ytdl
   // handler writes 'ytdl' on insert; the scanner backfills from a
@@ -2840,4 +2861,9 @@ export const MIGRATIONS = [
   // requests over the discovery DM transport. Pure new table + index, no
   // rescan. See SCHEMA_V67.
   { version: 67, sql: SCHEMA_V67 },
+  // V68 drops users.subsonic_password_encrypted — the Subsonic API and
+  // every reader of the column are gone, and the config key that could
+  // decrypt it is stripped on boot. Plain DROP COLUMN, no rescan. See
+  // SCHEMA_V68.
+  { version: 68, sql: SCHEMA_V68 },
 ];

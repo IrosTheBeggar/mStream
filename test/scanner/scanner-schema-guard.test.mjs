@@ -20,7 +20,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { MIGRATIONS, SCHEMA_VERSION } from '../../src/db/schema.js';
+import { SCHEMA_VERSION } from '../../src/db/schema.js';
+import { applyAllMigrations } from '../helpers/apply-migrations.mjs';
 import {
   writeScannerPidfile, clearScannerPidfile, reapOrphanedScanner,
   looksLikeScanner,
@@ -40,10 +41,10 @@ function makeDb(tmp) {
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
-  for (const m of MIGRATIONS) {
-    db.exec(m.sql);
-    db.exec(`PRAGMA user_version = ${m.version}`);
-  }
+  // Shared helper: runs the per-migration JS hooks the runner runs (V59
+  // recreates fts_tracks in its hook; without it the FTS triggers dangle
+  // and V68's DROP COLUMN refuses the schema).
+  applyAllMigrations(db);
   return { db, dbPath };
 }
 
@@ -227,10 +228,7 @@ describe('stale sweep verify-absence (deleteStaleTracks)', () => {
     const db = new DatabaseSync(dbPath);
     db.exec('PRAGMA journal_mode = WAL');
     // Build the world as it was BEFORE the repair migration...
-    for (const m of MIGRATIONS.filter(m => m.version <= 45)) {
-      db.exec(m.sql);
-      db.exec(`PRAGMA user_version = ${m.version}`);
-    }
+    applyAllMigrations(db, { upToVersion: 45 });
     db.prepare("INSERT INTO libraries (id, name, root_path) VALUES (1, 'l', 'x')").run();
     // ...poison it the way old JS scanners did (fractional mtimeMs → REAL)...
     db.exec(`INSERT INTO tracks (filepath, library_id, scan_id, modified, lyrics_sidecar_mtime)
@@ -238,10 +236,7 @@ describe('stale sweep verify-absence (deleteStaleTracks)', () => {
     db.exec(`INSERT INTO tracks (filepath, library_id, scan_id, modified, lyrics_sidecar_mtime)
              VALUES ('healthy.mp3', 1, 's', 1781126455012, NULL)`);
     // ...then apply the rest of the migrations (V46).
-    for (const m of MIGRATIONS.filter(m => m.version > 45)) {
-      db.exec(m.sql);
-      db.exec(`PRAGMA user_version = ${m.version}`);
-    }
+    applyAllMigrations(db, { fromVersion: 45 });
     const rows = db.prepare(
       `SELECT filepath, modified, typeof(modified) AS tm,
               lyrics_sidecar_mtime AS lsm, typeof(lyrics_sidecar_mtime) AS tl

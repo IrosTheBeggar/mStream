@@ -23,7 +23,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { MIGRATIONS } from '../../src/db/schema.js';
+import { applyAllMigrations } from '../helpers/apply-migrations.mjs';
 import { run, shouldChain } from '../../src/db/waveform-fallback.js';
 import {
   NUM_BARS, cacheFilePath, failedMarkerPath, deferredMarkerPath,
@@ -103,7 +103,7 @@ async function makeCase(tracks) {
   await fsp.mkdir(cache, { recursive: true });
 
   const db = new DatabaseSync(path.join(root, 'wf.db'));
-  for (const m of MIGRATIONS) { db.exec(m.sql); db.exec(`PRAGMA user_version = ${m.version}`); }
+  applyAllMigrations(db); // shared helper: runs the JS hooks (V59 recreates fts_tracks)
   db.prepare('INSERT INTO libraries (id, name, root_path) VALUES (1, ?, ?)').run('lib', lib);
 
   for (const t of tracks) {
