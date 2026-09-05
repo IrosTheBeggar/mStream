@@ -15,6 +15,8 @@ import { lrcToSearchText } from '../util/lrc-parser.js';
 import { computeHashes, HASH_GENERATION, SAMPLE_THRESHOLD_DEFAULT } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars, migrateArtistStars, migrateAlbumArtState } from './album-migration.js';
+import { albumKey } from './album-key.js';
+import { refreshDirtyAlbums } from './album-aggregate.js';
 import { cleanupOrphans, cleanupStaleArt, reconcileAlbumArt, deleteStaleTracks, VARIOUS_ARTISTS_MBZ_ID } from './orphan-cleanup.js';
 import { isIgnoredDirName, isDotEntry } from './scan-ignore.js';
 import { detectSource } from './source-detect.js';
@@ -186,12 +188,18 @@ const stmts = {
   insertArtist: db.prepare(
     'INSERT INTO artists (name) VALUES (?)'
   ),
+  // V70: albums are found by album_key (MBID first, else exact name +
+  // album-artist id — src/db/album-key.js). Year is NOT identity any more:
+  // the row's year / year_min / year_max / track_count / duration_total /
+  // compilation / album_artist are consensus values recomputed at scan end
+  // (album-aggregate.js) from every track on the row, so the values written
+  // at INSERT are just the first track's provisional ones.
   findAlbum: db.prepare(
-    'SELECT id FROM albums WHERE name = ? AND artist_id IS ? AND year IS ?'
+    'SELECT id FROM albums WHERE album_key = ?'
   ),
   insertAlbum: db.prepare(
-    `INSERT INTO albums (name, artist_id, year, album_art_file, album_art_source, album_artist, compilation, mbz_album_id, mbz_release_group_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO albums (album_key, name, artist_id, year, album_art_file, album_art_source, album_artist, compilation, mbz_album_id, mbz_release_group_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ),
   // album_art_source rides alongside album_art_file: when we fill a
   // previously-art-less album we also record where the art came from.
@@ -207,20 +215,6 @@ const stmts = {
         SET mbz_album_id = COALESCE(mbz_album_id, ?),
             mbz_release_group_id = COALESCE(mbz_release_group_id, ?)
       WHERE id = ? AND (mbz_album_id IS NULL OR mbz_release_group_id IS NULL)`
-  ),
-  // Keep the album_artist display string + compilation flag fresh on
-  // re-scan so subsequent tracks sharing the album don't drop them. The
-  // WHERE guard makes it a no-op (0 rows matched → no row rewrite, no WAL
-  // frame) when nothing actually changed — otherwise every track of a
-  // shared album rewrites the album row identically. Ports the same guard
-  // from the Rust scanner's find_or_create_album. Bind order:
-  // display, comp, id, comp, display, display.
-  updateAlbumTags: db.prepare(
-    `UPDATE albums
-        SET album_artist = COALESCE(?, album_artist),
-            compilation  = ?
-      WHERE id = ?
-        AND (compilation IS NOT ? OR (? IS NOT NULL AND album_artist IS NOT ?))`
   ),
   // V34 dropped tracks.genre — the canonical store is the track_genres
   // M2M (populated below via setTrackGenres). Keep the column list AND
@@ -259,8 +253,9 @@ const stmts = {
      lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime, lyrics_source, lyrics_search_text,
      bpm, musical_key, bpm_source,
      modified, scan_id, source,
-     mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source, hash_v)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source, hash_v,
+     tag_album, tag_album_artist, tag_compilation)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(filepath, library_id) DO UPDATE SET
        title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
        track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
@@ -282,7 +277,8 @@ const stmts = {
        modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source,
        mbz_recording_id=excluded.mbz_recording_id, mbz_release_track_id=excluded.mbz_release_track_id,
        isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source,
-       hash_v=excluded.hash_v
+       hash_v=excluded.hash_v,
+       tag_album=excluded.tag_album, tag_album_artist=excluded.tag_album_artist, tag_compilation=excluded.tag_compilation
      RETURNING id`
   ),
   // V17: M2M artist-link maintenance. Album-artists use INSERT OR IGNORE
@@ -437,14 +433,18 @@ function findOrCreateArtist(name) {
 
 function findOrCreateAlbum(name, artistId, year, albumArtFile, albumArtSource, albumArtistDisplay, isCompilation, mbzAlbumId, mbzReleaseGroupId) {
   if (!name) { return null; }
-  const row = stmts.findAlbum.get(name, artistId, year);
+  // V70: identity is the album key — MBID when the track carries one, else
+  // the exact album name + the album-artist id the fallback chain picked
+  // (src/db/album-key.js). Year, the display credit and the compilation
+  // flag are provisional at INSERT and become consensus values in the
+  // end-of-scan aggregate refresh (album-aggregate.js) — the per-track
+  // guarded UPDATE that used to keep them "fresh" is gone with it. The
+  // tracks_*_agg triggers flag the row for that refresh as the track
+  // row is written; nothing to mark here.
+  const key = albumKey({ name, artistId, mbzAlbumId: mbzAlbumId || null });
+  const row = stmts.findAlbum.get(key);
   if (row) {
-    // Re-asserting album metadata on every scan keeps the display string
-    // and compilation flag fresh if the user edits the tag and rescans.
     if (albumArtFile) { stmts.updateAlbumArt.run(albumArtFile, albumArtSource || null, row.id); }
-    const disp = albumArtistDisplay || null;
-    const comp = isCompilation ? 1 : 0;
-    stmts.updateAlbumTags.run(disp, comp, row.id, comp, disp, disp);
     // V55: fill-NULL the MusicBrainz release / release-group ids from tags.
     if (mbzAlbumId || mbzReleaseGroupId) {
       stmts.updateAlbumMbz.run(mbzAlbumId || null, mbzReleaseGroupId || null, row.id);
@@ -452,7 +452,7 @@ function findOrCreateAlbum(name, artistId, year, albumArtFile, albumArtSource, a
     return row.id;
   }
   const result = stmts.insertAlbum.run(
-    name, artistId, year, albumArtFile || null, albumArtSource || null,
+    key, name, artistId, year, albumArtFile || null, albumArtSource || null,
     albumArtistDisplay || null, isCompilation ? 1 : 0,
     mbzAlbumId || null, mbzReleaseGroupId || null,
   );
@@ -1127,7 +1127,13 @@ function insertTrack(song) {
     song.mbzReleaseTrackId ?? null,
     song.isrc ?? null,
     song.mbzIdSource ?? null,
-    HASH_GENERATION
+    HASH_GENERATION,
+    // V70 consensus inputs for the album aggregate refresh: this track's own
+    // album name, raw ALBUMARTIST display string and compilation flag. The
+    // album row's values are the majority / OR over these at scan end.
+    song.album ? String(song.album) : null,
+    ai.albumArtistDisplay || null,
+    ai.isCompilation ? 1 : 0
   );
   const trackId = Number(row.id);
 
@@ -1720,7 +1726,7 @@ async function run() {
         console.log(JSON.stringify({
           event: 'scanComplete',
           filesProcessed: 0, filesUnchanged: 0, filesScanned: 0, staleEntriesRemoved: 0,
-          movedTracksRehomed: 0, movedRefsRehomed: 0, folderArtLinked: 0,
+          movedTracksRehomed: 0, movedRefsRehomed: 0, folderArtLinked: 0, albumsAggregated: 0,
         }));
         return;
       }
@@ -1783,6 +1789,38 @@ async function run() {
           failedWalkPrefixes, supportedFiles: loadJson.supportedFiles,
           ignoreDotFiles, ignoreDotFolders,
           moveRehome: { libraryId: loadJson.libraryId } });
+
+    // Clean up orphaned artists, albums, and genres. Runs on every
+    // whole-library scan, and on subtree scans that DELETED rows —
+    // sweeping the last track of an album must reap the album now, not
+    // at the next full scan. The orphan probes are global NOT EXISTS
+    // queries, correct to run at any scope; a delete-less subtree scan
+    // still skips them (nothing can be newly orphaned).
+    // yieldBetweenChunks: we are a dedicated scanner process, so the
+    // inter-chunk sleep costs nothing and gives concurrent server
+    // writes a real window during big cleanups.
+    // expectedSchemaVersion: the orphan loops are the widest inter-chunk
+    // windows of the whole scan (three chunked DELETEs with 10-20ms
+    // yields) — re-verify per chunk for the same reason the stale sweep
+    // does.
+    if (!subtreeMode || sweep.removed > 0) {
+      // Replay recorded re-home hops now that the stale sweep has
+      // removed the doomed rows that masked their guards mid-scan —
+      // BEFORE the orphan sweep decides what's a ghost.
+      replayReHomes();
+      cleanupOrphans(db, {
+        yieldBetweenChunks: true,
+        expectedSchemaVersion: schemaVersionAtOpen,
+      });
+    }
+    // V70: recompute the consensus columns of every album the tracks_*_agg
+    // triggers flagged this scan (album-aggregate.js) — AFTER the orphan
+    // sweep, so rows it just reaped are not recomputed first (a starred
+    // trackless ghost survives it and is refreshed to track_count 0).
+    // Runs in subtree mode too — a subtree scan dirties albums like any
+    // other. Same schema guard + inter-chunk yield as the sweeps above.
+    const albumsAggregated = refreshDirtyAlbums(db,
+      { yieldBetweenChunks: true, expectedSchemaVersion: schemaVersionAtOpen });
     // Structured end-of-scan event — parsed by task-queue.js to decide whether
     // to run the waveform post-processor and to print a human-readable summary.
     // Field shapes mirror the rust-parser's emitter:
@@ -1808,35 +1846,13 @@ async function run() {
       movedTracksRehomed: sweep.movedTracks,
       movedRefsRehomed: sweep.movedRefs,
       folderArtLinked,
+      // V70: album rows whose aggregate columns were recomputed this scan.
+      albumsAggregated,
       // Subtrees the scan could not see (their rows were shielded from
       // cleanup) — surfaced so a permanently unreadable directory is
       // operator-visible in the scan summary, not just a stderr line.
       walkErrors
     }));
-
-    // Clean up orphaned artists, albums, and genres. Runs on every
-    // whole-library scan, and on subtree scans that DELETED rows —
-    // sweeping the last track of an album must reap the album now, not
-    // at the next full scan. The orphan probes are global NOT EXISTS
-    // queries, correct to run at any scope; a delete-less subtree scan
-    // still skips them (nothing can be newly orphaned).
-    // yieldBetweenChunks: we are a dedicated scanner process, so the
-    // inter-chunk sleep costs nothing and gives concurrent server
-    // writes a real window during big cleanups.
-    // expectedSchemaVersion: the orphan loops are the widest inter-chunk
-    // windows of the whole scan (three chunked DELETEs with 10-20ms
-    // yields) — re-verify per chunk for the same reason the stale sweep
-    // does.
-    if (!subtreeMode || sweep.removed > 0) {
-      // Replay recorded re-home hops now that the stale sweep has
-      // removed the doomed rows that masked their guards mid-scan —
-      // BEFORE the orphan sweep decides what's a ghost.
-      replayReHomes();
-      cleanupOrphans(db, {
-        yieldBetweenChunks: true,
-        expectedSchemaVersion: schemaVersionAtOpen,
-      });
-    }
     // Art passes stay whole-library-only: both walk disk truth for the
     // entire library (or cache dir), a cost a targeted subtree scan
     // shouldn't pay — and a swept track's art junction rows already

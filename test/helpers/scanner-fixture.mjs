@@ -252,18 +252,64 @@ export async function buildFixtureLibrary(rootDir) {
   await makeAudioWithArt(path.join(a6, '04.mp3'), 'orange',
     { title: 'Lyrics D', artist: 'Lyric Artist', album: 'Album Six', track: '4/4' });
 
+  // ── Album 7: "Decades" — per-track years under one ALBUMARTIST ─────
+  // V70 identity: year is no longer part of the album key, so three tracks
+  // tagged 1987 / 1991 / 1991 with different track artists but the same
+  // ALBUMARTIST must land on ONE album row (pre-V70 they fragmented into
+  // one row per year). The aggregate refresh must then agree across
+  // engines: year = 1991 (most common), year_min 1987, year_max 1991,
+  // track_count 3. Track 3 is a real TCMP compilation frame on ONE track
+  // only → compilation is an OR, so the album flags 1.
+  const a7 = path.join(rootDir, 'DJ Retro', 'Decades');
+  const decades = [
+    ['Retro A', '1987'], ['Retro B', '1991'], ['Retro C', '1991'],
+  ];
+  for (let i = 0; i < decades.length; i++) {
+    const meta = {
+      title:        `Decade ${i + 1}`,
+      artist:       decades[i][0],
+      album:        'Decades',
+      album_artist: 'DJ Retro',
+      date:         decades[i][1],
+      track:        `${i + 1}/3`,
+    };
+    const base = path.join(a7, `${(i + 1).toString().padStart(2, '0')}`);
+    if (i === 2) { await makeCompilationMp3(`${base}.mp3`, meta); }
+    else         { await makeAudio(`${base}.mp3`, MP3, meta); }
+  }
+
+  // ── Album 8: "Blue Album" — MBID-keyed across differing tags ────────
+  // Two FLACs sharing one MUSICBRAINZ_ALBUMID (a real Vorbis comment both
+  // scanners read) but tagged with different album names AND years. The
+  // MBID wins identity → ONE album row; its name is the most common
+  // tracks.album_name with the BINARY-smallest winning the 1:1 tie
+  // ("Blue Album" < "Blue Album (Deluxe)"), year_min 1994, year_max 2004.
+  const a8 = path.join(rootDir, 'Blue Band', 'Blue Album');
+  const blueMbid = '11111111-2222-3333-4444-555555555555';
+  await makeAudio(path.join(a8, '01.flac'), FLAC, {
+    title: 'Blue 1', artist: 'Blue Band', album: 'Blue Album', date: '1994',
+    track: '1/2', MUSICBRAINZ_ALBUMID: blueMbid,
+  });
+  await makeAudio(path.join(a8, '02.flac'), FLAC, {
+    title: 'Blue 2', artist: 'Blue Band', album: 'Blue Album (Deluxe)', date: '2004',
+    track: '2/2', MUSICBRAINZ_ALBUMID: blueMbid,
+  });
+
   // Return summary the test can sanity-check against.
   return {
-    expectedAudioFiles: 5 + 6 + 10 + 3 + 5 + 4,
+    expectedAudioFiles: 5 + 6 + 10 + 3 + 5 + 4 + 3 + 2,
     expectedArtists: new Set([
       'Solo Artist', 'Foo', 'Bar', 'Format Test', 'Lyric Artist',
       ...compilationArtists,
+      'DJ Retro', 'Retro A', 'Retro B', 'Retro C', 'Blue Band',
       // Various Artists is seeded by the schema; not added by the scanner
       // but counted in the artists table.
     ]).size + 1, // +1 for Various Artists seed
     // One row per album above — the compilation MUST collapse to a single
-    // Various-Artists-owned 'Various' row, not per-track-artist fragments.
-    expectedAlbums: 6,
+    // Various-Artists-owned 'Various' row, not per-track-artist fragments;
+    // 'Decades' MUST NOT fragment by year; the two 'Blue Album' tags MUST
+    // share their MBID's row.
+    expectedAlbums: 8,
     compilationTracks: compilationArtists.length,
   };
 }

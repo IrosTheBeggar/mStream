@@ -84,7 +84,16 @@ import { HASH_GENERATION } from './audio-hash.js';
 // V69 drops the velvet-only tables (smart_playlists, user_settings,
 // cue_points, play_events) and users.listenbrainz_token — the velvet UI and
 // the API modules that existed only for it were removed. See SCHEMA_V69.
-export const SCHEMA_VERSION = 69;
+export const SCHEMA_VERSION = 70;
+
+// The schema version at which the SCANNER'S WRITE CONTRACT last changed —
+// the columns / identity rules a rust-parser binary must know to write rows
+// this server can read back (V70: albums.album_key, tracks.tag_*). Compared
+// against the binary's `--schema-contract` answer in task-queue's binary
+// gate; bump it (and SCANNER_SCHEMA_CONTRACT in rust-parser/src/main.rs)
+// whenever a migration changes what the scanner writes, NOT for every
+// migration.
+export const SCANNER_SCHEMA_CONTRACT = 70;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2638,6 +2647,293 @@ export function migrateV59LyricsSearchText(db) {
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
+// ── V70: album identity — MBID first, then (name, album artist); year out ──
+//
+// Pre-V70 an album row was keyed UNIQUE(name, artist_id, year), with year =
+// each TRACK's own recording year. Two consequences the Navidrome study
+// (2026-09) made concrete:
+//
+//   1. A compilation (or reissue) tagged with per-track original years
+//      fragmented into one album row per year, and nothing could rejoin
+//      them — the API's DISTINCT(name, year, art) collapse keys on year.
+//   2. MUSICBRAINZ_ALBUMID was stored but never used for identity, so the
+//      one tag that names a release exactly did nothing.
+//
+// V70 gives albums an explicit identity column, `album_key`
+// (src/db/album-key.js):
+//
+//     mbid:<release id>                  the track carries MUSICBRAINZ_ALBUMID
+//     name:<exact album name>|<artist>   otherwise (artist = albums.artist_id
+//                                        from the ALBUMARTIST → Various
+//                                        Artists → track-artist chain)
+//
+// and turns year (+ year_min / year_max / track_count / duration_total /
+// compilation / album_artist) into CONSENSUS values over the row's tracks,
+// recomputed for rows flagged `agg_dirty` (src/db/album-aggregate.js). Three
+// per-track columns carry the consensus inputs — tracks.tag_album /
+// tag_album_artist / tag_compilation, the raw tag values — and three
+// triggers on tracks (tracks_ai_agg / tracks_ad_agg / tracks_au_agg) set the
+// flag, so no writer can forget and the flag is as durable as the track
+// write itself.
+//
+// The rebuild is the V18 TEMP-table dance: DROP TABLE under
+// foreign_keys=ON fires FK actions on every child (tracks.album_id SET
+// NULL; user_album_stars / album_artists / album_art / album_art_lookups
+// CASCADE), so the children are snapshotted, emptied, and restored after
+// the rename with album ids copied verbatim. tracks_au_fts is dropped for
+// the duration — the SET NULL and the restore would each fire it once per
+// track (recursive_triggers is ON), two full fts_tracks rewrites of
+// unchanged values — and tracks_ai_fts too, because ALTER TABLE ... RENAME
+// re-validates every trigger body and one naming the momentarily-absent
+// albums table aborts the migration. Both are recreated verbatim (V59
+// text) afterwards; the albums_* FTS triggers die with the old table and
+// are recreated too.
+//
+// Existing rows keep their exact name and artist_id and get a `name:` key
+// in the copy — deliberately IGNORING mbz_album_id, which pre-V70 was a
+// fill-NULL from whichever track carried it first; keying a row `mbid:` on
+// that evidence would strand its untagged tracks on a new row while the
+// stars stayed with the MBID minority. Per-year fragments therefore now
+// collide on one key; the js hook (migrateV70MergeAlbumFragments) merges
+// each collision group into its survivor (most tracks, then lowest id),
+// moving tracks, stars, credits, art links, lookups and the art default the
+// same way album-migration.js does on a re-mint, then creates the UNIQUE
+// key index and back-fills the aggregates — so the API shows merged albums
+// with a correct year range immediately, not after the rescan. The
+// rescanRequired epoch then re-parses every track: Picard libraries re-mint
+// onto `mbid:` rows through the existing unreferenced-guarded star/art hops,
+// and the tag_* copies below are replaced with tag truth.
+export const SCHEMA_V70 = `
+  -- Per-track consensus inputs (raw tag values) for the album aggregate
+  -- refresh. Back-filled from the album row each track currently sits on
+  -- so every pre-V70 row votes; the forced rescan replaces the copies with
+  -- tag truth. (None of these columns is in tracks_au_fts's UPDATE OF list,
+  -- so the back-fill fans nothing out to FTS.)
+  ALTER TABLE tracks ADD COLUMN tag_album TEXT;
+  ALTER TABLE tracks ADD COLUMN tag_album_artist TEXT;
+  ALTER TABLE tracks ADD COLUMN tag_compilation INTEGER NOT NULL DEFAULT 0;
+  UPDATE tracks SET
+    tag_album        = (SELECT a.name         FROM albums a WHERE a.id = tracks.album_id),
+    tag_album_artist = (SELECT a.album_artist FROM albums a WHERE a.id = tracks.album_id),
+    tag_compilation  = (SELECT a.compilation  FROM albums a WHERE a.id = tracks.album_id)
+  WHERE album_id IS NOT NULL;
+
+  -- See the header comment: tracks_au_fts (two full fts_tracks rewrites
+  -- avoided) and tracks_ai_fts (the RENAME re-validates trigger bodies).
+  DROP TRIGGER IF EXISTS tracks_ai_fts;
+  DROP TRIGGER IF EXISTS tracks_au_fts;
+
+  -- Snapshot every child of albums(id) before the DROP fires FK actions.
+  CREATE TEMP TABLE _v70_album_stars_backup       AS SELECT * FROM user_album_stars;
+  CREATE TEMP TABLE _v70_album_artists_backup     AS SELECT * FROM album_artists;
+  CREATE TEMP TABLE _v70_album_art_backup         AS SELECT * FROM album_art;
+  CREATE TEMP TABLE _v70_album_art_lookups_backup AS SELECT * FROM album_art_lookups;
+  CREATE TEMP TABLE _v70_track_album_backup AS
+    SELECT id, album_id FROM tracks WHERE album_id IS NOT NULL;
+  -- Without this the restore UPDATE's correlated subquery scans the whole
+  -- backup per track (V18 measured 7.7 min vs 1.8 s at 100k tracks).
+  CREATE INDEX _v70_track_album_backup_idx ON _v70_track_album_backup(id);
+
+  -- Empty the CASCADE children explicitly so the DROP has nothing left to
+  -- act on (the TEMP tables hold the data).
+  DELETE FROM user_album_stars;
+  DELETE FROM album_artists;
+  DELETE FROM album_art;
+  DELETE FROM album_art_lookups;
+
+  CREATE TABLE albums_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    artist_id INTEGER REFERENCES artists(id) ON DELETE SET NULL,
+    year INTEGER,
+    album_art_file TEXT,
+    mbz_album_id TEXT,
+    album_artist TEXT,
+    compilation INTEGER NOT NULL DEFAULT 0,
+    album_art_source TEXT,
+    album_art_pinned INTEGER NOT NULL DEFAULT 0,
+    mbz_release_group_id TEXT,
+    -- V70 identity + aggregates. album_key is nullable so a row inserted
+    -- outside the scanners (test fixtures) is valid; every scanner/server
+    -- writer sets it, and a NULL key is simply never matched. Its UNIQUE
+    -- index is created by the hook, once colliding fragments are merged.
+    album_key TEXT,
+    year_min INTEGER,
+    year_max INTEGER,
+    track_count INTEGER NOT NULL DEFAULT 0,
+    duration_total REAL NOT NULL DEFAULT 0,
+    agg_dirty INTEGER NOT NULL DEFAULT 1
+  );
+  -- The key expression MUST stay byte-identical to albumKey() in
+  -- src/db/album-key.js and album_key() in rust-parser/src/main.rs.
+  INSERT INTO albums_new (id, name, artist_id, year, album_art_file, mbz_album_id, album_artist,
+                          compilation, album_art_source, album_art_pinned, mbz_release_group_id,
+                          album_key)
+    SELECT id, name, artist_id, year, album_art_file, mbz_album_id, album_artist,
+           compilation, album_art_source, album_art_pinned, mbz_release_group_id,
+           'name:' || name || '|' || COALESCE(artist_id, '')
+      FROM albums;
+  DROP TABLE albums;
+  ALTER TABLE albums_new RENAME TO albums;
+
+  CREATE INDEX IF NOT EXISTS idx_albums_artist ON albums(artist_id);
+  -- The old UNIQUE(name, artist_id, year) autoindex served \`al.name = ?\`
+  -- (album-songs) as a prefix; this replaces it.
+  CREATE INDEX IF NOT EXISTS idx_albums_name ON albums(name);
+  -- The aggregate refresh picks dirty rows; on a settled library the
+  -- partial index is empty.
+  CREATE INDEX IF NOT EXISTS idx_albums_agg_dirty ON albums(agg_dirty) WHERE agg_dirty = 1;
+
+  -- Restore the children the DROP clobbered. Ids were copied verbatim, so
+  -- every restored reference passes the FK check against the new table.
+  UPDATE tracks SET album_id = (
+    SELECT b.album_id FROM _v70_track_album_backup b WHERE b.id = tracks.id
+  ) WHERE id IN (SELECT id FROM _v70_track_album_backup);
+  INSERT INTO user_album_stars  SELECT * FROM _v70_album_stars_backup;
+  INSERT INTO album_artists     SELECT * FROM _v70_album_artists_backup;
+  INSERT INTO album_art         SELECT * FROM _v70_album_art_backup;
+  INSERT INTO album_art_lookups SELECT * FROM _v70_album_art_lookups_backup;
+
+  DROP TABLE _v70_album_stars_backup;
+  DROP TABLE _v70_album_artists_backup;
+  DROP TABLE _v70_album_art_backup;
+  DROP TABLE _v70_album_art_lookups_backup;
+  DROP TABLE _v70_track_album_backup;
+
+  -- albums FTS triggers (V31 text) — dropped with the old table.
+  CREATE TRIGGER albums_ai_fts AFTER INSERT ON albums BEGIN
+    INSERT INTO fts_albums(rowid, name) VALUES (NEW.id, NEW.name);
+  END;
+  CREATE TRIGGER albums_ad_fts AFTER DELETE ON albums BEGIN
+    DELETE FROM fts_albums WHERE rowid = OLD.id;
+  END;
+  CREATE TRIGGER albums_au_fts AFTER UPDATE OF name ON albums BEGIN
+    UPDATE fts_albums SET name = NEW.name WHERE rowid = NEW.id;
+    UPDATE fts_tracks SET album_name = NEW.name
+     WHERE rowid IN (SELECT id FROM tracks WHERE album_id = NEW.id);
+  END;
+
+  -- tracks_ai_fts + tracks_au_fts, verbatim from V59.
+  CREATE TRIGGER tracks_ai_fts AFTER INSERT ON tracks BEGIN
+    INSERT INTO fts_tracks(rowid, title, artist_name, album_name, filepath, lyrics)
+    VALUES (
+      NEW.id,
+      NEW.title,
+      (SELECT name FROM artists WHERE id = NEW.artist_id),
+      (SELECT name FROM albums  WHERE id = NEW.album_id),
+      NEW.filepath,
+      COALESCE(NEW.lyrics_embedded, NEW.lyrics_search_text)
+    );
+  END;
+  CREATE TRIGGER tracks_au_fts AFTER UPDATE OF title, artist_id, album_id, filepath, lyrics_embedded, lyrics_synced_lrc, lyrics_search_text ON tracks BEGIN
+    UPDATE fts_tracks
+       SET title       = NEW.title,
+           artist_name = (SELECT name FROM artists WHERE id = NEW.artist_id),
+           album_name  = (SELECT name FROM albums  WHERE id = NEW.album_id),
+           filepath    = NEW.filepath,
+           lyrics      = COALESCE(NEW.lyrics_embedded, NEW.lyrics_search_text)
+     WHERE rowid = NEW.id;
+  END;
+
+  -- ── Aggregate dirty-marking ──────────────────────────────────────────
+  -- Every writer that changes a track's album membership, or a column the
+  -- consensus reads, flags the affected album row(s); refreshDirtyAlbums
+  -- (album-aggregate.js) / refresh_dirty_albums (rust-parser) clear them.
+  -- Triggers rather than explicit statements so no writer — either
+  -- scanner, the ytdl insert, library deletion, the stale sweep — can
+  -- forget, and the flag rides in the same transaction as the track write.
+  -- The guard keeps the 2nd..Nth track of an album in one scan a PK probe,
+  -- no row write. Created LAST so the restore UPDATE above fires nothing.
+  -- FUTURE REBUILDS of tracks or albums must DROP these three (and
+  -- recreate them) like the FTS triggers above.
+  CREATE TRIGGER tracks_ai_agg AFTER INSERT ON tracks WHEN NEW.album_id IS NOT NULL BEGIN
+    UPDATE albums SET agg_dirty = 1 WHERE id = NEW.album_id AND agg_dirty = 0;
+  END;
+  CREATE TRIGGER tracks_ad_agg AFTER DELETE ON tracks WHEN OLD.album_id IS NOT NULL BEGIN
+    UPDATE albums SET agg_dirty = 1 WHERE id = OLD.album_id AND agg_dirty = 0;
+  END;
+  CREATE TRIGGER tracks_au_agg AFTER UPDATE OF album_id, year, duration, tag_album, tag_album_artist, tag_compilation ON tracks BEGIN
+    UPDATE albums SET agg_dirty = 1 WHERE id IN (OLD.album_id, NEW.album_id) AND agg_dirty = 0;
+  END;
+`;
+
+// V70 js hook — runs inside the version's transaction after SCHEMA_V70.
+// Merges albums that now share one key (the per-year fragments), creates
+// the UNIQUE key index, and back-fills the aggregate columns from tracks.
+// Uses only prepare/all/run/exec (node:sqlite + Bun shim surface).
+export function migrateV70MergeAlbumFragments(db) {
+  const dupKeys = db.prepare(
+    'SELECT album_key FROM albums GROUP BY album_key HAVING COUNT(*) > 1').all()
+    .map((r) => r.album_key);
+  // Survivor = most tracks, then lowest id.
+  const rowsFor = db.prepare(`
+    SELECT a.id, (SELECT COUNT(*) FROM tracks t WHERE t.album_id = a.id) AS n
+      FROM albums a WHERE a.album_key = ?
+     ORDER BY n DESC, a.id ASC`);
+  // The same hops album-migration.js performs on a re-mint, minus its
+  // unreferenced guard (the loser is emptied right here).
+  const moveTracks  = db.prepare('UPDATE tracks SET album_id = ? WHERE album_id = ?');
+  const moveStars   = db.prepare(`
+    INSERT INTO user_album_stars (user_id, album_id, starred_at)
+    SELECT user_id, ?, starred_at FROM user_album_stars WHERE album_id = ?
+    ON CONFLICT(user_id, album_id) DO UPDATE SET
+      starred_at = MIN(user_album_stars.starred_at, excluded.starred_at)`);
+  const moveCredits = db.prepare(`
+    INSERT OR IGNORE INTO album_artists (album_id, artist_id, role, position)
+    SELECT ?, artist_id, role, position FROM album_artists WHERE album_id = ?`);
+  const moveArt     = db.prepare(`
+    INSERT OR IGNORE INTO album_art (album_id, art_id, source, picture_type, position)
+    SELECT ?, art_id, source, picture_type, position FROM album_art WHERE album_id = ?`);
+  const moveLookup  = db.prepare(`
+    INSERT OR IGNORE INTO album_art_lookups (album_id, last_attempt_at, outcome, attempts, fetched_hash)
+    SELECT ?, last_attempt_at, outcome, attempts, fetched_hash
+      FROM album_art_lookups WHERE album_id = ?`);
+  // Fill-NULL the survivor's default art / MBIDs from the loser. SET
+  // expressions read the pre-update row, so the source test on
+  // album_art_file is the survivor's current value.
+  const fillFromLoser = db.prepare(`
+    UPDATE albums SET
+      album_art_source     = CASE WHEN album_art_file IS NULL
+                               THEN (SELECT album_art_source FROM albums WHERE id = ?1)
+                               ELSE album_art_source END,
+      album_art_file       = COALESCE(album_art_file, (SELECT album_art_file FROM albums WHERE id = ?1)),
+      mbz_album_id         = COALESCE(mbz_album_id, (SELECT mbz_album_id FROM albums WHERE id = ?1)),
+      mbz_release_group_id = COALESCE(mbz_release_group_id, (SELECT mbz_release_group_id FROM albums WHERE id = ?1))
+    WHERE id = ?2`);
+  // CASCADE reaps the loser's (already copied) child rows; albums_ad_fts
+  // drops its fts_albums entry.
+  const deleteAlbum = db.prepare('DELETE FROM albums WHERE id = ?');
+
+  for (const key of dupKeys) {
+    const [survivor, ...losers] = rowsFor.all(key);
+    for (const loser of losers) {
+      moveTracks.run(survivor.id, loser.id);
+      moveStars.run(survivor.id, loser.id);
+      moveCredits.run(survivor.id, loser.id);
+      moveArt.run(survivor.id, loser.id);
+      moveLookup.run(survivor.id, loser.id);
+      fillFromLoser.run(loser.id, survivor.id);
+      deleteAlbum.run(loser.id);
+    }
+  }
+
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_albums_key ON albums(album_key)');
+
+  // Aggregates derivable now (one GROUP BY pass). year / compilation /
+  // album_artist keep their stored values until the refresh recomputes them
+  // from the tag_* copies; a merged survivor's year is its own — it held
+  // the most tracks, so it is the mode anyway. Trackless rows keep the
+  // column defaults (0 / NULL).
+  db.exec(`
+    UPDATE albums SET
+      year_min = s.ymin, year_max = s.ymax, track_count = s.n, duration_total = s.dur
+    FROM (SELECT album_id, MIN(year) AS ymin, MAX(year) AS ymax, COUNT(*) AS n,
+                 COALESCE(SUM(duration), 0) AS dur
+            FROM tracks WHERE album_id IS NOT NULL GROUP BY album_id) AS s
+    WHERE s.album_id = albums.id;
+    UPDATE albums SET agg_dirty = 0;`);
+}
+
 export const MIGRATIONS = [
   { version: 1,  sql: SCHEMA_V1  },
   { version: 2,  sql: SCHEMA_V2  },
@@ -2903,4 +3199,12 @@ export const MIGRATIONS = [
   // V69 drops the velvet-only tables + users.listenbrainz_token. Pure
   // DROP TABLE / DROP COLUMN, no rescan. See SCHEMA_V69.
   { version: 69, sql: SCHEMA_V69 },
+  // V70 re-keys albums (MBID first, else exact name + album artist — year
+  // is no longer identity) and turns year / count / duration / compilation
+  // / album_artist into scan-end consensus values. Table rebuild + js hook
+  // (per-year fragments merged into their survivor, UNIQUE key index,
+  // aggregate back-fill). rescanRequired: every track must re-key onto the
+  // new identity (MBID rows) and replace the copied tag_* consensus inputs
+  // with tag truth. See SCHEMA_V70.
+  { version: 70, sql: SCHEMA_V70, js: migrateV70MergeAlbumFragments, rescanRequired: true },
 ];

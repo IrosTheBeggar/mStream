@@ -1335,6 +1335,24 @@ jobs:
           echo "$OUT" | grep -q dbPath || { echo "::error::x64 mstream-server did not run under Rosetta (hardened-runtime/entitlement or Bun-blob problem)"; echo "$OUT" | head -20; exit 1; }
           echo "OK: x64 binary executes under Rosetta (JIT path exercised)"
 
+      # NOTE: this step's `run:` scalar sits just under GitHub's 21000-byte
+      # expression limit (it contains ${{ }} expressions, so the whole script
+      # is one expression). Keep explanatory prose OUT of it — put it here.
+      #
+      # The scan asserts below require the SHIPPED Rust scanner to have run.
+      # Two capability gates in task-queue.js can refuse the committed
+      # binaries and fall back to the JS scanner; both print "refusing it to
+      # protect …" and both fail this smoke on purpose:
+      #   - hash generation ("… track identities"): a stale binary that
+      #     stamps another hashing scheme;
+      #   - schema contract ("… album identities", V70+): the binaries predate
+      #     a scanner write-contract bump in THIS PR. That is the expected
+      #     state of a contract-bumping PR until its binaries are rebuilt —
+      #     dispatch build-rust-parser AND build-rust-parser-musl on the PR
+      #     branch, wait for their "ci: update pre-built rust-parser binaries"
+      #     commits (bot-pushed: re-run this workflow / re-label the PR, they
+      #     trigger nothing themselves), and this leg re-runs green. Never
+      #     loosen the assert to the JS fallback instead.
       - name: Smoke test (self-dispatch + boot + serve + scan)
         if: matrix.smoke
         shell: bash
@@ -1658,8 +1676,8 @@ jobs:
           #   - fallback/DOA/capability markers: it did not limp there;
           #   - ">= 1 files processed": it parsed the fixture, not a 0-file walk.
           grep -qF "File scan started (Rust)" "$RUN/boot.log" || { echo "FAIL: no 'File scan started (Rust)' — the shipped Rust scanner never ran"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; }
-          if grep -qE "JS fallback|died on arrival|refusing it to protect track identities|retrying with the portable static-musl" "$RUN/boot.log"; then
-            echo "FAIL: the scan degraded (fallback/DOA/capability-refusal marker in boot.log) — the Rust scanner is broken in this bundle"
+          if grep -qE "JS fallback|died on arrival|refusing it to protect |retrying with the portable static-musl" "$RUN/boot.log"; then
+            echo "FAIL: the scan degraded (fallback/DOA/capability-refusal marker in boot.log) — the Rust scanner is broken or stale in this bundle"
             echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1
           fi
           grep -qE "Scan complete: [1-9][0-9]* files processed" "$RUN/boot.log" || { echo "FAIL: scan processed 0 files — the fixture wav was not parsed"; echo "--- boot.log ---"; cat "$RUN/boot.log"; exit 1; }

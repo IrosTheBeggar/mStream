@@ -67,10 +67,13 @@ before(async () => {
     ISRC: ISRC1,
   });
 
-  // Track 2: same album, a different recording, carrying ONLY a recording id
-  // (no album-level ids). Exercises mbz_id_source='tag' from the recording id
-  // alone and confirms the album row keeps track 1's release / release-group
-  // ids (fill-NULL convergence, first writer wins).
+  // Track 2: same album NAME, a different recording, carrying ONLY a recording
+  // id (no album-level ids). Exercises mbz_id_source='tag' from the recording
+  // id alone. Since V70 the release MBID is album IDENTITY (album_key
+  // `mbid:…`), so this partially-tagged pair deliberately lands on TWO album
+  // rows: track 1 on the MBID-keyed row, track 2 on a name-keyed row with no
+  // MBIDs — the documented "tag every track or none" behaviour, same as
+  // Navidrome's. Pre-V70 they shared one row by fill-NULL convergence.
   await makeAudio(path.join(libRoot, 'Tagged Artist', 'Tagged Album', '02.flac'), FLAC, {
     title: 'Tagged Two', artist: 'Tagged Artist', album: 'Tagged Album', track: '2/2',
     MUSICBRAINZ_TRACKID: REC2,
@@ -148,11 +151,23 @@ describe('V55 external-service ID ingestion', () => {
       assert.equal(two.mbz_id_source, 'tag', `[${engine}] recording id alone sets provenance`);
       assert.equal(two.mbz_release_track_id, null, `[${engine}] track 2 has no release-track id`);
       assert.equal(two.isrc, null, `[${engine}] track 2 has no ISRC`);
-      // Same album row as track 1 — its release / release-group ids persist
-      // even though track 2 carried none (fill-NULL, first writer wins).
+      // V70: the release MBID is album identity, so track 2 (no album-level
+      // ids) sits on a separate, name-keyed 'Tagged Album' row that carries
+      // no MBIDs — the pair splits instead of converging (see the fixture
+      // comment).
       assert.equal(two.album_name, 'Tagged Album');
-      assert.equal(two.mbz_album_id, ALB1, `[${engine}] shared album keeps track 1's release MBID`);
-      assert.equal(two.mbz_release_group_id, RG1, `[${engine}] shared album keeps track 1's release-group MBID`);
+      assert.equal(two.mbz_album_id, null, `[${engine}] the MBID-less track's album row has no release MBID`);
+      assert.equal(two.mbz_release_group_id, null, `[${engine}] nor a release-group MBID`);
+      const taggedRows = (() => {
+        const db = new DatabaseSync(dbPath);
+        try {
+          return db.prepare(`SELECT album_key, mbz_album_id FROM albums WHERE name = 'Tagged Album' ORDER BY album_key`).all();
+        } finally { db.close(); }
+      })();
+      assert.equal(taggedRows.length, 2, `[${engine}] partially MBID-tagged album splits into two rows`);
+      assert.equal(taggedRows[0].album_key, `mbid:${ALB1}`);
+      assert.equal(taggedRows[0].mbz_album_id, ALB1);
+      assert.ok(taggedRows[1].album_key.startsWith('name:Tagged Album|'));
 
       const plain = trackByTitle(dbPath, 'Plain One');
       assert.equal(plain.mbz_recording_id, null, `[${engine}] untagged track has no recording id`);
