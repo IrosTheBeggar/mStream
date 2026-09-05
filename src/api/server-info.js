@@ -126,6 +126,14 @@ export function buildClientBootPayload(user) {
     // with none stays quiet. Caller-scoped for the same reason
     // federationDiscovery is: it reports live peer RELATIONSHIPS.
     federationBrowse: federationEnabled && federationPeers.length > 0,
+    // Direct access to a peer (the `access` route in api/federation-browse.js):
+    // a device dials the peer itself with a guest token this server fetches
+    // on its behalf (state/federation-guest.js). Same shape as
+    // federationBrowse — the key's presence says this build has the route,
+    // its value says there is a peer to reach. Whether a given PEER
+    // cooperates is answered per peer by the access route (an older peer
+    // refuses, and the client keeps using the proxies above).
+    federationDirect: federationEnabled && federationPeers.length > 0,
     vpathMetaData: {}
   };
 
@@ -158,6 +166,9 @@ export function setup(mstream) {
       username: user.username,
       admin: user.admin === true,
       federation: user.federation === true,
+      // A device of a key holder, on a guest token rather than the key
+      // itself (state/federation-guest.js). Same scope as the key.
+      federationGuest: user.federationGuest === true,
       ...buildClientBootPayload(user),
     };
 

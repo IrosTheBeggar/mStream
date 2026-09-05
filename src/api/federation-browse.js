@@ -12,8 +12,10 @@
 //   GET /api/v1/federation/peers                 peers this user can browse
 //   ALL /api/v1/federation/peers/:id/api/<path>  one allowlisted read
 //   GET /api/v1/federation/peers/:id/art/<file>  that peer's album art
+//   GET /api/v1/federation/peers/:id/access      what a device needs to
+//                                                reach that peer DIRECTLY
 //
-// All three take normal local-user auth and stay OFF the federation-key
+// All four take normal local-user auth and stay OFF the federation-key
 // allowlist, so a peer can never chain a proxy through us — the same rule
 // api/federation-stream.js states for the byte proxy.
 //
@@ -31,6 +33,7 @@ import * as config from '../state/config.js';
 import * as fedDb from '../db/federation.js';
 import { isFederationRouteAllowed } from './federation-auth.js';
 import { fedFetchWithDeadline } from './discovery-federation.js';
+import { buildFederationGuestTicket, endpointIdFromTicket } from '../state/federation.js';
 import WebError from '../util/web-error.js';
 
 // Dial + response budget, matching testPeer and the stream proxy's header
@@ -107,6 +110,68 @@ function pipeUpstream(upstream, res, peer, label) {
   body.pipe(res);
 }
 
+// ── Direct access: guest tokens for this server's own devices ─────────────
+//
+// GET /api/v1/federation/peers/:id/access hands a logged-in user what its
+// device needs to reach the peer WITHOUT this server in the path: the peer's
+// endpoint ticket and a guest token the peer minted for our key (POST
+// /api/v1/federation/guest over the bridge — state/federation-guest.js on
+// the peer's side). Tokens are cached per peer and re-minted once three
+// quarters of their life is gone, or on ?refresh=1 for a client whose token
+// the peer just refused, so a device polling this on every resume costs one
+// bridge round trip a day. The key itself still never leaves this server.
+const GUEST_REMINT_AT = 0.75; // fraction of the lifetime after which we re-mint
+const GUEST_REFRESH_MIN_GAP_MS = 5 * 1000; // a refresh right after a mint is served from cache
+const guestAccess = new Map(); // peerId -> { token, expiresAt: ms, mintedAt: ms }
+const guestPending = new Map(); // peerId -> Promise<entry|null> (one mint in flight per peer)
+
+function guestIsFresh(entry, { refresh }) {
+  if (!entry) { return false; }
+  const age = Date.now() - entry.mintedAt;
+  if (refresh) { return age < GUEST_REFRESH_MIN_GAP_MS; }
+  const life = entry.expiresAt - entry.mintedAt;
+  return life > 0 && age < life * GUEST_REMINT_AT;
+}
+
+// Drop a peer's cached guest token — on removal (the row is gone; a re-added
+// peer gets a fresh id anyway, this just keeps the map honest).
+export function forgetPeerAccess(peerId) {
+  guestAccess.delete(peerId);
+}
+
+// Ask the peer for a guest token. Resolves to the cache entry, or null when
+// the peer refuses to mint: an older build whose allowlist has no guest
+// route (its wall answers 403), or federation switched off there. Throws
+// when the peer is unreachable or answers something unexpected.
+async function mintGuestFromPeer(peer) {
+  const fedClient = await import('../state/federation-client.js');
+  const upstream = await fedFetchWithDeadline(fedClient, peer, '/api/v1/federation/guest', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  }, DEADLINE_MS);
+  if (upstream.status === 403 || upstream.status === 404) { return null; }
+  if (!upstream.ok) { throw new Error(`peer answered http ${upstream.status} to the guest mint`); }
+  const body = await upstream.json();
+  if (typeof body?.token !== 'string' || typeof body?.expiresAt !== 'string') {
+    throw new Error('peer answered the guest mint with an unexpected shape');
+  }
+  const expiresAt = Date.parse(body.expiresAt);
+  if (!Number.isFinite(expiresAt)) { throw new Error('peer answered the guest mint with an unreadable expiry'); }
+  return { token: body.token, expiresAt, mintedAt: Date.now() };
+}
+
+function guestAccessFor(peer, { refresh = false } = {}) {
+  const cached = guestAccess.get(peer.id);
+  if (guestIsFresh(cached, { refresh })) { return Promise.resolve(cached); }
+  const inFlight = guestPending.get(peer.id);
+  if (inFlight) { return inFlight; }
+  const p = mintGuestFromPeer(peer).then((entry) => {
+    if (entry) { guestAccess.set(peer.id, entry); } else { guestAccess.delete(peer.id); }
+    return entry;
+  }).finally(() => guestPending.delete(peer.id));
+  guestPending.set(peer.id, p);
+  return p;
+}
+
 export function setup(mstream) {
   // The peers a local user may browse. Admin's /api/v1/admin/federation/peers
   // returns the row — which carries api_key and endpoint_ticket, both
@@ -124,7 +189,46 @@ export function setup(mstream) {
         lastSeen: p.last_seen || null,
         lastStatus: p.last_status || null,
         useDiscovery: p.use_discovery === 1,
+        // The peer's iroh identity (a public key, not a credential): how a
+        // client tells that two parents list the same server. Null when
+        // this build cannot read tickets (no native module).
+        endpointId: endpointIdFromTicket(p.endpoint_ticket),
       })),
+    });
+  });
+
+  // What a device needs to reach a peer directly — see the section above.
+  // Same guards as the proxies (federation on, known peer, local-user auth,
+  // never a federation key), and the same 502 when the peer cannot be
+  // reached; a peer that will not mint is a 200 with `direct: false`, so a
+  // client can tell "fall back to the proxies" from "the peer is down".
+  mstream.get('/api/v1/federation/peers/:id/access', async (req, res) => {
+    requireFederation();
+    const peer = requirePeer(req.params.id);
+    const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
+
+    let entry;
+    try {
+      entry = await guestAccessFor(peer, { refresh });
+    } catch (err) {
+      winston.warn(`[federation] access: peer '${peer.name}' (id=${peer.id}) unreachable for the guest mint: ${err.message}`);
+      throw new WebError('Peer unreachable', 502);
+    }
+    if (!entry) {
+      return res.json({
+        direct: false,
+        reason: 'peer does not offer guest access (an older build, or federation is disabled there)',
+      });
+    }
+    res.json({
+      direct: true,
+      endpointTicket: peer.endpoint_ticket,
+      endpointId: endpointIdFromTicket(peer.endpoint_ticket),
+      guestToken: entry.token,
+      expiresAt: new Date(entry.expiresAt).toISOString(),
+      // The two above, packaged for the device's native dialer:
+      // docs/federation-guest-ticket.md.
+      directTicket: buildFederationGuestTicket({ endpointTicket: peer.endpoint_ticket, guestToken: entry.token }),
     });
   });
 

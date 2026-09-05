@@ -81,6 +81,17 @@ export function flushUsage() {
     try {
       flushKey(keyId, entry);
     } catch (err) {
+      if (/FOREIGN KEY/i.test(err.message)) {
+        // The key is gone — revoked between accumulation and flush, or a
+        // request that was in flight when the delete route called
+        // forgetKey re-created the entry. It can never land; retrying it
+        // every interval only logged the same failure forever (mStream
+        // #940). Drop it and move on to the next key.
+        winston.info(`[federation] dropping ${entry.bytes} unflushed bytes for revoked key id=${keyId}`);
+        pending.delete(keyId);
+        dbBaseline.delete(keyId);
+        continue;
+      }
       // Keep accumulating and retry next interval — a locked/closing DB
       // must not lose the day's count or take a stream down with it.
       winston.warn(`[federation] usage flush failed for key id=${keyId}: ${err.message}`);
@@ -94,6 +105,18 @@ export function flushUsage() {
       winston.warn(`[federation] usage prune failed: ${err.message}`);
     }
   }
+}
+
+// A revoked key's accounting has nowhere to go — its usage row is FK'd to
+// the deleted key — so drop everything held for it (the delete route calls
+// this next to severing the key's live pipes). Responses still open on the
+// key stop counting when they close; the flusher's FOREIGN KEY branch
+// catches whatever they added in the meantime.
+export function forgetKey(keyId) {
+  pending.delete(keyId);
+  dbBaseline.delete(keyId);
+  buckets.delete(keyId);
+  activeStreams.delete(keyId);
 }
 
 function addUsage(keyId, bytes, requests = 0) {

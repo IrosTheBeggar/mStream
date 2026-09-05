@@ -15,7 +15,10 @@
  *  - maxStreams 429s a second concurrent stream, and the slot frees on
  *    completion;
  *  - streamKbps paces a download without corrupting it (timing asserted
- *    with WIDE margins — CI runners and Windows clocks are noisy).
+ *    with WIDE margins — CI runners and Windows clocks are noisy);
+ *  - revoking a key with unflushed usage neither errors forever nor leaves
+ *    a usage row behind (mStream #940), and a guest of a key shares its
+ *    caps — the concurrent-stream slot in particular.
  */
 
 import { describe, test, before, after } from 'node:test';
@@ -26,6 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { startServer } from '../helpers/server.mjs';
+import jwt from 'jsonwebtoken';
 import { parseFederationTicket } from '../../src/state/federation.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -274,6 +278,56 @@ describe('federation bandwidth limits e2e', () => {
     const cleared = (await listKeys()).find((r) => r.id === k.id);
     assert.equal(cleared.expires_at, null);
     assert.equal(cleared.expired, 0);
+  });
+
+  test('a guest of a key shares its concurrent-stream cap', async () => {
+    // Same recipe as the maxStreams test above: 200 KiB at 800 kbps holds
+    // the one slot for ~1s, and the guest asks while the key's stream is
+    // mid-body. Same pool, not a pool of its own.
+    const k = await mintKey('shared-pool', { maxStreams: 1, streamKbps: 800, dailyMb: 0 });
+    const secret = JSON.parse(await fs.readFile(path.join(srv.tmpDir, 'config.json'), 'utf8')).secret;
+    const guest = jwt.sign({ federationGuest: true, federationKeyId: k.id }, secret, { expiresIn: '1h' });
+
+    const holder = await fetch(`${srv.baseUrl}/media/shared/c.bin`, { headers: fedHeaders(k.key) });
+    assert.equal(holder.status, 200);
+    await sleep(150);
+    const second = await fetch(`${srv.baseUrl}/media/shared/c.bin?token=${guest}`);
+    assert.equal(second.status, 429);
+    assert.match((await second.json()).error, /concurrent/i);
+    assert.ok(Buffer.from(await holder.arrayBuffer()).equals(FILE_CONC), 'the held stream is intact');
+
+    // Slot freed → the guest streams (the decrement lands on 'close', a
+    // beat after the last byte, so poll briefly).
+    let status = 0;
+    for (let i = 0; i < 20 && status !== 200; i++) {
+      await sleep(100);
+      const r = await fetch(`${srv.baseUrl}/media/shared/c.bin?token=${guest}`);
+      status = r.status;
+      await r.arrayBuffer();
+    }
+    assert.equal(status, 200, 'the guest gets the freed slot');
+  });
+
+  test('revoking a key with unflushed usage drops it cleanly (no FK error loop, no orphan row)', async () => {
+    const k = await mintKey('revoke-me', { streamKbps: 0, dailyMb: 0, maxStreams: 0 });
+    const r = await fetch(`${srv.baseUrl}/media/shared/c.bin`, { headers: fedHeaders(k.key) });
+    assert.equal(r.status, 200);
+    await r.arrayBuffer();
+    // Revoke while the accumulator (200ms flush) likely still holds bytes.
+    const del = await fetch(`${srv.baseUrl}/api/v1/admin/federation/keys/${k.id}`, {
+      method: 'DELETE', headers: { 'x-access-token': adminToken },
+    });
+    assert.equal(del.status, 200);
+    await sleep(800); // several flush intervals
+    // The server is still healthy, and nothing was written for the dead key
+    // (the usage rows cascade with the key; a late flush must not re-create one).
+    const db = new DatabaseSync(path.join(srv.tmpDir, 'db', 'mstream.db'), { readOnly: true });
+    try {
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM federation_key_usage WHERE key_id = ?').get(k.id).n, 0);
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM federation_keys WHERE id = ?').get(k.id).n, 0);
+    } finally { db.close(); }
+    const health = await fetch(`${srv.baseUrl}/api/v1/federation/health`, { headers: fedHeaders(k.key) });
+    assert.equal(health.status, 401);
   });
 
   test('streamKbps paces the download without corrupting it', async () => {

@@ -94,3 +94,15 @@ payload missing `t` or `k`.
 - **"Friend reinstalled" case:** their endpoint identity changed, so TOFU
   rejects them. The admin UI's reset-binding action clears the binding
   without re-minting; the next successful handshake re-binds.
+
+## Guest access (`mstrfedg<V>:`)
+
+A key holder's own devices — the mobile app — can reach the minting server
+directly instead of through the holder's proxies. The holder asks the
+minting server for a **guest token** over its bound pipe
+(`POST /api/v1/federation/guest`) and hands the device that token plus the
+minting server's endpoint ticket, packaged as a `mstrfedg1:` guest ticket.
+The token is a short-lived JWT scoped exactly like the key (same grants,
+allowlist and caps), it is never bound (expiry is its bound), and revoking
+the key revokes its guests. The key itself still never leaves the holder.
+Spec: [federation-guest-ticket.md](federation-guest-ticket.md).

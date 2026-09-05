@@ -27,6 +27,11 @@ info:
     - **Shared-playlist tokens** (`shareToken: true`) restrict file access to the tracks in one specific shared playlist.
     - **Federation keys** (`x-federation-key: fedk_…` header, not a JWT) authenticate a paired peer server as a
       synthetic read-only user scoped to the key's granted libraries, limited to a read-route allowlist.
+    - **Federation guest tokens** (`federationGuest: true`) are short-lived JWTs this server mints for a
+      federation key on request (`POST /api/v1/federation/guest`), so a key holder's own device can reach
+      this server directly. They ride the ordinary token slots and resolve to the same read-only user as
+      the key (same grants, allowlist and bandwidth caps); revoking the key revokes its guests. See
+      docs/federation-guest-ticket.md.
 
     ## Errors
 
@@ -165,6 +170,11 @@ tags:
       server's endpoint address plus the key. A peer authenticates every
       HTTP request with the `x-federation-key` header and is restricted to a
       read-route allowlist within the granted libraries.
+
+      A key holder may also fetch **guest tokens** for its own devices
+      (`POST /api/v1/federation/guest`; docs/federation-guest-ticket.md) so
+      a device dials this server directly instead of through the holder's
+      proxies — the parent side of that is `GET /api/v1/federation/peers/{id}/access`.
   - name: Torrent
     description: |
       User-facing torrent feature. Operators upload `.torrent` files or
@@ -1031,14 +1041,24 @@ paths:
                       Present only for authenticated callers. The
                       caller-scoped half of the ping boot payload (vpaths,
                       permission flags, federationDiscovery,
-                      federationBrowse, vpathMetaData) plus the identity
-                      fields below.
+                      federationBrowse, federationDirect, vpathMetaData)
+                      plus the identity fields below.
                     properties:
                       username: { type: string }
                       admin: { type: boolean }
                       federation:
                         type: boolean
-                        description: True when authenticated by a federation key.
+                        description: True when authenticated by a federation key (or a guest token of one).
+                      federationGuest:
+                        type: boolean
+                        description: True when authenticated by a federation guest token rather than the key itself.
+                      federationDirect:
+                        type: boolean
+                        description: >
+                          This build offers `GET /api/v1/federation/peers/{id}/access`
+                          and there is at least one peer to reach. Same value as
+                          federationBrowse; whether a given peer cooperates is
+                          answered per peer by the access route.
                   admin:
                     type: object
                     description: >
@@ -6081,6 +6101,45 @@ paths:
                       modelVersion: { type: string, nullable: true }
                       dim: { type: integer, description: Embedding dimension (float32 count per vector) }
                       analyzedCount: { type: integer, description: Embedded tracks in the index }
+                  guestAccess:
+                    type: boolean
+                    description: This build mints guest tokens (`POST /api/v1/federation/guest`).
+
+  /api/v1/federation/guest:
+    post:
+      tags: [Federation]
+      summary: Mint a guest token for the caller's federation key
+      description: |
+        Called by a paired server (with its `x-federation-key`) over the
+        federation bridge to get a short-lived JWT one of its OWN devices —
+        the mobile app — can dial this server with directly, so the device's
+        bytes stop crossing the holder's home link twice. The standing key
+        never leaves the holder; the device only ever holds the token.
+
+        The token resolves here to the same synthetic read-only user as the
+        key: same library grants, same route allowlist, same bandwidth caps
+        (guests share the key's pool). No TOFU binding — a device dials from
+        an ephemeral endpoint — so expiry (24 h) is the bound; revoking or
+        expiring the key rejects its guests at their next handshake and
+        request and severs their live pipes. See docs/federation-guest-ticket.md.
+
+        Refused (403) for a local user (no key to mint for), for a guest
+        (guests cannot mint guests), and for a key that has never completed
+        the federation handshake (unbound).
+      responses:
+        "200":
+          description: A signed guest token and its expiry.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string, description: "JWT — claims { federationGuest: true, federationKeyId, iat, exp }" }
+                  expiresAt: { type: string, format: date-time }
+        "401":
+          description: Federation is disabled, or the key is unknown or expired.
+        "403":
+          description: Not a federation key, a guest credential, or an unbound key.
 
   /api/v1/federation/discovery/similar:
     post:
@@ -6179,6 +6238,14 @@ paths:
                         lastSeen: { type: string, nullable: true, description: "Last successful contact (SQLite datetime), or null" }
                         lastStatus: { type: string, nullable: true, description: "'ok' or an error string from the last test-connection" }
                         useDiscovery: { type: boolean, description: Whether this server sends the peer similarity queries }
+                        endpointId:
+                          type: string
+                          nullable: true
+                          description: >
+                            The peer's iroh endpoint id (a public key, not a
+                            credential) — lets a client tell that two parents
+                            list the same server. Null when this build cannot
+                            read tickets.
         "403":
           description: Federation is disabled on this server.
 
@@ -6282,6 +6349,63 @@ paths:
         "403": { description: Federation is disabled on this server. }
         "404": { description: "Unknown peer id, or the peer has no such art file." }
         "502": { description: "Peer unreachable — the 15s deadline was exceeded." }
+
+  /api/v1/federation/peers/{id}/access:
+    get:
+      tags: [Federation]
+      summary: What a device needs to reach a peer directly
+      description: |
+        Hands a logged-in user what its device needs to reach the peer
+        WITHOUT this server in the path: the peer's endpoint ticket and a
+        guest token the peer minted for this server's key
+        (`POST /api/v1/federation/guest`, called over the bridge). The
+        device dials the ticket on ALPN `mstream/federation/1`, presents
+        the token on the first bi-stream, and authenticates every request
+        inside the pipe with the same token in the ordinary token slots.
+        `directTicket` packages the two as a `mstrfedg1:` guest ticket for
+        the device's native dialer (docs/federation-guest-ticket.md).
+
+        Tokens are cached per peer and re-minted once three quarters of
+        their life is gone, or on `?refresh=1` — for a client whose token
+        the peer just refused (a refresh within seconds of a mint is served
+        from the cache). The key itself never leaves this server.
+
+        A peer that will not mint — an older build, or federation disabled
+        there — is a 200 with `direct: false`, so a client can tell "keep
+        using the proxies" from "the peer is down" (502).
+
+        Takes normal local-user auth and is NOT callable with a federation
+        key or a guest token.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer }, description: Peer row id }
+        - { name: refresh, in: query, required: false, schema: { type: string, enum: ["1", "true"] }, description: Force a fresh mint }
+      responses:
+        "200":
+          description: "Direct-access material, or `direct: false`."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [direct, endpointTicket, guestToken, expiresAt, directTicket]
+                    properties:
+                      direct: { type: boolean, enum: [true] }
+                      endpointTicket: { type: string, description: "The peer's iroh EndpointTicket" }
+                      endpointId: { type: string, nullable: true, description: "The peer's endpoint id (public key)" }
+                      guestToken: { type: string, description: "JWT the peer signed for this server's key" }
+                      expiresAt: { type: string, format: date-time }
+                      directTicket: { type: string, description: "`mstrfedg1:` envelope of endpointTicket + guestToken" }
+                  - type: object
+                    required: [direct, reason]
+                    properties:
+                      direct: { type: boolean, enum: [false] }
+                      reason: { type: string }
+        "403":
+          description: Federation is disabled on this server.
+        "404":
+          description: Unknown peer id.
+        "502":
+          description: "Peer unreachable — the dial + response deadline (15s) was exceeded, or it answered the mint unexpectedly."
 
   /api/v1/federation/peers/{id}/stream/{path}:
     get:
