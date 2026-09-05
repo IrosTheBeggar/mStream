@@ -73,7 +73,11 @@ function rawGet(port, host, path, jwt) {
     const sock = net.connect({ port, host }, () => {
       sock.write(`GET ${path} HTTP/1.1\r\nHost: ${host}\r\nx-access-token: ${jwt}\r\nConnection: close\r\n\r\n`);
     });
-    sock.setTimeout(3000, () => { done('timeout'); sock.destroy(); });
+    // 15 s, not 3: the property under test is "accepted, never REFUSED". The
+    // reboot re-runs the boot chores on the event loop, and on a starved CI
+    // runner one answer has taken longer than 3 s — that is slow, not refused.
+    // A hung server still fails here, just later.
+    sock.setTimeout(15_000, () => { done('timeout'); sock.destroy(); });
     sock.on('data', d => {
       buf += d;
       const m = /^HTTP\/1\.[01] (\d{3})/.exec(buf);
