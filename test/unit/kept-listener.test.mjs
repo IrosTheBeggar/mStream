@@ -1,5 +1,5 @@
 /**
- * util/kept-listener.js: the separate-port Subsonic/DLNA servers' listener.
+ * util/kept-listener.js: the separate-port DLNA server's listener.
  *
  * Contract: ensure() with an unchanged bind KEEPS the socket (no close, no
  * re-listen — the Windows/Bun inherited-handle reason lives in server.js);

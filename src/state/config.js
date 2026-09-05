@@ -397,7 +397,7 @@ const discogsOptions = Joi.object({
 //   secretKey     — base64 of 32 random bytes; the endpoint's identity. The
 //                   EndpointId (and therefore every issued QR) is derived from
 //                   it, so it's auto-generated once and persisted (like
-//                   `secret`/`subsonicSecret`). Losing it changes the EndpointId
+//                   `secret`). Losing it changes the EndpointId
 //                   and breaks every previously-issued QR/ticket.
 //   connectSecret — base64 shared secret carried inside the QR. The tunnel only
 //                   completes a connection after the client proves knowledge of
@@ -548,11 +548,6 @@ const dlnaOptions = Joi.object({
   // behaviour; set false on multi-user servers to hide those per-user surfaces
   // so anyone on the network can't read everyone's history, ratings, and lists.
   shareUserData: Joi.boolean().default(true),
-});
-
-const subsonicOptions = Joi.object({
-  mode: Joi.string().valid('disabled', 'same-port', 'separate-port').default('disabled'),
-  port: Joi.number().integer().min(1).max(65535).default(3012),
 });
 
 // LAN service discovery. Advertises the API as a `_mstream._tcp` mDNS/DNS-SD
@@ -730,26 +725,15 @@ const schema = Joi.object({
   storage: storageJoi.default(storageJoi.validate({}).value),
   // 'default'  — mStream's classic UI (webapp/alpha/)
   // 'velvet'   — mStream's alternative UI (webapp/velvet/)
-  // 'subsonic' — bundled Airsonic Refix (webapp/subsonic/), a third-party
-  //              Subsonic web client pointed at our own /rest/* endpoints.
-  //              Users log in with their mStream username + password;
-  //              every HTTP call from the UI speaks Subsonic.
-  ui: Joi.string().valid('default', 'velvet', 'subsonic').default('default'),
+  // ('subsonic' — the bundled Airsonic Refix client — went away with the
+  //  Subsonic API; setup() coerces a stale value back to 'default'.)
+  ui: Joi.string().valid('default', 'velvet').default('default'),
   webAppDirectory: Joi.string().default(path.join(appRoot, 'webapp')),
   rpn: rpnOptions.default(rpnOptions.validate({}).value),
   transcode: transcodeOptions.default(transcodeOptions.validate({}).value),
   updates: updatesOptions.default(updatesOptions.validate({}).value),
   lyrics: lyricsOptions.default(lyricsOptions.validate({}).value),
   secret: Joi.string().optional(),
-  // Separate secret used to derive the AES-256-GCM key for the
-  // Subsonic-specific password column added in V35. Kept distinct from
-  // `secret` (which signs JWTs) so the two can rotate independently —
-  // rotating the JWT secret invalidates active sessions; rotating the
-  // Subsonic secret invalidates all stored Subsonic passwords (users
-  // would have to re-set them via the mobile-clients panel).
-  // Auto-generated on first boot like `secret`, persisted to the
-  // config file.
-  subsonicSecret: Joi.string().optional(),
   maxRequestSize: Joi.string().pattern(/[0-9]+(KB|MB)/i).default('1MB'),
   // Cap on the total uncompressed size of a bulk zip download
   // (/api/v1/download/*). The source files are summed before any bytes are
@@ -806,7 +790,6 @@ const schema = Joi.object({
   federation: federationOptions.default(federationOptions.validate({}).value),
   discoveryP2p: discoveryP2pOptions.default(discoveryP2pOptions.validate({}).value),
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
-  subsonic: subsonicOptions.default(subsonicOptions.validate({}).value),
   discovery: discoveryOptions.default(discoveryOptions.validate({}).value),
   torrent: torrentOptions.default(torrentOptions.validate({}).value),
   autoBootServerAudio: Joi.boolean().default(false),
@@ -859,19 +842,39 @@ export async function setup(configFileArg) {
     await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
   }
 
-  // Setup the separate Subsonic-password secret. Kept independent of
-  // `secret` so a JWT-secret rotation doesn't accidentally invalidate
-  // every user's Subsonic password (HKDF derives the AES key from this
-  // secret; rotating it makes existing ciphertexts unreadable).
-  if (!programData.subsonicSecret) {
-    winston.info('Config file does not have subsonicSecret.  Generating a secret and saving');
-    programData.subsonicSecret = await asyncRandom(128);
-    await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
+  // The Subsonic API, its per-user secrets and the bundled Subsonic web
+  // client were removed (docs/subsonic-deprecation.md). Three leftovers can
+  // sit in an existing config file:
+  //   ui: 'subsonic'   — would fail Joi's .valid() enum and THROW at boot,
+  //                      the same "upgrade bricks the server" shape as the
+  //                      retired-model migration below. Coerce to 'default'.
+  //   subsonic: {...}  — inert (validation runs with allowUnknown), but an
+  //                      operator who had the API on deserves one clear log
+  //                      line about why their clients stopped connecting.
+  //   subsonicSecret   — key material for the dropped password column;
+  //                      nothing can read those ciphertexts any more.
+  // All three are removed from the file and the result persisted, so the
+  // notice appears exactly once (the lockAdmin -> adminAccess precedent).
+  {
+    const stale = [];
+    if (programData.ui === 'subsonic') { stale.push("ui='subsonic'"); programData.ui = 'default'; }
+    if (programData.subsonic !== undefined) {
+      const mode = programData.subsonic && programData.subsonic.mode;
+      stale.push(mode && mode !== 'disabled' ? `subsonic.mode='${mode}'` : 'subsonic');
+      delete programData.subsonic;
+    }
+    if (programData.subsonicSecret !== undefined) { stale.push('subsonicSecret'); delete programData.subsonicSecret; }
+    if (stale.length > 0) {
+      winston.warn(`[config] The Subsonic API was removed in mStream 6.26 (see docs/subsonic-deprecation.md); `
+        + `dropping ${stale.join(', ')} from the config file. Subsonic clients can no longer connect `
+        + 'to this server — the first-party mStream apps are the supported clients.');
+      await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
+    }
   }
 
   // Iroh tunnel identity (secretKey -> stable EndpointId) and the pipe secret
   // (connectSecret). Generated once and persisted up-front — same generate-and-
-  // persist precedent as secret/subsonicSecret/dlna.uuid — so the EndpointId and
+  // persist precedent as secret/dlna.uuid — so the EndpointId and
   // any issued QR stay stable across reboots, and so enabling the feature later
   // from the admin panel doesn't need a key-generation round-trip. secretKey is
   // base64 of exactly 32 bytes (the size Iroh's SecretKey expects).
@@ -896,8 +899,8 @@ export async function setup(configFileArg) {
   // Back-compat migration for the lockAdmin -> adminAccess rename. A config
   // file that predates adminAccess and had lockAdmin=true meant "admin
   // disabled", which is now adminAccess.mode='none'. Coerce + persist before
-  // validation so the upgrade is sticky (matches the secret/subsonicSecret/
-  // dlna.uuid generate-and-persist precedents in this function). A pre-existing
+  // validation so the upgrade is sticky (matches the secret/dlna.uuid
+  // generate-and-persist precedents in this function). A pre-existing
   // adminAccess always wins; a missing/false lockAdmin needs no migration
   // (adminAccess defaults to mode='all', which is the lockAdmin=false meaning).
   if (programData.adminAccess === undefined && programData.lockAdmin === true) {
@@ -961,24 +964,6 @@ export async function setup(configFileArg) {
       `trusts X-Forwarded-For, which clients can spoof unless a trusted reverse proxy overwrites it. ` +
       `Ensure your proxy strips/sets X-Forwarded-For, or the gate can be bypassed.`
     );
-  }
-
-  // Enforce the `ui=subsonic` <-> Subsonic same-port constraint: the
-  // bundled Airsonic Refix SPA is configured to talk to the SAME origin
-  // it was served from (env.js SERVER_URL=""). If Subsonic is disabled
-  // or on a separate port, the SPA loads fine but every /rest/* call
-  // 404s and the user sees a "no server" splash with no indication why.
-  // Auto-coerce to same-port + log a loud warning so the operator sees
-  // what we did.
-  if (program.ui === 'subsonic') {
-    if (program.subsonic.mode !== 'same-port') {
-      winston.warn(
-        `[config] ui='subsonic' requires subsonic.mode='same-port' (had '${program.subsonic.mode}'); ` +
-        `forcing same-port so the bundled Refix client can reach the /rest/* API it was built against. ` +
-        `Set ui='default' or ui='velvet' if you need Subsonic disabled/separate-port.`
-      );
-      program.subsonic.mode = 'same-port';
-    }
   }
 
   // Persist a stable DLNA UUID so renderers recognise the server across reboots

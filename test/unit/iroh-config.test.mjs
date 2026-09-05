@@ -1,7 +1,7 @@
 /**
  * Config: the Iroh endpoint key + connect secret are auto-generated and
  * persisted on first boot, stay stable across reloads, and don't clobber
- * pre-existing values. Mirrors the secret/subsonicSecret/dlna.uuid precedent.
+ * pre-existing values. Mirrors the secret/dlna.uuid precedent.
  */
 
 import { describe, test, before, after } from 'node:test';

@@ -1,8 +1,8 @@
 /**
  * Unit tests for the search query parser + FTS5 expression builder.
  *
- * These three exports are the building blocks PR3 (the /api/v1/db/search
- * route changes) and PR4 (Subsonic search) will consume. The route
+ * These three exports are the building blocks the /api/v1/db/search
+ * route consumes. The route
  * decides between three algorithms — `basic` (LIKE only), `combo`
  * (FTS5 with per-category LIKE fallback), and `fts5` (strict, no
  * fallback) — and uses buildFtsExpression's null return as the signal

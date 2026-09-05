@@ -114,7 +114,7 @@ function suite(label, startOpts) {
     let jwt;
 
     before(async () => {
-      server = await startServer({ dlnaMode: 'disabled', subsonicMode: 'disabled', users: [{ ...ADMIN, admin: true }], ...startOpts });
+      server = await startServer({ dlnaMode: 'disabled', users: [{ ...ADMIN, admin: true }], ...startOpts });
       jwt = await login(server);
     });
 

@@ -8248,91 +8248,6 @@ async function viewListenBrainz() {
   });
 }
 
-// ── SUBSONIC SETTINGS ─────────────────────────────────────────
-async function viewSubsonic() {
-  setTitle('Subsonic API'); setBack(null); setNavActive('subsonic'); S.view = 'subsonic';
-  S.curSongs = [];
-  document.getElementById('play-all-btn').onclick = null;
-  document.getElementById('add-all-btn').onclick  = null;
-
-  setBody(`
-    <div class="playback-panel">
-      <div class="playback-section">
-        <div class="playback-section-hdr">
-          <div class="playback-section-icon">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" y1="8" x2="12" y2="8"/><line x1="3.95" y1="6.06" x2="8.54" y2="14"/><line x1="10.88" y1="21.94" x2="15.46" y2="14"/></svg>
-          </div>
-          <div>
-            <div class="playback-section-title">Subsonic API Password</div>
-            <div class="playback-section-desc">Set the password used by Subsonic-compatible apps (Ultrasonic, DSub, Symfonium, Tempo, Jamstash, etc.). This is separate from your mStream login password. Use HTTP token auth (MD5) in your app for best security.</div>
-          </div>
-        </div>
-
-        <div class="playback-row">
-          <div class="playback-row-label">
-            <div class="playback-row-name">Server URL</div>
-            <div class="playback-row-hint">Enter this in your Subsonic app</div>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px;">
-            <span id="subsonic-server-url" style="font-family:monospace;font-size:.82rem;color:var(--t1);word-break:break-all;">${esc(location.origin)}</span>
-            <button class="btn-ghost" id="copy-server-url-btn" style="padding:4px 10px;font-size:.75rem;flex-shrink:0;">Copy</button>
-          </div>
-        </div>
-
-        <div class="playback-row">
-          <label class="playback-row-label" for="subsonic-new-pw">
-            <div class="playback-row-name">New Subsonic Password</div>
-          </label>
-          <div style="display:flex;align-items:center;gap:8px;">
-            <input type="password" id="subsonic-new-pw" class="settings-input" style="max-width:220px" placeholder="New Subsonic password" autocomplete="new-password" data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore>
-            <button class="btn-primary" id="subsonic-save-pw-btn">Save</button>
-          </div>
-        </div>
-
-        <div class="playback-row" style="background:var(--raised2,var(--raised));border-radius:8px;padding:.65rem .9rem;margin-top:.5rem;gap:1rem;flex-wrap:wrap;">
-          <div class="playback-row-label">
-            <div class="playback-row-name" style="font-size:.8rem;">App connection details</div>
-            <div class="playback-row-hint" id="subsonic-username-hint">Username: <strong>${esc(S.username || 'mstream-user')}</strong>${S.username ? '' : ' <span style="font-size:.75rem;color:var(--t2);">(no-auth default)</span>'}</div>
-            <div class="playback-row-hint">API path: <code style="font-size:.78rem;">/rest/</code></div>
-            <div class="playback-row-hint" style="margin-top:.25rem;">Use <em>Token auth (MD5)</em> in your app when available — safer than plain-text mode.</div>
-          </div>
-        </div>
-      </div>
-    </div>`);
-
-  document.getElementById('copy-server-url-btn')?.addEventListener('click', () => {
-    navigator.clipboard.writeText(location.origin).then(() => toast('Server URL copied!')).catch(() => {
-      const ta = document.createElement('textarea');
-      ta.value = location.origin; document.body.appendChild(ta); ta.select();
-      document.execCommand('copy'); document.body.removeChild(ta);
-      toast('Server URL copied!');
-    });
-  });
-
-  document.getElementById('subsonic-save-pw-btn')?.addEventListener('click', async () => {
-    const btn = document.getElementById('subsonic-save-pw-btn');
-    const pw  = document.getElementById('subsonic-new-pw').value;
-    if (!pw) { toast('Enter a new Subsonic password'); return; }
-    btn.disabled = true; btn.textContent = 'Saving…';
-    try {
-      await api('POST', 'api/v1/admin/users/subsonic-password', {
-        username: S.username || '',
-        password: pw
-      });
-      toast('\u2713 Subsonic password updated');
-      document.getElementById('subsonic-new-pw').value = '';
-    } catch(e) {
-      toast('Error: ' + (e.message || 'Failed to update password'));
-    } finally {
-      btn.disabled = false; btn.textContent = 'Save';
-    }
-  });
-
-  document.getElementById('subsonic-new-pw')?.addEventListener('keydown', e => {
-    if (e.key === 'Enter') document.getElementById('subsonic-save-pw-btn')?.click();
-  });
-}
-
 // ── DISCOGS ADMIN SETTINGS ───────────────────────────────────
 async function viewDiscogs() {
   setTitle('Discogs'); setBack(null); setNavActive('discogs'); S.view = 'discogs';
@@ -11697,7 +11612,6 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
     else if (v === 'lastfm')       viewLastFM();
     else if (v === 'listenbrainz') viewListenBrainz();
     else if (v === 'discogs')      viewDiscogs();
-    else if (v === 'subsonic')     viewSubsonic();
     else if (v === 'radio')        viewRadio();
     else if (v === 'podcasts')        viewPodcasts();
     else if (v === 'podcast-feeds')  viewPodcastFeeds();

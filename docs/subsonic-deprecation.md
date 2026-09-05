@@ -1,7 +1,13 @@
-# Subsonic API — deprecation notice
+# Subsonic API — removed
 
-**Status: deprecated as of v6.20 (2026-08). Removal is planned for a future
-major release, once the first-party mStream apps are released.**
+**Status: removed in v6.26.0 (2026-09). It had been deprecated since v6.20.0
+(2026-08).**
+
+mStream no longer serves the Subsonic / OpenSubsonic REST API (`/rest/*`),
+the bundled Airsonic Refix web client (`ui: 'subsonic'`), per-user API keys
+(`/api/v1/user/api-keys`), or the separate, recoverable Subsonic password.
+Third-party Subsonic clients (DSub, Symfonium, play:Sub, Feishin, Sonixd,
+Substreamer, …) can no longer connect to an mStream server.
 
 ## Why
 
@@ -10,33 +16,35 @@ feature no third-party Subsonic client can offer: **iroh-based Quick
 Connect** — scan a QR code and stream from your server anywhere, with no
 port forwarding, no reverse proxy, no dynamic DNS.
 
-The Subsonic surface, by contrast, is a me-too feature in a field with
-dedicated implementations (Navidrome, Gonic, Airsonic-Advanced) whose whole
-project is that protocol. Every subsonic client has its own quirks, and
-matching that ecosystem's expectations is a maintenance commitment that
-competes directly with the first-party work. It also carries a standing
-security cost mStream would rather not keep: classic Subsonic token auth
-requires a recoverable password, which is why the surface keeps a separate
-encrypted password column and a second authentication wall.
+The Subsonic surface was a me-too feature in a field with dedicated
+implementations whose whole project is that protocol. Every client has its
+own quirks, and matching that ecosystem's expectations was a maintenance
+commitment that competed directly with the first-party work. It also
+carried a standing security cost: classic Subsonic token auth needs a
+recoverable password, which is why the surface kept a separate encrypted
+password column and a second authentication wall in front of the library.
 
-## What deprecation means today
+## What happens when you upgrade
 
-- The API keeps working exactly as before. Nothing is removed yet.
-- The surface is **frozen**: crash and security fixes only, no new
-  endpoints, no OpenSubsonic extension work.
-- A warning is logged at boot when the API is enabled, and the admin panel
-  shows a deprecation notice on the Subsonic page.
-- The bundled Subsonic web UI (`ui: 'subsonic'`) is deprecated with it.
+- **config.json** — on first boot the server logs one warning and rewrites
+  the file: `ui: 'subsonic'` becomes `ui: 'default'`, and the `subsonic`
+  block and `subsonicSecret` are removed. Nothing else changes.
+- **Ports** — nothing listens on the separate Subsonic port (default 3012)
+  any more. Firewall rules, Docker port mappings, and reverse-proxy routes
+  for `/rest/` can be deleted.
+- **Admin panel** — the "Subsonic API" page is gone. The Lyrics Cache card
+  that used to live there is under **Lyrics**.
+- **Database** — the tables the Subsonic surface populated (per-user stars,
+  bookmarks, play queue, API keys) are left in place and are inert. The
+  encrypted Subsonic password column is dropped by a later release; the
+  secret that could decrypt it is already gone from the config.
 
-## If you rely on it
+## If you need a Subsonic server
 
-Say so — real usage reports are what decide the removal timeline:
+Run a dedicated one — Navidrome, Gonic, or Airsonic-Advanced — against the
+same music folders. They can coexist with mStream on the same machine.
 
-- <https://github.com/IrosTheBeggar/mStream/issues>
-- The mStream Discord (link in the README)
+mStream's own apps are the supported clients:
 
-## Timeline
-
-Removal will not happen before the first-party apps are generally
-available, and will be announced in release notes at least one release
-before it happens.
+- Android: <https://play.google.com/store/apps/details?id=mstream.music>
+- iOS: <https://apps.apple.com/us/app/mstream-player/id1605378892>

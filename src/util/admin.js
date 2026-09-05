@@ -14,7 +14,6 @@ import { sweepVpathsForActiveClient } from '../torrent/vpath-sweep.js';
 import winston from 'winston';
 import * as dlnaSsdp from '../dlna/ssdp.js';
 import * as dlnaServer from '../dlna/dlna-server.js';
-import * as subsonicServer from '../subsonic/subsonic-server.js';
 import { getDirname } from './esm-helpers.js';
 import { launchWorker } from './worker-process.js';
 import { invalidateWhitelistCache } from './admin-network.js';
@@ -359,29 +358,6 @@ export async function editUserAccess(username, admin, allowMkdir, allowUpload, a
   db.invalidateCache();
 }
 
-// Set or clear the V35 opt-in Subsonic-specific password. Pass null/empty
-// to clear (revert the user to no token-auth, friendly error message
-// at /rest/* time). Used by both the admin endpoint and (by way of
-// the user-side endpoint) by users managing their own.
-//
-// Imports the encrypt helper lazily — the helper depends on
-// config.program.subsonicSecret which isn't populated until config.setup
-// runs, and admin.js is imported much earlier in the boot path.
-export async function setSubsonicPassword(username, plaintext) {
-  const user = db.getUserByUsername(username);
-  if (!user) { throw new Error(`'${username}' does not exist`); }
-
-  const d = db.getDB();
-  if (plaintext == null || plaintext === '') {
-    d.prepare('UPDATE users SET subsonic_password_encrypted = NULL WHERE id = ?').run(user.id);
-  } else {
-    const { encryptSubsonicPassword } = await import('./subsonic-password.js');
-    const encrypted = encryptSubsonicPassword(plaintext);
-    d.prepare('UPDATE users SET subsonic_password_encrypted = ? WHERE id = ?').run(encrypted, user.id);
-  }
-  db.invalidateCache();
-}
-
 // Set a user's stored Last.fm credentials — the V1 lastfm_user/lastfm_password
 // columns that live directly on the users row. Same lookup-then-UPDATE shape as
 // editUserPassword, and the same storage write the self-service /lastfm/connect
@@ -405,19 +381,6 @@ export async function editUI(ui) {
   if (config.program.ui === ui) { return; }
   const loadConfig = await loadFile(config.configFile);
   loadConfig.ui = ui;
-  // When switching TO ui='subsonic', auto-enable Subsonic same-port if
-  // it's currently disabled / separate-port. The bundled Refix SPA
-  // only works with same-port (its env.js SERVER_URL="" resolves to
-  // the current origin). Leaving the admin to manually fix subsonic
-  // mode after a UI switch produces a broken client with a silent
-  // failure mode — they see Refix's "couldn't reach server" error
-  // with no guidance. Flip it for them and log.
-  if (ui === 'subsonic') {
-    if (!loadConfig.subsonic) { loadConfig.subsonic = {}; }
-    if (loadConfig.subsonic.mode !== 'same-port') {
-      loadConfig.subsonic.mode = 'same-port';
-    }
-  }
   await saveFile(loadConfig, config.configFile);
   mStreamServer.reboot();
 }
@@ -1127,33 +1090,6 @@ export async function enableDlna(mode, port) {
   dlnaServer.stop();
   if (mode !== 'disabled') { dlnaSsdp.start(); }
   if (mode === 'separate-port') { dlnaServer.start(); }
-}
-
-export async function enableSubsonic(mode, port) {
-  const effectivePort = port !== undefined ? port : config.program.subsonic.port;
-  if (mode === config.program.subsonic.mode && effectivePort === config.program.subsonic.port) { return; }
-
-  const prevMode = config.program.subsonic.mode;
-
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.subsonic) { loadConfig.subsonic = {}; }
-  loadConfig.subsonic.mode = mode;
-  if (port !== undefined) { loadConfig.subsonic.port = port; }
-  await saveFile(loadConfig, config.configFile);
-  config.program.subsonic.mode = mode;
-  if (port !== undefined) { config.program.subsonic.port = port; }
-
-  // same-port registers /rest/* routes on the main Express app, which needs a
-  // full reboot to take effect or be removed. Express doesn't support
-  // dynamic middleware removal.
-  if (mode === 'same-port' || prevMode === 'same-port') {
-    mStreamServer.reboot();
-    return;
-  }
-
-  // disabled ↔ separate-port: hot-swap the secondary server in place.
-  subsonicServer.stop();
-  if (mode === 'separate-port') { subsonicServer.start(); }
 }
 
 export async function removeSSL() {

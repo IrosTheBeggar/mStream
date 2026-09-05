@@ -14,7 +14,6 @@ Tests are grouped by subsystem. Pick the folder that matches what you're testing
 | `unit/`          | Pure / in-process module tests — no server boot (e.g. `parse-size`).   |
 | `db/`            | Schema, migrations and FTS5 (direct `node:sqlite`, no server).         |
 | `scanner/`       | Scanner invocation, parity (JS vs Rust), waveform, provenance.         |
-| `subsonic/`      | The Subsonic API surface (boots a server).                            |
 | `torrent/`       | Torrent subsystem — unit helpers through to the admin routes.          |
 | `integration/`   | Everything else that boots a full mStream server or spans subsystems.  |
 
@@ -33,7 +32,7 @@ Non-test support code lives alongside but is **not** picked up by the runner
 ```bash
 npm test               # everything
 npm run test:unit      # one folder — also: test:db, test:scanner,
-                       # test:torrent, test:subsonic, test:integration
+                       # test:torrent, test:integration
 npm run test:dlna      # a single file
 node --test "test/db/**/*.test.mjs"   # ad-hoc glob
 node --test --watch "test/unit/**/*.test.mjs"
@@ -43,8 +42,8 @@ node --test --watch "test/unit/**/*.test.mjs"
 that pre-builds the fixture library once and fails fast with a clear message when
 a prerequisite is missing — rather than a cryptic error deep into the run.
 
-`unit/` and `db/` need nothing but Node. The `scanner/`, `subsonic/` and
-`integration/` folders boot a server and/or generate fixtures, so they need:
+`unit/` and `db/` need nothing but Node. The `scanner/` and `integration/`
+folders boot a server and/or generate fixtures, so they need:
 
 - **ffmpeg** at `bin/ffmpeg/` — used to synthesize the fixture library. A fresh
   git worktree won't have it; copy `bin/ffmpeg/` from your main checkout.

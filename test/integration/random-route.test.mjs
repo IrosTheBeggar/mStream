@@ -439,7 +439,6 @@ async function bootMstream(tmpDir, musicDir) {
   const config = {
     port, address: '127.0.0.1', ui: 'default',
     dlna:     { mode: 'disabled' },
-    subsonic: { mode: 'disabled' },
     folders:  { testlib: { root: musicDir } },
     storage: {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),

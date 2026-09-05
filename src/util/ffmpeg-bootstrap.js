@@ -874,7 +874,7 @@ export async function ensureFfmpeg() {
       const { major, versionLine } = await getFfmpegVersion(bundledFfmpeg);
       // Probe ffprobe too — a corrupt or truncated ffprobe next to a healthy
       // ffmpeg would otherwise resolve here and fail later in the waveform /
-      // Subsonic / DLNA paths. Every other resolution path checks both.
+      // DLNA paths. Every other resolution path checks both.
       const probe = await getFfmpegVersion(bundledFfprobe);
       if (major >= MIN_FFMPEG_MAJOR && probe.major >= MIN_FFMPEG_MAJOR) {
         return resolved(bundledFfmpeg, bundledFfprobe, 'bundled', versionLine);

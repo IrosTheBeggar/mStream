@@ -4,7 +4,7 @@
  *   POST /api/v1/admin/lyrics/backfill
  *   POST /api/v1/admin/lyrics/providers
  *   POST /api/v1/admin/lyrics/write-sidecar
- *   POST /api/v1/admin/lyrics/cache/purge  (+ its pre-move alias under /admin/subsonic/)
+ *   POST /api/v1/admin/lyrics/cache/purge
  *
  * Boots a real server in public mode (zero users → admin endpoints are
  * unauthenticated) and round-trips the settings, asserting defaults,
@@ -121,11 +121,4 @@ test('POST /admin/lyrics/cache/purge: retry + full modes, default mode, bad inpu
 
   assert.equal((await postJson('/api/v1/admin/lyrics/cache/purge', { mode: 'nuke' })).status, 400);
   assert.equal((await postJson('/api/v1/admin/lyrics/cache/purge', { mode: 'full', extra: 1 })).status, 400);
-});
-
-test('the pre-move purge path under /admin/subsonic/ still answers (alias, dies with the Subsonic surface)', async () => {
-  const r = await postJson('/api/v1/admin/subsonic/lyrics-cache/purge', { mode: 'retry' });
-  assert.equal(r.status, 200);
-  assert.equal(r.body.mode, 'retry');
-  assert.equal(typeof r.body.removed, 'number');
 });

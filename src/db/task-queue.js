@@ -2763,7 +2763,7 @@ export function scanSubtree(vPath, subtree) {
 export { scanAll, rescanAll };
 
 // "Is the system currently doing heavy disk work?" Used by API endpoints
-// (api/db.js, api/subsonic/handlers.js) to mark themselves "locked" so
+// (api/db.js) to mark themselves "locked" so
 // long-running write paths don't conflict with an in-flight scan or
 // backup. Post-mutex this returns true for EITHER kind of task — the
 // callers care about the broader "busy" semantic, not strictly scans,

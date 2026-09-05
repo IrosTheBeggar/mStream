@@ -137,8 +137,8 @@ async function waitForScanComplete(baseUrl, timeoutMs = 90_000) {
  * @param {boolean} [opts.dlnaShareUserData]       `dlna.shareUserData`; omit for the
  *                                                 config default (true). Set false to
  *                                                 hide the per-user DLNA containers.
- * @param {string} [opts.subsonicMode='same-port'] Subsonic API mode to configure
- * @param {number} [opts.subsonicPort]             Port for Subsonic separate-port mode
+ * @param {number} [opts.dlnaPort]                Port for DLNA separate-port mode (a
+ *                                                 free port is picked when omitted)
  * @param {boolean} [opts.waitForScan=true]        Block until the initial scan finishes
  * @param {boolean} [opts.captureLogs=false]       Pipe stdout/stderr to the test process
  * @param {string[]} [opts.extraArgs]              Extra CLI args after `-j <config>`
@@ -151,7 +151,7 @@ async function waitForScanComplete(baseUrl, timeoutMs = 90_000) {
  *                                                 suite's bun legs pass 'bun'.
  * @param {number}  [opts.rustPlayerPort]          Override config.rustPlayerPort so tests
  *                                                 can point the server-playback proxy
- *                                                 (and Subsonic jukeboxControl) at a stub.
+ *                                                 at a stub.
  * @param {Object[]} [opts.users]                  Users to create after boot (PUT
  *   /api/v1/admin/users while the server is still in public-access mode).
  *   Each entry: { username, password, admin?, vpaths? }.
@@ -161,8 +161,7 @@ export async function startServer(opts = {}) {
     dlnaMode      = 'same-port',
     browseMode    = 'dirs',
     dlnaShareUserData,
-    subsonicMode  = 'same-port',
-    subsonicPort,
+    dlnaPort,
     rustPlayerPort,
     waitForScan   = true,
     captureLogs   = false,
@@ -177,10 +176,8 @@ export async function startServer(opts = {}) {
     // fixtures (e.g. the V17 multi-artist suite builds compilation
     // and collab tracks on the fly).
     extraFolders  = {},
-    // Which UI to serve: 'default' (webapp/alpha), 'velvet', or
-    // 'subsonic' (webapp/subsonic → bundled Airsonic Refix). Only
-    // affects the `/` HTML + SPA-fallback routing — all API tests
-    // ignore this knob.
+    // Which UI to serve: 'default' (webapp/alpha) or 'velvet'. Only
+    // affects the `/` HTML routing — all API tests ignore this knob.
     ui            = 'default',
     // Optional extra process-env overrides passed to the spawned
     // mStream process. Used by the lyrics-cache test to point the
@@ -197,10 +194,10 @@ export async function startServer(opts = {}) {
   const tmpDir   = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-test-'));
   const port     = await findFreePort();
 
-  // Separate-port Subsonic needs its own free port if the caller didn't pick one.
-  const sPort = subsonicMode === 'separate-port'
-    ? (subsonicPort ?? await findFreePort())
-    : 3012;
+  // Separate-port DLNA needs its own free port if the caller didn't pick one.
+  const dPort = dlnaMode === 'separate-port'
+    ? (dlnaPort ?? await findFreePort())
+    : null;
 
   const config = {
     port,
@@ -211,10 +208,7 @@ export async function startServer(opts = {}) {
       name: 'mStream Test',
       browse: browseMode,
       ...(dlnaShareUserData != null ? { shareUserData: dlnaShareUserData } : {}),
-    },
-    subsonic: {
-      mode: subsonicMode,
-      port: sPort,
+      ...(dPort != null ? { port: dPort } : {}),
     },
     ...(rustPlayerPort != null ? { rustPlayerPort } : {}),
     folders: {
@@ -408,13 +402,11 @@ export async function startServer(opts = {}) {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 
-  // When Subsonic runs on a separate port, expose its base URL too — tests
-  // that want to hit /rest on the secondary port use this directly.
-  const subsonicBaseUrl = subsonicMode === 'separate-port'
-    ? `http://127.0.0.1:${sPort}`
-    : baseUrl;
+  // When DLNA runs on a separate port, expose its base URL too — tests that
+  // want to hit the secondary listener directly use this.
+  const dlnaBaseUrl = dPort != null ? `http://127.0.0.1:${dPort}` : baseUrl;
 
   // `proc` is the raw child handle, for tests that exercise process-level
   // behavior (the supervision suite destroys its pipes / closes its stdin).
-  return { baseUrl, port, tmpDir, musicDir, subsonicBaseUrl, subsonicPort: sPort, proc, stop };
+  return { baseUrl, port, tmpDir, musicDir, dlnaBaseUrl, dlnaPort: dPort, proc, stop };
 }

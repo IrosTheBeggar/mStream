@@ -12,8 +12,8 @@
  * lookup `_userLibrariesCache.get(sentinelId)` returned `[]` (the sentinel
  * has no rows in user_libraries). Downstream, `libraryFilter()` emitted
  * `clause: '1=0'`, hiding every track from every track-table-driven API
- * (db/status, db/artists, db/albums, all of Subsonic's browse endpoints,
- * etc.) — which is what the issue reporter saw on 6.5.4: "database seems
+ * (db/status, db/artists, db/albums, etc.) — which is what the issue
+ * reporter saw on 6.5.4: "database seems
  * empty now... only file explorer is not empty".
  *
  * This test stands up mStream in true public/no-users mode against an
@@ -69,12 +69,8 @@ async function bootMstream(tmpDir, musicDir) {
     port,
     address: '127.0.0.1',
     ui: 'default',
-    // Disable Subsonic + DLNA — we're only testing the default API path.
-    // Subsonic auth is tested separately and the sentinel guard
-    // (subsonic/auth.js excludes is_anonymous_sentinel = 1) means public
-    // mode never even reaches the Subsonic handler chain.
+    // Disable DLNA — we're only testing the default API path.
     dlna:     { mode: 'disabled' },
-    subsonic: { mode: 'disabled' },
     folders:  { testlib: { root: musicDir } },
     storage: {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),

@@ -171,15 +171,15 @@ export function setCacheSize(mb) {
 
 // Run fn inside a single transaction (BEGIN/COMMIT, ROLLBACK on throw).
 // Collapses a loop of writes into one fsync and makes the batch atomic, so
-// callers doing bulk inserts/updates (playlist save, Subsonic star / scrobble /
+// callers doing bulk inserts/updates (playlist save, scrobble / rating /
 // playlist mutations) don't pay a per-statement commit, and a concurrent reader
 // never sees a half-applied batch. SQLite has no nested transactions — don't
 // call this inside another transaction.
 //
 // BEGIN IMMEDIATE, not a deferred BEGIN: the scanner runs as a separate
 // process that commits write batches continuously during a scan. With a
-// deferred BEGIN, a body whose FIRST statement is a read (e.g. Subsonic
-// updatePlaylist SELECTs playlist positions before writing) pins a read
+// deferred BEGIN, a body whose FIRST statement is a read (e.g. a playlist
+// update that SELECTs positions before writing) pins a read
 // snapshot; when the scanner commits before the body's first write, the
 // lock upgrade fails with SQLITE_BUSY_SNAPSHOT — which does NOT invoke the
 // busy handler, so the 5s busy_timeout above never applies and the caller
@@ -402,8 +402,8 @@ export function getUserByUsername(username) {
   const row = _usersCache.get(username);
   // The sentinel is never reachable by name. Login attempts already fail
   // at PBKDF2 (its stored hash is the literal '!' which no PBKDF2 output
-  // can produce), but every other call site — admin mint-key, password
-  // change, delete-user, edit-access, Subsonic getUser/updateUser — also
+  // can produce), but every other call site — password change,
+  // delete-user, edit-access — also
   // resolves users by name, and we don't want any of those to be able
   // to address the sentinel either. The auth no-users branch resolves
   // the sentinel by id (getAnonymousUserId), not name, so it's

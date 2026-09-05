@@ -63,7 +63,6 @@ async function bootMstream(tmpDir, musicDir) {
     // mount too — the core /db routes are identical under either UI.
     port, address: '127.0.0.1', ui: 'velvet',
     dlna:     { mode: 'disabled' },
-    subsonic: { mode: 'disabled' },
     folders:  { testlib: { root: musicDir } },
     storage: {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),

@@ -7,15 +7,7 @@
 // registration.
 //
 // The pure parsing + FTS5-expression utilities stay in
-// src/util/search-query.js — they're consumed by both this module
-// and src/api/subsonic/handlers.js, and they have no DB dependency.
-//
-// Subsonic search (search3 / search2 / search v1) is NOT wired here.
-// It has different envelope semantics (DB ids, full track rows for
-// songFromRow, V18 M2M-aware widening, OpenSubsonic empty-query
-// listing) and lives in src/api/subsonic/handlers.js. The two paths
-// share the same FTS5 indexes (V31) and the same query-parser
-// utility but otherwise have nothing to gain from a shared dispatcher.
+// src/util/search-query.js — they have no DB dependency.
 
 import Joi from 'joi';
 import path from 'path';

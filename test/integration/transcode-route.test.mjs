@@ -1,6 +1,6 @@
 /**
  * Integration tests for GET /transcode/{*filepath} — the main-app transcode
- * route (not the Subsonic stream endpoint, which has its own coverage).
+ * route.
  *
  * Boots a real server in public mode (no users → anonymous sentinel sees all
  * libraries) against the shared ffmpeg-generated fixtures, then exercises:
@@ -32,7 +32,7 @@ function transcodeUrl(relPath, query = 'codec=mp3&bitrate=64k') {
 
 describe('GET /transcode/{*filepath}', () => {
   before(async () => {
-    server = await startServer({ dlnaMode: 'disabled', subsonicMode: 'disabled' });
+    server = await startServer({ dlnaMode: 'disabled' });
     // ffmpeg bootstrap (lockInit) resolves asynchronously after boot — poll
     // until the route stops reporting "transcoding disabled".
     const deadline = Date.now() + 15_000;

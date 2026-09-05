@@ -2210,10 +2210,9 @@ function handleUnsubscribe(req, res) {
 }
 
 // Read-only view of the counter for other surfaces that want a cheap
-// "library content changed" signal — the subsonic getArtists memo keys on
-// it (task-queue bumps on every scan batch that changed the DB, whether or
-// not DLNA is enabled, so it is a process-wide content epoch, not a
-// DLNA-only one).
+// "library content changed" signal (task-queue bumps on every scan batch
+// that changed the DB, whether or not DLNA is enabled, so it is a
+// process-wide content epoch, not a DLNA-only one).
 export function getSystemUpdateID() { return systemUpdateID; }
 
 export function bumpSystemUpdateID() {

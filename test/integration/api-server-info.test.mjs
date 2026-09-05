@@ -129,7 +129,7 @@ describe('layered /api/ server info', () => {
     assert.equal(typeof j.server, 'string', 'every authenticated response carries the version');
     assert.match(j.server, /^\d+\.\d+\.\d+/);
     assert.deepEqual(j.apiVersions, ['1']);
-    assert.ok(!('subsonic' in j.features), 'subsonic flag removed (feature on its way out)');
+    assert.ok(!('subsonic' in j.features), 'no subsonic flag (the Subsonic API is gone)');
     assert.equal(j.features.discoveryReady, false, 'discovery off in this config');
     assert.equal(j.features.discovery, false);
     assert.equal(j.features.discoveryP2p, false);

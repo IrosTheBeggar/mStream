@@ -297,8 +297,8 @@ export function buildDurationFilter(opts) {
 //   • an album_artists.artist_id (album credit — catches the
 //     compilation/various-artists case where tracks belong to many
 //     artists but the album is credited to one named artist)
-// This is the same widening pattern V18 introduced for the Subsonic
-// artist-search route, applied here so DJ similar-artists picks
+// This is the same widening pattern V18 introduced for artist search,
+// applied here so DJ similar-artists picks
 // include collaborations and featured-on appearances.
 //
 // `ignoreArtists` is the cooldown set — names to EXCLUDE so the

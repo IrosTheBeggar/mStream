@@ -25,12 +25,9 @@ import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
 import { isAdminAllowed } from '../util/admin-network.js';
 import WebError from '../util/web-error.js';
-import { bootRustPlayer, killRustPlayer, proxyToRust, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers, playerBinaryFetchable } from './server-playback.js';
-import { listImplementedMethods, methodStatusTable } from './subsonic/index.js';
+import { bootRustPlayer, killRustPlayer, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers, playerBinaryFetchable } from './server-playback.js';
 import * as lyricsLrclib from './lyrics-cache.js';
 import { warmScrobbleUser } from './scrobbler.js';
-import { listTokenAuthAttempts, clearTokenAuthAttempts, generateApiKey } from './subsonic/auth.js';
-import * as nowPlaying from './subsonic/now-playing.js';
 // Torrent admin endpoints live in their own module — see
 // admin-torrent.js. We call adminTorrent.register(mstream) from
 // setup() below, after the admin guard is registered, so the torrent
@@ -1235,11 +1232,6 @@ export function setup(mstream) {
     res.json({ removed, mode: value.mode });
   };
   mstream.post("/api/v1/admin/lyrics/cache/purge", purgeLyricsCache);
-  // DEPRECATED alias: the purge used to live under the Subsonic admin
-  // namespace because the ledger was born as the Subsonic getLyrics
-  // fallback cache. Answers identically; goes away with the Subsonic
-  // surface.
-  mstream.post("/api/v1/admin/subsonic/lyrics-cache/purge", purgeLyricsCache);
 
   mstream.get("/api/v1/admin/users", (req, res) => {
     const users = db.getAllUsers();
@@ -1336,12 +1328,6 @@ export function setup(mstream) {
       // the gate in server-playback.js, everyone else must be granted
       // explicitly via the admin panel.
       allowServerAudio: Joi.boolean().optional().default(false),
-      // Optional opt-in Subsonic-specific password (V35). When provided,
-      // it's stored AES-encrypted alongside the PBKDF2 main password.
-      // Without it, the user can still log in via Subsonic apiKey or
-      // by setting a Subsonic password later via the mobile-clients
-      // panel; only token-auth Subsonic clients require it.
-      subsonicPassword: Joi.string().min(1).optional(),
     });
     const input = joiValidate(schema, req.body);
 
@@ -1354,26 +1340,6 @@ export function setup(mstream) {
       input.value.allowUpload,
       input.value.allowServerAudio
     );
-    if (input.value.subsonicPassword) {
-      await admin.setSubsonicPassword(input.value.username, input.value.subsonicPassword);
-    }
-    res.json({});
-  });
-
-  // Update an existing user's Subsonic password (admin-side; the
-  // user-side equivalent is PUT /api/v1/user/subsonic-password).
-  // Admin can already change the main PBKDF2 password via the sibling
-  // POST /api/v1/admin/users/password — exposing the same capability
-  // for the Subsonic-specific column is consistent and avoids forcing
-  // admins through an "ask the user to set their own" loop. Pass
-  // `password: null` to clear the column.
-  mstream.post("/api/v1/admin/users/subsonic-password", async (req, res) => {
-    const schema = Joi.object({
-      username: Joi.string().required(),
-      password: Joi.string().min(1).allow(null).required(),
-    });
-    joiValidate(schema, req.body);
-    await admin.setSubsonicPassword(req.body.username, req.body.password);
     res.json({});
   });
 
@@ -1580,7 +1546,7 @@ export function setup(mstream) {
   mstream.post("/api/v1/admin/config/ui", async (req, res) => {
     const schema = Joi.object({
       // Keep this list in sync with state/config.js `ui` validator.
-      ui: Joi.string().valid('default', 'velvet', 'subsonic').required()
+      ui: Joi.string().valid('default', 'velvet').required()
     });
     joiValidate(schema, req.body);
 
@@ -1968,180 +1934,6 @@ export function setup(mstream) {
     setTimeout(() => { dlnaDebouncer = false; }, 2000);
 
     res.json({});
-  });
-
-  // ── Subsonic ────────────────────────────────────────────────────────────
-
-  mstream.get('/api/v1/admin/subsonic', (req, res) => {
-    res.json({
-      mode: config.program.subsonic.mode,
-      port: config.program.subsonic.port,
-    });
-  });
-
-  let subsonicDebouncer = false;
-  mstream.post('/api/v1/admin/subsonic/mode', async (req, res) => {
-    const schema = Joi.object({
-      mode: Joi.string().valid('disabled', 'same-port', 'separate-port').required(),
-      port: Joi.number().integer().min(1).max(65535).optional(),
-    });
-    const input = joiValidate(schema, req.body);
-
-    if (subsonicDebouncer === true) { throw new Error('Debouncer Enabled'); }
-
-    // Guard against breaking the bundled Subsonic UI: if the operator
-    // runs ui='subsonic' and tries to move Subsonic off same-port,
-    // the Refix SPA can no longer reach /rest/*. Return a clear 403
-    // instead of silently breaking the UI — the admin can either
-    // switch the UI first or pick same-port.
-    if (config.program.ui === 'subsonic' && input.value.mode !== 'same-port') {
-      return res.status(403).json({
-        error: "Cannot change Subsonic mode while ui='subsonic': the bundled Refix client " +
-               "requires Subsonic on the same origin. Switch `ui` to 'default' or 'velvet' first.",
-      });
-    }
-
-    await admin.enableSubsonic(input.value.mode, input.value.port);
-
-    subsonicDebouncer = true;
-    setTimeout(() => { subsonicDebouncer = false; }, 2000);
-
-    res.json({});
-  });
-
-  // ── Subsonic admin-panel data endpoints ─────────────────────────────────
-  // Backs the Subsonic admin UI widgets: method-count card, now-playing
-  // strip, jukebox status, token-auth warnings. All admin-only (guarded
-  // by the /api/v1/admin/* middleware at the top of this file).
-
-  // Methods + now-playing snapshot, for the main status card.
-  mstream.get('/api/v1/admin/subsonic/stats', (req, res) => {
-    const methods = listImplementedMethods();
-    const methodStatuses = methodStatusTable();
-    const fullCount = methodStatuses.filter(m => m.status === 'full').length;
-    const stubCount = methodStatuses.length - fullCount;
-    // Join now-playing entries to tracks so the admin UI can render
-    // readable "who's listening to what" rows without re-resolving.
-    const snap = nowPlaying.snapshot();
-    const byUserTrack = snap.map(s => {
-      const row = db.getDB().prepare(`
-        SELECT t.title, ar.name AS artist, al.name AS album
-        FROM tracks t
-        LEFT JOIN artists ar ON ar.id = t.artist_id
-        LEFT JOIN albums  al ON al.id = t.album_id
-        WHERE t.id = ?
-      `).get(s.trackId);
-      return {
-        username:   s.username,
-        trackId:    s.trackId,
-        title:      row?.title || null,
-        artist:     row?.artist || null,
-        album:      row?.album || null,
-        sinceMs:    Date.now() - s.since,
-      };
-    });
-    res.json({
-      methodsImplemented: methods.length,
-      methods,
-      // [{name, status: 'full' | 'stub'}] — lets the admin card show
-      // Full vs Stub badges next to each name. Older admin UIs just
-      // look at `methods` and ignore this.
-      methodStatuses,
-      fullCount,
-      stubCount,
-      nowPlaying: byUserTrack,
-    });
-  });
-
-  // Ping-the-Subsonic-endpoint probe for the "test connection" button.
-  // Hits our own /rest/ping using an ephemeral internal call so we exercise
-  // the real auth + response path rather than short-circuiting.
-  mstream.get('/api/v1/admin/subsonic/test', async (req, res) => {
-    // Use the HTTP port the Subsonic handler is actually mounted on — same
-    // port when mode=same-port, separate when mode=separate-port.
-    const subMode = config.program.subsonic.mode;
-    if (subMode === 'disabled') {
-      return res.json({ ok: false, reason: 'Subsonic API is disabled' });
-    }
-    const port = subMode === 'separate-port' ? config.program.subsonic.port : config.program.port;
-    const host = config.program.address === '0.0.0.0' ? '127.0.0.1' : config.program.address;
-    try {
-      // Admin user already has a JWT; mint a throwaway API key for this
-      // probe so we don't need to thread the admin's plaintext password.
-      const key = generateApiKey(req.user.id, `admin-probe-${Date.now()}`);
-      const url = `http://${host}:${port}/rest/ping?f=json&apiKey=${encodeURIComponent(key)}`;
-      const start = Date.now();
-      const r = await fetch(url);
-      const body = await r.json();
-      const ms = Date.now() - start;
-      const envelope = body['subsonic-response'];
-      // Revoke the probe key immediately — single-use.
-      db.getDB().prepare('DELETE FROM user_api_keys WHERE key = ?').run(key);
-      res.json({
-        ok:      envelope?.status === 'ok',
-        status:  envelope?.status || 'unknown',
-        version: envelope?.version,
-        serverVersion: envelope?.serverVersion,
-        latencyMs: ms,
-        url,
-      });
-    } catch (err) {
-      res.json({ ok: false, reason: err.message || 'test failed' });
-    }
-  });
-
-  // Live jukebox status (via rust-server-audio). Returns a normalised
-  // envelope so the admin UI can render "not available", "idle",
-  // "playing X" without having to probe multiple endpoints.
-  mstream.get('/api/v1/admin/subsonic/jukebox', async (req, res) => {
-    if (!config.program.autoBootServerAudio) {
-      return res.json({ available: false, reason: 'autoBootServerAudio is disabled' });
-    }
-    try {
-      const { data: status } = await proxyToRust('GET', '/status');
-      const { data: queue } = await proxyToRust('GET', '/queue');
-      res.json({
-        available:   true,
-        playing:     !!status?.playing,
-        paused:      !!status?.paused,
-        position:    status?.position || 0,
-        duration:    status?.duration || 0,
-        volume:      status?.volume ?? 1.0,
-        currentFile: status?.file || '',
-        queueLength: Array.isArray(queue?.queue) ? queue.queue.length : 0,
-        queueIndex:  status?.queue_index ?? 0,
-        shuffle:     !!status?.shuffle,
-        loopMode:    status?.loop_mode || 'none',
-      });
-    } catch (err) {
-      res.json({ available: false, reason: err.message });
-    }
-  });
-
-  // Recent token-auth failures. Real-world Subsonic clients often default
-  // to token auth and get stuck in a "wrong credentials" loop; surfacing
-  // these lets admins see who's affected and act fast.
-  mstream.get('/api/v1/admin/subsonic/token-auth-attempts', (req, res) => {
-    res.json({ attempts: listTokenAuthAttempts() });
-  });
-
-  mstream.delete('/api/v1/admin/subsonic/token-auth-attempts', (req, res) => {
-    clearTokenAuthAttempts();
-    res.json({});
-  });
-
-  // Admin-mints-key-for-another-user. Return value includes the plaintext
-  // key exactly once so the admin can copy-paste it to the end user.
-  mstream.post('/api/v1/admin/subsonic/mint-key', (req, res) => {
-    const schema = Joi.object({
-      username: Joi.string().required(),
-      name:     Joi.string().trim().min(1).max(100).required(),
-    });
-    const { value } = joiValidate(schema, req.body);
-    const user = db.getUserByUsername(value.username);
-    if (!user) { return res.status(404).json({ error: `User '${value.username}' not found` }); }
-    const key = generateApiKey(user.id, value.name);
-    res.json({ key, name: value.name, username: value.username });
   });
 
   // All torrent admin endpoints live in admin-torrent.js — registered

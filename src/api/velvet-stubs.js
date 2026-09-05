@@ -350,9 +350,6 @@ export function setup(mstream) {
 
   // Discogs — handled by discogs.js (loaded before stubs)
 
-  // Subsonic password — handled by admin.js (POST /api/v1/admin/users/subsonic-password)
-  // which is registered before this file, so a 501 stub here was unreachable dead code.
-
   // File delete (recordings)
   mstream.delete('/api/v1/files/recording', (req, res) => res.status(501).json({ error: 'Not implemented' }));
 

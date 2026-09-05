@@ -81,7 +81,6 @@ async function bootMstream(tmpDir, musicDir, extraConfig = {}) {
     // header becomes req.ip, letting us simulate remote clients.
     trustProxy: true,
     dlna:     { mode: 'disabled' },
-    subsonic: { mode: 'disabled' },
     folders:  { testlib: { root: musicDir } },
     storage: {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),

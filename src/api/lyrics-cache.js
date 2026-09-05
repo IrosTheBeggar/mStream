@@ -9,8 +9,8 @@
  * (src/db/lyrics-backfill.mjs writes lyrics straight onto tracks.lyrics_*).
  *
  * What survives here is everything that has nothing to do with fetching:
- *   - getCached()  — the read the serving endpoints (src/api/lyrics.js,
- *                    src/api/subsonic/handlers.js) still use as a
+ *   - getCached()  — the read the serving endpoint (src/api/lyrics.js)
+ *                    still uses as a
  *                    read-only fallback for a duplicate-hash twin the
  *                    backfill wrote a cache row for but hasn't yet copied
  *                    onto a given track row.

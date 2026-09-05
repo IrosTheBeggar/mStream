@@ -206,8 +206,7 @@ export function killRustPlayer() {
 }
 
 // Proxy a request to the Rust binary and pipe the response back.
-// Exported so the Subsonic jukeboxControl handler can reuse it — it
-// shares every primitive with /api/v1/server-playback/*.
+// Exported: cli-audio/index.js's proxyToCli is its drop-in counterpart.
 export function proxyToRust(method, rustPath, body) {
   return new Promise((resolve, reject) => {
     const postData = body ? JSON.stringify(body) : '';

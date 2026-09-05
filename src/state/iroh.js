@@ -5,7 +5,7 @@
 // cryptographic EndpointId instead of an IP:port.
 //
 // Shape ("iroh as a transport tunnel"): we DON'T touch mStream's existing
-// HTTP/Subsonic/DLNA stack. We bind an Iroh endpoint that accepts QUIC
+// HTTP/DLNA stack. We bind an Iroh endpoint that accepts QUIC
 // connections on a custom ALPN and proxies each bi-directional stream to the
 // local mStream HTTP server on 127.0.0.1:<port>. One QUIC stream per client TCP
 // connection, so full HTTP semantics (keep-alive, range/seek, parallel

@@ -1,7 +1,6 @@
 // Search query parser and FTS5 expression builder.
 //
-// Two-phase pipeline consumed by the search route (PR3) and the
-// Subsonic search handlers (PR4):
+// Two-phase pipeline consumed by the search route:
 //
 //   1. parseSearchQuery splits raw user input into positive and
 //      negative term lists, honouring the leading `-` exclusion

@@ -79,7 +79,6 @@ async function bootMstream(tmpDir, musicDir) {
     // route to any of them, so we boot in velvet mode here.
     ui: 'velvet',
     dlna:     { mode: 'disabled' },
-    subsonic: { mode: 'disabled' },
     folders:  { testlib: { root: musicDir } },
     storage: {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),
@@ -505,7 +504,6 @@ async function bootMstreamLocked(tmpDir, musicDir) {
     ui: 'velvet',
     lockAdmin: true,
     dlna:     { mode: 'disabled' },
-    subsonic: { mode: 'disabled' },
     folders:  { testlib: { root: musicDir } },
     storage: {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),
