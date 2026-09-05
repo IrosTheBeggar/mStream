@@ -1267,14 +1267,12 @@ fn pick_ledger_target(
                   mapped.clone())))
 }
 
-// Rewrite the path-keyed user references of doomed candidates that
-// paired with a live twin, BEFORE the chunk's DELETE. That ordering is
-// the crash safety: dying between rewrite and delete leaves references
-// pointing at the live file and the old row still sweepable next scan
-// (the rewrites then no-op). Batched CASE per table so each is scanned
-// once per chunk, not once per pair (play_events has no filepath index
-// and can be large). Every SET expression sees the PRE-update row, so
-// both CASEs key off the original filepath value. Returns rows
+// Rewrite the path-keyed user references (playlist_tracks) of doomed
+// candidates that paired with a live twin, BEFORE the chunk's DELETE.
+// That ordering is the crash safety: dying between rewrite and delete
+// leaves references pointing at the live file and the old row still
+// sweepable next scan (the rewrites then no-op). Batched CASE so the
+// table is scanned once per chunk, not once per pair. Returns rows
 // rewritten. Mirrors rewriteMovedRefs in src/db/orphan-cleanup.js.
 fn rewrite_moved_refs(
     conn: &Connection, state: &RehomeState, scanned_library_id: i64,
@@ -1320,23 +1318,6 @@ fn rewrite_moved_refs(
             Vec::with_capacity(pl_pairs.len() * 3);
         for (old, new) in &pl_pairs { params.push(old); params.push(new); }
         for (old, _) in &pl_pairs { params.push(old); }
-        refs += conn.prepare(&sql)?.execute(params.as_slice())?;
-    }
-    for table in ["cue_points", "play_events"] {
-        let arms = vec!["WHEN ? THEN ?"; pairs.len()].join(" ");
-        let in_ph = vec!["?"; pairs.len()].join(",");
-        let sql = format!(
-            "UPDATE {t} SET filepath = CASE filepath {a} ELSE filepath END, \
-             library_id = CASE filepath {a} ELSE library_id END \
-             WHERE library_id = ? AND filepath IN ({i})",
-            t = table, a = arms, i = in_ph,
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            Vec::with_capacity(pairs.len() * 5 + 1);
-        for (c, t) in pairs { params.push(&c.rel); params.push(&t.rel); }
-        for (c, t) in pairs { params.push(&c.rel); params.push(&t.library_id); }
-        params.push(&scanned_library_id);
-        for (c, _) in pairs { params.push(&c.rel); }
         refs += conn.prepare(&sql)?.execute(params.as_slice())?;
     }
     Ok(refs)

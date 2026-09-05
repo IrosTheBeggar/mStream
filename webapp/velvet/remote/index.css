@@ -1,3 +1,0 @@
-/* All layout/theming is handled inline in index.html's <style> block.
-   This file is kept empty so existing server-side path rewrites
-   (../ → ../../) still work without a 404. */

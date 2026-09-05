@@ -2,7 +2,7 @@
  * Regression test for issue #561 — public-mode (no-users) library filter.
  *
  * Background: V25 introduced an "anonymous sentinel" user row so per-user
- * tables (user_metadata, playlists, cue_points, …) which all FK NOT NULL
+ * tables (user_metadata, playlists, …) which all FK NOT NULL
  * on users(id) can accept inserts in public mode. auth.js's no-users
  * branch now pins `req.user.id = getAnonymousUserId()` instead of `null`.
  *

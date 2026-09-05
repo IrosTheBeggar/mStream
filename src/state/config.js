@@ -383,13 +383,6 @@ const lastFMOptions = Joi.object({
   apiSecret: Joi.string().default('a9df934fc504174d4cb68853d9feb143')
 });
 
-const discogsOptions = Joi.object({
-  enabled: Joi.boolean().default(false),
-  allowArtUpdate: Joi.boolean().default(false),
-  apiKey: Joi.string().allow('').default(''),
-  apiSecret: Joi.string().allow('').default(''),
-});
-
 // Iroh P2P remote-access tunnel. When enabled, mStream binds an Iroh endpoint
 // that proxies incoming QUIC connections to the local HTTP server, so a paired
 // device can reach the server from anywhere by dialing its EndpointId — no
@@ -579,7 +572,7 @@ const discoveryOptions = Joi.object({
 // `transmission` holds the saved RPC credentials for the Transmission
 // backend. Empty `host` means "no credentials saved" (the admin UI
 // shows the login form rather than the status card). Plaintext on
-// purpose — matches the existing pattern for `lastFM`, `discogs`, and
+// purpose — matches the existing pattern for `lastFM` and
 // `rpn.password`; encrypting these would be inconsistent and would
 // require a key-rotation story we don't have. Anyone who can read the
 // config file can also read the .torrent files; threat-modelling the
@@ -701,7 +694,6 @@ const schema = Joi.object({
     "opus": true, "m3u": false
   }),
   lastFM: lastFMOptions.default(lastFMOptions.validate({}).value),
-  discogs: discogsOptions.default(discogsOptions.validate({}).value),
   scanOptions: scanOptions.default(scanOptions.validate({}).value),
   noUpload: Joi.boolean().default(false),
   noMkdir: Joi.boolean().default(false),
@@ -723,11 +715,11 @@ const schema = Joi.object({
   lockAdmin: Joi.boolean().default(false),
   adminAccess: adminAccessOptions.default(adminAccessOptions.validate({}).value),
   storage: storageJoi.default(storageJoi.validate({}).value),
-  // 'default'  — mStream's classic UI (webapp/alpha/)
-  // 'velvet'   — mStream's alternative UI (webapp/velvet/)
-  // ('subsonic' — the bundled Airsonic Refix client — went away with the
-  //  Subsonic API; setup() coerces a stale value back to 'default'.)
-  ui: Joi.string().valid('default', 'velvet').default('default'),
+  // 'default' — mStream's UI (webapp/alpha/), the only one left. The key
+  // stays so existing config files keep validating (the admin panel wrote
+  // `ui` for years); setup() coerces the retired values — 'subsonic' (went
+  // with the Subsonic API) and 'velvet' (UI removed) — back to 'default'.
+  ui: Joi.string().valid('default').default('default'),
   webAppDirectory: Joi.string().default(path.join(appRoot, 'webapp')),
   rpn: rpnOptions.default(rpnOptions.validate({}).value),
   transcode: transcodeOptions.default(transcodeOptions.validate({}).value),
@@ -870,6 +862,19 @@ export async function setup(configFileArg) {
         + 'to this server — the first-party mStream apps are the supported clients.');
       await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
     }
+  }
+
+  // The velvet UI went the same way (2026-09): webapp/velvet/, the API
+  // modules mounted only under it, and their tables (schema V69). A config
+  // still carrying ui='velvet' would fail the .valid() enum and THROW at
+  // boot; coerce to 'default' and persist, so the notice appears once. A
+  // leftover `discogs` block (the only other velvet-only key) is inert under
+  // allowUnknown and left alone.
+  if (programData.ui === 'velvet') {
+    winston.warn("[config] ui='velvet' is no longer available — the velvet UI was removed. "
+      + "Falling back to ui='default' and saving.");
+    programData.ui = 'default';
+    await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
   }
 
   // Iroh tunnel identity (secretKey -> stable EndpointId) and the pipe secret

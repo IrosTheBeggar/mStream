@@ -73,7 +73,6 @@ async function writeConfig() {
       logsDirectory:       '/config/logs',
     },
     dlna:   { mode: 'disabled' },
-    discogs:{ enabled: false },
     lyrics: { lrclib: false },
     // The smoke exercises path-handling/RPC, not art download — and its
     // generated library is art-less, so the post-scan downloader would

@@ -205,10 +205,8 @@ export async function deleteLibraryRows(d, libraryId) {
     if (changes === 0) { break; }
     await new Promise((resolve) => setImmediate(resolve));
   }
-  // CASCADE handles what's left: user_libraries, cue_points (indexed by
-  // V63), backup_destinations + their backup_history, and the SET NULL
-  // sweep over play_events.library_id (also indexed by V63 — this was a
-  // full ever-growing-table scan before).
+  // CASCADE handles what's left: user_libraries, backup_destinations +
+  // their backup_history.
   d.prepare('DELETE FROM libraries WHERE id = ?').run(libraryId);
 }
 
@@ -360,10 +358,9 @@ export async function editUserAccess(username, admin, allowMkdir, allowUpload, a
 
 // Set a user's stored Last.fm credentials — the V1 lastfm_user/lastfm_password
 // columns that live directly on the users row. Same lookup-then-UPDATE shape as
-// editUserPassword, and the same storage write the self-service /lastfm/connect
-// endpoint (velvet-stubs.js) uses. Registering the creds with the in-process
-// Scribble session map (warmScrobbleUser) is the route handler's job — that
-// singleton lives in the api layer, so util/ stays out of it.
+// editUserPassword. Registering the creds with the in-process Scribble session
+// map (warmScrobbleUser) is the route handler's job — that singleton lives in
+// the api layer, so util/ stays out of it.
 export async function setUserLastFM(username, lastfmUser, lastfmPassword) {
   const user = db.getUserByUsername(username);
   if (!user) { throw new Error(`'${username}' does not exist`); }
@@ -1001,22 +998,6 @@ export async function editAdminAccess({ mode, whitelist }) {
   config.program.lockAdmin = (mode === 'none');
   // The whitelist BlockList is cached in admin-network.js; rebuild it.
   invalidateWhitelistCache();
-}
-
-// Legacy lock-api toggle, preserved for the velvet admin UI's existing
-// POST /api/v1/admin/lock-api endpoint. A thin shim over the richer
-// adminAccess setting. lock=true always fully disables (mode='none'). lock=false
-// (unlock) only relaxes to 'all' when currently fully locked — if the operator
-// has configured a richer mode ('localhost'/'whitelist'), a boolean unlock must
-// NOT silently strip their IP gate, since the boolean can't represent it.
-export async function lockAdminApi(val) {
-  if (val) {
-    await editAdminAccess({ mode: 'none' });
-    return;
-  }
-  if (config.program.adminAccess?.mode === 'none') {
-    await editAdminAccess({ mode: 'all' });
-  }
 }
 
 export async function editDlnaBrowse(browse) {

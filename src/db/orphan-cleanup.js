@@ -217,15 +217,14 @@ const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM
 // MOVE RE-HOMING (`moveRehome: { libraryId }`): a doomed candidate whose
 // content hash matches a LIVE row is a moved/renamed file, and the
 // path-keyed user references that would otherwise dangle forever —
-// playlist_tracks ("<vpath>/<rel>"),
-// cue_points and play_events (rel + library_id) — are rewritten to the
-// survivor's path BEFORE the chunk's DELETE. That ordering is the crash
-// safety: dying between rewrite and delete leaves references pointing at
-// the live file and the old row still sweepable next scan (the rewrites
-// then no-op). Targets are every tracks row NOT itself a candidate: rows
-// the walk accounted for, rows inserted mid-scan, and rows of OTHER
-// libraries (a cross-library move heals when the destination library was
-// scanned first). Lookup tries audio_hash first (survives tag edits),
+// playlist_tracks ("<vpath>/<rel>") — are rewritten to the survivor's
+// path BEFORE the chunk's DELETE. That ordering is the crash safety:
+// dying between rewrite and delete leaves references pointing at the
+// live file and the old row still sweepable next scan (the rewrites then
+// no-op). Targets are every tracks row NOT itself a candidate: rows the
+// walk accounted for, rows inserted mid-scan, and rows of OTHER libraries
+// (a cross-library move heals when the destination library was scanned
+// first). Lookup tries audio_hash first (survives tag edits),
 // then file_hash (covers pre-audio_hash rows); ties resolve
 // deterministically — same library, then same basename, then lowest
 // (library_id, filepath) — so both scanners converge on one answer, and
@@ -420,26 +419,6 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
           plPairs.map(() => 'WHEN ? THEN ?').join(' ')} ELSE filepath END
          WHERE filepath IN (${plPairs.map(() => '?').join(',')})`)
         .run(...plPairs.flat(), ...plPairs.map(p => p[0]));
-      movedRefs += r.changes;
-    }
-
-    // cue_points / play_events key on (filepath, library_id). Every SET
-    // expression sees the PRE-update row, so both CASEs key off the
-    // original filepath value; batched per chunk so each table is
-    // scanned once, not once per pair (play_events has no filepath
-    // index and can be large).
-    for (const table of ['cue_points', 'play_events']) {
-      const r = db.prepare(
-        `UPDATE ${table} SET filepath = CASE filepath ${
-          pairs.map(() => 'WHEN ? THEN ?').join(' ')} ELSE filepath END,
-           library_id = CASE filepath ${
-          pairs.map(() => 'WHEN ? THEN ?').join(' ')} ELSE library_id END
-         WHERE library_id = ? AND filepath IN (${pairs.map(() => '?').join(',')})`)
-        .run(
-          ...pairs.flatMap(({ c, t }) => [c.filepath, t.filepath]),
-          ...pairs.flatMap(({ c, t }) => [c.filepath, t.library_id]),
-          rehome.libraryId,
-          ...pairs.map(({ c }) => c.filepath));
       movedRefs += r.changes;
     }
   };

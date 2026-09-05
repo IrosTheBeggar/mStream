@@ -11,10 +11,10 @@ export function setup(mstream) {
   //
   // DEPRECATED in favor of the layered GET /api/ (server-info.js). Kept
   // indefinitely: older mobile clients, CI liveness probes, and the
-  // torrent/velvet webapps still boot off it. Ping's FROZEN flat contract
+  // torrent webapp still boot off it. Ping's FROZEN flat contract
   // is composed from the same two builders /api/ uses — the caller-scoped
   // half (buildClientBootPayload → /api/'s `user`) and the server-wide
-  // capabilities (buildFeatures → /api/'s public `features`) — plus three
+  // capabilities (buildFeatures → /api/'s public `features`) — plus two
   // legacy fields only ping carries. One source of truth, zero drift.
 
   mstream.get('/api/v1/ping', (req, res) => {
@@ -30,8 +30,6 @@ export function setup(mstream) {
       discoveryP2p: features.discoveryP2p,
       // A resource (the playlist routes), not a server capability.
       playlists: getPlaylists(req.user.id),
-      // VELVET ONLY: velvet's ping consumer still reads it; leaves with velvet.
-      allowYoutubeDownload: !boot.noUpload,
       // Historical version-gate ("this server has the sonic-path route") —
       // identical to `discovery` on every build carrying this code. The
       // alpha webapp (until it migrates to /api/) and the Flutter app

@@ -140,7 +140,6 @@ describe('layered /api/ server info', () => {
     assert.equal(j.user.federation, false);
     assert.deepEqual(j.user.vpaths, ['testlib']);
     assert.ok(!('playlists' in j.user), 'playlists are a resource, not a capability');
-    assert.ok(!('allowYoutubeDownload' in j.user), 'velvet-only legacy field stays on ping');
     assert.ok(!('discoveryPath' in j.user), 'redundant-with-discovery legacy field stays on ping');
     for (const cap of ['transcode', 'supportedAudioFiles', 'discovery', 'discoveryP2p']) {
       assert.ok(!(cap in j.user), `server-wide capability '${cap}' lives in features, not user`);
@@ -160,7 +159,7 @@ describe('layered /api/ server info', () => {
     // inside the shared builder (ping would leak identically), so pin the
     // sensitive columns by name.
     for (const secret of ['password', 'salt', 'token', 'id',
-      'lastfm_user', 'lastfm_password', 'listenbrainz_token']) {
+      'lastfm_user', 'lastfm_password']) {
       assert.ok(!(secret in j.user), `users-table column '${secret}' must never reach the response`);
     }
   });
@@ -188,13 +187,13 @@ describe('layered /api/ server info', () => {
 
     // Ping's frozen flat contract = the caller-scoped half (/api/'s
     // `user` minus identity) + the capabilities half (/api/'s `features`
-    // minus the /api/-only discoveryReady) + three legacy fields.
+    // minus the /api/-only discoveryReady) + two legacy fields.
     const { username: _u, admin: _a, federation: _f, federationGuest: _g, ...userHalf } = apiJ.user;
     const { discoveryReady: _dr, ...capsHalf } = apiJ.features;
-    const { playlists, allowYoutubeDownload, discoveryPath, ...pingRest } = ping;
+    const { playlists, discoveryPath, ...pingRest } = ping;
     assert.ok(Array.isArray(playlists), 'ping still carries playlists');
-    assert.equal(allowYoutubeDownload, !ping.noUpload,
-      'ping still carries the velvet field, with its historical value');
+    assert.ok(!('allowYoutubeDownload' in ping),
+      'the velvet-only allowYoutubeDownload field left with the velvet UI');
     assert.equal(discoveryPath, ping.discovery,
       'ping still carries discoveryPath, identical to discovery as always');
     assert.deepEqual(pingRest, { ...userHalf, ...capsHalf },

@@ -1,7 +1,7 @@
 /**
  * Subsonic-removal config migration (src/state/config.js).
  *
- * `ui` is validated with Joi.string().valid('default', 'velvet') and
+ * `ui` is validated with Joi.string().valid('default') and
  * config.setup() uses validateAsync, which THROWS — so a config file that
  * still selects the deleted bundled Subsonic UI would turn an upgrade into
  * a server that refuses to boot. The stale `subsonic` block and the
@@ -57,13 +57,24 @@ describe('subsonic removal config migration', () => {
   test('a config with no Subsonic leftovers keeps its ui and gains no Subsonic keys', async () => {
     const f = writeConfig('clean.json', {
       storage: { dbDirectory: path.join(tmpDir, 'c', 'db') },
+      ui: 'default',
+    });
+    await config.setup(f);
+    assert.equal(config.program.ui, 'default');
+    const onDisk = readBack(f);
+    assert.equal(onDisk.ui, 'default');
+    assert.ok(!('subsonic' in onDisk) && !('subsonicSecret' in onDisk),
+      'setup() must not reintroduce any Subsonic key (the old subsonicSecret generator is gone)');
+  });
+
+  // The velvet UI went the same way; its stale value takes the same road.
+  test("ui='velvet' (the removed velvet UI) coerces to 'default', persisted", async () => {
+    const f = writeConfig('velvet.json', {
+      storage: { dbDirectory: path.join(tmpDir, 'v', 'db') },
       ui: 'velvet',
     });
     await config.setup(f);
-    assert.equal(config.program.ui, 'velvet');
-    const onDisk = readBack(f);
-    assert.equal(onDisk.ui, 'velvet');
-    assert.ok(!('subsonic' in onDisk) && !('subsonicSecret' in onDisk),
-      'setup() must not reintroduce any Subsonic key (the old subsonicSecret generator is gone)');
+    assert.equal(config.program.ui, 'default');
+    assert.equal(readBack(f).ui, 'default', 'the stale ui must be rewritten on disk, not just in memory');
   });
 });

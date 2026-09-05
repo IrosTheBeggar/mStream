@@ -93,7 +93,6 @@ export function buildFeatures() {
 // its legacy fields) back into its frozen flat shape:
 //   - `playlists`            — a resource (the playlist routes), not a
 //                              server capability;
-//   - `allowYoutubeDownload` — velvet-only and always === !noUpload;
 //   - `discoveryPath`        — a historical "this server VERSION has the
 //                              sonic-path route" gate, always ===
 //                              `discovery` on any build carrying this

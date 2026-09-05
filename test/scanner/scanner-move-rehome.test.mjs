@@ -1,10 +1,10 @@
 /**
  * Move re-homing across the stale sweep.
  *
- * playlist_tracks ("<vpath>/<rel>"), cue_points and play_events
- * (rel + library_id) are path-keyed, and the sweep used to delete a
- * moved file's old row without touching them — a rename orphaned every
- * playlist entry pointing at it forever (stars/ratings survive via
+ * playlist_tracks ("<vpath>/<rel>") is path-keyed, and the sweep used
+ * to delete a moved file's old row without touching it — a rename
+ * orphaned every playlist entry pointing at it forever (stars/ratings
+ * survive via
  * audio_hash keying; path-keyed references did not). The sweep now
  * pairs each verified-gone candidate with a live row by content hash
  * (audio_hash first — survives tag edits — then file_hash), rewrites
@@ -12,7 +12,7 @@
  * created_at so a mass rename doesn't flood "recently added".
  *
  * This file pins that behaviour on BOTH scanners:
- *   - rename / folder-rename re-homes all three tables + created_at;
+ *   - rename / folder-rename re-homes playlist rows + created_at;
  *   - a tag-edit + move in ONE pass still pairs (audio_hash tier —
  *     the case tag-identity scanners lose);
  *   - identical-content ties resolve deterministically (same library,
@@ -92,8 +92,7 @@ function withDb(dbPath, fn) {
 }
 
 // Reference rows exactly as the API endpoints write them: playlists via
-// "<vpath>/<rel>", cue_points / play_events via (rel, library_id).
-let eventSeq = 0;
+// "<vpath>/<rel>".
 function seedRefs(dbPath, vpath, libraryId, rel) {
   withDb(dbPath, db => {
     db.prepare(`INSERT OR IGNORE INTO users (id, username, password, salt)
@@ -104,22 +103,12 @@ function seedRefs(dbPath, vpath, libraryId, rel) {
       'SELECT COALESCE(MAX(position), -1) + 1 AS p FROM playlist_tracks').get().p;
     db.prepare(`INSERT INTO playlist_tracks (playlist_id, filepath, position)
                 VALUES (1, ?, ?)`).run(`${vpath}/${rel}`, pos);
-    db.prepare(`INSERT INTO cue_points (filepath, library_id, user_id, position, label)
-                VALUES (?, ?, 1, 12.5, 'drop')`).run(rel, libraryId);
-    db.prepare(`INSERT INTO play_events (event_id, user_id, filepath, library_id)
-                VALUES (?, 1, ?, ?)`).run(`evt-${eventSeq++}`, rel, libraryId);
   });
 }
 
 const playlistPaths = (dbPath) => withDb(dbPath, db =>
   db.prepare('SELECT filepath FROM playlist_tracks ORDER BY id').all()
     .map(r => r.filepath));
-const cueRows = (dbPath) => withDb(dbPath, db =>
-  db.prepare('SELECT filepath, library_id FROM cue_points ORDER BY id').all()
-    .map(r => ({ ...r })));
-const eventRows = (dbPath) => withDb(dbPath, db =>
-  db.prepare('SELECT filepath, library_id FROM play_events ORDER BY id').all()
-    .map(r => ({ ...r })));
 const trackPaths = (dbPath) => withDb(dbPath, db =>
   db.prepare('SELECT filepath FROM tracks ORDER BY filepath').all()
     .map(r => r.filepath));
@@ -133,7 +122,7 @@ for (const engine of ['rust', 'js']) {
     fs.existsSync(FFMPEG) && (engine === 'js' || !!rustBin);
 
   describe(`move re-homing (${engine} scanner)`, () => {
-    test('rename in place re-homes playlist/cue/event refs and keeps created_at', async (t) => {
+    test('rename in place re-homes playlist refs and keeps created_at', async (t) => {
       if (!engineAvailable()) { t.skip('ffmpeg or rust binary unavailable'); return; }
       const sb = await makeSandbox(engine);
       await makeAudio(path.join(sb.libRoot, 'a.mp3'), MP3,
@@ -147,14 +136,9 @@ for (const engine of ['rust', 'js']) {
 
       assert.strictEqual(event.staleEntriesRemoved, 1);
       assert.strictEqual(event.movedTracksRehomed, 1);
-      assert.strictEqual(event.movedRefsRehomed, 3,
-        'one playlist row + one cue + one play event rewritten');
+      assert.strictEqual(event.movedRefsRehomed, 1, 'one playlist row rewritten');
       assert.deepStrictEqual(trackPaths(sb.dbPath), ['b.mp3']);
       assert.deepStrictEqual(playlistPaths(sb.dbPath), [`${sb.vpath}/b.mp3`]);
-      assert.deepStrictEqual(cueRows(sb.dbPath),
-        [{ filepath: 'b.mp3', library_id: sb.libraryId }]);
-      assert.deepStrictEqual(eventRows(sb.dbPath),
-        [{ filepath: 'b.mp3', library_id: sb.libraryId }]);
       assert.strictEqual(trackCreatedAt(sb.dbPath, 'b.mp3'), '2020-01-01 00:00:00',
         'moved file must not re-enter "recently added"');
 
@@ -183,10 +167,6 @@ for (const engine of ['rust', 'js']) {
       assert.strictEqual(event.movedTracksRehomed, 2);
       assert.deepStrictEqual(playlistPaths(sb.dbPath),
         [`${sb.vpath}/Y/1.mp3`, `${sb.vpath}/Y/2.mp3`]);
-      assert.deepStrictEqual(cueRows(sb.dbPath), [
-        { filepath: 'Y/1.mp3', library_id: sb.libraryId },
-        { filepath: 'Y/2.mp3', library_id: sb.libraryId },
-      ]);
     });
 
     test('tag edit + move in one pass still pairs via audio_hash', async (t) => {
@@ -222,8 +202,6 @@ for (const engine of ['rust', 'js']) {
       assert.strictEqual(event.staleEntriesRemoved, 1);
       assert.strictEqual(event.movedTracksRehomed, 1);
       assert.deepStrictEqual(playlistPaths(sb.dbPath), [`${sb.vpath}/dup2.mp3`]);
-      assert.deepStrictEqual(cueRows(sb.dbPath),
-        [{ filepath: 'dup2.mp3', library_id: sb.libraryId }]);
     });
 
     test('a genuine deletion never rewrites references', async (t) => {
@@ -288,10 +266,6 @@ for (const engine of ['rust', 'js']) {
       assert.strictEqual(event.movedTracksRehomed, 1);
       assert.deepStrictEqual(trackPaths(sb.dbPath), ['visible.mp3']);
       assert.deepStrictEqual(playlistPaths(sb.dbPath), [`${sb.vpath}/visible.mp3`]);
-      assert.deepStrictEqual(cueRows(sb.dbPath),
-        [{ filepath: 'visible.mp3', library_id: sb.libraryId }]);
-      assert.deepStrictEqual(eventRows(sb.dbPath),
-        [{ filepath: 'visible.mp3', library_id: sb.libraryId }]);
     });
 
     test('cross-library move heals when the destination was scanned first', async (t) => {
@@ -323,10 +297,6 @@ for (const engine of ['rust', 'js']) {
 
       assert.strictEqual(event.movedTracksRehomed, 1);
       assert.deepStrictEqual(playlistPaths(sb.dbPath), ['second/h.mp3']);
-      assert.deepStrictEqual(cueRows(sb.dbPath),
-        [{ filepath: 'h.mp3', library_id: lib2Id }]);
-      assert.deepStrictEqual(eventRows(sb.dbPath),
-        [{ filepath: 'h.mp3', library_id: lib2Id }]);
     });
   });
 }

@@ -7,8 +7,7 @@
  * row (populated by the scanner + the proactive backfill worker); it never
  * fetches.
  *
- * (Replaces the old Velvet-shaped handler — that UI is being retired. The
- * response is intentionally forward-looking: lyrics are grouped into two
+ * (The response is intentionally forward-looking: lyrics are grouped into two
  * typed containers — plain `lyrics` and timed `syncedLyrics` — each a
  * `{ default, lyrics: [] }` list of variants, so we can carry multiple
  * sources / translations per type later without a breaking change. Today

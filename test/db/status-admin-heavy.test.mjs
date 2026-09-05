@@ -2,14 +2,13 @@
  * Tests for the status/admin heavy-hitter fixes (audit PR-E: H6, H2, M1,
  * M3):
  *
- *   - V63 puts library_id indexes on cue_points + play_events, and the
- *     discovery V2 partial index backs the coverage counts;
+ *   - the discovery V2 partial index backs the coverage counts;
  *   - getEnrichmentCoverage serves STALE data on TTL expiry and refreshes
  *     off-request (stale-while-revalidate), memoises the globally-scoped
  *     passes across library signatures, and force:true still recomputes
  *     synchronously;
- *   - deleteLibraryRows removes >chunk-size libraries fully (tracks,
- *     cascades, play_events SET NULL) without a single monolithic DELETE;
+ *   - deleteLibraryRows removes >chunk-size libraries fully (tracks +
+ *     cascades) without a single monolithic DELETE;
  *   - POST /api/v1/share caps the playlist at the producer, and
  *     GET /api/v1/admin/db/shared returns counts, never blobs (live
  *     server).
@@ -83,15 +82,7 @@ after(() => {
 
 // ── migrations ──────────────────────────────────────────────────────────────
 
-describe('V63 + discovery V2 indexes', () => {
-  test('library_id indexes exist on cue_points and play_events', () => {
-    const names = manager.getDB().prepare(
-      "SELECT name FROM sqlite_master WHERE type='index' AND name IN "
-      + "('idx_cue_points_library','idx_play_events_library')"
-    ).all().map((r) => r.name).sort();
-    assert.deepEqual(names, ['idx_cue_points_library', 'idx_play_events_library']);
-  });
-
+describe('discovery V2 indexes', () => {
   test('discovery.db lands at V2 with the embedded-model partial index', () => {
     const d2 = ddb.getDiscoveryDb();
     assert.equal(d2.prepare('PRAGMA user_version').get().user_version, 2);
@@ -163,22 +154,12 @@ describe('deleteLibraryRows', () => {
     d.exec('BEGIN');
     const insT = d.prepare('INSERT INTO tracks (filepath, library_id, title) VALUES (?, ?, ?)');
     for (let i = 0; i < 1200; i++) { insT.run(`c${i}.mp3`, L3, `C${i}`); }
-    d.prepare(`INSERT INTO users (username, password, salt) VALUES ('pe-user', 'x', 'y')`).run();
-    const uid = d.prepare("SELECT id FROM users WHERE username='pe-user'").get().id;
-    d.prepare(`INSERT INTO cue_points (filepath, library_id, position) VALUES ('c0.mp3', ?, 1.5)`).run(L3);
-    d.prepare(`INSERT INTO play_events (event_id, user_id, filepath, library_id)
-               VALUES ('pe-evt-1', ?, 'c0.mp3', ?)`).run(uid, L3);
     d.exec('COMMIT');
 
     await adminUtil.deleteLibraryRows(d, L3);
 
     assert.equal(d.prepare('SELECT COUNT(*) AS n FROM tracks WHERE library_id = ?').get(L3).n, 0);
     assert.equal(d.prepare('SELECT COUNT(*) AS n FROM libraries WHERE id = ?').get(L3).n, 0);
-    assert.equal(d.prepare('SELECT COUNT(*) AS n FROM cue_points WHERE library_id = ?').get(L3).n, 0,
-      'cue_points cascade');
-    const pe = d.prepare("SELECT library_id FROM play_events WHERE event_id = 'pe-evt-1'").get();
-    assert.ok(pe, 'play event survives the library');
-    assert.equal(pe.library_id, null, 'library_id nulled by the cascade');
     // Other libraries untouched.
     assert.equal(d.prepare('SELECT COUNT(*) AS n FROM tracks WHERE library_id = ?').get(L1).n, 7);
   });
