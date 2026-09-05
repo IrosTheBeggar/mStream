@@ -4610,6 +4610,17 @@ async function autoDjPanel() {
           <button type="button" class="dj-genre-mode-btn dj-sonic-anchor-btn" data-anchor="locked" aria-pressed="${anchorMode === 'locked'}">${t('autoDJ.sonicAnchorLocked')}</button>
         </div>
       </div>
+      ${MSTREAMAPI.currentServer.federationBrowse === true ? `
+      <div class="autodj-opt-row">
+        <div>
+          <div class="autodj-opt-label" id="dj-federated-label">${t('autoDJ.federatedLabel')}</div>
+          <div class="autodj-opt-hint">${t('autoDJ.federatedHint')}</div>
+        </div>
+        <label class="toggle-sw">
+          <input type="checkbox" id="dj-federated-on" aria-labelledby="dj-federated-label" ${AUTODJ.state.federatedEnabled ? 'checked' : ''}>
+          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
+        </label>
+      </div>` : ''}
       <div class="autodj-opt-row autodj-opt-col">
         <div>
           <div class="autodj-opt-label">${t('autoDJ.sonicSeedLabel')}</div>
@@ -4805,6 +4816,15 @@ async function autoDjPanel() {
         t(mode === 'locked' ? 'autoDJ.sonicAnchorLockedHint' : 'autoDJ.sonicAnchorRollingHint');
     };
   });
+
+  // Federated session toggle — present only when the server advertises
+  // federationBrowse (rendered inside the sonic block, so it is already
+  // gated on sonic being on). A pure preference: the player decides per
+  // pick whether a cross-server pick can actually run.
+  const fedOnEl = document.getElementById('dj-federated-on');
+  if (fedOnEl) {
+    fedOnEl.onchange = (e) => { AUTODJ.setState({ federatedEnabled: !!e.target.checked }); };
+  }
 
   // Seed picker — title search against /api/v1/db/search (titles
   // only), debounced; picking a result stores the seed and, if

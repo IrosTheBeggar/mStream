@@ -281,6 +281,8 @@
   "autoDJ.sonicToastTitle": "Auto DJ — sonic similarity",
   "autoDJ.sonicNoMatch": "No songs are within the similarity range. Loosen the match slider or adjust your filters.",
   "autoDJ.sonicSeedUnanalyzed": "That song hasn't been analyzed yet. Pick another seed or wait for the discovery scan.",
+  "autoDJ.federatedLabel": "Play from federated servers",
+  "autoDJ.federatedHint": "Also ask every federated server that shares this server's discovery model, and play whichever answers closest to the session's sound.",
   "autoDJ.similarInfoTitle": "Auto DJ — similar artists",
   "autoDJ.similarInfoBody": "Picked something close to {{source}}. Considered: {{candidates}}.",
   "autoDJ.similarInfoBodyMore": "Picked something close to {{source}}. Considered: {{candidates}} (+{{extra}} more).",

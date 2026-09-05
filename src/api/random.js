@@ -686,7 +686,12 @@ export function runRandomSongs(req, body) {
   const baseConditions = [filter.clause];
   const baseParams = [...(req.user?.id ? [req.user.id] : []), ...filter.params];
 
-  if (body.minRating && Number(body.minRating) > 0) {
+  // Ratings are per-user. A caller with no user id — a federation key, whose
+  // synthetic user carries none — has no stars to filter on: trackQuery
+  // joins user_metadata on NULL for it, so this clause could only ever
+  // empty the pool. Skip it rather than starve a federated Auto DJ pick
+  // (the webapp never sends it to a peer; a stray one is harmless now).
+  if (body.minRating && Number(body.minRating) > 0 && req.user?.id) {
     baseConditions.push('um.rating >= ?');
     baseParams.push(Number(body.minRating));
   }
