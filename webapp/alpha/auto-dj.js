@@ -12,7 +12,9 @@
  * pulling in jsdom.
  *
  * Most of the substantive logic is lifted verbatim from the velvet
- * fork's webapp/app.js — sources cited inline. Comments preserve the
+ * fork's webapp/app.js (aroundmyroom/mStream — the "velvet/webapp/app.js:N"
+ * citations inline point there, not at anything in this repo; the fork is
+ * no longer tracked). Comments preserve the
  * original intent so divergence between the two trees is obvious to
  * anyone porting future fixes either direction.
  *

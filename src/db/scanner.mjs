@@ -941,7 +941,7 @@ async function parseMyFile(absolutePath, modified) {
     songInfo.bpm = (() => {
       if (parsed.common?.bpm == null) { return null; }
       const n = Math.round(Number(parsed.common.bpm));
-      // Range matches velvet's tag-extraction window. < 20 / > 300 are
+      // Range matches the velvet fork's tag-extraction window. < 20 / > 300 are
       // almost certainly malformed; storing them just pollutes the
       // future BPM-continuity filter.
       return Number.isFinite(n) && n >= 20 && n <= 300 ? n : null;

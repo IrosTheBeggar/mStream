@@ -55,7 +55,8 @@ import WebError from '../util/web-error.js';
 // ── Camelot → raw-key name expansion ────────────────────────────────────────
 //
 // Clients send Camelot codes (1A, 8B, etc.) because that's what the
-// velvet UI sends and what most DJ-tagged libraries use as the user-
+// Auto-DJ panel sends (a habit inherited from the velvet fork's UI) and
+// what most DJ-tagged libraries use as the user-
 // facing key notation. The DB stores whatever the scanner found
 // verbatim — TKEY frames in the wild are a mix of Camelot codes and
 // raw key names ("A minor", "C major"), with enharmonic spellings
@@ -63,8 +64,9 @@ import WebError from '../util/web-error.js';
 // `musicalKeys: ['8A']` filter matches "A minor" / "Am" / "Amin" /
 // raw "8A" alike.
 //
-// Mirrors velvet's _CAMELOT_TO_KEYS in src/db/sqlite-backend.js — keep
-// in sync if either tree updates the table.
+// Ported from _CAMELOT_TO_KEYS in the velvet fork (aroundmyroom/mStream,
+// its src/db/sqlite-backend.js — a file this tree never had). The fork is
+// no longer tracked, so this table is the only copy to maintain.
 export const CAMELOT_TO_KEYS = Object.freeze({
   '1A':  ['1A', 'Ab minor', 'Abmin', 'G# minor', 'G#min', 'Abm', 'G#m'],
   '1B':  ['1B', 'B major',  'Bmaj',  'B'],
@@ -116,8 +118,8 @@ export function expandCamelotCodes(codes) {
 // random-songs WHERE. Each opts field can be `undefined` / `null` /
 // empty-array, which short-circuits its branch.
 //
-// Mirrors velvet's filter shape in src/db/sqlite-backend.js's
-// _buildRandomWhere — same column references (t.bpm, t.musical_key),
+// Mirrors the filter shape of the velvet fork's _buildRandomWhere (its
+// src/db/sqlite-backend.js) — same column references (t.bpm, t.musical_key),
 // same NULL-exclusion rule (any filter implicitly requires the column
 // to be non-null), same `bpmRanges` OR-fanout. The only structural
 // difference is t.* vs files.* because of the normalised schema.
@@ -1081,7 +1083,7 @@ export function setup(mstream) {
     //   • artists/ignoreArtists: Last.fm's `artist.getSimilar` returns
     //                    at most 50 candidates; 100 covers the unioned
     //                    case where multiple callers want extra slack.
-    //   • bpmRanges (and Wide): velvet's UI sends 3 (normal+half+double);
+    //   • bpmRanges (and Wide): the Auto-DJ panel sends 3 (normal+half+double);
     //                    16 is room for future tolerance-window UIs.
     //   • musicalKeys:   24 possible Camelot codes; the cap matches.
     const schema = Joi.object({
