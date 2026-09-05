@@ -4091,7 +4091,6 @@ paths:
                   maxRequestSize: { type: string }
                   autoBootServerAudio: { type: boolean }
                   rustPlayerPort: { type: integer }
-                  ui: { type: string, enum: [default] }
                   adminAccess:
                     type: object
                     properties:
@@ -4151,25 +4150,6 @@ paths:
                   type: string
                   pattern: "[0-9]+(KB|MB)"
                   example: "50MB"
-      responses:
-        "200": { $ref: "#/components/responses/EmptySuccess" }
-        "405": { $ref: "#/components/responses/AdminLocked" }
-
-  /api/v1/admin/config/ui:
-    post:
-      tags: [Admin - Config]
-      summary: Switch UI
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [ui]
-              properties:
-                ui:
-                  type: string
-                  enum: [default]
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "405": { $ref: "#/components/responses/AdminLocked" }

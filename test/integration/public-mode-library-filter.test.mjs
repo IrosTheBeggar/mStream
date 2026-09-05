@@ -71,7 +71,6 @@ async function bootMstream(tmpDir, musicDir) {
   const config = {
     port,
     address: '127.0.0.1',
-    ui: 'default',
     // Disable DLNA — we're only testing the default API path.
     dlna:     { mode: 'disabled' },
     folders:  { testlib: { root: musicDir } },
@@ -100,7 +99,12 @@ async function bootMstream(tmpDir, musicDir) {
     },
   );
   proc.stdout.on('data', () => {});
-  proc.stderr.on('data', () => {});
+  // Keep the tail of stderr: a boot that CRASHED and one that was merely slow
+  // on a loaded runner both end in "fetch failed" at the deadline, and only
+  // the child's own output tells them apart (search-route and the shared
+  // helper in test/helpers/server.mjs do the same).
+  let stderrTail = '';
+  proc.stderr.on('data', (d) => { stderrTail = (stderrTail + d).slice(-4000); });
   const baseUrl = `http://127.0.0.1:${port}`;
   try {
     await waitForReady(baseUrl);
@@ -109,8 +113,10 @@ async function bootMstream(tmpDir, musicDir) {
     // healthy on a loaded runner, and a live orphan's stdio keeps this file's
     // event loop open — the run then hangs at exit instead of reporting the
     // timeout. test/helpers/server.mjs kills on this path for the same reason.
+    const exit = proc.exitCode != null ? `exited with code ${proc.exitCode}` : 'still running, killed';
     try { proc.kill('SIGKILL'); } catch { /* already gone */ }
-    throw err;
+    throw new Error(`${err.message}; child ${exit}; stderr tail:\n${stderrTail.trim() || '(empty)'}`,
+      { cause: err });
   }
   return { proc, baseUrl, port };
 }

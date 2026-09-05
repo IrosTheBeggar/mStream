@@ -374,14 +374,6 @@ export async function setUserLastFM(username, lastfmUser, lastfmPassword) {
 
 // ── Config file settings (server-level, stay in JSON) ───────────────────────
 
-export async function editUI(ui) {
-  if (config.program.ui === ui) { return; }
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.ui = ui;
-  await saveFile(loadConfig, config.configFile);
-  mStreamServer.reboot();
-}
-
 export async function editPort(port) {
   if (config.program.port === port) { return; }
   const loadConfig = await loadFile(config.configFile);

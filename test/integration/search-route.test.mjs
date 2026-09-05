@@ -63,7 +63,6 @@ async function bootMstream(tmpDir, musicDir, extraLibraries = {}) {
   const config = {
     port,
     address: '127.0.0.1',
-    ui: 'default',
     dlna:     { mode: 'disabled' },
     folders:  { testlib: { root: musicDir }, ...extraLibraries },
     storage: {

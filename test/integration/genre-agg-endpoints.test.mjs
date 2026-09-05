@@ -59,7 +59,7 @@ async function waitForReady(baseUrl, timeoutMs = 90_000) {
 async function bootMstream(tmpDir, musicDir) {
   const port = await findFreePort();
   const config = {
-    port, address: '127.0.0.1', ui: 'default',
+    port, address: '127.0.0.1',
     dlna:     { mode: 'disabled' },
     folders:  { testlib: { root: musicDir } },
     storage: {

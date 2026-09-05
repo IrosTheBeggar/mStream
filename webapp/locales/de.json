@@ -317,7 +317,6 @@
   "admin.settings.port": "Port:",
   "admin.settings.maxRequestSize": "Maximale Anfragegröße:",
   "admin.settings.address": "Adresse:",
-  "admin.settings.frontend": "Frontend:",
   "admin.settings.serverAudio": "Server-Audio",
   "admin.settings.autoBoot": "Server-Audio automatisch starten:",
   "admin.settings.rustPlayerPort": "Rust-Player-Port:",

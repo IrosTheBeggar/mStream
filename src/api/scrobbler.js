@@ -69,7 +69,7 @@ export async function fetchLastfmSimilarArtists(artist, apiKey) {
 
   // Strip "feat. X" / "ft. X" / "featuring X" / "vs. X" suffixes — Last.fm
   // matches the primary artist far more reliably without them.
-  // Mirrors velvet/src/api/scrobbler.js's strip pattern.
+  // Same strip pattern the velvet fork's scrobbler used.
   const queryName = String(artist)
     .replace(/\s+(feat\.|ft\.|featuring|vs\.?)\s+.*/i, '')
     .trim();

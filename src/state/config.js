@@ -715,11 +715,6 @@ const schema = Joi.object({
   lockAdmin: Joi.boolean().default(false),
   adminAccess: adminAccessOptions.default(adminAccessOptions.validate({}).value),
   storage: storageJoi.default(storageJoi.validate({}).value),
-  // 'default' — mStream's UI (webapp/alpha/), the only one left. The key
-  // stays so existing config files keep validating (the admin panel wrote
-  // `ui` for years); setup() coerces the retired values — 'subsonic' (went
-  // with the Subsonic API) and 'velvet' (UI removed) — back to 'default'.
-  ui: Joi.string().valid('default').default('default'),
   webAppDirectory: Joi.string().default(path.join(appRoot, 'webapp')),
   rpn: rpnOptions.default(rpnOptions.validate({}).value),
   transcode: transcodeOptions.default(transcodeOptions.validate({}).value),
@@ -834,22 +829,47 @@ export async function setup(configFileArg) {
     await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
   }
 
+  // Settings that no longer exist. `ui` picked the web UI back when there
+  // were three of them; the bundled Subsonic client left with the Subsonic
+  // API and the velvet UI was removed (schema V69), so the default UI is the
+  // only one and the key means nothing — whatever its value. The admin panel
+  // wrote `"ui": "default"` into most config files for years, so the plain
+  // value is expected and gets an info line; a retired value ('velvet',
+  // 'subsonic') gets a warning, because that operator's users will see a
+  // different UI than they used to. `discogs` configured the velvet-only
+  // Discogs art lookup. Both keys are inert under allowUnknown; they are
+  // removed from the file and the result persisted, so the note appears
+  // exactly once (the lockAdmin -> adminAccess precedent).
+  {
+    const retired = [];
+    let retiredUi = null;
+    if (programData.ui !== undefined) {
+      retiredUi = programData.ui;
+      retired.push(retiredUi === 'default' ? 'ui' : `ui='${retiredUi}'`);
+      delete programData.ui;
+    }
+    if (programData.discogs !== undefined) { retired.push('discogs'); delete programData.discogs; }
+    if (retired.length > 0) {
+      const msg = `[config] Removing retired setting(s) ${retired.join(', ')} from the config file — `
+        + 'the default web UI is the only UI, and the Discogs art lookup went with the velvet UI.';
+      if (retiredUi !== null && retiredUi !== 'default') { winston.warn(msg); } else { winston.info(msg); }
+      await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
+    }
+  }
+
   // The Subsonic API, its per-user secrets and the bundled Subsonic web
-  // client were removed (docs/subsonic-deprecation.md). Three leftovers can
-  // sit in an existing config file:
-  //   ui: 'subsonic'   — would fail Joi's .valid() enum and THROW at boot,
-  //                      the same "upgrade bricks the server" shape as the
-  //                      retired-model migration below. Coerce to 'default'.
+  // client were removed (docs/subsonic-deprecation.md). Two leftovers can
+  // sit in an existing config file (the third, ui: 'subsonic', is handled
+  // with the other retired settings above):
   //   subsonic: {...}  — inert (validation runs with allowUnknown), but an
   //                      operator who had the API on deserves one clear log
   //                      line about why their clients stopped connecting.
   //   subsonicSecret   — key material for the dropped password column;
   //                      nothing can read those ciphertexts any more.
-  // All three are removed from the file and the result persisted, so the
-  // notice appears exactly once (the lockAdmin -> adminAccess precedent).
+  // Both are removed from the file and the result persisted, so the notice
+  // appears exactly once.
   {
     const stale = [];
-    if (programData.ui === 'subsonic') { stale.push("ui='subsonic'"); programData.ui = 'default'; }
     if (programData.subsonic !== undefined) {
       const mode = programData.subsonic && programData.subsonic.mode;
       stale.push(mode && mode !== 'disabled' ? `subsonic.mode='${mode}'` : 'subsonic');
@@ -862,19 +882,6 @@ export async function setup(configFileArg) {
         + 'to this server — the first-party mStream apps are the supported clients.');
       await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
     }
-  }
-
-  // The velvet UI went the same way (2026-09): webapp/velvet/, the API
-  // modules mounted only under it, and their tables (schema V69). A config
-  // still carrying ui='velvet' would fail the .valid() enum and THROW at
-  // boot; coerce to 'default' and persist, so the notice appears once. A
-  // leftover `discogs` block (the only other velvet-only key) is inert under
-  // allowUnknown and left alone.
-  if (programData.ui === 'velvet') {
-    winston.warn("[config] ui='velvet' is no longer available — the velvet UI was removed. "
-      + "Falling back to ui='default' and saving.");
-    programData.ui = 'default';
-    await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
   }
 
   // Iroh tunnel identity (secretKey -> stable EndpointId) and the pipe secret

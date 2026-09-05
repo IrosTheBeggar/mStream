@@ -8,7 +8,8 @@
 // against the library we have to fold both sides through the same
 // normalizer first.
 //
-// Velvet's normalizer (see src/db/sqlite-backend.js `_normArtist`) only
+// The velvet fork's normalizer (`_normArtist` in its src/db/sqlite-backend.js,
+// a file this tree never had) only
 // did lowercase + `&` swap + whitespace collapse — no diacritic folding.
 // We do diacritic folding too because the JS-side cost is trivial and
 // "Beyoncé" vs "Beyonce" is a real, frequent miss without it.

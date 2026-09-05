@@ -1531,10 +1531,6 @@ const advancedView = Vue.component('advanced-view', {
                         [<a v-on:click="toggleTrustProxy()">{{ t('admin.settings.edit') }}</a>]
                       </td>
                     </tr>
-                    <tr>
-                      <td><b>{{ t('admin.settings.frontend') }}</b> {{uiLabel(params.ui)}}</td>
-                      <td></td>
-                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -1641,13 +1637,6 @@ const advancedView = Vue.component('advanced-view', {
     openModal: function(modalView) {
       modVM.currentViewModal = modalView;
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
-    },
-    // Lookup: internal UI id → user-visible label. Only the default UI is
-    // left (velvet and the bundled Subsonic client are gone), so there is no
-    // switcher any more; the row still names the active UI so a stale
-    // config.json value shows up here instead of being silently mapped.
-    uiLabel: function(id) {
-      return ({ default: 'Default' })[id] || id;
     },
     removeSSL: function() {
       iziToast.question({
