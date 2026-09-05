@@ -50,7 +50,10 @@ function findFreePort() {
   });
 }
 
-async function waitForReady(baseUrl, timeoutMs = 30_000) {
+// 90 s, not 30: the same loaded-CI-runner ceiling test/helpers/server.mjs
+// uses for this wait — under a full parallel `npm test` this boot competes
+// with a dozen others and 30 s was observed to cancel the whole describe.
+async function waitForReady(baseUrl, timeoutMs = 90_000) {
   const start = Date.now();
   let lastErr;
   while (Date.now() - start < timeoutMs) {
