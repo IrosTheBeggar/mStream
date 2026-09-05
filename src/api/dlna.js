@@ -48,9 +48,42 @@ const MAX_SUBSCRIBERS = 256;
 // string. Honours the widespread tagger convention that the leading
 // genre is the user's intended primary.
 //
-// See the matching TRACK_PRIMARY_GENRE_SQL in
-// src/api/subsonic/handlers.js for the full rationale (including why
-// `g.id` and alphabetical were rejected).
+// Why first-in-tag-string (via tg.rowid):
+//   • Honours the widespread convention that the leading genre in a
+//     "Rock, Pop" style ID3 tag is the user's intended primary; tools
+//     like MusicBrainz Picard and beets preserve this order.
+//   • Per-track stable: setTrackGenres iterates the split list
+//     left-to-right and INSERT OR IGNORE assigns rowids
+//     monotonically. Different worker threads scan different tracks,
+//     so a given track's M2M rows always end up in the order its own
+//     setTrackGenres saw them — independent of cross-track race
+//     scheduling.
+//   • Stable across rescans + tag edits: the scanner deletes the
+//     parent track (cascading to track_genres) and re-INSERTs in
+//     current tag order; replaceTrackGenres in the tag-edit handler
+//     does DELETE + ordered re-INSERT inside a transaction. Both
+//     produce fresh rowids in the new tag-string order.
+//   • Stable across VACUUM: SQLite preserves rowids on regular
+//     (non-WITHOUT-ROWID) tables since 3.1.0.
+//
+// `ORDER BY g.id` (the prior implementation) was REJECTED because it
+// resolves against the global `genres` table insertion order, not the
+// per-track tag order. A track tagged "Jazz, Fusion" could yield
+// "Fusion" if the library had already seen "Fusion" via an earlier
+// track, putting it at a lower id. Confusing and non-tag-faithful.
+//
+// `ORDER BY g.name COLLATE NOCASE` (an intermediate proposal) was
+// REJECTED because it ignored tagger intent entirely — "Jazz, Fusion"
+// would surface as "Fusion" (F < J) even on a fresh scan.
+//
+// Performance note: this is a per-row correlated subquery. Empirically
+// negligible because `idx_track_genres_track` (V2) makes the inner
+// `WHERE tg.track_id = t.id` an index-seek. The ORDER BY then sorts
+// the small per-track result set (typically 1-3 genres) by rowid,
+// which is the table's natural order — effectively free.
+//
+// Other per-track SELECTs that need a single genre string inline the
+// same subquery; this comment is the canonical rationale for all of them.
 //
 // Inline this constant via template-literal interpolation inside SELECT
 // lists and the sort/search maps. Outer alias for the tracks table is

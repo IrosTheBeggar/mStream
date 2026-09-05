@@ -21,7 +21,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { SCHEMA_VERSION, MIGRATIONS } from '../../src/db/schema.js';
 import { applyAllMigrations } from '../helpers/apply-migrations.mjs';
-import { lrcToSearchText } from '../../src/api/subsonic/lrc-parser.js';
+import { lrcToSearchText } from '../../src/util/lrc-parser.js';
 
 function freshDbAllMigrations() {
   const db = new DatabaseSync(':memory:');

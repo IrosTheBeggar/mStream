@@ -34,15 +34,16 @@
  *     input; each line time_ms is 0 and the `synced` flag in the
  *     caller's response is what signals "not timed"
  *
- * Consumed by:
- *   - src/api/subsonic/handlers.js      (Subsonic getLyricsBySongId)
- *   - src/api/lyrics.js                 (Velvet-compatible /api/v1/lyrics)
+ * Lives in src/util/ because it has no DB or HTTP dependency and is
+ * shared by the write side and the read side:
  *   - src/db/scanner.mjs                (lrcToSearchText at track upsert)
  *   - src/db/lyrics-backfill.mjs        (lrcToSearchText at commit)
  *   - src/db/schema.js                  (lrcToSearchText in the V59 backfill)
+ *   - src/api/subsonic/handlers.js      (parseLrc for Subsonic getLyricsBySongId)
+ *   - rust-parser/src/main.rs           (MIRRORS lrcToSearchText — the two
+ *                                        scanners must stay byte-identical)
  *
- * The two endpoints serve identical data under different envelopes; the
- * three writers derive tracks.lyrics_search_text (V59) from the same
+ * The three writers derive tracks.lyrics_search_text (V59) from the same
  * parsing rules so search matches what the endpoints serve.
  */
 

@@ -31,7 +31,7 @@ import { getSystemUpdateID } from '../dlna.js';
 import * as serverPlayback from '../server-playback.js';
 import { sendOk, sendError, SubErr } from './response.js';
 import * as nowPlaying from './now-playing.js';
-import { parseLrc, linesToPlainText, plainTextToLines } from './lrc-parser.js';
+import { parseLrc, linesToPlainText, plainTextToLines } from '../../util/lrc-parser.js';
 import * as lrclib from '../lyrics-cache.js';
 import { identiconFor } from './identicon.js';
 import { parseSearchQuery, buildFtsExpression } from '../../util/search-query.js';
@@ -48,43 +48,9 @@ const IGNORED_ARTICLES = 'The An A Die Das Ein Eine Les Le La';
 // against the M2M, picking the row with the lowest `tg.rowid` — which
 // is the genre that appeared FIRST in the track's source tag string.
 //
-// Why first-in-tag-string (via tg.rowid):
-//   • Honours the widespread convention that the leading genre in a
-//     "Rock, Pop" style ID3 tag is the user's intended primary; tools
-//     like MusicBrainz Picard and beets preserve this order.
-//   • Per-track stable: setTrackGenres iterates the split list
-//     left-to-right and INSERT OR IGNORE assigns rowids
-//     monotonically. Different worker threads scan different tracks,
-//     so a given track's M2M rows always end up in the order its own
-//     setTrackGenres saw them — independent of cross-track race
-//     scheduling.
-//   • Stable across rescans + tag edits: the scanner deletes the
-//     parent track (cascading to track_genres) and re-INSERTs in
-//     current tag order; replaceTrackGenres in the tag-edit handler
-//     does DELETE + ordered re-INSERT inside a transaction. Both
-//     produce fresh rowids in the new tag-string order.
-//   • Stable across VACUUM: SQLite preserves rowids on regular
-//     (non-WITHOUT-ROWID) tables since 3.1.0.
-//
-// `ORDER BY g.id` (the prior implementation) was REJECTED because it
-// resolves against the global `genres` table insertion order, not the
-// per-track tag order. A track tagged "Jazz, Fusion" could yield
-// "Fusion" if the library had already seen "Fusion" via an earlier
-// track, putting it at a lower id. Confusing and non-tag-faithful.
-//
-// `ORDER BY g.name COLLATE NOCASE` (an intermediate proposal) was
-// REJECTED because it ignored tagger intent entirely — "Jazz, Fusion"
-// would surface as "Fusion" (F < J) even on a fresh scan.
-//
-// Multi-genre tracks lose the secondary genres for now; if/when we
-// want to surface them, the OpenSubsonic `genres[]` extension is the
-// right place.
-//
-// Performance note: this is a per-row correlated subquery. Empirically
-// negligible because `idx_track_genres_track` (V2) makes the inner
-// `WHERE tg.track_id = t.id` an index-seek. The ORDER BY then sorts
-// the small per-track result set (typically 1-3 genres) by rowid,
-// which is the table's natural order — effectively free.
+// The full rationale (why tg.rowid beats `g.id` and alphabetical, and
+// why it is stable across rescans, tag edits, and VACUUM) lives next to
+// the identical TRACK_PRIMARY_GENRE_SQL in src/api/dlna.js.
 const TRACK_PRIMARY_GENRE_SQL =
   '(SELECT g.name FROM track_genres tg JOIN genres g ON g.id = tg.genre_id WHERE tg.track_id = t.id ORDER BY tg.rowid LIMIT 1) AS genre';
 

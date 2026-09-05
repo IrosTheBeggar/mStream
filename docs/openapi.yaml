@@ -101,8 +101,8 @@ tags:
     description: |
       Per-track lyrics — embedded tag (USLT / Vorbis LYRICS / MP4 ©lyr / APE Lyrics)
       or sibling `.lrc` / `.txt` sidecar files. LRC-format content is parsed into
-      line-timed entries. Optional LRCLib external fallback (opt-in via admin toggle)
-      populates a cache table for tracks with no local lyrics. Subsonic clients get
+      line-timed entries. The post-scan backfill worker (see Admin - Lyrics) fills in
+      lyrics for tracks that have none locally. Subsonic clients get
       `/rest/getLyrics` + `/rest/getLyricsBySongId`; the Velvet UI uses this endpoint.
   - name: Subsonic API
     description: |
@@ -155,12 +155,16 @@ tags:
     description: Shared-playlist administration.
   - name: Admin - File Explorer
     description: Unrestricted filesystem browsing (admin only).
+  - name: Admin - Lyrics
+    description: |
+      Lyrics backfill settings (config.lyrics; live, no reboot) and the
+      read-only lyrics_cache ledger the backfill worker keeps, with its
+      purge control.
   - name: Admin - Subsonic
     description: |
       Subsonic-specific admin widgets: mode toggle (disabled / same-port /
       separate-port), live now-playing strip, jukebox status, token-auth
-      attempts log, per-user API-key minting, lyrics-cache (LRCLib) config +
-      stats.
+      attempts log, per-user API-key minting.
   - name: Federation
     description: |
       Ticket-paired read-only library sharing between mStream servers over a
@@ -5642,6 +5646,128 @@ paths:
         "404": { description: Library not found. }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
+  # ── Admin - Lyrics ───────────────────────────────────────────────────────
+  /api/v1/admin/lyrics:
+    get:
+      tags: [Admin - Lyrics]
+      summary: Lyrics backfill settings + cache ledger counters
+      responses:
+        "200":
+          description: Current config.lyrics values plus the lyrics_cache ledger counters.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backfill:     { type: boolean, description: Post-scan proactive lookup on/off. }
+                  providers:
+                    type: array
+                    items: { type: string, enum: [lrclib, netease, kugou] }
+                    description: Providers in priority order; the first match wins.
+                  writeSidecar: { type: boolean, description: Also write fetched lyrics to a sibling .lrc / .txt. }
+                  cache:
+                    type: object
+                    description: |
+                      Read-only counters over the lyrics_cache ledger the backfill
+                      worker keeps (one row per looked-up track hash). `total` is
+                      always the sum of the named buckets; `other` catches any
+                      status value the UI doesn't know yet.
+                    properties:
+                      hit:     { type: integer }
+                      miss:    { type: integer }
+                      error:   { type: integer }
+                      pending: { type: integer }
+                      other:   { type: integer }
+                      total:   { type: integer }
+
+  /api/v1/admin/lyrics/backfill:
+    post:
+      tags: [Admin - Lyrics]
+      summary: Toggle the post-scan lyrics backfill
+      description: Enabling kicks an immediate pass so the operator sees results without waiting for the next scan.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [backfill]
+              properties:
+                backfill: { type: boolean }
+      responses:
+        "200": { description: Persisted. }
+        "400": { description: Validation error. }
+
+  /api/v1/admin/lyrics/providers:
+    post:
+      tags: [Admin - Lyrics]
+      summary: Set the lyrics providers, in priority order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [providers]
+              properties:
+                providers:
+                  type: array
+                  minItems: 1
+                  items: { type: string, enum: [lrclib, netease, kugou] }
+      responses:
+        "200": { description: Persisted. }
+        "400": { description: Validation error (empty list or unknown provider). }
+
+  /api/v1/admin/lyrics/write-sidecar:
+    post:
+      tags: [Admin - Lyrics]
+      summary: Toggle writing fetched lyrics to sidecar files
+      description: |
+        When enabled, a successful lookup ALSO writes a sibling `.lrc`
+        (synced) or `.txt` (plain) next to the audio file. Never clobbers an
+        existing sibling. Silent no-op on read-only filesystems.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [writeSidecar]
+              properties:
+                writeSidecar: { type: boolean }
+      responses:
+        "200": { description: Persisted. }
+        "400": { description: Validation error. }
+
+  /api/v1/admin/lyrics/cache/purge:
+    post:
+      tags: [Admin - Lyrics]
+      summary: Purge the lyrics_cache ledger
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum: [full, retry]
+                  default: full
+                  description: |
+                    `full` drops every row. `retry` drops only `error` and
+                    `pending` rows (keeps hits) — use after a network outage.
+      responses:
+        "200":
+          description: Count of rows deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed: { type: integer }
+                  mode:    { type: string }
+        "400": { description: Validation error (invalid mode). }
+
   # ── Admin - Subsonic ────────────────────────────────────────────────────
 
   /api/v1/admin/subsonic:
@@ -5682,7 +5808,7 @@ paths:
   /api/v1/admin/subsonic/stats:
     get:
       tags: [Admin - Subsonic]
-      summary: Implemented methods, now-playing, lyrics-cache stats
+      summary: Implemented methods + now-playing
       responses:
         "200":
           description: Stats for the admin panel card.
@@ -5715,21 +5841,6 @@ paths:
                         artist:   { type: string, nullable: true }
                         album:    { type: string, nullable: true }
                         sinceMs:  { type: integer }
-                  lyrics:
-                    type: object
-                    description: LRCLib cache state + toggles.
-                    properties:
-                      lrclibEnabled:       { type: boolean }
-                      writeSidecarEnabled: { type: boolean }
-                      cache:
-                        type: object
-                        properties:
-                          hit:     { type: integer }
-                          miss:    { type: integer }
-                          error:   { type: integer }
-                          pending: { type: integer }
-                          other:   { type: integer }
-                          total:   { type: integer }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/subsonic/test:
@@ -5874,87 +5985,14 @@ paths:
   /api/v1/admin/subsonic/lyrics-cache/purge:
     post:
       tags: [Admin - Subsonic]
-      summary: Purge the lyrics_cache table
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                mode:
-                  type: string
-                  enum: [full, retry]
-                  default: full
-                  description: |
-                    `full` drops every row. `retry` drops only `error` and
-                    `pending` rows (keeps hits) — use after a network outage.
-      responses:
-        "200":
-          description: Count of rows deleted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  removed: { type: integer }
-                  mode:    { type: string }
-        "403": { description: Validation error (invalid mode). }
-
-  /api/v1/admin/subsonic/lyrics-cache/enabled:
-    post:
-      tags: [Admin - Subsonic]
-      summary: Toggle LRCLib external-lookup fallback
+      deprecated: true
+      summary: Alias of POST /api/v1/admin/lyrics/cache/purge
       description: |
-        When disabled, no new LRCLib fetches fire (existing cached hits keep
-        serving — clear them via `/purge`). On the enabled→disabled edge
-        queued-but-not-yet-running jobs are cancelled; in-flight requests
-        complete but their result is dropped.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [enabled]
-              properties:
-                enabled: { type: boolean }
+        The lyrics cache ledger is shared by every lyrics path, so its purge
+        moved under `Admin - Lyrics`. This alias answers identically and is
+        removed together with the Subsonic surface.
       responses:
-        "200":
-          description: Toggle persisted; cache rows untouched.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  enabled:       { type: boolean }
-                  cancelledJobs: { type: integer, description: Queue drops when disabling. }
-
-  /api/v1/admin/subsonic/lyrics-cache/write-sidecar:
-    post:
-      tags: [Admin - Subsonic]
-      summary: Toggle LRCLib→sidecar write-back
-      description: |
-        When enabled, a successful LRCLib hit ALSO writes a sibling `.lrc`
-        (synced) or `.txt` (plain) next to the audio file. Never clobbers an
-        existing sibling. Silent no-op on read-only filesystems.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [enabled]
-              properties:
-                enabled: { type: boolean }
-      responses:
-        "200":
-          description: Toggle persisted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  writeSidecar: { type: boolean }
+        "200": { description: See `/api/v1/admin/lyrics/cache/purge`. }
 
   # ── Subsonic REST API (handled under /rest/*) ────────────────────────────
   # The Subsonic API uses its own auth scheme (u/p, u/t/s, or apiKey) and

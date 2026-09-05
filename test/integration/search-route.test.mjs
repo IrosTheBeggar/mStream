@@ -24,7 +24,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { lrcToSearchText } from '../../src/api/subsonic/lrc-parser.js';
+import { lrcToSearchText } from '../../src/util/lrc-parser.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');

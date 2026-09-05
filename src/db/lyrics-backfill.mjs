@@ -30,7 +30,7 @@ import path from 'path';
 import { DatabaseSync } from './sqlite-driver.js';
 import Joi from 'joi';
 import { LYRICS_PROVIDERS } from './lyrics-lookup-lib.js';
-import { lrcToSearchText } from '../api/subsonic/lrc-parser.js';
+import { lrcToSearchText } from '../util/lrc-parser.js';
 
 const SCHEMA_GUARD_EXIT = 3;
 

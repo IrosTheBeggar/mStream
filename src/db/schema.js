@@ -16,7 +16,7 @@
 // migration. The trigger DDL lives in SCHEMA_V31 — grep there.
 // ──────────────────────────────────────────────────────────────────────────
 
-import { lrcToSearchText } from '../api/subsonic/lrc-parser.js';
+import { lrcToSearchText } from '../util/lrc-parser.js';
 import { HASH_GENERATION } from './audio-hash.js';
 
 // Bumped to 42 after rebasing onto master's V36 (tracks.source). The
@@ -2468,7 +2468,7 @@ export const SCHEMA_V58 = `
 //
 // tracks.lyrics_search_text is the fix: the plain-words rendition of
 // lyrics_synced_lrc (stamps, header tags, and enhanced-LRC inline stamps
-// stripped by lrcToSearchText — see src/api/subsonic/lrc-parser.js).
+// stripped by lrcToSearchText — see src/util/lrc-parser.js).
 // NULL when the track has no synced lyrics. The searchable value
 // everywhere becomes COALESCE(lyrics_embedded, lyrics_search_text):
 //   - fts_tracks.lyrics (backfill INSERT + the recreated triggers below)

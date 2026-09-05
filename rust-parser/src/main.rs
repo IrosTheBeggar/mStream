@@ -4329,7 +4329,7 @@ fn looks_like_lrc(text: &str) -> bool {
 
 // ── V59: lyrics_search_text derivation ──────────────────────────────────────
 //
-// MIRROR of lrcToSearchText in src/api/subsonic/lrc-parser.js. The two
+// MIRROR of lrcToSearchText in src/util/lrc-parser.js. The two
 // scanners must emit byte-identical values for the same input (the parity
 // suite deep-compares full DB snapshots), so any behavioural change must
 // land in both places simultaneously.

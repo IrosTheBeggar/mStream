@@ -11,7 +11,7 @@ import Joi from 'joi';
 import { Jimp } from 'jimp';
 import { migrateHashReferences as migrateHashRefsShared } from './hash-migration.js';
 import { extractLyrics, sidecarMtimeCached } from './lyrics-extraction.js';
-import { lrcToSearchText } from '../api/subsonic/lrc-parser.js';
+import { lrcToSearchText } from '../util/lrc-parser.js';
 import { computeHashes, HASH_GENERATION, SAMPLE_THRESHOLD_DEFAULT } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
 import { migrateAlbumStars, migrateArtistStars, migrateAlbumArtState } from './album-migration.js';

@@ -3351,6 +3351,10 @@ const lyricsView = Vue.component('lyrics-view', {
       // in the Database view's Enrichment Status card.
       writeSidecar: false,
       providers: { lrclib: true, netease: false, kugou: false },
+      // Read-only lyrics_cache ledger counters (hit / miss / error /
+      // pending / total) + a transient message next to the purge buttons.
+      cache: null,
+      cachePurgeMsg: null,
     };
   },
   template: `
@@ -3388,6 +3392,34 @@ const lyricsView = Vue.component('lyrics-view', {
               </div>
             </div>
           </div>
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Lyrics Cache</span>
+                <p>The backfill worker keeps a cache / cooldown ledger of every lookup it has made, so tracks with no lyrics are not re-queried on every pass. The counters are read-only; the purge buttons make the worker try again.</p>
+                <table v-if="loaded && cache" style="max-width:400px">
+                  <tbody>
+                    <tr><td><b>Cached hits</b></td>  <td>{{cache.hit}}</td></tr>
+                    <tr><td><b>Cached misses</b></td><td>{{cache.miss}}</td></tr>
+                    <tr><td><b>Errors</b></td>       <td>{{cache.error}}</td></tr>
+                    <tr><td><b>Pending</b></td>      <td>{{cache.pending}}</td></tr>
+                    <tr><td><b>Total rows</b></td>   <td>{{cache.total}}</td></tr>
+                  </tbody>
+                </table>
+                <p style="margin-top:12px">
+                  <a v-on:click="purgeLyricsCache('retry')" class="btn-flat waves-effect" style="padding:0 8px">
+                    Retry errors
+                  </a>
+                  <a v-on:click="purgeLyricsCache('full')" class="btn-flat waves-effect red-text" style="padding:0 8px">
+                    Purge all
+                  </a>
+                  <span v-if="cachePurgeMsg" style="margin-left:12px;color:#5cb85c">
+                    {{cachePurgeMsg}}
+                  </span>
+                </p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>`,
@@ -3395,6 +3427,7 @@ const lyricsView = Vue.component('lyrics-view', {
     try {
       await ADMINDATA.getLyricsParams();
       this.writeSidecar = !!ADMINDATA.lyricsParams.writeSidecar;
+      this.cache = ADMINDATA.lyricsParams.cache || null;
       const list = Array.isArray(ADMINDATA.lyricsParams.providers) ? ADMINDATA.lyricsParams.providers : ['lrclib'];
       this.providers = {
         lrclib: list.includes('lrclib'),
@@ -3440,6 +3473,23 @@ const lyricsView = Vue.component('lyrics-view', {
       }).catch(() => {
         iziToast.error({ title: 'Update failed', position: 'topCenter', timeout: 3000 });
       });
+    },
+    // Lyrics cache ledger purge. mode='full' wipes all rows, 'retry'
+    // clears error/pending; each call refreshes the counters.
+    purgeLyricsCache: async function (mode) {
+      try {
+        const r = await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/lyrics/cache/purge`,
+          data: { mode },
+        });
+        this.cachePurgeMsg = `Removed ${r.data.removed} row(s).`;
+        setTimeout(() => { this.cachePurgeMsg = null; }, 4000);
+        await ADMINDATA.getLyricsParams();
+        this.cache = ADMINDATA.lyricsParams.cache || null;
+      } catch (err) {
+        iziToast.error({ title: `Purge failed: ${escHtml(err.message || '?')}`, position: 'topCenter', timeout: 3000 });
+      }
     },
   },
 });
@@ -5178,8 +5228,6 @@ const subsonicView = Vue.component('subsonic-view', {
       testResult:         null,
       testPending:        false,
       showMethodList:     false,
-      // Transient success message shown next to the purge buttons.
-      lyricsCachePurgeMsg: null,
       // One-time display for admin-minted-on-behalf-of keys. Mirrors
       // `lastMintedKey` but carries the target username too.
       adminMintedForUser: { val: null, name: null, username: null },
@@ -5350,47 +5398,6 @@ const subsonicView = Vue.component('subsonic-view', {
         </div>
       </div>
 
-      <!-- Lyrics cache ledger (read-only). Lyrics are filled by the proactive
-           backfill worker now, configured in the dedicated "Lyrics" admin
-           section — this card only surfaces the cache / cooldown ledger and a
-           purge control. Visible regardless of Subsonic mode because the
-           ledger is shared by every lyrics path. -->
-      <div v-if="stats.lyrics" class="row">
-        <div class="col s12">
-          <div class="card">
-            <div class="card-content">
-              <span class="card-title">Lyrics Cache</span>
-              <p>
-                Lyrics are fetched ahead of time by the proactive backfill worker.
-                Enable it, choose providers, and toggle sidecar writing in the
-                <b>Lyrics</b> admin section. This card just shows the read-only
-                cache / cooldown ledger that the worker keeps.
-              </p>
-              <table v-if="stats.lyrics.cache" style="max-width:400px">
-                <tbody>
-                  <tr><td><b>Cached hits</b></td>  <td>{{stats.lyrics.cache.hit}}</td></tr>
-                  <tr><td><b>Cached misses</b></td><td>{{stats.lyrics.cache.miss}}</td></tr>
-                  <tr><td><b>Errors</b></td>       <td>{{stats.lyrics.cache.error}}</td></tr>
-                  <tr><td><b>Pending</b></td>      <td>{{stats.lyrics.cache.pending}}</td></tr>
-                  <tr><td><b>Total rows</b></td>   <td>{{stats.lyrics.cache.total}}</td></tr>
-                </tbody>
-              </table>
-              <p style="margin-top:12px">
-                <a v-on:click="purgeLyricsCache('retry')" class="btn-flat waves-effect" style="padding:0 8px">
-                  Retry errors
-                </a>
-                <a v-on:click="purgeLyricsCache('full')" class="btn-flat waves-effect red-text" style="padding:0 8px">
-                  Purge all
-                </a>
-                <span v-if="lyricsCachePurgeMsg" style="margin-left:12px;color:#5cb85c">
-                  {{lyricsCachePurgeMsg}}
-                </span>
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- Jukebox live status -->
       <div v-if="params.mode !== 'disabled' && jukebox.available" class="row">
         <div class="col s12">
@@ -5555,24 +5562,6 @@ const subsonicView = Vue.component('subsonic-view', {
         this.testResult = { ok: false, reason: err.message };
       } finally {
         this.testPending = false;
-      }
-    },
-    // Lyrics cache ledger purge (the enable / sidecar-write toggles moved to
-    // the dedicated Lyrics admin view). mode='full' wipes all rows, 'retry'
-    // clears error/pending; each call refreshes the stats counters.
-    purgeLyricsCache: async function(mode) {
-      try {
-        const r = await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/subsonic/lyrics-cache/purge`,
-          data: { mode },
-        });
-        this.lyricsCachePurgeMsg = `Removed ${r.data.removed} row(s).`;
-        setTimeout(() => { this.lyricsCachePurgeMsg = null; }, 4000);
-        await ADMINDATA.getSubsonicStats();
-      } catch (err) {
-        iziToast.error({ title: `Purge failed: ${escHtml(err.message || '?')}`,
-          position: 'topCenter', timeout: 3000 });
       }
     },
     mintForUser: async function(username) {

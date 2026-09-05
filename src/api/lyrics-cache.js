@@ -18,7 +18,8 @@
  *                    now the backfill worker's cooldown/dedup ledger, so
  *                    sweeping orphaned + superseded rows still matters.
  *   - cacheStats() / purgeAll() / purgeTransient() — admin surface for
- *                    the subsonic lyrics-cache panel.
+ *                    the "Lyrics Cache" card in the Lyrics admin view
+ *                    (GET /api/v1/admin/lyrics, POST .../lyrics/cache/purge).
  *
  * NAMING GOTCHA: lyrics_cache.audio_hash actually stores the CANONICAL
  * hash — COALESCE(audio_hash, file_hash) — not audio_hash specifically.
