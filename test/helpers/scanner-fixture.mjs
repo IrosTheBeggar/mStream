@@ -138,6 +138,10 @@ export async function buildFixtureLibrary(rootDir) {
     // should reconcile, but the data path is in place here.
     if (i === 1) { tags.BPM = '124'; tags.KEY = '8A'; tags.INITIALKEY = '8A'; }
     if (i === 2) { tags.BPM = '90';  /* no key — bpm_source still 'tag' */ }
+    // V71: ARTISTSORT + MUSICBRAINZ_ARTISTID as real Vorbis comments — both
+    // scanners must fill artists.sort_name / mbz_artist_id from them, and
+    // order_name must follow the sort tag ("artist, solo").
+    if (i === 3) { tags.ARTISTSORT = 'Artist, Solo'; tags.MUSICBRAINZ_ARTISTID = '0a0a0a0a-1111-4222-8333-444444444444'; }
     await makeAudio(path.join(a1, `${i.toString().padStart(2, '0')} Track ${i}.flac`), FLAC, tags);
   }
 
@@ -217,7 +221,10 @@ export async function buildFixtureLibrary(rootDir) {
   await makeAudio(path.join(a5, '02.flac'), FLAC, { title: 'Test FLAC', artist: 'Format Test', album: 'Mixed', track: '2/5' });
   await makeAudio(path.join(a5, '03.ogg'),  OGG,  { title: 'Test OGG',  artist: 'Format Test', album: 'Mixed', track: '3/5' });
   await makeAudio(path.join(a5, '04.m4a'),  M4A,  { title: 'Test M4A',  artist: 'Format Test', album: 'Mixed', track: '4/5' });
-  await makeAudio(path.join(a5, '05.wav'),  WAV,  { title: 'Test WAV',  artist: 'Format Test', album: 'Mixed', track: '5/5' });
+  // V71: one track spells the artist differently. Same name_key → same
+  // artist row; the display name is the majority spelling ('Format Test',
+  // 4 votes to 1) whichever file a parallel walk commits first.
+  await makeAudio(path.join(a5, '05.wav'),  WAV,  { title: 'Test WAV',  artist: 'format test', album: 'Mixed', track: '5/5' });
 
   // ── Album 6: directory album-art + sidecar lyrics (3 tracks) ──────
   // Drop a folder.jpg next to the tracks so check_directory_for_album_art

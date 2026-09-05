@@ -25,6 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import express from 'express';
+import { orderName } from '../../src/db/name-key.js';
 
 let testRoot, server, base;
 let config, manager, dbApi, searchApi;
@@ -107,6 +108,12 @@ before(async () => {
   // libB: OLDEST timestamps + an album and artist that exist ONLY here.
   addTrack(LIB_B, albumId('Hidden Album')[0], artistId('Solo'), '2000-01-01 00:00:00');
   addTrack(LIB_B, null, artistId('HiddenOnly'), '2000-01-02 00:00:00');
+  // V71: an article-led artist for the `sort: 'order'` test. Fixture inserts
+  // get their name_key from the artists_ai_key trigger (lower(trim)), which
+  // does not strip articles — order_name is set the way the scanners write it.
+  insArtist.run('The Zed');
+  d.prepare('UPDATE artists SET order_name = ? WHERE name = ?').run(orderName('The Zed'), 'The Zed');
+  addTrack(LIB_A, null, artistId('The Zed'), '2023-01-01 00:00:00');
 
   // The two M2M arms artists-albums has to union in, plus the second "Twin"
   // row so Solo reaches both copies (see the fixture note above).
@@ -391,6 +398,34 @@ describe('album-songs year matches the album range, not the track year', () => {
     // filter finds it. (Album-less tracks have no range to consult.)
     assert.deepEqual((await post('/api/v1/db/album-songs', { album: null, artist: 'HiddenOnly', year: 2000 })).body, []);
     assert.equal((await post('/api/v1/db/album-songs', { album: null, artist: 'HiddenOnly' })).body.length, 1);
+  });
+});
+
+// ── artist lookups by normalised key + artist sort modes (V71) ──────────────
+
+describe('artist parameters match on the normalised key', () => {
+  test('artists-albums resolves any spelling of the artist', async () => {
+    scopeTo(null);
+    const exact = (await post('/api/v1/db/artists-albums', { artist: 'Solo' })).body.albums.map(a => a.name).sort();
+    const shouted = (await post('/api/v1/db/artists-albums', { artist: '  SOLO ' })).body.albums.map(a => a.name).sort();
+    assert.deepEqual(shouted, exact);
+    assert.ok(exact.length > 0);
+  });
+
+  test('album-songs singles bucket resolves the track artist by key', async () => {
+    scopeTo(null);
+    assert.equal((await post('/api/v1/db/album-songs', { album: null, artist: 'hiddenonly' })).body.length, 1);
+  });
+
+  test('/db/artists sorts by display name by default and by order_name on request', async () => {
+    scopeTo(null);
+    const byName = (await post('/api/v1/db/artists', {})).body.artists;
+    assert.ok(byName.indexOf('The Zed') < byName.indexOf('TieBreak'), `default: "The Zed" under T: ${byName}`);
+    const byOrder = (await post('/api/v1/db/artists', { sort: 'order' })).body.artists;
+    assert.equal(byOrder[byOrder.length - 1], 'The Zed', `order: article dropped → under Z: ${byOrder}`);
+    assert.deepEqual([...byOrder].sort(), [...byName].sort(), 'same set, different order');
+    const viaQuery = await fetch(`${base}/api/v1/db/artists?sort=order`).then(r => r.json());
+    assert.deepEqual(viaQuery.artists, byOrder, 'GET honours ?sort=order');
   });
 });
 

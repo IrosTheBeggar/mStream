@@ -31,6 +31,7 @@ import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 import { renderMetadataObj, toLiteMetadata, trackQuery, libraryFilter, fetchGenresForTrack } from './db.js';
 import { getVPathInfo } from '../util/vpath.js';
+import { nameKey } from '../db/name-key.js';
 
 const d = () => db.getDB();
 
@@ -393,8 +394,8 @@ export function setup(mstream) {
     const seedStats = d().prepare(`
       SELECT COUNT(*) AS n FROM tracks t
       JOIN artists a ON a.id = t.artist_id
-      WHERE a.name = ? AND ${filter.clause}
-    `).get(body.artist, ...filter.params);
+      WHERE a.name_key = ? AND ${filter.clause}
+    `).get(nameKey(body.artist), ...filter.params);
     if (!seedStats || seedStats.n === 0) { throw new WebError('Artist not found', 404); }
 
     const seedCentroid = index.artists.get(body.artist);
@@ -412,7 +413,7 @@ export function setup(mstream) {
     const artistVisible = d().prepare(`
       SELECT 1 FROM tracks t
       JOIN artists a ON a.id = t.artist_id
-      WHERE a.name = ? AND ${filter.clause}
+      WHERE a.name_key = ? AND ${filter.clause}
       LIMIT 1
     `);
 
@@ -426,7 +427,7 @@ export function setup(mstream) {
     for (const cand of ranked) {
       if (results.length >= body.limit) { break; }
       if (++considered > maxConsidered) { capped = true; break; }
-      if (!artistVisible.get(cand.artist, ...filter.params)) { continue; }
+      if (!artistVisible.get(nameKey(cand.artist), ...filter.params)) { continue; }
 
       // Entry points: the candidate's tracks closest to the SEED's sound —
       // playable doorways that continue the vibe the user came from.

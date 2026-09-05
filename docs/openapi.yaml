@@ -1367,7 +1367,16 @@ paths:
     get: &artistsOp
       tags: [Library]
       summary: List all artists
-      description: Unique artist names from the user's accessible libraries, case-insensitive sort.
+      description: |
+        Unique artist names from the user's accessible libraries. Default order is the
+        display name, case-insensitive. `sort=order` sorts by the artist's sort key instead:
+        the ARTISTSORT tag when the library carries one, else the name with one leading
+        article dropped ("The Beatles" under B).
+      parameters:
+        - in: query
+          name: sort
+          required: false
+          schema: { type: string, enum: [name, order], default: name }
       responses:
         "200":
           description: Artists.
@@ -1383,10 +1392,15 @@ paths:
     post:
       <<: *artistsOp
       requestBody:
-        description: Optional `ignoreVPaths` filter.
+        description: Optional `ignoreVPaths` filter and `sort` mode.
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/IgnoreVPaths" }
+            schema:
+              allOf:
+                - type: object
+                  properties:
+                    sort: { type: string, enum: [name, order], default: name }
+                - { $ref: "#/components/schemas/IgnoreVPaths" }
 
   /api/v1/db/artists-albums:
     post:
@@ -1401,7 +1415,9 @@ paths:
                 - type: object
                   required: [artist]
                   properties:
-                    artist: { type: string }
+                    artist:
+                      type: string
+                      description: Matched on the normalised artist name (case, whitespace and quote style insensitive).
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":

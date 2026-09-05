@@ -9,6 +9,7 @@ import { joiValidate } from '../util/validation.js';
 import * as vpath from '../util/vpath.js';
 import * as db from '../db/manager.js';
 import { refreshDirtyAlbums } from '../db/album-aggregate.js';
+import { refreshDirtyArtists } from '../db/artist-aggregate.js';
 import WebError from '../util/web-error.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import { parseFile } from 'music-metadata';
@@ -442,12 +443,25 @@ export function setup(mstream) {
             data.aaFile, data.replaygainTrackDb, data.modified, data.sID, 'ytdl', hashV,
             data.album || null
           );
+          // V71: the primary-artist credit row, with the raw spelling that
+          // votes on the artist's display name (the scanners write the same
+          // row from the split ARTIST tag).
+          if (artistId) {
+            // Trimmed, like the scanners' split credits — a " Foo" vote
+            // would win a 1:1 tie on BINARY order and rename the artist.
+            const credit = String(data.artist).trim() || null;
+            d.prepare(
+              `INSERT OR IGNORE INTO track_artists (track_id, artist_id, role, position, tag_name)
+               VALUES ((SELECT id FROM tracks WHERE filepath = ? AND library_id = ?), ?, 'main', 0, ?)`
+            ).run(data.filepath, lib.id, artistId, credit);
+          }
           // The insert (and the REPLACE of any earlier row at this path)
-          // flagged the affected album(s) through the tracks_*_agg
+          // flagged the affected album(s) / artist(s) through the *_agg
           // triggers; recompute them now so the album's year range / count
-          // reflect this track before any scan runs — the album-songs API
-          // matches `year` against that range.
+          // and the artist's counts reflect this track before any scan runs
+          // — the album-songs API matches `year` against that range.
           refreshDirtyAlbums(d);
+          refreshDirtyArtists(d);
         }
         winston.info(`yt-dlp: added ${relativePath} to database`);
 

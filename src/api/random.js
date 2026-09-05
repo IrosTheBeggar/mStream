@@ -50,6 +50,7 @@ import * as sim from '../db/discovery-similarity.js';
 import { renderMetadataObj, libraryFilter, trackQuery, fetchGenresForTrack } from './db.js';
 import { requireIndex, resolveSeedTrack, decodeSeedVector } from './discovery.js';
 import { joiValidate } from '../util/validation.js';
+import { nameKey } from '../db/name-key.js';
 import WebError from '../util/web-error.js';
 
 // ── Camelot → raw-key name expansion ────────────────────────────────────────
@@ -322,17 +323,19 @@ export function buildArtistFilter(opts) {
     // references the SAME parameter list, so we push the names once
     // and bind them three times via repeated placeholders.
     clauses.push(`(
-      t.artist_id IN (SELECT id FROM artists WHERE name IN (${ph}))
+      t.artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
       OR t.id IN (
         SELECT track_id FROM track_artists
-         WHERE artist_id IN (SELECT id FROM artists WHERE name IN (${ph}))
+         WHERE artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
       )
       OR t.album_id IN (
         SELECT album_id FROM album_artists
-         WHERE artist_id IN (SELECT id FROM artists WHERE name IN (${ph}))
+         WHERE artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
       )
     )`);
-    params.push(...opts.artists, ...opts.artists, ...opts.artists);
+    // V71: names match on their normalised key (src/db/name-key.js).
+    const keys = opts.artists.map(nameKey);
+    params.push(...keys, ...keys, ...keys);
   }
 
   if (Array.isArray(opts.ignoreArtists) && opts.ignoreArtists.length > 0) {
@@ -345,19 +348,20 @@ export function buildArtistFilter(opts) {
     // in WHERE), but the V18 fallback chain ensures most tracks have
     // at least one credit set anyway.
     clauses.push(`
-      COALESCE(t.artist_id, -1) NOT IN (SELECT id FROM artists WHERE name IN (${ph}))
+      COALESCE(t.artist_id, -1) NOT IN (SELECT id FROM artists WHERE name_key IN (${ph}))
       AND NOT EXISTS (
         SELECT 1 FROM track_artists ta
          WHERE ta.track_id = t.id
-           AND ta.artist_id IN (SELECT id FROM artists WHERE name IN (${ph}))
+           AND ta.artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
       )
       AND NOT EXISTS (
         SELECT 1 FROM album_artists aa
          WHERE aa.album_id = t.album_id
-           AND aa.artist_id IN (SELECT id FROM artists WHERE name IN (${ph}))
+           AND aa.artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
       )
     `);
-    params.push(...opts.ignoreArtists, ...opts.ignoreArtists, ...opts.ignoreArtists);
+    const ignoreKeys = opts.ignoreArtists.map(nameKey);
+    params.push(...ignoreKeys, ...ignoreKeys, ...ignoreKeys);
   }
 
   return { clauses, params };
