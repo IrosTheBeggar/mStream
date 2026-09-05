@@ -217,7 +217,7 @@ const ORPHAN_GENRES_SQL = 'SELECT id FROM genres WHERE NOT EXISTS (SELECT 1 FROM
 // MOVE RE-HOMING (`moveRehome: { libraryId }`): a doomed candidate whose
 // content hash matches a LIVE row is a moved/renamed file, and the
 // path-keyed user references that would otherwise dangle forever —
-// playlist_tracks ("<vpath>/<rel>", see the Subsonic playlist join),
+// playlist_tracks ("<vpath>/<rel>"),
 // cue_points and play_events (rel + library_id) — are rewritten to the
 // survivor's path BEFORE the chunk's DELETE. That ordering is the crash
 // safety: dying between rewrite and delete leaves references pointing at

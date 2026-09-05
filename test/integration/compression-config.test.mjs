@@ -65,7 +65,7 @@ async function getConfig() {
 
 before(async () => {
   server = await startServer({
-    dlnaMode: 'disabled', subsonicMode: 'disabled', waitForScan: false,
+    dlnaMode: 'disabled', waitForScan: false,
     users: [{ ...ADMIN, admin: true }],
   });
   const r = await fetch(`${server.baseUrl}/api/v1/auth/login`, {

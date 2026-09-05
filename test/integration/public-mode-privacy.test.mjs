@@ -56,7 +56,9 @@ function findFreePort() {
   });
 }
 
-async function waitForReady(baseUrl, timeoutMs = 30_000) {
+// 90 s, not 30: the same loaded-CI-runner ceiling test/helpers/server.mjs
+// uses for this wait — a starved Windows shard has expired 30 s at boot.
+async function waitForReady(baseUrl, timeoutMs = 90_000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
@@ -79,7 +81,6 @@ async function bootMstream(tmpDir, musicDir) {
     // route to any of them, so we boot in velvet mode here.
     ui: 'velvet',
     dlna:     { mode: 'disabled' },
-    subsonic: { mode: 'disabled' },
     folders:  { testlib: { root: musicDir } },
     storage: {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),
@@ -505,7 +506,6 @@ async function bootMstreamLocked(tmpDir, musicDir) {
     ui: 'velvet',
     lockAdmin: true,
     dlna:     { mode: 'disabled' },
-    subsonic: { mode: 'disabled' },
     folders:  { testlib: { root: musicDir } },
     storage: {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),

@@ -7,7 +7,7 @@
  *     the re-serve ran ~70 ms later: start() found the endpoint still closing,
  *     no-oped, the late stop nulled it, and the tunnel was dead until the next
  *     process restart — after ANY reboot-requiring admin save, no error logged.
- *   - The separate-port Subsonic server keeps serving across the reboot on the
+ *   - The separate-port DLNA server keeps serving across the reboot on the
  *     same socket (kept listener) instead of close()+listen() — the re-listen
  *     is what dies on the Windows Bun bundle mid-scan.
  *   - Two admin saves in flight together both end up applied: the coalesced
@@ -108,7 +108,7 @@ describe(`soft reboot keeps Quick Connect (${label})`, { skip: irohAvailable ? f
   let jwt;
   before(async () => {
     server = await startServer({
-      dlnaMode: 'disabled', subsonicMode: 'disabled', users: [{ ...ADMIN, admin: true }],
+      dlnaMode: 'disabled', users: [{ ...ADMIN, admin: true }],
       extraConfig: { iroh: { enabled: true } }, ...startOpts,
     });
     jwt = await login(server);
@@ -144,36 +144,36 @@ describe(`soft reboot keeps Quick Connect (${label})`, { skip: irohAvailable ? f
   });
 });
 
-describe(`soft reboot keeps the separate-port Subsonic listener (${label})`, () => {
+describe(`soft reboot keeps the separate-port DLNA listener (${label})`, () => {
   let server;
   let jwt;
   before(async () => {
-    server = await startServer({ dlnaMode: 'disabled', subsonicMode: 'separate-port', users: [{ ...ADMIN, admin: true }], ...startOpts });
+    server = await startServer({ dlnaMode: 'separate-port', users: [{ ...ADMIN, admin: true }], ...startOpts });
     jwt = await login(server);
   });
   after(async () => { if (server) { await server.stop(); } });
 
-  const ping = () => fetch(`${server.subsonicBaseUrl}/rest/ping.view?u=${ADMIN.username}&p=${ADMIN.password}&v=1.16.1&c=test&f=json`);
+  const ping = () => fetch(`${server.dlnaBaseUrl}/dlna/device.xml`);
 
-  test('the Subsonic port keeps answering through and after the reboot; the socket was kept, not re-listened', async () => {
+  test('the DLNA port keeps answering through and after the reboot; the socket was kept, not re-listened', async () => {
     assert.equal((await ping()).status, 200);
     const { lastSeq } = await recentLogText(server, jwt);
 
     const r = await adminPost(server, jwt, '/api/v1/admin/config/trust-proxy', { trustProxy: true });
     assert.equal(r.status, 200);
-    // Hammer the Subsonic port through the reboot window: it must never refuse.
+    // Hammer the DLNA port through the reboot window: it must never refuse.
     const outcomes = [];
     const until = Date.now() + 1200;
     while (Date.now() < until) {
       try { outcomes.push((await ping()).status); } catch (err) { outcomes.push(err.cause?.code || err.message); }
     }
-    assert.deepEqual(outcomes.filter((o) => o !== 200), [], `Subsonic port faltered during the reboot: ${JSON.stringify(outcomes)}`);
+    assert.deepEqual(outcomes.filter((o) => o !== 200), [], `DLNA port faltered during the reboot: ${JSON.stringify(outcomes)}`);
     await waitForConfig(server, jwt, (c) => c.trustProxy === true, 'trustProxy=true');
     assert.equal((await ping()).status, 200);
 
     const { text } = await recentLogText(server, jwt, lastSeq);
-    assert.match(text, /\[subsonic\] Separate server kept across reboot/);
-    assert.doesNotMatch(text, /\[subsonic\] Separate server stopped|\[subsonic\] Separate server error/);
+    assert.match(text, /\[dlna\] Separate server kept across reboot/);
+    assert.doesNotMatch(text, /\[dlna\] Separate server stopped|\[dlna\] Separate server error/);
   });
 });
 
@@ -181,7 +181,7 @@ describe(`overlapping admin saves and rejected binds (${label})`, () => {
   let server;
   let jwt;
   before(async () => {
-    server = await startServer({ dlnaMode: 'disabled', subsonicMode: 'disabled', users: [{ ...ADMIN, admin: true }], ...startOpts });
+    server = await startServer({ dlnaMode: 'disabled', users: [{ ...ADMIN, admin: true }], ...startOpts });
     jwt = await login(server);
   });
   after(async () => { if (server) { await server.stop(); } });
@@ -253,7 +253,7 @@ describe(`the reboot sweep spares kept keep-alive connections (${label})`, () =>
   let server;
   let jwt;
   before(async () => {
-    server = await startServer({ dlnaMode: 'disabled', subsonicMode: 'disabled', users: [{ ...ADMIN, admin: true }], ...startOpts });
+    server = await startServer({ dlnaMode: 'disabled', users: [{ ...ADMIN, admin: true }], ...startOpts });
     jwt = await login(server);
   });
   after(async () => { if (server) { await server.stop(); } });

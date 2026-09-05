@@ -1,20 +1,20 @@
 /**
- * Album track ordering on the OTHER surfaces — Subsonic and DLNA.
+ * Album track ordering on the OTHER surface — DLNA.
  *
  * test/integration/album-track-order.test.mjs covers the webapp album view
  * (/api/v1/db/album-songs). The same ALBUM_TRACK_ORDER fragment
- * (src/db/track-order.js) also drives the Subsonic album/directory browsers
- * and the DLNA content directory, and those had no ordering coverage at all:
- * the shared fixture library is entirely `disc: 1` with no NULLs, so every
- * existing Subsonic/DLNA test would pass just as happily with the discs
- * interleaved or the untagged tracks hoisted to the top.
+ * (src/db/track-order.js) also drives the DLNA content directory, and that
+ * had no ordering coverage at all: the shared fixture library is entirely
+ * `disc: 1` with no NULLs, so every existing DLNA test would pass just as
+ * happily with the discs interleaved or the untagged tracks hoisted to the
+ * top.
  *
  * Three albums, covering two different jobs:
  *   - "Order Half Tagged" and "Order Partly Numbered" are the cases that
  *     actually broke — SQLite sorts NULL FIRST, so a track missing its disc
  *     or track number used to be hoisted above the properly tagged ones.
- *     Both fail on every surface here against the pre-fix ordering (6 of
- *     these 9 assertions do).
+ *     Both fail here against the pre-fix ordering (2 of these 3
+ *     assertions do).
  *   - "Order Two Disc" is fully tagged, so the old and new orderings agree
  *     on it and it is NOT a regression guard for that fix. It is here to
  *     pin disc separation itself: a two-disc set whose track numbers restart
@@ -71,7 +71,7 @@ const EXPECTED = {
   // interleaved by track number — not stacked on top as NULL-first gave.
   'Order Half Tagged': ['Zulu', 'Yankee', 'Xray', 'Whiskey'],
   // Unnumbered tracks fall to the bottom and tie-break on title, which is
-  // what both the Subsonic and DLNA queries use as their last sort key.
+  // what the DLNA query uses as its last sort key.
   'Order Partly Numbered': ['Zulu', 'Yankee', 'Alpha', 'Bravo'],
 };
 
@@ -79,7 +79,6 @@ const USER = { username: 'order-admin', password: 'passw0rd-order' };
 
 let server;
 let tmpLib;
-let apiKey;
 
 before(async () => {
   tmpLib = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-ordersurf-'));
@@ -107,60 +106,12 @@ before(async () => {
     users: [{ ...USER, admin: true, vpaths: ['testlib', VPATH] }],
     extraFolders: { [VPATH]: tmpLib },
     dlnaMode: 'same-port',
-    subsonicMode: 'same-port',
   });
-
-  const login = await fetch(`${server.baseUrl}/api/v1/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(USER),
-  });
-  const { token } = await login.json();
-  const keyResp = await fetch(`${server.baseUrl}/api/v1/user/api-keys`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-access-token': token },
-    body: JSON.stringify({ name: 'order-surfaces' }),
-  });
-  apiKey = (await keyResp.json()).key;
-  assert.ok(apiKey, 'expected an API key');
 });
 
 after(async () => {
   if (server) { await server.stop(); }
   if (tmpLib) { await fs.rm(tmpLib, { recursive: true, force: true }).catch(() => {}); }
-});
-
-// ── Subsonic ────────────────────────────────────────────────────────────────
-
-async function sub(method, params = {}) {
-  const q = new URLSearchParams({ f: 'json', apiKey, ...params });
-  const r = await fetch(`${server.baseUrl}/rest/${method}?${q}`);
-  const body = await r.json();
-  const env = body['subsonic-response'];
-  assert.equal(env.status, 'ok', `${method}: ${JSON.stringify(env.error || {})}`);
-  return env;
-}
-
-// Subsonic ids are opaque/encoded — resolve them by name rather than guessing.
-async function subsonicAlbumId(name) {
-  const env = await sub('getAlbumList2', { type: 'alphabeticalByName', size: 500 });
-  const hit = (env.albumList2?.album || []).find((a) => a.name === name);
-  assert.ok(hit, `album "${name}" missing from getAlbumList2`);
-  return hit.id;
-}
-
-describe('Subsonic album track ordering', () => {
-  for (const album of Object.keys(EXPECTED)) {
-    test(`getAlbum("${album}") is in disc/track order`, async () => {
-      const env = await sub('getAlbum', { id: await subsonicAlbumId(album) });
-      assert.deepEqual((env.album.song || []).map((s) => s.title), EXPECTED[album]);
-    });
-
-    test(`getMusicDirectory("${album}") is in disc/track order`, async () => {
-      const env = await sub('getMusicDirectory', { id: await subsonicAlbumId(album) });
-      assert.deepEqual((env.directory.child || []).map((c) => c.title), EXPECTED[album]);
-    });
-  }
 });
 
 // ── DLNA ────────────────────────────────────────────────────────────────────

@@ -35,7 +35,9 @@ function findFreePort() {
   });
 }
 
-async function waitForReady(baseUrl, timeoutMs = 30_000) {
+// 90 s, not 30: the same loaded-CI-runner ceiling test/helpers/server.mjs
+// uses for this wait — a starved Windows shard has expired 30 s at boot.
+async function waitForReady(baseUrl, timeoutMs = 90_000) {
   const start = Date.now();
   let lastErr;
   while (Date.now() - start < timeoutMs) {
@@ -50,7 +52,6 @@ async function boot(tmpDir, musicDir) {
   const config = {
     port, address: '127.0.0.1', ui: 'default',
     dlna:     { mode: 'disabled' },
-    subsonic: { mode: 'disabled' },
     folders:  { testlib: { root: musicDir } },
     storage: {
       albumArtDirectory: path.join(tmpDir, 'image-cache'),

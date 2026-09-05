@@ -907,8 +907,9 @@ async function parseMyFile(absolutePath, modified) {
     parsedNative = parsed.native;
     songInfo = parsed.common;
     songInfo.duration = parsed.format?.duration || null;
-    // OpenSubsonic extended audio-format fields. music-metadata exposes
-    // these as part of parsed.format — store what's available; missing
+    // Extended audio-format fields (sample rate / bit depth / channels).
+    // music-metadata exposes these as part of parsed.format — store what's
+    // available; missing
     // values stay NULL and clients just don't render the corresponding
     // quality badge.
     songInfo.sampleRate = Number.isFinite(parsed.format?.sampleRate) ? parsed.format.sampleRate : null;

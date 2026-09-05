@@ -164,7 +164,7 @@ function spawnTranscode(inputPath, codec, bitrate, offsetSec = 0) {
   const args = [];
   // Input seek (`-ss` before `-i`): fast, keyframe-aligned — good enough for
   // lossy transcode targets where sample-accurate seek doesn't matter. Mirrors
-  // the DLNA time-seek and Subsonic stream paths.
+  // the DLNA time-seek path.
   if (offsetSec > 0) { args.push('-ss', offsetSec.toFixed(3)); }
   args.push(
     '-i', inputPath,

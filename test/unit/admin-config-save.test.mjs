@@ -27,30 +27,30 @@ describe('admin config saves merge instead of clobbering', () => {
   const read = async () => JSON.parse(await fs.readFile(file, 'utf8'));
 
   test('two editors that loaded the same document both keep their change', async () => {
-    await fs.writeFile(file, JSON.stringify({ port: 3000, trustProxy: false, maxRequestSize: '1MB', subsonic: { mode: 'disabled', port: 4040 } }));
+    await fs.writeFile(file, JSON.stringify({ port: 3000, trustProxy: false, maxRequestSize: '1MB', dlna: { mode: 'disabled', port: 4040 } }));
     const a = await loadFile(file);   // editTrustProxy
     const b = await loadFile(file);   // editMaxRequestSize, loaded BEFORE a saved
     a.trustProxy = true;
     await saveFile(a, file);
     b.maxRequestSize = '120MB';
     await saveFile(b, file);          // used to write b's stale trustProxy:false
-    assert.deepEqual(await read(), { port: 3000, trustProxy: true, maxRequestSize: '120MB', subsonic: { mode: 'disabled', port: 4040 } });
+    assert.deepEqual(await read(), { port: 3000, trustProxy: true, maxRequestSize: '120MB', dlna: { mode: 'disabled', port: 4040 } });
   });
 
   test('nested sibling keys survive; the same path is last-writer-wins; deletions apply', async () => {
-    await fs.writeFile(file, JSON.stringify({ port: 3000, subsonic: { mode: 'disabled', port: 4040 }, ssl: { cert: 'c', key: 'k' } }));
+    await fs.writeFile(file, JSON.stringify({ port: 3000, dlna: { mode: 'disabled', port: 4040 }, ssl: { cert: 'c', key: 'k' } }));
     const a = await loadFile(file);
     const b = await loadFile(file);
     const c = await loadFile(file);
-    a.subsonic.mode = 'separate-port';
+    a.dlna.mode = 'separate-port';
     await saveFile(a, file);
-    b.subsonic.port = 4041;             // sibling of a's change
+    b.dlna.port = 4041;             // sibling of a's change
     delete b.ssl;                       // removeSSL-style deletion
     await saveFile(b, file);
     c.port = 3001;
-    c.subsonic.mode = 'same-port';      // same path as a: later save wins
+    c.dlna.mode = 'same-port';      // same path as a: later save wins
     await saveFile(c, file);
-    assert.deepEqual(await read(), { port: 3001, subsonic: { mode: 'same-port', port: 4041 } });
+    assert.deepEqual(await read(), { port: 3001, dlna: { mode: 'same-port', port: 4041 } });
   });
 
   test('a document not obtained from loadFile is written as is', async () => {

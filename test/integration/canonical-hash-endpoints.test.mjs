@@ -6,10 +6,6 @@
  *     when present) and the play is visible to recently/most-played —
  *     the pre-V52 bug SELECTed no audio_hash, keyed every play on
  *     file_hash, and every COALESCE-join reader missed it forever.
- *   - legacy file_hash-keyed bookmarks (pre-audio_hash rows) are
- *     deletable and never duplicate: deleteBookmark removes EVERY
- *     identity hash, createBookmark supersedes the legacy row.
- *   - un-starring a never-starred song mints no all-null dead row.
  *   - rating a hashless track (failed parse) is a clean client error,
  *     not a NOT NULL constraint 500.
  */
@@ -25,7 +21,6 @@ const ADMIN = { username: 'admin', password: 'pw-admin-1' };
 
 let server;
 let jwt;
-let apiKey;
 let dbPath;
 let vpath;
 
@@ -45,13 +40,6 @@ before(async () => {
     body: JSON.stringify(ADMIN),
   });
   jwt = (await loginR.json()).token;
-  const keyR = await fetch(`${server.baseUrl}/api/v1/user/api-keys`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-access-token': jwt },
-    body: JSON.stringify({ name: 'canonical-hash-tests' }),
-  });
-  apiKey = (await keyR.json()).key;
-
   // Locate the instance's SQLite file + library vpath for DB assertions.
   const found = fs.readdirSync(server.tmpDir, { recursive: true })
     .find(f => String(f).endsWith('.db') && !String(f).includes('-wal'));
@@ -70,29 +58,19 @@ function post(p, body) {
   });
 }
 
-async function sub(method, params = {}) {
-  const q = new URLSearchParams({ f: 'json', apiKey });
-  for (const [k, v] of Object.entries(params)) { q.set(k, v); }
-  const r = await fetch(`${server.baseUrl}/rest/${method}?${q}`);
-  return (await r.json())['subsonic-response'];
-}
-
-// A scanned track that carries an audio_hash, plus its subsonic song id.
-async function pickTrack() {
+// A scanned track whose audio_hash differs from its file_hash.
+function pickTrack() {
   const t = withDb(db => db.prepare(`
     SELECT id, filepath, file_hash, audio_hash FROM tracks
      WHERE audio_hash IS NOT NULL AND file_hash IS NOT NULL
        AND audio_hash != file_hash LIMIT 1`).get());
   assert.ok(t, 'fixture library has a dual-hash track');
-  const r = await sub('getRandomSongs', { size: 500 });
-  const song = r.randomSongs.song.find(s => s.path === t.filepath || s.path?.endsWith(t.filepath));
-  assert.ok(song, 'subsonic id resolved for the chosen track');
-  return { ...t, songId: song.id };
+  return t;
 }
 
 describe('canonical-hash endpoint contract', () => {
   test('scrobble-by-filepath keys on audio_hash and shows in recently/most-played', async () => {
-    const t = await pickTrack();
+    const t = pickTrack();
 
     const r = await post('/api/v1/lastfm/scrobble-by-filepath',
       { filePath: `${vpath}/${t.filepath}` });
@@ -111,52 +89,6 @@ describe('canonical-hash endpoint contract', () => {
       assert.ok(JSON.stringify(items).includes(t.filepath),
         `${ep} sees the scrobbled track`);
     }
-  });
-
-  test('legacy file_hash-keyed bookmark: listed, deletable, superseded by re-create', async () => {
-    const t = await pickTrack();
-    const userId = withDb(db =>
-      db.prepare('SELECT id FROM users WHERE username = ?').get(ADMIN.username).id);
-
-    // Plant a legacy-keyed bookmark (pre-audio_hash era row).
-    withDb(db => db.prepare(`INSERT INTO user_bookmarks (user_id, track_hash, position_ms)
-      VALUES (?, ?, 1234)`).run(userId, t.file_hash));
-
-    let r = await sub('getBookmarks');
-    assert.equal(r.bookmarks.bookmark.length, 1, 'legacy bookmark listed');
-
-    // createBookmark over it: exactly one row, keyed canonical.
-    await sub('createBookmark', { id: t.songId, position: 9999 });
-    withDb(db => {
-      const rows = db.prepare('SELECT track_hash, position_ms FROM user_bookmarks WHERE user_id = ?')
-        .all(userId);
-      assert.equal(rows.length, 1, 'legacy row superseded, no duplicate');
-      assert.equal(rows[0].track_hash, t.audio_hash, 'keyed on the canonical hash');
-      assert.equal(rows[0].position_ms, 9999);
-    });
-
-    // Plant the legacy row again next to the canonical one; delete must
-    // remove BOTH identities (pre-fix, the legacy row was undeletable).
-    withDb(db => db.prepare(`INSERT INTO user_bookmarks (user_id, track_hash, position_ms)
-      VALUES (?, ?, 1234)`).run(userId, t.file_hash));
-    await sub('deleteBookmark', { id: t.songId });
-    withDb(db => {
-      assert.equal(db.prepare('SELECT COUNT(*) c FROM user_bookmarks WHERE user_id = ?')
-        .get(userId).c, 0, 'delete removed every identity-keyed row');
-    });
-    r = await sub('getBookmarks');
-    assert.equal(r.bookmarks.bookmark.length, 0);
-  });
-
-  test('un-starring a never-starred song mints no dead row', async () => {
-    const t = await pickTrack();
-    const beforeCount = withDb(db =>
-      db.prepare('SELECT COUNT(*) c FROM user_metadata').get().c);
-    const r = await sub('unstar', { id: t.songId });
-    assert.equal(r.status, 'ok');
-    const afterCount = withDb(db =>
-      db.prepare('SELECT COUNT(*) c FROM user_metadata').get().c);
-    assert.equal(afterCount, beforeCount, 'no row created by the no-op unstar');
   });
 
   test('rating a hashless track is a clean error, not a constraint 500', async () => {

@@ -64,8 +64,8 @@ export function renderMetadataObj(row) {
       // tracks row (trackQuery already SELECTs t.*, so no extra query).
       // These let clients render quality badges like "24/96 FLAC" or
       // "320 kbps". Units, to match the DB columns:
-      //   bitrate     — bits per second (the Subsonic API reports kbps;
-      //                 this is the raw value, divide by 1000 for kbps)
+      //   bitrate     — bits per second (the raw value; divide by 1000
+      //                 for the kbps figure clients usually display)
       //   duration    — seconds (REAL)
       //   sample-rate — Hz
       //   bit-depth   — bits
@@ -77,8 +77,7 @@ export function renderMetadataObj(row) {
       //
       // bitrate + file-size are written by both scanners
       // (rust-parser/src/main.rs, src/db/scanner.mjs). Rows scanned before
-      // that change stay NULL until a force-rescan. The Subsonic song
-      // builder surfaces the same values (bitRate in kbps, size in bytes).
+      // that change stay NULL until a force-rescan.
       bitrate: row.bitrate ?? null,
       format: row.format || null,
       'sample-rate': row.sample_rate ?? null,

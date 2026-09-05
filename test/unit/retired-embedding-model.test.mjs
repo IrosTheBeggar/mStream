@@ -67,7 +67,7 @@ describe('retired embedding models', () => {
   });
 
   // setup() rewrites the config file for its own reasons (generating the
-  // secret / subsonicSecret / iroh + federation keys / dlna uuid), so
+  // secret / iroh + federation keys / dlna uuid), so
   // byte-equality proves nothing here. What must hold is that the migration
   // leaves a LIVE id untouched, on disk and in memory.
   test('a live model id is left alone', async () => {

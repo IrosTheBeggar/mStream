@@ -12,7 +12,7 @@ import { Database } from 'bun:sqlite';
 // failures; bun:sqlite raises a SQLiteError whose code is the native SQLite
 // name ('SQLITE_ERROR', ...) or undefined (e.g. FTS5 MATCH parse errors).
 // Callers key on the node-style code — notably the FTS5->LIKE search fallback
-// in src/api/search.js and src/api/subsonic/handlers.js — so translate it here
+// in src/api/search.js — so translate it here
 // so the shim is behaviourally indistinguishable from node:sqlite.
 function withNodeErrors(fn) {
   try {

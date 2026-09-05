@@ -1,7 +1,7 @@
 // Canonical "in album order" SQL sort for a set of tracks, shared by every
 // listing that shows an album's tracks — the webapp album view
-// (/api/v1/db/album-songs), genre songs, the Subsonic album/directory
-// browsers and the DLNA content directory — so they can't drift apart.
+// (/api/v1/db/album-songs), genre songs and the DLNA content directory —
+// so they can't drift apart.
 //
 // Lives in its own dependency-free module rather than in src/api/db.js
 // because src/api/dlna.js needs it too, and db.js already reaches dlna.js

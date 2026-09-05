@@ -52,9 +52,6 @@ const ADMINDATA = (() => {
   // dlna
   module.dlnaParams = {};
   module.dlnaParamsUpdated = { ts: 0 };
-  // subsonic
-  module.subsonicParams = {};
-  module.subsonicParamsUpdated = { ts: 0 };
 
   module.irohParams = {};
   module.irohParamsUpdated = { ts: 0 };
@@ -108,14 +105,6 @@ const ADMINDATA = (() => {
     sampleMetadata:    {},
   };
   module.torrentPathTemplatesUpdated = { ts: 0 };
-  // subsonic — API keys for the currently-authenticated user. Keys are
-  // returned in full only at creation; subsequent listings are metadata-only.
-  module.apiKeys = [];
-  module.apiKeysUpdated = { ts: 0 };
-  // Holds the most recently minted key so the UI can render a one-time
-  // "copy this now" panel. Cleared as soon as the user dismisses it.
-  module.lastMintedKey = { val: null, name: null };
-
   module.getSharedPlaylists = async () => {
     const res = await API.axios({
       method: 'GET',
@@ -296,17 +285,6 @@ const ADMINDATA = (() => {
     module.dlnaParamsUpdated.ts = Date.now();
   }
 
-  module.getSubsonicParams = async () => {
-    try {
-      const res = await API.axios({
-        method: 'GET',
-        url: `${API.url()}/api/v1/admin/subsonic`
-      });
-      Object.keys(res.data).forEach(key => { module.subsonicParams[key] = res.data[key]; });
-    } catch (err) {}
-    module.subsonicParamsUpdated.ts = Date.now();
-  }
-
   module.getIroh = async () => {
     try {
       const res = await API.axios({
@@ -432,114 +410,6 @@ const ADMINDATA = (() => {
     module.torrentStatusUpdated.ts = Date.now();
   }
 
-  // ── Subsonic API key management ───────────────────────────────────────
-  // All three helpers operate on the currently-authenticated user's keys
-  // via /api/v1/user/api-keys.
-  module.getApiKeys = async () => {
-    try {
-      const res = await API.axios({
-        method: 'GET',
-        url: `${API.url()}/api/v1/user/api-keys`
-      });
-      module.apiKeys.length = 0;
-      res.data.forEach(k => module.apiKeys.push(k));
-    } catch (err) { /* not fatal for panel load */ }
-    module.apiKeysUpdated.ts = Date.now();
-  }
-
-  module.createApiKey = async (name) => {
-    const res = await API.axios({
-      method: 'POST',
-      url: `${API.url()}/api/v1/user/api-keys`,
-      data: { name }
-    });
-    // Stash the plaintext key for the one-time display card.
-    module.lastMintedKey.val = res.data.key;
-    module.lastMintedKey.name = res.data.name;
-    await module.getApiKeys();
-    return res.data.key;
-  }
-
-  module.revokeApiKey = async (id) => {
-    await API.axios({
-      method: 'DELETE',
-      url: `${API.url()}/api/v1/user/api-keys/${id}`
-    });
-    await module.getApiKeys();
-  }
-
-  // ── Subsonic admin-panel polish data ────────────────────────────────
-  module.subsonicStats = { methodsImplemented: 0, methods: [], nowPlaying: [] };
-  module.subsonicStatsUpdated = { ts: 0 };
-  module.getSubsonicStats = async () => {
-    try {
-      const res = await API.axios({
-        method: 'GET', url: `${API.url()}/api/v1/admin/subsonic/stats`,
-      });
-      Object.assign(module.subsonicStats, res.data);
-    } catch (err) { /* UI shows placeholder */ }
-    module.subsonicStatsUpdated.ts = Date.now();
-  }
-
-  // Jukebox status card. `available: false` means autoBootServerAudio is
-  // disabled or the mstream-player binary isn't reachable — the UI
-  // hides the whole card in that case.
-  module.jukeboxStatus = { available: false };
-  module.jukeboxStatusUpdated = { ts: 0 };
-  module.getJukeboxStatus = async () => {
-    try {
-      const res = await API.axios({
-        method: 'GET', url: `${API.url()}/api/v1/admin/subsonic/jukebox`,
-      });
-      module.jukeboxStatus = res.data;
-    } catch (err) { module.jukeboxStatus = { available: false, reason: err.message }; }
-    module.jukeboxStatusUpdated.ts = Date.now();
-  }
-
-  // Recent token-auth rejections. Each entry is { username, client, at, ua }.
-  module.tokenAuthAttempts = [];
-  module.tokenAuthAttemptsUpdated = { ts: 0 };
-  module.getTokenAuthAttempts = async () => {
-    try {
-      const res = await API.axios({
-        method: 'GET', url: `${API.url()}/api/v1/admin/subsonic/token-auth-attempts`,
-      });
-      module.tokenAuthAttempts.length = 0;
-      (res.data.attempts || []).forEach(a => module.tokenAuthAttempts.push(a));
-    } catch (err) { /* empty list */ }
-    module.tokenAuthAttemptsUpdated.ts = Date.now();
-  }
-
-  module.clearTokenAuthAttempts = async () => {
-    await API.axios({
-      method: 'DELETE', url: `${API.url()}/api/v1/admin/subsonic/token-auth-attempts`,
-    });
-    await module.getTokenAuthAttempts();
-  }
-
-  // Admin mints a key on behalf of a specific user. Returns the plaintext
-  // key once so the admin can relay it to the affected client.
-  module.mintKeyFor = async (username, name) => {
-    const res = await API.axios({
-      method: 'POST',
-      url: `${API.url()}/api/v1/admin/subsonic/mint-key`,
-      data: { username, name },
-    });
-    return res.data;
-  }
-
-  // Hit the Subsonic API as a real client would and return { ok, latencyMs, ... }.
-  module.testSubsonicConnection = async () => {
-    try {
-      const res = await API.axios({
-        method: 'GET', url: `${API.url()}/api/v1/admin/subsonic/test`,
-      });
-      return res.data;
-    } catch (err) {
-      return { ok: false, reason: err.message };
-    }
-  }
-
   module.getVersion = async () => {
     try {
       const res = await API.axios({
@@ -645,17 +515,12 @@ ADMINDATA.getDbParams();
 ADMINDATA.getServerParams();
 ADMINDATA.getServerAudioInfo();
 ADMINDATA.getDlnaParams();
-ADMINDATA.getSubsonicParams();
 ADMINDATA.getIroh();
 ADMINDATA.getTorrentParams();
 ADMINDATA.getTorrentStatus();
 ADMINDATA.getTorrentList();
 ADMINDATA.getTorrentVpathAccess();
 ADMINDATA.getTorrentPathTemplates();
-ADMINDATA.getApiKeys();
-ADMINDATA.getSubsonicStats();
-ADMINDATA.getJukeboxStatus();
-ADMINDATA.getTokenAuthAttempts();
 ADMINDATA.getVersion();
 ADMINDATA.getWinDrives();
 ADMINDATA.getBackupDestinations();
@@ -1165,16 +1030,8 @@ const usersView = Vue.component('users-view', {
       directories: ADMINDATA.folders,
       users: ADMINDATA.users,
       usersTS: ADMINDATA.usersUpdated,
-      // Used to gate the optional Subsonic-password field on the
-      // user-create form — only shown if Subsonic is enabled.
-      subsonicParams: ADMINDATA.subsonicParams,
       newUsername: '',
       newPassword: '',
-      // Optional opt-in Subsonic-specific password (V35). When set,
-      // the new user can immediately use token-auth Subsonic clients
-      // (Symfonium, DSub, etc); otherwise the user has to set one
-      // themselves later via the mobile-clients panel.
-      newSubsonicPassword: '',
       makeAdmin: Object.keys(ADMINDATA.users).length === 0 ? true : false,
       allowMkdir: true,
       allowUpload: true,
@@ -1291,17 +1148,6 @@ const usersView = Vue.component('users-view', {
                     <div class="input-field directory-name-field col s12 m6">
                       <input @blur="maybeResetForm()" v-model="newPassword" id="new-password" required type="password" class="validate">
                       <label for="new-password">{{ t('admin.users.passwordLabel') }}</label>
-                    </div>
-                  </div>
-                  <div class="row" v-if="subsonicParams.mode && subsonicParams.mode !== 'disabled'">
-                    <div class="input-field directory-name-field col s12 m6">
-                      <input v-model="newSubsonicPassword" id="new-subsonic-password" type="password" class="validate">
-                      <label for="new-subsonic-password">Subsonic password (optional)</label>
-                    </div>
-                    <div class="col s12 m6" style="font-size: 0.85em; opacity: 0.85; padding-top: 1.5em;">
-                      Optional separate password for token-auth Subsonic clients.
-                      Stored encrypted (recoverable) — intentionally less secure than the main password.
-                      Leave blank to let the user set one themselves via the mobile-clients panel.
                     </div>
                   </div>
                   <div class="row">
@@ -1539,13 +1385,6 @@ const usersView = Vue.component('users-view', {
             allowUpload: this.allowUpload,
             allowServerAudio: this.allowServerAudio
           };
-          // V35: only include the field when the admin actually filled
-          // it in. Empty string would round-trip through Joi as
-          // "missing" anyway, but be explicit.
-          if (this.newSubsonicPassword) {
-            data.subsonicPassword = this.newSubsonicPassword;
-          }
-
           await API.axios({
             method: 'PUT',
             url: `${API.url()}/api/v1/admin/users`,
@@ -1556,7 +1395,6 @@ const usersView = Vue.component('users-view', {
           const addedName = this.newUsername;
           this.newUsername = '';
           this.newPassword = '';
-          this.newSubsonicPassword = '';
           this.selectUser(addedName);
 
           // if this is the first user, prompt user and take them to login page
@@ -1806,21 +1644,11 @@ const advancedView = Vue.component('advanced-view', {
       modVM.currentViewModal = modalView;
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
     },
-    // Lookup: internal UI id → user-visible label. The `subsonic`
-    // value (Airsonic Refix — webapp/subsonic/) is still valid in
-    // the Joi validator and can be set by hand-editing config.json,
-    // but it is intentionally NOT listed in the switcher rotation
-    // below. The admin panel + shared pages don't yet render cleanly
-    // under the Subsonic UI; until that's sorted out we don't want
-    // to let operators trap themselves in a broken state by flipping
-    // to it from here. `uiLabel` still knows the Subsonic label so
-    // an operator who set it via config.json sees the correct name
-    // rendered instead of a raw 'subsonic' string.
+    // Lookup: internal UI id → user-visible label.
     uiLabel: function(id) {
-      return ({ default: 'Default', velvet: 'Velvet', subsonic: 'Subsonic UI' })[id] || id;
+      return ({ default: 'Default', velvet: 'Velvet' })[id] || id;
     },
     // Rotate through the switcher-exposed UIs on each click.
-    // Subsonic is deliberately omitted — see uiLabel comment.
     nextUI: function(id) {
       const order = ['default', 'velvet'];
       const i = order.indexOf(id);
@@ -5203,506 +5031,6 @@ const dlnaView = Vue.component('dlna-view', {
   }
 });
 
-const subsonicView = Vue.component('subsonic-view', {
-  data() {
-    return {
-      paramsTS: ADMINDATA.subsonicParamsUpdated,
-      params: ADMINDATA.subsonicParams,
-      selectedMode: 'disabled',
-      selectedPort: 3012,
-      applyPending: false,
-      // API keys — the state lives in ADMINDATA so every view sees a fresh
-      // list, but we reach in locally for the inputs driving this form.
-      apiKeysTS:  ADMINDATA.apiKeysUpdated,
-      apiKeys:    ADMINDATA.apiKeys,
-      newKeyName: '',
-      mintPending: false,
-      lastMintedKey: ADMINDATA.lastMintedKey,
-      // Polish widgets — stats / now-playing / jukebox / token-auth log.
-      statsTS:            ADMINDATA.subsonicStatsUpdated,
-      stats:              ADMINDATA.subsonicStats,
-      jukeboxTS:          ADMINDATA.jukeboxStatusUpdated,
-      jukebox:            ADMINDATA.jukeboxStatus,
-      tokenAttemptsTS:    ADMINDATA.tokenAuthAttemptsUpdated,
-      tokenAttempts:      ADMINDATA.tokenAuthAttempts,
-      testResult:         null,
-      testPending:        false,
-      showMethodList:     false,
-      // One-time display for admin-minted-on-behalf-of keys. Mirrors
-      // `lastMintedKey` but carries the target username too.
-      adminMintedForUser: { val: null, name: null, username: null },
-      pollTimer:          null,
-    };
-  },
-
-  mounted() {
-    // Refresh the live widgets every 5s so now-playing / jukebox state
-    // stays fresh without the admin reloading the page. Stopped on unmount.
-    this.pollTimer = setInterval(() => {
-      ADMINDATA.getSubsonicStats();
-      ADMINDATA.getJukeboxStatus();
-      ADMINDATA.getTokenAuthAttempts();
-    }, 5000);
-  },
-  beforeDestroy() {
-    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
-  },
-  watch: {
-    'paramsTS.ts': {
-      immediate: true,
-      handler: function() {
-        this.selectedMode = this.params.mode || 'disabled';
-        this.selectedPort = this.params.port || 3012;
-      }
-    }
-  },
-  template: `
-    <div v-if="paramsTS.ts === 0" class="row">
-      <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
-    </div>
-    <div v-else class="container">
-      <div class="row" style="margin-top:24px">
-        <div class="col s12">
-          <div class="card">
-            <div class="card-content">
-              <span class="card-title">Subsonic REST API</span>
-              <div class="card-panel amber lighten-4" style="margin-top:12px">
-                <p><b>Deprecated:</b> the Subsonic API will be removed in a future release once the first-party mStream apps are available. Development focus is on the first-party apps and their iroh-based Quick Connect, which no third-party client can offer. The Subsonic surface is frozen &mdash; crash and security fixes only, no new endpoints.</p>
-                <p style="margin-top:8px">If you rely on the Subsonic API, please say so on <a href="https://github.com/IrosTheBeggar/mStream/issues" target="_blank" rel="noopener">GitHub</a> or Discord &mdash; real usage reports are what decide the removal timeline.</p>
-              </div>
-              <p>The Subsonic API lets you use third-party music apps &mdash; DSub, Symfonium, Substreamer, play:Sub, Feishin, Sonixd, and many others &mdash; as clients for your mStream library. Each user signs in with their mStream username and password (or an API key they generate on their profile) from inside the client app.</p>
-              <div style="margin-top:16px">
-                <p><b>Current mode:</b> {{params.mode || 'disabled'}}</p>
-                <p v-if="params.mode === 'separate-port'"><b>Subsonic port:</b> {{params.port}}</p>
-              </div>
-              <div style="margin-top:20px">
-                <p><b>Change mode:</b></p>
-                <p>
-                  <label style="margin-right:20px">
-                    <input type="radio" v-model="selectedMode" value="disabled" />
-                    <span>Disabled</span>
-                  </label>
-                  <label style="margin-right:20px">
-                    <input type="radio" v-model="selectedMode" value="same-port" />
-                    <span>Same port as mStream</span>
-                  </label>
-                  <label>
-                    <input type="radio" v-model="selectedMode" value="separate-port" />
-                    <span>Separate port</span>
-                  </label>
-                </p>
-                <div v-if="selectedMode === 'separate-port'" style="margin-top:12px">
-                  <div class="input-field" style="max-width:200px">
-                    <input id="subsonic-port" type="number" v-model.number="selectedPort" min="1" max="65535" />
-                    <label for="subsonic-port" class="active">Subsonic Port</label>
-                  </div>
-                </div>
-              </div>
-              <div v-if="selectedMode !== 'disabled'" class="card-panel orange lighten-4" style="margin-top:16px">
-                <p><b>Security notice:</b> Subsonic clients authenticate with your mStream user credentials. For best security, enable HTTPS before exposing the Subsonic API to untrusted networks, and use an API key in each client instead of sharing your password.</p>
-                <p style="margin-top:8px">Mint and revoke API keys in the section below. Token-style auth (<code>t=</code>, <code>s=</code>) is not supported &mdash; use plaintext over HTTPS, or an API key.</p>
-              </div>
-            </div>
-            <div class="card-action flow-root">
-              <a v-on:click="applyMode()" :disabled="applyPending"
-                 class="waves-effect waves-light btn right">
-                Apply
-              </a>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Methods implemented + test connection -->
-      <div v-if="params.mode !== 'disabled'" class="row">
-        <div class="col s12 m6">
-          <div class="card">
-            <div class="card-content">
-              <span class="card-title">API Surface</span>
-              <p style="font-size:32px;font-weight:300;margin:8px 0">
-                {{stats.methodsImplemented || '—'}}
-                <span style="font-size:14px;color:#777;font-weight:400">
-                  Subsonic methods implemented
-                </span>
-              </p>
-              <p v-if="stats.fullCount != null" style="color:#777;margin:0 0 4px">
-                <small>{{stats.fullCount}} fully implemented &middot; {{stats.stubCount}} stubbed (empty response — real feature not backed)</small>
-              </p>
-              <p style="color:#777"><small>Subsonic 1.16.1 + OpenSubsonic defines roughly 70 methods. The ones this server does not implement at all return a "method not found" error — see the decline list in docs/subsonic-phase3.md.</small></p>
-              <a v-on:click="showMethodList = !showMethodList" class="btn-flat waves-effect" style="padding:0 8px">
-                {{showMethodList ? 'Hide' : 'Show'}} method list
-              </a>
-              <div v-if="showMethodList" style="margin-top:12px;max-height:220px;overflow-y:auto;background:#f5f5f5;padding:8px;border-radius:4px;font-family:monospace;font-size:12px">
-                <!-- New shape: per-method {name, status}. Fall back to the
-                     plain list on older server builds that don't emit it. -->
-                <div v-if="stats.methodStatuses && stats.methodStatuses.length">
-                  <div v-for="m in stats.methodStatuses" :key="m.name">
-                    <span v-if="m.status === 'stub'"
-                          style="display:inline-block;min-width:42px;background:#f0ad4e;color:#fff;padding:0 4px;border-radius:2px;margin-right:6px;font-size:10px;text-align:center;vertical-align:1px">STUB</span>
-                    <span v-else
-                          style="display:inline-block;min-width:42px;background:#5cb85c;color:#fff;padding:0 4px;border-radius:2px;margin-right:6px;font-size:10px;text-align:center;vertical-align:1px">FULL</span>
-                    {{m.name}}
-                  </div>
-                </div>
-                <div v-else>
-                  <div v-for="m in stats.methods" :key="m">{{m}}</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="col s12 m6">
-          <div class="card">
-            <div class="card-content">
-              <span class="card-title">Test Connection</span>
-              <p>Make a ping request against the running Subsonic endpoint as if a client were connecting. Useful for verifying a mode change took effect.</p>
-              <a v-on:click="runTest()" :disabled="testPending"
-                 class="waves-effect waves-light btn" style="margin-top:8px">
-                {{testPending ? 'Testing…' : 'Test Connection'}}
-              </a>
-              <div v-if="testResult" style="margin-top:16px" :class="testResult.ok ? 'card-panel green lighten-4' : 'card-panel red lighten-4'">
-                <p><b>{{testResult.ok ? 'OK' : 'Failed'}}</b>
-                  <span v-if="testResult.ok"> — {{testResult.latencyMs}}ms, server v{{testResult.serverVersion}}</span>
-                  <span v-else> — {{testResult.reason || testResult.status || 'unknown error'}}</span>
-                </p>
-                <p v-if="testResult.url" style="margin-top:6px"><small><code>{{testResult.url}}</code></small></p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Now-playing strip -->
-      <div v-if="params.mode !== 'disabled'" class="row">
-        <div class="col s12">
-          <div class="card">
-            <div class="card-content">
-              <span class="card-title">Now Playing</span>
-              <p v-if="stats.nowPlaying.length === 0" style="color:#777"><i>Nobody is streaming right now.</i></p>
-              <table v-else class="striped">
-                <thead>
-                  <tr><th>User</th><th>Track</th><th>Artist</th><th>Album</th><th>Since</th></tr>
-                </thead>
-                <tbody>
-                  <tr v-for="p in stats.nowPlaying" :key="p.username + ':' + p.trackId">
-                    <td><b>{{p.username}}</b></td>
-                    <td>{{p.title || '(unknown title)'}}</td>
-                    <td>{{p.artist || '—'}}</td>
-                    <td>{{p.album || '—'}}</td>
-                    <td><small>{{formatSince(p.sinceMs)}}</small></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Jukebox live status -->
-      <div v-if="params.mode !== 'disabled' && jukebox.available" class="row">
-        <div class="col s12">
-          <div class="card">
-            <div class="card-content">
-              <span class="card-title">Jukebox (Server Audio)</span>
-              <p>
-                <span v-if="jukebox.playing" class="chip green lighten-4" style="font-size:12px">Playing</span>
-                <span v-else-if="jukebox.paused" class="chip orange lighten-4" style="font-size:12px">Paused</span>
-                <span v-else class="chip grey lighten-3" style="font-size:12px">Idle</span>
-                <span v-if="jukebox.queueLength > 0" style="margin-left:12px">
-                  Track {{jukebox.queueIndex + 1}} of {{jukebox.queueLength}}
-                </span>
-              </p>
-              <p v-if="jukebox.currentFile"><b>Current file:</b> <code>{{jukebox.currentFile}}</code></p>
-              <p v-if="jukebox.duration > 0">
-                <b>Position:</b> {{formatSeconds(jukebox.position)}} / {{formatSeconds(jukebox.duration)}}
-              </p>
-              <p>
-                <b>Volume:</b> {{Math.round(jukebox.volume * 100)}}% &middot;
-                <b>Loop:</b> {{jukebox.loopMode}} &middot;
-                <b>Shuffle:</b> {{jukebox.shuffle ? 'on' : 'off'}}
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Token-auth warning log -->
-      <div v-if="params.mode !== 'disabled' && tokenAttempts.length > 0" class="row">
-        <div class="col s12">
-          <div class="card orange lighten-5">
-            <div class="card-content">
-              <span class="card-title" style="color:#bf5700">Token-auth attempts — clients stuck in a login loop</span>
-              <p>mStream cannot support Subsonic's legacy token auth (the server would need the plaintext password to compute the MD5 digest — it only keeps PBKDF2 hashes). Clients that default to token auth get rejected with error 41 and usually loop. Mint an API key for the affected user below and hand it to them.</p>
-              <table class="striped" style="margin-top:12px">
-                <thead>
-                  <tr><th>User</th><th>Client</th><th>When</th><th></th></tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(a, i) in tokenAttempts" :key="i">
-                    <td><b>{{a.username || '(anonymous)'}}</b></td>
-                    <td>{{a.client || '—'}}</td>
-                    <td><small>{{formatSince(Date.now() - a.at)}} ago</small></td>
-                    <td>
-                      <a v-if="a.username" v-on:click="mintForUser(a.username)"
-                         class="btn-small waves-effect waves-light blue">Generate key for {{a.username}}</a>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <div class="card-action flow-root">
-              <a v-on:click="clearTokenLog()" class="btn-flat waves-effect right">Clear log</a>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Admin-minted-key one-time display -->
-      <div v-if="adminMintedForUser.val" class="row">
-        <div class="col s12">
-          <div class="card-panel green lighten-4">
-            <p><b>Key created for user "{{adminMintedForUser.username}}":</b> {{adminMintedForUser.name}}</p>
-            <p style="margin-top:8px">
-              <code style="user-select:all;word-break:break-all;background:#fff;padding:4px 8px;border-radius:4px;display:inline-block">{{adminMintedForUser.val}}</code>
-            </p>
-            <p style="margin-top:8px"><small>Relay this to the user. They paste it as their API key in their Subsonic client.</small></p>
-            <a v-on:click="dismissAdminMintedKey()" class="waves-effect btn-flat">Dismiss</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col s12">
-          <div class="card">
-            <div class="card-content">
-              <span class="card-title">Your Subsonic API Keys</span>
-              <p>API keys are per-user. Each key authenticates Subsonic clients without exposing your mStream password. The full key value is only shown at creation &mdash; copy it into your client immediately, or revoke it and mint a new one.</p>
-
-              <div v-if="lastMintedKey.val" class="card-panel green lighten-4" style="margin-top:16px">
-                <p><b>New key created:</b> {{lastMintedKey.name}}</p>
-                <p style="margin-top:8px">
-                  <code style="user-select:all;word-break:break-all;background:#fff;padding:4px 8px;border-radius:4px;display:inline-block">{{lastMintedKey.val}}</code>
-                </p>
-                <p style="margin-top:8px"><small>This is the only time the full key will be shown. Paste it into your Subsonic client now.</small></p>
-                <a v-on:click="dismissMintedKey()" class="waves-effect btn-flat">Dismiss</a>
-              </div>
-
-              <div style="margin-top:16px">
-                <div class="row" style="margin-bottom:0">
-                  <div class="input-field col s12 m8">
-                    <input id="api-key-name" type="text" v-model="newKeyName" maxlength="100" placeholder="e.g. phone-dsub, laptop-feishin" />
-                    <label for="api-key-name" class="active">New key name</label>
-                  </div>
-                  <div class="col s12 m4" style="padding-top:20px">
-                    <a v-on:click="mintKey()" :disabled="mintPending || !newKeyName.trim()"
-                       class="waves-effect waves-light btn">Generate key</a>
-                  </div>
-                </div>
-              </div>
-
-              <div v-if="apiKeysTS.ts > 0" style="margin-top:16px">
-                <p v-if="apiKeys.length === 0"><i>No API keys yet.</i></p>
-                <table v-else class="striped">
-                  <thead>
-                    <tr><th>Name</th><th>Created</th><th>Last used</th><th></th></tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="k in apiKeys" :key="k.id">
-                      <td>{{k.name || '(unnamed)'}}</td>
-                      <td><small>{{formatTs(k.created_at)}}</small></td>
-                      <td><small>{{formatTs(k.last_used) || '—'}}</small></td>
-                      <td>
-                        <a v-on:click="revokeKey(k)" class="waves-effect waves-red btn-small red lighten-1">Revoke</a>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>`,
-  methods: {
-    formatTs: function(s) {
-      if (!s) { return null; }
-      // SQLite stores as "YYYY-MM-DD HH:MM:SS" in UTC.
-      const d = new Date(s.replace(' ', 'T') + 'Z');
-      return isNaN(d.getTime()) ? s : d.toLocaleString();
-    },
-    // "12.3 seconds ago" → "12s", "123s" → "2m", "4000s" → "1h". Tight
-    // formatting for the inline-table durations.
-    formatSince: function(ms) {
-      if (!Number.isFinite(ms) || ms < 0) { return '—'; }
-      const s = Math.floor(ms / 1000);
-      if (s < 60)   { return `${s}s`; }
-      if (s < 3600) { return `${Math.floor(s / 60)}m`; }
-      return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
-    },
-    // "1:23" / "62:15" position/duration formatting.
-    formatSeconds: function(s) {
-      if (!Number.isFinite(s) || s < 0) { return '0:00'; }
-      const m = Math.floor(s / 60);
-      const ss = String(Math.floor(s) % 60).padStart(2, '0');
-      return `${m}:${ss}`;
-    },
-    dismissMintedKey: function() {
-      ADMINDATA.lastMintedKey.val = null;
-      ADMINDATA.lastMintedKey.name = null;
-    },
-    dismissAdminMintedKey: function() {
-      this.adminMintedForUser = { val: null, name: null, username: null };
-    },
-    runTest: async function() {
-      this.testPending = true;
-      this.testResult = null;
-      try {
-        this.testResult = await ADMINDATA.testSubsonicConnection();
-      } catch (err) {
-        this.testResult = { ok: false, reason: err.message };
-      } finally {
-        this.testPending = false;
-      }
-    },
-    mintForUser: async function(username) {
-      // Same prompt shape as iziToast's question so it feels consistent
-      // with the rest of the admin panel's confirm dialogs.
-      const name = `admin-minted-${new Date().toISOString().slice(0, 10)}`;
-      iziToast.question({
-        timeout: 20000, close: false, overlayClose: true, overlay: true,
-        displayMode: 'once', id: 'admin-mint-key', zindex: 99999, layout: 2,
-        // Usernames have no server-side character validation — escape
-        // them at every toast sink in this flow.
-        title: `Create a Subsonic API key for "${escHtml(username)}"?`,
-        message: `The key will be labelled "${name}". You will see the key value once and must relay it to the user yourself.`,
-        position: 'center',
-        buttons: [
-          [`<button><b>Create key</b></button>`, async (instance, toast) => {
-            try {
-              const data = await ADMINDATA.mintKeyFor(username, name);
-              this.adminMintedForUser = { val: data.key, name: data.name, username: data.username };
-              iziToast.success({ title: `Key created for ${escHtml(username)}`, position: 'topCenter', timeout: 3000 });
-            } catch (err) {
-              iziToast.error({ title: `Failed to create key: ${escHtml(err.message || 'unknown error')}`, position: 'topCenter', timeout: 4000 });
-            } finally {
-              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-            }
-          }, true],
-          [`<button>Cancel</button>`, (instance, toast) => {
-            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-          }],
-        ]
-      });
-    },
-    clearTokenLog: async function() {
-      try {
-        await ADMINDATA.clearTokenAuthAttempts();
-      } catch (err) {
-        iziToast.error({ title: 'Failed to clear log', position: 'topCenter', timeout: 3000 });
-      }
-    },
-    mintKey: async function() {
-      const name = this.newKeyName.trim();
-      if (!name) { return; }
-      try {
-        this.mintPending = true;
-        await ADMINDATA.createApiKey(name);
-        this.newKeyName = '';
-        iziToast.success({ title: 'API key created', position: 'topCenter', timeout: 3000 });
-      } catch (err) {
-        iziToast.error({ title: 'Failed to create API key', position: 'topCenter', timeout: 3500 });
-      } finally {
-        this.mintPending = false;
-      }
-    },
-    revokeKey: function(k) {
-      iziToast.question({
-        timeout: 20000, close: false, overlayClose: true, overlay: true,
-        displayMode: 'once', id: 'api-key-revoke', zindex: 99999, layout: 2,
-        title: `Revoke API key "${escHtml(k.name || '(unnamed)')}"?`,
-        message: 'Any client using this key will stop working. You cannot undo this.',
-        position: 'center',
-        buttons: [
-          [`<button><b>Revoke</b></button>`, async (instance, toast) => {
-            try {
-              await ADMINDATA.revokeApiKey(k.id);
-              iziToast.success({ title: 'Key revoked', position: 'topCenter', timeout: 2500 });
-            } catch (err) {
-              iziToast.error({ title: 'Failed to revoke key', position: 'topCenter', timeout: 3500 });
-            } finally {
-              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-            }
-          }, true],
-          [`<button>Cancel</button>`, (instance, toast) => {
-            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-          }],
-        ]
-      });
-    },
-    applyMode: async function() {
-      const mode = this.selectedMode;
-      const port = this.selectedPort;
-      const modeLabels = { disabled: 'Disabled', 'same-port': 'Same Port', 'separate-port': 'Separate Port' };
-      iziToast.question({
-        timeout: 20000,
-        close: false,
-        overlayClose: true,
-        overlay: true,
-        displayMode: 'once',
-        id: 'subsonic-question',
-        zindex: 99999,
-        layout: 2,
-        maxWidth: 600,
-        title: `Set Subsonic mode to "${modeLabels[mode] || mode}"?`,
-        message: mode === 'same-port' || this.params.mode === 'same-port'
-          ? 'This will restart the mStream server.'
-          : '',
-        position: 'center',
-        buttons: [
-          [`<button><b>Apply</b></button>`, async (instance, toast) => {
-            try {
-              this.applyPending = true;
-              const data = { mode };
-              if (mode === 'separate-port') { data.port = port; }
-              await API.axios({
-                method: 'POST',
-                url: `${API.url()}/api/v1/admin/subsonic/mode`,
-                data
-              });
-              await ADMINDATA.getSubsonicParams();
-              instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-              iziToast.success({
-                title: `Subsonic mode set to ${modeLabels[mode] || mode}`,
-                position: 'topCenter',
-                timeout: 3500
-              });
-            } catch(err) {
-              iziToast.error({ title: 'Failed to update Subsonic setting', position: 'topCenter', timeout: 3500 });
-            } finally {
-              this.applyPending = false;
-            }
-          }, true],
-          [`<button>Cancel</button>`, (instance, toast) => {
-            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-          }],
-        ]
-      });
-    }
-  }
-});
-
-// ── Torrent (V37 — UX-layer settings) ──────────────────────────────────────
-// First-cut admin surface for the optional torrent-client feature. Two
-// dropdowns:
-//   client      — 'disabled' (default) or 'transmission'. More backends
-//                 will land later (qBittorrent, Deluge, rTorrent); the
-//                 dropdown is a single-select on purpose because only one
-//                 client is active at a time in v1.
-//   enabledFor  — 'all' (every authenticated user) or 'whitelist' (only
-//                 users with users.allow_torrent = 1). When 'whitelist'
-//                 is selected, an inline user-grant table appears so the
-//                 admin can flip the per-user flag without leaving the
-//                 page.
 const torrentView = Vue.component('torrent-view', {
   data() {
     return {
@@ -8944,7 +8272,7 @@ const irohView = Vue.component('iroh-view', {
 function _initialViewFromHash() {
   const valid = new Set([
     'folders-view','users-view','db-view','advanced-view','info-view',
-    'transcode-view','federation-view','dlna-view','subsonic-view','iroh-view',
+    'transcode-view','federation-view','dlna-view','iroh-view',
     'torrent-view','logs-view','rpn-view','security-view','backup-view',
     'lyrics-view','discovery-view',
   ]);
@@ -8964,7 +8292,6 @@ const vm = new Vue({
     'transcode-view': transcodeView,
     'federation-view': federationView,
     'dlna-view': dlnaView,
-    'subsonic-view': subsonicView,
     'iroh-view': irohView,
     'discovery-view': discoveryView,
     'torrent-view': torrentView,
