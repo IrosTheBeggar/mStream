@@ -437,7 +437,6 @@
   "admin.settings.downloadSizeLimit": "Download Size Limit:",
   "admin.settings.unlimited": "Unlimited",
   "admin.settings.address": "Address:",
-  "admin.settings.frontend": "Frontend:",
   "admin.settings.serverAudio": "Server Audio",
   "admin.settings.autoBoot": "Auto-Boot Server Audio:",
   "admin.settings.rustPlayerPort": "Rust Player Port:",

@@ -1449,7 +1449,6 @@ export function setup(mstream) {
       dbSynchronous: config.program.db?.synchronous || 'FULL',
       dbCacheSizeMb: config.program.db?.cacheSizeMb || 64,
       compression: config.program.compression?.mode || 'none',
-      ui: config.program.ui || 'default',
       adminAccess: config.program.adminAccess,
       trustProxy: config.program.trustProxy
     });
@@ -1532,17 +1531,6 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
 
     await admin.editDownloadSizeLimit(req.body.downloadSizeLimit);
-    res.json({});
-  });
-
-  mstream.post("/api/v1/admin/config/ui", async (req, res) => {
-    const schema = Joi.object({
-      // Keep this list in sync with state/config.js `ui` validator.
-      ui: Joi.string().valid('default').required()
-    });
-    joiValidate(schema, req.body);
-
-    await admin.editUI(req.body.ui);
     res.json({});
   });
 

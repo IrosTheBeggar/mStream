@@ -27,7 +27,8 @@ password column and a second authentication wall in front of the library.
 ## What happens when you upgrade
 
 - **config.json** — on first boot the server logs one warning and rewrites
-  the file: `ui: 'subsonic'` becomes `ui: 'default'`, and the `subsonic`
+  the file: the `ui` key (which selected the bundled client; the default web
+  UI is now the only one, so the setting itself is gone), the `subsonic`
   block and `subsonicSecret` are removed. Nothing else changes.
 - **Ports** — nothing listens on the separate Subsonic port (default 3012)
   any more. Firewall rules, Docker port mappings, and reverse-proxy routes

@@ -176,10 +176,6 @@ export async function startServer(opts = {}) {
     // fixtures (e.g. the V17 multi-artist suite builds compilation
     // and collab tracks on the fly).
     extraFolders  = {},
-    // Which UI to serve. Only 'default' (webapp/alpha) exists now; the
-    // knob stays so a test can boot with a retired value and pin the
-    // config coercion. All API tests ignore it.
-    ui            = 'default',
     // Optional extra process-env overrides passed to the spawned
     // mStream process. Used by the lyrics-cache test to point the
     // LRCLib fetcher at a local mock HTTP server instead of the real
@@ -203,7 +199,6 @@ export async function startServer(opts = {}) {
   const config = {
     port,
     address: '127.0.0.1',
-    ui,
     dlna: {
       mode: dlnaMode,
       name: 'mStream Test',

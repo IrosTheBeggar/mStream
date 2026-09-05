@@ -317,7 +317,6 @@
   "admin.settings.port": "포트:",
   "admin.settings.maxRequestSize": "최대 요청 크기:",
   "admin.settings.address": "주소:",
-  "admin.settings.frontend": "프론트엔드:",
   "admin.settings.serverAudio": "서버 오디오",
   "admin.settings.autoBoot": "서버 오디오 자동 시작:",
   "admin.settings.rustPlayerPort": "Rust 플레이어 포트:",
