@@ -71,6 +71,9 @@ function snapTracks(db) {
       -- owns it), so it's not part of scanner parity.
       t.mbz_recording_id, t.mbz_release_track_id, t.isrc, t.mbz_id_source,
       t.modified,
+      -- V70: per-track consensus inputs for the album aggregate refresh —
+      -- both scanners must stamp the same raw tag values.
+      t.tag_album, t.tag_album_artist, t.tag_compilation,
       ar.name AS artist_name,
       al.name AS album_name, al.year AS album_year,
       al.compilation AS album_compilation, al.album_artist AS album_artist_display
@@ -91,9 +94,16 @@ function snapAlbums(db) {
   // distinct rows — include the artist name in the natural key. Drop
   // album_art_file because tracks already carry it; including it here
   // would just double-count.
+  // V70: the aggregate columns are scan-end consensus values both engines
+  // must derive identically, and agg_dirty must be 0 everywhere once the
+  // refresh has run. duration_total is a float SUM whose last bits can
+  // depend on row order (insert order differs across engines), so it is
+  // rounded to milliseconds.
   return db.prepare(`
     SELECT al.name, al.year, al.compilation, al.album_artist,
            al.mbz_album_id, al.mbz_release_group_id,
+           al.year_min, al.year_max, al.track_count,
+           ROUND(al.duration_total, 3) AS duration_total, al.agg_dirty,
            ar.name AS artist_name
     FROM albums al
     LEFT JOIN artists ar ON ar.id = al.artist_id

@@ -718,8 +718,23 @@ export function setup(mstream) {
       params.push(String(req.body.artist));
     }
 
+    // V70 dropped the year from album identity, so one album can span
+    // several track years (a compilation tagged with per-track original
+    // years, a reissue with a later bonus track). A client's `year` is
+    // whatever it last saw — the album's aggregate year from a list
+    // response, or the PLAYING TRACK's year from the now-playing card's
+    // "go to album" — so it is matched against the album's year RANGE,
+    // never the track column: matching t.year would silently return a
+    // partial album. COALESCE covers rows without aggregates yet (a
+    // trackless ghost, a fixture insert).
+    // The singles bucket (no album) keeps the per-track match — there is
+    // no album range to consult.
     if (req.body.year) {
-      conditions.push('t.year = ?');
+      if (req.body.album) {
+        conditions.push('? BETWEEN COALESCE(al.year_min, al.year) AND COALESCE(al.year_max, al.year)');
+      } else {
+        conditions.push('t.year = ?');
+      }
       params.push(Number(req.body.year));
     }
 

@@ -658,6 +658,15 @@ fn main() {
         return;
     }
 
+    // Capability probe: `rust-parser --schema-contract` prints the schema
+    // version whose write contract this binary was built for (see
+    // SCANNER_SCHEMA_CONTRACT). Pre-probe binaries fall into the JSON-input
+    // path and exit non-zero, which task-queue reads as "too old".
+    if args.len() == 2 && args[1] == "--schema-contract" {
+        println!("{}", SCANNER_SCHEMA_CONTRACT);
+        return;
+    }
+
     // Hidden developer/test subcommand: `rust-parser --audio-hash <path>`
     // prints the dual-hash result as JSON on stdout and exits. Used by
     // test/audio-hash-parity.test.mjs to compare against the JS impl.
@@ -1075,6 +1084,143 @@ fn reconcile_album_art(
 // Wall-clock subsecond nanos as the entropy source — Instant is an
 // opaque monotonic point (elapsed-since-now is always ~0), and pulling
 // in a rand dependency for one modulus would be overkill.
+// ── V70: album aggregate refresh ─────────────────────────────────────────────
+//
+// Since V70 an album row's year, year_min, year_max, track_count,
+// duration_total, compilation and album_artist are DERIVED from its tracks.
+// The tracks_ai_agg / tracks_ad_agg / tracks_au_agg triggers (SCHEMA_V70)
+// flag rows `agg_dirty = 1` as their tracks change; this recomputes every
+// flagged row at scan end — after the orphan sweep, so reaped rows are not
+// recomputed first — in 200-row autocommit chunks with the same schema
+// guard + inter-chunk yield as the sweep. The flag lives in the row, so an
+// interrupted scan leaves its work for the next one.
+//
+// Mirrors refreshDirtyAlbums in src/db/album-aggregate.js — keep the SQL
+// and the tie-breaks byte-identical (the scanner-parity snapshot compares
+// these columns across engines):
+//   name          most common tracks.tag_album (tie → smallest, BINARY)
+//   year          most common non-NULL track year (tie → earliest)
+//   year_min/max  MIN / MAX track year
+//   compilation   any track flagged (MAX of tag_compilation)
+//   album_artist  most common non-NULL tracks.tag_album_artist (tie →
+//                 smallest, BINARY); NULL when no track carries one
+// A trackless row (a starred ghost the orphan sweep keeps) zeroes its
+// counts and keeps its display fields.
+const ALBUM_AGG_CHUNK: usize = 200;
+
+// One statement reads the current row and every consensus value; every
+// scalar subquery seeks idx_tracks_album.
+const ALBUM_CONSENSUS_SQL: &str = "
+  SELECT a.name, a.year, a.year_min, a.year_max, a.track_count, a.duration_total,
+         a.compilation, a.album_artist,
+         (SELECT COUNT(*)                            FROM tracks t WHERE t.album_id = a.id) AS n,
+         (SELECT COALESCE(SUM(t.duration), 0)        FROM tracks t WHERE t.album_id = a.id) AS dur,
+         (SELECT MIN(t.year)                         FROM tracks t WHERE t.album_id = a.id) AS ymin,
+         (SELECT MAX(t.year)                         FROM tracks t WHERE t.album_id = a.id) AS ymax,
+         (SELECT COALESCE(MAX(t.tag_compilation), 0) FROM tracks t WHERE t.album_id = a.id) AS comp,
+         (SELECT t.year FROM tracks t WHERE t.album_id = a.id AND t.year IS NOT NULL
+            GROUP BY t.year ORDER BY COUNT(*) DESC, t.year ASC LIMIT 1) AS mode_year,
+         (SELECT t.tag_album FROM tracks t WHERE t.album_id = a.id AND t.tag_album IS NOT NULL
+            GROUP BY t.tag_album ORDER BY COUNT(*) DESC, t.tag_album ASC LIMIT 1) AS mode_name,
+         (SELECT t.tag_album_artist FROM tracks t WHERE t.album_id = a.id AND t.tag_album_artist IS NOT NULL
+            GROUP BY t.tag_album_artist ORDER BY COUNT(*) DESC, t.tag_album_artist ASC LIMIT 1) AS mode_album_artist
+    FROM albums a WHERE a.id = ?";
+
+struct AlbumConsensus {
+    name: String,
+    year: Option<i64>,
+    year_min: Option<i64>,
+    year_max: Option<i64>,
+    compilation: i64,
+    album_artist: Option<String>,
+    n: i64,
+    dur: f64,
+    ymin: Option<i64>,
+    ymax: Option<i64>,
+    comp: i64,
+    mode_year: Option<i64>,
+    mode_name: Option<String>,
+    mode_album_artist: Option<String>,
+}
+
+fn refresh_one_album(conn: &Connection, id: i64) -> Result<(), Box<dyn std::error::Error>> {
+    let r: Option<AlbumConsensus> = conn
+        .prepare_cached(ALBUM_CONSENSUS_SQL)?
+        .query_row([id], |r| Ok(AlbumConsensus {
+            name: r.get(0)?, year: r.get(1)?, year_min: r.get(2)?, year_max: r.get(3)?,
+            // columns 4/5 (track_count, duration_total) are read by the JS
+            // twin for its identical SELECT; unused here.
+            compilation: r.get(6)?, album_artist: r.get(7)?,
+            n: r.get(8)?, dur: r.get(9)?, ymin: r.get(10)?, ymax: r.get(11)?, comp: r.get(12)?,
+            mode_year: r.get(13)?, mode_name: r.get(14)?, mode_album_artist: r.get(15)?,
+        }))
+        .optional()?;
+    let Some(r) = r else { return Ok(()); }; // deleted between pick and refresh
+
+    // The core write always runs (it is also what clears agg_dirty — a
+    // separate "clear" would rewrite the row anyway). name has its own
+    // statement because an UPDATE that lists `name` in its SET clause fires
+    // the albums_au_fts fan-out into every fts_tracks row of the album,
+    // changed or not — so it runs only when the name actually changes.
+    let mut write = conn.prepare_cached(
+        "UPDATE albums SET year = ?, year_min = ?, year_max = ?, track_count = ?,
+                           duration_total = ?, compilation = ?, album_artist = ?,
+                           agg_dirty = 0 WHERE id = ?")?;
+    if r.n == 0 {
+        write.execute(rusqlite::params![r.year, r.year_min, r.year_max, 0i64, 0.0f64,
+                                        r.compilation, r.album_artist, id])?;
+        return Ok(());
+    }
+    write.execute(rusqlite::params![r.mode_year, r.ymin, r.ymax, r.n, r.dur,
+                                    if r.comp != 0 { 1i64 } else { 0i64 },
+                                    r.mode_album_artist, id])?;
+    let name = r.mode_name.clone().unwrap_or_else(|| r.name.clone());
+    if name != r.name {
+        conn.prepare_cached("UPDATE albums SET name = ? WHERE id = ?")?
+            .execute(rusqlite::params![name, id])?;
+    }
+    Ok(())
+}
+
+/// Refresh every dirty album. Returns the number of albums refreshed.
+fn refresh_dirty_albums(
+    conn: &Connection, expected_schema_version: i64,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let pick_sql = format!("SELECT id FROM albums WHERE agg_dirty = 1 ORDER BY id LIMIT {}", ALBUM_AGG_CHUNK);
+    let mut refreshed = 0usize;
+    loop {
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if v != expected_schema_version {
+            return Err(format!(
+                "{}DB schema changed mid-refresh (V{} -> V{}) — aborting album aggregate refresh",
+                SCHEMA_GUARD_ERROR_PREFIX, expected_schema_version, v,
+            ).into());
+        }
+        // Row-step errors propagate (no filter_map(ok)): a transient
+        // SQLITE_BUSY mid-pick must fail the scan, not end the loop early
+        // and report success with rows still flagged — the JS twin's
+        // `.all()` throws in the same situation.
+        let ids: Vec<i64> = conn.prepare_cached(&pick_sql)?
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<Vec<i64>, _>>()?;
+        if ids.is_empty() { break; }
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let mut failed: Option<Box<dyn std::error::Error>> = None;
+        for id in &ids {
+            if let Err(e) = refresh_one_album(conn, *id) { failed = Some(e); break; }
+        }
+        if let Some(e) = failed {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+        conn.execute_batch("COMMIT")?;
+        refreshed += ids.len();
+        if ids.len() < ALBUM_AGG_CHUNK { break; }
+        chunk_yield();
+    }
+    Ok(refreshed)
+}
+
 fn chunk_yield() {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1653,6 +1799,8 @@ fn chunked_delete_stale_tracks(
                 params.push(&c.id);
                 params.push(&c.rel);
             }
+            // (V70: the albums these rows leave are flagged for the aggregate
+            // refresh by the tracks_ad_agg trigger — nothing to do here.)
             total += conn.prepare(&del_sql)?.execute(params.as_slice())?;
         }
         if full_chunk { chunk_yield(); }
@@ -1814,11 +1962,12 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // particular runs 2-4× per changed file (primary + featured +
     // album-artist + M2M) and almost always resolves to a small set of
     // repeat values, so caching collapses thousands of SELECTs into
-    // a handful. Albums key on (name, artist_id, year) because the
-    // same album name under a different artist is a different row.
+    // a handful. Albums key on album_key (MBID, else exact name +
+    // album-artist id — see album_key()); year is an aggregate since V70.
     // Genres are keyed by name alone.
     let artist_cache: Mutex<HashMap<String, i64>> = Mutex::new(HashMap::new());
-    let album_cache: Mutex<HashMap<(String, Option<i64>, Option<i64>), i64>> = Mutex::new(HashMap::new());
+    // V70: keyed by album_key (see album_key()) — year is no longer identity.
+    let album_cache: Mutex<HashMap<String, i64>> = Mutex::new(HashMap::new());
     let genre_cache: Mutex<HashMap<String, i64>> = Mutex::new(HashMap::new());
     // Cached id for the seeded "Various Artists" row, resolved on
     // first compilation track. -1 stored after a negative lookup so we
@@ -2445,7 +2594,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             config.directory, existing_tracks.len(),
         );
         println!(
-            "{{\"event\":\"scanComplete\",\"filesProcessed\":0,\"filesUnchanged\":0,\"filesScanned\":0,\"staleEntriesRemoved\":0,\"movedTracksRehomed\":0,\"movedRefsRehomed\":0,\"folderArtLinked\":0}}"
+            "{{\"event\":\"scanComplete\",\"filesProcessed\":0,\"filesUnchanged\":0,\"filesScanned\":0,\"staleEntriesRemoved\":0,\"movedTracksRehomed\":0,\"movedRefsRehomed\":0,\"folderArtLinked\":0,\"albumsAggregated\":0}}"
         );
         return Ok(());
     }
@@ -2631,6 +2780,14 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             schema_version_at_open)?;
     }
 
+    // V70: recompute the consensus columns of every album the tracks_*_agg
+    // triggers flagged this scan (see refresh_dirty_albums) — AFTER the
+    // orphan sweep, so rows it just reaped are not recomputed first (a
+    // starred trackless ghost survives it and is refreshed to track_count
+    // 0). Runs in subtree mode too — a subtree scan dirties albums like any
+    // other. Mirrors scanner.mjs.
+    let albums_aggregated = refresh_dirty_albums(&conn, schema_version_at_open)?;
+
     // Art passes stay whole-library-only: both walk disk truth for the
     // entire library (or cache dir), a cost a targeted subtree scan
     // shouldn't pay — and a swept track's art junction rows already
@@ -2676,9 +2833,9 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         .saturating_sub(file_count)
         .saturating_sub(error_count);
     println!(
-        "{{\"event\":\"scanComplete\",\"filesProcessed\":{},\"filesUnchanged\":{},\"filesScanned\":{},\"staleEntriesRemoved\":{},\"movedTracksRehomed\":{},\"movedRefsRehomed\":{},\"folderArtLinked\":{},\"walkErrors\":{}}}",
+        "{{\"event\":\"scanComplete\",\"filesProcessed\":{},\"filesUnchanged\":{},\"filesScanned\":{},\"staleEntriesRemoved\":{},\"movedTracksRehomed\":{},\"movedRefsRehomed\":{},\"folderArtLinked\":{},\"albumsAggregated\":{},\"walkErrors\":{}}}",
         file_count, unchanged, total_processed, sweep.deleted, sweep.moved_tracks,
-        sweep.moved_refs, folder_art_linked, walk_errors
+        sweep.moved_refs, folder_art_linked, albums_aggregated, walk_errors
     );
     Ok(())
 }
@@ -3313,7 +3470,7 @@ fn commit_track(
     config: &ScanConfig,
     et: &ExtractedTrack,
     artist_cache: &Mutex<HashMap<String, i64>>,
-    album_cache: &Mutex<HashMap<(String, Option<i64>, Option<i64>), i64>>,
+    album_cache: &Mutex<HashMap<String, i64>>,
     genre_cache: &Mutex<HashMap<String, i64>>,
     various_artists_id: &Mutex<Option<i64>>,
     re_homes: &ReHomes,
@@ -3404,8 +3561,9 @@ fn commit_track(
          lyrics_embedded, lyrics_synced_lrc, lyrics_lang, lyrics_sidecar_mtime, lyrics_source, lyrics_search_text,
          bpm, musical_key, bpm_source,
          modified, scan_id, source,
-         mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source, hash_v)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source, hash_v,
+         tag_album, tag_album_artist, tag_compilation)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(filepath, library_id) DO UPDATE SET
            title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
            track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
@@ -3427,7 +3585,8 @@ fn commit_track(
            modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source,
            mbz_recording_id=excluded.mbz_recording_id, mbz_release_track_id=excluded.mbz_release_track_id,
            isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source,
-           hash_v=excluded.hash_v
+           hash_v=excluded.hash_v,
+           tag_album=excluded.tag_album, tag_album_artist=excluded.tag_album_artist, tag_compilation=excluded.tag_compilation
          RETURNING id",
     )?.query_row(rusqlite::params![
         et.rel_path, config.library_id, et.title, primary_track_artist_id, album_id,
@@ -3446,7 +3605,12 @@ fn commit_track(
         et.bpm, et.musical_key, et.bpm_source,
         et.mod_time, config.scan_id, et.source,
         et.mbz_recording_id, et.mbz_release_track_id, et.isrc, et.mbz_id_source,
-        HASH_GENERATION
+        HASH_GENERATION,
+        // V70 consensus inputs for the album aggregate refresh: this track's
+        // own album name, raw ALBUMARTIST display string and compilation
+        // flag. The album row's values are the majority / OR over these at
+        // scan end. Mirrors scanner.mjs.
+        et.album, et.album_artist_tag, et.is_compilation as i64
     ], |row| row.get(0))?;
 
     // Clear track_genres first. Under the old INSERT OR REPLACE the row's
@@ -3866,40 +4030,59 @@ fn find_or_create_artist(
     Ok(id)
 }
 
+/// Album identity key (V70). Mirrors src/db/album-key.js albumKey() —
+/// keep byte-identical:
+///   mbid:<release id>                  when the track carries MUSICBRAINZ_ALBUMID
+///   name:<exact album name>|<artist>   otherwise (artist id, or empty)
+/// Year is deliberately not part of it (per-track years fragmented
+/// compilations); the album's year is a scan-end consensus value now.
+fn album_key(name: &str, artist_id: Option<i64>, mbz_album_id: Option<&str>) -> String {
+    match mbz_album_id {
+        Some(m) if !m.is_empty() => format!("mbid:{}", m),
+        _ => format!("name:{}|{}", name, artist_id.map(|i| i.to_string()).unwrap_or_default()),
+    }
+}
+
 fn find_or_create_album(
     conn: &Connection,
-    cache: &Mutex<HashMap<(String, Option<i64>, Option<i64>), i64>>,
+    cache: &Mutex<HashMap<String, i64>>,
     name: &str, artist_id: Option<i64>, year: Option<i64>,
     art: Option<&str>, art_source: Option<&str>, album_artist_display: Option<&str>, compilation: bool,
     mbz_album_id: Option<&str>, mbz_release_group_id: Option<&str>,
 ) -> Result<i64, rusqlite::Error> {
-    let key = (name.to_string(), artist_id, year);
+    // V70: identity is the album key — MBID when the track carries one, else
+    // the exact album name + the album-artist id the fallback chain picked.
+    // Year, the display credit and the compilation flag are provisional at
+    // INSERT and become consensus values in the end-of-scan aggregate
+    // refresh (refresh_dirty_albums) — the per-track guarded UPDATE that
+    // used to keep them "fresh" is gone with it. Mirrors scanner.mjs.
+    let key = album_key(name, artist_id, mbz_album_id);
 
     // Cache hit → we already resolved this album this scan. We still
-    // re-apply the album-art + display + compilation UPDATEs because
-    // per-track rescans can surface new art / change compilation
-    // flagging, and we need to keep those in sync with the DB.
+    // re-apply the fill-NULL art / MBID UPDATEs because per-track rescans
+    // can surface new art. (The tracks_*_agg triggers flag the row for the
+    // aggregate refresh as the track row is written; nothing to mark here.)
     let cached = cache.lock().unwrap().get(&key).copied();
     let id = match cached {
         Some(id) => id,
         None => {
             let existing: Option<i64> = conn
-                .prepare_cached("SELECT id FROM albums WHERE name = ? AND artist_id IS ? AND year IS ?")?
-                .query_row(rusqlite::params![name, artist_id, year], |row| row.get(0))
+                .prepare_cached("SELECT id FROM albums WHERE album_key = ?")?
+                .query_row(rusqlite::params![key], |row| row.get(0))
                 .optional()?;
             let resolved = match existing {
                 Some(id) => id,
                 None => {
                     conn.prepare_cached(
-                        "INSERT INTO albums (name, artist_id, year, album_art_file, album_art_source, album_artist, compilation, mbz_album_id, mbz_release_group_id)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO albums (album_key, name, artist_id, year, album_art_file, album_art_source, album_artist, compilation, mbz_album_id, mbz_release_group_id)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     )?.execute(rusqlite::params![
-                        name, artist_id, year, art, art_source, album_artist_display, compilation as i64,
+                        key, name, artist_id, year, art, art_source, album_artist_display, compilation as i64,
                         mbz_album_id, mbz_release_group_id,
                     ])?;
                     let new_id = conn.last_insert_rowid();
-                    // Newly-inserted row already has the art/display/
-                    // compilation columns we want; skip the UPDATE path.
+                    // Newly-inserted row already has the art/display
+                    // columns we want; skip the UPDATE path.
                     cache.lock().unwrap().insert(key, new_id);
                     return Ok(new_id);
                 }
@@ -3917,17 +4100,6 @@ fn find_or_create_album(
             "UPDATE albums SET album_art_file = ?, album_art_source = ? WHERE id = ? AND album_art_file IS NULL",
         )?.execute(rusqlite::params![art_file, art_source, id])?;
     }
-    // Re-applied on the first track of each album in this scan so a rescan
-    // picks up album-artist / compilation changes on a pre-existing row.
-    // The WHERE guard makes it a no-op (0 rows matched → no row rewrite, no
-    // WAL frame) when nothing actually changed — the case for every
-    // subsequent track of the same album, whose tags carry the same
-    // album-level values. Numbered params so ?1 / ?2 can be reused.
-    conn.prepare_cached(
-        "UPDATE albums SET album_artist = COALESCE(?1, album_artist), compilation = ?2
-          WHERE id = ?3
-            AND (compilation IS NOT ?2 OR (?1 IS NOT NULL AND album_artist IS NOT ?1))",
-    )?.execute(rusqlite::params![album_artist_display, compilation as i64, id])?;
     // V55: fill-NULL the MusicBrainz release / release-group MBIDs from tags
     // (first writer wins, like album art). The WHERE guard keeps it a no-op
     // once both are set. Mirrors updateAlbumMbz in src/db/scanner.mjs.
@@ -5705,6 +5877,14 @@ const SAMPLE_THRESHOLD_DEFAULT: u64 = 25 * 1024 * 1024;
 // re-homing pairing guard enforces it, and task-queue's boot check
 // re-arms the force-rescan epoch while any row remains below this.
 const HASH_GENERATION: i64 = 2;
+
+// The schema version whose scanner WRITE CONTRACT this binary implements
+// (V70: albums.album_key identity + the tracks.tag_* consensus columns).
+// Answered by `--schema-contract`; task-queue refuses a binary whose value
+// is below the server's SCANNER_SCHEMA_CONTRACT (src/db/schema.js) — a
+// stale prebuilt would otherwise write key-less album rows through the
+// forced migration rescan. Bump in lock-step with schema.js.
+const SCANNER_SCHEMA_CONTRACT: i64 = 70;
 const SAMPLE_W_START: u64 = 256 * 1024;
 const SAMPLE_W_MID: u64 = 512 * 1024;
 const SAMPLE_W_END: u64 = 256 * 1024;

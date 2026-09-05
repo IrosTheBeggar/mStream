@@ -18,7 +18,9 @@
  *   - moving ONE track off a multi-track album steals NOTHING (the
  *     unreferenced guard — previously migrateAlbumStars moved the
  *     album's stars whenever any single track changed albums).
- *   - an album re-mint (year re-tag) carries album_art_lookups + the
+ *   - a year re-tag no longer re-mints (V70: year is an aggregate, not
+ *     identity) — same row, star untouched;
+ *   - an album re-mint (name re-tag) carries album_art_lookups + the
  *     album_art gallery links + a service-sourced default along with
  *     the stars (previously CASCADE-destroyed → re-downloads).
  *   - the seeded Various Artists row survives sweeps (carve-out) and is
@@ -380,7 +382,39 @@ for (const engine of ['rust', 'js']) {
         'VA keeps its star — sweep-exempt stars never migrate');
     });
 
-    test('album re-mint (year re-tag) carries lookups, gallery links, and a service default', { skip: !available() && 'ffmpeg or rust-parser unavailable' }, async () => {
+    test('a year re-tag no longer re-mints the album (V70): same row, year updated, star intact', { skip: !available() && 'ffmpeg or rust-parser unavailable' }, async () => {
+      const sb = await makeSandbox(engine);
+      const p = path.join(sb.libRoot, 'Plain', '01.mp3');
+      await makeAudio(p, MP3, { title: 'P1', artist: 'Plain P', album: 'Plain', date: '1990' });
+      await sb.scan();
+      seedUser(sb.dbPath);
+      starAlbum(sb.dbPath, 'Plain');
+      const oldId = withDb(sb.dbPath, db => db.prepare(`SELECT id FROM albums WHERE name = 'Plain'`).get().id);
+
+      // Pre-V70 the year was part of UNIQUE(name, artist_id, year), so this
+      // re-tag minted a new row and every star / art-state hop had to fire.
+      // Now the key is name + album artist; the row stays and its year is
+      // the scan-end consensus over its (one) track.
+      await makeAudio(p, MP3, { title: 'P1', artist: 'Plain P', album: 'Plain', date: '1999' });
+      await touchFuture(p);
+      await sb.scan();
+
+      withDb(sb.dbPath, db => {
+        const rows = db.prepare(`SELECT id, year, year_min, year_max, track_count, agg_dirty
+                                   FROM albums WHERE name = 'Plain'`).all();
+        assert.equal(rows.length, 1, 'still exactly one Plain row');
+        assert.equal(rows[0].id, oldId, 'the re-tag did NOT mint a new album row');
+        assert.equal(rows[0].year, 1999, 'year follows the tags via the aggregate refresh');
+        assert.equal(rows[0].year_min, 1999);
+        assert.equal(rows[0].year_max, 1999);
+        assert.equal(rows[0].track_count, 1);
+        assert.equal(rows[0].agg_dirty, 0, 'refresh cleared the flag');
+      });
+      assert.deepEqual(albumStars(sb.dbPath).map(s => s.album_id), [oldId],
+        'star never had to move');
+    });
+
+    test('album re-mint (name re-tag) carries lookups, gallery links, and a service default', { skip: !available() && 'ffmpeg or rust-parser unavailable' }, async () => {
       const sb = await makeSandbox(engine);
       // Art-less album so the downloader-ish state below is the only art.
       const p = path.join(sb.libRoot, 'Plain', '01.mp3');
@@ -404,14 +438,16 @@ for (const engine of ['rust', 'js']) {
         return id;
       });
 
-      // Year re-tag → new (name, artist, year) identity → album re-mints.
-      await makeAudio(p, MP3, { title: 'P1', artist: 'Plain P', album: 'Plain', date: '1999' });
+      // Album NAME re-tag → new (name, album artist) identity → album
+      // re-mints. (Pre-V70 a YEAR re-tag did this too; since V70 the year is
+      // an aggregate, not identity — see the previous test.)
+      await makeAudio(p, MP3, { title: 'P1', artist: 'Plain P', album: 'Plain Deluxe' });
       await touchFuture(p);
       await sb.scan();
 
       withDb(sb.dbPath, db => {
         const heir = db.prepare(`SELECT id, album_art_file, album_art_source
-                                   FROM albums WHERE name = 'Plain'`).get();
+                                   FROM albums WHERE name = 'Plain Deluxe'`).get();
         assert.ok(heir, 'album exists after re-mint');
         assert.notEqual(heir.id, oldAlbumId, 'the re-tag minted a new album row');
         assert.equal(heir.album_art_file, 'feedface.jpeg', 'service default carried');

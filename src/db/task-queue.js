@@ -7,7 +7,7 @@ import * as config from '../state/config.js';
 import * as db from './manager.js';
 import { addToKillQueue, removeFromKillQueue } from '../state/kill-list.js';
 import { writeScannerPidfile, clearScannerPidfile } from './scan-pidfile.js';
-import { SCHEMA_VERSION } from './schema.js';
+import { SCHEMA_VERSION, SCANNER_SCHEMA_CONTRACT } from './schema.js';
 import { HASH_GENERATION } from './audio-hash.js';
 import { getDirname, appRoot } from '../util/esm-helpers.js';
 import { launchWorker, workerReaperMarker } from '../util/worker-process.js';
@@ -140,12 +140,23 @@ let rustParserDisabled = false;
 // anything older falls into the main JSON-input path and exits non-zero
 // (→ null). Exported for the unit test in test/task-queue.test.mjs.
 export function probeHashGeneration(binPath) {
+  return probeIntFlag(binPath, '--hash-generation');
+}
+
+// V70: the schema version whose scanner WRITE CONTRACT the binary was built
+// for (album_key + the tags.tag_* consensus columns). Binaries answer via
+// `--schema-contract`; pre-probe builds exit non-zero → null → "too old".
+export function probeSchemaContract(binPath) {
+  return probeIntFlag(binPath, '--schema-contract');
+}
+
+function probeIntFlag(binPath, flag) {
   try {
-    const probe = child.spawnSync(binPath, ['--hash-generation'],
+    const probe = child.spawnSync(binPath, [flag],
       { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 });
     if (probe.status !== 0) { return null; }
-    const gen = parseInt((probe.stdout || '').toString().trim(), 10);
-    return Number.isInteger(gen) ? gen : null;
+    const n = parseInt((probe.stdout || '').toString().trim(), 10);
+    return Number.isInteger(n) ? n : null;
   } catch (_) {
     return null;
   }
@@ -184,11 +195,27 @@ function findRustParser() {
   // catches up (CI rebuilds bin/ on merge; `npm run build-rust` locally).
   const generationCurrent = (binPath, label) => {
     const gen = probeHashGeneration(binPath);
-    if (gen === HASH_GENERATION) { return true; }
-    winston.warn(`${label} rust-parser at ${binPath} stamps hash generation `
-      + `${gen ?? 'unknown (pre-probe build)'} but this server is on generation ${HASH_GENERATION} — `
-      + `refusing it to protect track identities; scans use the JS scanner until the binary updates.`);
-    return false;
+    if (gen !== HASH_GENERATION) {
+      winston.warn(`${label} rust-parser at ${binPath} stamps hash generation `
+        + `${gen ?? 'unknown (pre-probe build)'} but this server is on generation ${HASH_GENERATION} — `
+        + `refusing it to protect track identities; scans use the JS scanner until the binary updates.`);
+      return false;
+    }
+    // V70 schema-contract gate, same shape: a binary built before the
+    // albums re-key would run happily against a V70 DB (its at-open guard
+    // only compares user_version to what the SERVER passes) and write
+    // key-less album rows through the forced migration rescan — every album
+    // re-fragmenting into rows no later scanner can match. Older contract →
+    // JS scanner until the binary catches up (CI rebuilds bin/ on merge;
+    // `cargo build --release` locally).
+    const contract = probeSchemaContract(binPath);
+    if (contract === null || contract < SCANNER_SCHEMA_CONTRACT) {
+      winston.warn(`${label} rust-parser at ${binPath} was built for scanner schema contract `
+        + `${contract ?? 'unknown (pre-probe build)'} but this server needs ${SCANNER_SCHEMA_CONTRACT} — `
+        + `refusing it to protect album identities; scans use the JS scanner until the binary updates.`);
+      return false;
+    }
+    return true;
   };
 
   // Check local build first (may be newer than prebuilt during
@@ -840,6 +867,10 @@ function handleScannerLine(scanObj, line) {
         if (evt.movedTracksRehomed > 0) {
           parts.push(`${evt.movedTracksRehomed} moved track(s) re-homed ` +
             `(${evt.movedRefsRehomed} reference(s) rewritten)`);
+        }
+        // V70 album aggregate refresh — same undefined-tolerance as above.
+        if (evt.albumsAggregated > 0) {
+          parts.push(`${evt.albumsAggregated} album(s) refreshed`);
         }
         const tail = evt.filesScanned != null ? ` (${evt.filesScanned} scanned)` : '';
         winston.info(`Scan complete: ${parts.join(', ')}${tail}`);

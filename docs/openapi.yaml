@@ -1453,8 +1453,16 @@ paths:
                   required: [album]
                   properties:
                     album: { type: string }
-                    artist: { type: string }
-                    year: { type: integer }
+                    artist:
+                      type: string
+                      description: Matches the TRACK artist (the primary ARTIST tag), not the album artist.
+                    year:
+                      type: integer
+                      description: |
+                        With `album` set, matches when the year falls inside the album's
+                        year range (an album can span several track years; send back the
+                        `year` a list response gave you, or the playing track's year).
+                        Without `album` (the singles bucket) it matches the track year.
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":

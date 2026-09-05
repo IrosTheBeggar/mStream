@@ -6,6 +6,7 @@ import * as config from '../state/config.js';
 import { SCHEMA_VERSION, MIGRATIONS } from './schema.js';
 import { shouldMigrate, migrate } from './migrate-from-loki.js';
 import { normalizeArtistName } from '../util/artist-normalize.js';
+import { albumKey } from './album-key.js';
 
 let db = null;
 let clearSharedTimer = null;
@@ -592,15 +593,19 @@ export function resolveArtistNamesForDJ(names) {
   return [...result];
 }
 
+// Server-side twin of the scanners' find-or-create (the ytdl download path
+// is the only caller). V70: albums are keyed by album_key — name + album
+// artist, no year (see src/db/album-key.js). The row's year/count columns
+// are provisional until the caller's track insert fires the tracks_*_agg
+// trigger and refreshDirtyAlbums() recomputes them (ytdl does that inline).
 export function findOrCreateAlbum(name, artistId, year) {
   if (!name) { return null; }
-  const existing = db.prepare(
-    'SELECT id FROM albums WHERE name = ? AND artist_id IS ? AND year IS ?'
-  ).get(name, artistId, year);
+  const key = albumKey({ name, artistId });
+  const existing = db.prepare('SELECT id FROM albums WHERE album_key = ?').get(key);
   if (existing) { return existing.id; }
   const result = db.prepare(
-    'INSERT INTO albums (name, artist_id, year) VALUES (?, ?, ?)'
-  ).run(name, artistId, year);
+    'INSERT INTO albums (name, artist_id, year, album_key) VALUES (?, ?, ?, ?)'
+  ).run(name, artistId, year, key);
   return Number(result.lastInsertRowid);
 }
 
