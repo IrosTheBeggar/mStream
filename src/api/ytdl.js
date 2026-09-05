@@ -435,13 +435,15 @@ export function setup(mstream) {
           d.prepare(
             `INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
              disc_number, year, format, file_hash, audio_hash, album_art_file, replaygain_track_db,
-             modified, scan_id, source, hash_v, tag_album, tag_compilation)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
+             modified, scan_id, source, hash_v, tag_album, tag_compilation, artist_display)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
           ).run(
             data.filepath, lib.id, data.title || null, artistId, albumId,
             data.track, data.disk, data.year, data.format, data.hash, data.audioHash || null,
             data.aaFile, data.replaygainTrackDb, data.modified, data.sID, 'ytdl', hashV,
-            data.album || null
+            data.album || null,
+            // V72: the display string is the uploader / artist as given.
+            String(data.artist || '').trim() || null
           );
           // V71: the primary-artist credit row, with the raw spelling that
           // votes on the artist's display name (the scanners write the same

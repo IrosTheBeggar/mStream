@@ -542,6 +542,17 @@ export async function editIgnoreDotFolders(val) {
   config.program.scanOptions.ignoreDotFolders = val;
 }
 
+// V72: artist names never delimiter-split (scanOptions.artistSplitExceptions).
+// Same live pattern — task-queue reads config.program when it builds each
+// scan's jsonLoad, so the next scan honours the new list.
+export async function editArtistSplitExceptions(list) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.artistSplitExceptions = list;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.artistSplitExceptions = list;
+}
+
 // Filesystem-watcher toggle. Persist + in-memory like the others; the
 // API route starts/stops the watchers through dbQueue so the flip is
 // live (no reboot). watcherWait stays config-file-only for now and is

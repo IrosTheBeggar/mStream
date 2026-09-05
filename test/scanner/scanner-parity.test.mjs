@@ -158,6 +158,26 @@ describe('scanner determinism + parity', () => {
       assert.equal(solo.order_name, 'artist, solo', `[${engine}] order_name follows the sort tag`);
       assert.equal(solo.mbz_artist_id, '0a0a0a0a-1111-4222-8333-444444444444', `[${engine}] MUSICBRAINZ_ARTISTID filled`);
       assert.ok(snapshot.artists.every(a => a.agg_dirty === 0), `[${engine}] no artist left agg_dirty`);
+      // V72 fixture checks: role credits (Vorbis and ID3v2.3), the display
+      // string, the plural rule and the bare-slash name.
+      const fp = (r) => r.filepath.replace(/\\/g, '/');
+      const roleRows = (suffix) => snapshot.trackArtists
+        .filter(r => fp(r).endsWith(suffix) && r.role !== 'main' && r.role !== 'featured')
+        .map(r => `${r.role}:${r.position}:${r.artist}`).sort();
+      const expectedRoles = (a, b) => [`composer:0:${a}`, `composer:1:${b}`, 'conductor:0:Maestro', 'lyricist:0:Poet', 'remixer:0:Mixer'].sort();
+      assert.deepEqual(roleRows('Echoes/04 Track 4.flac'), expectedRoles('Comp One', 'Comp Two'), `[${engine}] Vorbis role credits`);
+      assert.deepEqual(roleRows('Collab/03.mp3'), expectedRoles('Writer A', 'Writer B'), `[${engine}] ID3v2.3 role credits`);
+      const collab2 = snapshot.tracks.find(tr => fp(tr).endsWith('Collab/02.mp3'));
+      assert.equal(collab2.artist_display, 'Foo feat. Bar', `[${engine}] display string is the tag as written`);
+      const duet = snapshot.tracks.find(tr => tr.album_name === 'Duets');
+      assert.equal(duet.artist_display, 'Duet A, Duet B feat. Nobody', `[${engine}] plural display joins the values`);
+      assert.deepEqual(
+        snapshot.trackArtists.filter(r => r.filepath === duet.filepath && (r.role === 'main' || r.role === 'featured'))
+          .sort((x, y) => x.position - y.position).map(r => r.artist),
+        ['Duet A', 'Duet B feat. Nobody'], `[${engine}] plural ARTIST honoured verbatim (no feat. split)`);
+      const slash = snapshot.tracks.find(tr => tr.album_name === 'Slash');
+      assert.equal(slash.artist_name, 'AC/DC', `[${engine}] AC/DC is one artist`);
+      assert.equal(slash.artist_display, 'AC/DC', `[${engine}] AC/DC display verbatim`);
       assert.equal(snapshot.albums.length, fixtureSummary.expectedAlbums,
         `[${engine}] albums table should hold ${fixtureSummary.expectedAlbums} rows, got: ` +
         snapshot.albums.map(a => `${a.name}/${a.artist_name}`).join(', '));

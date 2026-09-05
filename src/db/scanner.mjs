@@ -13,7 +13,8 @@ import { migrateHashReferences as migrateHashRefsShared } from './hash-migration
 import { extractLyrics, sidecarMtimeCached } from './lyrics-extraction.js';
 import { lrcToSearchText } from '../util/lrc-parser.js';
 import { computeHashes, HASH_GENERATION, SAMPLE_THRESHOLD_DEFAULT } from './audio-hash.js';
-import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
+import { extractArtists, chooseAlbumArtistId, creditValuesFromParsed, id3IsPrimary } from './artist-extraction.js';
+import { readId3TextFrames } from './id3-raw.js';
 import { migrateAlbumStars, migrateArtistStars, migrateAlbumArtState } from './album-migration.js';
 import { albumKey } from './album-key.js';
 import { refreshDirtyAlbums } from './album-aggregate.js';
@@ -46,6 +47,9 @@ const schema = Joi.object({
   // embedded picture and a folder image. task-queue.js always sends it; the
   // default keeps standalone / older invocations working.
   albumArtPriority: Joi.string().valid('metadata', 'folder').default('metadata'),
+  // V72: artist names never delimiter-split (scanOptions.artistSplitExceptions,
+  // exact spelling). task-queue.js passes the admin list; default none.
+  artistSplitExceptions: Joi.array().items(Joi.string()).default([]),
   supportedFiles: Joi.object().pattern(
     Joi.string(), Joi.boolean()
   ).required(),
@@ -283,8 +287,8 @@ const stmts = {
      bpm, musical_key, bpm_source,
      modified, scan_id, source,
      mbz_recording_id, mbz_release_track_id, isrc, mbz_id_source, hash_v,
-     tag_album, tag_album_artist, tag_compilation)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     tag_album, tag_album_artist, tag_compilation, artist_display)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(filepath, library_id) DO UPDATE SET
        title=excluded.title, artist_id=excluded.artist_id, album_id=excluded.album_id,
        track_number=excluded.track_number, disc_number=excluded.disc_number, year=excluded.year,
@@ -307,7 +311,8 @@ const stmts = {
        mbz_recording_id=excluded.mbz_recording_id, mbz_release_track_id=excluded.mbz_release_track_id,
        isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source,
        hash_v=excluded.hash_v,
-       tag_album=excluded.tag_album, tag_album_artist=excluded.tag_album_artist, tag_compilation=excluded.tag_compilation
+       tag_album=excluded.tag_album, tag_album_artist=excluded.tag_album_artist, tag_compilation=excluded.tag_compilation,
+       artist_display=excluded.artist_display
      RETURNING id`
   ),
   // V17: M2M artist-link maintenance. Album-artists use INSERT OR IGNORE
@@ -1014,10 +1019,23 @@ async function parseMyFile(absolutePath, modified) {
     // file. Mirrors bpmSource; the future fingerprint pass writes 'acoustid'.
     songInfo.mbzIdSource = (songInfo.mbzRecordingId != null || songInfo.mbzReleaseTrackId != null
       || songInfo.isrc != null) ? 'tag' : null;
-    // Multi-artist / compilation extraction — see src/db/artist-extraction.js
-    // for the rules. Stored as a sub-object so `insertTrack` can pull it
-    // without re-parsing.
-    songInfo.artistInfo = extractArtists(parsed.common);
+    // Multi-artist / compilation / role extraction — see
+    // src/db/artist-extraction.js for the rules. Stored as a sub-object so
+    // `insertTrack` can pull it without re-parsing. The credit values come
+    // from the file's PRIMARY tag the way lofty reads them: ID3v2 files hand
+    // over the raw frames (id3-raw.js — music-metadata pre-splits v2.3 TPE1 /
+    // TCOM on "/" and would turn "AC/DC" into two artists), Vorbis / MP4 /
+    // APE from the native list (never the ARTISTS list tag lofty ignores).
+    const creditValues = creditValuesFromParsed(parsed,
+      id3IsPrimary(parsed) ? readId3TextFrames(absolutePath) : null);
+    if (creditValues?.degraded) {
+      console.error(`Warning: ID3 credit frames of ${absolutePath} could not be read raw; `
+        + 'using the music-metadata view (v2.3 slash-split names re-joined)');
+    }
+    songInfo.artistInfo = extractArtists(parsed.common, {
+      values: creditValues,
+      splitExceptions: loadJson.artistSplitExceptions || [],
+    });
     // V19: lyrics from embedded tags + sibling sidecars. Returns the
     // four tracks.lyrics_* column values flat; insertTrack binds them
     // directly. Kept in a sub-object for the same reason as artistInfo.
@@ -1026,7 +1044,7 @@ async function parseMyFile(absolutePath, modified) {
     console.error(`Warning: metadata parse error on ${absolutePath}: ${err.message}`);
     songInfo = { track: { no: null, of: null }, disk: { no: null, of: null }, duration: null,
                  sampleRate: null, channels: null, bitDepth: null,
-                 artistInfo: { trackArtists: [], albumArtists: [], isCompilation: false,
+                 artistInfo: { trackArtists: [], albumArtists: [], roleCredits: {}, isCompilation: false,
                                trackArtistDisplay: '', albumArtistDisplay: null } };
     // Intentionally do NOT set lyricsInfo on the error path — the
     // fallback below re-runs the extractor so a `.lrc` sidecar still
@@ -1078,7 +1096,7 @@ async function parseMyFile(absolutePath, modified) {
 
 function insertTrack(song) {
   const ai = song.artistInfo || {
-    trackArtists: [], albumArtists: [], isCompilation: false,
+    trackArtists: [], albumArtists: [], roleCredits: {}, isCompilation: false,
     trackArtistDisplay: song.artist || '', albumArtistDisplay: null,
   };
 
@@ -1174,7 +1192,10 @@ function insertTrack(song) {
     // album row's values are the majority / OR over these at scan end.
     song.album ? String(song.album) : null,
     ai.albumArtistDisplay || null,
-    ai.isCompilation ? 1 : 0
+    ai.isCompilation ? 1 : 0,
+    // V72: the ARTIST tag as written (plural values joined with ", ") —
+    // the API's `artist-display`. Mirrors the Rust scanner.
+    ai.trackArtistDisplay || null
   );
   const trackId = Number(row.id);
 
@@ -1225,6 +1246,16 @@ function insertTrack(song) {
   for (let i = 0; i < trackArtistIds.length; i++) {
     stmts.insertTrackArtist.run(trackId, trackArtistIds[i], i === 0 ? 'main' : 'featured', i,
       trackArtistTags[i] ?? null);
+  }
+  // V72: the other credit roles (composer / conductor / remixer / lyricist),
+  // one row per (artist, role) in tag order. The PK is (track, artist,
+  // role), so an artist can be both a performer and the composer. Mirrors
+  // the Rust scanner.
+  for (const [role, names] of Object.entries(ai.roleCredits || {})) {
+    for (let i = 0; i < names.length; i++) {
+      const id = findOrCreateArtist(names[i]);
+      if (Number.isFinite(id)) { stmts.insertTrackArtist.run(trackId, id, role, i, names[i]); }
+    }
   }
 
   // V71: ARTISTSORT / ALBUMARTISTSORT and MusicBrainz artist ids, index-

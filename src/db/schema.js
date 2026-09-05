@@ -87,7 +87,7 @@ import { mergeAlbumInto, backfillAlbumAggregates } from './album-merge.js';
 // V69 drops the velvet-only tables (smart_playlists, user_settings,
 // cue_points, play_events) and users.listenbrainz_token — the velvet UI and
 // the API modules that existed only for it were removed. See SCHEMA_V69.
-export const SCHEMA_VERSION = 71;
+export const SCHEMA_VERSION = 72;
 
 // The schema version at which the SCANNER'S WRITE CONTRACT last changed —
 // the columns / identity rules a rust-parser binary must know to write rows
@@ -97,7 +97,7 @@ export const SCHEMA_VERSION = 71;
 // whenever a migration changes what the scanner writes, NOT for every
 // migration. History: 70 (album_key, tracks.tag_*), 71 (artists.name_key /
 // order_name, track_artists.tag_name, album_artists.tag_name).
-export const SCANNER_SCHEMA_CONTRACT = 71;
+export const SCANNER_SCHEMA_CONTRACT = 72;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -3073,6 +3073,32 @@ export function migrateV71MergeArtists(db) {
   backfillAlbumAggregates(db, { onlyDirty: true });
 }
 
+// ── V72: credit roles + the track's artist display string ───────────────────
+//
+// PR 3 of the artist series (after V70 album identity and V71 artist
+// identity). Two things the scanners now write, both from tags:
+//
+// - `tracks.artist_display`: the ARTIST tag as written — "A feat. B", or the
+//   plural values of a multi-valued tag joined with ", ". `tracks.artist_id`
+//   stays the primary artist; the API surfaces the string as
+//   `metadata['artist-display']` (metadata.artist is unchanged).
+// - track_artists rows with role 'composer' / 'conductor' / 'remixer' /
+//   'lyricist' (from TCOM / TPE3 / TPE4 / TEXT and the Vorbis / MP4
+//   equivalents), position in tag order, tag_name as usual. 'main' /
+//   'featured' remain the performer roles; album_artists stays album
+//   credits only. Read paths that mean "this artist's songs / albums" keep
+//   to the performer roles unless a request widens them (`roles` /
+//   `include` params) — a composer credit must not turn into an album on
+//   the composer's artist page unasked.
+//
+// Split rules changed with it (src/db/artist-extraction.js): a tag with two
+// or more values is never delimiter-split; a single value is, except the
+// names in scanOptions.artistSplitExceptions. No table rebuild, no hook.
+// rescanRequired: every new value comes from tags.
+export const SCHEMA_V72 = `
+  ALTER TABLE tracks ADD COLUMN artist_display TEXT;
+`;
+
 export const MIGRATIONS = [
   { version: 1,  sql: SCHEMA_V1  },
   { version: 2,  sql: SCHEMA_V2  },
@@ -3353,4 +3379,8 @@ export const MIGRATIONS = [
   // rescanRequired: spellings, ARTISTSORT and MusicBrainz artist ids come
   // from tags. See SCHEMA_V71.
   { version: 71, sql: SCHEMA_V71, js: migrateV71MergeArtists, rescanRequired: true },
+  // V72 — tracks.artist_display + credit roles in track_artists. ADD COLUMN
+  // only. rescanRequired: display strings and roles come from tags. See
+  // SCHEMA_V72.
+  { version: 72, sql: SCHEMA_V72, rescanRequired: true },
 ];

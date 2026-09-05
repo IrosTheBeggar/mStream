@@ -439,3 +439,33 @@ describe('POST /api/v1/admin/config/trust-proxy', () => {
     assert.equal(r.status, 403);
   });
 });
+
+// ── POST /db/params/artist-split-exceptions (V72) ─────────────────────────
+
+describe('artist-split-exceptions param', () => {
+  test('GET includes the default (empty list)', async () => {
+    const body = await (await adminGet('/api/v1/admin/db/params')).json();
+    assert.deepEqual(body.artistSplitExceptions, []);
+  });
+
+  test('sets + reflects (trimmed, de-duplicated, order kept); rejects junk; 403 non-admin', async () => {
+    const r1 = await adminPost('/api/v1/admin/db/params/artist-split-exceptions',
+      { artistSplitExceptions: [' AC / DC ', 'Earth; Wind', 'AC / DC'] });
+    assert.equal(r1.status, 200);
+    assert.deepEqual(await r1.json(), {});
+    assert.deepEqual((await (await adminGet('/api/v1/admin/db/params')).json()).artistSplitExceptions,
+      ['AC / DC', 'Earth; Wind']);
+
+    for (const bad of [{ artistSplitExceptions: 'AC / DC' }, { artistSplitExceptions: [''] },
+      { artistSplitExceptions: [1] }, { artistSplitExceptions: null }, {}]) {
+      const r = await adminPost('/api/v1/admin/db/params/artist-split-exceptions', bad);
+      assert.equal(r.status, 400, `expected rejection for ${JSON.stringify(bad)}`);
+    }
+    assert.equal((await adminPost('/api/v1/admin/db/params/artist-split-exceptions',
+      { artistSplitExceptions: ['X'] }, userJwt)).status, 403);
+
+    // Restore the default so later tests start in a known state.
+    await adminPost('/api/v1/admin/db/params/artist-split-exceptions', { artistSplitExceptions: [] });
+    assert.deepEqual((await (await adminGet('/api/v1/admin/db/params')).json()).artistSplitExceptions, []);
+  });
+});

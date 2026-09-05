@@ -50,6 +50,9 @@ const storageJoi = Joi.object({
   modelCacheDirectory: Joi.string().default((parent) => deriveModelCacheDirectory(parent && parent.dbDirectory)),
 });
 
+// Shared with the admin setter (src/api/admin.js) so the two never drift.
+export const artistSplitExceptionsSchema = Joi.array().items(Joi.string().trim().min(1).max(200)).max(500);
+
 const scanOptions = Joi.object({
   skipImg: Joi.boolean().default(false),
   scanInterval: Joi.number().min(0).default(24),
@@ -69,6 +72,14 @@ const scanOptions = Joi.object({
   // (/api/v1/admin/db/params/ignore-dot-*).
   ignoreDotFiles: Joi.boolean().default(false),
   ignoreDotFolders: Joi.boolean().default(false),
+  // Artist names the scanners must never split on the artist delimiters
+  // (" / ", " feat. ", " ft. ", "; " …) when they appear in a single-valued
+  // ARTIST / ALBUMARTIST / COMPOSER … tag. Exact spelling as tagged, applied
+  // in list order (put a longer name before one it contains). Multi-valued
+  // tags are never split anyway. Live: the next scan reads the list; run a
+  // rescan to re-read files already indexed. Both scanners honour it
+  // (src/db/artist-extraction.js, rust-parser split_artist_string).
+  artistSplitExceptions: artistSplitExceptionsSchema.default([]),
   // Filesystem watcher: near-instant targeted scans when library files
   // change (src/util/library-watcher.js). Default OFF (opt-in): change
   // events don't fire on most CIFS/NFS mounts, so the scanInterval loop

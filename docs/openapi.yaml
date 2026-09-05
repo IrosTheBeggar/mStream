@@ -229,6 +229,27 @@ components:
             artist:
               type: string
               nullable: true
+              description: The primary artist's name (unchanged contract).
+            artist-display:
+              type: string
+              nullable: true
+              description: |
+                V72. The ARTIST tag as written — "A feat. B", or a multi-valued
+                tag's values joined with ", ". `artist` stays the primary
+                artist. Rows scanned before V72 return the primary name here
+                until the forced rescan. DB column `artist_display`.
+            artists:
+              type: array
+              items: { type: string }
+              description: |
+                V72. Performer credits in tag order — the primary artist first,
+                then featured artists. Always present (falls back to `[artist]`).
+            composer:
+              type: string
+              nullable: true
+              description: |
+                V72. Composer credit(s) from the COMPOSER / TCOM tag, several
+                joined with ", ". Null when the file carries none.
             album:
               type: string
               nullable: true
@@ -394,6 +415,14 @@ components:
         artist:
           type: string
           nullable: true
+        artist-display:
+          type: string
+          nullable: true
+          description: V72. The ARTIST tag as written (see `Metadata`).
+        artists:
+          type: array
+          items: { type: string }
+          description: V72. Performer credits in tag order (see `Metadata`).
         album:
           type: string
           nullable: true
@@ -630,6 +659,13 @@ components:
           items:
             type: string
             enum: [musicbrainz, itunes, deezer]
+        artistSplitExceptions:
+          type: array
+          items: { type: string }
+          description: |
+            V72. Artist names the scanners never split on the artist delimiters
+            (" / ", " feat. ", " ft. ", "; ") when they appear in a single-valued
+            tag. Exact spelling as tagged, applied in list order. Default empty.
         analyzeBpm:
           type: boolean
           description: |
@@ -1372,11 +1408,22 @@ paths:
         display name, case-insensitive. `sort=order` sorts by the artist's sort key instead:
         the ARTISTSORT tag when the library carries one, else the name with one leading
         article dropped ("The Beatles" under B).
+
+        By default the list holds the artists that are the primary artist of at least one
+        track (unchanged). `include` widens it (V72): `albumArtists` adds artists credited on
+        an album (ALBUMARTIST — this is where "Various Artists" appears), and a role name
+        (`featured`, `composer`, `conductor`, `remixer`, `lyricist`) adds artists holding
+        that credit on a track. Unknown values are a 400.
       parameters:
         - in: query
           name: sort
           required: false
           schema: { type: string, enum: [name, order], default: name }
+        - in: query
+          name: include
+          required: false
+          description: Comma-separated list of extra sources (see above).
+          schema: { type: string, example: "albumArtists,featured" }
       responses:
         "200":
           description: Artists.
@@ -1392,7 +1439,7 @@ paths:
     post:
       <<: *artistsOp
       requestBody:
-        description: Optional `ignoreVPaths` filter and `sort` mode.
+        description: Optional `ignoreVPaths` filter, `sort` mode and `include` sources.
         content:
           application/json:
             schema:
@@ -1400,6 +1447,10 @@ paths:
                 - type: object
                   properties:
                     sort: { type: string, enum: [name, order], default: name }
+                    include:
+                      type: array
+                      items: { type: string, enum: [albumArtists, featured, composer, conductor, remixer, lyricist] }
+                      description: Extra sources to include (V72; see the GET description).
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
 
   /api/v1/db/artists-albums:
@@ -1418,6 +1469,14 @@ paths:
                     artist:
                       type: string
                       description: Matched on the normalised artist name (case, whitespace and quote style insensitive).
+                    roles:
+                      type: array
+                      items: { type: string, enum: [main, featured, composer, conductor, remixer, lyricist] }
+                      description: |
+                        V72. Which track credits count as the artist's when collecting albums
+                        (and the singles bucket). Omitted or empty → `[main, featured]` (performer
+                        credits) — a composer credit does not put an album on the composer's page
+                        unless asked for.
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":
@@ -1471,7 +1530,11 @@ paths:
                     album: { type: string }
                     artist:
                       type: string
-                      description: Matches the TRACK artist (the primary ARTIST tag), not the album artist.
+                      description: |
+                        Matches the TRACK artist, not the album artist: the primary ARTIST tag or
+                        (V72) a performer credit (main / featured) on the track — the same set
+                        `/db/artists-albums` lists by default. Composer and other credit roles
+                        never match here. Matched on the normalised artist name.
                     year:
                       type: integer
                       description: |
@@ -3588,6 +3651,29 @@ paths:
               required: [skipImg]
               properties:
                 skipImg: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/db/params/artist-split-exceptions:
+    post:
+      tags: [Admin - Scanner]
+      summary: Set the artist names never split by the scanners
+      description: |
+        V72. Replaces `scanOptions.artistSplitExceptions`. Live — the next scan honours
+        the list; run a rescan to re-read files already indexed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [artistSplitExceptions]
+              properties:
+                artistSplitExceptions:
+                  type: array
+                  maxItems: 500
+                  items: { type: string, minLength: 1, maxLength: 200 }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "405": { $ref: "#/components/responses/AdminLocked" }

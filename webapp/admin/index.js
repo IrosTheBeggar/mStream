@@ -2168,6 +2168,12 @@ const dbView = Vue.component('db-view', {
                         [<a v-on:click="openModal('edit-album-art-services-modal')">{{ t('admin.settings.edit') }}</a>]
                       </td>
                     </tr>
+                    <tr>
+                      <td><b>{{ t('admin.db.artistSplitExceptions') }}</b> {{ dbParams.artistSplitExceptions && dbParams.artistSplitExceptions.length ? dbParams.artistSplitExceptions.join(', ') : t('admin.db.artistSplitExceptionsNone') }}</td>
+                      <td>
+                        [<a v-on:click="openModal('edit-artist-split-exceptions-modal')">{{ t('admin.settings.edit') }}</a>]
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -10359,6 +10365,59 @@ const editAlbumArtServicesModal = Vue.component('edit-album-art-services-modal',
           data: { albumArtServices: this.services }
         });
         Vue.set(ADMINDATA.dbParams, 'albumArtServices', this.services.slice());
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+        iziToast.success({ title: t('admin.settings.updated'), position: 'topCenter', timeout: 3500 });
+      } catch(err) {
+        iziToast.error({ title: t('admin.settings.failed'), position: 'topCenter', timeout: 3500 });
+      } finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+// V72: artist names the scanners never split (scanOptions.artistSplitExceptions).
+// One name per line; saved as an ordered, de-duplicated array. Live setting
+// (next scan) — no reboot.
+const editArtistSplitExceptionsModal = Vue.component('edit-artist-split-exceptions-modal', {
+  data() {
+    return {
+      submitPending: false,
+      text: (ADMINDATA.dbParams.artistSplitExceptions || []).join('\n')
+    };
+  },
+  template: `
+    <form @submit.prevent="updateExceptions">
+      <div class="modal-content">
+        <h4>{{ t('admin.modal.artistSplitExceptions') }}</h4>
+        <p>{{ t('admin.modal.artistSplitExceptionsHint') }}</p>
+        <div class="input-field">
+          <textarea v-model="text" id="edit-artist-split-exceptions" class="materialize-textarea" rows="6"></textarea>
+          <label for="edit-artist-split-exceptions">{{ t('admin.modal.artistSplitExceptionsLabel') }}</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending">
+          {{ submitPending ? t('admin.modal.updating') : t('admin.modal.update') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+    M.textareaAutoResize(document.getElementById('edit-artist-split-exceptions'));
+  },
+  methods: {
+    updateExceptions: async function() {
+      try {
+        this.submitPending = true;
+        const list = [...new Set(this.text.split(/\r?\n/).map((v) => v.trim()).filter(Boolean))];
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/db/params/artist-split-exceptions`,
+          data: { artistSplitExceptions: list }
+        });
+        Vue.set(ADMINDATA.dbParams, 'artistSplitExceptions', list);
         M.Modal.getInstance(document.getElementById('admin-modal')).close();
         iziToast.success({ title: t('admin.settings.updated'), position: 'topCenter', timeout: 3500 });
       } catch(err) {

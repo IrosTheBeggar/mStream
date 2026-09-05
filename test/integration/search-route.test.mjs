@@ -396,7 +396,7 @@ describe('/api/v1/db/search algorithm dispatch', () => {
     // metadata is the LITE subset — exactly these keys, no more. Hardcoded
     // here (rather than imported from src) as the wire contract; the unit test
     // (render-metadata-by-ids) locks this list against LITE_METADATA_FIELDS.
-    const EXPECTED_LITE_KEYS = ['album', 'album-art', 'artist', 'bpm', 'disk',
+    const EXPECTED_LITE_KEYS = ['album', 'album-art', 'artist', 'artist-display', 'artists', 'bpm', 'disk',
       'duration', 'genres', 'has-lyrics', 'has-synced-lyrics', 'musical-key',
       'rating', 'replaygain-track', 'title', 'track', 'year'];
     assert.ok(hit.metadata && typeof hit.metadata === 'object', 'title hit has a metadata object');
@@ -406,6 +406,9 @@ describe('/api/v1/db/search algorithm dispatch', () => {
     // Kept (display/playback/Auto-DJ) fields carry real values.
     assert.equal(hit.metadata.title, 'Comfortably Numb');
     assert.equal(hit.metadata.artist, 'Pink Floyd');
+    // V72 lite fields: the display string and the performer list ride along.
+    assert.equal(hit.metadata['artist-display'], 'Pink Floyd');
+    assert.deepEqual(hit.metadata.artists, ['Pink Floyd']);
     assert.equal(hit.metadata.album, 'The Wall');
     assert.equal(hit.metadata.year, 1979);
     assert.ok('album-art' in hit.metadata, 'kebab-case lite fields are present');

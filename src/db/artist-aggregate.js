@@ -12,16 +12,22 @@
 //
 // Consensus rules (order-independent — a parallel walk cannot make two
 // scans of one library disagree):
-//   name         most common tag_name across the artist's track AND album
-//                credits (tie → smallest, BINARY). Every credit on the row
-//                shares the row's name_key by construction, so the mode is
-//                always a spelling of the same artist. The seeded Various
+//   name         most common tag_name across the artist's PERFORMER track
+//                credits (main / featured) and album credits (tie →
+//                smallest, BINARY); an artist with no such credit (V72:
+//                composer / conductor / remixer / lyricist only) takes the
+//                mode over every credit row instead — a composer tag spelled
+//                CDDB-style must not rename a performer, but a composer-only
+//                artist still gets a deterministic name. Every credit on the
+//                row shares the row's name_key by construction, so the mode
+//                is always a spelling of the same artist. The seeded Various
 //                Artists row is never renamed: its fallback credits vote
 //                with the canonical spelling, and a library that spells it
 //                differently in its own tags must not rename the sentinel
 //                every other feature keys on.
 //   order_name   orderName(name, sort_name) — see src/db/name-key.js.
-//   track_count  COUNT(DISTINCT track_id) over track_artists.
+//   track_count  COUNT(DISTINCT track_id) over track_artists — every role
+//                (V72: a composer-only credit counts as a track credit).
 //   album_count  COUNT(DISTINCT album_id) over album_artists — the album
 //                credits (ALBUMARTIST, or the fallback chain), not every
 //                album the artist appears on.
@@ -41,9 +47,12 @@ const CONSENSUS_SQL = `
          (SELECT COUNT(DISTINCT album_id) FROM album_artists WHERE artist_id = a.id) AS n_albums,
          (SELECT tag_name FROM (
             SELECT tag_name FROM track_artists WHERE artist_id = a.id AND tag_name IS NOT NULL
+               AND role IN ('main', 'featured')
             UNION ALL
             SELECT tag_name FROM album_artists WHERE artist_id = a.id AND tag_name IS NOT NULL)
-           GROUP BY tag_name ORDER BY COUNT(*) DESC, tag_name ASC LIMIT 1) AS mode_name
+           GROUP BY tag_name ORDER BY COUNT(*) DESC, tag_name ASC LIMIT 1) AS mode_name,
+         (SELECT tag_name FROM track_artists WHERE artist_id = a.id AND tag_name IS NOT NULL
+           GROUP BY tag_name ORDER BY COUNT(*) DESC, tag_name ASC LIMIT 1) AS mode_name_any
     FROM artists a WHERE a.id = ?`;
 
 function prepareStatements(db) {
@@ -63,7 +72,7 @@ function refreshOne(s, id) {
   const r = s.read.get(id);
   if (!r) { return; }                      // deleted between pick and refresh
   const pinned = r.mbz_artist_id === VARIOUS_ARTISTS_MBZ_ID;
-  const name = (!pinned && r.mode_name) ? r.mode_name : r.name;
+  const name = pinned ? r.name : (r.mode_name || r.mode_name_any || r.name);
   s.writeCore.run(orderName(name, r.sort_name), r.n_tracks, r.n_albums, id);
   if (name !== r.name) { s.writeName.run(name, id); }
 }

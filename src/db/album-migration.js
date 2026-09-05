@@ -45,7 +45,10 @@ function albumStillReferenced(db, albumId) {
 function artistStillReferenced(db, artistId) {
   return !!db.prepare(`
     SELECT 1 WHERE EXISTS (SELECT 1 FROM tracks        WHERE artist_id = ?1)
-              OR EXISTS (SELECT 1 FROM track_artists WHERE artist_id = ?1)
+              -- V72: only a PERFORMER credit keeps the old row "referenced";
+              -- an ARTIST rename that leaves the old spelling behind in COMPOSER
+              -- (performers writing their own songs) must still re-home the stars.
+              OR EXISTS (SELECT 1 FROM track_artists WHERE artist_id = ?1 AND role IN ('main', 'featured'))
               OR EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = ?1
                    AND (EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id)
                      OR EXISTS (SELECT 1 FROM user_album_stars s WHERE s.album_id = al.id)))
