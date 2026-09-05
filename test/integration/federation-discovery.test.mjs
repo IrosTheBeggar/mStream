@@ -258,4 +258,87 @@ describe('federation discovery similar (peer side)', () => {
     const r = await similar(offServer, fedHeaders(offKey), { embedding: b64(Q), modelId: 'test-fake' });
     assert.equal(r.status, 403);
   });
+  // ── The webapp's federated Auto DJ: random-songs + embeddings for a key ──────
+  //
+  // A federated session asks each peer's picker with a vector seed, and reads
+  // the vectors behind anchors that live on that peer. Both routes are now on
+  // the key allowlist; these pin that a key sees them scoped to its grants,
+  // exactly like every other db read — the ungranted library's track has the
+  // highest cosine of all and must never surface.
+
+  describe('federation key: random-songs + embeddings (webapp cross-server Auto DJ)', () => {
+    const ALPHA_PATH = 'shared/alpha.mp3';
+    const UNGRANTED_PATH = 'testlib/Icarus/Be Somebody/01 - Be Somebody.mp3';
+
+    async function post(srv, headers, route, body) {
+      const r = await fetch(`${srv.baseUrl}${route}`, { method: 'POST', headers, body: JSON.stringify(body) });
+      return { status: r.status, body: await r.json().catch(() => null) };
+    }
+
+    test('a plain pick with a key draws only from the granted library', async () => {
+      const seen = new Set();
+      for (let i = 0; i < 16; i++) {
+        const { status, body } = await post(server, fedHeaders(fedKey), '/api/v1/db/random-songs', {});
+        assert.equal(status, 200, JSON.stringify(body));
+        seen.add(body.songs[0].metadata.title);
+        assert.ok(body.songs[0].filepath.startsWith('shared/'), `pick '${body.songs[0].filepath}' left the granted library`);
+      }
+      assert.ok(!seen.has('Be Somebody'));
+    });
+
+    test('a vector-seeded pick with a key stays inside the grants and reports the cosine', async () => {
+      // Q's nearest track overall is Be Somebody (cos ≈ 0.98) in the UNGRANTED
+      // library; within `shared` the pool at 0.5 is {Alpha 0.9, Beta 0.6}.
+      const seen = new Set();
+      for (let i = 0; i < 24; i++) {
+        const { status, body } = await post(server, fedHeaders(fedKey), '/api/v1/db/random-songs',
+          { similarToVector: b64(Q), similarToModelId: 'test-fake', minSimilarity: 0.5 });
+        assert.equal(status, 200, JSON.stringify(body));
+        const title = body.songs[0].metadata.title;
+        seen.add(title);
+        assert.ok(['Alpha Song', 'Beta Song'].includes(title), `'${title}' is outside the key's grants`);
+        const expected = title === 'Alpha Song' ? dot(Q, V.alpha) : dot(Q, V.beta);
+        assert.ok(Math.abs(body.sonic.similarity - expected) < 1e-3, `cosine ${body.sonic.similarity} for '${title}'`);
+      }
+      assert.deepEqual([...seen].sort(), ['Alpha Song', 'Beta Song']);
+    });
+
+    test('a model mismatch is the same hard 400 a local user gets', async () => {
+      const { status, body } = await post(server, fedHeaders(fedKey), '/api/v1/db/random-songs',
+        { similarToVector: b64(Q), similarToModelId: 'some-other-model', minSimilarity: 0.5 });
+      assert.equal(status, 400);
+      assert.match(body.error, /some-other-model/);
+    });
+
+    test('a minRating from a key is skipped, not a starved pool or a 500 (a key has no stars)', async () => {
+      const { status, body } = await post(server, fedHeaders(fedKey), '/api/v1/db/random-songs', { minRating: 8 });
+      assert.equal(status, 200, JSON.stringify(body));
+      assert.ok(body.songs[0].filepath.startsWith('shared/'));
+    });
+
+    test('embeddings for a granted path come back; an ungranted path is a uniform 404', async () => {
+      const ok = await post(server, fedHeaders(fedKey), '/api/v1/discovery/local/embeddings', { filePaths: [ALPHA_PATH] });
+      assert.equal(ok.status, 200, JSON.stringify(ok.body));
+      assert.deepEqual(ok.body.model, { id: 'test-fake', version: '1' });
+      assert.equal(ok.body.dim, 4);
+      assert.equal(ok.body.tracks[0].notAnalyzed, false);
+      const raw = Buffer.from(ok.body.tracks[0].embedding, 'base64');
+      const ab = new ArrayBuffer(raw.length); new Uint8Array(ab).set(raw);
+      const v = new Float32Array(ab);
+      for (let i = 0; i < 4; i++) { assert.ok(Math.abs(v[i] - V.alpha[i]) < 1e-6); }
+
+      const denied = await post(server, fedHeaders(fedKey), '/api/v1/discovery/local/embeddings', { filePaths: [UNGRANTED_PATH] });
+      assert.equal(denied.status, 404);
+    });
+
+    test('a discovery-off peer answers 403 to both, so a session can tell "sits out" from "unreachable"', async () => {
+      assert.equal((await post(offServer, fedHeaders(offKey), '/api/v1/discovery/local/embeddings', { filePaths: ['testlib/x.mp3'] })).status, 403);
+      assert.equal((await post(offServer, fedHeaders(offKey), '/api/v1/db/random-songs',
+        { similarToVector: b64(Q), similarToModelId: 'test-fake', minSimilarity: 0.5 })).status, 403);
+      // …while a plain pick there still works: the route is allowlisted, only
+      // the sonic pool needs discovery.
+      assert.equal((await post(offServer, fedHeaders(offKey), '/api/v1/db/random-songs', {})).status, 200);
+    });
+  });
+
 });

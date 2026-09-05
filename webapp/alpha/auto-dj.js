@@ -491,6 +491,28 @@
         const v = _read('sonicLockedAnchor', null);
         return typeof v === 'string' ? v : null;
       })(),
+      // Cross-server session (mStream #929): ask this server AND every
+      // federated peer that shares its discovery model, seed as a vector,
+      // best cosine wins. A preference like sonicEnabled; the panel only
+      // offers it when the server advertises federationBrowse.
+      federatedEnabled:   !!_read('federatedEnabled', false),
+      // Which server each sonicHistory path came from — a peer id, or null
+      // for this server. A path only names a row on the server that holds
+      // it, so a cross-server anchor must remember its owner or the seed
+      // read-out asks the wrong server. Pruned with the history ring.
+      sonicHistoryOwners: (() => {
+        const v = _read('sonicHistoryOwners', null);
+        return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
+      })(),
+      // Each peer's own ignoreList, by peer id. The list is server-issued
+      // track ids, meaningful only back on the server that issued it, so
+      // one shared list would exclude unrelated tracks everywhere else and
+      // lose the cooldown wherever the winner moved. The local list stays
+      // djIgnoreList. Each list is tail-trimmed like djIgnoreList.
+      djPeerIgnoreLists: (() => {
+        const v = _read('djPeerIgnoreLists', null);
+        return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
+      })(),
     };
   }
 
@@ -580,10 +602,14 @@
       camelotAnchor: null,
       djCountedFilepaths: [],
       sonicHistory: [],
+      sonicHistoryOwners: {},
       sonicLockedAnchor: null,
+      djPeerIgnoreLists: {},
       // sonicSeed survives — like the toggles it's a choice, not
       // session state, so a DJ off/on cycle keeps the picked seed.
+      // federatedEnabled survives for the same reason.
     });
+    _federatedExcluded.clear();
   }
 
   // ── BPM history + anchor ─────────────────────────────────────────
@@ -663,6 +689,7 @@
       // Manual pick = new lane: the sonic session re-anchors on the new
       // song, and any explicit seed from the old lane is consumed.
       sonicHistory: [],
+      sonicHistoryOwners: {},
       sonicLockedAnchor: null,
       sonicSeed: null,
     });
@@ -693,6 +720,7 @@
     setState({
       sonicSeed: { filepath: norm, title: String(title || norm) },
       sonicHistory: [],
+      sonicHistoryOwners: {},
       sonicLockedAnchor: null,
     });
     return true;
@@ -710,56 +738,277 @@
   // last. Re-picking a path already in the window moves it to the
   // most-recent slot instead of duplicating it (a duplicate would
   // double-weight that song in the server's centroid).
-  function pushSonicHistory(filepath) {
+  //
+  // `ownerPeerId` is the server the pick came from — a peer id, or null
+  // (the default, and every single-server pick) for this server. The
+  // owners map is pruned with the ring so it never outgrows it.
+  function pushSonicHistory(filepath, ownerPeerId = null) {
     const norm = _normSonicPath(filepath);
     if (!norm) { return; }
     const next = state.sonicHistory.filter(p => p !== norm);
     next.push(norm);
     while (next.length > SONIC_HISTORY_LIMIT) { next.shift(); }
-    setState({ sonicHistory: next });
+    const owners = {};
+    for (const p of next) {
+      if (p === norm) { owners[p] = ownerPeerId === null || ownerPeerId === undefined ? null : Number(ownerPeerId); }
+      else if (p in state.sonicHistoryOwners) { owners[p] = state.sonicHistoryOwners[p]; }
+    }
+    // The locked anchor is pinned outside the ring; its owner (recorded
+    // by sonicAnchors when the pin came from a playing peer track) rides
+    // along until the pin is cleared.
+    const pin = state.sonicLockedAnchor;
+    if (pin && !(pin in owners) && pin in state.sonicHistoryOwners) { owners[pin] = state.sonicHistoryOwners[pin]; }
+    setState({ sonicHistory: next, sonicHistoryOwners: owners });
   }
 
   function clearSonicHistory() {
-    setState({ sonicHistory: [] });
+    setState({ sonicHistory: [], sonicHistoryOwners: {} });
   }
 
   // Clear the per-session sonic anchors (history + locked pin) while
   // keeping the explicit seed. Used when the feature is toggled off in
   // the panel — mirrors clearBpmHistory/clearCamelotAnchor semantics.
   function clearSonicAnchors() {
-    setState({ sonicHistory: [], sonicLockedAnchor: null });
+    setState({ sonicHistory: [], sonicHistoryOwners: {}, sonicLockedAnchor: null });
   }
 
-  // The `similarTo`/`minSimilarity` fields for the next random-songs
-  // body, or null when sonic mode is off OR no anchor is resolvable
-  // (empty queue, no explicit seed — the caller decides how to surface
-  // that; the player toasts a "pick a seed" pointer).
+  // ── Cross-server session (mStream #929) ─────────────────────────
+  //
+  // With `federatedEnabled`, the player asks this server AND every paired
+  // peer that shares its discovery model. The pure parts live here so
+  // they can be unit-tested; the network round trips stay in the player
+  // (webapp/assets/js/mstream.player.js, _autoDjFederatedPick).
+  //
+  // The seed travels as a VECTOR: a filepath only names a row on the
+  // server that holds it, so the anchor's embeddings are read from their
+  // owning servers, averaged client-side, and sent as `similarToVector`
+  // (base64 of dim × float32 little-endian — the server's wire form).
+
+  // Peers dropped for the rest of the session — a model-space 400 from a
+  // peer means its library is indexed with a different model, and only a
+  // rescan changes that, so it is not re-asked every pick. Session-only,
+  // deliberately not persisted; reset() clears it.
+  const _federatedExcluded = new Set();
+
+  function excludePeerForSession(peerId) {
+    const id = Number(peerId);
+    if (Number.isFinite(id)) { _federatedExcluded.add(id); }
+  }
+
+  function isPeerExcluded(peerId) {
+    return _federatedExcluded.has(Number(peerId));
+  }
+
+  // Which server each anchor path lives on: the owners map for history
+  // paths, the playing song's own `federation` marker for the current
+  // track (a peer pick the user is listening to), and this server for
+  // anything else (the explicit seed is always picked from a local
+  // search). Returns [{ path, peerId }] in the order given, peerId null
+  // for this server.
+  function _currentSongOwner(currentSong) {
+    return currentSong && currentSong.federation && Number.isFinite(Number(currentSong.federation.peerId))
+      ? Number(currentSong.federation.peerId) : null;
+  }
+
+  function resolveSonicOwners(paths, currentSong) {
+    const curPath = _normSonicPath(currentSong && currentSong.rawFilePath);
+    const curPeer = _currentSongOwner(currentSong);
+    const out = [];
+    for (const raw of (Array.isArray(paths) ? paths : [])) {
+      const path = _normSonicPath(raw);
+      if (!path) { continue; }
+      let peerId = null;
+      if (Object.prototype.hasOwnProperty.call(state.sonicHistoryOwners, path)) {
+        const v = state.sonicHistoryOwners[path];
+        peerId = v === null || v === undefined ? null : Number(v);
+      } else if (curPath && path === curPath) {
+        peerId = curPeer;
+      }
+      out.push({ path, peerId });
+    }
+    return out;
+  }
+
+  // "<owner>|<path>" keys for everything a federated pick must not answer
+  // with: the anchors and the playing track. A vector seed carries no
+  // hashes for a server to exclude (the filepath form's seeds are dropped
+  // from the pool server-side), and ignoreList is only a soft cooldown that
+  // yields to the full pool once it covers every candidate — so the guard
+  // is here, and an answer that repeats is passed over for the next best.
+  function federatedKey(peerId, path) {
+    return `${peerId === null || peerId === undefined ? 'local' : Number(peerId)}|${_normSonicPath(path)}`;
+  }
+
+  function federatedRecentKeys(anchors, currentSong) {
+    const keys = new Set();
+    for (const a of (Array.isArray(anchors) ? anchors : [])) {
+      if (a && a.path) { keys.add(federatedKey(a.peerId, a.path)); }
+    }
+    const curPath = _normSonicPath(currentSong && currentSong.rawFilePath);
+    if (curPath) {
+      const curPeer = currentSong.federation && Number.isFinite(Number(currentSong.federation.peerId))
+        ? Number(currentSong.federation.peerId) : null;
+      keys.add(federatedKey(curPeer, curPath));
+    }
+    return keys;
+  }
+
+  // Best answer across servers: highest reported cosine among the answers
+  // that are neither blocked (keyword / genre / duration / continuity —
+  // the same client-side checks the single-server loop applies) nor a
+  // repeat of what is playing or anchoring. Null when nothing qualifies,
+  // which sends the player back to the single-server pick.
+  //   answers: [{ peerId|null, song, res, similarity, blocked }]
+  function chooseFederatedPick(answers, recentKeys) {
+    const recent = recentKeys instanceof Set ? recentKeys : new Set(recentKeys || []);
+    let best = null;
+    for (const a of (Array.isArray(answers) ? answers : [])) {
+      if (!a || !a.song || a.blocked) { continue; }
+      if (recent.has(federatedKey(a.peerId, a.song.filepath))) { continue; }
+      const sim = Number.isFinite(a.similarity) ? a.similarity : -1;
+      if (!best || sim > best.similarity) { best = { ...a, similarity: sim }; }
+    }
+    return best;
+  }
+
+  // Per-peer ignoreList bookkeeping (see djPeerIgnoreLists above).
+  function getPeerIgnoreList(peerId) {
+    const list = state.djPeerIgnoreLists[String(Number(peerId))];
+    return Array.isArray(list) ? [...list] : [];
+  }
+
+  function setPeerIgnoreList(peerId, list) {
+    const id = Number(peerId);
+    if (!Number.isFinite(id)) { return; }
+    const trimmed = !Array.isArray(list) ? []
+      : (list.length > IGNORE_LIST_LIMIT ? list.slice(-IGNORE_LIST_LIMIT) : list);
+    setState({ djPeerIgnoreLists: { ...state.djPeerIgnoreLists, [String(id)]: trimmed } });
+  }
+
+  // Wire vectors — base64 of dim × float32 little-endian, read and written
+  // through a DataView so the bytes are the same on any host.
+  function decodeWireVector(base64, dim) {
+    if (typeof base64 !== 'string' || !Number.isInteger(dim) || dim <= 0) { return null; }
+    let bytes;
+    try {
+      const bin = atob(base64);
+      bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) { bytes[i] = bin.charCodeAt(i); }
+    } catch (_e) {
+      return null;
+    }
+    if (bytes.length !== dim * 4) { return null; }
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const out = new Float32Array(dim);
+    for (let i = 0; i < dim; i++) { out[i] = view.getFloat32(i * 4, true); }
+    return out;
+  }
+
+  function encodeWireVector(vector) {
+    const buf = new ArrayBuffer(vector.length * 4);
+    const view = new DataView(buf);
+    for (let i = 0; i < vector.length; i++) { view.setFloat32(i * 4, vector[i], true); }
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) { bin += String.fromCharCode(bytes[i]); }
+    return btoa(bin);
+  }
+
+  // The unit-length mean of the anchors' vectors, or null when there is
+  // nothing to average or the mean collapses (near-opposite anchors — the
+  // server would refuse a zero vector, so don't spend the round trip). A
+  // vector of the wrong length is skipped rather than poisoning the sum.
+  function meanUnitVector(vectors, dim) {
+    if (!Number.isInteger(dim) || dim <= 0) { return null; }
+    const sum = new Float64Array(dim);
+    let n = 0;
+    for (const v of (vectors || [])) {
+      if (!v || v.length !== dim) { continue; }
+      for (let i = 0; i < dim; i++) { sum[i] += v[i]; }
+      n++;
+    }
+    if (n === 0) { return null; }
+    let sumSq = 0;
+    for (let i = 0; i < dim; i++) { sum[i] /= n; sumSq += sum[i] * sum[i]; }
+    const norm = Math.sqrt(sumSq);
+    if (!(norm > 0) || !Number.isFinite(norm)) { return null; }
+    const out = new Float32Array(dim);
+    for (let i = 0; i < dim; i++) { out[i] = sum[i] / norm; }
+    return out;
+  }
+
+  // The anchors a sonic pick averages over, each paired with the server
+  // that owns it (resolveSonicOwners) — [{ path, peerId }], empty when
+  // sonic mode is off or nothing is resolvable (empty queue, no explicit
+  // seed). One synchronous read: a song change between reading the ring
+  // and reading the owners map would have pruned an evicted path's owner,
+  // and a peer path then reads as this server's — which answers a
+  // uniform 404 for any path it can't resolve.
   //
   // Anchor resolution:
   //   locked  → the pinned path; lazily pinned on the session's first
-  //             pick from the explicit seed, else the current song.
+  //             pick from the explicit seed, else the current song (whose
+  //             owner is recorded with the pin when it is a peer track).
   //   rolling → the DJ-pick history; falls back to the explicit seed,
   //             else the current song, for the session's first pick.
-  function buildSonicParams(currentFilepath) {
-    if (!state.sonicEnabled) { return null; }
-    const cur = _normSonicPath(currentFilepath);
+  //
+  // `currentSong` is the playing song object (rawFilePath + the
+  // `federation` marker a peer pick carries); a bare path is accepted too.
+  function sonicAnchors(currentSong) {
+    if (!state.sonicEnabled) { return []; }
+    const song = typeof currentSong === 'string' ? { rawFilePath: currentSong } : currentSong;
+    const cur = _normSonicPath(song && song.rawFilePath);
     const explicit = state.sonicSeed ? _normSonicPath(state.sonicSeed.filepath) : null;
-    const minSimilarity = state.sonicMinSimilarity;
 
     if (state.sonicAnchorMode === 'locked') {
       let anchor = state.sonicLockedAnchor;
       if (!anchor) {
         anchor = explicit || cur;
-        if (anchor) { setState({ sonicLockedAnchor: anchor }); }
+        if (anchor) {
+          const owner = anchor === cur ? _currentSongOwner(song) : null;
+          setState({
+            sonicLockedAnchor: anchor,
+            sonicHistoryOwners: owner === null
+              ? state.sonicHistoryOwners
+              : { ...state.sonicHistoryOwners, [anchor]: owner },
+          });
+        }
       }
-      return anchor ? { similarTo: [anchor], minSimilarity } : null;
+      return anchor ? resolveSonicOwners([anchor], song) : [];
     }
 
     if (state.sonicHistory.length > 0) {
-      return { similarTo: [...state.sonicHistory], minSimilarity };
+      return resolveSonicOwners([...state.sonicHistory], song);
     }
     const seed = explicit || cur;
-    return seed ? { similarTo: [seed], minSimilarity } : null;
+    return seed ? resolveSonicOwners([seed], song) : [];
+  }
+
+  // The `similarTo`/`minSimilarity` fields for the next random-songs
+  // body sent to THIS server, or null when sonic mode is off OR no anchor
+  // this server holds remains (the caller decides how to surface that;
+  // the player toasts a "pick a seed" pointer).
+  //
+  // Anchors a peer owns are left out — a filepath only names a row on the
+  // server that holds it. When every anchor lives elsewhere (a federated
+  // session that has wandered onto peers, now asking this server alone),
+  // the explicit seed stands in; in rolling mode the playing song does
+  // too when it is this server's. A locked pin on a peer track with no
+  // seed yields null rather than quietly re-anchoring somewhere else.
+  function buildSonicParams(currentSong) {
+    const song = typeof currentSong === 'string' ? { rawFilePath: currentSong } : currentSong;
+    const anchors = sonicAnchors(song);
+    if (anchors.length === 0) { return null; }
+    const minSimilarity = state.sonicMinSimilarity;
+    let local = anchors.filter(a => a.peerId === null).map(a => a.path);
+    if (local.length === 0) {
+      const explicit = state.sonicSeed ? _normSonicPath(state.sonicSeed.filepath) : null;
+      const cur = _normSonicPath(song && song.rawFilePath);
+      const curLocal = cur && resolveSonicOwners([cur], song)[0].peerId === null ? cur : null;
+      local = explicit ? [explicit]
+        : (state.sonicAnchorMode !== 'locked' && curLocal ? [curLocal] : []);
+    }
+    return local.length > 0 ? { similarTo: local, minSimilarity } : null;
   }
 
   // ── Counted-filepath tracking ────────────────────────────────────
@@ -1078,6 +1327,7 @@
     clearSonicHistory,
     clearSonicAnchors,
     buildSonicParams,
+    sonicAnchors,
 
     // Counted-filepath tracking (used by the song-change handler to
     // avoid double-counting BPM history when the user navigates back
@@ -1093,6 +1343,19 @@
     // ignoreList passthrough
     setIgnoreList,
     getIgnoreList,
+
+    // Cross-server session (toggle on state.federatedEnabled; the player
+    // does the round trips, these are the pure parts + bookkeeping).
+    resolveSonicOwners,
+    federatedRecentKeys,
+    chooseFederatedPick,
+    getPeerIgnoreList,
+    setPeerIgnoreList,
+    excludePeerForSession,
+    isPeerExcluded,
+    decodeWireVector,
+    encodeWireVector,
+    meanUnitVector,
 
     // Keyword filter (toggle lives on state.djFilterEnabled,
     // mutated via setState; helpers here marshall the word list).
@@ -1135,6 +1398,7 @@
       FILTER_WORDS_LIMIT,
       DEFAULT_BPM_TOLERANCE,
       SONIC_HISTORY_LIMIT,
+      IGNORE_LIST_LIMIT,
       SONIC_ANCHOR_MODES,
       DEFAULT_SONIC_MIN_SIMILARITY,
       GENRE_LIST_LIMIT,

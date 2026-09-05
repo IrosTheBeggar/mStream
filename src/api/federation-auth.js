@@ -66,6 +66,14 @@ const ALLOWED_EXACT = new Set([
   'POST /api/v1/db/album-songs',
   'POST /api/v1/db/recent/added',
   'POST /api/v1/db/search',
+  // Auto DJ across servers (the webapp's federated session, mStream #929):
+  // a peer's picker, and the vector read-out behind its tracks that a
+  // session seeds itself from. random-songs is a read — it picks and
+  // records nothing — scoped by the key's grants like every db route; the
+  // per-user rating filter is skipped for a key (api/random.js), and
+  // ignoreVPaths names OUR libraries, so a caller sends neither.
+  'POST /api/v1/db/random-songs',
+  'POST /api/v1/discovery/local/embeddings',
   'POST /api/v1/file-explorer',
   'POST /api/v1/file-explorer/recursive',
   'POST /api/v1/file-explorer/m3u',

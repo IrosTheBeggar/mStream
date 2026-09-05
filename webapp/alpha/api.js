@@ -132,6 +132,14 @@ const MSTREAMAPI = (() => {
     });
   };
 
+  // The embeddings behind LOCAL tracks (1–8 paths): the seed a federated
+  // Auto DJ session carries to other servers as a vector, since a filepath
+  // only names a row here (mStream #929). Same degrade contract as the
+  // calls above: {disabled:true} on 403, null on any other failure.
+  mstreamModule.discoveryEmbeddings = (filePaths) => {
+    return discoveryReq('api/v1/discovery/local/embeddings', { filePaths });
+  };
+
   // POST /api/v1/db/genres → { genres: [{ name, track_count }] }.
   // Used by the Auto-DJ panel's genre filter dropdown. POST (not GET)
   // so callers can pass ignoreVPaths in the body to scope the count;
@@ -268,6 +276,16 @@ const MSTREAMAPI = (() => {
     genres: (peerId, postObject) => peerReq(peerId, 'POST', 'api/v1/db/genres', postObject || {}),
     genreSongs: (peerId, postObject) => peerReq(peerId, 'POST', 'api/v1/db/genre-songs', postObject),
     recentlyAdded: (peerId, limit) => peerReq(peerId, 'POST', 'api/v1/db/recent/added', { limit: limit || 100 }),
+    // Federated Auto DJ (mStream #929). health: the peer's discovery block
+    // (`discovery.modelId`, null when discovery is off there) — a vector
+    // only compares within one model space, so a session screens peers on
+    // it before asking. discoveryEmbeddings: the vectors behind the PEER's
+    // tracks, for anchors that live there. randomSongs: the peer's picker
+    // fed a vector seed; unlike the local call this rejects on a non-2xx
+    // (req()), which the player reads for the model-mismatch 400.
+    health: (peerId) => peerReq(peerId, 'GET', 'api/v1/federation/health'),
+    discoveryEmbeddings: (peerId, filePaths) => peerReq(peerId, 'POST', 'api/v1/discovery/local/embeddings', { filePaths }),
+    randomSongs: (peerId, postObject) => peerReq(peerId, 'POST', 'api/v1/db/random-songs', postObject),
   };
 
   mstreamModule.searchAlbumArt = (postObject) => {

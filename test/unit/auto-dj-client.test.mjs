@@ -1689,3 +1689,279 @@ describe('sonic anchor lifecycle', () => {
     assert.deepEqual(AUTODJ.state.sonicHistory, []);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────
+// Cross-server session helpers (mStream #929 — federated Auto DJ)
+// ─────────────────────────────────────────────────────────────────────
+
+describe('wire vectors — base64 float32 little-endian', () => {
+  test('encode then decode round-trips the exact floats', () => {
+    const v = new Float32Array([0.25, -1.5, 3, 0]);
+    const wire = AUTODJ.encodeWireVector(v);
+    const back = AUTODJ.decodeWireVector(wire, 4);
+    assert.deepEqual([...back], [...v]);
+  });
+
+  test('the wire bytes are what Node writes for float32 LE (the server\'s form)', () => {
+    const v = new Float32Array([1, 0, 0, 0]);
+    const expected = Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString('base64');
+    assert.equal(AUTODJ.encodeWireVector(v), expected);
+    assert.deepEqual([...AUTODJ.decodeWireVector(expected, 4)], [1, 0, 0, 0]);
+  });
+
+  test('a payload of the wrong length, bad base64, or a bad dim decodes to null', () => {
+    const three = AUTODJ.encodeWireVector(new Float32Array([1, 0, 0]));
+    assert.equal(AUTODJ.decodeWireVector(three, 4), null);
+    assert.equal(AUTODJ.decodeWireVector('!!!not-base64!!!', 4), null);
+    assert.equal(AUTODJ.decodeWireVector('', 4), null);
+    assert.equal(AUTODJ.decodeWireVector(three, 0), null);
+    assert.equal(AUTODJ.decodeWireVector(null, 4), null);
+  });
+});
+
+describe('meanUnitVector', () => {
+  const f = (...xs) => new Float32Array(xs);
+
+  test('averages anchors and re-normalizes', () => {
+    const m = AUTODJ.meanUnitVector([f(1, 0, 0, 0), f(0, 1, 0, 0)], 4);
+    const r = 1 / Math.SQRT2;
+    for (const [i, want] of [[0, r], [1, r], [2, 0], [3, 0]]) {
+      assert.ok(Math.abs(m[i] - want) < 1e-6, `component ${i}: ${m[i]} vs ${want}`);
+    }
+  });
+
+  test('scaled anchors still give a unit vector', () => {
+    const m = AUTODJ.meanUnitVector([f(3, 4, 0, 0), f(3, 4, 0, 0)], 4);
+    assert.ok(Math.abs(m[0] - 0.6) < 1e-6 && Math.abs(m[1] - 0.8) < 1e-6);
+  });
+
+  test('cancelling anchors, nothing to average, or a bad dim give null', () => {
+    assert.equal(AUTODJ.meanUnitVector([f(1, 0, 0, 0), f(-1, 0, 0, 0)], 4), null);
+    assert.equal(AUTODJ.meanUnitVector([], 4), null);
+    assert.equal(AUTODJ.meanUnitVector([f(1, 0, 0, 0)], 0), null);
+  });
+
+  test('a vector of the wrong length is skipped, not summed', () => {
+    const m = AUTODJ.meanUnitVector([f(1, 0, 0, 0), f(0, 1, 0)], 4);
+    assert.deepEqual([...m], [1, 0, 0, 0]);
+    assert.equal(AUTODJ.meanUnitVector([f(0, 1, 0)], 4), null);
+  });
+});
+
+describe('sonic history owners', () => {
+  test('a pick records its owner; a local pick records null; the map is pruned with the ring', () => {
+    AUTODJ.setState({ sonicEnabled: true });
+    AUTODJ.pushSonicHistory('music/a.mp3');
+    AUTODJ.pushSonicHistory('/music/b.mp3', 7);
+    assert.deepEqual(AUTODJ.state.sonicHistoryOwners, { 'music/a.mp3': null, 'music/b.mp3': 7 });
+    for (const p of ['c', 'd', 'e', 'f']) { AUTODJ.pushSonicHistory(`music/${p}.mp3`, 3); }
+    // Ring is 5: 'a' fell out, and so did its owner entry.
+    assert.equal(AUTODJ.state.sonicHistory.length, AUTODJ._internals.SONIC_HISTORY_LIMIT);
+    assert.ok(!('music/a.mp3' in AUTODJ.state.sonicHistoryOwners));
+    assert.equal(AUTODJ.state.sonicHistoryOwners['music/b.mp3'], 7);
+  });
+
+  test('a re-pick from another server moves it to most-recent and updates its owner', () => {
+    AUTODJ.pushSonicHistory('music/a.mp3', 7);
+    AUTODJ.pushSonicHistory('music/b.mp3');
+    AUTODJ.pushSonicHistory('music/a.mp3');
+    assert.deepEqual(AUTODJ.state.sonicHistory, ['music/b.mp3', 'music/a.mp3']);
+    assert.equal(AUTODJ.state.sonicHistoryOwners['music/a.mp3'], null);
+  });
+
+  test('clearing history, anchors, a new seed, resetAnchors and reset all drop the owners', () => {
+    for (const clear of [
+      () => AUTODJ.clearSonicHistory(),
+      () => AUTODJ.clearSonicAnchors(),
+      () => AUTODJ.setSonicSeed('music/seed.mp3', 'Seed'),
+      () => AUTODJ.resetAnchors(),
+      () => AUTODJ.reset(),
+    ]) {
+      AUTODJ.pushSonicHistory('music/x.mp3', 2);
+      clear();
+      assert.deepEqual(AUTODJ.state.sonicHistoryOwners, {});
+      assert.deepEqual(AUTODJ.state.sonicHistory, []);
+    }
+  });
+
+  test('owners survive a re-hydrate, and junk in storage hydrates to an empty map', () => {
+    AUTODJ.pushSonicHistory('music/a.mp3', 9);
+    AUTODJ._internals.rehydrate();
+    assert.deepEqual(AUTODJ.state.sonicHistoryOwners, { 'music/a.mp3': 9 });
+    _store.set(`${AUTODJ._internals.LS_PREFIX}sonicHistoryOwners`, JSON.stringify(['not', 'a', 'map']));
+    AUTODJ._internals.rehydrate();
+    assert.deepEqual(AUTODJ.state.sonicHistoryOwners, {});
+  });
+});
+
+describe('resolveSonicOwners', () => {
+  test('history paths take their recorded owner, the playing track its federation marker, the rest this server', () => {
+    AUTODJ.pushSonicHistory('music/hist-local.mp3');
+    AUTODJ.pushSonicHistory('music/hist-peer.mp3', 4);
+    const cur = { rawFilePath: '/music/playing.mp3', federation: { peerId: 8, peerName: 'NAS' } };
+    const out = AUTODJ.resolveSonicOwners(
+      ['music/hist-local.mp3', 'music/hist-peer.mp3', '/music/playing.mp3', 'music/explicit-seed.mp3'], cur);
+    assert.deepEqual(out, [
+      { path: 'music/hist-local.mp3', peerId: null },
+      { path: 'music/hist-peer.mp3', peerId: 4 },
+      { path: 'music/playing.mp3', peerId: 8 },
+      { path: 'music/explicit-seed.mp3', peerId: null },
+    ]);
+  });
+
+  test('a local playing track resolves to this server; empty and junk input resolve to nothing', () => {
+    const out = AUTODJ.resolveSonicOwners(['music/p.mp3'], { rawFilePath: 'music/p.mp3' });
+    assert.deepEqual(out, [{ path: 'music/p.mp3', peerId: null }]);
+    assert.deepEqual(AUTODJ.resolveSonicOwners([], null), []);
+    assert.deepEqual(AUTODJ.resolveSonicOwners([null, '', 42], null), []);
+  });
+});
+
+describe('sonicAnchors + local-only buildSonicParams (cross-server)', () => {
+  const PEER_CUR = { rawFilePath: 'ashared/a.mp3', federation: { peerId: 1, peerName: 'A' } };
+
+  beforeEach(() => { AUTODJ.setState({ sonicEnabled: true }); });
+
+  test('rolling: the snapshot pairs every history path with its owner; the local body keeps only this server\'s', () => {
+    AUTODJ.pushSonicHistory('lib/p1.mp3', null);
+    AUTODJ.pushSonicHistory('ashared/p2.mp3', 1);
+    assert.deepEqual(AUTODJ.sonicAnchors({ rawFilePath: 'lib/cur.mp3' }),
+      [{ path: 'lib/p1.mp3', peerId: null }, { path: 'ashared/p2.mp3', peerId: 1 }]);
+    assert.deepEqual(AUTODJ.buildSonicParams('lib/cur.mp3').similarTo, ['lib/p1.mp3'],
+      'a peer\'s path never reaches this server (it would answer 404)');
+    assert.deepEqual(AUTODJ.sonicAnchors('lib/cur.mp3'), AUTODJ.sonicAnchors({ rawFilePath: 'lib/cur.mp3' }),
+      'a bare path is accepted');
+  });
+
+  test('rolling: a history that lives entirely on peers falls back to the seed, else the playing song when local', () => {
+    AUTODJ.pushSonicHistory('ashared/p1.mp3', 1);
+    AUTODJ.pushSonicHistory('ashared/p2.mp3', 2);
+    assert.equal(AUTODJ.sonicAnchors({ rawFilePath: 'lib/cur.mp3' }).length, 2, 'the federated pick still sees both');
+    assert.deepEqual(AUTODJ.buildSonicParams('lib/cur.mp3').similarTo, ['lib/cur.mp3'], 'no seed: the local playing song');
+    assert.equal(AUTODJ.buildSonicParams(PEER_CUR), null, 'no seed and a peer track playing: nothing local');
+    AUTODJ.setSonicSeed('lib/seed.mp3', 'Seed');
+    AUTODJ.pushSonicHistory('ashared/p1.mp3', 1);
+    assert.deepEqual(AUTODJ.buildSonicParams(PEER_CUR).similarTo, ['lib/seed.mp3'], 'the seed stands in');
+  });
+
+  test('locked: a pin taken from a playing peer track remembers its owner across ring prunes', () => {
+    AUTODJ.setState({ sonicAnchorMode: 'locked' });
+    assert.deepEqual(AUTODJ.sonicAnchors(PEER_CUR), [{ path: 'ashared/a.mp3', peerId: 1 }]);
+    assert.equal(AUTODJ.state.sonicLockedAnchor, 'ashared/a.mp3');
+    for (let i = 0; i < AUTODJ._internals.SONIC_HISTORY_LIMIT + 2; i++) { AUTODJ.pushSonicHistory(`lib/h${i}.mp3`, null); }
+    assert.deepEqual(AUTODJ.sonicAnchors({ rawFilePath: 'lib/other.mp3' }), [{ path: 'ashared/a.mp3', peerId: 1 }],
+      'the pin\'s owner survives the prune even with another song playing');
+    assert.equal(AUTODJ.buildSonicParams({ rawFilePath: 'lib/other.mp3' }), null,
+      'locked on a peer track with no seed: nothing this server can honour');
+    AUTODJ.clearSonicAnchors();
+    assert.equal(AUTODJ.state.sonicLockedAnchor, null);
+    assert.deepEqual(AUTODJ.state.sonicHistoryOwners, {});
+  });
+
+  test('locked: a pin from a local song or the seed stays a plain local anchor', () => {
+    AUTODJ.setState({ sonicAnchorMode: 'locked' });
+    assert.deepEqual(AUTODJ.sonicAnchors({ rawFilePath: 'lib/cur.mp3' }), [{ path: 'lib/cur.mp3', peerId: null }]);
+    assert.deepEqual(AUTODJ.buildSonicParams(PEER_CUR).similarTo, ['lib/cur.mp3'], 'the pin holds whatever plays next');
+    assert.deepEqual(AUTODJ.state.sonicHistoryOwners, {}, 'no owner entry for a local pin');
+  });
+
+  test('sonic off: no anchors, no params', () => {
+    AUTODJ.pushSonicHistory('ashared/p1.mp3', 1);
+    AUTODJ.setState({ sonicEnabled: false });
+    assert.deepEqual(AUTODJ.sonicAnchors({ rawFilePath: 'lib/cur.mp3' }), []);
+    assert.equal(AUTODJ.buildSonicParams('lib/cur.mp3'), null);
+  });
+});
+
+describe('chooseFederatedPick', () => {
+  const song = (filepath) => ({ filepath, metadata: {} });
+
+  test('the highest cosine wins across servers', () => {
+    const best = AUTODJ.chooseFederatedPick([
+      { peerId: null, song: song('music/l.mp3'), similarity: 0.80, blocked: false },
+      { peerId: 2, song: song('music/p2.mp3'), similarity: 0.91, blocked: false },
+      { peerId: 3, song: song('music/p3.mp3'), similarity: 0.85, blocked: false },
+    ], new Set());
+    assert.equal(best.peerId, 2);
+  });
+
+  test('blocked answers and repeats of the anchors / playing track are passed over', () => {
+    const recent = AUTODJ.federatedRecentKeys(
+      [{ path: 'music/anchor.mp3', peerId: 2 }],
+      { rawFilePath: '/music/playing.mp3', federation: { peerId: 3 } });
+    const best = AUTODJ.chooseFederatedPick([
+      { peerId: 2, song: song('music/anchor.mp3'), similarity: 0.99, blocked: false },   // the anchor itself
+      { peerId: 3, song: song('music/playing.mp3'), similarity: 0.98, blocked: false },  // what is playing
+      { peerId: null, song: song('music/best-but-blocked.mp3'), similarity: 0.97, blocked: true },
+      { peerId: null, song: song('music/ok.mp3'), similarity: 0.70, blocked: false },
+    ], recent);
+    assert.equal(best.song.filepath, 'music/ok.mp3');
+    assert.equal(best.peerId, null);
+  });
+
+  test('the same path on a different server is not a repeat — a path only names a row where it lives', () => {
+    const recent = AUTODJ.federatedRecentKeys([{ path: 'music/same.mp3', peerId: 2 }], null);
+    const best = AUTODJ.chooseFederatedPick([
+      { peerId: 5, song: song('music/same.mp3'), similarity: 0.9, blocked: false },
+    ], recent);
+    assert.equal(best.peerId, 5);
+  });
+
+  test('an answer without a score still competes, but never beats a scored one; nothing usable is null', () => {
+    const best = AUTODJ.chooseFederatedPick([
+      { peerId: 1, song: song('music/unscored.mp3'), similarity: -1, blocked: false },
+      { peerId: 2, song: song('music/scored.mp3'), similarity: 0.5, blocked: false },
+    ], new Set());
+    assert.equal(best.peerId, 2);
+    assert.equal(AUTODJ.chooseFederatedPick([
+      { peerId: 1, song: song('music/unscored.mp3'), similarity: -1, blocked: false },
+    ], new Set()).peerId, 1);
+    assert.equal(AUTODJ.chooseFederatedPick([], new Set()), null);
+    assert.equal(AUTODJ.chooseFederatedPick([{ peerId: 1, song: null }], new Set()), null);
+  });
+});
+
+describe('per-peer ignore lists + session exclusions', () => {
+  test('each peer keeps its own list, trimmed to the cap, persisted, and wiped by reset()', () => {
+    AUTODJ.setPeerIgnoreList(2, [1, 2, 3]);
+    AUTODJ.setPeerIgnoreList(3, [9]);
+    assert.deepEqual(AUTODJ.getPeerIgnoreList(2), [1, 2, 3]);
+    assert.deepEqual(AUTODJ.getPeerIgnoreList(3), [9]);
+    assert.deepEqual(AUTODJ.getPeerIgnoreList(4), []);
+    // A copy: mutating the returned list must not touch state.
+    AUTODJ.getPeerIgnoreList(2).push(99);
+    assert.deepEqual(AUTODJ.getPeerIgnoreList(2), [1, 2, 3]);
+
+    const big = Array.from({ length: AUTODJ._internals.IGNORE_LIST_LIMIT + 10 }, (_, i) => i);
+    AUTODJ.setPeerIgnoreList(2, big);
+    assert.equal(AUTODJ.getPeerIgnoreList(2).length, AUTODJ._internals.IGNORE_LIST_LIMIT);
+    assert.equal(AUTODJ.getPeerIgnoreList(2)[0], 10, 'tail-trimmed, newest kept');
+
+    AUTODJ._internals.rehydrate();
+    assert.deepEqual(AUTODJ.getPeerIgnoreList(3), [9]);
+    AUTODJ.setPeerIgnoreList(3, 'junk');
+    assert.deepEqual(AUTODJ.getPeerIgnoreList(3), []);
+
+    AUTODJ.reset();
+    assert.deepEqual(AUTODJ.getPeerIgnoreList(2), []);
+  });
+
+  test('a model-mismatched peer stays excluded for the session, and reset() clears it', () => {
+    assert.equal(AUTODJ.isPeerExcluded(7), false);
+    AUTODJ.excludePeerForSession(7);
+    assert.equal(AUTODJ.isPeerExcluded(7), true);
+    assert.equal(AUTODJ.isPeerExcluded('7'), true);
+    AUTODJ.excludePeerForSession('not-a-peer');
+    assert.equal(AUTODJ.isPeerExcluded(NaN), false);
+    AUTODJ.reset();
+    assert.equal(AUTODJ.isPeerExcluded(7), false);
+  });
+
+  test('federatedEnabled is a persisted preference that survives reset()', () => {
+    AUTODJ.setState({ federatedEnabled: true });
+    AUTODJ.reset();
+    assert.equal(AUTODJ.state.federatedEnabled, true);
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.federatedEnabled, true);
+  });
+});
