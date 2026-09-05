@@ -27,7 +27,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { MIGRATIONS, SCHEMA_VERSION } from '../../src/db/schema.js';
+import { SCHEMA_VERSION } from '../../src/db/schema.js';
+import { applyAllMigrations } from '../helpers/apply-migrations.mjs';
 import {
   generateWaveformBars, NUM_BARS, CACHE_EXT, FAILED_EXT,
   cacheFilePath, failedMarkerPath,
@@ -133,7 +134,7 @@ describe('rust-parser --waveform-scan (the enrichment pass)', () => {
 
     const db = new DatabaseSync(dbPath);
     db.exec('PRAGMA journal_mode = WAL');
-    for (const m of MIGRATIONS) { db.exec(m.sql); db.exec(`PRAGMA user_version = ${m.version}`); }
+    applyAllMigrations(db); // shared helper: runs the JS hooks (V59 recreates fts_tracks)
     db.prepare('INSERT INTO libraries (id, name, root_path) VALUES (1, ?, ?)').run('wflib', lib);
     db.close();
 

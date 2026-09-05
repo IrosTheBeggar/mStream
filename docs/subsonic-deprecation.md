@@ -36,8 +36,9 @@ password column and a second authentication wall in front of the library.
   that used to live there is under **Lyrics**.
 - **Database** — the tables the Subsonic surface populated (per-user stars,
   bookmarks, play queue, API keys) are left in place and are inert. The
-  encrypted Subsonic password column is dropped by a later release; the
-  secret that could decrypt it is already gone from the config.
+  encrypted Subsonic password column is dropped by the V68 migration on
+  first boot; the secret that could decrypt it is removed from the config
+  at the same time.
 
 ## If you need a Subsonic server
 
