@@ -230,8 +230,8 @@ export function setup(mstream) {
     // Stat up front: a missing file 404s here instead of streaming an empty
     // 200 after ffmpeg fails to open the input (the DLNA time-seek path
     // documents the same hazard). The mtime/size also feed the cache key so a
-    // re-tagged or replaced file — the velvet tag editor rewrites files in
-    // place — can't keep serving a stale cached transcode. ENOENT in the log
+    // re-tagged or replaced file (tag editors rewrite files in place) can't
+    // keep serving a stale cached transcode. ENOENT in the log
     // means stale client/DB state; EACCES/EPERM/EIO mean a server-side
     // problem worth chasing.
     let st;

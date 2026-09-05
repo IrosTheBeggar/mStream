@@ -81,7 +81,10 @@ import { HASH_GENERATION } from './audio-hash.js';
 // V63 indexes cue_points.library_id and play_events.library_id so the
 // library-delete cascade seeks instead of scanning. See SCHEMA_V63.
 // V64 indexes tracks.year so the DLNA By-Year browse seeks. See SCHEMA_V64.
-export const SCHEMA_VERSION = 68;
+// V69 drops the velvet-only tables (smart_playlists, user_settings,
+// cue_points, play_events) and users.listenbrainz_token — the velvet UI and
+// the API modules that existed only for it were removed. See SCHEMA_V69.
+export const SCHEMA_VERSION = 69;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2472,6 +2475,37 @@ export const SCHEMA_V68 = `
   ALTER TABLE users DROP COLUMN subsonic_password_encrypted;
 `;
 
+// ── V69: velvet UI retirement ──────────────────────────────────────────────
+//
+// The velvet UI (webapp/velvet/) and the API modules mounted only under
+// ui='velvet' were removed in one pass. Four tables and one users column
+// had no reader or writer outside those modules:
+//   smart_playlists          (V4)           smart-playlists.js
+//   user_settings            (V5)           user-settings.js — prefs + saved queue
+//   cue_points               (V6, V63)      cuepoints.js
+//   play_events              (V7, V63, V65) wrapped.js — the listening log
+//   users.listenbrainz_token (V4)           listenbrainz.js
+// They are dropped rather than left dormant: both scanners' move re-homing
+// and the library-delete cascade paid per-table work for them, and an
+// orphaned table is one more thing every later migration has to reason
+// about. play_events rows were real listening history — they die with the
+// feature; a future stats feature starts from an empty log. DROP TABLE
+// takes the V6/V7/V63/V65 indexes with it. DROP COLUMN is the same shape
+// as V68 (SQLite ≥ 3.35; nothing indexes, references or triggers on the
+// column). One thing it does need: SQLite re-parses EVERY trigger while
+// dropping a column, so fts_tracks must exist — always true after V59's
+// hook on a real upgrade, and why test fixtures must replay migrations via
+// applyAllMigrations (hooks included) rather than raw m.sql. Fresh
+// databases still replay V4–V7 before this drop; that is the migration
+// chain's normal shape, not a bug.
+export const SCHEMA_V69 = `
+  DROP TABLE IF EXISTS smart_playlists;
+  DROP TABLE IF EXISTS user_settings;
+  DROP TABLE IF EXISTS cue_points;
+  DROP TABLE IF EXISTS play_events;
+  ALTER TABLE users DROP COLUMN listenbrainz_token;
+`;
+
 export const SCHEMA_V58 = `
   ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
 `;
@@ -2866,4 +2900,7 @@ export const MIGRATIONS = [
   // decrypt it is stripped on boot. Plain DROP COLUMN, no rescan. See
   // SCHEMA_V68.
   { version: 68, sql: SCHEMA_V68 },
+  // V69 drops the velvet-only tables + users.listenbrainz_token. Pure
+  // DROP TABLE / DROP COLUMN, no rescan. See SCHEMA_V69.
+  { version: 69, sql: SCHEMA_V69 },
 ];

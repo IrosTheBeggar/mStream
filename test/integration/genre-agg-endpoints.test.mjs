@@ -9,9 +9,7 @@
  * These tests lock the BEHAVIOUR the conversion must preserve: every
  * converted endpoint still emits identical metadata.genres content.
  * Covered: /db/metadata (single pullMetaData), /db/genre-songs (incl. the
- * name→id-first probe + NOCASE), /db/album-songs, /db/recent/added,
- * /smart-playlists/run (genre FILTER join vs genre SELECT enrichment stay
- * independent), and the velvet stubs /db/genre/songs + /db/decade/songs.
+ * name→id-first probe + NOCASE), /db/album-songs, and /db/recent/added.
  *
  * Pattern mirrors test/integration/playlist-load.test.mjs: boot a real
  * mStream in public/no-users mode, seed the DB directly, hit the HTTP API.
@@ -61,9 +59,7 @@ async function waitForReady(baseUrl, timeoutMs = 90_000) {
 async function bootMstream(tmpDir, musicDir) {
   const port = await findFreePort();
   const config = {
-    // ui:'velvet' so the velvet-gated modules (smart-playlists, velvet-stubs)
-    // mount too — the core /db routes are identical under either UI.
-    port, address: '127.0.0.1', ui: 'velvet',
+    port, address: '127.0.0.1', ui: 'default',
     dlna:     { mode: 'disabled' },
     folders:  { testlib: { root: musicDir } },
     storage: {
@@ -202,26 +198,4 @@ describe('genre aggregation parity across converted endpoints', () => {
     assert.deepEqual(byTitle, { 'Song A': ['Funk', 'Jazz'], 'Song B': ['Rock'] });
   });
 
-  test('smart-playlists/run: genre FILTER join and genre SELECT enrichment stay independent', async () => {
-    // Filter on Jazz — the response row must still carry BOTH of Song A's
-    // genres (the filter join must not become the source of the genre list).
-    const r = await api(server.baseUrl, '/api/v1/smart-playlists/run',
-      { filters: { genres: ['Jazz'] }, sort: 'artist', limit: 10 });
-    assert.equal(r.status, 200);
-    assert.equal(r.body.songs.length, 1);
-    assert.equal(r.body.songs[0].metadata.title, 'Song A');
-    assert.deepEqual(genresOf(r.body.songs[0]), ['Funk', 'Jazz']);
-  });
-
-  test('velvet stubs /db/genre/songs + /db/decade/songs carry genres', async () => {
-    const g = await api(server.baseUrl, '/api/v1/db/genre/songs', { genre: 'ROCK' });
-    assert.equal(g.status, 200);
-    assert.equal(g.body.length, 1);
-    assert.deepEqual(genresOf(g.body[0]), ['Rock']);
-
-    const d = await api(server.baseUrl, '/api/v1/db/decade/songs', { decade: 2000 });
-    assert.equal(d.status, 200);
-    assert.equal(d.body.length, 2);
-    for (const item of d.body) { assert.ok(genresOf(item).length > 0, 'decade rows keep genres'); }
-  });
 });

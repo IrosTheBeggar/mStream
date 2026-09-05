@@ -176,8 +176,9 @@ export async function startServer(opts = {}) {
     // fixtures (e.g. the V17 multi-artist suite builds compilation
     // and collab tracks on the fly).
     extraFolders  = {},
-    // Which UI to serve: 'default' (webapp/alpha) or 'velvet'. Only
-    // affects the `/` HTML routing — all API tests ignore this knob.
+    // Which UI to serve. Only 'default' (webapp/alpha) exists now; the
+    // knob stays so a test can boot with a retired value and pin the
+    // config coercion. All API tests ignore it.
     ui            = 'default',
     // Optional extra process-env overrides passed to the spawned
     // mStream process. Used by the lyrics-cache test to point the

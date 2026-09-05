@@ -54,9 +54,11 @@ describe('V68 drops users.subsonic_password_encrypted', () => {
     assert.equal(before[COLUMN], 'v1:iv:ciphertext-nobody-can-read');
     delete before[COLUMN];
 
-    // The real upgrade path: only migrations above the stored user_version run.
-    applyAllMigrations(db, { fromVersion: 67 });
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, SCHEMA_VERSION);
+    // The real upgrade path: only migrations above the stored user_version
+    // run — pinned to V68 itself, because later migrations drop other users
+    // columns (V69: listenbrainz_token) and this test is about THIS drop.
+    applyAllMigrations(db, { fromVersion: 67, upToVersion: 68 });
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 68);
     assert.ok(!userColumns(db).includes(COLUMN), 'column dropped');
 
     const after = db.prepare("SELECT * FROM users WHERE username = 'alice'").get();

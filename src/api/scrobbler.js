@@ -135,10 +135,11 @@ function _cacheLastfmResult(key, names, ttl) {
   _lastfmCache.set(key, { names, ts: Date.now(), ttl });
 }
 
-// Exposed so /lastfm/connect (in velvet-stubs.js) can register newly-saved
-// credentials with the Scribble session map without waiting for a server
-// restart. The boot-time pre-load below covers credentials already in the
-// DB on startup; warmScrobbleUser handles the post-boot path.
+// Exposed so the admin Last.fm route (POST /api/v1/admin/users/lastfm) can
+// register newly-saved credentials with the Scribble session map without
+// waiting for a server restart. The boot-time pre-load below covers
+// credentials already in the DB on startup; warmScrobbleUser handles the
+// post-boot path.
 export function warmScrobbleUser(lastfmUser, lastfmPassword) {
   if (!lastfmUser || !lastfmPassword) { return; }
   Scrobbler.addUser(lastfmUser, lastfmPassword);
@@ -165,10 +166,10 @@ export function setup(mstream) {
   // Public/no-users mode is supported here: auth.js's no-users branch
   // spreads the V25 anonymous sentinel's row onto req.user, so
   // `req.user.lastfm_user` / `lastfm_password` are populated when the
-  // operator has linked an account via /lastfm/connect. The "operator
-  // is the sentinel" model means scrobbles flow under that single
-  // operator-supplied identity — same trade-off as sentinel-backed
-  // playlists, cue points, and play counts.
+  // operator has linked an account (admin panel → users → Last.fm).
+  // The "operator is the sentinel" model means scrobbles flow under
+  // that single operator-supplied identity — same trade-off as
+  // sentinel-backed playlists and play counts.
 
   mstream.post('/api/v1/lastfm/scrobble-by-metadata', (req, res) => {
     const schema = Joi.object({
@@ -289,20 +290,14 @@ export function setup(mstream) {
   //     API key. Clients use it to decide whether to show the
   //     "Similar artists" toggle at all (or render it in a disabled,
   //     explain-why-it's-off state).
-  //   • hasApiKey     — same value, kept as a separate field for
-  //     legacy clients reading the velvet shape.
   //   • linkedUser    — the user's stored Last.fm username, or null
   //     if they haven't linked an account. Powers the "Connected as:
   //     X" line in the panel.
-  // Moved here from velvet-stubs.js because the default-UI Auto-DJ
-  // panel needs it too — same reason `/api/v1/lastfm/similar-artists`
-  // was moved in PR #587.
   mstream.get('/api/v1/lastfm/status', (req, res) => {
     const hasApiKey = !!(config.program.lastFM?.apiKey);
     const linkedUser = req.user?.lastfm_user || null;
     res.json({
       serverEnabled: hasApiKey,
-      hasApiKey,
       linkedUser,
     });
   });

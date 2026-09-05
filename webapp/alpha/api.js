@@ -57,7 +57,7 @@ const MSTREAMAPI = (() => {
     try {
       return await req('GET', mstreamModule.currentServer.host + 'api/v1/lastfm/status');
     } catch (_) {
-      return { hasApiKey: false, serverEnabled: false, linkedUser: null };
+      return { serverEnabled: false, linkedUser: null };
     }
   };
 

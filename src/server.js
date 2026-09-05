@@ -1,7 +1,6 @@
 import winston from 'winston';
 import express from 'express';
 import fs from 'fs';
-import path from 'path';
 import Joi from 'joi';
 import cookieParser from 'cookie-parser';
 import { compression } from './util/compression.js';
@@ -55,7 +54,6 @@ import * as lyricsApi from './api/lyrics.js';
 import * as lyricsLrclib from './api/lyrics-cache.js';
 import * as backupApi from './api/backup.js';
 import * as backupManager from './backup/manager.js';
-// Velvet UI modules — dynamically imported only when ui='velvet' is active
 import { classifyError } from './util/web-error.js';
 import { isAdminAllowed } from './util/admin-network.js';
 import { writeJsonAtomic, completedWrites } from './util/atomic-json.js';
@@ -505,13 +503,6 @@ export async function serveIt(configFile, { relisten = null } = {}) {
       return next();
     }
 
-    // Velvet handles auth inside the SPA (an inline form), so skip the
-    // server-side /login redirect for it — let the SPA decide what to render.
-    // TODO: standardize login flow so all UIs handle auth the same way
-    if (config.program.ui === 'velvet') {
-      return next();
-    }
-
     try {
       jwt.verify(req.cookies['x-access-token'], config.program.secret);
       next();
@@ -521,12 +512,6 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   });
 
   mstream.get('/login', (req, res, next) => {
-    // Velvet owns its login UI — a server-side hit on /login is
-    // meaningless for it, so redirect back to the SPA root.
-    if (config.program.ui === 'velvet') {
-      return res.redirect(302, '/');
-    }
-
     if (dbManager.getAllUsers().length === 0) {
       return res.redirect(302, '..');
     }
@@ -542,11 +527,8 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   // Server-remote route (must be before static middleware to intercept /server-remote)
   serverPlaybackApi.setupBeforeAuth(mstream);
 
-  // Give access to public folder. Two supported UIs — default and velvet.
-  const webappDir = config.program.ui === 'velvet'
-    ? path.join(config.program.webAppDirectory, 'velvet')
-    : config.program.webAppDirectory;
-  mstream.use('/', express.static(webappDir));
+  // Give access to public folder.
+  mstream.use('/', express.static(config.program.webAppDirectory));
 
   // Public APIs
   remoteApi.setupBeforeAuth(mstream, server);
@@ -620,30 +602,6 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   // and on reboot().
   backupManager.init();
   serverPlaybackApi.setup(mstream);
-
-  // VELVET ONLY: additional API modules loaded only when ui='velvet'
-  // These provide features specific to the Velvet UI (ListenBrainz, smart playlists,
-  // stats tracking, user settings, Discogs, cue points).
-  // TODO: evaluate which of these should be promoted to core /v1 APIs
-  if (config.program.ui === 'velvet') {
-    const [listenbrainzApi, smartPlaylistsApi, wrappedApi,
-           userSettingsApi, discogsApi, cuepointsApi, velvetStubs] = await Promise.all([
-      import('./api/listenbrainz.js'),
-      import('./api/smart-playlists.js'),
-      import('./api/wrapped.js'),
-      import('./api/user-settings.js'),
-      import('./api/discogs.js'),
-      import('./api/cuepoints.js'),
-      import('./api/velvet-stubs.js'),
-    ]);
-    listenbrainzApi.setup(mstream);
-    smartPlaylistsApi.setup(mstream);
-    wrappedApi.setup(mstream);
-    userSettingsApi.setup(mstream);
-    discogsApi.setup(mstream);
-    cuepointsApi.setup(mstream);
-    velvetStubs.setup(mstream);
-  }
 
   // album art folder
   mstream.get('/album-art/:file', albumArtApi.serveAlbumArtFile);

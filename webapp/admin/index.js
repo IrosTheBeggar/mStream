@@ -1533,9 +1533,7 @@ const advancedView = Vue.component('advanced-view', {
                     </tr>
                     <tr>
                       <td><b>{{ t('admin.settings.frontend') }}</b> {{uiLabel(params.ui)}}</td>
-                      <td>
-                        [<a v-on:click="switchUI()">switch to {{uiLabel(nextUI(params.ui))}}</a>]
-                      </td>
+                      <td></td>
                     </tr>
                   </tbody>
                 </table>
@@ -1644,59 +1642,12 @@ const advancedView = Vue.component('advanced-view', {
       modVM.currentViewModal = modalView;
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
     },
-    // Lookup: internal UI id → user-visible label.
+    // Lookup: internal UI id → user-visible label. Only the default UI is
+    // left (velvet and the bundled Subsonic client are gone), so there is no
+    // switcher any more; the row still names the active UI so a stale
+    // config.json value shows up here instead of being silently mapped.
     uiLabel: function(id) {
-      return ({ default: 'Default', velvet: 'Velvet' })[id] || id;
-    },
-    // Rotate through the switcher-exposed UIs on each click.
-    nextUI: function(id) {
-      const order = ['default', 'velvet'];
-      const i = order.indexOf(id);
-      return order[(i < 0 ? 0 : i + 1) % order.length];
-    },
-    switchUI: function() {
-      const newUI = this.nextUI(this.params.ui);
-      const label = this.uiLabel(newUI);
-      iziToast.question({
-        timeout: 20000,
-        close: false,
-        overlayClose: true,
-        overlay: true,
-        displayMode: 'once',
-        id: 'question',
-        zindex: 99999,
-        layout: 2,
-        maxWidth: 600,
-        title: `<b>${t('admin.settings.switchFrontend', { label: label })}</b>`,
-        message: t('admin.settings.switchRestart'),
-        position: 'center',
-        buttons: [
-          [`<button><b>${t('admin.settings.switchingTo', { label: label })}</b></button>`, (instance, toast) => {
-            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-            API.axios({
-              method: 'POST',
-              url: `${API.url()}/api/v1/admin/config/ui`,
-              data: { ui: newUI }
-            }).then(() => {
-              iziToast.success({
-                title: t('admin.settings.switchingTo', { label: label }),
-                message: t('admin.settings.serverRestarting'),
-                position: 'topCenter',
-                timeout: 3500
-              });
-            }).catch(() => {
-              iziToast.error({
-                title: t('admin.settings.failed'),
-                position: 'topCenter',
-                timeout: 3500
-              });
-            });
-          }, true],
-          [`<button>${t('admin.settings.cancel')}</button>`, (instance, toast) => {
-            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
-          }],
-        ]
-      });
+      return ({ default: 'Default' })[id] || id;
     },
     removeSSL: function() {
       iziToast.question({

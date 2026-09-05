@@ -53,14 +53,6 @@ export function setup(mstream) {
     next();
   });
 
-  mstream.post('/api/v1/admin/lock-api', async (req, res) => {
-    const schema = Joi.object({ lock: Joi.boolean().required() });
-    joiValidate(schema, req.body);
-
-    await admin.lockAdminApi(req.body.lock);
-    res.json({});
-  });
-
   // ── Iroh remote-access tunnel ────────────────────────────────────────
   // Admin-only (inherits the guard above). The status payload includes the
   // composite QR ticket, which carries the connect secret — hence admin-only.
@@ -1546,7 +1538,7 @@ export function setup(mstream) {
   mstream.post("/api/v1/admin/config/ui", async (req, res) => {
     const schema = Joi.object({
       // Keep this list in sync with state/config.js `ui` validator.
-      ui: Joi.string().valid('default', 'velvet').required()
+      ui: Joi.string().valid('default').required()
     });
     joiValidate(schema, req.body);
 
@@ -1811,8 +1803,8 @@ export function setup(mstream) {
 
   mstream.get("/api/v1/admin/db/shared", (req, res) => {
     const d = db.getDB();
-    // Reshape raw rows into the shape both admin UIs read: playlistId /
-    // user / expires (see webapp/admin/index.js + webapp/velvet/admin).
+    // Reshape raw rows into the shape the admin UI reads: playlistId /
+    // user / expires (see webapp/admin/index.js).
     // The LokiJS→SQLite migration renamed the columns (share_id,
     // user_id, playlist_json) but this list endpoint kept its
     // pre-migration `SELECT *`, so the UI bound to fields that no longer

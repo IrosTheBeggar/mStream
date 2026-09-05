@@ -1,6 +1,6 @@
-// On-demand waveform endpoint for the player's progress bar.
-// Used by both the default and Velvet UIs. Caches generated waveforms to
-// disk (keyed by content hash) and keeps a hot set in memory.
+// On-demand waveform endpoint for the player's progress bar. Caches
+// generated waveforms to disk (keyed by content hash) and keeps a hot set
+// in memory.
 
 import fs from 'node:fs';
 import path from 'node:path';

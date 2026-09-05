@@ -279,8 +279,8 @@ function fetchGenresForTracks(d, ids) {
 // (which materialises over the ENTIRE track_genres table, so a list
 // endpoint's cost scaled with the library, not the response — see
 // trackQuery's note). Returns `rows` with genres_concat set,
-// renderMetadataObj-ready. Exported for the trackQuery callers that live
-// outside this file (smart-playlists, velvet-stubs).
+// renderMetadataObj-ready. Exported for trackQuery callers outside this
+// file.
 export function enrichRowsWithGenres(d, rows) {
   // Chunked like renderMetadataByIds/pullMetaDataBatch above: one IN() per
   // 500 ids keeps huge responses (whole-genre / whole-decade listings) under

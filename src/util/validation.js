@@ -31,9 +31,8 @@ export function resolveId(body) {
 }
 
 /**
- * Build a response object that includes both `id` and `lokiId` for
- * backward compatibility with the default UI (reads `lokiId`) and
- * the Velvet UI (reads `id`).
+ * Build a response object that carries the row id under both names:
+ * `lokiId` (the historical field the default UI reads) and plain `id`.
  */
 export function dualId(id) {
   return { id, lokiId: id };

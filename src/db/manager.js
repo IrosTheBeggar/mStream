@@ -20,7 +20,7 @@ export let FTS5_AVAILABLE = false;
 // ── Anonymous (no-users) sentinel ────────────────────────────────────────────
 //
 // users.user_id is a NOT NULL FK on every per-user table (user_metadata,
-// playlists, cue_points, user_settings, …). When the admin hasn't created
+// playlists, shared_playlists, …). When the admin hasn't created
 // any real users — i.e. mStream is running in public read-only mode — every
 // HTTP request still needs *some* valid user_id to attribute writes to,
 // otherwise scrobbles, ratings, "save queue as playlist", etc. all crash
@@ -429,9 +429,9 @@ export function getAnonymousUserId() {
 // initDB() finishes).
 //
 // Callers: auth.js's no-users branch uses this to spread the sentinel's
-// columns (lastfm_user, lastfm_password, listenbrainz_token, …) onto
-// req.user, so public-mode requests look like a real-user request and
-// the per-user-data endpoints (LB/Last.fm scrobbling, /lastfm/status,
+// columns (lastfm_user, lastfm_password, …) onto req.user, so
+// public-mode requests look like a real-user request and the
+// per-user-data endpoints (Last.fm scrobbling, /lastfm/status,
 // etc.) work without per-endpoint special-casing.
 //
 // getUserByUsername / getAllUsers intentionally hide the sentinel from

@@ -132,10 +132,10 @@ function buildPublicModeUser() {
   const allLibs = db.getAllLibraries();
   const adminLocked = config.program.lockAdmin === true;
   // Spread the sentinel's actual users-table row first so per-user
-  // columns (lastfm_user, lastfm_password, listenbrainz_token, …)
-  // are present on req.user exactly the way they are for real-user
-  // requests. Endpoints that read those columns off req.user
-  // (scrobbler.js, velvet-stubs.js /lastfm/status, etc.) then work
+  // columns (lastfm_user, lastfm_password, …) are present on req.user
+  // exactly the way they are for real-user requests. Endpoints that
+  // read those columns off req.user (scrobbler.js /lastfm/status and
+  // the scrobble routes) then work
   // in public mode without per-endpoint DB lookups. Permission
   // flags below override whatever the sentinel row stored — the
   // sentinel's own allow_* defaults are 0 (see ensureAnonymousUser),
@@ -148,7 +148,7 @@ function buildPublicModeUser() {
     admin: !adminLocked,
     // Pin to the always-present anonymous sentinel row in the
     // users table. Per-user tables (user_metadata, playlists,
-    // cue_points, …) all FK on users(id) NOT NULL, so a null id
+    // shared_playlists, …) all FK on users(id) NOT NULL, so a null id
     // here meant every write endpoint crashed in public mode.
     // The sentinel is filtered out of getAllUsers() so the
     // empty-check still means "no real users".
