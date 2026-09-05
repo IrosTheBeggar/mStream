@@ -30,7 +30,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { extractLyrics } from '../../src/db/lyrics-extraction.js';
-import { lrcToSearchText } from '../../src/api/subsonic/lrc-parser.js';
+import { lrcToSearchText } from '../../src/util/lrc-parser.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');

@@ -31,7 +31,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startServer } from '../helpers/server.mjs';
-import { parseLrc, plainTextToLines } from '../../src/api/subsonic/lrc-parser.js';
+import { parseLrc, plainTextToLines } from '../../src/util/lrc-parser.js';
 import { extractLyrics } from '../../src/db/lyrics-extraction.js';
 import { DatabaseSync } from 'node:sqlite';
 

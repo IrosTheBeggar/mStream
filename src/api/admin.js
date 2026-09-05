@@ -1178,6 +1178,10 @@ export function setup(mstream) {
       backfill:     !!cfg.backfill,
       providers:    Array.isArray(cfg.providers) ? cfg.providers : ['lrclib'],
       writeSidecar: !!cfg.writeSidecar,
+      // Read-only counters over the lyrics_cache ledger the backfill worker
+      // keeps (hit / miss / error / pending / other / total). Backs the
+      // "Lyrics Cache" card in the Lyrics admin view.
+      cache:        lyricsLrclib.cacheStats(),
     });
   });
 
@@ -1209,6 +1213,33 @@ export function setup(mstream) {
     await admin.editLyricsWriteSidecar(req.body.writeSidecar);
     res.json({});
   });
+
+  // Lyrics-cache ledger purge. Admin-only (guarded by the /admin/*
+  // middleware). Two modes:
+  //   - full  → drop every row (useful after a big tag-cleanup pass, so
+  //             the backfill re-attempts everything)
+  //   - retry → drop just 'error' + 'pending' rows (shakes loose a
+  //             network-outage window without losing hits)
+  const purgeLyricsCache = (req, res) => {
+    // Match the Joi validation style the rest of /admin uses — a
+    // malformed body (extra keys, wrong `mode` string) throws to the
+    // global Joi handler (400) rather than silently proceeding with
+    // defaults.
+    const schema = Joi.object({
+      mode: Joi.string().valid('full', 'retry').default('full'),
+    });
+    const { value } = joiValidate(schema, req.body || {});
+    const removed = value.mode === 'retry'
+      ? lyricsLrclib.purgeTransient()
+      : lyricsLrclib.purgeAll();
+    res.json({ removed, mode: value.mode });
+  };
+  mstream.post("/api/v1/admin/lyrics/cache/purge", purgeLyricsCache);
+  // DEPRECATED alias: the purge used to live under the Subsonic admin
+  // namespace because the ledger was born as the Subsonic getLyrics
+  // fallback cache. Answers identically; goes away with the Subsonic
+  // surface.
+  mstream.post("/api/v1/admin/subsonic/lyrics-cache/purge", purgeLyricsCache);
 
   mstream.get("/api/v1/admin/users", (req, res) => {
     const users = db.getAllUsers();
@@ -2009,12 +2040,6 @@ export function setup(mstream) {
         sinceMs:    Date.now() - s.since,
       };
     });
-    // V20: lyrics cache stats (LRCLib fallback). Always emitted so
-    // older admin UIs see it; shown only when config.lyrics.lrclib
-    // is true (UI gates the render).
-    const lyricsCfg   = config.program.lyrics || {};
-    const lyricsCache = lyricsLrclib.cacheStats();
-
     res.json({
       methodsImplemented: methods.length,
       methods,
@@ -2025,61 +2050,7 @@ export function setup(mstream) {
       fullCount,
       stubCount,
       nowPlaying: byUserTrack,
-      lyrics: {
-        lrclibEnabled:       !!lyricsCfg.lrclib,
-        writeSidecarEnabled: !!lyricsCfg.writeSidecar,
-        cache:               lyricsCache,
-      },
     });
-  });
-
-  // V20: lyrics-cache management. Admin-only (guarded by the /admin/*
-  // middleware). Two purge modes:
-  //   - full  → drop every row (useful after disabling LRCLib or
-  //             after a big tag-cleanup pass)
-  //   - retry → drop just 'error' + 'pending' rows (shakes loose a
-  //             network-outage window without losing hits)
-  mstream.post('/api/v1/admin/subsonic/lyrics-cache/purge', (req, res) => {
-    // Match the Joi validation style the rest of /admin uses — a
-    // malformed body (extra keys, wrong `mode` string) throws to the
-    // 403 handler rather than silently proceeding with defaults.
-    const schema = Joi.object({
-      mode: Joi.string().valid('full', 'retry').default('full'),
-    });
-    const { value } = joiValidate(schema, req.body || {});
-    const removed = value.mode === 'retry'
-      ? lyricsLrclib.purgeTransient()
-      : lyricsLrclib.purgeAll();
-    res.json({ removed, mode: value.mode });
-  });
-
-  // DEPRECATED: toggles the legacy `lyrics.lrclib` flag, which is now
-  // inert — the reactive LRCLib fetch was removed in favour of the
-  // proactive backfill (see POST /api/v1/admin/lyrics/backfill). Kept so
-  // the older subsonic admin UI's toggle doesn't 404; it just persists
-  // the flag. Does NOT purge the cache (use the purge endpoint for that).
-  mstream.post('/api/v1/admin/subsonic/lyrics-cache/enabled', async (req, res) => {
-    const schema = Joi.object({ enabled: Joi.boolean().required() });
-    const { value } = joiValidate(schema, req.body || {});
-    const loadConfig = await admin.loadFile(config.configFile);
-    loadConfig.lyrics = { ...(loadConfig.lyrics || {}), lrclib: value.enabled };
-    await admin.saveFile(loadConfig, config.configFile);
-    config.program.lyrics = { ...(config.program.lyrics || {}), lrclib: value.enabled };
-    res.json({ enabled: value.enabled });
-  });
-
-  // Toggle the writeSidecar option. Mirrors the lrclib toggle above —
-  // persisted to config.json, flipped in-memory immediately. Has no
-  // effect on already-cached rows (they live in SQLite either way);
-  // only gates future write-through to the filesystem.
-  mstream.post('/api/v1/admin/subsonic/lyrics-cache/write-sidecar', async (req, res) => {
-    const schema = Joi.object({ enabled: Joi.boolean().required() });
-    const { value } = joiValidate(schema, req.body || {});
-    const loadConfig = await admin.loadFile(config.configFile);
-    loadConfig.lyrics = { ...(loadConfig.lyrics || {}), writeSidecar: value.enabled };
-    await admin.saveFile(loadConfig, config.configFile);
-    config.program.lyrics = { ...(config.program.lyrics || {}), writeSidecar: value.enabled };
-    res.json({ writeSidecar: value.enabled });
   });
 
   // Ping-the-Subsonic-endpoint probe for the "test connection" button.

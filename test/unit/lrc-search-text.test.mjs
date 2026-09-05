@@ -1,5 +1,5 @@
 /**
- * Unit tests for lrcToSearchText (src/api/subsonic/lrc-parser.js) — the
+ * Unit tests for lrcToSearchText (src/util/lrc-parser.js) — the
  * V59 derivation of tracks.lyrics_search_text from synced LRC.
  *
  * The contract under test (see the function's doc comment):
@@ -17,7 +17,7 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { lrcToSearchText } from '../../src/api/subsonic/lrc-parser.js';
+import { lrcToSearchText } from '../../src/util/lrc-parser.js';
 
 describe('lrcToSearchText basics', () => {
   test('null / empty / non-string inputs → null', () => {
