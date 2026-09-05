@@ -4,6 +4,11 @@
  * HTTP to the backend. Exercises the lazy native load + accept/auth loop +
  * the shared byte pumps against a real iroh endpoint.
  *
+ * Guest tokens (state/federation-guest.js) take the same first bi-stream:
+ * a signed token opens the pipe from ANY endpoint (no TOFU — expiry is the
+ * bound), never disturbs the key's binding, dies with the key, and its
+ * live pipes are severed with the key's.
+ *
  * Needs a real DB for the key lookups, so it bootstraps the canonical
  * config.setup + initDB harness into a temp dir (and process.exit()s in
  * teardown like the other DB-backed suites).
@@ -18,13 +23,14 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import jwt from 'jsonwebtoken';
 
 let available = true;
 try { await import('@number0/iroh'); } catch { available = false; }
 
 describe('federation endpoint handshake', { skip: available ? false : 'no @number0/iroh binary for this platform' }, () => {
   let tmpDir, stub, stubPort;
-  let federation, fedDb, iroh; // modules
+  let federation, fedDb, iroh, guest, config; // modules
   let endpointTicketStr;
   let keyGood; // { id, key }
   const clients = []; // throwaway dial endpoints to close in teardown
@@ -41,13 +47,14 @@ describe('federation endpoint handshake', { skip: available ? false : 'no @numbe
       port: 0,
     }, null, 2));
 
-    const config = await import('../../src/state/config.js');
+    config = await import('../../src/state/config.js');
     await config.setup(path.join(tmpDir, 'config.json'));
     const dbManager = await import('../../src/db/manager.js');
     dbManager.initDB();
     fedDb = await import('../../src/db/federation.js');
     federation = await import('../../src/state/federation.js');
     iroh = await import('../../src/state/iroh-common.js');
+    guest = await import('../../src/state/federation-guest.js');
 
     const d = dbManager.getDB();
     const libId = Number(d.prepare("INSERT INTO libraries (name, root_path) VALUES ('music', '/music')").run().lastInsertRowid);
@@ -147,6 +154,68 @@ describe('federation endpoint handshake', { skip: available ? false : 'no @numbe
     fedDb.setFederationKeyExpiry(expired.id, new Date(Date.now() + 3600_000).toISOString());
     const again = await dial(expired.key);
     assert.equal(again.resp, 'OK');
+  });
+
+  test('a guest token opens the pipe from any endpoint and bridges HTTP, without touching the binding', async () => {
+    const boundTo = fedDb.getFederationKeyById(keyGood.id).bound_endpoint_id;
+    assert.ok(boundTo, 'the key was bound by the first test');
+    const { token } = guest.mintGuestToken(keyGood);
+
+    // Two DIFFERENT throwaway endpoints (dial() binds a new one each time):
+    // a key would be rejected on the second (TOFU); a guest is not bound.
+    for (let i = 0; i < 2; i++) {
+      const { conn, resp } = await dial(token);
+      assert.equal(resp, 'OK', `guest dial #${i + 1}`);
+      const bi = await conn.openBi();
+      await bi.send.writeAll(Array.from(Buffer.from('GET /guest HTTP/1.0\r\nConnection: close\r\n\r\n')));
+      await bi.send.finish();
+      const chunks = [];
+      for (;;) { const c = await bi.recv.read(65536); if (c.length === 0) { break; } chunks.push(Buffer.from(c)); }
+      assert.match(Buffer.concat(chunks).toString('utf8'), /200[\s\S]*\/guest/);
+    }
+    assert.equal(fedDb.getFederationKeyById(keyGood.id).bound_endpoint_id, boundTo,
+      'a guest handshake must not rebind the key');
+  });
+
+  test('a guest of a revoked, expired or unknown key is rejected; so are forged and user tokens', async () => {
+    const revoked = fedDb.createFederationKey('revoked-host', []);
+    const { token: orphan } = guest.mintGuestToken(revoked);
+    fedDb.deleteFederationKey(revoked.id);
+    assert.notEqual((await dial(orphan)).resp, 'OK', 'guest of a deleted key');
+
+    const expiredKey = fedDb.createFederationKey('expired-host', [], {},
+      new Date(Date.now() - 60_000).toISOString());
+    const { token: ofExpired } = guest.mintGuestToken(expiredKey);
+    assert.notEqual((await dial(ofExpired)).resp, 'OK', 'guest of an expired key');
+
+    const expiredToken = jwt.sign(
+      { federationGuest: true, federationKeyId: keyGood.id, exp: Math.floor(Date.now() / 1000) - 60 },
+      config.program.secret,
+    );
+    assert.notEqual((await dial(expiredToken)).resp, 'OK', 'expired guest token');
+
+    const forged = jwt.sign({ federationGuest: true, federationKeyId: keyGood.id }, 'wrong-secret');
+    assert.notEqual((await dial(forged)).resp, 'OK', 'foreign signature');
+
+    const userToken = jwt.sign({ username: 'alice' }, config.program.secret);
+    assert.notEqual((await dial(userToken)).resp, 'OK', 'an ordinary user JWT is not a pipe credential');
+  });
+
+  test('closeConnectionsForKey severs a live guest pipe along with the key\'s', async () => {
+    const host = fedDb.createFederationKey('host-with-guests', []);
+    const viaKey = await dial(host.key);
+    assert.equal(viaKey.resp, 'OK');
+    const { token } = guest.mintGuestToken(host);
+    const viaGuest = await dial(token);
+    assert.equal(viaGuest.resp, 'OK');
+
+    assert.equal(federation.closeConnectionsForKey(host.id), 2, 'the key pipe AND its guest pipe');
+    await assert.rejects(async () => {
+      const bi = await viaGuest.conn.openBi();
+      await bi.send.writeAll(Array.from(Buffer.from('GET / HTTP/1.0\r\n\r\n')));
+      await bi.send.finish();
+      await bi.recv.readToEnd(64);
+    });
   });
 
   test('closeConnectionsForKey severs a live authorized pipe', async () => {

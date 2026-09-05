@@ -189,7 +189,7 @@ describe('layered /api/ server info', () => {
     // Ping's frozen flat contract = the caller-scoped half (/api/'s
     // `user` minus identity) + the capabilities half (/api/'s `features`
     // minus the /api/-only discoveryReady) + three legacy fields.
-    const { username: _u, admin: _a, federation: _f, ...userHalf } = apiJ.user;
+    const { username: _u, admin: _a, federation: _f, federationGuest: _g, ...userHalf } = apiJ.user;
     const { discoveryReady: _dr, ...capsHalf } = apiJ.features;
     const { playlists, allowYoutubeDownload, discoveryPath, ...pingRest } = ping;
     assert.ok(Array.isArray(playlists), 'ping still carries playlists');

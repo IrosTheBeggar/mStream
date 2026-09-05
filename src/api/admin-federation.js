@@ -24,6 +24,7 @@ import * as admin from '../util/admin.js';
 import * as db from '../db/manager.js';
 import * as fedDb from '../db/federation.js';
 import * as fedLimits from './federation-limits.js';
+import { forgetPeerAccess } from './federation-browse.js';
 
 // Per-key bandwidth caps (0 = unlimited). Optional at mint time — absent
 // fields fall back to config.federation.limits, which is also what the UI
@@ -167,6 +168,14 @@ export function register(mstream) {
     const limits = resolveLimits(req.body);
     const expiresAt = normalizeExpiry(req.body.expiresAt);
     const minted = fedDb.createFederationKey(req.body.name, libraryIds, limits, expiresAt);
+    // A fresh key means a fresh dial is coming — typically from the same
+    // friend whose retries on a key just revoked are what the endpoint
+    // backed off (mStream #940: a peer re-added right after a revocation
+    // was refused for a minute). Forgive every backed-off remote now.
+    try {
+      const federation = await import('../state/federation.js');
+      federation.clearHandshakeBackoff();
+    } catch (_err) { /* native binary not present — no endpoint, nothing backed off */ }
     winston.info(`[federation] ${req.user.username} minted key '${minted.name}' for libraries [${req.body.vpaths.join(', ')}] `
       + `(limits: ${limits.streamKbps} kbps, ${limits.dailyMb} MB/day, ${limits.maxStreams} streams; `
       + `expires: ${expiresAt || 'never'})`);
@@ -223,6 +232,8 @@ export function register(mstream) {
       const closed = federation.closeConnectionsForKey(Number(req.params.id));
       if (closed > 0) { winston.info(`[federation] closed ${closed} live connection(s) for revoked key id=${req.params.id}`); }
     } catch (_err) { /* native binary not present — nothing live to close */ }
+    // Its unflushed usage would fail its FOREIGN KEY forever (mStream #940).
+    fedLimits.forgetKey(Number(req.params.id));
     winston.info(`[federation] ${req.user.username} revoked key id=${req.params.id}`);
     res.json({});
   });
@@ -466,6 +477,7 @@ export function register(mstream) {
       const client = await import('../state/federation-client.js');
       client.closePeerBridge(id);
     } catch (_err) { /* nothing live to close */ }
+    forgetPeerAccess(id);
     winston.info(`[federation] ${req.user.username} removed peer id=${id}`);
     res.json({});
   });

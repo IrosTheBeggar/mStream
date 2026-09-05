@@ -16,6 +16,15 @@
  * branch-ordering pin: public mode grants anonymous requests everything, but
  * a federation key must STILL be scoped to its grants. If the wall checked
  * public mode first, the key would silently see every library.
+ *
+ * Guest tokens (state/federation-guest.js) get the same treatment in both
+ * scenarios: signed here with the spawned server's secret (read back out of
+ * its config.json) exactly as the server itself would mint them — the mint
+ * ROUTE needs a bound key, i.e. a real iroh handshake, and is covered by
+ * federation-browse's two-server suite. Over plain HTTP the guest rides the
+ * ordinary token slots and must land on the key's scope, the key's
+ * allowlist, and die with the key; and in public mode a forged one must be
+ * a 401, never the public user.
  */
 
 import { describe, test, before, after } from 'node:test';
@@ -24,6 +33,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { startServer } from '../helpers/server.mjs';
+import jwt from 'jsonwebtoken';
 import { parseFederationTicket, buildFederationTicket } from '../../src/state/federation.js';
 
 async function makeLibDir(prefix, fileName, content) {
@@ -33,6 +43,15 @@ async function makeLibDir(prefix, fileName, content) {
 }
 
 const fedHeaders = (key, extra = {}) => ({ 'x-federation-key': key, 'Content-Type': 'application/json', ...extra });
+const tokenHeaders = (token) => ({ 'x-access-token': token, 'Content-Type': 'application/json' });
+
+// The spawned server's JWT secret — config.setup generated it into the
+// config file at boot. Signing with it is exactly what mintGuestToken does.
+async function serverSecret(srv) {
+  return JSON.parse(await fs.readFile(path.join(srv.tmpDir, 'config.json'), 'utf8')).secret;
+}
+const signGuest = (secret, keyId, extra = {}) =>
+  jwt.sign({ federationGuest: true, federationKeyId: keyId, ...extra }, secret, extra.exp ? {} : { expiresIn: '1h' });
 
 describe('federation keys e2e (server with users)', () => {
   let srv, sharedDir, privateDir, adminToken, fedKey, keyId;
@@ -243,7 +262,62 @@ describe('federation keys e2e (server with users)', () => {
     assert.equal(delAgain.status, 404);
   });
 
-  test('revocation kills the key on the next request', async () => {
+  test('a guest token lands on the key\'s scope through the ordinary token slots', async () => {
+    const guest = signGuest(await serverSecret(srv), keyId);
+
+    // Header slot: health shows the key's grants and /api/ says who we are.
+    const health = await fetch(`${srv.baseUrl}/api/v1/federation/health`, { headers: tokenHeaders(guest) });
+    assert.equal(health.status, 200);
+    assert.deepEqual((await health.json()).libraries, ['shared']);
+    const info = await (await fetch(`${srv.baseUrl}/api/`, { headers: tokenHeaders(guest) })).json();
+    assert.equal(info.user.federation, true);
+    assert.equal(info.user.federationGuest, true);
+    assert.deepEqual(info.user.vpaths, ['shared']);
+    assert.equal(info.admin, undefined, 'never the admin layer');
+
+    // Query slot, the way stream and art URLs carry it: granted media
+    // streams, ungranted 404s — the key's scoping, verbatim.
+    const ok = await fetch(`${srv.baseUrl}/media/shared/hello.txt?token=${guest}`);
+    assert.equal(ok.status, 200);
+    assert.equal(await ok.text(), 'hello from shared');
+    assert.equal((await fetch(`${srv.baseUrl}/media/private/secret.txt?token=${guest}`)).status, 404);
+  });
+
+  test('a guest is held to the allowlist and cannot mint guests', async () => {
+    const guest = signGuest(await serverSecret(srv), keyId);
+    const write = await fetch(`${srv.baseUrl}/api/v1/db/rate-song`, {
+      method: 'POST', headers: tokenHeaders(guest), body: JSON.stringify({ filepath: 'x', rating: 5 }),
+    });
+    assert.equal(write.status, 403);
+    assert.equal((await fetch(`${srv.baseUrl}/api/v1/db/rated`, { headers: tokenHeaders(guest) })).status, 403);
+    // On the allowlist (for the KEY's sake), refused by the route itself.
+    const mint = await fetch(`${srv.baseUrl}/api/v1/federation/guest`, { method: 'POST', headers: tokenHeaders(guest) });
+    assert.equal(mint.status, 403);
+    assert.match((await mint.json()).error, /guest cannot mint/i);
+  });
+
+  test('the mint route refuses local users and keys that never completed the handshake', async () => {
+    // A logged-in admin has no key to mint for.
+    const asUser = await fetch(`${srv.baseUrl}/api/v1/federation/guest`, { method: 'POST', headers: tokenHeaders(adminToken) });
+    assert.equal(asUser.status, 403);
+    // Over plain HTTP the key is unbound (no iroh dial happened): refused.
+    const asKey = await fetch(`${srv.baseUrl}/api/v1/federation/guest`, { method: 'POST', headers: fedHeaders(fedKey) });
+    assert.equal(asKey.status, 403);
+    assert.match((await asKey.json()).error, /not bound/i);
+  });
+
+  test('bad guest tokens are 401: expired, foreign signature, unknown key', async () => {
+    const secret = await serverSecret(srv);
+    const expired = signGuest(secret, keyId, { exp: Math.floor(Date.now() / 1000) - 60 });
+    assert.equal((await fetch(`${srv.baseUrl}/api/v1/federation/health`, { headers: tokenHeaders(expired) })).status, 401);
+    const forged = jwt.sign({ federationGuest: true, federationKeyId: keyId }, 'not-the-secret');
+    assert.equal((await fetch(`${srv.baseUrl}/api/v1/federation/health`, { headers: tokenHeaders(forged) })).status, 401);
+    const orphan = signGuest(secret, 424242);
+    assert.equal((await fetch(`${srv.baseUrl}/api/v1/federation/health`, { headers: tokenHeaders(orphan) })).status, 401);
+  });
+
+  test('revocation kills the key on the next request — and its guests', async () => {
+    const guest = signGuest(await serverSecret(srv), keyId);
     const del = await fetch(`${srv.baseUrl}/api/v1/admin/federation/keys/${keyId}`, {
       method: 'DELETE', headers: { 'x-access-token': adminToken },
     });
@@ -251,11 +325,13 @@ describe('federation keys e2e (server with users)', () => {
 
     const r = await fetch(`${srv.baseUrl}/api/v1/federation/health`, { headers: fedHeaders(fedKey) });
     assert.equal(r.status, 401);
+    const g = await fetch(`${srv.baseUrl}/api/v1/federation/health`, { headers: tokenHeaders(guest) });
+    assert.equal(g.status, 401, 'a still-valid guest token dies with its key');
   });
 });
 
 describe('federation keys e2e (public mode — the branch-ordering pin)', () => {
-  let srv, sharedDir, privateDir, fedKey;
+  let srv, sharedDir, privateDir, fedKey, keyId;
 
   before(async () => {
     sharedDir = await makeLibDir('mstream-fed-pub-shared-', 'hello.txt', 'public shared');
@@ -274,7 +350,7 @@ describe('federation keys e2e (public mode — the branch-ordering pin)', () => 
       body: JSON.stringify({ name: 'pub-peer', vpaths: ['shared'] }),
     });
     assert.equal(mint.status, 200);
-    ({ key: fedKey } = await mint.json());
+    ({ key: fedKey, id: keyId } = await mint.json());
   });
 
   after(async () => {
@@ -300,5 +376,20 @@ describe('federation keys e2e (public mode — the branch-ordering pin)', () => 
 
     const ok = await fetch(`${srv.baseUrl}/media/shared/hello.txt`, { headers: fedHeaders(fedKey) });
     assert.equal(ok.status, 200);
+  });
+
+  test('guest tokens are scoped in public mode too, and a forged one is a 401 — never the public user', async () => {
+    const secret = await serverSecret(srv);
+    const guest = signGuest(secret, keyId);
+    assert.equal((await fetch(`${srv.baseUrl}/media/private/secret.txt?token=${guest}`)).status, 404,
+      'a valid guest must not inherit public mode\'s everything');
+    assert.equal((await fetch(`${srv.baseUrl}/media/shared/hello.txt?token=${guest}`)).status, 200);
+
+    // A token that merely CLAIMS to be a guest is verified in the guest
+    // branch and refused there. Falling through to public mode would hand
+    // anyone who can spell the claim the whole library.
+    const forged = jwt.sign({ federationGuest: true, federationKeyId: keyId }, 'not-the-secret');
+    assert.equal((await fetch(`${srv.baseUrl}/media/private/secret.txt?token=${forged}`)).status, 401);
+    assert.equal((await fetch(`${srv.baseUrl}/api/v1/federation/health`, { headers: tokenHeaders(forged) })).status, 401);
   });
 });

@@ -7,6 +7,7 @@ import * as db from '../db/manager.js';
 import * as shared from '../api/shared.js';
 import { isActiveJukeboxToken } from '../api/remote.js';
 import * as federationAuth from './federation-auth.js';
+import * as federationGuest from '../state/federation-guest.js';
 import WebError from '../util/web-error.js';
 
 export function setup(mstream) {
@@ -62,13 +63,27 @@ export function setup(mstream) {
       return next();
     }
 
+    // Federation GUEST tokens next — the same ordering reason. A guest is a
+    // device of a key holder carrying a short-lived JWT this server signed
+    // for the key (state/federation-guest.js); it rides the ordinary token
+    // slots so clients need no special header. Routed by CLAIM (a plain
+    // decode) so ordinary user tokens are still verified exactly once,
+    // below; a token that claims to be a guest is verified for real in the
+    // guest branch, and a bad one is a 401 there — never a fall-through to
+    // public mode.
+    const token = readToken(req);
+    if (token && federationGuest.looksLikeGuestToken(token)) {
+      req.token = token;
+      req.user = federationAuth.authenticateGuestToken(token, req);
+      return next();
+    }
+
     // Handle No Users (public access mode)
     if (db.getAllUsers().length === 0) {
       req.user = buildPublicModeUser();
       return next();
     }
 
-    const token = readToken(req);
     if (!token) { throw new WebError('Authentication Error', 401); }
     req.token = token;
 

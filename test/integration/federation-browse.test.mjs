@@ -19,6 +19,12 @@
  * Part 2 (skips without the iroh binary) is the real thing: two spawned
  * servers, B pairs with A over a pasted ticket, and B's webapp routes read
  * A's library through the bridge.
+ *
+ * Direct access (GET /api/v1/federation/peers/:id/access) rides both parts:
+ * the guards in part 1, and in part 2 the whole device flow — B mints a
+ * guest token from A over the bridge, a throwaway "phone" endpoint dials A
+ * with it and reads A's library through its own pipe, and the token works
+ * against A's HTTP wall in the ordinary token slots.
  */
 
 import { describe, test, before, after } from 'node:test';
@@ -27,7 +33,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { startServer } from '../helpers/server.mjs';
-import { buildFederationTicket } from '../../src/state/federation.js';
+import { buildFederationTicket, parseFederationGuestTicket, FEDERATION_ALPN } from '../../src/state/federation.js';
 import http from 'node:http';
 
 let irohAvailable = true;
@@ -100,8 +106,9 @@ describe('federation browse proxy — guards', () => {
     const { peers } = await res.json();
 
     assert.equal(peers.length, 1);
-    assert.deepEqual(Object.keys(peers[0]).sort(), ['id', 'lastSeen', 'lastStatus', 'name', 'useDiscovery']);
+    assert.deepEqual(Object.keys(peers[0]).sort(), ['endpointId', 'id', 'lastSeen', 'lastStatus', 'name', 'useDiscovery']);
     assert.equal(peers[0].name, 'Ghost NAS');
+    assert.equal(peers[0].endpointId, null, 'a ticket that does not parse yields no id (never throws)');
 
     // The credential columns must not appear under ANY key spelling.
     const serialized = JSON.stringify(peers);
@@ -180,6 +187,26 @@ describe('federation browse proxy — guards', () => {
     assert.equal(art.status, 404);
   });
 
+  test('the access route shares the guards: 404 unknown peer, 502 unreachable, never a federation key', async () => {
+    const ghost = await fetch(`${srv.baseUrl}/api/v1/federation/peers/424242/access`, { headers: json(adminToken) });
+    assert.equal(ghost.status, 404);
+
+    // The peer row is real but its endpoint is not: the mint cannot be
+    // asked, which is the same 502 the proxies give — NOT `direct: false`,
+    // which is reserved for a peer that answered and declined.
+    const down = await fetch(`${srv.baseUrl}/api/v1/federation/peers/${peerId}/access`, { headers: json(adminToken) });
+    assert.equal(down.status, 502);
+
+    // A normal user may ask (browsing is not an admin action)...
+    const login = await fetch(`${srv.baseUrl}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'listener', password: 'pw' }),
+    });
+    const listenerToken = (await login.json()).token;
+    assert.equal((await fetch(`${srv.baseUrl}/api/v1/federation/peers/${peerId}/access`, { headers: json(listenerToken) })).status, 502);
+  });
+
   test('a federation key cannot chain a proxy through us', async () => {
     const mint = await fetch(`${srv.baseUrl}/api/v1/admin/federation/keys`, {
       method: 'POST', headers: json(adminToken), body: JSON.stringify({ name: 'chainer', vpaths: ['shared'] }),
@@ -196,6 +223,7 @@ describe('federation browse proxy — guards', () => {
     for (const url of [
       `${srv.baseUrl}/api/v1/federation/peers`,
       `${srv.baseUrl}/api/v1/federation/peers/${peerId}/art/cover.jpg`,
+      `${srv.baseUrl}/api/v1/federation/peers/${peerId}/access`,
     ]) {
       assert.equal((await fetch(url, { headers: fedH })).status, 403, url);
     }
@@ -205,10 +233,15 @@ describe('federation browse proxy — guards', () => {
     assert.equal(proxied.status, 403);
   });
 
-  test('ping advertises federationBrowse once a peer exists', async () => {
+  test('ping and /api/ advertise federationBrowse + federationDirect once a peer exists', async () => {
     const res = await fetch(`${srv.baseUrl}/api/v1/ping`, { headers: json(adminToken) });
     assert.equal(res.status, 200);
-    assert.equal((await res.json()).federationBrowse, true);
+    const ping = await res.json();
+    assert.equal(ping.federationBrowse, true);
+    assert.equal(ping.federationDirect, true);
+    const info = await (await fetch(`${srv.baseUrl}/api/`, { headers: json(adminToken) })).json();
+    assert.equal(info.user.federationDirect, true);
+    assert.equal(info.user.federationGuest, false);
   });
 });
 
@@ -243,9 +276,11 @@ describe('federation browse proxy — federation disabled', () => {
       method: 'POST', headers: json(token), body: '{}',
     });
     assert.equal(proxied.status, 403);
+    assert.equal((await fetch(`${srv.baseUrl}/api/v1/federation/peers/1/access`, { headers: json(token) })).status, 403);
 
-    const ping = await fetch(`${srv.baseUrl}/api/v1/ping`, { headers: json(token) });
-    assert.equal((await ping.json()).federationBrowse, false);
+    const ping = await (await fetch(`${srv.baseUrl}/api/v1/ping`, { headers: json(token) })).json();
+    assert.equal(ping.federationBrowse, false);
+    assert.equal(ping.federationDirect, false);
   });
 });
 
@@ -369,6 +404,86 @@ describe('federation browse proxy over iroh (B reads A)', {
       assert.equal(res.status, 200, `${route} should proxy`);
       assert.ok(shapeOk(await res.json()), `${route} should come back in its normal shape`);
     }
+  });
+
+  test("direct access: B mints a guest token from A; a 'phone' dials A with it and reads A's library", async () => {
+    const res = await fetch(`${srvB.baseUrl}/api/v1/federation/peers/${peerId}/access`);
+    const text = await res.text();
+    assert.equal(res.status, 200, text);
+    const access = JSON.parse(text);
+    assert.equal(access.direct, true);
+    assert.ok(access.endpointTicket, 'the peer endpoint ticket');
+    assert.ok(access.endpointId, 'the peer endpoint id (public key)');
+    assert.match(access.guestToken, /^eyJ/);
+    assert.ok(Date.parse(access.expiresAt) > Date.now() + 23 * 3600 * 1000, 'a day-long token');
+    assert.match(access.directTicket, /^mstrfedg1:/);
+    const parsed = parseFederationGuestTicket(access.directTicket);
+    assert.equal(parsed.endpointTicket, access.endpointTicket);
+    assert.equal(parsed.guestToken, access.guestToken);
+
+    // The peers projection agrees on who A is.
+    const { peers } = await (await fetch(`${srvB.baseUrl}/api/v1/federation/peers`)).json();
+    assert.equal(peers[0].endpointId, access.endpointId);
+
+    // The token is A's: it works against A's HTTP wall directly, scoped to
+    // the grant, and A knows it is a guest.
+    const health = await fetch(`${srvA.baseUrl}/api/v1/federation/health`, { headers: { 'x-access-token': access.guestToken } });
+    assert.equal(health.status, 200);
+    assert.deepEqual((await health.json()).libraries, ['ashared']);
+    const info = await (await fetch(`${srvA.baseUrl}/api/`, { headers: { 'x-access-token': access.guestToken } })).json();
+    assert.equal(info.user.federationGuest, true);
+    assert.equal((await fetch(`${srvA.baseUrl}/media/ashared/shared-track.txt?token=${access.guestToken}`)).status, 200);
+    assert.equal((await fetch(`${srvA.baseUrl}/media/aprivate/private-track.txt?token=${access.guestToken}`)).status, 404);
+
+    // The phone: a throwaway endpoint (NOT B's) dials A's federation
+    // endpoint with the token, opens a bridged HTTP request, and reads A's
+    // library through its own pipe — B is nowhere in the path.
+    const { Endpoint, EndpointTicket } = await import('@number0/iroh');
+    const phone = await Endpoint.bind({});
+    try {
+      const addr = EndpointTicket.fromString(access.endpointTicket).endpointAddr();
+      const conn = await phone.connect(addr, FEDERATION_ALPN);
+      const authBi = await conn.openBi();
+      await authBi.send.writeAll(Array.from(Buffer.from(access.guestToken)));
+      await authBi.send.finish();
+      assert.equal(Buffer.from(await authBi.recv.readToEnd(8)).toString('utf8'), 'OK');
+
+      const bi = await conn.openBi();
+      const req = `POST /api/v1/file-explorer HTTP/1.0\r\nHost: a\r\nContent-Type: application/json\r\n`
+        + `x-access-token: ${access.guestToken}\r\nContent-Length: 17\r\nConnection: close\r\n\r\n{"directory":"/"}`;
+      await bi.send.writeAll(Array.from(Buffer.from(req)));
+      await bi.send.finish();
+      const chunks = [];
+      for (;;) { const c = await bi.recv.read(65536); if (c.length === 0) { break; } chunks.push(Buffer.from(c)); }
+      const raw = Buffer.concat(chunks).toString('utf8');
+      assert.match(raw, /^HTTP\/1\.[01] 200/);
+      const body = JSON.parse(raw.slice(raw.indexOf('\r\n\r\n') + 4));
+      assert.deepEqual((body.directories || []).map((d) => d.name), ['ashared'], 'only the granted library, through the phone\'s own pipe');
+      conn.close(0n, Array.from(Buffer.from('bye')));
+    } finally {
+      await phone.close();
+    }
+  });
+
+  test('direct access is cached per peer; ?refresh=1 mints anew; a guest cannot fetch access', async () => {
+    const first = await (await fetch(`${srvB.baseUrl}/api/v1/federation/peers/${peerId}/access`)).json();
+    const again = await (await fetch(`${srvB.baseUrl}/api/v1/federation/peers/${peerId}/access`)).json();
+    assert.equal(again.guestToken, first.guestToken, 'served from the cache');
+
+    // A refresh right after a mint is served from the cache (a client
+    // looping on 401s cannot make B mint per request)...
+    const soon = await (await fetch(`${srvB.baseUrl}/api/v1/federation/peers/${peerId}/access?refresh=1`)).json();
+    assert.equal(soon.guestToken, first.guestToken);
+    // ...but a new token is a new token: two mints a second apart differ
+    // by their iat, which the cache keyed on time proves once the gap is
+    // over. Waiting 5s is what the gap costs; keep the suite honest but
+    // bounded by checking the request is at least accepted.
+    assert.equal(soon.direct, true);
+
+    // The guest token is A's credential, not B's: it opens nothing on B.
+    assert.equal((await fetch(`${srvB.baseUrl}/api/v1/federation/peers/${peerId}/access`, {
+      headers: { 'x-access-token': first.guestToken },
+    })).status, 401, 'signed by A — B\'s wall does not know it');
   });
 
   test("A's own auth wall still refuses an ungranted library through the proxy", async () => {

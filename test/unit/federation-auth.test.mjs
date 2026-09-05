@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { isFederationPathAllowed, authenticateFederationKey } from '../../src/api/federation-auth.js';
+import { isFederationPathAllowed, authenticateFederationKey, authenticateGuestToken } from '../../src/api/federation-auth.js';
 import { getUserLibraryIds } from '../../src/db/manager.js';
 import * as config from '../../src/state/config.js';
 
@@ -48,6 +48,7 @@ describe('federation route allowlist', () => {
       ['POST', '/api/v1/file-explorer/m3u'],
       ['GET', '/api/v1/federation/health'],
       ['POST', '/api/v1/federation/discovery/similar'],
+      ['POST', '/api/v1/federation/guest'],
       ['GET', '/media/music/album/track.mp3'],
       ['GET', '/album-art/abc123.jpg'],
     ]) {
@@ -86,6 +87,13 @@ describe('federation disabled gate', () => {
   test('rejects any key with 401 while federation.enabled=false', () => {
     assert.throws(
       () => authenticateFederationKey('fedk_anything', req('GET', '/api/v1/federation/health')),
+      (err) => err.status === 401 && /Authentication/.test(err.message),
+    );
+  });
+
+  test('rejects any guest token with 401 while federation.enabled=false (before verifying it)', () => {
+    assert.throws(
+      () => authenticateGuestToken('eyJ.not-even-verified.x', req('GET', '/api/v1/federation/health')),
       (err) => err.status === 401 && /Authentication/.test(err.message),
     );
   });

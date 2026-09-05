@@ -34,12 +34,16 @@ import {
   parseEnvelope,
 } from './iroh-common.js';
 import * as fedDb from '../db/federation.js';
+import { verifyGuestToken } from './federation-guest.js';
 
 // ALPN — both ends must present identical bytes; Array<number> per the v1
 // binding. Bump the version if the handshake framing changes.
 export const FEDERATION_ALPN = Array.from(Buffer.from('mstream/federation/1'));
 
-const HANDSHAKE_LIMIT = 128; // fedk_ keys are 48 chars; anything bigger is garbage
+// The first bi-stream carries either a fedk_ key (48 chars) or a guest
+// token (a signed JWT — ~200 chars, see federation-guest.js); anything
+// bigger than this is garbage.
+const HANDSHAKE_LIMIT = 2048;
 const CONNECT_TIMEOUT_MS = 25000;
 
 // Failed-handshake backoff, per remote EndpointId. The endpoint is publicly
@@ -113,6 +117,45 @@ export function parseFederationTicket(str) {
 }
 
 // ---------------------------------------------------------------------------
+// Federation GUEST ticket: "mstrfedg<V>:<base64url(JSON)>". Payload:
+//   t  (required) the PEER's federation EndpointTicket string
+//   g  (required) a guest token the peer minted for the holder's key
+//                 (federation-guest.js — a short-lived JWT)
+// What a parent hands ONE OF ITS OWN DEVICES (the mobile app) so the device
+// can dial the peer directly — the opposite audience from the federation
+// ticket above, which goes admin-to-admin and carries a standing key. The
+// prefixes are disjoint on purpose (`mstrfedg1:` never matches
+// `^mstrfed(\d+):`), so a ticket pasted into the wrong parser fails
+// cleanly. Unknown fields are ignored (forward compat).
+// Spec: docs/federation-guest-ticket.md.
+// ---------------------------------------------------------------------------
+
+export const FEDERATION_GUEST_TICKET_PREFIX = 'mstrfedg';
+export const FEDERATION_GUEST_TICKET_VERSION = 1;
+
+export function buildFederationGuestTicket({ endpointTicket, guestToken }) {
+  return buildEnvelope(FEDERATION_GUEST_TICKET_PREFIX, FEDERATION_GUEST_TICKET_VERSION, {
+    t: endpointTicket,
+    g: guestToken,
+  });
+}
+
+// Pure (no native module). Throws on garbage, a missing prefix, a too-new
+// version, or missing fields.
+export function parseFederationGuestTicket(str) {
+  const { version, payload } = parseEnvelope(str, {
+    prefix: FEDERATION_GUEST_TICKET_PREFIX,
+    maxVersion: FEDERATION_GUEST_TICKET_VERSION,
+    allowBare: false,
+    label: 'federation guest ticket',
+  });
+  if (!payload || typeof payload.t !== 'string' || typeof payload.g !== 'string') {
+    throw new Error('Invalid federation guest ticket (missing fields)');
+  }
+  return { version, endpointTicket: payload.t, guestToken: payload.g };
+}
+
+// ---------------------------------------------------------------------------
 // Inbound: accept loop + key handshake with TOFU
 // ---------------------------------------------------------------------------
 
@@ -134,8 +177,25 @@ function recordHandshakeFailure(remote) {
   failedHandshakes.set(remote, entry);
 }
 
-// First bi-stream carries the raw key. Look it up, enforce/establish the TOFU
-// binding, reply OK/NO. Returns the key row on success, null otherwise.
+// Forgive every backed-off remote. Called when the admin mints a key: the
+// friend's next dial (with the new key) is expected, and the failures on
+// the books are typically that same friend retrying a key the admin just
+// revoked — which used to cost them a confusing minute (mStream #940).
+export function clearHandshakeBackoff() {
+  failedHandshakes.clear();
+}
+
+// First bi-stream carries the credential. Two kinds:
+//   - a raw `fedk_` key: a paired SERVER. Look it up, enforce/establish the
+//     TOFU binding to the dialer's EndpointId, reply OK/NO.
+//   - a guest token (federation-guest.js): one of a key holder's own
+//     DEVICES, carrying a short-lived JWT the holder fetched from us over
+//     its bound pipe. Verified (signature, expiry) and resolved to its key;
+//     NO binding — the device's endpoint is ephemeral, expiry is the bound
+//     — but every other rule is the key's: a revoked or expired key rejects
+//     its guests, and their pipes are tracked under the key so
+//     closeConnectionsForKey severs them too.
+// Returns { keyRow, via: 'peer' | 'guest' } on success, null otherwise.
 // `onAuthorized` runs BEFORE the OK byte is flushed: the caller registers
 // the connection in the live-conns map there, so a peer that has been told
 // OK is already severable by closeConnectionsForKey — with registration
@@ -145,31 +205,54 @@ async function authenticateConnection(conn, remote, onAuthorized) {
   const authBi = await conn.acceptBi();
   const sent = Buffer.from(await authBi.recv.readToEnd(HANDSHAKE_LIMIT)).toString('utf8');
 
-  let keyRow = sent.startsWith(fedDb.FEDERATION_KEY_PREFIX) ? fedDb.getFederationKeyByKey(sent) : undefined;
+  let keyRow = null;
   let ok = false;
-  if (!keyRow) {
-    winston.warn(`[federation] rejected connection from ${remote}: unknown key`);
-  } else if (keyRow.expired) {
-    // Checked BEFORE the TOFU block: an expired-but-unredeemed ticket must
-    // die without ever binding. The admin renewing the date re-arms it.
-    winston.warn(`[federation] rejected expired key '${keyRow.name}' from ${remote}`);
-    keyRow = null;
-  } else {
-    if (keyRow.bound_endpoint_id === null) {
-      // TOFU: first redemption binds the key to this dialer. The guarded
-      // UPDATE loses gracefully if a concurrent handshake (or a revoke)
-      // got there first — either way, re-read and require an exact match.
-      if (fedDb.bindFederationKeyEndpoint(keyRow.id, remote)) {
-        winston.info(`[federation] key '${keyRow.name}' bound to endpoint ${remote} (first use)`);
+  let via = 'peer';
+  if (sent.startsWith(fedDb.FEDERATION_KEY_PREFIX)) {
+    keyRow = fedDb.getFederationKeyByKey(sent) || null;
+    if (!keyRow) {
+      winston.warn(`[federation] rejected connection from ${remote}: unknown key`);
+    } else if (keyRow.expired) {
+      // Checked BEFORE the TOFU block: an expired-but-unredeemed ticket must
+      // die without ever binding. The admin renewing the date re-arms it.
+      winston.warn(`[federation] rejected expired key '${keyRow.name}' from ${remote}`);
+      keyRow = null;
+    } else {
+      if (keyRow.bound_endpoint_id === null) {
+        // TOFU: first redemption binds the key to this dialer. The guarded
+        // UPDATE loses gracefully if a concurrent handshake (or a revoke)
+        // got there first — either way, re-read and require an exact match.
+        if (fedDb.bindFederationKeyEndpoint(keyRow.id, remote)) {
+          winston.info(`[federation] key '${keyRow.name}' bound to endpoint ${remote} (first use)`);
+        }
+        keyRow = fedDb.getFederationKeyById(keyRow.id) || null;
       }
-      keyRow = fedDb.getFederationKeyById(keyRow.id);
+      ok = Boolean(keyRow && !keyRow.expired && keyRow.bound_endpoint_id === remote);
+      if (keyRow && !ok) {
+        // The one log line that matters most: a KNOWN key from the WRONG
+        // endpoint means the ticket leaked (or the friend reinstalled — the
+        // admin reset-binding action covers that case).
+        winston.warn(`[federation] rejected key '${keyRow.name}' from ${remote}: bound to ${keyRow.bound_endpoint_id} (possible leaked ticket)`);
+      }
     }
-    ok = Boolean(keyRow && !keyRow.expired && keyRow.bound_endpoint_id === remote);
-    if (keyRow && !ok) {
-      // The one log line that matters most: a KNOWN key from the WRONG
-      // endpoint means the ticket leaked (or the friend reinstalled — the
-      // admin reset-binding action covers that case).
-      winston.warn(`[federation] rejected key '${keyRow.name}' from ${remote}: bound to ${keyRow.bound_endpoint_id} (possible leaked ticket)`);
+  } else {
+    via = 'guest';
+    let guest = null;
+    try {
+      guest = verifyGuestToken(sent);
+    } catch (err) {
+      winston.warn(`[federation] rejected connection from ${remote}: neither a key nor a valid guest token (${err.message})`);
+    }
+    if (guest) {
+      keyRow = fedDb.getFederationKeyById(guest.keyId) || null;
+      if (!keyRow) {
+        winston.warn(`[federation] rejected guest of a revoked key (id=${guest.keyId}) from ${remote}`);
+      } else if (keyRow.expired) {
+        winston.warn(`[federation] rejected guest of expired key '${keyRow.name}' from ${remote}`);
+        keyRow = null;
+      } else {
+        ok = true;
+      }
     }
   }
 
@@ -182,7 +265,7 @@ async function authenticateConnection(conn, remote, onAuthorized) {
     await authBi.send.writeAll(Array.from(Buffer.from(ok ? 'OK' : 'NO')));
     await authBi.send.finish();
   } catch (_err) { /* peer may have hung up */ }
-  return ok ? keyRow : null;
+  return ok ? { keyRow, via } : null;
 }
 
 function trackConn(keyId, conn) {
@@ -247,21 +330,22 @@ async function runAcceptLoop(ep, targetHost, targetPort) {
         // Tracking happens inside the handshake, before the peer hears OK
         // (see authenticateConnection's contract); a null return means the
         // callback never ran, so the failure path has nothing to untrack.
-        const keyRow = await authenticateConnection(conn, remote,
+        const authed = await authenticateConnection(conn, remote,
           (row) => trackConn(row.id, conn));
-        if (!keyRow) {
+        if (!authed) {
           recordHandshakeFailure(remote);
           try { conn.close(1n, Array.from(Buffer.from('unauthorized'))); } catch (_err) { /* noop */ }
           return;
         }
+        const { keyRow, via } = authed;
         failedHandshakes.delete(remote);
-        winston.info(`[federation] peer connection authorized: key '${keyRow.name}' from ${remote}`);
+        winston.info(`[federation] ${via} connection authorized: key '${keyRow.name}' from ${remote}`);
         try {
           await acceptConnection(conn, targetHost, targetPort);
         } finally {
           untrackConn(keyRow.id, conn);
         }
-        winston.info(`[federation] peer connection closed: key '${keyRow.name}' (${remote})`);
+        winston.info(`[federation] ${via} connection closed: key '${keyRow.name}' (${remote})`);
       } catch (err) {
         winston.debug(`[federation] incoming connection dropped (${remote}): ${err?.message}`);
       }
@@ -309,6 +393,24 @@ export async function start({ targetPort, targetHost = '127.0.0.1', secretKey, a
 }
 
 export function getEndpointId() { return endpointIdStr; }
+
+// The EndpointId (base32 public key) inside an endpoint ticket string, or
+// null when the native module is not loaded or the ticket does not parse. A
+// public key is not a credential, so a parent may show it to its users (the
+// peers projection): it is how a client tells that two parents list the
+// same peer. Cached — the projection asks per peer per listing.
+const endpointIdCache = new Map(); // ticket string -> id string | null
+export function endpointIdFromTicket(endpointTicketStr) {
+  if (!irohMod || typeof endpointTicketStr !== 'string') { return null; }
+  if (endpointIdCache.has(endpointTicketStr)) { return endpointIdCache.get(endpointTicketStr); }
+  let id = null;
+  try {
+    id = irohMod.EndpointTicket.fromString(endpointTicketStr).endpointAddr().id().toString();
+  } catch (_err) { /* not a ticket this build can read */ }
+  if (endpointIdCache.size >= 256) { endpointIdCache.clear(); }
+  endpointIdCache.set(endpointTicketStr, id);
+  return id;
+}
 
 export function getEndpointAddr() {
   if (!endpoint) { return null; }
