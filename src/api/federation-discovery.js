@@ -23,10 +23,9 @@
 import Joi from 'joi';
 import * as sim from '../db/discovery-similarity.js';
 import * as discoveryDb from '../db/discovery-db.js';
-import { requireIndex, resolveVisible } from './discovery.js';
+import { requireIndex, resolveVisible, decodeSeedVector } from './discovery.js';
 import { renderMetadataObj, libraryFilter } from './db.js';
 import { joiValidate } from '../util/validation.js';
-import WebError from '../util/web-error.js';
 
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
@@ -55,26 +54,7 @@ export function setup(mstream) {
       return res.json({ model, results: [] });
     }
 
-    const raw = Buffer.from(body.embedding, 'base64');
-    if (raw.length !== index.dim * 4) {
-      throw new WebError(`embedding must be ${index.dim} float32 values (little-endian), got ${raw.length} bytes`, 400);
-    }
-    // Aligned copy — a Buffer's byteOffset isn't guaranteed 4-byte aligned.
-    const ab = new ArrayBuffer(raw.length);
-    new Uint8Array(ab).set(raw);
-    const q = new Float32Array(ab);
-
-    let sumSq = 0;
-    for (let i = 0; i < q.length; i++) {
-      if (!Number.isFinite(q[i])) { throw new WebError('embedding contains non-finite values', 400); }
-      sumSq += q[i] * q[i];
-    }
-    const norm = Math.sqrt(sumSq);
-    if (norm === 0) { throw new WebError('embedding is a zero vector', 400); }
-    // The index vectors are L2-normalized at write time; "similarity" below
-    // only means cosine if the query is normalized too. Callers should send
-    // unit vectors, but a scaled one costs nothing to fix here.
-    for (let i = 0; i < q.length; i++) { q[i] /= norm; }
+    const q = decodeSeedVector(index, body.embedding);
 
     const filter = libraryFilter(req.user);
     const uid = req.user?.id;

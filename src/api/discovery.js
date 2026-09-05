@@ -144,11 +144,87 @@ export function resolveVisible(uid, filter, canonHash, { withGenres = true } = {
   return row;
 }
 
+// Decode a client-supplied embedding into a unit vector this index can be
+// queried with. Extracted from the federation peer route so the two callers
+// that accept a foreign vector — federation/discovery/similar and the Auto-DJ
+// picker's vector seed — validate it identically; a divergence here would be
+// one route quietly accepting a vector the other rejects.
+//
+// Deliberately does NOT check modelId: the two callers differ on what a
+// mismatch means (federation answers a soft `modelMismatch`, the picker
+// refuses), so that policy stays with them.
+export function decodeSeedVector(index, base64) {
+  const raw = Buffer.from(base64, 'base64');
+  if (raw.length !== index.dim * 4) {
+    throw new WebError(`embedding must be ${index.dim} float32 values (little-endian), got ${raw.length} bytes`, 400);
+  }
+  // Aligned copy — a Buffer's byteOffset isn't guaranteed 4-byte aligned.
+  const ab = new ArrayBuffer(raw.length);
+  new Uint8Array(ab).set(raw);
+  const q = new Float32Array(ab);
+
+  let sumSq = 0;
+  for (let i = 0; i < q.length; i++) {
+    if (!Number.isFinite(q[i])) { throw new WebError('embedding contains non-finite values', 400); }
+    sumSq += q[i] * q[i];
+  }
+  const norm = Math.sqrt(sumSq);
+  if (norm === 0) { throw new WebError('embedding is a zero vector', 400); }
+  // The index vectors are L2-normalized at write time; "similarity" only
+  // means cosine if the query is normalized too. Callers should send unit
+  // vectors, but a scaled one costs nothing to fix here.
+  for (let i = 0; i < q.length; i++) { q[i] /= norm; }
+  return q;
+}
+
 function modelBlock(index) {
   return { id: index.modelId, version: index.modelVersion };
 }
 
 export function setup(mstream) {
+
+  // The embedding itself, for a client that needs to carry a seed somewhere
+  // this server can't reach — Auto-DJ spanning several servers averages the
+  // vectors of what is playing and hands the result to each of them, which
+  // only works if it can read them out in the first place.
+  //
+  // Batched because the rolling anchor seeds from the last few picks; one
+  // round trip per pick beats eight. Capped at 8 to match similarTo.
+  //
+  // Same failure semantics as the rest of this file: a uniform 404 for a path
+  // that can't be resolved, and notAnalyzed for one that resolves but has no
+  // vector yet — the caller can tell "wrong path" from "wait for the worker".
+  mstream.post('/api/v1/discovery/local/embeddings', (req, res) => {
+    const schema = Joi.object({
+      filePaths: Joi.array().items(Joi.string()).min(1).max(8).required(),
+    });
+    const { value: body } = joiValidate(schema, req.body);
+
+    const index = requireIndex();
+
+    const tracks = [];
+    for (const filePath of body.filePaths) {
+      const row = resolveSeedTrack(req, filePath, 'discovery/local/embeddings');
+      const canonHash = row.audio_hash || row.file_hash;
+      const entry = canonHash ? index.byHash.get(canonHash) : null;
+      if (!entry) {
+        tracks.push({ filePath, audioHash: canonHash ?? null, notAnalyzed: true, embedding: null });
+        continue;
+      }
+      // entry.vec is a subarray of the index's shared matrix — copy the
+      // bytes rather than handing Buffer a view over the whole thing.
+      const bytes = Buffer.from(
+        entry.vec.buffer, entry.vec.byteOffset, entry.vec.length * 4);
+      tracks.push({
+        filePath,
+        audioHash: canonHash,
+        notAnalyzed: false,
+        embedding: Buffer.from(bytes).toString('base64'),
+      });
+    }
+
+    res.json({ model: modelBlock(index), dim: index.dim, tracks });
+  });
 
   mstream.post('/api/v1/discovery/local/similar/tracks', (req, res) => {
     const schema = Joi.object({
