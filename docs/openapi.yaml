@@ -165,6 +165,15 @@ tags:
       Subsonic-specific admin widgets: mode toggle (disabled / same-port /
       separate-port), live now-playing strip, jukebox status, token-auth
       attempts log, per-user API-key minting.
+  - name: Discovery
+    description: |
+      The local sonic-similarity index built from discovery embeddings
+      (`scanOptions.collectDiscoveryData`; the analysis worker fills it in
+      after each scan). Every route here resolves file paths against the
+      caller's own libraries and answers a uniform `404 Track not found`
+      for anything it cannot resolve, so library names can't be probed;
+      `403 Discovery is disabled` when collection is off or nothing has
+      been embedded yet.
   - name: Federation
     description: |
       Ticket-paired read-only library sharing between mStream servers over a
@@ -1786,7 +1795,42 @@ paths:
         echo it back on the next call to deduplicate across a session.
         The server trims older entries automatically when the list
         exceeds ~half the candidate-pool size; clients don't need to
-        prune it themselves. Capped at 500 entries.
+        prune it themselves. Capped at 500 entries. Entries are
+        server-issued track ids, meaningful only on the server that
+        issued them, and the cooldown is soft: once the list covers every
+        candidate the server picks from the full pool again rather than
+        answering 400.
+
+        **Sonic similarity** (`similarTo` or `similarToVector`, with
+        `minSimilarity`) narrows the pool to analyzed tracks whose cosine
+        similarity to the seed is at least `minSimilarity`. The seed is
+        one to eight of the caller's own file paths, whose embeddings are
+        averaged into a session centroid, OR a raw vector in this
+        library's model space (`similarToVector`: base64 of `dim` ×
+        float32 little-endian, re-normalized server-side, with
+        `similarToModelId` naming the model it came from). The two forms
+        are mutually exclusive. The sonic pool is a HARD base condition
+        like `genres` — the BPM / key waterfall relaxes within it, never
+        past it — so an over-tight `minSimilarity` 400s with "No songs
+        within the similarity range match criteria". File-path seeds are
+        dropped from the pool; a vector seed excludes nothing, so a client
+        that must not replay what is playing keeps that guard itself (the
+        `ignoreList` cooldown is soft, see above). Requires discovery
+        (`403` otherwise); a seed path that does not resolve is a uniform
+        `404`; a seed that resolves but has no vector yet is `400 Sonic
+        seed track has not been analyzed yet`; a vector from another model
+        is `400 Sonic seed is from model 'X', this library is indexed with
+        'Y'`. Read a track's vector out with
+        `POST /api/v1/discovery/local/embeddings`. The response then
+        carries a `sonic` block with the pick's actual similarity.
+
+        On the federation read allowlist: a paired server may call this
+        with its key (the webapp reaches a peer's copy through
+        `POST /api/v1/federation/peers/{id}/api/api/v1/db/random-songs`).
+        The pool is scoped to the key's granted libraries like every other
+        `db/*` route, and `minRating` is ignored for such a caller — a
+        key has no user rows to rate against, so the clause could only
+        empty the pool.
       requestBody:
         content:
           application/json:
@@ -1845,7 +1889,7 @@ paths:
                         Camelot codes (`1A`..`12B`). Each code is
                         expanded server-side to all spellings the DB
                         might contain ("A minor" / "Am" / "Amin" / `8A`).
-                        Sending only unrecognised codes returns 403; an
+                        Sending only unrecognised codes returns 400; an
                         empty / omitted array disables the filter.
                       items: { type: string }
                     requireMusicalKey:
@@ -1923,7 +1967,7 @@ paths:
                         SECONDS. `0` or omitted means no upper bound.
                         Independent of `minDuration` — send either,
                         both, or neither. Sending both with
-                        `minDuration` > `maxDuration` returns 403.
+                        `minDuration` > `maxDuration` returns 400.
                     allowUnknownDuration:
                       type: boolean
                       default: false
@@ -1939,6 +1983,46 @@ paths:
                         scanned libraries where excluding them shrinks
                         the pool more than intended. Ignored when
                         neither bound is set.
+                    similarTo:
+                      type: array
+                      minItems: 1
+                      maxItems: 8
+                      description: |
+                        Sonic seed as file paths in the caller's own
+                        libraries (vpath form, e.g.
+                        `music/Artist/Album/01 - Song.mp3`). Several are
+                        averaged into one centroid. Requires
+                        `minSimilarity`; mutually exclusive with
+                        `similarToVector`. Uniform `404` when any path
+                        does not resolve.
+                      items: { type: string }
+                    similarToVector:
+                      type: string
+                      format: byte
+                      description: |
+                        Sonic seed as a raw vector: base64 of `dim` ×
+                        float32 little-endian in this library's model
+                        space — the wire form
+                        `POST /api/v1/discovery/local/embeddings` returns —
+                        re-normalized server-side. Requires
+                        `similarToModelId` and `minSimilarity`; mutually
+                        exclusive with `similarTo`. Excludes nothing from
+                        the pool by itself.
+                    similarToModelId:
+                      type: string
+                      description: |
+                        The embedding model the vector came from
+                        (`GET /api/v1/federation/health` advertises this
+                        server's as `discovery.modelId`). Must match the
+                        model this library is indexed with, else `400`.
+                    minSimilarity:
+                      type: number
+                      minimum: 0
+                      maximum: 1
+                      description: |
+                        Cosine-similarity floor of the sonic pool (raw
+                        cosine, 0..1). Required with either seed form and
+                        rejected without one.
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":
@@ -1959,9 +2043,108 @@ paths:
                       with the just-picked index appended, plus any
                       server-side trimming. Echo back unchanged on the
                       next call.
-        "400": { description: "No songs match the criteria, even after the waterfall fully drops them." }
+                  sonic:
+                    type: object
+                    description: |
+                      Present only when a sonic seed was given: how close
+                      the pick actually is, and how large the pool was
+                      before the other filters cut it down.
+                    properties:
+                      similarity:
+                        type: number
+                        nullable: true
+                        description: Cosine similarity of the picked track to the seed centroid, rounded to 4 decimals (`null` if the pick has no vector).
+                      poolSize:
+                        type: integer
+                        description: Analyzed tracks at or above `minSimilarity`, before rating / genre / BPM / key filtering.
+        "400":
+          description: |
+            No songs match the criteria, even after the waterfall fully
+            drops them ("No songs within the similarity range match
+            criteria" when a sonic seed is set). Also request validation
+            (e.g. bpmRange min > max, `musicalKeys` with no recognised
+            Camelot code, `minSimilarity` without a seed, both seed forms
+            at once), a seed track not analyzed yet, no tracks analyzed
+            yet, or `similarToModelId` naming a model other than the
+            library's.
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { description: "Joi validation failed on the request body (e.g. bpmRange min > max, or `musicalKeys` contained no recognised Camelot codes)." }
+        "403": { description: "A sonic seed was given but discovery is disabled on this server (or nothing has been embedded yet)." }
+        "404": { description: "A `similarTo` path does not resolve in the caller's libraries (uniform, so library names can't be probed)." }
+
+  /api/v1/discovery/local/embeddings:
+    post:
+      tags: [Discovery]
+      summary: Read tracks' embedding vectors out
+      description: |
+        The vectors behind sonic similarity, for a client that must carry a
+        seed somewhere this server can't reach: an Auto DJ session spanning
+        several servers reads the vectors of what is playing from the
+        servers that hold those tracks, averages them, and hands the result
+        to each server as `similarToVector` on
+        `POST /api/v1/db/random-songs`. Batched — one round trip per pick
+        beats eight — and capped at 8 to match `similarTo`.
+
+        A path that resolves but has no vector yet comes back with
+        `notAnalyzed: true` and a null embedding, so the caller can tell
+        "wrong path" (uniform `404`) from "wait for the analysis worker".
+
+        On the federation read allowlist: a paired server may call it with
+        its key for paths inside its granted libraries, and the webapp
+        reaches a peer's copy through
+        `POST /api/v1/federation/peers/{id}/api/api/v1/discovery/local/embeddings`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filePaths]
+              properties:
+                filePaths:
+                  type: array
+                  minItems: 1
+                  maxItems: 8
+                  items: { type: string }
+                  description: File paths in the caller's own libraries (vpath form).
+      responses:
+        "200":
+          description: One entry per requested path, in request order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  model:
+                    type: object
+                    description: The model space every returned vector lives in — send it back as `similarToModelId`.
+                    properties:
+                      id: { type: string }
+                      version: { type: string, nullable: true }
+                  dim:
+                    type: integer
+                    description: float32 count per vector.
+                  tracks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        filePath: { type: string }
+                        audioHash:
+                          type: string
+                          nullable: true
+                          description: The track's canonical content hash (audio hash, else file hash).
+                        notAnalyzed:
+                          type: boolean
+                          description: "`true` when the track resolves but the index has no vector for it yet."
+                        embedding:
+                          type: string
+                          format: byte
+                          nullable: true
+                          description: base64 of `dim` × float32 little-endian; `null` when `notAnalyzed`.
+        "400": { description: "Request validation failed (1–8 `filePaths` required)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Discovery is disabled on this server (or nothing has been embedded yet)." }
+        "404": { description: "A path does not resolve in the caller's libraries (uniform)." }
 
   /api/v1/albums/browse:
     get:
@@ -6295,8 +6478,11 @@ paths:
         The browsing half of federation: executes ONE read against a peer
         and pipes its answer back, so the webapp can call `db/albums`,
         `db/artists`, `db/genres`, `db/search`, `db/album-songs`,
-        `db/genre-songs`, `db/recent/added` or `file-explorer` against a
-        peer with exactly the shapes it uses locally.
+        `db/genre-songs`, `db/recent/added`, `file-explorer`,
+        `db/random-songs` or `discovery/local/embeddings` (the
+        cross-server Auto DJ's pick and seed-vector reads) against a peer
+        with exactly the shapes it uses locally — and `federation/health`
+        to learn the peer's discovery model before asking.
 
         The requested route is screened against the SHARED inbound allowlist
         (`api/federation-auth.js`) before anything is dialed — the same
