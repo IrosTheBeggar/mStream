@@ -194,6 +194,22 @@ for (const engine of ['rust', 'js']) {
       });
     });
 
+    test('Picard-style "/"-joined MusicBrainz artist ids fill both credited artists', { skip: !available() && 'ffmpeg or rust-parser unavailable' }, async () => {
+      const sb = await makeSandbox(engine);
+      // ffmpeg writes an unknown key as a TXXX frame with that description —
+      // exactly the Picard ID3v2.3 shape, ids joined with "/".
+      await makeAudio(path.join(sb.libRoot, 'Mb', '01.mp3'), MP3, {
+        title: 'MB1', artist: 'Betamax feat. Junia', album: 'Mb',
+        'MusicBrainz Artist Id': '4755f284-f2a0-483e-b77e-29af4c663fba/ffee77a9-fa8a-4fda-936a-2c78b8de44ca',
+      });
+      await sb.scan();
+      withDb(sb.dbPath, db => {
+        assert.deepEqual(
+          db.prepare("SELECT name, mbz_artist_id FROM artists WHERE name IN ('Betamax', 'Junia') ORDER BY name").all().map(r => [r.name, r.mbz_artist_id]),
+          [['Betamax', '4755f284-f2a0-483e-b77e-29af4c663fba'], ['Junia', 'ffee77a9-fa8a-4fda-936a-2c78b8de44ca']]);
+      });
+    });
+
     test('artistSplitExceptions keeps a listed name whole (exact spelling)', { skip: !available() && 'ffmpeg or rust-parser unavailable' }, async () => {
       const withEx = await makeSandbox(engine);
       await makeAudio(path.join(withEx.libRoot, 'Ex', '01.mp3'), MP3, { title: 'E1', artist: 'AC / DC feat. Bon', album: 'Ex' });

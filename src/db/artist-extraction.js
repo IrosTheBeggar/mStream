@@ -274,14 +274,15 @@ function alignSort(sortRaw, names) {
 }
 
 // MUSICBRAINZ_ARTISTID / ALBUMARTISTID are multi-valued (one per artist, in
-// artist order — Picard convention). Applied only when the id count equals
-// the name count, so nothing is ever attributed to the wrong artist; a
-// tagger that joined the ids into one value simply yields no ids. Same
-// rule in rust-parser/src/main.rs.
+// artist order — Picard convention). In an ID3v2.3 TXXX frame Picard joins
+// them with "/" (a UUID never contains one), so a joined value is split
+// first. Applied only when the id count equals the name count, so nothing
+// is ever attributed to the wrong artist. Same rule in rust-parser/src/main.rs.
 function alignIds(idsRaw, names) {
   if (idsRaw == null || names.length === 0) { return []; }
   const ids = (Array.isArray(idsRaw) ? idsRaw : [idsRaw])
-    .map((v) => (v == null ? '' : String(v).trim()))
+    .flatMap((v) => (v == null ? [] : String(v).split('/')))
+    .map((v) => v.trim())
     .filter(Boolean);
   return ids.length === names.length ? ids : [];
 }

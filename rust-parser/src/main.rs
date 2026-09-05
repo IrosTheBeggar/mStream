@@ -3272,11 +3272,13 @@ fn extract_track(
                 // src/db/artist-extraction.js) and per-artist MusicBrainz ids.
                 track_artist_sort = tag.get_string(&ItemKey::TrackArtistSortOrder).map(|s| s.to_string());
                 album_artist_sort = tag.get_string(&ItemKey::AlbumArtistSortOrder).map(|s| s.to_string());
+                // A Picard ID3v2.3 TXXX joins several ids with "/" (a UUID never
+                // contains one) — split, like alignIds in artist-extraction.js.
                 for item in tag.get_items(&ItemKey::MusicBrainzArtistId) {
-                    if let ItemValue::Text(s) = item.value() { track_artist_mbids_raw.push(s.to_string()); }
+                    if let ItemValue::Text(s) = item.value() { track_artist_mbids_raw.extend(s.split('/').map(|p| p.to_string())); }
                 }
                 for item in tag.get_items(&ItemKey::MusicBrainzReleaseArtistId) {
-                    if let ItemValue::Text(s) = item.value() { album_artist_mbids_raw.push(s.to_string()); }
+                    if let ItemValue::Text(s) = item.value() { album_artist_mbids_raw.extend(s.split('/').map(|p| p.to_string())); }
                 }
 
                 // Compilation flag — ID3v2 TCMP, MP4 cpil, Vorbis COMPILATION,

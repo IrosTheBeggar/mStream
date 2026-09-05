@@ -190,6 +190,14 @@ describe('extractArtists', () => {
     assert.deepEqual(ai.roleCredits.composer, ['AC / DC']);
   });
 
+  test('MusicBrainz artist ids joined with "/" (Picard, ID3v2.3) align like separate values', () => {
+    const ai = extractArtists({ artists: ['Betamaxnomates feat. Junia-T'], musicbrainz_artistid: ['4755f284-f2a0-483e-b77e-29af4c663fba/ffee77a9-fa8a-4fda-936a-2c78b8de44ca'] });
+    assert.deepEqual(ai.trackArtists, ['Betamaxnomates', 'Junia-T']);
+    assert.deepEqual(ai.trackArtistMbids, ['4755f284-f2a0-483e-b77e-29af4c663fba', 'ffee77a9-fa8a-4fda-936a-2c78b8de44ca']);
+    // Count mismatch still yields nothing.
+    assert.deepEqual(extractArtists({ artists: ['Solo'], musicbrainz_artistid: ['a/b'] }).trackArtistMbids, []);
+  });
+
   test('no credits at all', () => {
     const ai = extractArtists({});
     assert.deepEqual(ai.trackArtists, []);
@@ -280,6 +288,22 @@ describe('readId3TextFrames', () => {
     const p = path.join(dir, 'unsync.mp3');
     await fs.writeFile(p, Buffer.concat([header(3, 0x80, body.length), body]));
     assert.deepEqual(readId3TextFrames(p), { TPE1: ['AÿéB'] });
+  });
+
+  test('chained tags: a v2.4 tag appended after the v2.3 one wins per frame, earlier-only frames survive', async () => {
+    // A re-tagger left the original v2.3 tag (TPE1 + TCOM with three names)
+    // and appended a v2.4 tag (TPE1 + TPE2 + TCOM=Muse). lofty merges the
+    // two and music-metadata ranks v2.4 higher: TCOM is "Muse", TPE2 comes
+    // from the second tag, TPE1 is not duplicated.
+    const first = await tagOnly('chain-a.mp3', { TPE1: 'Muse', TCOM: 'Chris Wolstenholme/Dominic Howard/Matthew Bellamy' }, { version: 3 });
+    const second = await tagOnly('chain-b.mp3', { TPE1: 'Muse', TPE2: 'Muse', TCOM: 'Muse' }, { version: 4 });
+    const p = path.join(dir, 'chained.mp3');
+    await fs.writeFile(p, Buffer.concat([await fs.readFile(first), await fs.readFile(second)]));
+    assert.deepEqual(readId3TextFrames(p), { TPE1: ['Muse'], TCOM: ['Muse'], TPE2: ['Muse'] });
+    // The reverse order: the (later) v2.3 tag's TCOM wins.
+    const p2 = path.join(dir, 'chained2.mp3');
+    await fs.writeFile(p2, Buffer.concat([await fs.readFile(second), await fs.readFile(first)]));
+    assert.deepEqual(readId3TextFrames(p2), { TPE1: ['Muse'], TPE2: ['Muse'], TCOM: ['Chris Wolstenholme/Dominic Howard/Matthew Bellamy'] });
   });
 
   test('a RIFF/WAVE `id3 ` chunk is found', async () => {

@@ -15,10 +15,13 @@
 //
 // Handles ID3v2.2 (3-byte frame ids: TP1 TP2 TCM TP3 TP4 TXT), v2.3 and
 // v2.4; a tag at the head of the file (MP3, AAC, DSF prefix) or inside the
-// `id3 ` chunk of a RIFF/WAVE or AIFF container; tag-level (v2.3) and
-// frame-level (v2.4) unsynchronisation; the v2.3/v2.4 extended header;
-// v2.4 data-length indicators and grouping bytes; latin1 / UTF-16 (BOM) /
-// UTF-16BE / UTF-8 text. The whole tag is read in ONE positional read.
+// `id3 ` chunk of a RIFF/WAVE or AIFF container; CHAINED tags (a re-tagger
+// that appended a v2.4 tag after the original v2.3 one — the later tag's
+// frames replace the earlier tag's for the same id, the way lofty and
+// music-metadata resolve them); tag-level (v2.3) and frame-level (v2.4)
+// unsynchronisation; the v2.3/v2.4 extended header; v2.4 data-length
+// indicators and grouping bytes; latin1 / UTF-16 (BOM per value) /
+// UTF-16BE / UTF-8 text. Each tag is read in ONE positional read.
 //
 // Returns { TPE1: [...], TPE2: [...], ... } (v2.4 frame ids, v2.2 ids
 // mapped) for the frames present, or null when the file has no ID3v2 tag
@@ -34,6 +37,7 @@ export const CREDIT_FRAME_IDS = ['TPE1', 'TPE2', 'TCOM', 'TPE3', 'TPE4', 'TEXT']
 const V22_IDS = { TP1: 'TPE1', TP2: 'TPE2', TCM: 'TCOM', TP3: 'TPE3', TP4: 'TPE4', TXT: 'TEXT' };
 const MAX_TAG_BYTES = 64 * 1024 * 1024;   // an ID3 tag past this is not something we read for credits
 const MAX_TEXT_FRAME = 64 * 1024;         // a text frame past this is not a credit
+const MAX_CHAINED_TAGS = 4;
 
 export function syncsafe(buf, at) {
   return ((buf[at] & 0x7f) << 21) | ((buf[at + 1] & 0x7f) << 14)
@@ -89,9 +93,9 @@ function decodeText(body) {
   return text.split('\0').filter((v) => v.length > 0);
 }
 
-// Locate the ID3v2 tag: offset 0, or the `id3 `/`ID3 ` chunk of a RIFF
-// (little-endian sizes) or AIFF FORM (big-endian sizes) container. Returns
-// the byte offset of the "ID3" marker or -1.
+// Locate the first ID3v2 tag: offset 0, or the `id3 `/`ID3 ` chunk of a
+// RIFF (little-endian sizes) or AIFF FORM (big-endian sizes) container.
+// Returns the byte offset of the "ID3" marker or -1.
 function findTagOffset(fd) {
   const head = Buffer.alloc(12);
   const n = fs.readSync(fd, head, 0, 12, 0);
@@ -114,67 +118,87 @@ function findTagOffset(fd) {
   return -1;
 }
 
+// Parse the ID3v2 tag whose header sits at `at`, merging the wanted frames
+// into `out` (a later tag's frame REPLACES an earlier tag's values for the
+// same id). Returns the offset just past the tag, -1 when there is no tag
+// header at `at`, or null to bail (unsupported feature, unreadable).
+function parseTag(fd, at, wanted, out) {
+  const head = Buffer.alloc(10);
+  if (fs.readSync(fd, head, 0, 10, at) !== 10) { return -1; }
+  if (head.toString('latin1', 0, 3) !== 'ID3') { return -1; }
+  const major = head[3];
+  if (major < 2 || major > 4) { return null; }
+  const flags = head[5];
+  if (major === 2 && (flags & 0x40)) { return null; }   // v2.2 whole-tag compression
+  const tagSize = syncsafe(head, 6);
+  if (tagSize <= 0 || tagSize > MAX_TAG_BYTES) { return null; }
+  const end = at + 10 + tagSize;
+  let tag = Buffer.alloc(tagSize);
+  const got = fs.readSync(fd, tag, 0, tagSize, at + 10);
+  if (got < tagSize) { tag = tag.subarray(0, got); }
+  // Tag-level unsynchronisation (v2.2/v2.3 — and a v2.4 writer may set it
+  // too, meaning every frame is unsynchronised).
+  const tagUnsync = (flags & 0x80) !== 0;
+  if (tagUnsync && major < 4) { tag = deunsync(tag); }
+
+  let pos = 0;
+  if (major > 2 && (flags & 0x40)) {             // extended header
+    if (tag.length < pos + 4) { return null; }
+    pos += major === 4 ? syncsafe(tag, pos) : 4 + tag.readUInt32BE(pos);
+  }
+  const headerLen = major === 2 ? 6 : 10;
+  const seen = new Set();                        // ids this tag has written into `out`
+  while (pos + headerLen <= tag.length) {
+    if (tag[pos] === 0x00) { break; }            // padding
+    let id, size, frameFlags = 0;
+    if (major === 2) {
+      id = V22_IDS[tag.toString('latin1', pos, pos + 3)] || tag.toString('latin1', pos, pos + 3);
+      size = (tag[pos + 3] << 16) | (tag[pos + 4] << 8) | tag[pos + 5];
+    } else {
+      id = tag.toString('latin1', pos, pos + 4);
+      size = major === 4 ? syncsafe(tag, pos + 4) : tag.readUInt32BE(pos + 4);
+      frameFlags = tag[pos + 9];
+    }
+    const bodyStart = pos + headerLen;
+    if (bodyStart + size > tag.length) { break; } // truncated tag: keep what was read
+    if (wanted.has(id)) {
+      let body = tag.subarray(bodyStart, bodyStart + size);
+      if (major === 3) {
+        if (frameFlags & 0xc0) { return null; }   // compressed / encrypted credit frame
+        if (frameFlags & 0x20) { body = body.subarray(1); }         // grouping identity byte
+      } else if (major === 4) {
+        if (frameFlags & 0x0c) { return null; }   // compressed / encrypted credit frame
+        if (frameFlags & 0x40) { body = body.subarray(1); }         // grouping identity byte
+        if (frameFlags & 0x01) { body = body.subarray(4); }         // data length indicator
+        if (tagUnsync || (frameFlags & 0x02)) { body = deunsync(body); }
+      }
+      if (body.length > MAX_TEXT_FRAME) { return null; }
+      const values = decodeText(body);
+      if (values === null) { return null; }
+      if (!seen.has(id)) { out[id] = []; seen.add(id); }   // replaces an earlier tag's frame
+      out[id].push(...values);
+    }
+    pos = bodyStart + size;
+  }
+  return end;
+}
+
 export function readId3TextFrames(absolutePath, frameIds = CREDIT_FRAME_IDS) {
   const wanted = new Set(frameIds);
   let fd = null;
   try {
     fd = fs.openSync(absolutePath, 'r');
-    const at = findTagOffset(fd);
+    let at = findTagOffset(fd);
     if (at < 0) { return null; }
-    const head = Buffer.alloc(10);
-    if (fs.readSync(fd, head, 0, 10, at) !== 10) { return null; }
-    if (head.toString('latin1', 0, 3) !== 'ID3') { return null; }
-    const major = head[3];
-    if (major < 2 || major > 4) { return null; }
-    const flags = head[5];
-    if (major === 2 && (flags & 0x40)) { return null; }   // v2.2 whole-tag compression
-    const tagSize = syncsafe(head, 6);
-    if (tagSize <= 0 || tagSize > MAX_TAG_BYTES) { return null; }
-    let tag = Buffer.alloc(tagSize);
-    const got = fs.readSync(fd, tag, 0, tagSize, at + 10);
-    if (got < tagSize) { tag = tag.subarray(0, got); }
-    // Tag-level unsynchronisation (v2.2/v2.3 — and a v2.4 writer may set it
-    // too, meaning every frame is unsynchronised).
-    const tagUnsync = (flags & 0x80) !== 0;
-    if (tagUnsync && major < 4) { tag = deunsync(tag); }
-
-    let pos = 0;
-    if (major > 2 && (flags & 0x40)) {             // extended header
-      if (tag.length < pos + 4) { return null; }
-      pos += major === 4 ? syncsafe(tag, pos) : 4 + tag.readUInt32BE(pos);
-    }
-    const headerLen = major === 2 ? 6 : 10;
     const out = {};
-    while (pos + headerLen <= tag.length) {
-      if (tag[pos] === 0x00) { break; }            // padding
-      let id, size, frameFlags = 0;
-      if (major === 2) {
-        id = V22_IDS[tag.toString('latin1', pos, pos + 3)] || tag.toString('latin1', pos, pos + 3);
-        size = (tag[pos + 3] << 16) | (tag[pos + 4] << 8) | tag[pos + 5];
-      } else {
-        id = tag.toString('latin1', pos, pos + 4);
-        size = major === 4 ? syncsafe(tag, pos + 4) : tag.readUInt32BE(pos + 4);
-        frameFlags = tag[pos + 9];
-      }
-      const bodyStart = pos + headerLen;
-      if (bodyStart + size > tag.length) { break; } // truncated tag: keep what was read
-      if (wanted.has(id)) {
-        let body = tag.subarray(bodyStart, bodyStart + size);
-        if (major === 3) {
-          if (frameFlags & 0xc0) { return null; }   // compressed / encrypted credit frame
-          if (frameFlags & 0x20) { body = body.subarray(1); }         // grouping identity byte
-        } else if (major === 4) {
-          if (frameFlags & 0x0c) { return null; }   // compressed / encrypted credit frame
-          if (frameFlags & 0x40) { body = body.subarray(1); }         // grouping identity byte
-          if (frameFlags & 0x01) { body = body.subarray(4); }         // data length indicator
-          if (tagUnsync || (frameFlags & 0x02)) { body = deunsync(body); }
-        }
-        if (body.length > MAX_TEXT_FRAME) { return null; }
-        const values = decodeText(body);
-        if (values === null) { return null; }
-        (out[id] ||= []).push(...values);
-      }
-      pos = bodyStart + size;
+    // Chained tags: some re-taggers append a second ID3v2 (v2.4) right after
+    // the original (v2.3). lofty merges them and music-metadata ranks the
+    // later version higher, so the later tag's frames win here too.
+    for (let i = 0; i < MAX_CHAINED_TAGS && at >= 0; i++) {
+      const next = parseTag(fd, at, wanted, out);
+      if (next === null) { return null; }
+      if (i === 0 && next < 0) { return null; }
+      at = next;
     }
     return out;
   } catch (err) {
