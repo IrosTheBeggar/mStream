@@ -26,7 +26,7 @@ import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
 import { isAdminAllowed } from '../util/admin-network.js';
 import WebError from '../util/web-error.js';
-import { bootRustPlayer, killRustPlayer, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers } from './server-playback.js';
+import * as serverAudio from '../state/server-audio.js';
 import * as lyricsLrclib from './lyrics-cache.js';
 import { warmScrobbleUser } from './scrobbler.js';
 // Torrent admin endpoints live in their own module — see
@@ -1627,12 +1627,11 @@ export function setup(mstream) {
 
     await admin.editAutoBootServerAudio(req.body.autoBootServerAudio);
 
-    // Flag controls Rust preference now. Either way, re-boot server audio so
-    // the active backend matches the new setting:
-    //   true  → kill current backend, boot Rust (with CLI fallback)
-    //   false → kill current backend, boot CLI directly (MPD preferred)
-    killRustPlayer();
-    await bootRustPlayer();
+    // The flag is a backend preference (engine-first vs CLI-only), so
+    // restart server audio to make the active backend match it. restart()
+    // waits for the old engine to exit before spawning, so the port is free
+    // and a stale exit can't trip the crash fallback.
+    await serverAudio.restart();
 
     res.json({});
   });
@@ -1648,11 +1647,11 @@ export function setup(mstream) {
   });
 
   mstream.get("/api/v1/admin/server-audio/info", (req, res) => {
-    const active = getActiveBackend();
+    const active = serverAudio.getActiveBackend();
     res.json({
       backend: active.backend,
       player: active.player,
-      detectedCliPlayers: getDetectedCliPlayers(),
+      detectedCliPlayers: serverAudio.getDetectedCliPlayers(),
       // Whether a missing player binary could be fetched for this platform
       // (npm/source installs download it on first autoBoot; musl hosts
       // have no build and report false).
@@ -1664,7 +1663,7 @@ export function setup(mstream) {
   // removing a player (mpv, vlc, mplayer, or an MPD daemon) without having
   // to restart the server.
   mstream.post("/api/v1/admin/server-audio/detect", async (req, res) => {
-    const detected = await refreshDetectedCliPlayers();
+    const detected = await serverAudio.refreshDetectedCliPlayers();
     res.json({ detectedCliPlayers: detected });
   });
 

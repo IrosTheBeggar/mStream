@@ -134,7 +134,7 @@ export async function killCliPlayer() {
 }
 
 /**
- * Drop-in counterpart to server-playback.js's proxyToRust. Takes the same
+ * Drop-in counterpart to server-audio.js's proxyToRust. Takes the same
  * method/rustPath/body triple and returns `{ status, data }`.
  */
 export function proxyToCli(method, rustPath, body) {
