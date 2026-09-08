@@ -2919,17 +2919,23 @@ export function migrateV70MergeAlbumFragments(db) {
 
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_albums_key ON albums(album_key)');
 
-  // Aggregates derivable now (one GROUP BY pass). year / compilation /
-  // album_artist keep their stored values until the refresh recomputes them
-  // from the tag_* copies; a merged survivor's year is its own — it held
-  // the most tracks, so it is the mode anyway. Trackless rows keep the
-  // column defaults (0 / NULL).
+  // Aggregates derivable now (one GROUP BY pass). compilation / album_artist
+  // keep their stored values until the refresh recomputes them from the
+  // tag_* copies. A merged survivor's year is its own — it held the most
+  // tracks, so it is the mode anyway — except when it had none: a fragment
+  // whose tracks carry no year outlasting one whose tracks do. That row gets
+  // the mode of its tracks' years now (the refresh's own rule: most common,
+  // ties → earliest) instead of a NULL until the forced rescan runs.
+  // Trackless rows keep the column defaults (0 / NULL).
   db.exec(`
     UPDATE albums SET
+      year = COALESCE(albums.year, s.mode_year),
       year_min = s.ymin, year_max = s.ymax, track_count = s.n, duration_total = s.dur
-    FROM (SELECT album_id, MIN(year) AS ymin, MAX(year) AS ymax, COUNT(*) AS n,
-                 COALESCE(SUM(duration), 0) AS dur
-            FROM tracks WHERE album_id IS NOT NULL GROUP BY album_id) AS s
+    FROM (SELECT t.album_id, MIN(t.year) AS ymin, MAX(t.year) AS ymax, COUNT(*) AS n,
+                 COALESCE(SUM(t.duration), 0) AS dur,
+                 (SELECT t2.year FROM tracks t2 WHERE t2.album_id = t.album_id AND t2.year IS NOT NULL
+                    GROUP BY t2.year ORDER BY COUNT(*) DESC, t2.year ASC LIMIT 1) AS mode_year
+            FROM tracks t WHERE t.album_id IS NOT NULL GROUP BY t.album_id) AS s
     WHERE s.album_id = albums.id;
     UPDATE albums SET agg_dirty = 0;`);
 }
