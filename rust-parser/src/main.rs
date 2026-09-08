@@ -2963,6 +2963,13 @@ fn extract_track(
                     // after this block). The art set + default are built in the
                     // resolution block below.
                     for pic in tag.pictures() {
+                        // An APIC with no bytes — a tagger that wrote the
+                        // frame and never the picture; iTunes-era rips have
+                        // them — is not a picture: music-metadata drops it,
+                        // and caching it would elect a 0-byte cover.
+                        if pic.data().is_empty() {
+                            continue;
+                        }
                         embedded_pics.push(pic.clone());
                     }
                 }

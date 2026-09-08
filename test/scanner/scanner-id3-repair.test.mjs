@@ -14,7 +14,12 @@
  *     real-library failures in the 2026-09-05 smoke;
  *   - a UTF-16 text frame with an odd byte count (a stray terminator byte);
  *   - a text frame flagged UTF-8 that holds latin1 bytes;
- *   - a frame whose declared size overruns the tag.
+ *   - a frame whose declared size overruns the tag;
+ *   - and the mirror image on the JS side: ID3v2.3 with the tag-level
+ *     unsynchronisation flag (the WHOLE tag stuffed), which lofty reads
+ *     and music-metadata does not de-stuff — the JS scanner now does it
+ *     before handing the file over, so the picture and the frames after
+ *     it survive there too.
  *
  * Skipped (like scanner-parity.test.mjs) when ffmpeg or the rust binary
  * is unavailable.
@@ -30,12 +35,17 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   findRustParser, FFMPEG, initEmptyDb, buildScanConfig, runScan, runJsScan,
 } from '../helpers/scanner-runner.mjs';
+import crypto from 'node:crypto';
 import { makeAudio } from '../helpers/scanner-fixture.mjs';
 import {
-  buildId3v2Tag, id3Frame, id3TextBody, syncsafeBytes, unsyncBytes, replaceId3v2Tag,
+  buildId3v2Tag, id3Frame, id3TextBody, id3ApicBody, syncsafeBytes, unsyncBytes, replaceId3v2Tag,
 } from '../helpers/id3.mjs';
 
 const MP3 = ['-c:a', 'libmp3lame', '-b:a', '64k', '-id3v2_version', '3'];
+// A JPEG-shaped picture with FF 00 and FF E0 inside: the bytes whole-tag
+// unsynchronisation stuffs, so a reader that skips the de-stuff corrupts it.
+const PICTURE = Buffer.from('ffd8ffe000104a46494600ff00ff00e0ffd9', 'hex');
+const PICTURE_MD5 = crypto.createHash('md5').update(PICTURE).digest('hex');
 
 // One fixture per defect: [directory, tag, what both engines must store].
 function fixtures() {
@@ -64,6 +74,15 @@ function fixtures() {
       id3Frame('TPE1', id3TextBody('Cut Artist')),
       id3Frame('TALB', id3TextBody('Truncated Al'), { declared: 40 }),
     ], { padding: 0 }), { title: 'Cut', artist: 'Cut Artist', album: 'Truncated Al' }],
+    // v2.3, tag-level flag: the frames are laid out, then the whole body is
+    // stuffed; the picture comes first so the text frames sit past the
+    // stuffed bytes.
+    ['Whole', buildId3v2Tag([unsyncBytes(Buffer.concat([
+      id3Frame('APIC', id3ApicBody('image/jpeg', PICTURE)),
+      id3Frame('TIT2', id3TextBody('Whole Tag')),
+      id3Frame('TPE1', id3TextBody('Whole Artist')),
+      id3Frame('TALB', id3TextBody('Whole Album')),
+    ]))], { flags: 0x80 }), { title: 'Whole Tag', artist: 'Whole Artist', album: 'Whole Album', art: `${PICTURE_MD5}.jpeg` }],
   ];
 }
 
@@ -102,7 +121,7 @@ async function scanWith(engine) {
   const result = engine === 'rust' ? await runScan(rustBin, cfg) : await runJsScan(cfg);
   const db = new DatabaseSync(dbPath, { readOnly: true });
   const rows = db.prepare(`
-    SELECT t.filepath, t.title, t.duration, ar.name AS artist, al.name AS album
+    SELECT t.filepath, t.title, t.duration, t.album_art_file AS art, ar.name AS artist, al.name AS album
       FROM tracks t
       LEFT JOIN artists ar ON ar.id = t.artist_id
       LEFT JOIN albums al ON al.id = t.album_id
@@ -121,7 +140,8 @@ describe('broken ID3v2 tags', () => {
         assert.deepEqual(Object.keys(rows).sort(), Object.keys(expected).sort());
         for (const [file, want] of Object.entries(expected)) {
           const row = rows[file];
-          assert.deepEqual({ title: row.title, artist: row.artist, album: row.album }, want, file);
+          assert.deepEqual({ title: row.title, artist: row.artist, album: row.album, art: row.art ?? undefined },
+            { art: undefined, ...want }, file);
           assert.ok(row.duration > 0.5 && row.duration < 2, `${file}: duration ${row.duration}`);
         }
         assert.doesNotMatch(result.stderr, /metadata parse error/);
@@ -140,8 +160,8 @@ describe('broken ID3v2 tags', () => {
     for (const file of Object.keys(expected)) {
       const [r, j] = [got.rust[file], got.js[file]];
       assert.deepEqual(
-        { title: r.title, artist: r.artist, album: r.album, duration: Math.round(r.duration) },
-        { title: j.title, artist: j.artist, album: j.album, duration: Math.round(j.duration) },
+        { title: r.title, artist: r.artist, album: r.album, art: r.art, duration: Math.round(r.duration) },
+        { title: j.title, artist: j.artist, album: j.album, art: j.art, duration: Math.round(j.duration) },
         file);
     }
   });

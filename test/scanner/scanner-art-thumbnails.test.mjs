@@ -7,7 +7,9 @@
  * every file with embedded PNG art, whenever compressImage was on (the
  * default). Any picture Jimp cannot decode failed the same way. Thumbnails
  * are best-effort in both engines: the track and the full-size cache file
- * always land, the zl-/zs- variants when the bytes decode.
+ * always land, the zl-/zs- variants when the bytes decode. And an APIC
+ * with no bytes at all is not a picture in either engine — lofty used to
+ * hand it over and the rust scanner cached a 0-byte cover.
  *
  * Skipped (like scanner-parity.test.mjs) when ffmpeg or the rust binary
  * is unavailable.
@@ -50,6 +52,14 @@ before(async () => {
     id3Frame('TALB', id3TextBody('Bad')),
     id3Frame('APIC', id3ApicBody('image/png', NOT_AN_IMAGE)),
   ]));
+  const empty = path.join(libRoot, 'Empty', '01.mp3');
+  await makeAudio(empty, MP3, { title: 'placeholder' });
+  await replaceId3v2Tag(empty, buildId3v2Tag([
+    id3Frame('TIT2', id3TextBody('Empty Art')),
+    id3Frame('TPE1', id3TextBody('Thumbs')),
+    id3Frame('TALB', id3TextBody('Empty')),
+    id3Frame('APIC', id3ApicBody('image/jpeg', Buffer.alloc(0))),
+  ]));
 });
 
 after(async () => {
@@ -71,18 +81,24 @@ async function scanWith(engine) {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   const tracks = db.prepare('SELECT filepath, title, album_art_file FROM tracks ORDER BY filepath').all();
   const art = db.prepare('SELECT cache_file FROM art_files ORDER BY cache_file').all().map((r) => r.cache_file);
+  const emptyArt = db.prepare('SELECT COUNT(*) AS n FROM art_files WHERE byte_size = 0').get().n;
   db.close();
-  return { result, tracks, art, artDir };
+  return { result, tracks, art, emptyArt, artDir };
 }
 
 describe('album-art thumbnails with compressImage on', () => {
   for (const engine of ['rust', 'js']) {
     test(`${engine}: PNG art is thumbnailed, undecodable art is skipped, both tracks land`,
       { skip: !available() && 'ffmpeg or rust-parser unavailable' }, async () => {
-        const { result, tracks, art, artDir } = await scanWith(engine);
-        assert.deepEqual(tracks.map((t) => t.title), ['Bad Art', 'Png Art']);
-        // Every embedded picture is cached full-size, decodable or not…
-        const png = tracks[1].album_art_file;
+        const { result, tracks, art, emptyArt, artDir } = await scanWith(engine);
+        assert.deepEqual(tracks.map((t) => t.title), ['Bad Art', 'Empty Art', 'Png Art']);
+        // An APIC with no bytes is no picture: no art row, no default, no
+        // 0-byte cache file.
+        assert.equal(tracks[1].album_art_file, null);
+        assert.equal(emptyArt, 0);
+        assert.ok(!fs.existsSync(path.join(artDir, 'd41d8cd98f00b204e9800998ecf8427e.jpeg')), 'no empty cache file');
+        // Every embedded picture with bytes is cached full-size, decodable or not…
+        const png = tracks[2].album_art_file;
         assert.ok(png && png.endsWith('.png'), `png default elected: ${png}`);
         assert.ok(fs.existsSync(path.join(artDir, png)), 'png cached');
         assert.equal(tracks[0].album_art_file, `${NOT_AN_IMAGE_MD5}.png`);
