@@ -17,6 +17,15 @@
  *   - a frame whose declared size overruns the tag;
  *   - a URL frame written with an encoding byte before the URL (lofty 0.25
  *     stops reading the tag there; the frames after it must survive);
+ *   - ID3v2.4 frame sizes written as plain numbers (both libraries read
+ *     them as syncsafe and lose every frame after the first long one;
+ *     both scanners now re-encode them first);
+ *   - an album artist carried only as TXXX:ALBUM ARTIST (TPE2 stays first);
+ *   - the fields an ID3v2 tag lacks filled from the file's ID3v1 tag, and
+ *     an ID3v1-only file's space-padded fields trimmed — what
+ *     music-metadata does, and now the rust scanner too;
+ *   - an APE tag whose cover-art key is cased "Cover Art (front)": lofty
+ *     matches its picture keys case-sensitively and dropped the picture.
  *   - and the mirror image on the JS side: ID3v2.3 with the tag-level
  *     unsynchronisation flag (the WHOLE tag stuffed), which lofty reads
  *     and music-metadata does not de-stuff — the JS scanner now does it
@@ -40,7 +49,8 @@ import {
 import crypto from 'node:crypto';
 import { makeAudio } from '../helpers/scanner-fixture.mjs';
 import {
-  buildId3v2Tag, id3Frame, id3TextBody, id3ApicBody, syncsafeBytes, unsyncBytes, replaceId3v2Tag,
+  buildId3v2Tag, id3Frame, id3TextBody, id3TxxxBody, id3ApicBody, syncsafeBytes, unsyncBytes, replaceId3v2Tag,
+  appendId3v1Tag, appendApeTag,
 } from '../helpers/id3.mjs';
 
 const MP3 = ['-c:a', 'libmp3lame', '-b:a', '64k', '-id3v2_version', '3'];
@@ -91,6 +101,47 @@ function fixtures() {
       id3Frame('TPE1', id3TextBody('Whole Artist')),
       id3Frame('TALB', id3TextBody('Whole Album')),
     ]))], { flags: 0x80 }), { title: 'Whole Tag', artist: 'Whole Artist', album: 'Whole Album', art: `${PICTURE_MD5}.jpeg` }],
+    // v2.4 with plain-number sizes: the long TXXX reads 172 bytes short as
+    // syncsafe, which lands mid-frame and takes every later frame with it.
+    ['Plain', buildId3v2Tag([
+      id3Frame('TXXX', id3TxxxBody('COMMENT', 'x'.repeat(290)), { major: 4, plainSize: true }),
+      id3Frame('TIT2', id3TextBody('Plain Tag'), { major: 4, plainSize: true }),
+      id3Frame('TPE1', id3TextBody('Plain Artist'), { major: 4, plainSize: true }),
+      id3Frame('TALB', id3TextBody('Plain Album'), { major: 4, plainSize: true }),
+    ], { major: 4 }), { title: 'Plain Tag', artist: 'Plain Artist', album: 'Plain Album' }],
+    ['Txxx', buildId3v2Tag([
+      id3Frame('TIT2', id3TextBody('Txxx Tag')),
+      id3Frame('TPE1', id3TextBody('Txxx Artist')),
+      id3Frame('TALB', id3TextBody('Txxx Album')),
+      id3Frame('TXXX', id3TxxxBody('ALBUM ARTIST', 'Txxx Band')),
+    ]), { title: 'Txxx Tag', artist: 'Txxx Artist', album: 'Txxx Album', albumArtist: 'Txxx Band' }],
+    // TPE2 present too: it wins over the TXXX form.
+    ['Tpe2', buildId3v2Tag([
+      id3Frame('TIT2', id3TextBody('Tpe2 Tag')),
+      id3Frame('TPE1', id3TextBody('Tpe2 Artist')),
+      id3Frame('TALB', id3TextBody('Tpe2 Album')),
+      id3Frame('TXXX', id3TxxxBody('ALBUMARTIST', 'Not This One')),
+      id3Frame('TPE2', id3TextBody('Tpe2 Band')),
+    ]), { title: 'Tpe2 Tag', artist: 'Tpe2 Artist', album: 'Tpe2 Album', albumArtist: 'Tpe2 Band' }],
+  ];
+}
+
+// Fixtures whose tags sit at the END of the file: [directory, ID3v2 tag or
+// null (none), ID3v1 fields or null, APE items or null, expectation].
+function tailFixtures() {
+  return [
+    // The v2 tag lacks the album and year; the v1 tag has them (padded).
+    ['V1fill', buildId3v2Tag([id3Frame('TIT2', id3TextBody('V1 Fill')), id3Frame('TPE1', id3TextBody('V1 Fill Artist'))]),
+      { title: 'ignored', artist: 'ignored', album: 'V1 Fill Album', year: '1999', track: 5, genre: 17 }, null,
+      { title: 'V1 Fill', artist: 'V1 Fill Artist', album: 'V1 Fill Album', year: 1999 }],
+    // Only an ID3v1 tag: the padding must not survive.
+    ['V1only', null, { title: 'V1 Only', artist: 'V1 Only Artist', album: 'V1 Only Album', year: '1985', track: 2, genre: 17 }, null,
+      { title: 'V1 Only', artist: 'V1 Only Artist', album: 'V1 Only Album', year: 1985 }],
+    // Only an APE tag, its cover keyed "Cover Art (front)".
+    ['Ape', null, null, [
+      { key: 'Title', value: 'Ape Tag' }, { key: 'Artist', value: 'Ape Artist' }, { key: 'Album', value: 'Ape Album' },
+      { key: 'Cover Art (front)', data: Buffer.concat([Buffer.from('cover.jpg\0', 'latin1'), PICTURE]) },
+    ], { title: 'Ape Tag', artist: 'Ape Artist', album: 'Ape Album', art: `${PICTURE_MD5}.jpeg` }],
   ];
 }
 
@@ -111,6 +162,14 @@ before(async () => {
     await replaceId3v2Tag(file, tag);
     expected[`${dir}/01.mp3`] = want;
   }
+  for (const [dir, tag, v1, ape, want] of tailFixtures()) {
+    const file = path.join(libRoot, dir, '01.mp3');
+    await makeAudio(file, MP3, { title: 'placeholder' });
+    await replaceId3v2Tag(file, tag || Buffer.alloc(0));
+    if (ape) { await appendApeTag(file, ape); }
+    if (v1) { await appendId3v1Tag(file, v1); }
+    expected[`${dir}/01.mp3`] = want;
+  }
 });
 
 after(async () => {
@@ -129,7 +188,8 @@ async function scanWith(engine) {
   const result = engine === 'rust' ? await runScan(rustBin, cfg) : await runJsScan(cfg);
   const db = new DatabaseSync(dbPath, { readOnly: true });
   const rows = db.prepare(`
-    SELECT t.filepath, t.title, t.duration, t.album_art_file AS art, ar.name AS artist, al.name AS album
+    SELECT t.filepath, t.title, t.duration, t.year, t.album_art_file AS art, ar.name AS artist, al.name AS album,
+           al.album_artist AS albumArtist
       FROM tracks t
       LEFT JOIN artists ar ON ar.id = t.artist_id
       LEFT JOIN albums al ON al.id = t.album_id
@@ -148,8 +208,9 @@ describe('broken ID3v2 tags', () => {
         assert.deepEqual(Object.keys(rows).sort(), Object.keys(expected).sort());
         for (const [file, want] of Object.entries(expected)) {
           const row = rows[file];
-          assert.deepEqual({ title: row.title, artist: row.artist, album: row.album, art: row.art ?? undefined },
-            { art: undefined, ...want }, file);
+          assert.deepEqual(
+            { title: row.title, artist: row.artist, album: row.album, art: row.art ?? null, year: row.year ?? null, albumArtist: row.albumArtist ?? null },
+            { art: null, year: null, albumArtist: null, ...want }, file);
           assert.ok(row.duration > 0.5 && row.duration < 2, `${file}: duration ${row.duration}`);
         }
         assert.doesNotMatch(result.stderr, /metadata parse error/);
@@ -168,8 +229,8 @@ describe('broken ID3v2 tags', () => {
     for (const file of Object.keys(expected)) {
       const [r, j] = [got.rust[file], got.js[file]];
       assert.deepEqual(
-        { title: r.title, artist: r.artist, album: r.album, art: r.art, duration: Math.round(r.duration) },
-        { title: j.title, artist: j.artist, album: j.album, art: j.art, duration: Math.round(j.duration) },
+        { title: r.title, artist: r.artist, album: r.album, art: r.art, year: r.year, albumArtist: r.albumArtist, duration: Math.round(r.duration) },
+        { title: j.title, artist: j.artist, album: j.album, art: j.art, year: j.year, albumArtist: j.albumArtist, duration: Math.round(j.duration) },
         file);
     }
   });

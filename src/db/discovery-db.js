@@ -201,7 +201,18 @@ export function openedDiscoveryDbPath() {
 function runMigrations() {
   const currentVersion = db.prepare('PRAGMA user_version').get().user_version;
 
-  if (currentVersion >= DISCOVERY_SCHEMA_VERSION) {
+  // A discovery db from a newer mStream — the same case manager.js refuses
+  // for mstream.db. Throwing here is the right size of failure for a side
+  // dataset: initDiscoveryDb's caller logs it and leaves discovery off for
+  // this boot, and the music server still comes up.
+  if (currentVersion > DISCOVERY_SCHEMA_VERSION) {
+    throw new Error(
+      `The discovery database was created by a newer mStream: its schema is v${currentVersion}, ` +
+      `this build supports up to v${DISCOVERY_SCHEMA_VERSION}. Upgrade mStream to the version that ` +
+      'created it (or newer); discovery stays off until then.');
+  }
+
+  if (currentVersion === DISCOVERY_SCHEMA_VERSION) {
     winston.info(`Discovery database schema is up to date (v${currentVersion})`);
     return;
   }
