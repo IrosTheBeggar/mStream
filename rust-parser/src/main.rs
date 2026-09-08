@@ -1939,7 +1939,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // Insert initial progress row
     let _ = conn.execute(
         "INSERT OR REPLACE INTO scan_progress (scan_id, library_id, vpath, scanned, expected) VALUES (?1, ?2, ?3, 0, ?4)",
-        rusqlite::params![config.scan_id, config.library_id, config.vpath, expected_files],
+        rusqlite::params![config.scan_id, config.library_id, config.vpath, expected_files as i64],
     );
 
     let mut file_count = 0u64;      // new/modified files parsed
@@ -2095,7 +2095,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 };
                 let _ = conn.execute(
                     "UPDATE scan_progress SET scanned = ?1, current_file = ?2 WHERE scan_id = ?3",
-                    rusqlite::params![total_processed, rel, config.scan_id],
+                    rusqlite::params![total_processed as i64, rel, config.scan_id],
                 );
             }
         }
@@ -2373,7 +2373,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
                 if total_processed - last_progress_at >= commit_interval {
                     if let Err(e) = conn.execute(
                         "UPDATE scan_progress SET scanned = ?1, current_file = ?2 WHERE scan_id = ?3",
-                        rusqlite::params![total_processed, last_rel, config.scan_id],
+                        rusqlite::params![total_processed as i64, last_rel, config.scan_id],
                     ) {
                         err = Some(Box::new(e));
                         stop.store(true, Ordering::Relaxed);
