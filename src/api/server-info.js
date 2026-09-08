@@ -47,6 +47,7 @@ import packageJson from '../../package.json' with { type: 'json' };
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import * as fedDb from '../db/federation.js';
+import * as fedRequestsDb from '../db/federation-requests.js';
 import * as sim from '../db/discovery-similarity.js';
 import * as transcode from './transcode.js';
 
@@ -133,6 +134,17 @@ export function buildClientBootPayload(user) {
     // cooperates is answered per peer by the access route (an older peer
     // refuses, and the client keeps using the proxies above).
     federationDirect: federationEnabled && federationPeers.length > 0,
+    // Federation requests waiting on this operator — inbound rows still in
+    // the `received` state (the V67 inbox), the number the admin panel's
+    // Requests badge shows. A client draws its "N requests waiting" banner
+    // from the value alone, so it is scoped to who can ACT on it: a number
+    // only for an admin, on an unlocked admin API, of a federation-enabled
+    // server (the same three gates the accept/reject routes sit behind);
+    // everyone else reads 0. The key's presence says the build has the
+    // requests feature — an older server omits it and the client shows
+    // nothing.
+    federationInbox: federationEnabled && user.admin === true && config.program.lockAdmin !== true
+      ? fedRequestsDb.countPendingInbound() : 0,
     vpathMetaData: {}
   };
 

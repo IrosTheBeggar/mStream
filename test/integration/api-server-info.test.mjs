@@ -49,6 +49,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import jwt from 'jsonwebtoken';
 import { startServer } from '../helpers/server.mjs';
+import { DatabaseSync } from 'node:sqlite';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -177,6 +178,42 @@ describe('layered /api/ server info', () => {
     assert.equal(typeof j.admin.platform, 'string');
     assert.ok(Number.isInteger(j.admin.dbSchemaVersion) && j.admin.dbSchemaVersion >= 67,
       'live PRAGMA user_version');
+  });
+
+  test('federationInbox: an admin counts the requests waiting on them, a member reads 0', async () => {
+    // Fresh boot, federation on, nothing in the inbox: the key is present
+    // (this build has the V67 requests feature) and reads 0 for everyone.
+    const empty = await (await api({ 'x-access-token': adminToken })).json();
+    assert.equal(empty.user.federationInbox, 0);
+
+    // A request that arrived over the discovery mesh and is now waiting on
+    // a human — the row the inbound DM handler writes, planted straight
+    // into the server's database (the server counts live, per call).
+    const dbFile = new DatabaseSync(path.join(srv.tmpDir, 'db', 'mstream.db'));
+    dbFile.prepare(`
+      INSERT INTO federation_requests
+        (uuid, direction, peer_endpoint_id, peer_name, message, state, expires_at)
+      VALUES (?, 'in', ?, ?, ?, 'received', datetime('now', '+7 days'))
+    `).run('11111111-2222-4333-8444-555555555555', 'a'.repeat(64), 'Ghost NAS', 'Swap for the vinyl rips?');
+    // An outbound request of ours and a settled inbound one never count.
+    dbFile.prepare(`
+      INSERT INTO federation_requests (uuid, direction, peer_endpoint_id, state, expires_at)
+      VALUES (?, 'out', ?, 'pending-delivery', datetime('now', '+7 days')),
+             (?, 'in', ?, 'accepted', datetime('now', '+7 days'))
+    `).run('11111111-2222-4333-8444-666666666666', 'b'.repeat(64),
+      '11111111-2222-4333-8444-777777777777', 'c'.repeat(64));
+    try {
+      const admin = await (await api({ 'x-access-token': adminToken })).json();
+      assert.equal(admin.user.federationInbox, 1, 'only inbound rows still received count');
+      const member = await (await api({ 'x-access-token': userToken })).json();
+      assert.equal(member.user.federationInbox, 0, 'a member cannot act on requests, so reads 0');
+      // Both boot routes carry it (drift-lock below keeps them equal).
+      const ping = await (await fetch(`${srv.baseUrl}/api/v1/ping`, { headers: { 'x-access-token': adminToken } })).json();
+      assert.equal(ping.federationInbox, 1);
+    } finally {
+      dbFile.prepare('DELETE FROM federation_requests').run();
+      dbFile.close();
+    }
   });
 
   test('drift-lock: ping === /api/ user half + features half (modulo legacy/identity)', async () => {
