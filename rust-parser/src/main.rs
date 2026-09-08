@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -2889,28 +2889,14 @@ fn extract_track(
         None
     };
 
-    // Use Relaxed parsing so malformed frames (e.g. odd-length UTF-16 strings,
-    // invalid year lengths) get dropped individually instead of failing the
-    // whole file. Bulk rips with a broken tagger can otherwise lose all
-    // metadata for hundreds of tracks from one bad frame each.
-    // Match `Probe::open`'s behaviour: set the file type from the
-    // extension (what lofty's source does via `FileType::from_path`).
-    // The earlier version of the buffered arm used `guess_file_type()`
-    // which is magic-bytes-only — for files whose magic signature is
-    // unusual or corrupted but whose extension is known, `Probe::open`
-    // succeeds while magic detection returns `UnknownFormat`. Keeping
-    // the two paths semantically identical preserves parity.
-    let parse_opts = ParseOptions::new().parsing_mode(ParsingMode::Relaxed);
-    let tagged_result = match buf.as_deref() {
-        Some(bytes) => {
-            let mut probe = Probe::new(Cursor::new(bytes));
-            if let Some(ft) = FileType::from_ext(ext) {
-                probe = probe.set_file_type(ft);
-            }
-            probe.options(parse_opts).read()
-        }
-        None => Probe::open(filepath).and_then(|p| p.options(parse_opts).read()),
-    };
+    // Both arms go through probe_audio: Relaxed parsing (a frame with a
+    // malformed HEADER is skipped instead of failing the file), the file
+    // type set from the extension on both arms — what `Probe::open` does
+    // via `FileType::from_path`; the buffered arm once used magic-bytes
+    // detection, which returns `UnknownFormat` for files whose signature
+    // is odd but whose extension is known — and the ID3v2 normaliser in
+    // front of lofty for the frame BODIES it would otherwise choke on.
+    let tagged_result = probe_audio(filepath, ext, buf.as_deref());
     match tagged_result {
         Ok(tagged_file) => {
             // Get duration + extended audio properties.
@@ -5006,10 +4992,10 @@ fn extract_lyrics_for_cli(audio_path: &Path)
 
     // Pass 1: embedded tags (mirror of the in-scan block). Uses the
     // same lofty ItemKey values so USLT / Vorbis LYRICS / MP4 ©lyr /
-    // APE Lyrics all normalise. Relaxed parse so partial-broken tags
-    // don't drop the whole file.
-    let parse_opts = ParseOptions::new().parsing_mode(ParsingMode::Relaxed);
-    if let Ok(tagged) = Probe::open(audio_path).and_then(|p| p.options(parse_opts).read()) {
+    // APE Lyrics all normalise. Read through probe_audio, like the scan:
+    // Relaxed parse + the ID3v2 normaliser, so a tag the scan could read
+    // is one this pass can read too.
+    if let Ok(tagged) = probe_audio(audio_path, file_ext(audio_path), None) {
         if let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) {
             if let Some(t) = tag.get_string(&ItemKey::Lyrics) {
                 let s = t.trim();
@@ -6277,6 +6263,400 @@ fn save_resized(img: &image::DynamicImage, art_dir: &str, filename: &str) {
     let _ = write_atomic(&path, &buf);
 }
 
+// ── ID3v2 pre-read normaliser ───────────────────────────────────────────────
+//
+// lofty is this scanner's only tag interpreter, and it is strict in four
+// places where music-metadata (the JS scanner) is lenient. A file with one
+// of them used to index fully under the JS engine and as a bare row under
+// this one: a tag error fails the whole `Probe::read`, so not even the
+// duration survived. The 2026-09-05 real-library smoke counted 710 such
+// MP3s in a 36k-track library:
+//
+//   1. ID3v2.4 tags with the tag-level unsynchronisation flag (682 of
+//      them). In v2.4 that flag says every frame is unsynchronised
+//      INDIVIDUALLY and frame sizes count the stuffed bytes; lofty 0.22
+//      de-stuffs the whole tag first (the v2.2/v2.3 rule) and each frame
+//      again, so everything past the first stuffed byte is misaligned —
+//      "failed to fill whole buffer", "UTF-16 string has an odd length",
+//      or a silently truncated frame list. Fixed upstream in lofty 0.25.0
+//      (Serial-ATA/lofty-rs#678); rule 1 can go when lofty is bumped. That
+//      bump is its own PR: 0.23 also drops ItemKey::Unknown, which
+//      detect_source_from_tag is built on, and changes the lyrics keys.
+//   2. a UTF-16 text frame with an odd byte count — one stray terminator
+//      byte from an old tagger. lofty errors; music-metadata decodes the
+//      stray byte as U+FFFD.
+//   3. a UTF-8-flagged text frame holding bytes that aren't UTF-8 (a
+//      latin1 tagger that lied about the encoding). lofty errors;
+//      music-metadata decodes with U+FFFD replacements.
+//   4. a frame whose declared size runs past the end of the tag. lofty
+//      errors; music-metadata decodes the bytes that are there and stops.
+//
+// normalize_id3v2 walks the frame HEADERS of the tag at the head of the
+// file — no frame body is interpreted beyond its encoding byte — and
+// rewrites exactly the offending frames into what music-metadata reads:
+// de-stuffed with the unsync flag cleared, the stray byte re-encoded as
+// U+FFFD, the text re-encoded lossily, the size clamped. Clean tags
+// (nearly all of them) cost one header walk and allocate nothing. The
+// rewritten tag keeps the ORIGINAL byte length — frames grow only into the
+// trailing padding, and when they would not fit a second pass shrinks
+// instead (the stray byte dropped, '?' per bad byte) — so PatchedPrefix can
+// serve it in place of the file's first bytes and every audio offset lofty
+// derives still holds. Tags with an extended header and frames that are
+// compressed or encrypted are left to lofty as they are.
+
+// An ID3v2 tag past this is not something we rewrite (a real tag with
+// several embedded pictures is a few MB).
+const MAX_ID3_NORMALISE: usize = 64 * 1024 * 1024;
+
+/// What normalize_id3v2 changed. Rule 1 is lofty's bug, not the file's, so
+/// only rules 2–4 make the per-file warning.
+#[derive(Default, Debug, PartialEq)]
+struct Id3Fixes {
+    unsync: usize,
+    odd_utf16: usize,
+    bad_utf8: usize,
+    truncated: bool,
+}
+
+impl Id3Fixes {
+    fn defects(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if self.odd_utf16 > 0 {
+            parts.push(format!("{} UTF-16 text frame(s) with an odd byte count", self.odd_utf16));
+        }
+        if self.bad_utf8 > 0 {
+            parts.push(format!("{} text frame(s) flagged UTF-8 that are not", self.bad_utf8));
+        }
+        if self.truncated {
+            parts.push("a frame that overruns the tag".to_string());
+        }
+        if parts.is_empty() { None } else { Some(parts.join("; ")) }
+    }
+}
+
+fn id3v2_syncsafe(b: &[u8]) -> usize {
+    ((b[0] & 0x7f) as usize) << 21
+        | ((b[1] & 0x7f) as usize) << 14
+        | ((b[2] & 0x7f) as usize) << 7
+        | (b[3] & 0x7f) as usize
+}
+
+/// Reverse ID3v2 unsynchronisation: every 0xFF 0x00 pair is a stuffed 0xFF.
+fn id3v2_deunsync(src: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(src.len());
+    let mut i = 0;
+    while i < src.len() {
+        out.push(src[i]);
+        if src[i] == 0xff && src.get(i + 1) == Some(&0x00) {
+            i += 1;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Frames whose body is an encoding byte followed by text (after COMM /
+/// USLT's 3-byte language) — what a stray byte or a non-UTF-8 sequence can
+/// break. Binary frames (APIC, GEOB, SYLT, …) stay as they are.
+fn id3v2_is_text_frame(id: &[u8]) -> bool {
+    matches!(id, [b'T', ..] | b"COMM" | b"USLT" | b"IPLS" | b"COM" | b"ULT" | b"IPL")
+}
+
+/// One rewrite pass. `grow` allows the two rewrites that add a byte (a
+/// stray UTF-16 byte → U+FFFD, a lossy UTF-8 re-encode); without it they
+/// shrink instead. Returns the rewritten tag — header + frames, unpadded
+/// and possibly longer than the original — or None when nothing needs
+/// fixing or the tag isn't one this walker handles.
+fn normalize_id3v2_pass(bytes: &[u8], grow: bool) -> Option<(Vec<u8>, Id3Fixes)> {
+    if bytes.len() < 10 || &bytes[..3] != b"ID3" {
+        return None;
+    }
+    let major = bytes[3];
+    if !(2..=4).contains(&major) {
+        return None;
+    }
+    let flags = bytes[5];
+    // 0x40 is whole-tag compression in v2.2 (lofty rejects it) and the
+    // extended header in v2.3/v2.4 — neither is worth mirroring here.
+    if flags & 0x40 != 0 {
+        return None;
+    }
+    let size = id3v2_syncsafe(&bytes[6..10]);
+    if size == 0 || size > MAX_ID3_NORMALISE {
+        return None;
+    }
+    let raw = &bytes[10..bytes.len().min(10 + size)];
+    let tag_unsync = flags & 0x80 != 0;
+    // v2.2/v2.3: the flag means the tag as a whole was stuffed. lofty reads
+    // that correctly, so the walk (and any rewrite) works on the de-stuffed
+    // bytes with the flag cleared — the same tag, one representation over.
+    let whole;
+    let data: &[u8] = if tag_unsync && major < 4 {
+        whole = id3v2_deunsync(raw);
+        &whole
+    } else {
+        raw
+    };
+    let (hl, id_len) = if major == 2 { (6, 3) } else { (10, 4) };
+    let mut fixes = Id3Fixes::default();
+    // Materialised at the first fix: the header (tag flag cleared) plus the
+    // untouched frames before it.
+    let mut out: Option<Vec<u8>> = None;
+    let mut pos = 0;
+    while pos + hl <= data.len() {
+        if data[pos] == 0 {
+            break; // padding
+        }
+        let id = &data[pos..pos + id_len];
+        let declared = match major {
+            2 => (data[pos + 3] as usize) << 16 | (data[pos + 4] as usize) << 8 | data[pos + 5] as usize,
+            3 => u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]) as usize,
+            _ => id3v2_syncsafe(&data[pos + 4..pos + 8]),
+        };
+        let fflags = if major == 2 { 0 } else { u16::from_be_bytes([data[pos + 8], data[pos + 9]]) };
+        let body_start = pos + hl;
+        let truncated = declared > data.len() - body_start;
+        let raw_body = &data[body_start..(body_start + declared).min(data.len())];
+        // lofty's reading of the frame flags, per version.
+        let (compressed, encrypted, grouping, frame_unsync, dli) = match major {
+            3 => (fflags & 0x0080 != 0, fflags & 0x0040 != 0, fflags & 0x0020 != 0, false, false),
+            4 => (fflags & 0x0008 != 0, fflags & 0x0004 != 0, fflags & 0x0040 != 0, fflags & 0x0002 != 0, fflags & 0x0001 != 0),
+            _ => (false, false, false, false, false),
+        };
+        let mut new_flags = fflags;
+        let mut changed = truncated;
+        fixes.truncated |= truncated;
+        let mut body: Vec<u8>;
+        // Rule 1: v2.4 per-frame unsynchronisation — the frame's own flag,
+        // or the tag flag standing in for every frame. The bytes lofty
+        // reads BEFORE de-stuffing (encryption method, group id, and the
+        // data length indicator whenever its flag or compression says so)
+        // are copied as they are.
+        if major == 4 && (frame_unsync || tag_unsync) {
+            let lead = encrypted as usize + grouping as usize + if dli || compressed { 4 } else { 0 };
+            if raw_body.len() < lead {
+                return None; // not a frame we understand: lofty judges the original
+            }
+            body = raw_body[..lead].to_vec();
+            body.extend(id3v2_deunsync(&raw_body[lead..]));
+            new_flags &= !0x0002;
+            fixes.unsync += 1;
+            changed = true;
+        } else {
+            body = raw_body.to_vec();
+        }
+        // Rules 2 and 3: the text of a plain text frame.
+        if !compressed && !encrypted && id3v2_is_text_frame(id) {
+            let lead = grouping as usize + if major == 4 && dli { 4 } else { 0 };
+            let lang = if matches!(id, b"COMM" | b"USLT" | b"COM" | b"ULT") { 3 } else { 0 };
+            let text_start = lead + 1 + lang;
+            if body.len() > text_start {
+                match body[lead] {
+                    // UTF-16 (1 = with BOM, 2 = big-endian) with an odd byte
+                    // count: music-metadata decodes the stray byte as U+FFFD.
+                    enc @ (1 | 2) if (body.len() - text_start) % 2 == 1 => {
+                        body.pop();
+                        if grow {
+                            let big_endian = enc == 2 || body[text_start..].starts_with(&[0xfe, 0xff]);
+                            body.extend(if big_endian { [0xff, 0xfd] } else { [0xfd, 0xff] });
+                        }
+                        fixes.odd_utf16 += 1;
+                        changed = true;
+                    }
+                    3 if std::str::from_utf8(&body[text_start..]).is_err() => {
+                        let fixed: Vec<u8> = if grow {
+                            String::from_utf8_lossy(&body[text_start..]).into_owned().into_bytes()
+                        } else {
+                            body[text_start..]
+                                .utf8_chunks()
+                                .flat_map(|c| {
+                                    c.valid()
+                                        .bytes()
+                                        .chain(std::iter::repeat(b'?').take(c.invalid().len()))
+                                        .collect::<Vec<u8>>()
+                                })
+                                .collect()
+                        };
+                        body.truncate(text_start);
+                        body.extend(fixed);
+                        fixes.bad_utf8 += 1;
+                        changed = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if changed && out.is_none() {
+            let mut o = Vec::with_capacity(10 + size);
+            o.extend_from_slice(&bytes[..10]);
+            o[5] = flags & !0x80;
+            o.extend_from_slice(&data[..pos]);
+            out = Some(o);
+        }
+        if let Some(o) = out.as_mut() {
+            o.extend_from_slice(id);
+            let n = body.len();
+            match major {
+                2 => o.extend_from_slice(&[(n >> 16) as u8, (n >> 8) as u8, n as u8]),
+                3 => o.extend_from_slice(&(n as u32).to_be_bytes()),
+                _ => o.extend_from_slice(&[
+                    ((n >> 21) & 0x7f) as u8,
+                    ((n >> 14) & 0x7f) as u8,
+                    ((n >> 7) & 0x7f) as u8,
+                    (n & 0x7f) as u8,
+                ]),
+            }
+            if major != 2 {
+                o.extend_from_slice(&new_flags.to_be_bytes());
+            }
+            o.extend_from_slice(&body);
+        }
+        if truncated {
+            break; // nothing sound follows; music-metadata stops here too
+        }
+        pos = body_start + declared;
+    }
+    out.map(|o| (o, fixes))
+}
+
+/// See the section comment. The rewritten tag has the original byte length.
+fn normalize_id3v2(bytes: &[u8]) -> Option<(Vec<u8>, Id3Fixes)> {
+    let (mut out, mut fixes) = normalize_id3v2_pass(bytes, true)?;
+    let full = bytes.len().min(10 + id3v2_syncsafe(&bytes[6..10]));
+    if out.len() > full {
+        // The growing rewrites outran the padding: the shrinking ones then.
+        let (o, f) = normalize_id3v2_pass(bytes, false)?;
+        out = o;
+        fixes = f;
+        if out.len() > full {
+            return None;
+        }
+    }
+    out.resize(full, 0);
+    Some((out, fixes))
+}
+
+/// A `Read + Seek` view of `inner` whose first `patch.len()` bytes come from
+/// `patch` instead. The normaliser keeps the tag's exact byte length, so
+/// offsets on both sides of the boundary line up 1:1 with the real file.
+struct PatchedPrefix<R: Read + Seek> {
+    patch: Vec<u8>,
+    inner: R,
+    pos: u64,
+    inner_pos: Option<u64>, // where `inner` actually is, when known
+}
+
+impl<R: Read + Seek> PatchedPrefix<R> {
+    fn new(patch: Vec<u8>, inner: R) -> Self {
+        PatchedPrefix { patch, inner, pos: 0, inner_pos: None }
+    }
+}
+
+impl<R: Read + Seek> Read for PatchedPrefix<R> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos < self.patch.len() as u64 {
+            let start = self.pos as usize;
+            let n = out.len().min(self.patch.len() - start);
+            out[..n].copy_from_slice(&self.patch[start..start + n]);
+            self.pos += n as u64;
+            return Ok(n);
+        }
+        if self.inner_pos != Some(self.pos) {
+            self.inner.seek(SeekFrom::Start(self.pos))?;
+            self.inner_pos = Some(self.pos);
+        }
+        let n = self.inner.read(out)?;
+        self.pos += n as u64;
+        self.inner_pos = Some(self.pos);
+        Ok(n)
+    }
+}
+
+impl<R: Read + Seek> Seek for PatchedPrefix<R> {
+    fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+        let target: i128 = match to {
+            SeekFrom::Start(p) => p as i128,
+            SeekFrom::Current(d) => self.pos as i128 + d as i128,
+            SeekFrom::End(d) => {
+                let end = self.inner.seek(SeekFrom::End(0))?;
+                self.inner_pos = Some(end);
+                end as i128 + d as i128
+            }
+        };
+        if target < 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek before the start of the file"));
+        }
+        self.pos = target as u64;
+        Ok(self.pos)
+    }
+}
+
+/// The ID3v2 tag at the head of `reader` (header + body, as far as the file
+/// goes), or None when there isn't one. Leaves the reader wherever it ends.
+fn read_id3v2_prefix<R: Read>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>> {
+    let mut head = [0u8; 10];
+    let mut got = 0;
+    while got < 10 {
+        let n = reader.read(&mut head[got..])?;
+        if n == 0 {
+            break;
+        }
+        got += n;
+    }
+    if got < 10 || &head[..3] != b"ID3" {
+        return Ok(None);
+    }
+    let size = id3v2_syncsafe(&head[6..10]);
+    if size == 0 || size > MAX_ID3_NORMALISE {
+        return Ok(None);
+    }
+    let mut prefix = head.to_vec();
+    reader.by_ref().take(size as u64).read_to_end(&mut prefix)?;
+    Ok(Some(prefix))
+}
+
+/// Read a file's tags and properties through lofty with the ID3v2
+/// normaliser in front. `buf` is the whole file when the caller already
+/// holds it (the buffered fast path); otherwise the file is streamed, the
+/// way `Probe::open` would. Relaxed parsing on both: a frame with a
+/// malformed HEADER is skipped instead of failing the file.
+fn probe_audio(filepath: &Path, ext: &str, buf: Option<&[u8]>) -> lofty::error::Result<lofty::file::TaggedFile> {
+    fn read_tagged<R: Read + Seek>(reader: R, file_type: Option<FileType>) -> lofty::error::Result<lofty::file::TaggedFile> {
+        let mut probe = Probe::new(reader);
+        if let Some(ft) = file_type {
+            probe = probe.set_file_type(ft);
+        }
+        probe.options(ParseOptions::new().parsing_mode(ParsingMode::Relaxed)).read()
+    }
+    let file_type = FileType::from_ext(ext);
+    let note = |fixes: &Id3Fixes| {
+        if let Some(what) = fixes.defects() {
+            eprintln!("Warning: repaired the ID3v2 tag of {} while reading it: {}", filepath.display(), what);
+        }
+    };
+    match buf {
+        Some(bytes) => match normalize_id3v2(bytes) {
+            Some((patch, fixes)) => {
+                note(&fixes);
+                read_tagged(PatchedPrefix::new(patch, Cursor::new(bytes)), file_type)
+            }
+            None => read_tagged(Cursor::new(bytes), file_type),
+        },
+        None => {
+            let mut reader = BufReader::new(fs::File::open(filepath)?);
+            let patched = read_id3v2_prefix(&mut reader)?.and_then(|prefix| normalize_id3v2(&prefix));
+            reader.seek(SeekFrom::Start(0))?;
+            match patched {
+                Some((patch, fixes)) => {
+                    note(&fixes);
+                    read_tagged(PatchedPrefix::new(patch, reader), file_type)
+                }
+                None => read_tagged(reader, file_type),
+            }
+        }
+    }
+}
+
 // ── Utilities ───────────────────────────────────────────────────────────────
 
 // Borrowed extension — the old version eagerly allocated a String on
@@ -6342,4 +6722,228 @@ fn parse_num_of(s: &str) -> (Option<i64>, Option<i64>) {
         num.trim().parse::<u32>().ok().map(i64::from),
         total.and_then(|t| t.trim().parse::<u32>().ok()).map(i64::from),
     )
+}
+
+#[cfg(test)]
+mod id3_normaliser_tests {
+    use super::*;
+
+    fn syncsafe_bytes(n: usize) -> [u8; 4] {
+        [((n >> 21) & 0x7f) as u8, ((n >> 14) & 0x7f) as u8, ((n >> 7) & 0x7f) as u8, (n & 0x7f) as u8]
+    }
+    fn frame(major: u8, id: &[u8], flags: u16, body: &[u8], declared: Option<usize>) -> Vec<u8> {
+        let n = declared.unwrap_or(body.len());
+        let mut v = id.to_vec();
+        match major {
+            2 => v.extend([(n >> 16) as u8, (n >> 8) as u8, n as u8]),
+            3 => v.extend((n as u32).to_be_bytes()),
+            _ => v.extend(syncsafe_bytes(n)),
+        }
+        if major != 2 {
+            v.extend(flags.to_be_bytes());
+        }
+        v.extend_from_slice(body);
+        v
+    }
+    fn tag(major: u8, flags: u8, body: &[u8], pad: usize) -> Vec<u8> {
+        let mut v = b"ID3".to_vec();
+        v.extend([major, 0, flags]);
+        v.extend(syncsafe_bytes(body.len() + pad));
+        v.extend_from_slice(body);
+        v.resize(v.len() + pad, 0);
+        v
+    }
+    fn unsync(b: &[u8]) -> Vec<u8> {
+        let mut o = Vec::new();
+        for &x in b {
+            o.push(x);
+            if x == 0xff {
+                o.push(0);
+            }
+        }
+        o
+    }
+    fn utf16(s: &str) -> Vec<u8> {
+        let mut v = vec![1, 0xff, 0xfe];
+        for u in s.encode_utf16() {
+            v.extend(u.to_le_bytes());
+        }
+        v
+    }
+    fn latin1(s: &str) -> Vec<u8> {
+        let mut v = vec![0];
+        v.extend(s.bytes());
+        v
+    }
+    /// (id, flags, body) of every frame in a tag the normaliser produced.
+    fn frames_of(t: &[u8]) -> Vec<(Vec<u8>, u16, Vec<u8>)> {
+        let major = t[3];
+        let (hl, id_len) = if major == 2 { (6, 3) } else { (10, 4) };
+        let data = &t[10..];
+        let mut out = Vec::new();
+        let mut pos = 0;
+        while pos + hl <= data.len() && data[pos] != 0 {
+            let n = match major {
+                2 => (data[pos + 3] as usize) << 16 | (data[pos + 4] as usize) << 8 | data[pos + 5] as usize,
+                3 => u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]) as usize,
+                _ => id3v2_syncsafe(&data[pos + 4..pos + 8]),
+            };
+            let flags = if major == 2 { 0 } else { u16::from_be_bytes([data[pos + 8], data[pos + 9]]) };
+            out.push((data[pos..pos + id_len].to_vec(), flags, data[pos + hl..pos + hl + n].to_vec()));
+            pos += hl + n;
+        }
+        out
+    }
+
+    #[test]
+    fn clean_tags_are_left_alone() {
+        let v23 = tag(3, 0, &[frame(3, b"TIT2", 0, &latin1("Title"), None), frame(3, b"TPE1", 0, &utf16("Art\u{ff}ist"), None)].concat(), 16);
+        assert!(normalize_id3v2(&v23).is_none());
+        let v24 = tag(4, 0, &frame(4, b"TIT2", 0, &utf16("Title"), None), 16);
+        assert!(normalize_id3v2(&v24).is_none());
+        // v2.3 whole-tag unsynchronisation is lofty's to read.
+        let v23u = tag(3, 0x80, &unsync(&frame(3, b"TPE1", 0, &utf16("Art\u{ff}ist"), None)), 0);
+        assert!(normalize_id3v2(&v23u).is_none());
+        assert!(normalize_id3v2(b"not a tag at all").is_none());
+        assert!(normalize_id3v2(b"ID3\x03\x00\x00\x00\x00\x00\x00").is_none());
+    }
+
+    #[test]
+    fn v24_tag_level_unsync_is_destuffed_per_frame() {
+        // What a TagLib-era writer produces: the tag flag set, stuffed frames
+        // carrying their own unsync (+ data length indicator) flags, and a
+        // latin1 frame nothing needed stuffing in.
+        let pe1 = utf16("Emancipat\u{ff}or"); // 'ÿ' = FF 00 in UTF-16LE → stuffed
+        let mut pe1_body = syncsafe_bytes(pe1.len()).to_vec();
+        pe1_body.extend(unsync(&pe1));
+        let alb = utf16("Safe \u{ff}");
+        let frames = [
+            frame(4, b"TPE1", 0x0003, &pe1_body, None),
+            frame(4, b"TIT2", 0, &latin1("Greenland"), None),
+            frame(4, b"TALB", 0x0002, &unsync(&alb), None),
+        ]
+        .concat();
+        let t = tag(4, 0x80, &frames, 32);
+        let (out, fixes) = normalize_id3v2(&t).expect("rewritten");
+        assert_eq!(out.len(), t.len());
+        assert_eq!(out[5], 0, "tag-level unsync flag cleared");
+        assert_eq!(&out[6..10], &t[6..10], "declared tag size unchanged");
+        assert_eq!(fixes, Id3Fixes { unsync: 3, ..Id3Fixes::default() });
+        assert!(fixes.defects().is_none(), "lofty's bug is not the file's defect");
+        let mut expect_pe1 = syncsafe_bytes(pe1.len()).to_vec();
+        expect_pe1.extend(&pe1);
+        assert_eq!(
+            frames_of(&out),
+            vec![
+                (b"TPE1".to_vec(), 0x0001, expect_pe1),
+                (b"TIT2".to_vec(), 0, latin1("Greenland")),
+                (b"TALB".to_vec(), 0, alb),
+            ]
+        );
+    }
+
+    #[test]
+    fn odd_length_utf16_becomes_u_fffd_like_music_metadata() {
+        let mut odd = utf16("Odd");
+        odd.push(0); // one stray terminator byte
+        let t = tag(3, 0, &[frame(3, b"TIT2", 0, &odd, None), frame(3, b"TALB", 0, &latin1("Alb"), None)].concat(), 8);
+        let (out, fixes) = normalize_id3v2(&t).expect("rewritten");
+        assert_eq!(out.len(), t.len());
+        assert_eq!(fixes.odd_utf16, 1);
+        let mut expect = utf16("Odd");
+        expect.extend([0xfd, 0xff]); // U+FFFD, little-endian
+        assert_eq!(frames_of(&out), vec![(b"TIT2".to_vec(), 0, expect), (b"TALB".to_vec(), 0, latin1("Alb"))]);
+        assert!(fixes.defects().unwrap().contains("odd byte count"));
+        // No padding to grow into: the stray byte is dropped instead.
+        let tight = tag(3, 0, &frame(3, b"TIT2", 0, &odd, None), 0);
+        let (out, _) = normalize_id3v2(&tight).expect("rewritten");
+        assert_eq!(out.len(), tight.len());
+        assert_eq!(frames_of(&out)[0].2, utf16("Odd"));
+    }
+
+    #[test]
+    fn non_utf8_text_is_re_encoded_lossily_when_it_fits() {
+        let mut lied = vec![3];
+        lied.extend(b"Bj\xf6rk"); // latin1 bytes flagged UTF-8
+        let t = tag(3, 0, &frame(3, b"TPE1", 0, &lied, None), 8);
+        let (out, fixes) = normalize_id3v2(&t).expect("rewritten");
+        assert_eq!(out.len(), t.len());
+        assert_eq!(fixes.bad_utf8, 1);
+        let mut expect = vec![3];
+        expect.extend("Bj\u{fffd}rk".as_bytes());
+        assert_eq!(frames_of(&out)[0].2, expect);
+        // Too tight for the three-byte replacement: '?' keeps the length.
+        let tight = tag(3, 0, &frame(3, b"TPE1", 0, &lied, None), 1);
+        let (out, _) = normalize_id3v2(&tight).expect("rewritten");
+        assert_eq!(out.len(), tight.len());
+        let mut expect = vec![3];
+        expect.extend(b"Bj?rk");
+        assert_eq!(frames_of(&out)[0].2, expect);
+    }
+
+    #[test]
+    fn a_frame_overrunning_the_tag_is_clamped() {
+        let short = latin1("Truncated Al");
+        let t = tag(3, 0, &[frame(3, b"TIT2", 0, &latin1("T"), None), frame(3, b"TALB", 0, &short, Some(40))].concat(), 0);
+        let (out, fixes) = normalize_id3v2(&t).expect("rewritten");
+        assert_eq!(out.len(), t.len());
+        assert!(fixes.truncated);
+        assert_eq!(frames_of(&out), vec![(b"TIT2".to_vec(), 0, latin1("T")), (b"TALB".to_vec(), 0, short)]);
+    }
+
+    #[test]
+    fn v23_whole_tag_unsync_is_walked_destuffed() {
+        let mut odd = utf16("Odd\u{ff}");
+        odd.push(0);
+        let t = tag(3, 0x80, &unsync(&frame(3, b"TIT2", 0, &odd, None)), 8);
+        let (out, fixes) = normalize_id3v2(&t).expect("rewritten");
+        assert_eq!(out.len(), t.len());
+        assert_eq!(out[5], 0);
+        assert_eq!(fixes.odd_utf16, 1);
+        let mut expect = utf16("Odd\u{ff}");
+        expect.extend([0xfd, 0xff]);
+        assert_eq!(frames_of(&out)[0].2, expect);
+    }
+
+    #[test]
+    fn v22_frames_are_handled() {
+        let mut odd = utf16("Odd");
+        odd.push(0);
+        let t = tag(2, 0, &[frame(2, b"TT2", 0, &odd, None), frame(2, b"TAL", 0, &latin1("Alb"), None)].concat(), 4);
+        let (out, fixes) = normalize_id3v2(&t).expect("rewritten");
+        assert_eq!(out.len(), t.len());
+        assert_eq!(fixes.odd_utf16, 1);
+        let mut expect = utf16("Odd");
+        expect.extend([0xfd, 0xff]);
+        assert_eq!(frames_of(&out), vec![(b"TT2".to_vec(), 0, expect), (b"TAL".to_vec(), 0, latin1("Alb"))]);
+    }
+
+    #[test]
+    fn extended_headers_and_v22_compression_are_left_to_lofty() {
+        let t = tag(3, 0x40, &frame(3, b"TIT2", 0, &latin1("T"), None), 0);
+        assert!(normalize_id3v2(&t).is_none());
+        let t = tag(2, 0x40, &frame(2, b"TT2", 0, &latin1("T"), None), 0);
+        assert!(normalize_id3v2(&t).is_none());
+    }
+
+    #[test]
+    fn patched_prefix_serves_the_patch_then_the_file() {
+        let mut r = PatchedPrefix::new(b"ABCDE".to_vec(), Cursor::new(b"0123456789".to_vec()));
+        let mut all = Vec::new();
+        r.read_to_end(&mut all).unwrap();
+        assert_eq!(all, b"ABCDE56789");
+        r.seek(SeekFrom::Start(3)).unwrap();
+        let mut four = [0u8; 4];
+        r.read_exact(&mut four).unwrap();
+        assert_eq!(&four, b"DE56");
+        assert_eq!(r.seek(SeekFrom::End(-2)).unwrap(), 8);
+        let mut rest = Vec::new();
+        r.read_to_end(&mut rest).unwrap();
+        assert_eq!(rest, b"89");
+        assert_eq!(r.seek(SeekFrom::Current(-4)).unwrap(), 6);
+        let mut two = [0u8; 2];
+        r.read_exact(&mut two).unwrap();
+        assert_eq!(&two, b"67");
+        assert!(r.seek(SeekFrom::Current(-100)).is_err());
+    }
 }

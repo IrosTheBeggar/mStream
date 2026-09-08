@@ -821,8 +821,13 @@ async function getAlbumArt(songInfo) {
   }
 }
 
+// Cache names whose bytes Jimp could not decode this run: one warning per
+// picture, not one per track sharing it (an album's worth otherwise).
+const thumbnailFailures = new Set();
+
 async function compressAlbumArt(buff, imgName) {
   if (loadJson.compressImage === false) { return; }
+  if (thumbnailFailures.has(imgName)) { return; }
   // Once per cache file, not once per parsed track: the name is
   // content-addressed, so existing thumbnails are always current. Without
   // this gate every (re)parsed track re-decodes + re-resizes its elected
@@ -830,9 +835,27 @@ async function compressAlbumArt(buff, imgName) {
   // scan, and the V49 forced rescan would re-encode the whole library.
   if (fs.existsSync(path.join(loadJson.albumArtDirectory, 'zl-' + imgName))) { return; }
 
-  const img = await Jimp.fromBuffer(buff);
-  await img.scaleToFit({ w: 256, h: 256 }).write(path.join(loadJson.albumArtDirectory, 'zl-' + imgName));
-  await img.scaleToFit({ w: 92, h: 92 }).write(path.join(loadJson.albumArtDirectory, 'zs-' + imgName));
+  // music-metadata hands embedded pictures over as a bare Uint8Array.
+  // Jimp's decoders want a Node Buffer — pngjs dies on a plain view with
+  // "data.readUInt32BE is not a function" — and that error used to bubble
+  // out of parseMyFile and cost the track its row: every file with
+  // embedded PNG art, whenever compressImage was on. Same bytes, no copy.
+  const input = Buffer.isBuffer(buff) ? buff
+    : ArrayBuffer.isView(buff) ? Buffer.from(buff.buffer, buff.byteOffset, buff.byteLength)
+      : Buffer.from(buff);
+  try {
+    const img = await Jimp.fromBuffer(input);
+    await img.scaleToFit({ w: 256, h: 256 }).write(path.join(loadJson.albumArtDirectory, 'zl-' + imgName));
+    await img.scaleToFit({ w: 92, h: 92 }).write(path.join(loadJson.albumArtDirectory, 'zs-' + imgName));
+  } catch (err) {
+    // Thumbnails are best-effort, like compress_album_art in rust-parser
+    // (which returns on a decode failure): the full-size cache file is
+    // already written and the art route serves it when a zl-/zs- variant
+    // is missing. A picture Jimp can't decode — WebP, a truncated JPEG,
+    // bytes that aren't an image at all — must not cost the track its row.
+    thumbnailFailures.add(imgName);
+    console.error(`Warning: album art thumbnails skipped for ${imgName}: ${err.message}`);
+  }
 }
 
 // Write a track's art set (built by getAlbumArt) into art_files + the
