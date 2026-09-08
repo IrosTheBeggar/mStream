@@ -487,7 +487,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm install --prefix scripts --no-save --no-audit --no-fund --ignore-scripts resedit@3.0.2 pe-library@2.0.1
+          npm install --prefix scripts --no-save --no-audit --no-fund --ignore-scripts resedit@3.1.0 pe-library@2.0.1
           node -e '
             const want = require("./package-lock.json").packages;
             const got = require("./scripts/node_modules/.package-lock.json").packages;
