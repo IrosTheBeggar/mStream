@@ -6290,6 +6290,9 @@ fn save_resized(img: &image::DynamicImage, art_dir: &str, filename: &str) {
 //      music-metadata decodes with U+FFFD replacements.
 //   4. a frame whose declared size runs past the end of the tag. lofty
 //      errors; music-metadata decodes the bytes that are there and stops.
+//      (Only for a frame with a real id: junk in the padding area — an id
+//      that isn't A–Z/0–9 — both readers step over by its declared size
+//      and stop at when that overruns, and so does this walk.)
 //
 // normalize_id3v2 walks the frame HEADERS of the tag at the head of the
 // file — no frame body is interpreted beyond its encoding byte — and
@@ -6416,6 +6419,21 @@ fn normalize_id3v2_pass(bytes: &[u8], grow: bool) -> Option<(Vec<u8>, Id3Fixes)>
         let fflags = if major == 2 { 0 } else { u16::from_be_bytes([data[pos + 8], data[pos + 9]]) };
         let body_start = pos + hl;
         let truncated = declared > data.len() - body_start;
+        // lofty's rule for a frame id: A–Z / 0–9 (a v2.3 tag may carry a
+        // v2.2 id padded with a NUL). Anything else is junk in the padding
+        // area — skipped by its declared size, parsing stops when that runs
+        // past the tag — not a frame to repair.
+        let id_core = if major == 3 && id[3] == 0 { &id[..3] } else { id };
+        if !id_core.iter().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()) {
+            if truncated {
+                break;
+            }
+            if let Some(o) = out.as_mut() {
+                o.extend_from_slice(&data[pos..body_start + declared]);
+            }
+            pos = body_start + declared;
+            continue;
+        }
         let raw_body = &data[body_start..(body_start + declared).min(data.len())];
         // lofty's reading of the frame flags, per version.
         let (compressed, encrypted, grouping, frame_unsync, dli) = match major {
@@ -6916,6 +6934,34 @@ mod id3_normaliser_tests {
         let mut expect = utf16("Odd");
         expect.extend([0xfd, 0xff]);
         assert_eq!(frames_of(&out), vec![(b"TT2".to_vec(), 0, expect), (b"TAL".to_vec(), 0, latin1("Alb"))]);
+    }
+
+    #[test]
+    fn junk_in_the_padding_area_is_not_a_repair() {
+        // A tag whose padding holds leftovers of an older, longer tag: an
+        // id that isn't A-Z/0-9 with a huge "size". lofty and music-metadata
+        // both stop there; nothing to fix.
+        let mut junk = b"t\x00\x01\x02".to_vec();
+        junk.extend([0x42, 0x00, 0x00, 0x6e, 0x00, 0x00]);
+        junk.extend(b"leftover bytes of an older tag");
+        let t = tag(3, 0, &[frame(3, b"TIT2", 0, &latin1("Title"), None), junk.clone()].concat(), 0);
+        assert!(normalize_id3v2(&t).is_none());
+        // Junk that FITS is stepped over, verbatim, and a real defect past it
+        // is still fixed.
+        let small_junk = frame(3, b"t  1", 0, b"\x01\x02\x03\x04", None);
+        let mut odd = utf16("Odd");
+        odd.push(0);
+        let t = tag(3, 0, &[frame(3, b"TIT2", 0, &latin1("Title"), None), small_junk.clone(), frame(3, b"TALB", 0, &odd, None)].concat(), 8);
+        let (out, fixes) = normalize_id3v2(&t).expect("rewritten");
+        assert_eq!(out.len(), t.len());
+        assert_eq!(fixes.odd_utf16, 1);
+        assert!(!fixes.truncated);
+        let mut expect = utf16("Odd");
+        expect.extend([0xfd, 0xff]);
+        assert_eq!(
+            frames_of(&out),
+            vec![(b"TIT2".to_vec(), 0, latin1("Title")), (b"t  1".to_vec(), 0, b"\x01\x02\x03\x04".to_vec()), (b"TALB".to_vec(), 0, expect)]
+        );
     }
 
     #[test]
