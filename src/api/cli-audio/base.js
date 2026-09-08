@@ -13,8 +13,7 @@ import WebError from '../../util/web-error.js';
 const LOOP_MODES = ['none', 'one', 'all'];
 
 export class BaseCliAdapter {
-  constructor(playerName) {
-    this.playerName = playerName;
+  constructor() {
     this.queue = [];
     this.queueIndex = 0;
     this.shuffle = false;

@@ -17,6 +17,7 @@ import * as discoveryExport from '../db/discovery-export.js';
 import { EMBEDDING_MODELS } from '../db/discovery-features-lib.js';
 import * as discoveryP2p from '../state/discovery-p2p.js';
 import * as sidecarBootstrap from '../util/p2p-sidecar-bootstrap.js';
+import * as playerBootstrap from '../util/mstream-player-bootstrap.js';
 import * as discoveryCatalog from '../state/discovery-catalog.js';
 import * as discoverySeeds from '../state/discovery-seeds.js';
 import * as discoveryStack from '../state/discovery-p2p-stack.js';
@@ -25,7 +26,7 @@ import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
 import { isAdminAllowed } from '../util/admin-network.js';
 import WebError from '../util/web-error.js';
-import { bootRustPlayer, killRustPlayer, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers, playerBinaryFetchable } from './server-playback.js';
+import { bootRustPlayer, killRustPlayer, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers } from './server-playback.js';
 import * as lyricsLrclib from './lyrics-cache.js';
 import { warmScrobbleUser } from './scrobbler.js';
 // Torrent admin endpoints live in their own module — see
@@ -1655,7 +1656,7 @@ export function setup(mstream) {
       // Whether a missing player binary could be fetched for this platform
       // (npm/source installs download it on first autoBoot; musl hosts
       // have no build and report false).
-      binaryFetchable: playerBinaryFetchable(),
+      binaryFetchable: playerBootstrap.canAutoFetch(),
     });
   });
 

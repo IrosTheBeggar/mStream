@@ -392,7 +392,9 @@ var MSTREAMPLAYER = (function () {
 
   // ── Hide irrelevant UI elements ───────────────────────────────────────
   // Use CSS injection so elements are hidden immediately, even if Vue
-  // components mount after DOMContentLoaded.
+  // components mount after DOMContentLoaded. This is the one place that
+  // hides UI for server-audio mode: the /server-remote handler only swaps
+  // scripts and replaces the visualizer button with a badge.
 
   var hideCSS = document.createElement('style');
   hideCSS.textContent =
@@ -412,28 +414,6 @@ var MSTREAMPLAYER = (function () {
     '#livePlaylist { display: none !important; }';
   document.head.appendChild(hideCSS);
 
-  function hideElements() {
-    // Badge is now inline in the player bar (replaces visualizer button server-side)
-  }
-
-  // Some elements are rendered by Vue after mount, so we need to retry
-  // hiding them until they appear in the DOM.
-  var hideRetries = 0;
-  function hideVueElements() {
-    var hidden = 0;
-
-    // Visualizer button (Vue v-on:click="fadeOverlay" — no onclick attr to target via CSS)
-    var allSvgs = document.querySelectorAll('#mstream-player svg[viewBox="0 0 512 512"]');
-    allSvgs.forEach(function (svg) {
-      if (svg.parentElement) { svg.parentElement.style.display = 'none'; hidden++; }
-    });
-
-    hideRetries++;
-    if (hidden === 0 && hideRetries < 20) {
-      setTimeout(hideVueElements, 250);
-    }
-  }
-
   // Stub out the visualizer
   window.VIZ = {
     toggleDom: function () {},
@@ -441,10 +421,8 @@ var MSTREAMPLAYER = (function () {
     get: function () { return null; }
   };
 
-  // Start polling and hide UI when DOM is ready
+  // Start polling when DOM is ready
   function init() {
-    hideElements();
-    hideVueElements();
     startPolling();
     // Wait for MSTREAMAPI to be available before loading queue
     function tryLoadQueue() {

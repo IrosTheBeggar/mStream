@@ -104,7 +104,10 @@ tags:
   - name: Scrobbler - Last.fm
     description: Last.fm scrobbling integration.
   - name: Server Playback
-    description: Proxy to the bundled Rust audio player.
+    description: >-
+      Server-side playback. Proxies to the mstream-player engine, or to a CLI
+      player (mpv, MPD, VLC, MPlayer) when the engine is unavailable. Every
+      route requires the per-user allow_server_audio flag; admins always pass.
   - name: Jukebox
     description: Remote-control mode via WebSocket-backed REST.
   - name: YouTube DL
@@ -3174,7 +3177,33 @@ paths:
     get:
       tags: [Server Playback]
       summary: Get playback state
-      responses: { "200": { description: Proxied response. } }
+      description: >-
+        The active backend's own status object (playing, paused, position,
+        duration, volume, queue_index, queue_length, shuffle, loop_mode, ...)
+        with two fields added by the proxy that say which backend answered.
+      responses:
+        "200":
+          description: Proxied status.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                properties:
+                  backend:
+                    type: string
+                    nullable: true
+                    enum: [rust, cli, null]
+                    description: "`rust` for the mstream-player engine, `cli` for a CLI fallback."
+                  player:
+                    type: string
+                    nullable: true
+                    description: "`mstream-player`, or the CLI player name (`mpv`, `mpd`, `vlc`, `mplayer`)."
+        "503":
+          description: No server-audio backend is running.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /api/v1/server-playback/queue:
     get:
       tags: [Server Playback]
@@ -3280,16 +3309,22 @@ paths:
     get:
       tags: [Server Playback]
       summary: Server-audio webapp
-      description: Static HTML for the server-audio player mode.
-      security: []
+      description: >-
+        index.html with the browser player swapped for the server-audio
+        client. Sits behind the same auth wall and per-user allow_server_audio
+        gate as the /api/v1/server-playback/* routes.
       responses:
         "200":
           description: HTML.
           content:
             text/html:
               schema: { type: string }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "503":
-          description: Rust audio server unavailable.
+          description: No server-audio backend is running (an HTML error page with a retry link).
+          content:
+            text/html:
+              schema: { type: string }
 
   # ── Jukebox ──────────────────────────────────────────────────────────────
 
@@ -4293,7 +4328,12 @@ paths:
   /api/v1/admin/config/auto-boot-server-audio:
     post:
       tags: [Admin - Config]
-      summary: Toggle auto-start of the Rust audio server
+      summary: Choose the server-audio backend preference
+      description: >-
+        true prefers the mstream-player engine (fetching it on first use where a
+        build is published) and falls back to a CLI player if it is missing or
+        dies during startup; false skips the engine and uses a CLI player only,
+        MPD first. Server audio is re-booted immediately either way.
       requestBody:
         required: true
         content:
@@ -4322,6 +4362,64 @@ paths:
                 rustPlayerPort: { type: integer, minimum: 1, maximum: 65535 }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/server-audio/info:
+    get:
+      tags: [Admin - Config]
+      summary: Active server-audio backend and what else is available
+      description: >-
+        Reads the CLI-detection snapshot taken at boot, on every autoBoot
+        change, and by /api/v1/admin/server-audio/detect. Never probes.
+      responses:
+        "200":
+          description: Backend status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backend:
+                    type: string
+                    nullable: true
+                    enum: [rust, cli, null]
+                    description: null when no backend is running.
+                  player:
+                    type: string
+                    nullable: true
+                    description: mstream-player, or the active CLI player's name.
+                  detectedCliPlayers:
+                    type: array
+                    items: { type: string, enum: [mpv, mpd, vlc, mplayer] }
+                    description: Installed or reachable CLI players, in fallback priority order.
+                  binaryFetchable:
+                    type: boolean
+                    description: >-
+                      Whether a missing mstream-player binary can be downloaded for
+                      this platform. npm and source installs fetch it on the first
+                      autoBoot; musl hosts have no build and report false.
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/server-audio/detect:
+    post:
+      tags: [Admin - Config]
+      summary: Re-run CLI player detection
+      description: >-
+        Probes for mpv, MPD, VLC and MPlayer again and refreshes the snapshot
+        that /api/v1/admin/server-audio/info reports. Use it after installing
+        or removing a player without restarting the server. Does not change
+        the active backend.
+      responses:
+        "200":
+          description: Fresh detection result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detectedCliPlayers:
+                    type: array
+                    items: { type: string, enum: [mpv, mpd, vlc, mplayer] }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/config/secret:
