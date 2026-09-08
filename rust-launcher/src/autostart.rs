@@ -4,18 +4,20 @@
 // run — after that the user's choice (tray toggle, or --autostart=disable)
 // is never overridden, which is why the first-run marker exists.
 use crate::paths;
-use auto_launch::{AutoLaunch, AutoLaunchBuilder};
+use auto_launch::{AutoLaunch, AutoLaunchBuilder, LinuxLaunchMode, MacOSLaunchMode, WindowsEnableMode};
 
 fn launcher() -> Option<AutoLaunch> {
     let exe = std::env::current_exe().ok()?;
     let path = exe.to_string_lossy();
-    // auto-launch 0.5 does no quoting: the Windows Run value and the XDG
-    // .desktop Exec line are written as `{path} {args}` verbatim, so an
-    // install path with a space ("...\My Apps\mStream.exe") word-splits and
-    // login-start silently launches nothing while the entry reads enabled.
-    // Quote it ourselves on those platforms. macOS stays raw: the
-    // LaunchAgent plist carries the path as its own <string> element, where
-    // quotes would become part of the filename.
+    // auto-launch does no quoting (0.6 included — its windows.rs and
+    // linux.rs writers are still `format!("{} {}", path, args)`): the
+    // Windows Run value and the XDG .desktop Exec line are written as
+    // `{path} {args}` verbatim, so an install path with a space
+    // ("...\My Apps\mStream.exe") word-splits and login-start silently
+    // launches nothing while the entry reads enabled. Quote it ourselves on
+    // those platforms. macOS stays raw: the LaunchAgent plist carries the
+    // path as its own <string> element, where quotes would become part of
+    // the filename — and 0.6's enable() also insists the raw path EXISTS.
     #[cfg(target_os = "macos")]
     let path = path.into_owned();
     #[cfg(not(target_os = "macos"))]
@@ -26,76 +28,61 @@ fn launcher() -> Option<AutoLaunch> {
         // The login-item launch must come up silent (tray only, no browser
         // tab over the user's login) — that's what --autostarted means.
         .set_args(&["--autostarted"])
-        // macOS: a LaunchAgent plist, NOT the AppleScript/System Events
-        // login-item route (fragile, and prompts for automation consent).
-        .set_use_launch_agent(true)
+        // macOS: a LaunchAgent plist — NOT the AppleScript/System Events
+        // login-item route (fragile, and prompts for automation consent),
+        // and NOT 0.6's SMAppService route (macOS 13+ only, and it registers
+        // the running *bundle* — nothing for the bare mstream-desktop binary
+        // or an unsigned .app).
+        .set_macos_launch_mode(MacOSLaunchMode::LaunchAgent)
+        // Windows: HKCU only. 0.6's default (Dynamic) tries HKLM first and
+        // only falls back to HKCU on access-denied — an ELEVATED launcher
+        // would register a machine-wide login item for every account,
+        // pointing at this user's install.
+        .set_windows_enable_mode(WindowsEnableMode::CurrentUser)
+        // Linux: the XDG autostart .desktop entry, as before 0.6. The new
+        // systemd --user alternative has no session/display guarantee for a
+        // tray app.
+        .set_linux_launch_mode(LinuxLaunchMode::XdgAutostart)
         .build()
         .ok()
 }
 
+/// On Windows, auto-launch 0.6 also honours Task Manager's Startup tab
+/// (the StartupApproved\Run override): an entry the user switched off there
+/// reads disabled here, so the tray checkbox follows the OS's own view.
 pub fn is_enabled() -> bool {
     launcher().map(|a| a.is_enabled().unwrap_or(false)).unwrap_or(false)
 }
 
 pub fn set_enabled(on: bool) -> Result<(), String> {
     let a = launcher().ok_or("could not resolve the launcher executable")?;
-    if on {
-        ensure_autostart_parent_dir();
-    }
     match if on { a.enable() } else { a.disable() } {
         Ok(()) => Ok(()),
-        // Disable is idempotent: on Windows auto-launch's disable() is a bare
-        // `delete_value` and fails with "cannot find the file specified (os
-        // error 2)" when the Run value doesn't exist — while Linux/macOS
-        // return Ok for a missing file. An uninstaller or script asking for
+        // Disable is idempotent. With auto-launch 0.5 the Windows disable()
+        // was a bare `delete_value` that failed with "cannot find the file
+        // specified (os error 2)" when the Run value didn't exist; 0.6 maps
+        // that to Ok itself (and a missing Run KEY now reads "disabled"
+        // instead of erroring). The guard stays as the contract regardless
+        // of the crate's error surface: an uninstaller or script asking for
         // a state that already holds must not get exit 1. Judge by the
         // outcome: if the item is not enabled after the attempt, the request
         // is satisfied. (An unreadable state stays an error — nothing was
-        // proven. That includes a profile with no Run KEY at all: the
-        // crate's is_enabled() ?-propagates that open_subkey failure rather
-        // than reporting "disabled", so this guard deliberately does not
-        // vouch for it.)
+        // proven.)
         Err(_) if !on && !a.is_enabled().unwrap_or(true) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
 }
 
-// auto-launch writes into a per-user CONTAINER it does NOT create:
-// ~/.config/autostart on Linux, ~/Library/LaunchAgents on macOS, and the
-// HKCU Run key on Windows (enable/disable/is_enabled all use
-// open_subkey_with_flags — open, never create). Real lived-in accounts
-// always have them, but fresh or minimal profiles may not — the Linux gap
-// surfaced as ENOENT in a bare-$HOME Docker smoke, the Windows one as
-// `os error 2` on a fresh CI runner image at the v6.20.0 tag build.
-// Best-effort: a failure here just re-surfaces in enable()'s own error.
-fn ensure_autostart_parent_dir() {
-    #[cfg(windows)]
-    {
-        // create_subkey is open-or-create; plain HKCU write access, no
-        // elevation. Same key path auto-launch 0.5 hardcodes (AL_REGKEY).
-        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
-        let _ = RegKey::predef(HKEY_CURRENT_USER)
-            .create_subkey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run");
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::fs::create_dir_all(
-            crate::paths::home_dir().join("Library").join("LaunchAgents"),
-        );
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        // auto-launch 0.5's linux get_dir() is hardcoded to
-        // ~/.config/autostart — it never consults XDG_CONFIG_HOME — so THIS
-        // is the directory that must exist for enable() to succeed.
-        // Pre-creating $XDG_CONFIG_HOME/autostart instead re-opens the very
-        // ENOENT this helper exists to prevent. (Known limitation, not ours
-        // to paper over here: with XDG_CONFIG_HOME pointed elsewhere, a
-        // spec-compliant session manager reads autostart entries from a
-        // directory the crate never writes.)
-        let _ = std::fs::create_dir_all(crate::paths::home_dir().join(".config").join("autostart"));
-    }
-}
+// Container directories/keys are the crate's job since auto-launch 0.6:
+// `Key::create` on the HKCU Run key (open-or-create — 0.5 only ever OPENED
+// it, which failed with `os error 2` on a fresh CI runner image at the
+// v6.20.0 tag build), create_dir_all on ~/.config/autostart (the ENOENT a
+// bare-$HOME Docker smoke hit), create_dir on ~/Library/LaunchAgents. The
+// winreg pre-create this file used to carry for the Windows gap is gone with
+// it. Known limitation carried over from 0.5: the Linux dir is hardcoded to
+// ~/.config/autostart — XDG_CONFIG_HOME is never consulted, so with it
+// pointed elsewhere a spec-compliant session manager reads autostart entries
+// from a directory the crate never writes.
 
 /// First run of the desktop face: enable autostart once and remember that
 /// we did. MSTREAM_LAUNCHER_SKIP_AUTOSTART=1 is a testing hook so smokes
