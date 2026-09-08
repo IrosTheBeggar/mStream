@@ -2,7 +2,7 @@
 // Scans a directory for audio files and writes metadata directly to SQLite.
 // Spawned as a child process by task-queue.js.
 
-import { parseFile } from 'music-metadata';
+import { parseFile, parseBuffer } from 'music-metadata';
 import { DatabaseSync } from './sqlite-driver.js';
 import fs from 'fs';
 import path from 'path';
@@ -737,7 +737,9 @@ async function getAlbumArt(songInfo) {
   // same picture identically (see cache_art_bytes in rust-parser).
   const embedded = [];
   for (const pic of (Array.isArray(songInfo.picture) ? songInfo.picture : [])) {
-    if (!pic || !pic.data) { continue; }
+    // music-metadata already drops a picture with no bytes; the rust scanner
+    // skips them too (an APIC with an empty body is not a cover).
+    if (!pic || !pic.data || pic.data.length === 0) { continue; }
     const hash = crypto.createHash('md5').update(pic.data).digest('hex');
     embedded.push({
       cacheFile: hash + '.' + pictureExt(pic.format),
@@ -821,8 +823,13 @@ async function getAlbumArt(songInfo) {
   }
 }
 
+// Cache names whose bytes Jimp could not decode this run: one warning per
+// picture, not one per track sharing it (an album's worth otherwise).
+const thumbnailFailures = new Set();
+
 async function compressAlbumArt(buff, imgName) {
   if (loadJson.compressImage === false) { return; }
+  if (thumbnailFailures.has(imgName)) { return; }
   // Once per cache file, not once per parsed track: the name is
   // content-addressed, so existing thumbnails are always current. Without
   // this gate every (re)parsed track re-decodes + re-resizes its elected
@@ -830,9 +837,27 @@ async function compressAlbumArt(buff, imgName) {
   // scan, and the V49 forced rescan would re-encode the whole library.
   if (fs.existsSync(path.join(loadJson.albumArtDirectory, 'zl-' + imgName))) { return; }
 
-  const img = await Jimp.fromBuffer(buff);
-  await img.scaleToFit({ w: 256, h: 256 }).write(path.join(loadJson.albumArtDirectory, 'zl-' + imgName));
-  await img.scaleToFit({ w: 92, h: 92 }).write(path.join(loadJson.albumArtDirectory, 'zs-' + imgName));
+  // music-metadata hands embedded pictures over as a bare Uint8Array.
+  // Jimp's decoders want a Node Buffer — pngjs dies on a plain view with
+  // "data.readUInt32BE is not a function" — and that error used to bubble
+  // out of parseMyFile and cost the track its row: every file with
+  // embedded PNG art, whenever compressImage was on. Same bytes, no copy.
+  const input = Buffer.isBuffer(buff) ? buff
+    : ArrayBuffer.isView(buff) ? Buffer.from(buff.buffer, buff.byteOffset, buff.byteLength)
+      : Buffer.from(buff);
+  try {
+    const img = await Jimp.fromBuffer(input);
+    await img.scaleToFit({ w: 256, h: 256 }).write(path.join(loadJson.albumArtDirectory, 'zl-' + imgName));
+    await img.scaleToFit({ w: 92, h: 92 }).write(path.join(loadJson.albumArtDirectory, 'zs-' + imgName));
+  } catch (err) {
+    // Thumbnails are best-effort, like compress_album_art in rust-parser
+    // (which returns on a decode failure): the full-size cache file is
+    // already written and the art route serves it when a zl-/zs- variant
+    // is missing. A picture Jimp can't decode — WebP, a truncated JPEG,
+    // bytes that aren't an image at all — must not cost the track its row.
+    thumbnailFailures.add(imgName);
+    console.error(`Warning: album art thumbnails skipped for ${imgName}: ${err.message}`);
+  }
 }
 
 // Write a track's art set (built by getAlbumArt) into art_files + the
@@ -899,11 +924,75 @@ function pictureExt(format) {
 
 // ── Parse a single file ─────────────────────────────────────────────────────
 
+// Files past this are streamed to music-metadata as before, unsynchronised
+// tag or not: the de-stuff below needs the file in memory.
+const MAX_DESTUFF_FILE = 256 * 1024 * 1024;
+
+function id3v2Syncsafe(b, at) {
+  return ((b[at] & 0x7f) << 21) | ((b[at + 1] & 0x7f) << 14) | ((b[at + 2] & 0x7f) << 7) | (b[at + 3] & 0x7f);
+}
+
+// Reverse ID3v2 unsynchronisation: every 0xFF 0x00 pair is a stuffed 0xFF.
+function id3v2Deunsync(src) {
+  const out = Buffer.alloc(src.length);
+  let n = 0;
+  for (let i = 0; i < src.length; i++) {
+    out[n++] = src[i];
+    if (src[i] === 0xff && src[i + 1] === 0x00) { i++; }
+  }
+  return out.subarray(0, n);
+}
+
+// music-metadata, with one ID3v2 tag shape read the way lofty reads it.
+//
+// In ID3v2.2 and v2.3 the unsynchronisation flag on the TAG header means
+// the whole tag body was stuffed (a 0x00 after every 0xFF) and the frame
+// sizes describe the de-stuffed bytes. music-metadata only honours the v2.4
+// per-frame flag, so on such a tag it walks the stuffed bytes with
+// de-stuffed sizes: everything after the first stuffed byte is misaligned —
+// the embedded picture comes out corrupt (its stuffing still in, its tail
+// cut) and every later frame is lost — while lofty reads it correctly, so
+// the two engines disagreed. De-stuff the tag here and parse from memory.
+// The tag keeps its declared size (zero padding fills the gap), so nothing
+// after it moves. The v2.4 tag-level flag is per-frame semantics, which
+// music-metadata handles; the rust scanner's normalize_id3v2 covers the
+// lofty side of that one.
+function readId3v2Header(absolutePath) {
+  let fd = null;
+  try {
+    fd = fs.openSync(absolutePath, 'r');
+    const head = Buffer.alloc(10);
+    return fs.readSync(fd, head, 0, 10, 0) === 10 ? head : null;
+  } catch (_e) {
+    return null;                                 // let parseFile report it
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch (_e) { /* closed */ } }
+  }
+}
+
+function parseAudio(absolutePath, options) {
+  const head = readId3v2Header(absolutePath);
+  if (head && head.toString('latin1', 0, 3) === 'ID3' && (head[3] === 2 || head[3] === 3) && (head[5] & 0x80)) {
+    const size = id3v2Syncsafe(head, 6);
+    let file = null;
+    try {
+      if (fs.statSync(absolutePath).size <= MAX_DESTUFF_FILE) { file = fs.readFileSync(absolutePath); }
+    } catch (_e) { file = null; }
+    if (file && file.length >= 10 + size) {
+      const body = id3v2Deunsync(file.subarray(10, 10 + size));
+      const patched = Buffer.concat([file.subarray(0, 10), body, Buffer.alloc(size - body.length), file.subarray(10 + size)]);
+      patched[5] &= ~0x80;
+      return parseBuffer(patched, { path: absolutePath, size: patched.length }, options);
+    }
+  }
+  return parseFile(absolutePath, options);
+}
+
 async function parseMyFile(absolutePath, modified) {
   let songInfo;
   let parsedNative = null;
   try {
-    const parsed = await parseFile(absolutePath, { skipCovers: loadJson.skipImg });
+    const parsed = await parseAudio(absolutePath, { skipCovers: loadJson.skipImg });
     parsedNative = parsed.native;
     songInfo = parsed.common;
     songInfo.duration = parsed.format?.duration || null;
