@@ -53,17 +53,24 @@ export function mergeAlbumInto(db, survivorId, loserId, { copyTagName = true } =
 
 // Recompute year_min / year_max / track_count / duration_total for every
 // album (or only the flagged ones) in one GROUP BY pass and clear agg_dirty.
-// year / compilation / album_artist are left alone: the scan-end refresh
-// derives those from the tag_* consensus inputs. Trackless rows keep the
-// column defaults (0 / NULL).
+// compilation / album_artist are left alone: the scan-end refresh derives
+// those from the tag_* consensus inputs. So is a year the row already has;
+// a row WITHOUT one — a merged survivor whose own tracks carried no year
+// while the fragment it absorbed did — gets the mode of its tracks' years
+// (the refresh's own rule: most common, ties → earliest) instead of a NULL
+// until the forced rescan runs. Trackless rows keep the column defaults
+// (0 / NULL).
 export function backfillAlbumAggregates(db, { onlyDirty = false } = {}) {
   const dirtyOnly = onlyDirty ? 'AND albums.agg_dirty = 1' : '';
   db.exec(`
     UPDATE albums SET
+      year = COALESCE(albums.year, s.mode_year),
       year_min = s.ymin, year_max = s.ymax, track_count = s.n, duration_total = s.dur
-    FROM (SELECT album_id, MIN(year) AS ymin, MAX(year) AS ymax, COUNT(*) AS n,
-                 COALESCE(SUM(duration), 0) AS dur
-            FROM tracks WHERE album_id IS NOT NULL GROUP BY album_id) AS s
+    FROM (SELECT t.album_id, MIN(t.year) AS ymin, MAX(t.year) AS ymax, COUNT(*) AS n,
+                 COALESCE(SUM(t.duration), 0) AS dur,
+                 (SELECT t2.year FROM tracks t2 WHERE t2.album_id = t.album_id AND t2.year IS NOT NULL
+                    GROUP BY t2.year ORDER BY COUNT(*) DESC, t2.year ASC LIMIT 1) AS mode_year
+            FROM tracks t WHERE t.album_id IS NOT NULL GROUP BY t.album_id) AS s
     WHERE s.album_id = albums.id ${dirtyOnly};
     UPDATE albums SET agg_dirty = 0 ${onlyDirty ? 'WHERE agg_dirty = 1' : ''};`);
 }
