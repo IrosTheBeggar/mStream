@@ -40,7 +40,9 @@ export { PERFORMER_ROLES, CREDIT_ROLES, TRACK_ROLES };
 
 // Delimiters used to split a single-valued ARTIST tag into multiple
 // entries. Applied only to single values — multi-valued tags are honoured
-// natively.
+// natively. Matched case-insensitively: " Feat. " and " FT " are the same
+// delimiter as " feat. " (the Rust twin folds ASCII case the same way);
+// the exceptions list stays exact-spelling.
 const ARTIST_DELIMITERS = [
   ' / ',
   ' feat. ',
@@ -49,6 +51,7 @@ const ARTIST_DELIMITERS = [
   ' ft ',
   '; ',
 ];
+const DELIMITER_RES = ARTIST_DELIMITERS.map((d) => new RegExp(d.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
 
 // The credit fields and the tag key each is read from, per primary tag
 // format — the same keys lofty maps to ItemKey::TrackArtist / AlbumArtist /
@@ -88,7 +91,7 @@ export function splitArtistString(s, exceptions = []) {
   const used = [];
   // A value with no delimiter cannot be mis-split — skip the exceptions
   // pass (up to 500 `includes` per credit otherwise).
-  if (exceptions.length && ARTIST_DELIMITERS.some((d) => text.includes(d))) {
+  if (exceptions.length && DELIMITER_RES.some((re) => re.test(text))) {
     for (const ex of exceptions) {
       if (!ex || !text.includes(ex)) { continue; }
       used.push(ex);
@@ -96,11 +99,11 @@ export function splitArtistString(s, exceptions = []) {
     }
   }
   let parts = [text];
-  for (const delim of ARTIST_DELIMITERS) {
+  for (const re of DELIMITER_RES) {
     const next = [];
     for (const p of parts) {
-      if (p.includes(delim)) {
-        for (const piece of p.split(delim)) { next.push(piece); }
+      if (re.test(p)) {
+        for (const piece of p.split(re)) { next.push(piece); }
       } else {
         next.push(p);
       }
@@ -190,12 +193,50 @@ function fromCommon(common) {
  *   file (null when the frames could not be read → `degraded` view: the
  *   pre-split v2.2/v2.3 values re-joined with "/", flagged for the log)
  */
+// One text value out of a music-metadata native tag value: a string, the
+// first string of an array, or a TXXX object's text.
+function nativeText(value) {
+  if (typeof value === 'string') { return value.trim() || null; }
+  if (Array.isArray(value)) { return nativeText(value[0]); }
+  if (value && typeof value === 'object' && value.text !== undefined) { return nativeText(value.text); }
+  return null;
+}
+
+// The album artist carried as a TXXX frame described "ALBUMARTIST" or
+// "ALBUM ARTIST" (foobar2000, MediaMonkey), read only when TPE2 is absent.
+// Both TXXX shapes music-metadata emits are accepted (see source-detect.js);
+// the first value is taken, as the Rust twin does.
+export function txxxAlbumArtist(native) {
+  for (const [tagType, tags] of Object.entries(native || {})) {
+    if (!tagType.startsWith('ID3v2') || !Array.isArray(tags)) { continue; }
+    for (const t of tags) {
+      if (!t || typeof t.id !== 'string') { continue; }
+      const id = t.id.toUpperCase();
+      if (id === 'TXXX:ALBUMARTIST' || id === 'TXXX:ALBUM ARTIST') {
+        const v = nativeText(t.value);
+        if (v) { return v; }
+      } else if (id === 'TXXX' && t.value && typeof t.value === 'object') {
+        const desc = String(t.value.description || '').toUpperCase();
+        if (desc === 'ALBUMARTIST' || desc === 'ALBUM ARTIST') {
+          const v = nativeText(t.value.text);
+          if (v) { return v; }
+        }
+      }
+    }
+  }
+  return null;
+}
+
 export function creditValuesFromParsed(parsed, rawId3 = null) {
   const native = parsed?.native || {};
   if (id3IsPrimary(parsed)) {
     if (rawId3) {
       const out = {};
       for (const field of CREDIT_FIELDS) { out[field] = creditValues(rawId3[ID3_KEYS[field][0]]); }
+      if (!out.albumArtists.length) {
+        const fromTxxx = txxxAlbumArtist(native);
+        if (fromTxxx) { out.albumArtists = [fromTxxx]; }
+      }
       return out;
     }
     // Degraded: music-metadata's view. Its v2.2/v2.3 arrays for TPE1 / TCOM /
@@ -208,6 +249,10 @@ export function creditValuesFromParsed(parsed, rawId3 = null) {
       for (const field of ID3_PRESPLIT_FIELDS) {
         if (out[field].length > 1) { out[field] = [out[field].join('/')]; }
       }
+    }
+    if (!out.albumArtists.length) {
+      const fromTxxx = txxxAlbumArtist(native);
+      if (fromTxxx) { out.albumArtists = [fromTxxx]; }
     }
     out.degraded = true;
     return out;

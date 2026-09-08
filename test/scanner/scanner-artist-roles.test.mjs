@@ -210,6 +210,22 @@ for (const engine of ['rust', 'js']) {
       });
     });
 
+    test('a capitalised delimiter splits too, and TXXX:ALBUM ARTIST stands in for a missing TPE2', { skip: !available() && 'ffmpeg or rust-parser unavailable' }, async () => {
+      const sb = await makeSandbox(engine);
+      const p1 = path.join(sb.libRoot, 'Cap', '01.mp3');
+      await makeAudio(p1, MP3, { title: 'Cap1', artist: 'Atb Feat. Jansoon', album: 'Cap' });
+      const p2 = path.join(sb.libRoot, 'Cap', '02.mp3');
+      await makeAudio(p2, MP3, { title: 'Cap2', artist: 'Solo Cap', album: 'Cap' });
+      // A TXXX frame described "ALBUM ARTIST" (its body: description, NUL, text).
+      await appendId3TextFrames(p2, { TXXX: 'ALBUM ARTIST\0Cap Band' });
+      await sb.scan();
+      withDb(sb.dbPath, db => {
+        assert.deepEqual(credits(db, 'Cap1'), [['featured', 1, 'Jansoon'], ['main', 0, 'Atb']]);
+        assert.equal(display(db, 'Cap1'), 'Atb Feat. Jansoon');
+        assert.equal(db.prepare("SELECT al.album_artist FROM tracks t JOIN albums al ON al.id = t.album_id WHERE t.title = 'Cap2'").get().album_artist, 'Cap Band');
+      });
+    });
+
     test('artistSplitExceptions keeps a listed name whole (exact spelling)', { skip: !available() && 'ffmpeg or rust-parser unavailable' }, async () => {
       const withEx = await makeSandbox(engine);
       await makeAudio(path.join(withEx.libRoot, 'Ex', '01.mp3'), MP3, { title: 'E1', artist: 'AC / DC feat. Bon', album: 'Ex' });

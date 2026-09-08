@@ -3257,6 +3257,23 @@ fn extract_track(
                 // Picard writes) is deliberately not read — the JS twin reads
                 // the same keys from the primary tag.
                 album_artists_multi = text_items(tag, &ItemKey::AlbumArtist);
+                // TXXX:ALBUMARTIST / "ALBUM ARTIST" when there is no TPE2
+                // (foobar2000, MediaMonkey): lofty 0.22 keeps such a frame
+                // as ItemKey::Unknown(description). The JS twin reads the
+                // same frame from music-metadata's native view; both take
+                // its first value.
+                if album_artists_multi.is_empty() && tag.tag_type() == lofty::tag::TagType::Id3v2 {
+                    let from_txxx = tag.items().find_map(|item| match (item.key(), item.value()) {
+                        (ItemKey::Unknown(k), ItemValue::Text(t))
+                            if (k.eq_ignore_ascii_case("ALBUMARTIST") || k.eq_ignore_ascii_case("ALBUM ARTIST"))
+                                && !t.trim().is_empty() => Some(t.clone()),
+                        _ => None,
+                    });
+                    if let Some(v) = from_txxx {
+                        album_artist_tag = Some(v.clone());
+                        album_artists_multi = vec![v];
+                    }
+                }
                 track_artists_multi = text_items(tag, &ItemKey::TrackArtist);
                 // V72: composer / conductor / remixer / lyricist (TCOM / TPE3 /
                 // TPE4 / TEXT and the Vorbis / MP4 equivalents). Same value
@@ -4595,6 +4612,29 @@ const ARTIST_DELIMITERS: &[&str] = &[
     "; ",
 ];
 
+/// Byte offset of `needle` in `hay`, ASCII case folded — " Feat. " is the
+/// same delimiter as " feat. " (the JS twin matches with an `i` regex). The
+/// delimiters are ASCII, and an ASCII byte is always a char boundary in
+/// UTF-8, so the offset is safe to slice at.
+fn find_ci(hay: &str, needle: &str) -> Option<usize> {
+    let (h, n) = (hay.as_bytes(), needle.as_bytes());
+    if n.is_empty() || h.len() < n.len() {
+        return None;
+    }
+    (0..=h.len() - n.len()).find(|&i| h[i..i + n.len()].eq_ignore_ascii_case(n))
+}
+
+fn split_ci<'a>(s: &'a str, delim: &str) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut rest = s;
+    while let Some(i) = find_ci(rest, delim) {
+        out.push(&rest[..i]);
+        rest = &rest[i + delim.len()..];
+    }
+    out.push(rest);
+    out
+}
+
 /// Every Text item of one key, in tag order (Locators skipped).
 fn text_items(tag: &lofty::tag::Tag, key: &ItemKey) -> Vec<String> {
     tag.get_items(key)
@@ -4619,7 +4659,7 @@ fn split_artist_string(s: &str, exceptions: &[String]) -> Vec<String> {
     let mut used: Vec<&str> = Vec::new();
     // A value with no delimiter cannot be mis-split — skip the exceptions
     // pass (up to 500 `contains` per credit otherwise).
-    if !exceptions.is_empty() && ARTIST_DELIMITERS.iter().any(|d| text.contains(d)) {
+    if !exceptions.is_empty() && ARTIST_DELIMITERS.iter().any(|d| find_ci(&text, d).is_some()) {
         for ex in exceptions {
             if ex.is_empty() || !text.contains(ex.as_str()) { continue; }
             used.push(ex.as_str());
@@ -4630,8 +4670,8 @@ fn split_artist_string(s: &str, exceptions: &[String]) -> Vec<String> {
     for delim in ARTIST_DELIMITERS {
         let mut next = Vec::new();
         for p in &parts {
-            if p.contains(delim) {
-                for piece in p.split(delim) { next.push(piece.to_string()); }
+            if find_ci(p, delim).is_some() {
+                for piece in split_ci(p, delim) { next.push(piece.to_string()); }
             } else {
                 next.push(p.clone());
             }

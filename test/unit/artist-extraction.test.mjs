@@ -35,6 +35,14 @@ describe('splitArtistString', () => {
     assert.deepEqual(splitArtistString(null), []);
   });
 
+  test('delimiters fold case; the exceptions do not', () => {
+    assert.deepEqual(splitArtistString('Atb Feat. Jansoon'), ['Atb', 'Jansoon']);
+    assert.deepEqual(splitArtistString('A FT. B feat C Ft D'), ['A', 'B', 'C', 'D']);
+    assert.deepEqual(splitArtistString('Atb Feat. Jansoon', ['Atb feat. Jansoon']), ['Atb', 'Jansoon'], 'an exception is exact spelling');
+    assert.deepEqual(splitArtistString('Atb Feat. Jansoon', ['Atb Feat. Jansoon']), ['Atb Feat. Jansoon']);
+    assert.deepEqual(splitArtistString('Featuring Cast'), ['Featuring Cast'], '" featuring " is not on the list');
+  });
+
   test('a bare slash is not a delimiter (AC/DC stays whole)', () => {
     assert.deepEqual(splitArtistString('AC/DC'), ['AC/DC']);
     assert.deepEqual(splitArtistString('AC / DC'), ['AC', 'DC']);
