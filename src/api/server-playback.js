@@ -1,254 +1,15 @@
-import http from 'http';
-import fs from 'fs';
+// Routes for server-side playback: /api/v1/server-playback/* and the
+// /server-remote page. The backend itself — which process is running, how it
+// is found, spawned, watched and stopped — lives in src/state/server-audio.js;
+// this module only translates paths, gates access and proxies.
+
 import fsPromises from 'fs/promises';
 import path from 'path';
-import child_process from 'child_process';
 import winston from 'winston';
 import * as config from '../state/config.js';
+import * as serverAudio from '../state/server-audio.js';
 import * as vpath from '../util/vpath.js';
 import * as db from '../db/manager.js';
-import { appRoot } from '../util/esm-helpers.js';
-import * as killQueue from '../state/kill-list.js';
-import * as cliAudio from './cli-audio/index.js';
-import { playerKey, managedPlayerPath, ensurePlayer, canAutoFetch } from '../util/mstream-player-bootstrap.js';
-
-let rustPlayerProcess = null;
-
-killQueue.addToKillQueue(() => {
-  if (rustPlayerProcess) {
-    rustPlayerProcess.kill();
-    rustPlayerProcess = null;
-  }
-  cliAudio.killCliPlayer().catch(() => {});
-});
-
-// Snapshot of CLI detection. Refreshed eagerly at boot, on autoBoot toggle,
-// and whenever an admin hits /api/v1/admin/server-audio/detect. Exported so
-// the admin info endpoint can read it without re-probing on every hit.
-let _detectedCliPlayers = [];
-export async function refreshDetectedCliPlayers() {
-  _detectedCliPlayers = await cliAudio.detectAvailablePlayers();
-  return _detectedCliPlayers;
-}
-export function getDetectedCliPlayers() {
-  return _detectedCliPlayers;
-}
-
-export function getActiveBackend() {
-  if (rustPlayerProcess) { return { backend: 'rust', player: 'mstream-player' }; }
-  if (cliAudio.isCliActive()) { return { backend: 'cli', player: cliAudio.getActivePlayerName() }; }
-  return { backend: null, player: null };
-}
-
-function getRustPort() {
-  return config.program.rustPlayerPort || 3333;
-}
-
-// ── Auto-boot logic ───────────────────────────────────────────────────────
-
-// Sync, side-effect-free-ish resolver (mirrors discovery-p2p's
-// resolveSidecarBinary). Rungs, in trust order:
-//   1. dev cargo build of the player repo cloned into this checkout
-//   2. bundle-staged / operator-placed copy under appRoot
-//   3. the managed dataRoot home where the runtime fetch installs
-// The manifest key IS the filename, so there is no mapping to drift.
-function findRustBinary() {
-  const ext = process.platform === 'win32' ? '.exe' : '';
-  const candidates = [
-    path.join(appRoot, `mstream-terminal-player/target/release/mstream-player${ext}`),
-    path.join(appRoot, 'bin', 'mstream-player', playerKey()),
-  ];
-  const managed = managedPlayerPath();
-  if (!candidates.includes(managed)) { candidates.push(managed); }
-
-  for (const bin of candidates) {
-    if (fs.existsSync(bin)) {
-      // Docker image builds / tarball extraction / zip commonly strip the
-      // execute bit — without this, spawn fails with EACCES on every boot.
-      // No-op on Windows. `chmod` fails silently on read-only volumes; the
-      // downstream spawn will surface the real error if exec is truly
-      // blocked (noexec mount, SELinux). Matches the rust-parser's fix in
-      // src/db/task-queue.js.
-      try { fs.chmodSync(bin, 0o755); } catch (_err) { /* read-only volume: the spawn surfaces the real error */ }
-      return bin;
-    }
-  }
-  return null;
-}
-
-// Has the currently-spawned rust process stayed up long enough that we
-// consider startup successful? Used by the rust-fallback path: if rust dies
-// before this goes true, we treat the spawn as failed and roll over to CLI.
-let _rustStartupSettled = false;
-const RUST_SETTLE_MS = 2000;
-
-async function bootCliFallback(reason, preferredPlayer = null) {
-  if (cliAudio.isCliActive()) { return; }
-  if (_detectedCliPlayers.length === 0) {
-    winston.warn(`[server-audio] ${reason}; no CLI audio players detected — server audio unavailable`);
-    return;
-  }
-  try {
-    const name = await cliAudio.bootCliPlayer(preferredPlayer);
-    if (name) {
-      winston.info(`[server-audio] ${reason}; using CLI fallback: ${name}`);
-    } else {
-      winston.warn(`[server-audio] ${reason}; CLI players detected but none would start`);
-    }
-  } catch (err) {
-    winston.error(`[server-audio] CLI fallback failed: ${err.message}`);
-  }
-}
-
-/**
- * Boot whichever server-audio backend is appropriate.
- *
- *   autoBootServerAudio: true  → prefer the Rust binary; fall back to a CLI
- *                                player if the binary is missing, the spawn
- *                                fails (permission denied, etc.), or the
- *                                process exits during startup.
- *   autoBootServerAudio: false → skip Rust entirely and prefer MPD, since
- *                                that's the CLI option most often used on
- *                                self-hosted / NAS setups where a dedicated
- *                                audio daemon is already running. Falls back
- *                                to other installed CLI players if MPD isn't
- *                                available.
- *
- * Still named for the Rust-first preference it implements; it boots whichever
- * backend applies. Returns a Promise; callers that don't need to await may
- * fire-and-forget.
- */
-export async function bootRustPlayer() {
-  if (rustPlayerProcess) { return; }
-
-  // Refresh the CLI detection snapshot so the fallback decision (and the
-  // admin /info endpoint) have current data.
-  await refreshDetectedCliPlayers();
-
-  if (!config.program.autoBootServerAudio) {
-    await bootCliFallback('autoBootServerAudio=false', 'mpd');
-    return;
-  }
-
-  let bin = findRustBinary();
-  if (!bin && canAutoFetch()) {
-    // npm/source/Docker installs: the binary left git — fetch the pinned
-    // release build on first use (bundles ship it staged, so they never
-    // land here). A failed fetch degrades to the CLI players like any
-    // other miss; the cause is already logged by the bootstrap.
-    try {
-      bin = await ensurePlayer();
-    } catch (err) {
-      await bootCliFallback(`mstream-player fetch failed: ${err.message}`);
-      return;
-    }
-  }
-  if (!bin) {
-    await bootCliFallback('mstream-player binary not found');
-    return;
-  }
-
-  const port = getRustPort();
-  winston.info(`Starting mstream-player (server audio) on port ${port}`);
-
-  _rustStartupSettled = false;
-  rustPlayerProcess = child_process.spawn(bin, ['--port', String(port)], {
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-
-  const settleTimer = setTimeout(() => {
-    _rustStartupSettled = true;
-  }, RUST_SETTLE_MS);
-
-  rustPlayerProcess.stdout.on('data', (data) => {
-    winston.info(`[mstream-player] ${data.toString().trim()}`);
-  });
-
-  rustPlayerProcess.stderr.on('data', (data) => {
-    winston.error(`[mstream-player] ${data.toString().trim()}`);
-  });
-
-  rustPlayerProcess.on('close', (code) => {
-    clearTimeout(settleTimer);
-    winston.info(`mstream-player exited with code ${code}`);
-    const settled = _rustStartupSettled;
-    rustPlayerProcess = null;
-    if (!settled) {
-      // Died during startup → roll over to CLI.
-      bootCliFallback(`mstream-player exited early (code ${code})`).catch(() => {});
-    }
-  });
-
-  rustPlayerProcess.on('error', (err) => {
-    clearTimeout(settleTimer);
-    winston.error(`Failed to start mstream-player: ${err.message}`);
-    const settled = _rustStartupSettled;
-    rustPlayerProcess = null;
-    if (!settled) {
-      bootCliFallback(`mstream-player spawn failed: ${err.message}`).catch(() => {});
-    }
-  });
-}
-
-export function killRustPlayer() {
-  if (rustPlayerProcess) {
-    rustPlayerProcess.kill();
-    rustPlayerProcess = null;
-  }
-  cliAudio.killCliPlayer().catch(() => {});
-}
-
-// Proxy a request to the Rust binary and pipe the response back.
-// cli-audio/index.js's proxyToCli is its drop-in counterpart.
-function proxyToRust(method, rustPath, body) {
-  return new Promise((resolve, reject) => {
-    const postData = body ? JSON.stringify(body) : '';
-    const options = {
-      hostname: '127.0.0.1',
-      port: getRustPort(),
-      path: rustPath,
-      method: method,
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 5000
-    };
-
-    const req = http.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => {
-        try {
-          resolve({ status: res.statusCode, data: JSON.parse(data) });
-        } catch (_e) {
-          resolve({ status: res.statusCode, data: { raw: data } });
-        }
-      });
-    });
-
-    req.on('error', (_e) => {
-      reject(new Error('Server audio player is not running'));
-    });
-
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new Error('Server audio player timed out'));
-    });
-
-    if (postData) { req.write(postData); }
-    req.end();
-  });
-}
-
-// Dispatch to whichever backend is active. Rust is preferred; CLI is used
-// when the Rust binary is missing but a CLI fallback has been booted.
-function proxyPlayback(method, rustPath, body) {
-  if (rustPlayerProcess) {
-    return proxyToRust(method, rustPath, body);
-  }
-  if (cliAudio.isCliActive()) {
-    return cliAudio.proxyToCli(method, rustPath, body);
-  }
-  return Promise.reject(new Error('Server audio player is not running'));
-}
 
 // Resolve a virtual path (e.g. "55/song.mp3") to an absolute filesystem path
 function resolveFilePath(filePath, user) {
@@ -344,7 +105,7 @@ export function setup(mstream) {
   for (const [mstreamPath, rustPath] of Object.entries(simplePostRoutes)) {
     mstream.post(mstreamPath, async (req, res) => {
       try {
-        const result = await proxyPlayback('POST', rustPath, req.body || {});
+        const result = await serverAudio.proxy('POST', rustPath, req.body || {});
         res.status(result.status).json(result.data);
       } catch (e) {
         res.status(503).json({ error: e.message });
@@ -356,7 +117,7 @@ export function setup(mstream) {
 
   mstream.post('/api/v1/server-playback/seek', async (req, res) => {
     try {
-      const result = await proxyPlayback('POST', '/seek', req.body);
+      const result = await serverAudio.proxy('POST', '/seek', req.body);
       res.status(result.status).json(result.data);
     } catch (e) {
       res.status(503).json({ error: e.message });
@@ -365,7 +126,7 @@ export function setup(mstream) {
 
   mstream.post('/api/v1/server-playback/volume', async (req, res) => {
     try {
-      const result = await proxyPlayback('POST', '/volume', req.body);
+      const result = await serverAudio.proxy('POST', '/volume', req.body);
       res.status(result.status).json(result.data);
     } catch (e) {
       res.status(503).json({ error: e.message });
@@ -374,7 +135,7 @@ export function setup(mstream) {
 
   mstream.post('/api/v1/server-playback/shuffle', async (req, res) => {
     try {
-      const result = await proxyPlayback('POST', '/shuffle', req.body);
+      const result = await serverAudio.proxy('POST', '/shuffle', req.body);
       res.status(result.status).json(result.data);
     } catch (e) {
       res.status(503).json({ error: e.message });
@@ -385,9 +146,9 @@ export function setup(mstream) {
 
   mstream.get('/api/v1/server-playback/status', async (req, res) => {
     try {
-      const result = await proxyPlayback('GET', '/status');
+      const result = await serverAudio.proxy('GET', '/status');
       if (result.data && typeof result.data === 'object' && !Array.isArray(result.data)) {
-        const active = getActiveBackend();
+        const active = serverAudio.getActiveBackend();
         result.data.backend = active.backend;
         result.data.player = active.player;
       }
@@ -399,7 +160,7 @@ export function setup(mstream) {
 
   mstream.get('/api/v1/server-playback/queue', async (req, res) => {
     try {
-      const result = await proxyPlayback('GET', '/queue');
+      const result = await serverAudio.proxy('GET', '/queue');
       // Convert absolute paths back to virtual paths for the frontend
       if (result.data && result.data.queue) {
         result.data.queue = result.data.queue.map(absoluteToVpath);
@@ -416,7 +177,7 @@ export function setup(mstream) {
   mstream.post('/api/v1/server-playback/play', async (req, res) => {
     try {
       const absolutePath = resolveFilePath(req.body.file, req.user);
-      const result = await proxyPlayback('POST', '/play', { file: absolutePath });
+      const result = await serverAudio.proxy('POST', '/play', { file: absolutePath });
       res.status(result.status).json(result.data);
     } catch (e) {
       res.status(e.message.includes('not running') ? 503 : 400).json({ error: e.message });
@@ -427,7 +188,7 @@ export function setup(mstream) {
   mstream.post('/api/v1/server-playback/queue/add', async (req, res) => {
     try {
       const absolutePath = resolveFilePath(req.body.file, req.user);
-      const result = await proxyPlayback('POST', '/queue/add', { file: absolutePath });
+      const result = await serverAudio.proxy('POST', '/queue/add', { file: absolutePath });
       res.status(result.status).json(result.data);
     } catch (e) {
       res.status(e.message.includes('not running') ? 503 : 400).json({ error: e.message });
@@ -438,7 +199,7 @@ export function setup(mstream) {
   mstream.post('/api/v1/server-playback/queue/add-many', async (req, res) => {
     try {
       const files = req.body.files.map((f) => resolveFilePath(f, req.user));
-      const result = await proxyPlayback('POST', '/queue/add-many', { files });
+      const result = await serverAudio.proxy('POST', '/queue/add-many', { files });
       res.status(result.status).json(result.data);
     } catch (e) {
       res.status(e.message.includes('not running') ? 503 : 400).json({ error: e.message });
@@ -448,7 +209,7 @@ export function setup(mstream) {
   // POST /queue/play-index — jump to index
   mstream.post('/api/v1/server-playback/queue/play-index', async (req, res) => {
     try {
-      const result = await proxyPlayback('POST', '/queue/play-index', req.body);
+      const result = await serverAudio.proxy('POST', '/queue/play-index', req.body);
       res.status(result.status).json(result.data);
     } catch (e) {
       res.status(503).json({ error: e.message });
@@ -458,7 +219,7 @@ export function setup(mstream) {
   // POST /queue/remove — remove by index
   mstream.post('/api/v1/server-playback/queue/remove', async (req, res) => {
     try {
-      const result = await proxyPlayback('POST', '/queue/remove', req.body);
+      const result = await serverAudio.proxy('POST', '/queue/remove', req.body);
       res.status(result.status).json(result.data);
     } catch (e) {
       res.status(503).json({ error: e.message });
@@ -468,7 +229,7 @@ export function setup(mstream) {
   // POST /queue/clear — stop and empty queue
   mstream.post('/api/v1/server-playback/queue/clear', async (req, res) => {
     try {
-      const result = await proxyPlayback('POST', '/queue/clear', {});
+      const result = await serverAudio.proxy('POST', '/queue/clear', {});
       res.status(result.status).json(result.data);
     } catch (e) {
       res.status(503).json({ error: e.message });
@@ -486,9 +247,9 @@ export function setup(mstream) {
       return res.status(403).json({ error: 'Server audio access disabled for this user' });
     }
 
-    // Check if any audio backend (rust or CLI fallback) is reachable
+    // Check if any audio backend (engine or CLI fallback) is reachable
     try {
-      await proxyPlayback('GET', '/status');
+      await serverAudio.proxy('GET', '/status');
     } catch (_e) {
       res.status(503).send(
         '<!doctype html><html><head><meta charset="utf-8"><title>Server Audio Unavailable</title>' +

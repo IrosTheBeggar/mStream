@@ -33,7 +33,7 @@ WORKDIR /app
 # Minimal dependency install — our adapters only need winston.
 RUN npm init -y >/dev/null && npm install --omit=dev --no-audit --no-fund winston >/dev/null
 
-COPY src/api/cli-audio ./src/api/cli-audio
+COPY src/state/cli-audio ./src/state/cli-audio
 # base.js and mplayer.js import WebError from src/util; the image carries
 # only what is COPYed here, so without this line the harness dies at import.
 COPY src/util/web-error.js ./src/util/web-error.js

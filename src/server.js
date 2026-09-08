@@ -47,6 +47,7 @@ import * as dlnaSsdp from './dlna/ssdp.js';
 import * as dlnaServer from './dlna/dlna-server.js';
 import * as mdns from './discovery/mdns.js';
 import * as serverPlaybackApi from './api/server-playback.js';
+import * as serverAudio from './state/server-audio.js';
 import * as albumArtApi from './api/album-art.js';
 import * as waveformApi from './api/waveform.js';
 import * as scanApi from './api/scan.js';
@@ -810,9 +811,9 @@ export async function serveIt(configFile, { relisten = null } = {}) {
       mdns.start();
     }
 
-    // Boot server audio (Rust preferred, CLI fallback) — runs CLI detection
+    // Boot server audio (engine preferred, CLI fallback) — runs CLI detection
     // eagerly so the admin endpoint has fresh data by the time it's called.
-    serverPlaybackApi.bootRustPlayer().catch(() => {});
+    serverAudio.boot().catch(() => {});
   };
 
   if (keepListener) {
@@ -991,7 +992,7 @@ export function reboot() {
     // no second chance: the secondary server stayed dead until the next
     // restart.
     mdns.stop();
-    serverPlaybackApi.killRustPlayer();
+    serverAudio.stop().catch(() => {});
     // Tear down the /remote WebSocket server: it detaches its upgrade/error
     // listeners from the HTTP server (serveIt attaches a fresh one) and closes
     // its clients — an open WS client would otherwise keep a recycled listener
