@@ -237,3 +237,23 @@ describe('V70 albums rebuild', () => {
     assert.equal(db.prepare('PRAGMA user_version').get().user_version, SCHEMA_VERSION);
   });
 });
+
+describe('V70 fills a merged survivor\'s year from its tracks', () => {
+  test('a fragment without a year outlasting one with a year gets the mode of the tracks', () => {
+    const db = buildV69Fixture();
+    // 'Gap' by artist 10: the two-track fragment (no years anywhere) wins
+    // the merge over the one-track fragment that carries 2005.
+    db.exec(`
+      INSERT INTO albums (id, name, artist_id, year, compilation) VALUES (7, 'Gap', 10, NULL, 0), (8, 'Gap', 10, 2005, 0);
+      INSERT INTO tracks (id, filepath, library_id, title, artist_id, album_id, year, duration) VALUES
+        (200, 'g/1.mp3', 1, 'G1', 10, 7, NULL, 10),
+        (201, 'g/2.mp3', 1, 'G2', 10, 7, NULL, 10),
+        (202, 'g/3.mp3', 1, 'G3', 10, 8, 2005, 10);`);
+    upgrade(db);
+    assert.deepEqual(rows(db.prepare("SELECT id, year, year_min, year_max, track_count FROM albums WHERE name = 'Gap'")),
+      [{ id: 7, year: 2005, year_min: 2005, year_max: 2005, track_count: 3 }]);
+    // A survivor with a year of its own keeps it, and a trackless row stays NULL.
+    assert.equal(db.prepare('SELECT year FROM albums WHERE id = 1').get().year, 1987);
+    assert.equal(db.prepare('SELECT year FROM albums WHERE id = 4').get().year, null);
+  });
+});
