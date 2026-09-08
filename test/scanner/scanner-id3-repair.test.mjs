@@ -15,6 +15,8 @@
  *   - a UTF-16 text frame with an odd byte count (a stray terminator byte);
  *   - a text frame flagged UTF-8 that holds latin1 bytes;
  *   - a frame whose declared size overruns the tag;
+ *   - a URL frame written with an encoding byte before the URL (lofty 0.25
+ *     stops reading the tag there; the frames after it must survive);
  *   - and the mirror image on the JS side: ID3v2.3 with the tag-level
  *     unsynchronisation flag (the WHOLE tag stuffed), which lofty reads
  *     and music-metadata does not de-stuff — the JS scanner now does it
@@ -74,6 +76,12 @@ function fixtures() {
       id3Frame('TPE1', id3TextBody('Cut Artist')),
       id3Frame('TALB', id3TextBody('Truncated Al'), { declared: 40 }),
     ], { padding: 0 }), { title: 'Cut', artist: 'Cut Artist', album: 'Truncated Al' }],
+    ['Url', buildId3v2Tag([
+      id3Frame('TIT2', id3TextBody('Url Tag')),
+      id3Frame('WORS', Buffer.concat([Buffer.from([0x00]), Buffer.from('Anjunabeats', 'latin1')])),
+      id3Frame('TPE1', id3TextBody('Url Artist')),
+      id3Frame('TALB', id3TextBody('Url Album')),
+    ]), { title: 'Url Tag', artist: 'Url Artist', album: 'Url Album' }],
     // v2.3, tag-level flag: the frames are laid out, then the whole body is
     // stuffed; the picture comes first so the text frames sit past the
     // stuffed bytes.
