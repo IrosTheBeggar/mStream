@@ -575,6 +575,46 @@ describe('setState round-trip', () => {
     AUTODJ._internals.rehydrate();
     assert.equal(AUTODJ.state.djMinRating, 10);
   });
+
+  test('djLimit defaults to 1 and hydrates to an integer in 1..DJ_LIMIT_MAX', () => {
+    assert.equal(AUTODJ.state.djLimit, 1);
+    localStorage.setItem('mstream-dj-djLimit', '99');
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djLimit, AUTODJ._internals.DJ_LIMIT_MAX);
+
+    localStorage.setItem('mstream-dj-djLimit', '0');
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djLimit, 1);
+
+    // A fractional value would 400 on the server (Joi integer()).
+    localStorage.setItem('mstream-dj-djLimit', '2.7');
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djLimit, 3);
+  });
+});
+
+describe('setLimit (songs per fetch)', () => {
+  test('stores an integer in 1..LIMIT_MAX, persists it, and returns it', () => {
+    assert.equal(AUTODJ.setLimit(5), 5);
+    assert.equal(AUTODJ.state.djLimit, 5);
+    assert.equal(JSON.parse(localStorage.getItem('mstream-dj-djLimit')), 5);
+  });
+
+  test('clamps, rounds, and falls back to 1 on junk', () => {
+    assert.equal(AUTODJ.setLimit('99'), AUTODJ.LIMIT_MAX);
+    assert.equal(AUTODJ.LIMIT_MAX, AUTODJ._internals.DJ_LIMIT_MAX);
+    assert.equal(AUTODJ.setLimit(0), 1);
+    assert.equal(AUTODJ.setLimit(-4), 1);
+    assert.equal(AUTODJ.setLimit('2.5'), 3);
+    assert.equal(AUTODJ.setLimit(''), 1);
+    assert.equal(AUTODJ.setLimit('abc'), 1);
+  });
+
+  test('survives reset() — a preference, not session state', () => {
+    AUTODJ.setLimit(7);
+    AUTODJ.reset();
+    assert.equal(AUTODJ.state.djLimit, 7);
+  });
 });
 
 describe('reset()', () => {
@@ -1918,6 +1958,53 @@ describe('chooseFederatedPick', () => {
     ], new Set()).peerId, 1);
     assert.equal(AUTODJ.chooseFederatedPick([], new Set()), null);
     assert.equal(AUTODJ.chooseFederatedPick([{ peerId: 1, song: null }], new Set()), null);
+  });
+});
+
+describe('chooseFederatedPicks (a batch across servers)', () => {
+  const song = (filepath) => ({ filepath, metadata: {} });
+  const answers = [
+    { peerId: null, song: song('music/l1.mp3'), similarity: 0.80, blocked: false },
+    { peerId: null, song: song('music/l2.mp3'), similarity: 0.60, blocked: false },
+    { peerId: 2, song: song('music/p2a.mp3'), similarity: 0.91, blocked: false },
+    { peerId: 2, song: song('music/p2b.mp3'), similarity: 0.95, blocked: true },
+    { peerId: 3, song: song('music/p3.mp3'), similarity: 0.85, blocked: false },
+  ];
+  const paths = (picks) => picks.map((p) => p.song.filepath);
+
+  test('the n highest cosines across every server, best first', () => {
+    assert.deepEqual(paths(AUTODJ.chooseFederatedPicks(answers, new Set(), 3)),
+      ['music/p2a.mp3', 'music/p3.mp3', 'music/l1.mp3']);
+  });
+
+  test('blocked and recent answers are passed over; fewer than n come back when that is all there is', () => {
+    const recent = AUTODJ.federatedRecentKeys([{ path: 'music/p3.mp3', peerId: 3 }], null);
+    assert.deepEqual(paths(AUTODJ.chooseFederatedPicks(answers, recent, 10)),
+      ['music/p2a.mp3', 'music/l1.mp3', 'music/l2.mp3']);
+  });
+
+  test('a server|path appears once even when two rounds of asks both offered it', () => {
+    const twice = [...answers, { peerId: 2, song: song('music/p2a.mp3'), similarity: 0.91, blocked: false }];
+    const picks = AUTODJ.chooseFederatedPicks(twice, new Set(), 10);
+    assert.equal(picks.filter((p) => p.peerId === 2 && p.song.filepath === 'music/p2a.mp3').length, 1);
+    assert.equal(picks.length, 4);
+  });
+
+  test('ties keep answer order, so the local server (asked first) wins them', () => {
+    const tied = [
+      { peerId: 4, song: song('music/peer.mp3'), similarity: 0.9, blocked: false },
+      { peerId: null, song: song('music/local.mp3'), similarity: 0.9, blocked: false },
+    ];
+    assert.deepEqual(paths(AUTODJ.chooseFederatedPicks(tied, new Set(), 2)), ['music/peer.mp3', 'music/local.mp3']);
+    assert.deepEqual(paths(AUTODJ.chooseFederatedPicks([tied[1], tied[0]], new Set(), 2)), ['music/local.mp3', 'music/peer.mp3']);
+  });
+
+  test('n defaults to one, and chooseFederatedPick is exactly the first pick', () => {
+    assert.equal(AUTODJ.chooseFederatedPicks(answers, new Set()).length, 1);
+    assert.deepEqual(AUTODJ.chooseFederatedPick(answers, new Set()),
+      AUTODJ.chooseFederatedPicks(answers, new Set(), 1)[0]);
+    assert.deepEqual(AUTODJ.chooseFederatedPicks([], new Set(), 3), []);
+    assert.deepEqual(AUTODJ.chooseFederatedPicks([{ peerId: 1, song: null }], new Set(), 3), []);
   });
 });
 

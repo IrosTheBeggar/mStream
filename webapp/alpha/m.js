@@ -4516,6 +4516,20 @@ async function autoDjPanel() {
           <select class="autodj-select browser-default" id="dj-min-rating">${ratingOptions}</select>
         </div>
 
+        <div class="autodj-opt-row">
+          <div>
+            <div class="autodj-opt-label" id="dj-limit-label">${t('autoDJ.limitLabel')}</div>
+            <div class="autodj-opt-hint">${t('autoDJ.limitHint', { max: AUTODJ.LIMIT_MAX })}</div>
+          </div>
+          <input
+            type="number"
+            class="autodj-select browser-default dj-limit-num"
+            id="dj-limit"
+            min="1" max="${AUTODJ.LIMIT_MAX}" step="1" inputmode="numeric"
+            value="${AUTODJ.state.djLimit}"
+            aria-labelledby="dj-limit-label">
+        </div>
+
         <h4 class="autodj-section-heading">${t('autoDJ.sectionContinuity')}</h4>
         ${similarRow}
         ${bpmContinuityRow}
@@ -4583,6 +4597,13 @@ async function autoDjPanel() {
     const val = Math.max(0, Math.min(10, parseInt(e.target.value, 10)));
     AUTODJ.setState({ djMinRating: val });
   };
+
+  // Songs per fetch. `change` (blur / Enter), not `input`, so "12" isn't
+  // clamped the moment the user types "1". AUTODJ owns the integer +
+  // range rule and hands back what it stored, which is written into the
+  // field so it always shows what the next request will send.
+  const limitEl = document.getElementById('dj-limit');
+  limitEl.onchange = () => { limitEl.value = AUTODJ.setLimit(limitEl.value); };
 
   // Similar-artists toggle (no-op while disabled, but the event still
   // fires on label-click in some browsers).
