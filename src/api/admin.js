@@ -340,6 +340,21 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // V72: artist names the scanners never delimiter-split (exact spelling,
+  // list order). Live like the dot toggles — the next scan picks the list
+  // up; a rescan re-reads files already indexed.
+  mstream.post("/api/v1/admin/db/params/artist-split-exceptions", async (req, res) => {
+    const schema = Joi.object({
+      artistSplitExceptions: config.artistSplitExceptionsSchema.required()
+    });
+    // Joi's .trim() already applied on `value`; dedup keeping the admin's
+    // order (it is the match priority).
+    const { value } = joiValidate(schema, req.body);
+    const list = [...new Set(value.artistSplitExceptions)];
+    await admin.editArtistSplitExceptions(list);
+    res.json({});
+  });
+
   // Live toggle for the filesystem watcher: persists, then starts or
   // stops the watchers in-process — no reboot. Watchers only ever
   // ENQUEUE scans (through the same task-queue dedup as every other

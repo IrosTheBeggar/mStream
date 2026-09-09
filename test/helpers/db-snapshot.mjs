@@ -74,6 +74,9 @@ function snapTracks(db) {
       -- V70: per-track consensus inputs for the album aggregate refresh —
       -- both scanners must stamp the same raw tag values.
       t.tag_album, t.tag_album_artist, t.tag_compilation,
+      -- V72: the ARTIST tag as written (plural values joined) — both
+      -- scanners must stamp the same string.
+      t.artist_display,
       ar.name AS artist_name,
       al.name AS album_name, al.year AS album_year,
       al.compilation AS album_compilation, al.album_artist AS album_artist_display

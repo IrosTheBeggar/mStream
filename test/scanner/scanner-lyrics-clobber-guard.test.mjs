@@ -39,6 +39,8 @@ const COLS = [
   'mbz_recording_id', 'mbz_release_track_id', 'isrc', 'mbz_id_source', 'hash_v',
   // V70 per-track consensus inputs for the album aggregate refresh.
   'tag_album', 'tag_album_artist', 'tag_compilation',
+  // V72: the ARTIST tag as written.
+  'artist_display',
 ];
 // Columns with NOT NULL and no usable default — bound to a fixed value
 // unless the scenario overrides them.

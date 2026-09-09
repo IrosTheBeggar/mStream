@@ -24,6 +24,7 @@ import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { FFMPEG } from './scanner-runner.mjs';
 import { appendId3v23TextFrames } from './id3.mjs';
+import { appendFlacVorbisComments } from './vorbis.mjs';
 
 // Exported so focused fixture builders (scanner-multi-art.test.mjs)
 // can reuse the same ffmpeg plumbing without re-rolling it.
@@ -143,7 +144,16 @@ export async function buildFixtureLibrary(rootDir) {
     // scanners must fill artists.sort_name / mbz_artist_id from them, and
     // order_name must follow the sort tag ("artist, solo").
     if (i === 3) { tags.ARTISTSORT = 'Artist, Solo'; tags.MUSICBRAINZ_ARTISTID = '0a0a0a0a-1111-4222-8333-444444444444'; }
-    await makeAudio(path.join(a1, `${i.toString().padStart(2, '0')} Track ${i}.flac`), FLAC, tags);
+    // V72: role credits as Vorbis comments — a single COMPOSER value splits
+    // on "; " (two composers, positions 0/1); the others are one name each.
+    // Both scanners must write the same track_artists rows.
+    if (i === 4) { tags.COMPOSER = 'Comp One; Comp Two'; tags.CONDUCTOR = 'Maestro'; tags.REMIXER = 'Mixer'; tags.LYRICIST = 'Poet'; }
+    const f1 = path.join(a1, `${i.toString().padStart(2, '0')} Track ${i}.flac`);
+    await makeAudio(f1, FLAC, tags);
+    // V72: a Picard-style ARTISTS list tag next to ARTIST. lofty never reads
+    // it and neither may the JS engine (music-metadata folds it into
+    // common.artists) — the credits must come from ARTIST alone.
+    if (i === 5) { await appendFlacVorbisComments(f1, [['ARTISTS', 'Solo'], ['ARTISTS', 'Artist']]); }
   }
 
   // ── Album 2: "Collab" by Foo & Bar (6 tracks, two album-artists) ──
@@ -168,6 +178,10 @@ export async function buildFixtureLibrary(rootDir) {
     };
     if (i === 1) { tags.TBPM = '128'; tags.TKEY = '7A'; }
     if (i === 2) { tags.TBPM = '5';   /* below range → both scanners drop to NULL */ }
+    // V72: the same roles through ID3v2.3 frames (ffmpeg writes a 4-char
+    // key as that frame): TCOM splits on " / "; Maestro / Mixer / Poet are
+    // the artists album 1 already created, credited again here.
+    if (i === 3) { tags.TCOM = 'Writer A / Writer B'; tags.TPE3 = 'Maestro'; tags.TPE4 = 'Mixer'; tags.TEXT = 'Poet'; }
     await makeAudio(path.join(a2, `${i.toString().padStart(2, '0')}.mp3`), MP3, tags);
   }
 
@@ -303,21 +317,49 @@ export async function buildFixtureLibrary(rootDir) {
     track: '2/2', MUSICBRAINZ_ALBUMID: blueMbid,
   });
 
+  // ── Album 9: "Duets" — a genuinely multi-valued ARTIST tag (2 tracks) ──
+  // Two Vorbis ARTIST comments per file (ffmpeg can't write that; the
+  // second is appended by hand). V72 rule: plural values are honoured
+  // verbatim — "Duet B feat. Nobody" is ONE credit, not split — and the
+  // display string joins them with ", ". Both scanners must agree.
+  const a9 = path.join(rootDir, 'Duet A', 'Duets');
+  for (let i = 1; i <= 2; i++) {
+    const f = path.join(a9, `${i.toString().padStart(2, '0')}.flac`);
+    await makeAudio(f, FLAC, {
+      title: `Duet ${i}`, artist: 'Duet A', album_artist: 'Duet A', album: 'Duets', date: '2020', track: `${i}/2`,
+    });
+    await appendFlacVorbisComments(f, [['ARTIST', 'Duet B feat. Nobody']]);
+  }
+
+  // ── Album 10: "Slash" by AC/DC (2 tracks, ID3v2.3) ────────────────────
+  // A bare slash is not a delimiter: "AC/DC" is one artist and its own
+  // display string. The JS scanner has to read the raw TPE1 frame for this
+  // — music-metadata pre-splits v2.3 TPE1 on "/" (id3-raw.js).
+  const a10 = path.join(rootDir, 'AC-DC', 'Slash');
+  for (let i = 1; i <= 2; i++) {
+    await makeAudio(path.join(a10, `${i.toString().padStart(2, '0')}.mp3`), MP3, {
+      title: `Slash ${i}`, artist: 'AC/DC', album_artist: 'AC/DC', album: 'Slash', date: '1979', track: `${i}/2`,
+    });
+  }
+
   // Return summary the test can sanity-check against.
   return {
-    expectedAudioFiles: 5 + 6 + 10 + 3 + 5 + 4 + 3 + 2,
+    expectedAudioFiles: 5 + 6 + 10 + 3 + 5 + 4 + 3 + 2 + 2 + 2,
     expectedArtists: new Set([
       'Solo Artist', 'Foo', 'Bar', 'Format Test', 'Lyric Artist',
       ...compilationArtists,
       'DJ Retro', 'Retro A', 'Retro B', 'Retro C', 'Blue Band',
+      // V72: credit-only artists (roles) and the plural / slash cases.
+      'Comp One', 'Comp Two', 'Maestro', 'Mixer', 'Poet', 'Writer A', 'Writer B',
+      'Duet A', 'Duet B feat. Nobody', 'AC/DC',
       // Various Artists is seeded by the schema; not added by the scanner
       // but counted in the artists table.
     ]).size + 1, // +1 for Various Artists seed
     // One row per album above — the compilation MUST collapse to a single
     // Various-Artists-owned 'Various' row, not per-track-artist fragments;
     // 'Decades' MUST NOT fragment by year; the two 'Blue Album' tags MUST
-    // share their MBID's row.
-    expectedAlbums: 8,
+    // share their MBID's row; 'Duets' and 'Slash' are one row each.
+    expectedAlbums: 10,
     compilationTracks: compilationArtists.length,
   };
 }

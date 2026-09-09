@@ -2345,6 +2345,9 @@ function runScan(scanObj) {
     // both fields.
     ignoreDotFiles: config.program.scanOptions.ignoreDotFiles === true,
     ignoreDotFolders: config.program.scanOptions.ignoreDotFolders === true,
+    // V72: artist names the scanners never delimiter-split (exact spelling,
+    // list order). Both scanners read it; old builds ignore the field.
+    artistSplitExceptions: config.program.scanOptions.artistSplitExceptions || [],
     // TRANSITION-ONLY fields: current scanners ignore both — waveform
     // generation moved to the post-scan waveform task (runWaveformTask)
     // and BPM analysis left the scanner entirely (it returns as the
