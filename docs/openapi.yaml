@@ -470,18 +470,50 @@ components:
 
     Album:
       type: object
+      description: |
+        One album card. Rows sharing (name, year, album_art_file) are collapsed into
+        one item — an album with no ALBUMARTIST tag and several track artists is one
+        card — so the credit fields describe the group: `album_artist` is its single
+        credit and null when the collapsed rows disagree, `artists` the union of their
+        main credits, `compilation` true when any of them is one. Send `name`, `year`
+        and `album_artist` back to `/db/album-songs` to open exactly this card.
       properties:
         name:
           type: string
-        artist:
-          type: string
           nullable: true
+          description: Null only on the singles entry `/db/artists-albums` appends (tracks with no album).
         year:
           type: integer
           nullable: true
+          description: The album's aggregate year (its most common track year).
         album_art_file:
           type: string
           nullable: true
+        album_artist:
+          type: string
+          nullable: true
+          description: The ALBUMARTIST display string, else the primary album artist; null when the collapsed rows disagree.
+        artists:
+          type: array
+          items: { type: string }
+          description: Main album credits in tag order (the primary artist when a row carries none), de-duplicated across the group.
+        compilation:
+          type: boolean
+        year_min:
+          type: integer
+          nullable: true
+          description: Earliest track year across the group (V70 aggregate; null on the singles entry).
+        year_max:
+          type: integer
+          nullable: true
+        track_count:
+          type: integer
+          nullable: true
+          description: Tracks in the album(s) — the scan-time aggregate over every library, not the caller's visible subset; null on the singles entry.
+        duration:
+          type: number
+          nullable: true
+          description: Total seconds, same aggregate basis as `track_count`.
 
     Library:
       type: object
@@ -1536,9 +1568,22 @@ paths:
             schema:
               allOf:
                 - type: object
-                  required: [album]
                   properties:
-                    album: { type: string }
+                    album:
+                      type: string
+                      nullable: true
+                      description: |
+                        The album name exactly as a list response gave it. Null or absent selects
+                        the singles bucket — tracks with no album — narrowed by `artist` / `album_artist`.
+                    album_artist:
+                      type: string
+                      nullable: true
+                      description: |
+                        Narrows a named album to one album artist when two albums share a name: send
+                        back the `album_artist` (or one of the `artists`) a list response gave you.
+                        Matched on the normalised artist name against the album's primary artist and
+                        its main credits, or verbatim against the display string. Without `album` (the
+                        singles bucket) it matches the track artist, like `artist`.
                     artist:
                       type: string
                       description: |
