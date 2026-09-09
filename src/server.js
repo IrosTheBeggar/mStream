@@ -13,6 +13,7 @@ import { dataRoot, usingFallbackDataRoot } from './util/esm-helpers.js';
 import { installedPlayerPath, playerLoadableHere } from './util/mstream-player-bootstrap.js';
 
 import * as dbApi from './api/db.js';
+import * as statsApi from './api/stats.js';
 import * as discoveryApi from './api/discovery.js';
 import * as searchApi from './api/search.js';
 import * as randomApi from './api/random.js';
@@ -557,6 +558,7 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   discoveryP2pApi.setup(mstream);
   discoveryFederationApi.setup(mstream);
   dbApi.setup(mstream);
+  statsApi.setup(mstream);
   searchApi.setup(mstream);
   randomApi.setup(mstream);
   playlistApi.setup(mstream);

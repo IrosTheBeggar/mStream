@@ -278,6 +278,25 @@ Each user can have their own lastFM credentials
 }
 ```
 
+## Listening Stats
+
+How a play is counted, and how far back one may be reported. Clients (the
+mobile app, the web player) send complete plays to `POST /api/v1/stats/plays`
+after they happen; the server judges each one against these settings, stores
+the verdict with the play, and only counted plays move a track's play count.
+
+```json
+  "stats": {
+    "playThresholdMs": 30000,
+    "playThresholdFraction": 0.5,
+    "retentionMonths": 24
+  }
+```
+
+- `playThresholdMs` — listening at least this long counts as a play (default 30 s).
+- `playThresholdFraction` — or at least this fraction of the track, when its length is known (default half). `0` disables the fraction rule.
+- `retentionMonths` — plays that started earlier than this many months ago are refused as `bad-time`. `0` accepts anything since 2000.
+
 ## Storage
 
 mStream will write, logs, DB files, and album art to the filesystem.  By default these will be written in the mStream project folder tothe `save` and `image-cache` folders.  Use the `storage` object to choose where to save these files

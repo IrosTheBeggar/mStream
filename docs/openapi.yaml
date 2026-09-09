@@ -2225,6 +2225,91 @@ paths:
                 items: { $ref: "#/components/schemas/Metadata" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/v1/stats/plays:
+    post:
+      tags: [Stats]
+      summary: Record a batch of complete plays (Stats API v2)
+      description: |
+        Clients report plays AFTER they happen, with their own ids and start
+        times. Each play is resolved to a track and judged against the server's
+        play threshold (`stats.playThresholdMs` / `stats.playThresholdFraction`
+        in config); only counted plays move `play-count` and `last-played`.
+        The answer is per play, so an offline outbox can retry safely:
+        `duplicates` are ids this user already sent (nothing moves), `rejected`
+        carry a reason to drop the play — `unknown-track`, `unknown-peer`,
+        `bad-time` (unparsable, over five minutes in the future, or older than
+        `stats.retentionMonths`), `invalid` (a peer play without its `track`
+        snapshot, or an id another user owns).
+
+        A play of a federated peer's track is recorded HERE, as this user's own
+        play (`peerId` = the peer's id on this server, `track` = what the peer
+        reported), never on the peer. Not reachable with a federation key or a
+        guest token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plays]
+              properties:
+                client:
+                  type: object
+                  required: [name]
+                  properties:
+                    name: { type: string, maxLength: 64 }
+                    version: { type: string, maxLength: 32 }
+                    instanceId: { type: string, maxLength: 64 }
+                plays:
+                  type: array
+                  minItems: 1
+                  maxItems: 200
+                  items:
+                    type: object
+                    required: [id, filePath, startedAt, playedMs, outcome]
+                    properties:
+                      id: { type: string, maxLength: 128, description: "Client UUID — the idempotency key." }
+                      filePath: { type: string, description: "Virtual path (`<vpath>/<rel>`); for a peer play, the peer's own path." }
+                      peerId: { type: integer, description: "Present for a play of a federated peer's track." }
+                      startedAt: { oneOf: [{ type: string, format: date-time }, { type: integer, description: "epoch ms" }] }
+                      endedAt: { oneOf: [{ type: string, format: date-time }, { type: integer }] }
+                      playedMs: { type: integer, minimum: 0 }
+                      durationMs: { type: integer, minimum: 0, description: "Defaults to the library's duration for a local track." }
+                      outcome: { type: string, enum: [completed, skipped, stopped] }
+                      source: { type: string, enum: [manual, shuffle, autodj, playlist, smart-playlist, auto, carplay, cast, other] }
+                      sessionId: { type: string, maxLength: 128 }
+                      pauseCount: { type: integer, minimum: 0, default: 0 }
+                      track:
+                        type: object
+                        description: Snapshot for a peer play (ignored for a local track).
+                        properties:
+                          title: { type: string }
+                          artist: { type: string }
+                          album: { type: string }
+                          durationMs: { type: integer }
+                          hash: { type: string, description: "The peer-reported track hash; counters key on it." }
+                          artFile: { type: string }
+      responses:
+        "200":
+          description: Per-play outcome.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accepted: { type: array, items: { type: string } }
+                  duplicates: { type: array, items: { type: string } }
+                  rejected:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        reason: { type: string, enum: [unknown-track, unknown-peer, bad-time, invalid] }
+        "400": { description: "Validation failed (an unknown key, a bad enum value, an empty or oversized batch)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "A federation key or guest token — stats are never recorded for those." }
+
   # ── Playlists ────────────────────────────────────────────────────────────
 
   /api/v1/playlist/load:

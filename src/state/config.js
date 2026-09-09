@@ -378,6 +378,18 @@ const rpnOptions = Joi.object({
   url: Joi.string().optional()
 });
 
+// Listening stats (Stats API v2). What counts as a play, and how far back a
+// client may report one. Clients send complete plays to POST
+// /api/v1/stats/plays; the server judges each against these, stores the
+// verdict on the row, and only counted plays move play_count. The sweep that
+// prunes raw events past retentionMonths is a separate job; ingest already
+// refuses anything older, so the log's age is bounded from the first row.
+const statsOptions = Joi.object({
+  playThresholdMs: Joi.number().integer().min(0).default(30000),
+  playThresholdFraction: Joi.number().min(0).max(1).default(0.5),
+  retentionMonths: Joi.number().integer().min(0).default(24)
+});
+
 const lastFMOptions = Joi.object({
   apiKey: Joi.string().default('25627de528b6603d6471cd331ac819e0'),
   apiSecret: Joi.string().default('a9df934fc504174d4cb68853d9feb143')
@@ -694,6 +706,7 @@ const schema = Joi.object({
     "opus": true, "m3u": false
   }),
   lastFM: lastFMOptions.default(lastFMOptions.validate({}).value),
+  stats: statsOptions.default(statsOptions.validate({}).value),
   scanOptions: scanOptions.default(scanOptions.validate({}).value),
   noUpload: Joi.boolean().default(false),
   noMkdir: Joi.boolean().default(false),
