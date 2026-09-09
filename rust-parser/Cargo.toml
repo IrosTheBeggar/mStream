@@ -17,7 +17,7 @@ serde_json = "1"
 # still want); `bundled` compiles the vendored SQLite instead of linking the
 # host's.
 rusqlite = { version = "0.40", default-features = false, features = ["bundled", "cache"] }
-lofty = "0.22"
+lofty = "0.25"
 walkdir = "2"
 # RustCrypto's MD5 impl. The older `md5` crate (0.7) is marked unmaintained
 # (RUSTSEC informational — MD5 isn't used for security here, only content

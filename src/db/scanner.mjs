@@ -1054,10 +1054,10 @@ async function parseMyFile(absolutePath, modified) {
     songInfo.isrc              = firstStr(parsed.common?.isrc);
     songInfo.mbzAlbumId        = firstStr(parsed.common?.musicbrainz_albumid);
     songInfo.mbzReleaseGroupId = firstStr(parsed.common?.musicbrainz_releasegroupid);
-    // tracks.acoustid_id is deliberately NOT read from tags in Phase 1: lofty
-    // (the Rust scanner) has no AcoustID ItemKey, so reading it only here would
-    // break scanner parity. Its natural source is the Phase 2 fingerprint pass,
-    // which owns the column; it stays NULL until then.
+    // tracks.acoustid_id is deliberately NOT read from tags in Phase 1 by
+    // either scanner (lofty 0.23+ does have an AcoustId key; the Rust side
+    // skips it to stay in step). Its natural source is the Phase 2
+    // fingerprint pass, which owns the column; it stays NULL until then.
     // Provenance for the track-level ids — 'tag' when any was read from the
     // file. Mirrors bpmSource; the future fingerprint pass writes 'acoustid'.
     songInfo.mbzIdSource = (songInfo.mbzRecordingId != null || songInfo.mbzReleaseTrackId != null
