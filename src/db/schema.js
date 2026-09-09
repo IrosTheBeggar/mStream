@@ -84,7 +84,7 @@ import { HASH_GENERATION } from './audio-hash.js';
 // V69 drops the velvet-only tables (smart_playlists, user_settings,
 // cue_points, play_events) and users.listenbrainz_token — the velvet UI and
 // the API modules that existed only for it were removed. See SCHEMA_V69.
-export const SCHEMA_VERSION = 69;
+export const SCHEMA_VERSION = 70;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2506,6 +2506,75 @@ export const SCHEMA_V69 = `
   ALTER TABLE users DROP COLUMN listenbrainz_token;
 `;
 
+// ── V70: Stats API v2 — the listening log, reborn ──────────────────────────
+//
+// V69 dropped the velvet-era play_events (server-stamped time, no track
+// identity beyond a filepath, no ceiling). This is its replacement, shaped
+// for clients that report COMPLETE plays after the fact:
+//   event_id     the client's UUID — the idempotency key an offline outbox
+//                retries against (INSERT OR IGNORE; see src/stats/store.js)
+//   track_hash   the canonical per-track key (audio_hash, else file_hash —
+//                the same key user_metadata uses), resolved at ingest, so a
+//                rename never orphans a play; filepath + library_id are a
+//                snapshot for display and library scoping
+//   peer_id      set for a play of a federated peer's track — the user's
+//                own play of a track that lives elsewhere; snapshot then
+//                carries the peer-reported title/artist/album/hash/art,
+//                because this library has no row to join
+//   counted      the server's verdict under the play-threshold rule at
+//                ingest time, stored so the rule can change later without
+//                rewriting history; play_count only ever moves by counted
+//   started_at   the CLIENT's start time, UTC, as 'YYYY-MM-DD HH:MM:SS.SSS'
+//                — SQLite's own datetime text (strftime()/date() read it,
+//                TEXT comparison orders it) with milliseconds
+// user_hour_stats is the per-user UTC-hour rollup every time-series read
+// comes from: exact re-bucketing for any whole-hour timezone, and the part
+// of the history that survives when raw events are pruned by retention.
+// user_metadata grows the derived per-track counters (skips, listened time,
+// first play) next to the play_count / last_played it already had — all
+// bumped in the same transaction as the event insert, never recomputed
+// from a scan. Forward-only, no rescan.
+export const SCHEMA_V70 = `
+  CREATE TABLE IF NOT EXISTS play_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    track_hash TEXT,
+    filepath TEXT NOT NULL,
+    library_id INTEGER REFERENCES libraries(id) ON DELETE SET NULL,
+    peer_id INTEGER REFERENCES federation_peers(id) ON DELETE SET NULL,
+    snapshot TEXT,
+    client TEXT,
+    session_id TEXT,
+    source TEXT,
+    outcome TEXT NOT NULL CHECK (outcome IN ('completed', 'skipped', 'stopped')),
+    counted INTEGER NOT NULL DEFAULT 0,
+    played_ms INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER,
+    pause_count INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL,
+    ended_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_play_events_user_time ON play_events(user_id, started_at);
+  CREATE INDEX IF NOT EXISTS idx_play_events_user_hash ON play_events(user_id, track_hash);
+  CREATE INDEX IF NOT EXISTS idx_play_events_library ON play_events(library_id);
+  CREATE INDEX IF NOT EXISTS idx_play_events_peer ON play_events(peer_id);
+
+  CREATE TABLE IF NOT EXISTS user_hour_stats (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    hour TEXT NOT NULL,
+    events INTEGER NOT NULL DEFAULT 0,
+    plays INTEGER NOT NULL DEFAULT 0,
+    skips INTEGER NOT NULL DEFAULT 0,
+    listened_ms INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, hour)
+  );
+
+  ALTER TABLE user_metadata ADD COLUMN skip_count INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE user_metadata ADD COLUMN listened_ms INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE user_metadata ADD COLUMN first_played TEXT;
+`;
+
 export const SCHEMA_V58 = `
   ALTER TABLE federation_peers ADD COLUMN use_discovery INTEGER NOT NULL DEFAULT 1;
 `;
@@ -2903,4 +2972,6 @@ export const MIGRATIONS = [
   // V69 drops the velvet-only tables + users.listenbrainz_token. Pure
   // DROP TABLE / DROP COLUMN, no rescan. See SCHEMA_V69.
   { version: 69, sql: SCHEMA_V69 },
+  // Stats API v2 tables — see SCHEMA_V70.
+  { version: 70, sql: SCHEMA_V70 },
 ];

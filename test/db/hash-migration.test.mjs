@@ -30,7 +30,10 @@ function mkDb() {
       play_count INTEGER DEFAULT 0,
       last_played TEXT,
       rating INTEGER,
-      starred_at TEXT
+      starred_at TEXT,
+      skip_count INTEGER NOT NULL DEFAULT 0,
+      listened_ms INTEGER NOT NULL DEFAULT 0,
+      first_played TEXT
     );
     CREATE TABLE user_bookmarks (
       user_id INTEGER NOT NULL,
@@ -116,6 +119,26 @@ describe('hash migration helper', () => {
     // Old-hash rows gone.
     const orphaned = db.prepare('SELECT COUNT(*) AS n FROM user_metadata WHERE track_hash = ?').get('oldhash');
     assert.equal(orphaned.n, 0);
+  });
+
+  test('a collision merges the V70 counters: skips and listened time sum, first_played keeps the earliest', () => {
+    const db = mkDb();
+    // The user already holds the NEW identity (stars keyed on the audio hash)…
+    db.prepare(`INSERT INTO user_metadata (user_id, track_hash, play_count, last_played, skip_count, listened_ms, first_played)
+                VALUES (1, 'newhash', 2, '2026-09-01 10:00:00', 1, 100000, '2026-08-01 10:00:00')`).run();
+    // …and plays keyed on the OLD one.
+    db.prepare(`INSERT INTO user_metadata (user_id, track_hash, play_count, last_played, skip_count, listened_ms, first_played)
+                VALUES (1, 'oldhash', 5, '2026-09-05 10:00:00', 3, 250000, '2026-07-01 10:00:00')`).run();
+
+    assert.equal(migrateHashReferences(db, 'oldhash', 'newhash').metadata, 1);
+
+    const row = db.prepare('SELECT * FROM user_metadata WHERE user_id = 1 AND track_hash = ?').get('newhash');
+    assert.equal(row.play_count, 7);
+    assert.equal(row.last_played, '2026-09-05 10:00:00');
+    assert.equal(row.skip_count, 4);
+    assert.equal(row.listened_ms, 350000);
+    assert.equal(row.first_played, '2026-07-01 10:00:00');
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user_metadata WHERE track_hash = ?').get('oldhash').n, 0);
   });
 
   test('migrates user_bookmarks rows', () => {
