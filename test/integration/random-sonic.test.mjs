@@ -244,6 +244,29 @@ describe('sonic threshold pool', () => {
     assert.deepEqual([...titles].sort(), ['Highway', 'Lib2 Song', 'Rise']);
   });
 
+  test('a batch reports one similarity per song, aligned with songs', async () => {
+    // Pool at 0.75 = {Rise .95, Lib2 Song .9, Highway .8}. Asking for five
+    // returns exactly those three — the pool is a hard constraint, so the
+    // batch is not padded from outside it — each with its own exact
+    // cosine. The single `similarity` stays the first song's value so
+    // one-pick callers keep reading one number.
+    const { status, body } = await pick({ similarTo: [SEED_PATH], minSimilarity: 0.75, limit: 5 });
+    assert.equal(status, 200);
+    const titles = body.songs.map((s) => s.metadata.title);
+    assert.deepEqual([...titles].sort(), ['Highway', 'Lib2 Song', 'Rise']);
+    assert.equal(body.sonic.poolSize, 3);
+    assert.equal(body.sonic.similarities.length, 3, 'one entry per served song');
+    assert.equal(body.sonic.similarity, body.sonic.similarities[0]);
+    const expected = {
+      'Rise': dot(V.seed, V.near), 'Lib2 Song': dot(V.seed, V.lib2), 'Highway': dot(V.seed, V.mid),
+    };
+    titles.forEach((t, i) => {
+      assert.ok(Math.abs(body.sonic.similarities[i] - expected[t]) < 1e-3,
+        `similarities[${i}] = ${body.sonic.similarities[i]} is '${t}'s exact cosine`);
+    });
+    assert.equal(body.ignoreList.length, 3, 'every served song advances the cooldown');
+  });
+
   test('empty pool → 400 with the similarity-range message', async () => {
     const { status, body } = await pick({ similarTo: [SEED_PATH], minSimilarity: 0.99 });
     assert.equal(status, 400);

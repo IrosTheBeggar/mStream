@@ -37,6 +37,16 @@
 // match no candidate row and age out of the capped list within a few
 // picks.
 //
+// `limit` (default 1, capped at PICK_LIMIT_MAX) asks for a batch instead
+// of a single pick. A batch is served from the same bounded pool a pick
+// is: distinct rows, best tier first, fresh (not in the cooldown) before
+// repeats, and every song served advances the ignoreList. It can fall
+// short of `limit` — when fewer candidates are in scope, or when the
+// waterfall step that wins holds fewer matches. The chain deliberately
+// does NOT cascade into a more relaxed step to fill the remainder: the
+// tail of the batch would then break the constraint its head satisfied,
+// and the caller couldn't tell which songs are which.
+//
 // This is step B of the Auto-DJ velvet port. Similar-artists support
 // (the `artists` / `ignoreArtists` filters) is step D and lands in a
 // separate PR — there's no library-aware Last.fm proxy yet, so wiring
@@ -378,7 +388,10 @@ export function buildArtistFilter(opts) {
 // in JS so an in-range row wins over an unknown row wins over a wrong
 // row. Without this, "drop constraint" steps would feed garbage picks
 // to the client.
-function classifyRow(row, opts) {
+//
+// Exported for tests — the SQL twin (buildTierOrderExpr) is checked
+// row-for-row against this classifier.
+export function classifyRow(row, opts) {
   const bpmRanges = opts.bpmRanges;
   const keySet    = opts.keySet;
 
@@ -408,36 +421,37 @@ function classifyRow(row, opts) {
   return 2;
 }
 
-export function applyTierFilter(rows, opts) {
+// Stable sort by tier against the ORIGINAL request constraints: Tier 0
+// rows first, then Tier 1, then Tier 2, each keeping its input order.
+// The waterfall may have dropped the BPM/key constraint at the SQL layer,
+// so a batch is handed out from the front of this ranking — in-range
+// rows before unknown-tag rows before known-wrong rows — and a single
+// pick takes the best row present, exactly as the old best-tier-only
+// filter did. Input order carries the fresh-before-cooled priority (see
+// finalisePick), which the stable sort preserves within a tier.
+export function rankByTier(rows, opts) {
   const haveBpm = Array.isArray(opts.bpmRanges) && opts.bpmRanges.length > 0;
   const haveKey = Array.isArray(opts.musicalKeys) && opts.musicalKeys.length > 0;
-  // No active constraint → no filtering needed.
+  // No active constraint → nothing to rank on.
   if (!haveBpm && !haveKey) { return rows; }
 
   const keySet = haveKey ? new Set(expandCamelotCodes(opts.musicalKeys)) : null;
   const classifyOpts = { bpmRanges: opts.bpmRanges, keySet };
 
-  const tier0 = [];
-  const tier1 = [];
-  const tier2 = [];
+  const tiers = [[], [], []];
   for (const row of rows) {
-    const t = classifyRow(row, classifyOpts);
-    if (t === 0) { tier0.push(row); }
-    else if (t === 1) { tier1.push(row); }
-    else { tier2.push(row); }
+    tiers[classifyRow(row, classifyOpts)].push(row);
   }
-  if (tier0.length > 0) { return tier0; }
-  if (tier1.length > 0) { return tier1; }
-  return tier2;
+  return [...tiers[0], ...tiers[1], ...tiers[2]];
 }
 
 // SQL twin of classifyRow, built against the ORIGINAL request constraints
-// (exactly what the JS applyTierFilter call at the end of runRandomSongs
-// classifies with — tight ranges + expanded key names). Used as the leading
-// ORDER BY term of every bounded waterfall query: rows sort best-tier-first
-// before the RANDOM() tiebreak, so a LIMIT-sized pool provably contains the
-// best tier present in scope and sampling can't starve the tier filter.
-// The JS filter stays the authority — this only shapes what gets sampled.
+// (exactly what the JS rankByTier call in finalisePick classifies with —
+// tight ranges + expanded key names). Used as the leading ORDER BY term of
+// every bounded waterfall query: rows sort best-tier-first before the
+// RANDOM() tiebreak, so a LIMIT-sized pool provably contains the best tier
+// present in scope and sampling can't starve the tier ranking. The JS
+// ranking stays the authority — this only shapes what gets sampled.
 //
 // Emission order matters: params are pushed by the emit* helpers as the
 // template literal evaluates left-to-right, keeping placeholder order and
@@ -518,17 +532,20 @@ function runWaterfallQuery(d, baseSql, baseParams, filterOpts, bounded) {
   // to JS per pick). When the request carries BPM/key constraints,
   // `tierOrder` leads the ORDER BY so the pool always contains the best
   // tier present (see buildTierOrderExpr); the id cooldown is excluded in
-  // SQL first, and when that alone empties the step, the SAME step retries
-  // without it so cooldown exhaustion falls back to repeats WITHIN this
-  // step's constraints (matching finalisePick's fallback).
+  // SQL first, and when that alone leaves the step short of `limit` fresh
+  // rows (with one song asked: empty), the SAME step retries without it so
+  // cooldown exhaustion falls back to repeats WITHIN this step's
+  // constraints (matching finalisePick's fallback). The fresh rows stay in
+  // front of the merged result so the repeats only fill what's left.
   //
   // The retry is skipped for artist-cooldown-ENFORCING steps
-  // (allowRepeatRetry false): their all-cooled rows would be rejected
-  // by the step loop's id-fresh rule anyway (see runRandomSongs), so
-  // returning empty lets the waterfall advance toward the
-  // drop-cooldown step without paying for a query whose result is
-  // discarded.
-  const { ignoreIds, allowRepeatRetry, tierOrder } = bounded;
+  // (allowRepeatRetry false) that came back with NO fresh row: their
+  // all-cooled rows would be rejected by the step loop's id-fresh rule
+  // anyway (see runRandomSongs), so returning empty lets the waterfall
+  // advance toward the drop-cooldown step without paying for a query
+  // whose result is discarded. An enforcing step that has SOME fresh rows
+  // wins regardless, so its batch is topped up like any other step's.
+  const { ignoreIds, allowRepeatRetry, tierOrder, limit } = bounded;
   const orderBy = tierOrder
     ? `ORDER BY ${tierOrder.expr}, RANDOM()`
     : 'ORDER BY RANDOM()';
@@ -541,8 +558,9 @@ function runWaterfallQuery(d, baseSql, baseParams, filterOpts, bounded) {
       .all(...baseParams, ...params, ...(exclude ? ignoreIds : []), ...tierParams);
   };
   const rows = attempt(true);
-  if (rows.length > 0 || ignoreIds.length === 0 || !allowRepeatRetry) { return rows; }
-  return attempt(false);
+  if (rows.length >= limit || ignoreIds.length === 0) { return rows; }
+  if (rows.length === 0 && !allowRepeatRetry) { return rows; }
+  return mergeRows(rows, attempt(false));
 }
 
 // ── Sonic similarity pool (discovery embeddings) ────────────────────────────
@@ -660,10 +678,21 @@ function buildSonicPool(req, body) {
 // (The Joi wire cap of 500 stays as defense-in-depth headroom.)
 const IGNORE_COOLDOWN_MAX = 50;
 
-// Candidate-pool size for the bounded simple-mode query. The pick is one
-// song; 50 keeps the pool comfortably larger than the cooldown so
-// consecutive picks stay varied even right after a fallback.
-const SIMPLE_POOL_LIMIT = 50;
+// Candidate-pool size for every bounded candidate query (simple mode and
+// each waterfall step). 50 keeps the pool comfortably larger than the
+// cooldown so consecutive picks stay varied even right after a fallback.
+// Exported for the invariant test on PICK_LIMIT_MAX.
+export const SIMPLE_POOL_LIMIT = 50;
+
+// Most songs one request may ask for (`limit`). Two invariants keep a
+// batch cheap and coherent, both pinned by test/integration/random-route.test.mjs:
+//   • ≤ SIMPLE_POOL_LIMIT — one bounded pool always holds a full batch,
+//     so no query grows with the request, and a pool that comes back
+//     short has provably shown every fresh candidate in scope.
+//   • ≤ IGNORE_COOLDOWN_MAX / 2 — a maximal batch still leaves the whole
+//     previous batch in the ignoreList, so back-to-back batches never
+//     repeat each other.
+export const PICK_LIMIT_MAX = 25;
 
 // Sanitize the client's round-tripped ignoreList to track ids we can bind
 // into SQL / compare against rows. Joi already enforces integers >= 0;
@@ -673,9 +702,39 @@ function ignoreIdsFrom(body) {
   return list.filter((n) => Number.isInteger(n) && n >= 0);
 }
 
+// How many songs the request asks for. Joi defaults `limit` to 1 and caps
+// it at PICK_LIMIT_MAX; the clamp here is the same defence-in-depth as
+// ignoreIdsFrom for callers that bypass the route schema.
+function pickLimitFrom(body) {
+  const n = Number(body.limit);
+  if (!Number.isInteger(n) || n < 1) { return 1; }
+  return Math.min(n, PICK_LIMIT_MAX);
+}
+
+// Union of a cooldown-excluding query and its no-exclusion retry over the
+// SAME candidate set: the fresh rows first, then whatever the retry added
+// (all cooled — a first query that came back short of `limit` rows already
+// returned every fresh row in scope, see PICK_LIMIT_MAX). Order matters:
+// finalisePick hands out the front of the list, so repeats only ever fill
+// what fresh rows couldn't.
+function mergeRows(fresh, more) {
+  const seen = new Set(fresh.map((r) => r.id));
+  const out = [...fresh];
+  for (const r of more) {
+    if (seen.has(r.id)) { continue; }
+    seen.add(r.id);
+    out.push(r);
+  }
+  return out;
+}
+
 export function runRandomSongs(req, body) {
   const d = db.getDB();
   if (!d) { throw new WebError('Database not ready', 400); }
+
+  // Batch size — every bounded query's top-up rule and the final pick
+  // honour it (see the header comment).
+  const limit = pickLimitFrom(body);
 
   // Sonic pool first — it can 403/404/400 on its own and there's no point
   // running SQL when the seed itself is bad.
@@ -747,9 +806,9 @@ export function runRandomSongs(req, body) {
   }
 
   // Skip the trackQuery `tg_agg` aggregation for the candidate-set
-  // query — only the picked row's genres survive to the response, and
+  // query — only the picked rows' genres survive to the response, and
   // SQLite MATERIALIZEs the aggregation over the full tracks table
-  // before applying the WHERE clause. finalisePick enriches the
+  // before applying the WHERE clause. finalisePick enriches each
   // chosen row via fetchGenresForTrack so `metadata.genres` is still
   // populated on the wire. Measured ~80% SQL speedup on the smoke DB
   // (52 rows) and extrapolates to ~460ms saved per request at 100k
@@ -785,11 +844,12 @@ export function runRandomSongs(req, body) {
       ).all(...baseParams, ...(exclude ? ignoreIds : []));
     };
     let rows = bounded(true);
-    if (rows.length === 0 && ignoreIds.length > 0) {
-      // Cooldown covers everything in scope — allow repeats rather
-      // than stalling the session (same contract as the waterfall's
-      // drop-cooldown steps).
-      rows = bounded(false);
+    if (rows.length < limit && ignoreIds.length > 0) {
+      // The cooldown leaves fewer fresh songs in scope than asked for
+      // (with one song asked: none at all) — fill the rest with repeats
+      // rather than stalling the session (same contract as the
+      // waterfall's drop-cooldown steps). Fresh rows stay in front.
+      rows = mergeRows(rows, bounded(false));
     }
     if (rows.length === 0) {
       throw new WebError(sonic
@@ -972,7 +1032,7 @@ export function runRandomSongs(req, body) {
     // step).
     const candidate = runWaterfallQuery(
       d, baseSql, baseParams, opts,
-      { ignoreIds, allowRepeatRetry: !enforcesCooldown, tierOrder },
+      { ignoreIds, allowRepeatRetry: !enforcesCooldown, tierOrder, limit },
     );
     if (candidate.length === 0) { continue; }
     if (enforcesCooldown && candidate.every((r) => ignoreSet.has(r.id))) { continue; }
@@ -986,56 +1046,78 @@ export function runRandomSongs(req, body) {
       : 'No songs that match criteria', 400);
   }
 
-  // Apply tier filter against the ORIGINAL request constraints so that
-  // even after the chain drops the SQL filter, in-range rows still win.
-  rows = applyTierFilter(rows, {
+  // Ranked against the ORIGINAL request constraints inside finalisePick,
+  // so that even after the chain drops the SQL filter, in-range rows are
+  // served first.
+  return finalisePick(rows, body, sonic, {
     bpmRanges: body.bpmRanges,
     musicalKeys: body.musicalKeys,
   });
-
-  return finalisePick(rows, body, sonic);
 }
 
-function finalisePick(rows, body, sonic) {
+// Turn the winning candidate rows into the response: the first `limit`
+// rows in priority order, the advanced cooldown, and (sonic mode) the
+// picks' similarities.
+//
+// Priority is tier first, freshness second. The cooldown is soft —
+// best-effort variety — while the tier ranking guards the BPM/key promise
+// the request made, so a recently-served in-range row outranks a never-
+// served unknown-tag row. Within a tier, rows not served recently come
+// first; when the cooldown covers the whole candidate set (tiny library /
+// narrow filters / long session) the repeats fill in — they beat stalling
+// the session. Simple mode already excluded the cooled ids in SQL, so its
+// fresh partition only matters after a repeat top-up; the waterfall passes
+// `tierOpts` so its relaxed steps still serve in-range rows first. Every
+// query behind `rows` ends in RANDOM(), so the front of the ordering is a
+// uniform sample and a single pick is as random as it ever was.
+function finalisePick(rows, body, sonic, tierOpts = null) {
+  const limit = pickLimitFrom(body);
   const sent = ignoreIdsFrom(body);
   const ignoreSet = new Set(sent);
-  // Cooldown: prefer candidates not served recently. When the cooldown
-  // covers the whole candidate set (tiny library / narrow filters / long
-  // session), fall back to the full set — repeats beat stalling the
-  // session. Simple mode already excluded the ids in SQL, so the filter
-  // is a no-op there; waterfall and sonic sets are filtered here.
-  const fresh = rows.filter((r) => !ignoreSet.has(r.id));
-  const pool = fresh.length > 0 ? fresh : rows;
-  const picked = pool[Math.floor(Math.random() * pool.length)];
+  let ordered = [
+    ...rows.filter((r) => !ignoreSet.has(r.id)),
+    ...rows.filter((r) => ignoreSet.has(r.id)),
+  ];
+  if (tierOpts) { ordered = rankByTier(ordered, tierOpts); }
+  const picked = ordered.slice(0, limit);
 
-  // Move-to-end + trim: newest last, bounded, no duplicate of the pick.
+  // Move-to-end + trim: newest last, bounded, no duplicate of any pick.
   // Stale entries (deleted tracks, a pre-rework index-based list) age
   // out through the cap as new picks append.
-  const nextIgnore = sent.filter((id) => id !== picked.id);
-  nextIgnore.push(picked.id);
+  const pickedIds = picked.map((r) => r.id);
+  const pickedSet = new Set(pickedIds);
+  const nextIgnore = sent.filter((id) => !pickedSet.has(id));
+  nextIgnore.push(...pickedIds);
   while (nextIgnore.length > IGNORE_COOLDOWN_MAX) { nextIgnore.shift(); }
 
-  // Enrich the picked row with `genres_concat` so renderMetadataObj
+  // Enrich each picked row with `genres_concat` so renderMetadataObj
   // emits a populated `metadata.genres` field. The candidate-set
-  // query above skipped the LEFT JOIN aggregation for speed; this
-  // single targeted SELECT costs ~10µs and keeps the wire shape
+  // query above skipped the LEFT JOIN aggregation for speed; these
+  // targeted SELECTs cost ~10µs apiece and keep the wire shape
   // contractually identical.
-  const { genres_concat } = fetchGenresForTrack(db.getDB(), picked.id);
-  picked.genres_concat = genres_concat;
+  const d = db.getDB();
+  for (const row of picked) {
+    row.genres_concat = fetchGenresForTrack(d, row.id).genres_concat;
+  }
 
   const out = {
-    songs: [renderMetadataObj(picked)],
+    songs: picked.map((row) => renderMetadataObj(row)),
     ignoreList: nextIgnore,
   };
 
-  // Sonic mode: report the pick's actual cosine vs the seed/centroid (UI
+  // Sonic mode: report each pick's actual cosine vs the seed/centroid (UI
   // display + slider tuning) and how many analyzed tracks are inside the
   // range at all (before the other filters cut it down further).
+  // `similarities` is aligned with `songs`; `similarity` stays the first
+  // song's value so single-pick callers keep reading one number.
   if (sonic) {
-    const similarity = sim.similarityToHash(
-      sonic.index, sonic.seedVec, picked.audio_hash || picked.file_hash);
+    const similarities = picked.map((row) => {
+      const s = sim.similarityToHash(sonic.index, sonic.seedVec, row.audio_hash || row.file_hash);
+      return s === null ? null : Math.round(s * 10000) / 10000;
+    });
     out.sonic = {
-      similarity: similarity === null ? null : Math.round(similarity * 10000) / 10000,
+      similarity: similarities[0],
+      similarities,
       poolSize: sonic.allowed.size,
     };
   }
@@ -1087,6 +1169,14 @@ export function setup(mstream) {
     //                    16 is room for future tolerance-window UIs.
     //   • musicalKeys:   24 possible Camelot codes; the cap matches.
     const schema = Joi.object({
+      // How many songs to return — 1 (the default, and the pre-batch wire
+      // shape) up to PICK_LIMIT_MAX. Songs in a batch are distinct, served
+      // best-tier-first and fresh-before-repeats from the same bounded pool
+      // a single pick uses, and every one of them advances the ignoreList.
+      // `songs.length` can fall short of `limit` when fewer candidates are
+      // in scope, or when the waterfall step that wins holds fewer matches
+      // — the chain never cascades into a relaxed step to fill a batch.
+      limit: Joi.number().integer().min(1).max(PICK_LIMIT_MAX).default(1),
       ignoreList: Joi.array().items(Joi.number().integer().min(0)).max(500).optional(),
       ignoreVPaths: Joi.array().items(Joi.string()).max(50).optional(),
       // minRating accepts 0..10 — the alpha-UI rating dropdown

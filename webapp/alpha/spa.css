@@ -1957,6 +1957,16 @@ select {
 .dj-duration-num {
   -moz-appearance: textfield;
 }
+
+/* Songs-per-fetch — a short numeric field on the right of its row,
+   dressed as .autodj-select so the two "how much" controls at the top
+   of the panel match. Native spinners stay: step=1 is meaningful here. */
+.dj-limit-num {
+  width: 5.5em;
+  min-width: 0;
+  text-align: center;
+  cursor: text;
+}
 /* Unknown-length row — same shape as .dj-filter-head (caption left,
    .toggle-sw switch right) so it reads as one of the panel's toggles
    rather than a stray control. The switch itself needs no rules here;

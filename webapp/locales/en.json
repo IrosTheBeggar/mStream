@@ -215,6 +215,8 @@
   "autoDJ.sectionFilters": "Filters",
   "autoDJ.sectionContinuity": "Continuity",
   "autoDJ.ratingAny": "Any",
+  "autoDJ.limitLabel": "Songs per fetch",
+  "autoDJ.limitHint": "How many songs Auto DJ queues each time it runs (1–{{max}}). Continuity filters judge the whole batch against the song playing when it was fetched.",
   "autoDJ.similarLabel": "Similar artists (Last.fm)",
   "autoDJ.similarHint": "Bias picks toward artists Last.fm says are similar to the current song.",
   "autoDJ.similarHintNoKey": "No Last.fm API key configured on the server.",

@@ -1546,10 +1546,11 @@ paths:
   /api/v1/db/random-songs:
     post:
       tags: [Library]
-      summary: Get a random song (Auto-DJ)
+      summary: Get random songs (Auto-DJ)
       description: |
-        Returns one random song. With no body fields set, behaves like the
-        pre-V32 route — pick a random track from everything the user can see.
+        Returns one random song by default, or up to `limit` of them. With
+        no body fields set, behaves like the pre-V32 route — pick a random
+        track from everything the user can see.
 
         When any BPM / key / artist filter is set the server runs a
         fallback waterfall that progressively relaxes constraints until
@@ -1574,10 +1575,21 @@ paths:
           5b. similar (drop `ignoreArtists` cooldown — only if set)
           6-10. the non-similar chain above
 
-        After the SQL-side waterfall, a tier filter sorts the surviving
+        After the SQL-side waterfall, a tier ranking sorts the surviving
         rows so an in-range pick wins over an unknown-tag pick wins over
-        a known-wrong pick. The route always returns exactly one song
-        (or 400 if scope is empty).
+        a known-wrong pick. With `limit` omitted the route returns exactly
+        one song (or 400 if scope is empty).
+
+        **Batches.** `limit` (1..25, default 1) asks for several songs in
+        one call. They are distinct, served from the front of the same
+        ranking — best tier first, then songs not in the `ignoreList`
+        before repeats — and every one of them is appended to the returned
+        `ignoreList`. A batch can be SHORTER than `limit`: when fewer
+        candidates are in scope, or when the waterfall step that wins holds
+        fewer matches. The chain deliberately never pads a batch from a
+        more relaxed step, so the tail of a batch satisfies the same
+        constraints as its head. The always-on filters (`genres`, the
+        duration window, the sonic pool) apply to every song in a batch.
 
         `genres` and the `minDuration` / `maxDuration` window are
         ALWAYS-ON base conditions rather than waterfall steps: every
@@ -1601,14 +1613,14 @@ paths:
         or `BPM` / `KEY` / `INITIALKEY` (Vorbis) tags.
 
         `ignoreList` is a round-trip cursor — the server returns an
-        updated list with the just-picked index appended, and clients
-        echo it back on the next call to deduplicate across a session.
-        The server trims older entries automatically when the list
-        exceeds ~half the candidate-pool size; clients don't need to
-        prune it themselves. Capped at 500 entries. Entries are
-        server-issued track ids, meaningful only on the server that
-        issued them, and the cooldown is soft: once the list covers every
-        candidate the server picks from the full pool again rather than
+        updated list with every just-served track id appended (newest
+        last), and clients echo it back on the next call to deduplicate
+        across a session. The server keeps only the newest 50 entries;
+        clients don't need to prune it themselves. Accepted up to 500
+        entries. Entries are server-issued track ids, meaningful only on
+        the server that issued them, and the cooldown is soft: once the
+        list covers every candidate (or leaves fewer than a batch needs)
+        the server fills in from the full pool again rather than
         answering 400.
 
         **Sonic similarity** (`similarTo` or `similarToVector`, with
@@ -1648,15 +1660,27 @@ paths:
               allOf:
                 - type: object
                   properties:
+                    limit:
+                      type: integer
+                      minimum: 1
+                      maximum: 25
+                      default: 1
+                      description: |
+                        How many songs to return. Distinct, best tier
+                        first, fresh before repeats; may come back short
+                        when fewer candidates are in scope or the winning
+                        waterfall step holds fewer matches (see above).
+                        Every served song is appended to `ignoreList`.
                     minRating: { type: integer, minimum: 0, maximum: 10 }
                     ignoreList:
                       type: array
                       maxItems: 500
                       items: { type: integer, minimum: 0 }
                       description: |
-                        Indices of recently-picked tracks to skip. Echo
-                        back the `ignoreList` from the previous response
-                        unchanged; the server appends + trims.
+                        Server-issued track ids of recently served songs
+                        to skip. Echo back the `ignoreList` from the
+                        previous response unchanged; the server appends +
+                        trims.
                     bpmRanges:
                       type: array
                       maxItems: 16
@@ -1836,7 +1860,7 @@ paths:
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":
-          description: One random song that satisfies the (possibly relaxed) constraints.
+          description: Up to `limit` random songs (one by default) that satisfy the (possibly relaxed) constraints.
           content:
             application/json:
               schema:
@@ -1845,25 +1869,32 @@ paths:
                   songs:
                     type: array
                     items: { $ref: "#/components/schemas/Metadata" }
+                    description: |
+                      One entry by default, up to `limit` — possibly
+                      fewer, never more (see the batch notes above).
                   ignoreList:
                     type: array
                     items: { type: integer }
                     description: |
                       Updated cursor: previous request's `ignoreList`
-                      with the just-picked index appended, plus any
-                      server-side trimming. Echo back unchanged on the
-                      next call.
+                      with every served track id appended (newest last),
+                      trimmed to the newest 50. Echo back unchanged on
+                      the next call.
                   sonic:
                     type: object
                     description: |
                       Present only when a sonic seed was given: how close
-                      the pick actually is, and how large the pool was
+                      the picks actually are, and how large the pool was
                       before the other filters cut it down.
                     properties:
                       similarity:
                         type: number
                         nullable: true
-                        description: Cosine similarity of the picked track to the seed centroid, rounded to 4 decimals (`null` if the pick has no vector).
+                        description: Cosine similarity of the first song in `songs` to the seed centroid, rounded to 4 decimals (`null` if it has no vector). Kept for single-pick callers; equals `similarities[0]`.
+                      similarities:
+                        type: array
+                        items: { type: number, nullable: true }
+                        description: One cosine similarity per entry of `songs`, in the same order, rounded to 4 decimals.
                       poolSize:
                         type: integer
                         description: Analyzed tracks at or above `minSimilarity`, before rating / genre / BPM / key filtering.
