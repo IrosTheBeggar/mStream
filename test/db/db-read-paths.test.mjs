@@ -347,7 +347,10 @@ describe('artists-albums', () => {
       ORDER BY al.year DESC
     `).all('Solo', 'Solo', 'Solo', LIB_A, LIB_B)
       .map((r) => ({ name: r.name, year: r.year, album_art_file: r.album_art_file || null }));
-    const got = (await post('/api/v1/db/artists-albums', { artist: 'Solo' })).body.albums;
+    // The album-API series added credit and aggregate fields to the items;
+    // this oracle is about the legacy trio and the collapse, so compare those.
+    const got = (await post('/api/v1/db/artists-albums', { artist: 'Solo' })).body.albums
+      .map(({ name, year, album_art_file }) => ({ name, year, album_art_file }));
     assert.deepEqual([...got].sort((a, b) => String(a.name).localeCompare(b.name)),
       [...oracle].sort((a, b) => String(a.name).localeCompare(b.name)));
   });
