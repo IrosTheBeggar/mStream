@@ -198,7 +198,7 @@ describe('pathBetween equivalence with the old full-sort walk', () => {
 // ── buildTierOrderExpr ⇄ classifyRow lockstep ──────────────────────────────
 
 describe('buildTierOrderExpr mirrors the JS tier classifier', () => {
-  test('SQL tier ordering matches applyTierFilter tiers for every row shape', () => {
+  test('SQL tier ordering matches classifyRow tiers for every row shape', () => {
     const mem = new DatabaseSync(':memory:');
     mem.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, bpm REAL, musical_key TEXT)');
     const ins = mem.prepare('INSERT INTO t (bpm, musical_key) VALUES (?, ?)');
@@ -223,12 +223,11 @@ describe('buildTierOrderExpr mirrors the JS tier classifier', () => {
       `SELECT id, ${tier.expr} AS tier FROM t ORDER BY id`
     ).all(...tier.params).map((r) => r.tier);
 
-    // The JS authority, tier by tier.
+    // The JS authority, row by row — classifyRow takes the expanded key
+    // set, exactly as rankByTier hands it over.
     const all = mem.prepare('SELECT id, bpm, musical_key FROM t ORDER BY id').all();
-    const t0 = new Set(random.applyTierFilter(all, body).map((r) => r.id));
-    const rest = all.filter((r) => !t0.has(r.id));
-    const t1 = new Set(random.applyTierFilter(rest, body).map((r) => r.id));
-    const jsTiers = all.map((r) => (t0.has(r.id) ? 0 : t1.has(r.id) ? 1 : 2));
+    const keySet = new Set(random.expandCamelotCodes(body.musicalKeys));
+    const jsTiers = all.map((r) => random.classifyRow(r, { bpmRanges: body.bpmRanges, keySet }));
 
     assert.deepEqual(sqlTiers, jsTiers, 'SQL CASE and classifyRow must agree row-for-row');
     mem.close();
