@@ -8,6 +8,7 @@ import * as transcode from './transcode.js';
 import { joiValidate } from '../util/validation.js';
 import * as vpath from '../util/vpath.js';
 import * as db from '../db/manager.js';
+import { refreshDirtyAlbums } from '../db/album-aggregate.js';
 import WebError from '../util/web-error.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import { parseFile } from 'music-metadata';
@@ -426,16 +427,27 @@ export function setup(mstream) {
         if (d && lib) {
           const artistId = db.findOrCreateArtist(data.artist);
           const albumId = db.findOrCreateAlbum(data.album, artistId, data.year);
+          // V70: tag_album / tag_compilation are the album consensus inputs
+          // the scanners stamp per track; stamping them here means this
+          // row votes on its album like any scanned row (a ytdl download
+          // carries no ALBUMARTIST, so that input stays NULL).
           d.prepare(
             `INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
              disc_number, year, format, file_hash, audio_hash, album_art_file, replaygain_track_db,
-             modified, scan_id, source, hash_v)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             modified, scan_id, source, hash_v, tag_album, tag_compilation)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
           ).run(
             data.filepath, lib.id, data.title || null, artistId, albumId,
             data.track, data.disk, data.year, data.format, data.hash, data.audioHash || null,
-            data.aaFile, data.replaygainTrackDb, data.modified, data.sID, 'ytdl', hashV
+            data.aaFile, data.replaygainTrackDb, data.modified, data.sID, 'ytdl', hashV,
+            data.album || null
           );
+          // The insert (and the REPLACE of any earlier row at this path)
+          // flagged the affected album(s) through the tracks_*_agg
+          // triggers; recompute them now so the album's year range / count
+          // reflect this track before any scan runs — the album-songs API
+          // matches `year` against that range.
+          refreshDirtyAlbums(d);
         }
         winston.info(`yt-dlp: added ${relativePath} to database`);
 

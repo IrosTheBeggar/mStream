@@ -75,8 +75,9 @@ before(async () => {
   insAlbum.run('a first', artistId('TieBreak'), 2010, null);
   insAlbum.run('C Newest', artistId('TieBreak'), 2011, null);
   // Two DISTINCT album rows sharing (name, year, art) — the same release
-  // credited to two different artists, which is the only way past
-  // albums' UNIQUE(name, artist_id, year). Solo reaches its own row via
+  // credited to two different artists (distinct album keys since V70;
+  // pre-V70 the only way past UNIQUE(name, artist_id, year)). Solo reaches
+  // its own row via
   // albums.artist_id and the Collab row via album_artists, so both land in
   // the result set and the original query's SELECT DISTINCT collapsed them.
   // The rewrite has to keep doing that.
@@ -346,6 +347,50 @@ describe('artists-albums', () => {
     const r = await post('/api/v1/db/artists-albums', { artist: 'HiddenOnly' });
     assert.deepEqual(r.body.albums, []);
     scopeTo(null);
+  });
+});
+
+// ── album-songs year range (V70) ────────────────────────────────────────────
+
+describe('album-songs year matches the album range, not the track year', () => {
+  // Fixture tracks carry NO year, so the pre-V70 `t.year = ?` match would
+  // return nothing for any year. Since V70 the client's year is matched
+  // against the album's [year_min, year_max], falling back to albums.year
+  // for rows without aggregates (this fixture inserts albums directly).
+  test('a year equal to the album year returns the album', async () => {
+    scopeTo(null);
+    const r = await post('/api/v1/db/album-songs', { album: 'Solo Album', year: 2001 });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.length, 1, 'Solo Album has one visible track');
+  });
+
+  test('a year outside the range returns nothing', async () => {
+    scopeTo(null);
+    const r = await post('/api/v1/db/album-songs', { album: 'Solo Album', year: 1999 });
+    assert.deepEqual(r.body, []);
+  });
+
+  test('any year inside [year_min, year_max] matches, even when it is not albums.year', async () => {
+    scopeTo(null);
+    manager.getDB().prepare(`UPDATE albums SET year_min = 1999, year_max = 2003 WHERE name = 'Solo Album'`).run();
+    try {
+      for (const year of [1999, 2001, '2003']) {
+        const r = await post('/api/v1/db/album-songs', { album: 'Solo Album', year });
+        assert.equal(r.body.length, 1, `year ${year} should match the range`);
+      }
+      assert.deepEqual((await post('/api/v1/db/album-songs', { album: 'Solo Album', year: 1998 })).body, []);
+      assert.deepEqual((await post('/api/v1/db/album-songs', { album: 'Solo Album', year: 2004 })).body, []);
+    } finally {
+      manager.getDB().prepare(`UPDATE albums SET year_min = NULL, year_max = NULL WHERE name = 'Solo Album'`).run();
+    }
+  });
+
+  test('the singles bucket (no album) still matches the track year', async () => {
+    scopeTo(null);
+    // HiddenOnly's single has no year → a year filter finds nothing; no
+    // filter finds it. (Album-less tracks have no range to consult.)
+    assert.deepEqual((await post('/api/v1/db/album-songs', { album: null, artist: 'HiddenOnly', year: 2000 })).body, []);
+    assert.equal((await post('/api/v1/db/album-songs', { album: null, artist: 'HiddenOnly' })).body.length, 1);
   });
 });
 
