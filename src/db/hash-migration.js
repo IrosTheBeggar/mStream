@@ -52,6 +52,9 @@ export function migrateHashReferences(db, oldHash, newHash, { schemeRekey = fals
   // collision. Same merge semantics as the V52 repair migration:
   // play_count sums, starred_at keeps the earliest, last_played the
   // latest, rating prefers the target row's.
+  // The Rust scanner's port (rust-parser/src/main.rs migrate_hash_references)
+  // still merges only the four original columns — see the follow-up noted in
+  // the V70 change.
   let metadata = 0;
   for (const o of db.prepare(
     'SELECT * FROM user_metadata WHERE track_hash = ?').all(oldHash)) {
@@ -64,12 +67,18 @@ export function migrateHashReferences(db, oldHash, newHash, { schemeRekey = fals
     } else {
       const minNonNull = (a, b) => (a == null) ? b : (b == null) ? a : (a < b ? a : b);
       const maxNonNull = (a, b) => (a == null) ? b : (b == null) ? a : (a > b ? a : b);
+      // V70 counters follow the same shape: skips and listened time sum
+      // (every play happened), first_played keeps the earliest.
       db.prepare(`UPDATE user_metadata SET play_count = ?, starred_at = ?,
-                  last_played = ?, rating = ? WHERE user_id = ? AND track_hash = ?`)
+                  last_played = ?, rating = ?, skip_count = ?, listened_ms = ?,
+                  first_played = ? WHERE user_id = ? AND track_hash = ?`)
         .run((n.play_count || 0) + (o.play_count || 0),
           minNonNull(n.starred_at, o.starred_at),
           maxNonNull(n.last_played, o.last_played),
           n.rating ?? o.rating,
+          (n.skip_count || 0) + (o.skip_count || 0),
+          (n.listened_ms || 0) + (o.listened_ms || 0),
+          minNonNull(n.first_played, o.first_played),
           o.user_id, newHash);
       db.prepare('DELETE FROM user_metadata WHERE user_id = ? AND track_hash = ?')
         .run(o.user_id, oldHash);
