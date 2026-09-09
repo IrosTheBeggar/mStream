@@ -10,14 +10,20 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.33", features = ["bundled"] }
-lofty = "0.22"
+# default-features = false drops rusqlite's default `ffi-sqlite-wasm-rs`
+# (0.40+): it only applies to wasm32-unknown-unknown builds but would still
+# pin sqlite-wasm-rs + wasm-bindgen + js-sys into Cargo.lock. `cache` is the
+# prepared-statement cache behind prepare_cached() (a default feature we
+# still want); `bundled` compiles the vendored SQLite instead of linking the
+# host's.
+rusqlite = { version = "0.40", default-features = false, features = ["bundled", "cache"] }
+lofty = "0.25"
 walkdir = "2"
 # RustCrypto's MD5 impl. The older `md5` crate (0.7) is marked unmaintained
 # (RUSTSEC informational — MD5 isn't used for security here, only content
 # addressing for cache keys + JS parity). `md-5` exports its library as
 # `md5`, so call sites still `use md5::{Md5, Digest}`.
-md-5 = "0.10"
+md-5 = "0.11"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # Pure-Rust audio decoder used to build the 800-bar waveform cache in the
 # post-scan `--waveform-scan` pass. Codec features cover every extension in
@@ -59,7 +65,7 @@ symphonia = { version = "0.6", default-features = false, features = [
 # Connection (see run_scan in main.rs).
 rayon = "1"
 rusty-chromaprint = "0.3"
-base64 = "0.22"
+base64 = "0.23"
 # (stratum-dsp BPM/key analysis left with scan-time decode; BPM
 # analysis returns as the separate essentia enrichment scanner.)
 

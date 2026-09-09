@@ -86,6 +86,6 @@
     "@redocly/cli": "^2.47.0",
     "eslint": "^10.8.1",
     "globals": "^17.11.0",
-    "resedit": "3.0.2"
+    "resedit": "3.1.0"
   }
 }

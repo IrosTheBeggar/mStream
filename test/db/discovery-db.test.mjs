@@ -329,3 +329,19 @@ describe('applyHashTransitionGroups', () => {
     assert.deepEqual(rows.map((r) => ({ ...r })), [{ audio_hash: 'rk-l3', outcome: 'nomatch' }]);
   });
 });
+
+describe('discovery db from a newer mStream', () => {
+  test('initDiscoveryDb refuses a user_version above DISCOVERY_SCHEMA_VERSION and leaves the file alone', () => {
+    closeDiscoveryDb();
+    const stamp = (v) => { const db = new DatabaseSync(dbPath); db.exec(`PRAGMA user_version = ${v}`); db.close(); };
+    stamp(DISCOVERY_SCHEMA_VERSION + 1);
+    assert.throws(() => initDiscoveryDb(dbPath), /newer mStream/);
+    assert.equal(isDiscoveryDbOpen(), false);
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, DISCOVERY_SCHEMA_VERSION + 1);
+    db.close();
+    stamp(DISCOVERY_SCHEMA_VERSION);
+    initDiscoveryDb(dbPath);
+    assert.equal(isDiscoveryDbOpen(), true);
+  });
+});

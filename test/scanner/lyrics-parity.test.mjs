@@ -78,7 +78,7 @@ function runFfmpeg(args) {
 }
 
 // Make a 1-second FLAC with the given artist/title/lyrics.
-async function makeFlac(absPath, { artist, title, lyrics }) {
+async function makeFlac(absPath, { artist, title, lyrics, unsyncedLyrics }) {
   await fs.mkdir(path.dirname(absPath), { recursive: true });
   const args = [
     '-nostdin', '-y', '-loglevel', 'error',
@@ -88,6 +88,8 @@ async function makeFlac(absPath, { artist, title, lyrics }) {
     '-metadata', `title=${title}`,
   ];
   if (lyrics) { args.push('-metadata', `lyrics=${lyrics}`); }
+  // FLAC keeps an arbitrary Vorbis key as written (upper-cased).
+  if (unsyncedLyrics) { args.push('-metadata', `UNSYNCEDLYRICS=${unsyncedLyrics}`); }
   args.push(absPath);
   await runFfmpeg(args);
 }
@@ -121,6 +123,13 @@ before(async () => {
   await makeFlac(path.join(libDir, 'embedded.flac'), {
     artist: 'Embed A', title: 'Embed T',
     lyrics: 'Embedded line one\nEmbedded line two',
+  });
+  // Lyrics only under UNSYNCEDLYRICS, the key some taggers use for plain
+  // lyrics: music-metadata doesn't map it, lofty 0.25 reads it as
+  // UnsyncLyrics — both extractors take it after LYRICS.
+  await makeFlac(path.join(libDir, 'unsynced.flac'), {
+    artist: 'Unsynced A', title: 'Unsynced T',
+    unsyncedLyrics: 'Unsynced line one\nUnsynced line two',
   });
   // Embedded USLT + a sibling .lrc — sidecar .lrc should NOT override
   // the embedded synced source (we only fall through to sidecar when
@@ -200,7 +209,7 @@ async function assertParity(fixtureName) {
   // here — parity includes "both see the same parsed tag".
   const { parseFile } = await import('music-metadata');
   const parsed = await parseFile(audioPath);
-  const jsResult = extractLyrics(parsed.common, audioPath);
+  const jsResult = extractLyrics(parsed.common, audioPath, parsed.native);
 
   const rustResult = await runRustExtract(audioPath);
 
@@ -231,6 +240,15 @@ async function assertParity(fixtureName) {
 describe('JS ↔ Rust lyrics extractor parity', () => {
   test('FLAC with embedded unsynced lyrics (Vorbis LYRICS)', async () => {
     await assertParity('embedded.flac');
+  });
+
+  test('FLAC with lyrics only under Vorbis UNSYNCEDLYRICS', async () => {
+    const audioPath = path.join(libDir, 'unsynced.flac');
+    const { parseFile } = await import('music-metadata');
+    const parsed = await parseFile(audioPath);
+    assert.equal(extractLyrics(parsed.common, audioPath, parsed.native).lyricsEmbedded,
+      'Unsynced line one\nUnsynced line two');
+    await assertParity('unsynced.flac');
   });
 
   test('Embedded plain + sibling .lrc (sidecar fills synced slot)', async () => {

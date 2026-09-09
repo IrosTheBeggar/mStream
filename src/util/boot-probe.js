@@ -97,7 +97,9 @@ export async function runBootProbe(configPath) {
   // beyond a bare import), and the db's schema is not from this build's
   // FUTURE — user_version above our SCHEMA_VERSION means this build is an
   // older release being staged over a migrated db (a manual rollback
-  // across a schema bump), where scans would refuse after the flip.
+  // across a schema bump). manager.js refuses to boot on that, so after a
+  // flip the R1/R2 watchdogs would roll back anyway; refusing here is the
+  // same verdict before anything has moved.
   // Anything environmental (locked, unreadable) is a note, not a failure:
   // the probe judges THIS BUILD, not this disk.
   try {
@@ -118,7 +120,7 @@ export async function runBootProbe(configPath) {
       if (dbVersion !== null) {
         if (dbVersion > SCHEMA_VERSION) {
           clearTimeout(timer);
-          return fail(`this build's database schema (v${SCHEMA_VERSION}) predates the existing database (v${dbVersion}) - after a flip, scans would refuse to run`);
+          return fail(`this build's database schema (v${SCHEMA_VERSION}) predates the existing database (v${dbVersion}) - after a flip, the server would refuse to boot`);
         }
         checked.push(`db schema v${dbVersion}<=v${SCHEMA_VERSION}`);
       }
