@@ -4,7 +4,8 @@
 //   GET  /api/v1/stats/summary     the period's numbers (the old Wrapped view, as data)
 //   GET  /api/v1/stats/top         ranked tracks / artists / albums / genres
 //   GET  /api/v1/stats/timeseries  plays and listening time per bucket, in the caller's zone
-//   GET  /api/v1/stats/history     the listening log, newest first, cursor-paginated
+//   GET  /api/v1/stats/history     the listening log, newest first, cursor-paginated,
+//                                  filterable by any hash a client knows a track by
 //   POST /api/v1/stats/tracks      per-track counters for a batch of paths / hashes
 //   GET  /api/v1/stats/periods     which periods have data
 //

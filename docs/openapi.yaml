@@ -2503,12 +2503,12 @@ paths:
       summary: The listening log, newest first
       description: |
         Cursor-paginated: pass the previous page's `next` as `before`. `track`
-        filters to one canonical track hash. Each item carries the play's own
+        filters to one track by any hash the client knows it by. Each item carries the play's own
         facts and a `track` object (library metadata, or the ingest snapshot).
       parameters:
         - { name: before, in: query, schema: { type: string }, description: "Opaque cursor from a previous page." }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
-        - { name: track, in: query, schema: { type: string }, description: "Canonical track hash." }
+        - { name: track, in: query, schema: { type: string }, description: "A track hash: the canonical `audio-hash`, the file `hash` (resolved through the library), or a peer's reported hash." }
         - { name: origin, in: query, schema: { type: string, enum: [all, local, peers], default: all } }
         - { name: ignoreVPaths, in: query, style: form, explode: true, schema: { type: array, items: { type: string } } }
       responses:

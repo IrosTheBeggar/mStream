@@ -9,7 +9,8 @@
  *
  * Locks in: the summary's counts and derived facts, top-N by both metrics
  * with the federated snapshot path, timezone-correct day bucketing, the
- * history cursor, per-track counters by path, the periods listing, and the
+ * history cursor and its either-hash track filter, per-track counters by
+ * path, the periods listing, and the
  * 400s for a bad timezone / unknown parameter.
  */
 
@@ -236,6 +237,12 @@ describe('stats API v2 — reads', () => {
     assert.equal(p3.body.next, null);
     const onlyA = await get(server.baseUrl, '/api/v1/stats/history?track=ahA');
     assert.deepEqual(onlyA.body.items.map((i) => i.id), ['sep2-A', 'sep1-A', 'aug-A']);
+    // The file hash resolves to the same canonical key; a peer's hash has no
+    // library row and filters the events directly.
+    const byFileHash = await get(server.baseUrl, '/api/v1/stats/history?track=fhA');
+    assert.deepEqual(byFileHash.body.items.map((i) => i.id), ['sep2-A', 'sep1-A', 'aug-A']);
+    const peerOnly = await get(server.baseUrl, '/api/v1/stats/history?track=ph1');
+    assert.deepEqual(peerOnly.body.items.map((i) => i.id), ['sep3-peer']);
     const bad = await get(server.baseUrl, '/api/v1/stats/history?before=not-a-cursor');
     assert.equal(bad.status, 400);
   });

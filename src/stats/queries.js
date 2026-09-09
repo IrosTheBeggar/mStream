@@ -463,10 +463,23 @@ export function summary(d, { user, from, to, fromDate, toDate, tz, origin, ignor
 
 // ── History ──────────────────────────────────────────────────────────────
 
+// The key events are stored under, for any hash a client may know a track
+// by. The metadata object's `audio-hash` is the canonical key, but a client
+// holding only `hash` (the file hash) must still find the plays — and a
+// peer's reported hash, which no local row carries, must pass through. A
+// library hit resolves to its canonical key; anything else is used as sent.
+// Both probes are indexed (idx_tracks_audio_hash, idx_tracks_hash).
+export function canonicalHash(d, hash) {
+  if (typeof hash !== 'string' || hash.length === 0) { return hash; }
+  const row = d.prepare('SELECT audio_hash, file_hash FROM tracks WHERE audio_hash = ? OR file_hash = ? LIMIT 1')
+    .get(hash, hash);
+  return row ? (row.audio_hash || row.file_hash || hash) : hash;
+}
+
 export function history(d, { user, origin, ignoreVPaths, trackHash = null, before = null, limit }) {
   const scope = eventScope(user, ignoreVPaths);
   const extra = [];
-  if (trackHash) { extra.push(['pe.track_hash = ?', trackHash]); }
+  if (trackHash) { extra.push(['pe.track_hash = ?', canonicalHash(d, trackHash)]); }
   if (before) {
     extra.push(['(pe.started_at < ? OR (pe.started_at = ? AND pe.id < ?))', before.startedAt, before.startedAt, before.id]);
   }
