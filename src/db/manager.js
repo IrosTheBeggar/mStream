@@ -221,7 +221,23 @@ function setSchemaVersion(version) {
 function runMigrations() {
   const currentVersion = getSchemaVersion();
 
-  if (currentVersion >= SCHEMA_VERSION) {
+  // A database from this build's FUTURE: an older release opened a db a
+  // newer one already migrated — a rolled-back docker tag, a manual
+  // downgrade, a branch switch in a dev checkout. Nothing in this build
+  // knows the newer tables, columns, triggers or invariants: reads would
+  // mostly work, both scanners would refuse (their user_version check),
+  // and every write this build made is one the newer schema can't trust
+  // once the user upgrades again. Refuse to boot with the one message that
+  // says what to do instead of running half-blind. (The managed installers
+  // catch the same case BEFORE flipping a release: util/boot-probe.js.)
+  if (currentVersion > SCHEMA_VERSION) {
+    throw new Error(
+      `This database was created by a newer mStream: its schema is v${currentVersion}, ` +
+      `this build supports up to v${SCHEMA_VERSION}. Upgrade mStream to the version that ` +
+      'created it (or newer), or restore the database backup taken before that upgrade.');
+  }
+
+  if (currentVersion === SCHEMA_VERSION) {
     winston.info(`Database schema is up to date (v${currentVersion})`);
     return;
   }

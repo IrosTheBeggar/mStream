@@ -17,6 +17,7 @@
 //    connect() take Array<number>, NOT Buffers. reset()/stop() take bigint.
 
 import net from 'net';
+import os from 'os';
 import crypto from 'crypto';
 import winston from 'winston';
 import { existsSync, readdirSync } from 'node:fs';
@@ -46,8 +47,107 @@ export async function loadIroh() {
       } catch { /* fall back to the loader's default resolution */ }
     }
     irohMod = await import('@number0/iroh');
+    // MSTREAM_IROH_LOG=trace|debug|info|warn turns on iroh's own tracing
+    // (stderr) — the transport-level view the accept loops cannot give.
+    const lvl = process.env.MSTREAM_IROH_LOG;
+    if (lvl && typeof irohMod.setLogLevel === 'function') {
+      const name = lvl[0].toUpperCase() + lvl.slice(1).toLowerCase();
+      try { irohMod.setLogLevel(name); winston.info(`[iroh] native tracing at ${name}`); } catch (err) { winston.warn(`[iroh] setLogLevel(${name}) failed: ${err?.message}`); }
+    }
   }
   return irohMod;
+}
+
+// Where an endpoint stands: its home relay and how many direct addresses it
+// has learned — what a pairing code or federation ticket carries at that
+// moment (mStream#940: a code handed out too early may carry too little).
+export function describeAddr(ep) {
+  try {
+    const a = ep.addr();
+    const direct = a.directAddresses();
+    return `relay ${a.relayUrl() ?? 'none'}, ${direct.length} direct addr(s) [${direct.join(' ')}]`;
+  } catch (err) {
+    return `addr unavailable (${err?.message})`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// What a ticket advertises (mStream#940)
+// ---------------------------------------------------------------------------
+// endpoint.addr() lists every direct address iroh knows for us: the ones on
+// this machine's interfaces AND the NAT-reflexive ones (the router's outside
+// IP with a mapped port, learned through the relays). A phone on the SAME
+// LAN that reads a ticket with both dials the public one too; the router
+// hairpins that first packet back in with its own LAN address as the source,
+// the reply makes it back through that NAT state, so the phone's QUIC
+// handshake completes and it selects that "direct" path — and its next
+// packets never arrive. The server's half of the handshake times out 30 s
+// later, the phone's after 10 s, and it retries: measured 8/8 fresh
+// endpoints stalling the first dial, 10/10 stalled connections arriving from
+// 192.168.1.1, every success from the phone's own address. A phone outside
+// the NAT cannot use the reflexive address unsolicited anyway — holepunching
+// goes through the relay, which stays in the ticket — so a ticket carries
+// only the addresses this machine actually has. Pure; unit-tested.
+export function localDirectAddresses(directAddrs, interfaceIps) {
+  const ip = (addr) => {
+    const s = String(addr);
+    if (s.startsWith('[')) { return s.slice(1, s.indexOf(']')); }
+    const i = s.lastIndexOf(':');
+    return i < 0 ? s : s.slice(0, i);
+  };
+  const strip = (a) => String(a).split('%')[0].toLowerCase(); // zone ids off IPv6
+  const local = new Set([...interfaceIps].map(strip));
+  return directAddrs.filter((a) => local.has(strip(ip(a))));
+}
+
+function interfaceIps() {
+  const out = new Set();
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const i of list ?? []) { if (i?.address) { out.add(i.address); } }
+  }
+  return out;
+}
+
+// The EndpointAddr a ticket is built from: the endpoint's own, with the
+// reflexive direct addresses removed. Keeps everything when the filter would
+// leave nothing (interfaces unreadable) — never worse than before.
+export function ticketAddr(irohMod, ep) {
+  const a = ep.addr();
+  let all = [];
+  try { all = a.directAddresses(); } catch (_err) { return a; }
+  const keep = localDirectAddresses(all, interfaceIps());
+  if (keep.length === all.length || keep.length === 0) { return a; }
+  const dropped = all.filter((x) => !keep.includes(x));
+  winston.info(`[iroh] ticket carries ${keep.length} of ${all.length} direct addresses (not the NAT-reflexive ${dropped.join(' ')})`);
+  return new irohMod.EndpointAddr(a.id(), a.relayUrl(), keep);
+}
+
+// Per-connection handshake trace for the accept loops (mStream#940). Stage
+// lines print only under MSTREAM_IROH_TRACE=1; a handshake still in flight
+// after STALL_WARN_MS warns regardless, naming the stage it sits in — the
+// phone's dials time out at 10 s and the server used to say nothing at all.
+const TRACE = process.env.MSTREAM_IROH_TRACE === '1';
+const STALL_WARN_MS = 5000;
+export function handshakeTrace(tag) {
+  const t0 = Date.now();
+  let stage = 'accept';
+  let remote = '?';
+  let done = false;
+  const timer = setTimeout(() => {
+    if (!done) { winston.warn(`${tag} handshake from ${remote} still at '${stage}' after ${Date.now() - t0}ms`); }
+  }, STALL_WARN_MS);
+  return {
+    stage(name, r) {
+      stage = name;
+      if (r) { remote = r; }
+      if (TRACE) { winston.info(`${tag} handshake ${remote}: ${name} +${Date.now() - t0}ms`); }
+    },
+    end(outcome, level = 'info') {
+      done = true;
+      clearTimeout(timer);
+      winston[level](`${tag} handshake ${remote}: ${outcome} at '${stage}' after ${Date.now() - t0}ms`);
+    },
+  };
 }
 
 // Smoke check for the `iroh-selftest` worker (build CI + local build

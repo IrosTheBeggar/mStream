@@ -31,8 +31,7 @@ import {
   delay,
   bridgeStreamToBackend,
   buildEnvelope,
-  parseEnvelope,
-} from './iroh-common.js';
+  parseEnvelope, describeAddr, handshakeTrace, ticketAddr } from './iroh-common.js';
 import * as fedDb from '../db/federation.js';
 import { verifyGuestToken } from './federation-guest.js';
 
@@ -201,9 +200,11 @@ export function clearHandshakeBackoff() {
 // OK is already severable by closeConnectionsForKey — with registration
 // after the reply, an admin revoking the key (or anything else acting on
 // the client-visible OK) races the registry update and severs nothing.
-async function authenticateConnection(conn, remote, onAuthorized) {
+async function authenticateConnection(conn, remote, onAuthorized, tr) {
   const authBi = await conn.acceptBi();
+  tr?.stage('read');
   const sent = Buffer.from(await authBi.recv.readToEnd(HANDSHAKE_LIMIT)).toString('utf8');
+  tr?.stage(`reply (${sent.length} bytes)`);
 
   let keyRow = null;
   let ok = false;
@@ -318,12 +319,16 @@ async function runAcceptLoop(ep, targetHost, targetPort) {
     }
     if (incoming === null) { break; } // endpoint closed
     (async () => {
+      const tr = handshakeTrace('[federation]');
       let remote = '(unknown)';
       try {
         const accepting = await incoming.accept();
+        tr.stage('connect');
         const conn = await accepting.connect();
         try { remote = conn.remoteId().toString(); } catch (_err) { /* noop */ }
+        tr.stage('stream', remote);
         if (isBackedOff(remote)) {
+          tr.end('backed off', 'warn');
           try { conn.close(1n, Array.from(Buffer.from('backoff'))); } catch (_err) { /* noop */ }
           return;
         }
@@ -331,15 +336,16 @@ async function runAcceptLoop(ep, targetHost, targetPort) {
         // (see authenticateConnection's contract); a null return means the
         // callback never ran, so the failure path has nothing to untrack.
         const authed = await authenticateConnection(conn, remote,
-          (row) => trackConn(row.id, conn));
+          (row) => trackConn(row.id, conn), tr);
         if (!authed) {
+          tr.end('rejected', 'warn');
           recordHandshakeFailure(remote);
           try { conn.close(1n, Array.from(Buffer.from('unauthorized'))); } catch (_err) { /* noop */ }
           return;
         }
         const { keyRow, via } = authed;
         failedHandshakes.delete(remote);
-        winston.info(`[federation] ${via} connection authorized: key '${keyRow.name}' from ${remote}`);
+        tr.end(`authorized (${via}, key '${keyRow.name}')`);
         try {
           await acceptConnection(conn, targetHost, targetPort);
         } finally {
@@ -347,7 +353,7 @@ async function runAcceptLoop(ep, targetHost, targetPort) {
         }
         winston.info(`[federation] ${via} connection closed: key '${keyRow.name}' (${remote})`);
       } catch (err) {
-        winston.debug(`[federation] incoming connection dropped (${remote}): ${err?.message}`);
+        tr.end(`dropped: ${err?.message}`, 'warn');
       }
     })();
   }
@@ -381,7 +387,9 @@ export async function start({ targetPort, targetHost = '127.0.0.1', secretKey, a
   endpointIdStr = ep.id().toString();
 
   if (awaitOnline) {
-    await Promise.race([ep.online().catch(() => {}), delay(8000)]);
+    const t0 = Date.now();
+    const online = await Promise.race([ep.online().then(() => true).catch(() => false), delay(8000).then(() => false)]);
+    winston.info(`[federation] endpoint ${online ? 'online' : 'NOT online'} after ${Date.now() - t0}ms: ${describeAddr(ep)}`);
   }
   // stop() ran while we waited for the relay (see state/iroh.js): ep is
   // closed and the state cleared — the reboot's own start() takes over.
@@ -421,7 +429,7 @@ export function getEndpointAddr() {
 // or null when the endpoint isn't running.
 export function getEndpointTicket() {
   if (!endpoint || !irohMod) { return null; }
-  return irohMod.EndpointTicket.fromAddr(endpoint.addr()).toString();
+  return irohMod.EndpointTicket.fromAddr(ticketAddr(irohMod, endpoint)).toString();
 }
 
 export async function stop() {

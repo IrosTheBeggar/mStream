@@ -2,7 +2,7 @@
 // Scans a directory for audio files and writes metadata directly to SQLite.
 // Spawned as a child process by task-queue.js.
 
-import { parseFile } from 'music-metadata';
+import { parseFile, parseBuffer } from 'music-metadata';
 import { DatabaseSync } from './sqlite-driver.js';
 import fs from 'fs';
 import path from 'path';
@@ -11,6 +11,7 @@ import Joi from 'joi';
 import { Jimp } from 'jimp';
 import { migrateHashReferences as migrateHashRefsShared } from './hash-migration.js';
 import { extractLyrics, sidecarMtimeCached } from './lyrics-extraction.js';
+import { normaliseId3v2Tag, id3v2TagSize, MAX_ID3V2_TAG } from './id3v2-normalise.js';
 import { lrcToSearchText } from '../util/lrc-parser.js';
 import { computeHashes, HASH_GENERATION, SAMPLE_THRESHOLD_DEFAULT } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
@@ -737,7 +738,9 @@ async function getAlbumArt(songInfo) {
   // same picture identically (see cache_art_bytes in rust-parser).
   const embedded = [];
   for (const pic of (Array.isArray(songInfo.picture) ? songInfo.picture : [])) {
-    if (!pic || !pic.data) { continue; }
+    // music-metadata already drops a picture with no bytes; the rust scanner
+    // skips them too (an APIC with an empty body is not a cover).
+    if (!pic || !pic.data || pic.data.length === 0) { continue; }
     const hash = crypto.createHash('md5').update(pic.data).digest('hex');
     embedded.push({
       cacheFile: hash + '.' + pictureExt(pic.format),
@@ -821,8 +824,13 @@ async function getAlbumArt(songInfo) {
   }
 }
 
+// Cache names whose bytes Jimp could not decode this run: one warning per
+// picture, not one per track sharing it (an album's worth otherwise).
+const thumbnailFailures = new Set();
+
 async function compressAlbumArt(buff, imgName) {
   if (loadJson.compressImage === false) { return; }
+  if (thumbnailFailures.has(imgName)) { return; }
   // Once per cache file, not once per parsed track: the name is
   // content-addressed, so existing thumbnails are always current. Without
   // this gate every (re)parsed track re-decodes + re-resizes its elected
@@ -830,9 +838,27 @@ async function compressAlbumArt(buff, imgName) {
   // scan, and the V49 forced rescan would re-encode the whole library.
   if (fs.existsSync(path.join(loadJson.albumArtDirectory, 'zl-' + imgName))) { return; }
 
-  const img = await Jimp.fromBuffer(buff);
-  await img.scaleToFit({ w: 256, h: 256 }).write(path.join(loadJson.albumArtDirectory, 'zl-' + imgName));
-  await img.scaleToFit({ w: 92, h: 92 }).write(path.join(loadJson.albumArtDirectory, 'zs-' + imgName));
+  // music-metadata hands embedded pictures over as a bare Uint8Array.
+  // Jimp's decoders want a Node Buffer — pngjs dies on a plain view with
+  // "data.readUInt32BE is not a function" — and that error used to bubble
+  // out of parseMyFile and cost the track its row: every file with
+  // embedded PNG art, whenever compressImage was on. Same bytes, no copy.
+  const input = Buffer.isBuffer(buff) ? buff
+    : ArrayBuffer.isView(buff) ? Buffer.from(buff.buffer, buff.byteOffset, buff.byteLength)
+      : Buffer.from(buff);
+  try {
+    const img = await Jimp.fromBuffer(input);
+    await img.scaleToFit({ w: 256, h: 256 }).write(path.join(loadJson.albumArtDirectory, 'zl-' + imgName));
+    await img.scaleToFit({ w: 92, h: 92 }).write(path.join(loadJson.albumArtDirectory, 'zs-' + imgName));
+  } catch (err) {
+    // Thumbnails are best-effort, like compress_album_art in rust-parser
+    // (which returns on a decode failure): the full-size cache file is
+    // already written and the art route serves it when a zl-/zs- variant
+    // is missing. A picture Jimp can't decode — WebP, a truncated JPEG,
+    // bytes that aren't an image at all — must not cost the track its row.
+    thumbnailFailures.add(imgName);
+    console.error(`Warning: album art thumbnails skipped for ${imgName}: ${err.message}`);
+  }
 }
 
 // Write a track's art set (built by getAlbumArt) into art_files + the
@@ -899,13 +925,98 @@ function pictureExt(format) {
 
 // ── Parse a single file ─────────────────────────────────────────────────────
 
+// Files past this are streamed to music-metadata as before, normalised tag
+// or not: a rewrite needs the file in memory.
+const MAX_NORMALISE_FILE = 256 * 1024 * 1024;
+
+// The ID3v2 tag at the head of the file (header + body, as far as the file
+// goes), or null when there isn't one worth looking at.
+function readId3v2Tag(absolutePath) {
+  let fd = null;
+  try {
+    fd = fs.openSync(absolutePath, 'r');
+    const head = Buffer.alloc(10);
+    if (fs.readSync(fd, head, 0, 10, 0) !== 10 || head.toString('latin1', 0, 3) !== 'ID3') { return null; }
+    const size = id3v2TagSize(head);
+    if (size === 0 || size > MAX_ID3V2_TAG) { return null; }
+    const tag = Buffer.alloc(10 + size);
+    const got = fs.readSync(fd, tag, 0, 10 + size, 0);
+    return tag.subarray(0, got);
+  } catch (_e) {
+    return null;                                 // let parseFile report it
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch (_e) { /* closed */ } }
+  }
+}
+
+// music-metadata, with the two ID3v2 tag shapes it cannot read rewritten in
+// memory first — see src/db/id3v2-normalise.js. Only the tag is read up
+// front: a file whose tag needs no rewrite streams to parseFile as before,
+// one that does is spliced (rewritten tag + the untouched rest) and parsed
+// from memory. The tag keeps its declared size, so nothing after it moves.
+function parseAudio(absolutePath, options) {
+  const tag = readId3v2Tag(absolutePath);
+  const patchedTag = tag && normaliseId3v2Tag(tag);
+  if (patchedTag) {
+    let file = null;
+    try {
+      if (fs.statSync(absolutePath).size <= MAX_NORMALISE_FILE) { file = fs.readFileSync(absolutePath); }
+    } catch (_e) { file = null; }
+    if (file && file.length >= tag.length) {
+      const patched = Buffer.concat([patchedTag, file.subarray(tag.length)]);
+      return parseBuffer(patched, { path: absolutePath, size: patched.length }, options);
+    }
+  }
+  return parseFile(absolutePath, options);
+}
+
+// One text value out of a music-metadata native tag value: a string, the
+// first string of an array, or a TXXX object's text.
+function nativeText(value) {
+  if (typeof value === 'string') { return value.trim() || null; }
+  if (Array.isArray(value)) { return nativeText(value[0]); }
+  if (value && typeof value === 'object' && value.text !== undefined) { return nativeText(value.text); }
+  return null;
+}
+
+// music-metadata maps TPE2 to albumartist and nothing else. The TXXX form
+// — a frame described "ALBUMARTIST" or "ALBUM ARTIST" (foobar2000,
+// MediaMonkey; 248 files in one 19k library) — fills in when TPE2 is
+// absent. The rust scanner applies the same two steps and, like this,
+// takes the TXXX form's first value. Both TXXX shapes music-metadata
+// emits are accepted (see source-detect.js).
+function txxxAlbumArtist(native) {
+  for (const [tagType, tags] of Object.entries(native || {})) {
+    if (!tagType.startsWith('ID3v2') || !Array.isArray(tags)) { continue; }
+    for (const t of tags) {
+      if (!t || typeof t.id !== 'string') { continue; }
+      const id = t.id.toUpperCase();
+      if (id === 'TXXX:ALBUMARTIST' || id === 'TXXX:ALBUM ARTIST') {
+        const v = nativeText(t.value);
+        if (v) { return v; }
+      } else if (id === 'TXXX' && t.value && typeof t.value === 'object') {
+        const desc = String(t.value.description || '').toUpperCase();
+        if (desc === 'ALBUMARTIST' || desc === 'ALBUM ARTIST') {
+          const v = nativeText(t.value.text);
+          if (v) { return v; }
+        }
+      }
+    }
+  }
+  return null;
+}
+
 async function parseMyFile(absolutePath, modified) {
   let songInfo;
   let parsedNative = null;
   try {
-    const parsed = await parseFile(absolutePath, { skipCovers: loadJson.skipImg });
+    const parsed = await parseAudio(absolutePath, { skipCovers: loadJson.skipImg });
     parsedNative = parsed.native;
     songInfo = parsed.common;
+    if (!(typeof songInfo.albumartist === 'string' && songInfo.albumartist.trim())) {
+      const fromTxxx = txxxAlbumArtist(parsed.native);
+      if (fromTxxx) { songInfo.albumartist = fromTxxx; }
+    }
     songInfo.duration = parsed.format?.duration || null;
     // Extended audio-format fields (sample rate / bit depth / channels).
     // music-metadata exposes these as part of parsed.format — store what's
@@ -965,10 +1076,10 @@ async function parseMyFile(absolutePath, modified) {
     songInfo.isrc              = firstStr(parsed.common?.isrc);
     songInfo.mbzAlbumId        = firstStr(parsed.common?.musicbrainz_albumid);
     songInfo.mbzReleaseGroupId = firstStr(parsed.common?.musicbrainz_releasegroupid);
-    // tracks.acoustid_id is deliberately NOT read from tags in Phase 1: lofty
-    // (the Rust scanner) has no AcoustID ItemKey, so reading it only here would
-    // break scanner parity. Its natural source is the Phase 2 fingerprint pass,
-    // which owns the column; it stays NULL until then.
+    // tracks.acoustid_id is deliberately NOT read from tags in Phase 1 by
+    // either scanner (lofty 0.23+ does have an AcoustId key; the Rust side
+    // skips it to stay in step). Its natural source is the Phase 2
+    // fingerprint pass, which owns the column; it stays NULL until then.
     // Provenance for the track-level ids — 'tag' when any was read from the
     // file. Mirrors bpmSource; the future fingerprint pass writes 'acoustid'.
     songInfo.mbzIdSource = (songInfo.mbzRecordingId != null || songInfo.mbzReleaseTrackId != null
@@ -980,7 +1091,7 @@ async function parseMyFile(absolutePath, modified) {
     // V19: lyrics from embedded tags + sibling sidecars. Returns the
     // four tracks.lyrics_* column values flat; insertTrack binds them
     // directly. Kept in a sub-object for the same reason as artistInfo.
-    songInfo.lyricsInfo = extractLyrics(parsed.common, absolutePath);
+    songInfo.lyricsInfo = extractLyrics(parsed.common, absolutePath, parsed.native);
   } catch (err) {
     console.error(`Warning: metadata parse error on ${absolutePath}: ${err.message}`);
     songInfo = { track: { no: null, of: null }, disk: { no: null, of: null }, duration: null,

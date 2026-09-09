@@ -235,7 +235,7 @@ export function sidecarMtimeCached(absPath, cache) {
  *   lyricsSidecarMtime:  number|null,
  * }}
  */
-export function extractLyrics(common, absPath) {
+export function extractLyrics(common, absPath, native = null) {
   let plain = null;
   let synced = null;
   let lang = null;
@@ -272,6 +272,18 @@ export function extractLyrics(common, absPath) {
       }
       if (!lang && entry.language) {
         lang = normaliseLang(entry.language);
+      }
+    }
+  }
+
+  // Vorbis UNSYNCEDLYRICS — the key some taggers use for plain lyrics,
+  // which music-metadata doesn't map — when LYRICS gave nothing. The rust
+  // scanner reads it the same way (lofty's UnsyncLyrics, after Lyrics).
+  if (!plain && !synced && native && Array.isArray(native.vorbis)) {
+    for (const t of native.vorbis) {
+      if (t && typeof t.id === 'string' && t.id.toUpperCase() === 'UNSYNCEDLYRICS' && typeof t.value === 'string' && t.value.trim()) {
+        if (looksLikeLrc(t.value)) { synced = t.value; } else { plain = t.value; }
+        break;
       }
     }
   }
