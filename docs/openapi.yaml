@@ -494,6 +494,21 @@ components:
             type: string
           description: Libraries (vpaths) to exclude from the query.
 
+    StatsPeriod:
+      type: object
+      description: The resolved range a stats read covered.
+      properties:
+        label: { type: string }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time, description: "Exclusive." }
+        tz: { type: string }
+
+    StatsOriginSlice:
+      type: object
+      properties:
+        plays: { type: integer }
+        listenedMs: { type: integer }
+
     SearchArtistOrAlbumItem:
       type: object
       description: |
@@ -2309,6 +2324,290 @@ paths:
         "400": { description: "Validation failed (an unknown key, a bad enum value, an empty or oversized batch)." }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "A federation key or guest token — stats are never recorded for those." }
+
+  # ── Stats API v2 (read side) ─────────────────────────────────────────────
+  # Every read is scoped to the caller's own plays and visible libraries.
+  # A range is a preset `period` (+ `offset` <= 0) or an explicit `from`/`to`
+  # pair; `tz` (IANA, default UTC) sets where days, weeks and months begin.
+  # `origin` keeps local plays, federated-peer plays (recorded on this server
+  # as the caller's own plays of a peer's track), or both. Never reachable
+  # with a federation key.
+
+  /api/v1/stats/summary:
+    get:
+      tags: [Stats]
+      summary: Listening summary for a period
+      description: |
+        The period's totals as data (the former Wrapped view without its copy):
+        events, counted plays, uniques, listened time, skip and completion rates,
+        discoveries (tracks whose first counted play ever falls in the period),
+        library coverage, derived sessions (30-minute gap), day streaks, the top
+        listening day, peak hour and weekday, and the local/peer split.
+        Calendar facts (streaks, top day, peaks) come from the per-user hourly
+        rollup and are not narrowed by `ignoreVPaths` or `origin`.
+      parameters:
+        - { name: period, in: query, schema: { type: string, enum: [week, month, quarter, half, year, all], default: month } }
+        - { name: offset, in: query, schema: { type: integer, maximum: 0, default: 0 }, description: "Whole periods back from the current one." }
+        - { name: from, in: query, schema: { type: string, format: date-time }, description: "With `to`, replaces `period`/`offset`." }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: tz, in: query, schema: { type: string, default: UTC }, description: "IANA timezone for period and day boundaries." }
+        - { name: origin, in: query, schema: { type: string, enum: [all, local, peers], default: all } }
+        - { name: ignoreVPaths, in: query, style: form, explode: true, schema: { type: array, items: { type: string } } }
+      responses:
+        "200":
+          description: Summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  period: { $ref: "#/components/schemas/StatsPeriod" }
+                  events: { type: integer }
+                  plays: { type: integer, description: "Events the server counted as plays." }
+                  uniqueTracks: { type: integer }
+                  uniqueArtists: { type: integer }
+                  uniqueAlbums: { type: integer }
+                  listenedMs: { type: integer }
+                  skips: { type: integer }
+                  skipRate: { type: number }
+                  completionRate: { type: number }
+                  pauses: { type: integer }
+                  discoveries: { type: integer }
+                  libraryCoveragePct: { type: number }
+                  sessions:
+                    type: object
+                    properties:
+                      count: { type: integer }
+                      avgMs: { type: integer, nullable: true }
+                      longest:
+                        type: object
+                        nullable: true
+                        properties:
+                          startedAt: { type: string, format: date-time }
+                          endedAt: { type: string, format: date-time }
+                          tracks: { type: integer }
+                          plays: { type: integer }
+                          listenedMs: { type: integer }
+                  streakDays:
+                    type: object
+                    properties: { current: { type: integer }, longest: { type: integer } }
+                  topDay:
+                    type: object
+                    nullable: true
+                    properties: { date: { type: string }, plays: { type: integer }, listenedMs: { type: integer } }
+                  peakHour: { type: integer, nullable: true }
+                  peakWeekday: { type: integer, nullable: true, description: "0 = Sunday." }
+                  origins:
+                    type: object
+                    properties:
+                      local: { $ref: "#/components/schemas/StatsOriginSlice" }
+                      peers: { $ref: "#/components/schemas/StatsOriginSlice" }
+        "400": { description: "Validation failed: unknown parameter, bad timezone, unpaired from/to, or an invalid cursor." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats/top:
+    get:
+      tags: [Stats]
+      summary: Top tracks, artists, albums or genres for a period
+      description: |
+        Ranked by counted plays or by listened time. A track row carries the
+        library's metadata object when the track still resolves, otherwise the
+        snapshot recorded at ingest (always the case for a federated peer's
+        track, which also carries `peerId`). Artists and albums merge by name
+        across origins; genres come from the library only.
+      parameters:
+        - { name: entity, in: query, schema: { type: string, enum: [tracks, artists, albums, genres], default: tracks } }
+        - { name: metric, in: query, schema: { type: string, enum: [plays, time], default: plays } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 20 } }
+        - { name: period, in: query, schema: { type: string, enum: [week, month, quarter, half, year, all], default: month } }
+        - { name: offset, in: query, schema: { type: integer, maximum: 0, default: 0 } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: tz, in: query, schema: { type: string, default: UTC } }
+        - { name: origin, in: query, schema: { type: string, enum: [all, local, peers], default: all } }
+        - { name: ignoreVPaths, in: query, style: form, explode: true, schema: { type: array, items: { type: string } } }
+      responses:
+        "200":
+          description: Ranked rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  period: { $ref: "#/components/schemas/StatsPeriod" }
+                  entity: { type: string }
+                  metric: { type: string }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        rank: { type: integer }
+                        plays: { type: integer }
+                        listenedMs: { type: integer }
+                        events: { type: integer }
+                        share: { type: number, description: "Fraction of the period's total for the chosen metric." }
+                        name: { type: string, description: "artists / albums / genres only." }
+                        artist: { type: string, nullable: true, description: "albums only." }
+                        tracks: { type: integer, description: "Distinct tracks behind the row (artists / albums / genres)." }
+                        lastPlayed: { type: string, format: date-time, description: "tracks only." }
+                        origin: { type: string, enum: [local, peer], description: "tracks only." }
+                        peerId: { type: integer, nullable: true, description: "tracks only." }
+                        track: { $ref: "#/components/schemas/Metadata" }
+        "400": { description: "Validation failed: unknown parameter, bad timezone, unpaired from/to, or an invalid cursor." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats/timeseries:
+    get:
+      tags: [Stats]
+      summary: Plays and listening time per bucket
+      description: |
+        From the per-user hourly rollup, re-bucketed into `tz`. Calendar buckets
+        (`hour`, `day`, `week` — Monday-first, `month`) return only buckets with
+        data, keyed `YYYY-MM-DDTHH`, `YYYY-MM-DD`, the Monday's date, `YYYY-MM`.
+        Profile buckets (`hourOfDay` 0-23, `weekday` 0-6 with Sunday 0) return
+        every bucket. Not narrowed by `ignoreVPaths` or `origin`.
+      parameters:
+        - { name: bucket, in: query, schema: { type: string, enum: [hour, day, week, month, hourOfDay, weekday], default: day } }
+        - { name: period, in: query, schema: { type: string, enum: [week, month, quarter, half, year, all], default: month } }
+        - { name: offset, in: query, schema: { type: integer, maximum: 0, default: 0 } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: tz, in: query, schema: { type: string, default: UTC } }
+      responses:
+        "200":
+          description: Buckets in ascending order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  period: { $ref: "#/components/schemas/StatsPeriod" }
+                  bucket: { type: string }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        bucket: { type: string }
+                        events: { type: integer }
+                        plays: { type: integer }
+                        skips: { type: integer }
+                        listenedMs: { type: integer }
+        "400": { description: "Validation failed: unknown parameter, bad timezone, unpaired from/to, or an invalid cursor." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats/history:
+    get:
+      tags: [Stats]
+      summary: The listening log, newest first
+      description: |
+        Cursor-paginated: pass the previous page's `next` as `before`. `track`
+        filters to one canonical track hash. Each item carries the play's own
+        facts and a `track` object (library metadata, or the ingest snapshot).
+      parameters:
+        - { name: before, in: query, schema: { type: string }, description: "Opaque cursor from a previous page." }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: track, in: query, schema: { type: string }, description: "Canonical track hash." }
+        - { name: origin, in: query, schema: { type: string, enum: [all, local, peers], default: all } }
+        - { name: ignoreVPaths, in: query, style: form, explode: true, schema: { type: array, items: { type: string } } }
+      responses:
+        "200":
+          description: A page of plays.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, description: "The client's event id." }
+                        startedAt: { type: string, format: date-time }
+                        endedAt: { type: string, format: date-time, nullable: true }
+                        playedMs: { type: integer }
+                        durationMs: { type: integer, nullable: true }
+                        outcome: { type: string, enum: [completed, skipped, stopped] }
+                        counted: { type: boolean }
+                        source: { type: string, nullable: true }
+                        sessionId: { type: string, nullable: true }
+                        pauseCount: { type: integer }
+                        client: { type: string, nullable: true }
+                        origin: { type: string, enum: [local, peer] }
+                        peerId: { type: integer, nullable: true }
+                        track: { $ref: "#/components/schemas/Metadata" }
+                  next: { type: string, nullable: true }
+        "400": { description: "Validation failed: unknown parameter, bad timezone, unpaired from/to, or an invalid cursor." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats/tracks:
+    post:
+      tags: [Stats]
+      summary: Per-track counters for a batch of tracks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: At least one of the two lists.
+              properties:
+                filePaths: { type: array, maxItems: 500, items: { type: string }, description: "Virtual paths (`<vpath>/<rel>`)." }
+                hashes: { type: array, maxItems: 500, items: { type: string }, description: "Canonical track hashes." }
+      responses:
+        "200":
+          description: One item per track that has counters; unknown tracks are omitted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        hash: { type: string }
+                        filePath: { type: string, description: "Present for rows requested by path." }
+                        plays: { type: integer }
+                        skips: { type: integer }
+                        listenedMs: { type: integer }
+                        firstPlayed: { type: string, format: date-time, nullable: true }
+                        lastPlayed: { type: string, format: date-time, nullable: true }
+        "400": { description: "Validation failed: unknown parameter, bad timezone, unpaired from/to, or an invalid cursor." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats/periods:
+    get:
+      tags: [Stats]
+      summary: Periods that have listening data
+      parameters:
+        - { name: tz, in: query, schema: { type: string, default: UTC } }
+      responses:
+        "200":
+          description: The log's bounds and the preset periods that overlap them.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  earliest: { type: string, format: date-time, nullable: true }
+                  latest: { type: string, format: date-time, nullable: true }
+                  tz: { type: string }
+                  periods:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        period: { type: string }
+                        offset: { type: integer }
+                        label: { type: string }
+                        from: { type: string, format: date-time }
+                        to: { type: string, format: date-time }
+        "400": { description: "Validation failed: unknown parameter, bad timezone, unpaired from/to, or an invalid cursor." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
 
   # ── Playlists ────────────────────────────────────────────────────────────
 
