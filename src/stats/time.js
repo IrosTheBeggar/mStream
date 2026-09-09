@@ -120,6 +120,15 @@ export function fromHourKey(key) {
 
 export const isoDate = (d) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 
+// The oldest start still inside the retention window: [retentionMonths]
+// back from [now], to the hour; 2000-01-01 when retention is off. Ingest
+// refuses anything older; the sweep prunes anything older.
+export function retentionFloor(now, retentionMonths) {
+  if (!(retentionMonths > 0)) { return new Date(Date.UTC(2000, 0, 1)); }
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - retentionMonths,
+    now.getUTCDate(), now.getUTCHours()));
+}
+
 // ── Periods ──────────────────────────────────────────────────────────────
 const daysSinceMonday = (weekday) => (weekday + 6) % 7;
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
