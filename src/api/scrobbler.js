@@ -5,6 +5,8 @@ import Scribble from '../state/lastfm.js';
 import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
 import { getVPathInfo } from '../util/vpath.js';
+import { randomUUID } from 'node:crypto';
+import { recordPlayEvent } from '../stats/store.js';
 
 const Scrobbler = new Scribble();
 
@@ -201,7 +203,7 @@ export function setup(mstream) {
     if (!lib) { return res.json({ scrobble: false }); }
 
     const track = d().prepare(`
-      SELECT t.file_hash, t.audio_hash, t.title, a.name AS artist, al.name AS album
+      SELECT t.file_hash, t.audio_hash, t.title, t.duration, a.name AS artist, al.name AS album
       FROM tracks t
       LEFT JOIN artists a ON t.artist_id = a.id
       LEFT JOIN albums al ON t.album_id = al.id
@@ -225,15 +227,29 @@ export function setup(mstream) {
       return res.json({ scrobble: false });
     }
 
-    // Update play count and last played. Sentinel-keyed in public mode
-    // — the operator's listening history. See the header comment above.
-    d().prepare(`
-      INSERT INTO user_metadata (user_id, track_hash, play_count, last_played)
-      VALUES (?, ?, 1, datetime('now'))
-      ON CONFLICT(user_id, track_hash) DO UPDATE SET
-        play_count = play_count + 1,
-        last_played = datetime('now')
-    `).run(req.user.id, trackKey);
+    // The count now goes through the same write as every other play
+    // (src/stats/store.js), as a synthetic event the stats reads can see:
+    // counted by decree — the web player fires this route 30 s into a
+    // track, so 30 s listened is all that is known — and marked
+    // `source: 'legacy'` for the day the route goes. play_count and
+    // last_played move exactly as they always did. Sentinel-keyed in public
+    // mode — the operator's listening history. See the header comment above.
+    const now = Date.now();
+    recordPlayEvent(d(), {
+      eventId: randomUUID(),
+      userId: req.user.id,
+      trackHash: trackKey,
+      filepath: pathInfo.relativePath,
+      libraryId: lib.id,
+      client: 'legacy',
+      source: 'legacy',
+      outcome: 'stopped',
+      counted: true,
+      playedMs: 30000,
+      durationMs: track.duration > 0 ? Math.round(track.duration * 1000) : null,
+      startedAt: new Date(now - 30000),
+      endedAt: new Date(now),
+    });
 
     res.json({});
 

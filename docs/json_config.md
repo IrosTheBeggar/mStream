@@ -295,7 +295,7 @@ the verdict with the play, and only counted plays move a track's play count.
 
 - `playThresholdMs` — listening at least this long counts as a play (default 30 s).
 - `playThresholdFraction` — or at least this fraction of the track, when its length is known (default half). `0` disables the fraction rule.
-- `retentionMonths` — plays that started earlier than this many months ago are refused as `bad-time`. `0` accepts anything since 2000.
+- `retentionMonths` — plays that started earlier than this many months ago are refused as `bad-time`, and a daily sweep prunes stored plays older than that (their totals survive in the per-track counters and the hourly rollup). `0` keeps everything and accepts anything since 2000.
 
 ## Storage
 

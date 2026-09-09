@@ -14,6 +14,7 @@ import { installedPlayerPath, playerLoadableHere } from './util/mstream-player-b
 
 import * as dbApi from './api/db.js';
 import * as statsApi from './api/stats.js';
+import { startRetentionSweep, stopRetentionSweep } from './stats/retention.js';
 import * as discoveryApi from './api/discovery.js';
 import * as searchApi from './api/search.js';
 import * as randomApi from './api/random.js';
@@ -559,6 +560,7 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   discoveryFederationApi.setup(mstream);
   dbApi.setup(mstream);
   statsApi.setup(mstream);
+  startRetentionSweep();
   searchApi.setup(mstream);
   randomApi.setup(mstream);
   playlistApi.setup(mstream);
@@ -1008,6 +1010,8 @@ export function reboot() {
     // them — without this, each reboot left the old boot timeouts
     // pending alongside the new ones.
     backupManager.shutdown();
+    // The stats retention sweep is re-armed by the setup path on reboot.
+    stopRetentionSweep();
 
     // Tear down the Iroh tunnel, the federation endpoint (+ its peer bridges)
     // and the discovery-network gossip stack. Each binds its own sockets

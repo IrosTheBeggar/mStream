@@ -28,6 +28,8 @@ export function setup(mstream) {
       supportedAudioFiles: features.supportedAudioFiles,
       discovery: features.discovery,
       discoveryP2p: features.discoveryP2p,
+      // Stats API v2 version — the same fact /api/ carries under features.
+      stats: features.stats,
       // A resource (the playlist routes), not a server capability.
       playlists: getPlaylists(req.user.id),
       // Historical version-gate ("this server has the sonic-path route") —
