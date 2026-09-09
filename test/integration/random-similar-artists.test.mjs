@@ -62,15 +62,17 @@ describe('buildArtistFilter', () => {
     assert.match(clauses[0], /album_artists/);
     // The names are bound three times — once per widening path. With
     // a single input we expect three params (the same name repeated).
+    // V71: bound as normalised keys (src/db/name-key.js), matched against
+    // artists.name_key — so any spelling the DJ resolver hands over lands.
     assert.equal(params.length, 3);
-    assert.ok(params.every(p => p === 'Foo'));
+    assert.ok(params.every(p => p === 'foo'));
   });
 
   test('multiple artists bind correctly across all three placeholders sets', () => {
     const { params } = buildArtistFilter({ artists: ['Foo', 'Bar'] });
-    // 2 names × 3 widening paths = 6 params, in (Foo, Bar, Foo, Bar, Foo, Bar) order.
+    // 2 names × 3 widening paths = 6 params, in (Foo, Bar, Foo, Bar, Foo, Bar) order (as keys).
     assert.equal(params.length, 6);
-    assert.deepEqual(params, ['Foo', 'Bar', 'Foo', 'Bar', 'Foo', 'Bar']);
+    assert.deepEqual(params, ['foo', 'bar', 'foo', 'bar', 'foo', 'bar']);
   });
 
   test('ignoreArtists builds a symmetric NOT-IN clause', () => {
@@ -88,9 +90,9 @@ describe('buildArtistFilter', () => {
       ignoreArtists: ['Bar'],
     });
     assert.equal(clauses.length, 2);
-    // Three params per clause, in order.
-    assert.deepEqual(params.slice(0, 3), ['Foo', 'Foo', 'Foo']);
-    assert.deepEqual(params.slice(3, 6), ['Bar', 'Bar', 'Bar']);
+    // Three params per clause, in order (as normalised keys, V71).
+    assert.deepEqual(params.slice(0, 3), ['foo', 'foo', 'foo']);
+    assert.deepEqual(params.slice(3, 6), ['bar', 'bar', 'bar']);
   });
 });
 

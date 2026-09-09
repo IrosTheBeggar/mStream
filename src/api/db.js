@@ -6,6 +6,7 @@ import * as db from '../db/manager.js';
 import { joiValidate, dualId } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 import { ALBUM_TRACK_ORDER } from '../db/track-order.js';
+import { nameKey } from '../db/name-key.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -487,12 +488,22 @@ export function setup(mstream) {
 
   function getArtists(req) {
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
+    // V71: optional `sort` — 'name' (default; unchanged contract) or 'order',
+    // which sorts by artists.order_name: the ARTISTSORT tag when the scanner
+    // saw one, else the name with one leading article dropped ("The
+    // Beatles" under B). COALESCE covers rows without an order_name (a
+    // fixture insert before its key-fill trigger ran — none in practice).
+    // Additive and opt-in so no client sees its list reorder unasked.
+    const sortMode = req.body?.sort ?? req.query?.sort;
+    const orderBy = sortMode === 'order'
+      ? 'COALESCE(a.order_name, a.name) COLLATE NOCASE, a.name COLLATE NOCASE'
+      : 'a.name COLLATE NOCASE';
     const rows = d().prepare(`
       SELECT DISTINCT a.name
       FROM artists a
       JOIN tracks t ON t.artist_id = a.id
       WHERE ${filter.clause}
-      ORDER BY a.name COLLATE NOCASE
+      ORDER BY ${orderBy}
     `).all(...filter.params);
 
     return { artists: rows.map(r => r.name) };
@@ -532,23 +543,27 @@ export function setup(mstream) {
     // 653 artists). Pinning ties alphabetically is deterministic across
     // plans and SQLite versions; the sort b-tree already exists, so it's
     // free.
+    // V71: the artist is matched on its normalised key, so any spelling the
+    // client holds ("beatles", a curly apostrophe) resolves to the one row
+    // the scanner keeps — strictly more tolerant than the old exact match.
+    const artistKey = nameKey(req.body.artist);
     const albumRows = d().prepare(`
       SELECT DISTINCT al.name, al.year, al.album_art_file
       FROM albums al
       WHERE al.id IN (
-        SELECT id FROM albums WHERE artist_id IN (SELECT id FROM artists WHERE name = ?)
+        SELECT id FROM albums WHERE artist_id IN (SELECT id FROM artists WHERE name_key = ?)
         UNION ALL
         SELECT album_id FROM album_artists
-          WHERE artist_id IN (SELECT id FROM artists WHERE name = ?)
+          WHERE artist_id IN (SELECT id FROM artists WHERE name_key = ?)
         UNION ALL
         SELECT t2.album_id FROM track_artists ta
           JOIN tracks t2 ON t2.id = ta.track_id
-          WHERE ta.artist_id IN (SELECT id FROM artists WHERE name = ?)
+          WHERE ta.artist_id IN (SELECT id FROM artists WHERE name_key = ?)
             AND t2.album_id IS NOT NULL
       )
       AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})
       ORDER BY al.year DESC, al.name COLLATE NOCASE
-    `).all(String(req.body.artist), String(req.body.artist), String(req.body.artist), ...filter.params);
+    `).all(artistKey, artistKey, artistKey, ...filter.params);
 
     const albums = albumRows.map(r => ({
       name: r.name,
@@ -561,9 +576,9 @@ export function setup(mstream) {
       SELECT t.album_art_file
       FROM tracks t
       JOIN artists a ON t.artist_id = a.id
-      WHERE a.name = ? AND t.album_id IS NULL AND ${filter.clause}
+      WHERE a.name_key = ? AND t.album_id IS NULL AND ${filter.clause}
       LIMIT 1
-    `).get(String(req.body.artist), ...filter.params);
+    `).get(artistKey, ...filter.params);
 
     if (nullAlbumRow) {
       albums.push({
@@ -714,8 +729,9 @@ export function setup(mstream) {
     }
 
     if (req.body.artist) {
-      conditions.push('a.name = ?');
-      params.push(String(req.body.artist));
+      // V71: TRACK artist, matched on its normalised key (see artists-albums).
+      conditions.push('a.name_key = ?');
+      params.push(nameKey(req.body.artist));
     }
 
     // V70 dropped the year from album identity, so one album can span

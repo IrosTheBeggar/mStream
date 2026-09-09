@@ -86,7 +86,12 @@ function snapTracks(db) {
 }
 
 function snapArtists(db) {
-  return db.prepare('SELECT name FROM artists ORDER BY name').all().map(r => r.name);
+  // V71: display name is a scan-end consensus; sort_name / mbz_artist_id are
+  // tag-sourced fill-NULL columns; order_name and the counts are aggregates
+  // both engines must derive identically; agg_dirty must be 0 after a scan.
+  return db.prepare(`
+    SELECT name, sort_name, mbz_artist_id, order_name, track_count, album_count, agg_dirty
+    FROM artists ORDER BY name`).all();
 }
 
 function snapAlbums(db) {
@@ -131,7 +136,7 @@ function snapTrackArtists(db) {
   // (filepath, role, position) so the snapshot itself is order-stable
   // but a position-flip surfaces as a value diff.
   return db.prepare(`
-    SELECT t.filepath, ar.name AS artist, ta.role, ta.position
+    SELECT t.filepath, ar.name AS artist, ta.role, ta.position, ta.tag_name
     FROM track_artists ta
     JOIN tracks  t  ON t.id  = ta.track_id
     JOIN artists ar ON ar.id = ta.artist_id
@@ -144,7 +149,7 @@ function snapAlbumArtists(db) {
   // shape used in the find_or_create_album cache key on the Rust side.
   return db.prepare(`
     SELECT al.name AS album, primary_ar.name AS album_primary_artist,
-           al.year AS album_year, ar.name AS artist, aa.role, aa.position
+           al.year AS album_year, ar.name AS artist, aa.role, aa.position, aa.tag_name
     FROM album_artists aa
     JOIN albums  al         ON al.id        = aa.album_id
     LEFT JOIN artists primary_ar ON primary_ar.id = al.artist_id
