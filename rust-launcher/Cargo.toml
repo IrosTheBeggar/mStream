@@ -19,13 +19,26 @@ path = "src/main.rs"
 # it on, the shipped binary died at the dynamic loader on every machine
 # without xdotool installed — caught by the v6.20.0 tag smoke. The
 # remaining hard links are glibc + GTK3 only; CI asserts exactly that set.
-tray-icon = { version = "0.19", default-features = false }
-tao = "0.30"
+# Since tray-icon 0.24 the GTK/appindicator Linux backend is ALSO behind a
+# (default) feature, so it has to come back by name: without `gtk` the crate
+# still compiles on Linux but builds no tray at all.
+tray-icon = { version = "0.24", default-features = false, features = ["gtk"] }
+# tao's defaults grew a `dbus` feature (0.35+, XDG-portal colour-scheme
+# lookup) that hard-links libdbus-1.so.3 — outside the allowed NEEDED set,
+# and not a -dev package the debian:11 build container installs. We only use
+# the event loop, so keep the pre-0.35 feature set: rwh_06 (raw-window-handle
+# impls) and x11 (dlopen'd through x11-dl; gdkx11 rides the already-linked
+# libgdk-3).
+tao = { version = "0.37", default-features = false, features = ["rwh_06", "x11"] }
 # Login-item registration: HKCU Run key (Windows), LaunchAgent plist (macOS,
-# see set_use_launch_agent below — the AppleScript default would tie us to
-# System Events), XDG autostart .desktop (Linux). The launcher registers
-# ITSELF (with --autostarted), never the server.
-auto-launch = "0.5"
+# see set_macos_launch_mode in autostart.rs — the AppleScript route would tie
+# us to System Events, and 0.6's SMAppService route needs macOS 13+ plus a
+# signed bundle), XDG autostart .desktop (Linux). The launcher registers
+# ITSELF (with --autostarted), never the server. 0.6 creates its own
+# containers (Run key / ~/.config/autostart / ~/Library/LaunchAgents), which
+# retired the winreg pre-create this crate used to carry for fresh Windows
+# profiles.
+auto-launch = "0.6"
 # Default-browser opener; that_detached so the browser never ties to our
 # process lifetime.
 open = "5"
@@ -36,14 +49,13 @@ fslock = "0.2"
 serde_json = "1"
 # Decode the embedded tray PNG (build/icon.png) to the RGBA buffer tray-icon
 # wants. Deliberately not the `image` crate — png alone keeps the build light.
-png = "0.17"
+# Same major tray-icon/muda use themselves, so the lock carries one copy.
+png = "0.18"
 
 [target.'cfg(windows)'.dependencies]
-# Pre-create the HKCU Run key before auto-launch touches it: auto-launch 0.5
-# only ever OPENS it and errors on fresh profiles where it doesn't exist yet.
-# Same winreg version auto-launch itself compiles — no second copy.
-winreg = "0.10"
-windows-sys = { version = "0.59", features = [
+# The range tray-icon and muda resolve to (>=0.60, <=0.61) — one copy in the
+# lock instead of the 0.59 + 0.61 pair the previous pin produced.
+windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_System_Console",
   "Win32_UI_WindowsAndMessaging",

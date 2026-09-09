@@ -206,11 +206,24 @@ jobs:
       # Container leg first: the checkout action and rustup both need these,
       # and a debian container starts bare (root, no sudo — none needed).
       # zstd keeps actions/cache on its fast path inside the container.
+      # bullseye's LTS ended 2026-08-31 (first red master run: 2026-09-05).
+      # deb.debian.org still serves the bullseye-security INDEX (expired, so
+      # apt-get update exits 100 on Valid-Until) but has pruned its POOL, and
+      # archive.debian.org does not carry the suite yet (checked 2026-09-08:
+      # main + updates are there, security 404s). The suite can be neither
+      # dropped nor left as is: the image ships security-updated libc6 /
+      # perl-base / libsepol1 whose -dev twins live only there ("held broken
+      # packages" without it). So read it from snapshot.debian.org frozen at
+      # the LTS-end date, and stop enforcing Valid-Until on the expired
+      # Release files (signatures are still verified). Swap the host for
+      # archive.debian.org/debian-security once it appears there; the real
+      # fix is a newer glibc floor for this leg.
       - name: Install container build deps
         if: matrix.container
         run: |
-          apt-get update
-          apt-get install -y curl ca-certificates git build-essential pkg-config zstd \
+          sed -i 's|http://deb.debian.org/debian-security|http://snapshot.debian.org/archive/debian-security/20260901T000000Z|' /etc/apt/sources.list
+          apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3 update
+          apt-get -o Acquire::Retries=3 install -y curl ca-certificates git build-essential pkg-config zstd \
             libgtk-3-dev libayatana-appindicator3-dev
 
       - uses: actions/checkout@v6

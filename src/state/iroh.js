@@ -39,8 +39,7 @@ import {
   delay,
   bridgeStreamToBackend,
   buildEnvelope,
-  parseEnvelope,
-} from './iroh-common.js';
+  parseEnvelope, describeAddr, handshakeTrace, ticketAddr } from './iroh-common.js';
 
 // Shared plumbing re-exported for existing consumers.
 export {
@@ -112,9 +111,11 @@ export function parseCompositeTicket(code) {
 // Validate the shared-secret handshake on a freshly-accepted connection. The
 // client's FIRST bi-stream carries the secret; we compare constant-time and
 // reply OK / NO. Returns true iff the secret matched.
-async function authenticateConnection(conn) {
+async function authenticateConnection(conn, tr) {
   const authBi = await conn.acceptBi();
+  tr?.stage('read');
   const sent = Buffer.from(await authBi.recv.readToEnd(HANDSHAKE_LIMIT));
+  tr?.stage(`reply (${sent.length} bytes)`);
   const ok = sent.length === connectSecretBuf.length && crypto.timingSafeEqual(sent, connectSecretBuf);
   try {
     await authBi.send.writeAll(Array.from(Buffer.from(ok ? 'OK' : 'NO')));
@@ -149,22 +150,25 @@ async function runAcceptLoop(ep, targetHost, targetPort) {
     }
     if (incoming === null) { break; } // endpoint closed
     (async () => {
+      const tr = handshakeTrace('[iroh]');
       let remote = '(unknown)';
       try {
         const accepting = await incoming.accept();
+        tr.stage('connect');
         const conn = await accepting.connect();
         try { remote = conn.remoteId().toString(); } catch (_err) { /* noop */ }
-        const authed = await authenticateConnection(conn);
+        tr.stage('stream', remote);
+        const authed = await authenticateConnection(conn, tr);
         if (!authed) {
-          winston.warn(`[iroh] rejected connection from ${remote} (bad connect secret)`);
+          tr.end('rejected (bad connect secret)', 'warn');
           try { conn.close(1n, Array.from(Buffer.from('unauthorized'))); } catch (_err) { /* noop */ }
           return;
         }
-        winston.info(`[iroh] tunnel connection authorized: ${remote}`);
+        tr.end('authorized');
         await acceptConnection(conn, targetHost, targetPort);
         winston.info(`[iroh] tunnel connection closed: ${remote}`);
       } catch (err) {
-        winston.debug(`[iroh] incoming connection dropped (${remote}): ${err?.message}`);
+        tr.end(`dropped: ${err?.message}`, 'warn');
       }
     })();
   }
@@ -196,7 +200,9 @@ export async function start({ targetPort, targetHost = '127.0.0.1', secretKey, c
   endpointIdStr = ep.id().toString();
 
   if (awaitOnline) {
-    await Promise.race([ep.online().catch(() => {}), delay(8000)]);
+    const t0 = Date.now();
+    const online = await Promise.race([ep.online().then(() => true).catch(() => false), delay(8000).then(() => false)]);
+    winston.info(`[iroh] endpoint ${online ? 'online' : 'NOT online'} after ${Date.now() - t0}ms: ${describeAddr(ep)}`);
   }
   // stop() ran while we waited for the relay (a soft reboot lands here when
   // an admin saves right after boot): ep is closed and the state cleared —
@@ -220,7 +226,8 @@ export function getEndpointAddr() {
 // The composite QR string (EndpointTicket + connectSecret), or null if not started.
 export function getTicket() {
   if (!endpoint || !irohMod) { return null; }
-  const ticketStr = irohMod.EndpointTicket.fromAddr(endpoint.addr()).toString();
+  const ticketStr = irohMod.EndpointTicket.fromAddr(ticketAddr(irohMod, endpoint)).toString();
+  if (process.env.MSTREAM_IROH_TRACE === '1') { winston.info(`[iroh] pairing code issued: ${describeAddr(endpoint)}`); }
   return buildCompositeTicket(ticketStr, connectSecretBuf);
 }
 

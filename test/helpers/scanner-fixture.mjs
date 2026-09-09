@@ -63,9 +63,10 @@ export async function makeAudio(filepath, codecArgs, meta = {}, durationSec = 1)
 // MP3 with one or more EMBEDDED APIC pictures: tone + lavfi solid-color
 // images muxed with the attached_pic disposition (the standard ffmpeg
 // cover-embedding recipe). Distinct colors → distinct image bytes →
-// distinct content-addressed cache names. Exported for the multi-art
-// scanner tests.
-export async function makeAudioWithArt(filepath, colors, meta = {}) {
+// distinct content-addressed cache names. `codec` picks the picture
+// encoder (mjpeg by default; png for PNG art). Exported for the multi-art
+// and thumbnail scanner tests.
+export async function makeAudioWithArt(filepath, colors, meta = {}, { codec = 'mjpeg' } = {}) {
   await fs.mkdir(path.dirname(filepath), { recursive: true });
   const colorList = Array.isArray(colors) ? colors : [colors];
   const inputs = [];
@@ -81,7 +82,7 @@ export async function makeAudioWithArt(filepath, colors, meta = {}) {
     '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo:duration=1',
     ...inputs,
     '-map', '0:a', ...maps, '-frames:v', '1',
-    '-c:a', 'libmp3lame', '-b:a', '64k', '-c:v', 'mjpeg',
+    '-c:a', 'libmp3lame', '-b:a', '64k', '-c:v', codec,
     ...colorList.map((_, i) => [`-disposition:v:${i}`, 'attached_pic']).flat(),
     '-id3v2_version', '3',
     ...metaArgs,

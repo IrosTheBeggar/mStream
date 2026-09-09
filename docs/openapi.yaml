@@ -1058,7 +1058,8 @@ paths:
                       Present only for authenticated callers. The
                       caller-scoped half of the ping boot payload (vpaths,
                       permission flags, federationDiscovery,
-                      federationBrowse, federationDirect, vpathMetaData)
+                      federationBrowse, federationDirect, federationInbox,
+                      vpathMetaData)
                       plus the identity fields below.
                     properties:
                       username: { type: string }
@@ -1076,6 +1077,16 @@ paths:
                           and there is at least one peer to reach. Same value as
                           federationBrowse; whether a given peer cooperates is
                           answered per peer by the access route.
+                      federationInbox:
+                        type: integer
+                        description: >
+                          Federation requests waiting on this operator: inbound
+                          rows still in the `received` state, the number the
+                          admin panel's Requests badge shows. A number only for
+                          an admin, on an unlocked admin API, of a
+                          federation-enabled server; everyone else reads 0. The
+                          key's presence says the build has the requests
+                          feature (schema V67).
                   admin:
                     type: object
                     description: >
