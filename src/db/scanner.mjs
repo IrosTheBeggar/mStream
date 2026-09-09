@@ -11,6 +11,7 @@ import Joi from 'joi';
 import { Jimp } from 'jimp';
 import { migrateHashReferences as migrateHashRefsShared } from './hash-migration.js';
 import { extractLyrics, sidecarMtimeCached } from './lyrics-extraction.js';
+import { normaliseId3v2Tag, id3v2TagSize, MAX_ID3V2_TAG } from './id3v2-normalise.js';
 import { lrcToSearchText } from '../util/lrc-parser.js';
 import { computeHashes, HASH_GENERATION, SAMPLE_THRESHOLD_DEFAULT } from './audio-hash.js';
 import { extractArtists, chooseAlbumArtistId } from './artist-extraction.js';
@@ -924,45 +925,23 @@ function pictureExt(format) {
 
 // ── Parse a single file ─────────────────────────────────────────────────────
 
-// Files past this are streamed to music-metadata as before, unsynchronised
-// tag or not: the de-stuff below needs the file in memory.
-const MAX_DESTUFF_FILE = 256 * 1024 * 1024;
+// Files past this are streamed to music-metadata as before, normalised tag
+// or not: a rewrite needs the file in memory.
+const MAX_NORMALISE_FILE = 256 * 1024 * 1024;
 
-function id3v2Syncsafe(b, at) {
-  return ((b[at] & 0x7f) << 21) | ((b[at + 1] & 0x7f) << 14) | ((b[at + 2] & 0x7f) << 7) | (b[at + 3] & 0x7f);
-}
-
-// Reverse ID3v2 unsynchronisation: every 0xFF 0x00 pair is a stuffed 0xFF.
-function id3v2Deunsync(src) {
-  const out = Buffer.alloc(src.length);
-  let n = 0;
-  for (let i = 0; i < src.length; i++) {
-    out[n++] = src[i];
-    if (src[i] === 0xff && src[i + 1] === 0x00) { i++; }
-  }
-  return out.subarray(0, n);
-}
-
-// music-metadata, with one ID3v2 tag shape read the way lofty reads it.
-//
-// In ID3v2.2 and v2.3 the unsynchronisation flag on the TAG header means
-// the whole tag body was stuffed (a 0x00 after every 0xFF) and the frame
-// sizes describe the de-stuffed bytes. music-metadata only honours the v2.4
-// per-frame flag, so on such a tag it walks the stuffed bytes with
-// de-stuffed sizes: everything after the first stuffed byte is misaligned —
-// the embedded picture comes out corrupt (its stuffing still in, its tail
-// cut) and every later frame is lost — while lofty reads it correctly, so
-// the two engines disagreed. De-stuff the tag here and parse from memory.
-// The tag keeps its declared size (zero padding fills the gap), so nothing
-// after it moves. The v2.4 tag-level flag is per-frame semantics, which
-// music-metadata handles; the rust scanner's normalize_id3v2 covers the
-// lofty side of that one.
-function readId3v2Header(absolutePath) {
+// The ID3v2 tag at the head of the file (header + body, as far as the file
+// goes), or null when there isn't one worth looking at.
+function readId3v2Tag(absolutePath) {
   let fd = null;
   try {
     fd = fs.openSync(absolutePath, 'r');
     const head = Buffer.alloc(10);
-    return fs.readSync(fd, head, 0, 10, 0) === 10 ? head : null;
+    if (fs.readSync(fd, head, 0, 10, 0) !== 10 || head.toString('latin1', 0, 3) !== 'ID3') { return null; }
+    const size = id3v2TagSize(head);
+    if (size === 0 || size > MAX_ID3V2_TAG) { return null; }
+    const tag = Buffer.alloc(10 + size);
+    const got = fs.readSync(fd, tag, 0, 10 + size, 0);
+    return tag.subarray(0, got);
   } catch (_e) {
     return null;                                 // let parseFile report it
   } finally {
@@ -970,22 +949,61 @@ function readId3v2Header(absolutePath) {
   }
 }
 
+// music-metadata, with the two ID3v2 tag shapes it cannot read rewritten in
+// memory first — see src/db/id3v2-normalise.js. Only the tag is read up
+// front: a file whose tag needs no rewrite streams to parseFile as before,
+// one that does is spliced (rewritten tag + the untouched rest) and parsed
+// from memory. The tag keeps its declared size, so nothing after it moves.
 function parseAudio(absolutePath, options) {
-  const head = readId3v2Header(absolutePath);
-  if (head && head.toString('latin1', 0, 3) === 'ID3' && (head[3] === 2 || head[3] === 3) && (head[5] & 0x80)) {
-    const size = id3v2Syncsafe(head, 6);
+  const tag = readId3v2Tag(absolutePath);
+  const patchedTag = tag && normaliseId3v2Tag(tag);
+  if (patchedTag) {
     let file = null;
     try {
-      if (fs.statSync(absolutePath).size <= MAX_DESTUFF_FILE) { file = fs.readFileSync(absolutePath); }
+      if (fs.statSync(absolutePath).size <= MAX_NORMALISE_FILE) { file = fs.readFileSync(absolutePath); }
     } catch (_e) { file = null; }
-    if (file && file.length >= 10 + size) {
-      const body = id3v2Deunsync(file.subarray(10, 10 + size));
-      const patched = Buffer.concat([file.subarray(0, 10), body, Buffer.alloc(size - body.length), file.subarray(10 + size)]);
-      patched[5] &= ~0x80;
+    if (file && file.length >= tag.length) {
+      const patched = Buffer.concat([patchedTag, file.subarray(tag.length)]);
       return parseBuffer(patched, { path: absolutePath, size: patched.length }, options);
     }
   }
   return parseFile(absolutePath, options);
+}
+
+// One text value out of a music-metadata native tag value: a string, the
+// first string of an array, or a TXXX object's text.
+function nativeText(value) {
+  if (typeof value === 'string') { return value.trim() || null; }
+  if (Array.isArray(value)) { return nativeText(value[0]); }
+  if (value && typeof value === 'object' && value.text !== undefined) { return nativeText(value.text); }
+  return null;
+}
+
+// music-metadata maps TPE2 to albumartist and nothing else. The TXXX form
+// — a frame described "ALBUMARTIST" or "ALBUM ARTIST" (foobar2000,
+// MediaMonkey; 248 files in one 19k library) — fills in when TPE2 is
+// absent. The rust scanner applies the same two steps and, like this,
+// takes the TXXX form's first value. Both TXXX shapes music-metadata
+// emits are accepted (see source-detect.js).
+function txxxAlbumArtist(native) {
+  for (const [tagType, tags] of Object.entries(native || {})) {
+    if (!tagType.startsWith('ID3v2') || !Array.isArray(tags)) { continue; }
+    for (const t of tags) {
+      if (!t || typeof t.id !== 'string') { continue; }
+      const id = t.id.toUpperCase();
+      if (id === 'TXXX:ALBUMARTIST' || id === 'TXXX:ALBUM ARTIST') {
+        const v = nativeText(t.value);
+        if (v) { return v; }
+      } else if (id === 'TXXX' && t.value && typeof t.value === 'object') {
+        const desc = String(t.value.description || '').toUpperCase();
+        if (desc === 'ALBUMARTIST' || desc === 'ALBUM ARTIST') {
+          const v = nativeText(t.value.text);
+          if (v) { return v; }
+        }
+      }
+    }
+  }
+  return null;
 }
 
 async function parseMyFile(absolutePath, modified) {
@@ -995,6 +1013,10 @@ async function parseMyFile(absolutePath, modified) {
     const parsed = await parseAudio(absolutePath, { skipCovers: loadJson.skipImg });
     parsedNative = parsed.native;
     songInfo = parsed.common;
+    if (!(typeof songInfo.albumartist === 'string' && songInfo.albumartist.trim())) {
+      const fromTxxx = txxxAlbumArtist(parsed.native);
+      if (fromTxxx) { songInfo.albumartist = fromTxxx; }
+    }
     songInfo.duration = parsed.format?.duration || null;
     // Extended audio-format fields (sample rate / bit depth / channels).
     // music-metadata exposes these as part of parsed.format — store what's
@@ -1069,7 +1091,7 @@ async function parseMyFile(absolutePath, modified) {
     // V19: lyrics from embedded tags + sibling sidecars. Returns the
     // four tracks.lyrics_* column values flat; insertTrack binds them
     // directly. Kept in a sub-object for the same reason as artistInfo.
-    songInfo.lyricsInfo = extractLyrics(parsed.common, absolutePath);
+    songInfo.lyricsInfo = extractLyrics(parsed.common, absolutePath, parsed.native);
   } catch (err) {
     console.error(`Warning: metadata parse error on ${absolutePath}: ${err.message}`);
     songInfo = { track: { no: null, of: null }, disk: { no: null, of: null }, duration: null,

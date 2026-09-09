@@ -15,7 +15,7 @@ use lofty::file::FileType;
 use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue, TagType};
-use lofty::picture::{MimeType, PictureType};
+use lofty::picture::{MimeType, Picture, PictureType, APE_PICTURE_TYPES};
 use lofty::error::FileParseError;
 use lofty::file::TaggedFile;
 use rusqlite::{Connection, OptionalExtension};
@@ -2986,13 +2986,23 @@ fn extract_track(
                         album_artists_multi.push(s.to_string());
                     }
                 }
-                // lofty 0.23+ also maps TXXX:ALBUMARTIST / "ALBUM ARTIST" to
-                // AlbumArtist. music-metadata reads TPE2 only, and album
-                // identity keys on this value, so an ID3v2 album artist counts
-                // only when a TPE2 frame is there (see Probed::id3v2_tpe2).
-                if tag.tag_type() == TagType::Id3v2 && id3v2_tpe2 == Some(false) {
-                    album_artist_tag = None;
-                    album_artists_multi.clear();
+                // ID3v2: TPE2 is the album artist; when the tag has none, the
+                // TXXX:ALBUMARTIST / "ALBUM ARTIST" form (foobar2000,
+                // MediaMonkey — 248 files in one 19k library) fills in. lofty
+                // 0.23+ maps that TXXX to AlbumArtist as well, so the generic
+                // view could hand it back ahead of TPE2; the JS scanner
+                // (music-metadata reads TPE2, the TXXX fallback is ours) applies
+                // the same two steps, and both take the TXXX form's first value.
+                if tag.tag_type() == TagType::Id3v2 {
+                    let values: Vec<String> = match &id3v2_tpe2 {
+                        Some(v) if !v.is_empty() => v.clone(),
+                        _ => custom.iter()
+                            .find(|(k, v)| (k == "ALBUMARTIST" || k == "ALBUM ARTIST") && !v.trim().is_empty())
+                            .map(|(_, v)| vec![v.clone()])
+                            .unwrap_or_default(),
+                    };
+                    album_artist_tag = values.first().cloned();
+                    album_artists_multi = values;
                 }
                 for item in tag.get_items(ItemKey::TrackArtist) {
                     if let ItemValue::Text(s) = item.value() {
@@ -3080,6 +3090,34 @@ fn extract_track(
                 isrc                 = clean_id(tag.get_string(ItemKey::Isrc));
                 mbz_album_id         = clean_id(tag.get_string(ItemKey::MusicBrainzReleaseId));
                 mbz_release_group_id = clean_id(tag.get_string(ItemKey::MusicBrainzReleaseGroupId));
+            }
+            // music-metadata fills a field the primary tag lacks from the
+            // file's other tags, ID3v1 last, and trims ID3v1's space-padded
+            // 30-byte strings, which lofty hands over padded. Same here: the
+            // six fields an ID3v1 tag can hold fall back to it, and an ID3v1
+            // value is trimmed whether it is that fallback or, in an
+            // ID3v1-only file, the primary tag. (The other precedence
+            // music-metadata has — APEv2 ahead of ID3v2 — is deliberately
+            // not mirrored: lofty's primary tag stays the primary.)
+            match tag {
+                Some(t) if t.tag_type() == TagType::Id3v1 => {
+                    title = title.and_then(id3v1_text);
+                    artist = artist.and_then(id3v1_text);
+                    album = album.and_then(id3v1_text);
+                    genre = genre.and_then(id3v1_text);
+                    track_artists_multi = track_artists_multi.into_iter().filter_map(id3v1_text).collect();
+                }
+                _ => {
+                    if let Some(v1) = tagged_file.tag(TagType::Id3v1) {
+                        let blank = |s: &Option<String>| s.as_deref().map_or(true, |v| v.trim().is_empty());
+                        if blank(&title) { title = v1.title().and_then(|v| id3v1_text(v.to_string())); }
+                        if blank(&artist) { artist = v1.artist().and_then(|v| id3v1_text(v.to_string())); }
+                        if blank(&album) { album = v1.album().and_then(|v| id3v1_text(v.to_string())); }
+                        if blank(&genre) { genre = v1.genre().and_then(|v| id3v1_text(v.to_string())); }
+                        if year.is_none() { year = lofty22_year(v1); }
+                        if track_num.is_none() { track_num = v1.track().map(i64::from); }
+                    }
+                }
             }
         }
         Err(e) => {
@@ -4273,17 +4311,24 @@ fn detect_source(custom: &[(String, String)]) -> Option<String> {
     None
 }
 
-// The lyrics text lofty 0.22 read: ID3v2's USLT — which answers only to
-// ItemKey::UnsyncLyrics since lofty 0.23 — and ItemKey::Lyrics everywhere
-// else (Vorbis LYRICS, MP4 ©lyr, APE Lyrics). UnsyncLyrics is NOT tried for
-// those: it maps to a separate key there (Vorbis UNSYNCEDLYRICS) that the JS
-// engine doesn't read, and reading it here alone would part the engines.
+// The lyrics text: ID3v2's USLT — which answers only to ItemKey::UnsyncLyrics
+// since lofty 0.23 — and ItemKey::Lyrics everywhere else (Vorbis LYRICS,
+// MP4 ©lyr, APE Lyrics), with UnsyncLyrics as the fallback there (Vorbis
+// UNSYNCEDLYRICS, the key some taggers use for plain lyrics; the JS scanner
+// reads it the same way, after LYRICS).
 fn lyrics_text(tag: &lofty::tag::Tag) -> Option<&str> {
     if tag.tag_type() == TagType::Id3v2 {
         tag.get_string(ItemKey::UnsyncLyrics)
     } else {
-        tag.get_string(ItemKey::Lyrics)
+        tag.get_string(ItemKey::Lyrics).or_else(|| tag.get_string(ItemKey::UnsyncLyrics))
     }
+}
+
+/// An ID3v1 string the way music-metadata reads it: trimmed (the fields are
+/// space-padded to 30 bytes and lofty keeps the padding), empty → None.
+fn id3v1_text(s: String) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() { None } else { Some(t.to_string()) }
 }
 
 // lofty 0.22's `Accessor::year()`, kept verbatim: the YEAR / DATE string's
@@ -6330,6 +6375,15 @@ fn save_resized(img: &image::DynamicImage, art_dir: &str, filename: &str) {
 //      string up to that NUL as the URL and leaves the rest of the frame
 //      unread, so every frame after it is lost — the disc number, the
 //      album artist; 0.22 drained the frame, music-metadata never looks.
+//   6. ID3v2.4 frame sizes written as plain big-endian numbers instead of
+//      syncsafe ones (LAME 3.97-era taggers; OutKast rips). lofty and
+//      music-metadata both read v2.4 sizes as syncsafe, so a frame over 127
+//      bytes — the picture, usually — is read short and every frame after
+//      it is lost. A size byte with its high bit set can only be a plain
+//      number; in the ambiguous range the reading that lands on a frame
+//      boundary (a frame id, padding, the end of the tag) wins, syncsafe
+//      preferred. The JS scanner rewrites these the same way before
+//      music-metadata sees them (src/db/id3v2-normalise.js).
 //
 // normalize_id3v2 walks the frame HEADERS of the tag at the head of the
 // file — no frame body is interpreted beyond its encoding byte — and
@@ -6357,6 +6411,7 @@ struct Id3Fixes {
     bad_utf8: usize,
     truncated: bool,
     url_nul: usize,
+    plain_sizes: usize,
 }
 
 impl Id3Fixes {
@@ -6373,6 +6428,9 @@ impl Id3Fixes {
         }
         if self.url_nul > 0 {
             parts.push(format!("{} URL frame(s) with an encoding byte before the URL", self.url_nul));
+        }
+        if self.plain_sizes > 0 {
+            parts.push(format!("{} ID3v2.4 frame size(s) not syncsafe", self.plain_sizes));
         }
         if parts.is_empty() { None } else { Some(parts.join("; ")) }
     }
@@ -6404,6 +6462,15 @@ fn id3v2_deunsync(src: &[u8]) -> Vec<u8> {
 /// break. Binary frames (APIC, GEOB, SYLT, …) stay as they are.
 fn id3v2_is_text_frame(id: &[u8]) -> bool {
     matches!(id, [b'T', ..] | b"COMM" | b"USLT" | b"IPLS" | b"COM" | b"ULT" | b"IPL")
+}
+
+/// A frame boundary both readers accept at `at`: the end of the tag,
+/// padding, or a frame id (A–Z / 0–9).
+fn id3v2_boundary_ok(data: &[u8], at: usize) -> bool {
+    at == data.len()
+        || (at < data.len()
+            && (data[at] == 0
+                || (at + 4 <= data.len() && data[at..at + 4].iter().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))))
 }
 
 /// One rewrite pass. `grow` allows the two rewrites that add a byte (a
@@ -6452,10 +6519,28 @@ fn normalize_id3v2_pass(bytes: &[u8], grow: bool) -> Option<(Vec<u8>, Id3Fixes)>
             break; // padding
         }
         let id = &data[pos..pos + id_len];
+        let mut plain_size = false;
         let declared = match major {
             2 => (data[pos + 3] as usize) << 16 | (data[pos + 4] as usize) << 8 | data[pos + 5] as usize,
             3 => u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]]) as usize,
-            _ => id3v2_syncsafe(&data[pos + 4..pos + 8]),
+            _ => {
+                // Rule 6: which reading of the size is the right one.
+                let raw = &data[pos + 4..pos + 8];
+                let ss = id3v2_syncsafe(raw);
+                let be = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+                if be == ss {
+                    ss
+                } else {
+                    let ok_ss = raw.iter().all(|b| b & 0x80 == 0) && id3v2_boundary_ok(data, pos + hl + ss);
+                    let ok_be = id3v2_boundary_ok(data, pos + hl + be);
+                    if !ok_ss && ok_be {
+                        plain_size = true;
+                        be
+                    } else {
+                        ss
+                    }
+                }
+            }
         };
         let fflags = if major == 2 { 0 } else { u16::from_be_bytes([data[pos + 8], data[pos + 9]]) };
         let body_start = pos + hl;
@@ -6483,8 +6568,11 @@ fn normalize_id3v2_pass(bytes: &[u8], grow: bool) -> Option<(Vec<u8>, Id3Fixes)>
             _ => (false, false, false, false, false),
         };
         let mut new_flags = fflags;
-        let mut changed = truncated;
+        let mut changed = truncated || plain_size;
         fixes.truncated |= truncated;
+        if plain_size {
+            fixes.plain_sizes += 1;
+        }
         let mut body: Vec<u8>;
         // Rule 1: v2.4 per-frame unsynchronisation — the frame's own flag,
         // or the tag flag standing in for every frame. The bytes lofty
@@ -6694,17 +6782,47 @@ fn read_id3v2_prefix<R: Read>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>
 struct Probed {
     file: TaggedFile,
     custom: Vec<(String, String)>,
-    /// Some(true) when the file's ID3v2 tag carries a TPE2 frame, Some(false)
-    /// when it has an ID3v2 tag without one, None without an ID3v2 tag. lofty
-    /// 0.23+ also maps TXXX:ALBUMARTIST / "ALBUM ARTIST" to AlbumArtist;
-    /// music-metadata reads TPE2 only, and album identity keys on this value,
-    /// so the scan counts an ID3v2 album artist only when a TPE2 is there —
-    /// both engines on one rule until both read the TXXX form.
-    id3v2_tpe2: Option<bool>,
+    /// The values of the ID3v2 tag's TPE2 frame (v2.4 NUL-separated values
+    /// split), None when the tag has no TPE2 or the file no ID3v2 tag. lofty
+    /// 0.23+ also maps TXXX:ALBUMARTIST / "ALBUM ARTIST" to AlbumArtist, so
+    /// the generic view can't say which frame an album artist came from; the
+    /// scan wants TPE2 first and the TXXX form only as the fallback — the
+    /// rule the JS scanner applies too.
+    id3v2_tpe2: Option<Vec<String>>,
 }
 
-fn id3v2_has_tpe2(tag: Option<&lofty::id3::v2::Id3v2Tag>) -> Option<bool> {
-    tag.map(|t| t.into_iter().any(|frame| frame.id().as_str() == "TPE2"))
+fn id3v2_tpe2_values(tag: Option<&lofty::id3::v2::Id3v2Tag>) -> Option<Vec<String>> {
+    let mut found = None;
+    for frame in tag? {
+        if let lofty::id3::v2::Frame::Text(f) = frame {
+            if frame.id().as_str() == "TPE2" {
+                found = Some(f.value.split('\0').filter(|v| !v.is_empty()).map(str::to_string).collect());
+            }
+        }
+    }
+    found
+}
+
+/// APE cover-art items lofty skips because their key's case is off — "Cover
+/// Art (front)" for "Cover Art (Front)" (music-metadata matches APE keys
+/// case-insensitively and reads them). Parsed the way lofty parses the
+/// exact-case ones (a file name, a NUL, the picture), and pushed onto the
+/// APE tag's generic view so the scan sees them as embedded pictures.
+fn ape_pictures_lenient(tag: Option<&lofty::ape::ApeTag>) -> Vec<Picture> {
+    let mut out = Vec::new();
+    let Some(tag) = tag else { return out };
+    for item in tag {
+        let Some(canonical) = APE_PICTURE_TYPES.iter().find(|k| k.eq_ignore_ascii_case(item.key())) else { continue };
+        if *canonical == item.key() {
+            continue; // lofty already made a picture of it
+        }
+        if let ItemValue::Binary(data) = item.value() {
+            if let Ok(pic) = Picture::from_ape_bytes(canonical, data) {
+                out.push(pic);
+            }
+        }
+    }
+    out
 }
 
 fn custom_from_id3v2(tag: Option<&lofty::id3::v2::Id3v2Tag>, out: &mut Vec<(String, String)>) {
@@ -6765,19 +6883,21 @@ fn read_tagged<R: Read + Seek>(reader: R, file_type: Option<FileType>) -> Result
     reader.seek(SeekFrom::Start(0))?;
     let mut custom = Vec::new();
     let mut id3v2_tpe2 = None;
-    let file: TaggedFile = match file_type {
+    let mut ape_pics = Vec::new();
+    let mut file: TaggedFile = match file_type {
         Some(FileType::Mpeg) => {
             let f = lofty::mpeg::MpegFile::read_from(&mut reader, opts)?;
             custom_from_id3v2(f.id3v2(), &mut custom);
             custom_from_ape(f.ape(), &mut custom);
-            id3v2_tpe2 = id3v2_has_tpe2(f.id3v2());
+            ape_pics = ape_pictures_lenient(f.ape());
+            id3v2_tpe2 = id3v2_tpe2_values(f.id3v2());
             f.into()
         }
         Some(FileType::Flac) => {
             let f = lofty::flac::FlacFile::read_from(&mut reader, opts)?;
             custom_from_vorbis(f.vorbis_comments(), &mut custom);
             custom_from_id3v2(f.id3v2(), &mut custom);
-            id3v2_tpe2 = id3v2_has_tpe2(f.id3v2());
+            id3v2_tpe2 = id3v2_tpe2_values(f.id3v2());
             f.into()
         }
         Some(FileType::Vorbis) => {
@@ -6803,38 +6923,41 @@ fn read_tagged<R: Read + Seek>(reader: R, file_type: Option<FileType>) -> Result
         Some(FileType::Ape) => {
             let f = lofty::ape::ApeFile::read_from(&mut reader, opts)?;
             custom_from_ape(f.ape(), &mut custom);
+            ape_pics = ape_pictures_lenient(f.ape());
             custom_from_id3v2(f.id3v2(), &mut custom);
-            id3v2_tpe2 = id3v2_has_tpe2(f.id3v2());
+            id3v2_tpe2 = id3v2_tpe2_values(f.id3v2());
             f.into()
         }
         Some(FileType::Wav) => {
             let f = lofty::iff::wav::WavFile::read_from(&mut reader, opts)?;
             custom_from_id3v2(f.id3v2(), &mut custom);
-            id3v2_tpe2 = id3v2_has_tpe2(f.id3v2());
+            id3v2_tpe2 = id3v2_tpe2_values(f.id3v2());
             f.into()
         }
         Some(FileType::Aiff) => {
             let f = lofty::iff::aiff::AiffFile::read_from(&mut reader, opts)?;
             custom_from_id3v2(f.id3v2(), &mut custom);
-            id3v2_tpe2 = id3v2_has_tpe2(f.id3v2());
+            id3v2_tpe2 = id3v2_tpe2_values(f.id3v2());
             f.into()
         }
         Some(FileType::Aac) => {
             let f = lofty::aac::AacFile::read_from(&mut reader, opts)?;
             custom_from_id3v2(f.id3v2(), &mut custom);
-            id3v2_tpe2 = id3v2_has_tpe2(f.id3v2());
+            id3v2_tpe2 = id3v2_tpe2_values(f.id3v2());
             f.into()
         }
         Some(FileType::Mpc) => {
             let f = lofty::musepack::MpcFile::read_from(&mut reader, opts)?;
             custom_from_ape(f.ape(), &mut custom);
+            ape_pics = ape_pictures_lenient(f.ape());
             custom_from_id3v2(f.id3v2(), &mut custom);
-            id3v2_tpe2 = id3v2_has_tpe2(f.id3v2());
+            id3v2_tpe2 = id3v2_tpe2_values(f.id3v2());
             f.into()
         }
         Some(FileType::WavPack) => {
             let f = lofty::wavpack::WavPackFile::read_from(&mut reader, opts)?;
             custom_from_ape(f.ape(), &mut custom);
+            ape_pics = ape_pictures_lenient(f.ape());
             f.into()
         }
         other => {
@@ -6845,6 +6968,13 @@ fn read_tagged<R: Read + Seek>(reader: R, file_type: Option<FileType>) -> Result
             probe.read()?
         }
     };
+    if !ape_pics.is_empty() {
+        if let Some(ape) = file.tag_mut(TagType::Ape) {
+            for pic in ape_pics {
+                ape.push_picture(pic);
+            }
+        }
+    }
     Ok(Probed { file, custom, id3v2_tpe2 })
 }
 
@@ -7161,6 +7291,29 @@ mod id3_normaliser_tests {
         // An empty URL (just the NUL) and a WXXX (which has an encoding byte
         // by design) are left alone.
         let t = tag(3, 0, &[frame(3, b"WORS", 0, b"\x00", None), frame(3, b"WXXX", 0, b"\x00\x00http://x", None)].concat(), 4);
+        assert!(normalize_id3v2(&t).is_none());
+    }
+
+    #[test]
+    fn v24_plain_frame_sizes_are_re_encoded() {
+        // A 300-byte text frame whose size is written as a plain number:
+        // read as syncsafe it is 172 bytes, which lands mid-frame.
+        let long = latin1(&"x".repeat(299));
+        let mut plain = b"TXXX".to_vec();
+        plain.extend((long.len() as u32).to_be_bytes());
+        plain.extend([0u8, 0]);
+        plain.extend_from_slice(&long);
+        let t = tag(4, 0, &[plain, frame(4, b"TIT2", 0, &latin1("Title"), None), frame(4, b"TPE1", 0, &latin1("A"), None)].concat(), 16);
+        let (out, fixes) = normalize_id3v2(&t).expect("rewritten");
+        assert_eq!(out.len(), t.len());
+        assert_eq!(fixes.plain_sizes, 1);
+        assert!(fixes.defects().unwrap().contains("not syncsafe"));
+        assert_eq!(
+            frames_of(&out),
+            vec![(b"TXXX".to_vec(), 0, long), (b"TIT2".to_vec(), 0, latin1("Title")), (b"TPE1".to_vec(), 0, latin1("A"))]
+        );
+        // The same frame with a proper syncsafe size is left alone.
+        let t = tag(4, 0, &[frame(4, b"TXXX", 0, &latin1(&"x".repeat(299)), None), frame(4, b"TIT2", 0, &latin1("Title"), None)].concat(), 16);
         assert!(normalize_id3v2(&t).is_none());
     }
 
