@@ -171,3 +171,51 @@ describe('ingestPlays', () => {
     assert.deepEqual(ingestPlays(c.db, c.alice, {}, { now: NOW }), { accepted: [], duplicates: [], rejected: [] });
   });
 });
+
+// What the Last.fm forwarder (src/stats/forward.js) is handed: the resolved
+// track's strings, and the post-commit hook with the inserted plays only.
+describe('ingestPlays → the forwarder hook', () => {
+  test('lookupTrack carries the title / artist / album strings', () => {
+    const c = seed();
+    const aid = Number(c.db.prepare("INSERT INTO artists (name) VALUES ('Radiohead')").run().lastInsertRowid);
+    const alid = Number(c.db.prepare("INSERT INTO albums (name, artist_id) VALUES ('OK Computer', ?)").run(aid).lastInsertRowid);
+    c.db.prepare("UPDATE tracks SET artist_id = ?, album_id = ? WHERE filepath = 'Radiohead/Let Down.flac'").run(aid, alid);
+    const t = lookupTrack(c.db, c.lib, 'Radiohead/Let Down.flac');
+    assert.deepEqual([t.title, t.artist, t.album], ['Let Down', 'Radiohead', 'OK Computer']);
+    assert.equal(t.trackHash, 'ahA');
+    const bare = lookupTrack(c.db, c.lib, 'Portishead/Glory Box.mp3');
+    assert.deepEqual([bare.title, bare.artist, bare.album], ['Glory Box', null, null], 'no artist or album row → nulls, not a miss');
+  });
+
+  test('onStored fires once, after the commit, with the inserted plays only', () => {
+    const c = seed();
+    const calls = [];
+    const hook = (stored) => calls.push(stored.map((s) => ({
+      id: s.event.eventId,
+      counted: s.event.counted,
+      // the same source rule the forwarder applies: snapshot for a peer play, library row otherwise
+      title: s.event.peerId != null ? s.event.snapshot?.title : s.track?.title,
+      artist: s.event.peerId != null ? s.event.snapshot?.artist : s.track?.artist,
+      peer: s.event.peerId,
+      committed: c.db.isTransaction === false,
+      rows: c.db.prepare('SELECT COUNT(*) AS n FROM play_events').get().n,
+    })));
+    const remote = play({
+      id: 'pp', peerId: c.peer, filePath: 'remote/x.mp3', playedMs: 120000,
+      track: { title: 'Remote', artist: 'Peer', album: 'Far', hash: 'ph', durationMs: 200000 },
+    });
+    const r = ingest(c, c.alice, [play(), remote, play({ id: 'p3', filePath: 'music/Nope.flac' })], { onStored: hook });
+    assert.deepEqual(r.accepted, ['p1', 'pp']);
+    assert.deepEqual(r.rejected, [{ id: 'p3', reason: REASONS.unknownTrack }]);
+    assert.deepEqual(calls, [[
+      { id: 'p1', counted: true, title: 'Let Down', artist: null, peer: null, committed: true, rows: 2 },
+      { id: 'pp', counted: true, title: 'Remote', artist: 'Peer', peer: c.peer, committed: true, rows: 2 },
+    ]]);
+
+    // The replay is duplicates only — the hook stays quiet; so does a batch
+    // of nothing but rejections.
+    ingest(c, c.alice, [play(), remote], { onStored: hook });
+    ingest(c, c.alice, [play({ id: 'p9', filePath: 'music/Nope.flac' })], { onStored: hook });
+    assert.equal(calls.length, 1);
+  });
+});

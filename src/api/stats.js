@@ -13,6 +13,8 @@
 //   POST /api/v1/stats/reset       zero the counters, drop the log, or both
 //   GET  /api/v1/stats/export      the whole log as NDJSON
 //   POST /api/v1/admin/stats/rebuild  recompute the hourly rollup from the log
+//   POST /api/v1/stats/now-playing what the caller is playing right now (no row)
+//   GET  /api/v1/stats/now-playing the caller's own current plays
 //
 // Write side: clients (the mobile app's outbox, the web player) send plays
 // AFTER they happen, with their own ids and start times. The server resolves
@@ -20,6 +22,9 @@
 // `stats.playThreshold*`), and answers per play — accepted / duplicates /
 // rejected with a reason — so an outbox knows what to drop and what to
 // retry. Rules in src/stats/ingest.js, the write in src/stats/store.js.
+// After the commit, a linked Last.fm account gets each counted play as a
+// scrobble with the play's own start time (src/stats/forward.js) — queued,
+// best-effort, never in the response's path.
 //
 // Read side: every read is scoped to the caller — their events, their
 // visible libraries (`ignoreVPaths` narrows further), and their timezone
@@ -36,6 +41,7 @@
 // on the version string.
 
 import Joi from 'joi';
+import winston from 'winston';
 import * as db from '../db/manager.js';
 import * as fedDb from '../db/federation.js';
 import * as config from '../state/config.js';
@@ -43,7 +49,9 @@ import WebError from '../util/web-error.js';
 import { joiValidate } from '../util/validation.js';
 import { getVPathInfo } from '../util/vpath.js';
 import * as q from '../stats/queries.js';
-import { ingestPlays, MAX_BATCH } from '../stats/ingest.js';
+import { ingestPlays, resolveLocalTrack, MAX_BATCH } from '../stats/ingest.js';
+import { forwarder, planScrobbles } from '../stats/forward.js';
+import { nowPlayingAt } from './scrobbler.js';
 import {
   OUTCOMES, SOURCES, RESET_SCOPES, deletePlayEvents, resetStats, rebuildHourStats,
 } from '../stats/store.js';
@@ -101,6 +109,32 @@ export function clientLabel(c) {
   if (!c) { return null; }
   return `${c.name}${c.version ? `/${c.version}` : ''}`.slice(0, 128);
 }
+
+// ── Now playing ───────────────────────────────────────────────────────────
+//
+// What a client is playing right now: per user, in memory, gone after
+// NOW_PLAYING_TTL_MS unless the client posts again (a track longer than that
+// is re-announced by its player). Writes no row — the play itself arrives
+// through /stats/plays once it is over. A linked Last.fm account gets the
+// now-playing notice. Keyed by the client's sessionId, so two players of the
+// same user show as two entries and a re-post replaces its own.
+export const NOW_PLAYING_TTL_MS = 10 * 60 * 1000;
+const nowPlaying = new Map();   // userId → Map(sessionId → entry)
+
+function liveNowPlaying(userId, nowMs) {
+  const mine = nowPlaying.get(userId);
+  if (!mine) { return null; }
+  for (const [k, e] of mine) { if (e.expiresMs <= nowMs) { mine.delete(k); } }
+  if (mine.size === 0) { nowPlaying.delete(userId); return null; }
+  return mine;
+}
+
+const nowPlayingSchema = Joi.object({
+  filePath: Joi.string().min(1).max(2048).required(),
+  peerId: Joi.number().integer().min(1),
+  sessionId: Joi.string().min(1).max(128).required(),
+  track: trackSnapshot,
+});
 
 // ── Read side ─────────────────────────────────────────────────────────────
 
@@ -181,13 +215,73 @@ export function setup(mstream) {
   mstream.post('/api/v1/stats/plays', (req, res) => {
     requireAccount(req);
     const { value } = joiValidate(bodySchema, req.body || {});
+    const now = new Date();
     const result = ingestPlays(db.getDB(), req.user, value, {
       config: config.program.stats,
-      now: new Date(),
+      now,
       peers: fedDb.getFederationPeers(),
       client: clientLabel(value.client),
+      // After the commit: the counted plays go on to Last.fm for a linked
+      // account, with their own start times. Queued — never in the
+      // response's path, and never able to fail the request.
+      onStored: (stored) => {
+        try { forwarder().enqueue(req.user, planScrobbles(stored, now)); }
+        catch (err) { winston.warn(`[stats] last.fm forwarding skipped: ${err.message}`); }
+      },
     });
     res.json(result);
+  });
+
+  mstream.post('/api/v1/stats/now-playing', (req, res) => {
+    requireAccount(req);
+    const { value } = joiValidate(nowPlayingSchema, req.body || {});
+    const nowMs = Date.now();
+    let track;
+    if (value.peerId != null) {
+      if (!fedDb.getFederationPeers().some((p) => p.id === value.peerId)) {
+        return res.json({ accepted: false, reason: 'unknown-peer' });
+      }
+      if (!value.track) { return res.json({ accepted: false, reason: 'invalid' }); }
+      const snap = value.track;
+      track = {
+        title: snap.title ?? null, artist: snap.artist ?? null, album: snap.album ?? null,
+        durationMs: snap.durationMs ?? null, hash: snap.hash ?? null,
+      };
+    } else {
+      const t = resolveLocalTrack(d(), value.filePath, req.user);
+      if (!t) { return res.json({ accepted: false, reason: 'unknown-track' }); }
+      track = { title: t.title, artist: t.artist, album: t.album, durationMs: t.durationMs, hash: t.trackHash };
+    }
+    const expiresMs = nowMs + NOW_PLAYING_TTL_MS;
+    const entry = {
+      sessionId: value.sessionId,
+      filePath: value.filePath,
+      peerId: value.peerId ?? null,
+      track,
+      since: new Date(nowMs).toISOString(),
+      expiresAt: new Date(expiresMs).toISOString(),
+      expiresMs,
+    };
+    const mine = liveNowPlaying(req.user.id, nowMs) || new Map();
+    mine.set(entry.sessionId, entry);
+    nowPlaying.set(req.user.id, mine);
+    res.json({ accepted: true, expiresAt: entry.expiresAt });
+
+    // The Last.fm notice, after the response and best-effort.
+    if (req.user.lastfm_user && req.user.lastfm_password && track.artist && track.title) {
+      const song = { artist: track.artist, track: track.title, album: track.album || undefined };
+      if (Number.isInteger(track.durationMs) && track.durationMs > 0) { song.duration = Math.round(track.durationMs / 1000); }
+      nowPlayingAt(req.user, song)
+        .then((r) => { if (!r.ok) { winston.debug(`[stats] last.fm: now-playing notice failed: ${r.error}`); } })
+        .catch((err) => winston.debug(`[stats] last.fm: now-playing notice failed: ${err.message}`));
+    }
+  });
+
+  mstream.get('/api/v1/stats/now-playing', (req, res) => {
+    requireAccount(req);
+    const mine = liveNowPlaying(req.user.id, Date.now());
+    const entries = mine ? [...mine.values()].map(({ expiresMs: _e, ...e }) => e) : [];
+    res.json({ entries });
   });
 
   mstream.get('/api/v1/stats/summary', (req, res) => {

@@ -147,8 +147,61 @@ export function warmScrobbleUser(lastfmUser, lastfmPassword) {
   Scrobbler.addUser(lastfmUser, lastfmPassword);
 }
 
+// Register credentials only when the session map has no entry for them —
+// warmScrobbleUser REPLACES the entry (dropping a warmed session), which is
+// right for newly saved credentials and wrong for every play that follows.
+export function ensureScrobbleUser(lastfmUser, lastfmPassword) {
+  if (!lastfmUser || !lastfmPassword) { return false; }
+  if (!Scrobbler.hasUser(lastfmUser)) { Scrobbler.addUser(lastfmUser, lastfmPassword); }
+  return true;
+}
+
+// The Stats API's forwarders — src/stats/forward.js for scrobbles, the
+// now-playing route for notices — call these with a req.user-shaped account
+// (the lastfm_user / lastfm_password columns). Both resolve { ok, error }
+// and never throw or hang: Last.fm being slow, down, or unhappy with the
+// credentials is a debug line, never a failed request.
+//   not-linked   the account has no Last.fm credentials
+//   no-response  no session could be made, or the request failed
+//   timeout      Last.fm took longer than FORWARD_TIMEOUT_MS
+//   lastfm-N     Last.fm answered error code N (9 = invalid session: the
+//                session is dropped so the next call logs in again)
+const FORWARD_TIMEOUT_MS = 15000;
+function forwardCall(method, user, song) {
+  return new Promise((resolve) => {
+    if (!ensureScrobbleUser(user?.lastfm_user, user?.lastfm_password)) {
+      resolve({ ok: false, error: 'not-linked' });
+      return;
+    }
+    let settled = false;
+    const finish = (r) => { if (!settled) { settled = true; clearTimeout(timer); resolve(r); } };
+    const timer = setTimeout(() => finish({ ok: false, error: 'timeout' }), FORWARD_TIMEOUT_MS);
+    Scrobbler[method](song, user.lastfm_user, (body) => {
+      if (body == null) { finish({ ok: false, error: 'no-response' }); return; }
+      let parsed = null;
+      try { parsed = JSON.parse(body); } catch (_) { /* not JSON: treated as accepted */ }
+      if (parsed && parsed.error != null) {
+        if (parsed.error === 9) { Scrobbler.dropSession(user.lastfm_user); }
+        finish({ ok: false, error: `lastfm-${parsed.error}` });
+        return;
+      }
+      finish({ ok: true });
+    });
+  });
+}
+export const scrobbleAt = (user, song) => forwardCall('Scrobble', user, song);
+export const nowPlayingAt = (user, song) => forwardCall('NowPlaying', user, song);
+
 export function setup(mstream) {
   Scrobbler.setKeys(config.program.lastFM.apiKey, config.program.lastFM.apiSecret);
+
+  // A test points the client at a local fake Last.fm (host:port). Production
+  // never sets this — the same pattern as the other MSTREAM_TEST_* overrides.
+  const testEndpoint = process.env.MSTREAM_TEST_LASTFM_ENDPOINT;
+  if (testEndpoint) {
+    const [host, port] = testEndpoint.split(':');
+    Scrobbler.setEndpoint({ host, port: Number(port) || 80 });
+  }
 
   // Initialize lastfm users from database. getAllUsers() filters out the
   // anonymous sentinel (V25) — pull it in explicitly so a public-mode
