@@ -8,6 +8,11 @@
 //                                  filterable by any hash a client knows a track by
 //   POST /api/v1/stats/tracks      per-track counters for a batch of paths / hashes
 //   GET  /api/v1/stats/periods     which periods have data
+//   DELETE /api/v1/stats/plays/:id  forget one play (counters and rollup follow)
+//   DELETE /api/v1/stats/plays?from=&to=  forget every play in a range
+//   POST /api/v1/stats/reset       zero the counters, drop the log, or both
+//   GET  /api/v1/stats/export      the whole log as NDJSON
+//   POST /api/v1/admin/stats/rebuild  recompute the hourly rollup from the log
 //
 // Write side: clients (the mobile app's outbox, the web player) send plays
 // AFTER they happen, with their own ids and start times. The server resolves
@@ -26,8 +31,9 @@
 //
 // Never reachable with a federation key or a guest token: the wall's
 // allowlist does not carry these routes, and the synthetic user those tokens
-// build has no id to record against or read for. Nothing advertises the
-// surface in `features` until the scrobble shim and the flag land with it.
+// build has no id to record against or read for. The surface is advertised
+// as `features.stats` (src/api/server-info.js); clients gate on that, never
+// on the version string.
 
 import Joi from 'joi';
 import * as db from '../db/manager.js';
@@ -38,7 +44,9 @@ import { joiValidate } from '../util/validation.js';
 import { getVPathInfo } from '../util/vpath.js';
 import * as q from '../stats/queries.js';
 import { ingestPlays, MAX_BATCH } from '../stats/ingest.js';
-import { OUTCOMES, SOURCES } from '../stats/store.js';
+import {
+  OUTCOMES, SOURCES, RESET_SCOPES, deletePlayEvents, resetStats, rebuildHourStats,
+} from '../stats/store.js';
 import {
   isValidTimeZone, isBucket, periodRange, customRange, toSqlite, fromSqlite, toIso,
 } from '../stats/time.js';
@@ -270,6 +278,86 @@ export function setup(mstream) {
     for (const [p, h] of byPath) { const it = h && render(h, p); if (it) { items.push(it); } }
     for (const h of v.hashes || []) { const it = render(h); if (it) { items.push(it); } }
     res.json({ items });
+  });
+
+  // ── Management ──
+
+  mstream.delete('/api/v1/stats/plays/:id', (req, res) => {
+    requireAccount(req);
+    const { value } = joiValidate(Joi.object({ id: Joi.string().min(1).max(128).required() }), req.params);
+    const r = deletePlayEvents(d(), req.user.id, { eventIds: [value.id] });
+    if (r.deleted === 0) { throw new WebError('No such play', 404); }
+    res.json(r);
+  });
+
+  mstream.delete('/api/v1/stats/plays', (req, res) => {
+    requireAccount(req);
+    const { value: v } = joiValidate(Joi.object({
+      from: Joi.string().isoDate().required(),
+      to: Joi.string().isoDate().required(),
+    }), req.query);
+    let r;
+    try { r = customRange(v.from, v.to); } catch (err) { throw new WebError(err.message, 400); }
+    res.json(deletePlayEvents(d(), req.user.id, { from: toSqlite(r.from), to: toSqlite(r.to) }));
+  });
+
+  mstream.post('/api/v1/stats/reset', (req, res) => {
+    requireAccount(req);
+    const { value } = joiValidate(Joi.object({
+      scope: Joi.string().valid(...RESET_SCOPES).required(),
+    }), req.body || {});
+    res.json({ scope: value.scope, ...resetStats(d(), req.user.id, value.scope) });
+  });
+
+  // The whole log, one JSON object per line, oldest first — a backup, a
+  // migration, or a client rebuilding its local copy. Streamed in keyset
+  // pages so a long history never sits in memory at once.
+  mstream.get('/api/v1/stats/export', (req, res) => {
+    requireAccount(req);
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="listening-history.ndjson"');
+    const page = d().prepare(`
+      SELECT pe.*, l.name AS library_name
+        FROM play_events pe LEFT JOIN libraries l ON l.id = pe.library_id
+       WHERE pe.user_id = ? AND pe.id > ?
+       ORDER BY pe.id LIMIT 500`);
+    let after = 0;
+    for (;;) {
+      const rows = page.all(req.user.id, after);
+      if (rows.length === 0) { break; }
+      for (const r of rows) {
+        let snapshot = null;
+        if (r.snapshot) { try { snapshot = JSON.parse(r.snapshot); } catch (_) { snapshot = null; } }
+        res.write(`${JSON.stringify({
+          id: r.event_id,
+          startedAt: toIso(r.started_at),
+          endedAt: toIso(r.ended_at),
+          playedMs: r.played_ms,
+          durationMs: r.duration_ms,
+          outcome: r.outcome,
+          counted: r.counted === 1,
+          source: r.source,
+          sessionId: r.session_id,
+          pauseCount: r.pause_count,
+          client: r.client,
+          filePath: r.peer_id == null && r.library_name ? `${r.library_name}/${r.filepath}` : r.filepath,
+          peerId: r.peer_id ?? null,
+          trackHash: r.track_hash,
+          snapshot,
+        })}\n`);
+        after = r.id;
+      }
+    }
+    res.end();
+  });
+
+  // Recompute the hourly rollup from the events on hand (every hour that
+  // still has events; older rows are kept — see rebuildHourStats). Admin
+  // only; optional userId narrows it.
+  mstream.post('/api/v1/admin/stats/rebuild', (req, res) => {
+    if (!req.user?.admin) { throw new WebError('Forbidden', 403); }
+    const { value } = joiValidate(Joi.object({ userId: Joi.number().integer().min(1) }), req.body || {});
+    res.json(rebuildHourStats(d(), { userId: value.userId ?? null }));
   });
 
   mstream.get('/api/v1/stats/periods', (req, res) => {

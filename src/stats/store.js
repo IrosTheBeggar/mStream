@@ -13,7 +13,7 @@
 // peer row, the play-threshold verdict — is the INGEST route's job. This
 // module trusts a fully-resolved event and only guarantees the bookkeeping.
 
-import { toSqlite, fromSqlite, hourKey } from './time.js';
+import { toSqlite, fromSqlite, hourKey, retentionFloor } from './time.js';
 
 export const OUTCOMES = new Set(['completed', 'skipped', 'stopped']);
 export const SOURCES = new Set(['manual', 'shuffle', 'autodj', 'playlist',
@@ -158,3 +158,146 @@ export function recordPlayEvents(d, events, { transactional = true } = {}) {
   }
   return { inserted, duplicates };
 }
+
+// ── Removal ──────────────────────────────────────────────────────────────
+//
+// Deleting an event subtracts exactly what recording it added: its hour row
+// (dropped once it holds no events) and its track's counters. A track's
+// first/last played are then recomputed from the counted events that
+// remain; when none remain but plays predate the log (play_count still
+// above zero — the legacy count routes never wrote events) the dates are
+// left as they are, since the log cannot say when those plays were; and
+// when the count is zero they are cleared.
+
+const EVENT_COLS = 'id, event_id, user_id, track_hash, outcome, counted, played_ms, started_at';
+
+function subtractEvent(d, ev) {
+  const skipped = ev.outcome === 'skipped' ? 1 : 0;
+  const hour = hourKey(fromSqlite(ev.started_at));
+  d.prepare(`
+    UPDATE user_hour_stats
+       SET events = MAX(events - 1, 0), plays = MAX(plays - ?, 0),
+           skips = MAX(skips - ?, 0), listened_ms = MAX(listened_ms - ?, 0)
+     WHERE user_id = ? AND hour = ?`).run(ev.counted, skipped, ev.played_ms, ev.user_id, hour);
+  d.prepare('DELETE FROM user_hour_stats WHERE user_id = ? AND hour = ? AND events <= 0').run(ev.user_id, hour);
+  if (ev.track_hash) {
+    d.prepare(`
+      UPDATE user_metadata
+         SET play_count = MAX(play_count - ?, 0), skip_count = MAX(skip_count - ?, 0),
+             listened_ms = MAX(listened_ms - ?, 0)
+       WHERE user_id = ? AND track_hash = ?`).run(ev.counted, skipped, ev.played_ms, ev.user_id, ev.track_hash);
+  }
+}
+
+function refreshTrackTimes(d, userId, trackHash) {
+  const um = d.prepare('SELECT play_count FROM user_metadata WHERE user_id = ? AND track_hash = ?').get(userId, trackHash);
+  if (!um) { return; }
+  const r = d.prepare(`
+    SELECT MIN(started_at) AS first, MAX(started_at) AS last, COUNT(*) AS n
+      FROM play_events WHERE user_id = ? AND track_hash = ? AND counted = 1`).get(userId, trackHash);
+  if (r.n > 0) {
+    d.prepare('UPDATE user_metadata SET first_played = ?, last_played = ? WHERE user_id = ? AND track_hash = ?')
+      .run(r.first, r.last, userId, trackHash);
+  } else if (!(um.play_count > 0)) {
+    d.prepare('UPDATE user_metadata SET first_played = NULL, last_played = NULL WHERE user_id = ? AND track_hash = ?')
+      .run(userId, trackHash);
+  }
+}
+
+// Delete [userId]'s events by id list, or every event that started in
+// [from, to) (stored-text bounds). Atomic. Returns { deleted }.
+export function deletePlayEvents(d, userId, { eventIds = null, from = null, to = null } = {}) {
+  let rows;
+  if (Array.isArray(eventIds)) {
+    if (eventIds.length === 0) { return { deleted: 0 }; }
+    rows = d.prepare(`SELECT ${EVENT_COLS} FROM play_events WHERE user_id = ? AND event_id IN (${eventIds.map(() => '?').join(',')})`)
+      .all(userId, ...eventIds);
+  } else if (from != null && to != null) {
+    rows = d.prepare(`SELECT ${EVENT_COLS} FROM play_events WHERE user_id = ? AND started_at >= ? AND started_at < ?`)
+      .all(userId, from, to);
+  } else {
+    throw new TypeError('deletePlayEvents needs eventIds or a from/to range');
+  }
+  if (rows.length === 0) { return { deleted: 0 }; }
+  d.exec('BEGIN IMMEDIATE');
+  try {
+    const hashes = new Set();
+    const del = d.prepare('DELETE FROM play_events WHERE id = ?');
+    for (const ev of rows) {
+      subtractEvent(d, ev);
+      del.run(ev.id);
+      if (ev.track_hash) { hashes.add(ev.track_hash); }
+    }
+    for (const h of hashes) { refreshTrackTimes(d, userId, h); }
+    d.exec('COMMIT');
+  } catch (err) {
+    try { d.exec('ROLLBACK'); } catch (_) { /* already rolled back */ }
+    throw err;
+  }
+  return { deleted: rows.length };
+}
+
+// ── Reset ────────────────────────────────────────────────────────────────
+//
+// 'counts' zeroes the per-track counters (stars and ratings stay); 'history'
+// drops the log and its hourly rollup; 'all' does both. Counts without
+// history is the legacy reset — the log then says more than the counters,
+// which is what the user asked for.
+export const RESET_SCOPES = new Set(['counts', 'history', 'all']);
+
+export function resetStats(d, userId, scope) {
+  if (!RESET_SCOPES.has(scope)) { throw new TypeError('scope'); }
+  const out = { tracks: 0, events: 0 };
+  d.exec('BEGIN IMMEDIATE');
+  try {
+    if (scope === 'counts' || scope === 'all') {
+      out.tracks = Number(d.prepare(`
+        UPDATE user_metadata
+           SET play_count = 0, skip_count = 0, listened_ms = 0, first_played = NULL, last_played = NULL
+         WHERE user_id = ?`).run(userId).changes);
+    }
+    if (scope === 'history' || scope === 'all') {
+      out.events = Number(d.prepare('DELETE FROM play_events WHERE user_id = ?').run(userId).changes);
+      d.prepare('DELETE FROM user_hour_stats WHERE user_id = ?').run(userId);
+    }
+    d.exec('COMMIT');
+  } catch (err) {
+    try { d.exec('ROLLBACK'); } catch (_) { /* already rolled back */ }
+    throw err;
+  }
+  return out;
+}
+
+// ── Rebuild ──────────────────────────────────────────────────────────────
+//
+// Recompute the hourly rollup from the events on hand: every hour that
+// still has events is rewritten exactly; an hour with none keeps its row,
+// because it may be older than retention — the rollup is the part of the
+// history that outlives the raw events, so a rebuild must never erase it.
+export function rebuildHourStats(d, { userId = null } = {}) {
+  const where = userId != null ? 'WHERE user_id = ?' : '';
+  const params = userId != null ? [userId] : [];
+  const r = d.prepare(`
+    INSERT INTO user_hour_stats (user_id, hour, events, plays, skips, listened_ms)
+    SELECT user_id, strftime('%Y-%m-%dT%H', started_at), COUNT(*), SUM(counted),
+           SUM(CASE WHEN outcome = 'skipped' THEN 1 ELSE 0 END), SUM(played_ms)
+      FROM play_events ${where}
+     GROUP BY 1, 2
+    ON CONFLICT (user_id, hour) DO UPDATE SET
+      events = excluded.events, plays = excluded.plays,
+      skips = excluded.skips, listened_ms = excluded.listened_ms`).run(...params);
+  return { hours: Number(r.changes) };
+}
+
+// ── Retention ────────────────────────────────────────────────────────────
+//
+// Prune raw events that started before the retention floor. Counters and
+// the hourly rollup are deliberately untouched: the totals survive, only
+// the per-play rows go. Returns { deleted, cutoff }.
+export function sweepRetention(d, { retentionMonths, now = new Date() } = {}) {
+  if (!(retentionMonths > 0)) { return { deleted: 0, cutoff: null }; }
+  const cutoff = toSqlite(retentionFloor(now, retentionMonths));
+  const r = d.prepare('DELETE FROM play_events WHERE started_at < ?').run(cutoff);
+  return { deleted: Number(r.changes), cutoff };
+}
+

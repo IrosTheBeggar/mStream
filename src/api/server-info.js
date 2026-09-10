@@ -85,6 +85,11 @@ export function buildFeatures() {
     transcode: transcodeInfo,
     // Per-format booleans from config.
     supportedAudioFiles: config.program.supportedAudioFiles,
+    // Stats API v2 (/api/v1/stats/*): the version a client should speak.
+    // Absent on older servers, so a client gates on this — never on the
+    // version string. 2 = ingest, reads and management together; a partial
+    // surface was never advertised.
+    stats: 2,
   };
 }
 

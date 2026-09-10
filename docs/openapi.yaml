@@ -1000,6 +1000,13 @@ paths:
                       facts only: no counts, no library or content names,
                       no identity.
                     properties:
+                      stats:
+                        type: integer
+                        description: >
+                          The Stats API v2 version this server speaks
+                          (`/api/v1/stats/*`: ingest, reads, management).
+                          Absent on servers without it — gate on this key,
+                          never on the version string.
                       discoveryReady:
                         type: boolean
                         description: >
@@ -2325,6 +2332,22 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "A federation key or guest token — stats are never recorded for those." }
 
+    delete:
+      tags: [Stats]
+      summary: Forget every play in a range
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date-time }, description: "Exclusive." }
+      responses:
+        "200":
+          description: How many went.
+          content:
+            application/json:
+              schema: { type: object, properties: { deleted: { type: integer } } }
+        "400": { description: "Missing or unordered bounds." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+
   # ── Stats API v2 (read side) ─────────────────────────────────────────────
   # Every read is scoped to the caller's own plays and visible libraries.
   # A range is a preset `period` (+ `offset` <= 0) or an explicit `from`/`to`
@@ -2608,6 +2631,82 @@ paths:
                         to: { type: string, format: date-time }
         "400": { description: "Validation failed: unknown parameter, bad timezone, unpaired from/to, or an invalid cursor." }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats/plays/{id}:
+    delete:
+      tags: [Stats]
+      summary: Forget one play
+      description: The event goes, and its track's counters and its hour in the rollup are decremented exactly.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: "The client's event id." }
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { type: object, properties: { deleted: { type: integer } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "No play with that id for this user." }
+
+  /api/v1/stats/reset:
+    post:
+      tags: [Stats]
+      summary: Zero the counters, drop the log, or both
+      description: |
+        `counts` zeroes play/skip counts, listened time and first/last played on every track
+        (stars and ratings stay). `history` deletes the log and its hourly rollup. `all` does both.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scope]
+              properties:
+                scope: { type: string, enum: [counts, history, all] }
+      responses:
+        "200":
+          description: What was reset.
+          content:
+            application/json:
+              schema: { type: object, properties: { scope: { type: string }, tracks: { type: integer }, events: { type: integer } } }
+        "400": { description: "Unknown scope." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats/export:
+    get:
+      tags: [Stats]
+      summary: The whole listening log as NDJSON
+      description: One JSON object per line, oldest first, streamed. A backup, a migration, or a client rebuilding its local copy.
+      responses:
+        "200":
+          description: The log.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: "Lines of `{id, startedAt, endedAt, playedMs, durationMs, outcome, counted, source, sessionId, pauseCount, client, filePath, peerId, trackHash, snapshot}`."
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/admin/stats/rebuild:
+    post:
+      tags: [Stats]
+      summary: Recompute the hourly rollup from the log (admin)
+      description: Every hour that still has events is rewritten exactly; hours whose events were pruned by retention keep their rows.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId: { type: integer, description: "Narrow to one user." }
+      responses:
+        "200":
+          description: Hours rewritten.
+          content:
+            application/json:
+              schema: { type: object, properties: { hours: { type: integer } } }
+        "403": { description: "Not an admin." }
 
   # ── Playlists ────────────────────────────────────────────────────────────
 

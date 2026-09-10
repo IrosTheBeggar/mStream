@@ -24,7 +24,9 @@
 import * as db from '../db/manager.js';
 import { getVPathInfo } from '../util/vpath.js';
 import { recordPlayEvent } from './store.js';
-import { fromSqlite } from './time.js';
+import { fromSqlite, retentionFloor } from './time.js';
+
+export { retentionFloor };
 
 export const REASONS = Object.freeze({
   unknownTrack: 'unknown-track',
@@ -64,14 +66,6 @@ export function parseInstant(v) {
     return Number.isNaN(d.getTime()) ? null : d;
   }
   return null;
-}
-
-// The oldest start still accepted: retentionMonths back from now, to the
-// hour, or 2000-01-01 when retention is off.
-export function retentionFloor(now, retentionMonths) {
-  if (!(retentionMonths > 0)) { return new Date(Date.UTC(2000, 0, 1)); }
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - retentionMonths,
-    now.getUTCDate(), now.getUTCHours()));
 }
 
 // The start instant, or null when it is unparsable, more than futureSkewMs
