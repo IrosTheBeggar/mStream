@@ -26,7 +26,6 @@ import fsp from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { MIGRATIONS } from '../../src/db/schema.js';
 import { applyAllMigrations } from './apply-migrations.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -62,11 +61,14 @@ export function findRustParser() {
 // rust-parser/ source. The build workflows stamp each set with the
 // rust-parser/ source TREE it was built from (bin/rust-parser/.source-tree,
 // .source-tree-musl for the musl family); a mismatch with HEAD's tree means
-// an in-flight rust-parser change the binary doesn't carry yet (CI prebuilt
-// until the post-merge rebuild). A dev build under rust-parser/target/ is
-// never stale. For Rust-leg behaviour that has no CLI-visible capability to
-// probe (a scanner-internal SQL change, say) — suites skip that leg on this
-// the way the capability probes above skip on theirs.
+// a rust-parser change the shipped binary doesn't carry yet — a branch that
+// changes the scanner, or the window between a rust-parser merge and the
+// post-merge rebuild. A dev build under rust-parser/target/ is never stale,
+// and test.yml builds one from source before the suite runs, so CI never
+// sees a stale set: this covers a checkout that only has the shipped
+// binaries (no cargo). For Rust-leg behaviour with no CLI-visible capability
+// to probe (a scanner-internal SQL change, say) — suites skip that leg on
+// this the way the capability probes above skip on theirs.
 export function rustParserIsStale(bin) {
   const prebuiltDir = path.join(REPO_ROOT, 'bin', 'rust-parser');
   if (!bin || !bin.startsWith(prebuiltDir + path.sep)) { return false; }
