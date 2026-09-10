@@ -3707,25 +3707,41 @@ fn commit_track(
 /// UNIQUE(user_id, track_hash) constraint and aborts the per-file txn —
 /// and re-aborts on every rescan. Same merge policy as V52: play_count
 /// sums, starred_at keeps the earliest, last_played the latest, rating
-/// prefers the target row's. Bookmarks: most recently changed wins.
+/// prefers the target row's. The V70 listening counters follow the same
+/// shape: skip_count and listened_ms sum (every play happened),
+/// first_played keeps the earliest. Column-for-column mirror of
+/// hash-migration.js — hash_migration_tests below pins it against the
+/// same fixture as test/db/hash-migration.test.mjs. Bookmarks: most
+/// recently changed wins.
 fn migrate_hash_references(
     conn: &Connection, old_hash: &str, new_hash: &str, scheme_rekey: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    type UmRow = (i64, Option<i64>, Option<String>, Option<String>, Option<i64>);
+    // (user_id, play_count, starred_at, last_played, rating,
+    //  skip_count, listened_ms, first_played) — the V70 counters are
+    // NOT NULL DEFAULT 0 / nullable TEXT in the live schema, but read as
+    // Option like the rest so a NULL never aborts the per-file txn (the
+    // JS side's `|| 0` fallthrough).
+    type UmRow = (i64, Option<i64>, Option<String>, Option<String>, Option<i64>,
+                  Option<i64>, Option<i64>, Option<String>);
+    fn um_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<UmRow> {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?,
+            r.get(5)?, r.get(6)?, r.get(7)?))
+    }
     let olds: Vec<UmRow> = conn
         .prepare_cached(
-            "SELECT user_id, play_count, starred_at, last_played, rating
+            "SELECT user_id, play_count, starred_at, last_played, rating,
+                    skip_count, listened_ms, first_played
                FROM user_metadata WHERE track_hash = ?")?
-        .query_map([old_hash], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+        .query_map([old_hash], um_row)?
         .filter_map(|r| r.ok())
         .collect();
-    for (user_id, o_play, o_star, o_last, o_rating) in olds {
+    for (user_id, o_play, o_star, o_last, o_rating, o_skips, o_listened, o_first) in olds {
         let target: Option<UmRow> = conn
             .prepare_cached(
-                "SELECT user_id, play_count, starred_at, last_played, rating
+                "SELECT user_id, play_count, starred_at, last_played, rating,
+                        skip_count, listened_ms, first_played
                    FROM user_metadata WHERE user_id = ? AND track_hash = ?")?
-            .query_row(rusqlite::params![user_id, new_hash],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .query_row(rusqlite::params![user_id, new_hash], um_row)
             .optional()?;
         match target {
             None => {
@@ -3733,7 +3749,7 @@ fn migrate_hash_references(
                     "UPDATE user_metadata SET track_hash = ? WHERE user_id = ? AND track_hash = ?",
                     rusqlite::params![new_hash, user_id, old_hash])?;
             }
-            Some((_, n_play, n_star, n_last, n_rating)) => {
+            Some((_, n_play, n_star, n_last, n_rating, n_skips, n_listened, n_first)) => {
                 let min_nn = |a: Option<String>, b: Option<String>| match (a, b) {
                     (Some(x), Some(y)) => Some(if x < y { x } else { y }),
                     (x, y) => x.or(y),
@@ -3744,13 +3760,17 @@ fn migrate_hash_references(
                 };
                 conn.execute(
                     "UPDATE user_metadata SET play_count = ?, starred_at = ?,
-                            last_played = ?, rating = ?
+                            last_played = ?, rating = ?, skip_count = ?,
+                            listened_ms = ?, first_played = ?
                       WHERE user_id = ? AND track_hash = ?",
                     rusqlite::params![
                         n_play.unwrap_or(0) + o_play.unwrap_or(0),
                         min_nn(n_star, o_star),
                         max_nn(n_last, o_last),
                         n_rating.or(o_rating),
+                        n_skips.unwrap_or(0) + o_skips.unwrap_or(0),
+                        n_listened.unwrap_or(0) + o_listened.unwrap_or(0),
+                        min_nn(n_first, o_first),
                         user_id, new_hash])?;
                 conn.execute(
                     "DELETE FROM user_metadata WHERE user_id = ? AND track_hash = ?",
@@ -7372,5 +7392,131 @@ mod id3_normaliser_tests {
         r.read_exact(&mut two).unwrap();
         assert_eq!(&two, b"67");
         assert!(r.seek(SeekFrom::Current(-100)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod hash_migration_tests {
+    //! migrate_hash_references' user_metadata merge, run against the same
+    //! fixture rows test/db/hash-migration.test.mjs feeds the JS helper —
+    //! the two are meant to be column-for-column mirrors, and a scan is
+    //! the only other way to reach the Rust merge.
+    use super::*;
+
+    fn mk_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        // Same shape as the JS test's mkDb(), minus the NOT NULL on the
+        // V70 counters so the NULL-tolerance case below can plant one.
+        conn.execute_batch(
+            "CREATE TABLE user_metadata (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               user_id INTEGER NOT NULL,
+               track_hash TEXT NOT NULL,
+               play_count INTEGER DEFAULT 0,
+               last_played TEXT,
+               rating INTEGER,
+               starred_at TEXT,
+               skip_count INTEGER DEFAULT 0,
+               listened_ms INTEGER DEFAULT 0,
+               first_played TEXT
+             );
+             CREATE UNIQUE INDEX um_unique ON user_metadata(user_id, track_hash);
+             CREATE TABLE user_bookmarks (
+               user_id INTEGER NOT NULL, track_hash TEXT NOT NULL,
+               position_ms INTEGER NOT NULL, comment TEXT,
+               created_at TEXT, changed_at TEXT,
+               PRIMARY KEY (user_id, track_hash)
+             );
+             CREATE TABLE user_play_queue (
+               user_id INTEGER PRIMARY KEY, current_track_hash TEXT,
+               position_ms INTEGER, changed_at TEXT, changed_by TEXT,
+               track_hashes_json TEXT NOT NULL
+             );
+             CREATE TABLE lyrics_cache (audio_hash TEXT PRIMARY KEY, status TEXT NOT NULL);
+             CREATE TABLE acoustid_lookups (
+               audio_hash TEXT PRIMARY KEY, last_attempt_at INTEGER NOT NULL, outcome TEXT NOT NULL);
+             CREATE TABLE audio_analysis_lookups (
+               audio_hash TEXT PRIMARY KEY, last_attempt_at INTEGER NOT NULL, outcome TEXT NOT NULL);",
+        ).unwrap();
+        conn
+    }
+
+    fn insert(
+        conn: &Connection, hash: &str, play: i64, last: &str,
+        skips: Option<i64>, listened: Option<i64>, first: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO user_metadata
+               (user_id, track_hash, play_count, last_played, skip_count, listened_ms, first_played)
+             VALUES (1, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params![hash, play, last, skips, listened, first],
+        ).unwrap();
+    }
+
+    // (play_count, last_played, skip_count, listened_ms, first_played)
+    type Counters = (i64, Option<String>, Option<i64>, Option<i64>, Option<String>);
+    fn row(conn: &Connection, hash: &str) -> Option<Counters> {
+        conn.query_row(
+            "SELECT play_count, last_played, skip_count, listened_ms, first_played
+               FROM user_metadata WHERE user_id = 1 AND track_hash = ?",
+            [hash],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        ).optional().unwrap()
+    }
+
+    #[test]
+    fn a_collision_merges_the_v70_counters() {
+        let conn = mk_db();
+        // The user already holds the NEW identity (stars keyed on the audio hash)…
+        insert(&conn, "newhash", 2, "2026-09-01 10:00:00",
+               Some(1), Some(100_000), Some("2026-08-01 10:00:00"));
+        // …and plays keyed on the OLD one.
+        insert(&conn, "oldhash", 5, "2026-09-05 10:00:00",
+               Some(3), Some(250_000), Some("2026-07-01 10:00:00"));
+
+        migrate_hash_references(&conn, "oldhash", "newhash", false).unwrap();
+
+        let (play, last, skips, listened, first) = row(&conn, "newhash").expect("merged row");
+        assert_eq!(play, 7, "play_count sums");
+        assert_eq!(last.as_deref(), Some("2026-09-05 10:00:00"), "last_played keeps the latest");
+        assert_eq!(skips, Some(4), "skip_count sums");
+        assert_eq!(listened, Some(350_000), "listened_ms sums");
+        assert_eq!(first.as_deref(), Some("2026-07-01 10:00:00"), "first_played keeps the earliest");
+        assert!(row(&conn, "oldhash").is_none(), "the old identity's row is gone");
+    }
+
+    #[test]
+    fn a_null_counter_reads_as_zero_and_never_aborts() {
+        // The live schema backfills 0 (V70 ADD COLUMN ... DEFAULT 0), so a
+        // NULL here is hypothetical — but the read must tolerate one the
+        // way the JS `|| 0` does rather than abort the per-file txn.
+        let conn = mk_db();
+        insert(&conn, "newhash", 1, "2026-09-01 10:00:00", None, None, None);
+        insert(&conn, "oldhash", 1, "2026-09-02 10:00:00",
+               Some(2), Some(30_000), Some("2026-07-01 10:00:00"));
+
+        migrate_hash_references(&conn, "oldhash", "newhash", false).unwrap();
+
+        let (play, _, skips, listened, first) = row(&conn, "newhash").expect("merged row");
+        assert_eq!(play, 2);
+        assert_eq!(skips, Some(2));
+        assert_eq!(listened, Some(30_000));
+        assert_eq!(first.as_deref(), Some("2026-07-01 10:00:00"), "the only first_played wins");
+    }
+
+    #[test]
+    fn a_plain_re_key_carries_the_counters_untouched() {
+        let conn = mk_db();
+        insert(&conn, "oldhash", 5, "2026-09-05 10:00:00",
+               Some(3), Some(250_000), Some("2026-07-01 10:00:00"));
+
+        migrate_hash_references(&conn, "oldhash", "newhash", false).unwrap();
+
+        assert!(row(&conn, "oldhash").is_none());
+        let (play, last, skips, listened, first) = row(&conn, "newhash").expect("re-keyed row");
+        assert_eq!(
+            (play, last.as_deref(), skips, listened, first.as_deref()),
+            (5, Some("2026-09-05 10:00:00"), Some(3), Some(250_000), Some("2026-07-01 10:00:00")),
+        );
     }
 }

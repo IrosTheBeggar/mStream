@@ -10,8 +10,9 @@
  *
  * Mirrored in rust-parser/src/main.rs#migrate_hash_references — the Rust
  * scanner inlines the same logic rather than cross-processing into JS.
- * Any behaviour change must be reflected in both places (and covered by
- * the unit test in test/hash-migration.test.mjs).
+ * Any behaviour change must be reflected in both places and covered by
+ * both unit tests — test/db/hash-migration.test.mjs here, the
+ * hash_migration_tests module there — which share their fixture rows.
  */
 
 /**
@@ -52,9 +53,6 @@ export function migrateHashReferences(db, oldHash, newHash, { schemeRekey = fals
   // collision. Same merge semantics as the V52 repair migration:
   // play_count sums, starred_at keeps the earliest, last_played the
   // latest, rating prefers the target row's.
-  // The Rust scanner's port (rust-parser/src/main.rs migrate_hash_references)
-  // still merges only the four original columns — see the follow-up noted in
-  // the V70 change.
   let metadata = 0;
   for (const o of db.prepare(
     'SELECT * FROM user_metadata WHERE track_hash = ?').all(oldHash)) {

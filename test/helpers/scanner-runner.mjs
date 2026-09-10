@@ -58,6 +58,28 @@ export function findRustParser() {
   return null;
 }
 
+// Whether `bin` is a PREBUILT binary that predates the checked-out
+// rust-parser/ source. The build workflows stamp each set with the
+// rust-parser/ source TREE it was built from (bin/rust-parser/.source-tree,
+// .source-tree-musl for the musl family); a mismatch with HEAD's tree means
+// an in-flight rust-parser change the binary doesn't carry yet (CI prebuilt
+// until the post-merge rebuild). A dev build under rust-parser/target/ is
+// never stale. For Rust-leg behaviour that has no CLI-visible capability to
+// probe (a scanner-internal SQL change, say) — suites skip that leg on this
+// the way the capability probes above skip on theirs.
+export function rustParserIsStale(bin) {
+  const prebuiltDir = path.join(REPO_ROOT, 'bin', 'rust-parser');
+  if (!bin || !bin.startsWith(prebuiltDir + path.sep)) { return false; }
+  const stampName = /-musl(\.exe)?$/.test(bin) ? '.source-tree-musl' : '.source-tree';
+  let stamp;
+  try { stamp = fs.readFileSync(path.join(prebuiltDir, stampName), 'utf8').trim(); }
+  catch (_) { return true; }   // unstamped set — nothing vouches for it
+  const r = spawnSync('git', ['rev-parse', 'HEAD:rust-parser'],
+    { cwd: REPO_ROOT, encoding: 'utf8', timeout: 5000 });
+  if (r.status !== 0) { return false; }   // no git (tarball checkout): assume current
+  return r.stdout.trim() !== stamp;
+}
+
 // The hashing generation a binary stamps (its `--hash-generation`
 // answer), or null for pre-probe builds — the shared capability check
 // for suites that need sampled-hash support. One cheap spawnSync
