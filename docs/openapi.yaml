@@ -2267,6 +2267,13 @@ paths:
         play (`peerId` = the peer's id on this server, `track` = what the peer
         reported), never on the peer. Not reachable with a federation key or a
         guest token.
+
+        For an account linked to Last.fm (admin panel → users → Last.fm), every
+        COUNTED play is also scrobbled with its own start time — after the
+        response, best-effort, queued so a large outbox drains at Last.fm's
+        pace. Nothing Last.fm would ignore is sent: plays older than 14 days,
+        tracks shorter than 30 seconds, plays without an artist and title. A
+        peer play is scrobbled from its `track` snapshot.
       requestBody:
         required: true
         content:
@@ -2346,6 +2353,87 @@ paths:
               schema: { type: object, properties: { deleted: { type: integer } } }
         "400": { description: "Missing or unordered bounds." }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+
+  /api/v1/stats/now-playing:
+    post:
+      tags: [Stats]
+      summary: Announce what the caller is playing right now
+      description: |
+        Ephemeral and per user: kept in memory for ten minutes (a longer
+        track is re-announced by its player), keyed by the client's
+        `sessionId`, so a re-post replaces the same player's entry and two
+        players show as two entries. Writes no row — the play itself arrives
+        through `/api/v1/stats/plays` once it is over. A linked Last.fm account
+        gets the now-playing notice, best-effort, after the response. A peer's
+        track needs its `track` snapshot, like a peer play. Not reachable with
+        a federation key or a guest token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filePath, sessionId]
+              properties:
+                filePath: { type: string, maxLength: 2048, description: "Virtual path (`<vpath>/<rel>`); for a peer's track, the peer's own path." }
+                peerId: { type: integer, description: "Present for a federated peer's track." }
+                sessionId: { type: string, maxLength: 128, description: "The player's session — one entry per player." }
+                track:
+                  type: object
+                  description: Snapshot for a peer's track (ignored for a local one).
+                  properties:
+                    title: { type: string }
+                    artist: { type: string }
+                    album: { type: string }
+                    durationMs: { type: integer }
+                    hash: { type: string }
+                    artFile: { type: string }
+      responses:
+        "200":
+          description: "Stored (`accepted: true`) or answered with why not; never an error for an unknown track."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accepted: { type: boolean }
+                  reason: { type: string, enum: [unknown-track, unknown-peer, invalid], description: "Only when `accepted` is false." }
+                  expiresAt: { type: string, format: date-time, description: "Only when accepted." }
+        "400": { description: "Validation failed (a missing path or session id, an unknown key)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "A federation key or guest token." }
+    get:
+      tags: [Stats]
+      summary: The caller's current plays
+      responses:
+        "200":
+          description: Every unexpired entry the caller announced, one per player session.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        sessionId: { type: string }
+                        filePath: { type: string }
+                        peerId: { type: integer, nullable: true }
+                        track:
+                          type: object
+                          properties:
+                            title: { type: string, nullable: true }
+                            artist: { type: string, nullable: true }
+                            album: { type: string, nullable: true }
+                            durationMs: { type: integer, nullable: true }
+                            hash: { type: string, nullable: true }
+                        since: { type: string, format: date-time }
+                        expiresAt: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "A federation key or guest token." }
 
 
   # ── Stats API v2 (read side) ─────────────────────────────────────────────

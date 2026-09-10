@@ -83,12 +83,18 @@ export function checkStartedAt(value, {
 const stripSlash = (p) => (typeof p === 'string' && p.startsWith('/') ? p.slice(1) : p);
 
 // A scanned track by (library, relative path): the canonical key (audio
-// hash, else file hash), the library id, the path, and the library's own
-// duration for when the client sent none. A row with no hash at all (a
-// failed parse) resolves with trackHash null — the event is kept for
-// history, but there is no counter row to bump.
+// hash, else file hash), the library id, the path, the library's own
+// duration for when the client sent none, and the title / artist / album
+// strings the Last.fm forwarder needs. A row with no hash at all (a failed
+// parse) resolves with trackHash null — the event is kept for history, but
+// there is no counter row to bump.
 export function lookupTrack(d, libraryId, relativePath) {
-  const row = d.prepare('SELECT audio_hash, file_hash, duration FROM tracks WHERE filepath = ? AND library_id = ?')
+  const row = d.prepare(`SELECT t.audio_hash, t.file_hash, t.duration, t.title,
+                                a.name AS artist, al.name AS album
+                           FROM tracks t
+                           LEFT JOIN artists a ON a.id = t.artist_id
+                           LEFT JOIN albums al ON al.id = t.album_id
+                          WHERE t.filepath = ? AND t.library_id = ?`)
     .get(relativePath, libraryId);
   if (!row) { return null; }
   return {
@@ -96,6 +102,9 @@ export function lookupTrack(d, libraryId, relativePath) {
     libraryId,
     filepath: relativePath,
     durationMs: typeof row.duration === 'number' && row.duration > 0 ? Math.round(row.duration * 1000) : null,
+    title: row.title ?? null,
+    artist: row.artist ?? null,
+    album: row.album ?? null,
   };
 }
 
@@ -113,15 +122,21 @@ export function resolveLocalTrack(d, filePath, user) {
 // accepted plays commit together, so a database failure rolls the whole
 // batch back and throws. Options: config (the `stats` block), now, peers
 // (this server's federation_peers rows), client (stored on every row),
-// resolveLocal (injectable for tests).
+// resolveLocal (injectable for tests), onStored — called once AFTER the
+// commit with the plays that were actually inserted, as [{ event, track }]
+// (the stored event and the resolved track it was matched to), never for a
+// duplicate or a rejection; the Last.fm forwarder hangs off it. It is not
+// called when nothing was inserted.
 export function ingestPlays(d, user, body, {
   config = DEFAULTS, now = new Date(), peers = [], client = null, resolveLocal = resolveLocalTrack,
+  onStored = null,
 } = {}) {
   const accepted = [];
   const duplicates = [];
   const rejected = [];
   const seen = new Set();
   const prepared = [];
+  const stored = [];
   const retentionMonths = config?.retentionMonths ?? DEFAULTS.retentionMonths;
 
   for (const play of body?.plays || []) {
@@ -161,6 +176,7 @@ export function ingestPlays(d, user, body, {
 
     prepared.push({
       id,
+      track,
       event: {
         eventId: id,
         userId: user.id,
@@ -187,7 +203,7 @@ export function ingestPlays(d, user, body, {
     d.exec('BEGIN IMMEDIATE');
     try {
       const owner = d.prepare('SELECT user_id FROM play_events WHERE event_id = ?');
-      for (const { id, event } of prepared) {
+      for (const { id, event, track } of prepared) {
         const existing = owner.get(id);
         if (existing) {
           if (existing.user_id === user.id) { duplicates.push(id); } else { rejected.push({ id, reason: REASONS.invalid }); }
@@ -195,6 +211,7 @@ export function ingestPlays(d, user, body, {
         }
         recordPlayEvent(d, event);
         accepted.push(id);
+        stored.push({ event, track });
       }
       d.exec('COMMIT');
     } catch (err) {
@@ -202,5 +219,6 @@ export function ingestPlays(d, user, body, {
       throw err;
     }
   }
+  if (onStored && stored.length > 0) { onStored(stored); }
   return { accepted, duplicates, rejected };
 }

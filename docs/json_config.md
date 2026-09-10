@@ -284,6 +284,9 @@ How a play is counted, and how far back one may be reported. Clients (the
 mobile app, the web player) send complete plays to `POST /api/v1/stats/plays`
 after they happen; the server judges each one against these settings, stores
 the verdict with the play, and only counted plays move a track's play count.
+For a user who linked a Last.fm account (admin panel → Users → Last.fm), each
+counted play is also scrobbled to Last.fm with the play's own start time —
+Last.fm takes nothing older than 14 days or shorter than 30 seconds.
 
 ```json
   "stats": {
