@@ -354,8 +354,8 @@ for (const engine of ['rust', 'js']) {
     test('content replacement onto an identity the user already holds merges the V70 counters', async (t) => {
       if (!available()) { t.skip('ffmpeg/rust binary unavailable or stale'); return; }
       if (engine === 'rust' && rustParserIsStale(rustBin)) {
-        t.skip('rust-parser binary predates the V70 counter merge '
-          + '(CI prebuilt until the post-merge rebuild) — the JS leg still covers the logic');
+        t.skip('shipped rust-parser binary predates the V70 counter merge '
+          + '(build rust-parser from source to run this leg) — the JS leg still covers the logic');
         return;
       }
       const sb = await makeSandbox('collide', engine);
