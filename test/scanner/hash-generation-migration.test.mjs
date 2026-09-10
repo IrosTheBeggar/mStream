@@ -31,7 +31,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  findRustParser, rustParserHashGeneration, FFMPEG,
+  findRustParser, rustParserHashGeneration, rustParserIsStale, FFMPEG,
   initEmptyDb, buildScanConfig, runScan, runJsScan,
 } from '../helpers/scanner-runner.mjs';
 import { makeAudio } from '../helpers/scanner-fixture.mjs';
@@ -353,6 +353,11 @@ for (const engine of ['rust', 'js']) {
 
     test('content replacement onto an identity the user already holds merges the V70 counters', async (t) => {
       if (!available()) { t.skip('ffmpeg/rust binary unavailable or stale'); return; }
+      if (engine === 'rust' && rustParserIsStale(rustBin)) {
+        t.skip('rust-parser binary predates the V70 counter merge '
+          + '(CI prebuilt until the post-merge rebuild) — the JS leg still covers the logic');
+        return;
+      }
       const sb = await makeSandbox('collide', engine);
       const song = path.join(sb.libRoot, 'song.mp3');
       await makeAudio(song, MP3, { title: 'One' }, 2);
