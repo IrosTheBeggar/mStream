@@ -710,6 +710,11 @@ async function init() {
     // Discovery capability — consumed by the Discover panel (below) and
     // the Auto-DJ panel's sonic-similarity section.
     MSTREAMAPI.currentServer.discovery = response.discovery === true;
+    // Stats API v2 — with it, the player reports complete plays instead of
+    // the 30-second scrobble (assets/js/mstream.player.js), and posts what
+    // an earlier page left behind.
+    MSTREAMAPI.currentServer.stats = Number(response.stats) || 0;
+    if (typeof MSTREAMPLAYER.statsInit === 'function') { MSTREAMPLAYER.statsInit(); }
     VUEPLAYERCORE.setDiscoveryAvailable(response.discovery === true);
     VUEPLAYERCORE.setDiscoveryP2pAvailable(response.discoveryP2p === true);
     VUEPLAYERCORE.setFederationDiscoveryAvailable(response.federationDiscovery === true);
