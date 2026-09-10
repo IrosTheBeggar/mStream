@@ -35,7 +35,7 @@ import {
   initEmptyDb, buildScanConfig, runScan, runJsScan,
 } from '../helpers/scanner-runner.mjs';
 import { makeAudio } from '../helpers/scanner-fixture.mjs';
-import { canonicalHash, HASH_GENERATION } from '../../src/db/audio-hash.js';
+import { canonicalHash, computeHashes, HASH_GENERATION } from '../../src/db/audio-hash.js';
 
 const MP3 = ['-c:a', 'libmp3lame', '-b:a', '128k', '-id3v2_version', '3'];
 const TEST_THRESHOLD = 96 * 1024;
@@ -349,6 +349,55 @@ for (const engine of ['rust', 'js']) {
         `${table}: cooldown left behind for the orphan sweep — new audio must not ` +
         'inherit a failure for attempts that never ran against it');
       }
+    });
+
+    test('content replacement onto an identity the user already holds merges the V70 counters', async (t) => {
+      if (!available()) { t.skip('ffmpeg/rust binary unavailable or stale'); return; }
+      const sb = await makeSandbox('collide', engine);
+      const song = path.join(sb.libRoot, 'song.mp3');
+      await makeAudio(song, MP3, { title: 'One' }, 2);
+      await sb.scan();
+      const c1 = canonOf(sb.rows()[0]);
+
+      // Stage the replacement audio OUTSIDE the library so its identity is
+      // known before the rescan: the collision has to be in place when the
+      // re-key runs, or the merge path never executes.
+      const staged = path.join(sb.root, 'staged.mp3');
+      await makeAudio(staged, MP3, { title: 'Two' }, 3);
+      const h = await computeHashes(staged, { sampleThreshold: TEST_THRESHOLD });
+      const c2 = canonOf({ audio_hash: h.audioHash, file_hash: h.fileHash });
+      assert.notEqual(c2, c1, 'the staged audio is a different recording');
+
+      sb.withDb(db => {
+        db.prepare(`INSERT OR IGNORE INTO users (id, username, password, salt)
+                    VALUES (1, 'u', 'x', 'x')`).run();
+        // Plays keyed on the OLD identity… (the fixture rows of
+        // test/db/hash-migration.test.mjs, so every merge — JS unit, Rust
+        // unit, and this scan on either engine — agrees on one answer)
+        db.prepare(`INSERT INTO user_metadata
+                      (user_id, track_hash, play_count, last_played, skip_count, listened_ms, first_played)
+                    VALUES (1, ?, 5, '2026-09-05 10:00:00', 3, 250000, '2026-07-01 10:00:00')`).run(c1);
+        // …and a row the user already holds under the NEW one.
+        db.prepare(`INSERT INTO user_metadata
+                      (user_id, track_hash, play_count, last_played, skip_count, listened_ms, first_played)
+                    VALUES (1, ?, 2, '2026-09-01 10:00:00', 1, 100000, '2026-08-01 10:00:00')`).run(c2);
+      });
+
+      await fsp.copyFile(staged, song);
+      const future = new Date(Date.now() + 5000);
+      await fsp.utimes(song, future, future);
+      await sb.scan();
+
+      assert.equal(canonOf(sb.rows()[0]), c2, 'content change re-keyed the row');
+      const meta = sb.withDb(db => db.prepare(
+        `SELECT track_hash, play_count, last_played, skip_count, listened_ms, first_played
+           FROM user_metadata`).all().map(r => ({ ...r })), { readOnly: true });
+      assert.deepEqual(meta, [{
+        track_hash: c2, play_count: 7, last_played: '2026-09-05 10:00:00',
+        skip_count: 4, listened_ms: 350000, first_played: '2026-07-01 10:00:00',
+      }], 'ONE merged row on the new identity: counts and listened time sum, ' +
+          'last_played keeps the latest, first_played the earliest — a bare ' +
+          'UPDATE would have hit UNIQUE(user_id, track_hash) and aborted the file');
     });
   });
 }
