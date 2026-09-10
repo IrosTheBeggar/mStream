@@ -65,7 +65,8 @@ const d = () => db.getDB();
 
 const instant = Joi.alternatives().try(Joi.string().isoDate(), Joi.number().integer().min(0));
 
-// 'legacy' is reserved for the server's own scrobble shim.
+// 'legacy' is reserved for the server's own scrobble-by-filepath route — a
+// legacy route kept for older clients — so a client can never claim it.
 const CLIENT_SOURCES = [...SOURCES].filter((s) => s !== 'legacy');
 
 // What a client knows about a track this library can't look up — required
