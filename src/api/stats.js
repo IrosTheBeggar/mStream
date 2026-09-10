@@ -103,6 +103,9 @@ const bodySchema = Joi.object({
   }),
   plays: Joi.array().items(playSchema).min(1).max(MAX_BATCH).required(),
 });
+// The wire contract, for the tests of the clients that post here (the
+// webapp's play sessions validate what they build against it).
+export const playsBodySchema = bodySchema;
 
 // `name/version`, the form stored on every row and shown in history.
 export function clientLabel(c) {

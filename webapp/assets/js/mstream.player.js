@@ -64,6 +64,118 @@ const MSTREAMPLAYER = (() => {
       (response, error) => {});
   }
 
+  // ── Stats API v2: play sessions ──────────────────────────────────────
+  //
+  // On a server with the Stats API (the ping's `stats` flag, read by
+  // alpha/m.js into MSTREAMAPI.currentServer.stats) the 30-second scrobble
+  // above is never armed. Instead every song start opens a session
+  // (assets/js/mstream.play-session.js) fed by the player's own signals —
+  // the timeupdate ticks, pause and resume, the end of the stream, the user
+  // moving on — and the finished play goes to POST /api/v1/stats/plays
+  // through an outbox that retries and survives a closed tab. A peer track
+  // is reported as a peer play (its id + a snapshot of the metadata), which
+  // the legacy path could never count. Server-side playback
+  // (mstream.server-audio.js) keeps the legacy scrobble for now.
+  let playSession = null;
+  let statsOutbox = null;
+  let statsRetryTimer = null;
+  let lastCheckpointAt = 0;
+  const CHECKPOINT_EVERY_MS = 5000;
+
+  function statsEnabled() {
+    return typeof MSTREAMPLAYSESSION !== 'undefined'
+      && typeof MSTREAMAPI !== 'undefined'
+      && Number(MSTREAMAPI.currentServer && MSTREAMAPI.currentServer.stats) >= 2;
+  }
+  function statsOutboxFor() {
+    if (!statsOutbox) {
+      statsOutbox = MSTREAMPLAYSESSION.createOutbox({
+        post: (body, opts) => MSTREAMAPI.postPlays(body, opts),
+        log: console,
+      });
+    }
+    return statsOutbox;
+  }
+  // How the song got here: a DJ pick, the shuffle, or the user.
+  function statsSourceOf(song) {
+    if (mstreamModule.playerStats.autoDJ === true && song.metadata && song.metadata._djPicked === true) { return 'autodj'; }
+    if (mstreamModule.playerStats.shuffle === true) { return 'shuffle'; }
+    return 'manual';
+  }
+  function beginPlaySession(song) {
+    endPlaySession('skipped');
+    if (!statsEnabled() || !song || !song.rawFilePath) { return; }
+    const meta = song.metadata || {};
+    const peerId = song.federation && Number.isFinite(Number(song.federation.peerId))
+      ? Number(song.federation.peerId) : null;
+    const metaDur = Number(meta.duration);
+    try {
+      playSession = MSTREAMPLAYSESSION.createSession({
+        filePath: song.rawFilePath,
+        peerId,
+        track: peerId != null ? MSTREAMPLAYSESSION.snapshotOf(meta) : null,
+        durationMs: Number.isFinite(metaDur) && metaDur > 0 ? Math.round(metaDur * 1000) : null,
+        source: statsSourceOf(song),
+        sessionId: MSTREAMPLAYSESSION.tabSessionId(),
+      });
+    } catch (err) {
+      console.warn('[stats] could not open a play session', err);
+      return;
+    }
+    lastCheckpointAt = Date.now();
+    statsOutboxFor().checkpoint(playSession);
+    const notice = { filePath: playSession.filePath, sessionId: playSession.sessionId };
+    if (peerId != null) { notice.peerId = peerId; notice.track = playSession.track; }
+    try { MSTREAMAPI.postNowPlaying(notice).catch(() => {}); } catch (_) { /* best-effort */ }
+  }
+  // Close the open session with the player's word on how it ended; the
+  // fold may upgrade it to `completed` (the playhead reached the end).
+  function endPlaySession(outcome, flushOpts) {
+    if (!playSession) { return; }
+    const session = playSession;
+    playSession = null;
+    const box = statsOutboxFor();
+    box.clearCheckpoint();
+    const play = MSTREAMPLAYSESSION.finish(session, outcome);
+    if (!play) { return; }
+    box.enqueue(play);
+    box.flush(flushOpts || {}).catch(() => {});
+  }
+  function tickPlaySession() {
+    if (!playSession) { return; }
+    MSTREAMPLAYSESSION.tick(playSession, mstreamModule.playerStats.currentTime, mstreamModule.playerStats.playing === true);
+    const dur = mstreamModule.playerStats.duration;
+    if (Number.isFinite(dur) && dur > 0) { MSTREAMPLAYSESSION.withDuration(playSession, Math.round(dur * 1000)); }
+    const now = Date.now();
+    if (now - lastCheckpointAt >= CHECKPOINT_EVERY_MS) {
+      lastCheckpointAt = now;
+      statsOutboxFor().checkpoint(playSession);
+    }
+  }
+  function pausePlaySession() { if (playSession) { MSTREAMPLAYSESSION.pause(playSession); } }
+  function resumePlaySession() { if (playSession) { MSTREAMPLAYSESSION.resume(playSession); } }
+  // Called by alpha/m.js once the ping has answered: post what an earlier
+  // page left behind, then keep retrying quietly.
+  mstreamModule.statsInit = () => {
+    if (!statsEnabled()) { return false; }
+    const box = statsOutboxFor();
+    box.recover();
+    box.flush().catch(() => {});
+    if (!statsRetryTimer) { statsRetryTimer = setInterval(() => { box.flush().catch(() => {}); }, 60000); }
+    return true;
+  };
+  // A closing page: the play so far leaves as `stopped`, on a request that
+  // outlives the page.
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('pagehide', () => { endPlaySession('stopped', { keepalive: true }); });
+  }
+  // For the console and the smoke tests.
+  mstreamModule.stats = {
+    enabled: statsEnabled,
+    session: () => playSession,
+    outbox: () => statsOutboxFor(),
+  };
+
   // The audioData looks like this
   // var song = {
   //   "url":"vPath/path/to/song.mp3?token=xxx",
@@ -1204,9 +1316,15 @@ const MSTREAMPLAYER = (() => {
 
     }, cacheTimeout);
 
-    // Scrobble song after 30 seconds
+    // Count the play. A server with the Stats API gets the complete play
+    // once this song is over (the session); anything older still gets the
+    // legacy 30-second scrobble.
     clearTimeout(scrobbleTimer);
-    scrobbleTimer = setTimeout(() => { mstreamModule.scrobble() }, 30000);
+    if (statsEnabled()) {
+      beginPlaySession(mstreamModule.playlist[position]);
+    } else {
+      scrobbleTimer = setTimeout(() => { mstreamModule.scrobble() }, 30000);
+    }
   }
 
   // Should be called whenever the "metadata" field of the current song is changed, or
@@ -1303,13 +1421,13 @@ const MSTREAMPLAYER = (() => {
   function howlPlayerPlay() {
     const localPlayer = getCurrentPlayer();
     mstreamModule.playerStats.playing = true;
-
+    resumePlaySession();
     localPlayer.playerObject.play();
   }
   function howlPlayerPause() {
     const localPlayer = getCurrentPlayer();
     mstreamModule.playerStats.playing = false;
-
+    pausePlaySession();
     localPlayer.playerObject.pause();
   }
   function howlPlayerPlayPause() {
@@ -1318,9 +1436,11 @@ const MSTREAMPLAYER = (() => {
     // TODO: Check that media is loaded
     if (localPlayer.playerObject.paused === false) {
       mstreamModule.playerStats.playing = false;
+      pausePlaySession();
       localPlayer.playerObject.pause();
       document.title = "mStream Music"
     } else {
+      resumePlaySession();
       localPlayer.playerObject.play();
       
       let pageTitle = (mstreamModule.playerStats.metadata.title) ? 
@@ -1418,6 +1538,7 @@ const MSTREAMPLAYER = (() => {
       }
 
       if (playerObj === getCurrentPlayer()) {
+        endPlaySession('stopped');
         goToNextSong();
       }else {
         // Invalidate cache
@@ -1433,6 +1554,7 @@ const MSTREAMPLAYER = (() => {
       // offset`, so the element's own currentTime restarts at 0. Add the
       // offset back to report the true position.
       mstreamModule.playerStats.currentTime = (cur.seekOffset || 0) + cur.playerObject.currentTime;
+      tickPlaySession();
 
       // Duration: a chunked transcode stream has no usable audio.duration
       // (Infinity until fully buffered, and a seeked stream only spans the
@@ -1507,6 +1629,7 @@ const MSTREAMPLAYER = (() => {
 
   function callMeOnStreamEnd() {
     mstreamModule.playerStats.playing = false;
+    endPlaySession('completed');
     if (mstreamModule.playerStats.shouldLoopOne === true) {
       return goToSong(mstreamModule.positionCache.val);
     }
