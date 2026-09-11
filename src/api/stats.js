@@ -327,24 +327,29 @@ export function setup(mstream) {
     }), req.query);
     const r = resolveRange(v);
     if (!isBucket(v.bucket)) { throw new WebError('Unknown bucket', 400); }
-    const rows = q.hourRows(d(), { userId: req.user.id, from: r.from, to: r.to });
+    const rows = q.scopedHourRows(d(), {
+      user: req.user, from: r.fromText, to: r.toText, fromDate: r.from, toDate: r.to,
+      origin: v.origin, ignoreVPaths: normIgnore(v.ignoreVPaths),
+    });
     res.json({ period: periodOut(r), bucket: v.bucket, items: q.rebucket(rows, v.bucket, r.tz) });
   });
 
   mstream.get('/api/v1/stats/history', (req, res) => {
     requireAccount(req);
+    // The range is optional here: without one, the whole log, newest first.
     const { value: v } = joiValidate(Joi.object({
+      ...rangeKeys,
       before: Joi.string().max(512),
       limit: Joi.number().integer().min(1).max(200).default(50),
       track: Joi.string().max(128),
-      origin: Joi.string().valid(...ORIGIN_VALUES).default('all'),
-      ignoreVPaths: ignoreVPathsSchema,
     }), req.query);
+    const r = (v.period != null || v.from != null) ? resolveRange(v) : null;
     const { items, next } = q.history(d(), {
       user: req.user, origin: v.origin, ignoreVPaths: normIgnore(v.ignoreVPaths),
+      from: r ? r.fromText : null, to: r ? r.toText : null,
       trackHash: v.track ?? null, before: decodeCursor(v.before), limit: v.limit,
     });
-    res.json({ items, next: encodeCursor(next) });
+    res.json({ items, next: encodeCursor(next), ...(r ? { period: periodOut(r) } : {}) });
   });
 
   mstream.post('/api/v1/stats/tracks', (req, res) => {

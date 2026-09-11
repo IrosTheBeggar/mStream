@@ -386,6 +386,11 @@ for (const engine of ['rust', 'js']) {
         db.prepare(`INSERT INTO user_metadata
                       (user_id, track_hash, play_count, last_played, skip_count, listened_ms, first_played)
                     VALUES (1, ?, 2, '2026-09-01 10:00:00', 1, 100000, '2026-08-01 10:00:00')`).run(c2);
+        // The listening log behind those counts: two plays under the old key.
+        const ev = db.prepare(`INSERT INTO play_events (event_id, user_id, track_hash, filepath, outcome, counted, played_ms, started_at)
+                               VALUES (?, 1, ?, 'song.mp3', 'completed', 1, 120000, ?)`);
+        ev.run('rekey-e1', c1, '2026-09-04 10:00:00.000');
+        ev.run('rekey-e2', c1, '2026-09-05 10:00:00.000');
       });
 
       await fsp.copyFile(staged, song);
@@ -403,6 +408,9 @@ for (const engine of ['rust', 'js']) {
       }], 'ONE merged row on the new identity: counts and listened time sum, ' +
           'last_played keeps the latest, first_played the earliest — a bare ' +
           'UPDATE would have hit UNIQUE(user_id, track_hash) and aborted the file');
+      const events = sb.withDb(db => db.prepare('SELECT event_id, track_hash FROM play_events ORDER BY event_id').all().map(r => ({ ...r })), { readOnly: true });
+      assert.deepEqual(events, [{ event_id: 'rekey-e1', track_hash: c2 }, { event_id: 'rekey-e2', track_hash: c2 }],
+        'the listening log followed the key with the counters');
     });
   });
 }

@@ -52,8 +52,8 @@ describe('formatters', () => {
   });
 
   test('the notes under the charts come from the summary', () => {
-    assert.equal(V.hoursNote({ peakHour: 20, peakWeekday: 4 }), 'Most around 20:00, mostly Thursdays');
-    assert.equal(V.hoursNote({ peakHour: null, peakWeekday: 0 }), 'Mostly Sundays');
+    assert.equal(V.hoursNote({ peakHour: 20, peakWeekday: 4 }), 'Most around 20:00, mostly on Thursday');
+    assert.equal(V.hoursNote({ peakHour: null, peakWeekday: 0 }), 'Mostly on Sunday');
     assert.equal(V.hoursNote({}), '');
     assert.equal(V.daysNote({ topDay: { date: '2026-09-03', plays: 19, listenedMs: 72 * 60000 } }), 'Most on Thu 3 · 19 plays, 1h 12m');
     assert.equal(V.daysNote({ topDay: null }), '');
@@ -181,8 +181,62 @@ describe('rows and tiles', () => {
     assert.ok(V.tilesHtml(t).includes('stats-tile-value'));
   });
   test('the provenance line', () => {
-    assert.equal(V.provenance({ period: { from: '2026-09-01T00:00:00.000Z' } }, { peersNamed: 1 }),
+    assert.equal(V.provenance({ period: { from: new Date(2026, 8, 1).toISOString() } }, { peersNamed: 1 }),
       'Every play this account reported through this server since 1 Sep, including peers’ tracks played here. Times in your zone.');
     assert.equal(V.provenance({ period: {} }, {}), 'Every play this account reported through this server. Times in your zone.');
+  });
+});
+
+describe('translation hook', () => {
+  test('tr asks the translator first and falls back to English for a key the locale lacks', () => {
+    const de = { 'stats.tile.plays': 'Wiedergaben', 'stats.period.weekOf': 'Woche vom {{date}}', 'stats.count.plays': { one: '{{count}} Wiedergabe', other: '{{count}} Wiedergaben' } };
+    const t = (key, params) => {
+      let v = de[key];
+      if (v == null) { return key; }
+      if (typeof v === 'object') { v = params.count === 1 ? v.one : v.other; }
+      return v.replace(/\{\{(\w+)\}\}/g, (m, k) => String(params[k]));
+    };
+    V.configure({ t, lang: 'de' });
+    try {
+      assert.equal(V.tr('stats.tile.plays'), 'Wiedergaben');
+      assert.equal(V.tr('stats.count.plays', { count: 3 }), '3 Wiedergaben');
+      assert.equal(V.tr('stats.tile.skips'), 'Skips');
+      assert.equal(V.tr('stats.count.days', { count: 1 }), '1 day');
+      assert.equal(V.tr('stats.sub.deltaUp', { pct: 4, versus: 'x' }), '+4% vs x');
+      assert.equal(V.tr('no.such.key'), 'no.such.key');
+      // calendar names come from the browser in the page's language
+      assert.match(V.monthName(8), /^Sep/);
+      assert.equal(V.weekdayName(4), 'Donnerstag');
+      assert.equal(V.formatDate(new Date(2026, 8, 3), 'long'), '3. September 2026');
+      assert.match(V.dayKeyLabel('2026-09-03'), /^Do\.? 3$/);
+      assert.equal(V.hoursNote({ peakHour: 20, peakWeekday: 4 }), 'Most around 20:00, mostly on Donnerstag');
+      assert.equal(V.dayLabel('2026-09-07T12:00:00Z', '2026-09-30T12:00:00Z', 'UTC'), '7. Sept.');
+      assert.equal(V.dayLabel('2025-09-07T12:00:00Z', '2026-09-30T12:00:00Z', 'UTC'), '7. Sept. 2025');
+      // the server's English period labels are reworded from their start instant
+      const sep = new Date(2026, 8, 1).toISOString();
+      assert.equal(V.periodLabel({ period: 'month', offset: 0, label: 'September 2026', from: sep }), 'September 2026');
+      assert.equal(V.periodLabel({ period: 'week', offset: 0, label: 'Week of 2026-09-07', from: new Date(2026, 8, 7).toISOString() }), 'Woche vom 2026-09-07');
+      assert.equal(V.periodLabel({ period: 'quarter', offset: 0, label: 'Q3 2026', from: sep }), 'Q3 2026');
+      assert.equal(V.periodOptions({ periods: [{ period: 'month', offset: -2, label: 'July 2026', from: new Date(2026, 6, 1).toISOString() }] })[0].label, 'Juli 2026');
+    } finally {
+      V.configure();
+    }
+    assert.equal(V.tr('stats.tile.plays'), 'Plays');
+    assert.equal(V.monthName(8), 'Sep');
+    assert.equal(V.weekdayName(4), 'Thursday');
+    assert.equal(V.formatDate(new Date(2026, 8, 3), 'long'), '3 September 2026');
+    assert.equal(V.formatDate(new Date(2026, 8, 3), 'short'), '3 Sep');
+    assert.equal(V.periodLabel({ period: 'month', offset: -1, label: 'August 2026', from: new Date(2026, 7, 1).toISOString() }), 'August 2026');
+    assert.equal(V.periodLabel({ period: 'week', offset: 0, label: 'Week of 2026-09-07', from: new Date(2026, 8, 7).toISOString() }), 'Week of 2026-09-07');
+    assert.equal(V.periodLabel({ period: 'month', offset: 0, label: 'September 2026' }), 'September 2026');
+    assert.equal(V.dayLabel('2026-09-07T12:00:00Z', '2026-09-30T12:00:00Z', 'UTC'), 'Sep 7');
+  });
+
+  test('every key the page reads has an English fallback and a value in en.json', () => {
+    const en = require('../../webapp/locales/en.json');
+    for (const key of Object.keys(V.EN)) {
+      assert.ok(en[key] !== undefined, key + ' missing from en.json');
+      assert.deepEqual(en[key], V.EN[key], key + ' differs between en.json and the fallback table');
+    }
   });
 });

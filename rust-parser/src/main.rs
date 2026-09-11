@@ -3822,6 +3822,14 @@ fn migrate_hash_references(
         }
     }
 
+    // The listening log (V70): every play of the old key becomes a play of
+    // the new one. No merge — an event is not unique per track — and the
+    // counters merged above stay in step with the history that produced
+    // them. Mirrors hash-migration.js.
+    conn.execute(
+        "UPDATE play_events SET track_hash = ? WHERE track_hash = ?",
+        rusqlite::params![new_hash, old_hash])?;
+
     // Canonical-hash-keyed sibling tables, one shared policy: the row
     // already AT the new identity wins; the old-keyed row re-keys only
     // when no canonical row exists. lyrics_cache follows on EVERY canon
@@ -7432,6 +7440,10 @@ mod hash_migration_tests {
                position_ms INTEGER, changed_at TEXT, changed_by TEXT,
                track_hashes_json TEXT NOT NULL
              );
+             CREATE TABLE play_events (
+               id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
+               user_id INTEGER NOT NULL, track_hash TEXT, filepath TEXT NOT NULL,
+               outcome TEXT NOT NULL, counted INTEGER NOT NULL DEFAULT 0, started_at TEXT NOT NULL);
              CREATE TABLE lyrics_cache (audio_hash TEXT PRIMARY KEY, status TEXT NOT NULL);
              CREATE TABLE acoustid_lookups (
                audio_hash TEXT PRIMARY KEY, last_attempt_at INTEGER NOT NULL, outcome TEXT NOT NULL);
@@ -7502,6 +7514,35 @@ mod hash_migration_tests {
         assert_eq!(skips, Some(2));
         assert_eq!(listened, Some(30_000));
         assert_eq!(first.as_deref(), Some("2026-07-01 10:00:00"), "the only first_played wins");
+    }
+
+    #[test]
+    fn the_listening_log_follows_the_key() {
+        for scheme_rekey in [false, true] {
+            let conn = mk_db();
+            let ins = |id: &str, user: i64, hash: Option<&str>| conn.execute(
+                "INSERT INTO play_events (event_id, user_id, track_hash, filepath, outcome, counted, started_at)
+                 VALUES (?, ?, ?, 'a.mp3', 'completed', 1, '2026-09-01 10:00:00.000')",
+                rusqlite::params![id, user, hash]).unwrap();
+            ins("e1", 1, Some("oldhash"));
+            ins("e2", 1, Some("oldhash"));
+            ins("e3", 2, Some("oldhash"));
+            ins("e4", 1, Some("other"));
+            ins("e5", 1, None);
+
+            migrate_hash_references(&conn, "oldhash", "newhash", scheme_rekey).unwrap();
+
+            let count = |hash: Option<&str>| -> i64 {
+                match hash {
+                    Some(h) => conn.query_row("SELECT COUNT(*) FROM play_events WHERE track_hash = ?", [h], |r| r.get(0)).unwrap(),
+                    None => conn.query_row("SELECT COUNT(*) FROM play_events WHERE track_hash IS NULL", [], |r| r.get(0)).unwrap(),
+                }
+            };
+            assert_eq!(count(Some("newhash")), 3, "scheme re-key {scheme_rekey}: every play of the old key moved");
+            assert_eq!(count(Some("oldhash")), 0);
+            assert_eq!(count(Some("other")), 1);
+            assert_eq!(count(None), 1, "a hashless play is left alone");
+        }
     }
 
     #[test]
