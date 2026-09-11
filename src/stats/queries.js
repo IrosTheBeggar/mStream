@@ -561,6 +561,30 @@ export function history(d, { user, origin, ignoreVPaths, from = null, to = null,
 
 // ── Per-track counters ───────────────────────────────────────────────────
 
+// Map every hash a client holds — audio hash or file hash — to the canonical
+// key the counters are stored under (audio hash, else file hash). A hash the
+// library does not know passes through unchanged: a peer's key is stored as
+// it came, and still resolves.
+export function canonicalHashes(d, hashes) {
+  const out = new Map();
+  const uniq = [...new Set((hashes || []).filter((h) => typeof h === 'string' && h.length > 0))];
+  for (const h of uniq) { out.set(h, h); }
+  const CHUNK = 250;
+  for (let i = 0; i < uniq.length; i += CHUNK) {
+    const slice = uniq.slice(i, i + CHUNK);
+    const marks = slice.map(() => '?').join(',');
+    const rows = d.prepare(`SELECT audio_hash, file_hash FROM tracks
+                             WHERE audio_hash IN (${marks}) OR file_hash IN (${marks})`).all(...slice, ...slice);
+    for (const r of rows) {
+      const canonical = r.audio_hash || r.file_hash;
+      if (!canonical) { continue; }
+      if (r.audio_hash && out.has(r.audio_hash)) { out.set(r.audio_hash, canonical); }
+      if (r.file_hash && out.has(r.file_hash)) { out.set(r.file_hash, canonical); }
+    }
+  }
+  return out;
+}
+
 export function trackStats(d, userId, hashes) {
   const out = new Map();
   const uniq = [...new Set(hashes.filter(Boolean))];

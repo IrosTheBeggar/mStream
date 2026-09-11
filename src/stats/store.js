@@ -18,7 +18,21 @@ import { toSqlite, fromSqlite, hourKey, retentionFloor } from './time.js';
 export const OUTCOMES = new Set(['completed', 'skipped', 'stopped']);
 export const SOURCES = new Set(['manual', 'shuffle', 'autodj', 'playlist',
   'smart-playlist', 'auto', 'carplay', 'cast', 'legacy', 'other']);
-const SNAPSHOT_KEYS = new Set(['title', 'artist', 'album', 'durationMs', 'hash', 'artFile']);
+// `enrichedAt` (epoch ms) marks a federated play's snapshot as completed from
+// the peer's own metadata (stats/enrich.js) — set even when the peer had
+// nothing to add, so a row is asked about once.
+const SNAPSHOT_KEYS = new Set(['title', 'artist', 'album', 'durationMs', 'hash', 'artFile', 'enrichedAt']);
+
+// The whitelisted, JSON-ready shape of a snapshot (null when empty).
+export function cleanSnapshot(snapshot) {
+  if (snapshot == null) { return null; }
+  if (typeof snapshot !== 'object') { throw new TypeError('snapshot'); }
+  const clean = {};
+  for (const k of Object.keys(snapshot)) {
+    if (SNAPSHOT_KEYS.has(k) && snapshot[k] != null) { clean[k] = snapshot[k]; }
+  }
+  return clean;
+}
 
 const isInt = (v) => Number.isInteger(v);
 
@@ -294,6 +308,46 @@ export function rebuildHourStats(d, { userId = null } = {}) {
 // Prune raw events that started before the retention floor. Counters and
 // the hourly rollup are deliberately untouched: the totals survive, only
 // the per-play rows go. Returns { deleted, cutoff }.
+// Replace one event's snapshot (a federated play, after enrichment). The
+// counters and the rollup are untouched — only what the row renders as.
+export function updateEventSnapshot(d, eventId, snapshot) {
+  const clean = cleanSnapshot(snapshot);
+  return d.prepare('UPDATE play_events SET snapshot = ? WHERE event_id = ?')
+    .run(clean ? JSON.stringify(clean) : null, eventId).changes;
+}
+
+// Federated plays whose snapshot has not been completed from the peer yet,
+// newest first — the enrichment backfill's worklist.
+export function thinPeerEvents(d, { limit = 500 } = {}) {
+  return d.prepare(`
+    SELECT event_id, user_id, track_hash, filepath, peer_id, snapshot
+      FROM play_events
+     WHERE peer_id IS NOT NULL
+       AND (snapshot IS NULL OR instr(snapshot, '"enrichedAt"') = 0)
+     ORDER BY started_at DESC
+     LIMIT ?`).all(limit);
+}
+
+// Whole-log facts for the admin readout: how many plays are on file, from
+// when, for how many accounts, and how many federated rows still await
+// enrichment.
+export function logSummary(d) {
+  const r = d.prepare(`
+    SELECT COUNT(*) AS total, MIN(started_at) AS oldest, MAX(started_at) AS newest,
+           COUNT(DISTINCT user_id) AS users,
+           SUM(CASE WHEN peer_id IS NOT NULL THEN 1 ELSE 0 END) AS peerEvents,
+           SUM(CASE WHEN peer_id IS NOT NULL AND (snapshot IS NULL OR instr(snapshot, '"enrichedAt"') = 0) THEN 1 ELSE 0 END) AS thinPeerEvents
+      FROM play_events`).get();
+  return {
+    total: r.total || 0,
+    oldest: r.oldest ? fromSqlite(r.oldest).toISOString() : null,
+    newest: r.newest ? fromSqlite(r.newest).toISOString() : null,
+    users: r.users || 0,
+    peerEvents: r.peerEvents || 0,
+    thinPeerEvents: r.thinPeerEvents || 0,
+  };
+}
+
 export function sweepRetention(d, { retentionMonths, now = new Date() } = {}) {
   if (!(retentionMonths > 0)) { return { deleted: 0, cutoff: null }; }
   const cutoff = toSqlite(retentionFloor(now, retentionMonths));

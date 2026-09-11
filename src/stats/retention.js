@@ -13,18 +13,23 @@ import winston from 'winston';
 import * as db from '../db/manager.js';
 import * as config from '../state/config.js';
 import { sweepRetention } from './store.js';
+import { enricher } from './enrich.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const BOOT_DELAY_MS = 60 * 1000;
 
 let bootTimer = null;
 let dailyTimer = null;
+let lastSweep = null;   // { at, deleted, cutoff } of the most recent run
+
+export function lastSweepInfo() { return lastSweep; }
 
 export function runRetentionSweep({ now = new Date() } = {}) {
   const d = db.getDB();
   if (!d) { return { deleted: 0, cutoff: null }; }
   const retentionMonths = config.program.stats?.retentionMonths ?? 24;
   const r = sweepRetention(d, { retentionMonths, now });
+  lastSweep = { at: now.toISOString(), deleted: r.deleted, cutoff: r.cutoff };
   if (r.deleted > 0) {
     winston.info(`[stats] retention: pruned ${r.deleted} play event(s) that started before ${r.cutoff}`);
     try {
@@ -38,6 +43,10 @@ export function runRetentionSweep({ now = new Date() } = {}) {
 
 function safeRun() {
   try { runRetentionSweep(); } catch (err) { winston.warn(`[stats] retention sweep failed: ${err.message}`); }
+  // The same cadence completes federated plays the peers have not answered
+  // for yet (stats/enrich.js) — bounded per pass, failures wait for the next.
+  try { enricher().backfill().catch((err) => winston.warn(`[stats] enrichment backfill failed: ${err.message}`)); }
+  catch (err) { winston.warn(`[stats] enrichment backfill skipped: ${err.message}`); }
 }
 
 export function startRetentionSweep() {

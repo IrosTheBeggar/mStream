@@ -282,6 +282,14 @@ describe('stats API v2 — reads', () => {
     assert.equal(empty.status, 400);
   });
 
+  test('tracks: a file hash finds the counters kept under the audio hash, reported under the key sent', async () => {
+    const r = await post(server.baseUrl, '/api/v1/stats/tracks', { hashes: ['fhA', 'ahA', 'ph1'] });
+    assert.equal(r.status, 200, r.body);
+    assert.deepEqual(r.body.items.map((i) => [i.hash, i.canonicalHash ?? null, i.plays]),
+      [['fhA', 'ahA', 3], ['ahA', null, 3], ['ph1', null, 1]]);   // the peer's key is looked up as sent
+    assert.equal(r.body.items[0].lastPlayed, r.body.items[1].lastPlayed);
+  });
+
   test('periods: bounds and the presets that overlap them', async () => {
     const r = await get(server.baseUrl, '/api/v1/stats/periods?tz=Europe/Berlin');
     assert.equal(r.status, 200, r.body);
