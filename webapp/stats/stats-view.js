@@ -235,8 +235,9 @@
       return tr('stats.period.weekOf', { date: key });
     }
     if (x.period === 'month') {
-      const name = monthName(from.getMonth(), 'long');
-      return (language === 'en' || language.startsWith('en-') ? name.charAt(0).toUpperCase() + name.slice(1) : name) + ' ' + from.getFullYear();
+      if (language === 'en' || language.startsWith('en-')) { return MONTHS_LONG[from.getMonth()] + ' ' + from.getFullYear(); }
+      try { return new Intl.DateTimeFormat(language, { month: 'long', year: 'numeric' }).format(from); }
+      catch (_) { return x.label || ''; }
     }
     return x.label || '';
   }

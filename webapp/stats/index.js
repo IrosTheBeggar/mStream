@@ -129,7 +129,7 @@
 
     revealOriginIfPeerPlays(summary);
     const prevEntry = state.periodList.find((p) => p.period === state.period && p.offset === state.offset - 1);
-    const versus = V.versusLabel(state.period, prevEntry && prevEntry.label);
+    const versus = V.versusLabel(state.period, prevEntry && V.periodLabel(prevEntry));
     $('stats-tiles').innerHTML = V.tilesHtml(V.tiles(summary, prev, { versus, libraryTracks: state.libraryTracks }));
     renderCharts({ summary, series, hours, monthly });
     renderOrigins(summary);

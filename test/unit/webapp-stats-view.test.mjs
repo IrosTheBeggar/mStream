@@ -218,6 +218,8 @@ describe('translation hook', () => {
       assert.equal(V.periodLabel({ period: 'week', offset: 0, label: 'Week of 2026-09-07', from: new Date(2026, 8, 7).toISOString() }), 'Woche vom 2026-09-07');
       assert.equal(V.periodLabel({ period: 'quarter', offset: 0, label: 'Q3 2026', from: sep }), 'Q3 2026');
       assert.equal(V.periodOptions({ periods: [{ period: 'month', offset: -2, label: 'July 2026', from: new Date(2026, 6, 1).toISOString() }] })[0].label, 'Juli 2026');
+      V.configure({ t, lang: 'ja' });
+      assert.equal(V.periodLabel({ period: 'month', offset: -1, label: 'August 2026', from: new Date(2026, 7, 1).toISOString() }), '2026年8月');
     } finally {
       V.configure();
     }
