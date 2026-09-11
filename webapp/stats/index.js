@@ -60,7 +60,13 @@
       const first = state.periodOptions[0];
       state.period = first.period; state.offset = first.offset; sel.value = first.value;
     }
-    $('stats-origin').hidden = peers.length === 0;
+    $('stats-origin').hidden = peers.length === 0 && !(state.bounds && state.bounds.peers);
+  }
+
+  // The toggle also appears once the log itself shows peer plays.
+  function revealOriginIfPeerPlays(summary) {
+    const o = summary && summary.origins && summary.origins.peers;
+    if (o && o.plays > 0) { $('stats-origin').hidden = false; }
   }
 
   // ── the period's data ─────────────────────────────────────────────────
@@ -115,6 +121,7 @@
     $('stats-body').hidden = empty;
     if (empty) { renderEmpty(noPlaysEver); return; }
 
+    revealOriginIfPeerPlays(summary);
     const prevEntry = state.periodList.find((p) => p.period === state.period && p.offset === state.offset - 1);
     const versus = V.versusLabel(state.period, prevEntry && prevEntry.label);
     $('stats-tiles').innerHTML = V.tilesHtml(V.tiles(summary, prev, { versus, libraryTracks: state.libraryTracks }));
@@ -181,7 +188,7 @@
     const peerName = one ? state.peers[0].name : 'Peers’ tracks';
     const peerNote = one
       ? 'A peer’s tracks, played through this server. Counted here, never on the peer.'
-      : 'Tracks from ' + (state.peers.length || 'former') + ' peers, played through this server. Counted here, never on the peer.';
+      : (state.peers.length > 1 ? 'Tracks from ' + state.peers.length + ' peers' : 'Peers’ tracks') + ', played through this server. Counted here, never on the peer.';
     $('stats-origins').innerHTML = line('This server', local, 'Your own library.') + line(peerName, peers, peerNote);
   }
 
