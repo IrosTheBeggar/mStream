@@ -284,8 +284,10 @@ export function setup(mstream) {
     // (src/stats/store.js), as a synthetic event the stats reads can see:
     // counted by decree — the web player fires this route 30 s into a
     // track, so 30 s listened is all that is known — and marked
-    // `source: 'legacy'` for the day the route goes. play_count and
-    // last_played move exactly as they always did. Sentinel-keyed in public
+    // `source: 'legacy'` so history can tell it from a reported play. The
+    // route stays: public since 2022, older clients still call it (the
+    // default web player moved to /api/v1/stats/plays in 6.27). play_count
+    // and last_played move exactly as they always did. Sentinel-keyed in public
     // mode — the operator's listening history. See the header comment above.
     const now = Date.now();
     recordPlayEvent(d(), {

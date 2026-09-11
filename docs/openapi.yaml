@@ -102,7 +102,10 @@ tags:
       line-timed entries. The post-scan backfill worker (see Admin - Lyrics) fills in
       lyrics for tracks that have none locally. The web UI uses this endpoint.
   - name: Scrobbler - Last.fm
-    description: Last.fm scrobbling integration.
+    description: >-
+      Last.fm — the link status, similar artists for Auto DJ, and the legacy
+      scrobble routes older clients still call. A new client reports its
+      plays to `/api/v1/stats/plays` instead.
   - name: Server Playback
     description: Proxy to the bundled Rust audio player.
   - name: Jukebox
@@ -2305,7 +2308,7 @@ paths:
                       playedMs: { type: integer, minimum: 0 }
                       durationMs: { type: integer, minimum: 0, description: "Defaults to the library's duration for a local track." }
                       outcome: { type: string, enum: [completed, skipped, stopped] }
-                      source: { type: string, enum: [manual, shuffle, autodj, playlist, smart-playlist, auto, carplay, cast, other] }
+                      source: { type: string, enum: [manual, shuffle, autodj, playlist, smart-playlist, auto, carplay, cast, other], description: "How the play was queued. `legacy` is reserved for the server's own scrobble-by-filepath route and is never accepted here." }
                       sessionId: { type: string, maxLength: 128 }
                       pauseCount: { type: integer, minimum: 0, default: 0 }
                       track:
@@ -2642,7 +2645,7 @@ paths:
                         durationMs: { type: integer, nullable: true }
                         outcome: { type: string, enum: [completed, skipped, stopped] }
                         counted: { type: boolean }
-                        source: { type: string, nullable: true }
+                        source: { type: string, nullable: true, description: "How the play was queued (`manual`, `shuffle`, `autodj`, …). `legacy` marks a play recorded through the scrobble-by-filepath route." }
                         sessionId: { type: string, nullable: true }
                         pauseCount: { type: integer }
                         client: { type: string, nullable: true }
@@ -2765,7 +2768,7 @@ paths:
     get:
       tags: [Stats]
       summary: The whole listening log as NDJSON
-      description: One JSON object per line, oldest first, streamed. A backup, a migration, or a client rebuilding its local copy.
+      description: One JSON object per line, oldest first, streamed. A backup, a migration, or a client rebuilding its local copy. `source` is `legacy` for a play recorded through the scrobble-by-filepath route.
       responses:
         "200":
           description: The log.
@@ -3662,7 +3665,14 @@ paths:
   /api/v1/lastfm/scrobble-by-metadata:
     post:
       tags: [Scrobbler - Last.fm]
-      summary: Scrobble a play by metadata
+      summary: Scrobble a play by metadata (legacy)
+      deprecated: true
+      description: |
+        Kept for older clients — public since 2017 and not scheduled for
+        removal. Sends a Last.fm scrobble stamped with the current time for a
+        linked account; touches no counters. A new client reports its plays to
+        `/api/v1/stats/plays`, which counts them and, for a linked account,
+        scrobbles Last.fm with the play's own start time.
       requestBody:
         required: true
         content:
@@ -3689,7 +3699,18 @@ paths:
   /api/v1/lastfm/scrobble-by-filepath:
     post:
       tags: [Scrobbler - Last.fm]
-      summary: Scrobble a play by filepath
+      summary: Scrobble a play by filepath (legacy)
+      deprecated: true
+      description: |
+        Kept for older clients — public since 2022 and not scheduled for
+        removal. Records one counted play of the track at this path as of
+        now (30 seconds listened, outcome `stopped`, source `legacy`), moving
+        `play-count` and `last-played` exactly as it always has, and sends a
+        Last.fm scrobble stamped with the current time for a linked account.
+        The default web player stopped calling it in 6.27 in favour of
+        `/api/v1/stats/plays`, which a new client should use: it takes
+        complete plays after the fact, with their real length, outcome and
+        start time.
       requestBody:
         required: true
         content:
