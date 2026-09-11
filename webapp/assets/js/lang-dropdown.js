@@ -50,7 +50,10 @@ function initLangDropdown(toggleId, menuId, classPrefix) {
 
   let langs = {};
 
-  fetch('locales/languages.json').then(r => r.json()).then(data => {
+  // Nested pages (/stats) name where the locales live, the way i18n.js reads
+  // them; the player at the root has no meta and keeps the relative path.
+  const base = document.querySelector('meta[name="i18n-base"]')?.content || '';
+  fetch(`${base}locales/languages.json`).then(r => r.json()).then(data => {
     langs = data;
     const cur = I18N.getLanguage();
 
