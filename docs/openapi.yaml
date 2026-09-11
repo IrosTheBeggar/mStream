@@ -2681,7 +2681,7 @@ paths:
               description: At least one of the two lists.
               properties:
                 filePaths: { type: array, maxItems: 500, items: { type: string }, description: "Virtual paths (`<vpath>/<rel>`)." }
-                hashes: { type: array, maxItems: 500, items: { type: string }, description: "Canonical track hashes." }
+                hashes: { type: array, maxItems: 500, items: { type: string }, description: "Track hashes — the canonical (audio) hash or the file hash; either resolves to the same counters. A hash this library does not know is looked up as sent (a peer's key)." }
       responses:
         "200":
           description: One item per track that has counters; unknown tracks are omitted.
@@ -2695,7 +2695,8 @@ paths:
                     items:
                       type: object
                       properties:
-                        hash: { type: string }
+                        hash: { type: string, description: "The key as the client sent it." }
+                        canonicalHash: { type: string, description: "Present when the requested hash resolved to a different canonical key (a file hash sent where the counters sit under the audio hash)." }
                         filePath: { type: string, description: "Present for rows requested by path." }
                         plays: { type: integer }
                         skips: { type: integer }
@@ -2790,6 +2791,133 @@ paths:
                 type: string
                 description: "Lines of `{id, startedAt, endedAt, playedMs, durationMs, outcome, counted, source, sessionId, pauseCount, client, filePath, peerId, trackHash, snapshot}`."
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/admin/stats:
+    get:
+      tags: [Stats]
+      summary: Listening-history settings and the shape of the log (admin)
+      description: |
+        The live `stats` config block plus whole-log facts: how many plays are on file, from when, for how many
+        accounts, how many federated plays still await their peer's metadata, the retention floor and the last prune,
+        and the enrichment pass's counters. Config values apply without a reboot — the sweep and the ingest read them
+        per run.
+      responses:
+        "200":
+          description: Settings and log facts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  retentionMonths: { type: integer, description: "0 keeps the per-play log forever." }
+                  playThresholdMs: { type: integer }
+                  playThresholdFraction: { type: number }
+                  log:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      oldest: { type: string, format: date-time, nullable: true }
+                      newest: { type: string, format: date-time, nullable: true }
+                      users: { type: integer }
+                      peerEvents: { type: integer }
+                      thinPeerEvents: { type: integer, description: "Federated plays not yet completed from the peer." }
+                  retention:
+                    type: object
+                    properties:
+                      floor: { type: string, format: date-time, nullable: true }
+                      lastSweep: { type: object, nullable: true, properties: { at: { type: string, format: date-time }, deleted: { type: integer }, cutoff: { type: string, nullable: true } } }
+                  enrichment:
+                    type: object
+                    properties:
+                      enriched: { type: integer }
+                      rekeyed: { type: integer }
+                      unknown: { type: integer }
+                      failed: { type: integer }
+                      pending: { type: integer }
+                      lastRunAt: { type: string, format: date-time, nullable: true }
+                      lastError: { type: string, nullable: true }
+        "403": { description: "Not an admin." }
+
+  /api/v1/admin/stats/retention:
+    post:
+      tags: [Stats]
+      summary: Set how long the per-play log is kept (admin, live)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [retentionMonths]
+              properties:
+                retentionMonths: { type: integer, minimum: 0, maximum: 1200, description: "0 keeps everything." }
+      responses:
+        "200": { description: "Saved to the config file and applied to the next sweep." }
+        "400": { description: "Validation failed." }
+        "403": { description: "Not an admin." }
+
+  /api/v1/admin/stats/thresholds:
+    post:
+      tags: [Stats]
+      summary: Set when a play counts (admin, live)
+      description: A play counts once it ran for `playThresholdMs`, or for `playThresholdFraction` of the track when the duration is known. Applies to the next batch of plays.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playThresholdMs, playThresholdFraction]
+              properties:
+                playThresholdMs: { type: integer, minimum: 0, maximum: 3600000 }
+                playThresholdFraction: { type: number, minimum: 0, maximum: 1 }
+      responses:
+        "200": { description: "Saved and applied." }
+        "400": { description: "Validation failed." }
+        "403": { description: "Not an admin." }
+
+  /api/v1/admin/stats/sweep:
+    post:
+      tags: [Stats]
+      summary: Prune the per-play log now (admin)
+      description: Runs the retention sweep immediately with the current `retentionMonths`; the daily pass does the same.
+      responses:
+        "200":
+          description: What the sweep removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: integer }
+                  cutoff: { type: string, nullable: true }
+        "403": { description: "Not an admin." }
+
+  /api/v1/admin/stats/enrich:
+    post:
+      tags: [Stats]
+      summary: Ask the peers about federated plays still waiting on their metadata (admin)
+      description: |
+        The daily pass does the same. A federated play stores the snapshot the app had at hand; the peer's own
+        metadata completes it (title, artist, album, duration, art, and the canonical audio hash, onto which the play
+        and its counters are re-keyed). Bounded per run; a peer that does not answer leaves its rows for next time.
+      responses:
+        "200":
+          description: This pass's numbers (rows queued, completed, re-keyed, unknown to the peer, unanswered), plus the process-lifetime counters under `totals`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  queued: { type: integer }
+                  enriched: { type: integer }
+                  rekeyed: { type: integer }
+                  unknown: { type: integer }
+                  failed: { type: integer }
+                  pending: { type: integer }
+                  lastError: { type: string, nullable: true }
+                  totals: { type: object, description: "The same counters since the server started (as GET /api/v1/admin/stats reports)." }
+        "403": { description: "Not an admin." }
 
   /api/v1/admin/stats/rebuild:
     post:

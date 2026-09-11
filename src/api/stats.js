@@ -51,12 +51,15 @@ import { getVPathInfo } from '../util/vpath.js';
 import * as q from '../stats/queries.js';
 import { ingestPlays, resolveLocalTrack, MAX_BATCH } from '../stats/ingest.js';
 import { forwarder, planScrobbles } from '../stats/forward.js';
+import { enricher } from '../stats/enrich.js';
+import { runRetentionSweep, lastSweepInfo } from '../stats/retention.js';
 import { nowPlayingAt } from './scrobbler.js';
+import * as admin from '../util/admin.js';
 import {
-  OUTCOMES, SOURCES, RESET_SCOPES, deletePlayEvents, resetStats, rebuildHourStats,
+  OUTCOMES, SOURCES, RESET_SCOPES, deletePlayEvents, resetStats, rebuildHourStats, logSummary,
 } from '../stats/store.js';
 import {
-  isValidTimeZone, isBucket, periodRange, customRange, toSqlite, fromSqlite, toIso,
+  isValidTimeZone, isBucket, periodRange, customRange, toSqlite, fromSqlite, toIso, retentionFloor,
 } from '../stats/time.js';
 
 const d = () => db.getDB();
@@ -231,6 +234,10 @@ export function setup(mstream) {
       onStored: (stored) => {
         try { forwarder().enqueue(req.user, planScrobbles(stored, now)); }
         catch (err) { winston.warn(`[stats] last.fm forwarding skipped: ${err.message}`); }
+        // Federated plays: complete their snapshots from the peer, off the
+        // request path (stats/enrich.js).
+        try { enricher().enqueue(stored.map(({ event }) => event)); }
+        catch (err) { winston.warn(`[stats] peer enrichment skipped: ${err.message}`); }
       },
     });
     res.json(result);
@@ -358,17 +365,21 @@ export function setup(mstream) {
       filePaths: Joi.array().items(Joi.string().max(2048)).max(500),
       hashes: Joi.array().items(Joi.string().max(128)).max(500),
     }).or('filePaths', 'hashes'), req.body || {});
-    // Resolve every path to its canonical hash first, so one lookup answers
-    // both lists and a path is reported under the key the client sent.
+    // Resolve every path, and every hash, to its canonical key first — a
+    // client may hold the file hash where the counters sit under the audio
+    // hash — so one lookup answers both lists, and each item is reported
+    // under the key the client sent.
     const byPath = new Map();
     for (const p of v.filePaths || []) { byPath.set(p, hashForPath(p, req.user)); }
-    const wanted = [...new Set([...(v.hashes || []), ...[...byPath.values()].filter(Boolean)])];
+    const byHash = q.canonicalHashes(d(), v.hashes || []);
+    const wanted = [...new Set([...byHash.values(), ...[...byPath.values()].filter(Boolean)])];
     const stats = q.trackStats(d(), req.user.id, wanted);
-    const render = (hash, filePath) => {
-      const s = stats.get(hash);
+    const render = (hash, filePath, canonical = hash) => {
+      const s = stats.get(canonical);
       if (!s) { return null; }
       return {
         hash,
+        ...(canonical !== hash ? { canonicalHash: canonical } : {}),
         ...(filePath != null ? { filePath } : {}),
         plays: s.play_count || 0,
         skips: s.skip_count || 0,
@@ -379,7 +390,7 @@ export function setup(mstream) {
     };
     const items = [];
     for (const [p, h] of byPath) { const it = h && render(h, p); if (it) { items.push(it); } }
-    for (const h of v.hashes || []) { const it = render(h); if (it) { items.push(it); } }
+    for (const h of v.hashes || []) { const it = render(h, undefined, byHash.get(h) || h); if (it) { items.push(it); } }
     res.json({ items });
   });
 
@@ -461,6 +472,67 @@ export function setup(mstream) {
     if (!req.user?.admin) { throw new WebError('Forbidden', 403); }
     const { value } = joiValidate(Joi.object({ userId: Joi.number().integer().min(1) }), req.body || {});
     res.json(rebuildHourStats(d(), { userId: value.userId ?? null }));
+  });
+
+  // ── Admin: the listening-history settings and the log's shape ──
+  // config.stats is live: the retention sweep and the ingest's counted rule
+  // read it per run / per batch, so a save applies without a reboot.
+  const requireAdmin = (req) => { if (!req.user?.admin) { throw new WebError('Forbidden', 403); } };
+
+  mstream.get('/api/v1/admin/stats', (req, res) => {
+    requireAdmin(req);
+    const cfg = config.program.stats || {};
+    const retentionMonths = cfg.retentionMonths ?? 24;
+    const floor = retentionMonths > 0 ? retentionFloor(new Date(), retentionMonths) : null;
+    res.json({
+      retentionMonths,
+      playThresholdMs: cfg.playThresholdMs ?? 30000,
+      playThresholdFraction: cfg.playThresholdFraction ?? 0.5,
+      log: logSummary(d()),
+      retention: { floor: floor ? toIso(floor) : null, lastSweep: lastSweepInfo() },
+      enrichment: enricher().stats(),
+    });
+  });
+
+  mstream.post('/api/v1/admin/stats/retention', async (req, res) => {
+    requireAdmin(req);
+    const { value } = joiValidate(Joi.object({
+      retentionMonths: Joi.number().integer().min(0).max(1200).required(),
+    }), req.body || {});
+    await admin.editStatsRetention(value.retentionMonths);
+    res.json({ retentionMonths: value.retentionMonths });
+  });
+
+  mstream.post('/api/v1/admin/stats/thresholds', async (req, res) => {
+    requireAdmin(req);
+    const { value } = joiValidate(Joi.object({
+      playThresholdMs: Joi.number().integer().min(0).max(3_600_000).required(),
+      playThresholdFraction: Joi.number().min(0).max(1).required(),
+    }), req.body || {});
+    await admin.editStatsThresholds(value);
+    res.json(value);
+  });
+
+  // Prune now rather than at the next daily pass; the same sweep, the
+  // current retentionMonths.
+  mstream.post('/api/v1/admin/stats/sweep', (req, res) => {
+    requireAdmin(req);
+    res.json(runRetentionSweep());
+  });
+
+  // Ask the peers about every federated play still waiting on its metadata
+  // (the daily pass does the same, bounded the same way).
+  mstream.post('/api/v1/admin/stats/enrich', async (req, res) => {
+    requireAdmin(req);
+    const before = enricher().stats();
+    const queued = await enricher().backfill();
+    const after = enricher().stats();
+    const delta = (k) => after[k] - before[k];
+    // This pass's own numbers; the process-lifetime counters ride along.
+    res.json({
+      queued, enriched: delta('enriched'), rekeyed: delta('rekeyed'), unknown: delta('unknown'), failed: delta('failed'),
+      pending: after.pending, lastError: after.lastError, totals: after,
+    });
   });
 
   mstream.get('/api/v1/stats/periods', (req, res) => {
