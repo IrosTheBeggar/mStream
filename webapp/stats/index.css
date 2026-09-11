@@ -26,10 +26,10 @@ body.stats-page a:hover { color: #8ea0f0; }
 .stats-main {
   max-width: 1240px;
   margin: 0 auto;
-  padding: 16px 24px 28px 24px;
+  padding: 16px 24px 32px 24px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 22px;
 }
 .stats-loading {
   max-width: 1240px;
@@ -108,8 +108,7 @@ body.stats-page a:hover { color: #8ea0f0; }
 .stats-tiles {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 2px;
+  gap: 12px;
 }
 .stats-tile {
   display: flex;
@@ -148,7 +147,7 @@ body.stats-page a:hover { color: #8ea0f0; }
 .stats-two {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 22px;
 }
 .stats-origins { display: flex; flex-direction: column; gap: 16px; margin-top: 12px; }
 .stats-origin { display: flex; flex-direction: column; gap: 6px; }
@@ -227,8 +226,8 @@ body.stats-page a:hover { color: #8ea0f0; }
   letter-spacing: .6px;
   text-transform: uppercase;
   color: #b8bcc6;
-  margin: 16px 0 -4px 0;
-  padding-top: 12px;
+  margin: 10px 0 -10px 0;
+  padding-top: 14px;
   border-top: 1px solid #444c56;
 }
 .stats-opt-row {
