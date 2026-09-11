@@ -4,9 +4,10 @@
  * When the scanner re-parses a file whose bytes changed (typical trigger:
  * an external ID3 tag editor), the file's MD5 changes. User-facing rows
  * that key on track_hash — user_metadata (stars, ratings, play counts),
- * user_bookmarks, user_play_queue (scalar + JSON array of hashes) — still
- * reference the old hash. This helper points them at the new one so the
- * user's state follows the file's new identity.
+ * user_bookmarks, user_play_queue (scalar + JSON array of hashes), and the
+ * play_events listening log (V70) — still reference the old hash. This
+ * helper points them at the new one so the user's state follows the file's
+ * new identity, and the counters and the log keep agreeing.
  *
  * Mirrored in rust-parser/src/main.rs#migrate_hash_references — the Rust
  * scanner inlines the same logic rather than cross-processing into JS.
@@ -42,7 +43,7 @@
  */
 export function migrateHashReferences(db, oldHash, newHash, { schemeRekey = false } = {}) {
   if (!oldHash || !newHash || oldHash === newHash) {
-    return { metadata: 0, bookmarks: 0, queues: 0 };
+    return { metadata: 0, bookmarks: 0, queues: 0, events: 0 };
   }
 
   // MERGE, not bare UPDATE: a user can hold rows under BOTH identities
@@ -160,9 +161,17 @@ export function migrateHashReferences(db, oldHash, newHash, { schemeRekey = fals
     queuesUpdated++;
   }
 
+  // The listening log (V70): every play of the old key becomes a play of the
+  // new one — no merge to do, an event is not unique per track. Reads group
+  // and filter by track_hash, so a play left behind would vanish from the
+  // track's history while its counters (merged above) still counted it.
+  const events = db.prepare('UPDATE play_events SET track_hash = ? WHERE track_hash = ?')
+    .run(newHash, oldHash).changes;
+
   return {
     metadata,
     bookmarks,
     queues: queuesUpdated,
+    events,
   };
 }

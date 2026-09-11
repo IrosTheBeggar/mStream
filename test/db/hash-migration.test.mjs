@@ -4,9 +4,10 @@
  * Scenario: the scanner detects a file whose content hash changed (typical
  * trigger: external ID3 tag editor rewriting frames). Before deleting the
  * old tracks row and inserting a fresh one, we migrate the user-facing
- * rows keyed on track_hash — user_metadata, user_bookmarks, and
- * user_play_queue — so stars, play counts, bookmarks, and queue entries
- * follow the file's new identity rather than silently orphaning.
+ * rows keyed on track_hash — user_metadata, user_bookmarks,
+ * user_play_queue, and the play_events listening log — so stars, play
+ * counts, bookmarks, queue entries and history follow the file's new
+ * identity rather than silently orphaning.
  *
  * This test runs against an in-memory SQLite DB with the same schema shape
  * the real scanner would see, so it exercises the migration in isolation
@@ -71,6 +72,16 @@ function mkDb() {
       attempts        INTEGER NOT NULL DEFAULT 1
     );
     CREATE UNIQUE INDEX um_unique ON user_metadata(user_id, track_hash);
+    CREATE TABLE play_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id TEXT NOT NULL UNIQUE,
+      user_id INTEGER NOT NULL,
+      track_hash TEXT,
+      filepath TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      counted INTEGER NOT NULL DEFAULT 0,
+      started_at TEXT NOT NULL
+    );
   `);
   return db;
 }
@@ -80,14 +91,14 @@ describe('hash migration helper', () => {
     const db = mkDb();
     db.prepare('INSERT INTO user_metadata (user_id, track_hash, play_count) VALUES (1, ?, 5)').run('aaaa');
     const res = migrateHashReferences(db, 'aaaa', 'aaaa');
-    assert.deepEqual(res, { metadata: 0, bookmarks: 0, queues: 0 });
+    assert.deepEqual(res, { metadata: 0, bookmarks: 0, queues: 0, events: 0 });
   });
 
   test('no-op when either hash is falsy', () => {
     const db = mkDb();
     db.prepare('INSERT INTO user_metadata (user_id, track_hash, play_count) VALUES (1, ?, 5)').run('aaaa');
-    assert.deepEqual(migrateHashReferences(db, null, 'bbbb'), { metadata: 0, bookmarks: 0, queues: 0 });
-    assert.deepEqual(migrateHashReferences(db, 'aaaa', ''),   { metadata: 0, bookmarks: 0, queues: 0 });
+    assert.deepEqual(migrateHashReferences(db, null, 'bbbb'), { metadata: 0, bookmarks: 0, queues: 0, events: 0 });
+    assert.deepEqual(migrateHashReferences(db, 'aaaa', ''),   { metadata: 0, bookmarks: 0, queues: 0, events: 0 });
     // Original row untouched.
     const row = db.prepare('SELECT play_count FROM user_metadata WHERE track_hash = ?').get('aaaa');
     assert.equal(row.play_count, 5);
@@ -139,6 +150,25 @@ describe('hash migration helper', () => {
     assert.equal(row.listened_ms, 350000);
     assert.equal(row.first_played, '2026-07-01 10:00:00');
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user_metadata WHERE track_hash = ?').get('oldhash').n, 0);
+  });
+
+  test('the listening log follows the key, on a content change and on a scheme re-key alike', () => {
+    for (const schemeRekey of [false, true]) {
+      const db = mkDb();
+      const ins = db.prepare(`INSERT INTO play_events (event_id, user_id, track_hash, filepath, outcome, counted, started_at)
+                              VALUES (?, ?, ?, 'a.mp3', 'completed', 1, '2026-09-01 10:00:00.000')`);
+      ins.run('e1', 1, 'oldhash');
+      ins.run('e2', 1, 'oldhash');
+      ins.run('e3', 2, 'oldhash');       // another user's play of the same track moves too
+      ins.run('e4', 1, 'other');         // untouched
+      ins.run('e5', 1, null);            // a hashless play (failed parse) is left alone
+      const res = migrateHashReferences(db, 'oldhash', 'newhash', { schemeRekey });
+      assert.equal(res.events, 3, `scheme re-key ${schemeRekey}`);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM play_events WHERE track_hash = 'newhash'").get().n, 3);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM play_events WHERE track_hash = 'oldhash'").get().n, 0);
+      assert.equal(db.prepare("SELECT track_hash FROM play_events WHERE event_id = 'e4'").get().track_hash, 'other');
+      assert.equal(db.prepare("SELECT track_hash FROM play_events WHERE event_id = 'e5'").get().track_hash, null);
+    }
   });
 
   test('migrates user_bookmarks rows', () => {
@@ -261,7 +291,7 @@ describe('hash migration helper', () => {
     `).run('oldhash', JSON.stringify(['oldhash']));
 
     const res = migrateHashReferences(db, 'oldhash', 'newhash');
-    assert.deepEqual(res, { metadata: 1, bookmarks: 1, queues: 1 });
+    assert.deepEqual(res, { metadata: 1, bookmarks: 1, queues: 1, events: 0 });
 
     const m = db.prepare('SELECT play_count, rating FROM user_metadata WHERE track_hash = ?').get('newhash');
     assert.equal(m.play_count, 10);

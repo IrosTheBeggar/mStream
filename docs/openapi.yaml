@@ -2444,7 +2444,11 @@ paths:
   # A range is a preset `period` (+ `offset` <= 0) or an explicit `from`/`to`
   # pair; `tz` (IANA, default UTC) sets where days, weeks and months begin.
   # `origin` keeps local plays, federated-peer plays (recorded on this server
-  # as the caller's own plays of a peer's track), or both. Never reachable
+  # as the caller's own plays of a peer's track), or both, and reaches the
+  # calendar facts too (streaks, the top day, the peaks, the time series):
+  # a read narrowed by `origin` or `ignoreVPaths` is folded from the raw log,
+  # so plays already pruned by retention drop out of it, while an unfiltered
+  # read comes from the hourly rollup that outlives them. Never reachable
   # with a federation key.
 
   /api/v1/stats/summary:
@@ -2567,6 +2571,7 @@ paths:
                         lastPlayed: { type: string, format: date-time, description: "tracks only." }
                         origin: { type: string, enum: [local, peer], description: "tracks only." }
                         peerId: { type: integer, nullable: true, description: "tracks only." }
+                        peerName: { type: string, nullable: true, description: "tracks only — the peer's name, for a federated row." }
                         track: { $ref: "#/components/schemas/Metadata" }
         "400": { description: "Validation failed: unknown parameter, bad timezone, unpaired from/to, or an invalid cursor." }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -2621,6 +2626,11 @@ paths:
         facts and a `track` object (library metadata, or the ingest snapshot).
       parameters:
         - { name: before, in: query, schema: { type: string }, description: "Opaque cursor from a previous page." }
+        - { name: period, in: query, schema: { type: string, enum: [week, month, quarter, half, year, all] }, description: "Optional. Without a period or a from/to pair the whole log answers, newest first." }
+        - { name: offset, in: query, schema: { type: integer, maximum: 0, default: 0 } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time }, description: "Exclusive; with `from`." }
+        - { name: tz, in: query, schema: { type: string, default: UTC } }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
         - { name: track, in: query, schema: { type: string }, description: "A track hash: the canonical `audio-hash`, the file `hash` (resolved through the library), or a peer's reported hash." }
         - { name: origin, in: query, schema: { type: string, enum: [all, local, peers], default: all } }
@@ -2651,8 +2661,10 @@ paths:
                         client: { type: string, nullable: true }
                         origin: { type: string, enum: [local, peer] }
                         peerId: { type: integer, nullable: true }
+                        peerName: { type: string, nullable: true, description: "The peer's name, for a federated row." }
                         track: { $ref: "#/components/schemas/Metadata" }
                   next: { type: string, nullable: true }
+                  period: { $ref: "#/components/schemas/StatsPeriod", description: "Only when a range was given." }
         "400": { description: "Validation failed: unknown parameter, bad timezone, unpaired from/to, or an invalid cursor." }
         "401": { $ref: "#/components/responses/Unauthorized" }
 

@@ -6,6 +6,12 @@
 (() => {
   const V = window.STATSVIEW;
   const $ = (id) => document.getElementById(id);
+  const tr = V.tr;
+  function configureLanguage() {
+    if (typeof I18N === 'undefined') { return; }
+    V.configure({ t: (key, params) => I18N.t(key, params), lang: I18N.getLanguage() });
+  }
+  configureLanguage();
   const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (_) { return 'UTC'; } })();
   const token = (() => { try { return localStorage.getItem('token') || ''; } catch (_) { return ''; } })();
   const state = {
@@ -82,7 +88,7 @@
         getJson('api/v1/stats/timeseries?' + qs({ ...r, bucket: monthly ? 'month' : 'day' })),
         getJson('api/v1/stats/timeseries?' + qs({ ...r, bucket: 'hourOfDay' })),
         getJson('api/v1/stats/top?' + qs({ ...r, entity: state.entity, metric: 'plays', limit: state.topLimit })),
-        getJson('api/v1/stats/history?' + qs({ origin: state.origin, limit: state.historyLimit })),
+        getJson('api/v1/stats/history?' + qs({ ...r, limit: state.historyLimit })),
       ]);
       if (seq !== state.seq) { return; }
       state.summary = summary;
@@ -100,11 +106,11 @@
   function showError(err) {
     const box = $('stats-error');
     if (err && (err.status === 401 || err.status === 403)) {
-      box.innerHTML = 'Sign in to see your listening. <a href="../login">Go to the login page</a>.';
+      box.innerHTML = V.escapeHtml(tr('stats.error.signIn')) + ' <a href="../login">' + V.escapeHtml(tr('stats.error.goToLogin')) + '</a>';
     } else if (err && err.status === 404) {
-      box.textContent = 'This server does not have the Stats API yet — it arrived in mStream 6.27.';
+      box.textContent = tr('stats.error.noApi');
     } else {
-      box.textContent = 'Could not load your listening: ' + (err && err.message ? err.message : 'unknown error') + '.';
+      box.textContent = tr('stats.error.load', { message: err && err.message ? err.message : 'unknown error' });
     }
     box.hidden = false;
     $('stats-loading').hidden = true;
@@ -115,15 +121,15 @@
     const empty = !summary || !summary.events;
     const noPlaysEver = state.periodList.length === 0 && empty;
     $('stats-provenance').textContent = empty
-      ? 'Plays this account reports through this server. Times in your zone.'
-      : V.provenance(summary, { peersNamed: state.peers.length });
+      ? tr('stats.provenance.empty')
+      : V.provenance(summary, { peersNamed: state.peers.length || ((summary.origins && summary.origins.peers && summary.origins.peers.plays) ? 1 : 0) });
     $('stats-empty').hidden = !empty;
     $('stats-body').hidden = empty;
     if (empty) { renderEmpty(noPlaysEver); return; }
 
     revealOriginIfPeerPlays(summary);
     const prevEntry = state.periodList.find((p) => p.period === state.period && p.offset === state.offset - 1);
-    const versus = V.versusLabel(state.period, prevEntry && prevEntry.label);
+    const versus = V.versusLabel(state.period, prevEntry && V.periodLabel(prevEntry));
     $('stats-tiles').innerHTML = V.tilesHtml(V.tiles(summary, prev, { versus, libraryTracks: state.libraryTracks }));
     renderCharts({ summary, series, hours, monthly });
     renderOrigins(summary);
@@ -147,13 +153,13 @@
     const s = monthly ? V.monthSeries(series.items, from, to, tz) : V.dailySeries(series.items, from, to, tz);
     const box = $('stats-days-chart');
     const width = Math.max(320, Math.min(1180, box.clientWidth || 1180));
-    $('stats-days-title').textContent = monthly ? 'Plays per month' : 'Plays per day';
+    $('stats-days-title').textContent = tr(monthly ? 'stats.playsPerMonth' : 'stats.playsPerDay');
     box.innerHTML = V.columnChart(s.values, {
       width, height: 190,
       labels: monthly ? V.monthAxisLabels(s.keys) : V.dayAxisLabels(s.keys),
       peakLabel: peakLabelFor(s.values),
       barMax: monthly ? 40 : 24,
-      titles: s.keys.map((k, i) => (monthly ? k : V.dayKeyLabel(k)) + ': ' + V.fmtInt(s.values[i]) + (s.values[i] === 1 ? ' play' : ' plays')),
+      titles: s.keys.map((k, i) => (monthly ? k : V.dayKeyLabel(k)) + ': ' + tr('stats.count.plays', { count: s.values[i] })),
     });
     $('stats-days-note').textContent = V.daysNote(summary);
 
@@ -165,7 +171,7 @@
       labels: [[0, '0'], [6, '6'], [12, '12'], [18, '18'], [23, '23']],
       peakLabel: Number.isInteger(summary.peakHour) ? V.hourLabel(summary.peakHour) : null,
       barMax: 16,
-      titles: hv.map((v, i) => V.hourLabel(i) + ': ' + V.fmtInt(v) + (v === 1 ? ' play' : ' plays')),
+      titles: hv.map((v, i) => V.hourLabel(i) + ': ' + tr('stats.count.plays', { count: v })),
     });
     $('stats-hours-note').textContent = V.hoursNote(summary);
   }
@@ -181,15 +187,15 @@
     if (!show) { return; }
     const total = ((local.plays || 0) + (peers.plays || 0)) || 1;
     const line = (name, slice, note) => '<div class="stats-origin"><div class="stats-origin-head"><div class="stats-origin-name">' + V.escapeHtml(name) + '</div>'
-      + '<div class="stats-origin-nums">' + V.fmtInt(slice.plays) + (slice.plays === 1 ? ' play' : ' plays') + ' · ' + V.fmtDuration(slice.listenedMs) + '</div></div>'
+      + '<div class="stats-origin-nums">' + V.escapeHtml(tr('stats.count.plays', { count: slice.plays || 0 })) + ' · ' + V.fmtDuration(slice.listenedMs) + '</div></div>'
       + '<div class="stats-meter"><div class="stats-meter-fill" style="width: ' + Math.round(100 * (slice.plays || 0) / total) + '%;"></div></div>'
       + '<div class="stats-hint">' + V.escapeHtml(note) + '</div></div>';
     const one = state.peers.length === 1;
-    const peerName = one ? state.peers[0].name : 'Peers’ tracks';
+    const peerName = one ? state.peers[0].name : tr('stats.origins.peersTracks');
     const peerNote = one
-      ? 'A peer’s tracks, played through this server. Counted here, never on the peer.'
-      : (state.peers.length > 1 ? 'Tracks from ' + state.peers.length + ' peers' : 'Peers’ tracks') + ', played through this server. Counted here, never on the peer.';
-    $('stats-origins').innerHTML = line('This server', local, 'Your own library.') + line(peerName, peers, peerNote);
+      ? tr('stats.origins.peerNote')
+      : tr('stats.origins.peersNote', { who: state.peers.length > 1 ? tr('stats.origins.fromPeers', { n: state.peers.length }) : tr('stats.origins.peersTracks') });
+    $('stats-origins').innerHTML = line(tr('stats.origins.thisServer'), local, tr('stats.origins.yourLibrary')) + line(peerName, peers, peerNote);
   }
 
   function renderTop(top) {
@@ -197,7 +203,7 @@
     const max = items.length ? Math.max(...items.map((i) => i.plays || 0)) : 0;
     $('stats-top').innerHTML = items.length
       ? items.map((it) => V.topRowHtml(it, state.entity, max, { peers: state.peers, artUrl, now: nowIso(), tz })).join('')
-      : '<div class="stats-hint" style="padding: 10px 8px;">Nothing here for this period.</div>';
+      : '<div class="stats-hint" style="padding: 10px 8px;">' + V.escapeHtml(tr('stats.nothingHere')) + '</div>';
     $('stats-top-more').hidden = state.topLimit >= 20 || items.length < state.topLimit;
   }
 
@@ -205,30 +211,30 @@
     const items = (history && history.items) || [];
     const html = items.map((it) => V.historyRowHtml(it, { now: nowIso(), tz, peers: state.peers, artUrl })).join('');
     if (reset) {
-      $('stats-history').innerHTML = html || '<div class="stats-hint" style="padding: 10px 8px;">No plays yet.</div>';
+      $('stats-history').innerHTML = html || '<div class="stats-hint" style="padding: 10px 8px;">' + V.escapeHtml(tr('stats.empty.noPlaysTitle')) + '</div>';
     } else {
       $('stats-history').insertAdjacentHTML('beforeend', html);
     }
     state.cursor = history && history.next ? history.next : null;
     $('stats-history-more').hidden = !state.cursor;
     $('stats-history-note').textContent = state.summary && state.summary.events
-      ? V.fmtInt(state.summary.events) + (state.summary.events === 1 ? ' start' : ' starts') + ' in this period' : '';
+      ? tr('stats.count.starts', { count: state.summary.events }) : '';
   }
 
   function renderEmpty(noPlaysEver) {
     const actions = $('stats-empty-actions');
     if (noPlaysEver) {
-      $('stats-empty-title').textContent = 'No plays yet';
-      $('stats-empty-copy').textContent = 'Plays land here as you listen. The web player reports each track when it ends, and the mobile app sends its history when it is online. Older apps that still scrobble at 30 seconds count too.';
-      actions.innerHTML = '<a class="stats-button" href="./" style="display: inline-flex; align-items: center; text-decoration: none;">Play something</a>';
+      $('stats-empty-title').textContent = tr('stats.empty.noPlaysTitle');
+      $('stats-empty-copy').textContent = tr('stats.empty.noPlaysCopy');
+      actions.innerHTML = '<a class="stats-button" href="./" style="display: inline-flex; align-items: center; text-decoration: none;">' + V.escapeHtml(tr('stats.empty.playSomething')) + '</a>';
       return;
     }
     const current = state.period + ':' + state.offset;
-    const label = (state.periodOptions.find((o) => o.value === current) || {}).label || 'this period';
-    $('stats-empty-title').textContent = 'Nothing in ' + label.replace(/^(This|Last) /, (m) => m.toLowerCase()).split(' · ')[0];
+    const label = ((state.periodOptions.find((o) => o.value === current) || {}).label || '').split(' · ')[0];
+    $('stats-empty-title').textContent = tr('stats.empty.nothingIn', { period: label.charAt(0).toLowerCase() + label.slice(1) });
     const earliest = state.bounds && state.bounds.earliest ? new Date(state.bounds.earliest) : null;
-    $('stats-empty-copy').textContent = 'No plays started in this period.'
-      + (earliest && !Number.isNaN(earliest.getTime()) ? ' Your log begins on ' + earliest.getDate() + ' ' + V.MONTHS[earliest.getMonth()] + ' ' + earliest.getFullYear() + '.' : '');
+    $('stats-empty-copy').textContent = tr('stats.empty.noneInPeriod')
+      + (earliest && !Number.isNaN(earliest.getTime()) ? ' ' + tr('stats.empty.logBegins', { date: V.formatDate(earliest, 'long') }) : '');
     const others = state.periodOptions.filter((o) => o.value !== current).slice(-3);
     actions.innerHTML = others.map((o) => '<button type="button" class="stats-pill" data-period="' + V.escapeHtml(o.value) + '">' + V.escapeHtml(o.label.split(' · ')[0]) + '</button>').join('');
   }
@@ -279,7 +285,7 @@
       if (!state.cursor) { return; }
       const b = $('stats-history-more');
       b.disabled = true;
-      getJson('api/v1/stats/history?' + qs({ origin: state.origin, limit: 20, before: state.cursor }))
+      getJson('api/v1/stats/history?' + qs({ ...range(), limit: 20, before: state.cursor }))
         .then((h) => renderHistory(h, false)).catch(showError).finally(() => { b.disabled = false; });
     });
     $('stats-history').addEventListener('click', (e) => {
@@ -322,5 +328,8 @@
   }
 
   wire();
+  if (typeof I18N !== 'undefined' && typeof I18N.onChange === 'function') {
+    I18N.onChange(() => { configureLanguage(); loadContext().then(load).catch(showError); });
+  }
   loadContext().then(load).catch(showError);
 })();

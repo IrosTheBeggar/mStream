@@ -179,6 +179,28 @@ describe('stats API v2 — reads', () => {
     assert.equal(berlin.body.topDay.date, '2026-09-03'); // 22:30Z Sep 2 = 00:30 Sep 3 local → three plays that day
   });
 
+  test('summary and timeseries: the calendar facts follow origin, not just the counts', async () => {
+    // Only the peer play: one day, one hour — the rollup would have said three days and a 10:00 peak.
+    const peers = await get(server.baseUrl, `/api/v1/stats/summary?${SEP}&origin=peers`);
+    assert.equal(peers.body.events, 1);
+    assert.deepEqual(peers.body.streakDays, { current: 0, longest: 1 });
+    assert.equal(peers.body.topDay.date, '2026-09-03');
+    assert.equal(peers.body.topDay.plays, 1);
+    assert.equal(peers.body.peakHour, 11);
+    const local = await get(server.baseUrl, `/api/v1/stats/summary?${SEP}&origin=local`);
+    assert.equal(local.body.peakHour, 10);
+    assert.deepEqual(local.body.streakDays, { current: 0, longest: 3 });
+    const series = await get(server.baseUrl, `/api/v1/stats/timeseries?${SEP}&bucket=day&origin=peers`);
+    assert.deepEqual(series.body.items, [{ bucket: '2026-09-03', events: 1, plays: 1, skips: 0, listenedMs: 240_000 }]);
+    const hours = await get(server.baseUrl, `/api/v1/stats/timeseries?${SEP}&bucket=hourOfDay&origin=local`);
+    const ten = hours.body.items.find((b) => b.bucket === '10');
+    assert.deepEqual([ten.events, ten.plays, ten.skips], [3, 2, 1]); // sep2-B started at 10:05 and was skipped
+    assert.equal(hours.body.items.find((b) => b.bucket === '11').plays, 0);
+    // Unfiltered, the rollup still answers (identical here, nothing is pruned).
+    const all = await get(server.baseUrl, `/api/v1/stats/timeseries?${SEP}&bucket=day`);
+    assert.equal(all.body.items.reduce((n, b) => n + b.plays, 0), 4);
+  });
+
   test('top tracks by plays, with a federated snapshot row', async () => {
     const r = await get(server.baseUrl, `/api/v1/stats/top?${SEP}&entity=tracks&limit=10`);
     assert.equal(r.status, 200, r.body);
@@ -243,6 +265,8 @@ describe('stats API v2 — reads', () => {
     assert.deepEqual(byFileHash.body.items.map((i) => i.id), ['sep2-A', 'sep1-A', 'aug-A']);
     const peerOnly = await get(server.baseUrl, '/api/v1/stats/history?track=ph1');
     assert.deepEqual(peerOnly.body.items.map((i) => i.id), ['sep3-peer']);
+    assert.equal(peerOnly.body.items[0].peerName, 'Bob', 'a peer row names its peer');
+    assert.equal(p1.body.items[1].peerName, null);
     const bad = await get(server.baseUrl, '/api/v1/stats/history?before=not-a-cursor');
     assert.equal(bad.status, 400);
   });
@@ -273,5 +297,28 @@ describe('stats API v2 — reads', () => {
     const unknown = await get(server.baseUrl, '/api/v1/stats/summary?bogus=1');
     assert.equal(unknown.status, 400);
     assert.match(unknown.body, /bogus.* is not allowed/); // the Joi message the app's ServerCapabilities parses
+  });
+
+  test('history: an optional range scopes the log the way every other read is scoped', async () => {
+    const sep = await get(server.baseUrl, `/api/v1/stats/history?${SEP}`);
+    assert.equal(sep.status, 200, sep.body);
+    assert.deepEqual(sep.body.items.map((i) => i.id), ['sep3-peer', 'sep3-C', 'sep2-A', 'sep2-B', 'sep1-A']);
+    assert.equal(sep.body.period.from, '2026-09-01T00:00:00.000Z', 'the resolved range rides along');
+    const aug = await get(server.baseUrl, '/api/v1/stats/history?from=2026-08-01T00:00:00Z&to=2026-09-01T00:00:00Z');
+    assert.deepEqual(aug.body.items.map((i) => i.id), ['aug-A']);
+    const peersInSep = await get(server.baseUrl, `/api/v1/stats/history?${SEP}&origin=peers`);
+    assert.deepEqual(peersInSep.body.items.map((i) => [i.id, i.peerName]), [['sep3-peer', 'Bob']]);
+    const whole = await get(server.baseUrl, '/api/v1/stats/history');
+    assert.equal(whole.body.items.length, 6, 'no range: the whole log, as before');
+    assert.equal(whole.body.period, undefined);
+    const half = await get(server.baseUrl, '/api/v1/stats/history?from=2026-09-01T00:00:00Z');
+    assert.equal(half.status, 400, 'from without to');
+  });
+
+  test('top tracks name the peer behind a federated row', async () => {
+    const r = await get(server.baseUrl, `/api/v1/stats/top?${SEP}&entity=tracks`);
+    const peerRow = r.body.items.find((i) => i.origin === 'peer');
+    assert.equal(peerRow.peerName, 'Bob');
+    assert.equal(r.body.items.find((i) => i.origin === 'local').peerName, null);
   });
 });

@@ -48,34 +48,17 @@ const MSTREAMPLAYER = (() => {
     getOtherPlayer().playerObject.volume = rgainAdjustedVolume;
   }
 
-  // Scrobble function
-  // This is a placeholder function that the API layer can take hold of to implement the scrobble call
-  let scrobbleTimer;
-  mstreamModule.scrobble = () => {
-    const song = mstreamModule.getCurrentSong();
-    if (!song) { return; }
-    // A federated track's path lives in the PEER's vpath namespace, so
-    // scrobble-by-filepath cannot resolve it against this library — it
-    // just errors 30 seconds into every peer track. Same degrade rule as
-    // the waveform, rating and Sonic Path guards.
-    if (song.federation) { return; }
-    MSTREAMAPI.scrobbleByFilePath(
-      song.rawFilePath,
-      (response, error) => {});
-  }
-
   // ── Stats API v2: play sessions ──────────────────────────────────────
   //
-  // On a server with the Stats API (the ping's `stats` flag, read by
-  // alpha/m.js into MSTREAMAPI.currentServer.stats) the 30-second scrobble
-  // above is never armed. Instead every song start opens a session
-  // (assets/js/mstream.play-session.js) fed by the player's own signals —
-  // the timeupdate ticks, pause and resume, the end of the stream, the user
-  // moving on — and the finished play goes to POST /api/v1/stats/plays
-  // through an outbox that retries and survives a closed tab. A peer track
-  // is reported as a peer play (its id + a snapshot of the metadata), which
-  // the legacy path could never count. Server-side playback
-  // (mstream.server-audio.js) keeps the legacy scrobble for now.
+  // Every song start opens a session (assets/js/mstream.play-session.js)
+  // fed by the player's own signals — the timeupdate ticks, pause and
+  // resume, the end of the stream, the user moving on — and the finished
+  // play goes to POST /api/v1/stats/plays through an outbox that retries
+  // and survives a closed tab. A peer track is reported as a peer play (its
+  // id + a snapshot of the metadata). The 30-second scrobble-by-filepath
+  // timer this replaced is gone: the page is served by the server it
+  // reports to, and every server with this page has the Stats API. Server-
+  // side playback (mstream.server-audio.js) keeps its own legacy scrobble.
   let playSession = null;
   let statsOutbox = null;
   let statsRetryTimer = null;
@@ -83,9 +66,7 @@ const MSTREAMPLAYER = (() => {
   const CHECKPOINT_EVERY_MS = 5000;
 
   function statsEnabled() {
-    return typeof MSTREAMPLAYSESSION !== 'undefined'
-      && typeof MSTREAMAPI !== 'undefined'
-      && Number(MSTREAMAPI.currentServer && MSTREAMAPI.currentServer.stats) >= 2;
+    return typeof MSTREAMPLAYSESSION !== 'undefined' && typeof MSTREAMAPI !== 'undefined';
   }
   function statsOutboxFor() {
     if (!statsOutbox) {
@@ -154,8 +135,9 @@ const MSTREAMPLAYER = (() => {
   }
   function pausePlaySession() { if (playSession) { MSTREAMPLAYSESSION.pause(playSession); } }
   function resumePlaySession() { if (playSession) { MSTREAMPLAYSESSION.resume(playSession); } }
-  // Called by alpha/m.js once the ping has answered: post what an earlier
-  // page left behind, then keep retrying quietly.
+  // Called by alpha/m.js once the ping has answered (the token and server
+  // are settled by then): post what an earlier page left behind, then keep
+  // retrying quietly.
   mstreamModule.statsInit = () => {
     if (!statsEnabled()) { return false; }
     const box = statsOutboxFor();
@@ -1316,15 +1298,8 @@ const MSTREAMPLAYER = (() => {
 
     }, cacheTimeout);
 
-    // Count the play. A server with the Stats API gets the complete play
-    // once this song is over (the session); anything older still gets the
-    // legacy 30-second scrobble.
-    clearTimeout(scrobbleTimer);
-    if (statsEnabled()) {
-      beginPlaySession(mstreamModule.playlist[position]);
-    } else {
-      scrobbleTimer = setTimeout(() => { mstreamModule.scrobble() }, 30000);
-    }
+    // Count the play: the complete play is reported once this song is over.
+    beginPlaySession(mstreamModule.playlist[position]);
   }
 
   // Should be called whenever the "metadata" field of the current song is changed, or

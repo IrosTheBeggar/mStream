@@ -153,6 +153,7 @@ export function topTracks(d, { user, userId, from, to, scope, origin, metric, li
   const all = trackAggregates(d, w, { metric });
   const totals = totalsOf(all);
   const rows = attachTracks(d, all.slice(0, limit), user, scope?.libIds ?? null);
+  const names = peerNames(d, rows);
   return rows.map((r, i) => ({
     rank: i + 1,
     plays: r.plays,
@@ -162,8 +163,22 @@ export function topTracks(d, { user, userId, from, to, scope, origin, metric, li
     lastPlayed: toIso(r.last_played),
     origin: r.peer_id == null ? 'local' : 'peer',
     peerId: r.peer_id ?? null,
+    peerName: r.peer_id == null ? null : (names.get(r.peer_id) ?? null),
     track: r.track,
   }));
+}
+
+// The names of the peers behind [rows], read only when a peer row exists —
+// a client shows "via Bob's records" without listing peers itself (that
+// listing needs federation to be on).
+function peerNames(d, rows) {
+  const ids = [...new Set(rows.map((r) => r.peer_id).filter((id) => id != null))];
+  const out = new Map();
+  if (ids.length === 0) { return out; }
+  for (const r of d.prepare(`SELECT id, name FROM federation_peers WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids)) {
+    out.set(r.id, r.name);
+  }
+  return out;
 }
 
 // artists / albums / genres: group the per-track aggregates by the entity.
@@ -248,6 +263,31 @@ export function hourRows(d, { userId, from, to }) {
       FROM user_hour_stats
      WHERE user_id = ? AND hour >= ? AND hour ${partial ? '<=' : '<'} ?
      ORDER BY hour`).all(userId, lo, hi);
+}
+
+// The same rows folded from the raw log under an events filter — what a
+// read scoped by origin or by ignored libraries uses, since the rollup
+// carries neither. Plays pruned by retention are absent here, so an
+// unfiltered read keeps the rollup (see scopedHourRows).
+export function eventHourRows(d, w) {
+  return d.prepare(`
+    SELECT (substr(pe.started_at, 1, 10) || 'T' || substr(pe.started_at, 12, 2)) AS hour,
+           COUNT(*) AS events, SUM(pe.counted) AS plays,
+           SUM(CASE WHEN pe.outcome = 'skipped' THEN 1 ELSE 0 END) AS skips,
+           SUM(pe.played_ms) AS listened_ms
+      FROM play_events pe
+     WHERE ${w.sql}
+     GROUP BY hour
+     ORDER BY hour`).all(...w.params);
+}
+
+// Hour rows for a read: the rollup when nothing narrows the caller's whole
+// log, the raw log once origin or ignoreVPaths does.
+export function scopedHourRows(d, { user, from, to, fromDate, toDate, origin = 'all', ignoreVPaths }) {
+  const filtered = (origin && origin !== 'all') || (Array.isArray(ignoreVPaths) && ignoreVPaths.length > 0);
+  if (!filtered) { return hourRows(d, { userId: user.id, from: fromDate, to: toDate }); }
+  const scope = eventScope(user, ignoreVPaths);
+  return eventHourRows(d, whereEvents({ userId: user.id, from, to, scope, origin }));
 }
 
 const range = (n) => Array.from({ length: n }, (_, i) => String(i));
@@ -416,8 +456,8 @@ export function summary(d, { user, from, to, fromDate, toDate, tz, origin, ignor
     if (!longest || s.listenedMs > longest.listenedMs) { longest = s; }
   }
 
-  // Calendar facts from the rollup (per-user totals; see the header).
-  const rows = hourRows(d, { userId, from: fromDate, to: toDate });
+  // Calendar facts: the rollup for the whole log, the raw log under a filter.
+  const rows = scopedHourRows(d, { user, from, to, fromDate, toDate, origin, ignoreVPaths });
   const days = dayTotals(rows, tz);
   const playedDays = [...days.values()].filter((v) => v.plays > 0).map((v) => v.date);
   let topDay = null;
@@ -476,14 +516,14 @@ export function canonicalHash(d, hash) {
   return row ? (row.audio_hash || row.file_hash || hash) : hash;
 }
 
-export function history(d, { user, origin, ignoreVPaths, trackHash = null, before = null, limit }) {
+export function history(d, { user, origin, ignoreVPaths, from = null, to = null, trackHash = null, before = null, limit }) {
   const scope = eventScope(user, ignoreVPaths);
   const extra = [];
   if (trackHash) { extra.push(['pe.track_hash = ?', canonicalHash(d, trackHash)]); }
   if (before) {
     extra.push(['(pe.started_at < ? OR (pe.started_at = ? AND pe.id < ?))', before.startedAt, before.startedAt, before.id]);
   }
-  const w = whereEvents({ userId: user.id, scope, origin, extra });
+  const w = whereEvents({ userId: user.id, from, to, scope, origin, extra });
   const rows = d.prepare(`
     SELECT pe.id, pe.event_id, pe.track_hash AS hash, pe.filepath, pe.library_id, pe.peer_id,
            pe.snapshot, pe.client, pe.session_id, pe.source, pe.outcome, pe.counted,
@@ -495,6 +535,7 @@ export function history(d, { user, origin, ignoreVPaths, trackHash = null, befor
   const more = rows.length > limit;
   if (more) { rows.pop(); }
   attachTracks(d, rows, user, scope.libIds);
+  const names = peerNames(d, rows);
   const last = rows[rows.length - 1];
   return {
     items: rows.map((r) => ({
@@ -511,6 +552,7 @@ export function history(d, { user, origin, ignoreVPaths, trackHash = null, befor
       client: r.client,
       origin: r.peer_id == null ? 'local' : 'peer',
       peerId: r.peer_id ?? null,
+      peerName: r.peer_id == null ? null : (names.get(r.peer_id) ?? null),
       track: r.track,
     })),
     next: more && last ? { startedAt: last.started_at, id: last.id } : null,
