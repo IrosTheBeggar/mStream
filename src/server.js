@@ -513,6 +513,20 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     }
   });
 
+  // The listening page (webapp/stats/): the signed-in user's own stats, so
+  // the same gate as the player — a session cookie, or public mode. No
+  // admin role and no IP gate: every account may see its own listening.
+  mstream.get('/stats', (req, res, next) => {
+    if (dbManager.getAllUsers().length === 0) {
+      return next();
+    }
+    try {
+      jwt.verify(req.cookies['x-access-token'], config.program.secret);
+      next();
+    } catch (_err) {
+      return res.redirect(302, '/login');
+    }
+  });
   mstream.get('/login', (req, res, next) => {
     if (dbManager.getAllUsers().length === 0) {
       return res.redirect(302, '..');

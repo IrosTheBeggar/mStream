@@ -715,6 +715,8 @@ async function init() {
     // an earlier page left behind.
     MSTREAMAPI.currentServer.stats = Number(response.stats) || 0;
     if (typeof MSTREAMPLAYER.statsInit === 'function') { MSTREAMPLAYER.statsInit(); }
+    // The listening page (/stats) reads the same API; its nav entry follows the flag.
+    document.getElementById('nav-stats').classList.toggle('super-hide', MSTREAMAPI.currentServer.stats < 2);
     VUEPLAYERCORE.setDiscoveryAvailable(response.discovery === true);
     VUEPLAYERCORE.setDiscoveryP2pAvailable(response.discoveryP2p === true);
     VUEPLAYERCORE.setFederationDiscoveryAvailable(response.federationDiscovery === true);
