@@ -13,6 +13,7 @@ import { dataRoot, usingFallbackDataRoot } from './util/esm-helpers.js';
 import { installedPlayerPath, playerLoadableHere } from './util/mstream-player-bootstrap.js';
 
 import * as dbApi from './api/db.js';
+import * as syncApi from './api/sync.js';
 import * as statsApi from './api/stats.js';
 import { startRetentionSweep, stopRetentionSweep } from './stats/retention.js';
 import * as discoveryApi from './api/discovery.js';
@@ -573,6 +574,7 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   discoveryP2pApi.setup(mstream);
   discoveryFederationApi.setup(mstream);
   dbApi.setup(mstream);
+  syncApi.setup(mstream);
   statsApi.setup(mstream);
   startRetentionSweep();
   searchApi.setup(mstream);
