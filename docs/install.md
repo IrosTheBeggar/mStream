@@ -138,8 +138,9 @@ directly, with `manifest.json` holding their sha256s:
 **Just double-click it.** The desktop face of the bundle — `mStream.exe` on
 Windows, `mStream.app` on macOS, `mstream-desktop` on Linux — starts the
 server in the background, puts an mStream icon in your tray / menu bar
-(a status line — "Running · up 3h 12m", or Starting… / Stopped — then Open
-Admin Panel · Quick Connect · Start at login · View logs ·
+(a status line — "Running · up 3h 12m", or Starting… / Stopped — then
+Manage server ▸ (Libraries · Discovery · Federation · Backups · Torrents ·
+Open Admin Panel in browser) · Quick Connect · Start at login · View logs ·
 Restart server · Quit). Boots are quiet once set up — re-click the app icon
 (or launch it again) whenever you want the player in your browser. Start-at-login
 is on by default; one click in the tray menu turns it off. On a **first
@@ -163,6 +164,20 @@ an install has no player binary, or no terminal could be opened, it opens
 the web player's Quick Connect modal instead. Headless installs get the
 setup invitation as a boot log line whenever the server has no folders and
 no accounts yet.
+
+**Manage server** holds the server's management screens as terminal pages
+— the bundled player's admin rooms (`mstream-player admin <room>
+--same-machine`), opened in the same kind of window as the wizard:
+**Libraries** (the music folders; the picker is the OS folder dialog, since
+the terminal runs on the server's own machine), **Discovery** (the P2P
+discovery network), **Federation**, **Backups** and **Torrents**. The rooms
+use the admin session the setup wizard saved when it created your account.
+An install whose admin account was made elsewhere — in the browser, or
+before the wizard existed — gets a one-time sign-in page inside the room
+and keeps that session for next time. When an install has no player
+binary, or no terminal could be opened, a room item opens the matching
+section of the browser admin panel instead; **Open Admin Panel in
+browser**, the submenu's last item, always does exactly that.
 
 **Terminal users lose nothing.** The same desktop binary run from a terminal
 behaves exactly like the server itself (same flags, output, and exit codes) —

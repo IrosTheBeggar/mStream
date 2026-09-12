@@ -214,9 +214,9 @@ pub fn setup_complete(config: &Path) -> bool {
 /// has happened, the ADMIN PANEL before it — a fresh install's player is a
 /// dead end. (The post-boot announce goes further and opens the setup
 /// wizard itself on fresh installs; this is its browser fallback and every
-/// other gesture's routing.) The tray's explicit "Open Admin Panel" item
-/// does NOT route through this — it always opens /admin, literally what it
-/// says.
+/// other gesture's routing.) The tray's explicit "Open Admin Panel in
+/// browser" item (under Manage server) does NOT route through this — it
+/// always opens /admin, literally what it says.
 pub fn browse_target(config: &Path, ep: &Endpoint) -> String {
     if setup_complete(config) {
         server_url(ep)
@@ -246,10 +246,11 @@ pub fn player_key() -> String {
     format!("mstream-player-{plat}-{arch}{ext}")
 }
 
-/// The terminal player for the "Set up mStream" item: the copy build-bun
-/// stages next to the server binary in every desktop bundle, else one the
-/// server's runtime fetch installed in the shared data home. None disables
-/// the item — a greyed entry beats a terminal window that dies instantly.
+/// The terminal player behind the wizard, Quick Connect and the Manage
+/// server rooms: the copy build-bun stages next to the server binary in
+/// every desktop bundle, else one the server's runtime fetch installed in
+/// the shared data home. None sends those items to their browser fallbacks
+/// (the webapp's Quick Connect modal, the admin panel's sections).
 pub fn find_player_bin(server_bin: &Path, data_home: &Path) -> Option<PathBuf> {
     let key = player_key();
     let bundled = server_bin.parent()?.join("bin").join("mstream-player").join(&key);

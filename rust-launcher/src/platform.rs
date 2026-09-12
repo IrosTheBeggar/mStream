@@ -273,61 +273,124 @@ pub fn open_logs_terminal(logs_dir: &std::path::Path) -> Result<(), String> {
     }
 }
 
-/// Which wizard-family page a terminal launch opens. Each carries its own
-/// subcommand, window title, and scratch script name, so the Setup and
-/// Quick Connect tray items never clobber each other's launch files.
-#[derive(Clone, Copy)]
-pub enum WizardPage {
+/// One of the terminal player's admin rooms — `mstream-player admin <room>`,
+/// the server's management screens drawn in a terminal (player PR #21;
+/// pin v0.7.0 is the first with all five plus the in-room sign-in).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdminRoom {
+    /// The server's music folders.
+    Libraries,
+    /// The discovery network (P2P): the mesh, follows, invites, settings.
+    Discovery,
+    /// Federation: requests, minted tickets, readable peers.
+    Federation,
+    /// Backups: each library's copies elsewhere, schedules, runs.
+    Backups,
+    /// Torrents: the client, its list, per-library paths, seeding.
+    Torrents,
+}
+
+impl AdminRoom {
+    /// Menu order — the player's own `admin` help order.
+    pub const ALL: [AdminRoom; 5] = [
+        AdminRoom::Libraries,
+        AdminRoom::Discovery,
+        AdminRoom::Federation,
+        AdminRoom::Backups,
+        AdminRoom::Torrents,
+    ];
+
+    /// The room's name in the player's CLI (`mstream-player admin <this>`).
+    pub fn subcommand(self) -> &'static str {
+        match self {
+            AdminRoom::Libraries => "libraries",
+            AdminRoom::Discovery => "discovery",
+            AdminRoom::Federation => "federation",
+            AdminRoom::Backups => "backups",
+            AdminRoom::Torrents => "torrents",
+        }
+    }
+
+    /// The inverse of [`AdminRoom::subcommand`].
+    pub fn from_subcommand(name: &str) -> Option<AdminRoom> {
+        AdminRoom::ALL.into_iter().find(|r| r.subcommand() == name)
+    }
+}
+
+/// Which player page a terminal launch opens. Each carries its own argv,
+/// window title, and scratch script name, so no two tray items ever clobber
+/// each other's launch files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayerPage {
     /// The full first-run wizard (`mstream-player setup`).
     Setup,
     /// The standalone Quick Connect page (`mstream-player qr`) — the
     /// wizard's Done screen: pairing QR plus the app buttons.
     QuickConnect,
+    /// One admin room (`mstream-player admin <room> --same-machine`). The
+    /// launcher only ever runs on the server's own machine, so the rooms'
+    /// folder pickers may open the OS dialog and treat what it picks as the
+    /// server's paths — exactly what `--same-machine` declares.
+    Admin(AdminRoom),
 }
 
-impl WizardPage {
-    fn subcommand(self) -> &'static str {
+impl PlayerPage {
+    /// The player's argv for this page, before the `--server <url>` every
+    /// launch appends. Static words only: nothing here ever needs quoting.
+    fn args(self) -> Vec<&'static str> {
         match self {
-            WizardPage::Setup => "setup",
-            WizardPage::QuickConnect => "qr",
+            PlayerPage::Setup => vec!["setup"],
+            PlayerPage::QuickConnect => vec!["qr"],
+            PlayerPage::Admin(room) => vec!["admin", room.subcommand(), "--same-machine"],
         }
     }
-    // Only the mac ghostty config (and this file's mac-gated tests) call
-    // this; allow, not cfg, keeps the enum's surface uniform across
-    // platforms.
+    // Only the mac ghostty config (and this file's tests) call this; allow,
+    // not cfg, keeps the enum's surface uniform across platforms.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    fn title(self) -> &'static str {
+    fn title(self) -> String {
         match self {
-            WizardPage::Setup => "mStream Setup",
-            WizardPage::QuickConnect => "mStream Quick Connect",
+            PlayerPage::Setup => "mStream Setup".into(),
+            PlayerPage::QuickConnect => "mStream Quick Connect".into(),
+            PlayerPage::Admin(room) => format!("mStream {}", capitalized(room.subcommand())),
         }
     }
     #[cfg(target_os = "macos")]
-    fn script_name(self) -> &'static str {
+    fn script_name(self) -> String {
         match self {
-            WizardPage::Setup => "setup-mstream.command",
-            WizardPage::QuickConnect => "quickconnect-mstream.command",
+            PlayerPage::Setup => "setup-mstream.command".into(),
+            PlayerPage::QuickConnect => "quickconnect-mstream.command".into(),
+            PlayerPage::Admin(room) => format!("admin-{}-mstream.command", room.subcommand()),
         }
     }
 }
 
-/// Run one of the terminal player's wizard-family pages in a fresh terminal
-/// window, pointed at this launcher's server. Same per-OS "what is a
-/// terminal" seams as open_logs_terminal; the caller logs a failure — a
-/// missing terminal emulator must never take the tray down. Ok carries
-/// WHICH surface opened (support surface: "it opened in Terminal, not the
-/// mStream console — why?" should be one log line away).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn capitalized(word: &str) -> String {
+    let mut c = word.chars();
+    match c.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Run one of the terminal player's pages — the setup wizard, Quick
+/// Connect, or an admin room — in a fresh terminal window, pointed at this
+/// launcher's server. Same per-OS "what is a terminal" seams as
+/// open_logs_terminal; the caller logs a failure — a missing terminal
+/// emulator must never take the tray down. Ok carries WHICH surface opened
+/// (support surface: "it opened in Terminal, not the mStream console —
+/// why?" should be one log line away).
 ///
 /// `console`: the bundled Ghostty (macOS bundles only, resolved by
 /// paths::find_console_app) — preferred over Terminal.app because Apple's
 /// terminal has no pixel protocol at all, so the wizard's wordmark and QR
 /// degrade to character art there. Ignored on the other platforms.
-pub fn open_wizard_terminal(
+pub fn open_player_terminal(
     player_bin: &std::path::Path,
     server_url: &str,
     scratch_dir: &std::path::Path,
     console: Option<&crate::paths::ConsoleLaunch>,
-    page: WizardPage,
+    page: PlayerPage,
 ) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
@@ -348,10 +411,8 @@ pub fn open_wizard_terminal(
         // doesn't just keeps its size (the wizard reflows).
         let script = scratch_dir.join(page.script_name());
         let body = format!(
-            "#!/bin/sh\n# Written by mStream's tray - safe to delete.\nprintf '\\033[8;42;120t'\nclear\nexec {player} {sub} --server {url}\n",
-            player = sh_quote(player_bin),
-            sub = page.subcommand(),
-            url = sh_quote_str(server_url),
+            "#!/bin/sh\n# Written by mStream's tray - safe to delete.\nprintf '\\033[8;42;120t'\nclear\nexec {}\n",
+            player_shell_words(page, player_bin, server_url),
         );
         std::fs::write(&script, body).map_err(|e| format!("write {}: {e}", script.display()))?;
         let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
@@ -372,7 +433,8 @@ pub fn open_wizard_terminal(
         let _ = console;
         if std::process::Command::new("wt.exe")
             .arg(player_bin)
-            .args([page.subcommand(), "--server", server_url])
+            .args(page.args())
+            .args(["--server", server_url])
             .spawn()
             .is_ok()
         {
@@ -380,7 +442,8 @@ pub fn open_wizard_terminal(
         }
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
         std::process::Command::new(player_bin)
-            .args([page.subcommand(), "--server", server_url])
+            .args(page.args())
+            .args(["--server", server_url])
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
             .map(|_| "conhost fallback".into())
@@ -394,10 +457,8 @@ pub fn open_wizard_terminal(
         // on screen behind a "press Enter" instead of a window that flashed
         // and vanished — the support surface for "nothing happened".
         let cmd = format!(
-            "{player} {sub} --server {url}; s=$?; if [ \"$s\" -ne 0 ]; then printf '\\nmstream-player exited with status %s - press Enter to close this window\\n' \"$s\"; read dummy; fi",
-            player = sh_quote(player_bin),
-            sub = page.subcommand(),
-            url = sh_quote_str(server_url),
+            "{}; s=$?; if [ \"$s\" -ne 0 ]; then printf '\\nmstream-player exited with status %s - press Enter to close this window\\n' \"$s\"; read dummy; fi",
+            player_shell_words(page, player_bin, server_url),
         );
         let candidates =
             linux_terminal::candidates(&cmd, Some(linux_terminal::WIZARD_SIZE), linux_terminal::on_wayland());
@@ -418,8 +479,8 @@ fn spawn_ghostty_page(
     player_bin: &std::path::Path,
     server_url: &str,
     scratch_dir: &std::path::Path,
-    page: WizardPage,
-) -> Result<(), String> {
+    page: PlayerPage,
+) ->Result<(), String> {
     let bin = console.ghostty_app.join("Contents").join("MacOS").join("ghostty");
     if !bin.exists() {
         return Err(format!("no ghostty binary at {}", bin.display()));
@@ -449,8 +510,8 @@ fn ghostty_page_config(
     console: &crate::paths::ConsoleLaunch,
     player_bin: &std::path::Path,
     server_url: &str,
-    page: WizardPage,
-) -> String {
+    page: PlayerPage,
+) ->String {
     let mut body = format!(
         "# Written by mStream's tray - safe to delete.\n\
          auto-update = off\n\
@@ -465,12 +526,7 @@ fn ghostty_page_config(
         // Config values run to end of line — a spaced path needs no quoting.
         body.push_str(&format!("macos-icon = custom\nmacos-custom-icon = {}\n", icns.display()));
     }
-    body.push_str(&format!(
-        "command = shell:{player} {sub} --server {url}\n",
-        player = sh_quote(player_bin),
-        sub = page.subcommand(),
-        url = sh_quote_str(server_url),
-    ));
+    body.push_str(&format!("command = shell:{}\n", player_shell_words(page, player_bin, server_url)));
     body
 }
 
@@ -899,6 +955,109 @@ fn sh_quote_str(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// The one `sh -c` program every unix launch of a player page runs —
+/// `'<player>' <page args…> --server '<url>'` — shared by the macOS
+/// .command script, the bundled-console config and the Linux chain, so all
+/// three agree on the argv and its quoting.
+#[cfg(unix)]
+fn player_shell_words(page: PlayerPage, player_bin: &std::path::Path, server_url: &str) -> String {
+    let mut words = vec![sh_quote(player_bin)];
+    words.extend(page.args().into_iter().map(String::from));
+    words.push("--server".into());
+    words.push(sh_quote_str(server_url));
+    words.join(" ")
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::{AdminRoom, PlayerPage};
+
+    fn every_page() -> Vec<PlayerPage> {
+        let mut pages = vec![PlayerPage::Setup, PlayerPage::QuickConnect];
+        pages.extend(AdminRoom::ALL.into_iter().map(PlayerPage::Admin));
+        pages
+    }
+
+    #[test]
+    fn each_page_maps_to_its_own_argv_and_title() {
+        assert_eq!(PlayerPage::Setup.args(), ["setup"]);
+        assert_eq!(PlayerPage::QuickConnect.args(), ["qr"]);
+        // A room always declares --same-machine: the launcher IS the
+        // server's machine, so the room's folder picker may use the OS
+        // dialog and hand the server the paths it picks.
+        assert_eq!(
+            PlayerPage::Admin(AdminRoom::Libraries).args(),
+            ["admin", "libraries", "--same-machine"]
+        );
+        assert_eq!(PlayerPage::Admin(AdminRoom::Torrents).args(), ["admin", "torrents", "--same-machine"]);
+        assert_eq!(PlayerPage::Setup.title(), "mStream Setup");
+        assert_eq!(PlayerPage::QuickConnect.title(), "mStream Quick Connect");
+        assert_eq!(PlayerPage::Admin(AdminRoom::Discovery).title(), "mStream Discovery");
+        // Seven pages, seven argvs, seven titles: no two tray items may
+        // open the same thing or the same-named window.
+        let pages = every_page();
+        for (i, a) in pages.iter().enumerate() {
+            for b in &pages[i + 1..] {
+                assert_ne!(a.args(), b.args(), "{a:?} vs {b:?}");
+                assert_ne!(a.title(), b.title(), "{a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rooms_round_trip_through_their_cli_names() {
+        for room in AdminRoom::ALL {
+            assert_eq!(AdminRoom::from_subcommand(room.subcommand()), Some(room));
+        }
+        assert_eq!(AdminRoom::from_subcommand("setup"), None);
+        assert_eq!(AdminRoom::from_subcommand("Libraries"), None, "the CLI names are lowercase");
+        assert_eq!(AdminRoom::from_subcommand(""), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_launches_share_one_quoted_command_line() {
+        let player = std::path::Path::new("/Application Support/bin/mstream-player");
+        assert_eq!(
+            super::player_shell_words(PlayerPage::Setup, player, "http://localhost:3000"),
+            "'/Application Support/bin/mstream-player' setup --server 'http://localhost:3000'"
+        );
+        assert_eq!(
+            super::player_shell_words(PlayerPage::Admin(AdminRoom::Backups), player, "http://x:1"),
+            "'/Application Support/bin/mstream-player' admin backups --same-machine --server 'http://x:1'"
+        );
+        // A quote inside a path survives as the POSIX '\'' dance.
+        let odd = std::path::Path::new("/it's/player");
+        let words = super::player_shell_words(PlayerPage::QuickConnect, odd, "http://x:1");
+        assert!(words.starts_with("'/it'\\''s/player' qr "), "{words}");
+    }
+
+    #[test]
+    #[ignore = "spawns a real terminal window - run manually with --ignored"]
+    fn manual_open_player_terminal() {
+        // MSTREAM_DEMO_PLAYER = a real player binary; MSTREAM_DEMO_SERVER =
+        // the URL to point it at; MSTREAM_DEMO_PAGE = setup (default), qr,
+        // or a room name (libraries, discovery, federation, backups,
+        // torrents); on macOS MSTREAM_DEMO_CONSOLE = optionally a Ghostty.app
+        // to prefer (with MSTREAM_DEMO_ICNS for the Dock icon).
+        let player = std::path::PathBuf::from(std::env::var("MSTREAM_DEMO_PLAYER").expect("set MSTREAM_DEMO_PLAYER"));
+        let url = std::env::var("MSTREAM_DEMO_SERVER").unwrap_or_else(|_| "http://localhost:3000".into());
+        let console = std::env::var("MSTREAM_DEMO_CONSOLE").ok().map(|app| crate::paths::ConsoleLaunch {
+            ghostty_app: std::path::PathBuf::from(app),
+            icon_icns: std::env::var("MSTREAM_DEMO_ICNS").ok().map(std::path::PathBuf::from),
+        });
+        let dir = std::env::temp_dir().join("mstream-page-demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let page = match std::env::var("MSTREAM_DEMO_PAGE").as_deref() {
+            Ok("qr") => PlayerPage::QuickConnect,
+            Ok(name) => AdminRoom::from_subcommand(name).map(PlayerPage::Admin).unwrap_or(PlayerPage::Setup),
+            Err(_) => PlayerPage::Setup,
+        };
+        let via = super::open_player_terminal(&player, &url, &dir, console.as_ref(), page).unwrap();
+        eprintln!("opened {page:?} via {via}");
+    }
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     #[test]
@@ -911,7 +1070,7 @@ mod tests {
             &c,
             std::path::Path::new("/Application Support/bin/mstream-player"),
             "http://localhost:3000",
-            super::WizardPage::Setup,
+            super::PlayerPage::Setup,
         );
         // shell: + sh-quoting is what survives "Application Support" spaces;
         // the command must live in the CONFIG, never a -e argument (consent
@@ -927,25 +1086,36 @@ mod tests {
         assert!(cfg.contains("quit-after-last-window-closed = true\n"), "{cfg}");
 
         let plain = crate::paths::ConsoleLaunch { ghostty_app: "/t/G.app".into(), icon_icns: None };
-        let cfg2 = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", super::WizardPage::Setup);
+        let cfg2 = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", super::PlayerPage::Setup);
         assert!(!cfg2.contains("macos-icon"), "no icns means Ghostty keeps its own icon: {cfg2}");
 
         // The Quick Connect page: same machinery, its own subcommand + title.
-        let qc = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", super::WizardPage::QuickConnect);
+        let qc = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", super::PlayerPage::QuickConnect);
         assert!(qc.contains("command = shell:'/p' qr --server 'http://x:1'"), "{qc}");
         assert!(qc.contains("title = mStream Quick Connect\n"), "{qc}");
+
+        // An admin room: the same window, its own argv (with --same-machine)
+        // and title.
+        let room = super::PlayerPage::Admin(super::AdminRoom::Federation);
+        let fed = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", room);
+        assert!(fed.contains("command = shell:'/p' admin federation --same-machine --server 'http://x:1'"), "{fed}");
+        assert!(fed.contains("title = mStream Federation\n"), "{fed}");
     }
 
     #[test]
-    fn each_page_maps_to_its_own_subcommand_title_and_script() {
-        use super::WizardPage::*;
-        assert_eq!(Setup.subcommand(), "setup");
-        assert_eq!(QuickConnect.subcommand(), "qr");
-        assert_eq!(Setup.title(), "mStream Setup");
-        assert_eq!(QuickConnect.title(), "mStream Quick Connect");
-        // Distinct script files: the two tray items must never clobber
-        // each other's .command.
-        assert_ne!(Setup.script_name(), QuickConnect.script_name());
+    fn each_page_writes_its_own_command_script() {
+        // Distinct script files: no two tray items may clobber each
+        // other's .command while both windows are open.
+        let mut pages = vec![super::PlayerPage::Setup, super::PlayerPage::QuickConnect];
+        pages.extend(super::AdminRoom::ALL.into_iter().map(super::PlayerPage::Admin));
+        let names: Vec<String> = pages.iter().map(|p| p.script_name()).collect();
+        for (i, a) in names.iter().enumerate() {
+            assert!(a.ends_with(".command"), "{a}");
+            for b in &names[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+        assert_eq!(super::PlayerPage::Admin(super::AdminRoom::Libraries).script_name(), "admin-libraries-mstream.command");
     }
 
     #[test]
@@ -958,31 +1128,4 @@ mod tests {
         super::open_logs_terminal(&dir).unwrap();
     }
 
-    #[test]
-    #[ignore = "spawns a real Terminal window - run manually with --ignored"]
-    fn manual_open_setup_terminal() {
-        // MSTREAM_DEMO_PLAYER = a real player binary; MSTREAM_DEMO_SERVER =
-        // the URL to point its wizard at; MSTREAM_DEMO_CONSOLE = optionally,
-        // a Ghostty.app to prefer (with MSTREAM_DEMO_ICNS for the Dock icon).
-        let player = std::path::PathBuf::from(
-            std::env::var("MSTREAM_DEMO_PLAYER").expect("set MSTREAM_DEMO_PLAYER"),
-        );
-        let url = std::env::var("MSTREAM_DEMO_SERVER")
-            .unwrap_or_else(|_| "http://localhost:3000".into());
-        let console = std::env::var("MSTREAM_DEMO_CONSOLE").ok().map(|app| {
-            crate::paths::ConsoleLaunch {
-                ghostty_app: std::path::PathBuf::from(app),
-                icon_icns: std::env::var("MSTREAM_DEMO_ICNS").ok().map(std::path::PathBuf::from),
-            }
-        });
-        let dir = std::env::temp_dir().join("mstream-setup-demo");
-        std::fs::create_dir_all(&dir).unwrap();
-        // MSTREAM_DEMO_PAGE=qr opens the Quick Connect page instead.
-        let page = match std::env::var("MSTREAM_DEMO_PAGE").as_deref() {
-            Ok("qr") => super::WizardPage::QuickConnect,
-            _ => super::WizardPage::Setup,
-        };
-        let via = super::open_wizard_terminal(&player, &url, &dir, console.as_ref(), page).unwrap();
-        eprintln!("opened via {via}");
-    }
 }
