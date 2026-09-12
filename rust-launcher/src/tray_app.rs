@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 const STOP_GRACE: Duration = Duration::from_secs(8);
@@ -356,7 +356,16 @@ pub fn run(args: LauncherArgs) -> ! {
                     update_item_view(upd.as_ref(), &updates_dir(), relaunch_target_exists(exe_real.as_deref()));
                 let update = MenuItem::with_id("update", utext.clone(), uaction != UpdateAction::None, None);
                 upd_text = utext;
-                let open_item = MenuItem::with_id("open", "Open Admin Panel", true, None);
+                // "Manage server": the terminal player's admin rooms, one
+                // item each, then the browser admin panel as the last
+                // resort that always exists (a room item falls back to
+                // the panel's matching section when no terminal opens).
+                let manage = Submenu::with_id("manage", "Manage server", true);
+                for room in platform::AdminRoom::ALL {
+                    let _ = manage.append(&MenuItem::with_id(room_menu_id(room), room_label(room), true, None));
+                }
+                let _ = manage.append(&PredefinedMenuItem::separator());
+                let _ = manage.append(&MenuItem::with_id("open", "Open Admin Panel in browser", true, None));
                 let qc_item = MenuItem::with_id("quick-connect", "Quick Connect", true, None);
                 let auto_item =
                     CheckMenuItem::with_id("autostart", "Start at login", true, autostart::is_enabled(), None);
@@ -366,7 +375,7 @@ pub fn run(args: LauncherArgs) -> ! {
                 let _ = menu.append(&status);
                 let _ = menu.append(&update);
                 let _ = menu.append(&PredefinedMenuItem::separator());
-                let _ = menu.append(&open_item);
+                let _ = menu.append(&manage);
                 let _ = menu.append(&qc_item);
                 let _ = menu.append(&PredefinedMenuItem::separator());
                 let _ = menu.append(&auto_item);
@@ -500,11 +509,39 @@ pub fn run(args: LauncherArgs) -> ! {
                 }
                 AppEvent::Menu(id) => match id.as_str() {
                     "open" => {
-                        // The admin panel, explicitly — the tray is the
-                        // operator's surface, and listening happens in the
-                        // apps/players. (The post-boot browser announce keeps
-                        // its own routing: paths::browse_target.)
+                        // The browser admin panel, explicitly — the tray is
+                        // the operator's surface, and listening happens in
+                        // the apps/players. (The post-boot browser announce
+                        // keeps its own routing: paths::browse_target.)
                         let _ = open::that_detached(format!("{url}/admin"));
+                    }
+                    room_id if room_from_menu_id(room_id).is_some() => {
+                        // One of the player's admin rooms in a real terminal
+                        // — the same spawn as the wizard pages, so the same
+                        // per-OS terminal choice and the same log surface.
+                        // The room reuses the admin session the wizard saved
+                        // (or asks once, in-room, and keeps what it gets);
+                        // the browser panel's matching section is the
+                        // fallback when this install has no player binary
+                        // or no terminal opened.
+                        let room = room_from_menu_id(room_id).expect("guarded by the match arm");
+                        let name = room.subcommand();
+                        log.line(&format!("menu: manage {name}"));
+                        let mut opened = false;
+                        if let Some(player) = player_bin.as_deref() {
+                            match platform::open_player_terminal(player, &url, &data_home, console.as_ref(), platform::PlayerPage::Admin(room)) {
+                                Ok(via) => {
+                                    log.line(&format!("{name} room opened via {via}"));
+                                    opened = true;
+                                }
+                                Err(e) => log.line(&format!("{name} room terminal failed: {e} - falling back to the admin panel")),
+                            }
+                        } else {
+                            log.line(&format!("{name} room: no player binary in this install - falling back to the admin panel"));
+                        }
+                        if !opened {
+                            let _ = open::that_detached(room_webapp_url(&url, room));
+                        }
                     }
                     "quick-connect" => {
                         // The wizard's Quick Connect page (pixel pairing QR)
@@ -516,7 +553,7 @@ pub fn run(args: LauncherArgs) -> ! {
                         log.line("menu: quick connect");
                         let mut opened = false;
                         if let Some(player) = player_bin.as_deref() {
-                            match platform::open_wizard_terminal(player, &url, &data_home, console.as_ref(), platform::WizardPage::QuickConnect) {
+                            match platform::open_player_terminal(player, &url, &data_home, console.as_ref(), platform::PlayerPage::QuickConnect) {
                                 Ok(via) => {
                                     log.line(&format!("quick connect opened via {via}"));
                                     opened = true;
@@ -689,7 +726,7 @@ pub fn run(args: LauncherArgs) -> ! {
                             if target.ends_with("/admin") {
                                 let mut wizard_opened = false;
                                 if let Some(player) = player_bin.as_deref() {
-                                    match platform::open_wizard_terminal(player, &url, &data_home, console.as_ref(), platform::WizardPage::Setup) {
+                                    match platform::open_player_terminal(player, &url, &data_home, console.as_ref(), platform::PlayerPage::Setup) {
                                         Ok(via) => {
                                             log.line(&format!("first-run announce: setup wizard opened via {via}"));
                                             wizard_opened = true;
@@ -835,6 +872,45 @@ pub fn run(args: LauncherArgs) -> ! {
             _ => {}
         }
     })
+}
+
+/// The "Manage server" submenu: one menu id per admin room, derived from the
+/// room's CLI name so the id and the argv can never drift apart.
+fn room_menu_id(room: platform::AdminRoom) -> String {
+    format!("admin-{}", room.subcommand())
+}
+
+fn room_from_menu_id(id: &str) -> Option<platform::AdminRoom> {
+    id.strip_prefix("admin-").and_then(platform::AdminRoom::from_subcommand)
+}
+
+/// The menu text — the rooms' own titles, which are also the browser admin
+/// panel's section names (Directories aside: the player and the wizard
+/// call the music folders libraries).
+fn room_label(room: platform::AdminRoom) -> &'static str {
+    use platform::AdminRoom::*;
+    match room {
+        Libraries => "Libraries",
+        Discovery => "Discovery",
+        Federation => "Federation",
+        Backups => "Backups",
+        Torrents => "Torrents",
+    }
+}
+
+/// The browser admin panel opened on the room's section — its URL-hash
+/// deep link (webapp/admin/index.js `_initialViewFromHash`) — the
+/// fallback when the terminal room could not open.
+fn room_webapp_url(server_url: &str, room: platform::AdminRoom) -> String {
+    use platform::AdminRoom::*;
+    let view = match room {
+        Libraries => "folders-view",
+        Discovery => "discovery-view",
+        Federation => "federation-view",
+        Backups => "backup-view",
+        Torrents => "torrent-view",
+    };
+    format!("{server_url}/admin#{view}")
 }
 
 /// Spawn a server generation plus its two helper threads.
@@ -1416,6 +1492,29 @@ mod tests {
         assert!(unverified.ticks());
         assert!(!Phase::Starting.ticks(), "no ticks unless an uptime is showing");
         assert!(!Phase::Stopped.ticks());
+    }
+
+    #[test]
+    fn manage_server_items_round_trip_and_fall_back_to_their_panel_section() {
+        use crate::platform::AdminRoom;
+        for room in AdminRoom::ALL {
+            let id = room_menu_id(room);
+            assert_eq!(room_from_menu_id(&id), Some(room), "{id}");
+            assert!(!room_label(room).is_empty());
+        }
+        // Every other menu id — and a room name without the prefix — is
+        // somebody else's arm, never a room.
+        for other in ["open", "quick-connect", "manage", "libraries", "admin-", "admin-setup", ""] {
+            assert_eq!(room_from_menu_id(other), None, "{other}");
+        }
+        // Five rooms, five labels, five panel sections.
+        let labels: std::collections::BTreeSet<&str> = AdminRoom::ALL.into_iter().map(room_label).collect();
+        assert_eq!(labels.len(), AdminRoom::ALL.len());
+        let urls: std::collections::BTreeSet<String> =
+            AdminRoom::ALL.into_iter().map(|r| room_webapp_url("http://localhost:3000", r)).collect();
+        assert_eq!(urls.len(), AdminRoom::ALL.len());
+        assert_eq!(room_webapp_url("http://localhost:3000", AdminRoom::Libraries), "http://localhost:3000/admin#folders-view");
+        assert_eq!(room_webapp_url("http://[::1]:3000", AdminRoom::Backups), "http://[::1]:3000/admin#backup-view");
     }
 
     fn status(json: &str) -> Option<crate::paths::UpdateStatus> {
