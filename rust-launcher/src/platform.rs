@@ -251,35 +251,25 @@ pub fn open_logs_terminal(logs_dir: &std::path::Path) -> Result<(), String> {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        // No universal Linux terminal. Try the common emulators — each with
-        // its own execute-argument dialect — first successful spawn wins;
-        // with none present, degrade to the file manager on the logs dir
-        // (still a working "show me the logs", just not a live tail).
+        // No universal Linux terminal: the shared chain (linux_terminal
+        // below) — the desktop's declared default, the pixel-capable
+        // emulators, then the distro ones. With none present, degrade to
+        // the file manager on the logs dir (still a working "show me the
+        // logs", just not a live tail).
         let cmd = format!(
             "cd {dir}; echo '== launcher.log =='; tail -n 50 launcher.log 2>/dev/null; echo; echo '== server-console.log: full server log for this session (following; Ctrl+C to stop) =='; exec tail -n +1 -F server-console.log",
             dir = sh_quote(logs_dir)
         );
-        let candidates = [
-            ("x-terminal-emulator", ["-e", "sh", "-c", cmd.as_str()]),
-            ("gnome-terminal", ["--", "sh", "-c", cmd.as_str()]),
-            ("konsole", ["-e", "sh", "-c", cmd.as_str()]),
-            ("xfce4-terminal", ["-x", "sh", "-c", cmd.as_str()]),
-            ("xterm", ["-e", "sh", "-c", cmd.as_str()]),
-        ];
-        for (bin, args) in candidates {
-            if std::process::Command::new(bin).args(args).spawn().is_ok() {
-                return Ok(());
-            }
-        }
+        let candidates = linux_terminal::candidates(&cmd, None, linux_terminal::on_wayland());
+        let chain_err = match linux_terminal::spawn_first_alive(&candidates) {
+            Ok(_) => return Ok(()),
+            Err(e) => e,
+        };
         std::process::Command::new("xdg-open")
             .arg(logs_dir)
             .spawn()
             .map(|_| ())
-            .map_err(|_| {
-                "no terminal emulator found (tried x-terminal-emulator, gnome-terminal, \
-                 konsole, xfce4-terminal, xterm) and xdg-open failed"
-                    .to_string()
-            })
+            .map_err(|_| format!("{chain_err} and xdg-open failed"))
     }
 }
 
@@ -399,27 +389,19 @@ pub fn open_wizard_terminal(
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let _ = (scratch_dir, console); // no script file / no bundled console here
+        // No `exec`: the shell stays the window's parent, so a page that
+        // dies at once (a missing libasound, a bad binary) leaves its error
+        // on screen behind a "press Enter" instead of a window that flashed
+        // and vanished — the support surface for "nothing happened".
         let cmd = format!(
-            "exec {player} {sub} --server {url}",
+            "{player} {sub} --server {url}; s=$?; if [ \"$s\" -ne 0 ]; then printf '\\nmstream-player exited with status %s - press Enter to close this window\\n' \"$s\"; read dummy; fi",
             player = sh_quote(player_bin),
             sub = page.subcommand(),
             url = sh_quote_str(server_url),
         );
-        let candidates = [
-            ("x-terminal-emulator", ["-e", "sh", "-c", cmd.as_str()]),
-            ("gnome-terminal", ["--", "sh", "-c", cmd.as_str()]),
-            ("konsole", ["-e", "sh", "-c", cmd.as_str()]),
-            ("xfce4-terminal", ["-x", "sh", "-c", cmd.as_str()]),
-            ("xterm", ["-e", "sh", "-c", cmd.as_str()]),
-        ];
-        for (bin, args) in candidates {
-            if std::process::Command::new(bin).args(args).spawn().is_ok() {
-                return Ok(bin.into());
-            }
-        }
-        Err("no terminal emulator found (tried x-terminal-emulator, gnome-terminal, \
-             konsole, xfce4-terminal, xterm)"
-            .to_string())
+        let candidates =
+            linux_terminal::candidates(&cmd, Some(linux_terminal::WIZARD_SIZE), linux_terminal::on_wayland());
+        linux_terminal::spawn_first_alive(&candidates)
     }
 }
 
@@ -628,6 +610,281 @@ pub fn spawn_installer_detached(installer: &std::path::Path, silent: bool) -> Re
     cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("spawn {}: {e}", installer.display()))
+}
+
+/// The Linux terminal chain, shared by View logs and the wizard pages.
+/// There is no universal Linux terminal, so this is a preference list —
+/// each entry in its own execute-argument dialect — and the first one that
+/// actually opens wins.
+#[cfg(all(unix, not(target_os = "macos")))]
+mod linux_terminal {
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    /// Columns × rows the wizard pages ask for, where an emulator's CLI can
+    /// take a size: the VTE family opens 80×24 by default, which cannot
+    /// hold the pairing QR drawn in half-blocks (77×39 cells), and the
+    /// XTWINOPS resize the macOS .command script sends is ignored by VTE,
+    /// kitty and stock xterm alike. The same window the mac Ghostty config
+    /// asks for.
+    pub const WIZARD_SIZE: (u16, u16) = (120, 42);
+
+    /// How long a spawned emulator gets to fail. A spawn that succeeds and
+    /// then exits non-zero at once opened nothing — a Wayland-only terminal
+    /// on X11, a GPU terminal without GL, a D-Bus factory that refused —
+    /// and must not end the chain: before this probe, such a "success"
+    /// left the user with no window and no fallback.
+    const GRACE: Duration = Duration::from_millis(250);
+
+    pub fn on_wayland() -> bool {
+        std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
+    }
+
+    /// The chain for one `sh -c` program, in preference order:
+    ///  1. `xdg-terminal-exec` — the freedesktop "run this in the user's
+    ///     chosen terminal" entry point, authoritative where installed;
+    ///  2. the pixel-capable emulators (kitty, Ghostty, WezTerm, foot):
+    ///     they draw the wizard's wordmark and QR as real pixels, so a user
+    ///     who has one gets the best page even when it isn't the desktop's
+    ///     default (the player repo's Phase 8 verdict);
+    ///  3. Debian's `x-terminal-emulator` alternative, then the desktop
+    ///     defaults — Ptyxis (Fedora 41+ ships no gnome-terminal), GNOME
+    ///     Console, GNOME Terminal, Konsole, the Xfce and MATE terminals,
+    ///     Alacritty — and xterm last.
+    ///
+    /// `size` rides only where the CLI takes one (the rest open at their
+    /// default and the pages reflow); `wayland` admits foot, which cannot
+    /// run without a Wayland socket.
+    pub fn candidates(cmd: &str, size: Option<(u16, u16)>, wayland: bool) -> Vec<(&'static str, Vec<String>)> {
+        // Every dialect ends in the program itself as three argv elements —
+        // `sh -c <cmd>` — so no emulator re-parses the command text.
+        let with = |lead: Vec<String>| -> Vec<String> {
+            let mut a = lead;
+            a.extend(["sh", "-c", cmd].map(String::from));
+            a
+        };
+        let owned = |parts: &[&str]| -> Vec<String> { parts.iter().map(|p| (*p).to_string()).collect() };
+        let geo = size.map(|(c, r)| format!("{c}x{r}"));
+        let mut chain: Vec<(&'static str, Vec<String>)> = Vec::new();
+        chain.push(("xdg-terminal-exec", with(vec![])));
+        chain.push((
+            "kitty",
+            with(match size {
+                Some((c, r)) => vec![
+                    "-o".into(),
+                    format!("initial_window_width={c}c"),
+                    "-o".into(),
+                    format!("initial_window_height={r}c"),
+                ],
+                None => vec![],
+            }),
+        ));
+        chain.push((
+            "ghostty",
+            with(match size {
+                Some((c, r)) => vec![format!("--window-width={c}"), format!("--window-height={r}"), "-e".into()],
+                None => owned(&["-e"]),
+            }),
+        ));
+        chain.push((
+            "wezterm",
+            with(match size {
+                Some((c, r)) => vec![
+                    "--config".into(),
+                    format!("initial_cols={c}"),
+                    "--config".into(),
+                    format!("initial_rows={r}"),
+                    "start".into(),
+                    "--".into(),
+                ],
+                None => owned(&["start", "--"]),
+            }),
+        ));
+        if wayland {
+            chain.push((
+                "foot",
+                with(match &geo {
+                    Some(g) => vec!["-W".into(), g.clone(), "--".into()],
+                    None => owned(&["--"]),
+                }),
+            ));
+        }
+        chain.push(("x-terminal-emulator", with(owned(&["-e"]))));
+        chain.push(("ptyxis", with(owned(&["--"]))));
+        chain.push(("kgx", with(owned(&["--"]))));
+        chain.push((
+            "gnome-terminal",
+            with(match &geo {
+                Some(g) => vec![format!("--geometry={g}"), "--".into()],
+                None => owned(&["--"]),
+            }),
+        ));
+        chain.push(("konsole", with(owned(&["-e"]))));
+        chain.push((
+            "xfce4-terminal",
+            with(match &geo {
+                Some(g) => vec![format!("--geometry={g}"), "-x".into()],
+                None => owned(&["-x"]),
+            }),
+        ));
+        chain.push((
+            "mate-terminal",
+            with(match &geo {
+                Some(g) => vec![format!("--geometry={g}"), "-x".into()],
+                None => owned(&["-x"]),
+            }),
+        ));
+        chain.push((
+            "alacritty",
+            with(match size {
+                Some((c, r)) => vec![
+                    "-o".into(),
+                    format!("window.dimensions.columns={c}"),
+                    "-o".into(),
+                    format!("window.dimensions.lines={r}"),
+                    "-e".into(),
+                ],
+                None => owned(&["-e"]),
+            }),
+        ));
+        chain.push((
+            "xterm",
+            with(match &geo {
+                Some(g) => vec!["-geometry".into(), g.clone(), "-e".into()],
+                None => owned(&["-e"]),
+            }),
+        ));
+        chain
+    }
+
+    /// Spawn the first candidate that is still alive after GRACE — or that
+    /// exited 0 within it: the D-Bus-factory clients (gnome-terminal and
+    /// kin) hand the window to a running service and return at once. Ok
+    /// carries the emulator that opened; Err lists what each one did, for
+    /// the launcher log.
+    pub fn spawn_first_alive(candidates: &[(&str, Vec<String>)]) -> Result<String, String> {
+        let mut tried = Vec::with_capacity(candidates.len());
+        for (bin, args) in candidates {
+            let mut child = match Command::new(bin).args(args).stdin(Stdio::null()).spawn() {
+                Ok(c) => c,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    tried.push(format!("{bin}: not installed"));
+                    continue;
+                }
+                Err(e) => {
+                    tried.push(format!("{bin}: {e}"));
+                    continue;
+                }
+            };
+            std::thread::sleep(GRACE);
+            if let Ok(Some(status)) = child.try_wait() {
+                if !status.success() {
+                    tried.push(format!("{bin}: {status}"));
+                    continue;
+                }
+            }
+            // Reap it eventually, so a session of clicks leaves no zombies.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            return Ok((*bin).to_string());
+        }
+        Err(format!("no terminal emulator opened ({})", tried.join("; ")))
+    }
+}
+
+#[cfg(all(test, unix, not(target_os = "macos")))]
+mod linux_tests {
+    use super::linux_terminal::{candidates, spawn_first_alive, WIZARD_SIZE};
+
+    const CMD: &str = "'/opt/m stream/bin/mstream-player' setup --server 'http://x:1'";
+
+    #[test]
+    fn every_dialect_carries_the_program_as_sh_dash_c() {
+        for size in [None, Some(WIZARD_SIZE)] {
+            for wayland in [false, true] {
+                for (bin, args) in candidates(CMD, size, wayland) {
+                    let n = args.len();
+                    assert!(n >= 3, "{bin}: {args:?}");
+                    assert_eq!(&args[n - 3..], ["sh", "-c", CMD], "{bin}: {args:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn size_rides_only_where_the_cli_takes_one() {
+        let sized = candidates(CMD, Some(WIZARD_SIZE), true);
+        let args_of = |bin: &str| -> Vec<String> {
+            sized.iter().find(|(b, _)| *b == bin).map(|(_, a)| a.clone()).unwrap_or_else(|| panic!("{bin} missing"))
+        };
+        let pair = |bin: &str, a: &str, b: &str| args_of(bin).windows(2).any(|w| w[0] == a && w[1] == b);
+        assert!(pair("xterm", "-geometry", "120x42"));
+        assert!(pair("foot", "-W", "120x42"));
+        assert!(args_of("gnome-terminal").contains(&"--geometry=120x42".to_string()));
+        assert!(args_of("xfce4-terminal").contains(&"--geometry=120x42".to_string()));
+        assert!(args_of("mate-terminal").contains(&"--geometry=120x42".to_string()));
+        assert!(args_of("kitty").contains(&"initial_window_width=120c".to_string()));
+        assert!(args_of("ghostty").contains(&"--window-height=42".to_string()));
+        assert!(args_of("wezterm").contains(&"initial_rows=42".to_string()));
+        assert!(args_of("alacritty").contains(&"window.dimensions.lines=42".to_string()));
+        // These CLIs take no size: the pages reflow into the default window.
+        for bin in ["xdg-terminal-exec", "x-terminal-emulator", "ptyxis", "kgx", "konsole"] {
+            let a = args_of(bin);
+            assert!(!a.iter().any(|x| x.contains("120") || x.contains("42")), "{bin}: {a:?}");
+        }
+        // Without a size, nobody asks for one.
+        for (bin, args) in candidates(CMD, None, true) {
+            assert!(
+                !args.iter().any(|a| a.contains("120x42") || a.contains("=120") || a.contains("=42")),
+                "{bin}: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn foot_is_offered_only_on_wayland() {
+        assert!(candidates(CMD, None, false).iter().all(|(b, _)| *b != "foot"));
+        assert!(candidates(CMD, None, true).iter().any(|(b, _)| *b == "foot"));
+    }
+
+    #[test]
+    fn order_is_declared_default_then_pixel_capable_then_distro_then_xterm() {
+        let names: Vec<&str> = candidates(CMD, None, true).into_iter().map(|(b, _)| b).collect();
+        assert_eq!(names.first(), Some(&"xdg-terminal-exec"));
+        assert_eq!(names.last(), Some(&"xterm"));
+        let pos = |n: &str| names.iter().position(|b| *b == n).unwrap_or_else(|| panic!("{n} missing"));
+        assert!(pos("kitty") < pos("x-terminal-emulator"), "pixel-capable before the distro default");
+        assert!(pos("x-terminal-emulator") < pos("ptyxis") && pos("ptyxis") < pos("gnome-terminal"));
+    }
+
+    #[test]
+    fn a_spawn_that_dies_at_once_does_not_end_the_chain() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mstream-term-chain-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = |name: &str, body: &str| -> String {
+            let p = dir.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p.to_string_lossy().into_owned()
+        };
+        let dead = script("dead-terminal", "exit 3");
+        let alive = script("alive-terminal", "sleep 1");
+        let handed_off = script("factory-client", "exit 0");
+        let missing = dir.join("no-such-terminal").to_string_lossy().into_owned();
+
+        let chain = vec![(missing.as_str(), vec![]), (dead.as_str(), vec![]), (alive.as_str(), vec![])];
+        assert_eq!(spawn_first_alive(&chain).unwrap(), alive, "the first one still running wins");
+
+        let factory = vec![(dead.as_str(), vec![]), (handed_off.as_str(), vec![]), (alive.as_str(), vec![])];
+        assert_eq!(spawn_first_alive(&factory).unwrap(), handed_off, "a clean exit 0 counts as opened");
+
+        let hopeless = vec![(missing.as_str(), vec![]), (dead.as_str(), vec![])];
+        let err = spawn_first_alive(&hopeless).unwrap_err();
+        assert!(err.contains("not installed") && err.contains("exit status: 3"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// POSIX single-quote a path for embedding in `sh -c` text — the macOS data

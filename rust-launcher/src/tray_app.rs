@@ -508,22 +508,20 @@ pub fn run(args: LauncherArgs) -> ! {
                     }
                     "quick-connect" => {
                         // The wizard's Quick Connect page (pixel pairing QR)
-                        // in a real terminal on the desktop platforms; the
-                        // webapp's modal hash stays the linux behavior
-                        // (webapp/assets/js/quick-connect.js) and the
-                        // fallback when this install has no player binary or
-                        // the terminal launch itself fails.
+                        // in a real terminal on every desktop platform; the
+                        // webapp's modal hash (webapp/assets/js/quick-connect.js)
+                        // is the fallback when this install has no player
+                        // binary or no terminal opened (a Linux desktop
+                        // without an emulator the chain knows).
                         log.line("menu: quick connect");
                         let mut opened = false;
-                        if cfg!(any(target_os = "macos", windows)) {
-                            if let Some(player) = player_bin.as_deref() {
-                                match platform::open_wizard_terminal(player, &url, &data_home, console.as_ref(), platform::WizardPage::QuickConnect) {
-                                    Ok(via) => {
-                                        log.line(&format!("quick connect opened via {via}"));
-                                        opened = true;
-                                    }
-                                    Err(e) => log.line(&format!("quick connect terminal failed: {e} - falling back to the webapp")),
+                        if let Some(player) = player_bin.as_deref() {
+                            match platform::open_wizard_terminal(player, &url, &data_home, console.as_ref(), platform::WizardPage::QuickConnect) {
+                                Ok(via) => {
+                                    log.line(&format!("quick connect opened via {via}"));
+                                    opened = true;
                                 }
+                                Err(e) => log.line(&format!("quick connect terminal failed: {e} - falling back to the webapp")),
                             }
                         }
                         if !opened {
@@ -675,8 +673,9 @@ pub fn run(args: LauncherArgs) -> ! {
                             opened = true;
                             // First install: open the guided terminal wizard
                             // (browser admin panel as the fallback when no
-                            // player binary exists or the terminal launch
-                            // failed, and as the linux path). CONFIGURED
+                            // player binary exists or no terminal opened —
+                            // on Linux, a desktop without an emulator the
+                            // platform chain knows). CONFIGURED
                             // installs boot QUIETLY — the wizard quick-start
                             // superseded the old open-the-player-on-every-
                             // boot announce (operator decision, pre-6.24):
@@ -689,15 +688,13 @@ pub fn run(args: LauncherArgs) -> ! {
                             // never pop a terminal.
                             if target.ends_with("/admin") {
                                 let mut wizard_opened = false;
-                                if cfg!(any(target_os = "macos", windows)) {
-                                    if let Some(player) = player_bin.as_deref() {
-                                        match platform::open_wizard_terminal(player, &url, &data_home, console.as_ref(), platform::WizardPage::Setup) {
-                                            Ok(via) => {
-                                                log.line(&format!("first-run announce: setup wizard opened via {via}"));
-                                                wizard_opened = true;
-                                            }
-                                            Err(e) => log.line(&format!("first-run announce: wizard failed ({e}) - opening the admin panel")),
+                                if let Some(player) = player_bin.as_deref() {
+                                    match platform::open_wizard_terminal(player, &url, &data_home, console.as_ref(), platform::WizardPage::Setup) {
+                                        Ok(via) => {
+                                            log.line(&format!("first-run announce: setup wizard opened via {via}"));
+                                            wizard_opened = true;
                                         }
+                                        Err(e) => log.line(&format!("first-run announce: wizard failed ({e}) - opening the admin panel")),
                                     }
                                 }
                                 if !wizard_opened {

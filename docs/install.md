@@ -147,12 +147,19 @@ install** the tray opens the guided setup wizard by itself (the bundled
 `mstream-player setup` — music folders, admin account, extras) in a real
 terminal: the bundled mStream console (Ghostty, with the mStream Dock icon)
 on macOS, which draws the wizard's artwork and Quick Connect QR as real
-pixels; Terminal.app without the console, and Windows Terminal on Windows.
-The wizard is one-time onboarding — the server records `setupComplete` in
-its config the moment the first folder or account lands, and everything
-after that lives in the admin panel. **Quick Connect** opens the same way on macOS and Windows —
-the wizard's pairing page (a scannable pixel QR plus the app links) in a
-terminal window; on Linux, or when an install has no player binary, it opens
+pixels; Terminal.app without the console; Windows Terminal on Windows (a
+plain console window without it); and on Linux whichever terminal emulator
+the desktop has — the one `xdg-terminal-exec` declares when that is
+installed, else a pixel-capable one (kitty, Ghostty, WezTerm, foot) so the
+artwork stays pixels, else the distro's own (Ptyxis, GNOME Console, GNOME
+Terminal, Konsole, the Xfce and MATE terminals, Alacritty, xterm). A Linux
+desktop with none of those opens the browser admin panel instead, and the
+launcher log says why. The wizard is one-time onboarding — the server
+records `setupComplete` in its config the moment the first folder or
+account lands, and everything after that lives in the admin panel.
+**Quick Connect** opens the same way on all three — the wizard's pairing
+page (a scannable pixel QR plus the app links) in a terminal window; when
+an install has no player binary, or no terminal could be opened, it opens
 the web player's Quick Connect modal instead. Headless installs get the
 setup invitation as a boot log line whenever the server has no folders and
 no accounts yet.
