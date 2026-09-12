@@ -116,6 +116,8 @@ export function register(mstream) {
     raw.federation.enabled = enabled;
     await admin.saveFile(raw, config.configFile);
     config.program.federation.enabled = enabled;
+    // The tray's inbox count is gated on this flag (util/tray-status.js).
+    (await import('../util/tray-status.js')).kick(`federation ${enabled ? 'enabled' : 'disabled'}`);
 
     try {
       const federation = await import('../state/federation.js');

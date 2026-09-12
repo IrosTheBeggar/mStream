@@ -141,7 +141,11 @@ server in the background, puts an mStream icon in your tray / menu bar
 (a status line — "Running · up 3h 12m", or Starting… / Stopped — then
 Manage server ▸ (Libraries · Discovery · Federation · Backups · Torrents ·
 Open Admin Panel in browser) · Quick Connect · Start at login · View logs ·
-Restart server · Quit). Boots are quiet once set up — re-click the app icon
+Restart server · Quit). While other mStream servers have federation pairing
+requests waiting on you, an extra line under the update one says so ("2
+federation requests waiting"), the tray icon wears a dot — with the count
+beside it on macOS — and clicking the line opens the Federation room.
+Boots are quiet once set up — re-click the app icon
 (or launch it again) whenever you want the player in your browser. Start-at-login
 is on by default; one click in the tray menu turns it off. On a **first
 install** the tray opens the guided setup wizard by itself (the bundled

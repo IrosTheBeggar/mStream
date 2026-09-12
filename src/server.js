@@ -61,6 +61,7 @@ import { isAdminAllowed } from './util/admin-network.js';
 import { writeJsonAtomic, completedWrites } from './util/atomic-json.js';
 import * as adminUtil from './util/admin.js';
 import * as updateCheck from './util/update-check.js';
+import * as trayStatus from './util/tray-status.js';
 import * as bootWatchdog from './util/boot-watchdog.js';
 
 
@@ -595,6 +596,10 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     isScanning: () => (taskQueueMod ? taskQueueMod.isScanning() : true),
     msSinceActivity: () => Date.now() - lastUserRequestAt,
   });
+  // The tray's session-less facts file (tray-status.json): written once at
+  // boot so the launcher's post-boot read sees THIS run's truth, then from
+  // the transitions that change it (state/federation-requests.js).
+  trayStatus.refresh('boot').catch(() => {});
   scrobblerApi.setup(mstream);
   remoteApi.setupAfterAuth(mstream, server);
   sharedApi.setupAfterSecurity(mstream);
