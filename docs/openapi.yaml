@@ -89,6 +89,8 @@ tags:
     description: Directory browsing, upload, M3U parsing.
   - name: Download
     description: Multi-file ZIP downloads.
+  - name: Sync
+    description: Paged library manifest for client-side mirrors and offline indexes.
   - name: Transcode
     description: On-the-fly audio transcoding via ffmpeg.
   - name: Album Art
@@ -441,6 +443,60 @@ components:
           type: boolean
         has-synced-lyrics:
           type: boolean
+
+    SyncManifestEntry:
+      type: object
+      description: |
+        One track in the library manifest: the lite `{filepath, metadata}` row every
+        list endpoint returns, plus the identity fields a mirror needs to keep a
+        byte-identical local copy without touching the file. Multi-word keys are
+        kebab-case, matching `Metadata`.
+      properties:
+        filepath:
+          type: string
+          description: Virtual path (`<vpath>/<rel>`), forward slashes.
+        metadata: { $ref: "#/components/schemas/MetadataLite" }
+        id:
+          type: integer
+          description: Track row id — the paging cursor.
+        file-size: { type: integer, nullable: true, description: "Bytes." }
+        modified: { type: integer, nullable: true, description: "File mtime, epoch milliseconds." }
+        hash:
+          type: string
+          nullable: true
+          description: Whole-file content hash (full MD5 below 25 MB, sampled above — see `hash-v`).
+        audio-hash:
+          type: string
+          nullable: true
+          description: Audio-payload hash, stable across tag edits — the key for rename detection.
+        hash-v:
+          type: integer
+          nullable: true
+          description: Hash scheme generation the row's hashes were computed under (2 = sampled above 25 MB).
+        format: { type: string, nullable: true }
+        album-id: { type: integer, nullable: true }
+        artist-id: { type: integer, nullable: true }
+        created-at: { type: string, nullable: true, description: "When the row was first scanned." }
+
+    SyncManifest:
+      type: object
+      properties:
+        revision:
+          type: string
+          description: |
+            Revision of the caller's visible library set (row count, max id, max mtime,
+            art count, scope). Also sent as the `ETag`. Covers library content only —
+            not per-user ratings or play counts.
+        scanning:
+          type: boolean
+          description: A scan is running; rows can be transiently absent, so a missing path is not a deletion.
+        next:
+          type: integer
+          nullable: true
+          description: Cursor for the next page, or null on the last page.
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/SyncManifestEntry" }
 
     Album:
       type: object
@@ -1026,6 +1082,13 @@ paths:
                       discoveryP2p:
                         type: boolean
                         description: The discovery network feature is enabled.
+                      sync:
+                        type: boolean
+                        description: >
+                          This server serves `POST /api/v1/sync/manifest` (the
+                          library manifest behind client-side mirrors and
+                          offline indexes). Absent on older servers — gate on
+                          the key, never on a probe.
                       transcode:
                         description: >
                           false when unavailable; otherwise the server's
@@ -1097,6 +1160,7 @@ paths:
                   discoveryReady: true
                   discovery: true
                   discoveryP2p: false
+                  sync: true
                   transcode: false
                   supportedAudioFiles: { mp3: true, flac: true }
         "401":
@@ -3413,6 +3477,56 @@ paths:
           content:
             application/zip:
               schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ── Sync ─────────────────────────────────────────────────────────────────
+
+  /api/v1/sync/manifest:
+    post:
+      tags: [Sync]
+      summary: Library manifest (paged)
+      description: |
+        Every track the caller can see, ascending by id, for client-side mirrors and
+        offline indexes: the lite metadata block plus size / mtime / hashes. Page with
+        `cursor` = the previous page's `next`. Send the last `revision` back as
+        `If-None-Match` on the first page (no `cursor`) to get a 304 when nothing
+        changed. Advertised by the `sync` flag in `GET /api/v1/ping`.
+      parameters:
+        - in: header
+          name: If-None-Match
+          required: false
+          schema: { type: string }
+          description: A previously returned `revision`, quoted as the `ETag` header carried it.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  properties:
+                    cursor:
+                      type: integer
+                      minimum: 0
+                      description: Return rows with an id greater than this. Omit for the first page.
+                    limit:
+                      type: integer
+                      minimum: 1
+                      maximum: 5000
+                      default: 2000
+                - { $ref: "#/components/schemas/IgnoreVPaths" }
+      responses:
+        "200":
+          description: One page. The `ETag` header carries the revision.
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SyncManifest" }
+        "304":
+          description: Nothing changed since the revision in `If-None-Match` (first page only).
+        "400": { description: "Validation failed." }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   # ── Transcode ────────────────────────────────────────────────────────────

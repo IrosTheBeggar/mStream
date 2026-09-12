@@ -90,6 +90,11 @@ export function buildFeatures() {
     // version string. 2 = ingest, reads and management together; a partial
     // surface was never advertised.
     stats: 2,
+    // Library sync manifest (POST /api/v1/sync/manifest) — the server half
+    // of the mobile / desktop app's local mirror + offline index. Same
+    // contract as the discovery flags: the key's presence says this VERSION
+    // has the route; clients never probe for it.
+    sync: true,
   };
 }
 
