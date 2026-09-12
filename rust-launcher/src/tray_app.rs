@@ -306,6 +306,14 @@ pub fn run(args: LauncherArgs) -> ! {
     let mut update_item: Option<MenuItem> = None;
     let mut upd: Option<paths::UpdateStatus> = paths::read_update_status();
     let mut upd_text = String::new();
+    // The federation inbox: peers' pairing requests waiting on this
+    // operator, from the server's tray-status.json (util/tray-status.js) —
+    // re-read on the same minute tick as the update file and after each
+    // boot. While non-zero it owns a menu line under the update one, a dot
+    // on the icon, and the count beside the icon where the OS draws one.
+    let mut menu_handle: Option<Menu> = None;
+    let mut inbox_item: Option<MenuItem> = None;
+    let mut inbox: u32 = 0;
     // The apply request we last ACTED on (the file's applyRequestedAt, else
     // the staged version): a failed handoff must not auto-retry itself into
     // a spawn loop, but a NEW request — a later version, or the operator
@@ -343,6 +351,13 @@ pub fn run(args: LauncherArgs) -> ! {
             // it must follow NSApplication activation. Windows tolerates
             // either; one code path keeps all three honest.
             Event::NewEvents(StartCause::Init) => {
+                // What the previous server run left in the facts file: the
+                // icon is built badged from the first frame when peers are
+                // already waiting.
+                inbox = paths::read_tray_status().map(|s| s.federation_inbox).unwrap_or(0);
+                if inbox > 0 {
+                    log.line(&format!("federation inbox: {inbox} waiting (from the last run's file)"));
+                }
                 let menu = Menu::new();
                 // Disabled = the greyed, unclickable status line every tray
                 // app leads with (Docker Desktop, Tailscale). Text tracks
@@ -383,6 +398,10 @@ pub fn run(args: LauncherArgs) -> ! {
                 let _ = menu.append(&logs_item);
                 let _ = menu.append(&restart_item);
                 let _ = menu.append(&quit_item);
+                // A handle for later inserts/removes (the builder takes the
+                // menu itself); the inbox line, if any, goes in now.
+                menu_handle = Some(menu.clone());
+                sync_inbox_item(&menu, &mut inbox_item, inbox);
                 status_item = Some(status);
                 update_item = Some(update);
                 autostart_item = Some(auto_item);
@@ -398,7 +417,7 @@ pub fn run(args: LauncherArgs) -> ! {
                     TrayIconBuilder::new()
                         .with_tooltip("mStream Server")
                         .with_menu(Box::new(menu))
-                        .with_icon(load_icon())
+                        .with_icon(icon_for(inbox))
                         .build()
                 }));
                 match built {
@@ -416,7 +435,10 @@ pub fn run(args: LauncherArgs) -> ! {
                         log.line(&format!("tray unavailable ({msg}) - server continues without it"));
                     }
                 }
-                show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
+                // The icon was built badged already; this adds the count
+                // beside it where the OS draws one.
+                apply_inbox_tray(tray.as_ref(), inbox, false);
+                show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()), inbox);
             }
             Event::UserEvent(app_event) => match app_event {
                 // The minute tick from the current generation's ticker
@@ -439,6 +461,11 @@ pub fn run(args: LauncherArgs) -> ! {
                         relaunch_target_exists(exe_real.as_deref()),
                         &mut upd_text,
                     );
+                    // The same tick reads the tray facts file (the inbox
+                    // count): one more small file, re-rendered on change.
+                    if sync_inbox(&mut inbox, menu_handle.as_ref(), &mut inbox_item, tray.as_ref(), &log) {
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()), inbox);
+                    }
                     // auto mode / a webapp "restart to update" click: the
                     // server flags applyRequested and this launcher acts on
                     // the next poll. Once PER REQUEST TOKEN — a failed
@@ -492,7 +519,7 @@ pub fn run(args: LauncherArgs) -> ! {
                                 phase = recover_after_failed_apply(
                                     &shared_loop, &bin, &args.server_args, &server_log_loop, ep, &proxy, &log,
                                 );
-                                show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
+                                show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()), inbox);
                             }
                         }
                     }
@@ -504,7 +531,7 @@ pub fn run(args: LauncherArgs) -> ! {
                         && status_rendered_at.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1))
                     {
                         status_rendered_at = Some(now);
-                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()), inbox);
                     }
                 }
                 AppEvent::Menu(id) => match id.as_str() {
@@ -515,33 +542,18 @@ pub fn run(args: LauncherArgs) -> ! {
                         // keeps its own routing: paths::browse_target.)
                         let _ = open::that_detached(format!("{url}/admin"));
                     }
+                    "federation-inbox" => {
+                        // The line under the update item, present only
+                        // while peers wait on this operator: straight into
+                        // the Federation room, whose first section is the
+                        // requests inbox.
+                        log.line("menu: federation inbox");
+                        open_admin_room(platform::AdminRoom::Federation, player_bin.as_deref(), &url, &data_home, console.as_ref(), &log);
+                    }
                     room_id if room_from_menu_id(room_id).is_some() => {
-                        // One of the player's admin rooms in a real terminal
-                        // — the same spawn as the wizard pages, so the same
-                        // per-OS terminal choice and the same log surface.
-                        // The room reuses the admin session the wizard saved
-                        // (or asks once, in-room, and keeps what it gets);
-                        // the browser panel's matching section is the
-                        // fallback when this install has no player binary
-                        // or no terminal opened.
                         let room = room_from_menu_id(room_id).expect("guarded by the match arm");
-                        let name = room.subcommand();
-                        log.line(&format!("menu: manage {name}"));
-                        let mut opened = false;
-                        if let Some(player) = player_bin.as_deref() {
-                            match platform::open_player_terminal(player, &url, &data_home, console.as_ref(), platform::PlayerPage::Admin(room)) {
-                                Ok(via) => {
-                                    log.line(&format!("{name} room opened via {via}"));
-                                    opened = true;
-                                }
-                                Err(e) => log.line(&format!("{name} room terminal failed: {e} - falling back to the admin panel")),
-                            }
-                        } else {
-                            log.line(&format!("{name} room: no player binary in this install - falling back to the admin panel"));
-                        }
-                        if !opened {
-                            let _ = open::that_detached(room_webapp_url(&url, room));
-                        }
+                        log.line(&format!("menu: manage {}", room.subcommand()));
+                        open_admin_room(room, player_bin.as_deref(), &url, &data_home, console.as_ref(), &log);
                     }
                     "quick-connect" => {
                         // The wizard's Quick Connect page (pixel pairing QR)
@@ -609,7 +621,7 @@ pub fn run(args: LauncherArgs) -> ! {
                                 Phase::Stopped
                             }
                         };
-                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()), inbox);
                     }
                     "update" => {
                         // Recompute from the file at click time — the menu
@@ -650,7 +662,7 @@ pub fn run(args: LauncherArgs) -> ! {
                                         phase = recover_after_failed_apply(
                                             &shared_loop, &bin, &args.server_args, &server_log_loop, ep, &proxy, &log,
                                         );
-                                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
+                                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()), inbox);
                                     }
                                 }
                             }
@@ -693,12 +705,16 @@ pub fn run(args: LauncherArgs) -> ! {
                             relaunch_target_exists(exe_real.as_deref()),
                             &mut upd_text,
                         );
+                        // The booting server also refreshed tray-status.json
+                        // (its boot write): read it now, not a minute on.
+                        // (The status line below re-renders regardless.)
+                        let _ = sync_inbox(&mut inbox, menu_handle.as_ref(), &mut inbox_item, tray.as_ref(), &log);
                         // Uptime counts from here — "up" means serving, not
                         // spawned. A restart or crash lands back in
                         // Starting/Stopped, so the count resets with it.
                         let since = Instant::now();
                         phase = Phase::Running { since };
-                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()), inbox);
                         start_ticker(&shared_loop, generation, since, &proxy);
                         // Logged unconditionally (even under --no-open) so
                         // smokes and support can see the routing decision.
@@ -773,7 +789,7 @@ pub fn run(args: LauncherArgs) -> ! {
                         ));
                         let since = spawned_at;
                         phase = Phase::Unverified { since };
-                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()), inbox);
                         start_ticker(&shared_loop, generation, since, &proxy);
                     }
                 }
@@ -849,7 +865,7 @@ pub fn run(args: LauncherArgs) -> ! {
                                 }
                             }
                         }
-                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
+                        show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()), inbox);
                     }
                 }
             },
@@ -911,6 +927,117 @@ fn room_webapp_url(server_url: &str, room: platform::AdminRoom) -> String {
         Torrents => "torrent-view",
     };
     format!("{server_url}/admin#{view}")
+}
+
+/// One of the player's admin rooms in a real terminal — the same spawn as
+/// the wizard pages, so the same per-OS terminal choice and the same log
+/// surface. The room reuses the admin session the wizard saved (or asks
+/// once, in-room, and keeps what it gets); the browser panel's matching
+/// section is the fallback when this install has no player binary or no
+/// terminal opened.
+fn open_admin_room(
+    room: platform::AdminRoom,
+    player_bin: Option<&Path>,
+    url: &str,
+    data_home: &Path,
+    console: Option<&paths::ConsoleLaunch>,
+    log: &Logger,
+) {
+    let name = room.subcommand();
+    let mut opened = false;
+    if let Some(player) = player_bin {
+        match platform::open_player_terminal(player, url, data_home, console, platform::PlayerPage::Admin(room)) {
+            Ok(via) => {
+                log.line(&format!("{name} room opened via {via}"));
+                opened = true;
+            }
+            Err(e) => log.line(&format!("{name} room terminal failed: {e} - falling back to the admin panel")),
+        }
+    } else {
+        log.line(&format!("{name} room: no player binary in this install - falling back to the admin panel"));
+    }
+    if !opened {
+        let _ = open::that_detached(room_webapp_url(url, room));
+    }
+}
+
+/// Where the inbox line sits: under the status line (0) and the update
+/// line (1), above the first separator.
+const INBOX_POSITION: usize = 2;
+
+/// The inbox menu line's text.
+fn inbox_line(n: u32) -> String {
+    if n == 1 {
+        "1 federation request waiting".into()
+    } else {
+        format!("{n} federation requests waiting")
+    }
+}
+
+/// What the tooltip gains while peers wait — short: Windows keeps 127
+/// characters of a tooltip and the status text already spends most of them.
+fn inbox_suffix(n: u32) -> String {
+    match n {
+        0 => String::new(),
+        1 => " - 1 request waiting".into(),
+        n => format!(" - {n} requests waiting"),
+    }
+}
+
+/// The inbox line is PRESENT only while the count is non-zero — inserted
+/// under the update line, removed at zero, retitled in between. (muda has
+/// no hidden state for an item; insert/remove is the live primitive on all
+/// three backends.)
+fn sync_inbox_item(menu: &Menu, item: &mut Option<MenuItem>, n: u32) {
+    match (n, item.as_ref()) {
+        (0, None) => {}
+        (0, Some(existing)) => {
+            let _ = menu.remove(existing);
+            *item = None;
+        }
+        (_, Some(existing)) => existing.set_text(inbox_line(n)),
+        (_, None) => {
+            let fresh = MenuItem::with_id("federation-inbox", inbox_line(n), true, None);
+            let _ = menu.insert(&fresh, INBOX_POSITION);
+            *item = Some(fresh);
+        }
+    }
+}
+
+/// The icon's badge and the count beside it. `repaint`: false when the
+/// icon was just built for this count (startup) and only the title is due.
+/// set_title is the macOS menu-bar text and the appindicator label; a
+/// no-op on Windows, where the tooltip carries the number instead.
+fn apply_inbox_tray(tray: Option<&TrayIcon>, n: u32, repaint: bool) {
+    if let Some(t) = tray {
+        if repaint {
+            let _ = t.set_icon(Some(icon_for(n)));
+        }
+        t.set_title(if n > 0 { Some(n.to_string()) } else { None });
+    }
+}
+
+/// Re-read the server's facts file and, when the inbox count moved, reflect
+/// it in the menu line, the icon and the title. True when it moved — the
+/// caller re-renders the status line, whose tooltip carries the count too.
+fn sync_inbox(
+    inbox: &mut u32,
+    menu: Option<&Menu>,
+    item: &mut Option<MenuItem>,
+    tray: Option<&TrayIcon>,
+    log: &Logger,
+) -> bool {
+    let n = paths::read_tray_status().map(|s| s.federation_inbox).unwrap_or(0);
+    if n == *inbox {
+        return false;
+    }
+    *inbox = n;
+    log.line(&format!("federation inbox: {n} waiting"));
+    if let Some(m) = menu {
+        sync_inbox_item(m, item, n);
+    }
+    apply_inbox_tray(tray, n, true);
+    true
 }
 
 /// Spawn a server generation plus its two helper threads.
@@ -1357,12 +1484,14 @@ impl Phase {
 /// Push the phase into the status line and tooltip. Both handles are
 /// Options because the tray can be degraded away (no StatusNotifier host)
 /// while the loop, and the server, carry on.
-fn show_status(item: Option<&MenuItem>, tray: Option<&TrayIcon>, phase: &Phase, url: &str, ver: &str) {
+fn show_status(item: Option<&MenuItem>, tray: Option<&TrayIcon>, phase: &Phase, url: &str, ver: &str, inbox: u32) {
     if let Some(i) = item {
         i.set_text(phase.menu_text(ver));
     }
     if let Some(t) = tray {
-        let _ = t.set_tooltip(Some(phase.tooltip(url, ver)));
+        // The count rides on the tooltip too: on Windows the icon's dot is
+        // the only badge and hovering is how one asks what it means.
+        let _ = t.set_tooltip(Some(format!("{}{}", phase.tooltip(url, ver), inbox_suffix(inbox))));
     }
 }
 
@@ -1393,25 +1522,71 @@ fn format_uptime(d: Duration) -> String {
 /// Tray icon: the repo logo (build/icon.png), embedded at compile time; a
 /// plain fallback square if decoding ever fails — an icon must never be the
 /// reason the launcher dies.
-fn load_icon() -> Icon {
-    fn decode() -> Option<(Vec<u8>, u32, u32)> {
-        let bytes: &[u8] = include_bytes!("../../build/icon.png");
-        let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-        let mut reader = decoder.read_info().ok()?;
-        let mut buf = vec![0u8; reader.output_buffer_size()?];
-        let info = reader.next_frame(&mut buf).ok()?;
-        buf.truncate(info.buffer_size());
-        let rgba = match info.color_type {
-            png::ColorType::Rgba => buf,
-            png::ColorType::Rgb => buf.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
-            _ => return None,
-        };
-        Some((rgba, info.width, info.height))
+/// The tray mark's pixels, decoded once from the embedded PNG
+/// (build/icon.png): the base every badge variant is painted over.
+fn base_icon() -> &'static (Vec<u8>, u32, u32) {
+    static BASE: std::sync::OnceLock<(Vec<u8>, u32, u32)> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| {
+        fn decode() -> Option<(Vec<u8>, u32, u32)> {
+            let bytes: &[u8] = include_bytes!("../../build/icon.png");
+            let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+            let mut reader = decoder.read_info().ok()?;
+            let mut buf = vec![0u8; reader.output_buffer_size()?];
+            let info = reader.next_frame(&mut buf).ok()?;
+            buf.truncate(info.buffer_size());
+            let rgba = match info.color_type {
+                png::ColorType::Rgba => buf,
+                png::ColorType::Rgb => buf.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+                _ => return None,
+            };
+            Some((rgba, info.width, info.height))
+        }
+        decode().unwrap_or_else(|| ([124, 77, 255, 255].repeat(32 * 32), 32, 32))
+    })
+}
+
+/// The icon for an inbox count: the plain mark at zero, the mark wearing a
+/// red dot in its top-right corner otherwise — the one badge every OS can
+/// show (Windows has no badge API for notification-area icons, and a digit
+/// is illegible at the 16 px the tray draws). The number itself rides in
+/// the menu line, the tooltip, and the macOS / appindicator title.
+fn icon_for(inbox: u32) -> Icon {
+    let (base, w, h) = base_icon();
+    let mut rgba = base.clone();
+    if inbox > 0 {
+        paint_badge(&mut rgba, *w, *h);
     }
-    let (rgba, w, h) = decode().unwrap_or_else(|| ([124, 77, 255, 255].repeat(32 * 32), 32, 32));
-    Icon::from_rgba(rgba, w, h).unwrap_or_else(|_| {
+    Icon::from_rgba(rgba, *w, *h).unwrap_or_else(|_| {
         Icon::from_rgba([124, 77, 255, 255].repeat(32 * 32), 32, 32).expect("solid icon")
     })
+}
+
+/// A filled disc, top-right, a fifth of the icon wide, with a one-pixel soft
+/// edge: big enough to survive the tray's downscale, small enough to leave
+/// the mark recognisable. Straight (non-premultiplied) RGBA, source-over.
+fn paint_badge(rgba: &mut [u8], w: u32, h: u32) {
+    const RED: [f32; 3] = [232.0 / 255.0, 56.0 / 255.0, 48.0 / 255.0];
+    let (wf, hf) = (w as f32, h as f32);
+    let r = wf * 0.21;
+    let (cx, cy) = (wf * 0.76, hf * 0.24);
+    for y in 0..h {
+        for x in 0..w {
+            let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            let cover = (r + 0.5 - d).clamp(0.0, 1.0);
+            if cover <= 0.0 {
+                continue;
+            }
+            let i = ((y * w + x) * 4) as usize;
+            let under_a = rgba[i + 3] as f32 / 255.0;
+            let out_a = cover + under_a * (1.0 - cover);
+            for c in 0..3 {
+                let under = rgba[i + c] as f32 / 255.0;
+                let v = (RED[c] * cover + under * under_a * (1.0 - cover)) / out_a.max(1e-6);
+                rgba[i + c] = (v * 255.0).round() as u8;
+            }
+            rgba[i + 3] = (out_a * 255.0).round() as u8;
+        }
+    }
 }
 
 struct Logger(std::path::PathBuf);
@@ -1515,6 +1690,55 @@ mod tests {
         assert_eq!(urls.len(), AdminRoom::ALL.len());
         assert_eq!(room_webapp_url("http://localhost:3000", AdminRoom::Libraries), "http://localhost:3000/admin#folders-view");
         assert_eq!(room_webapp_url("http://[::1]:3000", AdminRoom::Backups), "http://[::1]:3000/admin#backup-view");
+    }
+
+    #[test]
+    fn inbox_texts_count_in_english() {
+        assert_eq!(inbox_line(1), "1 federation request waiting");
+        assert_eq!(inbox_line(2), "2 federation requests waiting");
+        assert_eq!(inbox_line(999), "999 federation requests waiting");
+        assert_eq!(inbox_suffix(0), "", "no count, no suffix: the tooltip stays what it was");
+        assert_eq!(inbox_suffix(1), " - 1 request waiting");
+        assert_eq!(inbox_suffix(12), " - 12 requests waiting");
+        // The whole tooltip stays inside Windows' 127-character szTip even
+        // with a pinned address and the unverified note.
+        let tip = format!(
+            "{}{}",
+            Phase::Unverified { since: Instant::now() }.tooltip("http://192.168.100.200:3000", "6.26.0"),
+            inbox_suffix(999)
+        );
+        assert!(tip.encode_utf16().count() <= 127, "{} chars: {tip}", tip.encode_utf16().count());
+    }
+
+    #[test]
+    fn the_badge_is_a_disc_in_the_top_right_corner_and_nothing_else() {
+        let (w, h) = (64u32, 64u32);
+        let base: Vec<u8> = (0..w * h).flat_map(|_| [10, 20, 30, 255]).collect();
+        let mut painted = base.clone();
+        paint_badge(&mut painted, w, h);
+        let px = |buf: &[u8], x: u32, y: u32| {
+            let i = ((y * w + x) * 4) as usize;
+            [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
+        };
+        // Centre (0.76, 0.24) of the icon, radius 0.21 of its width.
+        assert_eq!(px(&painted, 48, 15), [232, 56, 48, 255], "the disc's centre is the badge red");
+        assert_eq!(px(&painted, 48, 25), [232, 56, 48, 255], "inside the radius");
+        assert_eq!(px(&painted, 48, 31), [10, 20, 30, 255], "outside the radius: the mark");
+        assert_eq!(px(&painted, 32, 32), [10, 20, 30, 255], "the mark's centre is untouched");
+        assert_eq!(px(&painted, 8, 56), [10, 20, 30, 255], "the far corner is untouched");
+        let changed = (0..w * h).filter(|&i| painted[(i * 4) as usize..(i * 4 + 4) as usize] != base[(i * 4) as usize..(i * 4 + 4) as usize]).count();
+        let disc = std::f32::consts::PI * (64.0 * 0.21f32).powi(2);
+        assert!((changed as f32) > disc * 0.9 && (changed as f32) < disc * 1.25, "{changed} pixels changed for a disc of ~{disc:.0}");
+        // On transparent ground the disc is fully opaque, the ground stays clear.
+        let mut clear = vec![0u8; (w * h * 4) as usize];
+        paint_badge(&mut clear, w, h);
+        assert_eq!(px(&clear, 48, 15), [232, 56, 48, 255]);
+        assert_eq!(px(&clear, 8, 56), [0, 0, 0, 0]);
+        // The real mark decodes, and both variants build an icon.
+        let (_, bw, bh) = base_icon();
+        assert!(*bw >= 32 && *bh >= 32, "{bw}x{bh}");
+        let _ = icon_for(0);
+        let _ = icon_for(3);
     }
 
     fn status(json: &str) -> Option<crate::paths::UpdateStatus> {
