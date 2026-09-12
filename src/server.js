@@ -540,9 +540,6 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     }
   });
 
-  // Server-remote route (must be before static middleware to intercept /server-remote)
-  serverPlaybackApi.setupBeforeAuth(mstream);
-
   // Give access to public folder.
   mstream.use('/', express.static(config.program.webAppDirectory));
 

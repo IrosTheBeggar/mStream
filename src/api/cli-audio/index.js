@@ -88,7 +88,6 @@ let activeAdapter = null;
 let activePlayerName = null;
 
 export function getActivePlayerName() { return activePlayerName; }
-export function getActiveAdapter() { return activeAdapter; }
 export function isCliActive() { return activeAdapter !== null; }
 
 /**

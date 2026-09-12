@@ -25,7 +25,7 @@ function socketPath() {
 
 export class MpvAdapter extends BaseCliAdapter {
   constructor(binary = 'mpv') {
-    super('mpv');
+    super();
     this.binary = binary;
     this._sockPath = socketPath();
     this._proc = null;
