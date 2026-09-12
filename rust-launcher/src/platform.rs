@@ -479,8 +479,8 @@ fn spawn_ghostty_page(
     player_bin: &std::path::Path,
     server_url: &str,
     scratch_dir: &std::path::Path,
-    page: WizardPage,
-) -> Result<(), String> {
+    page: PlayerPage,
+) ->Result<(), String> {
     let bin = console.ghostty_app.join("Contents").join("MacOS").join("ghostty");
     if !bin.exists() {
         return Err(format!("no ghostty binary at {}", bin.display()));
@@ -510,8 +510,8 @@ fn ghostty_page_config(
     console: &crate::paths::ConsoleLaunch,
     player_bin: &std::path::Path,
     server_url: &str,
-    page: WizardPage,
-) -> String {
+    page: PlayerPage,
+) ->String {
     let mut body = format!(
         "# Written by mStream's tray - safe to delete.\n\
          auto-update = off\n\
