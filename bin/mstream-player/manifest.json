@@ -2,39 +2,39 @@
   "family": "mstream-player",
   "schema": 2,
   "repo": "IrosTheBeggar/mstream-terminal-player",
-  "tag": "v0.6.0",
-  "builtFrom": "25dd9a5bcc984814696025d1ec76cbed40238590",
-  "release": "https://github.com/IrosTheBeggar/mstream-terminal-player/releases/tag/v0.6.0",
+  "tag": "v0.7.0",
+  "builtFrom": "3171725907d25c310b99cc661bcfd7d83b81dc22",
+  "release": "https://github.com/IrosTheBeggar/mstream-terminal-player/releases/tag/v0.7.0",
   "assets": {
     "mstream-player-darwin-arm64": {
       "file": "mstream-player-darwin-arm64",
-      "sha256": "b153bef3cb2938ff55b6f7f00264ea1d7f833b8f01347f92df3d5127f51b8755",
-      "size": 24352976
+      "sha256": "6db5bf6d43812b004a1bee4e13a8a0cfbe0f33f64a5e02ed1dbec9930831da32",
+      "size": 24402256
     },
     "mstream-player-darwin-x64": {
       "file": "mstream-player-darwin-x64",
-      "sha256": "0b3e948b33c34a1403dbe53dccbcd03f12634ee5143fe85705570376b7000007",
-      "size": 27374224
+      "sha256": "0299130f4b435f2cdf493e2ae392790d983c391a3be6c6d556f9ff5d47113de7",
+      "size": 27432064
     },
     "mstream-player-linux-arm": {
       "file": "mstream-player-linux-arm",
-      "sha256": "f03ec23c933840059374843db62e9fe8b33907231c644f3a81a99b5059511557",
-      "size": 27730084
+      "sha256": "0c5abab8b09621145b0999204f9680eb53404c11b5a49b0f082cdc1ca8ac6166",
+      "size": 27787428
     },
     "mstream-player-linux-arm64": {
       "file": "mstream-player-linux-arm64",
-      "sha256": "02fc4ddb21434128e4305d881ddc375c4b4774c3ee09d6630e91354e66d00341",
-      "size": 28706312
+      "sha256": "f21e38a2a5f5b45a9483a50abfef09f860dfe1771cafea3f2ac2252b8de97bd5",
+      "size": 28788232
     },
     "mstream-player-linux-x64": {
       "file": "mstream-player-linux-x64",
-      "sha256": "05da3c12404c0b47f8ea898e2044278343b51fda2fd5fada1e6dc4bc6038e61f",
-      "size": 33457656
+      "sha256": "f17b700969f9a86f3f852478e4020e713262763b53e2bee8758983c59e869062",
+      "size": 33523192
     },
     "mstream-player-win32-x64.exe": {
       "file": "mstream-player-win32-x64.exe",
-      "sha256": "5d1c0da48d703a98b7b36e87ab3134fb6362956d8418ac954c881c3c12bd8685",
-      "size": 32784896
+      "sha256": "f01429ba62e6a74a36cebd8d3e0c33aa0114749e5e4a5b83979babc1b48464f9",
+      "size": 32884736
     }
   }
 }
