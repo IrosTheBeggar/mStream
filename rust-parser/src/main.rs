@@ -345,7 +345,7 @@ struct ExtractedTrack {
     album_artists: Vec<String>,
     track_artists: Vec<String>,
     is_compilation: bool,
-    // V71: index-aligned to album_artists / track_artists (empty = none).
+    // V72: index-aligned to album_artists / track_artists (empty = none).
     track_artist_sorts: Vec<String>,
     album_artist_sorts: Vec<String>,
     track_artist_mbids: Vec<String>,
@@ -1091,11 +1091,11 @@ fn reconcile_album_art(
 // Wall-clock subsecond nanos as the entropy source — Instant is an
 // opaque monotonic point (elapsed-since-now is always ~0), and pulling
 // in a rand dependency for one modulus would be overkill.
-// ── V70: album aggregate refresh ─────────────────────────────────────────────
+// ── V71: album aggregate refresh ─────────────────────────────────────────────
 //
-// Since V70 an album row's year, year_min, year_max, track_count,
+// Since V71 an album row's year, year_min, year_max, track_count,
 // duration_total, compilation and album_artist are DERIVED from its tracks.
-// The tracks_ai_agg / tracks_ad_agg / tracks_au_agg triggers (SCHEMA_V70)
+// The tracks_ai_agg / tracks_ad_agg / tracks_au_agg triggers (SCHEMA_V71)
 // flag rows `agg_dirty = 1` as their tracks change; this recomputes every
 // flagged row at scan end — after the orphan sweep, so reaped rows are not
 // recomputed first — in 200-row autocommit chunks with the same schema
@@ -1228,9 +1228,9 @@ fn refresh_dirty_albums(
     Ok(refreshed)
 }
 
-// ── V71: artist aggregate refresh ────────────────────────────────────────────
+// ── V72: artist aggregate refresh ────────────────────────────────────────────
 //
-// Since V71 an artist row's display `name`, `order_name`, `track_count` and
+// Since V72 an artist row's display `name`, `order_name`, `track_count` and
 // `album_count` are DERIVED from its credits (track_artists / album_artists,
 // whose tag_name carries the raw tagged spelling). The *_agg triggers on
 // those tables flag rows `agg_dirty = 1`; this recomputes every flagged row
@@ -1888,7 +1888,7 @@ fn chunked_delete_stale_tracks(
                 params.push(&c.id);
                 params.push(&c.rel);
             }
-            // (V70: the albums these rows leave are flagged for the aggregate
+            // (V71: the albums these rows leave are flagged for the aggregate
             // refresh by the tracks_ad_agg trigger — nothing to do here.)
             total += conn.prepare(&del_sql)?.execute(params.as_slice())?;
         }
@@ -2052,10 +2052,10 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // album-artist + M2M) and almost always resolves to a small set of
     // repeat values, so caching collapses thousands of SELECTs into
     // a handful. Albums key on album_key (MBID, else exact name +
-    // album-artist id — see album_key()); year is an aggregate since V70.
+    // album-artist id — see album_key()); year is an aggregate since V71.
     // Genres are keyed by name alone.
     let artist_cache: Mutex<HashMap<String, i64>> = Mutex::new(HashMap::new());
-    // V70: keyed by album_key (see album_key()) — year is no longer identity.
+    // V71: keyed by album_key (see album_key()) — year is no longer identity.
     let album_cache: Mutex<HashMap<String, i64>> = Mutex::new(HashMap::new());
     let genre_cache: Mutex<HashMap<String, i64>> = Mutex::new(HashMap::new());
     // Cached id for the seeded "Various Artists" row, resolved on
@@ -2869,14 +2869,14 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             schema_version_at_open)?;
     }
 
-    // V70: recompute the consensus columns of every album the tracks_*_agg
+    // V71: recompute the consensus columns of every album the tracks_*_agg
     // triggers flagged this scan (see refresh_dirty_albums) — AFTER the
     // orphan sweep, so rows it just reaped are not recomputed first (a
     // starred trackless ghost survives it and is refreshed to track_count
     // 0). Runs in subtree mode too — a subtree scan dirties albums like any
     // other. Mirrors scanner.mjs.
     let albums_aggregated = refresh_dirty_albums(&conn, schema_version_at_open)?;
-    // V71: same for artists (display name = majority spelling, order_name,
+    // V72: same for artists (display name = majority spelling, order_name,
     // counts) — after albums, so album_count sees the surviving rows.
     let artists_aggregated = refresh_dirty_artists(&conn, schema_version_at_open)?;
 
@@ -3075,7 +3075,7 @@ fn extract_track(
     let mut album_artists_multi: Vec<String> = Vec::new();
     let mut track_artists_multi: Vec<String> = Vec::new();
     let mut is_compilation = false;
-    // V71: ARTISTSORT / ALBUMARTISTSORT (first value) and the multi-valued
+    // V72: ARTISTSORT / ALBUMARTISTSORT (first value) and the multi-valued
     // MusicBrainz artist ids, aligned to the credit lists after resolution.
     let mut track_artist_sort: Option<String> = None;
     let mut album_artist_sort: Option<String> = None;
@@ -3262,7 +3262,7 @@ fn extract_track(
                         track_artists_multi.push(s.to_string());
                     }
                 }
-                // V71: sort names (first value only — see alignSort in
+                // V72: sort names (first value only — see alignSort in
                 // src/db/artist-extraction.js) and per-artist MusicBrainz ids.
                 track_artist_sort = tag.get_string(ItemKey::TrackArtistSortOrder).map(|s| s.to_string());
                 album_artist_sort = tag.get_string(ItemKey::AlbumArtistSortOrder).map(|s| s.to_string());
@@ -3408,7 +3408,7 @@ fn extract_track(
         artist.as_deref(),
         &track_artists_multi,
     );
-    // V71: attribute sort names / MBIDs only when they align with the
+    // V72: attribute sort names / MBIDs only when they align with the
     // resolved credits (mirrors alignSort / alignIds in artist-extraction.js).
     let track_artist_sorts = align_sort(track_artist_sort.as_deref(), &track_artists);
     let album_artist_sorts = align_sort(album_artist_sort.as_deref(), &album_artists);
@@ -3765,7 +3765,7 @@ fn commit_track(
         et.mod_time, config.scan_id, et.source,
         et.mbz_recording_id, et.mbz_release_track_id, et.isrc, et.mbz_id_source,
         HASH_GENERATION,
-        // V70 consensus inputs for the album aggregate refresh: this track's
+        // V71 consensus inputs for the album aggregate refresh: this track's
         // own album name, raw ALBUMARTIST display string and compilation
         // flag. The album row's values are the majority / OR over these at
         // scan end. Mirrors scanner.mjs.
@@ -3792,7 +3792,7 @@ fn commit_track(
             primary_album_artist_id.into_iter().collect()
         };
         if !m2m_ids.is_empty() {
-            // V71: tag_name = the raw spelling this credit came from. The
+            // V72: tag_name = the raw spelling this credit came from. The
             // fallback credit's spelling is the primary track artist's tag
             // when that is what the chain picked, else the canonical
             // 'Various Artists'. One row per (album, artist, role): the
@@ -3849,7 +3849,7 @@ fn commit_track(
         }
     }
 
-    // V71: ARTISTSORT / ALBUMARTISTSORT and MusicBrainz artist ids, index-
+    // V72: ARTISTSORT / ALBUMARTISTSORT and MusicBrainz artist ids, index-
     // aligned by align_sort / align_ids. Converge on the BINARY-smallest
     // value seen (order-independent, so both engines land on the same
     // sort_name / order_name when files disagree). The sort fill flags the
@@ -4205,7 +4205,7 @@ fn clean_id(v: Option<&str>) -> Option<String> {
     v.map(str::trim).filter(|s| !s.is_empty()).map(|s| s.to_string())
 }
 
-/// Artist identity key (V71). Mirrors src/db/name-key.js nameKey() — keep
+/// Artist identity key (V72). Mirrors src/db/name-key.js nameKey() — keep
 /// byte-identical: whitespace runs collapsed + trimmed, Unicode quote/dash
 /// variants folded onto ASCII, lowercased. NOT diacritic- or
 /// punctuation-folded (those separate real artists).
@@ -4242,7 +4242,7 @@ fn find_or_create_artist(
     cache: &Mutex<HashMap<String, i64>>,
     name: &str,
 ) -> Result<i64, rusqlite::Error> {
-    // V71: identity is the normalised key — "Beatles" / "beatles" / a curly
+    // V72: identity is the normalised key — "Beatles" / "beatles" / a curly
     // apostrophe are one row. The name written on INSERT is provisional;
     // the scan-end artist refresh picks the majority spelling of the
     // credits. Mirrors findOrCreateArtist in scanner.mjs.
@@ -4281,7 +4281,7 @@ fn find_or_create_artist(
     Ok(id)
 }
 
-/// Album identity key (V70). Mirrors src/db/album-key.js albumKey() —
+/// Album identity key (V71). Mirrors src/db/album-key.js albumKey() —
 /// keep byte-identical:
 ///   mbid:<release id>                  when the track carries MUSICBRAINZ_ALBUMID
 ///   name:<exact album name>|<artist>   otherwise (artist id, or empty)
@@ -4301,7 +4301,7 @@ fn find_or_create_album(
     art: Option<&str>, art_source: Option<&str>, album_artist_display: Option<&str>, compilation: bool,
     mbz_album_id: Option<&str>, mbz_release_group_id: Option<&str>,
 ) -> Result<i64, rusqlite::Error> {
-    // V70: identity is the album key — MBID when the track carries one, else
+    // V71: identity is the album key — MBID when the track carries one, else
     // the exact album name + the album-artist id the fallback chain picked.
     // Year, the display credit and the compilation flag are provisional at
     // INSERT and become consensus values in the end-of-scan aggregate
@@ -4395,7 +4395,7 @@ fn find_various_artists(
             if v > 0 { return Ok(Some(v)); }
         }
     }
-    // V71: by key, so a tag spelled "various artists" lands on the seed too.
+    // V72: by key, so a tag spelled "various artists" lands on the seed too.
     let looked_up: Option<i64> = conn
         .prepare_cached("SELECT id FROM artists WHERE name_key = 'various artists' LIMIT 1")?
         .query_row([], |row| row.get::<_, i64>(0))
@@ -4613,7 +4613,7 @@ fn resolve_artists_list(scalar: Option<&str>, multi: &[String]) -> Vec<String> {
     } else {
         scalar.map(|s| vec![s.to_string()]).unwrap_or_default()
     };
-    // Dedup by identity key, first-seen spelling wins (V71): "Guns N' Roses /
+    // Dedup by identity key, first-seen spelling wins (V72): "Guns N' Roses /
     // Guns N’ Roses" is one credit, not a main + featured pair for one
     // artist id. Mirrors normaliseArtistTag in src/db/artist-extraction.js.
     let mut out: Vec<String> = Vec::new();
@@ -6174,12 +6174,12 @@ const SAMPLE_THRESHOLD_DEFAULT: u64 = 25 * 1024 * 1024;
 const HASH_GENERATION: i64 = 2;
 
 // The schema version whose scanner WRITE CONTRACT this binary implements
-// (V70: albums.album_key identity + the tracks.tag_* consensus columns).
+// (V71: albums.album_key identity + the tracks.tag_* consensus columns).
 // Answered by `--schema-contract`; task-queue refuses a binary whose value
 // is below the server's SCANNER_SCHEMA_CONTRACT (src/db/schema.js) — a
 // stale prebuilt would otherwise write key-less album rows through the
 // forced migration rescan. Bump in lock-step with schema.js.
-const SCANNER_SCHEMA_CONTRACT: i64 = 71;
+const SCANNER_SCHEMA_CONTRACT: i64 = 72;
 const SAMPLE_W_START: u64 = 256 * 1024;
 const SAMPLE_W_MID: u64 = 512 * 1024;
 const SAMPLE_W_END: u64 = 256 * 1024;

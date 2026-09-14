@@ -535,7 +535,7 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
       // the old per-chunk re-SELECT was immune by construction — this
       // keeps the property.) AUTOINCREMENT already guarantees ids are
       // never reused, so the pair is stable evidence.
-      // (V70: the albums these rows leave are flagged for the aggregate
+      // (V71: the albums these rows leave are flagged for the aggregate
       // refresh by the tracks_ad_agg trigger — nothing to do here.)
       const r = db.prepare(
         `DELETE FROM tracks WHERE (id, filepath) IN (VALUES ${

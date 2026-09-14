@@ -1,4 +1,4 @@
-// Album row merging for migrations (V70 fragment merge, V71 artist merge).
+// Album row merging for migrations (V71 fragment merge, V72 artist merge).
 //
 // mergeAlbumInto() folds `loserId` into `survivorId`: the same hops
 // src/db/album-migration.js performs when a re-mint orphans a row, minus
@@ -8,12 +8,12 @@
 // + the Bun driver shim).
 //
 // Moving tracks fires tracks_au_fts (album_id is in its column list) so
-// fts_tracks.album_name follows, and — since V70 — tracks_au_agg, which
+// fts_tracks.album_name follows, and — since V71 — tracks_au_agg, which
 // flags the survivor for the aggregate refresh; callers back-fill the
 // aggregate columns afterwards (backfillAlbumAggregates) so the API's
 // year-range match is right before any scan runs.
 
-// `copyTagName`: V71 adds album_artists.tag_name; the V70 hook runs before
+// `copyTagName`: V72 adds album_artists.tag_name; the V71 hook runs before
 // that column exists and passes false.
 export function mergeAlbumInto(db, survivorId, loserId, { copyTagName = true } = {}) {
   if (survivorId === loserId) { return; }

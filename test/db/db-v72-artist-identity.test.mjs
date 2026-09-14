@@ -1,8 +1,8 @@
 /**
- * V71 artist-identity migration: key assignment, duplicate merge, re-keyed
+ * V72 artist-identity migration: key assignment, duplicate merge, re-keyed
  * albums, dirty-marking and key-fill triggers.
  *
- * V71 is ADD COLUMN only (no rebuild). Its js hook groups artists by
+ * V72 is ADD COLUMN only (no rebuild). Its js hook groups artists by
  * nameKey(name), elects a survivor per group (most credit rows + primary-
  * track references, then lowest id) and folds the others in: tracks, both
  * M2M tables, stars and artist art re-point; NULL sort / MBID / image
@@ -11,7 +11,7 @@
  * that name through album-merge.js. Then the UNIQUE key index, order_name
  * and the counts are written.
  *
- * These tests build a populated V70 database and upgrade it under
+ * These tests build a populated V71 database and upgrade it under
  * foreign_keys=ON + recursive_triggers=ON exactly as the runner does.
  */
 
@@ -24,12 +24,12 @@ import { applyAllMigrations } from '../helpers/apply-migrations.mjs';
 
 const rows = (stmt, ...args) => stmt.all(...args).map(r => ({ ...r }));
 
-function buildV70Fixture() {
+function buildV71Fixture() {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec('PRAGMA recursive_triggers = ON');
-  applyAllMigrations(db, { upToVersion: 70 });
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 70);
+  applyAllMigrations(db, { upToVersion: 71 });
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 71);
 
   db.exec(`
     INSERT INTO libraries (id, name, root_path, type, follow_symlinks) VALUES (1, 'lib', '/lib', 'music', 0);
@@ -75,13 +75,13 @@ function buildV70Fixture() {
 }
 
 function upgrade(db) {
-  applyAllMigrations(db, { fromVersion: 70 });
+  applyAllMigrations(db, { fromVersion: 71 });
   assert.equal(db.prepare('PRAGMA user_version').get().user_version, SCHEMA_VERSION);
 }
 
-describe('V71 artist identity', () => {
+describe('V72 artist identity', () => {
   test('spelling variants merge into the most-referenced row; controls and the VA seed are untouched', () => {
-    const db = buildV70Fixture();
+    const db = buildV71Fixture();
     upgrade(db);
     const artists = rows(db.prepare('SELECT id, name, name_key FROM artists ORDER BY id'));
     assert.deepEqual(artists.filter(a => a.id >= 10), [
@@ -93,7 +93,7 @@ describe('V71 artist identity', () => {
   });
 
   test('tracks, credits, stars and art re-point to the survivor; NULL columns fill from the losers', () => {
-    const db = buildV70Fixture();
+    const db = buildV71Fixture();
     upgrade(db);
     assert.deepEqual(db.prepare('SELECT DISTINCT artist_id FROM tracks WHERE id BETWEEN 100 AND 105').all().map(r => r.artist_id), [10]);
     assert.deepEqual(db.prepare('SELECT DISTINCT artist_id FROM tracks WHERE id BETWEEN 106 AND 108').all().map(r => r.artist_id), [14]);
@@ -120,7 +120,7 @@ describe('V71 artist identity', () => {
   });
 
   test("the losers' albums re-key onto the survivor, merging with its own same-name album", () => {
-    const db = buildV70Fixture();
+    const db = buildV71Fixture();
     upgrade(db);
     const albums = rows(db.prepare('SELECT id, name, artist_id, album_key, track_count, year_min, year_max, agg_dirty FROM albums ORDER BY id'));
     assert.deepEqual(albums, [
@@ -135,7 +135,7 @@ describe('V71 artist identity', () => {
   });
 
   test('counts, keys and indexes', () => {
-    const db = buildV70Fixture();
+    const db = buildV71Fixture();
     upgrade(db);
     assert.deepEqual(rows(db.prepare('SELECT id, track_count, album_count, agg_dirty FROM artists WHERE id >= 10 ORDER BY id')), [
       { id: 10, track_count: 6, album_count: 3, agg_dirty: 0 },
@@ -149,7 +149,7 @@ describe('V71 artist identity', () => {
   });
 
   test('key-fill trigger covers rows inserted without a key; dirty triggers flag credit changes', () => {
-    const db = buildV70Fixture();
+    const db = buildV71Fixture();
     upgrade(db);
     db.prepare("INSERT INTO artists (id, name) VALUES (20, '  New  Guy ')").run();
     assert.deepEqual({ ...db.prepare('SELECT name_key, order_name, agg_dirty FROM artists WHERE id = 20').get() },

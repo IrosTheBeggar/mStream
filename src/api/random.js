@@ -333,7 +333,7 @@ export function buildArtistFilter(opts) {
          WHERE artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
       )
     )`);
-    // V71: names match on their normalised key (src/db/name-key.js).
+    // V72: names match on their normalised key (src/db/name-key.js).
     const keys = opts.artists.map(nameKey);
     params.push(...keys, ...keys, ...keys);
   }

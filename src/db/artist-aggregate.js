@@ -1,9 +1,9 @@
-// Artist aggregate refresh (V71).
+// Artist aggregate refresh (V72).
 //
-// Since V71 an artist row's display `name`, `order_name`, `track_count` and
+// Since V72 an artist row's display `name`, `order_name`, `track_count` and
 // `album_count` are DERIVED from its credits. Every credit row carries the
 // raw spelling it was tagged with (track_artists.tag_name /
-// album_artists.tag_name), and triggers on those tables (SCHEMA_V71) flag
+// album_artists.tag_name), and triggers on those tables (SCHEMA_V72) flag
 // the artist `agg_dirty = 1` whenever a credit is added, removed or has its
 // spelling changed; the scanner's fill of `sort_name` flags it too.
 // refreshDirtyArtists() recomputes the flagged rows. The scanners call it

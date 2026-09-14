@@ -143,7 +143,7 @@ export function probeHashGeneration(binPath) {
   return probeIntFlag(binPath, '--hash-generation');
 }
 
-// V70: the schema version whose scanner WRITE CONTRACT the binary was built
+// V71: the schema version whose scanner WRITE CONTRACT the binary was built
 // for (album_key + the tags.tag_* consensus columns). Binaries answer via
 // `--schema-contract`; pre-probe builds exit non-zero → null → "too old".
 export function probeSchemaContract(binPath) {
@@ -201,8 +201,8 @@ function findRustParser() {
         + `refusing it to protect track identities; scans use the JS scanner until the binary updates.`);
       return false;
     }
-    // V70 schema-contract gate, same shape: a binary built before the
-    // albums re-key would run happily against a V70 DB (its at-open guard
+    // V71 schema-contract gate, same shape: a binary built before the
+    // albums re-key would run happily against a V71 DB (its at-open guard
     // only compares user_version to what the SERVER passes) and write
     // key-less album rows through the forced migration rescan — every album
     // re-fragmenting into rows no later scanner can match. Older contract →
@@ -868,7 +868,7 @@ function handleScannerLine(scanObj, line) {
           parts.push(`${evt.movedTracksRehomed} moved track(s) re-homed ` +
             `(${evt.movedRefsRehomed} reference(s) rewritten)`);
         }
-        // V70 album aggregate refresh — same undefined-tolerance as above.
+        // V71 album aggregate refresh — same undefined-tolerance as above.
         if (evt.albumsAggregated > 0) {
           parts.push(`${evt.albumsAggregated} album(s) refreshed`);
         }

@@ -61,7 +61,7 @@ function normaliseArtistTag(raw) {
   for (const v of values) {
     for (const piece of splitArtistString(v)) { out.push(piece); }
   }
-  // Deduplicate while preserving order (first-seen spelling wins). V71:
+  // Deduplicate while preserving order (first-seen spelling wins). V72:
   // by identity key, not exact string — "Guns N' Roses / Guns N’ Roses"
   // is one artist, and two credits for one artist id would otherwise land
   // as main + featured rows ("X feat. X"). Mirrors resolve_artists_list.
@@ -107,7 +107,7 @@ export function extractArtists(common) {
     isCompilation:      !!common.compilation,
     trackArtistDisplay: common.artist      ? String(common.artist)      : (trackArtists[0] || ''),
     albumArtistDisplay: common.albumartist ? String(common.albumartist) : (albumArtists[0] || null),
-    // V71: per-artist sort names and MusicBrainz ids, index-aligned to the
+    // V72: per-artist sort names and MusicBrainz ids, index-aligned to the
     // name lists above (empty array = nothing to apply).
     trackArtistSorts: alignSort(common.artistsort, trackArtists),
     albumArtistSorts: alignSort(common.albumartistsort, albumArtists),

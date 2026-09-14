@@ -488,7 +488,7 @@ export function setup(mstream) {
 
   function getArtists(req) {
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
-    // V71: optional `sort` — 'name' (default; unchanged contract) or 'order',
+    // V72: optional `sort` — 'name' (default; unchanged contract) or 'order',
     // which sorts by artists.order_name: the ARTISTSORT tag when the scanner
     // saw one, else the name with one leading article dropped ("The
     // Beatles" under B). COALESCE covers rows without an order_name (a
@@ -543,7 +543,7 @@ export function setup(mstream) {
     // 653 artists). Pinning ties alphabetically is deterministic across
     // plans and SQLite versions; the sort b-tree already exists, so it's
     // free.
-    // V71: the artist is matched on its normalised key, so any spelling the
+    // V72: the artist is matched on its normalised key, so any spelling the
     // client holds ("beatles", a curly apostrophe) resolves to the one row
     // the scanner keeps — strictly more tolerant than the old exact match.
     const artistKey = nameKey(req.body.artist);
@@ -729,12 +729,12 @@ export function setup(mstream) {
     }
 
     if (req.body.artist) {
-      // V71: TRACK artist, matched on its normalised key (see artists-albums).
+      // V72: TRACK artist, matched on its normalised key (see artists-albums).
       conditions.push('a.name_key = ?');
       params.push(nameKey(req.body.artist));
     }
 
-    // V70 dropped the year from album identity, so one album can span
+    // V71 dropped the year from album identity, so one album can span
     // several track years (a compilation tagged with per-track original
     // years, a reissue with a later bonus track). A client's `year` is
     // whatever it last saw — the album's aggregate year from a list

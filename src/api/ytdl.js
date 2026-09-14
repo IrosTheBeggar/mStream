@@ -428,7 +428,7 @@ export function setup(mstream) {
         if (d && lib) {
           const artistId = db.findOrCreateArtist(data.artist);
           const albumId = db.findOrCreateAlbum(data.album, artistId, data.year);
-          // V70: tag_album / tag_compilation are the album consensus inputs
+          // V71: tag_album / tag_compilation are the album consensus inputs
           // the scanners stamp per track; stamping them here means this
           // row votes on its album like any scanned row (a ytdl download
           // carries no ALBUMARTIST, so that input stays NULL).
@@ -443,7 +443,7 @@ export function setup(mstream) {
             data.aaFile, data.replaygainTrackDb, data.modified, data.sID, 'ytdl', hashV,
             data.album || null
           );
-          // V71: the primary-artist credit row, with the raw spelling that
+          // V72: the primary-artist credit row, with the raw spelling that
           // votes on the artist's display name (the scanners write the same
           // row from the split ARTIST tag).
           if (artistId) {

@@ -185,7 +185,7 @@ const stmts = {
             album_art_file, album_art_source, hash_v
        FROM tracks WHERE filepath = ? AND library_id = ?`
   ),
-  // V71: artists are found by name_key (src/db/name-key.js) — case / quote
+  // V72: artists are found by name_key (src/db/name-key.js) — case / quote
   // variants of one name share a row; the display name is the scan-end
   // majority of the credits' raw spellings (artist-aggregate.js), so the
   // name written here is provisional.
@@ -205,7 +205,7 @@ const stmts = {
   insertArtist: db.prepare(
     'INSERT INTO artists (name, name_key) VALUES (?, ?)'
   ),
-  // V71: ARTISTSORT / MusicBrainz artist id. Converge on the BINARY-smallest
+  // V72: ARTISTSORT / MusicBrainz artist id. Converge on the BINARY-smallest
   // value seen rather than the first written — order-independent, so two
   // scans (or the two engines) of one library land on the same sort_name
   // and order_name even when files disagree. The sort fill flags the row:
@@ -218,7 +218,7 @@ const stmts = {
     `UPDATE artists SET mbz_artist_id = ?1
       WHERE id = ?2 AND (mbz_artist_id IS NULL OR ?1 < mbz_artist_id)`
   ),
-  // V70: albums are found by album_key (MBID first, else exact name +
+  // V71: albums are found by album_key (MBID first, else exact name +
   // album-artist id — src/db/album-key.js). Year is NOT identity any more:
   // the row's year / year_min / year_max / track_count / duration_total /
   // compilation / album_artist are consensus values recomputed at scan end
@@ -318,11 +318,11 @@ const stmts = {
   // (which keeps the same track_id and so does NOT cascade-drop them the
   // way the old INSERT OR REPLACE did); without the explicit DELETEs a
   // tag edit that drops an artist/genre would leak the stale M2M row.
-  // V71: tag_name = the raw spelling this credit was tagged with; the artist
+  // V72: tag_name = the raw spelling this credit was tagged with; the artist
   // aggregate refresh picks the display name from these. One row per
   // (album, artist, role), so the spelling converges on the BINARY-smallest
   // one seen (order-independent — the parity snapshot compares it across
-  // engines); the V71 seed copy counts as a spelling seen. The UPDATE arm
+  // engines); the V72 seed copy counts as a spelling seen. The UPDATE arm
   // fires album_artists_au_agg, so a changed spelling re-votes.
   insertAlbumArtist: db.prepare(
     `INSERT INTO album_artists (album_id, artist_id, role, position, tag_name)
@@ -342,7 +342,7 @@ const stmts = {
      VALUES (?, ?, ?, ?, ?)`
   ),
   // One-shot lookup of the seeded "Various Artists" row id. Used when
-  // the album-artist fallback chain hits the compilation branch. V71: by
+  // the album-artist fallback chain hits the compilation branch. V72: by
   // key, so a tag spelled "various artists" lands on the seed too.
   findVariousArtists: db.prepare(
     `SELECT id FROM artists WHERE name_key = 'various artists' LIMIT 1`
@@ -475,7 +475,7 @@ function findOrCreateArtist(name) {
 
 function findOrCreateAlbum(name, artistId, year, albumArtFile, albumArtSource, albumArtistDisplay, isCompilation, mbzAlbumId, mbzReleaseGroupId) {
   if (!name) { return null; }
-  // V70: identity is the album key — MBID when the track carries one, else
+  // V71: identity is the album key — MBID when the track carries one, else
   // the exact album name + the album-artist id the fallback chain picked
   // (src/db/album-key.js). Year, the display credit and the compilation
   // flag are provisional at INSERT and become consensus values in the
@@ -1280,7 +1280,7 @@ function insertTrack(song) {
     song.isrc ?? null,
     song.mbzIdSource ?? null,
     HASH_GENERATION,
-    // V70 consensus inputs for the album aggregate refresh: this track's own
+    // V71 consensus inputs for the album aggregate refresh: this track's own
     // album name, raw ALBUMARTIST display string and compilation flag. The
     // album row's values are the majority / OR over these at scan end.
     song.album ? String(song.album) : null,
@@ -1301,7 +1301,7 @@ function insertTrack(song) {
   // albums.artist_id so the M2M row isn't empty (keeps the "union via
   // album_artists OR albums.artist_id" query shape from needing two
   // branches for the legacy single-artist case).
-  // V71: each credit carries the raw spelling it came from (tag_name). The
+  // V72: each credit carries the raw spelling it came from (tag_name). The
   // fallback credit's spelling is the primary track artist's tag when that
   // is what the chain picked, else the canonical 'Various Artists' — the
   // seed's own spelling, so untagged compilations vote to keep it (the
@@ -1338,7 +1338,7 @@ function insertTrack(song) {
       trackArtistTags[i] ?? null);
   }
 
-  // V71: ARTISTSORT / ALBUMARTISTSORT and MusicBrainz artist ids, index-
+  // V72: ARTISTSORT / ALBUMARTISTSORT and MusicBrainz artist ids, index-
   // aligned to the credit lists by the extractor (see alignSort / alignIds
   // in artist-extraction.js), fill-NULL. Mirrors the Rust scanner.
   for (let i = 0; i < trackArtistIds.length; i++) {
@@ -1998,7 +1998,7 @@ async function run() {
         expectedSchemaVersion: schemaVersionAtOpen,
       });
     }
-    // V70: recompute the consensus columns of every album the tracks_*_agg
+    // V71: recompute the consensus columns of every album the tracks_*_agg
     // triggers flagged this scan (album-aggregate.js) — AFTER the orphan
     // sweep, so rows it just reaped are not recomputed first (a starred
     // trackless ghost survives it and is refreshed to track_count 0).
@@ -2006,7 +2006,7 @@ async function run() {
     // other. Same schema guard + inter-chunk yield as the sweeps above.
     const albumsAggregated = refreshDirtyAlbums(db,
       { yieldBetweenChunks: true, expectedSchemaVersion: schemaVersionAtOpen });
-    // V71: same for artists (display name = majority spelling, order_name,
+    // V72: same for artists (display name = majority spelling, order_name,
     // counts) — after albums, so album_count sees the surviving rows.
     const artistsAggregated = refreshDirtyArtists(db,
       { yieldBetweenChunks: true, expectedSchemaVersion: schemaVersionAtOpen });
@@ -2035,7 +2035,7 @@ async function run() {
       movedTracksRehomed: sweep.movedTracks,
       movedRefsRehomed: sweep.movedRefs,
       folderArtLinked,
-      // V70/V71: album / artist rows whose aggregate columns were recomputed.
+      // V71/V72: album / artist rows whose aggregate columns were recomputed.
       albumsAggregated,
       artistsAggregated,
       // Subtrees the scan could not see (their rows were shielded from

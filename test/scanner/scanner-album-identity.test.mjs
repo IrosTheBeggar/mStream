@@ -1,5 +1,5 @@
 /**
- * V70 album identity + aggregate refresh, end-to-end on BOTH scanners.
+ * V71 album identity + aggregate refresh, end-to-end on BOTH scanners.
  *
  *   - per-track years never fragment an album; the row's year is the most
  *     common track year, year_min/year_max the range, track_count the size;

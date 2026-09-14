@@ -1,10 +1,10 @@
-// Album aggregate refresh (V70).
+// Album aggregate refresh (V71).
 //
-// Since V70 an album row's year, year_min, year_max, track_count,
+// Since V71 an album row's year, year_min, year_max, track_count,
 // duration_total, compilation and album_artist are DERIVED from its tracks
 // rather than written by whichever track happened to reach the row first
 // (or last). Three triggers on `tracks` (tracks_ai_agg / tracks_ad_agg /
-// tracks_au_agg, SCHEMA_V70) flag a row `agg_dirty = 1` whenever one of its
+// tracks_au_agg, SCHEMA_V71) flag a row `agg_dirty = 1` whenever one of its
 // tracks is inserted, deleted, moved to another album, or has a consensus
 // input change; refreshDirtyAlbums() recomputes the flagged rows. The
 // scanners call it at scan end (after the orphan sweep, so reaped rows are

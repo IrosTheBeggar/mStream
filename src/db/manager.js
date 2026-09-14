@@ -556,7 +556,7 @@ export function inPlaceholders(arr) {
 }
 
 // Server-side twin of the scanners' find-or-create (the ytdl download path
-// is the only caller). V71: artists are keyed by name_key (src/db/name-key.js),
+// is the only caller). V72: artists are keyed by name_key (src/db/name-key.js),
 // so "beatles" finds the row shown as "Beatles"; the display name of a
 // new row is provisional until the artist aggregate refresh (which ytdl
 // runs inline) picks the majority spelling of its credits.
@@ -624,7 +624,7 @@ export function resolveArtistNamesForDJ(names) {
 }
 
 // Server-side twin of the scanners' find-or-create (the ytdl download path
-// is the only caller). V70: albums are keyed by album_key — name + album
+// is the only caller). V71: albums are keyed by album_key — name + album
 // artist, no year (see src/db/album-key.js). The row's year/count columns
 // are provisional until the caller's track insert fires the tracks_*_agg
 // trigger and refreshDirtyAlbums() recomputes them (ytdl does that inline).

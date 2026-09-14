@@ -139,7 +139,7 @@ export async function buildFixtureLibrary(rootDir) {
     // should reconcile, but the data path is in place here.
     if (i === 1) { tags.BPM = '124'; tags.KEY = '8A'; tags.INITIALKEY = '8A'; }
     if (i === 2) { tags.BPM = '90';  /* no key — bpm_source still 'tag' */ }
-    // V71: ARTISTSORT + MUSICBRAINZ_ARTISTID as real Vorbis comments — both
+    // V72: ARTISTSORT + MUSICBRAINZ_ARTISTID as real Vorbis comments — both
     // scanners must fill artists.sort_name / mbz_artist_id from them, and
     // order_name must follow the sort tag ("artist, solo").
     if (i === 3) { tags.ARTISTSORT = 'Artist, Solo'; tags.MUSICBRAINZ_ARTISTID = '0a0a0a0a-1111-4222-8333-444444444444'; }
@@ -222,7 +222,7 @@ export async function buildFixtureLibrary(rootDir) {
   await makeAudio(path.join(a5, '02.flac'), FLAC, { title: 'Test FLAC', artist: 'Format Test', album: 'Mixed', track: '2/5' });
   await makeAudio(path.join(a5, '03.ogg'),  OGG,  { title: 'Test OGG',  artist: 'Format Test', album: 'Mixed', track: '3/5' });
   await makeAudio(path.join(a5, '04.m4a'),  M4A,  { title: 'Test M4A',  artist: 'Format Test', album: 'Mixed', track: '4/5' });
-  // V71: one track spells the artist differently. Same name_key → same
+  // V72: one track spells the artist differently. Same name_key → same
   // artist row; the display name is the majority spelling ('Format Test',
   // 4 votes to 1) whichever file a parallel walk commits first.
   await makeAudio(path.join(a5, '05.wav'),  WAV,  { title: 'Test WAV',  artist: 'format test', album: 'Mixed', track: '5/5' });
@@ -261,9 +261,9 @@ export async function buildFixtureLibrary(rootDir) {
     { title: 'Lyrics D', artist: 'Lyric Artist', album: 'Album Six', track: '4/4' });
 
   // ── Album 7: "Decades" — per-track years under one ALBUMARTIST ─────
-  // V70 identity: year is no longer part of the album key, so three tracks
+  // V71 identity: year is no longer part of the album key, so three tracks
   // tagged 1987 / 1991 / 1991 with different track artists but the same
-  // ALBUMARTIST must land on ONE album row (pre-V70 they fragmented into
+  // ALBUMARTIST must land on ONE album row (pre-V71 they fragmented into
   // one row per year). The aggregate refresh must then agree across
   // engines: year = 1991 (most common), year_min 1987, year_max 1991,
   // track_count 3. Track 3 is a real TCMP compilation frame on ONE track

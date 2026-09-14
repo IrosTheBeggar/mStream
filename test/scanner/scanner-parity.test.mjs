@@ -142,13 +142,13 @@ describe('scanner determinism + parity', () => {
     for (const [engine, runner] of Object.entries(engines)) {
       const { snapshot } = await scanAndSnapshot(`va-collapse-${engine}`, {}, runner);
 
-      // V71: the artists snapshot carries rows (name + sort/order/count
+      // V72: the artists snapshot carries rows (name + sort/order/count
       // columns), not bare names.
       const artistNames = snapshot.artists.map(a => a.name);
       assert.equal(artistNames.length, fixtureSummary.expectedArtists,
         `[${engine}] artists table should hold ${fixtureSummary.expectedArtists} rows, got: ${artistNames.join(', ')}`);
       assert.ok(artistNames.includes('Various Artists'), `[${engine}] VA row present`);
-      // V71 fixture checks: the spelling variant converged on the majority
+      // V72 fixture checks: the spelling variant converged on the majority
       // form, the sort tag landed and drove order_name, nothing left dirty.
       const formatTest = snapshot.artists.find(a => a.name === 'Format Test');
       assert.ok(formatTest, `[${engine}] 'format test' merged into 'Format Test'`);
