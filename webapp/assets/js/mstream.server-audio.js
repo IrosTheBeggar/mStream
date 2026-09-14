@@ -276,6 +276,8 @@ var MSTREAMPLAYER = (function () {
     if (!curSong) { return; }
     var meta = curSong.metadata || {};
     mstreamModule.playerStats.metadata.artist = meta.artist || '';
+    mstreamModule.playerStats.metadata['artist-display'] = meta['artist-display'] || '';
+    mstreamModule.playerStats.metadata.composer = meta.composer || '';
     mstreamModule.playerStats.metadata.album = meta.album || '';
     mstreamModule.playerStats.metadata.track = meta.track || '';
     mstreamModule.playerStats.metadata.title = meta.title || '';
