@@ -29,7 +29,7 @@ import * as db from '../db/manager.js';
 import * as sim from '../db/discovery-similarity.js';
 import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
-import { renderMetadataObj, toLiteMetadata, trackQuery, libraryFilter, fetchGenresForTrack } from './db.js';
+import { renderMetadataObj, toLiteMetadata, trackQuery, libraryFilter, fetchGenresForTrack, fetchCreditsForTrack, enrichRows } from './db.js';
 import { getVPathInfo } from '../util/vpath.js';
 import { nameKey } from '../db/name-key.js';
 
@@ -100,7 +100,7 @@ export function resolveSeedTrack(req, filePath, routeTag) {
     LIMIT 1
   `).get(...seedParams);
   if (!seedRow) { throw new WebError('Track not found', 404); }
-  Object.assign(seedRow, fetchGenresForTrack(d(), seedRow.id));
+  Object.assign(seedRow, fetchGenresForTrack(d(), seedRow.id), fetchCreditsForTrack(d(), seedRow.id));
   return seedRow;
 }
 
@@ -141,7 +141,7 @@ export function resolveVisible(uid, filter, canonHash, { withGenres = true } = {
   // (similar/tracks rejects on bpm/artist AFTER resolving; federation's
   // response carries no track genres) — they enrich accepted rows
   // themselves, so rejected candidates never pay the lookup.
-  if (row && withGenres) { Object.assign(row, fetchGenresForTrack(d(), row.id)); }
+  if (row && withGenres) { Object.assign(row, fetchGenresForTrack(d(), row.id), fetchCreditsForTrack(d(), row.id)); }
   return row;
 }
 
@@ -276,7 +276,7 @@ export function setup(mstream) {
 
       // Enrich only rows that survived the filters — rejected candidates
       // never pay the genre lookup.
-      Object.assign(row, fetchGenresForTrack(d(), row.id));
+      Object.assign(row, fetchGenresForTrack(d(), row.id), fetchCreditsForTrack(d(), row.id));
       const rendered = renderMetadataObj(row);
       results.push({
         filepath: rendered.filepath,
@@ -356,11 +356,14 @@ export function setup(mstream) {
     const filter = libraryFilter(req.user);
     const rowCache = new Map();
     const visible = (hash) => {
-      if (!rowCache.has(hash)) { rowCache.set(hash, resolveVisible(uid, filter, hash) || null); }
+      if (!rowCache.has(hash)) { rowCache.set(hash, resolveVisible(uid, filter, hash, { withGenres: false }) || null); }
       return rowCache.get(hash) !== null;
     };
 
     const waypoints = sim.pathBetween(index, startHash, endHash, body.length - 2, visible);
+    // The gate admits more rows than the path renders — enrich (genres +
+    // credits, two batched queries) only the waypoints.
+    enrichRows(d(), waypoints.map((wp) => rowCache.get(wp.hash)));
 
     const results = [seedRes(start, 0)];
     for (const wp of waypoints) {
@@ -438,18 +441,22 @@ export function setup(mstream) {
       let epConsidered = 0;
       for (const { entry } of sim.rankArtistTracks(index, cand.artist, seedCentroid.vec)) {
         if (entryPoints.length >= 2 || ++epConsidered > 200) { break; }
-        const row = resolveVisible(uid, filter, entry.hash);
+        const row = resolveVisible(uid, filter, entry.hash, { withGenres: false });
         if (!row) { continue; }
-        const rendered = renderMetadataObj(row);
-        entryPoints.push({ filepath: rendered.filepath, metadata: toLiteMetadata(rendered.metadata) });
+        entryPoints.push(row);
       }
+      // Enrich the two doorways only, not every probed candidate.
+      enrichRows(d(), entryPoints);
 
       results.push({
         artist: cand.artist,
         similarity: Math.round(cand.similarity * 10000) / 10000,
         analyzedCount: cand.analyzedCount,
         genreTags: cand.topTags,
-        entryPoints,
+        entryPoints: entryPoints.map((row) => {
+          const rendered = renderMetadataObj(row);
+          return { filepath: rendered.filepath, metadata: toLiteMetadata(rendered.metadata) };
+        }),
       });
     }
 

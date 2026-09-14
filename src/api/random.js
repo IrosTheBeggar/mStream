@@ -57,7 +57,8 @@ import { createHash } from 'node:crypto';
 import Joi from 'joi';
 import * as db from '../db/manager.js';
 import * as sim from '../db/discovery-similarity.js';
-import { renderMetadataObj, libraryFilter, trackQuery, fetchGenresForTrack } from './db.js';
+import { renderMetadataObj, libraryFilter, trackQuery, fetchGenresForTrack, fetchCreditsForTrack } from './db.js';
+import { PERFORMER_ROLES_SQL } from '../db/artist-roles.js';
 import { requireIndex, resolveSeedTrack, decodeSeedVector } from './discovery.js';
 import { joiValidate } from '../util/validation.js';
 import { nameKey } from '../db/name-key.js';
@@ -306,7 +307,9 @@ export function buildDurationFilter(opts) {
 // similar-artists names. The filter widens through V18 M2M tables so
 // a track matches when the artist appears as:
 //   • the tracks.artist_id (primary track artist)
-//   • a track_artists.artist_id (featured / collaborator)
+//   • a track_artists.artist_id in a PERFORMER role (main / featured) —
+//     V73 added composer / conductor / remixer / lyricist credits, which
+//     are not songs BY that artist
 //   • an album_artists.artist_id (album credit — catches the
 //     compilation/various-artists case where tracks belong to many
 //     artists but the album is credited to one named artist)
@@ -337,6 +340,7 @@ export function buildArtistFilter(opts) {
       OR t.id IN (
         SELECT track_id FROM track_artists
          WHERE artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
+           AND role IN (${PERFORMER_ROLES_SQL})
       )
       OR t.album_id IN (
         SELECT album_id FROM album_artists
@@ -362,6 +366,7 @@ export function buildArtistFilter(opts) {
       AND NOT EXISTS (
         SELECT 1 FROM track_artists ta
          WHERE ta.track_id = t.id
+           AND ta.role IN (${PERFORMER_ROLES_SQL})
            AND ta.artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
       )
       AND NOT EXISTS (
@@ -1102,6 +1107,8 @@ function finalisePick(rows, body, sonic, tierOpts = null) {
   const d = db.getDB();
   for (const row of picked) {
     row.genres_concat = fetchGenresForTrack(d, row.id).genres_concat;
+    // V73: performer / composer credits for `metadata.artists` / `composer`.
+    Object.assign(row, fetchCreditsForTrack(d, row.id));
   }
 
   const out = {
