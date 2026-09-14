@@ -142,6 +142,28 @@ const MSTREAMAPI = (() => {
     return discoveryReq('api/v1/discovery/local/embeddings', { filePaths });
   };
 
+  // Discovery plug-ins — what this server lets a user do with a network or
+  // peer recommendation. Reveal via the ping's discoveryPlugins flag, never
+  // a probe; the list itself is fetched on the first row menu.
+  mstreamModule.discoveryPlugins = async () => {
+    try {
+      const res = await fetch(mstreamModule.currentServer.host + 'api/v1/discovery/plugins', {
+        headers: { 'x-access-token': mstreamModule.currentServer.token },
+      });
+      if (!res.ok) { return null; }
+      return await res.json();
+    } catch (_) {
+      return null;
+    }
+  };
+
+  // Run one links/preview plug-in on a recommendation row (passed through
+  // as the similar route returned it — the server strips what it doesn't
+  // know). Same degrade contract as the calls above.
+  mstreamModule.discoveryPluginResolve = (name, recommendation) => {
+    return discoveryReq('api/v1/discovery/plugins/' + encodeURIComponent(name) + '/resolve', { recommendation });
+  };
+
   // POST /api/v1/db/genres → { genres: [{ name, track_count }] }.
   // Used by the Auto-DJ panel's genre filter dropdown. POST (not GET)
   // so callers can pass ignoreVPaths in the body to scope the count;

@@ -720,6 +720,9 @@ async function init() {
     VUEPLAYERCORE.setDiscoveryAvailable(response.discovery === true);
     VUEPLAYERCORE.setDiscoveryP2pAvailable(response.discoveryP2p === true);
     VUEPLAYERCORE.setFederationDiscoveryAvailable(response.federationDiscovery === true);
+    // Discovery plug-ins (actions on a recommendation row) — the flag says
+    // the server has at least one switched on; the list is fetched lazily.
+    VUEPLAYERCORE.setDiscoveryPluginsAvailable(response.discoveryPlugins === true);
     // Sonic Path is a standalone side-nav panel — reveal its nav entry
     // only when the server has the route (never probed).
     MSTREAMAPI.currentServer.discoveryPath = response.discoveryPath === true;

@@ -171,6 +171,22 @@ const VUEPLAYERCORE = (() => {
       unreachable: 0,         // peers that timed out/failed on the last ask
       mismatched: 0,          // peers on a different embedding model
     },
+    // Discovery plug-ins: what this server lets a user DO with a network or
+    // peer row (/api/v1/discovery/plugins). Same reveal contract — ping's
+    // discoveryPlugins flag, never a probe; the list is fetched on the first
+    // menu open. Without plug-ins a row click falls back to the copy.
+    plugins: {
+      available: false,
+      list: null,             // null = not fetched yet
+    },
+    // The one open row menu (key = source + row identity), with the links
+    // the "links" plug-in resolved for it.
+    menu: {
+      key: null,
+      loading: false,
+      links: [],
+      error: false,
+    },
   };
   let discoverDebounce = null;
   let discoverReqId = 0;
@@ -393,6 +409,55 @@ const VUEPLAYERCORE = (() => {
           duration: ft.duration || null,
         }, true);
       },
+      // ── Row action menu (discovery plug-ins) ──────────────────────────
+      // Translations inside v-if blocks: the data-i18n scan only sees nodes
+      // present at load, so dynamic menu text goes through t() directly.
+      tt: function (key) {
+        return (typeof t === 'function') ? t(key) : key;
+      },
+      discoverMenuKey: function (track, source) {
+        return source + ':' + (track.exportId || track.filepath || ((track.artist || '') + '|' + (track.title || '')));
+      },
+      isDiscoverMenu: function (track, source) {
+        return this.discover.menu.key !== null && this.discover.menu.key === this.discoverMenuKey(track, source);
+      },
+      closeDiscoverMenu: function () {
+        this.discover.menu = { key: null, loading: false, links: [], error: false };
+      },
+      // Open (or close) the menu for one row and ask the "links" plug-in
+      // where else the recording can be found. Without plug-ins on the
+      // server, a click keeps the old behaviour: copy the title.
+      openDiscoverMenu: async function (track, source) {
+        if (!this.discover.plugins.available) { return this.copyDiscoverP2p(track); }
+        const key = this.discoverMenuKey(track, source);
+        if (this.discover.menu.key === key) { this.closeDiscoverMenu(); return; }
+        this.discover.menu = { key, loading: true, links: [], error: false };
+        try {
+          if (!this.discover.plugins.list) {
+            const res = await MSTREAMAPI.discoveryPlugins();
+            this.discover.plugins.list = (res && res.plugins) || [];
+          }
+          const linksPlugin = this.discover.plugins.list.find((p) => (p.capabilities || []).indexOf('links') !== -1);
+          let links = [];
+          if (linksPlugin) {
+            // The row as the similar route returned it, plus provenance;
+            // the server strips what it doesn't know.
+            const res = await MSTREAMAPI.discoveryPluginResolve(linksPlugin.name, {
+              ...track, source, filepath: source === 'federation' ? track.filepath : null,
+            });
+            if (!res || res.disabled) { throw new Error('resolve failed'); }
+            links = (res.result && res.result.links) || [];
+          }
+          if (this.discover.menu.key !== key) { return; }   // closed or switched meanwhile
+          this.discover.menu.links = links;
+          this.discover.menu.loading = false;
+        } catch (_) {
+          if (this.discover.menu.key !== key) { return; }
+          this.discover.menu.loading = false;
+          this.discover.menu.error = true;
+        }
+      },
+
       // ── "From the network" rows ────────────────────────────────────
       // Not playable (the track lives on someone else's server) — clicking
       // copies "Artist - Title" so the user can go find it.
@@ -1456,6 +1521,15 @@ const VUEPLAYERCORE = (() => {
   // network without local analysis (rare) or vice versa (common).
   mstreamModule.setDiscoveryP2pAvailable = (available) => {
     discoverState.p2p.available = available === true;
+  };
+
+  // Ping's discoveryPlugins flag — the network/peer rows get an action menu
+  // instead of the bare copy. The plug-in list is fetched on first use and
+  // forgotten on a flag change (a server switch), never probed up front.
+  mstreamModule.setDiscoveryPluginsAvailable = (available) => {
+    discoverState.plugins.available = available === true;
+    discoverState.plugins.list = null;
+    discoverState.menu = { key: null, loading: false, links: [], error: false };
   };
 
   // Ping's federationDiscovery flag — reveals the "From your peers" section.

@@ -2231,6 +2231,39 @@ select {
 .discover-match-fill-p2p { background: #4fb8a8; }
 .discover-mb-link { color: #6f7683; }
 .discover-mb-link:hover { color: #4fb8a8; }
+/* Row action menu (discovery plug-ins): opens inside the row, so the
+   match bar and the peer's MusicBrainz link stay where they were. */
+.discover-row-open { align-items: flex-start; background: #1e222a; }
+.discover-menu {
+  margin-top: 6px;
+  padding: 6px 0 2px;
+  border-top: 1px solid #262b33;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  white-space: normal;
+}
+.discover-menu-label {
+  width: 100%;
+  margin-top: 4px;
+  font-size: 10.5px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #6f7683;
+}
+.discover-menu-item {
+  font-size: 11.5px;
+  color: #dfe3ea;
+  background: #262b33;
+  border-radius: 4px;
+  padding: 3px 8px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.discover-menu-item:hover { background: #2e3440; color: #fff; }
+.discover-menu-note { font-size: 11px; font-style: italic; color: #6f7683; }
+.discover-more { margin-left: 2px; color: #8a919e; }
+.discover-more:hover { color: #dfe3ea; }
 /* "From your peers" — federation leads. Same anatomy as the network
    section; the amber match bar + peer name mark rows as coming from a
    PAIRED server (playable once the federation stream proxy lands). */
