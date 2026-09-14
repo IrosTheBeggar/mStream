@@ -32,7 +32,9 @@ import {
   buildBpmKeyFilter,
   buildGenreFilter,
   buildDurationFilter,
-  applyTierFilter,
+  rankByTier,
+  PICK_LIMIT_MAX,
+  SIMPLE_POOL_LIMIT,
 } from '../../src/api/random.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -200,77 +202,88 @@ describe('buildBpmKeyFilter', () => {
   });
 });
 
-describe('applyTierFilter', () => {
+describe('rankByTier', () => {
   // Row helper — sparse fields only since classifyRow only reads bpm + musical_key.
   const r = (bpm, musical_key, id = 0) => ({ id, bpm, musical_key });
+  const ids = (rows) => rows.map((x) => x.id);
+  const inRange = { bpmRanges: [{ min: 120, max: 130 }] };
 
   test('no constraints → identity (returns rows unchanged)', () => {
     const rows = [r(120, 'Am'), r(null, null), r(80, 'C')];
-    assert.deepEqual(applyTierFilter(rows, {}), rows);
+    assert.deepEqual(rankByTier(rows, {}), rows);
   });
 
-  test('BPM in range → Tier 0; out of range → Tier 2 (dropped if Tier 0 exists)', () => {
+  test('keeps every row — it ranks, it does not filter', () => {
+    // A batch is served from the front of the ranking, so lower tiers
+    // must survive for the tail; a single pick only ever reads row 0.
+    const rows = [r(80, null, 1), r(125, null, 2), r(null, null, 3)];
+    const ranked = rankByTier(rows, inRange);
+    assert.equal(ranked.length, rows.length);
+    assert.deepEqual([...ids(ranked)].sort(), [1, 2, 3]);
+  });
+
+  test('BPM in range (Tier 0) ranks ahead of out of range (Tier 2)', () => {
     const rows = [
-      r(125, null, 1),   // Tier 0: BPM good, key NA
-      r(80,  null, 2),   // Tier 2: BPM wrong, key NA
+      r(80,  null, 1),   // Tier 2: BPM wrong, key NA
+      r(125, null, 2),   // Tier 0: BPM good, key NA
     ];
-    const filtered = applyTierFilter(rows, {
-      bpmRanges: [{ min: 120, max: 130 }],
-    });
-    assert.equal(filtered.length, 1);
-    assert.equal(filtered[0].id, 1);
+    assert.deepEqual(ids(rankByTier(rows, inRange)), [2, 1]);
   });
 
-  test('unknown BPM passes through as Tier 1 when no Tier 0 exists', () => {
+  test('unknown BPM (Tier 1) ranks between in-range and known-wrong', () => {
     const rows = [
-      r(80,  null, 1),    // Tier 2: BPM wrong
+      r(80,   null, 1),   // Tier 2: BPM wrong
       r(null, null, 2),   // Tier 1: BPM unknown
+      r(125,  null, 3),   // Tier 0: BPM good
     ];
-    const filtered = applyTierFilter(rows, {
-      bpmRanges: [{ min: 120, max: 130 }],
-    });
-    // No Tier 0 → fall back to Tier 1 (unknown BPM).
-    assert.equal(filtered.length, 1);
-    assert.equal(filtered[0].id, 2);
+    assert.deepEqual(ids(rankByTier(rows, inRange)), [3, 2, 1]);
   });
 
-  test('all rows Tier 2 → return them (no Tier 0/1 to prefer)', () => {
-    const rows = [
-      r(80,  null, 1),
-      r(200, null, 2),
-    ];
-    const filtered = applyTierFilter(rows, {
-      bpmRanges: [{ min: 120, max: 130 }],
-    });
-    assert.equal(filtered.length, 2);
+  test('stable within a tier — input order is the tiebreak', () => {
+    // finalisePick relies on this: it puts fresh rows ahead of cooled
+    // rows and expects the ranking to keep that order inside each tier.
+    const rows = [r(80, null, 1), r(125, null, 2), r(200, null, 3), r(128, null, 4)];
+    assert.deepEqual(ids(rankByTier(rows, inRange)), [2, 4, 1, 3]);
   });
 
-  test('combined BPM+key: good BPM + good key = Tier 0', () => {
+  test('combined BPM+key: one wrong dimension sinks the row to Tier 2', () => {
     const rows = [
-      r(125, 'A minor', 1), // bpm good, key good → Tier 0
-      r(125, 'Cmaj',    2), // bpm good, key wrong → Tier 2
-      r(80,  'A minor', 3), // bpm wrong, key good → Tier 2 (one wrong sinks it)
+      r(125, 'Cmaj',    1), // bpm good, key wrong → Tier 2
+      r(80,  'A minor', 2), // bpm wrong, key good → Tier 2 (one wrong sinks it)
+      r(125, 'A minor', 3), // bpm good, key good → Tier 0
     ];
-    const filtered = applyTierFilter(rows, {
+    const ranked = rankByTier(rows, {
       bpmRanges:   [{ min: 120, max: 130 }],
       musicalKeys: ['8A'], // expands to A minor / Am / Amin / 8A
     });
-    assert.equal(filtered.length, 1);
-    assert.equal(filtered[0].id, 1);
+    assert.deepEqual(ids(ranked), [3, 1, 2]);
   });
 
-  test('one good + one unknown = both Tier 0/1, picks Tier 0', () => {
-    // Per classifyRow: bpm=good and key=na → Tier 0. So if there's no
-    // key constraint, a known-good BPM row is Tier 0 regardless of key.
+  test('good BPM with no key constraint is Tier 0 regardless of key', () => {
+    // Per classifyRow: bpm=good and key=na → Tier 0.
     const rows = [
-      r(125, 'whatever', 1), // BPM good, no key constraint → Tier 0
-      r(null, 'whatever', 2), // BPM unknown → Tier 1
+      r(null, 'whatever', 1), // BPM unknown → Tier 1
+      r(125,  'whatever', 2), // BPM good, no key constraint → Tier 0
     ];
-    const filtered = applyTierFilter(rows, {
-      bpmRanges: [{ min: 120, max: 130 }],
-    });
-    assert.equal(filtered.length, 1);
-    assert.equal(filtered[0].id, 1);
+    assert.deepEqual(ids(rankByTier(rows, inRange)), [2, 1]);
+  });
+});
+
+describe('batch size invariants', () => {
+  test('PICK_LIMIT_MAX fits inside one bounded pool', () => {
+    // Every candidate query is `ORDER BY ... RANDOM() LIMIT SIMPLE_POOL_LIMIT`.
+    // If a batch could exceed that, a request would come back short while
+    // fresh candidates were still in scope — and the top-up logic assumes a
+    // short pool has already shown every fresh row.
+    assert.ok(PICK_LIMIT_MAX <= SIMPLE_POOL_LIMIT,
+      `PICK_LIMIT_MAX ${PICK_LIMIT_MAX} > SIMPLE_POOL_LIMIT ${SIMPLE_POOL_LIMIT}`);
+  });
+
+  test('two maximal batches fit in the cooldown', () => {
+    // The route caps the returned ignoreList at 50 (pinned by 'returned
+    // list is capped at 50, newest last' below). A maximal batch must leave
+    // the whole previous batch in it, or back-to-back batches could repeat.
+    assert.ok(PICK_LIMIT_MAX * 2 <= 50, `PICK_LIMIT_MAX ${PICK_LIMIT_MAX} > half the cooldown`);
   });
 });
 
@@ -701,6 +714,126 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     assert.equal(r.body.ignoreList.length, 50);
     assert.equal(r.body.ignoreList.at(-1), ids[pickedTitle(r)], 'picked id lands at the end');
     assert.equal(r.body.ignoreList[0], 900001, 'oldest entry shifted out');
+  });
+
+  // ── limit — batch picks ───────────────────────────────────────────
+  //
+  // `limit` returns up to N distinct songs from the same bounded pool a
+  // single pick uses. Fresh rows come first, repeats fill in only when
+  // the cooldown leaves fewer fresh candidates than asked for, and every
+  // song served lands in the returned ignoreList (newest last). A batch
+  // can come back short: fewer candidates in scope, or a waterfall step
+  // that wins with fewer matches — the chain never pads a batch from a
+  // more relaxed step.
+
+  const titlesOf = (r) => r.body.songs.map((s) => s.metadata.title);
+
+  test('limit omitted → one song (the pre-batch wire shape is unchanged)', async () => {
+    const r = await randomReq(server.baseUrl, { ignoreList: [] });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.songs.length, 1);
+    assert.equal(r.body.ignoreList.length, 1);
+  });
+
+  test('limit: 5 → five distinct songs, every served id in the cooldown in order', async () => {
+    const ids = trackIdsByTitle();
+    const r = await randomReq(server.baseUrl, { limit: 5, ignoreList: [] });
+    assert.equal(r.status, 200);
+    const titles = titlesOf(r);
+    assert.equal(titles.length, 5);
+    assert.equal(new Set(titles).size, 5, 'no duplicates within a batch');
+    assert.deepEqual(r.body.ignoreList, titles.map((t) => ids[t]),
+      'ignoreList gains every served id, in serving order');
+  });
+
+  test('limit beyond the in-scope pool returns everything in scope, once', async () => {
+    const r = await randomReq(server.baseUrl, { limit: PICK_LIMIT_MAX });
+    assert.equal(r.status, 200);
+    assert.deepEqual([...titlesOf(r)].sort(), ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8']);
+    assert.equal(r.body.ignoreList.length, 8);
+  });
+
+  test('a batch serves fresh songs first, then tops up with repeats', async () => {
+    const ids = trackIdsByTitle();
+    // Cool down everything except t3 and t6, ask for five.
+    const cooled = Object.entries(ids).filter(([t]) => t !== 't3' && t !== 't6');
+    const r = await randomReq(server.baseUrl, {
+      limit: 5, ignoreList: cooled.map(([, id]) => id),
+    });
+    assert.equal(r.status, 200);
+    const titles = titlesOf(r);
+    assert.equal(titles.length, 5, 'topped up to the requested size');
+    assert.deepEqual([...titles.slice(0, 2)].sort(), ['t3', 't6'], 'the two fresh songs lead');
+    for (const t of titles.slice(2)) {
+      assert.ok(cooled.some(([c]) => c === t), `repeat '${t}' came from the cooled set`);
+    }
+    assert.equal(new Set(titles).size, 5, 'repeats are still distinct rows');
+    // Move-to-end for every served id: 6 sent − 3 re-served + 5 served = 8.
+    assert.equal(r.body.ignoreList.length, 8);
+    assert.deepEqual(r.body.ignoreList.slice(-5), titles.map((t) => ids[t]));
+  });
+
+  test('a batch honours the always-on filters and enriches every row', async () => {
+    // Funk is t1 + t3. Asking for five yields exactly those two, each
+    // carrying its genres — per-row enrichment, not just the first pick's.
+    const r = await randomReq(server.baseUrl, { limit: 5, genres: ['Funk'] });
+    assert.equal(r.status, 200);
+    assert.deepEqual([...titlesOf(r)].sort(), ['t1', 't3']);
+    for (const s of r.body.songs) {
+      assert.ok(s.metadata.genres.includes('Funk'), `${s.metadata.title} lost its genres`);
+    }
+  });
+
+  test('waterfall batch: the winning step is served whole, never padded from a relaxed step', async () => {
+    // 124-128 BPM holds t1, t2, t3, t7. Asking for six returns those four
+    // — the chain does not fall through to off-range songs to make six.
+    const r = await randomReq(server.baseUrl, { limit: 6, bpmRanges: [{ min: 124, max: 128 }] });
+    assert.equal(r.status, 200);
+    assert.deepEqual([...titlesOf(r)].sort(), ['t1', 't2', 't3', 't7']);
+    for (const s of r.body.songs) {
+      assert.ok(s.metadata.bpm >= 124 && s.metadata.bpm <= 128, `${s.metadata.title} is off-range`);
+    }
+  });
+
+  test('waterfall batch: tier ranking orders a relaxed step (unknown BPM before known-wrong)', async () => {
+    // Nothing is at 300-310 BPM, so every constrained step is empty and
+    // the unrestricted step wins with all eight rows. The batch must lead
+    // with the two unknown-BPM rows (Tier 1) before any known-wrong row.
+    const r = await randomReq(server.baseUrl, { limit: 4, bpmRanges: [{ min: 300, max: 310 }] });
+    assert.equal(r.status, 200);
+    const bpms = r.body.songs.map((s) => s.metadata.bpm);
+    assert.equal(bpms.length, 4);
+    assert.deepEqual(bpms.slice(0, 2), [null, null], 'unknown-BPM rows lead');
+    assert.ok(bpms.slice(2).every((b) => typeof b === 'number'), 'known-wrong rows trail');
+  });
+
+  test('waterfall batch: the id cooldown tops up within the winning step', async () => {
+    const ids = trackIdsByTitle();
+    // 124-125 BPM is {t1, t2, t7}; cool down t1 + t2 and ask for three:
+    // t7 leads and the two repeats come from the same step, never from
+    // outside the BPM window.
+    const r = await randomReq(server.baseUrl, {
+      limit: 3, bpmRanges: [{ min: 124, max: 125 }], ignoreList: [ids.t1, ids.t2],
+    });
+    assert.equal(r.status, 200);
+    const titles = titlesOf(r);
+    assert.equal(titles[0], 't7', 'the fresh song leads');
+    assert.deepEqual([...titles].sort(), ['t1', 't2', 't7']);
+  });
+
+  test('artist-cooldown batch flows through the bounded waterfall', async () => {
+    const r = await randomReq(server.baseUrl, { limit: 3, ignoreArtists: ['No Such Artist'] });
+    assert.equal(r.status, 200);
+    assert.equal(new Set(titlesOf(r)).size, 3);
+  });
+
+  test('limit validation: an integer from 1 to PICK_LIMIT_MAX', async () => {
+    for (const limit of [0, PICK_LIMIT_MAX + 1, 2.5, 'many', -1]) {
+      const r = await randomReq(server.baseUrl, { limit });
+      assert.equal(r.status, 400, `expected 400 for limit=${JSON.stringify(limit)}`);
+    }
+    assert.equal((await randomReq(server.baseUrl, { limit: 1 })).status, 200);
+    assert.equal((await randomReq(server.baseUrl, { limit: PICK_LIMIT_MAX })).status, 200);
   });
 
   // ── Bounded waterfall (no-BPM/key sessions) ───────────────────────

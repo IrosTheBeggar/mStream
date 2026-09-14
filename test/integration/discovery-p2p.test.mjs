@@ -58,7 +58,13 @@ function embeddingBlob(vec) {
 // (user_version marker, meta + tracks tables) — what fetchPeer() validates
 // and the similarity search reads. Lets the whole N4a query path be tested
 // without any network or sidecar.
-function makeSnapshotFile(filePath, { modelId = 'test-model', tracks = [] } = {}) {
+//
+// Default = the ORIGINAL layout (source schema v1/v2: no catalogue columns),
+// which is what every peer that has not upgraded still publishes; the
+// reader must keep accepting it. `catalogue: true` adds the V3 columns
+// (album / year / isrc / release_group_mbid) the way a current exporter
+// writes them — same format_version, appended columns.
+function makeSnapshotFile(filePath, { modelId = 'test-model', tracks = [], catalogue = false } = {}) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.rmSync(filePath, { force: true });
   const db = new DatabaseSync(filePath);
@@ -70,23 +76,35 @@ function makeSnapshotFile(filePath, { modelId = 'test-model', tracks = [] } = {}
       artist TEXT, title TEXT, duration REAL,
       model_id TEXT, model_version TEXT, embedding BLOB,
       bpm INTEGER, musical_key TEXT, danceability REAL,
-      genre_tags TEXT, mood_tags TEXT
+      genre_tags TEXT, mood_tags TEXT${catalogue
+    ? ', album TEXT, year INTEGER, isrc TEXT, release_group_mbid TEXT'
+    : ''}
     );
   `);
   const meta = db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)');
   meta.run('format', 'mstream-discovery-snapshot');
   meta.run('format_version', '1');
+  meta.run('source_schema_version', catalogue ? '3' : '2');
   meta.run('embedding_model_id', modelId);
   meta.run('embedding_model_version', '1');
   meta.run('row_count', String(tracks.length));
-  const ins = db.prepare(`
-    INSERT INTO tracks (export_id, recording_mbid, artist, title, duration, model_id, model_version, embedding)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+  const ins = catalogue
+    ? db.prepare(`
+        INSERT INTO tracks (export_id, recording_mbid, artist, title, duration, model_id, model_version, embedding,
+                            album, year, isrc, release_group_mbid)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    : db.prepare(`
+        INSERT INTO tracks (export_id, recording_mbid, artist, title, duration, model_id, model_version, embedding)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
   for (const t of tracks) {
-    ins.run(t.exportId || `anon:${t.title}`, t.mbid || null, t.artist, t.title,
+    const base = [t.exportId || `anon:${t.title}`, t.mbid || null, t.artist, t.title,
       t.duration || 180, t.modelId || modelId, '1',
-      t.vec ? embeddingBlob(t.vec) : null);
+      t.vec ? embeddingBlob(t.vec) : null];
+    if (catalogue) {
+      ins.run(...base, t.album ?? null, t.year ?? null, t.isrc ?? null, t.releaseGroupMbid ?? null);
+    } else {
+      ins.run(...base);
+    }
   }
   db.close();
   return filePath;
@@ -495,6 +513,7 @@ describe('discovery p2p — similarity search + novelty filter', () => {
   const MODEL = 'test-model';
   const PEER_X = 'a'.repeat(64);
   const PEER_Y = 'b'.repeat(64);
+  const PEER_Z = 'c'.repeat(64);   // original (pre-catalogue) snapshot layout
 
   before(async () => {
     server = await startServer({
@@ -528,10 +547,13 @@ describe('discovery p2p — similarity search + novelty filter', () => {
       trackA.title, MODEL, embeddingBlob([1, 0, 0, 0]));
     ddb.close();
 
-    // Peer X: the novelty-filter menagerie in the matching model space.
+    // Peer X: the novelty-filter menagerie in the matching model space, in
+    // the CURRENT snapshot layout (V3 catalogue columns present, filled on
+    // some rows and NULL on others — an untagged file exports NULLs).
     const peerDir = path.join(server.tmpDir, 'db', 'discovery-peers');
     makeSnapshotFile(path.join(peerDir, 'x'.repeat(64) + '.db'), {
       modelId: MODEL,
+      catalogue: true,
       tracks: [
         // near-duplicate of the query itself -> excluded (same recording)
         { artist: 'Dup Artist', title: 'Same Recording', vec: [1, 0, 0, 0] },
@@ -541,9 +563,10 @@ describe('discovery p2p — similarity search + novelty filter', () => {
         { artist: trackB.artist, title: trackB.title, vec: [0.8, 0.6, 0, 0] },
         // known artist, new song -> kept (dropped by newArtistsOnly)
         { artist: trackA.artist, title: 'Brand New Song', vec: [0.6, 0.8, 0, 0] },
-        // brand-new artist -> kept, ranks first
-        { artist: 'Totally New Artist', title: 'Fresh Cut', vec: [0.9, 0.43589, 0, 0] },
-        // another new artist, orthogonal -> kept, ranks last
+        // brand-new artist -> kept, ranks first; fully catalogued
+        { artist: 'Totally New Artist', title: 'Fresh Cut', vec: [0.9, 0.43589, 0, 0],
+          album: 'Fresh Album', year: 2019, isrc: 'USFC11900001', releaseGroupMbid: 'rg-fresh' },
+        // another new artist, orthogonal -> kept, ranks last; untagged file
         { artist: 'Another New Artist', title: 'Distant Sound', vec: [0, 1, 0, 0] },
         // no embedding -> never part of the search space
         { artist: 'Null Artist', title: 'No Vector', vec: null },
@@ -556,6 +579,14 @@ describe('discovery p2p — similarity search + novelty filter', () => {
       modelId: 'other-model',
       tracks: [{ artist: 'Other Space', title: 'Unreachable', vec: [1, 0, 0, 0], modelId: 'other-model' }],
     });
+    // Peer Z: a peer that has NOT upgraded — the ORIGINAL snapshot layout
+    // (no catalogue columns) in the query's model space. It must be read
+    // like any other peer (its rows count as searched), with the missing
+    // fields coming back null rather than the peer erroring out.
+    makeSnapshotFile(path.join(peerDir, 'z'.repeat(64) + '.db'), {
+      modelId: MODEL,
+      tracks: [{ artist: 'Legacy Peer Artist', title: 'Old Layout Song', vec: [0.3, 0.9539, 0, 0] }],
+    });
 
     // Hand-write the shelf registry the peer-db module lazy-loads.
     const p2pDir = path.join(server.tmpDir, 'db', 'discovery-p2p');
@@ -565,6 +596,8 @@ describe('discovery p2p — similarity search + novelty filter', () => {
         snapshotSeq: 1, modelId: MODEL, rowCount: 8, sizeBytes: 8192, name: 'Peer X', fetchedAt: new Date().toISOString() },
       { endpointId: PEER_Y, hash: 'y'.repeat(64), path: path.join(peerDir, 'y'.repeat(64) + '.db'),
         snapshotSeq: 1, modelId: 'other-model', rowCount: 1, sizeBytes: 4096, name: 'Peer Y', fetchedAt: new Date().toISOString() },
+      { endpointId: PEER_Z, hash: 'z'.repeat(64), path: path.join(peerDir, 'z'.repeat(64) + '.db'),
+        snapshotSeq: 1, modelId: MODEL, rowCount: 1, sizeBytes: 4096, name: 'Peer Z', fetchedAt: new Date().toISOString() },
     ]));
   });
   after(async () => { if (server) { await server.stop(); } });
@@ -580,22 +613,43 @@ describe('discovery p2p — similarity search + novelty filter', () => {
     const body = await r.json();
 
     assert.equal(body.query.modelId, MODEL);
-    // Peer Y has zero rows in the model space -> only Peer X is searched.
-    assert.equal(body.searched.peers, 1);
-    assert.equal(body.searched.tracks, 6, 'null-embedding and wrong-model rows are outside the space');
+    // Peer Y has zero rows in the model space -> Peers X and Z are searched.
+    assert.equal(body.searched.peers, 2);
+    assert.equal(body.searched.tracks, 7, 'null-embedding and wrong-model rows are outside the space');
 
     const titles = body.results.map((x) => x.title);
-    assert.deepEqual(titles, ['Fresh Cut', 'Brand New Song', 'Distant Sound'],
+    assert.deepEqual(titles, ['Fresh Cut', 'Brand New Song', 'Old Layout Song', 'Distant Sound'],
       'exclusions applied and ranking is cosine-descending');
     assert.ok(Math.abs(body.results[0].similarity - 0.9) < 0.001);
     assert.equal(body.results[0].peer.endpointId, PEER_X);
     assert.equal(body.results[0].peer.name, 'Peer X');
   });
 
+  test('catalogue fields ride along; a pre-catalogue snapshot reads as nulls', async () => {
+    const r = await similar({ filePath: `testlib/${trackA.filepath}` });
+    const body = await r.json();
+    const byTitle = Object.fromEntries(body.results.map((x) => [x.title, x]));
+
+    // Current-layout peer, tagged file: every catalogue field present.
+    assert.deepEqual(
+      [byTitle['Fresh Cut'].album, byTitle['Fresh Cut'].year, byTitle['Fresh Cut'].isrc, byTitle['Fresh Cut'].releaseGroupMbid],
+      ['Fresh Album', 2019, 'USFC11900001', 'rg-fresh']);
+    // Current-layout peer, untagged file: explicit nulls.
+    assert.deepEqual(
+      [byTitle['Distant Sound'].album, byTitle['Distant Sound'].year, byTitle['Distant Sound'].isrc, byTitle['Distant Sound'].releaseGroupMbid],
+      [null, null, null, null]);
+    // Original-layout peer (no such columns at all): searched normally,
+    // fields null — the format version never moved, so it is still valid.
+    const legacy = byTitle['Old Layout Song'];
+    assert.equal(legacy.peer.endpointId, PEER_Z);
+    assert.ok(Math.abs(legacy.similarity - 0.3) < 0.001);
+    assert.deepEqual([legacy.album, legacy.year, legacy.isrc, legacy.releaseGroupMbid], [null, null, null, null]);
+  });
+
   test('newArtistsOnly also drops artists the local library knows', async () => {
     const r = await similar({ filePath: `testlib/${trackA.filepath}`, newArtistsOnly: true });
     const body = await r.json();
-    assert.deepEqual(body.results.map((x) => x.title), ['Fresh Cut', 'Distant Sound']);
+    assert.deepEqual(body.results.map((x) => x.title), ['Fresh Cut', 'Old Layout Song', 'Distant Sound']);
   });
 
   test('limit caps the result list', async () => {
@@ -616,11 +670,11 @@ describe('discovery p2p — similarity search + novelty filter', () => {
     assert.equal((await similar({ filePath: `testlib/${trackA.filepath}`, limit: 0 })).status, 400);
   });
 
-  test('the shelf route lists both fetched snapshots', async () => {
+  test('the shelf route lists every fetched snapshot', async () => {
     const r = await fetch(`${server.baseUrl}/api/v1/discovery/p2p/peer-dbs`);
     assert.equal(r.status, 200);
     const body = await r.json();
-    assert.equal(body.peerDbs.length, 2);
+    assert.equal(body.peerDbs.length, 3);
     const x = body.peerDbs.find((p) => p.endpointId === PEER_X);
     assert.equal(x.name, 'Peer X');
   });
