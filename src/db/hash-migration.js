@@ -4,14 +4,16 @@
  * When the scanner re-parses a file whose bytes changed (typical trigger:
  * an external ID3 tag editor), the file's MD5 changes. User-facing rows
  * that key on track_hash — user_metadata (stars, ratings, play counts),
- * user_bookmarks, user_play_queue (scalar + JSON array of hashes) — still
- * reference the old hash. This helper points them at the new one so the
- * user's state follows the file's new identity.
+ * user_bookmarks, user_play_queue (scalar + JSON array of hashes), and the
+ * play_events listening log (V70) — still reference the old hash. This
+ * helper points them at the new one so the user's state follows the file's
+ * new identity, and the counters and the log keep agreeing.
  *
  * Mirrored in rust-parser/src/main.rs#migrate_hash_references — the Rust
  * scanner inlines the same logic rather than cross-processing into JS.
- * Any behaviour change must be reflected in both places (and covered by
- * the unit test in test/hash-migration.test.mjs).
+ * Any behaviour change must be reflected in both places and covered by
+ * both unit tests — test/db/hash-migration.test.mjs here, the
+ * hash_migration_tests module there — which share their fixture rows.
  */
 
 /**
@@ -41,7 +43,7 @@
  */
 export function migrateHashReferences(db, oldHash, newHash, { schemeRekey = false } = {}) {
   if (!oldHash || !newHash || oldHash === newHash) {
-    return { metadata: 0, bookmarks: 0, queues: 0 };
+    return { metadata: 0, bookmarks: 0, queues: 0, events: 0 };
   }
 
   // MERGE, not bare UPDATE: a user can hold rows under BOTH identities
@@ -64,12 +66,18 @@ export function migrateHashReferences(db, oldHash, newHash, { schemeRekey = fals
     } else {
       const minNonNull = (a, b) => (a == null) ? b : (b == null) ? a : (a < b ? a : b);
       const maxNonNull = (a, b) => (a == null) ? b : (b == null) ? a : (a > b ? a : b);
+      // V70 counters follow the same shape: skips and listened time sum
+      // (every play happened), first_played keeps the earliest.
       db.prepare(`UPDATE user_metadata SET play_count = ?, starred_at = ?,
-                  last_played = ?, rating = ? WHERE user_id = ? AND track_hash = ?`)
+                  last_played = ?, rating = ?, skip_count = ?, listened_ms = ?,
+                  first_played = ? WHERE user_id = ? AND track_hash = ?`)
         .run((n.play_count || 0) + (o.play_count || 0),
           minNonNull(n.starred_at, o.starred_at),
           maxNonNull(n.last_played, o.last_played),
           n.rating ?? o.rating,
+          (n.skip_count || 0) + (o.skip_count || 0),
+          (n.listened_ms || 0) + (o.listened_ms || 0),
+          minNonNull(n.first_played, o.first_played),
           o.user_id, newHash);
       db.prepare('DELETE FROM user_metadata WHERE user_id = ? AND track_hash = ?')
         .run(o.user_id, oldHash);
@@ -153,9 +161,17 @@ export function migrateHashReferences(db, oldHash, newHash, { schemeRekey = fals
     queuesUpdated++;
   }
 
+  // The listening log (V70): every play of the old key becomes a play of the
+  // new one — no merge to do, an event is not unique per track. Reads group
+  // and filter by track_hash, so a play left behind would vanish from the
+  // track's history while its counters (merged above) still counted it.
+  const events = db.prepare('UPDATE play_events SET track_hash = ? WHERE track_hash = ?')
+    .run(newHash, oldHash).changes;
+
   return {
     metadata,
     bookmarks,
     queues: queuesUpdated,
+    events,
   };
 }

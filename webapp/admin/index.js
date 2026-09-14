@@ -36,6 +36,11 @@ const ADMINDATA = (() => {
   // lyrics backfill settings (config.lyrics)
   module.lyricsParams = {};
   module.lyricsParamsUpdated = { ts: 0 };
+  // listening-history settings + log facts (GET /api/v1/admin/stats). Keys
+  // are declared up front so the card's bindings are reactive from the
+  // first render (a key added later would not be).
+  module.statsParams = { retentionMonths: null, playThresholdMs: null, playThresholdFraction: null, log: null, retention: null, enrichment: null };
+  module.statsParamsUpdated = { ts: 0 };
   // server settings
   module.serverParams = {};
   module.serverParamsUpdated = { ts: 0 };
@@ -216,6 +221,17 @@ const ADMINDATA = (() => {
     });
 
     module.lyricsParamsUpdated.ts = Date.now();
+  }
+
+  module.getStatsParams = async () => {
+    const res = await API.axios({
+      method: 'GET',
+      url: `${API.url()}/api/v1/admin/stats`
+    });
+    Object.keys(res.data).forEach(key => {
+      module.statsParams[key] = res.data[key];
+    });
+    module.statsParamsUpdated.ts = Date.now();
   }
 
   module.getServerParams = async () => {
@@ -2008,6 +2024,9 @@ const dbView = Vue.component('db-view', {
   data() {
     return {
       dbParams: ADMINDATA.dbParams,
+      statsParams: ADMINDATA.statsParams,
+      statsParamsTS: ADMINDATA.statsParamsUpdated,
+      statsBusy: '',
       sharedPlaylists: ADMINDATA.sharedPlaylists,
       sharedPlaylistsTS: ADMINDATA.sharedPlaylistUpdated,
       isPullingShared: false,
@@ -2260,6 +2279,55 @@ const dbView = Vue.component('db-view', {
                     </tbody>
                   </table>
                 </template>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">Listening History</span>
+                <p>Every play the apps report lands in the listening log behind the Stats page. Play counts on tracks are kept for good; the per-play log is pruned once it is older than the retention period. Settings apply live — no restart.</p>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td><b>Plays on file:</b>
+                        <template v-if="statsParams.log">{{ statsParams.log.total.toLocaleString() }}<span v-if="statsParams.log.oldest" class="enrich-muted"> since {{ fmtStatsDate(statsParams.log.oldest) }}, {{ statsParams.log.users }} account{{ statsParams.log.users === 1 ? '' : 's' }}</span></template>
+                        <span v-else class="enrich-muted">loading…</span>
+                      </td>
+                      <td></td>
+                    </tr>
+                    <tr>
+                      <td><b>Keep the log for:</b> {{ retentionLabel }}<span v-if="statsParams.retention && statsParams.retention.floor" class="enrich-muted"> — plays before {{ fmtStatsDate(statsParams.retention.floor) }} are pruned</span></td>
+                      <td>[<a v-on:click="openModal('edit-stats-retention-modal')">{{ t('admin.settings.edit') }}</a>]</td>
+                    </tr>
+                    <tr>
+                      <td><b>A play counts after:</b> {{ thresholdLabel }}</td>
+                      <td>[<a v-on:click="openModal('edit-stats-thresholds-modal')">{{ t('admin.settings.edit') }}</a>]</td>
+                    </tr>
+                    <tr>
+                      <td><b>Last prune:</b>
+                        <template v-if="statsParams.retention && statsParams.retention.lastSweep">{{ fmtStatsDate(statsParams.retention.lastSweep.at) }} — {{ statsParams.retention.lastSweep.deleted.toLocaleString() }} play{{ statsParams.retention.lastSweep.deleted === 1 ? '' : 's' }} removed</template>
+                        <span v-else class="enrich-muted">not yet this session (runs a minute after boot, then daily)</span>
+                      </td>
+                      <td></td>
+                    </tr>
+                    <tr>
+                      <td><b>Federated plays:</b>
+                        <template v-if="statsParams.log">{{ statsParams.log.peerEvents.toLocaleString() }} on file<span v-if="statsParams.log.thinPeerEvents > 0">, {{ statsParams.log.thinPeerEvents.toLocaleString() }} still waiting on the peer's metadata</span><span v-if="statsParams.enrichment && statsParams.enrichment.lastError" class="enrich-muted"> — last error: {{ statsParams.enrichment.lastError }}</span></template>
+                        <span v-else class="enrich-muted">loading…</span>
+                      </td>
+                      <td></td>
+                    </tr>
+                  </tbody>
+                </table>
+                <br>
+                <a class="waves-effect waves-light btn" v-bind:class="{ disabled: statsBusy !== '' }" v-on:click="statsAction('sweep')">{{ statsBusy === 'sweep' ? 'Pruning…' : 'Prune now' }}</a>
+                &nbsp;
+                <a class="waves-effect waves-light btn" v-bind:class="{ disabled: statsBusy !== '' }" v-on:click="statsAction('enrich')">{{ statsBusy === 'enrich' ? 'Asking peers…' : 'Ask peers for metadata' }}</a>
+                &nbsp;
+                <a class="waves-effect waves-light btn" v-bind:class="{ disabled: statsBusy !== '' }" v-on:click="statsAction('rebuild')">{{ statsBusy === 'rebuild' ? 'Rebuilding…' : 'Rebuild hourly totals' }}</a>
               </div>
             </div>
           </div>
@@ -2950,6 +3018,28 @@ const dbView = Vue.component('db-view', {
       modVM.currentViewModal = modalView;
       M.Modal.getInstance(document.getElementById('admin-modal')).open();
     },
+    fmtStatsDate: function(iso) {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) { return '—'; }
+      return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    },
+    statsAction: async function(kind) {
+      if (this.statsBusy) { return; }
+      this.statsBusy = kind;
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/stats/${kind}`, data: {} });
+        const d = res.data || {};
+        const message = kind === 'sweep' ? `${(d.deleted || 0).toLocaleString()} play${d.deleted === 1 ? '' : 's'} pruned`
+          : kind === 'enrich' ? `${(d.queued || 0).toLocaleString()} queued · ${(d.enriched || 0).toLocaleString()} completed · ${(d.unknown || 0).toLocaleString()} unknown to the peer · ${(d.failed || 0).toLocaleString()} unanswered`
+          : `${(d.hours || 0).toLocaleString()} hour${d.hours === 1 ? '' : 's'} recomputed`;
+        iziToast.success({ title: t('admin.settings.updated'), message: escHtml(message), position: 'topCenter', timeout: 4000 });
+        await ADMINDATA.getStatsParams();
+      } catch (err) {
+        iziToast.error({ title: t('admin.modal.updateFailed'), message: escHtml(err.response?.data?.error || ''), position: 'topCenter', timeout: 3500 });
+      } finally {
+        this.statsBusy = '';
+      }
+    },
     fetchEnrichStatus: async function() {
       // Two GETs per tick: /scan/status (queue + passes + coverage) and
       // /scan/progress (live per-library rows, empty between scans).
@@ -3091,8 +3181,24 @@ const dbView = Vue.component('db-view', {
       return `${Math.round(s / 86400)}d ago`;
     }
   },
+  computed: {
+    retentionLabel: function() {
+      const m = this.statsParams.retentionMonths;
+      if (m === null || m === undefined) { return '…'; }
+      if (m === 0) { return 'forever'; }
+      if (m % 12 === 0) { const y = m / 12; return `${y} year${y === 1 ? '' : 's'}`; }
+      return `${m} month${m === 1 ? '' : 's'}`;
+    },
+    thresholdLabel: function() {
+      const ms = this.statsParams.playThresholdMs; const f = this.statsParams.playThresholdFraction;
+      if (ms === null || ms === undefined) { return '…'; }
+      const secs = Math.round(ms / 1000);
+      return `${secs} second${secs === 1 ? '' : 's'}, or ${Math.round((f || 0) * 100)}% of the track when its length is known`;
+    }
+  },
   created: function() {
     this.fetchEnrichStatus();
+    ADMINDATA.getStatsParams().catch(() => { /* the card keeps showing loading…; the call is admin-only */ });
     // 4s keeps the running pass's progress feeling live without leaning
     // on the server: the endpoint's coverage counts are memoised
     // server-side, so a poll between passes is two cheap map reads.
@@ -9547,6 +9653,114 @@ const editDiscoveryPerRunView = Vue.component('edit-discovery-per-run-modal', {
   }
 });
 
+// Listening history: how long the per-play log is kept. Live — the next
+// sweep reads it (config.stats.retentionMonths).
+const editStatsRetentionView = Vue.component('edit-stats-retention-modal', {
+  data() {
+    return {
+      submitPending: false,
+      editValue: ADMINDATA.statsParams.retentionMonths ?? 24
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>Keep the listening log for</h4>
+        <div class="input-field">
+          <input v-model="editValue" id="edit-stats-retention" required type="number" min="0" max="1200">
+          <label for="edit-stats-retention">Months</label>
+          <span class="helper-text">Plays older than this are pruned from the per-play log once a day; play counts, hourly totals and the Stats page's long-range charts keep their numbers. 0 keeps every play forever.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/stats/retention`,
+          data: { retentionMonths: Number(this.editValue) }
+        });
+        ADMINDATA.statsParams.retentionMonths = Number(this.editValue);
+        ADMINDATA.getStatsParams().catch(() => {});
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+        iziToast.success({ title: t('admin.settings.updated'), position: 'topCenter', timeout: 3500 });
+      } catch(err) {
+        iziToast.error({ title: t('admin.modal.updateFailed'), message: escHtml(err.response?.data?.error || ''), position: 'topCenter', timeout: 3500 });
+      } finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
+// Listening history: when a play counts. Live — the next batch of plays
+// is judged by it (config.stats.playThresholdMs / playThresholdFraction).
+const editStatsThresholdsView = Vue.component('edit-stats-thresholds-modal', {
+  data() {
+    return {
+      submitPending: false,
+      seconds: Math.round((ADMINDATA.statsParams.playThresholdMs ?? 30000) / 1000),
+      percent: Math.round((ADMINDATA.statsParams.playThresholdFraction ?? 0.5) * 100)
+    };
+  },
+  template: `
+    <form @submit.prevent="updateParam">
+      <div class="modal-content">
+        <h4>When a play counts</h4>
+        <p>A play is counted once it has run for this many seconds, <i>or</i> for this share of the track when its length is known — whichever comes first. Shorter plays are still logged, as skips.</p>
+        <div class="input-field">
+          <input v-model="seconds" id="edit-stats-threshold-seconds" required type="number" min="0" max="3600">
+          <label for="edit-stats-threshold-seconds">Seconds played</label>
+        </div>
+        <div class="input-field">
+          <input v-model="percent" id="edit-stats-threshold-percent" required type="number" min="0" max="100">
+          <label for="edit-stats-threshold-percent">Percent of the track</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.modal.update') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  mounted: function () {
+    M.updateTextFields();
+  },
+  methods: {
+    updateParam: async function() {
+      try {
+        this.submitPending = true;
+        const data = { playThresholdMs: Math.round(Number(this.seconds) * 1000), playThresholdFraction: Number(this.percent) / 100 };
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/stats/thresholds`,
+          data
+        });
+        ADMINDATA.statsParams.playThresholdMs = data.playThresholdMs;
+        ADMINDATA.statsParams.playThresholdFraction = data.playThresholdFraction;
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+        iziToast.success({ title: t('admin.settings.updated'), position: 'topCenter', timeout: 3500 });
+      } catch(err) {
+        iziToast.error({ title: t('admin.modal.updateFailed'), message: escHtml(err.response?.data?.error || ''), position: 'topCenter', timeout: 3500 });
+      } finally {
+        this.submitPending = false;
+      }
+    }
+  }
+});
+
 const editScanIntervalView = Vue.component('edit-scan-interval-modal', {
   data() {
     return {
@@ -10762,6 +10976,8 @@ const modVM = new Vue({
     'edit-request-size-modal': editRequestSizeModal,
     'edit-address-modal': editAddressModal,
     'edit-scan-interval-modal': editScanIntervalView,
+    'edit-stats-retention-modal': editStatsRetentionView,
+    'edit-stats-thresholds-modal': editStatsThresholdsView,
     'edit-boot-scan-delay-modal': editBootScanView,
     'edit-select-codec-modal': editTranscodeCodecModal,
     'edit-transcode-bitrate-modal': editTranscodeDefaultBitrate,

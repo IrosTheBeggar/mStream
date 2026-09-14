@@ -108,6 +108,12 @@ export function setup(mstream) {
         results.push({
           artist: space.artists[i],
           title: space.titles[i],
+          // Catalogue fields (discovery.db V3) — null from peers whose
+          // snapshot predates them or whose file carries no such tag.
+          album: space.albums[i],
+          year: space.years[i],
+          isrc: space.isrcs[i],
+          releaseGroupMbid: space.releaseGroupMbids[i],
           duration: space.durations[i],
           similarity: dot,
           recordingMbid: space.mbids[i],

@@ -85,6 +85,16 @@ export function buildFeatures() {
     transcode: transcodeInfo,
     // Per-format booleans from config.
     supportedAudioFiles: config.program.supportedAudioFiles,
+    // Stats API v2 (/api/v1/stats/*): the version a client should speak.
+    // Absent on older servers, so a client gates on this — never on the
+    // version string. 2 = ingest, reads and management together; a partial
+    // surface was never advertised.
+    stats: 2,
+    // Library sync manifest (POST /api/v1/sync/manifest) — the server half
+    // of the mobile / desktop app's local mirror + offline index. Same
+    // contract as the discovery flags: the key's presence says this VERSION
+    // has the route; clients never probe for it.
+    sync: true,
   };
 }
 

@@ -64,6 +64,16 @@ removed.
 
 ### ✨ New features
 
+- **Library sync manifest.** `POST /api/v1/sync/manifest` (authenticated,
+  every user) lists every track the caller can see — ascending by id,
+  paged by cursor — as the lite metadata row plus the identity a
+  client-side mirror needs (file size, mtime, `hash` / `audio-hash` and
+  the hash scheme generation). A `revision` over the visible set doubles
+  as the `ETag`: send it back as `If-None-Match` on the first page and a
+  periodic sync costs one 304. Advertised by the `sync` flag in
+  `GET /api/` `features` (and flat on `/api/v1/ping`). The server half of
+  the mobile / desktop app's "keep a full copy of this library" and
+  offline browsing. See `docs/openapi.yaml`.
 - **Enrichment scan status API.** `GET /api/v1/scan/status`
   (authenticated, not admin-only) reports every post-scan enrichment
   pass — waveforms, album-art download, lyrics backfill, BPM/key

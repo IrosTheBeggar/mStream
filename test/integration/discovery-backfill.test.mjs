@@ -72,7 +72,10 @@ async function makeAudio(outPath, freq = 440, duration = 8) {
 let scratch;
 
 // Fixture library DB + a discovery.db path in the same dir. Track spec:
-//   { file?, dur?, hash?, artist?, genre?, bpm?, key? }
+//   { file?, dur?, hash?, artist?, genre?, bpm?, key?, album?, albumYear?,
+//     year?, isrc?, releaseGroupMbid? }
+// `album` creates/reuses an albums row (with albumYear + releaseGroupMbid)
+// and links the track to it — the V3 catalogue-field source.
 function makeDbs(tracks) {
   const dir = fs.mkdtempSync(path.join(scratch, 'disc-'));
   const libraryDbPath = path.join(dir, 'mstream.db');
@@ -100,11 +103,19 @@ function makeDbs(tracks) {
           artistId = db.prepare('SELECT id FROM artists WHERE name = ?').get(t.artist).id;
         }
       }
+      let albumId = null;
+      if (t.album) {
+        albumId = Number(db.prepare(
+          'INSERT INTO albums (name, artist_id, year, mbz_release_group_id) VALUES (?, ?, ?, ?)')
+          .run(t.album, artistId, t.albumYear ?? null, t.releaseGroupMbid ?? null).lastInsertRowid);
+      }
       const trackId = Number(db.prepare(`
-        INSERT INTO tracks (filepath, library_id, title, duration, audio_hash, artist_id, bpm, musical_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        INSERT INTO tracks (filepath, library_id, title, duration, audio_hash, artist_id, bpm, musical_key,
+                            album_id, year, isrc)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(t.file ?? `missing-${n}.flac`, libId, `T${n}`, t.dur ?? 200,
-          t.hash ?? `hash-${n}`, artistId, t.bpm ?? null, t.key ?? null).lastInsertRowid);
+          t.hash ?? `hash-${n}`, artistId, t.bpm ?? null, t.key ?? null,
+          albumId, t.year ?? null, t.isrc ?? null).lastInsertRowid);
       if (t.genre) {
         let genreId = Number(db.prepare('INSERT OR IGNORE INTO genres (name) VALUES (?)').run(t.genre).lastInsertRowid);
         if (!genreId) { genreId = db.prepare('SELECT id FROM genres WHERE name = ?').get(t.genre).id; }
@@ -169,7 +180,8 @@ after(() => {
 describe('discovery-backfill worker', () => {
   test('embeds eligible tracks with the model pin and library snapshot', async () => {
     const fx = makeDbs([
-      { file: 'a.flac', hash: 'hash-a', artist: 'Artist A', bpm: 128, key: 'C major' },
+      { file: 'a.flac', hash: 'hash-a', artist: 'Artist A', bpm: 128, key: 'C major',
+        album: 'Album A', albumYear: 1999, isrc: 'GBUM71900001', releaseGroupMbid: 'rg-album-a' },
       { file: 'b.flac', hash: 'hash-b' },
     ]);
     await makeAudio(path.join(fx.musicDir, 'a.flac'), 440);
@@ -180,6 +192,7 @@ describe('discovery-backfill worker', () => {
     assert.equal(r.complete.embedded, 2);
     assert.equal(r.complete.errors, 0);
     assert.equal(r.complete.hitCap, false);
+    assert.equal(r.complete.filled, 0, 'fresh rows are born filled — nothing for the fill pass');
 
     const ddb = openDiscovery(fx.discoveryDbPath);
     try {
@@ -196,6 +209,15 @@ describe('discovery-backfill worker', () => {
       assert.equal(a.bpm, 128);
       assert.equal(a.musical_key, 'C major');
       assert.match(a.export_id, /^anon:/);
+      // V3 catalogue fields copied from the library at write time; the
+      // year falls back to the album's when the track row has none.
+      assert.equal(a.album, 'Album A');
+      assert.equal(a.year, 1999);
+      assert.equal(a.isrc, 'GBUM71900001');
+      assert.equal(a.release_group_mbid, 'rg-album-a');
+      const b = rows.find((x) => x.audio_hash === 'hash-b');
+      assert.equal(b.album, null, 'untagged file: catalogue fields stay NULL');
+      assert.equal(b.year, null);
 
       // Vector: right length, L2-normalized (unit norm within float error).
       const u8 = Uint8Array.from(a.embedding);
@@ -431,6 +453,75 @@ describe('discovery-backfill worker', () => {
     } finally {
       ddb.close();
     }
+  });
+
+  test('catalogue fill: pre-V3 rows gain album/year/isrc/release-group without re-embedding', async () => {
+    const fx = makeDbs([
+      { file: 'tagged.flac', hash: 'hash-tagged', artist: 'Artist T',
+        album: 'Tagged Album', albumYear: 2004, year: 2005, isrc: 'GBUM70500001', releaseGroupMbid: 'rg-tagged' },
+      { file: 'untagged.flac', hash: 'hash-untagged' },
+    ]);
+    await makeAudio(path.join(fx.musicDir, 'tagged.flac'), 440);
+    await makeAudio(path.join(fx.musicDir, 'untagged.flac'), 660);
+
+    // Embed both, then erase the catalogue fields the way a discovery.db
+    // written before V3 looks after the migration: columns exist, all NULL.
+    const r1 = await runWorker(basePayload(fx));
+    assert.equal(r1.complete.embedded, 2);
+    const readRowSeq = () => {
+      const c = openDiscovery(fx.discoveryDbPath);
+      try { return Number(c.prepare("SELECT value FROM discovery_meta WHERE key = 'row_seq'").get().value); }
+      finally { c.close(); }
+    };
+    let ddb = openDiscovery(fx.discoveryDbPath);
+    let before;
+    try {
+      ddb.prepare('UPDATE discovery_tracks SET album = NULL, year = NULL, isrc = NULL, release_group_mbid = NULL').run();
+      before = ddb.prepare('SELECT audio_hash, embedding, updated_at FROM discovery_tracks ORDER BY audio_hash').all()
+        .map((x) => ({ ...x, embedding: Buffer.from(x.embedding).toString('hex') }));
+      assert.equal(before.length, 2);
+    } finally {
+      ddb.close();
+    }
+    const rowSeqBefore = readRowSeq();
+
+    // Nothing is eligible for embedding, yet the run must still fill.
+    const r2 = await runWorker(basePayload(fx));
+    assert.equal(r2.code, 0, r2.stderr);
+    assert.equal(r2.complete.attempted, 0, 'no embedding work');
+    assert.equal(r2.complete.filled, 1, 'exactly the tagged row is fillable');
+
+    ddb = openDiscovery(fx.discoveryDbPath);
+    try {
+      const after = ddb.prepare(
+        'SELECT audio_hash, album, year, isrc, release_group_mbid, embedding, updated_at FROM discovery_tracks ORDER BY audio_hash').all();
+      const tagged = after.find((x) => x.audio_hash === 'hash-tagged');
+      assert.equal(tagged.album, 'Tagged Album');
+      assert.equal(tagged.year, 2005, 'the track year wins over the album year');
+      assert.equal(tagged.isrc, 'GBUM70500001');
+      assert.equal(tagged.release_group_mbid, 'rg-tagged');
+      const untagged = after.find((x) => x.audio_hash === 'hash-untagged');
+      assert.equal(untagged.album, null, 'a file with no album tag stays NULL (and is never "fillable")');
+
+      // The fill touches nothing else: vectors and per-row rowversions are
+      // byte-for-byte what they were, but row_seq moved so auto-publish
+      // re-exports.
+      for (const b of before) {
+        const a = after.find((x) => x.audio_hash === b.audio_hash);
+        assert.equal(Buffer.from(a.embedding).toString('hex'), b.embedding);
+        assert.equal(a.updated_at, b.updated_at);
+      }
+    } finally {
+      ddb.close();
+    }
+    const rowSeqAfter = readRowSeq();
+    assert.ok(rowSeqAfter > rowSeqBefore, 'row_seq bumped by the fill');
+
+    // Steady state: a third run finds nothing to fill (the untagged row is
+    // not counted as work) and leaves row_seq alone.
+    const r3 = await runWorker(basePayload(fx));
+    assert.equal(r3.complete.filled, 0);
+    assert.equal(readRowSeq(), rowSeqAfter, 'a no-op fill must not move row_seq');
   });
 
   test('unknown model key is rejected up front', async () => {

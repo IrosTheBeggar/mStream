@@ -138,8 +138,9 @@ directly, with `manifest.json` holding their sha256s:
 **Just double-click it.** The desktop face of the bundle — `mStream.exe` on
 Windows, `mStream.app` on macOS, `mstream-desktop` on Linux — starts the
 server in the background, puts an mStream icon in your tray / menu bar
-(a status line — "Running · up 3h 12m", or Starting… / Stopped — then Open
-Admin Panel · Quick Connect · Start at login · View logs ·
+(a status line — "Running · up 3h 12m", or Starting… / Stopped — then
+Manage server ▸ (Libraries · Discovery · Federation · Backups · Torrents ·
+Open Admin Panel in browser) · Quick Connect · Start at login · View logs ·
 Restart server · Quit). Boots are quiet once set up — re-click the app icon
 (or launch it again) whenever you want the player in your browser. Start-at-login
 is on by default; one click in the tray menu turns it off. On a **first
@@ -147,15 +148,36 @@ install** the tray opens the guided setup wizard by itself (the bundled
 `mstream-player setup` — music folders, admin account, extras) in a real
 terminal: the bundled mStream console (Ghostty, with the mStream Dock icon)
 on macOS, which draws the wizard's artwork and Quick Connect QR as real
-pixels; Terminal.app without the console, and Windows Terminal on Windows.
-The wizard is one-time onboarding — the server records `setupComplete` in
-its config the moment the first folder or account lands, and everything
-after that lives in the admin panel. **Quick Connect** opens the same way on macOS and Windows —
-the wizard's pairing page (a scannable pixel QR plus the app links) in a
-terminal window; on Linux, or when an install has no player binary, it opens
+pixels; Terminal.app without the console; Windows Terminal on Windows (a
+plain console window without it); and on Linux whichever terminal emulator
+the desktop has — the one `xdg-terminal-exec` declares when that is
+installed, else a pixel-capable one (kitty, Ghostty, WezTerm, foot) so the
+artwork stays pixels, else the distro's own (Ptyxis, GNOME Console, GNOME
+Terminal, Konsole, the Xfce and MATE terminals, Alacritty, xterm). A Linux
+desktop with none of those opens the browser admin panel instead, and the
+launcher log says why. The wizard is one-time onboarding — the server
+records `setupComplete` in its config the moment the first folder or
+account lands, and everything after that lives in the admin panel.
+**Quick Connect** opens the same way on all three — the wizard's pairing
+page (a scannable pixel QR plus the app links) in a terminal window; when
+an install has no player binary, or no terminal could be opened, it opens
 the web player's Quick Connect modal instead. Headless installs get the
 setup invitation as a boot log line whenever the server has no folders and
 no accounts yet.
+
+**Manage server** holds the server's management screens as terminal pages
+— the bundled player's admin rooms (`mstream-player admin <room>
+--same-machine`), opened in the same kind of window as the wizard:
+**Libraries** (the music folders; the picker is the OS folder dialog, since
+the terminal runs on the server's own machine), **Discovery** (the P2P
+discovery network), **Federation**, **Backups** and **Torrents**. The rooms
+use the admin session the setup wizard saved when it created your account.
+An install whose admin account was made elsewhere — in the browser, or
+before the wizard existed — gets a one-time sign-in page inside the room
+and keeps that session for next time. When an install has no player
+binary, or no terminal could be opened, a room item opens the matching
+section of the browser admin panel instead; **Open Admin Panel in
+browser**, the submenu's last item, always does exactly that.
 
 **Terminal users lose nothing.** The same desktop binary run from a terminal
 behaves exactly like the server itself (same flags, output, and exit codes) —

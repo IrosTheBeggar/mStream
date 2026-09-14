@@ -323,6 +323,7 @@
   const DURATION_MAX_SECONDS = 86400;   // mirrors src/api/random.js Joi.number().max(86400) — 24h
   const GENRES_CACHE_TTL_MS = 5 * 60 * 1000;  // 5 min — popover dropdown content
   const GENRE_MODES = Object.freeze(['whitelist', 'blacklist']);
+  const DJ_LIMIT_MAX = 25;              // mirrors src/api/random.js PICK_LIMIT_MAX — songs one fetch may ask for
 
   // Safe-ish localStorage shim — Node tests + private-mode browsers
   // can both end up without a real one. Returning `null` for misses
@@ -382,6 +383,13 @@
       harmonicMixing: !!_read('harmonicMixing', false),
       bpmTolerance:   _readNumber('bpmTolerance', DEFAULT_BPM_TOLERANCE, 1, 20),
       djMinRating:    _readNumber('djMinRating', 0, 0, 10),
+      // Songs per fetch — how many songs one Auto DJ turn asks the server
+      // for (`limit` on random-songs, mStream #966). A preference like
+      // djMinRating, so it survives reset(). Rounded because the server's
+      // Joi wants an integer: a fractional value left in LS would 400
+      // every pick. The player only puts `limit` on the wire above 1, so
+      // the default keeps the pre-batch request byte-identical.
+      djLimit:        Math.round(_readNumber('djLimit', 1, 1, DJ_LIMIT_MAX)),
       // Vpath inclusion set — array of vpath names this DJ session is
       // allowed to pick from. Empty means "every vpath the user can
       // see"; the player computes the inverted `ignoreVPaths` payload.
@@ -855,22 +863,35 @@
     return keys;
   }
 
-  // Best answer across servers: highest reported cosine among the answers
-  // that are neither blocked (keyword / genre / duration / continuity —
-  // the same client-side checks the single-server loop applies) nor a
-  // repeat of what is playing or anchoring. Null when nothing qualifies,
-  // which sends the player back to the single-server pick.
+  // Best answers across servers: the `n` highest reported cosines among
+  // the answers that are neither blocked (keyword / genre / duration /
+  // continuity — the same client-side checks the single-server loop
+  // applies) nor a repeat of what is playing or anchoring, one entry per
+  // distinct server|path (a server never repeats itself within one
+  // answer, but two rounds of asks can offer the same song twice). Best
+  // first; equal cosines keep answer order, so the local server — asked
+  // first — wins ties. Empty when nothing qualifies, which sends the
+  // player back to the single-server pick.
   //   answers: [{ peerId|null, song, res, similarity, blocked }]
-  function chooseFederatedPick(answers, recentKeys) {
+  function chooseFederatedPicks(answers, recentKeys, n) {
     const recent = recentKeys instanceof Set ? recentKeys : new Set(recentKeys || []);
-    let best = null;
+    const want = Number.isInteger(n) && n > 0 ? n : 1;
+    const seen = new Set();
+    const eligible = [];
     for (const a of (Array.isArray(answers) ? answers : [])) {
       if (!a || !a.song || a.blocked) { continue; }
-      if (recent.has(federatedKey(a.peerId, a.song.filepath))) { continue; }
-      const sim = Number.isFinite(a.similarity) ? a.similarity : -1;
-      if (!best || sim > best.similarity) { best = { ...a, similarity: sim }; }
+      const key = federatedKey(a.peerId, a.song.filepath);
+      if (recent.has(key) || seen.has(key)) { continue; }
+      seen.add(key);
+      eligible.push({ ...a, similarity: Number.isFinite(a.similarity) ? a.similarity : -1 });
     }
-    return best;
+    eligible.sort((x, y) => y.similarity - x.similarity);   // stable: ties keep answer order
+    return eligible.slice(0, want);
+  }
+
+  // The single best answer, or null — chooseFederatedPicks for one song.
+  function chooseFederatedPick(answers, recentKeys) {
+    return chooseFederatedPicks(answers, recentKeys, 1)[0] || null;
   }
 
   // Per-peer ignoreList bookkeeping (see djPeerIgnoreLists above).
@@ -1249,6 +1270,20 @@
     return { min, max };
   }
 
+  // ── Songs per fetch ─────────────────────────────────────────────
+  //
+  // One place owns the rules — an integer from 1 to DJ_LIMIT_MAX — so a
+  // typed "99", "0", "2.5" or "" can never reach the wire: the server's
+  // Joi rejects a non-integer or out-of-range `limit` and would 400 every
+  // pick until the field was fixed. Returns what was stored so the panel
+  // can write it back into the input.
+  function setLimit(raw) {
+    const n = Math.round(Number(raw));
+    const val = Number.isFinite(n) ? Math.max(1, Math.min(DJ_LIMIT_MAX, n)) : 1;
+    setState({ djLimit: val });
+    return val;
+  }
+
   // ── Genres-list fetch cache ─────────────────────────────────────
   //
   // The popover/dropdown content (the SET of genres in the library)
@@ -1351,6 +1386,7 @@
     resolveSonicOwners,
     federatedRecentKeys,
     chooseFederatedPick,
+    chooseFederatedPicks,
     getPeerIgnoreList,
     setPeerIgnoreList,
     excludePeerForSession,
@@ -1382,6 +1418,11 @@
     // constrain each other).
     setDurationBounds,
 
+    // Songs per fetch (state.djLimit — set through the clamping setter;
+    // LIMIT_MAX is the ceiling the panel renders and the server enforces).
+    setLimit,
+    LIMIT_MAX: DJ_LIMIT_MAX,
+
     // Library genres-list cache (5-min TTL; populated by m.js's
     // panel-open lifecycle from /api/v1/db/genres).
     getCachedGenresList,
@@ -1407,6 +1448,7 @@
       GENRES_CACHE_TTL_MS,
       GENRE_MODES,
       DURATION_MAX_SECONDS,
+      DJ_LIMIT_MAX,
       // Re-read state from localStorage (tests seed LS then probe).
       rehydrate: _rehydrate,
     },

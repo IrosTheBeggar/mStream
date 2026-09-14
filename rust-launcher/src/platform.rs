@@ -251,93 +251,146 @@ pub fn open_logs_terminal(logs_dir: &std::path::Path) -> Result<(), String> {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        // No universal Linux terminal. Try the common emulators — each with
-        // its own execute-argument dialect — first successful spawn wins;
-        // with none present, degrade to the file manager on the logs dir
-        // (still a working "show me the logs", just not a live tail).
+        // No universal Linux terminal: the shared chain (linux_terminal
+        // below) — the desktop's declared default, the pixel-capable
+        // emulators, then the distro ones. With none present, degrade to
+        // the file manager on the logs dir (still a working "show me the
+        // logs", just not a live tail).
         let cmd = format!(
             "cd {dir}; echo '== launcher.log =='; tail -n 50 launcher.log 2>/dev/null; echo; echo '== server-console.log: full server log for this session (following; Ctrl+C to stop) =='; exec tail -n +1 -F server-console.log",
             dir = sh_quote(logs_dir)
         );
-        let candidates = [
-            ("x-terminal-emulator", ["-e", "sh", "-c", cmd.as_str()]),
-            ("gnome-terminal", ["--", "sh", "-c", cmd.as_str()]),
-            ("konsole", ["-e", "sh", "-c", cmd.as_str()]),
-            ("xfce4-terminal", ["-x", "sh", "-c", cmd.as_str()]),
-            ("xterm", ["-e", "sh", "-c", cmd.as_str()]),
-        ];
-        for (bin, args) in candidates {
-            if std::process::Command::new(bin).args(args).spawn().is_ok() {
-                return Ok(());
-            }
-        }
+        let candidates = linux_terminal::candidates(&cmd, None, linux_terminal::on_wayland());
+        let chain_err = match linux_terminal::spawn_first_alive(&candidates) {
+            Ok(_) => return Ok(()),
+            Err(e) => e,
+        };
         std::process::Command::new("xdg-open")
             .arg(logs_dir)
             .spawn()
             .map(|_| ())
-            .map_err(|_| {
-                "no terminal emulator found (tried x-terminal-emulator, gnome-terminal, \
-                 konsole, xfce4-terminal, xterm) and xdg-open failed"
-                    .to_string()
-            })
+            .map_err(|_| format!("{chain_err} and xdg-open failed"))
     }
 }
 
-/// Which wizard-family page a terminal launch opens. Each carries its own
-/// subcommand, window title, and scratch script name, so the Setup and
-/// Quick Connect tray items never clobber each other's launch files.
-#[derive(Clone, Copy)]
-pub enum WizardPage {
+/// One of the terminal player's admin rooms — `mstream-player admin <room>`,
+/// the server's management screens drawn in a terminal (player PR #21;
+/// pin v0.7.0 is the first with all five plus the in-room sign-in).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdminRoom {
+    /// The server's music folders.
+    Libraries,
+    /// The discovery network (P2P): the mesh, follows, invites, settings.
+    Discovery,
+    /// Federation: requests, minted tickets, readable peers.
+    Federation,
+    /// Backups: each library's copies elsewhere, schedules, runs.
+    Backups,
+    /// Torrents: the client, its list, per-library paths, seeding.
+    Torrents,
+}
+
+impl AdminRoom {
+    /// Menu order — the player's own `admin` help order.
+    pub const ALL: [AdminRoom; 5] = [
+        AdminRoom::Libraries,
+        AdminRoom::Discovery,
+        AdminRoom::Federation,
+        AdminRoom::Backups,
+        AdminRoom::Torrents,
+    ];
+
+    /// The room's name in the player's CLI (`mstream-player admin <this>`).
+    pub fn subcommand(self) -> &'static str {
+        match self {
+            AdminRoom::Libraries => "libraries",
+            AdminRoom::Discovery => "discovery",
+            AdminRoom::Federation => "federation",
+            AdminRoom::Backups => "backups",
+            AdminRoom::Torrents => "torrents",
+        }
+    }
+
+    /// The inverse of [`AdminRoom::subcommand`].
+    pub fn from_subcommand(name: &str) -> Option<AdminRoom> {
+        AdminRoom::ALL.into_iter().find(|r| r.subcommand() == name)
+    }
+}
+
+/// Which player page a terminal launch opens. Each carries its own argv,
+/// window title, and scratch script name, so no two tray items ever clobber
+/// each other's launch files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayerPage {
     /// The full first-run wizard (`mstream-player setup`).
     Setup,
     /// The standalone Quick Connect page (`mstream-player qr`) — the
     /// wizard's Done screen: pairing QR plus the app buttons.
     QuickConnect,
+    /// One admin room (`mstream-player admin <room> --same-machine`). The
+    /// launcher only ever runs on the server's own machine, so the rooms'
+    /// folder pickers may open the OS dialog and treat what it picks as the
+    /// server's paths — exactly what `--same-machine` declares.
+    Admin(AdminRoom),
 }
 
-impl WizardPage {
-    fn subcommand(self) -> &'static str {
+impl PlayerPage {
+    /// The player's argv for this page, before the `--server <url>` every
+    /// launch appends. Static words only: nothing here ever needs quoting.
+    fn args(self) -> Vec<&'static str> {
         match self {
-            WizardPage::Setup => "setup",
-            WizardPage::QuickConnect => "qr",
+            PlayerPage::Setup => vec!["setup"],
+            PlayerPage::QuickConnect => vec!["qr"],
+            PlayerPage::Admin(room) => vec!["admin", room.subcommand(), "--same-machine"],
         }
     }
-    // Only the mac ghostty config (and this file's mac-gated tests) call
-    // this; allow, not cfg, keeps the enum's surface uniform across
-    // platforms.
+    // Only the mac ghostty config (and this file's tests) call this; allow,
+    // not cfg, keeps the enum's surface uniform across platforms.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    fn title(self) -> &'static str {
+    fn title(self) -> String {
         match self {
-            WizardPage::Setup => "mStream Setup",
-            WizardPage::QuickConnect => "mStream Quick Connect",
+            PlayerPage::Setup => "mStream Setup".into(),
+            PlayerPage::QuickConnect => "mStream Quick Connect".into(),
+            PlayerPage::Admin(room) => format!("mStream {}", capitalized(room.subcommand())),
         }
     }
     #[cfg(target_os = "macos")]
-    fn script_name(self) -> &'static str {
+    fn script_name(self) -> String {
         match self {
-            WizardPage::Setup => "setup-mstream.command",
-            WizardPage::QuickConnect => "quickconnect-mstream.command",
+            PlayerPage::Setup => "setup-mstream.command".into(),
+            PlayerPage::QuickConnect => "quickconnect-mstream.command".into(),
+            PlayerPage::Admin(room) => format!("admin-{}-mstream.command", room.subcommand()),
         }
     }
 }
 
-/// Run one of the terminal player's wizard-family pages in a fresh terminal
-/// window, pointed at this launcher's server. Same per-OS "what is a
-/// terminal" seams as open_logs_terminal; the caller logs a failure — a
-/// missing terminal emulator must never take the tray down. Ok carries
-/// WHICH surface opened (support surface: "it opened in Terminal, not the
-/// mStream console — why?" should be one log line away).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn capitalized(word: &str) -> String {
+    let mut c = word.chars();
+    match c.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Run one of the terminal player's pages — the setup wizard, Quick
+/// Connect, or an admin room — in a fresh terminal window, pointed at this
+/// launcher's server. Same per-OS "what is a terminal" seams as
+/// open_logs_terminal; the caller logs a failure — a missing terminal
+/// emulator must never take the tray down. Ok carries WHICH surface opened
+/// (support surface: "it opened in Terminal, not the mStream console —
+/// why?" should be one log line away).
 ///
 /// `console`: the bundled Ghostty (macOS bundles only, resolved by
 /// paths::find_console_app) — preferred over Terminal.app because Apple's
 /// terminal has no pixel protocol at all, so the wizard's wordmark and QR
 /// degrade to character art there. Ignored on the other platforms.
-pub fn open_wizard_terminal(
+pub fn open_player_terminal(
     player_bin: &std::path::Path,
     server_url: &str,
     scratch_dir: &std::path::Path,
     console: Option<&crate::paths::ConsoleLaunch>,
-    page: WizardPage,
+    page: PlayerPage,
 ) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
@@ -358,10 +411,8 @@ pub fn open_wizard_terminal(
         // doesn't just keeps its size (the wizard reflows).
         let script = scratch_dir.join(page.script_name());
         let body = format!(
-            "#!/bin/sh\n# Written by mStream's tray - safe to delete.\nprintf '\\033[8;42;120t'\nclear\nexec {player} {sub} --server {url}\n",
-            player = sh_quote(player_bin),
-            sub = page.subcommand(),
-            url = sh_quote_str(server_url),
+            "#!/bin/sh\n# Written by mStream's tray - safe to delete.\nprintf '\\033[8;42;120t'\nclear\nexec {}\n",
+            player_shell_words(page, player_bin, server_url),
         );
         std::fs::write(&script, body).map_err(|e| format!("write {}: {e}", script.display()))?;
         let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
@@ -382,7 +433,8 @@ pub fn open_wizard_terminal(
         let _ = console;
         if std::process::Command::new("wt.exe")
             .arg(player_bin)
-            .args([page.subcommand(), "--server", server_url])
+            .args(page.args())
+            .args(["--server", server_url])
             .spawn()
             .is_ok()
         {
@@ -390,7 +442,8 @@ pub fn open_wizard_terminal(
         }
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
         std::process::Command::new(player_bin)
-            .args([page.subcommand(), "--server", server_url])
+            .args(page.args())
+            .args(["--server", server_url])
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
             .map(|_| "conhost fallback".into())
@@ -399,27 +452,17 @@ pub fn open_wizard_terminal(
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let _ = (scratch_dir, console); // no script file / no bundled console here
+        // No `exec`: the shell stays the window's parent, so a page that
+        // dies at once (a missing libasound, a bad binary) leaves its error
+        // on screen behind a "press Enter" instead of a window that flashed
+        // and vanished — the support surface for "nothing happened".
         let cmd = format!(
-            "exec {player} {sub} --server {url}",
-            player = sh_quote(player_bin),
-            sub = page.subcommand(),
-            url = sh_quote_str(server_url),
+            "{}; s=$?; if [ \"$s\" -ne 0 ]; then printf '\\nmstream-player exited with status %s - press Enter to close this window\\n' \"$s\"; read dummy; fi",
+            player_shell_words(page, player_bin, server_url),
         );
-        let candidates = [
-            ("x-terminal-emulator", ["-e", "sh", "-c", cmd.as_str()]),
-            ("gnome-terminal", ["--", "sh", "-c", cmd.as_str()]),
-            ("konsole", ["-e", "sh", "-c", cmd.as_str()]),
-            ("xfce4-terminal", ["-x", "sh", "-c", cmd.as_str()]),
-            ("xterm", ["-e", "sh", "-c", cmd.as_str()]),
-        ];
-        for (bin, args) in candidates {
-            if std::process::Command::new(bin).args(args).spawn().is_ok() {
-                return Ok(bin.into());
-            }
-        }
-        Err("no terminal emulator found (tried x-terminal-emulator, gnome-terminal, \
-             konsole, xfce4-terminal, xterm)"
-            .to_string())
+        let candidates =
+            linux_terminal::candidates(&cmd, Some(linux_terminal::WIZARD_SIZE), linux_terminal::on_wayland());
+        linux_terminal::spawn_first_alive(&candidates)
     }
 }
 
@@ -436,8 +479,8 @@ fn spawn_ghostty_page(
     player_bin: &std::path::Path,
     server_url: &str,
     scratch_dir: &std::path::Path,
-    page: WizardPage,
-) -> Result<(), String> {
+    page: PlayerPage,
+) ->Result<(), String> {
     let bin = console.ghostty_app.join("Contents").join("MacOS").join("ghostty");
     if !bin.exists() {
         return Err(format!("no ghostty binary at {}", bin.display()));
@@ -467,8 +510,8 @@ fn ghostty_page_config(
     console: &crate::paths::ConsoleLaunch,
     player_bin: &std::path::Path,
     server_url: &str,
-    page: WizardPage,
-) -> String {
+    page: PlayerPage,
+) ->String {
     let mut body = format!(
         "# Written by mStream's tray - safe to delete.\n\
          auto-update = off\n\
@@ -483,12 +526,7 @@ fn ghostty_page_config(
         // Config values run to end of line — a spaced path needs no quoting.
         body.push_str(&format!("macos-icon = custom\nmacos-custom-icon = {}\n", icns.display()));
     }
-    body.push_str(&format!(
-        "command = shell:{player} {sub} --server {url}\n",
-        player = sh_quote(player_bin),
-        sub = page.subcommand(),
-        url = sh_quote_str(server_url),
-    ));
+    body.push_str(&format!("command = shell:{}\n", player_shell_words(page, player_bin, server_url)));
     body
 }
 
@@ -630,6 +668,281 @@ pub fn spawn_installer_detached(installer: &std::path::Path, silent: bool) -> Re
         .map_err(|e| format!("spawn {}: {e}", installer.display()))
 }
 
+/// The Linux terminal chain, shared by View logs and the wizard pages.
+/// There is no universal Linux terminal, so this is a preference list —
+/// each entry in its own execute-argument dialect — and the first one that
+/// actually opens wins.
+#[cfg(all(unix, not(target_os = "macos")))]
+mod linux_terminal {
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    /// Columns × rows the wizard pages ask for, where an emulator's CLI can
+    /// take a size: the VTE family opens 80×24 by default, which cannot
+    /// hold the pairing QR drawn in half-blocks (77×39 cells), and the
+    /// XTWINOPS resize the macOS .command script sends is ignored by VTE,
+    /// kitty and stock xterm alike. The same window the mac Ghostty config
+    /// asks for.
+    pub const WIZARD_SIZE: (u16, u16) = (120, 42);
+
+    /// How long a spawned emulator gets to fail. A spawn that succeeds and
+    /// then exits non-zero at once opened nothing — a Wayland-only terminal
+    /// on X11, a GPU terminal without GL, a D-Bus factory that refused —
+    /// and must not end the chain: before this probe, such a "success"
+    /// left the user with no window and no fallback.
+    const GRACE: Duration = Duration::from_millis(250);
+
+    pub fn on_wayland() -> bool {
+        std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
+    }
+
+    /// The chain for one `sh -c` program, in preference order:
+    ///  1. `xdg-terminal-exec` — the freedesktop "run this in the user's
+    ///     chosen terminal" entry point, authoritative where installed;
+    ///  2. the pixel-capable emulators (kitty, Ghostty, WezTerm, foot):
+    ///     they draw the wizard's wordmark and QR as real pixels, so a user
+    ///     who has one gets the best page even when it isn't the desktop's
+    ///     default (the player repo's Phase 8 verdict);
+    ///  3. Debian's `x-terminal-emulator` alternative, then the desktop
+    ///     defaults — Ptyxis (Fedora 41+ ships no gnome-terminal), GNOME
+    ///     Console, GNOME Terminal, Konsole, the Xfce and MATE terminals,
+    ///     Alacritty — and xterm last.
+    ///
+    /// `size` rides only where the CLI takes one (the rest open at their
+    /// default and the pages reflow); `wayland` admits foot, which cannot
+    /// run without a Wayland socket.
+    pub fn candidates(cmd: &str, size: Option<(u16, u16)>, wayland: bool) -> Vec<(&'static str, Vec<String>)> {
+        // Every dialect ends in the program itself as three argv elements —
+        // `sh -c <cmd>` — so no emulator re-parses the command text.
+        let with = |lead: Vec<String>| -> Vec<String> {
+            let mut a = lead;
+            a.extend(["sh", "-c", cmd].map(String::from));
+            a
+        };
+        let owned = |parts: &[&str]| -> Vec<String> { parts.iter().map(|p| (*p).to_string()).collect() };
+        let geo = size.map(|(c, r)| format!("{c}x{r}"));
+        let mut chain: Vec<(&'static str, Vec<String>)> = Vec::new();
+        chain.push(("xdg-terminal-exec", with(vec![])));
+        chain.push((
+            "kitty",
+            with(match size {
+                Some((c, r)) => vec![
+                    "-o".into(),
+                    format!("initial_window_width={c}c"),
+                    "-o".into(),
+                    format!("initial_window_height={r}c"),
+                ],
+                None => vec![],
+            }),
+        ));
+        chain.push((
+            "ghostty",
+            with(match size {
+                Some((c, r)) => vec![format!("--window-width={c}"), format!("--window-height={r}"), "-e".into()],
+                None => owned(&["-e"]),
+            }),
+        ));
+        chain.push((
+            "wezterm",
+            with(match size {
+                Some((c, r)) => vec![
+                    "--config".into(),
+                    format!("initial_cols={c}"),
+                    "--config".into(),
+                    format!("initial_rows={r}"),
+                    "start".into(),
+                    "--".into(),
+                ],
+                None => owned(&["start", "--"]),
+            }),
+        ));
+        if wayland {
+            chain.push((
+                "foot",
+                with(match &geo {
+                    Some(g) => vec!["-W".into(), g.clone(), "--".into()],
+                    None => owned(&["--"]),
+                }),
+            ));
+        }
+        chain.push(("x-terminal-emulator", with(owned(&["-e"]))));
+        chain.push(("ptyxis", with(owned(&["--"]))));
+        chain.push(("kgx", with(owned(&["--"]))));
+        chain.push((
+            "gnome-terminal",
+            with(match &geo {
+                Some(g) => vec![format!("--geometry={g}"), "--".into()],
+                None => owned(&["--"]),
+            }),
+        ));
+        chain.push(("konsole", with(owned(&["-e"]))));
+        chain.push((
+            "xfce4-terminal",
+            with(match &geo {
+                Some(g) => vec![format!("--geometry={g}"), "-x".into()],
+                None => owned(&["-x"]),
+            }),
+        ));
+        chain.push((
+            "mate-terminal",
+            with(match &geo {
+                Some(g) => vec![format!("--geometry={g}"), "-x".into()],
+                None => owned(&["-x"]),
+            }),
+        ));
+        chain.push((
+            "alacritty",
+            with(match size {
+                Some((c, r)) => vec![
+                    "-o".into(),
+                    format!("window.dimensions.columns={c}"),
+                    "-o".into(),
+                    format!("window.dimensions.lines={r}"),
+                    "-e".into(),
+                ],
+                None => owned(&["-e"]),
+            }),
+        ));
+        chain.push((
+            "xterm",
+            with(match &geo {
+                Some(g) => vec!["-geometry".into(), g.clone(), "-e".into()],
+                None => owned(&["-e"]),
+            }),
+        ));
+        chain
+    }
+
+    /// Spawn the first candidate that is still alive after GRACE — or that
+    /// exited 0 within it: the D-Bus-factory clients (gnome-terminal and
+    /// kin) hand the window to a running service and return at once. Ok
+    /// carries the emulator that opened; Err lists what each one did, for
+    /// the launcher log.
+    pub fn spawn_first_alive(candidates: &[(&str, Vec<String>)]) -> Result<String, String> {
+        let mut tried = Vec::with_capacity(candidates.len());
+        for (bin, args) in candidates {
+            let mut child = match Command::new(bin).args(args).stdin(Stdio::null()).spawn() {
+                Ok(c) => c,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    tried.push(format!("{bin}: not installed"));
+                    continue;
+                }
+                Err(e) => {
+                    tried.push(format!("{bin}: {e}"));
+                    continue;
+                }
+            };
+            std::thread::sleep(GRACE);
+            if let Ok(Some(status)) = child.try_wait() {
+                if !status.success() {
+                    tried.push(format!("{bin}: {status}"));
+                    continue;
+                }
+            }
+            // Reap it eventually, so a session of clicks leaves no zombies.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            return Ok((*bin).to_string());
+        }
+        Err(format!("no terminal emulator opened ({})", tried.join("; ")))
+    }
+}
+
+#[cfg(all(test, unix, not(target_os = "macos")))]
+mod linux_tests {
+    use super::linux_terminal::{candidates, spawn_first_alive, WIZARD_SIZE};
+
+    const CMD: &str = "'/opt/m stream/bin/mstream-player' setup --server 'http://x:1'";
+
+    #[test]
+    fn every_dialect_carries_the_program_as_sh_dash_c() {
+        for size in [None, Some(WIZARD_SIZE)] {
+            for wayland in [false, true] {
+                for (bin, args) in candidates(CMD, size, wayland) {
+                    let n = args.len();
+                    assert!(n >= 3, "{bin}: {args:?}");
+                    assert_eq!(&args[n - 3..], ["sh", "-c", CMD], "{bin}: {args:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn size_rides_only_where_the_cli_takes_one() {
+        let sized = candidates(CMD, Some(WIZARD_SIZE), true);
+        let args_of = |bin: &str| -> Vec<String> {
+            sized.iter().find(|(b, _)| *b == bin).map(|(_, a)| a.clone()).unwrap_or_else(|| panic!("{bin} missing"))
+        };
+        let pair = |bin: &str, a: &str, b: &str| args_of(bin).windows(2).any(|w| w[0] == a && w[1] == b);
+        assert!(pair("xterm", "-geometry", "120x42"));
+        assert!(pair("foot", "-W", "120x42"));
+        assert!(args_of("gnome-terminal").contains(&"--geometry=120x42".to_string()));
+        assert!(args_of("xfce4-terminal").contains(&"--geometry=120x42".to_string()));
+        assert!(args_of("mate-terminal").contains(&"--geometry=120x42".to_string()));
+        assert!(args_of("kitty").contains(&"initial_window_width=120c".to_string()));
+        assert!(args_of("ghostty").contains(&"--window-height=42".to_string()));
+        assert!(args_of("wezterm").contains(&"initial_rows=42".to_string()));
+        assert!(args_of("alacritty").contains(&"window.dimensions.lines=42".to_string()));
+        // These CLIs take no size: the pages reflow into the default window.
+        for bin in ["xdg-terminal-exec", "x-terminal-emulator", "ptyxis", "kgx", "konsole"] {
+            let a = args_of(bin);
+            assert!(!a.iter().any(|x| x.contains("120") || x.contains("42")), "{bin}: {a:?}");
+        }
+        // Without a size, nobody asks for one.
+        for (bin, args) in candidates(CMD, None, true) {
+            assert!(
+                !args.iter().any(|a| a.contains("120x42") || a.contains("=120") || a.contains("=42")),
+                "{bin}: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn foot_is_offered_only_on_wayland() {
+        assert!(candidates(CMD, None, false).iter().all(|(b, _)| *b != "foot"));
+        assert!(candidates(CMD, None, true).iter().any(|(b, _)| *b == "foot"));
+    }
+
+    #[test]
+    fn order_is_declared_default_then_pixel_capable_then_distro_then_xterm() {
+        let names: Vec<&str> = candidates(CMD, None, true).into_iter().map(|(b, _)| b).collect();
+        assert_eq!(names.first(), Some(&"xdg-terminal-exec"));
+        assert_eq!(names.last(), Some(&"xterm"));
+        let pos = |n: &str| names.iter().position(|b| *b == n).unwrap_or_else(|| panic!("{n} missing"));
+        assert!(pos("kitty") < pos("x-terminal-emulator"), "pixel-capable before the distro default");
+        assert!(pos("x-terminal-emulator") < pos("ptyxis") && pos("ptyxis") < pos("gnome-terminal"));
+    }
+
+    #[test]
+    fn a_spawn_that_dies_at_once_does_not_end_the_chain() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mstream-term-chain-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = |name: &str, body: &str| -> String {
+            let p = dir.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p.to_string_lossy().into_owned()
+        };
+        let dead = script("dead-terminal", "exit 3");
+        let alive = script("alive-terminal", "sleep 1");
+        let handed_off = script("factory-client", "exit 0");
+        let missing = dir.join("no-such-terminal").to_string_lossy().into_owned();
+
+        let chain = vec![(missing.as_str(), vec![]), (dead.as_str(), vec![]), (alive.as_str(), vec![])];
+        assert_eq!(spawn_first_alive(&chain).unwrap(), alive, "the first one still running wins");
+
+        let factory = vec![(dead.as_str(), vec![]), (handed_off.as_str(), vec![]), (alive.as_str(), vec![])];
+        assert_eq!(spawn_first_alive(&factory).unwrap(), handed_off, "a clean exit 0 counts as opened");
+
+        let hopeless = vec![(missing.as_str(), vec![]), (dead.as_str(), vec![])];
+        let err = spawn_first_alive(&hopeless).unwrap_err();
+        assert!(err.contains("not installed") && err.contains("exit status: 3"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// POSIX single-quote a path for embedding in `sh -c` text — the macOS data
 /// home ("Application Support") guarantees a space.
 #[cfg(unix)]
@@ -640,6 +953,109 @@ fn sh_quote(p: &std::path::Path) -> String {
 #[cfg(unix)]
 fn sh_quote_str(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// The one `sh -c` program every unix launch of a player page runs —
+/// `'<player>' <page args…> --server '<url>'` — shared by the macOS
+/// .command script, the bundled-console config and the Linux chain, so all
+/// three agree on the argv and its quoting.
+#[cfg(unix)]
+fn player_shell_words(page: PlayerPage, player_bin: &std::path::Path, server_url: &str) -> String {
+    let mut words = vec![sh_quote(player_bin)];
+    words.extend(page.args().into_iter().map(String::from));
+    words.push("--server".into());
+    words.push(sh_quote_str(server_url));
+    words.join(" ")
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::{AdminRoom, PlayerPage};
+
+    fn every_page() -> Vec<PlayerPage> {
+        let mut pages = vec![PlayerPage::Setup, PlayerPage::QuickConnect];
+        pages.extend(AdminRoom::ALL.into_iter().map(PlayerPage::Admin));
+        pages
+    }
+
+    #[test]
+    fn each_page_maps_to_its_own_argv_and_title() {
+        assert_eq!(PlayerPage::Setup.args(), ["setup"]);
+        assert_eq!(PlayerPage::QuickConnect.args(), ["qr"]);
+        // A room always declares --same-machine: the launcher IS the
+        // server's machine, so the room's folder picker may use the OS
+        // dialog and hand the server the paths it picks.
+        assert_eq!(
+            PlayerPage::Admin(AdminRoom::Libraries).args(),
+            ["admin", "libraries", "--same-machine"]
+        );
+        assert_eq!(PlayerPage::Admin(AdminRoom::Torrents).args(), ["admin", "torrents", "--same-machine"]);
+        assert_eq!(PlayerPage::Setup.title(), "mStream Setup");
+        assert_eq!(PlayerPage::QuickConnect.title(), "mStream Quick Connect");
+        assert_eq!(PlayerPage::Admin(AdminRoom::Discovery).title(), "mStream Discovery");
+        // Seven pages, seven argvs, seven titles: no two tray items may
+        // open the same thing or the same-named window.
+        let pages = every_page();
+        for (i, a) in pages.iter().enumerate() {
+            for b in &pages[i + 1..] {
+                assert_ne!(a.args(), b.args(), "{a:?} vs {b:?}");
+                assert_ne!(a.title(), b.title(), "{a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rooms_round_trip_through_their_cli_names() {
+        for room in AdminRoom::ALL {
+            assert_eq!(AdminRoom::from_subcommand(room.subcommand()), Some(room));
+        }
+        assert_eq!(AdminRoom::from_subcommand("setup"), None);
+        assert_eq!(AdminRoom::from_subcommand("Libraries"), None, "the CLI names are lowercase");
+        assert_eq!(AdminRoom::from_subcommand(""), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_launches_share_one_quoted_command_line() {
+        let player = std::path::Path::new("/Application Support/bin/mstream-player");
+        assert_eq!(
+            super::player_shell_words(PlayerPage::Setup, player, "http://localhost:3000"),
+            "'/Application Support/bin/mstream-player' setup --server 'http://localhost:3000'"
+        );
+        assert_eq!(
+            super::player_shell_words(PlayerPage::Admin(AdminRoom::Backups), player, "http://x:1"),
+            "'/Application Support/bin/mstream-player' admin backups --same-machine --server 'http://x:1'"
+        );
+        // A quote inside a path survives as the POSIX '\'' dance.
+        let odd = std::path::Path::new("/it's/player");
+        let words = super::player_shell_words(PlayerPage::QuickConnect, odd, "http://x:1");
+        assert!(words.starts_with("'/it'\\''s/player' qr "), "{words}");
+    }
+
+    #[test]
+    #[ignore = "spawns a real terminal window - run manually with --ignored"]
+    fn manual_open_player_terminal() {
+        // MSTREAM_DEMO_PLAYER = a real player binary; MSTREAM_DEMO_SERVER =
+        // the URL to point it at; MSTREAM_DEMO_PAGE = setup (default), qr,
+        // or a room name (libraries, discovery, federation, backups,
+        // torrents); on macOS MSTREAM_DEMO_CONSOLE = optionally a Ghostty.app
+        // to prefer (with MSTREAM_DEMO_ICNS for the Dock icon).
+        let player = std::path::PathBuf::from(std::env::var("MSTREAM_DEMO_PLAYER").expect("set MSTREAM_DEMO_PLAYER"));
+        let url = std::env::var("MSTREAM_DEMO_SERVER").unwrap_or_else(|_| "http://localhost:3000".into());
+        let console = std::env::var("MSTREAM_DEMO_CONSOLE").ok().map(|app| crate::paths::ConsoleLaunch {
+            ghostty_app: std::path::PathBuf::from(app),
+            icon_icns: std::env::var("MSTREAM_DEMO_ICNS").ok().map(std::path::PathBuf::from),
+        });
+        let dir = std::env::temp_dir().join("mstream-page-demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let page = match std::env::var("MSTREAM_DEMO_PAGE").as_deref() {
+            Ok("qr") => PlayerPage::QuickConnect,
+            Ok(name) => AdminRoom::from_subcommand(name).map(PlayerPage::Admin).unwrap_or(PlayerPage::Setup),
+            Err(_) => PlayerPage::Setup,
+        };
+        let via = super::open_player_terminal(&player, &url, &dir, console.as_ref(), page).unwrap();
+        eprintln!("opened {page:?} via {via}");
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -654,7 +1070,7 @@ mod tests {
             &c,
             std::path::Path::new("/Application Support/bin/mstream-player"),
             "http://localhost:3000",
-            super::WizardPage::Setup,
+            super::PlayerPage::Setup,
         );
         // shell: + sh-quoting is what survives "Application Support" spaces;
         // the command must live in the CONFIG, never a -e argument (consent
@@ -670,25 +1086,36 @@ mod tests {
         assert!(cfg.contains("quit-after-last-window-closed = true\n"), "{cfg}");
 
         let plain = crate::paths::ConsoleLaunch { ghostty_app: "/t/G.app".into(), icon_icns: None };
-        let cfg2 = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", super::WizardPage::Setup);
+        let cfg2 = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", super::PlayerPage::Setup);
         assert!(!cfg2.contains("macos-icon"), "no icns means Ghostty keeps its own icon: {cfg2}");
 
         // The Quick Connect page: same machinery, its own subcommand + title.
-        let qc = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", super::WizardPage::QuickConnect);
+        let qc = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", super::PlayerPage::QuickConnect);
         assert!(qc.contains("command = shell:'/p' qr --server 'http://x:1'"), "{qc}");
         assert!(qc.contains("title = mStream Quick Connect\n"), "{qc}");
+
+        // An admin room: the same window, its own argv (with --same-machine)
+        // and title.
+        let room = super::PlayerPage::Admin(super::AdminRoom::Federation);
+        let fed = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", room);
+        assert!(fed.contains("command = shell:'/p' admin federation --same-machine --server 'http://x:1'"), "{fed}");
+        assert!(fed.contains("title = mStream Federation\n"), "{fed}");
     }
 
     #[test]
-    fn each_page_maps_to_its_own_subcommand_title_and_script() {
-        use super::WizardPage::*;
-        assert_eq!(Setup.subcommand(), "setup");
-        assert_eq!(QuickConnect.subcommand(), "qr");
-        assert_eq!(Setup.title(), "mStream Setup");
-        assert_eq!(QuickConnect.title(), "mStream Quick Connect");
-        // Distinct script files: the two tray items must never clobber
-        // each other's .command.
-        assert_ne!(Setup.script_name(), QuickConnect.script_name());
+    fn each_page_writes_its_own_command_script() {
+        // Distinct script files: no two tray items may clobber each
+        // other's .command while both windows are open.
+        let mut pages = vec![super::PlayerPage::Setup, super::PlayerPage::QuickConnect];
+        pages.extend(super::AdminRoom::ALL.into_iter().map(super::PlayerPage::Admin));
+        let names: Vec<String> = pages.iter().map(|p| p.script_name()).collect();
+        for (i, a) in names.iter().enumerate() {
+            assert!(a.ends_with(".command"), "{a}");
+            for b in &names[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+        assert_eq!(super::PlayerPage::Admin(super::AdminRoom::Libraries).script_name(), "admin-libraries-mstream.command");
     }
 
     #[test]
@@ -701,31 +1128,4 @@ mod tests {
         super::open_logs_terminal(&dir).unwrap();
     }
 
-    #[test]
-    #[ignore = "spawns a real Terminal window - run manually with --ignored"]
-    fn manual_open_setup_terminal() {
-        // MSTREAM_DEMO_PLAYER = a real player binary; MSTREAM_DEMO_SERVER =
-        // the URL to point its wizard at; MSTREAM_DEMO_CONSOLE = optionally,
-        // a Ghostty.app to prefer (with MSTREAM_DEMO_ICNS for the Dock icon).
-        let player = std::path::PathBuf::from(
-            std::env::var("MSTREAM_DEMO_PLAYER").expect("set MSTREAM_DEMO_PLAYER"),
-        );
-        let url = std::env::var("MSTREAM_DEMO_SERVER")
-            .unwrap_or_else(|_| "http://localhost:3000".into());
-        let console = std::env::var("MSTREAM_DEMO_CONSOLE").ok().map(|app| {
-            crate::paths::ConsoleLaunch {
-                ghostty_app: std::path::PathBuf::from(app),
-                icon_icns: std::env::var("MSTREAM_DEMO_ICNS").ok().map(std::path::PathBuf::from),
-            }
-        });
-        let dir = std::env::temp_dir().join("mstream-setup-demo");
-        std::fs::create_dir_all(&dir).unwrap();
-        // MSTREAM_DEMO_PAGE=qr opens the Quick Connect page instead.
-        let page = match std::env::var("MSTREAM_DEMO_PAGE").as_deref() {
-            Ok("qr") => super::WizardPage::QuickConnect,
-            _ => super::WizardPage::Setup,
-        };
-        let via = super::open_wizard_terminal(&player, &url, &dir, console.as_ref(), page).unwrap();
-        eprintln!("opened via {via}");
-    }
 }
