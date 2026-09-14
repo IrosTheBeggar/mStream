@@ -187,6 +187,25 @@ describe('rows and tiles', () => {
   });
 });
 
+describe('the way back to the player', () => {
+  const PAGE = 'http://127.0.0.1:3000/stats/';
+  const tab = (href, closed = false) => ({ closed, location: new URL(href) });
+  test('a tab the player opened goes back by closing', () => {
+    assert.equal(V.openerIsPlayer(tab('http://127.0.0.1:3000/'), PAGE), true);
+    assert.equal(V.openerIsPlayer(tab('http://127.0.0.1:3000/?x=1#y'), PAGE), true, 'a query or hash on the player is still the player');
+    assert.equal(V.openerIsPlayer(tab('https://host/mstream/'), 'https://host/mstream/stats/'), true, 'under a path prefix');
+  });
+  test('anything else follows the link', () => {
+    assert.equal(V.openerIsPlayer(null, PAGE), false, 'a bookmark or a typed URL');
+    assert.equal(V.openerIsPlayer(tab('http://127.0.0.1:3000/', true), PAGE), false, 'the player tab has closed');
+    assert.equal(V.openerIsPlayer(tab('http://127.0.0.1:3000/login'), PAGE), false, 'the player tab moved on');
+    assert.equal(V.openerIsPlayer(tab('http://127.0.0.1:3000/stats/'), PAGE), false, 'another stats tab');
+    assert.equal(V.openerIsPlayer(tab('http://other:3000/'), PAGE), false, 'another origin');
+    const unreadable = { closed: false, location: { get origin() { throw new Error('SecurityError'); }, get pathname() { throw new Error('SecurityError'); } } };
+    assert.equal(V.openerIsPlayer(unreadable, PAGE), false, 'a cross-origin opener cannot be read');
+  });
+});
+
 describe('translation hook', () => {
   test('tr asks the translator first and falls back to English for a key the locale lacks', () => {
     const de = { 'stats.tile.plays': 'Wiedergaben', 'stats.period.weekOf': 'Woche vom {{date}}', 'stats.count.plays': { one: '{{count}} Wiedergabe', other: '{{count}} Wiedergaben' } };

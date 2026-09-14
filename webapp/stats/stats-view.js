@@ -596,11 +596,28 @@
     return tr('stats.provenance.plain');
   }
 
+  // ── the way back ─────────────────────────────────────────────────────
+  // The player's side nav opens this page in a tab of its own, and the player
+  // keeps playing in the tab that opened it. "Back to the player" closes this
+  // tab while that opener is still the player (same origin, the directory
+  // above this page), rather than loading a second player here. No opener
+  // (a bookmark, a typed URL), a closed one, one that moved on, or one that
+  // cannot be read: follow the link.
+  function openerIsPlayer(opener, pageHref) {
+    if (!opener || opener.closed) { return false; }
+    try {
+      const player = new URL('../', pageHref);
+      return opener.location.origin === player.origin && opener.location.pathname === player.pathname;
+    } catch (_) {
+      return false;
+    }
+  }
+
   return {
     escapeHtml, fmtDuration, fmtClock, fmtInt, fmtPercent, deltaText, deltaDuration,
     dayLabel, timeLabel, dayKeyLabel, hourLabel, periodOptions, versusLabel,
     niceTicks, columnChart, dayAxisLabels, dailySeries, monthSeries, monthAxisLabels, hourSeries, hoursNote, daysNote,
     metaOf, topRowHtml, historyRowHtml, outcomeParts, listenedText, clientText, tiles, tilesHtml, provenance,
-    configure, tr, monthName, weekdayName, formatDate, periodLabel, EN, WEEKDAYS, MONTHS,
+    openerIsPlayer, configure, tr, monthName, weekdayName, formatDate, periodLabel, EN, WEEKDAYS, MONTHS,
   };
 }));
