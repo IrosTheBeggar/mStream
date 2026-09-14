@@ -872,6 +872,9 @@ function handleScannerLine(scanObj, line) {
         if (evt.albumsAggregated > 0) {
           parts.push(`${evt.albumsAggregated} album(s) refreshed`);
         }
+        if (evt.artistsAggregated > 0) {
+          parts.push(`${evt.artistsAggregated} artist(s) refreshed`);
+        }
         const tail = evt.filesScanned != null ? ` (${evt.filesScanned} scanned)` : '';
         winston.info(`Scan complete: ${parts.join(', ')}${tail}`);
         if (evt.walkErrors > 0) {
