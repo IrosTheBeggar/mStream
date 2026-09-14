@@ -8,7 +8,7 @@
  * lofty's FlagCompilation reads. Fixtures that need such frames let
  * ffmpeg write the tags it CAN express, then append the rest here.
  *
- * V72: also handles ID3v2.4 tags (syncsafe frame sizes) and non-latin1
+ * V73: also handles ID3v2.4 tags (syncsafe frame sizes) and non-latin1
  * encodings, so fixtures can carry a null-separated multi-value TPE1 —
  * the one multi-value form ffmpeg cannot write from argv.
  */

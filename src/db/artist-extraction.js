@@ -13,7 +13,7 @@
  * delimiters are likewise Navidrome's defaults — the order matters
  * (longest / most-specific first) because we do a sequential replace.
  *
- * V72 split rules (Navidrome's, adopted whole):
+ * V73 split rules (Navidrome's, adopted whole):
  *   - a tag with TWO OR MORE values (Vorbis plural ARTIST, ID3v2.4
  *     null-separated, MP4 arrays) is honoured verbatim — its entries are
  *     never split again, so "Simon & Garfunkel; Art Garfunkel" as one of two
@@ -137,7 +137,7 @@ function dedupByKey(names) {
   });
 }
 
-// The V72 split rule: plural values verbatim, a single value delimiter-split.
+// The V73 split rule: plural values verbatim, a single value delimiter-split.
 export function resolveCredits(values, exceptions = []) {
   if (values.length >= 2) { return dedupByKey(values); }
   if (values.length === 1) { return dedupByKey(splitArtistString(values[0], exceptions)); }
@@ -299,7 +299,7 @@ export function extractArtists(common, { values = null, splitExceptions = [] } =
     isCompilation:      !!common?.compilation,
     trackArtistDisplay: creditDisplay(v.trackArtists),
     albumArtistDisplay: creditDisplay(v.albumArtists) || null,
-    // V71: per-artist sort names and MusicBrainz ids, index-aligned to the
+    // V72: per-artist sort names and MusicBrainz ids, index-aligned to the
     // name lists above (empty array = nothing to apply).
     trackArtistSorts: alignSort(common?.artistsort, trackArtists),
     albumArtistSorts: alignSort(common?.albumartistsort, albumArtists),

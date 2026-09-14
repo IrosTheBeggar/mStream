@@ -62,7 +62,7 @@ describe('buildArtistFilter', () => {
     assert.match(clauses[0], /album_artists/);
     // The names are bound three times — once per widening path. With
     // a single input we expect three params (the same name repeated).
-    // V71: bound as normalised keys (src/db/name-key.js), matched against
+    // V72: bound as normalised keys (src/db/name-key.js), matched against
     // artists.name_key — so any spelling the DJ resolver hands over lands.
     assert.equal(params.length, 3);
     assert.ok(params.every(p => p === 'foo'));
@@ -90,7 +90,7 @@ describe('buildArtistFilter', () => {
       ignoreArtists: ['Bar'],
     });
     assert.equal(clauses.length, 2);
-    // Three params per clause, in order (as normalised keys, V71).
+    // Three params per clause, in order (as normalised keys, V72).
     assert.deepEqual(params.slice(0, 3), ['foo', 'foo', 'foo']);
     assert.deepEqual(params.slice(3, 6), ['bar', 'bar', 'bar']);
   });

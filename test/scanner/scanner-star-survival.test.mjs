@@ -18,7 +18,7 @@
  *   - moving ONE track off a multi-track album steals NOTHING (the
  *     unreferenced guard — previously migrateAlbumStars moved the
  *     album's stars whenever any single track changed albums).
- *   - a year re-tag no longer re-mints (V70: year is an aggregate, not
+ *   - a year re-tag no longer re-mints (V71: year is an aggregate, not
  *     identity) — same row, star untouched;
  *   - an album re-mint (name re-tag) carries album_art_lookups + the
  *     album_art gallery links + a service-sourced default along with
@@ -382,7 +382,7 @@ for (const engine of ['rust', 'js']) {
         'VA keeps its star — sweep-exempt stars never migrate');
     });
 
-    test('a year re-tag no longer re-mints the album (V70): same row, year updated, star intact', { skip: !available() && 'ffmpeg or rust-parser unavailable' }, async () => {
+    test('a year re-tag no longer re-mints the album (V71): same row, year updated, star intact', { skip: !available() && 'ffmpeg or rust-parser unavailable' }, async () => {
       const sb = await makeSandbox(engine);
       const p = path.join(sb.libRoot, 'Plain', '01.mp3');
       await makeAudio(p, MP3, { title: 'P1', artist: 'Plain P', album: 'Plain', date: '1990' });
@@ -391,7 +391,7 @@ for (const engine of ['rust', 'js']) {
       starAlbum(sb.dbPath, 'Plain');
       const oldId = withDb(sb.dbPath, db => db.prepare(`SELECT id FROM albums WHERE name = 'Plain'`).get().id);
 
-      // Pre-V70 the year was part of UNIQUE(name, artist_id, year), so this
+      // Pre-V71 the year was part of UNIQUE(name, artist_id, year), so this
       // re-tag minted a new row and every star / art-state hop had to fire.
       // Now the key is name + album artist; the row stays and its year is
       // the scan-end consensus over its (one) track.
@@ -439,7 +439,7 @@ for (const engine of ['rust', 'js']) {
       });
 
       // Album NAME re-tag → new (name, album artist) identity → album
-      // re-mints. (Pre-V70 a YEAR re-tag did this too; since V70 the year is
+      // re-mints. (Pre-V71 a YEAR re-tag did this too; since V71 the year is
       // an aggregate, not identity — see the previous test.)
       await makeAudio(p, MP3, { title: 'P1', artist: 'Plain P', album: 'Plain Deluxe' });
       await touchFuture(p);

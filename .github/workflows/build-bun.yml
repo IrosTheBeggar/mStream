@@ -1345,7 +1345,7 @@ jobs:
       # protect …" and both fail this smoke on purpose:
       #   - hash generation ("… track identities"): a stale binary that
       #     stamps another hashing scheme;
-      #   - schema contract ("… album identities", V70+): the binaries predate
+      #   - schema contract ("… album identities", V71+): the binaries predate
       #     a scanner write-contract bump in THIS PR. That is the expected
       #     state of a contract-bumping PR until its binaries are rebuilt —
       #     dispatch build-rust-parser AND build-rust-parser-musl on the PR

@@ -76,8 +76,8 @@ before(async () => {
   insAlbum.run('a first', artistId('TieBreak'), 2010, null);
   insAlbum.run('C Newest', artistId('TieBreak'), 2011, null);
   // Two DISTINCT album rows sharing (name, year, art) — the same release
-  // credited to two different artists (distinct album keys since V70;
-  // pre-V70 the only way past UNIQUE(name, artist_id, year)). Solo reaches
+  // credited to two different artists (distinct album keys since V71;
+  // pre-V71 the only way past UNIQUE(name, artist_id, year)). Solo reaches
   // its own row via
   // albums.artist_id and the Collab row via album_artists, so both land in
   // the result set and the original query's SELECT DISTINCT collapsed them.
@@ -108,7 +108,7 @@ before(async () => {
   // libB: OLDEST timestamps + an album and artist that exist ONLY here.
   addTrack(LIB_B, albumId('Hidden Album')[0], artistId('Solo'), '2000-01-01 00:00:00');
   addTrack(LIB_B, null, artistId('HiddenOnly'), '2000-01-02 00:00:00');
-  // V71: an article-led artist for the `sort: 'order'` test. Fixture inserts
+  // V72: an article-led artist for the `sort: 'order'` test. Fixture inserts
   // get their name_key from the artists_ai_key trigger (lower(trim)), which
   // does not strip articles — order_name is set the way the scanners write it.
   insArtist.run('The Zed');
@@ -138,7 +138,7 @@ before(async () => {
   for (const r of d.prepare('SELECT id FROM tracks WHERE library_id = ?').all(LIB_B)) {
     insTg.run(r.id, genreId('HiddenGenre'));
   }
-  // V72: a composer-only artist, an album-credit-only artist, a featured
+  // V73: a composer-only artist, an album-credit-only artist, a featured
   // credit and a display string on Solo Album's track — for the metadata
   // fields, `/db/artists` `include` and artists-albums `roles` tests.
   for (const n of ['Composer Only', 'Album Only', 'Feat Guest']) { insArtist.run(n); }
@@ -380,11 +380,11 @@ describe('artists-albums', () => {
   });
 });
 
-// ── album-songs year range (V70) ────────────────────────────────────────────
+// ── album-songs year range (V71) ────────────────────────────────────────────
 
 describe('album-songs year matches the album range, not the track year', () => {
-  // Fixture tracks carry NO year, so the pre-V70 `t.year = ?` match would
-  // return nothing for any year. Since V70 the client's year is matched
+  // Fixture tracks carry NO year, so the pre-V71 `t.year = ?` match would
+  // return nothing for any year. Since V71 the client's year is matched
   // against the album's [year_min, year_max], falling back to albums.year
   // for rows without aggregates (this fixture inserts albums directly).
   test('a year equal to the album year returns the album', async () => {
@@ -424,7 +424,7 @@ describe('album-songs year matches the album range, not the track year', () => {
   });
 });
 
-// ── artist lookups by normalised key + artist sort modes (V71) ──────────────
+// ── artist lookups by normalised key + artist sort modes (V72) ──────────────
 
 describe('artist parameters match on the normalised key', () => {
   test('artists-albums resolves any spelling of the artist', async () => {
@@ -552,9 +552,9 @@ describe('genre-songs limit/offset', () => {
   });
 });
 
-// ── V72: credit roles, display string, artists `include`, artists-albums `roles` ──
+// ── V73: credit roles, display string, artists `include`, artists-albums `roles` ──
 
-describe('V72 credits on the wire', () => {
+describe('V73 credits on the wire', () => {
   test('album-songs carries artist-display, the performer list and the composer', async () => {
     scopeTo(null);
     const r = await post('/api/v1/db/album-songs', { album: 'Solo Album', year: 2001 });

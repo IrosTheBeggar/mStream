@@ -22,11 +22,11 @@ export function renderMetadataObj(row) {
     filepath: fullPath,
     metadata: {
       artist: row.artist_name || null,
-      // V72: the ARTIST tag as written ("A feat. B"; a multi-valued tag's
+      // V73: the ARTIST tag as written ("A feat. B"; a multi-valued tag's
       // values joined with ", ") — `artist` stays the primary artist's name.
-      // Rows scanned before V72 fall back to that name until the rescan.
+      // Rows scanned before V73 fall back to that name until the rescan.
       'artist-display': row.artist_display || row.artist_name || null,
-      // V72: performer credits (main + featured, tag order) and the composer
+      // V73: performer credits (main + featured, tag order) and the composer
       // credit(s), from track_artists via the credits enrichment
       // (enrichRows / fetchCreditsForTrack). A row rendered without it, or
       // a legacy row with no credit rows, falls back to the primary artist.
@@ -288,7 +288,7 @@ function fetchGenresForTracks(d, ids) {
   return out;
 }
 
-// V72 credits: the performer names (main + featured, tag order) and the
+// V73 credits: the performer names (main + featured, tag order) and the
 // composer names per track, from track_artists. Batched like the genre
 // helpers — one indexed query per id chunk — and attached to the row as
 // `credit_artists` / `credit_composers` arrays for renderMetadataObj (which
@@ -555,7 +555,7 @@ export function setup(mstream) {
 
   // ── Artists ─────────────────────────────────────────────────────────────
 
-  // V72: `include` widens the artists index beyond the track-primary artists
+  // V73: `include` widens the artists index beyond the track-primary artists
   // (the unchanged default): 'albumArtists' adds artists credited on an
   // album (album_artists — this is where Various Artists comes in), and a
   // role name ('featured', 'composer', 'conductor', 'remixer', 'lyricist')
@@ -587,7 +587,7 @@ export function setup(mstream) {
   function getArtists(req) {
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
     const include = parseInclude(req.body?.include ?? req.query?.include);
-    // V71: optional `sort` — 'name' (default; unchanged contract) or 'order',
+    // V72: optional `sort` — 'name' (default; unchanged contract) or 'order',
     // which sorts by artists.order_name: the ARTISTSORT tag when the scanner
     // saw one, else the name with one leading article dropped ("The
     // Beatles" under B). COALESCE covers rows without an order_name (a
@@ -669,11 +669,11 @@ export function setup(mstream) {
     // 653 artists). Pinning ties alphabetically is deterministic across
     // plans and SQLite versions; the sort b-tree already exists, so it's
     // free.
-    // V71: the artist is matched on its normalised key, so any spelling the
+    // V72: the artist is matched on its normalised key, so any spelling the
     // client holds ("beatles", a curly apostrophe) resolves to the one row
     // the scanner keeps — strictly more tolerant than the old exact match.
     const artistKey = nameKey(req.body.artist);
-    // V72: the track_artists arm counts performer credits (main / featured)
+    // V73: the track_artists arm counts performer credits (main / featured)
     // by default — a composer credit must not put an album on the composer's
     // page unasked. `roles` (array of role names) replaces that set.
     const roles = parseRoles(req.body?.roles);
@@ -704,7 +704,7 @@ export function setup(mstream) {
     }));
 
     // Check for tracks with no album (null album_id) by this artist
-    // V72: the same `roles` apply to the singles bucket — a credit in one
+    // V73: the same `roles` apply to the singles bucket — a credit in one
     // of the requested roles on an album-less track is enough.
     const nullAlbumRow = d().prepare(`
       SELECT t.album_art_file
@@ -866,8 +866,8 @@ export function setup(mstream) {
     }
 
     if (req.body.artist) {
-      // V71: TRACK artist, matched on its normalised key (see artists-albums).
-      // V72: a performer credit (main / featured — the set artists-albums
+      // V72: TRACK artist, matched on its normalised key (see artists-albums).
+      // V73: a performer credit (main / featured — the set artists-albums
       // lists by default) counts too, so the singles bucket of an artist who
       // is only ever featured is not empty. Other roles never match here.
       const key = nameKey(req.body.artist);
@@ -878,7 +878,7 @@ export function setup(mstream) {
       params.push(key, key);
     }
 
-    // V70 dropped the year from album identity, so one album can span
+    // V71 dropped the year from album identity, so one album can span
     // several track years (a compilation tagged with per-track original
     // years, a reissue with a later bonus track). A client's `year` is
     // whatever it last saw — the album's aggregate year from a list

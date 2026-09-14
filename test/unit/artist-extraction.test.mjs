@@ -1,5 +1,5 @@
 /**
- * Unit tests for the V72 credit rules (src/db/artist-extraction.js) and the
+ * Unit tests for the V73 credit rules (src/db/artist-extraction.js) and the
  * raw ID3v2 credit-frame reader (src/db/id3-raw.js) the JS scanner uses to
  * see tags the way lofty does.
  *

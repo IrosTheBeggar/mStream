@@ -1,4 +1,4 @@
-// Raw ID3v2 text-frame reader for the JS scanner's credit extraction (V72).
+// Raw ID3v2 text-frame reader for the JS scanner's credit extraction (V73).
 //
 // music-metadata splits ID3v2.2/v2.3 TPE1 / TCOM / TEXT / TOLY / TOPE / TSRC
 // on "/" (the v2.3 spec's separator) BEFORE anything reaches `common` — and

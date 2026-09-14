@@ -1,5 +1,5 @@
 /**
- * V71 artist name normalisation — the identity key and the sort key.
+ * V72 artist name normalisation — the identity key and the sort key.
  * rust-parser/src/main.rs mirrors both functions; the scanner-parity
  * snapshot compares their outputs across engines on real files.
  */

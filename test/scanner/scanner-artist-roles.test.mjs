@@ -1,5 +1,5 @@
 /**
- * V72 credit roles, display strings and split rules, end-to-end on BOTH
+ * V73 credit roles, display strings and split rules, end-to-end on BOTH
  * scanners.
  *
  *   - COMPOSER / CONDUCTOR / REMIXER / LYRICIST (Vorbis) and TCOM / TPE3 /

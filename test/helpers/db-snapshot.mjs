@@ -71,10 +71,10 @@ function snapTracks(db) {
       -- owns it), so it's not part of scanner parity.
       t.mbz_recording_id, t.mbz_release_track_id, t.isrc, t.mbz_id_source,
       t.modified,
-      -- V70: per-track consensus inputs for the album aggregate refresh —
+      -- V71: per-track consensus inputs for the album aggregate refresh —
       -- both scanners must stamp the same raw tag values.
       t.tag_album, t.tag_album_artist, t.tag_compilation,
-      -- V72: the ARTIST tag as written (plural values joined) — both
+      -- V73: the ARTIST tag as written (plural values joined) — both
       -- scanners must stamp the same string.
       t.artist_display,
       ar.name AS artist_name,
@@ -89,7 +89,7 @@ function snapTracks(db) {
 }
 
 function snapArtists(db) {
-  // V71: display name is a scan-end consensus; sort_name / mbz_artist_id are
+  // V72: display name is a scan-end consensus; sort_name / mbz_artist_id are
   // tag-sourced fill-NULL columns; order_name and the counts are aggregates
   // both engines must derive identically; agg_dirty must be 0 after a scan.
   return db.prepare(`
@@ -102,7 +102,7 @@ function snapAlbums(db) {
   // distinct rows — include the artist name in the natural key. Drop
   // album_art_file because tracks already carry it; including it here
   // would just double-count.
-  // V70: the aggregate columns are scan-end consensus values both engines
+  // V71: the aggregate columns are scan-end consensus values both engines
   // must derive identically, and agg_dirty must be 0 everywhere once the
   // refresh has run. duration_total is a float SUM whose last bits can
   // depend on row order (insert order differs across engines), so it is

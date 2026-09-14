@@ -542,7 +542,7 @@ export async function editIgnoreDotFolders(val) {
   config.program.scanOptions.ignoreDotFolders = val;
 }
 
-// V72: artist names never delimiter-split (scanOptions.artistSplitExceptions).
+// V73: artist names never delimiter-split (scanOptions.artistSplitExceptions).
 // Same live pattern — task-queue reads config.program when it builds each
 // scan's jsonLoad, so the next scan honours the new list.
 export async function editArtistSplitExceptions(list) {

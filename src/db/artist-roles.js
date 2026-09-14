@@ -1,5 +1,5 @@
 // The track credit roles (track_artists.role) — one place for the vocabulary
-// the scanners write and the API filters on (V72).
+// the scanners write and the API filters on (V73).
 //
 //   performer roles  'main' (tracks.artist_id, position 0) and 'featured'
 //                    (the other ARTIST-tag names, tag order) — what "songs by
