@@ -78,7 +78,9 @@ const PANELS = ['setBrowserRootPanel', 'getFileExplorerPath', 'printdir',
 // The federation plumbing the panels and renderers read ambiently: which
 // server the app points at (peerContext), the row marker (peerAttr), the
 // routed browse call (browseApi) and the peer-aware art URL (artImgAttr).
-const HELPERS = ['peerAttr', 'browseApi', 'localIgnoreVPaths', 'artUrl', 'artImgAttr'];
+// albumCredit / albumSongsBody: the album-API series' card credit and
+// album-songs request helpers the album panels call.
+const HELPERS = ['peerAttr', 'browseApi', 'localIgnoreVPaths', 'artUrl', 'artImgAttr', 'albumCredit', 'albumSongsBody'];
 
 const EXPORTS = [...RENDERERS, ...PANELS].join(', ');
 
