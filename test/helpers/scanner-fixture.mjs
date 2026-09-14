@@ -254,9 +254,9 @@ export async function buildFixtureLibrary(rootDir) {
     { title: 'Lyrics D', artist: 'Lyric Artist', album: 'Album Six', track: '4/4' });
 
   // ── Album 7: "Decades" — per-track years under one ALBUMARTIST ─────
-  // V70 identity: year is no longer part of the album key, so three tracks
+  // V71 identity: year is no longer part of the album key, so three tracks
   // tagged 1987 / 1991 / 1991 with different track artists but the same
-  // ALBUMARTIST must land on ONE album row (pre-V70 they fragmented into
+  // ALBUMARTIST must land on ONE album row (pre-V71 they fragmented into
   // one row per year). The aggregate refresh must then agree across
   // engines: year = 1991 (most common), year_min 1987, year_max 1991,
   // track_count 3. Track 3 is a real TCMP compilation frame on ONE track

@@ -75,8 +75,8 @@ before(async () => {
   insAlbum.run('a first', artistId('TieBreak'), 2010, null);
   insAlbum.run('C Newest', artistId('TieBreak'), 2011, null);
   // Two DISTINCT album rows sharing (name, year, art) — the same release
-  // credited to two different artists (distinct album keys since V70;
-  // pre-V70 the only way past UNIQUE(name, artist_id, year)). Solo reaches
+  // credited to two different artists (distinct album keys since V71;
+  // pre-V71 the only way past UNIQUE(name, artist_id, year)). Solo reaches
   // its own row via
   // albums.artist_id and the Collab row via album_artists, so both land in
   // the result set and the original query's SELECT DISTINCT collapsed them.
@@ -350,11 +350,11 @@ describe('artists-albums', () => {
   });
 });
 
-// ── album-songs year range (V70) ────────────────────────────────────────────
+// ── album-songs year range (V71) ────────────────────────────────────────────
 
 describe('album-songs year matches the album range, not the track year', () => {
-  // Fixture tracks carry NO year, so the pre-V70 `t.year = ?` match would
-  // return nothing for any year. Since V70 the client's year is matched
+  // Fixture tracks carry NO year, so the pre-V71 `t.year = ?` match would
+  // return nothing for any year. Since V71 the client's year is matched
   // against the album's [year_min, year_max], falling back to albums.year
   // for rows without aggregates (this fixture inserts albums directly).
   test('a year equal to the album year returns the album', async () => {

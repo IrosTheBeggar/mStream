@@ -189,7 +189,7 @@ const stmts = {
   insertArtist: db.prepare(
     'INSERT INTO artists (name) VALUES (?)'
   ),
-  // V70: albums are found by album_key (MBID first, else exact name +
+  // V71: albums are found by album_key (MBID first, else exact name +
   // album-artist id — src/db/album-key.js). Year is NOT identity any more:
   // the row's year / year_min / year_max / track_count / duration_total /
   // compilation / album_artist are consensus values recomputed at scan end
@@ -434,7 +434,7 @@ function findOrCreateArtist(name) {
 
 function findOrCreateAlbum(name, artistId, year, albumArtFile, albumArtSource, albumArtistDisplay, isCompilation, mbzAlbumId, mbzReleaseGroupId) {
   if (!name) { return null; }
-  // V70: identity is the album key — MBID when the track carries one, else
+  // V71: identity is the album key — MBID when the track carries one, else
   // the exact album name + the album-artist id the fallback chain picked
   // (src/db/album-key.js). Year, the display credit and the compilation
   // flag are provisional at INSERT and become consensus values in the
@@ -1239,7 +1239,7 @@ function insertTrack(song) {
     song.isrc ?? null,
     song.mbzIdSource ?? null,
     HASH_GENERATION,
-    // V70 consensus inputs for the album aggregate refresh: this track's own
+    // V71 consensus inputs for the album aggregate refresh: this track's own
     // album name, raw ALBUMARTIST display string and compilation flag. The
     // album row's values are the majority / OR over these at scan end.
     song.album ? String(song.album) : null,
@@ -1924,7 +1924,7 @@ async function run() {
         expectedSchemaVersion: schemaVersionAtOpen,
       });
     }
-    // V70: recompute the consensus columns of every album the tracks_*_agg
+    // V71: recompute the consensus columns of every album the tracks_*_agg
     // triggers flagged this scan (album-aggregate.js) — AFTER the orphan
     // sweep, so rows it just reaped are not recomputed first (a starred
     // trackless ghost survives it and is refreshed to track_count 0).
@@ -1957,7 +1957,7 @@ async function run() {
       movedTracksRehomed: sweep.movedTracks,
       movedRefsRehomed: sweep.movedRefs,
       folderArtLinked,
-      // V70: album rows whose aggregate columns were recomputed this scan.
+      // V71: album rows whose aggregate columns were recomputed this scan.
       albumsAggregated,
       // Subtrees the scan could not see (their rows were shielded from
       // cleanup) — surfaced so a permanently unreadable directory is

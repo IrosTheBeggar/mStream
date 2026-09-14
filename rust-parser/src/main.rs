@@ -1086,11 +1086,11 @@ fn reconcile_album_art(
 // Wall-clock subsecond nanos as the entropy source — Instant is an
 // opaque monotonic point (elapsed-since-now is always ~0), and pulling
 // in a rand dependency for one modulus would be overkill.
-// ── V70: album aggregate refresh ─────────────────────────────────────────────
+// ── V71: album aggregate refresh ─────────────────────────────────────────────
 //
-// Since V70 an album row's year, year_min, year_max, track_count,
+// Since V71 an album row's year, year_min, year_max, track_count,
 // duration_total, compilation and album_artist are DERIVED from its tracks.
-// The tracks_ai_agg / tracks_ad_agg / tracks_au_agg triggers (SCHEMA_V70)
+// The tracks_ai_agg / tracks_ad_agg / tracks_au_agg triggers (SCHEMA_V71)
 // flag rows `agg_dirty = 1` as their tracks change; this recomputes every
 // flagged row at scan end — after the orphan sweep, so reaped rows are not
 // recomputed first — in 200-row autocommit chunks with the same schema
@@ -1801,7 +1801,7 @@ fn chunked_delete_stale_tracks(
                 params.push(&c.id);
                 params.push(&c.rel);
             }
-            // (V70: the albums these rows leave are flagged for the aggregate
+            // (V71: the albums these rows leave are flagged for the aggregate
             // refresh by the tracks_ad_agg trigger — nothing to do here.)
             total += conn.prepare(&del_sql)?.execute(params.as_slice())?;
         }
@@ -1965,10 +1965,10 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     // album-artist + M2M) and almost always resolves to a small set of
     // repeat values, so caching collapses thousands of SELECTs into
     // a handful. Albums key on album_key (MBID, else exact name +
-    // album-artist id — see album_key()); year is an aggregate since V70.
+    // album-artist id — see album_key()); year is an aggregate since V71.
     // Genres are keyed by name alone.
     let artist_cache: Mutex<HashMap<String, i64>> = Mutex::new(HashMap::new());
-    // V70: keyed by album_key (see album_key()) — year is no longer identity.
+    // V71: keyed by album_key (see album_key()) — year is no longer identity.
     let album_cache: Mutex<HashMap<String, i64>> = Mutex::new(HashMap::new());
     let genre_cache: Mutex<HashMap<String, i64>> = Mutex::new(HashMap::new());
     // Cached id for the seeded "Various Artists" row, resolved on
@@ -2782,7 +2782,7 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
             schema_version_at_open)?;
     }
 
-    // V70: recompute the consensus columns of every album the tracks_*_agg
+    // V71: recompute the consensus columns of every album the tracks_*_agg
     // triggers flagged this scan (see refresh_dirty_albums) — AFTER the
     // orphan sweep, so rows it just reaped are not recomputed first (a
     // starred trackless ghost survives it and is refreshed to track_count
@@ -3649,7 +3649,7 @@ fn commit_track(
         et.mod_time, config.scan_id, et.source,
         et.mbz_recording_id, et.mbz_release_track_id, et.isrc, et.mbz_id_source,
         HASH_GENERATION,
-        // V70 consensus inputs for the album aggregate refresh: this track's
+        // V71 consensus inputs for the album aggregate refresh: this track's
         // own album name, raw ALBUMARTIST display string and compilation
         // flag. The album row's values are the majority / OR over these at
         // scan end. Mirrors scanner.mjs.
@@ -4073,7 +4073,7 @@ fn find_or_create_artist(
     Ok(id)
 }
 
-/// Album identity key (V70). Mirrors src/db/album-key.js albumKey() —
+/// Album identity key (V71). Mirrors src/db/album-key.js albumKey() —
 /// keep byte-identical:
 ///   mbid:<release id>                  when the track carries MUSICBRAINZ_ALBUMID
 ///   name:<exact album name>|<artist>   otherwise (artist id, or empty)
@@ -4093,7 +4093,7 @@ fn find_or_create_album(
     art: Option<&str>, art_source: Option<&str>, album_artist_display: Option<&str>, compilation: bool,
     mbz_album_id: Option<&str>, mbz_release_group_id: Option<&str>,
 ) -> Result<i64, rusqlite::Error> {
-    // V70: identity is the album key — MBID when the track carries one, else
+    // V71: identity is the album key — MBID when the track carries one, else
     // the exact album name + the album-artist id the fallback chain picked.
     // Year, the display credit and the compilation flag are provisional at
     // INSERT and become consensus values in the end-of-scan aggregate
@@ -5942,12 +5942,12 @@ const SAMPLE_THRESHOLD_DEFAULT: u64 = 25 * 1024 * 1024;
 const HASH_GENERATION: i64 = 2;
 
 // The schema version whose scanner WRITE CONTRACT this binary implements
-// (V70: albums.album_key identity + the tracks.tag_* consensus columns).
+// (V71: albums.album_key identity + the tracks.tag_* consensus columns).
 // Answered by `--schema-contract`; task-queue refuses a binary whose value
 // is below the server's SCANNER_SCHEMA_CONTRACT (src/db/schema.js) — a
 // stale prebuilt would otherwise write key-less album rows through the
 // forced migration rescan. Bump in lock-step with schema.js.
-const SCANNER_SCHEMA_CONTRACT: i64 = 70;
+const SCANNER_SCHEMA_CONTRACT: i64 = 71;
 const SAMPLE_W_START: u64 = 256 * 1024;
 const SAMPLE_W_MID: u64 = 512 * 1024;
 const SAMPLE_W_END: u64 = 256 * 1024;

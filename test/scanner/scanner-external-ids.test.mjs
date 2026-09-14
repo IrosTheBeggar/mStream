@@ -69,11 +69,11 @@ before(async () => {
 
   // Track 2: same album NAME, a different recording, carrying ONLY a recording
   // id (no album-level ids). Exercises mbz_id_source='tag' from the recording
-  // id alone. Since V70 the release MBID is album IDENTITY (album_key
+  // id alone. Since V71 the release MBID is album IDENTITY (album_key
   // `mbid:…`), so this partially-tagged pair deliberately lands on TWO album
   // rows: track 1 on the MBID-keyed row, track 2 on a name-keyed row with no
   // MBIDs — the documented "tag every track or none" behaviour, same as
-  // Navidrome's. Pre-V70 they shared one row by fill-NULL convergence.
+  // Navidrome's. Pre-V71 they shared one row by fill-NULL convergence.
   await makeAudio(path.join(libRoot, 'Tagged Artist', 'Tagged Album', '02.flac'), FLAC, {
     title: 'Tagged Two', artist: 'Tagged Artist', album: 'Tagged Album', track: '2/2',
     MUSICBRAINZ_TRACKID: REC2,
@@ -151,7 +151,7 @@ describe('V55 external-service ID ingestion', () => {
       assert.equal(two.mbz_id_source, 'tag', `[${engine}] recording id alone sets provenance`);
       assert.equal(two.mbz_release_track_id, null, `[${engine}] track 2 has no release-track id`);
       assert.equal(two.isrc, null, `[${engine}] track 2 has no ISRC`);
-      // V70: the release MBID is album identity, so track 2 (no album-level
+      // V71: the release MBID is album identity, so track 2 (no album-level
       // ids) sits on a separate, name-keyed 'Tagged Album' row that carries
       // no MBIDs — the pair splits instead of converging (see the fixture
       // comment).

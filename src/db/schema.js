@@ -84,16 +84,16 @@ import { HASH_GENERATION } from './audio-hash.js';
 // V69 drops the velvet-only tables (smart_playlists, user_settings,
 // cue_points, play_events) and users.listenbrainz_token — the velvet UI and
 // the API modules that existed only for it were removed. See SCHEMA_V69.
-export const SCHEMA_VERSION = 70;
+export const SCHEMA_VERSION = 71;
 
 // The schema version at which the SCANNER'S WRITE CONTRACT last changed —
 // the columns / identity rules a rust-parser binary must know to write rows
-// this server can read back (V70: albums.album_key, tracks.tag_*). Compared
+// this server can read back (V71: albums.album_key, tracks.tag_*). Compared
 // against the binary's `--schema-contract` answer in task-queue's binary
 // gate; bump it (and SCANNER_SCHEMA_CONTRACT in rust-parser/src/main.rs)
 // whenever a migration changes what the scanner writes, NOT for every
 // migration.
-export const SCANNER_SCHEMA_CONTRACT = 70;
+export const SCANNER_SCHEMA_CONTRACT = 71;
 
 export const SCHEMA_V1 = `
   -- Users
@@ -2647,9 +2647,9 @@ export function migrateV59LyricsSearchText(db) {
 // rescanRequired: true — marks migrations that change the tracks table schema
 // and need a force rescan to populate new fields. When applied, a marker file
 // is written so the next boot triggers rescanAll() instead of scanAll().
-// ── V70: album identity — MBID first, then (name, album artist); year out ──
+// ── V71: album identity — MBID first, then (name, album artist); year out ──
 //
-// Pre-V70 an album row was keyed UNIQUE(name, artist_id, year), with year =
+// Pre-V71 an album row was keyed UNIQUE(name, artist_id, year), with year =
 // each TRACK's own recording year. Two consequences the Navidrome study
 // (2026-09) made concrete:
 //
@@ -2659,7 +2659,7 @@ export function migrateV59LyricsSearchText(db) {
 //   2. MUSICBRAINZ_ALBUMID was stored but never used for identity, so the
 //      one tag that names a release exactly did nothing.
 //
-// V70 gives albums an explicit identity column, `album_key`
+// V71 gives albums an explicit identity column, `album_key`
 // (src/db/album-key.js):
 //
 //     mbid:<release id>                  the track carries MUSICBRAINZ_ALBUMID
@@ -2690,11 +2690,11 @@ export function migrateV59LyricsSearchText(db) {
 // are recreated too.
 //
 // Existing rows keep their exact name and artist_id and get a `name:` key
-// in the copy — deliberately IGNORING mbz_album_id, which pre-V70 was a
+// in the copy — deliberately IGNORING mbz_album_id, which pre-V71 was a
 // fill-NULL from whichever track carried it first; keying a row `mbid:` on
 // that evidence would strand its untagged tracks on a new row while the
 // stars stayed with the MBID minority. Per-year fragments therefore now
-// collide on one key; the js hook (migrateV70MergeAlbumFragments) merges
+// collide on one key; the js hook (migrateV71MergeAlbumFragments) merges
 // each collision group into its survivor (most tracks, then lowest id),
 // moving tracks, stars, credits, art links, lookups and the art default the
 // same way album-migration.js does on a re-mint, then creates the UNIQUE
@@ -2703,10 +2703,10 @@ export function migrateV59LyricsSearchText(db) {
 // rescanRequired epoch then re-parses every track: Picard libraries re-mint
 // onto `mbid:` rows through the existing unreferenced-guarded star/art hops,
 // and the tag_* copies below are replaced with tag truth.
-export const SCHEMA_V70 = `
+export const SCHEMA_V71 = `
   -- Per-track consensus inputs (raw tag values) for the album aggregate
   -- refresh. Back-filled from the album row each track currently sits on
-  -- so every pre-V70 row votes; the forced rescan replaces the copies with
+  -- so every pre-V71 row votes; the forced rescan replaces the copies with
   -- tag truth. (None of these columns is in tracks_au_fts's UPDATE OF list,
   -- so the back-fill fans nothing out to FTS.)
   ALTER TABLE tracks ADD COLUMN tag_album TEXT;
@@ -2724,15 +2724,15 @@ export const SCHEMA_V70 = `
   DROP TRIGGER IF EXISTS tracks_au_fts;
 
   -- Snapshot every child of albums(id) before the DROP fires FK actions.
-  CREATE TEMP TABLE _v70_album_stars_backup       AS SELECT * FROM user_album_stars;
-  CREATE TEMP TABLE _v70_album_artists_backup     AS SELECT * FROM album_artists;
-  CREATE TEMP TABLE _v70_album_art_backup         AS SELECT * FROM album_art;
-  CREATE TEMP TABLE _v70_album_art_lookups_backup AS SELECT * FROM album_art_lookups;
-  CREATE TEMP TABLE _v70_track_album_backup AS
+  CREATE TEMP TABLE _v71_album_stars_backup       AS SELECT * FROM user_album_stars;
+  CREATE TEMP TABLE _v71_album_artists_backup     AS SELECT * FROM album_artists;
+  CREATE TEMP TABLE _v71_album_art_backup         AS SELECT * FROM album_art;
+  CREATE TEMP TABLE _v71_album_art_lookups_backup AS SELECT * FROM album_art_lookups;
+  CREATE TEMP TABLE _v71_track_album_backup AS
     SELECT id, album_id FROM tracks WHERE album_id IS NOT NULL;
   -- Without this the restore UPDATE's correlated subquery scans the whole
   -- backup per track (V18 measured 7.7 min vs 1.8 s at 100k tracks).
-  CREATE INDEX _v70_track_album_backup_idx ON _v70_track_album_backup(id);
+  CREATE INDEX _v71_track_album_backup_idx ON _v71_track_album_backup(id);
 
   -- Empty the CASCADE children explicitly so the DROP has nothing left to
   -- act on (the TEMP tables hold the data).
@@ -2753,7 +2753,7 @@ export const SCHEMA_V70 = `
     album_art_source TEXT,
     album_art_pinned INTEGER NOT NULL DEFAULT 0,
     mbz_release_group_id TEXT,
-    -- V70 identity + aggregates. album_key is nullable so a row inserted
+    -- V71 identity + aggregates. album_key is nullable so a row inserted
     -- outside the scanners (test fixtures) is valid; every scanner/server
     -- writer sets it, and a NULL key is simply never matched. Its UNIQUE
     -- index is created by the hook, once colliding fragments are merged.
@@ -2787,18 +2787,18 @@ export const SCHEMA_V70 = `
   -- Restore the children the DROP clobbered. Ids were copied verbatim, so
   -- every restored reference passes the FK check against the new table.
   UPDATE tracks SET album_id = (
-    SELECT b.album_id FROM _v70_track_album_backup b WHERE b.id = tracks.id
-  ) WHERE id IN (SELECT id FROM _v70_track_album_backup);
-  INSERT INTO user_album_stars  SELECT * FROM _v70_album_stars_backup;
-  INSERT INTO album_artists     SELECT * FROM _v70_album_artists_backup;
-  INSERT INTO album_art         SELECT * FROM _v70_album_art_backup;
-  INSERT INTO album_art_lookups SELECT * FROM _v70_album_art_lookups_backup;
+    SELECT b.album_id FROM _v71_track_album_backup b WHERE b.id = tracks.id
+  ) WHERE id IN (SELECT id FROM _v71_track_album_backup);
+  INSERT INTO user_album_stars  SELECT * FROM _v71_album_stars_backup;
+  INSERT INTO album_artists     SELECT * FROM _v71_album_artists_backup;
+  INSERT INTO album_art         SELECT * FROM _v71_album_art_backup;
+  INSERT INTO album_art_lookups SELECT * FROM _v71_album_art_lookups_backup;
 
-  DROP TABLE _v70_album_stars_backup;
-  DROP TABLE _v70_album_artists_backup;
-  DROP TABLE _v70_album_art_backup;
-  DROP TABLE _v70_album_art_lookups_backup;
-  DROP TABLE _v70_track_album_backup;
+  DROP TABLE _v71_album_stars_backup;
+  DROP TABLE _v71_album_artists_backup;
+  DROP TABLE _v71_album_art_backup;
+  DROP TABLE _v71_album_art_lookups_backup;
+  DROP TABLE _v71_track_album_backup;
 
   -- albums FTS triggers (V31 text) — dropped with the old table.
   CREATE TRIGGER albums_ai_fts AFTER INSERT ON albums BEGIN
@@ -2857,11 +2857,11 @@ export const SCHEMA_V70 = `
   END;
 `;
 
-// V70 js hook — runs inside the version's transaction after SCHEMA_V70.
+// V71 js hook — runs inside the version's transaction after SCHEMA_V71.
 // Merges albums that now share one key (the per-year fragments), creates
 // the UNIQUE key index, and back-fills the aggregate columns from tracks.
 // Uses only prepare/all/run/exec (node:sqlite + Bun shim surface).
-export function migrateV70MergeAlbumFragments(db) {
+export function migrateV71MergeAlbumFragments(db) {
   const dupKeys = db.prepare(
     'SELECT album_key FROM albums GROUP BY album_key HAVING COUNT(*) > 1').all()
     .map((r) => r.album_key);
@@ -3205,12 +3205,12 @@ export const MIGRATIONS = [
   // V69 drops the velvet-only tables + users.listenbrainz_token. Pure
   // DROP TABLE / DROP COLUMN, no rescan. See SCHEMA_V69.
   { version: 69, sql: SCHEMA_V69 },
-  // V70 re-keys albums (MBID first, else exact name + album artist — year
+  // V71 re-keys albums (MBID first, else exact name + album artist — year
   // is no longer identity) and turns year / count / duration / compilation
   // / album_artist into scan-end consensus values. Table rebuild + js hook
   // (per-year fragments merged into their survivor, UNIQUE key index,
   // aggregate back-fill). rescanRequired: every track must re-key onto the
   // new identity (MBID rows) and replace the copied tag_* consensus inputs
-  // with tag truth. See SCHEMA_V70.
-  { version: 70, sql: SCHEMA_V70, js: migrateV70MergeAlbumFragments, rescanRequired: true },
+  // with tag truth. See SCHEMA_V71.
+  { version: 71, sql: SCHEMA_V71, js: migrateV71MergeAlbumFragments, rescanRequired: true },
 ];

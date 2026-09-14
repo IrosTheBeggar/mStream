@@ -718,7 +718,7 @@ export function setup(mstream) {
       params.push(String(req.body.artist));
     }
 
-    // V70 dropped the year from album identity, so one album can span
+    // V71 dropped the year from album identity, so one album can span
     // several track years (a compilation tagged with per-track original
     // years, a reissue with a later bonus track). A client's `year` is
     // whatever it last saw — the album's aggregate year from a list

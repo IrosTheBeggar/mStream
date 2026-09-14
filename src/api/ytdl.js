@@ -427,7 +427,7 @@ export function setup(mstream) {
         if (d && lib) {
           const artistId = db.findOrCreateArtist(data.artist);
           const albumId = db.findOrCreateAlbum(data.album, artistId, data.year);
-          // V70: tag_album / tag_compilation are the album consensus inputs
+          // V71: tag_album / tag_compilation are the album consensus inputs
           // the scanners stamp per track; stamping them here means this
           // row votes on its album like any scanned row (a ytdl download
           // carries no ALBUMARTIST, so that input stays NULL).
