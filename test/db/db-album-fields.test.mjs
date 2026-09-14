@@ -1,7 +1,7 @@
 /**
  * The album-API fields (album-API series, PR 4): /db/albums and
  * /db/artists-albums items carry `album_artist`, `artists`, `compilation` and
- * the V70 aggregates (`year_min`, `year_max`, `track_count`, `duration`) next
+ * the V71 aggregates (`year_min`, `year_max`, `track_count`, `duration`) next
  * to the legacy trio, and /db/album-songs takes an `album_artist` selector.
  *
  * What is pinned here:

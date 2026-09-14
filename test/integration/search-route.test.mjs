@@ -406,7 +406,7 @@ describe('/api/v1/db/search algorithm dispatch', () => {
     // Kept (display/playback/Auto-DJ) fields carry real values.
     assert.equal(hit.metadata.title, 'Comfortably Numb');
     assert.equal(hit.metadata.artist, 'Pink Floyd');
-    // V72 lite fields: the display string and the performer list ride along.
+    // V73 lite fields: the display string and the performer list ride along.
     assert.equal(hit.metadata['artist-display'], 'Pink Floyd');
     assert.deepEqual(hit.metadata.artists, ['Pink Floyd']);
     assert.equal(hit.metadata.album, 'The Wall');

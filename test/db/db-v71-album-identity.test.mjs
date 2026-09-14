@@ -1,7 +1,7 @@
 /**
- * V70 album-identity migration: data survival, fragment merge, triggers.
+ * V71 album-identity migration: data survival, fragment merge, triggers.
  *
- * V70 rebuilds `albums` (dropping UNIQUE(name, artist_id, year), adding
+ * V71 rebuilds `albums` (dropping UNIQUE(name, artist_id, year), adding
  * album_key + the aggregate columns) with the V18-style TEMP-table dance,
  * because DROP TABLE under foreign_keys=ON fires FK actions on every child:
  *
@@ -43,7 +43,7 @@ function buildV69Fixture() {
     INSERT INTO users (id, username, password, salt) VALUES (1, 'u1', 'x', 'x');
     INSERT INTO users (id, username, password, salt) VALUES (2, 'u2', 'x', 'x');
     INSERT INTO artists (id, name) VALUES (10, 'Aa'), (11, 'Bb');
-    -- Two per-year fragments of one album (the V70 target case; the 1991
+    -- Two per-year fragments of one album (the V71 target case; the 1991
     -- fragment carries the art + a compilation flag the survivor lacks), a
     -- normal album, and a trackless starred ghost with a NULL year.
     INSERT INTO albums (id, name, artist_id, year, album_art_file, album_art_source, album_artist, compilation, mbz_release_group_id) VALUES
@@ -76,7 +76,7 @@ function upgrade(db) {
 // node:sqlite rows carry a null prototype; strict deepEqual wants plain objects.
 const rows = (stmt, ...args) => stmt.all(...args).map(r => ({ ...r }));
 
-describe('V70 albums rebuild', () => {
+describe('V71 albums rebuild', () => {
   test('non-colliding albums keep their ids and every child survives', () => {
     const db = buildV69Fixture();
     upgrade(db);
@@ -103,7 +103,7 @@ describe('V70 albums rebuild', () => {
     assert.equal(surv.mbz_release_group_id, 'rg-1', 'MBIDs filled from the fragment');
     assert.equal(surv.compilation, 0, 'compilation stays the survivor\'s until the refresh recomputes it');
     // No TEMP leftovers.
-    assert.equal(db.prepare("SELECT COUNT(*) c FROM sqlite_temp_master WHERE name LIKE '_v70_%'").get().c, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) c FROM sqlite_temp_master WHERE name LIKE '_v71_%'").get().c, 0);
   });
 
   test('keys are the exact-name form and unique', () => {
@@ -238,7 +238,7 @@ describe('V70 albums rebuild', () => {
   });
 });
 
-describe('V70 fills a merged survivor\'s year from its tracks', () => {
+describe('V71 fills a merged survivor\'s year from its tracks', () => {
   test('a fragment without a year outlasting one with a year gets the mode of the tracks', () => {
     const db = buildV69Fixture();
     // 'Gap' by artist 10: the two-track fragment (no years anywhere) wins

@@ -1,9 +1,9 @@
-// Artist aggregate refresh (V71).
+// Artist aggregate refresh (V72).
 //
-// Since V71 an artist row's display `name`, `order_name`, `track_count` and
+// Since V72 an artist row's display `name`, `order_name`, `track_count` and
 // `album_count` are DERIVED from its credits. Every credit row carries the
 // raw spelling it was tagged with (track_artists.tag_name /
-// album_artists.tag_name), and triggers on those tables (SCHEMA_V71) flag
+// album_artists.tag_name), and triggers on those tables (SCHEMA_V72) flag
 // the artist `agg_dirty = 1` whenever a credit is added, removed or has its
 // spelling changed; the scanner's fill of `sort_name` flags it too.
 // refreshDirtyArtists() recomputes the flagged rows. The scanners call it
@@ -14,7 +14,7 @@
 // scans of one library disagree):
 //   name         most common tag_name across the artist's PERFORMER track
 //                credits (main / featured) and album credits (tie →
-//                smallest, BINARY); an artist with no such credit (V72:
+//                smallest, BINARY); an artist with no such credit (V73:
 //                composer / conductor / remixer / lyricist only) takes the
 //                mode over every credit row instead — a composer tag spelled
 //                CDDB-style must not rename a performer, but a composer-only
@@ -27,7 +27,7 @@
 //                every other feature keys on.
 //   order_name   orderName(name, sort_name) — see src/db/name-key.js.
 //   track_count  COUNT(DISTINCT track_id) over track_artists — every role
-//                (V72: a composer-only credit counts as a track credit).
+//                (V73: a composer-only credit counts as a track credit).
 //   album_count  COUNT(DISTINCT album_id) over album_artists — the album
 //                credits (ALBUMARTIST, or the fallback chain), not every
 //                album the artist appears on.

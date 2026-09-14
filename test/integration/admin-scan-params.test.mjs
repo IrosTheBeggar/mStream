@@ -440,7 +440,7 @@ describe('POST /api/v1/admin/config/trust-proxy', () => {
   });
 });
 
-// ── POST /db/params/artist-split-exceptions (V72) ─────────────────────────
+// ── POST /db/params/artist-split-exceptions (V73) ─────────────────────────
 
 describe('artist-split-exceptions param', () => {
   test('GET includes the default (empty list)', async () => {

@@ -10376,7 +10376,7 @@ const editAlbumArtServicesModal = Vue.component('edit-album-art-services-modal',
   }
 });
 
-// V72: artist names the scanners never split (scanOptions.artistSplitExceptions).
+// V73: artist names the scanners never split (scanOptions.artistSplitExceptions).
 // One name per line; saved as an ordered, de-duplicated array. Live setting
 // (next scan) — no reboot.
 const editArtistSplitExceptionsModal = Vue.component('edit-artist-split-exceptions-modal', {

@@ -1,5 +1,5 @@
 /**
- * V71 artist identity + aggregate refresh, end-to-end on BOTH scanners.
+ * V72 artist identity + aggregate refresh, end-to-end on BOTH scanners.
  *
  *   - case / quote-style spellings of one artist land on ONE row, and its
  *     display name is the majority spelling regardless of walk order;

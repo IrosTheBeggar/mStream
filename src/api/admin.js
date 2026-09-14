@@ -340,7 +340,7 @@ export function setup(mstream) {
     res.json({});
   });
 
-  // V72: artist names the scanners never delimiter-split (exact spelling,
+  // V73: artist names the scanners never delimiter-split (exact spelling,
   // list order). Live like the dot toggles — the next scan picks the list
   // up; a rescan re-reads files already indexed.
   mstream.post("/api/v1/admin/db/params/artist-split-exceptions", async (req, res) => {

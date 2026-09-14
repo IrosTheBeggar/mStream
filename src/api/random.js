@@ -298,7 +298,7 @@ export function buildDurationFilter(opts) {
 // a track matches when the artist appears as:
 //   • the tracks.artist_id (primary track artist)
 //   • a track_artists.artist_id in a PERFORMER role (main / featured) —
-//     V72 added composer / conductor / remixer / lyricist credits, which
+//     V73 added composer / conductor / remixer / lyricist credits, which
 //     are not songs BY that artist
 //   • an album_artists.artist_id (album credit — catches the
 //     compilation/various-artists case where tracks belong to many
@@ -337,7 +337,7 @@ export function buildArtistFilter(opts) {
          WHERE artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
       )
     )`);
-    // V71: names match on their normalised key (src/db/name-key.js).
+    // V72: names match on their normalised key (src/db/name-key.js).
     const keys = opts.artists.map(nameKey);
     params.push(...keys, ...keys, ...keys);
   }
@@ -1031,7 +1031,7 @@ function finalisePick(rows, body, sonic) {
   // contractually identical.
   const { genres_concat } = fetchGenresForTrack(db.getDB(), picked.id);
   picked.genres_concat = genres_concat;
-  // V72: performer / composer credits for `metadata.artists` / `composer`.
+  // V73: performer / composer credits for `metadata.artists` / `composer`.
   Object.assign(picked, fetchCreditsForTrack(db.getDB(), picked.id));
 
   const out = {

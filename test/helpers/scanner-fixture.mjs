@@ -140,17 +140,17 @@ export async function buildFixtureLibrary(rootDir) {
     // should reconcile, but the data path is in place here.
     if (i === 1) { tags.BPM = '124'; tags.KEY = '8A'; tags.INITIALKEY = '8A'; }
     if (i === 2) { tags.BPM = '90';  /* no key — bpm_source still 'tag' */ }
-    // V71: ARTISTSORT + MUSICBRAINZ_ARTISTID as real Vorbis comments — both
+    // V72: ARTISTSORT + MUSICBRAINZ_ARTISTID as real Vorbis comments — both
     // scanners must fill artists.sort_name / mbz_artist_id from them, and
     // order_name must follow the sort tag ("artist, solo").
     if (i === 3) { tags.ARTISTSORT = 'Artist, Solo'; tags.MUSICBRAINZ_ARTISTID = '0a0a0a0a-1111-4222-8333-444444444444'; }
-    // V72: role credits as Vorbis comments — a single COMPOSER value splits
+    // V73: role credits as Vorbis comments — a single COMPOSER value splits
     // on "; " (two composers, positions 0/1); the others are one name each.
     // Both scanners must write the same track_artists rows.
     if (i === 4) { tags.COMPOSER = 'Comp One; Comp Two'; tags.CONDUCTOR = 'Maestro'; tags.REMIXER = 'Mixer'; tags.LYRICIST = 'Poet'; }
     const f1 = path.join(a1, `${i.toString().padStart(2, '0')} Track ${i}.flac`);
     await makeAudio(f1, FLAC, tags);
-    // V72: a Picard-style ARTISTS list tag next to ARTIST. lofty never reads
+    // V73: a Picard-style ARTISTS list tag next to ARTIST. lofty never reads
     // it and neither may the JS engine (music-metadata folds it into
     // common.artists) — the credits must come from ARTIST alone.
     if (i === 5) { await appendFlacVorbisComments(f1, [['ARTISTS', 'Solo'], ['ARTISTS', 'Artist']]); }
@@ -178,7 +178,7 @@ export async function buildFixtureLibrary(rootDir) {
     };
     if (i === 1) { tags.TBPM = '128'; tags.TKEY = '7A'; }
     if (i === 2) { tags.TBPM = '5';   /* below range → both scanners drop to NULL */ }
-    // V72: the same roles through ID3v2.3 frames (ffmpeg writes a 4-char
+    // V73: the same roles through ID3v2.3 frames (ffmpeg writes a 4-char
     // key as that frame): TCOM splits on " / "; Maestro / Mixer / Poet are
     // the artists album 1 already created, credited again here.
     if (i === 3) { tags.TCOM = 'Writer A / Writer B'; tags.TPE3 = 'Maestro'; tags.TPE4 = 'Mixer'; tags.TEXT = 'Poet'; }
@@ -236,7 +236,7 @@ export async function buildFixtureLibrary(rootDir) {
   await makeAudio(path.join(a5, '02.flac'), FLAC, { title: 'Test FLAC', artist: 'Format Test', album: 'Mixed', track: '2/5' });
   await makeAudio(path.join(a5, '03.ogg'),  OGG,  { title: 'Test OGG',  artist: 'Format Test', album: 'Mixed', track: '3/5' });
   await makeAudio(path.join(a5, '04.m4a'),  M4A,  { title: 'Test M4A',  artist: 'Format Test', album: 'Mixed', track: '4/5' });
-  // V71: one track spells the artist differently. Same name_key → same
+  // V72: one track spells the artist differently. Same name_key → same
   // artist row; the display name is the majority spelling ('Format Test',
   // 4 votes to 1) whichever file a parallel walk commits first.
   await makeAudio(path.join(a5, '05.wav'),  WAV,  { title: 'Test WAV',  artist: 'format test', album: 'Mixed', track: '5/5' });
@@ -275,9 +275,9 @@ export async function buildFixtureLibrary(rootDir) {
     { title: 'Lyrics D', artist: 'Lyric Artist', album: 'Album Six', track: '4/4' });
 
   // ── Album 7: "Decades" — per-track years under one ALBUMARTIST ─────
-  // V70 identity: year is no longer part of the album key, so three tracks
+  // V71 identity: year is no longer part of the album key, so three tracks
   // tagged 1987 / 1991 / 1991 with different track artists but the same
-  // ALBUMARTIST must land on ONE album row (pre-V70 they fragmented into
+  // ALBUMARTIST must land on ONE album row (pre-V71 they fragmented into
   // one row per year). The aggregate refresh must then agree across
   // engines: year = 1991 (most common), year_min 1987, year_max 1991,
   // track_count 3. Track 3 is a real TCMP compilation frame on ONE track
@@ -319,7 +319,7 @@ export async function buildFixtureLibrary(rootDir) {
 
   // ── Album 9: "Duets" — a genuinely multi-valued ARTIST tag (2 tracks) ──
   // Two Vorbis ARTIST comments per file (ffmpeg can't write that; the
-  // second is appended by hand). V72 rule: plural values are honoured
+  // second is appended by hand). V73 rule: plural values are honoured
   // verbatim — "Duet B feat. Nobody" is ONE credit, not split — and the
   // display string joins them with ", ". Both scanners must agree.
   const a9 = path.join(rootDir, 'Duet A', 'Duets');
@@ -349,7 +349,7 @@ export async function buildFixtureLibrary(rootDir) {
       'Solo Artist', 'Foo', 'Bar', 'Format Test', 'Lyric Artist',
       ...compilationArtists,
       'DJ Retro', 'Retro A', 'Retro B', 'Retro C', 'Blue Band',
-      // V72: credit-only artists (roles) and the plural / slash cases.
+      // V73: credit-only artists (roles) and the plural / slash cases.
       'Comp One', 'Comp Two', 'Maestro', 'Mixer', 'Poet', 'Writer A', 'Writer B',
       'Duet A', 'Duet B feat. Nobody', 'AC/DC',
       // Various Artists is seeded by the schema; not added by the scanner

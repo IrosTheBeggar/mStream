@@ -1,4 +1,4 @@
-// Artist name normalisation (V71).
+// Artist name normalisation (V72).
 //
 // `artists.name_key` is the scanner's find-or-create key for artists: two
 // spellings that normalise to the same key are the same artist row. The
