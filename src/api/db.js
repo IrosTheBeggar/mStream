@@ -6,6 +6,9 @@ import * as db from '../db/manager.js';
 import { joiValidate, dualId } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 import { ALBUM_TRACK_ORDER } from '../db/track-order.js';
+import { nameKey } from '../db/name-key.js';
+import { PERFORMER_ROLES, TRACK_ROLES, PERFORMER_ROLES_SQL } from '../db/artist-roles.js';
+import { creditDisplay } from '../db/artist-extraction.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -19,6 +22,18 @@ export function renderMetadataObj(row) {
     filepath: fullPath,
     metadata: {
       artist: row.artist_name || null,
+      // V73: the ARTIST tag as written ("A feat. B"; a multi-valued tag's
+      // values joined with ", ") — `artist` stays the primary artist's name.
+      // Rows scanned before V73 fall back to that name until the rescan.
+      'artist-display': row.artist_display || row.artist_name || null,
+      // V73: performer credits (main + featured, tag order) and the composer
+      // credit(s), from track_artists via the credits enrichment
+      // (enrichRows / fetchCreditsForTrack). A row rendered without it, or
+      // a legacy row with no credit rows, falls back to the primary artist.
+      artists: Array.isArray(row.credit_artists) && row.credit_artists.length
+        ? row.credit_artists
+        : (row.artist_name ? [row.artist_name] : []),
+      composer: creditDisplay(row.credit_composers || []) || null,
       hash: row.file_hash || null,
       album: row.album_name || null,
       track: row.track_number || null,
@@ -144,7 +159,7 @@ export function renderMetadataObj(row) {
 // under the same `metadata` key; the lite-vs-full distinction will be named
 // explicitly in the v2 API.
 export const LITE_METADATA_FIELDS = [
-  'title', 'artist', 'album', 'album-art', 'year', 'track', 'disk',
+  'title', 'artist', 'artist-display', 'artists', 'album', 'album-art', 'year', 'track', 'disk',
   'duration', 'rating', 'bpm', 'musical-key', 'genres',
   'has-lyrics', 'has-synced-lyrics', 'replaygain-track',
 ];
@@ -273,6 +288,56 @@ function fetchGenresForTracks(d, ids) {
   return out;
 }
 
+// V73 credits: the performer names (main + featured, tag order) and the
+// composer names per track, from track_artists. Batched like the genre
+// helpers — one indexed query per id chunk — and attached to the row as
+// `credit_artists` / `credit_composers` arrays for renderMetadataObj (which
+// falls back to the primary artist when a row has neither). The rows come
+// back ordered, so the arrays are built here rather than with GROUP_CONCAT
+// (whose element order is not guaranteed).
+function fetchCreditsForTracks(d, ids) {
+  const out = new Map();
+  if (ids.length === 0) { return out; }
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = d.prepare(`
+    SELECT ta.track_id, ta.role, a.name
+      FROM track_artists ta
+      JOIN artists a ON a.id = ta.artist_id
+     WHERE ta.track_id IN (${placeholders}) AND ta.role IN (${PERFORMER_ROLES_SQL}, 'composer')
+     ORDER BY ta.track_id, ta.position, ta.role
+  `).all(...ids);
+  for (const r of rows) {
+    let e = out.get(r.track_id);
+    if (!e) { e = { credit_artists: [], credit_composers: [] }; out.set(r.track_id, e); }
+    (r.role === 'composer' ? e.credit_composers : e.credit_artists).push(r.name);
+  }
+  return out;
+}
+
+// Single-row companion (the fetchGenresForTrack shape): splat onto a row
+// before renderMetadataObj. Genuinely single-row callers only (the picked
+// Auto-DJ song, the discovery seed) — lists go through enrichRows.
+export function fetchCreditsForTrack(d, trackId) {
+  return fetchCreditsForTracks(d, [trackId]).get(trackId) || {};
+}
+
+function enrichRowsWithCredits(d, rows) {
+  const uniq = [...new Set(rows.map((r) => r.id))];
+  const credits = new Map();
+  const CHUNK = 500;
+  for (let i = 0; i < uniq.length; i += CHUNK) {
+    for (const [id, c] of fetchCreditsForTracks(d, uniq.slice(i, i + CHUNK))) { credits.set(id, c); }
+  }
+  for (const row of rows) { Object.assign(row, credits.get(row.id)); }
+  return rows;
+}
+
+// Genres + credits in two batched queries — what every response-shaped list
+// endpoint calls before renderMetadataObj.
+export function enrichRows(d, rows) {
+  return enrichRowsWithCredits(d, enrichRowsWithGenres(d, rows));
+}
+
 // Enrich trackQuery({ includeGenres: false }) rows with their genre
 // aggregation in ONE indexed batch, in place — the companion every
 // response-shaped list endpoint uses instead of the default tg_agg join
@@ -337,8 +402,10 @@ export function renderMetadataByIds(ids, user) {
     ).all(...userIdParams, ...slice);
 
     const genres = fetchGenresForTracks(d, slice);
+    const credits = fetchCreditsForTracks(d, slice);
     for (const row of rows) {
       row.genres_concat = genres.get(row.id) || null;
+      Object.assign(row, credits.get(row.id));
       result.set(row.id, renderMetadataObj(row));
     }
   }
@@ -371,6 +438,7 @@ export function pullMetaData(filepath, user) {
 
   if (!row) { return { filepath: filepath, metadata: null }; }
   row.genres_concat = fetchGenresForTrack(d, row.id).genres_concat ?? null;
+  Object.assign(row, fetchCreditsForTrack(d, row.id));
   return renderMetadataObj(row);
 }
 
@@ -432,8 +500,10 @@ export function pullMetaDataBatch(filepaths, user) {
       `${trackQuery(user?.id, { includeGenres: false })} WHERE (t.library_id, t.filepath) IN (VALUES ${values})`
     ).all(...userIdParams, ...slice.flatMap(e => [e.library_id, e.rel]));
 
+    // Two batched lookups per chunk (genres + credits) instead of two
+    // statements per row — a 1000-track playlist is ~5 ms, not ~60.
+    enrichRows(d, rows);
     for (const row of rows) {
-      Object.assign(row, fetchGenresForTrack(d, row.id));
       const entry = pending.get(keyOf(row.library_id, row.filepath));
       if (!entry) { continue; }
       const rendered = renderMetadataObj(row);
@@ -485,21 +555,186 @@ export function setup(mstream) {
 
   // ── Artists ─────────────────────────────────────────────────────────────
 
+  // V73: `include` widens the artists index beyond the track-primary artists
+  // (the unchanged default): 'albumArtists' adds artists credited on an
+  // album (album_artists — this is where Various Artists comes in), and a
+  // role name ('featured', 'composer', 'conductor', 'remixer', 'lyricist')
+  // adds artists holding that credit on a track. Body array or a
+  // comma-separated query string; unknown values are a 400.
+  // Body array or comma-separated query string of names from an allow-list:
+  // trimmed, de-duplicated, order kept; an unknown name is a 400.
+  function parseNameList(raw, allowed, label) {
+    if (raw == null || raw === '') { return []; }
+    const list = Array.isArray(raw) ? raw : String(raw).split(',');
+    const out = new Set();
+    for (const v of list) {
+      const value = String(v).trim();
+      if (!value) { continue; }
+      if (!allowed.includes(value)) { throw new WebError(`Unknown ${label}: ${value}`, 400); }
+      out.add(value);
+    }
+    return [...out];
+  }
+  const ARTIST_INCLUDES = ['albumArtists', ...TRACK_ROLES.filter((r) => r !== 'main')];
+  const parseInclude = (raw) => parseNameList(raw, ARTIST_INCLUDES, 'include value');
+  // artists-albums `roles`: which track credits count as the artist's when
+  // collecting albums. Omitted or empty → the performer roles.
+  function parseRoles(raw) {
+    const roles = parseNameList(raw, TRACK_ROLES, 'role');
+    return roles.length ? roles : [...PERFORMER_ROLES];
+  }
+
   function getArtists(req) {
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
-    const rows = d().prepare(`
-      SELECT DISTINCT a.name
-      FROM artists a
-      JOIN tracks t ON t.artist_id = a.id
-      WHERE ${filter.clause}
-      ORDER BY a.name COLLATE NOCASE
-    `).all(...filter.params);
+    const include = parseInclude(req.body?.include ?? req.query?.include);
+    // V72: optional `sort` — 'name' (default; unchanged contract) or 'order',
+    // which sorts by artists.order_name: the ARTISTSORT tag when the scanner
+    // saw one, else the name with one leading article dropped ("The
+    // Beatles" under B). COALESCE covers rows without an order_name (a
+    // fixture insert before its key-fill trigger ran — none in practice).
+    // Additive and opt-in so no client sees its list reorder unasked.
+    const sortMode = req.body?.sort ?? req.query?.sort;
+    const orderBy = sortMode === 'order'
+      ? 'COALESCE(a.order_name, a.name) COLLATE NOCASE, a.name COLLATE NOCASE'
+      : 'a.name COLLATE NOCASE';
+    if (include.length === 0) {
+      const rows = d().prepare(`
+        SELECT DISTINCT a.name
+        FROM artists a
+        JOIN tracks t ON t.artist_id = a.id
+        WHERE ${filter.clause}
+        ORDER BY ${orderBy}
+      `).all(...filter.params);
+      return { artists: rows.map(r => r.name) };
+    }
 
+    // Widened: a UNION of index-driven artist-id sets, one per source, each
+    // carrying the visibility test through the tracks it reaches. NOT a
+    // chain of correlated EXISTS probes — with a library filter and no
+    // planner stats that form re-scanned every visible track per artist row
+    // (17 s at 100k tracks, measured; this form ~0.1 s). The default query
+    // above is left untouched so the hot path keeps its plan.
+    const roles = include.filter((v) => v !== 'albumArtists');
+    const sources = [`SELECT t.artist_id FROM tracks t WHERE ${filter.clause}`];
+    const params = [...filter.params];
+    if (roles.length) {
+      sources.push(`SELECT ta.artist_id FROM track_artists ta JOIN tracks t ON t.id = ta.track_id
+                     WHERE ta.role IN (${roles.map(() => '?').join(',')}) AND ${filter.clause}`);
+      params.push(...roles, ...filter.params);
+    }
+    if (include.includes('albumArtists')) {
+      sources.push(`SELECT aa.artist_id FROM album_artists aa
+                     WHERE aa.album_id IN (SELECT t.album_id FROM tracks t WHERE ${filter.clause})`);
+      params.push(...filter.params);
+    }
+    const rows = d().prepare(`
+      SELECT a.name FROM artists a
+      WHERE a.id IN (${sources.join('\n             UNION\n             ')})
+      ORDER BY ${orderBy}
+    `).all(...params);
     return { artists: rows.map(r => r.name) };
   }
 
   mstream.get('/api/v1/db/artists', (req, res) => res.json(getArtists(req)));
   mstream.post('/api/v1/db/artists', (req, res) => res.json(getArtists(req)));
+
+  // ── Album items ─────────────────────────────────────────────────────────
+  // What /db/albums and /db/artists-albums return per album: the legacy trio
+  // (name, year, album_art_file) plus, since the album-API series, the credit
+  // fields (album_artist, artists, compilation) and the V71 aggregates
+  // (year_min, year_max, track_count, duration).
+  //
+  // The DISTINCT collapse over exactly (name, year, album_art_file) is a
+  // client-visible contract and stays: an album with no ALBUMARTIST tag and
+  // several track artists is N album rows and ONE card, and album-songs'
+  // name + year match returns every fragment's tracks. So the new fields are
+  // GROUP aggregates: `album_artist` is the group's single credit and null
+  // when its rows disagree, `artists` is the union of the rows' 'main'
+  // credits, `compilation` is true when any row is one.
+  //
+  // Aggregation is at ALBUM granularity: the library filter is an EXISTS
+  // probe per album over idx_tracks_album, never a tracks join that GROUP BY
+  // then has to fold — so the cost scales with the number of albums, not
+  // tracks (the 2026-07 audit's lesson for every list route). The credit
+  // names come from a second, id-chunked query like enrichRowsWithGenres,
+  // not a GROUP_CONCAT whose element order SQLite does not guarantee.
+  //
+  // The aggregate columns are the album rows' own (the scan-end refresh over
+  // ALL of an album's tracks), like `year` always was — a library filter
+  // hides albums, it does not recount the ones it shows.
+  //
+  // The select list expects `albums al LEFT JOIN artists pa` in the FROM.
+  const ALBUM_ITEM_COLUMNS = `
+             al.name, al.year, al.album_art_file,
+             GROUP_CONCAT(al.id) AS ids,
+             COUNT(DISTINCT COALESCE(al.album_artist, pa.name)) AS credit_variants,
+             MIN(COALESCE(al.album_artist, pa.name)) AS credit,
+             MAX(al.compilation) AS compilation,
+             MIN(COALESCE(al.year_min, al.year)) AS year_min,
+             MAX(COALESCE(al.year_max, al.year)) AS year_max,
+             SUM(al.track_count) AS track_count,
+             SUM(al.duration_total) AS duration_total`;
+  const ALBUM_ITEM_GROUP = 'GROUP BY al.name, al.year, al.album_art_file';
+
+  // The 'main' album credits of a set of album ids, in tag order, plus each
+  // row's primary artist as the fallback for rows without credits (legacy
+  // and fixture rows — both scanners write a credit for every album they
+  // touch). One query per id chunk; ORDER BY names the compound's columns.
+  function fetchAlbumCredits(d, ids) {
+    const out = new Map();
+    if (ids.length === 0) { return out; }
+    const ph = ids.map(() => '?').join(',');
+    const rows = d.prepare(`
+      SELECT aa.album_id AS album_id, a.name AS name, aa.position AS position, 0 AS fallback
+        FROM album_artists aa JOIN artists a ON a.id = aa.artist_id
+       WHERE aa.role = 'main' AND aa.album_id IN (${ph})
+      UNION ALL
+      SELECT al.id, pa.name, 0, 1
+        FROM albums al JOIN artists pa ON pa.id = al.artist_id
+       WHERE al.id IN (${ph})
+       ORDER BY album_id, fallback, position, name COLLATE NOCASE
+    `).all(...ids, ...ids);
+    for (const r of rows) {
+      let e = out.get(r.album_id);
+      if (!e) { e = { credits: [], fallback: [] }; out.set(r.album_id, e); }
+      (r.fallback ? e.fallback : e.credits).push(r.name);
+    }
+    return out;
+  }
+
+  // ALBUM_ITEM_SELECT rows → wire items, in row order. A group's `artists`
+  // walks its rows by id (deterministic across plans) and de-duplicates.
+  function albumItems(d, rows) {
+    const idsOf = (r) => String(r.ids).split(',').map(Number).sort((x, y) => x - y);
+    const all = [...new Set(rows.flatMap(idsOf))];
+    const credits = new Map();
+    const CHUNK = 500;
+    for (let i = 0; i < all.length; i += CHUNK) {
+      for (const [id, c] of fetchAlbumCredits(d, all.slice(i, i + CHUNK))) { credits.set(id, c); }
+    }
+    return rows.map((r) => {
+      const names = [];
+      for (const id of idsOf(r)) {
+        const c = credits.get(id);
+        if (!c) { continue; }
+        for (const n of (c.credits.length ? c.credits : c.fallback)) {
+          if (!names.includes(n)) { names.push(n); }
+        }
+      }
+      return {
+        name: r.name,
+        year: r.year,
+        album_art_file: r.album_art_file || null,
+        album_artist: r.credit_variants === 1 ? r.credit : null,
+        artists: names,
+        compilation: Number(r.compilation) > 0,
+        year_min: r.year_min ?? null,
+        year_max: r.year_max ?? null,
+        track_count: r.track_count ?? 0,
+        duration: r.duration_total ?? 0,
+      };
+    });
+  }
 
   // ── Artist Albums ───────────────────────────────────────────────────────
 
@@ -532,44 +767,87 @@ export function setup(mstream) {
     // 653 artists). Pinning ties alphabetically is deterministic across
     // plans and SQLite versions; the sort b-tree already exists, so it's
     // free.
+    // V72: the artist is matched on its normalised key, so any spelling the
+    // client holds ("beatles", a curly apostrophe) resolves to the one row
+    // the scanner keeps — strictly more tolerant than the old exact match.
+    const artistKey = nameKey(req.body.artist);
+    // V73: the track_artists arm counts performer credits (main / featured)
+    // by default — a composer credit must not put an album on the composer's
+    // page unasked. `roles` (array of role names) replaces that set.
+    const roles = parseRoles(req.body?.roles);
+    const rolePh = roles.map(() => '?').join(',');
+    // The card is the ALBUM, the same item /db/albums returns, not the
+    // artist's fragment of it: `reach` is the (name, year, art) groups the
+    // artist's visible rows fall in, and the aggregate then runs over every
+    // visible row of those groups — so an untagged album split across two
+    // artists shows one card with a null album_artist on both artists' pages,
+    // and sending that card back to album-songs still plays the whole album.
+    // (Aggregating over the reached rows alone would have credited the
+    // fragment to this artist and narrowed playback to their tracks.) The
+    // group join is on idx_albums_name; IS makes null years and art match
+    // themselves. The trailing `al.album_art_file` completes the tie pin: two
+    // same-name, same-year albums differing only in art are distinct cards
+    // whose relative order must not depend on the plan either.
     const albumRows = d().prepare(`
-      SELECT DISTINCT al.name, al.year, al.album_art_file
-      FROM albums al
-      WHERE al.id IN (
-        SELECT id FROM albums WHERE artist_id IN (SELECT id FROM artists WHERE name = ?)
-        UNION ALL
-        SELECT album_id FROM album_artists
-          WHERE artist_id IN (SELECT id FROM artists WHERE name = ?)
-        UNION ALL
-        SELECT t2.album_id FROM track_artists ta
-          JOIN tracks t2 ON t2.id = ta.track_id
-          WHERE ta.artist_id IN (SELECT id FROM artists WHERE name = ?)
-            AND t2.album_id IS NOT NULL
+      WITH reach AS (
+        SELECT DISTINCT al.name, al.year, al.album_art_file
+        FROM albums al
+        WHERE al.id IN (
+          SELECT id FROM albums WHERE artist_id IN (SELECT id FROM artists WHERE name_key = ?)
+          UNION ALL
+          SELECT album_id FROM album_artists
+            WHERE artist_id IN (SELECT id FROM artists WHERE name_key = ?)
+          UNION ALL
+          SELECT t2.album_id FROM track_artists ta
+            JOIN tracks t2 ON t2.id = ta.track_id
+            WHERE ta.artist_id IN (SELECT id FROM artists WHERE name_key = ?)
+              AND ta.role IN (${rolePh})
+              AND t2.album_id IS NOT NULL
+        )
+        AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})
       )
-      AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})
-      ORDER BY al.year DESC, al.name COLLATE NOCASE
-    `).all(String(req.body.artist), String(req.body.artist), String(req.body.artist), ...filter.params);
+      SELECT ${ALBUM_ITEM_COLUMNS}
+      FROM reach r
+      JOIN albums al ON al.name = r.name AND al.year IS r.year AND al.album_art_file IS r.album_art_file
+      LEFT JOIN artists pa ON pa.id = al.artist_id
+      WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})
+      ${ALBUM_ITEM_GROUP}
+      ORDER BY al.year DESC, al.name COLLATE NOCASE, al.album_art_file
+    `).all(artistKey, artistKey, artistKey, ...roles, ...filter.params, ...filter.params);
 
-    const albums = albumRows.map(r => ({
-      name: r.name,
-      year: r.year,
-      album_art_file: r.album_art_file || null
-    }));
+    const albums = albumItems(d(), albumRows);
 
     // Check for tracks with no album (null album_id) by this artist
+    // V73: the same `roles` apply to the singles bucket — a credit in one
+    // of the requested roles on an album-less track is enough.
     const nullAlbumRow = d().prepare(`
       SELECT t.album_art_file
       FROM tracks t
-      JOIN artists a ON t.artist_id = a.id
-      WHERE a.name = ? AND t.album_id IS NULL AND ${filter.clause}
+      WHERE t.album_id IS NULL AND ${filter.clause}
+        AND (t.artist_id IN (SELECT id FROM artists WHERE name_key = ?)
+             OR t.id IN (SELECT ta.track_id FROM track_artists ta
+                          WHERE ta.role IN (${rolePh})
+                            AND ta.artist_id IN (SELECT id FROM artists WHERE name_key = ?)))
       LIMIT 1
-    `).get(String(req.body.artist), ...filter.params);
+    `).get(...filter.params, artistKey, ...roles, artistKey);
 
     if (nullAlbumRow) {
+      // The singles bucket is the requested artist's by definition, so its
+      // credit fields name them — in the canonical spelling the key resolves
+      // to. It has no album row, so the aggregates are null, not zero.
+      const canonical = d().prepare('SELECT name FROM artists WHERE name_key = ?').get(artistKey)?.name
+        ?? String(req.body.artist);
       albums.push({
         name: null,
         year: null,
-        album_art_file: nullAlbumRow.album_art_file || null
+        album_art_file: nullAlbumRow.album_art_file || null,
+        album_artist: canonical,
+        artists: [canonical],
+        compilation: false,
+        year_min: null,
+        year_max: null,
+        track_count: null,
+        duration: null,
       });
     }
 
@@ -580,19 +858,21 @@ export function setup(mstream) {
 
   function getAlbums(req) {
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
+    // `, al.year DESC, al.album_art_file` pins the order among same-name
+    // albums, which `ORDER BY al.name` alone left to the plan (the rewrite
+    // changed the plan, and the UI renders response order — see the
+    // artists-albums tiebreak note). Newest first among namesakes; a one-time
+    // reorder for libraries that hold two albums of one name.
     const rows = d().prepare(`
-      SELECT DISTINCT al.name, al.year, al.album_art_file
+      SELECT ${ALBUM_ITEM_COLUMNS}
       FROM albums al
-      JOIN tracks t ON t.album_id = al.id
-      WHERE ${filter.clause}
-      ORDER BY al.name COLLATE NOCASE
+      LEFT JOIN artists pa ON pa.id = al.artist_id
+      WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})
+      ${ALBUM_ITEM_GROUP}
+      ORDER BY al.name COLLATE NOCASE, al.year DESC, al.album_art_file
     `).all(...filter.params);
 
-    return { albums: rows.map(r => ({
-      name: r.name,
-      year: r.year,
-      album_art_file: r.album_art_file || null
-    }))};
+    return { albums: albumItems(d(), rows) };
   }
 
   mstream.get('/api/v1/db/albums', (req, res) => res.json(getAlbums(req)));
@@ -696,12 +976,21 @@ export function setup(mstream) {
       ${pageSql}
     `).all(...allParams, ...pageParams);
 
-    res.json(enrichRowsWithGenres(d(), rows).map(renderMetadataObj));
+    res.json(enrichRows(d(), rows).map(renderMetadataObj));
   });
 
   // ── Album Songs ─────────────────────────────────────────────────────────
 
   mstream.post('/api/v1/db/album-songs', (req, res) => {
+    // `.unknown(true)` and a nullable field on purpose: this route never had
+    // a schema, the webapp sends `album: null, artist: null, year: null` for
+    // the singles bucket, and federated peers and the Flutter app forward
+    // whatever they hold. Only the new field is validated.
+    const schema = Joi.object({
+      album_artist: Joi.string().allow('', null).optional(),
+    }).unknown(true);
+    joiValidate(schema, req.body);
+
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
     const conditions = [filter.clause];
     const params = [...filter.params];
@@ -714,12 +1003,63 @@ export function setup(mstream) {
     }
 
     if (req.body.artist) {
-      conditions.push('a.name = ?');
-      params.push(String(req.body.artist));
+      // V72: TRACK artist, matched on its normalised key (see artists-albums).
+      // V73: a performer credit (main / featured — the set artists-albums
+      // lists by default) counts too, so the singles bucket of an artist who
+      // is only ever featured is not empty. Other roles never match here.
+      const key = nameKey(req.body.artist);
+      conditions.push(`(a.name_key = ? OR t.id IN (
+        SELECT ta.track_id FROM track_artists ta
+         WHERE ta.role IN (${PERFORMER_ROLES_SQL})
+           AND ta.artist_id IN (SELECT id FROM artists WHERE name_key = ?)))`);
+      params.push(key, key);
     }
 
+    // `album_artist` narrows a named album to one credit. Two albums that
+    // share a name (and overlapping years) are one `album` + `year` match
+    // here, so a client that holds the album artist a list response gave it
+    // sends it back. Matched three ways, so any spelling a client can hold
+    // resolves: the primary album artist's normalised key, a 'main' album
+    // credit's key, or the display string verbatim (a joined "A & B" tag has
+    // no artist row of its own). The singles bucket has no album to credit:
+    // there the album artist IS the track artist, matched like `artist`.
+    const albumArtist = typeof req.body.album_artist === 'string' ? req.body.album_artist.trim() : '';
+    let albumArtistJoin = '';
+    if (albumArtist) {
+      const key = nameKey(albumArtist);
+      if (req.body.album) {
+        albumArtistJoin = 'LEFT JOIN artists pa ON pa.id = al.artist_id';
+        conditions.push(`(pa.name_key = ? OR COALESCE(al.album_artist, pa.name) = ? OR al.id IN (
+          SELECT aa.album_id FROM album_artists aa
+           WHERE aa.role = 'main'
+             AND aa.artist_id IN (SELECT id FROM artists WHERE name_key = ?)))`);
+        params.push(key, albumArtist, key);
+      } else {
+        conditions.push(`(a.name_key = ? OR t.id IN (
+          SELECT ta.track_id FROM track_artists ta
+           WHERE ta.role IN (${PERFORMER_ROLES_SQL})
+             AND ta.artist_id IN (SELECT id FROM artists WHERE name_key = ?)))`);
+        params.push(key, key);
+      }
+    }
+
+    // V71 dropped the year from album identity, so one album can span
+    // several track years (a compilation tagged with per-track original
+    // years, a reissue with a later bonus track). A client's `year` is
+    // whatever it last saw — the album's aggregate year from a list
+    // response, or the PLAYING TRACK's year from the now-playing card's
+    // "go to album" — so it is matched against the album's year RANGE,
+    // never the track column: matching t.year would silently return a
+    // partial album. COALESCE covers rows without aggregates yet (a
+    // trackless ghost, a fixture insert).
+    // The singles bucket (no album) keeps the per-track match — there is
+    // no album range to consult.
     if (req.body.year) {
-      conditions.push('t.year = ?');
+      if (req.body.album) {
+        conditions.push('? BETWEEN COALESCE(al.year_min, al.year) AND COALESCE(al.year_max, al.year)');
+      } else {
+        conditions.push('t.year = ?');
+      }
       params.push(Number(req.body.year));
     }
 
@@ -728,11 +1068,12 @@ export function setup(mstream) {
 
     const rows = d().prepare(`
       ${trackQuery(req.user?.id, { includeGenres: false })}
+      ${albumArtistJoin}
       WHERE ${conditions.join(' AND ')}
       ORDER BY ${ALBUM_TRACK_ORDER}, t.filepath
     `).all(...allParams);
 
-    res.json(enrichRowsWithGenres(d(), rows).map(renderMetadataObj));
+    res.json(enrichRows(d(), rows).map(renderMetadataObj));
   });
 
   // ── Search ──────────────────────────────────────────────────────────────
@@ -857,7 +1198,7 @@ export function setup(mstream) {
       LIMIT ?
     `).all(...allParams, req.body.limit);
 
-    res.json(enrichRowsWithGenres(d(), rows).map(renderMetadataObj));
+    res.json(enrichRows(d(), rows).map(renderMetadataObj));
   });
 
   // ── Recently Played ─────────────────────────────────────────────────────

@@ -41,7 +41,11 @@ const VUEPLAYERCORE = (() => {
     'flipPlayer': true,
     'compressArt': false,
     'hideTopBar': false,
-    'waveformBar': true
+    'waveformBar': true,
+    // Artists panel: album-only credits (Various Artists) listed; leading
+    // articles honoured in the sort.
+    'artistsShowAlbumOnly': true,
+    'artistsIgnoreArticles': false
   };
 
   try {
@@ -52,6 +56,8 @@ const VUEPLAYERCORE = (() => {
     mstreamModule.altLayout.compressArt = typeof altLayout.compressArt === 'boolean' ? altLayout.compressArt : false;
     mstreamModule.altLayout.hideTopBar = typeof altLayout.hideTopBar === 'boolean' ? altLayout.hideTopBar : false;
     mstreamModule.altLayout.waveformBar = typeof altLayout.waveformBar === 'boolean' ? altLayout.waveformBar : true;
+    mstreamModule.altLayout.artistsShowAlbumOnly = typeof altLayout.artistsShowAlbumOnly === 'boolean' ? altLayout.artistsShowAlbumOnly : true;
+    mstreamModule.altLayout.artistsIgnoreArticles = typeof altLayout.artistsIgnoreArticles === 'boolean' ? altLayout.artistsIgnoreArticles : false;
 
     // When the top bar is disabled, mark the body so CSS can:
     //   - hide #nav-bar

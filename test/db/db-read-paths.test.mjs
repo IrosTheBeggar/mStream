@@ -25,6 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import express from 'express';
+import { orderName } from '../../src/db/name-key.js';
 
 let testRoot, server, base;
 let config, manager, dbApi, searchApi;
@@ -75,8 +76,9 @@ before(async () => {
   insAlbum.run('a first', artistId('TieBreak'), 2010, null);
   insAlbum.run('C Newest', artistId('TieBreak'), 2011, null);
   // Two DISTINCT album rows sharing (name, year, art) — the same release
-  // credited to two different artists, which is the only way past
-  // albums' UNIQUE(name, artist_id, year). Solo reaches its own row via
+  // credited to two different artists (distinct album keys since V71;
+  // pre-V71 the only way past UNIQUE(name, artist_id, year)). Solo reaches
+  // its own row via
   // albums.artist_id and the Collab row via album_artists, so both land in
   // the result set and the original query's SELECT DISTINCT collapsed them.
   // The rewrite has to keep doing that.
@@ -106,6 +108,12 @@ before(async () => {
   // libB: OLDEST timestamps + an album and artist that exist ONLY here.
   addTrack(LIB_B, albumId('Hidden Album')[0], artistId('Solo'), '2000-01-01 00:00:00');
   addTrack(LIB_B, null, artistId('HiddenOnly'), '2000-01-02 00:00:00');
+  // V72: an article-led artist for the `sort: 'order'` test. Fixture inserts
+  // get their name_key from the artists_ai_key trigger (lower(trim)), which
+  // does not strip articles — order_name is set the way the scanners write it.
+  insArtist.run('The Zed');
+  d.prepare('UPDATE artists SET order_name = ? WHERE name = ?').run(orderName('The Zed'), 'The Zed');
+  addTrack(LIB_A, null, artistId('The Zed'), '2023-01-01 00:00:00');
 
   // The two M2M arms artists-albums has to union in, plus the second "Twin"
   // row so Solo reaches both copies (see the fixture note above).
@@ -130,6 +138,29 @@ before(async () => {
   for (const r of d.prepare('SELECT id FROM tracks WHERE library_id = ?').all(LIB_B)) {
     insTg.run(r.id, genreId('HiddenGenre'));
   }
+  // V73: a composer-only artist, an album-credit-only artist, a featured
+  // credit and a display string on Solo Album's track — for the metadata
+  // fields, `/db/artists` `include` and artists-albums `roles` tests.
+  for (const n of ['Composer Only', 'Album Only', 'Feat Guest']) { insArtist.run(n); }
+  const soloTrack = d.prepare('SELECT id FROM tracks WHERE album_id = ? AND library_id = ?')
+    .get(albumId('Solo Album')[0], LIB_A).id;
+  d.prepare("UPDATE tracks SET artist_display = 'Solo feat. Feat Guest' WHERE id = ?").run(soloTrack);
+  const insCredit = d.prepare('INSERT INTO track_artists (track_id, artist_id, role, position) VALUES (?, ?, ?, ?)');
+  insCredit.run(soloTrack, artistId('Solo'), 'main', 0);
+  insCredit.run(soloTrack, artistId('Feat Guest'), 'featured', 1);
+  insCredit.run(soloTrack, artistId('Composer Only'), 'composer', 0);
+  d.prepare('INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)')
+    .run(albumId('Solo Album')[0], artistId('Album Only'));
+  // An album-less track credited to Composer Only (composer) and to Feat
+  // Guest (featured): the singles bucket must follow `roles` / performer
+  // credits like the albums arm does.
+  insArtist.run('Single Star');
+  addTrack(LIB_A, null, artistId('Single Star'), '2023-06-01 00:00:00');
+  const single = d.prepare('SELECT id FROM tracks WHERE album_id IS NULL AND artist_id = ? AND library_id = ?')
+    .get(artistId('Single Star'), LIB_A).id;
+  insCredit.run(single, artistId('Single Star'), 'main', 0);
+  insCredit.run(single, artistId('Feat Guest'), 'featured', 1);
+  insCredit.run(single, artistId('Composer Only'), 'composer', 0);
   d.exec('COMMIT');
 
   const app = express();
@@ -316,7 +347,10 @@ describe('artists-albums', () => {
       ORDER BY al.year DESC
     `).all('Solo', 'Solo', 'Solo', LIB_A, LIB_B)
       .map((r) => ({ name: r.name, year: r.year, album_art_file: r.album_art_file || null }));
-    const got = (await post('/api/v1/db/artists-albums', { artist: 'Solo' })).body.albums;
+    // The album-API series added credit and aggregate fields to the items;
+    // this oracle is about the legacy trio and the collapse, so compare those.
+    const got = (await post('/api/v1/db/artists-albums', { artist: 'Solo' })).body.albums
+      .map(({ name, year, album_art_file }) => ({ name, year, album_art_file }));
     assert.deepEqual([...got].sort((a, b) => String(a.name).localeCompare(b.name)),
       [...oracle].sort((a, b) => String(a.name).localeCompare(b.name)));
   });
@@ -346,6 +380,78 @@ describe('artists-albums', () => {
     const r = await post('/api/v1/db/artists-albums', { artist: 'HiddenOnly' });
     assert.deepEqual(r.body.albums, []);
     scopeTo(null);
+  });
+});
+
+// ── album-songs year range (V71) ────────────────────────────────────────────
+
+describe('album-songs year matches the album range, not the track year', () => {
+  // Fixture tracks carry NO year, so the pre-V71 `t.year = ?` match would
+  // return nothing for any year. Since V71 the client's year is matched
+  // against the album's [year_min, year_max], falling back to albums.year
+  // for rows without aggregates (this fixture inserts albums directly).
+  test('a year equal to the album year returns the album', async () => {
+    scopeTo(null);
+    const r = await post('/api/v1/db/album-songs', { album: 'Solo Album', year: 2001 });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.length, 1, 'Solo Album has one visible track');
+  });
+
+  test('a year outside the range returns nothing', async () => {
+    scopeTo(null);
+    const r = await post('/api/v1/db/album-songs', { album: 'Solo Album', year: 1999 });
+    assert.deepEqual(r.body, []);
+  });
+
+  test('any year inside [year_min, year_max] matches, even when it is not albums.year', async () => {
+    scopeTo(null);
+    manager.getDB().prepare(`UPDATE albums SET year_min = 1999, year_max = 2003 WHERE name = 'Solo Album'`).run();
+    try {
+      for (const year of [1999, 2001, '2003']) {
+        const r = await post('/api/v1/db/album-songs', { album: 'Solo Album', year });
+        assert.equal(r.body.length, 1, `year ${year} should match the range`);
+      }
+      assert.deepEqual((await post('/api/v1/db/album-songs', { album: 'Solo Album', year: 1998 })).body, []);
+      assert.deepEqual((await post('/api/v1/db/album-songs', { album: 'Solo Album', year: 2004 })).body, []);
+    } finally {
+      manager.getDB().prepare(`UPDATE albums SET year_min = NULL, year_max = NULL WHERE name = 'Solo Album'`).run();
+    }
+  });
+
+  test('the singles bucket (no album) still matches the track year', async () => {
+    scopeTo(null);
+    // HiddenOnly's single has no year → a year filter finds nothing; no
+    // filter finds it. (Album-less tracks have no range to consult.)
+    assert.deepEqual((await post('/api/v1/db/album-songs', { album: null, artist: 'HiddenOnly', year: 2000 })).body, []);
+    assert.equal((await post('/api/v1/db/album-songs', { album: null, artist: 'HiddenOnly' })).body.length, 1);
+  });
+});
+
+// ── artist lookups by normalised key + artist sort modes (V72) ──────────────
+
+describe('artist parameters match on the normalised key', () => {
+  test('artists-albums resolves any spelling of the artist', async () => {
+    scopeTo(null);
+    const exact = (await post('/api/v1/db/artists-albums', { artist: 'Solo' })).body.albums.map(a => a.name).sort();
+    const shouted = (await post('/api/v1/db/artists-albums', { artist: '  SOLO ' })).body.albums.map(a => a.name).sort();
+    assert.deepEqual(shouted, exact);
+    assert.ok(exact.length > 0);
+  });
+
+  test('album-songs singles bucket resolves the track artist by key', async () => {
+    scopeTo(null);
+    assert.equal((await post('/api/v1/db/album-songs', { album: null, artist: 'hiddenonly' })).body.length, 1);
+  });
+
+  test('/db/artists sorts by display name by default and by order_name on request', async () => {
+    scopeTo(null);
+    const byName = (await post('/api/v1/db/artists', {})).body.artists;
+    assert.ok(byName.indexOf('The Zed') < byName.indexOf('TieBreak'), `default: "The Zed" under T: ${byName}`);
+    const byOrder = (await post('/api/v1/db/artists', { sort: 'order' })).body.artists;
+    assert.equal(byOrder[byOrder.length - 1], 'The Zed', `order: article dropped → under Z: ${byOrder}`);
+    assert.deepEqual([...byOrder].sort(), [...byName].sort(), 'same set, different order');
+    const viaQuery = await fetch(`${base}/api/v1/db/artists?sort=order`).then(r => r.json());
+    assert.deepEqual(viaQuery.artists, byOrder, 'GET honours ?sort=order');
   });
 });
 
@@ -446,5 +552,96 @@ describe('genre-songs limit/offset', () => {
     const r = await post('/api/v1/db/genre-songs', { genre: 'Shared', limit: '2' });
     assert.equal(r.status, 200);
     assert.equal(r.body.length, 2);
+  });
+});
+
+// ── V73: credit roles, display string, artists `include`, artists-albums `roles` ──
+
+describe('V73 credits on the wire', () => {
+  test('album-songs carries artist-display, the performer list and the composer', async () => {
+    scopeTo(null);
+    const r = await post('/api/v1/db/album-songs', { album: 'Solo Album', year: 2001 });
+    assert.equal(r.status, 200);
+    const m = r.body.find((x) => x.metadata['artist-display'] === 'Solo feat. Feat Guest')?.metadata;
+    assert.ok(m, 'the credited track is in the album');
+    assert.equal(m.artist, 'Solo', 'metadata.artist stays the primary artist');
+    assert.deepEqual(m.artists, ['Solo', 'Feat Guest'], 'performers in position order');
+    assert.equal(m.composer, 'Composer Only');
+  });
+
+  test('a track without credit rows falls back to its primary artist', async () => {
+    scopeTo(null);
+    const r = await post('/api/v1/db/album-songs', { album: 'Twin', year: 2002 });
+    assert.equal(r.status, 200);
+    assert.ok(r.body.length > 0);
+    for (const { metadata: m } of r.body) {
+      assert.equal(m['artist-display'], 'Solo');
+      assert.deepEqual(m.artists, ['Solo']);
+      assert.equal(m.composer, null);
+    }
+  });
+
+  test('/db/artists: the default set is unchanged; include widens it per source', async () => {
+    scopeTo(null);
+    const def = (await post('/api/v1/db/artists', {})).body.artists;
+    for (const n of ['Composer Only', 'Album Only', 'Feat Guest']) {
+      assert.ok(!def.includes(n), `${n} is not a primary artist → not listed by default`);
+    }
+    assert.ok(def.includes('Solo'));
+    const comp = (await post('/api/v1/db/artists', { include: ['composer'] })).body.artists;
+    assert.ok(comp.includes('Composer Only') && !comp.includes('Album Only') && !comp.includes('Feat Guest'));
+    assert.ok(def.every((n) => comp.includes(n)), 'widening keeps every default artist');
+    const alb = (await post('/api/v1/db/artists', { include: ['albumArtists'] })).body.artists;
+    assert.ok(alb.includes('Album Only') && !alb.includes('Composer Only'));
+    // GET form: comma-separated.
+    const q = await fetch(`${base}/api/v1/db/artists?include=featured,albumArtists`);
+    const both = (await q.json()).artists;
+    assert.ok(both.includes('Feat Guest') && both.includes('Album Only') && !both.includes('Composer Only'));
+    assert.deepEqual([...both].sort((a, b) => a.localeCompare(b)), both.slice().sort((a, b) => a.localeCompare(b)));
+    const bad = await post('/api/v1/db/artists', { include: ['producer'] });
+    assert.equal(bad.status, 400, 'unknown include value is rejected');
+  });
+
+  test('/db/artists include respects library visibility', async () => {
+    scopeTo([LIB_B]);
+    const r = (await post('/api/v1/db/artists', { include: ['composer', 'albumArtists', 'featured'] })).body.artists;
+    assert.ok(!r.includes('Composer Only') && !r.includes('Album Only') && !r.includes('Feat Guest'),
+      'credits reachable only through a hidden library stay hidden');
+    scopeTo(null);
+  });
+
+  test('artists-albums: a composer credit lists the album only when roles asks for it', async () => {
+    scopeTo(null);
+    const def = await post('/api/v1/db/artists-albums', { artist: 'Composer Only' });
+    assert.equal(def.status, 200);
+    assert.deepEqual(def.body.albums, [], 'default = performer credits only');
+    const widened = await post('/api/v1/db/artists-albums', { artist: 'Composer Only', roles: ['composer'] });
+    assert.deepEqual(widened.body.albums.map((a) => a.name).filter(Boolean), ['Solo Album']);
+    const feat = await post('/api/v1/db/artists-albums', { artist: 'Feat Guest' });
+    assert.deepEqual(feat.body.albums.map((a) => a.name).filter(Boolean), ['Solo Album'], 'featured is a performer role');
+    const bad = await post('/api/v1/db/artists-albums', { artist: 'Composer Only', roles: ['producer'] });
+    assert.equal(bad.status, 400, 'unknown role is rejected');
+  });
+
+  test('artists-albums: the singles bucket follows roles too', async () => {
+    scopeTo(null);
+    const def = await post('/api/v1/db/artists-albums', { artist: 'Composer Only' });
+    assert.ok(!def.body.albums.some((a) => a.name === null), 'no singles bucket for a composer credit by default');
+    const widened = await post('/api/v1/db/artists-albums', { artist: 'Composer Only', roles: ['composer'] });
+    assert.ok(widened.body.albums.some((a) => a.name === null), 'roles: composer → the album-less credit shows the singles bucket');
+    const feat = await post('/api/v1/db/artists-albums', { artist: 'Feat Guest' });
+    assert.ok(feat.body.albums.some((a) => a.name === null), 'a featured credit on a single is a performer credit');
+  });
+
+  test('album-songs `artist` matches performer credits, not other roles', async () => {
+    scopeTo(null);
+    const feat = await post('/api/v1/db/album-songs', { album: null, artist: 'Feat Guest' });
+    assert.equal(feat.status, 200);
+    assert.equal(feat.body.length, 1, 'the featured single is listed under the featured artist');
+    assert.deepEqual(feat.body[0].metadata.artists, ['Single Star', 'Feat Guest']);
+    const comp = await post('/api/v1/db/album-songs', { album: null, artist: 'Composer Only' });
+    assert.deepEqual(comp.body, [], 'a composer credit is not "songs by" that artist');
+    const primary = await post('/api/v1/db/album-songs', { album: null, artist: 'single star' });
+    assert.equal(primary.body.length, 1, 'the primary artist still matches (by key)');
   });
 });
