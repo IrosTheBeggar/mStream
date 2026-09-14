@@ -139,6 +139,12 @@ export function setup(mstream) {
         merged.push({
           artist: r.artist,
           title: r.title,
+          // Catalogue fields — absent (null) from peers older than the
+          // discovery.db V3 responder; every field here is optional.
+          album: r.album ?? null,
+          year: r.year ?? null,
+          isrc: r.isrc ?? null,
+          releaseGroupMbid: r.releaseGroupMbid ?? null,
           duration: r.duration,
           similarity: r.similarity,
           genreTags: r.genreTags,

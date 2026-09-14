@@ -5792,6 +5792,10 @@ paths:
                         filepath: { type: string, description: "vpath-form path within a granted library (streamable via /media)" }
                         artist: { type: string, nullable: true }
                         title: { type: string, nullable: true }
+                        album: { type: string, nullable: true, description: "Album name from the file's tags (discovery.db V3); null when untagged or from an older peer" }
+                        year: { type: integer, nullable: true, description: "Track year, falling back to the album year" }
+                        isrc: { type: string, nullable: true, description: "ISRC from the file's tags — a direct-hit key on most catalogues" }
+                        releaseGroupMbid: { type: string, nullable: true, description: "MusicBrainz release-group MBID of the album, when tagged" }
                         duration: { type: number, nullable: true }
                         similarity: { type: number, description: "Cosine vs the query vector, 4 decimals" }
                         genreTags:

@@ -1903,6 +1903,12 @@ export function maybeEnqueueDiscovery() {
          LIMIT 1
       `).get(DISCOVERY_MIN_DURATION_SEC, DISCOVERY_MAX_DURATION_SEC,
         config.program.scanOptions.discoveryModel);
+      // Second kind of work (discovery.db v3): rows embedded before the
+      // catalogue columns existed whose library track HAS an album. Rows
+      // whose file simply carries no album tag are not counted — they can
+      // never be filled, and counting them would fork the worker on every
+      // drain forever. Index-only through idx_discovery_tracks_album_null.
+      if (!row && discoveryDb.hasFillableCatalogueRows('precheck_lib')) { row = { fill: 1 }; }
     } finally {
       ddb.exec('DETACH DATABASE precheck_lib');
     }
@@ -1976,6 +1982,9 @@ function runDiscoveryTask(taskObj) {
           if (evt.attempted > 0) {
             winston.info(`Discovery-embedding pass complete: ${evt.embedded} embedded, `
               + `${evt.errors} error(s) (${evt.attempted} attempted)`);
+          }
+          if (evt.filled > 0) {
+            winston.info(`Discovery catalogue fill: ${evt.filled} row(s) gained album/year/isrc/release-group`);
           }
           return;
         }

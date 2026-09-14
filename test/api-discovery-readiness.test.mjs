@@ -127,4 +127,34 @@ describe('GET /api/ -> features.discoveryReady', () => {
     assert.equal(sim.hasEmbeddings(), false);
     config.program.storage = { ...config.program.storage, dbDirectory: good };
   });
+
+  // The downgrade case: a discovery.db written by a NEWER mStream. Boot
+  // refuses it (discovery off for the boot); the request-time opener must
+  // then read it as absent — every discovery route answers its own clean
+  // 403/404 on null, whereas a throw here escaped as a 500 from all of them
+  // (2026-09-14 compat smoke against 6.27.0). The file itself is never
+  // touched: the operator upgrades, and it opens again.
+  test('a discovery.db from a newer mStream reads as absent, never throws, and is left untouched', () => {
+    setScanOptions({ collect: true });
+    const file = path.join(tmpDir, 'discovery.db');
+    discoveryDb.initDiscoveryDb(file);
+    const future = discoveryDb.DISCOVERY_SCHEMA_VERSION + 1;
+    discoveryDb.getDiscoveryDb().exec(`PRAGMA user_version = ${future}`);
+    discoveryDb.closeDiscoveryDb();
+
+    assert.doesNotThrow(() => discoveryDb.openDiscoveryDbIfExists());
+    assert.equal(discoveryDb.openDiscoveryDbIfExists(), null, 'too-new file is "absent"');
+    assert.equal(discoveryDb.isDiscoveryDbOpen(), false, 'no half-open handle left behind');
+    assert.equal(sim.getIndex(), null, 'no index → routes answer "Discovery is disabled"');
+    assert.doesNotThrow(() => sim.hasEmbeddings());
+    assert.equal(sim.hasEmbeddings(), false);
+    // Second call: same answer, still no throw (the warning is rate-limited
+    // to one per distinct cause, but the probe itself repeats every time).
+    assert.equal(discoveryDb.openDiscoveryDbIfExists(), null);
+
+    // Untouched on disk — and initDiscoveryDb (the boot path) still refuses
+    // it loudly, which is what tells the operator to upgrade.
+    assert.throws(() => discoveryDb.initDiscoveryDb(file), /newer mStream/);
+    assert.equal(discoveryDb.isDiscoveryDbOpen(), false);
+  });
 });
