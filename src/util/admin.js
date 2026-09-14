@@ -402,6 +402,20 @@ export async function editDownloadSizeLimit(val) {
   config.program.downloadSizeLimit = val;
 }
 
+// Flip one discovery plug-in on or off — live: the registry reads
+// config.program on every call, so the next GET /api/v1/discovery/plugins
+// (and the ping flag) already reflects it. The caller has validated `name`
+// against the registry; this only persists. Other settings the plug-in
+// keeps under the same key survive the write.
+export async function editDiscoveryPlugin(name, enabled) {
+  const loadConfig = await loadFile(config.configFile);
+  loadConfig.discoveryPlugins = loadConfig.discoveryPlugins || {};
+  loadConfig.discoveryPlugins[name] = { ...(loadConfig.discoveryPlugins[name] || {}), enabled };
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryPlugins = config.program.discoveryPlugins || {};
+  config.program.discoveryPlugins[name] = { ...(config.program.discoveryPlugins[name] || {}), enabled };
+}
+
 export async function editUpload(val) {
   const loadConfig = await loadFile(config.configFile);
   loadConfig.noUpload = val;
