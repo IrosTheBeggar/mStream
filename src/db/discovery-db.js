@@ -203,10 +203,29 @@ export function initDiscoveryDb(dbPath) {
 // collection is off: reuse the open handle, else open a DB that already
 // exists on disk, else null — deliberately does NOT create a fresh file,
 // so hitting an export endpoint never silently enables the feature.
+//
+// A file this build cannot open — created by a newer mStream (the downgrade
+// case), or any open/migration failure — reads as ABSENT here rather than
+// throwing. Every caller already treats null as "discovery is off" and
+// answers with its own clean 403/404; a throw instead escaped as a 500 from
+// every discovery route on a downgraded install (2026-09-14 compat smoke).
+// Boot logs the full reason once (server.js); this warns once per distinct
+// cause so a burst of requests can't turn it into log spam, and retries on
+// every call because the condition clears the moment the operator upgrades
+// or replaces the file.
+let lastOpenFailure = null;
 export function openDiscoveryDbIfExists() {
   if (db) { return db; }
-  if (fs.existsSync(discoveryDbPath())) { return initDiscoveryDb(); }
-  return null;
+  if (!fs.existsSync(discoveryDbPath())) { return null; }
+  try {
+    return initDiscoveryDb();
+  } catch (err) {
+    if (lastOpenFailure !== err.message) {
+      lastOpenFailure = err.message;
+      winston.warn(`discovery DB unavailable — treating it as absent until it can be opened: ${err.message}`);
+    }
+    return null;
+  }
 }
 
 export function closeDiscoveryDb() {
