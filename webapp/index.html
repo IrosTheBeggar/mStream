@@ -952,7 +952,7 @@
                       <div class="discover-row-info">
                         <div class="discover-row-title">{{ pt.title || '(untitled)' }}</div>
                         <div class="discover-row-sub">
-                          {{ pt.artist || '' }}<span class="discover-row-tags"> &middot; {{ pt.peer.name || 'peer' }}</span>
+                          {{ pt.artist || '' }}<span class="discover-row-tags"><template v-if="pt.album"> &middot; {{ pt.album }}</template> &middot; {{ pt.peer.name || 'peer' }}</span>
                         </div>
                       </div>
                       <a v-if="discoverP2pMbUrl(pt)" class="discover-add discover-mb-link" :href="discoverP2pMbUrl(pt)" target="_blank" rel="noopener"
@@ -989,7 +989,7 @@
                       <div class="discover-row-info">
                         <div class="discover-row-title">{{ ft.title || '(untitled)' }}</div>
                         <div class="discover-row-sub">
-                          {{ ft.artist || '' }}<span class="discover-row-tags"> &middot; {{ ft.peer.name || 'peer' }}<span v-if="discoverTags(ft.genreTags)"> &middot; {{ discoverTags(ft.genreTags) }}</span></span>
+                          {{ ft.artist || '' }}<span class="discover-row-tags"><template v-if="ft.album"> &middot; {{ ft.album }}</template> &middot; {{ ft.peer.name || 'peer' }}<span v-if="discoverTags(ft.genreTags)"> &middot; {{ discoverTags(ft.genreTags) }}</span></span>
                         </div>
                       </div>
                       <a v-if="discoverP2pMbUrl(ft)" class="discover-add discover-mb-link" :href="discoverP2pMbUrl(ft)" target="_blank" rel="noopener"
