@@ -14,7 +14,7 @@ import { BaseCliAdapter } from './base.js';
 
 export class MplayerAdapter extends BaseCliAdapter {
   constructor(binary = 'mplayer') {
-    super('mplayer');
+    super();
     this.binary = binary;
     this._proc = null;
     this._stdoutBuf = '';
