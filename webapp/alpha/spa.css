@@ -2261,6 +2261,12 @@ select {
   cursor: pointer;
 }
 .discover-menu-item:hover { background: #2e3440; color: #fff; }
+.discover-menu-item-active { background: #4fb8a8; color: #0f1216; }
+.discover-menu-item-active:hover { background: #5ec9b9; color: #0f1216; }
+.discover-menu-item-muted { color: #8a919e; }
+.discover-menu-attrib { width: 100%; font-size: 10.5px; color: #6f7683; }
+.discover-menu-attrib a { color: #8a919e; }
+.discover-menu-attrib a:hover { color: #dfe3ea; }
 .discover-menu-note { font-size: 11px; font-style: italic; color: #6f7683; }
 .discover-more { margin-left: 2px; color: #8a919e; }
 .discover-more:hover { color: #dfe3ea; }

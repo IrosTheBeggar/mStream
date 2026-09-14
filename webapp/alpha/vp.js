@@ -180,17 +180,25 @@ const VUEPLAYERCORE = (() => {
       list: null,             // null = not fetched yet
     },
     // The one open row menu (key = source + row identity), with the links
-    // the "links" plug-in resolved for it.
+    // the "links" plug-in resolved for it, one preview state per preview
+    // plug-in (idle | loading | ready | none | error), and which preview is
+    // playing.
     menu: {
       key: null,
       loading: false,
       links: [],
       error: false,
+      previews: {},
+      playing: null,
     },
   };
   let discoverDebounce = null;
   let discoverReqId = 0;
   let discoverDirty = false;   // song changed while collapsed → refetch on expand
+  // The one 30-second preview clip playing from a row menu, and whether we
+  // paused the main player to make room for it.
+  let discoverPreviewAudio = null;
+  let discoverPreviewPausedMain = false;
 
   const playlistVue = new Vue({
     el: '#playlist',
@@ -422,7 +430,66 @@ const VUEPLAYERCORE = (() => {
         return this.discover.menu.key !== null && this.discover.menu.key === this.discoverMenuKey(track, source);
       },
       closeDiscoverMenu: function () {
-        this.discover.menu = { key: null, loading: false, links: [], error: false };
+        this.stopDiscoverPreview();
+        this.discover.menu = { key: null, loading: false, links: [], error: false, previews: {}, playing: null };
+      },
+      // The preview plug-ins the server has on — one button each.
+      discoverPreviewPlugins: function () {
+        return (this.discover.plugins.list || []).filter((p) => (p.capabilities || []).indexOf('preview') !== -1);
+      },
+      discoverPreviewState: function (name) {
+        return (this.discover.menu.previews && this.discover.menu.previews[name]) || { status: 'idle', preview: null };
+      },
+      // Ask one provider for its 30-second clip and play it. Nothing is sent
+      // to a catalogue until the user presses this. A second press stops it.
+      // The main player is paused for the clip and resumed afterwards if it
+      // was playing.
+      toggleDiscoverPreview: async function (track, source, plugin) {
+        const name = plugin.name;
+        if (this.discover.menu.playing === name) { this.stopDiscoverPreview(); return; }
+        const state = this.discoverPreviewState(name);
+        if (state.status === 'ready' && state.preview) { this.playDiscoverPreview(name, state.preview); return; }
+        if (state.status === 'loading') { return; }
+        const key = this.discover.menu.key;
+        this.$set(this.discover.menu.previews, name, { status: 'loading', preview: null });
+        const res = await MSTREAMAPI.discoveryPluginResolve(name, {
+          ...track, source, filepath: source === 'federation' ? track.filepath : null,
+        });
+        if (this.discover.menu.key !== key) { return; }   // menu closed or switched meanwhile
+        if (!res || res.disabled || !res.result) {
+          this.$set(this.discover.menu.previews, name, { status: 'error', preview: null });
+          return;
+        }
+        const preview = res.result.preview || null;
+        this.$set(this.discover.menu.previews, name, { status: preview ? 'ready' : 'none', preview });
+        if (preview) { this.playDiscoverPreview(name, preview); }
+      },
+      playDiscoverPreview: function (name, preview) {
+        this.stopDiscoverPreview();
+        if (typeof MSTREAMPLAYER !== 'undefined' && MSTREAMPLAYER.playerStats && MSTREAMPLAYER.playerStats.playing === true) {
+          discoverPreviewPausedMain = true;
+          MSTREAMPLAYER.playPause();
+        }
+        const audio = new Audio(preview.url);
+        discoverPreviewAudio = audio;
+        this.discover.menu.playing = name;
+        const done = () => { if (discoverPreviewAudio === audio) { this.stopDiscoverPreview(); } };
+        audio.addEventListener('ended', done);
+        audio.addEventListener('error', done);
+        audio.play().catch(done);
+      },
+      stopDiscoverPreview: function () {
+        if (discoverPreviewAudio) {
+          try { discoverPreviewAudio.pause(); } catch (_) { /* already gone */ }
+          discoverPreviewAudio = null;
+        }
+        if (this.discover.menu) { this.discover.menu.playing = null; }
+        if (discoverPreviewPausedMain) {
+          discoverPreviewPausedMain = false;
+          if (typeof MSTREAMPLAYER !== 'undefined' && MSTREAMPLAYER.playerStats && MSTREAMPLAYER.playerStats.playing !== true) {
+            MSTREAMPLAYER.playPause();
+          }
+        }
       },
       // Open (or close) the menu for one row and ask the "links" plug-in
       // where else the recording can be found. Without plug-ins on the
@@ -431,7 +498,8 @@ const VUEPLAYERCORE = (() => {
         if (!this.discover.plugins.available) { return this.copyDiscoverP2p(track); }
         const key = this.discoverMenuKey(track, source);
         if (this.discover.menu.key === key) { this.closeDiscoverMenu(); return; }
-        this.discover.menu = { key, loading: true, links: [], error: false };
+        this.stopDiscoverPreview();
+        this.discover.menu = { key, loading: true, links: [], error: false, previews: {}, playing: null };
         try {
           if (!this.discover.plugins.list) {
             const res = await MSTREAMAPI.discoveryPlugins();
@@ -1529,7 +1597,12 @@ const VUEPLAYERCORE = (() => {
   mstreamModule.setDiscoveryPluginsAvailable = (available) => {
     discoverState.plugins.available = available === true;
     discoverState.plugins.list = null;
-    discoverState.menu = { key: null, loading: false, links: [], error: false };
+    if (discoverPreviewAudio) {
+      try { discoverPreviewAudio.pause(); } catch (_) { /* already gone */ }
+      discoverPreviewAudio = null;
+      discoverPreviewPausedMain = false;
+    }
+    discoverState.menu = { key: null, loading: false, links: [], error: false, previews: {}, playing: null };
   };
 
   // Ping's federationDiscovery flag — reveals the "From your peers" section.

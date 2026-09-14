@@ -957,6 +957,22 @@
                         </div>
                         <div v-if="isDiscoverMenu(pt, 'p2p')" class="discover-menu" v-on:click.stop>
                           <a class="discover-menu-item" v-on:click="copyDiscoverP2p(pt)">{{ tt('discover.menu.copy') }}</a>
+                          <template v-if="discoverPreviewPlugins().length">
+                            <div class="discover-menu-label">{{ tt('discover.menu.preview') }}</div>
+                            <template v-for="pp in discoverPreviewPlugins()">
+                              <a :key="pp.name" class="discover-menu-item" v-bind:class="{ 'discover-menu-item-active': discover.menu.playing === pp.name, 'discover-menu-item-muted': discoverPreviewState(pp.name).status === 'none' || discoverPreviewState(pp.name).status === 'error' }"
+                                 v-on:click="toggleDiscoverPreview(pt, 'p2p', pp)">
+                                <template v-if="discover.menu.playing === pp.name">&#9632; {{ tt('discover.menu.stop') }}</template>
+                                <template v-else-if="discoverPreviewState(pp.name).status === 'loading'">{{ tt('discover.menu.loading') }}</template>
+                                <template v-else-if="discoverPreviewState(pp.name).status === 'none'">{{ pp.title }} &middot; {{ tt('discover.menu.previewNone') }}</template>
+                                <template v-else-if="discoverPreviewState(pp.name).status === 'error'">{{ pp.title }} &middot; {{ tt('discover.menu.previewFailed') }}</template>
+                                <template v-else>&#9654; {{ pp.title }}</template>
+                              </a>
+                              <span :key="pp.name + ':attrib'" v-if="discoverPreviewState(pp.name).preview" class="discover-menu-attrib">
+                                {{ discoverPreviewState(pp.name).preview.attribution }}<template v-if="discoverPreviewState(pp.name).preview.link"> &middot; <a :href="discoverPreviewState(pp.name).preview.link" target="_blank" rel="noopener">{{ tt('discover.menu.open') }}</a></template>
+                              </span>
+                            </template>
+                          </template>
                           <div class="discover-menu-label">{{ tt('discover.menu.findElsewhere') }}</div>
                           <div v-if="discover.menu.loading" class="discover-menu-note">{{ tt('discover.menu.loading') }}</div>
                           <div v-else-if="discover.menu.error" class="discover-menu-note">{{ tt('discover.menu.failed') }}</div>
@@ -1001,7 +1017,24 @@
                           {{ ft.artist || '' }}<span class="discover-row-tags"><template v-if="ft.album"> &middot; {{ ft.album }}</template> &middot; {{ ft.peer.name || 'peer' }}<span v-if="discoverTags(ft.genreTags)"> &middot; {{ discoverTags(ft.genreTags) }}</span></span>
                         </div>
                         <div v-if="isDiscoverMenu(ft, 'federation')" class="discover-menu" v-on:click.stop>
+                          <a class="discover-menu-item" v-on:click="queueDiscoverFed(ft)">{{ tt('discover.menu.queue') }}</a>
                           <a class="discover-menu-item" v-on:click="copyDiscoverP2p(ft)">{{ tt('discover.menu.copy') }}</a>
+                          <template v-if="discoverPreviewPlugins().length">
+                            <div class="discover-menu-label">{{ tt('discover.menu.preview') }}</div>
+                            <template v-for="pp in discoverPreviewPlugins()">
+                              <a :key="pp.name" class="discover-menu-item" v-bind:class="{ 'discover-menu-item-active': discover.menu.playing === pp.name, 'discover-menu-item-muted': discoverPreviewState(pp.name).status === 'none' || discoverPreviewState(pp.name).status === 'error' }"
+                                 v-on:click="toggleDiscoverPreview(ft, 'federation', pp)">
+                                <template v-if="discover.menu.playing === pp.name">&#9632; {{ tt('discover.menu.stop') }}</template>
+                                <template v-else-if="discoverPreviewState(pp.name).status === 'loading'">{{ tt('discover.menu.loading') }}</template>
+                                <template v-else-if="discoverPreviewState(pp.name).status === 'none'">{{ pp.title }} &middot; {{ tt('discover.menu.previewNone') }}</template>
+                                <template v-else-if="discoverPreviewState(pp.name).status === 'error'">{{ pp.title }} &middot; {{ tt('discover.menu.previewFailed') }}</template>
+                                <template v-else>&#9654; {{ pp.title }}</template>
+                              </a>
+                              <span :key="pp.name + ':attrib'" v-if="discoverPreviewState(pp.name).preview" class="discover-menu-attrib">
+                                {{ discoverPreviewState(pp.name).preview.attribution }}<template v-if="discoverPreviewState(pp.name).preview.link"> &middot; <a :href="discoverPreviewState(pp.name).preview.link" target="_blank" rel="noopener">{{ tt('discover.menu.open') }}</a></template>
+                              </span>
+                            </template>
+                          </template>
                           <div class="discover-menu-label">{{ tt('discover.menu.findElsewhere') }}</div>
                           <div v-if="discover.menu.loading" class="discover-menu-note">{{ tt('discover.menu.loading') }}</div>
                           <div v-else-if="discover.menu.error" class="discover-menu-note">{{ tt('discover.menu.failed') }}</div>
