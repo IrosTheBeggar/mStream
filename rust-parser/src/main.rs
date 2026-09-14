@@ -1539,14 +1539,26 @@ fn chunked_delete_stale_tracks(
                 Some(_) if is_ignored_rel_path(rel, ignore_dot_files, ignore_dot_folders) =>
                     doomed.push(cand),
                 Some(names) => match names.get(name) {
-                    Some(Kind::RegularFile) => survivors += 1,
+                    // Walk-faithful presence also applies the walk's SIZE
+                    // rule: a zero-byte file is never indexed, so a row
+                    // whose file is empty now — indexed before the rule,
+                    // or truncated since — converges out like an
+                    // unsupported extension. An unreadable stat is
+                    // unverifiable: kept, like an unreadable listing.
+                    Some(Kind::RegularFile) => match fs::metadata(root.join(rel)) {
+                        Ok(m) if m.len() == 0 => doomed.push(cand),
+                        Ok(_) => survivors += 1,
+                        Err(_) => { skipped += 1; }
+                    },
                     Some(Kind::Unknown) => { skipped += 1; } // DT_UNKNOWN — unverifiable
                     Some(Kind::Symlink) if follow_symlinks => {
                         // Walk-faithful: a symlink the walk would have
                         // followed counts as present only if its target
-                        // resolves to a regular file right now.
+                        // resolves to a regular, non-empty file right now
+                        // (the walk stats through the link and applies the
+                        // same size rule).
                         match fs::metadata(root.join(rel)) {
-                            Ok(m) if m.is_file() => survivors += 1,
+                            Ok(m) if m.is_file() && m.len() > 0 => survivors += 1,
                             Ok(_) => doomed.push(cand),
                             Err(e) if matches!(
                                 e.kind(),
@@ -1880,6 +1892,8 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     let mut failed_walk_prefixes: Vec<String> = Vec::new();
     let mut walk_errors = 0usize;
     let mut walk_error_logs = 0usize;
+    // Zero-byte entries the walk refused — one summary line per scan.
+    let empty_skipped = std::cell::Cell::new(0u64);
     let entries: Vec<(walkdir::DirEntry, String)> = WalkDir::new(&scan_root)
         .follow_links(config.follow_symlinks)
         .into_iter()
@@ -1926,17 +1940,32 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
         .filter(|e| e.file_type().is_file())
         .filter_map(|e| {
             let ext = file_ext(e.path()).to_ascii_lowercase();
-            if config.supported_files.get(&ext).copied().unwrap_or(false) {
-                Some((e, ext))
-            } else {
-                None
+            if !config.supported_files.get(&ext).copied().unwrap_or(false) {
+                return None;
             }
+            // A zero-byte file is not audio and can never play — it is not
+            // a track. Refused here (never parsed, never a fast-path hit)
+            // and treated as ineligible by the stale sweep, so a row
+            // indexed before this rule, or a file truncated to nothing
+            // since, converges out of the index the way an unsupported
+            // extension does. Mirrors collectFiles in src/db/scanner.mjs.
+            // (walkdir serves the metadata from the directory listing on
+            // Windows; one stat per file elsewhere.) An unreadable stat is
+            // left to the per-file step, which reports it.
+            if e.metadata().map(|m| m.len() == 0).unwrap_or(false) {
+                empty_skipped.set(empty_skipped.get() + 1);
+                return None;
+            }
+            Some((e, ext))
         })
         .collect();
 
-    // Every entry is a supported audio file now, so the expected count
-    // (the progress denominator) is just the list length.
+    // Every entry is a supported, non-empty audio file now, so the expected
+    // count (the progress denominator) is just the list length.
     let expected_files: u64 = entries.len() as u64;
+    if empty_skipped.get() > 0 {
+        eprintln!("Warning: skipped {} empty file(s) (0 bytes) — not indexed", empty_skipped.get());
+    }
 
     // Insert initial progress row
     let _ = conn.execute(

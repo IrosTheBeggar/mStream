@@ -1293,6 +1293,7 @@ function insertTrack(song) {
 
 let fileCount = 0;      // new/modified files parsed
 let totalProcessed = 0; // all files SUCCESSFULLY touched (including unchanged)
+let emptyFilesSkipped = 0; // zero-byte entries the walk refused (collectFiles)
 let errorCount = 0;     // per-file failures — counted separately so the
                         // scanComplete filesScanned matches the Rust
                         // contract (visited = processed + unchanged +
@@ -1462,6 +1463,14 @@ function collectFiles(dir, out) {
       collectFiles(filepath, out);
     } else if (stat.isFile() && loadJson.supportedFiles[getFileType(file).toLowerCase()]) {
       if (ignoreDotFiles && isDotEntry(file)) { continue; }
+      // A zero-byte file is not audio and can never play — it is not a
+      // track. Refused here (never parsed, never a fast-path hit) and
+      // treated as ineligible by the stale sweep (orphan-cleanup.js), so a
+      // row indexed before this rule, or a file truncated to nothing
+      // since, converges out of the index the way an unsupported
+      // extension does. Mirrors the Rust walk. Counted for one summary
+      // line per scan instead of a warning per file.
+      if (stat.size === 0) { emptyFilesSkipped++; continue; }
       // Math.trunc(mtimeMs), NOT stat.mtime.getTime(): Node builds the
       // Date by ROUNDING the fractional ms (dateFromMs adds 0.5) while
       // the Rust scanner's as_millis() TRUNCATES — so getTime() disagrees
@@ -1783,6 +1792,9 @@ async function run() {
     // expected count.
     const files = [];
     collectFiles(scanRoot, files);
+    if (emptyFilesSkipped > 0) {
+      console.error(`Warning: skipped ${emptyFilesSkipped} empty file(s) (0 bytes) — not indexed`);
+    }
     try {
       progressStmts.insert.run(loadJson.scanId, loadJson.libraryId, loadJson.vpath || '', files.length || null);
     } catch (_) {}

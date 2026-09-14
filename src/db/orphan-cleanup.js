@@ -473,13 +473,28 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
       }
       const kind = listing.get(name);
       if (kind === KIND_FILE) {
-        survivors++;
+        // Walk-faithful presence also applies the walk's SIZE rule: a
+        // zero-byte file is never indexed (scanner.mjs collectFiles), so a
+        // row whose file is empty now — indexed before the rule, or
+        // truncated since — converges out like an unsupported extension.
+        // An unreadable stat is unverifiable: kept, like an unreadable
+        // listing.
+        let size;
+        try { size = fs.statSync(path.join(libraryRoot, c.filepath)).size; }
+        catch (_err) { size = null; }
+        if (size === null) { skipped++; }
+        else if (size === 0) { doomed.push(c); }
+        else { survivors++; }
       } else if (kind === KIND_SYMLINK && followSymlinks) {
         // Walk-faithful: a symlink the walk would follow counts as
-        // present only if its target resolves to a regular file now.
+        // present only if its target resolves to a regular, non-empty
+        // file now (the walk stats through the link and applies the same
+        // size rule).
         let present;
-        try { present = fs.statSync(path.join(libraryRoot, c.filepath)).isFile(); }
-        catch (err) {
+        try {
+          const st = fs.statSync(path.join(libraryRoot, c.filepath));
+          present = st.isFile() && st.size > 0;
+        } catch (err) {
           present = (err.code === 'ENOENT' || err.code === 'ENOTDIR') ? false : null;
         }
         if (present === null) { skipped++; }
