@@ -48,6 +48,7 @@ import Joi from 'joi';
 import winston from 'winston';
 import {
   initDiscoveryDb, setMeta, upsertDiscoveryTrack, bumpRowSeq, publishIndexEpoch,
+  fillCatalogueFieldsFromLibrary,
 } from './discovery-db.js';
 import { createEmbedder, analyzeFile, EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL } from './discovery-features-lib.js';
 
@@ -188,10 +189,15 @@ function selectEligibleTracks(nowSec) {
            t.musical_key AS musical_key,
            t.mbz_recording_id AS mbz_recording_id,
            t.acoustid_id AS acoustid_id,
-           a.name AS artist
+           a.name AS artist,
+           al.name AS album,
+           COALESCE(t.year, al.year) AS year,
+           t.isrc AS isrc,
+           al.mbz_release_group_id AS release_group_mbid
       FROM lib.tracks t
       JOIN lib.libraries l ON l.id = t.library_id
       LEFT JOIN lib.artists a ON a.id = t.artist_id
+      LEFT JOIN lib.albums al ON al.id = t.album_id
       LEFT JOIN discovery_tracks dt
              ON dt.audio_hash = COALESCE(t.audio_hash, t.file_hash)
       LEFT JOIN discovery_lookups dl
@@ -223,14 +229,28 @@ const clearError = db.prepare('DELETE FROM discovery_lookups WHERE audio_hash = 
 
 // ── Run ──────────────────────────────────────────────────────────────────────
 
+// Catalogue-field fill for rows that predate discovery.db V3 (album / year /
+// isrc / release_group_mbid). Metadata only — no decode, no model — so it
+// runs before the eligibility check and the early return: a library that is
+// fully embedded still gets its rows filled. Failure is logged, never fatal.
+function fillCatalogueFields() {
+  try {
+    return fillCatalogueFieldsFromLibrary('lib');
+  } catch (err) {
+    console.error(`Warning: catalogue-field fill failed: ${err?.message || err}`);
+    return 0;
+  }
+}
+
 async function run() {
   pruneOrphans();
+  const filled = fillCatalogueFields();
 
   const nowSec = Math.floor(Date.now() / 1000);
   const tracks = selectEligibleTracks(nowSec);
 
   if (tracks.length === 0) {
-    emit({ event: 'discoveryComplete', attempted: 0, embedded: 0, errors: 0, hitCap: false });
+    emit({ event: 'discoveryComplete', attempted: 0, embedded: 0, errors: 0, filled, hitCap: false });
     return;
   }
 
@@ -298,6 +318,13 @@ async function run() {
         // covers rows that already existed.
         recordingMbid: t.mbz_recording_id,
         acoustidId: t.acoustid_id,
+        // Catalogue fields (discovery.db V3) — what a recommendation needs
+        // to be found again on another catalogue. Straight from the file's
+        // tags via the library; NULL when the file carries none.
+        album: t.album,
+        year: t.year,
+        isrc: t.isrc,
+        releaseGroupMbid: t.release_group_mbid,
       });
       // A previous failure for this hash is superseded by success.
       try { clearError.run(t.canon_hash); } catch (_e) { /* best-effort */ }
@@ -323,6 +350,7 @@ async function run() {
     attempted,
     embedded,
     errors,
+    filled,
     // More work probably remains (full batch or budget cut). persisted>0
     // breaks the would-be infinite re-enqueue when NOTHING could be written.
     hitCap: (tracks.length === cfg.maxPerRun || hitBudget) && persisted > 0,

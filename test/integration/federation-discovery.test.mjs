@@ -204,6 +204,17 @@ describe('federation discovery similar (peer side)', () => {
     assert.deepEqual(body.results[0].genreTags, ['Test---StyleA', 'Test---StyleB']);
     assert.equal(body.results[1].recordingMbid, null);
     assert.equal(body.results[1].genreTags, null);
+
+    // Catalogue fields (discovery.db V3) come from the library row itself:
+    // the fixture tags an album per artist and nothing else, so album is
+    // set and the other three are explicit nulls, never undefined.
+    assert.equal(body.results[0].album, 'Ana Album');
+    assert.equal(body.results[1].album, 'Ben Album');
+    for (const r of body.results) {
+      assert.equal(r.year, null);
+      assert.equal(r.isrc, null);
+      assert.equal(r.releaseGroupMbid, null);
+    }
   });
 
   test('respects limit', async () => {

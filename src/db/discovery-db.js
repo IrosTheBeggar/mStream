@@ -33,7 +33,7 @@ import winston from 'winston';
 import * as config from '../state/config.js';
 
 // Independent version line — this is NOT mstream.db's SCHEMA_VERSION.
-export const DISCOVERY_SCHEMA_VERSION = 2;
+export const DISCOVERY_SCHEMA_VERSION = 3;
 
 // Contract constants for the embedding column. Declared here (and copied
 // into discovery_meta + every export snapshot) so a consumer never has to
@@ -129,9 +129,34 @@ const SCHEMA_V2 = `
     ON discovery_tracks(model_id, audio_hash) WHERE embedding IS NOT NULL;
 `;
 
+// V3: catalogue fields (2026-09 discovery plug-in groundwork). A network
+// recommendation used to travel as artist+title+duration only, which is not
+// enough to find the recording anywhere else (Soulseek, Deezer/iTunes,
+// Lidarr, MusicBrainz all disambiguate on album / year, and ISRC and the
+// release-group MBID are direct-hit keys). All four are catalogue facts
+// copied from the file's own tags — the same share-safe class as artist and
+// title; no path, hash or listening data. Nullable and ADDITIVE on purpose:
+// the export snapshot keeps its format version so older peers still read
+// newer snapshots (discovery-export.js), and older discovery.db rows are
+// filled in place by fillCatalogueFieldsFromLibrary() below.
+//
+// The partial index is what keeps the fill cheap to *detect*: task-queue's
+// enqueue pre-check and the worker's fill gate both probe "is any row still
+// unfilled?" through it instead of walking the table's blob-laden pages,
+// and it shrinks to nothing once the fill has run.
+const SCHEMA_V3 = `
+  ALTER TABLE discovery_tracks ADD COLUMN album TEXT;
+  ALTER TABLE discovery_tracks ADD COLUMN year INTEGER;
+  ALTER TABLE discovery_tracks ADD COLUMN isrc TEXT;
+  ALTER TABLE discovery_tracks ADD COLUMN release_group_mbid TEXT;
+  CREATE INDEX IF NOT EXISTS idx_discovery_tracks_album_null
+    ON discovery_tracks(audio_hash) WHERE album IS NULL;
+`;
+
 const MIGRATIONS = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
+  { version: 3, sql: SCHEMA_V3 },
 ];
 
 export function discoveryDbPath() {
@@ -279,6 +304,71 @@ export function bumpRowSeq() {
   return nextUpdateSeq();
 }
 
+// ── V3 catalogue-field fill ─────────────────────────────────────────────────
+//
+// Rows written before schema V3 have album / year / isrc /
+// release_group_mbid = NULL although the library knows them. Nothing else
+// would ever revisit those rows: the embedding worker only selects tracks
+// with no current-model embedding. These two helpers run against the open
+// discovery handle with the LIBRARY DB attached under `libSchema` (the
+// worker attaches it as `lib`, task-queue's pre-check as `precheck_lib`).
+//
+// "Fillable" means album IS NULL here AND the library track has an album
+// row — a file with no album tag can never be filled and must not count,
+// or the pre-check would fork the worker on every drain forever. The
+// canonical-hash join is the UNION ALL id-subquery form (not COALESCE or a
+// flat OR) so both hash indexes on tracks are used; see resolveVisible in
+// src/api/discovery.js for the measured difference.
+function fillableJoin(libSchema) {
+  return `
+    SELECT 1 FROM ${libSchema}.tracks t
+     WHERE t.album_id IS NOT NULL
+       AND t.id IN (
+             SELECT id FROM ${libSchema}.tracks WHERE audio_hash = discovery_tracks.audio_hash
+             UNION ALL
+             SELECT id FROM ${libSchema}.tracks WHERE file_hash = discovery_tracks.audio_hash AND audio_hash IS NULL
+           )`;
+}
+
+export function hasFillableCatalogueRows(libSchema = 'lib') {
+  const row = getDiscoveryDb().prepare(`
+    SELECT 1 FROM discovery_tracks
+     WHERE album IS NULL AND EXISTS (${fillableJoin(libSchema)})
+     LIMIT 1
+  `).get();
+  return !!row;
+}
+
+// Fill every fillable row in one statement. The representative library
+// track is the lowest id among the files sharing the canonical hash — the
+// same choice the embedding worker makes (MIN(t.id)). Bumps row_seq once
+// when anything changed so auto-publish sees a stale snapshot; per-row
+// updated_at is deliberately left alone (nothing about the row's identity
+// or vector moved). Returns the number of rows filled.
+export function fillCatalogueFieldsFromLibrary(libSchema = 'lib') {
+  const ddb = getDiscoveryDb();
+  // Cheap gate through the partial index: the common steady state is "no
+  // unfilled rows", and that must cost one index probe, not a scan.
+  if (!ddb.prepare('SELECT 1 FROM discovery_tracks WHERE album IS NULL LIMIT 1').get()) { return 0; }
+  const changes = ddb.prepare(`
+    UPDATE discovery_tracks
+       SET (album, year, isrc, release_group_mbid) = (
+             SELECT al.name, COALESCE(t.year, al.year), t.isrc, al.mbz_release_group_id
+               FROM ${libSchema}.tracks t
+               JOIN ${libSchema}.albums al ON al.id = t.album_id
+              WHERE t.id IN (
+                      SELECT id FROM ${libSchema}.tracks WHERE audio_hash = discovery_tracks.audio_hash
+                      UNION ALL
+                      SELECT id FROM ${libSchema}.tracks WHERE file_hash = discovery_tracks.audio_hash AND audio_hash IS NULL
+                    )
+              ORDER BY t.id
+              LIMIT 1)
+     WHERE album IS NULL AND EXISTS (${fillableJoin(libSchema)})
+  `).run().changes;
+  if (changes > 0) { bumpRowSeq(); }
+  return changes;
+}
+
 // ── Similarity-index epoch ──────────────────────────────────────────────────
 //
 // row_seq bumps on EVERY row write, which made it a catastrophic cache key
@@ -342,6 +432,11 @@ export function upsertDiscoveryTrack(fields) {
     fields.genreTags ? JSON.stringify(fields.genreTags) : null,
     fields.moodTags ? JSON.stringify(fields.moodTags) : null,
     Date.now(),
+    // V3 catalogue fields.
+    fields.album ?? null,
+    fields.year ?? null,
+    fields.isrc ?? null,
+    fields.releaseGroupMbid ?? null,
   ];
 
   getDiscoveryDb().prepare(`
@@ -349,8 +444,8 @@ export function upsertDiscoveryTrack(fields) {
       audio_hash, source_mtime, updated_at, export_id, recording_mbid,
       acoustid_id, artist, title, duration, model_id, model_version,
       embedding, bpm, musical_key, danceability, genre_tags, mood_tags,
-      analyzed_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      analyzed_at, album, year, isrc, release_group_mbid
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(audio_hash) DO UPDATE SET
       source_mtime   = excluded.source_mtime,
       updated_at     = excluded.updated_at,
@@ -368,7 +463,11 @@ export function upsertDiscoveryTrack(fields) {
       danceability   = excluded.danceability,
       genre_tags     = excluded.genre_tags,
       mood_tags      = excluded.mood_tags,
-      analyzed_at    = excluded.analyzed_at
+      analyzed_at    = excluded.analyzed_at,
+      album              = excluded.album,
+      year               = excluded.year,
+      isrc               = excluded.isrc,
+      release_group_mbid = excluded.release_group_mbid
   `).run(...params);
 }
 
