@@ -476,6 +476,22 @@ function openPeerDb(entry) {
   return conn;
 }
 
+// Coercions for the V3 catalogue columns of a peer snapshot. SQLite columns
+// are typed by affinity only, and the file is a peer's claim: a value that
+// isn't a short string (or, for year, a plausible integer) reads as null.
+const PEER_TEXT_MAX = 512;
+function peerText(value, max = PEER_TEXT_MAX) {
+  if (typeof value !== 'string') { return null; }
+  const trimmed = value.trim();
+  if (!trimmed) { return null; }
+  return trimmed.length > max ? trimmed.slice(0, max) : trimmed;
+}
+function peerYear(value) {
+  const n = typeof value === 'string' ? Number(value) : value;
+  if (!Number.isInteger(n) || n < 1000 || n > 9999) { return null; }
+  return n;
+}
+
 // Read a peer's embedding matrix for one model space. Returns null when the
 // peer has no rows in that space. Cached per (peer, snapshot hash) — the
 // snapshot file is immutable by construction (content-addressed), so hash
@@ -494,8 +510,19 @@ export function readEmbeddings(endpointId, modelId) {
     return cached;
   }
 
-  const rows = openPeerDb(entry).prepare(`
-    SELECT export_id, recording_mbid, artist, title, duration, embedding
+  const conn = openPeerDb(entry);
+  // The catalogue columns (album / year / isrc / release_group_mbid) arrived
+  // with discovery.db V3 as an ADDITIVE change — the snapshot format version
+  // did not move, so a snapshot from an older peer is still valid and simply
+  // lacks them. Probe the column list and read NULLs in their place rather
+  // than failing the whole peer on "no such column".
+  const present = new Set(
+    conn.prepare("SELECT name FROM pragma_table_info('tracks')").all().map((c) => c.name));
+  const optional = (col) => (present.has(col) ? col : `NULL AS ${col}`);
+  const rows = conn.prepare(`
+    SELECT export_id, recording_mbid, artist, title, duration, embedding,
+           ${optional('album')}, ${optional('year')}, ${optional('isrc')},
+           ${optional('release_group_mbid')}
     FROM tracks
     WHERE embedding IS NOT NULL AND model_id = ?
   `).all(modelId);
@@ -508,6 +535,10 @@ export function readEmbeddings(endpointId, modelId) {
   const artists = new Array(rows.length);
   const titles = new Array(rows.length);
   const durations = new Array(rows.length);
+  const albums = new Array(rows.length);
+  const years = new Array(rows.length);
+  const isrcs = new Array(rows.length);
+  const releaseGroupMbids = new Array(rows.length);
   let n = 0;
   for (const row of rows) {
     if (row.embedding.byteLength !== dim * 4) { continue; } // mixed-dim row: skip, don't crash
@@ -520,6 +551,13 @@ export function readEmbeddings(endpointId, modelId) {
     artists[n] = row.artist;
     titles[n] = row.title;
     durations[n] = row.duration;
+    // Untrusted peer data, typed loosely by SQLite: coerce to the shapes the
+    // API promises (bounded strings, an integer year) so a hostile snapshot
+    // can't smuggle blobs or megabyte strings into every similar response.
+    albums[n] = peerText(row.album);
+    years[n] = peerYear(row.year);
+    isrcs[n] = peerText(row.isrc, 32);
+    releaseGroupMbids[n] = peerText(row.release_group_mbid, 64);
     n += 1;
   }
 
@@ -527,6 +565,7 @@ export function readEmbeddings(endpointId, modelId) {
     hash: entry.hash, modelId, dim, count: n,
     matrix: n === rows.length ? matrix : matrix.subarray(0, n * dim),
     ids, mbids, artists, titles, durations,
+    albums, years, isrcs, releaseGroupMbids,
     peerName: entry.name, endpointId,
   };
   matrixCache.set(endpointId, result);

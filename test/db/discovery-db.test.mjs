@@ -32,11 +32,13 @@ import {
   initDiscoveryDb, closeDiscoveryDb, isDiscoveryDbOpen, getDiscoveryDb,
   upsertDiscoveryTrack, exportIdFor, getMeta, setMeta,
   applyHashTransitionGroups,
+  hasFillableCatalogueRows, fillCatalogueFieldsFromLibrary,
   DISCOVERY_SCHEMA_VERSION, EMBEDDING_DTYPE, EMBEDDING_NORMALIZATION,
 } from '../../src/db/discovery-db.js';
 import {
   exportDiscoverySnapshot, SNAPSHOT_FORMAT, SNAPSHOT_FORMAT_VERSION,
 } from '../../src/db/discovery-export.js';
+import { applyAllMigrations } from '../helpers/apply-migrations.mjs';
 
 let tmpDir;
 let dbPath;
@@ -81,6 +83,15 @@ describe('discovery-db bootstrap', () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
     ).all().map(r => r.name);
     assert.deepEqual(tables, ['discovery_lookups', 'discovery_meta', 'discovery_tracks']);
+
+    // V3 catalogue columns exist on a fresh file (the chain replays every
+    // migration from zero — V1's CREATE TABLE is never edited).
+    const cols = db.prepare('PRAGMA table_info(discovery_tracks)').all().map(c => c.name);
+    for (const c of ['album', 'year', 'isrc', 'release_group_mbid']) {
+      assert.ok(cols.includes(c), `V3 column ${c} present`);
+    }
+    const idx = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_discovery_tracks_album_null'").get();
+    assert.ok(idx, 'partial index behind the fill pre-check exists');
   });
 
   test('meta is seeded: counter, secret salt, embedding format contract', () => {
@@ -134,6 +145,7 @@ describe('upsertDiscoveryTrack', () => {
       bpm: 120, musicalKey: 'C major', danceability: 0.7,
       genreTags: ['rock'], moodTags: ['happy'],
       sourceMtime: 111,
+      album: 'Album A', year: 2001, isrc: 'GBUM70100001', releaseGroupMbid: 'rg-a',
     });
     const row = getDiscoveryDb()
       .prepare('SELECT * FROM discovery_tracks WHERE audio_hash = ?').get('hash-1');
@@ -143,6 +155,11 @@ describe('upsertDiscoveryTrack', () => {
     assert.deepEqual(JSON.parse(row.genre_tags), ['rock']);
     assert.deepEqual(blobToFloats(row.embedding), [0.5, -0.25, 0.125]);
     assert.ok(row.analyzed_at > 0);
+    // V3 catalogue fields round-trip through the single write path.
+    assert.equal(row.album, 'Album A');
+    assert.equal(row.year, 2001);
+    assert.equal(row.isrc, 'GBUM70100001');
+    assert.equal(row.release_group_mbid, 'rg-a');
   });
 
   test('re-upsert replaces values and bumps updated_at; MBID flips export_id', () => {
@@ -217,6 +234,9 @@ describe('export snapshot', () => {
         'export_id', 'recording_mbid', 'acoustid_id', 'artist', 'title',
         'duration', 'model_id', 'model_version', 'embedding', 'bpm',
         'musical_key', 'danceability', 'genre_tags', 'mood_tags',
+        // V3 catalogue fields are APPENDED so every older column keeps its
+        // position for readers that address columns by index.
+        'album', 'year', 'isrc', 'release_group_mbid',
       ], 'internal columns (audio_hash / source_mtime / updated_at) must not travel');
 
       const metaKeys = snap.prepare('SELECT key FROM meta ORDER BY key').all().map(r => r.key);
@@ -343,5 +363,139 @@ describe('discovery db from a newer mStream', () => {
     stamp(DISCOVERY_SCHEMA_VERSION);
     initDiscoveryDb(dbPath);
     assert.equal(isDiscoveryDbOpen(), true);
+  });
+});
+
+// ── V3: catalogue fields (album / year / isrc / release_group_mbid) ─────────
+//
+// Two things a V3 upgrade must get right: an EXISTING v2 file migrates in
+// place with its rows intact (columns appear, NULL), and the fill helpers
+// then populate those NULLs from the library DB attached alongside — but
+// only for rows whose library track actually has an album, so the enqueue
+// pre-check never sees an untagged file as perpetual work.
+describe('discovery db V3 catalogue fields', () => {
+  let v3Dir;
+  let v2Path;
+  let libPath;
+
+  // A discovery.db exactly as a pre-V3 mStream left it: the V1 tables (no
+  // catalogue columns), the V2 index, user_version = 2, meta seeded, one
+  // embedded row. Hand-written rather than replayed from the module so the
+  // fixture cannot silently drift with the code under test.
+  before(() => {
+    v3Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-discovery-v3-'));
+    v2Path = path.join(v3Dir, 'discovery.db');
+    libPath = path.join(v3Dir, 'mstream.db');
+    const old = new DatabaseSync(v2Path);
+    old.exec(`
+      CREATE TABLE discovery_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE discovery_tracks (
+        audio_hash TEXT PRIMARY KEY, source_mtime INTEGER, updated_at INTEGER NOT NULL,
+        export_id TEXT NOT NULL, recording_mbid TEXT, acoustid_id TEXT,
+        artist TEXT, title TEXT, duration REAL,
+        model_id TEXT, model_version TEXT, embedding BLOB,
+        bpm INTEGER, musical_key TEXT, danceability REAL,
+        genre_tags TEXT, mood_tags TEXT, analyzed_at INTEGER
+      );
+      CREATE INDEX idx_discovery_tracks_export_id ON discovery_tracks(export_id);
+      CREATE INDEX idx_discovery_tracks_updated_at ON discovery_tracks(updated_at);
+      CREATE TABLE discovery_lookups (
+        audio_hash TEXT PRIMARY KEY, last_attempt_at INTEGER NOT NULL,
+        outcome TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE INDEX idx_discovery_tracks_embedded_model
+        ON discovery_tracks(model_id, audio_hash) WHERE embedding IS NOT NULL;
+      PRAGMA user_version = 2;
+    `);
+    const meta = old.prepare('INSERT INTO discovery_meta (key, value) VALUES (?, ?)');
+    meta.run('row_seq', '7');
+    meta.run('export_salt', 'a'.repeat(64));
+    meta.run('created_at', '2026-01-01T00:00:00.000Z');
+    old.prepare(`
+      INSERT INTO discovery_tracks (audio_hash, updated_at, export_id, artist, title, duration, model_id, model_version, embedding)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run('old-hash-tagged', 7, 'anon:old-tagged', 'Old Artist', 'Old Song', 200, 'test-model', '1', embeddingBlob([1, 0, 0, 0]));
+    old.prepare(`
+      INSERT INTO discovery_tracks (audio_hash, updated_at, export_id, artist, title, duration, model_id, model_version, embedding)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run('old-hash-untagged', 6, 'anon:old-untagged', 'Old Artist', 'Untagged Song', 180, 'test-model', '1', embeddingBlob([0, 1, 0, 0]));
+    old.close();
+
+    // A library DB whose tracks share those canonical hashes: one with an
+    // album row (fillable), one without (never fillable).
+    const lib = new DatabaseSync(libPath);
+    applyAllMigrations(lib);
+    const libId = Number(lib.prepare("INSERT INTO libraries (name, root_path, type) VALUES ('lib', ?, 'music')").run(v3Dir).lastInsertRowid);
+    const artistId = Number(lib.prepare('INSERT INTO artists (name) VALUES (?)').run('Old Artist').lastInsertRowid);
+    const albumId = Number(lib.prepare(
+      'INSERT INTO albums (name, artist_id, year, mbz_release_group_id) VALUES (?, ?, ?, ?)')
+      .run('Old Album', artistId, 1988, 'rg-old').lastInsertRowid);
+    const insTrack = lib.prepare(`
+      INSERT INTO tracks (filepath, library_id, title, duration, audio_hash, artist_id, album_id, year, isrc)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    insTrack.run('old.flac', libId, 'Old Song', 200, 'old-hash-tagged', artistId, albumId, null, 'GBOLD8800001');
+    insTrack.run('untagged.flac', libId, 'Untagged Song', 180, 'old-hash-untagged', artistId, null, null, null);
+    lib.close();
+  });
+
+  after(() => {
+    closeDiscoveryDb();
+    fs.rmSync(v3Dir, { recursive: true, force: true });
+  });
+
+  test('a v2 file migrates in place: columns appear, rows and meta survive', () => {
+    closeDiscoveryDb();
+    initDiscoveryDb(v2Path);
+    const db = getDiscoveryDb();
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3);
+    const cols = db.prepare('PRAGMA table_info(discovery_tracks)').all().map(c => c.name);
+    for (const c of ['album', 'year', 'isrc', 'release_group_mbid']) { assert.ok(cols.includes(c), c); }
+    const rows = db.prepare('SELECT * FROM discovery_tracks ORDER BY audio_hash').all();
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].artist, 'Old Artist');
+    assert.deepEqual(blobToFloats(rows[0].embedding), [1, 0, 0, 0]);
+    assert.equal(rows[0].album, null, 'migration adds the column, it does not invent data');
+    assert.equal(getMeta('row_seq'), '7', 'meta untouched by the migration');
+    assert.equal(getMeta('export_salt'), 'a'.repeat(64), 'the salt must never rotate');
+  });
+
+  test('fill helpers: only rows whose library track has an album count, and one pass fills them', () => {
+    const db = getDiscoveryDb();
+    db.exec(`ATTACH DATABASE '${libPath.replace(/'/g, "''")}' AS lib`);
+    try {
+      assert.equal(hasFillableCatalogueRows('lib'), true);
+      assert.equal(fillCatalogueFieldsFromLibrary('lib'), 1, 'exactly the tagged row');
+
+      const tagged = db.prepare('SELECT * FROM discovery_tracks WHERE audio_hash = ?').get('old-hash-tagged');
+      assert.equal(tagged.album, 'Old Album');
+      assert.equal(tagged.year, 1988, 'album year fills in when the track has none');
+      assert.equal(tagged.isrc, 'GBOLD8800001');
+      assert.equal(tagged.release_group_mbid, 'rg-old');
+      assert.equal(tagged.updated_at, 7, 'per-row rowversion untouched (identity/vector did not change)');
+      assert.equal(getMeta('row_seq'), '8', 'row_seq bumped once so auto-publish re-exports');
+
+      const untagged = db.prepare('SELECT album, year FROM discovery_tracks WHERE audio_hash = ?').get('old-hash-untagged');
+      assert.deepEqual([untagged.album, untagged.year], [null, null]);
+
+      // Steady state: the untagged row is not "fillable", so the pre-check
+      // probe says no and a second pass is a no-op that leaves row_seq alone.
+      assert.equal(hasFillableCatalogueRows('lib'), false);
+      assert.equal(fillCatalogueFieldsFromLibrary('lib'), 0);
+      assert.equal(getMeta('row_seq'), '8');
+    } finally {
+      db.exec('DETACH DATABASE lib');
+    }
+  });
+
+  test('a fresh upsert with catalogue fields is not fillable work either', () => {
+    upsertDiscoveryTrack({ audioHash: 'old-hash-tagged', artist: 'Old Artist', title: 'Old Song',
+      album: 'Old Album', year: 1988 });
+    const db = getDiscoveryDb();
+    db.exec(`ATTACH DATABASE '${libPath.replace(/'/g, "''")}' AS lib`);
+    try {
+      assert.equal(hasFillableCatalogueRows('lib'), false);
+    } finally {
+      db.exec('DETACH DATABASE lib');
+    }
   });
 });

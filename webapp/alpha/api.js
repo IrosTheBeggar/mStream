@@ -18,7 +18,9 @@ const MSTREAMAPI = (() => {
         // 'Content-Type': 'application/x-www-form-urlencoded',
       },
       body: dataObject ? JSON.stringify(dataObject) : undefined,
-      signal: opts?.signal
+      signal: opts?.signal,
+      // A play posted as the page closes must outlive it.
+      keepalive: opts?.keepalive === true
     });
 
     if (res.ok !== true) {
@@ -451,6 +453,17 @@ const MSTREAMAPI = (() => {
 
   mstreamModule.scrobbleByFilePath =  (filePath) => {
     return req('POST', mstreamModule.currentServer.host +  "api/v1/lastfm/scrobble-by-filepath", { filePath });
+  }
+
+  // Stats API v2 (the ping's `stats` flag, 2 or higher). The player's play
+  // sessions post here once a play is over — assets/js/mstream.player.js
+  // and mstream.play-session.js; `keepalive` carries the last play out of
+  // a closing page.
+  mstreamModule.postPlays = (body, opts) => {
+    return req('POST', mstreamModule.currentServer.host + 'api/v1/stats/plays', body, opts);
+  }
+  mstreamModule.postNowPlaying = (body) => {
+    return req('POST', mstreamModule.currentServer.host + 'api/v1/stats/now-playing', body);
   }
 
   // LOGIN

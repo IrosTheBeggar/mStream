@@ -5,6 +5,8 @@ import Scribble from '../state/lastfm.js';
 import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
 import { getVPathInfo } from '../util/vpath.js';
+import { randomUUID } from 'node:crypto';
+import { recordPlayEvent } from '../stats/store.js';
 
 const Scrobbler = new Scribble();
 
@@ -145,8 +147,61 @@ export function warmScrobbleUser(lastfmUser, lastfmPassword) {
   Scrobbler.addUser(lastfmUser, lastfmPassword);
 }
 
+// Register credentials only when the session map has no entry for them —
+// warmScrobbleUser REPLACES the entry (dropping a warmed session), which is
+// right for newly saved credentials and wrong for every play that follows.
+export function ensureScrobbleUser(lastfmUser, lastfmPassword) {
+  if (!lastfmUser || !lastfmPassword) { return false; }
+  if (!Scrobbler.hasUser(lastfmUser)) { Scrobbler.addUser(lastfmUser, lastfmPassword); }
+  return true;
+}
+
+// The Stats API's forwarders — src/stats/forward.js for scrobbles, the
+// now-playing route for notices — call these with a req.user-shaped account
+// (the lastfm_user / lastfm_password columns). Both resolve { ok, error }
+// and never throw or hang: Last.fm being slow, down, or unhappy with the
+// credentials is a debug line, never a failed request.
+//   not-linked   the account has no Last.fm credentials
+//   no-response  no session could be made, or the request failed
+//   timeout      Last.fm took longer than FORWARD_TIMEOUT_MS
+//   lastfm-N     Last.fm answered error code N (9 = invalid session: the
+//                session is dropped so the next call logs in again)
+const FORWARD_TIMEOUT_MS = 15000;
+function forwardCall(method, user, song) {
+  return new Promise((resolve) => {
+    if (!ensureScrobbleUser(user?.lastfm_user, user?.lastfm_password)) {
+      resolve({ ok: false, error: 'not-linked' });
+      return;
+    }
+    let settled = false;
+    const finish = (r) => { if (!settled) { settled = true; clearTimeout(timer); resolve(r); } };
+    const timer = setTimeout(() => finish({ ok: false, error: 'timeout' }), FORWARD_TIMEOUT_MS);
+    Scrobbler[method](song, user.lastfm_user, (body) => {
+      if (body == null) { finish({ ok: false, error: 'no-response' }); return; }
+      let parsed = null;
+      try { parsed = JSON.parse(body); } catch (_) { /* not JSON: treated as accepted */ }
+      if (parsed && parsed.error != null) {
+        if (parsed.error === 9) { Scrobbler.dropSession(user.lastfm_user); }
+        finish({ ok: false, error: `lastfm-${parsed.error}` });
+        return;
+      }
+      finish({ ok: true });
+    });
+  });
+}
+export const scrobbleAt = (user, song) => forwardCall('Scrobble', user, song);
+export const nowPlayingAt = (user, song) => forwardCall('NowPlaying', user, song);
+
 export function setup(mstream) {
   Scrobbler.setKeys(config.program.lastFM.apiKey, config.program.lastFM.apiSecret);
+
+  // A test points the client at a local fake Last.fm (host:port). Production
+  // never sets this — the same pattern as the other MSTREAM_TEST_* overrides.
+  const testEndpoint = process.env.MSTREAM_TEST_LASTFM_ENDPOINT;
+  if (testEndpoint) {
+    const [host, port] = testEndpoint.split(':');
+    Scrobbler.setEndpoint({ host, port: Number(port) || 80 });
+  }
 
   // Initialize lastfm users from database. getAllUsers() filters out the
   // anonymous sentinel (V25) — pull it in explicitly so a public-mode
@@ -201,7 +256,7 @@ export function setup(mstream) {
     if (!lib) { return res.json({ scrobble: false }); }
 
     const track = d().prepare(`
-      SELECT t.file_hash, t.audio_hash, t.title, a.name AS artist, al.name AS album
+      SELECT t.file_hash, t.audio_hash, t.title, t.duration, a.name AS artist, al.name AS album
       FROM tracks t
       LEFT JOIN artists a ON t.artist_id = a.id
       LEFT JOIN albums al ON t.album_id = al.id
@@ -225,15 +280,31 @@ export function setup(mstream) {
       return res.json({ scrobble: false });
     }
 
-    // Update play count and last played. Sentinel-keyed in public mode
-    // — the operator's listening history. See the header comment above.
-    d().prepare(`
-      INSERT INTO user_metadata (user_id, track_hash, play_count, last_played)
-      VALUES (?, ?, 1, datetime('now'))
-      ON CONFLICT(user_id, track_hash) DO UPDATE SET
-        play_count = play_count + 1,
-        last_played = datetime('now')
-    `).run(req.user.id, trackKey);
+    // The count now goes through the same write as every other play
+    // (src/stats/store.js), as a synthetic event the stats reads can see:
+    // counted by decree — the web player fires this route 30 s into a
+    // track, so 30 s listened is all that is known — and marked
+    // `source: 'legacy'` so history can tell it from a reported play. The
+    // route stays: public since 2022, older clients still call it (the
+    // default web player moved to /api/v1/stats/plays in 6.27). play_count
+    // and last_played move exactly as they always did. Sentinel-keyed in public
+    // mode — the operator's listening history. See the header comment above.
+    const now = Date.now();
+    recordPlayEvent(d(), {
+      eventId: randomUUID(),
+      userId: req.user.id,
+      trackHash: trackKey,
+      filepath: pathInfo.relativePath,
+      libraryId: lib.id,
+      client: 'legacy',
+      source: 'legacy',
+      outcome: 'stopped',
+      counted: true,
+      playedMs: 30000,
+      durationMs: track.duration > 0 ? Math.round(track.duration * 1000) : null,
+      startedAt: new Date(now - 30000),
+      endedAt: new Date(now),
+    });
 
     res.json({});
 

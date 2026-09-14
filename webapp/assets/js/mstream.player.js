@@ -48,21 +48,115 @@ const MSTREAMPLAYER = (() => {
     getOtherPlayer().playerObject.volume = rgainAdjustedVolume;
   }
 
-  // Scrobble function
-  // This is a placeholder function that the API layer can take hold of to implement the scrobble call
-  let scrobbleTimer;
-  mstreamModule.scrobble = () => {
-    const song = mstreamModule.getCurrentSong();
-    if (!song) { return; }
-    // A federated track's path lives in the PEER's vpath namespace, so
-    // scrobble-by-filepath cannot resolve it against this library — it
-    // just errors 30 seconds into every peer track. Same degrade rule as
-    // the waveform, rating and Sonic Path guards.
-    if (song.federation) { return; }
-    MSTREAMAPI.scrobbleByFilePath(
-      song.rawFilePath,
-      (response, error) => {});
+  // ── Stats API v2: play sessions ──────────────────────────────────────
+  //
+  // Every song start opens a session (assets/js/mstream.play-session.js)
+  // fed by the player's own signals — the timeupdate ticks, pause and
+  // resume, the end of the stream, the user moving on — and the finished
+  // play goes to POST /api/v1/stats/plays through an outbox that retries
+  // and survives a closed tab. A peer track is reported as a peer play (its
+  // id + a snapshot of the metadata). The 30-second scrobble-by-filepath
+  // timer this replaced is gone: the page is served by the server it
+  // reports to, and every server with this page has the Stats API. Server-
+  // side playback (mstream.server-audio.js) keeps its own legacy scrobble.
+  let playSession = null;
+  let statsOutbox = null;
+  let statsRetryTimer = null;
+  let lastCheckpointAt = 0;
+  const CHECKPOINT_EVERY_MS = 5000;
+
+  function statsEnabled() {
+    return typeof MSTREAMPLAYSESSION !== 'undefined' && typeof MSTREAMAPI !== 'undefined';
   }
+  function statsOutboxFor() {
+    if (!statsOutbox) {
+      statsOutbox = MSTREAMPLAYSESSION.createOutbox({
+        post: (body, opts) => MSTREAMAPI.postPlays(body, opts),
+        log: console,
+      });
+    }
+    return statsOutbox;
+  }
+  // How the song got here: a DJ pick, the shuffle, or the user.
+  function statsSourceOf(song) {
+    if (mstreamModule.playerStats.autoDJ === true && song.metadata && song.metadata._djPicked === true) { return 'autodj'; }
+    if (mstreamModule.playerStats.shuffle === true) { return 'shuffle'; }
+    return 'manual';
+  }
+  function beginPlaySession(song) {
+    endPlaySession('skipped');
+    if (!statsEnabled() || !song || !song.rawFilePath) { return; }
+    const meta = song.metadata || {};
+    const peerId = song.federation && Number.isFinite(Number(song.federation.peerId))
+      ? Number(song.federation.peerId) : null;
+    const metaDur = Number(meta.duration);
+    try {
+      playSession = MSTREAMPLAYSESSION.createSession({
+        filePath: song.rawFilePath,
+        peerId,
+        track: peerId != null ? MSTREAMPLAYSESSION.snapshotOf(meta) : null,
+        durationMs: Number.isFinite(metaDur) && metaDur > 0 ? Math.round(metaDur * 1000) : null,
+        source: statsSourceOf(song),
+        sessionId: MSTREAMPLAYSESSION.tabSessionId(),
+      });
+    } catch (err) {
+      console.warn('[stats] could not open a play session', err);
+      return;
+    }
+    lastCheckpointAt = Date.now();
+    statsOutboxFor().checkpoint(playSession);
+    const notice = { filePath: playSession.filePath, sessionId: playSession.sessionId };
+    if (peerId != null) { notice.peerId = peerId; notice.track = playSession.track; }
+    try { MSTREAMAPI.postNowPlaying(notice).catch(() => {}); } catch (_) { /* best-effort */ }
+  }
+  // Close the open session with the player's word on how it ended; the
+  // fold may upgrade it to `completed` (the playhead reached the end).
+  function endPlaySession(outcome, flushOpts) {
+    if (!playSession) { return; }
+    const session = playSession;
+    playSession = null;
+    const box = statsOutboxFor();
+    box.clearCheckpoint();
+    const play = MSTREAMPLAYSESSION.finish(session, outcome);
+    if (!play) { return; }
+    box.enqueue(play);
+    box.flush(flushOpts || {}).catch(() => {});
+  }
+  function tickPlaySession() {
+    if (!playSession) { return; }
+    MSTREAMPLAYSESSION.tick(playSession, mstreamModule.playerStats.currentTime, mstreamModule.playerStats.playing === true);
+    const dur = mstreamModule.playerStats.duration;
+    if (Number.isFinite(dur) && dur > 0) { MSTREAMPLAYSESSION.withDuration(playSession, Math.round(dur * 1000)); }
+    const now = Date.now();
+    if (now - lastCheckpointAt >= CHECKPOINT_EVERY_MS) {
+      lastCheckpointAt = now;
+      statsOutboxFor().checkpoint(playSession);
+    }
+  }
+  function pausePlaySession() { if (playSession) { MSTREAMPLAYSESSION.pause(playSession); } }
+  function resumePlaySession() { if (playSession) { MSTREAMPLAYSESSION.resume(playSession); } }
+  // Called by alpha/m.js once the ping has answered (the token and server
+  // are settled by then): post what an earlier page left behind, then keep
+  // retrying quietly.
+  mstreamModule.statsInit = () => {
+    if (!statsEnabled()) { return false; }
+    const box = statsOutboxFor();
+    box.recover();
+    box.flush().catch(() => {});
+    if (!statsRetryTimer) { statsRetryTimer = setInterval(() => { box.flush().catch(() => {}); }, 60000); }
+    return true;
+  };
+  // A closing page: the play so far leaves as `stopped`, on a request that
+  // outlives the page.
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('pagehide', () => { endPlaySession('stopped', { keepalive: true }); });
+  }
+  // For the console and the smoke tests.
+  mstreamModule.stats = {
+    enabled: statsEnabled,
+    session: () => playSession,
+    outbox: () => statsOutboxFor(),
+  };
 
   // The audioData looks like this
   // var song = {
@@ -144,6 +238,13 @@ const MSTREAMPLAYER = (() => {
       minRating: (autodjLoaded && AUTODJ.state.djMinRating) || 0,
       ignoreVPaths,
     };
+
+    // Songs per fetch (mStream #966). Only on the wire when it changes
+    // anything: at the default of 1 the request stays byte-identical to
+    // the pre-batch shape, and a server from before `limit` existed
+    // (Joi, no unknown keys) never sees a field it would reject.
+    const limit = autodjLoaded ? Number(AUTODJ.state.djLimit) : 1;
+    if (Number.isInteger(limit) && limit > 1) { body.limit = limit; }
 
     // Current song's metadata — used for BPM anchor / Camelot anchor /
     // similar-artist source. May be undefined on the very first DJ
@@ -414,6 +515,23 @@ const MSTREAMPLAYER = (() => {
   }
 
   // One federated pick. True when a song was queued.
+  // A peer's random-songs, with one concession to age: a peer from before
+  // batch picks (mStream #966) rejects `limit` outright — Joi, no unknown
+  // keys — and would otherwise sit out every round while the setting is
+  // above 1. Ask such a peer for one song instead, the way the app's
+  // capability learner does, rather than dropping it from the session.
+  function _askPeerRandomSongs(peer, body) {
+    return MSTREAMAPI.peer.randomSongs(peer.id, body).catch((err) => {
+      const msg = (err && err.body && err.body.error) || '';
+      if (body.limit !== undefined && err && err.status === 400 && /"limit" is not allowed/i.test(msg)) {
+        const single = { ...body };
+        delete single.limit;
+        return MSTREAMAPI.peer.randomSongs(peer.id, single);
+      }
+      throw err;
+    });
+  }
+
   async function _autoDjFederatedPick(signal) {
     // The anchors and their owners in one synchronous read, before
     // anything is awaited (see AUTODJ.sonicAnchors): a song change during
@@ -475,26 +593,32 @@ const MSTREAMPLAYER = (() => {
     // own ignoreList. Every server is asked at once — a session that waited
     // for each in turn would stall the queue on the slowest one.
     //
-    // A server answers with a random row from its pool, so when every
+    // A server answers with random rows from its pool, so when every
     // answer is a repeat or blocked the ask is repeated a couple of times
     // with each server's own returned ignoreList fed back (the way the
     // single-server loop retries) before the pick is left to that loop —
     // otherwise a strict slider, whose pools are small, would keep turning
     // the session local-only. The fed-back lists stay transient: only the
-    // winner's cooldown advances, its pick is the one being played.
+    // cooldowns of servers whose songs get queued advance.
+    //
+    // Songs per fetch applies across all servers: every server is asked
+    // for the whole batch (`limit` rides along in `shared`) and the best
+    // `want` cosines overall are queued, so one server with the closest
+    // matches can supply the entire batch.
     const { similarTo, ignoreVPaths, minRating, ignoreList, ...shared } = body;
     const eligible = peers.filter(p => p.modelId === modelId);
     const retryLists = new Map([['local', ignoreList]]);
     for (const p of eligible) { retryLists.set(String(p.id), AUTODJ.getPeerIgnoreList(p.id)); }
     const recentKeys = AUTODJ.federatedRecentKeys(anchors, curSong);
+    const want = Number.isInteger(shared.limit) && shared.limit > 1 ? shared.limit : 1;
     const MAX_ASKS = 3;
-    let best = null;
-    for (let attempt = 0; attempt < MAX_ASKS && !best; attempt++) {
+    let chosen = [];
+    for (let attempt = 0; attempt < MAX_ASKS && chosen.length === 0; attempt++) {
       const asks = [
         MSTREAMAPI.getRandomSong({ ...shared, ignoreVPaths, minRating, ignoreList: retryLists.get('local'), ...vectorSeed }, { signal })
           .then(res => ({ peer: null, res }), err => ({ peer: null, err })),
         ...eligible.filter(p => !AUTODJ.isPeerExcluded(p.id)).map(p =>
-          MSTREAMAPI.peer.randomSongs(p.id, { ...shared, ignoreList: retryLists.get(String(p.id)), ...vectorSeed })
+          _askPeerRandomSongs(p, { ...shared, ignoreList: retryLists.get(String(p.id)), ...vectorSeed })
             .then(res => ({ peer: p, res }), err => ({ peer: p, err }))),
       ];
       const answers = await Promise.all(asks);
@@ -509,41 +633,58 @@ const MSTREAMPLAYER = (() => {
           }
           continue;
         }
-        const song = a.res && a.res.songs && a.res.songs[0];
-        if (!song) { continue; }
+        const songs = a.res && Array.isArray(a.res.songs) ? a.res.songs : [];
+        if (songs.length === 0) { continue; }
         if (Array.isArray(a.res.ignoreList)) { retryLists.set(a.peer ? String(a.peer.id) : 'local', a.res.ignoreList); }
-        const sim = a.res.sonic && Number.isFinite(a.res.sonic.similarity) ? a.res.sonic.similarity : -1;
-        scored.push({
-          peerId: a.peer ? a.peer.id : null,
-          peer: a.peer,
-          song,
-          res: a.res,
-          similarity: sim,
-          blocked: _autoDjSongBlocked(song.metadata, refBpm, refNeighbours),
+        // One cosine per song (`sonic.similarities`, aligned with `songs`);
+        // a peer from before batches reports only the first song's value.
+        const sims = a.res.sonic && Array.isArray(a.res.sonic.similarities) ? a.res.sonic.similarities : [];
+        songs.forEach((song, i) => {
+          let sim = -1;
+          if (Number.isFinite(sims[i])) { sim = sims[i]; }
+          else if (i === 0 && a.res.sonic && Number.isFinite(a.res.sonic.similarity)) { sim = a.res.sonic.similarity; }
+          scored.push({
+            peerId: a.peer ? a.peer.id : null,
+            peer: a.peer,
+            song,
+            res: a.res,
+            similarity: sim,
+            blocked: _autoDjSongBlocked(song.metadata, refBpm, refNeighbours),
+          });
         });
       }
       // Nobody answered — asking again would not change that.
       if (scored.length === 0) { break; }
-      best = AUTODJ.chooseFederatedPick(scored, recentKeys);
+      chosen = AUTODJ.chooseFederatedPicks(scored, recentKeys, want);
     }
-    if (!best) { return false; }
+    if (chosen.length === 0) { return false; }
 
-    // Only the winner's cooldown advances — its pick is the one being
-    // played, the others' were not.
-    if (best.peerId === null) {
-      AUTODJ.setIgnoreList(Array.isArray(best.res.ignoreList) ? best.res.ignoreList : []);
-      autoDjIgnoreArray = AUTODJ.getIgnoreList();
-    } else {
-      AUTODJ.setPeerIgnoreList(best.peerId, best.res.ignoreList);
+    // Only the cooldowns of servers whose songs are being queued advance —
+    // the others' answers were not played. A contributing server's list
+    // also carries the ids of its songs that lost to a better cosine
+    // elsewhere; the cooldown is soft variety and they cycle back out.
+    const advanced = new Set();
+    for (const pick of chosen) {
+      const key = pick.peerId === null ? 'local' : String(pick.peerId);
+      if (advanced.has(key)) { continue; }
+      advanced.add(key);
+      if (pick.peerId === null) {
+        AUTODJ.setIgnoreList(Array.isArray(pick.res.ignoreList) ? pick.res.ignoreList : []);
+        autoDjIgnoreArray = AUTODJ.getIgnoreList();
+      } else {
+        AUTODJ.setPeerIgnoreList(pick.peerId, pick.res.ignoreList);
+      }
     }
 
-    const meta = { ...(best.song.metadata || {}), _djPicked: true };
-    if (meta.artist) { AUTODJ.pushArtistHistory(meta.artist); }
-
-    if (best.peerId === null) {
-      await VUEPLAYERCORE.addSongWizard(best.song.filepath, meta);
-    } else {
-      VUEPLAYERCORE.addFederationSongWizard(best.peer, best.song.filepath, meta, false);
+    // Queue best first so the playlist order is the ranking.
+    for (const pick of chosen) {
+      const meta = { ...(pick.song.metadata || {}), _djPicked: true };
+      if (meta.artist) { AUTODJ.pushArtistHistory(meta.artist); }
+      if (pick.peerId === null) {
+        await VUEPLAYERCORE.addSongWizard(pick.song.filepath, meta);
+      } else {
+        VUEPLAYERCORE.addFederationSongWizard(pick.peer, pick.song.filepath, meta, false);
+      }
     }
     return true;
   }
@@ -657,41 +798,48 @@ const MSTREAMPLAYER = (() => {
       // blocked retry doesn't re-pick the same song.
       if (Array.isArray(res?.ignoreList)) { ignoreList = res.ignoreList; }
 
-      const song = res.songs && res.songs[0];
-      if (!song) { break; }
+      const songs = Array.isArray(res.songs) ? res.songs : [];
+      if (songs.length === 0) { break; }
 
       // Client-side post-fetch guard. Velvet's `_djSongBlocked` —
-      // the server's tier filter already prefers in-range rows, but
-      // in degraded fallback cases (step 5, step 10) the candidate
+      // the server's tier ranking already prefers in-range rows, but
+      // in degraded fallback cases (step 5, step 10) a candidate
       // can still be off-target. Retry-on-blocked closes the gap.
       // Songs with NULL bpm/key pass through (server already
-      // exhausted the tagged options).
-      const blocked = _autoDjSongBlocked(song.metadata, refBpm, refNeighbours);
-      if (!blocked) { picked = song; break; }
+      // exhausted the tagged options). A batch keeps whatever part
+      // of it passes; only an answer blocked in full is retried.
+      const accepted = songs.filter((s) => !_autoDjSongBlocked(s.metadata, refBpm, refNeighbours));
+      if (accepted.length > 0) { picked = accepted; break; }
     }
 
     // If every retry was blocked, fall through with whatever the
     // last response was so the session doesn't stall completely.
     // The server's fallback chain is already exhausting all viable
     // alternatives; refusing here just means the DJ stops.
-    if (!picked && lastResponse?.songs?.[0]) {
-      picked = lastResponse.songs[0];
+    if (!picked && Array.isArray(lastResponse?.songs) && lastResponse.songs.length > 0) {
+      picked = lastResponse.songs;
     }
     if (!picked) {
       throw new Error('no song in response');
     }
 
-    // Mark as a DJ pick so the song-change handler later knows to
+    // Mark as DJ picks so the song-change handler later knows to
     // push to BPM history (vs. resetting anchors on a manual pick).
-    // `_djPicked` is the only metadata flag the song carries; the
+    // `_djPicked` is the only metadata flag a song carries; the
     // "have we counted this song's BPM yet" state lives in AUTODJ
     // proper (state.djCountedFilepaths), not on the metadata.
-    const meta = { ...(picked.metadata || {}), _djPicked: true };
+    const queued = picked.map((song) => ({
+      filepath: song.filepath,
+      meta: { ...(song.metadata || {}), _djPicked: true },
+    }));
 
-    // Persist updated ignoreList + push picked artist to cooldown.
+    // Persist updated ignoreList + push every picked artist to the
+    // cooldown — all of them are about to be queued.
     if (autodjLoaded) {
       AUTODJ.setIgnoreList(ignoreList);
-      if (meta.artist) { AUTODJ.pushArtistHistory(meta.artist); }
+      for (const { meta } of queued) {
+        if (meta.artist) { AUTODJ.pushArtistHistory(meta.artist); }
+      }
     }
     // Legacy bridge — keep the old global in sync until everywhere
     // else has migrated off it.
@@ -708,10 +856,13 @@ const MSTREAMPLAYER = (() => {
     // via the dev console but the user gets the gist.
     _showSimilarArtistsInfoStrip();
 
-    // Await so async failures inside addSongWizard surface through
-    // the outer try/catch and trigger the iziToast warning instead
-    // of becoming a silent unhandled rejection.
-    await VUEPLAYERCORE.addSongWizard(picked.filepath, meta);
+    // Await each so async failures inside addSongWizard surface through
+    // the outer try/catch and trigger the iziToast warning instead of
+    // becoming a silent unhandled rejection — and so the queue keeps
+    // the server's order (best tier first).
+    for (const { filepath, meta } of queued) {
+      await VUEPLAYERCORE.addSongWizard(filepath, meta);
+    }
   }
 
   // Info strip helper — fires an iziToast.info if similar-mode is on
@@ -1147,9 +1298,8 @@ const MSTREAMPLAYER = (() => {
 
     }, cacheTimeout);
 
-    // Scrobble song after 30 seconds
-    clearTimeout(scrobbleTimer);
-    scrobbleTimer = setTimeout(() => { mstreamModule.scrobble() }, 30000);
+    // Count the play: the complete play is reported once this song is over.
+    beginPlaySession(mstreamModule.playlist[position]);
   }
 
   // Should be called whenever the "metadata" field of the current song is changed, or
@@ -1246,13 +1396,13 @@ const MSTREAMPLAYER = (() => {
   function howlPlayerPlay() {
     const localPlayer = getCurrentPlayer();
     mstreamModule.playerStats.playing = true;
-
+    resumePlaySession();
     localPlayer.playerObject.play();
   }
   function howlPlayerPause() {
     const localPlayer = getCurrentPlayer();
     mstreamModule.playerStats.playing = false;
-
+    pausePlaySession();
     localPlayer.playerObject.pause();
   }
   function howlPlayerPlayPause() {
@@ -1261,9 +1411,11 @@ const MSTREAMPLAYER = (() => {
     // TODO: Check that media is loaded
     if (localPlayer.playerObject.paused === false) {
       mstreamModule.playerStats.playing = false;
+      pausePlaySession();
       localPlayer.playerObject.pause();
       document.title = "mStream Music"
     } else {
+      resumePlaySession();
       localPlayer.playerObject.play();
       
       let pageTitle = (mstreamModule.playerStats.metadata.title) ? 
@@ -1361,6 +1513,7 @@ const MSTREAMPLAYER = (() => {
       }
 
       if (playerObj === getCurrentPlayer()) {
+        endPlaySession('stopped');
         goToNextSong();
       }else {
         // Invalidate cache
@@ -1376,6 +1529,7 @@ const MSTREAMPLAYER = (() => {
       // offset`, so the element's own currentTime restarts at 0. Add the
       // offset back to report the true position.
       mstreamModule.playerStats.currentTime = (cur.seekOffset || 0) + cur.playerObject.currentTime;
+      tickPlaySession();
 
       // Duration: a chunked transcode stream has no usable audio.duration
       // (Infinity until fully buffered, and a seeked stream only spans the
@@ -1450,6 +1604,7 @@ const MSTREAMPLAYER = (() => {
 
   function callMeOnStreamEnd() {
     mstreamModule.playerStats.playing = false;
+    endPlaySession('completed');
     if (mstreamModule.playerStats.shouldLoopOne === true) {
       return goToSong(mstreamModule.positionCache.val);
     }
@@ -1605,11 +1760,13 @@ const MSTREAMPLAYER = (() => {
   // (No mstreamModule.minRating init — the legacy global is dead;
   // the rewritten autoDJ() reads djMinRating from AUTODJ.state.)
 
-  // Queue N Auto-DJ picks sequentially. The autoDJ() function is
-  // guarded against re-entrancy (a second call while the first is
-  // in flight returns the same in-flight promise), so we must await
-  // each pick before requesting the next — calling autoDJ() twice in
-  // a row collapses to a single pick.
+  // Queue Auto-DJ fetches until at least N songs have been added. The
+  // autoDJ() function is guarded against re-entrancy (a second call
+  // while the first is in flight returns the same in-flight promise),
+  // so each fetch is awaited before the next — calling autoDJ() twice
+  // in a row collapses to a single fetch. One fetch adds up to
+  // AUTODJ.state.djLimit songs: at the default of 1 that is two fetches
+  // here, at any larger setting a single fetch already covers the runway.
   //
   // Used on STARTUP paths (toggleAutoDJ, clearPlaylist) to bootstrap
   // a 2-deep lookahead. The downstream "queue one ahead" triggers in
@@ -1623,13 +1780,14 @@ const MSTREAMPLAYER = (() => {
   // Re-checks `mstreamModule.playerStats.autoDJ` between picks so a
   // user toggling Auto-DJ off mid-bootstrap aborts cleanly.
   async function _autoDjQueueN(n) {
-    for (let i = 0; i < n; i++) {
+    const start = mstreamModule.playlist.length;
+    while (mstreamModule.playlist.length - start < n) {
       if (mstreamModule.playerStats.autoDJ !== true) { return; }
       const before = mstreamModule.playlist.length;
       try {
         await autoDJ();
       } catch (_) { /* autoDJ already toasts; don't stack errors */ }
-      // A pick that added nothing failed (autoDJ toasted why) — the
+      // A fetch that added nothing failed (autoDJ toasted why) — the
       // next bootstrap attempt would fail the same way; stop instead
       // of stacking a duplicate toast + duplicate server round-trip.
       if (mstreamModule.playlist.length === before) { return; }
