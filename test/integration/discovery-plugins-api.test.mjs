@@ -84,8 +84,9 @@ describe('discovery plug-ins API', () => {
     const list = await json(await fetch(`${server.baseUrl}/api/v1/discovery/plugins`));
     assert.deepEqual(list.body.plugins.filter((p) => p.name === 'links'), [], 'disabled → not listed');
     assert.equal((await post('/api/v1/discovery/plugins/links/resolve', { recommendation: REC })).status, 404, 'disabled → invisible');
+    // The flag means "any plug-in on": the other built-ins are still on.
     const ping = await json(await fetch(`${server.baseUrl}/api/v1/ping`));
-    assert.equal(ping.body.discoveryPlugins, false, 'no plug-in left → flag off');
+    assert.equal(ping.body.discoveryPlugins, true, 'other plug-ins are still on → flag stays');
 
     const cfg = JSON.parse(fs.readFileSync(path.join(server.tmpDir, 'config.json'), 'utf8'));
     assert.equal(cfg.discoveryPlugins.links.enabled, false, 'persisted');
@@ -93,10 +94,25 @@ describe('discovery plug-ins API', () => {
     const admin = await json(await fetch(`${server.baseUrl}/api/v1/admin/config`));
     assert.equal(admin.body.discoveryPlugins.links.enabled, false, 'admin config read reflects it');
 
-    const on = await json(await post('/api/v1/admin/config/discovery-plugins', { name: 'links', enabled: true }));
-    assert.equal(on.status, 200);
+    // Switch every remaining plug-in off → the flag finally drops; the
+    // listing is empty. Then restore all of them.
+    const others = (await json(await fetch(`${server.baseUrl}/api/v1/discovery/plugins`))).body.plugins.map((p) => p.name);
+    assert.ok(others.length >= 1);
+    for (const name of others) {
+      assert.equal((await post('/api/v1/admin/config/discovery-plugins', { name, enabled: false })).status, 200);
+    }
+    const none = await json(await fetch(`${server.baseUrl}/api/v1/discovery/plugins`));
+    assert.deepEqual(none.body.plugins, []);
+    const pingOff = await json(await fetch(`${server.baseUrl}/api/v1/ping`));
+    assert.equal(pingOff.body.discoveryPlugins, false, 'no plug-in left → flag off');
+
+    for (const name of ['links', ...others]) {
+      const on = await json(await post('/api/v1/admin/config/discovery-plugins', { name, enabled: true }));
+      assert.equal(on.status, 200, JSON.stringify(on.body));
+    }
     const back = await json(await fetch(`${server.baseUrl}/api/v1/discovery/plugins`));
     assert.equal(back.body.plugins.some((p) => p.name === 'links'), true);
+    assert.equal(back.body.plugins.length, others.length + 1, 'everything restored');
   });
 
   test('admin toggle rejects unknown plug-ins and bad bodies', async () => {

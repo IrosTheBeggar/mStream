@@ -23,7 +23,11 @@
 //
 // Capabilities say which verbs the UI may offer and which API routes apply:
 //   links    resolve() returns { links: [{ id, label, url, kind }] }
-//   preview  resolve() returns { preview: { url, seconds, attribution } }
+//   preview  resolve() returns { preview: { url, seconds, provider, … } | null }
+//            — a short clip from a catalogue, or null when it has no match
+//   play     resolve() returns { play: { url, kind, … } | null } — a
+//            full-length stream THIS server can serve for the recommendation
+//            (a paired peer's track through the federation proxy)
 //   acquire  (later) starts a job that lands a file in the scratch library
 //   handoff  (later) pushes the recommendation to an external account
 //
@@ -37,9 +41,15 @@ import * as config from '../state/config.js';
 export const CAPABILITIES = Object.freeze({
   LINKS: 'links',
   PREVIEW: 'preview',
+  PLAY: 'play',
   ACQUIRE: 'acquire',
   HANDOFF: 'handoff',
 });
+
+// The capabilities answered by resolve() — the others start jobs.
+export const RESOLVING_CAPABILITIES = Object.freeze([
+  CAPABILITIES.LINKS, CAPABILITIES.PREVIEW, CAPABILITIES.PLAY,
+]);
 
 export const SCOPES = Object.freeze({ SERVER: 'server', USER: 'user' });
 
@@ -57,7 +67,7 @@ export function registerPlugin(def) {
     throw new Error(`registerPlugin: ${def.name} declares unknown capabilities ${JSON.stringify(def.capabilities)}`);
   }
   if (!Object.values(SCOPES).includes(def.scope)) { throw new Error(`registerPlugin: ${def.name} needs a scope`); }
-  const resolves = def.capabilities.includes(CAPABILITIES.LINKS) || def.capabilities.includes(CAPABILITIES.PREVIEW);
+  const resolves = def.capabilities.some((c) => RESOLVING_CAPABILITIES.includes(c));
   if (resolves && typeof def.resolve !== 'function') { throw new Error(`registerPlugin: ${def.name} must implement resolve()`); }
   const frozen = Object.freeze({ description: '', ...def, capabilities: Object.freeze([...def.capabilities]) });
   plugins.set(frozen.name, frozen);

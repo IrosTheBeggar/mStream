@@ -2115,7 +2115,7 @@ paths:
                         description: { type: string }
                         capabilities:
                           type: array
-                          items: { type: string, enum: [links, preview, acquire, handoff] }
+                          items: { type: string, enum: [links, preview, play, acquire, handoff] }
                         scope: { type: string, enum: [server, user], description: "server = admin configuration only; user = needs per-user credentials" }
                         enabled: { type: boolean }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -2184,10 +2184,17 @@ paths:
                     description: >
                       Shape depends on the capability. `links`:
                       `{ links: [{ id, label, url, kind: canonical|search }] }`.
-                      `preview`: `{ preview: { url, seconds, attribution } }`.
+                      `preview`: `{ preview: { provider, url, seconds, title,
+                      artist, album, link, artwork, attribution, match } | null }`
+                      — null when the catalogue has no confident match; show
+                      `attribution` next to the clip. `play`: `{ play: { kind:
+                      stream, url, peer, title, artist, album, duration } | null }`
+                      — `url` is server-relative and tokenless; append the same
+                      `?token=` the /media URLs use.
         "400": { description: "Malformed body, or the plug-in does not resolve recommendations." }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { description: "Unknown or disabled plug-in (disabled plug-ins are invisible, not forbidden)." }
+        "429": { description: "The plug-in's own request budget for its catalogue is spent — try again shortly." }
         "502": { description: "The plug-in failed to resolve this recommendation (a catalogue was unreachable); the cause is logged server-side." }
 
   # ── Search ───────────────────────────────────────────────────────────────

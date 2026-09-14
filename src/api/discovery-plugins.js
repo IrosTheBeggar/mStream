@@ -35,8 +35,7 @@ export function setup(mstream) {
     if (!plugin || !plugins.isPluginEnabled(name)) {
       throw new WebError('unknown discovery plug-in', 404);
     }
-    const resolves = plugin.capabilities.includes(plugins.CAPABILITIES.LINKS)
-      || plugin.capabilities.includes(plugins.CAPABILITIES.PREVIEW);
+    const resolves = plugin.capabilities.some((c) => plugins.RESOLVING_CAPABILITIES.includes(c));
     if (!resolves) {
       throw new WebError(`plug-in ${name} does not resolve recommendations`, 400);
     }
@@ -49,10 +48,15 @@ export function setup(mstream) {
       result = await plugin.resolve(recommendation, { user: req.user || null });
     } catch (err) {
       // A plug-in failure is the plug-in's (a catalogue is down, a parse
-      // broke) — never a server error to the client, and always logged
-      // with the cause: a rejected lookup is a signal worth keeping.
+      // broke, its rate budget is spent) — never a server error to the
+      // client, and always logged with the cause: a rejected lookup is a
+      // signal worth keeping. A plug-in that set a status (429 for its
+      // budget) gets it passed through; anything else is a 502.
       winston.warn(`discovery plug-in ${name} failed to resolve a recommendation: ${err.message}`);
-      throw new WebError(`plug-in ${name} could not resolve this recommendation`, 502);
+      const status = Number.isInteger(err.status) && err.status >= 400 && err.status < 600 ? err.status : 502;
+      throw new WebError(status === 429
+        ? `plug-in ${name} is rate-limited right now — try again shortly`
+        : `plug-in ${name} could not resolve this recommendation`, status);
     }
     res.json({
       plugin: name,

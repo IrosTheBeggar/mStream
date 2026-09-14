@@ -5,11 +5,17 @@
 
 import { registerPlugin } from './registry.js';
 import links from './plugins/links.js';
+import deezer from './plugins/deezer.js';
+import itunes from './plugins/itunes.js';
+import federationPlay from './plugins/federation-play.js';
 
 registerPlugin(links);
+registerPlugin(deezer);
+registerPlugin(itunes);
+registerPlugin(federationPlay);
 
 export {
-  CAPABILITIES, SCOPES, getPlugin, isPluginEnabled, listPlugins, anyPluginEnabled, pluginNames,
+  CAPABILITIES, RESOLVING_CAPABILITIES, SCOPES, getPlugin, isPluginEnabled, listPlugins, anyPluginEnabled, pluginNames,
 } from './registry.js';
 export {
   RECOMMENDATION_SOURCES, recommendationSchema, normalizeRecommendation, recommendationKey, searchPhrase,

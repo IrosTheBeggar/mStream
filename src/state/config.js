@@ -639,6 +639,24 @@ const discoveryPluginsOptions = Joi.object({
   links: Joi.object({
     enabled: Joi.boolean().default(true),
   }).default({ enabled: true }),
+  // 30-second previews. Each sends the recommendation's artist + title (or
+  // ISRC) to the catalogue's public search API — only when a user asks for
+  // that provider's preview, never on menu open — the same services the
+  // album-art downloader already queries by default.
+  deezer: Joi.object({
+    enabled: Joi.boolean().default(true),
+  }).default({ enabled: true }),
+  itunes: Joi.object({
+    enabled: Joi.boolean().default(true),
+    // Storefront for the search (two-letter country code); previews and
+    // store links differ per storefront.
+    country: Joi.string().length(2).uppercase().default('US'),
+  }).default({ enabled: true, country: 'US' }),
+  // Full-length playback of a paired peer's recommendation through this
+  // server's federation stream proxy. Nothing leaves the federation.
+  'federation-play': Joi.object({
+    enabled: Joi.boolean().default(true),
+  }).default({ enabled: true }),
 });
 
 const torrentOptions = Joi.object({
