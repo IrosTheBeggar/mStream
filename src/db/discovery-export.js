@@ -44,6 +44,12 @@ const EXPORT_SCRIPT_PATH = path.join(__dirname, 'discovery-export-script.mjs');
 const EXPORT_WORKER_TIMEOUT_MS = 10 * 60 * 1000;
 
 export const SNAPSHOT_FORMAT = 'mstream-discovery-snapshot';
+// Bump ONLY for a breaking layout change. Every receiving peer refuses a
+// snapshot whose user_version differs from the one it was built with
+// (discovery-peer-dbs.js inspectSnapshot), so a bump partitions the network
+// until the last peer upgrades. Additive nullable columns (V3's catalogue
+// fields) keep the version: old readers select the columns they know by
+// name, new readers probe the column list and substitute NULLs.
 export const SNAPSHOT_FORMAT_VERSION = 1;
 
 export function exportDir() {
@@ -137,7 +143,14 @@ export async function buildSnapshot(opts = {}) {
           musical_key  TEXT,
           danceability REAL,
           genre_tags   TEXT,
-          mood_tags    TEXT
+          mood_tags    TEXT,
+          -- Catalogue fields (source schema V3, appended so older columns keep
+          -- their positions): what a recommendation needs to be found on
+          -- another catalogue. NULL when the file carries no such tag.
+          album              TEXT,
+          year               INTEGER,
+          isrc               TEXT,
+          release_group_mbid TEXT
         );
 
         CREATE INDEX snap.idx_tracks_export_id ON tracks(export_id);
@@ -152,12 +165,12 @@ export async function buildSnapshot(opts = {}) {
         INSERT INTO snap.tracks (
           export_id, recording_mbid, acoustid_id, artist, title, duration,
           model_id, model_version, embedding, bpm, musical_key, danceability,
-          genre_tags, mood_tags
+          genre_tags, mood_tags, album, year, isrc, release_group_mbid
         )
         SELECT
           export_id, recording_mbid, acoustid_id, artist, title, duration,
           model_id, model_version, embedding, bpm, musical_key, danceability,
-          genre_tags, mood_tags
+          genre_tags, mood_tags, album, year, isrc, release_group_mbid
         FROM discovery_tracks
         ORDER BY export_id, audio_hash
       `);
@@ -241,6 +254,9 @@ export async function buildSnapshot(opts = {}) {
       embedding: `Track embeddings are raw ${EMBEDDING_DTYPE} arrays `
         + `(little-endian), ${EMBEDDING_NORMALIZATION}-normalized; dim/model in meta. `
         + 'NULL until the analysis pass has processed the track.',
+      catalogue: 'album, year, isrc and release_group_mbid are catalogue facts '
+        + 'copied from the file\'s tags (source schema v3+); NULL when the file '
+        + 'carries no such tag or the row predates them.',
     },
   };
 
@@ -367,6 +383,9 @@ ${SNAPSHOT_FORMAT_VERSION}). Verify integrity against \`manifest.json\`
     NULL for tracks the analysis pass hasn't reached.
   - \`bpm\`, \`musical_key\`, \`danceability\`, \`genre_tags\`, \`mood_tags\`:
     coarse filter metadata (tags are JSON arrays).
+  - \`album\`, \`year\`, \`isrc\`, \`release_group_mbid\`: catalogue facts from
+    the file's own tags (source schema v3+), so a recording can be looked up
+    on another catalogue. NULL when untagged or when the row predates them.
 - \`meta\` — key/value self-description: embedding model id/version/dim/
   dtype/normalization, format, generation time, row count.
 

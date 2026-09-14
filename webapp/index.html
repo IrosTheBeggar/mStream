@@ -63,6 +63,7 @@
   <script src="assets/js/lib/hyst-modal.js"></script>
   <link rel="stylesheet" href="assets/css/modal.css">
 
+  <script src="assets/js/mstream.play-session.js"></script>
   <script src="assets/js/mstream.player.js"></script>
 
   <!-- Lazy Loading Polyfill-->
@@ -653,6 +654,10 @@
     <div class="side-nav-header">
       <span data-i18n="nav.navigation">Navigation</span>
     </div>
+    <div id="nav-stats" class="local-only side-nav-item my-waves super-hide" onclick="window.location.href = './stats';">
+      <svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 0 24 24" width="24" fill="none" stroke="#FFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"></path><path d="M10 20V4"></path><path d="M16 20v-7"></path><path d="M22 20H2"></path></svg>
+      <span data-i18n="nav.stats">Stats</span>
+    </div>
     <div id="admin-side-link" class="side-nav-item my-waves" onclick="window.open('./admin', '_blank');">
       <svg xmlns="http://www.w3.org/2000/svg" enable-background="new 0 0 24 24" height="24" viewBox="0 0 24 24" width="24"><g><rect fill="none" height="24" width="24"/></g><g><g><path d="M17,11c0.34,0,0.67,0.04,1,0.09V6.27L10.5,3L3,6.27v4.91c0,4.54,3.2,8.79,7.5,9.82c0.55-0.13,1.08-0.32,1.6-0.55 C11.41,19.47,11,18.28,11,17C11,13.69,13.69,11,17,11z"/><path d="M17,13c-2.21,0-4,1.79-4,4c0,2.21,1.79,4,4,4s4-1.79,4-4C21,14.79,19.21,13,17,13z M17,14.38c0.62,0,1.12,0.51,1.12,1.12 s-0.51,1.12-1.12,1.12s-1.12-0.51-1.12-1.12S16.38,14.38,17,14.38z M17,19.75c-0.93,0-1.74-0.46-2.24-1.17 c0.05-0.72,1.51-1.08,2.24-1.08s2.19,0.36,2.24,1.08C18.74,19.29,17.93,19.75,17,19.75z"/></g></g></svg>
       <span data-i18n="nav.adminPanel">Admin Panel</span>
@@ -947,7 +952,7 @@
                       <div class="discover-row-info">
                         <div class="discover-row-title">{{ pt.title || '(untitled)' }}</div>
                         <div class="discover-row-sub">
-                          {{ pt.artist || '' }}<span class="discover-row-tags"> &middot; {{ pt.peer.name || 'peer' }}</span>
+                          {{ pt.artist || '' }}<span class="discover-row-tags"><template v-if="pt.album"> &middot; {{ pt.album }}</template> &middot; {{ pt.peer.name || 'peer' }}</span>
                         </div>
                       </div>
                       <a v-if="discoverP2pMbUrl(pt)" class="discover-add discover-mb-link" :href="discoverP2pMbUrl(pt)" target="_blank" rel="noopener"
@@ -984,7 +989,7 @@
                       <div class="discover-row-info">
                         <div class="discover-row-title">{{ ft.title || '(untitled)' }}</div>
                         <div class="discover-row-sub">
-                          {{ ft.artist || '' }}<span class="discover-row-tags"> &middot; {{ ft.peer.name || 'peer' }}<span v-if="discoverTags(ft.genreTags)"> &middot; {{ discoverTags(ft.genreTags) }}</span></span>
+                          {{ ft.artist || '' }}<span class="discover-row-tags"><template v-if="ft.album"> &middot; {{ ft.album }}</template> &middot; {{ ft.peer.name || 'peer' }}<span v-if="discoverTags(ft.genreTags)"> &middot; {{ discoverTags(ft.genreTags) }}</span></span>
                         </div>
                       </div>
                       <a v-if="discoverP2pMbUrl(ft)" class="discover-add discover-mb-link" :href="discoverP2pMbUrl(ft)" target="_blank" rel="noopener"

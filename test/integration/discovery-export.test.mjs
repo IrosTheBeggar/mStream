@@ -145,11 +145,14 @@ describe('discovery export — enabled at boot, real data round-trip', () => {
     try {
       const ins = db.prepare(`
         INSERT INTO discovery_tracks
-          (audio_hash, source_mtime, updated_at, export_id, artist, title, embedding)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+          (audio_hash, source_mtime, updated_at, export_id, artist, title, embedding,
+           album, year, isrc, release_group_mbid)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      ins.run('local-hash-b', 42, 1, 'mbid:zzz-sorts-last', 'B Artist', 'B Song', null);
-      ins.run('local-hash-a', 43, 2, 'anon:aaa-sorts-first', 'A Artist', 'A Song', embedding);
+      ins.run('local-hash-b', 42, 1, 'mbid:zzz-sorts-last', 'B Artist', 'B Song', null,
+        null, null, null, null);
+      ins.run('local-hash-a', 43, 2, 'anon:aaa-sorts-first', 'A Artist', 'A Song', embedding,
+        'A Album', 1999, 'USA1A9900001', 'rg-aaaa');
       db.prepare(
         'INSERT INTO discovery_lookups (audio_hash, last_attempt_at, outcome) VALUES (?, ?, ?)'
       ).run('local-hash-c', Date.now(), 'error');
@@ -182,12 +185,20 @@ describe('discovery export — enabled at boot, real data round-trip', () => {
       assert.ok(!cols.includes('source_mtime'));
       assert.ok(!cols.includes('updated_at'));
 
-      const rows = snap.prepare('SELECT export_id, artist, embedding FROM tracks').all();
+      const rows = snap.prepare(
+        'SELECT export_id, artist, embedding, album, year, isrc, release_group_mbid FROM tracks').all();
       assert.deepEqual(rows.map(r => r.export_id),
         ['anon:aaa-sorts-first', 'mbid:zzz-sorts-last'],
         'deterministic export_id ordering regardless of insert order');
       const embOut = Uint8Array.from(rows[0].embedding);
       assert.deepEqual(Array.from(new Float32Array(embOut.buffer, 0, 3)), [0.25, -1, 0.5]);
+      // V3 catalogue fields travel (and stay NULL where the source is NULL).
+      assert.deepEqual(
+        [rows[0].album, rows[0].year, rows[0].isrc, rows[0].release_group_mbid],
+        ['A Album', 1999, 'USA1A9900001', 'rg-aaaa']);
+      assert.deepEqual(
+        [rows[1].album, rows[1].year, rows[1].isrc, rows[1].release_group_mbid],
+        [null, null, null, null]);
 
       const metaKeys = snap.prepare('SELECT key FROM meta').all().map(r => r.key);
       assert.ok(!metaKeys.includes('export_salt'), 'salt is a secret');

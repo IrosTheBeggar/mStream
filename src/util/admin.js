@@ -821,6 +821,30 @@ export async function editAlbumArtServices(val) {
 // Lyrics backfill knobs live under config.lyrics (not scanOptions).
 // Both are LIVE — the backfill worker reads them fresh per pass, so no
 // reboot is needed.
+// ── Listening-history settings (config.stats; live, no reboot) ──
+// The retention sweep and the ingest's counted rule both read
+// config.program.stats at run time, so a saved value applies to the next
+// sweep / the next batch of plays without a restart.
+export async function editStatsRetention(retentionMonths) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.stats) { loadConfig.stats = {}; }
+  loadConfig.stats.retentionMonths = retentionMonths;
+  await saveFile(loadConfig, config.configFile);
+  if (!config.program.stats) { config.program.stats = {}; }
+  config.program.stats.retentionMonths = retentionMonths;
+}
+
+export async function editStatsThresholds({ playThresholdMs, playThresholdFraction }) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.stats) { loadConfig.stats = {}; }
+  loadConfig.stats.playThresholdMs = playThresholdMs;
+  loadConfig.stats.playThresholdFraction = playThresholdFraction;
+  await saveFile(loadConfig, config.configFile);
+  if (!config.program.stats) { config.program.stats = {}; }
+  config.program.stats.playThresholdMs = playThresholdMs;
+  config.program.stats.playThresholdFraction = playThresholdFraction;
+}
+
 export async function editLyricsBackfill(val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.lyrics) { loadConfig.lyrics = {}; }

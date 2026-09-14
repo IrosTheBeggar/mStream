@@ -13,6 +13,9 @@ import { dataRoot, usingFallbackDataRoot } from './util/esm-helpers.js';
 import { installedPlayerPath, playerLoadableHere } from './util/mstream-player-bootstrap.js';
 
 import * as dbApi from './api/db.js';
+import * as syncApi from './api/sync.js';
+import * as statsApi from './api/stats.js';
+import { startRetentionSweep, stopRetentionSweep } from './stats/retention.js';
 import * as discoveryApi from './api/discovery.js';
 import * as searchApi from './api/search.js';
 import * as randomApi from './api/random.js';
@@ -511,6 +514,20 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     }
   });
 
+  // The listening page (webapp/stats/): the signed-in user's own stats, so
+  // the same gate as the player — a session cookie, or public mode. No
+  // admin role and no IP gate: every account may see its own listening.
+  mstream.get('/stats', (req, res, next) => {
+    if (dbManager.getAllUsers().length === 0) {
+      return next();
+    }
+    try {
+      jwt.verify(req.cookies['x-access-token'], config.program.secret);
+      next();
+    } catch (_err) {
+      return res.redirect(302, '/login');
+    }
+  });
   mstream.get('/login', (req, res, next) => {
     if (dbManager.getAllUsers().length === 0) {
       return res.redirect(302, '..');
@@ -557,6 +574,9 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   discoveryP2pApi.setup(mstream);
   discoveryFederationApi.setup(mstream);
   dbApi.setup(mstream);
+  syncApi.setup(mstream);
+  statsApi.setup(mstream);
+  startRetentionSweep();
   searchApi.setup(mstream);
   randomApi.setup(mstream);
   playlistApi.setup(mstream);
@@ -1006,6 +1026,8 @@ export function reboot() {
     // them — without this, each reboot left the old boot timeouts
     // pending alongside the new ones.
     backupManager.shutdown();
+    // The stats retention sweep is re-armed by the setup path on reboot.
+    stopRetentionSweep();
 
     // Tear down the Iroh tunnel, the federation endpoint (+ its peer bridges)
     // and the discovery-network gossip stack. Each binds its own sockets

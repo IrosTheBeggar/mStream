@@ -89,6 +89,8 @@ tags:
     description: Directory browsing, upload, M3U parsing.
   - name: Download
     description: Multi-file ZIP downloads.
+  - name: Sync
+    description: Paged library manifest for client-side mirrors and offline indexes.
   - name: Transcode
     description: On-the-fly audio transcoding via ffmpeg.
   - name: Album Art
@@ -102,7 +104,10 @@ tags:
       line-timed entries. The post-scan backfill worker (see Admin - Lyrics) fills in
       lyrics for tracks that have none locally. The web UI uses this endpoint.
   - name: Scrobbler - Last.fm
-    description: Last.fm scrobbling integration.
+    description: >-
+      Last.fm — the link status, similar artists for Auto DJ, and the legacy
+      scrobble routes older clients still call. A new client reports its
+      plays to `/api/v1/stats/plays` instead.
   - name: Server Playback
     description: Proxy to the bundled Rust audio player.
   - name: Jukebox
@@ -439,6 +444,60 @@ components:
         has-synced-lyrics:
           type: boolean
 
+    SyncManifestEntry:
+      type: object
+      description: |
+        One track in the library manifest: the lite `{filepath, metadata}` row every
+        list endpoint returns, plus the identity fields a mirror needs to keep a
+        byte-identical local copy without touching the file. Multi-word keys are
+        kebab-case, matching `Metadata`.
+      properties:
+        filepath:
+          type: string
+          description: Virtual path (`<vpath>/<rel>`), forward slashes.
+        metadata: { $ref: "#/components/schemas/MetadataLite" }
+        id:
+          type: integer
+          description: Track row id — the paging cursor.
+        file-size: { type: integer, nullable: true, description: "Bytes." }
+        modified: { type: integer, nullable: true, description: "File mtime, epoch milliseconds." }
+        hash:
+          type: string
+          nullable: true
+          description: Whole-file content hash (full MD5 below 25 MB, sampled above — see `hash-v`).
+        audio-hash:
+          type: string
+          nullable: true
+          description: Audio-payload hash, stable across tag edits — the key for rename detection.
+        hash-v:
+          type: integer
+          nullable: true
+          description: Hash scheme generation the row's hashes were computed under (2 = sampled above 25 MB).
+        format: { type: string, nullable: true }
+        album-id: { type: integer, nullable: true }
+        artist-id: { type: integer, nullable: true }
+        created-at: { type: string, nullable: true, description: "When the row was first scanned." }
+
+    SyncManifest:
+      type: object
+      properties:
+        revision:
+          type: string
+          description: |
+            Revision of the caller's visible library set (row count, max id, max mtime,
+            art count, scope). Also sent as the `ETag`. Covers library content only —
+            not per-user ratings or play counts.
+        scanning:
+          type: boolean
+          description: A scan is running; rows can be transiently absent, so a missing path is not a deletion.
+        next:
+          type: integer
+          nullable: true
+          description: Cursor for the next page, or null on the last page.
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/SyncManifestEntry" }
+
     Album:
       type: object
       properties:
@@ -493,6 +552,21 @@ components:
           items:
             type: string
           description: Libraries (vpaths) to exclude from the query.
+
+    StatsPeriod:
+      type: object
+      description: The resolved range a stats read covered.
+      properties:
+        label: { type: string }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time, description: "Exclusive." }
+        tz: { type: string }
+
+    StatsOriginSlice:
+      type: object
+      properties:
+        plays: { type: integer }
+        listenedMs: { type: integer }
 
     SearchArtistOrAlbumItem:
       type: object
@@ -985,6 +1059,13 @@ paths:
                       facts only: no counts, no library or content names,
                       no identity.
                     properties:
+                      stats:
+                        type: integer
+                        description: >
+                          The Stats API v2 version this server speaks
+                          (`/api/v1/stats/*`: ingest, reads, management).
+                          Absent on servers without it — gate on this key,
+                          never on the version string.
                       discoveryReady:
                         type: boolean
                         description: >
@@ -1001,6 +1082,13 @@ paths:
                       discoveryP2p:
                         type: boolean
                         description: The discovery network feature is enabled.
+                      sync:
+                        type: boolean
+                        description: >
+                          This server serves `POST /api/v1/sync/manifest` (the
+                          library manifest behind client-side mirrors and
+                          offline indexes). Absent on older servers — gate on
+                          the key, never on a probe.
                       transcode:
                         description: >
                           false when unavailable; otherwise the server's
@@ -1072,6 +1160,7 @@ paths:
                   discoveryReady: true
                   discovery: true
                   discoveryP2p: false
+                  sync: true
                   transcode: false
                   supportedAudioFiles: { mp3: true, flac: true }
         "401":
@@ -1570,10 +1659,11 @@ paths:
   /api/v1/db/random-songs:
     post:
       tags: [Library]
-      summary: Get a random song (Auto-DJ)
+      summary: Get random songs (Auto-DJ)
       description: |
-        Returns one random song. With no body fields set, behaves like the
-        pre-V32 route — pick a random track from everything the user can see.
+        Returns one random song by default, or up to `limit` of them. With
+        no body fields set, behaves like the pre-V32 route — pick a random
+        track from everything the user can see.
 
         When any BPM / key / artist filter is set the server runs a
         fallback waterfall that progressively relaxes constraints until
@@ -1598,10 +1688,21 @@ paths:
           5b. similar (drop `ignoreArtists` cooldown — only if set)
           6-10. the non-similar chain above
 
-        After the SQL-side waterfall, a tier filter sorts the surviving
+        After the SQL-side waterfall, a tier ranking sorts the surviving
         rows so an in-range pick wins over an unknown-tag pick wins over
-        a known-wrong pick. The route always returns exactly one song
-        (or 400 if scope is empty).
+        a known-wrong pick. With `limit` omitted the route returns exactly
+        one song (or 400 if scope is empty).
+
+        **Batches.** `limit` (1..25, default 1) asks for several songs in
+        one call. They are distinct, served from the front of the same
+        ranking — best tier first, then songs not in the `ignoreList`
+        before repeats — and every one of them is appended to the returned
+        `ignoreList`. A batch can be SHORTER than `limit`: when fewer
+        candidates are in scope, or when the waterfall step that wins holds
+        fewer matches. The chain deliberately never pads a batch from a
+        more relaxed step, so the tail of a batch satisfies the same
+        constraints as its head. The always-on filters (`genres`, the
+        duration window, the sonic pool) apply to every song in a batch.
 
         `genres` and the `minDuration` / `maxDuration` window are
         ALWAYS-ON base conditions rather than waterfall steps: every
@@ -1625,14 +1726,14 @@ paths:
         or `BPM` / `KEY` / `INITIALKEY` (Vorbis) tags.
 
         `ignoreList` is a round-trip cursor — the server returns an
-        updated list with the just-picked index appended, and clients
-        echo it back on the next call to deduplicate across a session.
-        The server trims older entries automatically when the list
-        exceeds ~half the candidate-pool size; clients don't need to
-        prune it themselves. Capped at 500 entries. Entries are
-        server-issued track ids, meaningful only on the server that
-        issued them, and the cooldown is soft: once the list covers every
-        candidate the server picks from the full pool again rather than
+        updated list with every just-served track id appended (newest
+        last), and clients echo it back on the next call to deduplicate
+        across a session. The server keeps only the newest 50 entries;
+        clients don't need to prune it themselves. Accepted up to 500
+        entries. Entries are server-issued track ids, meaningful only on
+        the server that issued them, and the cooldown is soft: once the
+        list covers every candidate (or leaves fewer than a batch needs)
+        the server fills in from the full pool again rather than
         answering 400.
 
         **Sonic similarity** (`similarTo` or `similarToVector`, with
@@ -1672,15 +1773,27 @@ paths:
               allOf:
                 - type: object
                   properties:
+                    limit:
+                      type: integer
+                      minimum: 1
+                      maximum: 25
+                      default: 1
+                      description: |
+                        How many songs to return. Distinct, best tier
+                        first, fresh before repeats; may come back short
+                        when fewer candidates are in scope or the winning
+                        waterfall step holds fewer matches (see above).
+                        Every served song is appended to `ignoreList`.
                     minRating: { type: integer, minimum: 0, maximum: 10 }
                     ignoreList:
                       type: array
                       maxItems: 500
                       items: { type: integer, minimum: 0 }
                       description: |
-                        Indices of recently-picked tracks to skip. Echo
-                        back the `ignoreList` from the previous response
-                        unchanged; the server appends + trims.
+                        Server-issued track ids of recently served songs
+                        to skip. Echo back the `ignoreList` from the
+                        previous response unchanged; the server appends +
+                        trims.
                     bpmRanges:
                       type: array
                       maxItems: 16
@@ -1860,7 +1973,7 @@ paths:
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":
-          description: One random song that satisfies the (possibly relaxed) constraints.
+          description: Up to `limit` random songs (one by default) that satisfy the (possibly relaxed) constraints.
           content:
             application/json:
               schema:
@@ -1869,25 +1982,32 @@ paths:
                   songs:
                     type: array
                     items: { $ref: "#/components/schemas/Metadata" }
+                    description: |
+                      One entry by default, up to `limit` — possibly
+                      fewer, never more (see the batch notes above).
                   ignoreList:
                     type: array
                     items: { type: integer }
                     description: |
                       Updated cursor: previous request's `ignoreList`
-                      with the just-picked index appended, plus any
-                      server-side trimming. Echo back unchanged on the
-                      next call.
+                      with every served track id appended (newest last),
+                      trimmed to the newest 50. Echo back unchanged on
+                      the next call.
                   sonic:
                     type: object
                     description: |
                       Present only when a sonic seed was given: how close
-                      the pick actually is, and how large the pool was
+                      the picks actually are, and how large the pool was
                       before the other filters cut it down.
                     properties:
                       similarity:
                         type: number
                         nullable: true
-                        description: Cosine similarity of the picked track to the seed centroid, rounded to 4 decimals (`null` if the pick has no vector).
+                        description: Cosine similarity of the first song in `songs` to the seed centroid, rounded to 4 decimals (`null` if it has no vector). Kept for single-pick callers; equals `similarities[0]`.
+                      similarities:
+                        type: array
+                        items: { type: number, nullable: true }
+                        description: One cosine similarity per entry of `songs`, in the same order, rounded to 4 decimals.
                       poolSize:
                         type: integer
                         description: Analyzed tracks at or above `minSimilarity`, before rating / genre / BPM / key filtering.
@@ -2217,6 +2337,695 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Metadata" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats/plays:
+    post:
+      tags: [Stats]
+      summary: Record a batch of complete plays (Stats API v2)
+      description: |
+        Clients report plays AFTER they happen, with their own ids and start
+        times. Each play is resolved to a track and judged against the server's
+        play threshold (`stats.playThresholdMs` / `stats.playThresholdFraction`
+        in config); only counted plays move `play-count` and `last-played`.
+        The answer is per play, so an offline outbox can retry safely:
+        `duplicates` are ids this user already sent (nothing moves), `rejected`
+        carry a reason to drop the play — `unknown-track`, `unknown-peer`,
+        `bad-time` (unparsable, over five minutes in the future, or older than
+        `stats.retentionMonths`), `invalid` (a peer play without its `track`
+        snapshot, or an id another user owns).
+
+        A play of a federated peer's track is recorded HERE, as this user's own
+        play (`peerId` = the peer's id on this server, `track` = what the peer
+        reported), never on the peer. Not reachable with a federation key or a
+        guest token.
+
+        For an account linked to Last.fm (admin panel → users → Last.fm), every
+        COUNTED play is also scrobbled with its own start time — after the
+        response, best-effort, queued so a large outbox drains at Last.fm's
+        pace. Nothing Last.fm would ignore is sent: plays older than 14 days,
+        tracks shorter than 30 seconds, plays without an artist and title. A
+        peer play is scrobbled from its `track` snapshot.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plays]
+              properties:
+                client:
+                  type: object
+                  required: [name]
+                  properties:
+                    name: { type: string, maxLength: 64 }
+                    version: { type: string, maxLength: 32 }
+                    instanceId: { type: string, maxLength: 64 }
+                plays:
+                  type: array
+                  minItems: 1
+                  maxItems: 200
+                  items:
+                    type: object
+                    required: [id, filePath, startedAt, playedMs, outcome]
+                    properties:
+                      id: { type: string, maxLength: 128, description: "Client UUID — the idempotency key." }
+                      filePath: { type: string, description: "Virtual path (`<vpath>/<rel>`); for a peer play, the peer's own path." }
+                      peerId: { type: integer, description: "Present for a play of a federated peer's track." }
+                      startedAt: { oneOf: [{ type: string, format: date-time }, { type: integer, description: "epoch ms" }] }
+                      endedAt: { oneOf: [{ type: string, format: date-time }, { type: integer }] }
+                      playedMs: { type: integer, minimum: 0 }
+                      durationMs: { type: integer, minimum: 0, description: "Defaults to the library's duration for a local track." }
+                      outcome: { type: string, enum: [completed, skipped, stopped] }
+                      source: { type: string, enum: [manual, shuffle, autodj, playlist, smart-playlist, auto, carplay, cast, other], description: "How the play was queued. `legacy` is reserved for the server's own scrobble-by-filepath route and is never accepted here." }
+                      sessionId: { type: string, maxLength: 128 }
+                      pauseCount: { type: integer, minimum: 0, default: 0 }
+                      track:
+                        type: object
+                        description: Snapshot for a peer play (ignored for a local track).
+                        properties:
+                          title: { type: string }
+                          artist: { type: string }
+                          album: { type: string }
+                          durationMs: { type: integer }
+                          hash: { type: string, description: "The peer-reported track hash; counters key on it." }
+                          artFile: { type: string }
+      responses:
+        "200":
+          description: Per-play outcome.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accepted: { type: array, items: { type: string } }
+                  duplicates: { type: array, items: { type: string } }
+                  rejected:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        reason: { type: string, enum: [unknown-track, unknown-peer, bad-time, invalid] }
+        "400": { description: "Validation failed (an unknown key, a bad enum value, an empty or oversized batch)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "A federation key or guest token — stats are never recorded for those." }
+
+    delete:
+      tags: [Stats]
+      summary: Forget every play in a range
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date-time }, description: "Exclusive." }
+      responses:
+        "200":
+          description: How many went.
+          content:
+            application/json:
+              schema: { type: object, properties: { deleted: { type: integer } } }
+        "400": { description: "Missing or unordered bounds." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+
+  /api/v1/stats/now-playing:
+    post:
+      tags: [Stats]
+      summary: Announce what the caller is playing right now
+      description: |
+        Ephemeral and per user: kept in memory for ten minutes (a longer
+        track is re-announced by its player), keyed by the client's
+        `sessionId`, so a re-post replaces the same player's entry and two
+        players show as two entries. Writes no row — the play itself arrives
+        through `/api/v1/stats/plays` once it is over. A linked Last.fm account
+        gets the now-playing notice, best-effort, after the response. A peer's
+        track needs its `track` snapshot, like a peer play. Not reachable with
+        a federation key or a guest token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filePath, sessionId]
+              properties:
+                filePath: { type: string, maxLength: 2048, description: "Virtual path (`<vpath>/<rel>`); for a peer's track, the peer's own path." }
+                peerId: { type: integer, description: "Present for a federated peer's track." }
+                sessionId: { type: string, maxLength: 128, description: "The player's session — one entry per player." }
+                track:
+                  type: object
+                  description: Snapshot for a peer's track (ignored for a local one).
+                  properties:
+                    title: { type: string }
+                    artist: { type: string }
+                    album: { type: string }
+                    durationMs: { type: integer }
+                    hash: { type: string }
+                    artFile: { type: string }
+      responses:
+        "200":
+          description: "Stored (`accepted: true`) or answered with why not; never an error for an unknown track."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accepted: { type: boolean }
+                  reason: { type: string, enum: [unknown-track, unknown-peer, invalid], description: "Only when `accepted` is false." }
+                  expiresAt: { type: string, format: date-time, description: "Only when accepted." }
+        "400": { description: "Validation failed (a missing path or session id, an unknown key)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "A federation key or guest token." }
+    get:
+      tags: [Stats]
+      summary: The caller's current plays
+      responses:
+        "200":
+          description: Every unexpired entry the caller announced, one per player session.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        sessionId: { type: string }
+                        filePath: { type: string }
+                        peerId: { type: integer, nullable: true }
+                        track:
+                          type: object
+                          properties:
+                            title: { type: string, nullable: true }
+                            artist: { type: string, nullable: true }
+                            album: { type: string, nullable: true }
+                            durationMs: { type: integer, nullable: true }
+                            hash: { type: string, nullable: true }
+                        since: { type: string, format: date-time }
+                        expiresAt: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "A federation key or guest token." }
+
+
+  # ── Stats API v2 (read side) ─────────────────────────────────────────────
+  # Every read is scoped to the caller's own plays and visible libraries.
+  # A range is a preset `period` (+ `offset` <= 0) or an explicit `from`/`to`
+  # pair; `tz` (IANA, default UTC) sets where days, weeks and months begin.
+  # `origin` keeps local plays, federated-peer plays (recorded on this server
+  # as the caller's own plays of a peer's track), or both, and reaches the
+  # calendar facts too (streaks, the top day, the peaks, the time series):
+  # a read narrowed by `origin` or `ignoreVPaths` is folded from the raw log,
+  # so plays already pruned by retention drop out of it, while an unfiltered
+  # read comes from the hourly rollup that outlives them. Never reachable
+  # with a federation key.
+
+  /api/v1/stats/summary:
+    get:
+      tags: [Stats]
+      summary: Listening summary for a period
+      description: |
+        The period's totals as data (the former Wrapped view without its copy):
+        events, counted plays, uniques, listened time, skip and completion rates,
+        discoveries (tracks whose first counted play ever falls in the period),
+        library coverage, derived sessions (30-minute gap), day streaks, the top
+        listening day, peak hour and weekday, and the local/peer split.
+        Calendar facts (streaks, top day, peaks) come from the per-user hourly
+        rollup and are not narrowed by `ignoreVPaths` or `origin`.
+      parameters:
+        - { name: period, in: query, schema: { type: string, enum: [week, month, quarter, half, year, all], default: month } }
+        - { name: offset, in: query, schema: { type: integer, maximum: 0, default: 0 }, description: "Whole periods back from the current one." }
+        - { name: from, in: query, schema: { type: string, format: date-time }, description: "With `to`, replaces `period`/`offset`." }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: tz, in: query, schema: { type: string, default: UTC }, description: "IANA timezone for period and day boundaries." }
+        - { name: origin, in: query, schema: { type: string, enum: [all, local, peers], default: all } }
+        - { name: ignoreVPaths, in: query, style: form, explode: true, schema: { type: array, items: { type: string } } }
+      responses:
+        "200":
+          description: Summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  period: { $ref: "#/components/schemas/StatsPeriod" }
+                  events: { type: integer }
+                  plays: { type: integer, description: "Events the server counted as plays." }
+                  uniqueTracks: { type: integer }
+                  uniqueArtists: { type: integer }
+                  uniqueAlbums: { type: integer }
+                  listenedMs: { type: integer }
+                  skips: { type: integer }
+                  skipRate: { type: number }
+                  completionRate: { type: number }
+                  pauses: { type: integer }
+                  discoveries: { type: integer }
+                  libraryCoveragePct: { type: number }
+                  sessions:
+                    type: object
+                    properties:
+                      count: { type: integer }
+                      avgMs: { type: integer, nullable: true }
+                      longest:
+                        type: object
+                        nullable: true
+                        properties:
+                          startedAt: { type: string, format: date-time }
+                          endedAt: { type: string, format: date-time }
+                          tracks: { type: integer }
+                          plays: { type: integer }
+                          listenedMs: { type: integer }
+                  streakDays:
+                    type: object
+                    properties: { current: { type: integer }, longest: { type: integer } }
+                  topDay:
+                    type: object
+                    nullable: true
+                    properties: { date: { type: string }, plays: { type: integer }, listenedMs: { type: integer } }
+                  peakHour: { type: integer, nullable: true }
+                  peakWeekday: { type: integer, nullable: true, description: "0 = Sunday." }
+                  origins:
+                    type: object
+                    properties:
+                      local: { $ref: "#/components/schemas/StatsOriginSlice" }
+                      peers: { $ref: "#/components/schemas/StatsOriginSlice" }
+        "400": { description: "Validation failed: unknown parameter, bad timezone, unpaired from/to, or an invalid cursor." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats/top:
+    get:
+      tags: [Stats]
+      summary: Top tracks, artists, albums or genres for a period
+      description: |
+        Ranked by counted plays or by listened time. A track row carries the
+        library's metadata object when the track still resolves, otherwise the
+        snapshot recorded at ingest (always the case for a federated peer's
+        track, which also carries `peerId`). Artists and albums merge by name
+        across origins; genres come from the library only.
+      parameters:
+        - { name: entity, in: query, schema: { type: string, enum: [tracks, artists, albums, genres], default: tracks } }
+        - { name: metric, in: query, schema: { type: string, enum: [plays, time], default: plays } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 20 } }
+        - { name: period, in: query, schema: { type: string, enum: [week, month, quarter, half, year, all], default: month } }
+        - { name: offset, in: query, schema: { type: integer, maximum: 0, default: 0 } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: tz, in: query, schema: { type: string, default: UTC } }
+        - { name: origin, in: query, schema: { type: string, enum: [all, local, peers], default: all } }
+        - { name: ignoreVPaths, in: query, style: form, explode: true, schema: { type: array, items: { type: string } } }
+      responses:
+        "200":
+          description: Ranked rows.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  period: { $ref: "#/components/schemas/StatsPeriod" }
+                  entity: { type: string }
+                  metric: { type: string }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        rank: { type: integer }
+                        plays: { type: integer }
+                        listenedMs: { type: integer }
+                        events: { type: integer }
+                        share: { type: number, description: "Fraction of the period's total for the chosen metric." }
+                        name: { type: string, description: "artists / albums / genres only." }
+                        artist: { type: string, nullable: true, description: "albums only." }
+                        tracks: { type: integer, description: "Distinct tracks behind the row (artists / albums / genres)." }
+                        lastPlayed: { type: string, format: date-time, description: "tracks only." }
+                        origin: { type: string, enum: [local, peer], description: "tracks only." }
+                        peerId: { type: integer, nullable: true, description: "tracks only." }
+                        peerName: { type: string, nullable: true, description: "tracks only — the peer's name, for a federated row." }
+                        track: { $ref: "#/components/schemas/Metadata" }
+        "400": { description: "Validation failed: unknown parameter, bad timezone, unpaired from/to, or an invalid cursor." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats/timeseries:
+    get:
+      tags: [Stats]
+      summary: Plays and listening time per bucket
+      description: |
+        From the per-user hourly rollup, re-bucketed into `tz`. Calendar buckets
+        (`hour`, `day`, `week` — Monday-first, `month`) return only buckets with
+        data, keyed `YYYY-MM-DDTHH`, `YYYY-MM-DD`, the Monday's date, `YYYY-MM`.
+        Profile buckets (`hourOfDay` 0-23, `weekday` 0-6 with Sunday 0) return
+        every bucket. Not narrowed by `ignoreVPaths` or `origin`.
+      parameters:
+        - { name: bucket, in: query, schema: { type: string, enum: [hour, day, week, month, hourOfDay, weekday], default: day } }
+        - { name: period, in: query, schema: { type: string, enum: [week, month, quarter, half, year, all], default: month } }
+        - { name: offset, in: query, schema: { type: integer, maximum: 0, default: 0 } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: tz, in: query, schema: { type: string, default: UTC } }
+      responses:
+        "200":
+          description: Buckets in ascending order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  period: { $ref: "#/components/schemas/StatsPeriod" }
+                  bucket: { type: string }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        bucket: { type: string }
+                        events: { type: integer }
+                        plays: { type: integer }
+                        skips: { type: integer }
+                        listenedMs: { type: integer }
+        "400": { description: "Validation failed: unknown parameter, bad timezone, unpaired from/to, or an invalid cursor." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats/history:
+    get:
+      tags: [Stats]
+      summary: The listening log, newest first
+      description: |
+        Cursor-paginated: pass the previous page's `next` as `before`. `track`
+        filters to one track by any hash the client knows it by. Each item carries the play's own
+        facts and a `track` object (library metadata, or the ingest snapshot).
+      parameters:
+        - { name: before, in: query, schema: { type: string }, description: "Opaque cursor from a previous page." }
+        - { name: period, in: query, schema: { type: string, enum: [week, month, quarter, half, year, all] }, description: "Optional. Without a period or a from/to pair the whole log answers, newest first." }
+        - { name: offset, in: query, schema: { type: integer, maximum: 0, default: 0 } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time }, description: "Exclusive; with `from`." }
+        - { name: tz, in: query, schema: { type: string, default: UTC } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: track, in: query, schema: { type: string }, description: "A track hash: the canonical `audio-hash`, the file `hash` (resolved through the library), or a peer's reported hash." }
+        - { name: origin, in: query, schema: { type: string, enum: [all, local, peers], default: all } }
+        - { name: ignoreVPaths, in: query, style: form, explode: true, schema: { type: array, items: { type: string } } }
+      responses:
+        "200":
+          description: A page of plays.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, description: "The client's event id." }
+                        startedAt: { type: string, format: date-time }
+                        endedAt: { type: string, format: date-time, nullable: true }
+                        playedMs: { type: integer }
+                        durationMs: { type: integer, nullable: true }
+                        outcome: { type: string, enum: [completed, skipped, stopped] }
+                        counted: { type: boolean }
+                        source: { type: string, nullable: true, description: "How the play was queued (`manual`, `shuffle`, `autodj`, …). `legacy` marks a play recorded through the scrobble-by-filepath route." }
+                        sessionId: { type: string, nullable: true }
+                        pauseCount: { type: integer }
+                        client: { type: string, nullable: true }
+                        origin: { type: string, enum: [local, peer] }
+                        peerId: { type: integer, nullable: true }
+                        peerName: { type: string, nullable: true, description: "The peer's name, for a federated row." }
+                        track: { $ref: "#/components/schemas/Metadata" }
+                  next: { type: string, nullable: true }
+                  period: { $ref: "#/components/schemas/StatsPeriod", description: "Only when a range was given." }
+        "400": { description: "Validation failed: unknown parameter, bad timezone, unpaired from/to, or an invalid cursor." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats/tracks:
+    post:
+      tags: [Stats]
+      summary: Per-track counters for a batch of tracks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: At least one of the two lists.
+              properties:
+                filePaths: { type: array, maxItems: 500, items: { type: string }, description: "Virtual paths (`<vpath>/<rel>`)." }
+                hashes: { type: array, maxItems: 500, items: { type: string }, description: "Track hashes — the canonical (audio) hash or the file hash; either resolves to the same counters. A hash this library does not know is looked up as sent (a peer's key)." }
+      responses:
+        "200":
+          description: One item per track that has counters; unknown tracks are omitted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        hash: { type: string, description: "The key as the client sent it." }
+                        canonicalHash: { type: string, description: "Present when the requested hash resolved to a different canonical key (a file hash sent where the counters sit under the audio hash)." }
+                        filePath: { type: string, description: "Present for rows requested by path." }
+                        plays: { type: integer }
+                        skips: { type: integer }
+                        listenedMs: { type: integer }
+                        firstPlayed: { type: string, format: date-time, nullable: true }
+                        lastPlayed: { type: string, format: date-time, nullable: true }
+        "400": { description: "Validation failed: unknown parameter, bad timezone, unpaired from/to, or an invalid cursor." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats/periods:
+    get:
+      tags: [Stats]
+      summary: Periods that have listening data
+      parameters:
+        - { name: tz, in: query, schema: { type: string, default: UTC } }
+      responses:
+        "200":
+          description: The log's bounds and the preset periods that overlap them.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  earliest: { type: string, format: date-time, nullable: true }
+                  latest: { type: string, format: date-time, nullable: true }
+                  tz: { type: string }
+                  periods:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        period: { type: string }
+                        offset: { type: integer }
+                        label: { type: string }
+                        from: { type: string, format: date-time }
+                        to: { type: string, format: date-time }
+        "400": { description: "Validation failed: unknown parameter, bad timezone, unpaired from/to, or an invalid cursor." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats/plays/{id}:
+    delete:
+      tags: [Stats]
+      summary: Forget one play
+      description: The event goes, and its track's counters and its hour in the rollup are decremented exactly.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: "The client's event id." }
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { type: object, properties: { deleted: { type: integer } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "No play with that id for this user." }
+
+  /api/v1/stats/reset:
+    post:
+      tags: [Stats]
+      summary: Zero the counters, drop the log, or both
+      description: |
+        `counts` zeroes play/skip counts, listened time and first/last played on every track
+        (stars and ratings stay). `history` deletes the log and its hourly rollup. `all` does both.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scope]
+              properties:
+                scope: { type: string, enum: [counts, history, all] }
+      responses:
+        "200":
+          description: What was reset.
+          content:
+            application/json:
+              schema: { type: object, properties: { scope: { type: string }, tracks: { type: integer }, events: { type: integer } } }
+        "400": { description: "Unknown scope." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats/export:
+    get:
+      tags: [Stats]
+      summary: The whole listening log as NDJSON
+      description: One JSON object per line, oldest first, streamed. A backup, a migration, or a client rebuilding its local copy. `source` is `legacy` for a play recorded through the scrobble-by-filepath route.
+      responses:
+        "200":
+          description: The log.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: "Lines of `{id, startedAt, endedAt, playedMs, durationMs, outcome, counted, source, sessionId, pauseCount, client, filePath, peerId, trackHash, snapshot}`."
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/admin/stats:
+    get:
+      tags: [Stats]
+      summary: Listening-history settings and the shape of the log (admin)
+      description: |
+        The live `stats` config block plus whole-log facts: how many plays are on file, from when, for how many
+        accounts, how many federated plays still await their peer's metadata, the retention floor and the last prune,
+        and the enrichment pass's counters. Config values apply without a reboot — the sweep and the ingest read them
+        per run.
+      responses:
+        "200":
+          description: Settings and log facts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  retentionMonths: { type: integer, description: "0 keeps the per-play log forever." }
+                  playThresholdMs: { type: integer }
+                  playThresholdFraction: { type: number }
+                  log:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      oldest: { type: string, format: date-time, nullable: true }
+                      newest: { type: string, format: date-time, nullable: true }
+                      users: { type: integer }
+                      peerEvents: { type: integer }
+                      thinPeerEvents: { type: integer, description: "Federated plays not yet completed from the peer." }
+                  retention:
+                    type: object
+                    properties:
+                      floor: { type: string, format: date-time, nullable: true }
+                      lastSweep: { type: object, nullable: true, properties: { at: { type: string, format: date-time }, deleted: { type: integer }, cutoff: { type: string, nullable: true } } }
+                  enrichment:
+                    type: object
+                    properties:
+                      enriched: { type: integer }
+                      rekeyed: { type: integer }
+                      unknown: { type: integer }
+                      failed: { type: integer }
+                      pending: { type: integer }
+                      lastRunAt: { type: string, format: date-time, nullable: true }
+                      lastError: { type: string, nullable: true }
+        "403": { description: "Not an admin." }
+
+  /api/v1/admin/stats/retention:
+    post:
+      tags: [Stats]
+      summary: Set how long the per-play log is kept (admin, live)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [retentionMonths]
+              properties:
+                retentionMonths: { type: integer, minimum: 0, maximum: 1200, description: "0 keeps everything." }
+      responses:
+        "200": { description: "Saved to the config file and applied to the next sweep." }
+        "400": { description: "Validation failed." }
+        "403": { description: "Not an admin." }
+
+  /api/v1/admin/stats/thresholds:
+    post:
+      tags: [Stats]
+      summary: Set when a play counts (admin, live)
+      description: A play counts once it ran for `playThresholdMs`, or for `playThresholdFraction` of the track when the duration is known. Applies to the next batch of plays.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [playThresholdMs, playThresholdFraction]
+              properties:
+                playThresholdMs: { type: integer, minimum: 0, maximum: 3600000 }
+                playThresholdFraction: { type: number, minimum: 0, maximum: 1 }
+      responses:
+        "200": { description: "Saved and applied." }
+        "400": { description: "Validation failed." }
+        "403": { description: "Not an admin." }
+
+  /api/v1/admin/stats/sweep:
+    post:
+      tags: [Stats]
+      summary: Prune the per-play log now (admin)
+      description: Runs the retention sweep immediately with the current `retentionMonths`; the daily pass does the same.
+      responses:
+        "200":
+          description: What the sweep removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: integer }
+                  cutoff: { type: string, nullable: true }
+        "403": { description: "Not an admin." }
+
+  /api/v1/admin/stats/enrich:
+    post:
+      tags: [Stats]
+      summary: Ask the peers about federated plays still waiting on their metadata (admin)
+      description: |
+        The daily pass does the same. A federated play stores the snapshot the app had at hand; the peer's own
+        metadata completes it (title, artist, album, duration, art, and the canonical audio hash, onto which the play
+        and its counters are re-keyed). Bounded per run; a peer that does not answer leaves its rows for next time.
+      responses:
+        "200":
+          description: This pass's numbers (rows queued, completed, re-keyed, unknown to the peer, unanswered), plus the process-lifetime counters under `totals`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  queued: { type: integer }
+                  enriched: { type: integer }
+                  rekeyed: { type: integer }
+                  unknown: { type: integer }
+                  failed: { type: integer }
+                  pending: { type: integer }
+                  lastError: { type: string, nullable: true }
+                  totals: { type: object, description: "The same counters since the server started (as GET /api/v1/admin/stats reports)." }
+        "403": { description: "Not an admin." }
+
+  /api/v1/admin/stats/rebuild:
+    post:
+      tags: [Stats]
+      summary: Recompute the hourly rollup from the log (admin)
+      description: Every hour that still has events is rewritten exactly; hours whose events were pruned by retention keep their rows.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId: { type: integer, description: "Narrow to one user." }
+      responses:
+        "200":
+          description: Hours rewritten.
+          content:
+            application/json:
+              schema: { type: object, properties: { hours: { type: integer } } }
+        "403": { description: "Not an admin." }
 
   # ── Playlists ────────────────────────────────────────────────────────────
 
@@ -2694,6 +3503,56 @@ paths:
               schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  # ── Sync ─────────────────────────────────────────────────────────────────
+
+  /api/v1/sync/manifest:
+    post:
+      tags: [Sync]
+      summary: Library manifest (paged)
+      description: |
+        Every track the caller can see, ascending by id, for client-side mirrors and
+        offline indexes: the lite metadata block plus size / mtime / hashes. Page with
+        `cursor` = the previous page's `next`. Send the last `revision` back as
+        `If-None-Match` on the first page (no `cursor`) to get a 304 when nothing
+        changed. Advertised by the `sync` flag in `GET /api/v1/ping`.
+      parameters:
+        - in: header
+          name: If-None-Match
+          required: false
+          schema: { type: string }
+          description: A previously returned `revision`, quoted as the `ETag` header carried it.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              allOf:
+                - type: object
+                  properties:
+                    cursor:
+                      type: integer
+                      minimum: 0
+                      description: Return rows with an id greater than this. Omit for the first page.
+                    limit:
+                      type: integer
+                      minimum: 1
+                      maximum: 5000
+                      default: 2000
+                - { $ref: "#/components/schemas/IgnoreVPaths" }
+      responses:
+        "200":
+          description: One page. The `ETag` header carries the revision.
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SyncManifest" }
+        "304":
+          description: Nothing changed since the revision in `If-None-Match` (first page only).
+        "400": { description: "Validation failed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   # ── Transcode ────────────────────────────────────────────────────────────
 
   /transcode/{filepath}:
@@ -3084,7 +3943,14 @@ paths:
   /api/v1/lastfm/scrobble-by-metadata:
     post:
       tags: [Scrobbler - Last.fm]
-      summary: Scrobble a play by metadata
+      summary: Scrobble a play by metadata (legacy)
+      deprecated: true
+      description: |
+        Kept for older clients — public since 2017 and not scheduled for
+        removal. Sends a Last.fm scrobble stamped with the current time for a
+        linked account; touches no counters. A new client reports its plays to
+        `/api/v1/stats/plays`, which counts them and, for a linked account,
+        scrobbles Last.fm with the play's own start time.
       requestBody:
         required: true
         content:
@@ -3111,7 +3977,18 @@ paths:
   /api/v1/lastfm/scrobble-by-filepath:
     post:
       tags: [Scrobbler - Last.fm]
-      summary: Scrobble a play by filepath
+      summary: Scrobble a play by filepath (legacy)
+      deprecated: true
+      description: |
+        Kept for older clients — public since 2022 and not scheduled for
+        removal. Records one counted play of the track at this path as of
+        now (30 seconds listened, outcome `stopped`, source `legacy`), moving
+        `play-count` and `last-played` exactly as it always has, and sends a
+        Last.fm scrobble stamped with the current time for a linked account.
+        The default web player stopped calling it in 6.27 in favour of
+        `/api/v1/stats/plays`, which a new client should use: it takes
+        complete plays after the fact, with their real length, outcome and
+        start time.
       requestBody:
         required: true
         content:
@@ -4939,6 +5816,10 @@ paths:
                         filepath: { type: string, description: "vpath-form path within a granted library (streamable via /media)" }
                         artist: { type: string, nullable: true }
                         title: { type: string, nullable: true }
+                        album: { type: string, nullable: true, description: "Album name from the file's tags (discovery.db V3); null when untagged or from an older peer" }
+                        year: { type: integer, nullable: true, description: "Track year, falling back to the album year" }
+                        isrc: { type: string, nullable: true, description: "ISRC from the file's tags — a direct-hit key on most catalogues" }
+                        releaseGroupMbid: { type: string, nullable: true, description: "MusicBrainz release-group MBID of the album, when tagged" }
                         duration: { type: number, nullable: true }
                         similarity: { type: number, description: "Cosine vs the query vector, 4 decimals" }
                         genreTags:

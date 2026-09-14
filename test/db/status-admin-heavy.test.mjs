@@ -83,9 +83,11 @@ after(() => {
 // ── migrations ──────────────────────────────────────────────────────────────
 
 describe('discovery V2 indexes', () => {
-  test('discovery.db lands at V2 with the embedded-model partial index', () => {
+  test('discovery.db lands at the current schema (≥ V2) with the embedded-model partial index', () => {
     const d2 = ddb.getDiscoveryDb();
-    assert.equal(d2.prepare('PRAGMA user_version').get().user_version, 2);
+    const v = d2.prepare('PRAGMA user_version').get().user_version;
+    assert.equal(v, ddb.DISCOVERY_SCHEMA_VERSION);
+    assert.ok(v >= 2, 'the V2 index migration has been applied');
     const idx = d2.prepare(
       "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_discovery_tracks_embedded_model'"
     ).get();
