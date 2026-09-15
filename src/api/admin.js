@@ -43,24 +43,12 @@ import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
 // ── Path answers for the two admin filesystem routes ─────────────────
 //
 // A readdir failure in the admin file explorer is the admin's path, not
-// the server's health: the folder is gone, is a file, or is unreadable by
-// the account mStream runs as. Answer those as the client errors they
-// are, errno in the message so the reason is visible from the API,
-// instead of the bare 500 "Server Error" that hid the cause in the log.
-// Codes outside this table (EIO, EMFILE, …) fall through to the terminal
-// handler unchanged: those ARE server trouble and deserve the stack.
-// ERR_INVALID_ARG_VALUE is Node's own rejection of a path containing a NUL
-// byte, raised before any syscall — still the caller's path, so 400.
-const EXPLORER_READ_STATUS = Object.freeze({
-  ENOENT: 404, ENOTDIR: 404,
-  EACCES: 400, EPERM: 400, EINVAL: 400, ENAMETOOLONG: 400, ELOOP: 400,
-  ERR_INVALID_ARG_VALUE: 400,
-});
-function explorerReadError(directory, err) {
-  const status = EXPLORER_READ_STATUS[err?.code];
-  if (!status) { return err; }
-  return new WebError(`Cannot read directory "${directory}" (${err.code})`, status);
-}
+// the server's health, and is answered as the client error it is by
+// fileExplorer.pathReadError (util/file-explorer.js) — the mapping is
+// shared with the user-facing explorer and download routes. The admin
+// explorer shows the ABSOLUTE path in the message: admins browse the whole
+// filesystem, so there is nothing to hide (user routes show the virtual
+// path instead).
 
 // Resolve + validate a library root BEFORE anything touches the DB or the
 // router, and answer a bad one with a 400 that says why. `~` forms expand
@@ -216,7 +204,7 @@ export function setup(mstream) {
     try {
       folderContents = await fileExplorer.getDirectoryContents(thisDirectory, {}, true);
     } catch (err) {
-      throw explorerReadError(thisDirectory, err);
+      throw fileExplorer.pathReadError(thisDirectory, err);
     }
 
     res.json({
