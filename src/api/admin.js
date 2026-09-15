@@ -1,6 +1,7 @@
 import path from 'path';
 import child from 'child_process';
 import os from 'os';
+import fs from 'fs/promises';
 import Joi from 'joi';
 import winston from 'winston';
 import { ZipArchive } from 'archiver';
@@ -23,6 +24,7 @@ import * as discoveryStack from '../state/discovery-p2p-stack.js';
 import * as discoveryPeerDbs from '../state/discovery-peer-dbs.js';
 import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
+import { expandHomeDir } from '../util/esm-helpers.js';
 import { isAdminAllowed } from '../util/admin-network.js';
 import WebError from '../util/web-error.js';
 import { bootRustPlayer, killRustPlayer, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers, playerBinaryFetchable } from './server-playback.js';
@@ -37,6 +39,50 @@ import * as adminTorrent from './admin-torrent.js';
 import * as adminFederation from './admin-federation.js';
 
 import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
+
+// ── Path answers for the two admin filesystem routes ─────────────────
+//
+// A readdir failure in the admin file explorer is the admin's path, not
+// the server's health: the folder is gone, is a file, or is unreadable by
+// the account mStream runs as. Answer those as the client errors they
+// are, errno in the message so the reason is visible from the API,
+// instead of the bare 500 "Server Error" that hid the cause in the log.
+// Codes outside this table (EIO, EMFILE, …) fall through to the terminal
+// handler unchanged: those ARE server trouble and deserve the stack.
+// ERR_INVALID_ARG_VALUE is Node's own rejection of a path containing a NUL
+// byte, raised before any syscall — still the caller's path, so 400.
+const EXPLORER_READ_STATUS = Object.freeze({
+  ENOENT: 404, ENOTDIR: 404,
+  EACCES: 400, EPERM: 400, EINVAL: 400, ENAMETOOLONG: 400, ELOOP: 400,
+  ERR_INVALID_ARG_VALUE: 400,
+});
+function explorerReadError(directory, err) {
+  const status = EXPLORER_READ_STATUS[err?.code];
+  if (!status) { return err; }
+  return new WebError(`Cannot read directory "${directory}" (${err.code})`, status);
+}
+
+// Resolve + validate a library root BEFORE anything touches the DB or the
+// router, and answer a bad one with a 400 that says why. `~` forms expand
+// exactly as the file explorer's do, so the stored root is the real
+// absolute path. The raw value used to go straight to admin.addDirectory,
+// whose fs.stat threw for `~`, `~/Music`, a relative `code/music` or an
+// absolute path that does not exist — an unhandled 500 "Server Error"
+// with the reason only in the server log.
+async function resolveLibraryDirectory(raw) {
+  const reject = why =>
+    new WebError(`"directory" must be an absolute path that exists (${why})`, 400);
+  const directory = expandHomeDir(raw);
+  if (!path.isAbsolute(directory)) { throw reject('not an absolute path'); }
+  let stat;
+  try {
+    stat = await fs.stat(directory);
+  } catch (err) {
+    throw reject(err.code || err.message);
+  }
+  if (!stat.isDirectory()) { throw reject('not a directory'); }
+  return directory;
+}
 
 export function setup(mstream) {
   mstream.all('/api/v1/admin/{*path}', (req, res, next) => {
@@ -156,17 +202,22 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
 
-    // Handle home directory
-    let thisDirectory = req.body.directory;
-    if (req.body.directory === '~') {
-      thisDirectory = os.homedir();
-    }
+    // `~`, `~/x` and `~\x` expand to the server's home directory — the one
+    // rule PUT /admin/directory applies too (expandHomeDir). Only the bare
+    // `~` used to be handled, so `~/code` was read literally and the
+    // readdir's ENOENT surfaced as an unhandled 500.
+    let thisDirectory = expandHomeDir(req.body.directory);
 
     if (req.body.joinDirectory) {
       thisDirectory = path.join(thisDirectory, req.body.joinDirectory);
     }
 
-    const folderContents = await fileExplorer.getDirectoryContents(thisDirectory, {}, true);
+    let folderContents;
+    try {
+      folderContents = await fileExplorer.getDirectoryContents(thisDirectory, {}, true);
+    } catch (err) {
+      throw explorerReadError(thisDirectory, err);
+    }
 
     res.json({
       path: thisDirectory,
@@ -1281,9 +1332,10 @@ export function setup(mstream) {
       followSymlinks: Joi.boolean().default(false)
     });
     const input = joiValidate(schema, req.body);
+    const directory = await resolveLibraryDirectory(input.value.directory);
 
     await admin.addDirectory(
-      input.value.directory,
+      directory,
       input.value.vpath,
       input.value.autoAccess,
       input.value.isAudioBooks,

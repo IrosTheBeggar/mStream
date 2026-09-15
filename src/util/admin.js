@@ -18,6 +18,7 @@ import { getDirname } from './esm-helpers.js';
 import { launchWorker } from './worker-process.js';
 import { invalidateWhitelistCache } from './admin-network.js';
 import { updateJsonAtomic, completedWrites, readJsonFile } from './atomic-json.js';
+import WebError from './web-error.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -107,8 +108,13 @@ export async function addDirectory(directory, vpath, autoAccess, isAudioBooks, f
   const stat = await fs.stat(directory);
   if (!stat.isDirectory()) { throw new Error(`${directory} is not a directory`); }
 
+  // A name collision is the caller's request, not a crash. A WebError is
+  // answered with its status + message (and logged as a warn-level
+  // rejection); the plain Error this used to be surfaced as an unhandled
+  // 500 "Server Error" with the reason only in the server log. Same for
+  // the two unknown-library throws below (404).
   const existing = db.getLibraryByName(vpath);
-  if (existing) { throw new Error(`'${vpath}' already exists`); }
+  if (existing) { throw new WebError(`'${vpath}' already exists`, 409); }
 
   const d = db.getDB();
   const type = isAudioBooks ? 'audio-books' : 'music';
@@ -172,7 +178,7 @@ export async function addDirectory(directory, vpath, autoAccess, isAudioBooks, f
  */
 export async function setLibraryFollowSymlinks(vpath, followSymlinks) {
   const library = db.getLibraryByName(vpath);
-  if (!library) { throw new Error(`'${vpath}' not found`); }
+  if (!library) { throw new WebError(`'${vpath}' not found`, 404); }
   db.getDB().prepare(
     'UPDATE libraries SET follow_symlinks = ? WHERE id = ?'
   ).run(followSymlinks ? 1 : 0, library.id);
@@ -212,7 +218,7 @@ export async function deleteLibraryRows(d, libraryId) {
 
 export async function removeDirectory(vpath) {
   const library = db.getLibraryByName(vpath);
-  if (!library) { throw new Error(`'${vpath}' not found`); }
+  if (!library) { throw new WebError(`'${vpath}' not found`, 404); }
 
   // Cancel this library's backups BEFORE the cascade below destroys
   // their backup_destinations rows. Without this, an in-flight backup
