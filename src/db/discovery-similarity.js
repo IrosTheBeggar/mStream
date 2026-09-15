@@ -27,6 +27,7 @@
 import winston from 'winston';
 import * as discoveryDb from './discovery-db.js';
 import * as config from '../state/config.js';
+import { nameKey } from './name-key.js';
 
 let cache = null;
 
@@ -65,6 +66,21 @@ function l2normalize(v) {
   return v;
 }
 
+// Artist identity in the index = the library's rule (src/db/name-key.js):
+// spellings that fold to one key are ONE artist. Empty / whitespace-only
+// (an untagged row) → null, and the row stays out of the artist space.
+function artistKey(raw) {
+  const key = nameKey(raw);
+  return key || null;
+}
+
+// Memoized per entry; hand-built indexes (tests, embedders) get it on first
+// touch, the way pathBetween memoizes the same-song key.
+function artistKeyOf(e) {
+  if (e.artistKey === undefined) { e.artistKey = artistKey(e.artist); }
+  return e.artistKey;
+}
+
 /**
  * The current similarity index, rebuilt when the dataset or the configured
  * model changed. Returns null when discovery has no store to read (feature
@@ -72,10 +88,19 @@ function l2normalize(v) {
  *
  * Shape: {
  *   modelId, modelVersion, dim,
- *   entries: [{ hash, artist, vec, genreTags }],
+ *   entries: [{ hash, artist, artistKey, vec, genreTags }],
  *   byHash:  Map<hash, entry>,
- *   artists: Map<artistName, { vec, analyzedCount, topTags }>,
+ *   artists: Map<artistKey, { name, vec, analyzedCount, topTags }>,
  * }
+ *
+ * Artist identity is the library's (name_key). A catalogue row keeps the
+ * spelling its track had when it was embedded — frozen until re-embedded —
+ * while the library's artist name is a scan-end consensus that 6.28 merged
+ * across spellings ("Beatles"/"beatles") and re-split credits ("Atb Feat.
+ * X" → "Atb"). Grouping by the folded key keeps ONE centroid per artist and
+ * lets any spelling seed it; `name` is the group's most frequent catalogue
+ * spelling, for callers without a library at hand (the API answers with the
+ * library's current name for the key instead).
  */
 /// Cheapest possible "would a similarity query find anything?" — one indexed
 /// existence check, no vector decode, no index build.
@@ -144,6 +169,7 @@ export function getIndex() {
     }
     const entry = {
       hash: r.audio_hash, artist: r.artist || null, title: r.title || null, vec, genreTags,
+      artistKey: artistKey(r.artist),
       // Same-song dedupe key, precomputed ONCE — pathBetween used to rebuild
       // it per entry per waypoint (two trims + lowercases × 25k × waypoints).
       // Rows without a title dedupe by hash alone (null key).
@@ -166,18 +192,20 @@ export function getIndex() {
     entries[i].vec = matrix.subarray(i * dim, (i + 1) * dim);
   }
 
-  // Artist centroids: mean of the artist's track vectors, re-normalized.
+  // Artist centroids: mean of the artist's track vectors, re-normalized —
+  // one per name_key, whatever spellings the rows carry (see the Shape note).
   // topTags = the artist's most frequent model tags (the "why similar"
   // line for the artists endpoint). Untagged/unknown-artist rows are not
   // part of the artist space.
   const artists = new Map();
   const grouped = new Map();
   for (const e of entries) {
-    if (!e.artist) { continue; }
-    if (!grouped.has(e.artist)) { grouped.set(e.artist, []); }
-    grouped.get(e.artist).push(e);
+    const key = artistKeyOf(e);
+    if (!key) { continue; }
+    if (!grouped.has(key)) { grouped.set(key, []); }
+    grouped.get(key).push(e);
   }
-  for (const [name, list] of grouped) {
+  for (const [key, list] of grouped) {
     const centroid = new Float32Array(dim);
     const tagCounts = new Map();
     for (const e of list) {
@@ -187,7 +215,14 @@ export function getIndex() {
     for (let i = 0; i < dim; i++) { centroid[i] /= list.length; }
     l2normalize(centroid);
     const topTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t]) => t);
-    artists.set(name, { vec: centroid, analyzedCount: list.length, topTags: topTags.length ? topTags : null });
+    // The group's display spelling for callers without a library: the most
+    // frequent catalogue spelling, ties to the first seen (Map order = row order).
+    const spellings = new Map();
+    for (const e of list) { spellings.set(e.artist, (spellings.get(e.artist) || 0) + 1); }
+    let name = list[0].artist;
+    let best = 0;
+    for (const [spelling, n] of spellings) { if (n > best) { best = n; name = spelling; } }
+    artists.set(key, { name, vec: centroid, analyzedCount: list.length, topTags: topTags.length ? topTags : null });
   }
 
   const modelVersion = discoveryDb.getMeta('embedding_model_version') || null;
@@ -462,15 +497,28 @@ export function pathBetween(index, hashA, hashB, waypoints, visible) {
 }
 
 /**
- * All artists ranked by centroid similarity to `seedArtist`'s centroid.
+ * The centroid group for an artist named in ANY spelling, or undefined when
+ * nothing of theirs is embedded.
+ */
+export function artistCentroid(index, artistName) {
+  const key = artistKey(artistName);
+  return key ? index.artists.get(key) : undefined;
+}
+
+/**
+ * All artists ranked by centroid similarity to `seedArtist`'s centroid; the
+ * seed is a name in any spelling. Each result carries the group's `artistKey`
+ * (to look the artist up in the library) and its most frequent catalogue
+ * spelling as `artist`. Null when the seed has no centroid.
  */
 export function rankArtists(index, seedArtist) {
-  const seed = index.artists.get(seedArtist);
+  const seedKey = artistKey(seedArtist);
+  const seed = seedKey ? index.artists.get(seedKey) : undefined;
   if (!seed) { return null; }
   const out = [];
-  for (const [name, a] of index.artists) {
-    if (name === seedArtist) { continue; }
-    out.push({ artist: name, analyzedCount: a.analyzedCount, topTags: a.topTags, similarity: dot(seed.vec, a.vec) });
+  for (const [key, a] of index.artists) {
+    if (key === seedKey) { continue; }
+    out.push({ artist: a.name, artistKey: key, analyzedCount: a.analyzedCount, topTags: a.topTags, similarity: dot(seed.vec, a.vec) });
   }
   out.sort((a, b) => b.similarity - a.similarity);
   return out;
@@ -479,12 +527,15 @@ export function rankArtists(index, seedArtist) {
 /**
  * An artist's own tracks ranked by similarity to `seedVec` — the "entry
  * points" into a similar artist: where to start listening, in the context
- * of the sound the user came from.
+ * of the sound the user came from. `artistName` is any spelling; every row
+ * that folds to the same key counts as theirs.
  */
 export function rankArtistTracks(index, artistName, seedVec) {
+  const key = artistKey(artistName);
   const out = [];
+  if (!key) { return out; }
   for (const e of index.entries) {
-    if (e.artist !== artistName) { continue; }
+    if (artistKeyOf(e) !== key) { continue; }
     out.push({ entry: e, similarity: dot(seedVec, e.vec) });
   }
   out.sort((a, b) => b.similarity - a.similarity);

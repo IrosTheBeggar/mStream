@@ -514,3 +514,83 @@ describe('resolveVisible probe semantics', () => {
     } finally { mdb.close(); }
   });
 });
+
+// ── artist identity = name_key ───────────────────────────────────────────────
+
+describe('artist identity follows the library (name_key), not the catalogue spelling', () => {
+  // Catalogue rows keep the spelling a track had when it was embedded; the
+  // library's artist name is a consensus that 6.28 merged across spellings.
+  // Embed three unembedded fixture tracks under DRIFTED spellings: two Icarus
+  // tracks as 'ICARUS' / ' icarus', one Vosto track as 'VOSTO' — the Vosto
+  // one closest to the Icarus sound, so it must become Vosto's first doorway.
+  const drifted = [
+    ['Return', 'ICARUS', vec(0.97, 0.243, 0, 0)],
+    ['Descent', ' icarus', vec(0.93, 0.368, 0, 0)],
+    ['Static', 'VOSTO', vec(0.9, 0.436, 0, 0)],
+  ];
+
+  before(() => {
+    const mdb = new DatabaseSync(path.join(server.tmpDir, 'db', 'mstream.db'), { readOnly: true });
+    const ddb = openDiscovery();
+    try {
+      const hashOf = mdb.prepare(`
+        SELECT COALESCE(t.audio_hash, t.file_hash) AS hash FROM tracks t WHERE t.title = ?
+      `);
+      const ins = ddb.prepare(`
+        INSERT INTO discovery_tracks
+          (audio_hash, updated_at, export_id, artist, title, duration, model_id, model_version, embedding)
+        VALUES (?, 200, ?, ?, ?, 120, 'test-fake', '1', ?)
+      `);
+      for (const [title, spelling, v] of drifted) {
+        const t = hashOf.get(title);
+        assert.ok(t?.hash, `fixture track '${title}' must exist with a hash`);
+        ins.run(t.hash, `anon:${title.toLowerCase()}`, spelling, title, blob(v));
+      }
+      ddb.prepare("UPDATE discovery_meta SET value = '200' WHERE key = 'row_seq'").run();
+      ddb.prepare("INSERT OR REPLACE INTO discovery_meta (key, value) VALUES ('index_epoch', '200')").run();
+    } finally { ddb.close(); mdb.close(); }
+  });
+
+  after(() => {
+    const ddb = openDiscovery();
+    try {
+      ddb.prepare("DELETE FROM discovery_tracks WHERE title IN ('Return', 'Descent', 'Static')").run();
+      ddb.prepare("UPDATE discovery_meta SET value = '201' WHERE key = 'row_seq'").run();
+      ddb.prepare("INSERT OR REPLACE INTO discovery_meta (key, value) VALUES ('index_epoch', '201')").run();
+    } finally { ddb.close(); }
+  });
+
+  test('one centroid per artist: drifted spellings merge, and the library names the results', async () => {
+    const { status, body } = await api('/api/v1/discovery/local/similar/artists', { artist: 'Icarus' });
+    assert.equal(status, 200);
+    assert.equal(body.notAnalyzed, false);
+    assert.equal(body.seed.analyzedCount, 4, 'the two drifted Icarus rows count toward the seed');
+
+    assert.deepEqual(body.results.map((r) => r.artist), ['Zed', 'Vosto'],
+      'no phantom ICARUS / icarus / VOSTO artists — and Zed (0.9) still beats the Vosto centroid');
+    const vosto = body.results.find((r) => r.artist === 'Vosto');
+    assert.equal(vosto.analyzedCount, 3, "the 'VOSTO' row is Vosto's");
+    assert.deepEqual(vosto.entryPoints.map((e) => e.metadata.title), ['Static', 'Highway'],
+      "the 'VOSTO'-spelled track is the doorway closest to the Icarus sound");
+  });
+
+  test('a seed in any spelling resolves, and the seed echoes the library name', async () => {
+    for (const spelling of ['ICARUS', ' icarus ', 'Icarus']) {
+      const { status, body } = await api('/api/v1/discovery/local/similar/artists', { artist: spelling });
+      assert.equal(status, 200, spelling);
+      assert.equal(body.notAnalyzed, false, spelling);
+      assert.equal(body.seed.artist, 'Icarus', `seed spelled ${JSON.stringify(spelling)} answers under the library's name`);
+      assert.equal(body.seed.analyzedCount, 4, spelling);
+      assert.deepEqual(body.results.map((r) => r.artist), ['Zed', 'Vosto'], spelling);
+    }
+  });
+
+  test('a spelling that exists nowhere verbatim still finds the artist', async () => {
+    // Library 'Vosto', catalogue 'Vosto' + 'VOSTO'; the client says 'vosto'.
+    const { status, body } = await api('/api/v1/discovery/local/similar/artists', { artist: 'vosto' });
+    assert.equal(status, 200);
+    assert.equal(body.seed.artist, 'Vosto');
+    assert.equal(body.seed.analyzedCount, 3);
+    assert.equal(body.notAnalyzed, false);
+  });
+});
