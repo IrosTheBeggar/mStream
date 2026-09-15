@@ -81,7 +81,17 @@ export function setup(mstream) {
       }
 
       if (stat.isDirectory()) {
-        await recursiveFileScan(path.join(directory, file), fileList, path.join(relativePath, file), vPath);
+        try {
+          await recursiveFileScan(path.join(directory, file), fileList, path.join(relativePath, file), vPath);
+        } catch (err) {
+          // An unreadable or vanished SUBfolder must not fail the whole
+          // listing — skip it, like an entry that cannot be stat-ed above.
+          // Only the folder the caller asked for (the top-level call, which
+          // is not wrapped) still surfaces its own readdir failure, as the
+          // route's 404/400. Anything without an fs code is a real bug.
+          if (typeof err?.code !== 'string') { throw err; }
+          winston.warn(`Failed to read directory ${path.join(directory, file)}, skipping.`, { stack: err });
+        }
       } else {
         const extension = fileExplorer.getFileType(file).toLowerCase();
         if (config.program.supportedAudioFiles[extension] === true) {

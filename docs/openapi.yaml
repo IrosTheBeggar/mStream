@@ -3487,7 +3487,9 @@ paths:
           description: >-
             The folder cannot be read (`EACCES`, `EPERM`, …) or the path is
             malformed (a NUL byte → `ERR_INVALID_ARG_VALUE`) — message
-            `Cannot read directory "<virtual path>" (<code>)`.
+            `Cannot read directory "<virtual path>" (<code>)`. Only the requested
+            folder itself can fail this way: an unreadable or vanished
+            subfolder is skipped (logged) and the rest is still listed.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

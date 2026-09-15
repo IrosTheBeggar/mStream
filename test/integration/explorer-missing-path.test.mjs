@@ -105,6 +105,25 @@ describe('the other user-facing path routes map the same way', () => {
     assert.equal(r.body.error, 'Cannot read directory "/scratch/no-such-subdir/" (ENOENT)');
   });
 
+  // The smoke round for this change found the recursive listing of a whole
+  // library answering 400 (before: 500) as soon as ONE subfolder was
+  // unreadable: the recursion's readdir failure propagated and the route
+  // could only name the top folder. A bad subfolder is skipped now, like an
+  // entry that cannot be stat-ed; only the requested folder itself fails.
+  const canProvokeEacces = process.platform !== 'win32' && process.getuid?.() !== 0;
+  test('POST /file-explorer/recursive skips an unreadable subfolder instead of failing', { skip: !canProvokeEacces }, async () => {
+    const locked = path.join(root, 'locked');
+    await fs.mkdir(locked, { recursive: true });
+    await fs.chmod(locked, 0o000);
+    try {
+      const r = await api('/api/v1/file-explorer/recursive', { directory: '/scratch/' });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.deepEqual(r.body, ['scratch/album/song.mp3']);
+    } finally {
+      await fs.chmod(locked, 0o755);
+    }
+  });
+
   test('POST /file-explorer/m3u on a missing playlist → 404 ENOENT', async () => {
     const r = await api('/api/v1/file-explorer/m3u', { path: '/scratch/no-such.m3u' });
     assert.equal(r.status, 404, JSON.stringify(r.body));
