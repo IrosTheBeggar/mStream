@@ -97,3 +97,17 @@ export const dataRoot = resolveDataRoot();
 // True when appRoot was unwritable and we fell back — worth a log line at boot,
 // since it changes where the user's library config and database live.
 export const usingFallbackDataRoot = dataRoot !== appRoot;
+
+// Expand a leading `~` to the home directory the way a shell does for the
+// bare form only: `~` alone, or `~` followed by a path separator (`~/Music`,
+// `~\Music` → home + the rest). `~alice/Music` and `~foo` come back
+// unchanged — no user lookups, and reading `~foo` as home + `foo` would
+// silently point somewhere else. One rule, shared by the admin file
+// explorer and the library-add route (src/api/admin.js) so the two agree.
+// `homedir` is injectable for tests.
+export function expandHomeDir(p, homedir = os.homedir) {
+  if (typeof p !== 'string') { return p; }
+  if (p === '~') { return homedir(); }
+  if (p.startsWith('~/') || p.startsWith('~\\')) { return join(homedir(), p.slice(2)); }
+  return p;
+}

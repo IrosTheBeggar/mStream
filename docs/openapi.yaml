@@ -4027,7 +4027,13 @@ paths:
               type: object
               required: [directory, vpath]
               properties:
-                directory: { type: string, description: "Absolute filesystem path." }
+                directory:
+                  type: string
+                  description: >-
+                    Absolute path of an existing directory. A leading `~`
+                    (alone or before a path separator, e.g. `~/Music`)
+                    expands to the server's home directory, and the expanded
+                    path is what gets stored.
                 vpath:
                   type: string
                   pattern: "[a-zA-Z0-9-]+"
@@ -4043,6 +4049,24 @@ paths:
                     scan the add queues).
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "400":
+          description: >-
+            `directory` is not an absolute path to an existing directory
+            after `~` expansion — message
+            `"directory" must be an absolute path that exists (<why>)`,
+            where `<why>` is `not an absolute path`, `not a directory`,
+            or the stat errno (`ENOENT`, `EACCES`, …) — or `vpath` is
+            not a slug.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: >-
+            A library named `vpath` already exists — message
+            `'<vpath>' already exists`. Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
     delete:
       tags: [Admin - Libraries]
@@ -4060,6 +4084,13 @@ paths:
                   pattern: "[a-zA-Z0-9-]+"
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404":
+          description: >-
+            No library named `vpath` — message `'<vpath>' not found`.
+            Nothing is removed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   # ── Admin - Config ───────────────────────────────────────────────────────
@@ -4591,7 +4622,12 @@ paths:
               type: object
               required: [directory]
               properties:
-                directory: { type: string, description: "Absolute path, or `~` for home." }
+                directory:
+                  type: string
+                  description: >-
+                    Absolute path, or `~` / `~/…` (`~\…` on Windows) for
+                    the server's home directory and paths under it. The
+                    response `path` is the expanded absolute path.
                 joinDirectory: { type: string }
       responses:
         "200":
@@ -4604,6 +4640,20 @@ paths:
                   path: { type: string }
                   directories: { type: array, items: { type: object } }
                   files: { type: array, items: { type: object } }
+        "400":
+          description: >-
+            The directory cannot be read (`EACCES`, `EPERM`, …); the errno
+            is in the message, e.g. `Cannot read directory "/root" (EACCES)`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            No such directory (`ENOENT`), or the path is a file (`ENOTDIR`);
+            the errno is in the message.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/file-explorer/win-drives:
