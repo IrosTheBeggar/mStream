@@ -14,6 +14,7 @@ real processes. Run them by hand when working on the matching code.
 | Boot-watchdog rollback, Windows (`update-watchdog-smoke.ps1`) | `npm run test:smoke:update-watchdog:win` | a built launcher plus `rustc` on PATH (the stub servers are compiled on the spot) |
 | Update apply cycle (`update-apply-smoke.sh`) | `npm run test:smoke:update-apply` | a built launcher + `python3`; ~2.5 min (two 60s launcher polls); Linux headless needs `xvfb-run` |
 | Boot-probe under PowerShell 5.1 (`boot-probe-51-smoke.ps1`) | `npm run test:smoke:boot-probe:win51` | `rustc` + git-bash + real Python; run under `powershell.exe` (Desktop 5.1) — that floor is the point |
+| API error codes (`api-error-codes-smoke.mjs`) | `npm run test:smoke:api-errors` | Node + the fixture library only (built by `npm test`'s pretest); boots a throwaway server; ~2 min |
 
 Each script just runs the harness; bringing the daemons up (and tearing them
 down) is the operator's job. The setup, credentials and env knobs are
@@ -33,6 +34,16 @@ documented at:
   [update-apply-smoke.sh](update-apply-smoke.sh) — the positive half: an
   armed `update-status.json` applies the staged version (takeover, `current`
   honored, status rewritten clean) with no stale-arm relaunch churn.
+- **API error codes:** the header comment of
+  [api-error-codes-smoke.mjs](api-error-codes-smoke.mjs) — the one harness
+  here that needs no external system. It boots a throwaway server with an
+  admin and a non-admin and checks what the path- and name-taking routes
+  answer for the caller's mistakes (4xx with a reason, never a bare 500),
+  using the REAL home directory for `~`, hostile filesystem inputs, the
+  routes that catch the resolver's errors themselves, a library
+  add → scan → serve → delete lifecycle, and a grep of the server log for
+  crash lines. The integration suites pin the same contracts
+  deterministically; this is the broad, real-environment sweep.
 - **CI note:** the update watchdog + apply smokes ALSO run automatically on
   launcher PRs (the `check` matrix in `build-rust-launcher.yml` runs them
   with the binary it just built) — this table stays the manual entry point

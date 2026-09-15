@@ -121,14 +121,16 @@ describe('POST /api/v1/admin/users/lastfm', () => {
     assert.equal(r.status, 403);
   });
 
-  test('unknown target user surfaces the helper\'s thrown error (500)', async () => {
-    // setUserLastFM throws a bare Error for a non-existent user — same shape as
-    // every sibling user-management helper (editUserPassword, deleteUser, …),
-    // which the global handler maps to 500. Pinned here so the not-found guard
-    // can't silently regress into a no-op or a wrong-row write.
+  test('unknown target user → 404 (the helper\'s not-found guard, as a WebError)', async () => {
+    // setUserLastFM throws for a non-existent user — same shape as every
+    // sibling user-management helper (editUserPassword, deleteUser, …). It
+    // used to be a bare Error, which the global handler mapped to 500; it is
+    // a WebError 404 now. Still pinned so the guard can't silently regress
+    // into a no-op or a wrong-row write.
     const r = await post('/api/v1/admin/users/lastfm', {
       username: 'ghost', lastfmUser: 'x', lastfmPassword: 'y',
     });
-    assert.equal(r.status, 500);
+    assert.equal(r.status, 404);
+    assert.equal((await r.json()).error, "'ghost' does not exist");
   });
 });
