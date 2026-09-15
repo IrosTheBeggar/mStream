@@ -1017,7 +1017,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Forbidden:
-      description: Validation error or permission denied.
+      description: Permission denied — authenticated, but not allowed (admin role, per-user flag or library access missing). Validation failures answer 400, never 403.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -5040,6 +5040,13 @@ paths:
                 allowUpload: { type: boolean, default: true }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "409":
+          description: >-
+            A user named `username` already exists — message
+            `'<username>' already exists`. Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
     delete:
       tags: [Admin - Users]
@@ -5055,6 +5062,13 @@ paths:
                 username: { type: string }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404":
+          description: >-
+            No user named `username` — message `'<username>' does not exist`.
+            Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/users/password:
@@ -5073,6 +5087,13 @@ paths:
                 password: { type: string }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404":
+          description: >-
+            No user named `username` — message `'<username>' does not exist`.
+            Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/users/lastfm:
@@ -5093,6 +5114,13 @@ paths:
                 lasftfmPassword: { type: string }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404":
+          description: >-
+            No user named `username` — message `'<username>' does not exist`.
+            Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/users/vpaths:
@@ -5113,6 +5141,13 @@ paths:
                   items: { type: string }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404":
+          description: >-
+            No user named `username` — message `'<username>' does not exist`.
+            Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/users/access:
@@ -5134,6 +5169,13 @@ paths:
                 allowFileModify: { type: boolean, default: true }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404":
+          description: >-
+            No user named `username` — message `'<username>' does not exist`.
+            Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   # ── Admin - Libraries ────────────────────────────────────────────────────
@@ -5847,7 +5889,7 @@ paths:
                 followSymlinks: { type: boolean }
       responses:
         "200": { description: Flag updated. }
-        "403": { description: Validation error. }
+        "400": { description: Validation error. }
         "404": { description: Library not found. }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
