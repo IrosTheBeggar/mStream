@@ -76,6 +76,11 @@ describe('GET /stats', () => {
     const html = await page.text();
     assert.ok(html.includes('id="stats"') && html.includes('stats-view.js') && html.includes('id="nav-bar"'), 'the page shell with the top bar');
     assert.ok(!html.includes('id="sidenav"'), 'no sidenav on this page');
+    const playerLinks = [...html.matchAll(/<a\b[^>]*\bdata-player-link\b[^>]*>/g)].map((m) => (/href="([^"]*)"/.exec(m[0]) || [])[1]);
+    assert.equal(playerLinks.length, 2, 'the logo and the back link');
+    for (const href of playerLinks) {
+      assert.equal(new URL(href, `${server.baseUrl}/stats/`).pathname, '/', `${href} leads to the player, not back to this page`);
+    }
     for (const asset of ['stats-view.js', 'index.js', 'index.css']) {
       assert.equal((await fetch(`${server.baseUrl}/stats/${asset}`)).status, 200, asset);
     }
