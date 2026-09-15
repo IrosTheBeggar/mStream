@@ -28,6 +28,7 @@ import winston from 'winston';
 import * as discoveryDb from './discovery-db.js';
 import * as config from '../state/config.js';
 import { nameKey } from './name-key.js';
+import * as db from './manager.js';
 
 let cache = null;
 
@@ -81,6 +82,93 @@ function artistKeyOf(e) {
   return e.artistKey;
 }
 
+// Who owns each embedded row TODAY, by canonical hash: the library track's
+// primary artist (name_key + current display name). The catalogue string is
+// the spelling a track had when it was embedded; the library's word is the
+// artist's identity NOW — spellings V71 merged, credits the scanner has since
+// re-split ("Atb Feat. X" → Atb + featured X), files retagged after their
+// embedding. Duplicate files share a hash: the lowest track id decides,
+// deterministically. Null when no main database is open (module-level
+// callers in tests) — rows then fold by their catalogue spelling alone.
+function loadLibraryOwners() {
+  const main = db.getDB();
+  if (!main) { return null; }
+  const owners = new Map();
+  const rows = main.prepare(`
+    SELECT COALESCE(t.audio_hash, t.file_hash) AS hash, a.name_key AS key, a.name AS name
+      FROM tracks t
+      JOIN artists a ON a.id = t.artist_id
+     WHERE a.name_key IS NOT NULL AND a.name_key <> ''
+     ORDER BY t.id
+  `).all();
+  for (const r of rows) {
+    if (r.hash && !owners.has(r.hash)) { owners.set(r.hash, { key: r.key, name: r.name }); }
+  }
+  return owners;
+}
+
+// The main connection's counter of OTHER connections' commits — the scanner's
+// when a rescan merges, renames or re-homes artists. Null when no main
+// database is open.
+function libraryVersion() {
+  const main = db.getDB();
+  if (!main) { return null; }
+  return main.prepare('PRAGMA data_version').get().data_version;
+}
+
+/**
+ * The artist identity of one catalogue row: the library's when the row's
+ * track is still in the library (`owner` = { key, name } from
+ * loadLibraryOwners), else the folded catalogue spelling with no library name.
+ */
+export function artistIdentity(catalogueArtist, owner) {
+  if (owner) { return { artistKey: owner.key, libraryArtist: owner.name }; }
+  return { artistKey: artistKey(catalogueArtist), libraryArtist: null };
+}
+
+/**
+ * Artist centroid groups over `entries` (each carrying `artistKey`, plus
+ * `libraryArtist` when library-owned): one group per key — mean of the
+ * group's vectors, re-normalized — with `analyzedCount`, the three most
+ * frequent model tags as `topTags` (the "why similar" line), and `name`: the
+ * library's current name when any row is library-owned, else the group's
+ * most frequent catalogue spelling (ties → first seen, Map order = row
+ * order). Rows without a key (untagged orphans) are not part of the artist
+ * space.
+ */
+export function groupArtists(entries, dim) {
+  const grouped = new Map();
+  for (const e of entries) {
+    const key = artistKeyOf(e);
+    if (!key) { continue; }
+    if (!grouped.has(key)) { grouped.set(key, []); }
+    grouped.get(key).push(e);
+  }
+  const artists = new Map();
+  for (const [key, list] of grouped) {
+    const centroid = new Float32Array(dim);
+    const tagCounts = new Map();
+    const spellings = new Map();
+    let libraryName = null;
+    for (const e of list) {
+      for (let i = 0; i < dim; i++) { centroid[i] += e.vec[i]; }
+      for (const t of e.genreTags || []) { tagCounts.set(t, (tagCounts.get(t) || 0) + 1); }
+      if (e.artist) { spellings.set(e.artist, (spellings.get(e.artist) || 0) + 1); }
+      if (!libraryName && e.libraryArtist) { libraryName = e.libraryArtist; }
+    }
+    for (let i = 0; i < dim; i++) { centroid[i] /= list.length; }
+    l2normalize(centroid);
+    const topTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t]) => t);
+    let name = libraryName;
+    if (!name) {
+      let best = 0;
+      for (const [spelling, n] of spellings) { if (n > best) { best = n; name = spelling; } }
+    }
+    artists.set(key, { name, vec: centroid, analyzedCount: list.length, topTags: topTags.length ? topTags : null });
+  }
+  return artists;
+}
+
 /**
  * The current similarity index, rebuilt when the dataset or the configured
  * model changed. Returns null when discovery has no store to read (feature
@@ -88,19 +176,22 @@ function artistKeyOf(e) {
  *
  * Shape: {
  *   modelId, modelVersion, dim,
- *   entries: [{ hash, artist, artistKey, vec, genreTags }],
+ *   entries: [{ hash, artist, artistKey, libraryArtist, vec, genreTags }],
  *   byHash:  Map<hash, entry>,
  *   artists: Map<artistKey, { name, vec, analyzedCount, topTags }>,
  * }
  *
- * Artist identity is the library's (name_key). A catalogue row keeps the
- * spelling its track had when it was embedded — frozen until re-embedded —
- * while the library's artist name is a scan-end consensus that 6.28 merged
- * across spellings ("Beatles"/"beatles") and re-split credits ("Atb Feat.
- * X" → "Atb"). Grouping by the folded key keeps ONE centroid per artist and
- * lets any spelling seed it; `name` is the group's most frequent catalogue
- * spelling, for callers without a library at hand (the API answers with the
- * library's current name for the key instead).
+ * Artist identity is the library's. A catalogue row keeps the spelling its
+ * track had when it was embedded — frozen until re-embedded — while the
+ * library moves on: V71 merged spellings ("Beatles"/"beatles"), the 6.28
+ * scanner re-splits credits ("Atb Feat. X" → Atb + featured X), files get
+ * retagged. So a row whose track is still in the library takes that track's
+ * primary artist as its identity (`artistKey` = the artist's name_key,
+ * `libraryArtist` = its current name), joined by canonical hash at build
+ * time; a row whose track is gone folds its catalogue spelling with nameKey
+ * (so a deleted file's embedding still counts for its artist). ONE centroid
+ * per artist, any spelling seeds it, and the index rebuilds when the library
+ * changes under it (see libraryVersion), not only when the catalogue does.
  */
 /// Cheapest possible "would a similarity query find anything?" — one indexed
 /// existence check, no vector decode, no index build.
@@ -140,11 +231,16 @@ export function getIndex() {
   // Batch-grained key when a writer has ever published; per-write fallback
   // otherwise (pre-epoch DBs, tests writing directly).
   const seq = epoch !== null ? epoch : rowSeq;
+  const libVersion = libraryVersion();
   if (cache && cache.seq === seq && cache.modelId === modelId) {
-    // Epoch says fresh but rows moved underneath and nobody published —
-    // serve the cache until it ages out, then rebuild despite the epoch.
+    // Epoch says fresh but rows moved underneath and nobody published — or
+    // the LIBRARY changed under the artist identities (another connection
+    // committed: a rescan that merged, renamed or re-homed artists) — serve
+    // the cache until it ages out, then rebuild despite the epoch. Bounded
+    // staleness and bounded churn, both ways.
     const unpublishedDrift = epoch !== null && cache.rowSeq !== rowSeq;
-    if (!unpublishedDrift || Date.now() - cache.builtAt < STALE_REBUILD_MS) {
+    const libraryDrift = libVersion !== null && cache.libVersion !== libVersion;
+    if ((!unpublishedDrift && !libraryDrift) || Date.now() - cache.builtAt < STALE_REBUILD_MS) {
       return cache;
     }
   }
@@ -156,6 +252,8 @@ export function getIndex() {
      WHERE embedding IS NOT NULL AND model_id = ?
   `).all(modelId);
 
+  const owners = loadLibraryOwners();
+  let owned = 0;
   const entries = [];
   const byHash = new Map();
   let dim = null;
@@ -167,9 +265,11 @@ export function getIndex() {
     if (r.genre_tags) {
       try { genreTags = JSON.parse(r.genre_tags); } catch (_e) { /* stays null */ }
     }
+    const owner = owners ? owners.get(r.audio_hash) : undefined;
+    if (owner) { owned++; }
     const entry = {
       hash: r.audio_hash, artist: r.artist || null, title: r.title || null, vec, genreTags,
-      artistKey: artistKey(r.artist),
+      ...artistIdentity(r.artist, owner),
       // Same-song dedupe key, precomputed ONCE — pathBetween used to rebuild
       // it per entry per waypoint (two trims + lowercases × 25k × waypoints).
       // Rows without a title dedupe by hash alone (null key).
@@ -192,42 +292,12 @@ export function getIndex() {
     entries[i].vec = matrix.subarray(i * dim, (i + 1) * dim);
   }
 
-  // Artist centroids: mean of the artist's track vectors, re-normalized —
-  // one per name_key, whatever spellings the rows carry (see the Shape note).
-  // topTags = the artist's most frequent model tags (the "why similar"
-  // line for the artists endpoint). Untagged/unknown-artist rows are not
-  // part of the artist space.
-  const artists = new Map();
-  const grouped = new Map();
-  for (const e of entries) {
-    const key = artistKeyOf(e);
-    if (!key) { continue; }
-    if (!grouped.has(key)) { grouped.set(key, []); }
-    grouped.get(key).push(e);
-  }
-  for (const [key, list] of grouped) {
-    const centroid = new Float32Array(dim);
-    const tagCounts = new Map();
-    for (const e of list) {
-      for (let i = 0; i < dim; i++) { centroid[i] += e.vec[i]; }
-      for (const t of e.genreTags || []) { tagCounts.set(t, (tagCounts.get(t) || 0) + 1); }
-    }
-    for (let i = 0; i < dim; i++) { centroid[i] /= list.length; }
-    l2normalize(centroid);
-    const topTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t]) => t);
-    // The group's display spelling for callers without a library: the most
-    // frequent catalogue spelling, ties to the first seen (Map order = row order).
-    const spellings = new Map();
-    for (const e of list) { spellings.set(e.artist, (spellings.get(e.artist) || 0) + 1); }
-    let name = list[0].artist;
-    let best = 0;
-    for (const [spelling, n] of spellings) { if (n > best) { best = n; name = spelling; } }
-    artists.set(key, { name, vec: centroid, analyzedCount: list.length, topTags: topTags.length ? topTags : null });
-  }
+  // Artist centroids — one per artist identity (see the Shape note).
+  const artists = groupArtists(entries, dim || 0);
 
   const modelVersion = discoveryDb.getMeta('embedding_model_version') || null;
-  cache = { seq, rowSeq, builtAt: Date.now(), modelId, modelVersion, dim, entries, byHash, artists, matrix };
-  winston.info(`discovery similarity index built: ${entries.length} tracks, ${artists.size} artists, ${dim}-d (${Date.now() - started} ms)`);
+  cache = { seq, rowSeq, libVersion, builtAt: Date.now(), modelId, modelVersion, dim, entries, byHash, artists, matrix };
+  winston.info(`discovery similarity index built: ${entries.length} tracks, ${artists.size} artists, ${dim}-d (${Date.now() - started} ms); ${owned} rows keyed by the library, ${entries.length - owned} by catalogue spelling`);
   return cache;
 }
 

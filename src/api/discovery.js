@@ -402,11 +402,13 @@ export function setup(mstream) {
     if (!seedStats || seedStats.n === 0) { throw new WebError('Artist not found', 404); }
 
     // Everything keys on name_key: the client may hold any spelling (a stale
-    // queue, a peer's catalogue), each catalogue row keeps the spelling its
-    // track had when it was embedded, and the library's name is the
-    // consensus 6.28 merged across spellings. The response speaks the
-    // library's — seed and candidates come back under their current names
-    // (name_key is UNIQUE on artists, so MAX(a.name) is the one row's name).
+    // queue, a peer's catalogue); the index takes each embedded row's artist
+    // from the LIBRARY track that still owns its hash (so a credit the scanner
+    // re-split since the embedding counts for its primary artist) and folds
+    // the catalogue spelling only for rows whose file is gone. The response
+    // speaks the library's — seed and candidates come back under their
+    // current names (name_key is UNIQUE on artists, so MAX(a.name) is the one
+    // row's name).
     const seedCentroid = sim.artistCentroid(index, body.artist);
     const seed = {
       artist: seedStats.name,
