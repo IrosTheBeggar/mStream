@@ -118,6 +118,12 @@ describe('POST /api/v1/admin/file-explorer — `~` forms and readdir failures', 
     assert.match(r.body.error, /ENOENT/);
   });
 
+  test('a NUL byte in the path → 400 ERR_INVALID_ARG_VALUE (Node rejects it before the syscall)', async () => {
+    const r = await explore({ directory: '/tmp/\u0000x' });
+    assert.equal(r.status, 400, JSON.stringify(r.body));
+    assert.match(r.body.error, /ERR_INVALID_ARG_VALUE/);
+  });
+
   // chmod 000 means nothing to root and nothing to Windows ACLs, so the
   // EACCES leg runs only where it can actually be provoked.
   const canProvokeEacces = process.platform !== 'win32' && process.getuid?.() !== 0;
@@ -143,6 +149,7 @@ describe('PUT /api/v1/admin/directory — root must be an absolute directory tha
     ['`~/…` that does not exist (expanded, then stat-ed)', '~/does-not-exist',          /ENOENT/],
     ['a regular file',                           () => filePath,                        /not a directory/],
     ['a `~user` form (never expanded)',          '~alice/Music',                        /not an absolute path/],
+    ['a path with a NUL byte',                   '/tmp/\u0000x',                        /ERR_INVALID_ARG_VALUE/],
   ];
   rejected.forEach(([label, dir, why], i) => {
     test(`${label} → 400 with the reason`, async () => {

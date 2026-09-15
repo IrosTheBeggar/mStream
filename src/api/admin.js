@@ -49,9 +49,12 @@ import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
 // instead of the bare 500 "Server Error" that hid the cause in the log.
 // Codes outside this table (EIO, EMFILE, …) fall through to the terminal
 // handler unchanged: those ARE server trouble and deserve the stack.
+// ERR_INVALID_ARG_VALUE is Node's own rejection of a path containing a NUL
+// byte, raised before any syscall — still the caller's path, so 400.
 const EXPLORER_READ_STATUS = Object.freeze({
   ENOENT: 404, ENOTDIR: 404,
   EACCES: 400, EPERM: 400, EINVAL: 400, ENAMETOOLONG: 400, ELOOP: 400,
+  ERR_INVALID_ARG_VALUE: 400,
 });
 function explorerReadError(directory, err) {
   const status = EXPLORER_READ_STATUS[err?.code];

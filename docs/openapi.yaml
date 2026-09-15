@@ -4642,8 +4642,9 @@ paths:
                   files: { type: array, items: { type: object } }
         "400":
           description: >-
-            The directory cannot be read (`EACCES`, `EPERM`, …); the errno
-            is in the message, e.g. `Cannot read directory "/root" (EACCES)`.
+            The directory cannot be read (`EACCES`, `EPERM`, …) or the path
+            is malformed (a NUL byte → `ERR_INVALID_ARG_VALUE`); the code is
+            in the message, e.g. `Cannot read directory "/root" (EACCES)`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
