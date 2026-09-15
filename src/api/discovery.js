@@ -395,15 +395,21 @@ export function setup(mstream) {
     // Live library facts about the seed artist — also the access check:
     // an artist with no tracks visible to this user doesn't exist for them.
     const seedStats = d().prepare(`
-      SELECT COUNT(*) AS n FROM tracks t
+      SELECT COUNT(*) AS n, MAX(a.name) AS name FROM tracks t
       JOIN artists a ON a.id = t.artist_id
       WHERE a.name_key = ? AND ${filter.clause}
     `).get(nameKey(body.artist), ...filter.params);
     if (!seedStats || seedStats.n === 0) { throw new WebError('Artist not found', 404); }
 
-    const seedCentroid = index.artists.get(body.artist);
+    // Everything keys on name_key: the client may hold any spelling (a stale
+    // queue, a peer's catalogue), each catalogue row keeps the spelling its
+    // track had when it was embedded, and the library's name is the
+    // consensus 6.28 merged across spellings. The response speaks the
+    // library's — seed and candidates come back under their current names
+    // (name_key is UNIQUE on artists, so MAX(a.name) is the one row's name).
+    const seedCentroid = sim.artistCentroid(index, body.artist);
     const seed = {
-      artist: body.artist,
+      artist: seedStats.name,
       trackCount: seedStats.n,
       analyzedCount: seedCentroid?.analyzedCount ?? 0,
       genreTags: seedCentroid?.topTags ?? null,
@@ -414,7 +420,7 @@ export function setup(mstream) {
     }
 
     const artistVisible = d().prepare(`
-      SELECT 1 FROM tracks t
+      SELECT a.name FROM tracks t
       JOIN artists a ON a.id = t.artist_id
       WHERE a.name_key = ? AND ${filter.clause}
       LIMIT 1
@@ -430,7 +436,8 @@ export function setup(mstream) {
     for (const cand of ranked) {
       if (results.length >= body.limit) { break; }
       if (++considered > maxConsidered) { capped = true; break; }
-      if (!artistVisible.get(nameKey(cand.artist), ...filter.params)) { continue; }
+      const lib = artistVisible.get(cand.artistKey, ...filter.params);
+      if (!lib) { continue; }
 
       // Entry points: the candidate's tracks closest to the SEED's sound —
       // playable doorways that continue the vibe the user came from.
@@ -449,7 +456,7 @@ export function setup(mstream) {
       enrichRows(d(), entryPoints);
 
       results.push({
-        artist: cand.artist,
+        artist: lib.name,
         similarity: Math.round(cand.similarity * 10000) / 10000,
         analyzedCount: cand.analyzedCount,
         genreTags: cand.topTags,
