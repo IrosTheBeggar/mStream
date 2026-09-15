@@ -3436,6 +3436,14 @@ paths:
                   path: { type: string }
                   directories: { type: array, items: { type: object } }
                   files: { type: array, items: { type: object } }
+        "400":
+          description: >-
+            The folder cannot be read (`EACCES`, `EPERM`, …) or the path is
+            malformed (a NUL byte → `ERR_INVALID_ARG_VALUE`) — message
+            `Cannot read directory "<virtual path>" (<code>)`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
@@ -3446,7 +3454,9 @@ paths:
             403 for the access case, so a caller cannot tell whether a
             library they lack exists (the same choice `/media/<vpath>/`
             makes). Every route that resolves a virtual path answers the
-            same way.
+            same way. Also 404 when the folder itself is gone or is a file
+            — message `Cannot read directory "<virtual path>" (ENOENT|ENOTDIR)`,
+            never the library's path on disk.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3473,7 +3483,23 @@ paths:
                 type: array
                 items: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "400":
+          description: >-
+            The folder cannot be read (`EACCES`, `EPERM`, …) or the path is
+            malformed (a NUL byte → `ERR_INVALID_ARG_VALUE`) — message
+            `Cannot read directory "<virtual path>" (<code>)`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            The path's library is not among the caller's libraries or does not exist (`User does not have access to path <vpath>` — the same 404 as `/api/v1/file-explorer`, existence not revealed);
+            or the folder is gone or is a file — message
+            `Cannot read directory "<virtual path>" (ENOENT|ENOTDIR)`, never the
+            library's path on disk.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/file-explorer/mkdir:
     post:
@@ -3555,7 +3581,23 @@ paths:
                         name: { type: string }
                         path: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "400":
+          description: >-
+            `path` missing (validation), or the playlist cannot be read (`EACCES`, `EPERM`, …) or the path is
+            malformed (a NUL byte → `ERR_INVALID_ARG_VALUE`) — message
+            `Cannot read playlist "<virtual path>" (<code>)`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            The path's library is not among the caller's libraries or does not exist (`User does not have access to path <vpath>` — the same 404 as `/api/v1/file-explorer`, existence not revealed);
+            or the playlist file is missing or is a folder — message
+            `Cannot read playlist "<virtual path>" (ENOENT|EISDIR)`, never the
+            library's path on disk.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   # ── Download ─────────────────────────────────────────────────────────────
 
@@ -3579,7 +3621,23 @@ paths:
             application/zip:
               schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "400":
+          description: >-
+            The playlist cannot be read (`EACCES`, `EPERM`, …) or the path is
+            malformed (a NUL byte → `ERR_INVALID_ARG_VALUE`) — message
+            `Cannot read playlist "<virtual path>" (<code>)`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            The path's library is not among the caller's libraries or does not exist (`User does not have access to path <vpath>` — the same 404 as `/api/v1/file-explorer`, existence not revealed);
+            or the playlist file is missing or is a folder — message
+            `Cannot read playlist "<virtual path>" (ENOENT|EISDIR)`, never the
+            library's path on disk.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/download/directory:
     post:
@@ -3601,7 +3659,23 @@ paths:
             application/zip:
               schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "400":
+          description: >-
+            Not a directory (`Not A Directory`), or the folder cannot be read (`EACCES`, `EPERM`, …) or the path is
+            malformed (a NUL byte → `ERR_INVALID_ARG_VALUE`) — message
+            `Cannot read directory "<virtual path>" (<code>)`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            The path's library is not among the caller's libraries or does not exist (`User does not have access to path <vpath>` — the same 404 as `/api/v1/file-explorer`, existence not revealed);
+            or the folder is gone or is a file — message
+            `Cannot read directory "<virtual path>" (ENOENT|ENOTDIR)`, never the
+            library's path on disk.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/download/shared:
     get:

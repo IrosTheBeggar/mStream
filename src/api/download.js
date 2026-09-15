@@ -10,6 +10,7 @@ import { parseSizeToBytes } from '../util/parse-size.js';
 import { joiValidate } from '../util/validation.js';
 import Joi from 'joi';
 import WebError from '../util/web-error.js';
+import { pathReadError } from '../util/file-explorer.js';
 
 // Configured cap on a bulk download's total uncompressed size, in bytes.
 // 0 = unlimited (the default, and the fallback if the configured string is
@@ -80,7 +81,14 @@ export function setup(mstream) {
     joiValidate(Joi.object({ path: Joi.string().required() }), req.body);
     const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
     const playlistParentDir = path.dirname(pathInfo.fullPath);
-    const songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
+    let songs;
+    try {
+      songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
+    } catch (err) {
+      // A missing or unreadable playlist is the caller's path, not a crash:
+      // 404/400 with the caller's virtual path (util/file-explorer.js).
+      throw pathReadError(req.body.path, err, 'playlist');
+    }
 
     // Resolve the entries we'll actually archive (those that stay within the
     // library root), then size-gate before streaming.
@@ -119,7 +127,13 @@ export function setup(mstream) {
     joiValidate(Joi.object({ directory: Joi.string().required() }), req.body);
 
     const pathInfo = vpath.getVPathInfo(req.body.directory, req.user);
-    if (!(await fs.stat(pathInfo.fullPath)).isDirectory()) { throw new WebError('Not A Directory', 400); }
+    let stat;
+    try {
+      stat = await fs.stat(pathInfo.fullPath);
+    } catch (err) {
+      throw pathReadError(req.body.directory, err);
+    }
+    if (!stat.isDirectory()) { throw new WebError('Not A Directory', 400); }
     await enforceDirLimit(pathInfo.fullPath);
 
     const archive = new ZipArchive();

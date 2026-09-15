@@ -43,8 +43,16 @@ export function setup(mstream) {
 
     // Bounds check is handled by getVPathInfo — it throws if fullPath escapes basePath
 
-    // get directory contents
-    const folderContents = await fileExplorer.getDirectoryContents(pathInfo.fullPath, config.program.supportedAudioFiles, value.sort, value.pullMetadata, value.directory, req.user);
+    // get directory contents. A folder that is gone, is a file, or is
+    // unreadable is the caller's path, not a crash — it used to surface as
+    // an unhandled 500. pathReadError maps the fs code to 404/400; the
+    // message shows the caller's VIRTUAL path, never the library's root.
+    let folderContents;
+    try {
+      folderContents = await fileExplorer.getDirectoryContents(pathInfo.fullPath, config.program.supportedAudioFiles, value.sort, value.pullMetadata, value.directory, req.user);
+    } catch (err) {
+      throw fileExplorer.pathReadError(value.directory, err);
+    }
 
     // Format directory string for return value
     let returnDirectory = path.join(pathInfo.vpath, pathInfo.relativePath);
@@ -93,7 +101,13 @@ export function setup(mstream) {
 
     // Bounds check is handled by getVPathInfo
 
-    res.json(await recursiveFileScan(pathInfo.fullPath, [], pathInfo.relativePath, pathInfo.vpath));
+    let files;
+    try {
+      files = await recursiveFileScan(pathInfo.fullPath, [], pathInfo.relativePath, pathInfo.vpath);
+    } catch (err) {
+      throw fileExplorer.pathReadError(req.body.directory, err);
+    }
+    res.json(files);
   });
 
   mstream.post("/api/v1/file-explorer/mkdir", async (req, res) => {
@@ -146,10 +160,18 @@ export function setup(mstream) {
   });
 
   mstream.post("/api/v1/file-explorer/m3u", async (req, res) => {
+    // Validate up front: a missing `path` used to reach getVPathInfo as
+    // undefined and die with a TypeError (500).
+    joiValidate(Joi.object({ path: Joi.string().required() }), req.body);
     const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
 
     const playlistParentDir = path.dirname(req.body.path);
-    const songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
+    let songs;
+    try {
+      songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
+    } catch (err) {
+      throw fileExplorer.pathReadError(req.body.path, err, 'playlist');
+    }
     const vpathRoot = path.resolve(pathInfo.basePath);
     const playlistDir = path.dirname(pathInfo.fullPath);
 
