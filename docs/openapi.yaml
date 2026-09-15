@@ -2370,7 +2370,16 @@ paths:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "404":
+          description: >-
+            The track's library is not among the caller's libraries or does
+            not exist (`User does not have access to path <vpath>` — the
+            same 404 as `/api/v1/file-explorer`, so existence is not
+            revealed), or the track is not in the database (`File Not
+            Found`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/db/recent/added:
     post:

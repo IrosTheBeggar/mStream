@@ -1151,7 +1151,10 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
 
-    const pathInfo = vpath.getVPathInfo(req.body.filepath);
+    // req.user MUST be passed: getVPathInfo's per-user library check is
+    // what stops a caller from rating (or probing) tracks in a library they
+    // were never granted. This was the one route that resolved without it.
+    const pathInfo = vpath.getVPathInfo(req.body.filepath, req.user);
     const lib = db.getLibraryByName(pathInfo.vpath);
     if (!lib) { throw new WebError('Library not found', 404); }
 
