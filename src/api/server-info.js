@@ -49,6 +49,7 @@ import * as db from '../db/manager.js';
 import * as fedDb from '../db/federation.js';
 import * as fedRequestsDb from '../db/federation-requests.js';
 import * as sim from '../db/discovery-similarity.js';
+import * as discoveryPlugins from '../discovery-plugins/index.js';
 import * as transcode from './transcode.js';
 
 // Server-wide capability facts — the `features` object. Everything here
@@ -81,6 +82,10 @@ export function buildFeatures() {
     // Same contract for the panel's "From the network" section
     // (/api/v1/discovery/p2p/*).
     discoveryP2p: config.program.discoveryP2p.enabled === true,
+    // At least one discovery plug-in is switched on, so a recommendation
+    // row has actions to offer (GET /api/v1/discovery/plugins lists them).
+    // The flag, never the list, lives here: the list is per-plug-in state.
+    discoveryPlugins: discoveryPlugins.anyPluginEnabled(),
     // false, or the server's transcode defaults.
     transcode: transcodeInfo,
     // Per-format booleans from config.

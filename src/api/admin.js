@@ -22,6 +22,7 @@ import * as discoveryCatalog from '../state/discovery-catalog.js';
 import * as discoverySeeds from '../state/discovery-seeds.js';
 import * as discoveryStack from '../state/discovery-p2p-stack.js';
 import * as discoveryPeerDbs from '../state/discovery-peer-dbs.js';
+import * as discoveryPlugins from '../discovery-plugins/index.js';
 import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
 import { expandHomeDir } from '../util/esm-helpers.js';
@@ -1499,6 +1500,9 @@ export function setup(mstream) {
       storage: config.program.storage,
       maxRequestSize: config.program.maxRequestSize,
       downloadSizeLimit: config.program.downloadSizeLimit,
+      // Per-plug-in enablement (src/discovery-plugins/); the registry's
+      // full listing, including disabled ones, is what an admin panel edits.
+      discoveryPlugins: config.program.discoveryPlugins,
       autoBootServerAudio: config.program.autoBootServerAudio,
       rustPlayerPort: config.program.rustPlayerPort,
       dbSynchronous: config.program.db?.synchronous || 'FULL',
@@ -1587,6 +1591,24 @@ export function setup(mstream) {
 
     await admin.editDownloadSizeLimit(req.body.downloadSizeLimit);
     res.json({});
+  });
+
+  // Switch one discovery plug-in on or off. Live — the registry reads
+  // config.program per call — so the next /api/v1/discovery/plugins and the
+  // ping flag reflect it at once. The name must be a registered plug-in:
+  // config.json never grows an entry the code doesn't know.
+  mstream.post("/api/v1/admin/config/discovery-plugins", async (req, res) => {
+    const schema = Joi.object({
+      name: Joi.string().pattern(/^[a-z0-9][a-z0-9-]{0,31}$/).required(),
+      enabled: Joi.boolean().strict().required(),
+    });
+    joiValidate(schema, req.body);
+    if (!discoveryPlugins.getPlugin(req.body.name)) {
+      throw new WebError(`unknown discovery plug-in: ${req.body.name}`, 400);
+    }
+
+    await admin.editDiscoveryPlugin(req.body.name, req.body.enabled);
+    res.json({ plugins: discoveryPlugins.listPlugins({ includeDisabled: true }) });
   });
 
   mstream.post("/api/v1/admin/config/port", async (req, res) => {

@@ -1150,6 +1150,13 @@ paths:
                       discoveryP2p:
                         type: boolean
                         description: The discovery network feature is enabled.
+                      discoveryPlugins:
+                        type: boolean
+                        description: >
+                          At least one discovery plug-in is switched on, so
+                          recommendation rows have actions to offer —
+                          `GET /api/v1/discovery/plugins` lists them. A flag,
+                          never a probe.
                       sync:
                         type: boolean
                         description: >
@@ -1228,6 +1235,7 @@ paths:
                   discoveryReady: true
                   discovery: true
                   discoveryP2p: false
+                  discoveryPlugins: true
                   sync: true
                   transcode: false
                   supportedAudioFiles: { mp3: true, flac: true }
@@ -2207,6 +2215,119 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "Discovery is disabled on this server (or nothing has been embedded yet)." }
         "404": { description: "A path does not resolve in the caller's libraries (uniform)." }
+
+  /api/v1/discovery/plugins:
+    get:
+      tags: [Discovery]
+      summary: Discovery plug-ins switched on here
+      description: |
+        What a user may do with a recommendation — a recording the discovery
+        network surfaced that this library does not have. Each plug-in
+        declares capabilities: `links` and `preview` answer
+        `POST /api/v1/discovery/plugins/{name}/resolve`; `acquire` and
+        `handoff` get their own routes when they land. Only enabled plug-ins
+        are listed; the admin panel sees all of them through
+        `GET /api/v1/admin/config`. Gate on `features.discoveryPlugins`
+        from `GET /api/` first — flags, never probes.
+      responses:
+        "200":
+          description: The enabled plug-ins.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plugins:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string, example: links }
+                        title: { type: string, example: Open elsewhere }
+                        description: { type: string }
+                        capabilities:
+                          type: array
+                          items: { type: string, enum: [links, preview, play, acquire, handoff] }
+                        scope: { type: string, enum: [server, user], description: "server = admin configuration only; user = needs per-user credentials" }
+                        enabled: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/discovery/plugins/{name}/resolve:
+    post:
+      tags: [Discovery]
+      summary: Run a links/preview plug-in on one recommendation
+      description: |
+        Hands one recommendation (a row from `/api/v1/discovery/p2p/similar`
+        or `/api/v1/discovery/federation/similar`, passed through as-is —
+        unknown keys are stripped) to a plug-in and returns what it found.
+        The response also carries the normalised recommendation and its
+        persistence `key` (`mbid:<recording-mbid>` when known, else a
+        `text:` digest over artist, title and album) so a client can dedupe
+        the same song offered by several peers.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recommendation]
+              properties:
+                recommendation:
+                  type: object
+                  description: Every field optional and nullable; a plug-in degrades to what is known.
+                  properties:
+                    artist: { type: string, nullable: true }
+                    title: { type: string, nullable: true }
+                    album: { type: string, nullable: true }
+                    year: { type: integer, nullable: true }
+                    isrc: { type: string, nullable: true, description: "12 alphanumerics" }
+                    releaseGroupMbid: { type: string, nullable: true }
+                    recordingMbid: { type: string, nullable: true }
+                    duration: { type: number, nullable: true }
+                    exportId: { type: string, nullable: true }
+                    filepath: { type: string, nullable: true, description: "The PEER's vpath-form path (federation rows)" }
+                    source: { type: string, enum: [p2p, federation, local], default: p2p }
+                    peer:
+                      type: object
+                      nullable: true
+                      properties:
+                        endpointId: { type: string, nullable: true }
+                        id: { nullable: true, oneOf: [{ type: integer }, { type: string }] }
+                        name: { type: string, nullable: true }
+      responses:
+        "200":
+          description: The plug-in's result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plugin: { type: string }
+                  capabilities: { type: array, items: { type: string } }
+                  key: { type: string, example: "text:3f2a…" }
+                  recommendation: { type: object, description: The normalised recommendation. }
+                  result:
+                    type: object
+                    description: >
+                      Shape depends on the capability. `links`:
+                      `{ links: [{ id, label, url, kind: canonical|search }] }`.
+                      `preview`: `{ preview: { provider, url, seconds, title,
+                      artist, album, link, artwork, attribution, match } | null }`
+                      — null when the catalogue has no confident match; show
+                      `attribution` next to the clip. `play`: `{ play: { kind:
+                      stream, url, peer, title, artist, album, duration } | null }`
+                      — `url` is server-relative and tokenless; append the same
+                      `?token=` the /media URLs use.
+        "400": { description: "Malformed body, or the plug-in does not resolve recommendations." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "Unknown or disabled plug-in (disabled plug-ins are invisible, not forbidden)." }
+        "429": { description: "The plug-in's own request budget for its catalogue is spent — try again shortly." }
+        "502": { description: "The plug-in failed to resolve this recommendation (a catalogue was unreachable); the cause is logged server-side." }
 
   # ── Search ───────────────────────────────────────────────────────────────
 

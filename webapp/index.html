@@ -957,12 +957,36 @@
                   </div>
                   <div v-if="discover.p2p.tracks.length" class="discover-rows">
                     <div v-for="pt in discover.p2p.tracks" :key="pt.peer.endpointId + pt.exportId" class="discover-row pointer"
-                         v-on:click="copyDiscoverP2p(pt)" :title="Math.round(pt.similarity * 100) + '% match — on ' + (pt.peer.name || 'a peer server') + '. Click to copy.'">
+                         v-bind:class="{ 'discover-row-open': isDiscoverMenu(pt, 'p2p') }"
+                         v-on:click="openDiscoverMenu(pt, 'p2p')" :title="Math.round(pt.similarity * 100) + '% match — on ' + (pt.peer.name || 'a peer server') + (discover.plugins.available ? '' : '. Click to copy.')">
                       <div class="discover-match"><div class="discover-match-fill discover-match-fill-p2p" :style="{ height: Math.max(15, Math.round(pt.similarity * 100)) + '%' }"></div></div>
                       <div class="discover-row-info">
                         <div class="discover-row-title">{{ pt.title || '(untitled)' }}</div>
                         <div class="discover-row-sub">
                           {{ pt.artist || '' }}<span class="discover-row-tags"><template v-if="pt.album"> &middot; {{ pt.album }}</template> &middot; {{ pt.peer.name || 'peer' }}</span>
+                        </div>
+                        <div v-if="isDiscoverMenu(pt, 'p2p')" class="discover-menu" v-on:click.stop>
+                          <a class="discover-menu-item" v-on:click="copyDiscoverP2p(pt)">{{ tt('discover.menu.copy') }}</a>
+                          <template v-if="discoverPreviewPlugins().length">
+                            <div class="discover-menu-label">{{ tt('discover.menu.preview') }}</div>
+                            <template v-for="pp in discoverPreviewPlugins()">
+                              <a :key="pp.name" class="discover-menu-item" v-bind:class="{ 'discover-menu-item-active': discover.menu.playing === pp.name, 'discover-menu-item-muted': discoverPreviewState(pp.name).status === 'none' || discoverPreviewState(pp.name).status === 'error' }"
+                                 v-on:click="toggleDiscoverPreview(pt, 'p2p', pp)">
+                                <template v-if="discover.menu.playing === pp.name">&#9632; {{ tt('discover.menu.stop') }}</template>
+                                <template v-else-if="discoverPreviewState(pp.name).status === 'loading'">{{ tt('discover.menu.loading') }}</template>
+                                <template v-else-if="discoverPreviewState(pp.name).status === 'none'">{{ pp.title }} &middot; {{ tt('discover.menu.previewNone') }}</template>
+                                <template v-else-if="discoverPreviewState(pp.name).status === 'error'">{{ pp.title }} &middot; {{ tt('discover.menu.previewFailed') }}</template>
+                                <template v-else>&#9654; {{ pp.title }}</template>
+                              </a>
+                              <span :key="pp.name + ':attrib'" v-if="discoverPreviewState(pp.name).preview" class="discover-menu-attrib">
+                                {{ discoverPreviewState(pp.name).preview.attribution }}<template v-if="discoverPreviewState(pp.name).preview.link"> &middot; <a :href="discoverPreviewState(pp.name).preview.link" target="_blank" rel="noopener">{{ tt('discover.menu.open') }}</a></template>
+                              </span>
+                            </template>
+                          </template>
+                          <div class="discover-menu-label">{{ tt('discover.menu.findElsewhere') }}</div>
+                          <div v-if="discover.menu.loading" class="discover-menu-note">{{ tt('discover.menu.loading') }}</div>
+                          <div v-else-if="discover.menu.error" class="discover-menu-note">{{ tt('discover.menu.failed') }}</div>
+                          <a v-for="l in discover.menu.links" :key="l.id" class="discover-menu-item" :href="l.url" target="_blank" rel="noopener">{{ l.label }}</a>
                         </div>
                       </div>
                       <a v-if="discoverP2pMbUrl(pt)" class="discover-add discover-mb-link" :href="discoverP2pMbUrl(pt)" target="_blank" rel="noopener"
@@ -994,6 +1018,7 @@
                   </div>
                   <div v-if="discover.fed.tracks.length" class="discover-rows">
                     <div v-for="ft in discover.fed.tracks" :key="ft.peer.id + ':' + ft.filepath" class="discover-row pointer"
+                         v-bind:class="{ 'discover-row-open': isDiscoverMenu(ft, 'federation') }"
                          v-on:click="queueDiscoverFed(ft)" :title="Math.round(ft.similarity * 100) + '% match — on ' + (ft.peer.name || 'a paired server') + '. Add to queue.'">
                       <div class="discover-match"><div class="discover-match-fill discover-match-fill-fed" :style="{ height: Math.max(15, Math.round(ft.similarity * 100)) + '%' }"></div></div>
                       <div class="discover-row-info">
@@ -1001,6 +1026,34 @@
                         <div class="discover-row-sub">
                           {{ ft.artist || '' }}<span class="discover-row-tags"><template v-if="ft.album"> &middot; {{ ft.album }}</template> &middot; {{ ft.peer.name || 'peer' }}<span v-if="discoverTags(ft.genreTags)"> &middot; {{ discoverTags(ft.genreTags) }}</span></span>
                         </div>
+                        <div v-if="isDiscoverMenu(ft, 'federation')" class="discover-menu" v-on:click.stop>
+                          <a class="discover-menu-item" v-on:click="queueDiscoverFed(ft)">{{ tt('discover.menu.queue') }}</a>
+                          <a class="discover-menu-item" v-on:click="copyDiscoverP2p(ft)">{{ tt('discover.menu.copy') }}</a>
+                          <template v-if="discoverPreviewPlugins().length">
+                            <div class="discover-menu-label">{{ tt('discover.menu.preview') }}</div>
+                            <template v-for="pp in discoverPreviewPlugins()">
+                              <a :key="pp.name" class="discover-menu-item" v-bind:class="{ 'discover-menu-item-active': discover.menu.playing === pp.name, 'discover-menu-item-muted': discoverPreviewState(pp.name).status === 'none' || discoverPreviewState(pp.name).status === 'error' }"
+                                 v-on:click="toggleDiscoverPreview(ft, 'federation', pp)">
+                                <template v-if="discover.menu.playing === pp.name">&#9632; {{ tt('discover.menu.stop') }}</template>
+                                <template v-else-if="discoverPreviewState(pp.name).status === 'loading'">{{ tt('discover.menu.loading') }}</template>
+                                <template v-else-if="discoverPreviewState(pp.name).status === 'none'">{{ pp.title }} &middot; {{ tt('discover.menu.previewNone') }}</template>
+                                <template v-else-if="discoverPreviewState(pp.name).status === 'error'">{{ pp.title }} &middot; {{ tt('discover.menu.previewFailed') }}</template>
+                                <template v-else>&#9654; {{ pp.title }}</template>
+                              </a>
+                              <span :key="pp.name + ':attrib'" v-if="discoverPreviewState(pp.name).preview" class="discover-menu-attrib">
+                                {{ discoverPreviewState(pp.name).preview.attribution }}<template v-if="discoverPreviewState(pp.name).preview.link"> &middot; <a :href="discoverPreviewState(pp.name).preview.link" target="_blank" rel="noopener">{{ tt('discover.menu.open') }}</a></template>
+                              </span>
+                            </template>
+                          </template>
+                          <div class="discover-menu-label">{{ tt('discover.menu.findElsewhere') }}</div>
+                          <div v-if="discover.menu.loading" class="discover-menu-note">{{ tt('discover.menu.loading') }}</div>
+                          <div v-else-if="discover.menu.error" class="discover-menu-note">{{ tt('discover.menu.failed') }}</div>
+                          <a v-for="l in discover.menu.links" :key="l.id" class="discover-menu-item" :href="l.url" target="_blank" rel="noopener">{{ l.label }}</a>
+                        </div>
+                      </div>
+                      <div v-if="discover.plugins.available" class="discover-add discover-more" :title="tt('discover.menu.more')"
+                           v-on:click.stop="openDiscoverMenu(ft, 'federation')">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
                       </div>
                       <a v-if="discoverP2pMbUrl(ft)" class="discover-add discover-mb-link" :href="discoverP2pMbUrl(ft)" target="_blank" rel="noopener"
                          v-on:click.stop title="Open on MusicBrainz">

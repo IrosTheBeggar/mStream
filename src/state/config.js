@@ -638,6 +638,38 @@ const delugeCredsOptions = Joi.object({
   useHttps: Joi.boolean().default(false),
 });
 
+// Discovery plug-ins — what a user may DO with a recommendation the
+// discovery network surfaced (src/discovery-plugins/). One entry per
+// built-in, declared explicitly: the registry treats a plug-in with no
+// entry as OFF, so a plug-in cannot switch itself on by shipping. `links`
+// (URLs built from the recommendation, no network, no credentials) is the
+// base plug-in and defaults ON; anything that talks to a catalogue or lands
+// files will default OFF and carry its own settings here. Flipped live by
+// POST /api/v1/admin/config/discovery-plugins — no reboot.
+const discoveryPluginsOptions = Joi.object({
+  links: Joi.object({
+    enabled: Joi.boolean().default(true),
+  }).default({ enabled: true }),
+  // 30-second previews. Each sends the recommendation's artist + title (or
+  // ISRC) to the catalogue's public search API — only when a user asks for
+  // that provider's preview, never on menu open — the same services the
+  // album-art downloader already queries by default.
+  deezer: Joi.object({
+    enabled: Joi.boolean().default(true),
+  }).default({ enabled: true }),
+  itunes: Joi.object({
+    enabled: Joi.boolean().default(true),
+    // Storefront for the search (two-letter country code); previews and
+    // store links differ per storefront.
+    country: Joi.string().length(2).uppercase().default('US'),
+  }).default({ enabled: true, country: 'US' }),
+  // Full-length playback of a paired peer's recommendation through this
+  // server's federation stream proxy. Nothing leaves the federation.
+  'federation-play': Joi.object({
+    enabled: Joi.boolean().default(true),
+  }).default({ enabled: true }),
+});
+
 const torrentOptions = Joi.object({
   // Pulled from CLIENT_TYPE / ENABLED_FOR — adding a new backend or
   // policy extends the validator automatically. Defaults stay
@@ -800,6 +832,7 @@ const schema = Joi.object({
   iroh: irohOptions.default(irohOptions.validate({}).value),
   federation: federationOptions.default(federationOptions.validate({}).value),
   discoveryP2p: discoveryP2pOptions.default(discoveryP2pOptions.validate({}).value),
+  discoveryPlugins: discoveryPluginsOptions.default(discoveryPluginsOptions.validate({}).value),
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
   discovery: discoveryOptions.default(discoveryOptions.validate({}).value),
   torrent: torrentOptions.default(torrentOptions.validate({}).value),
