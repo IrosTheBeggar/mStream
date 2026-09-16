@@ -32,7 +32,12 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 // Captured at import by dlna.js. Long enough that back-to-back browses in one
 // test stay inside the window, short enough that "aging out" is a quick sleep.
-process.env.MSTREAM_TEST_DLNA_CACHE_TTL_MS = '150';
+// Defined once here so the tests reason about the same number dlna.js uses
+// instead of hard-coding assumptions about it.
+const CACHE_TTL_MS = 150;
+process.env.MSTREAM_TEST_DLNA_CACHE_TTL_MS = String(CACHE_TTL_MS);
+// Sleeping this long after a browse guarantees its memo entry has aged out.
+const PAST_THE_WINDOW_MS = CACHE_TTL_MS + 100;
 
 const SMART_LIMIT = 200;      // mirrors dlna.js
 const RATED_TRACKS = 260;     // > SMART_LIMIT, so the Favorites cap is observable
@@ -259,39 +264,82 @@ describe('xmlEscape strip-probe fast path', () => {
 // ── M10: library-shaped memos ───────────────────────────────────────────────
 
 describe('library browse memos', () => {
-  test('the six view containers are served from the memo inside the window', async () => {
-    dlna.invalidateBrowseCaches();
-    const first = await browse(`lib-${libId}`);
-    assert.equal(numberReturned(first.text), 6);
-    assert.match(first.text, /All Tracks/);
+  // The warm-path assertion below only means something if the second browse
+  // actually landed inside the memo window. Under a fully parallel `npm test`
+  // on a loaded machine the event loop can stall between the two browses for
+  // longer than the window, the memo legitimately ages out (the TTL doing its
+  // job, not a cache bug) and the extra row shows up in the "warm" listing.
+  // So the pair is timed from the outside: the memo entry is stamped no
+  // earlier than t0 and the warm lookup happens no later than t1, hence
+  // t1 - t0 < TTL proves the lookup was a hit. A pair that overran the window
+  // is discarded and re-run rather than judged; if none fits, the warm path
+  // is reported as skipped instead of failing on the machine's load.
+  const WARM_ATTEMPTS = 5;
 
-    // A direct edit that does NOT bump SystemUpdateID stays invisible while
-    // the memo is warm — that is the deal the cache makes.
+  test('the six view containers are served from the memo inside the window', async (t) => {
     const d = manager.getDB();
-    d.prepare(`INSERT INTO tracks (filepath, library_id, title, audio_hash)
-               VALUES ('d0/extra.mp3', ?, 'Extra', 'ah-extra')`).run(libId);
-    const warm = await browse(`lib-${libId}`);
-    assert.equal(warm.text, first.text, 'same rendered listing while the memo is warm');
+    const insertExtra = d.prepare(`INSERT INTO tracks (filepath, library_id, title, audio_hash)
+                                   VALUES ('d0/extra.mp3', ?, 'Extra', 'ah-extra')`);
+    const deleteExtra = d.prepare("DELETE FROM tracks WHERE filepath = 'd0/extra.mp3'");
+    let warmJudged = false;
+    // The extra row must never outlive this test: the search-bounds tests
+    // count on exactly TRACKS rows, so the cleanup runs even when an
+    // assertion throws.
+    try {
+      let first, warm, elapsed;
+      for (let attempt = 1; ; attempt++) {
+        deleteExtra.run();
+        dlna.invalidateBrowseCaches();
+        const t0 = Date.now();
+        first = await browse(`lib-${libId}`);
+        // A direct edit that does NOT bump SystemUpdateID stays invisible while
+        // the memo is warm — that is the deal the cache makes.
+        insertExtra.run(libId);
+        warm = await browse(`lib-${libId}`);
+        elapsed = Date.now() - t0;
+        if (elapsed < CACHE_TTL_MS || attempt === WARM_ATTEMPTS) { break; }
+        t.diagnostic(`browse pair took ${elapsed}ms, outside the ${CACHE_TTL_MS}ms memo window; `
+          + `retrying (${attempt}/${WARM_ATTEMPTS})`);
+      }
+      assert.equal(numberReturned(first.text), 6);
+      assert.match(first.text, /All Tracks/);
+      if (elapsed < CACHE_TTL_MS) {
+        assert.equal(warm.text, first.text, 'same rendered listing while the memo is warm');
+        warmJudged = true;
+      }
 
-    // ...and the TTL is the safety net that eventually reconciles it.
-    await sleep(250);
-    const cold = await browse(`lib-${libId}`);
-    assert.notEqual(cold.text, first.text, 'TTL expiry picks the new track up');
-    d.prepare("DELETE FROM tracks WHERE filepath = 'd0/extra.mp3'").run();
-    dlna.invalidateBrowseCaches();
+      // ...and the TTL is the safety net that eventually reconciles it. This
+      // half is robust to load by construction: a late browse can only be
+      // colder.
+      await sleep(PAST_THE_WINDOW_MS);
+      const cold = await browse(`lib-${libId}`);
+      assert.notEqual(cold.text, first.text, 'TTL expiry picks the new track up');
+    } finally {
+      deleteExtra.run();
+      dlna.invalidateBrowseCaches();
+    }
+    if (!warmJudged) {
+      t.skip(`no browse pair fit inside the ${CACHE_TTL_MS}ms memo window in ${WARM_ATTEMPTS} attempts `
+        + '(machine too loaded to judge the warm path; TTL expiry was still verified)');
+    }
   });
 
   test('a SystemUpdateID bump invalidates immediately, without waiting for the TTL', async () => {
     dlna.invalidateBrowseCaches();
     const before = await browse(`lib-${libId}`);
     const d = manager.getDB();
-    d.prepare(`INSERT INTO tracks (filepath, library_id, title, audio_hash)
-               VALUES ('d0/bumped.mp3', ?, 'Bumped', 'ah-bumped')`).run(libId);
-    dlna.bumpSystemUpdateID();
-    const after = await browse(`lib-${libId}`);
-    assert.notEqual(after.text, before.text, 'the bump dropped the memo');
-    d.prepare("DELETE FROM tracks WHERE filepath = 'd0/bumped.mp3'").run();
-    dlna.bumpSystemUpdateID();
+    // Same leak guard as above: the bumped row is cleaned up even if the
+    // assertion throws.
+    try {
+      d.prepare(`INSERT INTO tracks (filepath, library_id, title, audio_hash)
+                 VALUES ('d0/bumped.mp3', ?, 'Bumped', 'ah-bumped')`).run(libId);
+      dlna.bumpSystemUpdateID();
+      const after = await browse(`lib-${libId}`);
+      assert.notEqual(after.text, before.text, 'the bump dropped the memo');
+    } finally {
+      d.prepare("DELETE FROM tracks WHERE filepath = 'd0/bumped.mp3'").run();
+      dlna.bumpSystemUpdateID();
+    }
   });
 
   test('the memoised filepath tree still paginates folders correctly', async () => {
@@ -341,7 +389,7 @@ describe('smart containers', () => {
     assert.equal(before, SMART_LIMIT);
     // Drop below the cap so the number has somewhere to move.
     d.prepare('DELETE FROM user_metadata').run();
-    await sleep(250);
+    await sleep(PAST_THE_WINDOW_MS);
     assert.equal(totalMatches((await browse('favorites')).text), 0,
       'the short window reconciles play/rating changes, which never bump SystemUpdateID');
     const uid = d.prepare("SELECT id FROM users WHERE username='prh-user'").get().id;
