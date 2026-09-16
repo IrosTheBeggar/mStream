@@ -517,12 +517,17 @@ describe('resolveVisible probe semantics', () => {
 
 // ── artist identity = name_key ───────────────────────────────────────────────
 
-describe('artist identity follows the library (name_key), not the catalogue spelling', () => {
+describe('artist identity follows the library, not the catalogue spelling', () => {
   // Catalogue rows keep the spelling a track had when it was embedded; the
-  // library's artist name is a consensus that 6.28 merged across spellings.
-  // Embed three unembedded fixture tracks under DRIFTED spellings: two Icarus
-  // tracks as 'ICARUS' / ' icarus', one Vosto track as 'VOSTO' — the Vosto
-  // one closest to the Icarus sound, so it must become Vosto's first doorway.
+  // library's artist name is a consensus that 6.28 merged across spellings,
+  // and the scanner has since re-split "Feat." credits. Embed three
+  // unembedded fixture tracks under DRIFTED spellings: two Icarus tracks as
+  // 'ICARUS' / ' icarus', one Vosto track as 'VOSTO' — the Vosto one closest
+  // to the Icarus sound, so it must become Vosto's first doorway. Then a
+  // fourth Icarus track under a whole CREDIT string no spelling fold reaches
+  // ('Icarus Feat. Wex' — the library says the track is Icarus's), and an
+  // ORPHAN row whose file is gone (no library track owns its hash), spelled
+  // 'icarus', which folds to Icarus by its catalogue spelling alone.
   const drifted = [
     ['Return', 'ICARUS', vec(0.97, 0.243, 0, 0)],
     ['Descent', ' icarus', vec(0.93, 0.368, 0, 0)],
@@ -546,6 +551,10 @@ describe('artist identity follows the library (name_key), not the catalogue spel
         assert.ok(t?.hash, `fixture track '${title}' must exist with a hash`);
         ins.run(t.hash, `anon:${title.toLowerCase()}`, spelling, title, blob(v));
       }
+      const orbit = hashOf.get('Orbit');
+      assert.ok(orbit?.hash, 'fixture track Orbit must exist with a hash');
+      ins.run(orbit.hash, 'anon:orbit-credit', 'Icarus Feat. Wex', 'Orbit', blob(vec(0.99, 0.141, 0, 0)));
+      ins.run('feedfacefeedfacefeedfacefeedface', 'anon:orphan', 'icarus', 'Long Gone', blob(vec(0.96, 0.28, 0, 0)));
       ddb.prepare("UPDATE discovery_meta SET value = '200' WHERE key = 'row_seq'").run();
       ddb.prepare("INSERT OR REPLACE INTO discovery_meta (key, value) VALUES ('index_epoch', '200')").run();
     } finally { ddb.close(); mdb.close(); }
@@ -554,17 +563,23 @@ describe('artist identity follows the library (name_key), not the catalogue spel
   after(() => {
     const ddb = openDiscovery();
     try {
-      ddb.prepare("DELETE FROM discovery_tracks WHERE title IN ('Return', 'Descent', 'Static')").run();
+      ddb.prepare("DELETE FROM discovery_tracks WHERE title IN ('Return', 'Descent', 'Static', 'Orbit', 'Long Gone')").run();
       ddb.prepare("UPDATE discovery_meta SET value = '201' WHERE key = 'row_seq'").run();
       ddb.prepare("INSERT OR REPLACE INTO discovery_meta (key, value) VALUES ('index_epoch', '201')").run();
     } finally { ddb.close(); }
   });
 
-  test('one centroid per artist: drifted spellings merge, and the library names the results', async () => {
+  test('one centroid per artist: drifted spellings, a re-split credit and an orphan all count, and the library names the results', async () => {
     const { status, body } = await api('/api/v1/discovery/local/similar/artists', { artist: 'Icarus' });
     assert.equal(status, 200);
     assert.equal(body.notAnalyzed, false);
-    assert.equal(body.seed.analyzedCount, 4, 'the two drifted Icarus rows count toward the seed');
+    assert.equal(body.seed.analyzedCount, 6,
+      "2 exact + 2 drifted spellings + the 'Icarus Feat. Wex' credit (the library owns that track) + the orphan spelled 'icarus'");
+
+    // The credit string names Wex, but the track is Icarus's: nothing is Wex's.
+    const wex = await api('/api/v1/discovery/local/similar/artists', { artist: 'Wex' });
+    assert.equal(wex.status, 200);
+    assert.equal(wex.body.notAnalyzed, true, 'a "Feat." credit does not hand the track to the featured artist');
 
     assert.deepEqual(body.results.map((r) => r.artist), ['Zed', 'Vosto'],
       'no phantom ICARUS / icarus / VOSTO artists — and Zed (0.9) still beats the Vosto centroid');
@@ -580,7 +595,7 @@ describe('artist identity follows the library (name_key), not the catalogue spel
       assert.equal(status, 200, spelling);
       assert.equal(body.notAnalyzed, false, spelling);
       assert.equal(body.seed.artist, 'Icarus', `seed spelled ${JSON.stringify(spelling)} answers under the library's name`);
-      assert.equal(body.seed.analyzedCount, 4, spelling);
+      assert.equal(body.seed.analyzedCount, 6, spelling);
       assert.deepEqual(body.results.map((r) => r.artist), ['Zed', 'Vosto'], spelling);
     }
   });
