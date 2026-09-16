@@ -670,6 +670,20 @@ const discoveryPluginsOptions = Joi.object({
   }).default({ enabled: true }),
 });
 
+// The discovery plug-in JOB runner (acquire / hand-off plug-ins —
+// src/discovery-plugins/jobs.js). `enabledFor` is the acquisition gate,
+// mirroring torrent.enabledFor: 'all' lets every user start jobs,
+// 'whitelist' only users with users.allow_discovery_jobs = 1 (V74).
+// Flipped live by POST /api/v1/admin/config/discovery-jobs.
+const discoveryJobsOptions = Joi.object({
+  enabledFor: Joi.string().valid('all', 'whitelist').default('all'),
+  // Jobs in flight at once across every plug-in (each plug-in also caps
+  // itself). Small on purpose: these are catalogue fetches and downloads.
+  maxConcurrent: Joi.number().integer().min(1).max(16).default(2),
+  // Finished rows (done / failed / cancelled) older than this are pruned.
+  retentionDays: Joi.number().integer().min(1).max(3650).default(30),
+});
+
 const torrentOptions = Joi.object({
   // Pulled from CLIENT_TYPE / ENABLED_FOR — adding a new backend or
   // policy extends the validator automatically. Defaults stay
@@ -833,6 +847,7 @@ const schema = Joi.object({
   federation: federationOptions.default(federationOptions.validate({}).value),
   discoveryP2p: discoveryP2pOptions.default(discoveryP2pOptions.validate({}).value),
   discoveryPlugins: discoveryPluginsOptions.default(discoveryPluginsOptions.validate({}).value),
+  discoveryJobs: discoveryJobsOptions.default(discoveryJobsOptions.validate({}).value),
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
   discovery: discoveryOptions.default(discoveryOptions.validate({}).value),
   torrent: torrentOptions.default(torrentOptions.validate({}).value),

@@ -1503,6 +1503,8 @@ export function setup(mstream) {
       // Per-plug-in enablement (src/discovery-plugins/); the registry's
       // full listing, including disabled ones, is what an admin panel edits.
       discoveryPlugins: config.program.discoveryPlugins,
+      // The job runner's gate and caps (acquire / hand-off plug-ins).
+      discoveryJobs: config.program.discoveryJobs,
       autoBootServerAudio: config.program.autoBootServerAudio,
       rustPlayerPort: config.program.rustPlayerPort,
       dbSynchronous: config.program.db?.synchronous || 'FULL',
@@ -1609,6 +1611,32 @@ export function setup(mstream) {
 
     await admin.editDiscoveryPlugin(req.body.name, req.body.enabled);
     res.json({ plugins: discoveryPlugins.listPlugins({ includeDisabled: true }) });
+  });
+
+  // The discovery plug-in JOB runner's knobs (acquire / hand-off plug-ins):
+  // the acquisition gate and the concurrency cap. Live — the gate is read
+  // per request, the cap per tick. Partial bodies patch what they name.
+  mstream.post("/api/v1/admin/config/discovery-jobs", async (req, res) => {
+    const schema = Joi.object({
+      enabledFor: Joi.string().valid('all', 'whitelist').optional(),
+      maxConcurrent: Joi.number().integer().min(1).max(16).optional(),
+      retentionDays: Joi.number().integer().min(1).max(3650).optional(),
+    }).min(1);
+    const { value } = joiValidate(schema, req.body || {});
+    await admin.editDiscoveryJobs(value);
+    res.json({ discoveryJobs: config.program.discoveryJobs });
+  });
+
+  // Per-user half of the acquisition gate (whitelist mode), the same shape
+  // as /api/v1/admin/users/torrent-access.
+  mstream.post("/api/v1/admin/users/discovery-jobs-access", async (req, res) => {
+    const schema = Joi.object({
+      username: Joi.string().required(),
+      allowDiscoveryJobs: Joi.boolean().required(),
+    });
+    const { value } = joiValidate(schema, req.body || {});
+    await admin.editUserAllowDiscoveryJobs(value.username, value.allowDiscoveryJobs);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/config/port", async (req, res) => {

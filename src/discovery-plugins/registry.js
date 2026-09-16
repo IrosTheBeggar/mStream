@@ -51,6 +51,12 @@ export const RESOLVING_CAPABILITIES = Object.freeze([
   CAPABILITIES.LINKS, CAPABILITIES.PREVIEW, CAPABILITIES.PLAY,
 ]);
 
+// The capabilities that run as jobs (src/discovery-plugins/jobs.js): the
+// plug-in implements `run(ctx)` and may declare `concurrency` (default 1).
+export const RUNNABLE_CAPABILITIES = Object.freeze([
+  CAPABILITIES.ACQUIRE, CAPABILITIES.HANDOFF,
+]);
+
 export const SCOPES = Object.freeze({ SERVER: 'server', USER: 'user' });
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
@@ -69,9 +75,19 @@ export function registerPlugin(def) {
   if (!Object.values(SCOPES).includes(def.scope)) { throw new Error(`registerPlugin: ${def.name} needs a scope`); }
   const resolves = def.capabilities.some((c) => RESOLVING_CAPABILITIES.includes(c));
   if (resolves && typeof def.resolve !== 'function') { throw new Error(`registerPlugin: ${def.name} must implement resolve()`); }
+  const runnable = def.capabilities.some((c) => RUNNABLE_CAPABILITIES.includes(c));
+  if (runnable && typeof def.run !== 'function') { throw new Error(`registerPlugin: ${def.name} must implement run(ctx)`); }
+  if (def.concurrency !== undefined && !(Number.isInteger(def.concurrency) && def.concurrency > 0)) {
+    throw new Error(`registerPlugin: ${def.name} concurrency must be a positive integer`);
+  }
   const frozen = Object.freeze({ description: '', ...def, capabilities: Object.freeze([...def.capabilities]) });
   plugins.set(frozen.name, frozen);
   return frozen;
+}
+
+// The plug-ins the job runner drives (registration order).
+export function runnablePlugins() {
+  return [...plugins.values()].filter((p) => p.capabilities.some((c) => RUNNABLE_CAPABILITIES.includes(c)));
 }
 
 export function getPlugin(name) {

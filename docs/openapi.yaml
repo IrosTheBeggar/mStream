@@ -203,6 +203,26 @@ components:
       name: x-access-token
 
   schemas:
+    DiscoveryPluginJob:
+      type: object
+      description: One thing a discovery plug-in was asked to do with a recommendation (acquire / hand-off). Timestamps are ms epochs.
+      properties:
+        id: { type: integer }
+        plugin: { type: string, example: soulseek }
+        userId: { type: integer, nullable: true, description: "Who asked; null in public mode or after the user was deleted." }
+        key: { type: string, description: "The recommendation's persistence key (mbid:… or text:…)." }
+        recommendation: { type: object, description: The normalised recommendation the job was started with. }
+        state: { type: string, enum: [queued, running, done, failed, cancelled] }
+        progress: { type: number, nullable: true, minimum: 0, maximum: 1 }
+        statusText: { type: string, nullable: true, description: "The plug-in's own progress line." }
+        result: { type: object, nullable: true, description: "What the plug-in produced (plug-in specific), once done." }
+        error: { type: string, nullable: true }
+        attempts: { type: integer }
+        cancelRequested: { type: boolean }
+        createdAt: { type: integer }
+        updatedAt: { type: integer }
+        startedAt: { type: integer, nullable: true }
+        finishedAt: { type: integer, nullable: true }
     Error:
       type: object
       required: [error]
@@ -2328,6 +2348,122 @@ paths:
         "404": { description: "Unknown or disabled plug-in (disabled plug-ins are invisible, not forbidden)." }
         "429": { description: "The plug-in's own request budget for its catalogue is spent — try again shortly." }
         "502": { description: "The plug-in failed to resolve this recommendation (a catalogue was unreachable); the cause is logged server-side." }
+
+  /api/v1/discovery/plugins/{name}/jobs:
+    post:
+      tags: [Discovery]
+      summary: Start a job (acquire / hand-off plug-ins)
+      description: |
+        Asks a runnable plug-in (capability `acquire` or `handoff`) to act on
+        one recommendation. The job is queued and run by the server's plug-in
+        job runner; poll it through `/api/v1/discovery/plugin-jobs/{id}`.
+        Gated by `config.discoveryJobs.enabledFor`: `all`, or `whitelist`
+        with the caller's `allow_discovery_jobs` flag. The same
+        (plug-in, recommendation) is never queued twice while a job for it is
+        live: a second ask answers `200` with the existing job.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recommendation]
+              properties:
+                recommendation: { type: object, description: "Same shape as the resolve body." }
+      responses:
+        "202":
+          description: Queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created: { type: boolean, example: true }
+                  job: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "200": { description: "A live job for this recommendation already exists; `created: false` and that job." }
+        "400": { description: "Malformed body, or the plug-in does not run jobs (use resolve)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The acquisition gate is in whitelist mode and the caller is not allowed." }
+        "404": { description: "Unknown or disabled plug-in." }
+
+  /api/v1/discovery/plugin-jobs:
+    get:
+      tags: [Discovery]
+      summary: The caller's plug-in jobs
+      parameters:
+        - name: state
+          in: query
+          schema: { type: string, enum: [queued, running, done, failed, cancelled] }
+        - name: all
+          in: query
+          description: Admins only — every user's jobs.
+          schema: { type: boolean }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        "200":
+          description: Newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+                  runner:
+                    type: object
+                    properties:
+                      running: { type: integer, description: Jobs in flight right now. }
+                      active: { type: boolean, description: The runner is armed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/discovery/plugin-jobs/{id}:
+    get:
+      tags: [Discovery]
+      summary: One plug-in job
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: The job.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "No such job, or not the caller's (uniform, so ids can't be enumerated)." }
+
+  /api/v1/discovery/plugin-jobs/{id}/cancel:
+    post:
+      tags: [Discovery]
+      summary: Cancel a plug-in job
+      description: |
+        A queued job is cancelled at once; a running one is flagged and the
+        plug-in stops at its next step, after which the job reads `cancelled`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: The job as it now stands.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  outcome: { type: string, enum: [cancelled, requested] }
+                  job: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "No such job, or not the caller's." }
+        "409": { description: "The job has already finished." }
 
   # ── Search ───────────────────────────────────────────────────────────────
 

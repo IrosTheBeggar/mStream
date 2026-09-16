@@ -426,6 +426,24 @@ export async function editDiscoveryPlugin(name, enabled) {
   config.program.discoveryPlugins[name] = { ...(config.program.discoveryPlugins[name] || {}), enabled };
 }
 
+// Patch the discovery job runner's settings (gate, concurrency, retention)
+// — live: the gate is read per request, the cap per runner tick. The caller
+// has Joi-validated `patch`; this persists only the keys it names.
+export async function editDiscoveryJobs(patch) {
+  const loadConfig = await loadFile(config.configFile);
+  loadConfig.discoveryJobs = { ...(loadConfig.discoveryJobs || {}), ...patch };
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryJobs = { ...(config.program.discoveryJobs || {}), ...patch };
+}
+
+// Per-user half of the discovery acquisition gate (V74 users.allow_discovery_jobs).
+export async function editUserAllowDiscoveryJobs(username, allow) {
+  const user = db.getUserByUsername(username);
+  if (!user) { throw new WebError(`'${username}' does not exist`, 404); }
+  db.getDB().prepare('UPDATE users SET allow_discovery_jobs = ? WHERE id = ?').run(allow ? 1 : 0, user.id);
+  db.invalidateCache();
+}
+
 export async function editUpload(val) {
   const loadConfig = await loadFile(config.configFile);
   loadConfig.noUpload = val;

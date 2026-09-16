@@ -87,7 +87,7 @@ import { mergeAlbumInto, backfillAlbumAggregates } from './album-merge.js';
 // V69 drops the velvet-only tables (smart_playlists, user_settings,
 // cue_points, play_events) and users.listenbrainz_token — the velvet UI and
 // the API modules that existed only for it were removed. See SCHEMA_V69.
-export const SCHEMA_VERSION = 73;
+export const SCHEMA_VERSION = 74;
 
 // The schema version at which the SCANNER'S WRITE CONTRACT last changed —
 // the columns / identity rules a rust-parser binary must know to write rows
@@ -3168,6 +3168,67 @@ export const SCHEMA_V73 = `
   ALTER TABLE tracks ADD COLUMN artist_display TEXT;
 `;
 
+// V74: the discovery plug-in system's persistence (src/discovery-plugins/).
+//
+//   discovery_plugin_jobs — one row per thing a plug-in was asked to DO with
+//   a recommendation (acquire a file, hand it off to an external account).
+//   State machine queued → running → done | failed | cancelled, driven by
+//   the in-process runner (src/discovery-plugins/jobs.js), NOT the serial
+//   enrichment task queue: these are user-initiated, cancellable, and run
+//   concurrently under per-plug-in budgets. `rec_key` is
+//   recommendationKey() (MBID-first, else a normalised text digest) and the
+//   partial unique index keeps ONE live job per (plugin, recommendation) so
+//   the same song offered by several peers is fetched once. `recommendation`
+//   and `result` are JSON; timestamps are ms epochs.
+//
+//   user_settings — a generic per-user key/value store, namespaced, so a
+//   plug-in that needs a user's token (ListenBrainz, Spotify) does not grow
+//   a column on `users` the way lastfm_user/lastfm_password did (and the
+//   removed listenbrainz_token, V69). `secret` rows are never returned to a
+//   client in full. JSON-encoded values.
+//
+//   users.allow_discovery_jobs — the per-user half of the acquisition gate
+//   (config.discoveryJobs.enabledFor = 'whitelist'), mirroring
+//   users.allow_torrent (V37).
+export const SCHEMA_V74 = `
+  CREATE TABLE IF NOT EXISTS discovery_plugin_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plugin TEXT NOT NULL,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    rec_key TEXT NOT NULL,
+    recommendation TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'queued',
+    progress REAL,
+    status_text TEXT,
+    result TEXT,
+    error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    started_at INTEGER,
+    finished_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_discovery_plugin_jobs_state
+    ON discovery_plugin_jobs(state, created_at);
+  CREATE INDEX IF NOT EXISTS idx_discovery_plugin_jobs_user
+    ON discovery_plugin_jobs(user_id, created_at);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_discovery_plugin_jobs_live
+    ON discovery_plugin_jobs(plugin, rec_key) WHERE state IN ('queued', 'running');
+
+  CREATE TABLE IF NOT EXISTS user_settings (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    namespace TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT,
+    secret INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, namespace, key)
+  );
+
+  ALTER TABLE users ADD COLUMN allow_discovery_jobs INTEGER NOT NULL DEFAULT 0;
+`;
+
 export const MIGRATIONS = [
   { version: 1,  sql: SCHEMA_V1  },
   { version: 2,  sql: SCHEMA_V2  },
@@ -3454,4 +3515,7 @@ export const MIGRATIONS = [
   // only. rescanRequired: display strings and roles come from tags. See
   // SCHEMA_V73.
   { version: 73, sql: SCHEMA_V73, rescanRequired: true },
+  // V74 — discovery plug-in jobs + user_settings + users.allow_discovery_jobs.
+  // New tables and an ADD COLUMN; nothing comes from tags. See SCHEMA_V74.
+  { version: 74, sql: SCHEMA_V74 },
 ];
