@@ -71,6 +71,12 @@ function snapTracks(db) {
       -- owns it), so it's not part of scanner parity.
       t.mbz_recording_id, t.mbz_release_track_id, t.isrc, t.mbz_id_source,
       t.modified,
+      -- V71: per-track consensus inputs for the album aggregate refresh —
+      -- both scanners must stamp the same raw tag values.
+      t.tag_album, t.tag_album_artist, t.tag_compilation,
+      -- V73: the ARTIST tag as written (plural values joined) — both
+      -- scanners must stamp the same string.
+      t.artist_display,
       ar.name AS artist_name,
       al.name AS album_name, al.year AS album_year,
       al.compilation AS album_compilation, al.album_artist AS album_artist_display
@@ -83,7 +89,12 @@ function snapTracks(db) {
 }
 
 function snapArtists(db) {
-  return db.prepare('SELECT name FROM artists ORDER BY name').all().map(r => r.name);
+  // V72: display name is a scan-end consensus; sort_name / mbz_artist_id are
+  // tag-sourced fill-NULL columns; order_name and the counts are aggregates
+  // both engines must derive identically; agg_dirty must be 0 after a scan.
+  return db.prepare(`
+    SELECT name, sort_name, mbz_artist_id, order_name, track_count, album_count, agg_dirty
+    FROM artists ORDER BY name`).all();
 }
 
 function snapAlbums(db) {
@@ -91,9 +102,16 @@ function snapAlbums(db) {
   // distinct rows — include the artist name in the natural key. Drop
   // album_art_file because tracks already carry it; including it here
   // would just double-count.
+  // V71: the aggregate columns are scan-end consensus values both engines
+  // must derive identically, and agg_dirty must be 0 everywhere once the
+  // refresh has run. duration_total is a float SUM whose last bits can
+  // depend on row order (insert order differs across engines), so it is
+  // rounded to milliseconds.
   return db.prepare(`
     SELECT al.name, al.year, al.compilation, al.album_artist,
            al.mbz_album_id, al.mbz_release_group_id,
+           al.year_min, al.year_max, al.track_count,
+           ROUND(al.duration_total, 3) AS duration_total, al.agg_dirty,
            ar.name AS artist_name
     FROM albums al
     LEFT JOIN artists ar ON ar.id = al.artist_id
@@ -121,7 +139,7 @@ function snapTrackArtists(db) {
   // (filepath, role, position) so the snapshot itself is order-stable
   // but a position-flip surfaces as a value diff.
   return db.prepare(`
-    SELECT t.filepath, ar.name AS artist, ta.role, ta.position
+    SELECT t.filepath, ar.name AS artist, ta.role, ta.position, ta.tag_name
     FROM track_artists ta
     JOIN tracks  t  ON t.id  = ta.track_id
     JOIN artists ar ON ar.id = ta.artist_id
@@ -134,7 +152,7 @@ function snapAlbumArtists(db) {
   // shape used in the find_or_create_album cache key on the Rust side.
   return db.prepare(`
     SELECT al.name AS album, primary_ar.name AS album_primary_artist,
-           al.year AS album_year, ar.name AS artist, aa.role, aa.position
+           al.year AS album_year, ar.name AS artist, aa.role, aa.position, aa.tag_name
     FROM album_artists aa
     JOIN albums  al         ON al.id        = aa.album_id
     LEFT JOIN artists primary_ar ON primary_ar.id = al.artist_id

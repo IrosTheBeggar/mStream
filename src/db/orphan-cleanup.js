@@ -50,7 +50,9 @@ const ORPHAN_CHUNK_SIZE = 500;
 // would-be beneficiary is the sleeping process itself.
 const YIELD_MIN_MS = 10;
 const YIELD_JITTER_MS = 11; // yield = 10..=20ms
-function chunkYield() {
+// Exported for the album aggregate refresh (src/db/album-aggregate.js),
+// which chunks its writes on the same cooperate-with-writers pattern.
+export function chunkYield() {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0,
     YIELD_MIN_MS + Math.floor(Math.random() * YIELD_JITTER_MS));
 }
@@ -473,13 +475,28 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
       }
       const kind = listing.get(name);
       if (kind === KIND_FILE) {
-        survivors++;
+        // Walk-faithful presence also applies the walk's SIZE rule: a
+        // zero-byte file is never indexed (scanner.mjs collectFiles), so a
+        // row whose file is empty now — indexed before the rule, or
+        // truncated since — converges out like an unsupported extension.
+        // An unreadable stat is unverifiable: kept, like an unreadable
+        // listing.
+        let size;
+        try { size = fs.statSync(path.join(libraryRoot, c.filepath)).size; }
+        catch (_err) { size = null; }
+        if (size === null) { skipped++; }
+        else if (size === 0) { doomed.push(c); }
+        else { survivors++; }
       } else if (kind === KIND_SYMLINK && followSymlinks) {
         // Walk-faithful: a symlink the walk would follow counts as
-        // present only if its target resolves to a regular file now.
+        // present only if its target resolves to a regular, non-empty
+        // file now (the walk stats through the link and applies the same
+        // size rule).
         let present;
-        try { present = fs.statSync(path.join(libraryRoot, c.filepath)).isFile(); }
-        catch (err) {
+        try {
+          const st = fs.statSync(path.join(libraryRoot, c.filepath));
+          present = st.isFile() && st.size > 0;
+        } catch (err) {
           present = (err.code === 'ENOENT' || err.code === 'ENOTDIR') ? false : null;
         }
         if (present === null) { skipped++; }
@@ -533,6 +550,8 @@ export function deleteStaleTracks(db, candidates, expectedSchemaVersion = null,
       // the old per-chunk re-SELECT was immune by construction — this
       // keeps the property.) AUTOINCREMENT already guarantees ids are
       // never reused, so the pair is stable evidence.
+      // (V71: the albums these rows leave are flagged for the aggregate
+      // refresh by the tracks_ad_agg trigger — nothing to do here.)
       const r = db.prepare(
         `DELETE FROM tracks WHERE (id, filepath) IN (VALUES ${
           doomed.map(() => '(?, ?)').join(',')})`,

@@ -18,6 +18,7 @@ import { getDirname } from './esm-helpers.js';
 import { launchWorker } from './worker-process.js';
 import { invalidateWhitelistCache } from './admin-network.js';
 import { updateJsonAtomic, completedWrites, readJsonFile } from './atomic-json.js';
+import WebError from './web-error.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -107,8 +108,13 @@ export async function addDirectory(directory, vpath, autoAccess, isAudioBooks, f
   const stat = await fs.stat(directory);
   if (!stat.isDirectory()) { throw new Error(`${directory} is not a directory`); }
 
+  // A name collision is the caller's request, not a crash. A WebError is
+  // answered with its status + message (and logged as a warn-level
+  // rejection); the plain Error this used to be surfaced as an unhandled
+  // 500 "Server Error" with the reason only in the server log. Same for
+  // the two unknown-library throws below (404).
   const existing = db.getLibraryByName(vpath);
-  if (existing) { throw new Error(`'${vpath}' already exists`); }
+  if (existing) { throw new WebError(`'${vpath}' already exists`, 409); }
 
   const d = db.getDB();
   const type = isAudioBooks ? 'audio-books' : 'music';
@@ -172,7 +178,7 @@ export async function addDirectory(directory, vpath, autoAccess, isAudioBooks, f
  */
 export async function setLibraryFollowSymlinks(vpath, followSymlinks) {
   const library = db.getLibraryByName(vpath);
-  if (!library) { throw new Error(`'${vpath}' not found`); }
+  if (!library) { throw new WebError(`'${vpath}' not found`, 404); }
   db.getDB().prepare(
     'UPDATE libraries SET follow_symlinks = ? WHERE id = ?'
   ).run(followSymlinks ? 1 : 0, library.id);
@@ -212,7 +218,7 @@ export async function deleteLibraryRows(d, libraryId) {
 
 export async function removeDirectory(vpath) {
   const library = db.getLibraryByName(vpath);
-  if (!library) { throw new Error(`'${vpath}' not found`); }
+  if (!library) { throw new WebError(`'${vpath}' not found`, 404); }
 
   // Cancel this library's backups BEFORE the cascade below destroys
   // their backup_destinations rows. Without this, an in-flight backup
@@ -281,7 +287,11 @@ export async function removeDirectory(vpath) {
 
 export async function addUser(username, password, admin, vpaths, allowMkdir, allowUpload, allowServerAudio = false) {
   const existing = db.getUserByUsername(username);
-  if (existing) { throw new Error(`'${username}' already exists`); }
+  // A name collision is the caller's request, not a crash: 409, like the
+  // library-name collision in addDirectory. The six `does not exist` guards
+  // below are 404 for the same reason; as plain Errors all of them surfaced
+  // as an unhandled 500 "Server Error" with the reason only in the log.
+  if (existing) { throw new WebError(`'${username}' already exists`, 409); }
 
   const hash = await auth.hashPassword(password);
   const d = db.getDB();
@@ -308,7 +318,7 @@ export async function addUser(username, password, admin, vpaths, allowMkdir, all
 
 export async function deleteUser(username) {
   const user = db.getUserByUsername(username);
-  if (!user) { throw new Error(`'${username}' does not exist`); }
+  if (!user) { throw new WebError(`'${username}' does not exist`, 404); }
 
   const d = db.getDB();
   // CASCADE will delete user_metadata, playlists, playlist_tracks, user_libraries
@@ -319,7 +329,7 @@ export async function deleteUser(username) {
 
 export async function editUserPassword(username, password) {
   const user = db.getUserByUsername(username);
-  if (!user) { throw new Error(`'${username}' does not exist`); }
+  if (!user) { throw new WebError(`'${username}' does not exist`, 404); }
 
   const hash = await auth.hashPassword(password);
   db.getDB().prepare(
@@ -331,7 +341,7 @@ export async function editUserPassword(username, password) {
 
 export async function editUserVPaths(username, vpaths) {
   const user = db.getUserByUsername(username);
-  if (!user) { throw new Error(`'${username}' does not exist`); }
+  if (!user) { throw new WebError(`'${username}' does not exist`, 404); }
 
   const d = db.getDB();
   // Clear existing and re-add
@@ -347,7 +357,7 @@ export async function editUserVPaths(username, vpaths) {
 
 export async function editUserAccess(username, admin, allowMkdir, allowUpload, allowFileModify = true, allowServerAudio = false) {
   const user = db.getUserByUsername(username);
-  if (!user) { throw new Error(`'${username}' does not exist`); }
+  if (!user) { throw new WebError(`'${username}' does not exist`, 404); }
 
   db.getDB().prepare(
     'UPDATE users SET is_admin = ?, allow_mkdir = ?, allow_upload = ?, allow_file_modify = ?, allow_server_audio = ? WHERE id = ?'
@@ -363,7 +373,7 @@ export async function editUserAccess(username, admin, allowMkdir, allowUpload, a
 // the api layer, so util/ stays out of it.
 export async function setUserLastFM(username, lastfmUser, lastfmPassword) {
   const user = db.getUserByUsername(username);
-  if (!user) { throw new Error(`'${username}' does not exist`); }
+  if (!user) { throw new WebError(`'${username}' does not exist`, 404); }
 
   db.getDB().prepare(
     'UPDATE users SET lastfm_user = ?, lastfm_password = ? WHERE id = ?'
@@ -554,6 +564,17 @@ export async function editIgnoreDotFolders(val) {
   loadConfig.scanOptions.ignoreDotFolders = val;
   await saveFile(loadConfig, config.configFile);
   config.program.scanOptions.ignoreDotFolders = val;
+}
+
+// V73: artist names never delimiter-split (scanOptions.artistSplitExceptions).
+// Same live pattern — task-queue reads config.program when it builds each
+// scan's jsonLoad, so the next scan honours the new list.
+export async function editArtistSplitExceptions(list) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
+  loadConfig.scanOptions.artistSplitExceptions = list;
+  await saveFile(loadConfig, config.configFile);
+  config.program.scanOptions.artistSplitExceptions = list;
 }
 
 // Filesystem-watcher toggle. Persist + in-memory like the others; the
@@ -1275,7 +1296,7 @@ export async function editTorrentQbittorrent(creds) {
 // 0 (fail-closed) — see SCHEMA_V36.
 export async function editUserAllowTorrent(username, allowTorrent) {
   const user = db.getUserByUsername(username);
-  if (!user) { throw new Error(`'${username}' does not exist`); }
+  if (!user) { throw new WebError(`'${username}' does not exist`, 404); }
 
   db.getDB().prepare(
     'UPDATE users SET allow_torrent = ? WHERE id = ?'

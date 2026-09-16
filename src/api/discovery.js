@@ -29,8 +29,9 @@ import * as db from '../db/manager.js';
 import * as sim from '../db/discovery-similarity.js';
 import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
-import { renderMetadataObj, toLiteMetadata, trackQuery, libraryFilter, fetchGenresForTrack } from './db.js';
+import { renderMetadataObj, toLiteMetadata, trackQuery, libraryFilter, fetchGenresForTrack, fetchCreditsForTrack, enrichRows } from './db.js';
 import { getVPathInfo } from '../util/vpath.js';
+import { nameKey } from '../db/name-key.js';
 
 const d = () => db.getDB();
 
@@ -99,7 +100,7 @@ export function resolveSeedTrack(req, filePath, routeTag) {
     LIMIT 1
   `).get(...seedParams);
   if (!seedRow) { throw new WebError('Track not found', 404); }
-  Object.assign(seedRow, fetchGenresForTrack(d(), seedRow.id));
+  Object.assign(seedRow, fetchGenresForTrack(d(), seedRow.id), fetchCreditsForTrack(d(), seedRow.id));
   return seedRow;
 }
 
@@ -140,7 +141,7 @@ export function resolveVisible(uid, filter, canonHash, { withGenres = true } = {
   // (similar/tracks rejects on bpm/artist AFTER resolving; federation's
   // response carries no track genres) — they enrich accepted rows
   // themselves, so rejected candidates never pay the lookup.
-  if (row && withGenres) { Object.assign(row, fetchGenresForTrack(d(), row.id)); }
+  if (row && withGenres) { Object.assign(row, fetchGenresForTrack(d(), row.id), fetchCreditsForTrack(d(), row.id)); }
   return row;
 }
 
@@ -275,7 +276,7 @@ export function setup(mstream) {
 
       // Enrich only rows that survived the filters — rejected candidates
       // never pay the genre lookup.
-      Object.assign(row, fetchGenresForTrack(d(), row.id));
+      Object.assign(row, fetchGenresForTrack(d(), row.id), fetchCreditsForTrack(d(), row.id));
       const rendered = renderMetadataObj(row);
       results.push({
         filepath: rendered.filepath,
@@ -355,11 +356,14 @@ export function setup(mstream) {
     const filter = libraryFilter(req.user);
     const rowCache = new Map();
     const visible = (hash) => {
-      if (!rowCache.has(hash)) { rowCache.set(hash, resolveVisible(uid, filter, hash) || null); }
+      if (!rowCache.has(hash)) { rowCache.set(hash, resolveVisible(uid, filter, hash, { withGenres: false }) || null); }
       return rowCache.get(hash) !== null;
     };
 
     const waypoints = sim.pathBetween(index, startHash, endHash, body.length - 2, visible);
+    // The gate admits more rows than the path renders — enrich (genres +
+    // credits, two batched queries) only the waypoints.
+    enrichRows(d(), waypoints.map((wp) => rowCache.get(wp.hash)));
 
     const results = [seedRes(start, 0)];
     for (const wp of waypoints) {
@@ -391,15 +395,23 @@ export function setup(mstream) {
     // Live library facts about the seed artist — also the access check:
     // an artist with no tracks visible to this user doesn't exist for them.
     const seedStats = d().prepare(`
-      SELECT COUNT(*) AS n FROM tracks t
+      SELECT COUNT(*) AS n, MAX(a.name) AS name FROM tracks t
       JOIN artists a ON a.id = t.artist_id
-      WHERE a.name = ? AND ${filter.clause}
-    `).get(body.artist, ...filter.params);
+      WHERE a.name_key = ? AND ${filter.clause}
+    `).get(nameKey(body.artist), ...filter.params);
     if (!seedStats || seedStats.n === 0) { throw new WebError('Artist not found', 404); }
 
-    const seedCentroid = index.artists.get(body.artist);
+    // Everything keys on name_key: the client may hold any spelling (a stale
+    // queue, a peer's catalogue); the index takes each embedded row's artist
+    // from the LIBRARY track that still owns its hash (so a credit the scanner
+    // re-split since the embedding counts for its primary artist) and folds
+    // the catalogue spelling only for rows whose file is gone. The response
+    // speaks the library's — seed and candidates come back under their
+    // current names (name_key is UNIQUE on artists, so MAX(a.name) is the one
+    // row's name).
+    const seedCentroid = sim.artistCentroid(index, body.artist);
     const seed = {
-      artist: body.artist,
+      artist: seedStats.name,
       trackCount: seedStats.n,
       analyzedCount: seedCentroid?.analyzedCount ?? 0,
       genreTags: seedCentroid?.topTags ?? null,
@@ -410,9 +422,9 @@ export function setup(mstream) {
     }
 
     const artistVisible = d().prepare(`
-      SELECT 1 FROM tracks t
+      SELECT a.name FROM tracks t
       JOIN artists a ON a.id = t.artist_id
-      WHERE a.name = ? AND ${filter.clause}
+      WHERE a.name_key = ? AND ${filter.clause}
       LIMIT 1
     `);
 
@@ -426,7 +438,8 @@ export function setup(mstream) {
     for (const cand of ranked) {
       if (results.length >= body.limit) { break; }
       if (++considered > maxConsidered) { capped = true; break; }
-      if (!artistVisible.get(cand.artist, ...filter.params)) { continue; }
+      const lib = artistVisible.get(cand.artistKey, ...filter.params);
+      if (!lib) { continue; }
 
       // Entry points: the candidate's tracks closest to the SEED's sound —
       // playable doorways that continue the vibe the user came from.
@@ -437,18 +450,22 @@ export function setup(mstream) {
       let epConsidered = 0;
       for (const { entry } of sim.rankArtistTracks(index, cand.artist, seedCentroid.vec)) {
         if (entryPoints.length >= 2 || ++epConsidered > 200) { break; }
-        const row = resolveVisible(uid, filter, entry.hash);
+        const row = resolveVisible(uid, filter, entry.hash, { withGenres: false });
         if (!row) { continue; }
-        const rendered = renderMetadataObj(row);
-        entryPoints.push({ filepath: rendered.filepath, metadata: toLiteMetadata(rendered.metadata) });
+        entryPoints.push(row);
       }
+      // Enrich the two doorways only, not every probed candidate.
+      enrichRows(d(), entryPoints);
 
       results.push({
-        artist: cand.artist,
+        artist: lib.name,
         similarity: Math.round(cand.similarity * 10000) / 10000,
         analyzedCount: cand.analyzedCount,
         genreTags: cand.topTags,
-        entryPoints,
+        entryPoints: entryPoints.map((row) => {
+          const rendered = renderMetadataObj(row);
+          return { filepath: rendered.filepath, metadata: toLiteMetadata(rendered.metadata) };
+        }),
       });
     }
 

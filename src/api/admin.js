@@ -1,6 +1,7 @@
 import path from 'path';
 import child from 'child_process';
 import os from 'os';
+import fs from 'fs/promises';
 import Joi from 'joi';
 import winston from 'winston';
 import { ZipArchive } from 'archiver';
@@ -24,6 +25,7 @@ import * as discoveryPeerDbs from '../state/discovery-peer-dbs.js';
 import * as discoveryPlugins from '../discovery-plugins/index.js';
 import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
+import { expandHomeDir } from '../util/esm-helpers.js';
 import { isAdminAllowed } from '../util/admin-network.js';
 import WebError from '../util/web-error.js';
 import { bootRustPlayer, killRustPlayer, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers, playerBinaryFetchable } from './server-playback.js';
@@ -38,6 +40,38 @@ import * as adminTorrent from './admin-torrent.js';
 import * as adminFederation from './admin-federation.js';
 
 import { getTransCodecs, getTransBitrates } from '../api/transcode.js';
+
+// ── Path answers for the two admin filesystem routes ─────────────────
+//
+// A readdir failure in the admin file explorer is the admin's path, not
+// the server's health, and is answered as the client error it is by
+// fileExplorer.pathReadError (util/file-explorer.js) — the mapping is
+// shared with the user-facing explorer and download routes. The admin
+// explorer shows the ABSOLUTE path in the message: admins browse the whole
+// filesystem, so there is nothing to hide (user routes show the virtual
+// path instead).
+
+// Resolve + validate a library root BEFORE anything touches the DB or the
+// router, and answer a bad one with a 400 that says why. `~` forms expand
+// exactly as the file explorer's do, so the stored root is the real
+// absolute path. The raw value used to go straight to admin.addDirectory,
+// whose fs.stat threw for `~`, `~/Music`, a relative `code/music` or an
+// absolute path that does not exist — an unhandled 500 "Server Error"
+// with the reason only in the server log.
+async function resolveLibraryDirectory(raw) {
+  const reject = why =>
+    new WebError(`"directory" must be an absolute path that exists (${why})`, 400);
+  const directory = expandHomeDir(raw);
+  if (!path.isAbsolute(directory)) { throw reject('not an absolute path'); }
+  let stat;
+  try {
+    stat = await fs.stat(directory);
+  } catch (err) {
+    throw reject(err.code || err.message);
+  }
+  if (!stat.isDirectory()) { throw reject('not a directory'); }
+  return directory;
+}
 
 export function setup(mstream) {
   mstream.all('/api/v1/admin/{*path}', (req, res, next) => {
@@ -157,17 +191,22 @@ export function setup(mstream) {
     });
     joiValidate(schema, req.body);
 
-    // Handle home directory
-    let thisDirectory = req.body.directory;
-    if (req.body.directory === '~') {
-      thisDirectory = os.homedir();
-    }
+    // `~`, `~/x` and `~\x` expand to the server's home directory — the one
+    // rule PUT /admin/directory applies too (expandHomeDir). Only the bare
+    // `~` used to be handled, so `~/code` was read literally and the
+    // readdir's ENOENT surfaced as an unhandled 500.
+    let thisDirectory = expandHomeDir(req.body.directory);
 
     if (req.body.joinDirectory) {
       thisDirectory = path.join(thisDirectory, req.body.joinDirectory);
     }
 
-    const folderContents = await fileExplorer.getDirectoryContents(thisDirectory, {}, true);
+    let folderContents;
+    try {
+      folderContents = await fileExplorer.getDirectoryContents(thisDirectory, {}, true);
+    } catch (err) {
+      throw fileExplorer.pathReadError(thisDirectory, err);
+    }
 
     res.json({
       path: thisDirectory,
@@ -338,6 +377,21 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
 
     await admin.editIgnoreDotFolders(req.body.ignoreDotFolders);
+    res.json({});
+  });
+
+  // V73: artist names the scanners never delimiter-split (exact spelling,
+  // list order). Live like the dot toggles — the next scan picks the list
+  // up; a rescan re-reads files already indexed.
+  mstream.post("/api/v1/admin/db/params/artist-split-exceptions", async (req, res) => {
+    const schema = Joi.object({
+      artistSplitExceptions: config.artistSplitExceptionsSchema.required()
+    });
+    // Joi's .trim() already applied on `value`; dedup keeping the admin's
+    // order (it is the match priority).
+    const { value } = joiValidate(schema, req.body);
+    const list = [...new Set(value.artistSplitExceptions)];
+    await admin.editArtistSplitExceptions(list);
     res.json({});
   });
 
@@ -1267,9 +1321,10 @@ export function setup(mstream) {
       followSymlinks: Joi.boolean().default(false)
     });
     const input = joiValidate(schema, req.body);
+    const directory = await resolveLibraryDirectory(input.value.directory);
 
     await admin.addDirectory(
-      input.value.directory,
+      directory,
       input.value.vpath,
       input.value.autoAccess,
       input.value.isAudioBooks,

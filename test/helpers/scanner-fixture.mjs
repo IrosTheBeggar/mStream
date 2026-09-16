@@ -24,6 +24,7 @@ import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { FFMPEG } from './scanner-runner.mjs';
 import { appendId3v23TextFrames } from './id3.mjs';
+import { appendFlacVorbisComments } from './vorbis.mjs';
 
 // Exported so focused fixture builders (scanner-multi-art.test.mjs)
 // can reuse the same ffmpeg plumbing without re-rolling it.
@@ -139,7 +140,20 @@ export async function buildFixtureLibrary(rootDir) {
     // should reconcile, but the data path is in place here.
     if (i === 1) { tags.BPM = '124'; tags.KEY = '8A'; tags.INITIALKEY = '8A'; }
     if (i === 2) { tags.BPM = '90';  /* no key — bpm_source still 'tag' */ }
-    await makeAudio(path.join(a1, `${i.toString().padStart(2, '0')} Track ${i}.flac`), FLAC, tags);
+    // V72: ARTISTSORT + MUSICBRAINZ_ARTISTID as real Vorbis comments — both
+    // scanners must fill artists.sort_name / mbz_artist_id from them, and
+    // order_name must follow the sort tag ("artist, solo").
+    if (i === 3) { tags.ARTISTSORT = 'Artist, Solo'; tags.MUSICBRAINZ_ARTISTID = '0a0a0a0a-1111-4222-8333-444444444444'; }
+    // V73: role credits as Vorbis comments — a single COMPOSER value splits
+    // on "; " (two composers, positions 0/1); the others are one name each.
+    // Both scanners must write the same track_artists rows.
+    if (i === 4) { tags.COMPOSER = 'Comp One; Comp Two'; tags.CONDUCTOR = 'Maestro'; tags.REMIXER = 'Mixer'; tags.LYRICIST = 'Poet'; }
+    const f1 = path.join(a1, `${i.toString().padStart(2, '0')} Track ${i}.flac`);
+    await makeAudio(f1, FLAC, tags);
+    // V73: a Picard-style ARTISTS list tag next to ARTIST. lofty never reads
+    // it and neither may the JS engine (music-metadata folds it into
+    // common.artists) — the credits must come from ARTIST alone.
+    if (i === 5) { await appendFlacVorbisComments(f1, [['ARTISTS', 'Solo'], ['ARTISTS', 'Artist']]); }
   }
 
   // ── Album 2: "Collab" by Foo & Bar (6 tracks, two album-artists) ──
@@ -164,6 +178,10 @@ export async function buildFixtureLibrary(rootDir) {
     };
     if (i === 1) { tags.TBPM = '128'; tags.TKEY = '7A'; }
     if (i === 2) { tags.TBPM = '5';   /* below range → both scanners drop to NULL */ }
+    // V73: the same roles through ID3v2.3 frames (ffmpeg writes a 4-char
+    // key as that frame): TCOM splits on " / "; Maestro / Mixer / Poet are
+    // the artists album 1 already created, credited again here.
+    if (i === 3) { tags.TCOM = 'Writer A / Writer B'; tags.TPE3 = 'Maestro'; tags.TPE4 = 'Mixer'; tags.TEXT = 'Poet'; }
     await makeAudio(path.join(a2, `${i.toString().padStart(2, '0')}.mp3`), MP3, tags);
   }
 
@@ -218,7 +236,10 @@ export async function buildFixtureLibrary(rootDir) {
   await makeAudio(path.join(a5, '02.flac'), FLAC, { title: 'Test FLAC', artist: 'Format Test', album: 'Mixed', track: '2/5' });
   await makeAudio(path.join(a5, '03.ogg'),  OGG,  { title: 'Test OGG',  artist: 'Format Test', album: 'Mixed', track: '3/5' });
   await makeAudio(path.join(a5, '04.m4a'),  M4A,  { title: 'Test M4A',  artist: 'Format Test', album: 'Mixed', track: '4/5' });
-  await makeAudio(path.join(a5, '05.wav'),  WAV,  { title: 'Test WAV',  artist: 'Format Test', album: 'Mixed', track: '5/5' });
+  // V72: one track spells the artist differently. Same name_key → same
+  // artist row; the display name is the majority spelling ('Format Test',
+  // 4 votes to 1) whichever file a parallel walk commits first.
+  await makeAudio(path.join(a5, '05.wav'),  WAV,  { title: 'Test WAV',  artist: 'format test', album: 'Mixed', track: '5/5' });
 
   // ── Album 6: directory album-art + sidecar lyrics (3 tracks) ──────
   // Drop a folder.jpg next to the tracks so check_directory_for_album_art
@@ -253,18 +274,92 @@ export async function buildFixtureLibrary(rootDir) {
   await makeAudioWithArt(path.join(a6, '04.mp3'), 'orange',
     { title: 'Lyrics D', artist: 'Lyric Artist', album: 'Album Six', track: '4/4' });
 
+  // ── Album 7: "Decades" — per-track years under one ALBUMARTIST ─────
+  // V71 identity: year is no longer part of the album key, so three tracks
+  // tagged 1987 / 1991 / 1991 with different track artists but the same
+  // ALBUMARTIST must land on ONE album row (pre-V71 they fragmented into
+  // one row per year). The aggregate refresh must then agree across
+  // engines: year = 1991 (most common), year_min 1987, year_max 1991,
+  // track_count 3. Track 3 is a real TCMP compilation frame on ONE track
+  // only → compilation is an OR, so the album flags 1.
+  const a7 = path.join(rootDir, 'DJ Retro', 'Decades');
+  const decades = [
+    ['Retro A', '1987'], ['Retro B', '1991'], ['Retro C', '1991'],
+  ];
+  for (let i = 0; i < decades.length; i++) {
+    const meta = {
+      title:        `Decade ${i + 1}`,
+      artist:       decades[i][0],
+      album:        'Decades',
+      album_artist: 'DJ Retro',
+      date:         decades[i][1],
+      track:        `${i + 1}/3`,
+    };
+    const base = path.join(a7, `${(i + 1).toString().padStart(2, '0')}`);
+    if (i === 2) { await makeCompilationMp3(`${base}.mp3`, meta); }
+    else         { await makeAudio(`${base}.mp3`, MP3, meta); }
+  }
+
+  // ── Album 8: "Blue Album" — MBID-keyed across differing tags ────────
+  // Two FLACs sharing one MUSICBRAINZ_ALBUMID (a real Vorbis comment both
+  // scanners read) but tagged with different album names AND years. The
+  // MBID wins identity → ONE album row; its name is the most common
+  // tracks.album_name with the BINARY-smallest winning the 1:1 tie
+  // ("Blue Album" < "Blue Album (Deluxe)"), year_min 1994, year_max 2004.
+  const a8 = path.join(rootDir, 'Blue Band', 'Blue Album');
+  const blueMbid = '11111111-2222-3333-4444-555555555555';
+  await makeAudio(path.join(a8, '01.flac'), FLAC, {
+    title: 'Blue 1', artist: 'Blue Band', album: 'Blue Album', date: '1994',
+    track: '1/2', MUSICBRAINZ_ALBUMID: blueMbid,
+  });
+  await makeAudio(path.join(a8, '02.flac'), FLAC, {
+    title: 'Blue 2', artist: 'Blue Band', album: 'Blue Album (Deluxe)', date: '2004',
+    track: '2/2', MUSICBRAINZ_ALBUMID: blueMbid,
+  });
+
+  // ── Album 9: "Duets" — a genuinely multi-valued ARTIST tag (2 tracks) ──
+  // Two Vorbis ARTIST comments per file (ffmpeg can't write that; the
+  // second is appended by hand). V73 rule: plural values are honoured
+  // verbatim — "Duet B feat. Nobody" is ONE credit, not split — and the
+  // display string joins them with ", ". Both scanners must agree.
+  const a9 = path.join(rootDir, 'Duet A', 'Duets');
+  for (let i = 1; i <= 2; i++) {
+    const f = path.join(a9, `${i.toString().padStart(2, '0')}.flac`);
+    await makeAudio(f, FLAC, {
+      title: `Duet ${i}`, artist: 'Duet A', album_artist: 'Duet A', album: 'Duets', date: '2020', track: `${i}/2`,
+    });
+    await appendFlacVorbisComments(f, [['ARTIST', 'Duet B feat. Nobody']]);
+  }
+
+  // ── Album 10: "Slash" by AC/DC (2 tracks, ID3v2.3) ────────────────────
+  // A bare slash is not a delimiter: "AC/DC" is one artist and its own
+  // display string. The JS scanner has to read the raw TPE1 frame for this
+  // — music-metadata pre-splits v2.3 TPE1 on "/" (id3-raw.js).
+  const a10 = path.join(rootDir, 'AC-DC', 'Slash');
+  for (let i = 1; i <= 2; i++) {
+    await makeAudio(path.join(a10, `${i.toString().padStart(2, '0')}.mp3`), MP3, {
+      title: `Slash ${i}`, artist: 'AC/DC', album_artist: 'AC/DC', album: 'Slash', date: '1979', track: `${i}/2`,
+    });
+  }
+
   // Return summary the test can sanity-check against.
   return {
-    expectedAudioFiles: 5 + 6 + 10 + 3 + 5 + 4,
+    expectedAudioFiles: 5 + 6 + 10 + 3 + 5 + 4 + 3 + 2 + 2 + 2,
     expectedArtists: new Set([
       'Solo Artist', 'Foo', 'Bar', 'Format Test', 'Lyric Artist',
       ...compilationArtists,
+      'DJ Retro', 'Retro A', 'Retro B', 'Retro C', 'Blue Band',
+      // V73: credit-only artists (roles) and the plural / slash cases.
+      'Comp One', 'Comp Two', 'Maestro', 'Mixer', 'Poet', 'Writer A', 'Writer B',
+      'Duet A', 'Duet B feat. Nobody', 'AC/DC',
       // Various Artists is seeded by the schema; not added by the scanner
       // but counted in the artists table.
     ]).size + 1, // +1 for Various Artists seed
     // One row per album above — the compilation MUST collapse to a single
-    // Various-Artists-owned 'Various' row, not per-track-artist fragments.
-    expectedAlbums: 6,
+    // Various-Artists-owned 'Various' row, not per-track-artist fragments;
+    // 'Decades' MUST NOT fragment by year; the two 'Blue Album' tags MUST
+    // share their MBID's row; 'Duets' and 'Slash' are one row each.
+    expectedAlbums: 10,
     compilationTracks: compilationArtists.length,
   };
 }

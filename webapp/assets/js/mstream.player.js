@@ -1307,6 +1307,11 @@ const MSTREAMPLAYER = (() => {
   mstreamModule.resetCurrentMetadata = () => {
     const curSong = getCurrentPlayer().songObject;
     mstreamModule.playerStats.metadata.artist = curSong.metadata && curSong.metadata.artist ? curSong.metadata.artist : "";
+    // V73 credits: the ARTIST tag as written ("A feat. B") for the card,
+    // the composer line. The plain `artist` stays the primary artist —
+    // it is what goToArtist navigates to.
+    mstreamModule.playerStats.metadata['artist-display'] = curSong.metadata && curSong.metadata['artist-display'] ? curSong.metadata['artist-display'] : "";
+    mstreamModule.playerStats.metadata.composer = curSong.metadata && curSong.metadata.composer ? curSong.metadata.composer : "";
     mstreamModule.playerStats.metadata.album = curSong.metadata && curSong.metadata.album  ? curSong.metadata.album : "";
     mstreamModule.playerStats.metadata.track = curSong.metadata && curSong.metadata.track ? curSong.metadata.track : "";
     mstreamModule.playerStats.metadata.title = curSong.metadata && curSong.metadata.title ? curSong.metadata.title : "";
@@ -1332,7 +1337,7 @@ const MSTREAMPLAYER = (() => {
     if ('mediaSession' in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: mstreamModule.playerStats.metadata.title,
-        artist: mstreamModule.playerStats.metadata.artist,
+        artist: mstreamModule.playerStats.metadata['artist-display'] || mstreamModule.playerStats.metadata.artist,
         album: mstreamModule.playerStats.metadata.album,
         artwork: [] //TODO: Get album art working here
       });
@@ -1480,6 +1485,8 @@ const MSTREAMPLAYER = (() => {
     // same silent breakage.
     metadata: {
       "artist": "",
+      "artist-display": "",
+      "composer": "",
       "album": "",
       "track": "",
       "title": "",

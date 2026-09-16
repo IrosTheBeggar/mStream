@@ -234,6 +234,27 @@ components:
             artist:
               type: string
               nullable: true
+              description: The primary artist's name (unchanged contract).
+            artist-display:
+              type: string
+              nullable: true
+              description: |
+                V73. The ARTIST tag as written — "A feat. B", or a multi-valued
+                tag's values joined with ", ". `artist` stays the primary
+                artist. Rows scanned before V73 return the primary name here
+                until the forced rescan. DB column `artist_display`.
+            artists:
+              type: array
+              items: { type: string }
+              description: |
+                V73. Performer credits in tag order — the primary artist first,
+                then featured artists. Always present (falls back to `[artist]`).
+            composer:
+              type: string
+              nullable: true
+              description: |
+                V73. Composer credit(s) from the COMPOSER / TCOM tag, several
+                joined with ", ". Null when the file carries none.
             album:
               type: string
               nullable: true
@@ -399,6 +420,14 @@ components:
         artist:
           type: string
           nullable: true
+        artist-display:
+          type: string
+          nullable: true
+          description: V73. The ARTIST tag as written (see `Metadata`).
+        artists:
+          type: array
+          items: { type: string }
+          description: V73. Performer credits in tag order (see `Metadata`).
         album:
           type: string
           nullable: true
@@ -500,18 +529,50 @@ components:
 
     Album:
       type: object
+      description: |
+        One album card. Rows sharing (name, year, album_art_file) are collapsed into
+        one item — an album with no ALBUMARTIST tag and several track artists is one
+        card — so the credit fields describe the group: `album_artist` is its single
+        credit and null when the collapsed rows disagree, `artists` the union of their
+        main credits, `compilation` true when any of them is one. Send `name`, `year`
+        and `album_artist` back to `/db/album-songs` to open exactly this card.
       properties:
         name:
           type: string
-        artist:
-          type: string
           nullable: true
+          description: Null only on the singles entry `/db/artists-albums` appends (tracks with no album).
         year:
           type: integer
           nullable: true
+          description: The album's aggregate year (its most common track year).
         album_art_file:
           type: string
           nullable: true
+        album_artist:
+          type: string
+          nullable: true
+          description: The ALBUMARTIST display string, else the primary album artist; null when the collapsed rows disagree.
+        artists:
+          type: array
+          items: { type: string }
+          description: Main album credits in tag order (the primary artist when a row carries none), de-duplicated across the group.
+        compilation:
+          type: boolean
+        year_min:
+          type: integer
+          nullable: true
+          description: Earliest track year across the group (V71 aggregate; null on the singles entry).
+        year_max:
+          type: integer
+          nullable: true
+        track_count:
+          type: integer
+          nullable: true
+          description: Tracks in the album(s) — the scan-time aggregate over every library, not the caller's visible subset; null on the singles entry.
+        duration:
+          type: number
+          nullable: true
+          description: Total seconds, same aggregate basis as `track_count`.
 
     Library:
       type: object
@@ -704,6 +765,13 @@ components:
           items:
             type: string
             enum: [musicbrainz, itunes, deezer]
+        artistSplitExceptions:
+          type: array
+          items: { type: string }
+          description: |
+            V73. Artist names the scanners never split on the artist delimiters
+            (" / ", " feat. ", " ft. ", "; ") when they appear in a single-valued
+            tag. Exact spelling as tagged, applied in list order. Default empty.
         analyzeBpm:
           type: boolean
           description: |
@@ -949,7 +1017,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Forbidden:
-      description: Validation error or permission denied.
+      description: Permission denied — authenticated, but not allowed (admin role, per-user flag or library access missing). Validation failures answer 400, never 403.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -1475,7 +1543,27 @@ paths:
     get: &artistsOp
       tags: [Library]
       summary: List all artists
-      description: Unique artist names from the user's accessible libraries, case-insensitive sort.
+      description: |
+        Unique artist names from the user's accessible libraries. Default order is the
+        display name, case-insensitive. `sort=order` sorts by the artist's sort key instead:
+        the ARTISTSORT tag when the library carries one, else the name with one leading
+        article dropped ("The Beatles" under B).
+
+        By default the list holds the artists that are the primary artist of at least one
+        track (unchanged). `include` widens it (V73): `albumArtists` adds artists credited on
+        an album (ALBUMARTIST — this is where "Various Artists" appears), and a role name
+        (`featured`, `composer`, `conductor`, `remixer`, `lyricist`) adds artists holding
+        that credit on a track. Unknown values are a 400.
+      parameters:
+        - in: query
+          name: sort
+          required: false
+          schema: { type: string, enum: [name, order], default: name }
+        - in: query
+          name: include
+          required: false
+          description: Comma-separated list of extra sources (see above).
+          schema: { type: string, example: "albumArtists,featured" }
       responses:
         "200":
           description: Artists.
@@ -1491,10 +1579,19 @@ paths:
     post:
       <<: *artistsOp
       requestBody:
-        description: Optional `ignoreVPaths` filter.
+        description: Optional `ignoreVPaths` filter, `sort` mode and `include` sources.
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/IgnoreVPaths" }
+            schema:
+              allOf:
+                - type: object
+                  properties:
+                    sort: { type: string, enum: [name, order], default: name }
+                    include:
+                      type: array
+                      items: { type: string, enum: [albumArtists, featured, composer, conductor, remixer, lyricist] }
+                      description: Extra sources to include (V73; see the GET description).
+                - { $ref: "#/components/schemas/IgnoreVPaths" }
 
   /api/v1/db/artists-albums:
     post:
@@ -1509,7 +1606,17 @@ paths:
                 - type: object
                   required: [artist]
                   properties:
-                    artist: { type: string }
+                    artist:
+                      type: string
+                      description: Matched on the normalised artist name (case, whitespace and quote style insensitive).
+                    roles:
+                      type: array
+                      items: { type: string, enum: [main, featured, composer, conductor, remixer, lyricist] }
+                      description: |
+                        V73. Which track credits count as the artist's when collecting albums
+                        (and the singles bucket). Omitted or empty → `[main, featured]` (performer
+                        credits) — a composer credit does not put an album on the composer's page
+                        unless asked for.
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":
@@ -1558,11 +1665,36 @@ paths:
             schema:
               allOf:
                 - type: object
-                  required: [album]
                   properties:
-                    album: { type: string }
-                    artist: { type: string }
-                    year: { type: integer }
+                    album:
+                      type: string
+                      nullable: true
+                      description: |
+                        The album name exactly as a list response gave it. Null or absent selects
+                        the singles bucket — tracks with no album — narrowed by `artist` / `album_artist`.
+                    album_artist:
+                      type: string
+                      nullable: true
+                      description: |
+                        Narrows a named album to one album artist when two albums share a name: send
+                        back the `album_artist` (or one of the `artists`) a list response gave you.
+                        Matched on the normalised artist name against the album's primary artist and
+                        its main credits, or verbatim against the display string. Without `album` (the
+                        singles bucket) it matches the track artist, like `artist`.
+                    artist:
+                      type: string
+                      description: |
+                        Matches the TRACK artist, not the album artist: the primary ARTIST tag or
+                        (V73) a performer credit (main / featured) on the track — the same set
+                        `/db/artists-albums` lists by default. Composer and other credit roles
+                        never match here. Matched on the normalised artist name.
+                    year:
+                      type: integer
+                      description: |
+                        With `album` set, matches when the year falls inside the album's
+                        year range (an album can span several track years; send back the
+                        `year` a list response gave you, or the playing track's year).
+                        Without `album` (the singles bucket) it matches the track year.
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":
@@ -2359,6 +2491,16 @@ paths:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: >-
+            The track's library is not among the caller's libraries or does
+            not exist (`User does not have access to path <vpath>` — the
+            same 404 as `/api/v1/file-explorer`, so existence is not
+            revealed), or the track is not in the database (`File Not
+            Found`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/db/recent/added:
     post:
@@ -3415,8 +3557,30 @@ paths:
                   path: { type: string }
                   directories: { type: array, items: { type: object } }
                   files: { type: array, items: { type: object } }
+        "400":
+          description: >-
+            The folder cannot be read (`EACCES`, `EPERM`, …) or the path is
+            malformed (a NUL byte → `ERR_INVALID_ARG_VALUE`) — message
+            `Cannot read directory "<virtual path>" (<code>)`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: >-
+            The path's library is not among the caller's libraries, or does
+            not exist — message `User does not have access to path <vpath>`
+            or `Library '<vpath>' not found`. Deliberately 404 rather than
+            403 for the access case, so a caller cannot tell whether a
+            library they lack exists (the same choice `/media/<vpath>/`
+            makes). Every route that resolves a virtual path answers the
+            same way. Also 404 when the folder itself is gone or is a file
+            — message `Cannot read directory "<virtual path>" (ENOENT|ENOTDIR)`,
+            never the library's path on disk.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/file-explorer/recursive:
     post:
@@ -3440,6 +3604,25 @@ paths:
                 type: array
                 items: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "400":
+          description: >-
+            The folder cannot be read (`EACCES`, `EPERM`, …) or the path is
+            malformed (a NUL byte → `ERR_INVALID_ARG_VALUE`) — message
+            `Cannot read directory "<virtual path>" (<code>)`. Only the requested
+            folder itself can fail this way: an unreadable or vanished
+            subfolder is skipped (logged) and the rest is still listed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            The path's library is not among the caller's libraries or does not exist (`User does not have access to path <vpath>` — the same 404 as `/api/v1/file-explorer`, existence not revealed);
+            or the folder is gone or is a file — message
+            `Cannot read directory "<virtual path>" (ENOENT|ENOTDIR)`, never the
+            library's path on disk.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/file-explorer/mkdir:
     post:
@@ -3459,6 +3642,7 @@ paths:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/file-explorer/upload:
     post:
@@ -3487,6 +3671,7 @@ paths:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/file-explorer/m3u:
     post:
@@ -3519,6 +3704,23 @@ paths:
                         name: { type: string }
                         path: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "400":
+          description: >-
+            `path` missing (validation), or the playlist cannot be read (`EACCES`, `EPERM`, …) or the path is
+            malformed (a NUL byte → `ERR_INVALID_ARG_VALUE`) — message
+            `Cannot read playlist "<virtual path>" (<code>)`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            The path's library is not among the caller's libraries or does not exist (`User does not have access to path <vpath>` — the same 404 as `/api/v1/file-explorer`, existence not revealed);
+            or the playlist file is missing or is a folder — message
+            `Cannot read playlist "<virtual path>" (ENOENT|EISDIR)`, never the
+            library's path on disk.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   # ── Download ─────────────────────────────────────────────────────────────
 
@@ -3542,6 +3744,23 @@ paths:
             application/zip:
               schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "400":
+          description: >-
+            The playlist cannot be read (`EACCES`, `EPERM`, …) or the path is
+            malformed (a NUL byte → `ERR_INVALID_ARG_VALUE`) — message
+            `Cannot read playlist "<virtual path>" (<code>)`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            The path's library is not among the caller's libraries or does not exist (`User does not have access to path <vpath>` — the same 404 as `/api/v1/file-explorer`, existence not revealed);
+            or the playlist file is missing or is a folder — message
+            `Cannot read playlist "<virtual path>" (ENOENT|EISDIR)`, never the
+            library's path on disk.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/download/directory:
     post:
@@ -3563,6 +3782,23 @@ paths:
             application/zip:
               schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "400":
+          description: >-
+            Not a directory (`Not A Directory`), or the folder cannot be read (`EACCES`, `EPERM`, …) or the path is
+            malformed (a NUL byte → `ERR_INVALID_ARG_VALUE`) — message
+            `Cannot read directory "<virtual path>" (<code>)`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            The path's library is not among the caller's libraries or does not exist (`User does not have access to path <vpath>` — the same 404 as `/api/v1/file-explorer`, existence not revealed);
+            or the folder is gone or is a file — message
+            `Cannot read directory "<virtual path>" (ENOENT|ENOTDIR)`, never the
+            library's path on disk.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/download/shared:
     get:
@@ -4577,6 +4813,29 @@ paths:
         "200": { $ref: "#/components/responses/EmptySuccess" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
+  /api/v1/admin/db/params/artist-split-exceptions:
+    post:
+      tags: [Admin - Scanner]
+      summary: Set the artist names never split by the scanners
+      description: |
+        V73. Replaces `scanOptions.artistSplitExceptions`. Live — the next scan honours
+        the list; run a rescan to re-read files already indexed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [artistSplitExceptions]
+              properties:
+                artistSplitExceptions:
+                  type: array
+                  maxItems: 500
+                  items: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
   /api/v1/admin/db/params/boot-scan-delay:
     post:
       tags: [Admin - Scanner]
@@ -4902,6 +5161,13 @@ paths:
                 allowUpload: { type: boolean, default: true }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "409":
+          description: >-
+            A user named `username` already exists — message
+            `'<username>' already exists`. Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
     delete:
       tags: [Admin - Users]
@@ -4917,6 +5183,13 @@ paths:
                 username: { type: string }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404":
+          description: >-
+            No user named `username` — message `'<username>' does not exist`.
+            Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/users/password:
@@ -4935,6 +5208,13 @@ paths:
                 password: { type: string }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404":
+          description: >-
+            No user named `username` — message `'<username>' does not exist`.
+            Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/users/lastfm:
@@ -4955,6 +5235,13 @@ paths:
                 lasftfmPassword: { type: string }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404":
+          description: >-
+            No user named `username` — message `'<username>' does not exist`.
+            Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/users/vpaths:
@@ -4975,6 +5262,13 @@ paths:
                   items: { type: string }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404":
+          description: >-
+            No user named `username` — message `'<username>' does not exist`.
+            Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/users/access:
@@ -4996,6 +5290,13 @@ paths:
                 allowFileModify: { type: boolean, default: true }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404":
+          description: >-
+            No user named `username` — message `'<username>' does not exist`.
+            Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   # ── Admin - Libraries ────────────────────────────────────────────────────
@@ -5036,7 +5337,13 @@ paths:
               type: object
               required: [directory, vpath]
               properties:
-                directory: { type: string, description: "Absolute filesystem path." }
+                directory:
+                  type: string
+                  description: >-
+                    Absolute path of an existing directory. A leading `~`
+                    (alone or before a path separator, e.g. `~/Music`)
+                    expands to the server's home directory, and the expanded
+                    path is what gets stored.
                 vpath:
                   type: string
                   pattern: "[a-zA-Z0-9-]+"
@@ -5052,6 +5359,24 @@ paths:
                     scan the add queues).
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "400":
+          description: >-
+            `directory` is not an absolute path to an existing directory
+            after `~` expansion — message
+            `"directory" must be an absolute path that exists (<why>)`,
+            where `<why>` is `not an absolute path`, `not a directory`,
+            or the stat errno (`ENOENT`, `EACCES`, …) — or `vpath` is
+            not a slug.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: >-
+            A library named `vpath` already exists — message
+            `'<vpath>' already exists`. Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
     delete:
       tags: [Admin - Libraries]
@@ -5069,6 +5394,13 @@ paths:
                   pattern: "[a-zA-Z0-9-]+"
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404":
+          description: >-
+            No library named `vpath` — message `'<vpath>' not found`.
+            Nothing is removed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   # ── Admin - Config ───────────────────────────────────────────────────────
@@ -5600,7 +5932,12 @@ paths:
               type: object
               required: [directory]
               properties:
-                directory: { type: string, description: "Absolute path, or `~` for home." }
+                directory:
+                  type: string
+                  description: >-
+                    Absolute path, or `~` / `~/…` (`~\…` on Windows) for
+                    the server's home directory and paths under it. The
+                    response `path` is the expanded absolute path.
                 joinDirectory: { type: string }
       responses:
         "200":
@@ -5613,6 +5950,21 @@ paths:
                   path: { type: string }
                   directories: { type: array, items: { type: object } }
                   files: { type: array, items: { type: object } }
+        "400":
+          description: >-
+            The directory cannot be read (`EACCES`, `EPERM`, …) or the path
+            is malformed (a NUL byte → `ERR_INVALID_ARG_VALUE`); the code is
+            in the message, e.g. `Cannot read directory "/root" (EACCES)`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            No such directory (`ENOENT`), or the path is a file (`ENOTDIR`);
+            the errno is in the message.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/file-explorer/win-drives:
@@ -5658,7 +6010,7 @@ paths:
                 followSymlinks: { type: boolean }
       responses:
         "200": { description: Flag updated. }
-        "403": { description: Validation error. }
+        "400": { description: Validation error. }
         "404": { description: Library not found. }
         "405": { $ref: "#/components/responses/AdminLocked" }
 

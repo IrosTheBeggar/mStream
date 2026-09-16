@@ -654,7 +654,9 @@
     <div class="side-nav-header">
       <span data-i18n="nav.navigation">Navigation</span>
     </div>
-    <div id="nav-stats" class="local-only side-nav-item my-waves super-hide" onclick="window.location.href = './stats';">
+    <!-- Stats opens in its own tab so playback carries on here. Its "Back to
+         the player" closes that tab again, which needs window.opener: no noopener. -->
+    <div id="nav-stats" class="local-only side-nav-item my-waves super-hide" onclick="window.open('./stats', '_blank');">
       <svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 0 24 24" width="24" fill="none" stroke="#FFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10"></path><path d="M10 20V4"></path><path d="M16 20v-7"></path><path d="M22 20H2"></path></svg>
       <span data-i18n="nav.stats">Stats</span>
     </div>
@@ -728,7 +730,11 @@
             </p>
             <p>
               <b data-i18n="metadata.artist">Artist:</b>
-              <span class="pointer" v-on:click="goToArtist">{{ (meta.artist) ? meta.artist : '' }}</span>
+              <span class="pointer" v-on:click="goToArtist">{{ meta['artist-display'] || meta.artist || '' }}</span>
+            </p>
+            <p v-if="meta.composer">
+              <b data-i18n="metadata.composer">Composer:</b>
+              {{ meta.composer }}
             </p>
             <p>
               <b data-i18n="metadata.album">Album:</b>
@@ -876,7 +882,11 @@
                 </p>
                 <p>
                   <b data-i18n="metadata.artist">Artist:</b>
-                  <span class="pointer" v-on:click="goToArtist">{{ (meta.artist) ? meta.artist : '' }}</span>
+                  <span class="pointer" v-on:click="goToArtist">{{ meta['artist-display'] || meta.artist || '' }}</span>
+                </p>
+                <p v-if="meta.composer">
+                  <b data-i18n="metadata.composer">Composer:</b>
+                  {{ meta.composer }}
                 </p>
                 <p>
                   <b data-i18n="metadata.album">Album:</b>

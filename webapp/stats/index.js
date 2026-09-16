@@ -226,7 +226,7 @@
     if (noPlaysEver) {
       $('stats-empty-title').textContent = tr('stats.empty.noPlaysTitle');
       $('stats-empty-copy').textContent = tr('stats.empty.noPlaysCopy');
-      actions.innerHTML = '<a class="stats-button" href="./" style="display: inline-flex; align-items: center; text-decoration: none;">' + V.escapeHtml(tr('stats.empty.playSomething')) + '</a>';
+      actions.innerHTML = '<a class="stats-button" href="../" data-player-link style="display: inline-flex; align-items: center; text-decoration: none;">' + V.escapeHtml(tr('stats.empty.playSomething')) + '</a>';
       return;
     }
     const current = state.period + ':' + state.offset;
@@ -261,6 +261,18 @@
   }
 
   function wire() {
+    // The links back to the player (the logo, the back link, the empty
+    // state's button): a plain click closes this tab when the player opened
+    // it (stats-view.js openerIsPlayer); a modified click, or a browser that
+    // won't close the tab, follows the link.
+    document.addEventListener('click', (e) => {
+      const a = e.target.closest('a[data-player-link]');
+      if (!a || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) { return; }
+      if (!V.openerIsPlayer(window.opener, location.href)) { return; }
+      e.preventDefault();
+      window.close();
+      if (!window.closed) { location.href = a.href; }
+    });
     $('stats-period').addEventListener('change', (e) => setPeriod(e.target.value));
     $('stats-origin').addEventListener('click', (e) => {
       const b = e.target.closest('[data-origin]');

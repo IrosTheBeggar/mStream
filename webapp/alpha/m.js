@@ -256,10 +256,28 @@ function escapeHtml (string) {
   });
 }
 
-function renderAlbum(id, artist, name, albumArtFile, year) {
+// The artist line an album card shows and the `album_artist` it may send
+// back to /db/album-songs, from one /db/albums (or artists-albums) item.
+// `album_artist` is the group's single credit and null when the collapsed
+// rows disagree; it is the ONLY value fit to send back — a joined display of
+// several credits matches nothing and would open an empty album. The line
+// falls back to the credits so a disagreeing card still says who is on it.
+// A server without the fields (a peer on an older version) gives nulls and
+// the card renders exactly as before.
+function albumCredit(value) {
+  const albumArtist = typeof value.album_artist === 'string' && value.album_artist ? value.album_artist : null;
+  const artists = Array.isArray(value.artists) ? value.artists.filter((a) => typeof a === 'string' && a) : [];
+  return { albumArtist, line: albumArtist || (artists.length ? artists.join(', ') : null) };
+}
+
+// `albumArtist` rides along as data-album-artist so getAlbumsOnClick and
+// queueAlbum open exactly this card when two albums share a name; `artistLine`
+// is display only. Both are optional — a panel that lacks them draws the
+// pre-series card.
+function renderAlbum(id, artist, name, albumArtFile, year, albumArtist, artistLine) {
   const artSrc = artUrl(albumArtFile, VUEPLAYERCORE.altLayout.compressArt ? 'l' : undefined);
 
-  return `<div class="album-grid-card"${peerAttr()} ${year ? `data-year="${escapeHtml(year)}"` : ''} ${artist ? `data-artist="${escapeHtml(artist)}"` : ''} ${id ? `data-album="${escapeHtml(id)}"` : ''} onclick="getAlbumsOnClick(this);">
+  return `<div class="album-grid-card"${peerAttr()} ${year ? `data-year="${escapeHtml(year)}"` : ''} ${artist ? `data-artist="${escapeHtml(artist)}"` : ''} ${albumArtist ? `data-album-artist="${escapeHtml(albumArtist)}"` : ''} ${id ? `data-album="${escapeHtml(id)}"` : ''} onclick="getAlbumsOnClick(this);">
     <div class="album-grid-art">
       ${artSrc
         ? `<img loading="lazy" src="${artSrc}">`
@@ -270,6 +288,7 @@ function renderAlbum(id, artist, name, albumArtFile, year) {
     </div>
     <div class="album-grid-info">
       <div class="album-grid-name">${escapeHtml(name)}</div>
+      ${artistLine ? `<div class="album-grid-artist">${escapeHtml(artistLine)}</div>` : ''}
       ${year ? `<div class="album-grid-year">${escapeHtml(year)}</div>` : ''}
     </div>
   </div>`;
@@ -650,15 +669,11 @@ async function queueAlbum(cardEl) {
   const album = cardEl.getAttribute('data-album') || null;
   const artist = cardEl.getAttribute('data-artist') || null;
   const year = cardEl.getAttribute('data-year') || null;
+  const albumArtist = cardEl.getAttribute('data-album-artist') || null;
   const peer = adoptPeer(cardEl);
 
   try {
-    const response = await browseApi('albumSongs', {
-      album,
-      artist,
-      year,
-      ignoreVPaths: localIgnoreVPaths()
-    });
+    const response = await browseApi('albumSongs', albumSongsBody(album, artist, year, albumArtist));
 
     response.forEach(song => {
       queueRow(peer, song.filepath, song.metadata || {});
@@ -3115,6 +3130,30 @@ async function savePlaylist() {
 }
 
 /////////////// Artists
+// The /db/artists request the two layout preferences shape: "show
+// album-only artists" widens the list with `include: ['albumArtists']` (the
+// artists credited only on albums — Various Artists, a compilation's credit
+// — join the track artists; on by default), and "ignore leading articles"
+// asks for `sort: 'order'` ("The Beatles" files under B). Both are omitted
+// when browsing a peer: a peer on an older version validates neither, and
+// the peer already answers in its own order.
+function artistsBody() {
+  const body = { ignoreVPaths: localIgnoreVPaths() };
+  if (peerContext) { return body; }
+  if (VUEPLAYERCORE.altLayout.artistsShowAlbumOnly !== false) { body.include = ['albumArtists']; }
+  if (VUEPLAYERCORE.altLayout.artistsIgnoreArticles === true) { body.sort = 'order'; }
+  return body;
+}
+
+// The /db/album-songs request for a card: `album_artist` only when the card
+// carries one (the group's single credit) — never null, so a server that
+// predates the field, or a peer, sees the request it always did.
+function albumSongsBody(album, artist, year, albumArtist) {
+  const body = { album, artist, year, ignoreVPaths: localIgnoreVPaths() };
+  if (albumArtist) { body.album_artist = albumArtist; }
+  return body;
+}
+
 async function getAllArtists() {
   setBrowserRootPanel(t('panel.artists'));
   document.getElementById('filelist').innerHTML = getLoadingSvg();
@@ -3122,7 +3161,7 @@ async function getAllArtists() {
 
   const gen = browseGeneration;
   try {
-    const response = await browseApi('artists', { ignoreVPaths: localIgnoreVPaths() });
+    const response = await browseApi('artists', artistsBody());
     if (gen !== browseGeneration) { return; }
 
     // parse through the json array and make an array of corresponding divs
@@ -3166,8 +3205,10 @@ async function getArtistsAlbums(artist) {
     let albums = '<div class="album-grid">';
     response.albums.forEach(value => {
       const albumString = value.name ? value.name : 'SINGLES';
-      albums += renderAlbum(value.name, value.name === null ? artist : null, albumString, value.album_art_file, value.year);
-      currentBrowsingList.push({ type: 'album', name: value.name, artist: artist, album_art_file: value.album_art_file, year: value.year })
+      const credit = albumCredit(value);
+      albums += renderAlbum(value.name, value.name === null ? artist : null, albumString, value.album_art_file, value.year, credit.albumArtist, credit.line);
+      currentBrowsingList.push({ type: 'album', name: value.name, artist: artist, album_art_file: value.album_art_file, year: value.year,
+        album_artist: credit.albumArtist, artist_line: credit.line });
     });
     albums += '</div>';
 
@@ -3254,14 +3295,17 @@ async function getAllAlbums() {
 
     let albums = '<div class="album-grid">';
     response.albums.forEach(value => {
+      const credit = albumCredit(value);
       currentBrowsingList.push({
         type: 'album',
         name: value.name,
         'album_art_file': value.album_art_file,
-        year: value.year
+        year: value.year,
+        album_artist: credit.albumArtist,
+        artist_line: credit.line
       });
 
-      albums += renderAlbum(value.name, undefined, value.name, value.album_art_file, value.year);
+      albums += renderAlbum(value.name, undefined, value.name, value.album_art_file, value.year, credit.albumArtist, credit.line);
     });
     albums += '</div>'
 
@@ -3277,10 +3321,11 @@ function getAlbumsOnClick(el) {
   getAlbumSongs(
     el.hasAttribute('data-album') ? el.getAttribute('data-album') : null,
     el.hasAttribute('data-artist') ? el.getAttribute('data-artist') : null,
-    el.hasAttribute('data-year') ? el.getAttribute('data-year') : null);
+    el.hasAttribute('data-year') ? el.getAttribute('data-year') : null,
+    el.hasAttribute('data-album-artist') ? el.getAttribute('data-album-artist') : null);
 }
 
-async function getAlbumSongs(album, artist, year) {
+async function getAlbumSongs(album, artist, year, albumArtist) {
   document.getElementById('directoryName').innerHTML = 'Album: ' + escapeHtml(album);
 
   programState.push({
@@ -3298,12 +3343,7 @@ async function getAlbumSongs(album, artist, year) {
 
   const gen = browseGeneration;
   try {
-    const response = await browseApi('albumSongs', {
-      album,
-      artist,
-      year,
-      ignoreVPaths: localIgnoreVPaths()
-    });
+    const response = await browseApi('albumSongs', albumSongsBody(album, artist, year, albumArtist));
     if (gen !== browseGeneration) { return; }
 
     //parse through the json array and make an array of corresponding divs
@@ -5128,7 +5168,7 @@ function runLocalSearch(el) {
         filelist += renderPlaylist(x.name);
       } else if (x.type === 'album') {
         const albumString = x.name  ? x.name  : 'SINGLES';
-        filelist += renderAlbum(x.name, x.name === null ? x.artist : null, albumString, x.album_art_file, x.year);
+        filelist += renderAlbum(x.name, x.name === null ? x.artist : null, albumString, x.album_art_file, x.year, x.album_artist, x.artist_line);
       } else if (x.type === 'artist') {
         filelist += renderArtist(x.name);
       } else if (x.type === 'genre') {
@@ -5681,6 +5721,22 @@ function setupLayoutPanel() {
         </label>
       </div>
       <br>
+      <div class="switch">
+        <label>
+          <input onchange="tglArtistsShowAlbumOnly();" type="checkbox" ${VUEPLAYERCORE.altLayout.artistsShowAlbumOnly !== false ? 'checked' : ''}>
+          <span class="lever"></span>
+          ${t('layout.artistsShowAlbumOnly')}
+        </label>
+      </div>
+      <br>
+      <div class="switch">
+        <label>
+          <input onchange="tglArtistsIgnoreArticles();" type="checkbox" ${VUEPLAYERCORE.altLayout.artistsIgnoreArticles === true ? 'checked' : ''}>
+          <span class="lever"></span>
+          ${t('layout.artistsIgnoreArticles')}
+        </label>
+      </div>
+      <br>
       <!-- <div class="switch">
         <label>
           <input type="checkbox">
@@ -5751,6 +5807,18 @@ function flipPlayer() {
 function tglHideTopBar() {
   VUEPLAYERCORE.altLayout.hideTopBar = !VUEPLAYERCORE.altLayout.hideTopBar;
   document.body.classList.toggle('top-bar-hidden', VUEPLAYERCORE.altLayout.hideTopBar);
+  localStorage.setItem('altLayout', JSON.stringify(VUEPLAYERCORE.altLayout));
+}
+
+// The two artists-list preferences (see artistsBody). Persisted with the
+// other layout preferences; the Artists panel reads them on its next load.
+function tglArtistsShowAlbumOnly() {
+  VUEPLAYERCORE.altLayout.artistsShowAlbumOnly = VUEPLAYERCORE.altLayout.artistsShowAlbumOnly === false;
+  localStorage.setItem('altLayout', JSON.stringify(VUEPLAYERCORE.altLayout));
+}
+
+function tglArtistsIgnoreArticles() {
+  VUEPLAYERCORE.altLayout.artistsIgnoreArticles = VUEPLAYERCORE.altLayout.artistsIgnoreArticles !== true;
   localStorage.setItem('altLayout', JSON.stringify(VUEPLAYERCORE.altLayout));
 }
 

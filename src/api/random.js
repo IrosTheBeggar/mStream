@@ -57,9 +57,11 @@ import { createHash } from 'node:crypto';
 import Joi from 'joi';
 import * as db from '../db/manager.js';
 import * as sim from '../db/discovery-similarity.js';
-import { renderMetadataObj, libraryFilter, trackQuery, fetchGenresForTrack } from './db.js';
+import { renderMetadataObj, libraryFilter, trackQuery, fetchGenresForTrack, fetchCreditsForTrack } from './db.js';
+import { PERFORMER_ROLES_SQL } from '../db/artist-roles.js';
 import { requireIndex, resolveSeedTrack, decodeSeedVector } from './discovery.js';
 import { joiValidate } from '../util/validation.js';
+import { nameKey } from '../db/name-key.js';
 import WebError from '../util/web-error.js';
 
 // ── Camelot → raw-key name expansion ────────────────────────────────────────
@@ -305,7 +307,9 @@ export function buildDurationFilter(opts) {
 // similar-artists names. The filter widens through V18 M2M tables so
 // a track matches when the artist appears as:
 //   • the tracks.artist_id (primary track artist)
-//   • a track_artists.artist_id (featured / collaborator)
+//   • a track_artists.artist_id in a PERFORMER role (main / featured) —
+//     V73 added composer / conductor / remixer / lyricist credits, which
+//     are not songs BY that artist
 //   • an album_artists.artist_id (album credit — catches the
 //     compilation/various-artists case where tracks belong to many
 //     artists but the album is credited to one named artist)
@@ -332,17 +336,20 @@ export function buildArtistFilter(opts) {
     // references the SAME parameter list, so we push the names once
     // and bind them three times via repeated placeholders.
     clauses.push(`(
-      t.artist_id IN (SELECT id FROM artists WHERE name IN (${ph}))
+      t.artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
       OR t.id IN (
         SELECT track_id FROM track_artists
-         WHERE artist_id IN (SELECT id FROM artists WHERE name IN (${ph}))
+         WHERE artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
+           AND role IN (${PERFORMER_ROLES_SQL})
       )
       OR t.album_id IN (
         SELECT album_id FROM album_artists
-         WHERE artist_id IN (SELECT id FROM artists WHERE name IN (${ph}))
+         WHERE artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
       )
     )`);
-    params.push(...opts.artists, ...opts.artists, ...opts.artists);
+    // V72: names match on their normalised key (src/db/name-key.js).
+    const keys = opts.artists.map(nameKey);
+    params.push(...keys, ...keys, ...keys);
   }
 
   if (Array.isArray(opts.ignoreArtists) && opts.ignoreArtists.length > 0) {
@@ -355,19 +362,21 @@ export function buildArtistFilter(opts) {
     // in WHERE), but the V18 fallback chain ensures most tracks have
     // at least one credit set anyway.
     clauses.push(`
-      COALESCE(t.artist_id, -1) NOT IN (SELECT id FROM artists WHERE name IN (${ph}))
+      COALESCE(t.artist_id, -1) NOT IN (SELECT id FROM artists WHERE name_key IN (${ph}))
       AND NOT EXISTS (
         SELECT 1 FROM track_artists ta
          WHERE ta.track_id = t.id
-           AND ta.artist_id IN (SELECT id FROM artists WHERE name IN (${ph}))
+           AND ta.role IN (${PERFORMER_ROLES_SQL})
+           AND ta.artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
       )
       AND NOT EXISTS (
         SELECT 1 FROM album_artists aa
          WHERE aa.album_id = t.album_id
-           AND aa.artist_id IN (SELECT id FROM artists WHERE name IN (${ph}))
+           AND aa.artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
       )
     `);
-    params.push(...opts.ignoreArtists, ...opts.ignoreArtists, ...opts.ignoreArtists);
+    const ignoreKeys = opts.ignoreArtists.map(nameKey);
+    params.push(...ignoreKeys, ...ignoreKeys, ...ignoreKeys);
   }
 
   return { clauses, params };
@@ -1098,6 +1107,8 @@ function finalisePick(rows, body, sonic, tierOpts = null) {
   const d = db.getDB();
   for (const row of picked) {
     row.genres_concat = fetchGenresForTrack(d, row.id).genres_concat;
+    // V73: performer / composer credits for `metadata.artists` / `composer`.
+    Object.assign(row, fetchCreditsForTrack(d, row.id));
   }
 
   const out = {
