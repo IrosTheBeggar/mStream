@@ -108,6 +108,12 @@ export const usingFallbackDataRoot = dataRoot !== appRoot;
 export function expandHomeDir(p, homedir = os.homedir) {
   if (typeof p !== 'string') { return p; }
   if (p === '~') { return homedir(); }
-  if (p.startsWith('~/') || p.startsWith('~\\')) { return join(homedir(), p.slice(2)); }
+  if (p.startsWith('~/') || p.startsWith('~\\')) {
+    const rest = p.slice(2);
+    // `~/` alone is the home directory itself, returned verbatim: join() would
+    // re-render it with the platform's separators (a POSIX home becomes
+    // `\srv\home` on Windows), and there is nothing to append anyway.
+    return rest ? join(homedir(), rest) : homedir();
+  }
   return p;
 }
