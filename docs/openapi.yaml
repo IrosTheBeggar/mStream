@@ -2297,7 +2297,11 @@ paths:
                       nullable: true
                       properties:
                         endpointId: { type: string, nullable: true }
-                        id: { nullable: true, oneOf: [{ type: integer }, { type: string }] }
+                        id:
+                          description: "The paired peer's numeric id (federation rows); absent or null for network rows."
+                          oneOf:
+                            - { type: integer, nullable: true }
+                            - { type: string, nullable: true }
                         name: { type: string, nullable: true }
       responses:
         "200":
