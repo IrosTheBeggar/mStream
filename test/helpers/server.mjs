@@ -10,8 +10,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { after } from 'node:test';
 import { ensureFixtures } from './fixtures.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -35,6 +36,68 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 // enough for a full ERR_MODULE_NOT_FOUND / Joi stack, small enough that a
 // chatty server can't grow test-process memory.
 const STDERR_TAIL_BYTES = 4096;
+
+// ── never leave a server behind ──────────────────────────────────────────────
+//
+// Every server this process has started and not stopped. Why a registry: a
+// suite that boots two servers with Promise.all([startServer(), startServer()])
+// never assigns the variables its after() would stop when ONE boot fails —
+// the sibling that did boot is orphaned, alive, and its stdio pipes keep this
+// test process's event loop alive, so `node --test` waits on the file for
+// ever (seen on Windows under full-suite load, where a 90 s scan window is
+// easy to miss). Nothing in the suite can reach that server; the harness can.
+const live = new Set();
+
+// Kill a server and everything under it. On Windows proc.kill() reaches only
+// the direct child: the rust-parser scan, the waveform pass and the p2p
+// sidecar are grandchildren that survive, keep the child's stdio pipes open
+// and hold files in tmpDir. taskkill /T takes the whole tree.
+function killTree(proc) {
+  if (proc.exitCode != null || proc.signalCode != null) { return; }
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    } catch { /* taskkill missing — fall through to the plain kill */ }
+  }
+  try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+}
+
+// Our ends of the child's pipes: a grandchild that inherited the other ends
+// can hold them open, and an open readable pins the event loop. Drop them
+// once the child is dead (or given up on).
+function release(proc) {
+  for (const s of [proc.stdout, proc.stderr]) { try { s?.destroy(); } catch { /* noop */ } }
+  live.delete(proc);
+}
+
+// Wait for the child's exit, capped. Not Promise.race([..., sleep(cap)]):
+// the losing timer would stay pending and keep THIS process alive for the
+// whole cap after every stop().
+function exitedWithin(proc, ms) {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    proc.once('exit', () => { clearTimeout(t); resolve(); });
+  });
+}
+
+async function killAndRelease(proc) {
+  killTree(proc);
+  if (proc.exitCode == null && proc.signalCode == null) {
+    await exitedWithin(proc, 10_000);
+  }
+  release(proc);
+}
+
+/** Stop every server this process still has running (the orphans). */
+export async function stopAll() {
+  await Promise.all([...live].map(killAndRelease));
+}
+
+// Root-level hook: runs once the importing file's tests (and their own
+// hooks) are done, whatever state they left. The exit handler is the last
+// resort for a process.exit() path — synchronous kills only.
+after(() => stopAll());
+process.once('exit', () => { for (const proc of live) { killTree(proc); } });
 
 // The timeout is a ceiling, not a wait: healthy boots return as soon as the
 // API answers, and a crashed boot bails immediately via getExitError. 90s
@@ -296,6 +359,7 @@ export async function startServer(opts = {}) {
       env: { ...process.env, NODE_ENV: 'test', MSTREAM_TEST_BAKED_SEEDS: '[]', MSTREAM_SIDECAR_BASE: 'http://127.0.0.1:9', MSTREAM_PLAYER_BASE: 'http://127.0.0.1:9', ...env },
     },
   );
+  live.add(proc);
 
   // Drain output so the buffer doesn't back up even when not captured — but
   // keep a rolling tail of stderr. A boot crash used to surface as a bare
@@ -337,23 +401,37 @@ export async function startServer(opts = {}) {
     if (!exitedEarly) { exitedEarly = `server exited with code ${code}`; }
   });
 
+  // Every failure after the spawn goes through here: the child is killed
+  // (tree and all), its stderr tail flushed for the message, its pipes
+  // released and its tmpDir removed — THEN the caller sees the error. A
+  // boot that threw without killing left a live server nobody referenced.
+  const fail = async (err) => {
+    killTree(proc);
+    await flushStderr();
+    release(proc);
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    throw exitedEarly ? new Error(exitedEarly + stderrTail()) : err;
+  };
+
   try {
     await waitForReady(baseUrl, { getExitError: () => exitedEarly });
   } catch (err) {
-    try { proc.kill('SIGKILL'); } catch { /* already gone */ }
-    if (exitedEarly) { await flushStderr(); }
-    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    throw exitedEarly ? new Error(exitedEarly + stderrTail()) : err;
+    await fail(err);
   }
 
   if (waitForScan) {
-    await waitForScanComplete(baseUrl);
+    try {
+      await waitForScanComplete(baseUrl);
+    } catch (err) {
+      await fail(err);
+    }
   }
 
   // Create users before the caller starts testing. While there are zero users
   // the server is in public-access mode and admin endpoints are unauthenticated;
   // once the first user is added, subsequent ones need an admin token, so we
   // always mark the first created user as admin.
+  try {
   for (let i = 0; i < users.length; i++) {
     const u = users[i];
     const body = {
@@ -383,18 +461,15 @@ export async function startServer(opts = {}) {
     });
     if (!r.ok) {
       const msg = await r.text();
-      try { proc.kill('SIGKILL'); } catch { /* already gone */ }
-      await flushStderr();
-      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
       throw new Error(`failed to create user "${u.username}": ${r.status} ${msg}${stderrTail()}`);
     }
   }
+  } catch (err) {
+    await fail(err);
+  }
 
   async function stop() {
-    if (proc.exitCode == null && proc.signalCode == null) {
-      proc.kill('SIGKILL');
-      await new Promise(r => proc.once('exit', r));
-    }
+    await killAndRelease(proc);
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 
