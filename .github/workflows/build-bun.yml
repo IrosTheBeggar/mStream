@@ -424,8 +424,15 @@ jobs:
           # tolerances below reference; 1.4.1 (2026-09-04) is the rewrite's
           # first patch release (202 fixes, among them 1.4.0 regressions in
           # node:http server/socket lifecycle and the darwin-arm64
-          # `--compile` codesign failure on macOS 27, oven-sh/bun#39764).
-          bun-version: 1.4.1
+          # `--compile` codesign failure on macOS 27, oven-sh/bun#39764);
+          # 1.4.2 (2026-09-05) is a small follow-up (11 fixes: worker_threads
+          # 'online' event order, a JavaScriptCore upgrade, memory fixes —
+          # nothing in networking, spawn or `--compile`). Validated locally
+          # 2026-09-17 before pinning: the socket-inheritance probe re-listens
+          # on attempt 1 (regular and baseline builds), the reboot-keeps-*
+          # integration bun legs pass, and a win-x64 bundle built with the
+          # pre-fetched baseline runtime completes a discovery pass.
+          bun-version: 1.4.2
 
       - name: Install production dependencies
         run: npm ci --omit=dev
