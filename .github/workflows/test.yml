@@ -53,7 +53,7 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
+          bun-version: 1.4.2
 
       # ffmpeg sources differ per OS: version-pinned, checksum-verified static
       # builds fetched from GitHub-CDN mirrors on Linux (BtbN) and Windows
