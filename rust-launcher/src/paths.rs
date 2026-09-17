@@ -381,6 +381,34 @@ pub fn sanitize_version(s: &str) -> Option<String> {
     (dots == 2 && !s.starts_with('.') && !s.ends_with('.')).then(|| s.to_string())
 }
 
+/// The server's tray-status.json (src/util/tray-status.js): the facts the
+/// tray shows without a session — today the federation requests waiting on
+/// the operator. Same channel and the same tolerance as the update status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrayStatus {
+    pub federation_inbox: u32,
+}
+
+fn tray_status_file() -> PathBuf {
+    data_home().join("tray-status.json")
+}
+
+pub fn read_tray_status() -> Option<TrayStatus> {
+    parse_tray_status(&std::fs::read_to_string(tray_status_file()).ok()?)
+}
+
+/// An absent or non-numeric fact reads as 0 — an older server never writes
+/// the key, and a hand-edited file must not invent a badge. Capped: neither
+/// the menu line nor the badge ever needs more than three digits.
+pub fn parse_tray_status(doc: &str) -> Option<TrayStatus> {
+    let v = serde_json::from_str::<serde_json::Value>(doc).ok()?;
+    if !v.is_object() {
+        return None;
+    }
+    let n = v.get("federationInbox").and_then(|x| x.as_u64()).unwrap_or(0);
+    Some(TrayStatus { federation_inbox: n.min(999) as u32 })
+}
+
 /// Tolerant read of the status file: absent, unreadable, or garbage all come
 /// back as None; unknown fields are ignored (the server may write a newer
 /// schema than this launcher knows).
@@ -542,6 +570,19 @@ mod tests {
         #[cfg(all(unix, not(target_os = "macos")))]
         assert!(key.starts_with("mstream-player-linux-"), "{key}");
         assert!(!key.contains("x86_64") && !key.contains("aarch64"), "node arch names, not Rust's: {key}");
+    }
+
+    #[test]
+    fn tray_status_reads_the_inbox_tolerantly() {
+        let n = |doc: &str| parse_tray_status(doc).map(|s| s.federation_inbox);
+        assert_eq!(n(r#"{"federationInbox": 3, "updatedAt": "2026-09-12T15:00:00.000Z"}"#), Some(3));
+        assert_eq!(n(r#"{"updatedAt": "x"}"#), Some(0), "an older server never writes the key");
+        assert_eq!(n(r#"{"federationInbox": -2}"#), Some(0), "negatives are not counts");
+        assert_eq!(n(r#"{"federationInbox": "7"}"#), Some(0), "strings are not counts");
+        assert_eq!(n(r#"{"federationInbox": 2.5}"#), Some(0), "fractions are not counts");
+        assert_eq!(n(r#"{"federationInbox": 12345}"#), Some(999), "capped at three digits");
+        assert_eq!(n("garbage"), None);
+        assert_eq!(n("[]"), None, "a document that is not an object is no status");
     }
 
     #[test]
