@@ -65,6 +65,9 @@ export function setup(mstream) {
   //   filePath        the local seed track ("<vpath>/<relpath>")
   //   limit           max results (default 10, cap 50)
   //   newArtistsOnly  also drop artists the local library already has
+  //   peerId          ask ONE paired server only (the recommendation
+  //                   modal's "more like this on <peer>"); 404 when that
+  //                   peer is unknown or has opted out of discovery
   mstream.post('/api/v1/discovery/federation/similar', async (req, res) => {
     if (config.program.federation.enabled !== true) {
       throw new WebError('federation is disabled (config: federation.enabled)', 403);
@@ -73,8 +76,9 @@ export function setup(mstream) {
       filePath: Joi.string().required(),
       limit: Joi.number().integer().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),
       newArtistsOnly: Joi.boolean().default(false),
+      peerId: Joi.number().integer().min(1).optional(),
     });
-    const { value: { filePath, limit, newArtistsOnly } } = joiValidate(schema, req.body);
+    const { value: { filePath, limit, newArtistsOnly, peerId } } = joiValidate(schema, req.body);
 
     // Same resolution + uniform-404 + probe logging as the local/p2p routes.
     const seedRow = resolveSeedTrack(req, filePath, 'discovery/federation/similar');
@@ -91,7 +95,12 @@ export function setup(mstream) {
     }
 
     const query = { filePath, modelId: seed.model_id, newArtistsOnly };
-    const peers = fedDb.getFederationPeers().filter((p) => p.use_discovery === 1);
+    let peers = fedDb.getFederationPeers().filter((p) => p.use_discovery === 1);
+    if (peerId !== undefined) {
+      peers = peers.filter((p) => p.id === peerId);
+      if (peers.length === 0) { throw new WebError('Peer not found or not searchable', 404); }
+      query.peerId = peerId;
+    }
     if (peers.length === 0) {
       return res.json({ query, searched: { peers: 0, unreachable: 0, mismatched: 0 }, results: [] });
     }
