@@ -691,6 +691,18 @@ const discoveryPluginsOptions = Joi.object({
   'federation-copy': Joi.object({
     enabled: Joi.boolean().default(true),
   }).default({ enabled: true }),
+  // "Get it" from YouTube: search, score, download with yt-dlp into the
+  // Discover downloads folder (discoveryJobs.downloads). Lands files from
+  // outside the federation, so OFF by default; listed only while yt-dlp
+  // and ffmpeg are present. `binary` is also where the Youtube DL route
+  // looks for yt-dlp (a name on PATH or a path).
+  youtube: Joi.object({
+    enabled: Joi.boolean().default(false),
+    binary: Joi.string().min(1).default('yt-dlp'),
+    codec: Joi.string().valid('mp3', 'm4a', 'aac', 'opus', 'ogg', 'flac', 'wav').default('mp3'),
+    maxFilesizeMb: Joi.number().integer().min(1).max(4096).default(100),
+    searchResults: Joi.number().integer().min(1).max(20).default(8),
+  }).default({ enabled: false, binary: 'yt-dlp', codec: 'mp3', maxFilesizeMb: 100, searchResults: 8 }),
 });
 
 // The discovery plug-in JOB runner (acquire / hand-off plug-ins —
@@ -705,6 +717,13 @@ const discoveryJobsOptions = Joi.object({
   maxConcurrent: Joi.number().integer().min(1).max(16).default(2),
   // Finished rows (done / failed / cancelled) older than this are pruned.
   retentionDays: Joi.number().integer().min(1).max(3650).default(30),
+  // The "Discover downloads" scratch library acquire plug-ins land files in
+  // (src/discovery-plugins/downloads.js): created on first use, one
+  // subfolder per user, files nobody kept swept after retentionDays.
+  downloads: Joi.object({
+    dir: Joi.string().default(path.join(dataRoot, 'discover-downloads')),
+    retentionDays: Joi.number().integer().min(1).max(3650).default(30),
+  }).default({ dir: path.join(dataRoot, 'discover-downloads'), retentionDays: 30 }),
 });
 
 const torrentOptions = Joi.object({

@@ -30,6 +30,8 @@ import * as discoveryFederationApi from './api/discovery-federation.js';
 import * as discoveryPluginsApi from './api/discovery-plugins.js';
 import * as discoveryPluginJobsApi from './api/discovery-plugin-jobs.js';
 import * as discoveryPluginJobs from './discovery-plugins/jobs.js';
+import * as discoveryPlugins from './discovery-plugins/index.js';
+import * as discoveryDownloads from './discovery-plugins/downloads.js';
 import * as remoteApi from './api/remote.js';
 import * as sharedApi from './api/shared.js';
 import * as scrobblerApi from './api/scrobbler.js';
@@ -578,6 +580,9 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   discoveryFederationApi.setup(mstream);
   discoveryPluginsApi.setup(mstream);
   discoveryPluginJobsApi.setup(mstream);
+  // The Discover downloads library is created on first use; it needs the
+  // app to serve itself without a reboot.
+  discoveryDownloads.attachApp(mstream);
   dbApi.setup(mstream);
   syncApi.setup(mstream);
   statsApi.setup(mstream);
@@ -761,6 +766,10 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     // only does work when a user has asked a plug-in to acquire or hand
     // off a recommendation.
     discoveryPluginJobs.start();
+    // Availability probes (yt-dlp, ffmpeg): a plug-in whose probe fails is
+    // listed nowhere until it passes. Runs in the background; the listing
+    // treats an unprobed plug-in as available meanwhile.
+    discoveryPlugins.refreshProbes().catch((err) => winston.warn(`discovery plug-in probes failed: ${err.message}`));
 
     if (config.program.dlna.mode !== 'disabled') {
       dlnaSsdp.start();

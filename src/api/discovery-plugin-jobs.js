@@ -50,7 +50,9 @@ export function setup(mstream) {
   mstream.post('/api/v1/discovery/plugins/:name/jobs', (req, res) => {
     const name = String(req.params.name || '');
     const plugin = NAME_RE.test(name) ? plugins.getPlugin(name) : null;
-    if (!plugin || !plugins.isPluginEnabled(name)) {
+    // Unknown, disabled and unavailable (its probe failed — no yt-dlp) all
+    // read the same: the plug-in is not here.
+    if (!plugin || !plugins.isPluginEnabled(name) || plugins.isPluginUnavailable(name)) {
       throw new WebError('unknown discovery plug-in', 404);
     }
     if (!plugin.capabilities.some((c) => plugins.RUNNABLE_CAPABILITIES.includes(c))) {

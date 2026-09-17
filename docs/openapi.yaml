@@ -2283,6 +2283,13 @@ paths:
                           type: array
                           items: { type: string }
                           description: The per-user setting keys this plug-in keeps (see the settings routes); empty for most.
+                        available:
+                          type: boolean
+                          description: >
+                            Always true here: a plug-in whose availability probe failed
+                            (yt-dlp or ffmpeg missing for `youtube`) is left out of this
+                            list and answers 404, so an unconfigured plug-in never shows a
+                            row that cannot work. The admin listing shows it with `reason`.
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/v1/discovery/plugins/{name}/settings:
@@ -2471,6 +2478,18 @@ paths:
         path — nothing is ever overwritten. It fails (state `failed`, `error`)
         when uploads are off for the account, the peer is unreachable, or the
         peer answers 429 for its transfer limit.
+
+        `youtube` ("Get it" from YouTube; off by default, needs yt-dlp and
+        ffmpeg) searches YouTube for the recommendation, scores the uploads
+        against it (the shared match scorer, a bonus for the artist's Topic
+        channel, covers / karaoke / live takes dropped) and downloads the best
+        one's audio into the `discover-downloads` scratch library (a per-user
+        subfolder), tagged from the recommendation. Its `result` is
+        `{ downloaded: { vpath, filepath, trackId, bytes, format }, match:
+        { score, url, title, channel, durationSec }, expiresAt }`. It fails
+        with `Nothing matched closely enough (best score …, needs 0.62)`,
+        `YouTube returned no results …`, or yt-dlp's own last error line
+        (for example its sign-in / bot check).
       parameters:
         - name: name
           in: path
