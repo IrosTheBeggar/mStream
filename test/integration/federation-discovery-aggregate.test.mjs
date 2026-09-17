@@ -193,6 +193,26 @@ describe('discovery federation aggregate (B queries A over iroh)', { skip: avail
     assert.equal(status, 200);
     assert.equal(body.federationDiscovery, true);
     assert.equal(body.discovery, true, 'sanity: local discovery flag rides the same ping');
+    // The recommendation modal's Federate row keys on /api/'s identity half
+    // (ping stays a frozen flat contract); public mode = the synthetic admin.
+    const info = await api(srvB, 'GET', '/api/');
+    assert.equal(info.status, 200);
+    assert.equal(info.body.user.admin, true, '/api/ carries the caller\'s admin flag');
+  });
+
+  test('peerId narrows the ask to one paired server; an unknown id is a 404', async () => {
+    const one = await aggregate({ filePath: SEED_PATH, peerId: peerIds[0] });
+    assert.equal(one.status, 200);
+    assert.equal(one.body.query.peerId, peerIds[0], 'the echo names the peer asked');
+    assert.equal(one.body.searched.peers, 1, 'only the named peer row is asked');
+    assert.equal(one.body.searched.unreachable, 0);
+    assert.ok(one.body.results.length >= 1, 'the novel remote hit still comes back');
+    assert.ok(one.body.results.every((r) => r.peer.id === peerIds[0]), 'every result is that peer\'s');
+
+    const missing = await aggregate({ filePath: SEED_PATH, peerId: 999999 });
+    assert.equal(missing.status, 404);
+    const bad = await aggregate({ filePath: SEED_PATH, peerId: 'peer-one' });
+    assert.equal(bad.status, 400, 'peerId is an integer id, not a name');
   });
 
   test('aggregates, novelty-filters, and dedupes across both peer rows', async () => {

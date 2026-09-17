@@ -176,6 +176,7 @@ const VUEPLAYERCORE = (() => {
       searchedPeers: null,    // null = never fetched; 0 = nobody answered
       unreachable: 0,         // peers that timed out/failed on the last ask
       mismatched: 0,          // peers on a different embedding model
+      onlyPeer: null,         // { id, name } while "more like this on <peer>" narrows the ask
     },
     // Discovery plug-ins: what this server lets a user DO with a network or
     // peer row (/api/v1/discovery/plugins). Same reveal contract — ping's
@@ -185,17 +186,35 @@ const VUEPLAYERCORE = (() => {
       available: false,
       list: null,             // null = not fetched yet
     },
-    // The one open row menu (key = source + row identity), with the links
-    // the "links" plug-in resolved for it, one preview state per preview
-    // plug-in (idle | loading | ready | none | error), and which preview is
-    // playing.
-    menu: {
-      key: null,
+    // Whether this user is an admin (/api/'s `user.admin`): the
+    // recommendation modal shows its "Invite <peer> to federate" row to
+    // admins only.
+    admin: false,
+    // The seed path of the current Discover fetch — what "more like this on
+    // <peer>" re-asks with.
+    seedPath: '',
+    // The one open recommendation modal (a network or peer row). `gen`
+    // fences async answers: a reply for a closed or replaced window is
+    // dropped. `view` is the peer rows' Federation | Plug-Ins selector.
+    // links / previews / playing = the plug-in sections; peer / file /
+    // album / artist = the facts a peer row's Federation view fetches;
+    // federate = the admin's invite row on a network row.
+    modal: {
+      open: false,
+      gen: 0,
+      source: null,           // 'p2p' | 'federation'
+      track: null,
+      view: 'federation',     // 'federation' | 'plugins'
       loading: false,
       links: [],
       error: false,
       previews: {},
       playing: null,
+      peer: null,
+      file: null,
+      album: null,
+      artist: null,
+      federate: null,
     },
   };
   let discoverDebounce = null;
@@ -205,6 +224,14 @@ const VUEPLAYERCORE = (() => {
   // paused the main player to make room for it.
   let discoverPreviewAudio = null;
   let discoverPreviewPausedMain = false;
+  // Recommendation modal bookkeeping: a generation counter that fences
+  // async answers, the peer rows' last selector choice (remembered for the
+  // session), and the Esc handler installed only while a window is open.
+  let discoverModalGen = 0;
+  let discoverModalView = 'federation';
+  function onDiscoverModalKey(e) {
+    if (e.key === 'Escape') { playlistVue.closeDiscoverModal(); }
+  }
 
   const playlistVue = new Vue({
     el: '#playlist',
@@ -352,6 +379,8 @@ const VUEPLAYERCORE = (() => {
         }
         discoverDirty = false;
         const seedPath = song.rawFilePath.charAt(0) === '/' ? song.rawFilePath.substr(1) : song.rawFilePath;
+        this.discover.seedPath = seedPath;
+        this.discover.fed.onlyPeer = null;   // a fresh ask is every peer again
         const reqId = ++discoverReqId;
         this.discover.loading = true;
 
@@ -423,51 +452,341 @@ const VUEPLAYERCORE = (() => {
           duration: ft.duration || null,
         }, true);
       },
-      // ── Row action menu (discovery plug-ins) ──────────────────────────
+      // ── Recommendation modal ───────────────────────────────────────────
+      // One window for a network or peer row (docs/designs/discover-modal).
       // Translations inside v-if blocks: the data-i18n scan only sees nodes
-      // present at load, so dynamic menu text goes through t() directly.
-      tt: function (key) {
-        return (typeof t === 'function') ? t(key) : key;
+      // present at load, so dynamic text goes through t() directly.
+      tt: function (key, params) {
+        return (typeof t === 'function') ? t(key, params) : key;
       },
-      discoverMenuKey: function (track, source) {
-        return source + ':' + (track.exportId || track.filepath || ((track.artist || '') + '|' + (track.title || '')));
+      dmDuration: function (seconds) {
+        const s = Math.round(Number(seconds) || 0);
+        if (!s) { return ''; }
+        return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
       },
-      isDiscoverMenu: function (track, source) {
-        return this.discover.menu.key !== null && this.discover.menu.key === this.discoverMenuKey(track, source);
+      dmPct: function (track) {
+        return Math.round(((track && track.similarity) || 0) * 100);
       },
-      closeDiscoverMenu: function () {
-        this.stopDiscoverPreview();
-        this.discover.menu = { key: null, loading: false, links: [], error: false, previews: {}, playing: null };
+      // Header artwork: the peer's own art file for a peer row, else the
+      // first preview provider that answered with artwork.
+      dmArt: function () {
+        const m = this.discover.modal;
+        if (!m.open) { return null; }
+        if (m.source === 'federation' && m.file && m.file.art && m.track.peer) {
+          return MSTREAMAPI.peerArtUrl(m.track.peer.id, m.file.art, 's');
+        }
+        for (const name of Object.keys(m.previews || {})) {
+          const p = m.previews[name] && m.previews[name].preview;
+          if (p && p.artwork) { return p.artwork; }
+        }
+        return null;
       },
-      // The preview plug-ins the server has on — one button each.
+      // "<peer> online · last seen 2 min ago" from the peers listing —
+      // as of the last contact, which is all the server knows.
+      dmPeerStatus: function () {
+        const p = this.discover.modal.peer;
+        if (!p) { return ''; }
+        const online = p.lastStatus === 'ok';
+        const seen = p.lastSeen ? this.dmAgo(p.lastSeen) : this.tt('discover.modal.never');
+        return `${p.name} ${this.tt(online ? 'discover.modal.online' : 'discover.modal.offline')} · ${this.tt('discover.modal.lastSeen')} ${seen}`;
+      },
+      dmAgo: function (stamp) {
+        // SQLite's datetime('now') is UTC without a zone marker.
+        const iso = String(stamp).replace(' ', 'T');
+        const t0 = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + 'Z');
+        if (!Number.isFinite(t0)) { return String(stamp); }
+        const s = Math.max(0, Math.round((Date.now() - t0) / 1000));
+        if (s < 60) { return this.tt('discover.modal.justNow'); }
+        const when = s < 3600 ? `${Math.floor(s / 60)} min` : s < 86400 ? `${Math.floor(s / 3600)} h` : `${Math.floor(s / 86400)} d`;
+        return this.tt('discover.modal.ago', { when });
+      },
+      discoverLinksPlugin: function () {
+        return (this.discover.plugins.list || []).find((p) => (p.capabilities || []).indexOf('links') !== -1) || null;
+      },
+      // The preview plug-ins the server has on — one row each.
       discoverPreviewPlugins: function () {
         return (this.discover.plugins.list || []).filter((p) => (p.capabilities || []).indexOf('preview') !== -1);
       },
       discoverPreviewState: function (name) {
-        return (this.discover.menu.previews && this.discover.menu.previews[name]) || { status: 'idle', preview: null };
+        return (this.discover.modal.previews && this.discover.modal.previews[name]) || { status: 'idle', preview: null };
       },
+      // The row as the similar route returned it, plus provenance; the
+      // server strips what it doesn't know.
+      dmRecommendation: function () {
+        const m = this.discover.modal;
+        return { ...m.track, source: m.source, filepath: m.source === 'federation' ? m.track.filepath : null };
+      },
+      dmLive: function (gen) {
+        return this.discover.modal.open && this.discover.modal.gen === gen;
+      },
+      // Open the window for one row. A network row with neither plug-ins
+      // nor an admin's invite row keeps the old behaviour: copy the title.
+      openDiscoverModal: async function (track, source) {
+        if (source === 'p2p' && !this.discover.plugins.available && !this.discover.admin) { return this.copyDiscoverP2p(track); }
+        this.stopDiscoverPreview();
+        const gen = ++discoverModalGen;
+        this.discover.modal = {
+          open: true, gen, source, track,
+          view: (source === 'federation' && this.discover.plugins.available) ? discoverModalView : (source === 'federation' ? 'federation' : 'plugins'),
+          loading: false, links: [], error: false, previews: {}, playing: null,
+          peer: null, file: null, album: null, artist: null, federate: null,
+        };
+        document.addEventListener('keydown', onDiscoverModalKey);
+        this.$nextTick(() => { const el = this.$refs.dmodalClose; if (el && el.focus) { el.focus(); } });
+        const jobs = [];
+        if (this.discover.plugins.available) { jobs.push(this.dmLoadLinks(gen)); }
+        if (source === 'federation') { jobs.push(this.dmLoadPeerFacts(gen)); }
+        if (source === 'p2p' && this.discover.admin) { jobs.push(this.dmLoadFederate(gen)); }
+        await Promise.all(jobs);
+      },
+      closeDiscoverModal: function () {
+        this.stopDiscoverPreview();
+        document.removeEventListener('keydown', onDiscoverModalKey);
+        discoverModalGen++;
+        this.discover.modal = {
+          open: false, gen: discoverModalGen, source: null, track: null, view: 'federation',
+          loading: false, links: [], error: false, previews: {}, playing: null,
+          peer: null, file: null, album: null, artist: null, federate: null,
+        };
+      },
+      // Peer rows: Federation | Plug-Ins. The choice is remembered for the
+      // session; switching to Federation stops a preview clip.
+      setDiscoverModalView: function (view) {
+        this.discover.modal.view = view;
+        discoverModalView = view;
+        if (view === 'federation') { this.stopDiscoverPreview(); }
+      },
+      dmLoadLinks: async function (gen) {
+        this.discover.modal.loading = true;
+        try {
+          if (!this.discover.plugins.list) {
+            const res = await MSTREAMAPI.discoveryPlugins();
+            if (!this.dmLive(gen)) { return; }
+            this.discover.plugins.list = (res && res.plugins) || [];
+          }
+          const linksPlugin = this.discoverLinksPlugin();
+          let links = [];
+          if (linksPlugin) {
+            const res = await MSTREAMAPI.discoveryPluginResolve(linksPlugin.name, this.dmRecommendation());
+            if (!res || res.disabled) { throw new Error('resolve failed'); }
+            links = (res.result && res.result.links) || [];
+          }
+          if (!this.dmLive(gen)) { return; }
+          this.discover.modal.links = links;
+          this.discover.modal.loading = false;
+        } catch (_) {
+          if (!this.dmLive(gen)) { return; }
+          this.discover.modal.loading = false;
+          this.discover.modal.error = true;
+        }
+      },
+      // A peer row's Federation view: the peer's status from the peers
+      // listing, the file's own facts (format, size, art) from its metadata
+      // route, album and artist facts through the read proxy, and what of
+      // that artist this library already holds. Every call is optional —
+      // a missing answer leaves its line blank.
+      dmLoadPeerFacts: async function (gen) {
+        const track = this.discover.modal.track;
+        const peerId = track.peer && track.peer.id;
+        if (!peerId) { return; }
+        const settle = (p) => Promise.resolve(p).then((v) => v, () => null);
+        const [peers, meta, albumSongs, peerAlbums, localAlbums] = await Promise.all([
+          settle(MSTREAMAPI.federationPeers()),
+          settle(MSTREAMAPI.peer.metadata(peerId, track.filepath)),
+          track.album ? settle(MSTREAMAPI.peer.albumSongs(peerId, { album: track.album, artist: track.artist || null, year: track.year || null })) : Promise.resolve(null),
+          track.artist ? settle(MSTREAMAPI.peer.artistAlbums(peerId, { artist: track.artist })) : Promise.resolve(null),
+          track.artist ? settle(MSTREAMAPI.artistAlbums({ artist: track.artist })) : Promise.resolve(null),
+        ]);
+        if (!this.dmLive(gen)) { return; }
+        const peer = peers && Array.isArray(peers.peers) ? peers.peers.find((p) => p.id === peerId) : null;
+        this.discover.modal.peer = peer
+          ? { name: peer.name || track.peer.name || 'peer', lastSeen: peer.lastSeen || null, lastStatus: peer.lastStatus || null }
+          : null;
+        const md = meta && typeof meta === 'object' ? (meta.metadata || meta) : null;
+        this.discover.modal.file = md && typeof md === 'object' && !md.error
+          ? { format: md.format || null, art: md['album-art'] || null, metadata: md }
+          : null;
+        const norm = (s) => String(s || '').trim().toLowerCase();
+        const localList = localAlbums && Array.isArray(localAlbums.albums) ? localAlbums.albums : [];
+        const songs = Array.isArray(albumSongs) ? albumSongs : null;
+        this.discover.modal.album = track.album ? {
+          songs,
+          count: songs ? songs.length : null,
+          seconds: songs ? songs.reduce((sum, s) => sum + ((s.metadata && Number(s.metadata.duration)) || 0), 0) : null,
+          owned: localList.some((a) => norm(a.name) === norm(track.album)),
+        } : null;
+        const remote = peerAlbums && Array.isArray(peerAlbums.albums) ? peerAlbums.albums : null;
+        const years = remote ? remote.map((a) => Number(a.year_min || a.year)).filter((y) => y > 0) : [];
+        this.discover.modal.artist = track.artist ? {
+          albums: remote ? remote.length : null,
+          songs: remote ? remote.reduce((sum, a) => sum + (Number(a.track_count) || 0), 0) : null,
+          yearMin: years.length ? Math.min(...years) : null,
+          yearMax: remote ? Math.max(...remote.map((a) => Number(a.year_max || a.year) || 0), 0) || null : null,
+          owned: localList.length,
+        } : null;
+      },
+      // ── Federation view actions ────────────────────────────────────────
+      dmSongMeta: function () {
+        const m = this.discover.modal;
+        const t = m.track;
+        const base = { title: t.title || '', artist: t.artist || '', album: t.album || '', year: t.year || null, duration: t.duration || null };
+        return (m.file && m.file.metadata) ? { ...base, ...m.file.metadata } : base;
+      },
+      dmPlayNow: function () {
+        const m = this.discover.modal;
+        mstreamModule.addFederationSongWizard(m.track.peer, m.track.filepath, this.dmSongMeta(), false, MSTREAMPLAYER.positionCache.val + 1, true);
+        this.closeDiscoverModal();
+      },
+      dmQueueNext: function () {
+        const m = this.discover.modal;
+        mstreamModule.addFederationSongWizard(m.track.peer, m.track.filepath, this.dmSongMeta(), true, MSTREAMPLAYER.positionCache.val + 1, false);
+        iziToast.success({ title: this.tt('discover.modal.queuedNext'), position: 'topCenter', timeout: 1800 });
+      },
+      dmAddToQueue: function () {
+        const m = this.discover.modal;
+        mstreamModule.addFederationSongWizard(m.track.peer, m.track.filepath, this.dmSongMeta(), true);
+        iziToast.success({ title: this.tt('discover.modal.queued'), position: 'topCenter', timeout: 1800 });
+      },
+      // View album / View artist open the peer's album or artist in the
+      // browser panel, the way goToAlbum / goToArtist do for the playing
+      // track: the element carries the peer so the panel resolves on that
+      // server (adoptPeer).
+      dmViewAlbum: function () {
+        const m = this.discover.modal;
+        const el = document.createElement('DIV');
+        el.setAttribute('data-album', m.track.album);
+        if (m.track.artist) { el.setAttribute('data-artist', m.track.artist); }
+        if (m.track.year) { el.setAttribute('data-year', String(m.track.year)); }
+        el.setAttribute('data-peer', m.track.peer.id);
+        this.closeDiscoverModal();
+        getAlbumsOnClick(el);
+      },
+      dmViewArtist: function () {
+        const m = this.discover.modal;
+        const el = document.createElement('DIV');
+        el.setAttribute('data-artist', m.track.artist);
+        el.setAttribute('data-peer', m.track.peer.id);
+        this.closeDiscoverModal();
+        getArtistz(el);
+      },
+      // Play album replaces the queue with the album; Add album appends it.
+      dmQueueAlbum: async function (play) {
+        const m = this.discover.modal;
+        const gen = m.gen;
+        let songs = m.album && m.album.songs;
+        if (!songs) {
+          try {
+            songs = await MSTREAMAPI.peer.albumSongs(m.track.peer.id, { album: m.track.album, artist: m.track.artist || null, year: m.track.year || null });
+          } catch (_) { songs = null; }
+          if (!this.dmLive(gen)) { return; }
+        }
+        if (!Array.isArray(songs) || songs.length === 0) {
+          iziToast.warning({ title: this.tt('discover.modal.albumEmpty'), position: 'topCenter', timeout: 2500 });
+          return;
+        }
+        if (play) { mstreamModule.clearQueue(); }
+        songs.forEach((s, i) => {
+          mstreamModule.addFederationSongWizard(m.track.peer, s.filepath, s.metadata || {}, !(play && i === 0));
+        });
+        this.closeDiscoverModal();
+        if (!play) { iziToast.success({ title: this.tt('discover.modal.albumQueued', { count: songs.length }), position: 'topCenter', timeout: 2000 }); }
+      },
+      // "More like this on <peer>": the same similar ask, narrowed to that
+      // one paired server; the panel shows the narrowing as a chip.
+      dmMoreLikeThisOnPeer: async function () {
+        const m = this.discover.modal;
+        const peer = m.track.peer;
+        const seedPath = this.discover.seedPath;
+        if (!seedPath || !peer) { return; }
+        this.closeDiscoverModal();
+        this.discover.fed.onlyPeer = { id: peer.id, name: peer.name || 'peer' };
+        const reqId = ++discoverReqId;
+        this.discover.loading = true;
+        const fed = await MSTREAMAPI.discoveryFederationSimilar(seedPath, 5, this.discover.p2p.newArtistsOnly, peer.id);
+        if (reqId !== discoverReqId) { return; }
+        this.discover.loading = false;
+        if (fed && !fed.disabled && Array.isArray(fed.results)) {
+          this.discover.fed.tracks = fed.results;
+          this.discover.fed.searchedPeers = (fed.searched && fed.searched.peers) || 0;
+          this.discover.fed.unreachable = (fed.searched && fed.searched.unreachable) || 0;
+          this.discover.fed.mismatched = (fed.searched && fed.searched.mismatched) || 0;
+        }
+      },
+      clearDiscoverPeerFilter: function () {
+        this.discover.fed.onlyPeer = null;
+        this.refreshDiscover();
+      },
+      // ── Federate row (network rows, admins) ────────────────────────────
+      // Paired already (the peers listing exposes each peer's endpoint id)
+      // → say so; an outbound request in flight → "sent"; else the invite.
+      // Both lookups are admin routes: a 403 (not an admin, or a locked
+      // admin API) hides the row rather than explaining it.
+      dmLoadFederate: async function (gen) {
+        const m = this.discover.modal;
+        const endpointId = m.track.peer && m.track.peer.endpointId;
+        if (!endpointId) { return; }
+        this.discover.modal.federate = { visible: true, state: 'checking', peerName: m.track.peer.name || '', message: '', form: false, error: '' };
+        try {
+          const [peers, reqs] = await Promise.all([MSTREAMAPI.federationPeers(), MSTREAMAPI.federationRequests()]);
+          if (!this.dmLive(gen)) { return; }
+          const paired = peers && Array.isArray(peers.peers) ? peers.peers.find((p) => p.endpointId === endpointId) : null;
+          if (paired) {
+            this.discover.modal.federate.peerName = paired.name || this.discover.modal.federate.peerName;
+            this.discover.modal.federate.state = 'paired';
+            return;
+          }
+          const rows = reqs && Array.isArray(reqs.requests) ? reqs.requests : [];
+          const mine = rows.filter((r) => r.peer_endpoint_id === endpointId);
+          if (mine.some((r) => r.state === 'completed')) { this.discover.modal.federate.state = 'paired'; return; }
+          const active = mine.some((r) => r.direction === 'out' && ['pending-delivery', 'delivered', 'accepted', 'granting'].indexOf(r.state) !== -1);
+          this.discover.modal.federate.state = active ? 'sent' : 'idle';
+        } catch (_) {
+          if (!this.dmLive(gen)) { return; }
+          this.discover.modal.federate.visible = false;
+        }
+      },
+      dmInviteForm: function (show) {
+        if (this.discover.modal.federate) { this.discover.modal.federate.form = show; }
+      },
+      dmSendInvite: async function () {
+        const m = this.discover.modal;
+        const f = m.federate;
+        const gen = m.gen;
+        if (!f || f.state === 'sending') { return; }
+        f.state = 'sending';
+        f.error = '';
+        try {
+          await MSTREAMAPI.composeFederationRequest(m.track.peer.endpointId, MSTREAMAPI.currentServer.vpaths || [], f.message);
+          if (!this.dmLive(gen)) { return; }
+          f.state = 'sent';
+          f.form = false;
+        } catch (err) {
+          if (!this.dmLive(gen)) { return; }
+          f.state = 'failed';
+          f.error = (err && err.message) ? String(err.message) : '';
+        }
+      },
+      // ── Previews ───────────────────────────────────────────────────────
       // Ask one provider for its 30-second clip and play it. Nothing is sent
       // to a catalogue until the user presses this. A second press stops it.
       // The main player is paused for the clip and resumed afterwards if it
       // was playing.
-      toggleDiscoverPreview: async function (track, source, plugin) {
+      toggleDiscoverPreview: async function (plugin) {
         const name = plugin.name;
-        if (this.discover.menu.playing === name) { this.stopDiscoverPreview(); return; }
+        if (this.discover.modal.playing === name) { this.stopDiscoverPreview(); return; }
         const state = this.discoverPreviewState(name);
         if (state.status === 'ready' && state.preview) { this.playDiscoverPreview(name, state.preview); return; }
         if (state.status === 'loading') { return; }
-        const key = this.discover.menu.key;
-        this.$set(this.discover.menu.previews, name, { status: 'loading', preview: null });
-        const res = await MSTREAMAPI.discoveryPluginResolve(name, {
-          ...track, source, filepath: source === 'federation' ? track.filepath : null,
-        });
-        if (this.discover.menu.key !== key) { return; }   // menu closed or switched meanwhile
+        const gen = this.discover.modal.gen;
+        this.$set(this.discover.modal.previews, name, { status: 'loading', preview: null });
+        const res = await MSTREAMAPI.discoveryPluginResolve(name, this.dmRecommendation());
+        if (!this.dmLive(gen)) { return; }   // window closed or replaced meanwhile
         if (!res || res.disabled || !res.result) {
-          this.$set(this.discover.menu.previews, name, { status: 'error', preview: null });
+          this.$set(this.discover.modal.previews, name, { status: 'error', preview: null });
           return;
         }
         const preview = res.result.preview || null;
-        this.$set(this.discover.menu.previews, name, { status: preview ? 'ready' : 'none', preview });
+        this.$set(this.discover.modal.previews, name, { status: preview ? 'ready' : 'none', preview });
         if (preview) { this.playDiscoverPreview(name, preview); }
       },
       playDiscoverPreview: function (name, preview) {
@@ -478,7 +797,7 @@ const VUEPLAYERCORE = (() => {
         }
         const audio = new Audio(preview.url);
         discoverPreviewAudio = audio;
-        this.discover.menu.playing = name;
+        this.discover.modal.playing = name;
         const done = () => { if (discoverPreviewAudio === audio) { this.stopDiscoverPreview(); } };
         audio.addEventListener('ended', done);
         audio.addEventListener('error', done);
@@ -489,46 +808,12 @@ const VUEPLAYERCORE = (() => {
           try { discoverPreviewAudio.pause(); } catch (_) { /* already gone */ }
           discoverPreviewAudio = null;
         }
-        if (this.discover.menu) { this.discover.menu.playing = null; }
+        if (this.discover.modal) { this.discover.modal.playing = null; }
         if (discoverPreviewPausedMain) {
           discoverPreviewPausedMain = false;
           if (typeof MSTREAMPLAYER !== 'undefined' && MSTREAMPLAYER.playerStats && MSTREAMPLAYER.playerStats.playing !== true) {
             MSTREAMPLAYER.playPause();
           }
-        }
-      },
-      // Open (or close) the menu for one row and ask the "links" plug-in
-      // where else the recording can be found. Without plug-ins on the
-      // server, a click keeps the old behaviour: copy the title.
-      openDiscoverMenu: async function (track, source) {
-        if (!this.discover.plugins.available) { return this.copyDiscoverP2p(track); }
-        const key = this.discoverMenuKey(track, source);
-        if (this.discover.menu.key === key) { this.closeDiscoverMenu(); return; }
-        this.stopDiscoverPreview();
-        this.discover.menu = { key, loading: true, links: [], error: false, previews: {}, playing: null };
-        try {
-          if (!this.discover.plugins.list) {
-            const res = await MSTREAMAPI.discoveryPlugins();
-            this.discover.plugins.list = (res && res.plugins) || [];
-          }
-          const linksPlugin = this.discover.plugins.list.find((p) => (p.capabilities || []).indexOf('links') !== -1);
-          let links = [];
-          if (linksPlugin) {
-            // The row as the similar route returned it, plus provenance;
-            // the server strips what it doesn't know.
-            const res = await MSTREAMAPI.discoveryPluginResolve(linksPlugin.name, {
-              ...track, source, filepath: source === 'federation' ? track.filepath : null,
-            });
-            if (!res || res.disabled) { throw new Error('resolve failed'); }
-            links = (res.result && res.result.links) || [];
-          }
-          if (this.discover.menu.key !== key) { return; }   // closed or switched meanwhile
-          this.discover.menu.links = links;
-          this.discover.menu.loading = false;
-        } catch (_) {
-          if (this.discover.menu.key !== key) { return; }
-          this.discover.menu.loading = false;
-          this.discover.menu.error = true;
         }
       },
 
@@ -1188,7 +1473,10 @@ const VUEPLAYERCORE = (() => {
   // `position` (added for the peer-browse panels) inserts and plays, the
   // way addSongWizard's own position argument does — without it a peer row
   // could only ever be appended, so "Play Now" did nothing on peer tracks.
-  mstreamModule.addFederationSongWizard = (peer, remotePath, metadata, autoPlayOff, position) => {
+  // `playNow` (default true, the historical behaviour) matters only with a
+  // position: false inserts there without jumping to it — the modal's
+  // "Queue next".
+  mstreamModule.addFederationSongWizard = (peer, remotePath, metadata, autoPlayOff, position, playNow = true) => {
     let escaped = remotePath.replace(/\%/g, '%25').replace(/\#/g, '%23').replace(/\?/g, '%3F');
     if (escaped.charAt(0) === '/') { escaped = escaped.substr(1); }
     let url = `${MSTREAMAPI.currentServer.host}api/v1/federation/peers/${peer.id}/stream/${escaped}?`;
@@ -1206,7 +1494,7 @@ const VUEPLAYERCORE = (() => {
     // `if (position)` treated it as "no position" and fell through to a paused
     // append.
     if (position !== undefined) {
-      MSTREAMPLAYER.insertSongAt(newSong, position, true);
+      MSTREAMPLAYER.insertSongAt(newSong, position, playNow !== false);
       return;
     }
     MSTREAMPLAYER.addSong(newSong, autoPlayOff);
@@ -1616,6 +1904,12 @@ const VUEPLAYERCORE = (() => {
   // one paired peer is opted into discovery queries.
   mstreamModule.setFederationDiscoveryAvailable = (available) => {
     discoverState.fed.available = available === true;
+  };
+
+  // Admins see the "Invite <peer> to federate" row in the recommendation
+  // modal (/api/'s `user.admin`; a server without /api/ = false).
+  mstreamModule.setAdmin = (admin) => {
+    discoverState.admin = admin === true;
   };
 
   return mstreamModule;
