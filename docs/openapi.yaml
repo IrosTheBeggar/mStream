@@ -2270,7 +2270,92 @@ paths:
                           items: { type: string, enum: [links, preview, play, acquire, handoff] }
                         scope: { type: string, enum: [server, user], description: "server = admin configuration only; user = needs per-user credentials" }
                         enabled: { type: boolean }
+                        settings:
+                          type: array
+                          items: { type: string }
+                          description: The per-user setting keys this plug-in keeps (see the settings routes); empty for most.
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/discovery/plugins/{name}/settings:
+    get:
+      tags: [Discovery]
+      summary: The caller's settings for a plug-in
+      description: |
+        Per-user settings a plug-in keeps (`user_settings`, namespace
+        `discovery-plugin:{name}`), plus the plug-in's own description of the
+        effective view. Secret values (tokens) never come back; the entry
+        says only that one is set. In public mode the settings belong to the
+        shared anonymous account.
+
+        `federation-copy` describes `destination` (`{ vpath, base, layout,
+        source: default|user }` — the copy destination with the library
+        default filled in when nothing is saved; `null` when the caller may
+        not copy anywhere), `libraries` (`[{ vpath, template }]` — the
+        libraries the caller may copy into, each with its admin Path
+        Template), `defaultLayout` and `variables`.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+      responses:
+        "200":
+          description: The settings view.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plugin: { type: string }
+                  keys: { type: array, items: { type: string } }
+                  settings:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        value: { description: The stored value (absent for secrets). }
+                        secret: { type: boolean }
+                        set: { type: boolean }
+                        updatedAt: { type: integer }
+                additionalProperties: true
+        "400": { description: "The plug-in keeps no settings." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The caller has no user account to keep settings under." }
+        "404": { description: "Unknown or disabled plug-in." }
+    put:
+      tags: [Discovery]
+      summary: Store one plug-in setting for the caller
+      description: |
+        Stores one key (validated by the plug-in's schema and its own
+        checks — `federation-copy` refuses a library the caller cannot
+        upload to, a base folder that climbs out, or a layout with an
+        unknown variable). `value: null` deletes the key. Answers with the
+        same view as GET.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, value]
+              properties:
+                key: { type: string }
+                value:
+                  description: "Any JSON value the plug-in's schema for that key accepts (`federation-copy.destination` = `{ vpath, base, layout }`); `null` deletes the key."
+            example:
+              key: destination
+              value: { vpath: Music, base: "From peers", layout: "{{PEER}}/{{ARTIST}}/{{ALBUM}}" }
+      responses:
+        "200": { description: "Stored; the settings view." }
+        "400": { description: "Unknown key, a value the schema or the plug-in refused, or a plug-in with no settings." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The caller has no user account to keep settings under." }
+        "404": { description: "Unknown or disabled plug-in." }
 
   /api/v1/discovery/plugins/{name}/resolve:
     post:
@@ -2365,6 +2450,18 @@ paths:
         with the caller's `allow_discovery_jobs` flag. The same
         (plug-in, recommendation) is never queued twice while a job for it is
         live: a second ask answers `200` with the existing job.
+
+        `federation-copy` ("Add to your collection") takes a federation
+        recommendation (`source: federation`, the peer's `filepath`, `peer.id`)
+        and copies the file into the caller's destination (see the settings
+        routes). Its `result` is `{ copied: { vpath, filepath, trackId, bytes,
+        title, artist, album }, missingVars, peer, destination }`, or
+        `{ skipped: owned, existing: { filepath, by } }` when the library
+        already has the song (by hash or by artist + album + title), or
+        `{ skipped: exists, filepath }` when a file already sits at the target
+        path — nothing is ever overwritten. It fails (state `failed`, `error`)
+        when uploads are off for the account, the peer is unreachable, or the
+        peer answers 429 for its transfer limit.
       parameters:
         - name: name
           in: path

@@ -35,6 +35,16 @@ export const SUPPORTED_VARS = Object.freeze([
 
 const _SUPPORTED_SET = new Set(SUPPORTED_VARS);
 
+// Variables only SOME callers accept, passed as `extraVars` to the
+// validators. PEER is the paired server a discovery collection copy came
+// from (src/discovery-plugins/plugins/federation-copy.js); torrent
+// templates never see it — the admin validator runs with the base set, so
+// an operator cannot save a torrent template that renders an empty
+// segment for every torrent.
+export const EXTRA_VARS = Object.freeze({
+  PEER: 'PEER',
+});
+
 // Suggested template the admin UI offers as a "use suggested" preset
 // when the operator hasn't typed anything yet. Conservative — works
 // against any metadata that has at least artist + album. Matches the
@@ -96,8 +106,13 @@ function _scanTokens(template) {
  * sample-resolve. The caller is expected to follow up with a
  * sample-resolve (`resolveTemplate(template, SAMPLE_METADATA)`) and
  * validate the resolved path via `validateResolvedPath`.
+ *
+ * `extraVars` widens the allowlist for callers whose metadata carries
+ * more than the torrent pipeline's (EXTRA_VARS above); the default is
+ * the base set, so existing callers are unchanged.
  */
-export function validateTemplate(template) {
+export function validateTemplate(template, { extraVars = [] } = {}) {
+  const allowed = extraVars.length ? new Set([...SUPPORTED_VARS, ...extraVars]) : _SUPPORTED_SET;
   if (typeof template !== 'string') {
     return { valid: false, error: 'invalid_type', message: 'Template must be a string' };
   }
@@ -122,10 +137,10 @@ export function validateTemplate(template) {
     return { valid: false, error: 'unbalanced_braces', message: 'Template has stray { or } — variables must use {{NAME}} (double braces)' };
   }
   for (const t of tokens) {
-    if (!_SUPPORTED_SET.has(t.name)) {
+    if (!allowed.has(t.name)) {
       return {
         valid: false, error: 'unknown_variable',
-        message: `Unknown variable ${t.raw}. Supported: ${SUPPORTED_VARS.map(v => '{{' + v + '}}').join(', ')}`,
+        message: `Unknown variable ${t.raw}. Supported: ${[...allowed].map(v => '{{' + v + '}}').join(', ')}`,
       };
     }
   }
@@ -180,6 +195,8 @@ export function resolveTemplate(template, metadata) {
     // ALBUMARTIST falls back to ARTIST when not provided — typical
     // library convention since compilation-album fields are rare.
     ALBUMARTIST: sanitizeSegment(meta.albumartist || meta.artist),
+    // EXTRA_VARS: empty (dropped) unless the caller's metadata carries it.
+    PEER:        sanitizeSegment(meta.peer),
   };
   const missing = new Set();
   const substituted = template.replace(
@@ -226,7 +243,8 @@ export function validateResolvedPath(path) {
     return { valid: false, error: 'path_too_long', message: `Resolved path exceeds ${_MAX_RESOLVED_LEN} characters` };
   }
   // Same rules as _validateSubPath / _validateDirectoryName — keep
-  // them in sync. eslint-disable-next-line no-control-regex
+  // them in sync.
+  // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1f]/.test(path)) {
     return { valid: false, error: 'invalid_chars', message: 'Resolved path cannot contain control characters' };
   }
@@ -263,15 +281,17 @@ export function validateResolvedPath(path) {
  *   - resolves to a safe non-empty path under SAMPLE_METADATA
  *
  * Returns `{ valid: true, sample: <resolved path> }` on success or
- * `{ valid: false, error, message }` otherwise.
+ * `{ valid: false, error, message }` otherwise. `extraVars` and
+ * `sampleMetadata` let a caller with a wider variable set (EXTRA_VARS)
+ * validate against its own sample.
  */
-export function validateForSave(template) {
-  const synt = validateTemplate(template);
+export function validateForSave(template, { extraVars = [], sampleMetadata = SAMPLE_METADATA } = {}) {
+  const synt = validateTemplate(template, { extraVars });
   if (!synt.valid) { return synt; }
   if (synt.empty) {
     return { valid: false, error: 'empty_template', message: 'Template is required. Leave the field blank in the UI to remove the template.' };
   }
-  const { path: sample } = resolveTemplate(template, SAMPLE_METADATA);
+  const { path: sample } = resolveTemplate(template, sampleMetadata);
   const pathCheck = validateResolvedPath(sample);
   if (!pathCheck.valid) { return pathCheck; }
   return { valid: true, sample };

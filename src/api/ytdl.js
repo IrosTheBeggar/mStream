@@ -7,15 +7,10 @@ import * as config from '../state/config.js';
 import * as transcode from './transcode.js';
 import { joiValidate } from '../util/validation.js';
 import * as vpath from '../util/vpath.js';
-import * as db from '../db/manager.js';
-import { refreshDirtyAlbums } from '../db/album-aggregate.js';
-import { refreshDirtyArtists } from '../db/artist-aggregate.js';
+import { insertDownloadedTrack } from '../db/insert-downloaded-track.js';
 import WebError from '../util/web-error.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import { parseFile } from 'music-metadata';
-import { generateThumbnails } from '../util/image-thumbs.js';
-import mime from 'mime-types';
-import crypto from 'crypto';
 import fs from 'fs/promises';
 
 const downloadTracker = new Map();
@@ -61,7 +56,7 @@ function lookupMetadata(url) {
           year: json.release_year || json.release_date?.substring(0, 4) || null,
           thumbnail: json.thumbnail || null,
         });
-      } catch (e) {
+      } catch (_e) {
         reject(new Error('Failed to parse yt-dlp output'));
       }
     });
@@ -170,14 +165,12 @@ export function setup(mstream) {
         const expectedExt = extMap[value.outputCodec] || value.outputCodec;
         const dirFiles = await fs.readdir(pathInfo.fullPath);
         let downloadedFile = null;
-        let downloadedStat = null;
         for (const file of dirFiles) {
           if (!file.endsWith('.' + expectedExt)) continue;
           const filePath = path.join(pathInfo.fullPath, file);
           const stat = await fs.stat(filePath);
           if (stat.mtime.getTime() >= entry.startTime) {
             downloadedFile = filePath;
-            downloadedStat = stat;
             break;
           }
         }
@@ -274,7 +267,6 @@ export function setup(mstream) {
                   }
 
                   await fs.rename(tmpEmbed, downloadedFile);
-                  downloadedStat = await fs.stat(downloadedFile);
                   winston.info('yt-dlp: embedded thumbnail into ' + value.outputCodec + ' file');
                 } finally {
                   try { await fs.unlink(thumbPath); } catch { /* ignore */ }
@@ -331,141 +323,24 @@ export function setup(mstream) {
           });
 
           await fs.rename(tmpFile, downloadedFile);
-          downloadedStat = await fs.stat(downloadedFile);
           winston.info('yt-dlp: wrote metadata tags + MSTREAM_SOURCE marker to file');
         } catch (tagErr) {
           winston.error('yt-dlp: failed to write metadata tags', { stack: tagErr });
           try { await fs.unlink(downloadedFile + '.tmp.' + expectedExt); } catch { /* ignore */ }
         }
 
-        // Parse metadata from the downloaded file (include covers for album art)
-        const skipImg = config.program.scanOptions.skipImg === true;
-        let metadata;
-        try {
-          metadata = (await parseFile(downloadedFile, { skipCovers: skipImg })).common;
-        } catch (err) {
-          winston.error('yt-dlp: metadata parse error', { stack: err });
-          metadata = { track: { no: null, of: null }, disk: { no: null, of: null } };
-        }
-
-        // Compute both whole-file and audio-region hashes. The scanner uses
-        // the same helper so ytdl-inserted rows are identity-compatible with
-        // scanned rows — which since V60 includes stamping hash_v with the
-        // helper's HASH_GENERATION: a row left at the column default (1)
-        // would re-arm the boot convergence epoch (a full re-key pass of
-        // the stale-generation rows) after every download.
-        const audioHashLib = await import('../db/audio-hash.js');
-        const { fileHash: hash, audioHash } = await audioHashLib.computeHashes(downloadedFile);
-        const hashV = audioHashLib.HASH_GENERATION;
-
-        // Build DB record matching the scanner schema
-        // User-submitted metadata overrides take priority over parsed file metadata
-        const relativePath = path.relative(pathInfo.basePath, downloadedFile);
-        const data = {
-          title: userMeta.title || (metadata.title ? String(metadata.title) : null),
-          artist: userMeta.artist || (metadata.artist ? String(metadata.artist) : null),
-          year: userMeta.year ? Number(userMeta.year) : (metadata.year || null),
-          album: userMeta.album || (metadata.album ? String(metadata.album) : null),
-          filepath: relativePath,
-          format: expectedExt,
-          track: metadata.track?.no || null,
-          disk: metadata.disk?.no || null,
-          modified: downloadedStat.mtime.getTime(),
-          hash: hash,
-          audioHash: audioHash,
-          aaFile: null,
+        // Parse, hash, extract the embedded cover and insert the row the way
+        // a scan would (src/db/insert-downloaded-track.js — shared with the
+        // discovery collection copies). V36: tracks.source = 'ytdl'.
+        await insertDownloadedTrack({
+          filePath: downloadedFile,
           vpath: pathInfo.vpath,
-          ts: Math.floor(Date.now() / 1000),
-          // Leave scan_id NULL: the scanner stamps it only when it
-          // rewrites a row, and the first scan that walks this file
-          // claims the row normally (the stale sweep keys on the
-          // scanner's in-memory seen tracking, not this column). The
-          // 'ytdl' provenance signal lives in tracks.source (V36).
-          sID: null,
-          replaygainTrackDb: metadata.replaygain_track_gain ? metadata.replaygain_track_gain.dB : null,
-        };
-
-        // Extract and save album art from embedded thumbnail
-        if (!skipImg && metadata.picture && metadata.picture[0]) {
-          try {
-            const picData = metadata.picture[0].data;
-            const picHashString = crypto.createHash('md5').update(picData.toString('utf-8')).digest('hex');
-            const extension = mime.extension(metadata.picture[0].format) || 'jpg';
-            data.aaFile = picHashString + '.' + extension;
-
-            const aaDir = config.program.storage.albumArtDirectory;
-            const aaFilePath = path.join(aaDir, data.aaFile);
-
-            // Save original if it doesn't already exist in the cache
-            let isNewFile = false;
-            try {
-              await fs.access(aaFilePath);
-            } catch {
-              await fs.writeFile(aaFilePath, picData);
-              isNewFile = true;
-            }
-
-            // Create compressed versions for thumbnails. Off the event loop
-            // + pixel-count guarded (util/image-thumbs.js): embedded covers
-            // come from downloaded media, so their dimensions are not ours to
-            // trust, and a pure-JS decode here stalls every other request.
-            if (isNewFile && config.program.scanOptions.compressImage) {
-              await generateThumbnails(picData, aaFilePath, aaDir, data.aaFile);
-            }
-          } catch (err) {
-            winston.error('yt-dlp: failed to extract album art', { stack: err });
-          }
-        }
-
-        // Insert into SQLite. V34 dropped tracks.genre — genre data flows
-        // through the track_genres M2M instead (the scanner populates it
-        // via setTrackGenres; ytdl downloads commonly have no embedded
-        // genre tag from YouTube anyway, so we don't write the M2M here —
-        // the next scan picks it up if the file ends up with one).
-        // V36: tracks.source = 'ytdl' records provenance.
-        const d = db.getDB();
-        const lib = db.getLibraryByName(data.vpath);
-        if (d && lib) {
-          const artistId = db.findOrCreateArtist(data.artist);
-          const albumId = db.findOrCreateAlbum(data.album, artistId, data.year);
-          // V71: tag_album / tag_compilation are the album consensus inputs
-          // the scanners stamp per track; stamping them here means this
-          // row votes on its album like any scanned row (a ytdl download
-          // carries no ALBUMARTIST, so that input stays NULL).
-          d.prepare(
-            `INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
-             disc_number, year, format, file_hash, audio_hash, album_art_file, replaygain_track_db,
-             modified, scan_id, source, hash_v, tag_album, tag_compilation, artist_display)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
-          ).run(
-            data.filepath, lib.id, data.title || null, artistId, albumId,
-            data.track, data.disk, data.year, data.format, data.hash, data.audioHash || null,
-            data.aaFile, data.replaygainTrackDb, data.modified, data.sID, 'ytdl', hashV,
-            data.album || null,
-            // V73: the display string is the uploader / artist as given.
-            String(data.artist || '').trim() || null
-          );
-          // V72: the primary-artist credit row, with the raw spelling that
-          // votes on the artist's display name (the scanners write the same
-          // row from the split ARTIST tag).
-          if (artistId) {
-            // Trimmed, like the scanners' split credits — a " Foo" vote
-            // would win a 1:1 tie on BINARY order and rename the artist.
-            const credit = String(data.artist).trim() || null;
-            d.prepare(
-              `INSERT OR IGNORE INTO track_artists (track_id, artist_id, role, position, tag_name)
-               VALUES ((SELECT id FROM tracks WHERE filepath = ? AND library_id = ?), ?, 'main', 0, ?)`
-            ).run(data.filepath, lib.id, artistId, credit);
-          }
-          // The insert (and the REPLACE of any earlier row at this path)
-          // flagged the affected album(s) / artist(s) through the *_agg
-          // triggers; recompute them now so the album's year range / count
-          // and the artist's counts reflect this track before any scan runs
-          // — the album-songs API matches `year` against that range.
-          refreshDirtyAlbums(d);
-          refreshDirtyArtists(d);
-        }
-        winston.info(`yt-dlp: added ${relativePath} to database`);
+          basePath: pathInfo.basePath,
+          source: 'ytdl',
+          format: expectedExt,
+          userMeta,
+          log: 'yt-dlp',
+        });
 
         if (entry) {
           entry.status = 'complete';
@@ -489,7 +364,7 @@ export function setup(mstream) {
 
     try {
       await commandExists('yt-dlp');
-    } catch (err) {
+    } catch (_err) {
       return res.status(500).json({ error: 'yt-dlp is not installed' });
     }
 

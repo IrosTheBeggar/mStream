@@ -668,6 +668,14 @@ const discoveryPluginsOptions = Joi.object({
   'federation-play': Joi.object({
     enabled: Joi.boolean().default(true),
   }).default({ enabled: true }),
+  // "Add to your collection": copies a paired peer's file into a folder of
+  // the user's own library as a job (through the same stream proxy playback
+  // uses, so the peer's key limits apply). Runs only for accounts that may
+  // upload and may start jobs (discoveryJobs.enabledFor); the destination
+  // is a per-user setting (library · base folder · layout template).
+  'federation-copy': Joi.object({
+    enabled: Joi.boolean().default(true),
+  }).default({ enabled: true }),
 });
 
 // The discovery plug-in JOB runner (acquire / hand-off plug-ins —

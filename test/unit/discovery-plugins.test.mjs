@@ -87,7 +87,7 @@ describe('registry', () => {
     assert.equal(all.find((p) => p.name === 'links').enabled, false);
     const on = listPlugins({ config: ON });
     assert.equal(on.length >= 1, true);
-    assert.deepEqual(Object.keys(on[0]).sort(), ['capabilities', 'description', 'enabled', 'name', 'scope', 'title']);
+    assert.deepEqual(Object.keys(on[0]).sort(), ['capabilities', 'description', 'enabled', 'name', 'scope', 'settings', 'title']);
   });
 
   test('registerPlugin enforces the contract', () => {

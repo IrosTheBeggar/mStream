@@ -8,11 +8,13 @@ import links from './plugins/links.js';
 import deezer from './plugins/deezer.js';
 import itunes from './plugins/itunes.js';
 import federationPlay from './plugins/federation-play.js';
+import federationCopy from './plugins/federation-copy.js';
 
 registerPlugin(links);
 registerPlugin(deezer);
 registerPlugin(itunes);
 registerPlugin(federationPlay);
+registerPlugin(federationCopy);
 
 // Test-only runnable plug-in — exercises the job path end to end without a
 // catalogue or a disk. Never registered unless the environment asks.
