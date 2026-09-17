@@ -1,0 +1,245 @@
+<title>Discover Recommendation Modal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jura:wght@500;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --bg: #eef0f3; --surface: #f7f8fa; --ink: #1b1f26; --ink-2: #4b5461; --muted: #6f7886;
+  --line: #d4d9e1; --line-2: #c2c8d2;
+  --teal: #237f74; --teal-bg: rgba(35,127,116,.10);
+  --amber: #9a6f12; --amber-bg: rgba(154,111,18,.10);
+  --blue: #3f56b8; --blue-bg: rgba(63,86,184,.10);
+  --screen: #0f1216; --focus: #237f74;
+  --display: "Jura", "Segoe UI", system-ui, sans-serif;
+  --body: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", Consolas, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1216; --surface: #15171c; --ink: #e6e9ee; --ink-2: #b8bcc6; --muted: #8a919e;
+    --line: #262b33; --line-2: #3a4149;
+    --teal: #4fb8a8; --teal-bg: rgba(79,184,168,.12);
+    --amber: #d9a441; --amber-bg: rgba(217,164,65,.12);
+    --blue: #8ea0f0; --blue-bg: rgba(142,160,240,.12);
+    --focus: #4fb8a8;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1216; --surface: #15171c; --ink: #e6e9ee; --ink-2: #b8bcc6; --muted: #8a919e;
+  --line: #262b33; --line-2: #3a4149;
+  --teal: #4fb8a8; --teal-bg: rgba(79,184,168,.12);
+  --amber: #d9a441; --amber-bg: rgba(217,164,65,.12);
+  --blue: #8ea0f0; --blue-bg: rgba(142,160,240,.12);
+  --focus: #4fb8a8;
+}
+* { box-sizing: border-box; }
+html { scrollbar-gutter: stable; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 var(--body); padding-block: 0 72px; padding-inline: 20px; -webkit-font-smoothing: antialiased; }
+a { color: var(--teal); text-decoration: none; }
+a:hover { text-decoration: underline; }
+a:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
+code { font: 500 .92em var(--mono); color: var(--ink-2); }
+
+.board { max-width: 1240px; margin: 0 auto; display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 40px; }
+.rail { position: sticky; top: 24px; align-self: start; padding-top: 34px; }
+.rail-title { font: 700 11px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin: 0 0 12px; }
+.rail ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.rail a { display: grid; grid-template-columns: 24px 1fr; gap: 8px; padding: 5px 8px; border-radius: 3px; color: var(--ink-2); font-size: 14px; line-height: 1.3; }
+.rail a:hover { background: var(--surface); text-decoration: none; color: var(--ink); }
+.rail a code { font-size: 12px; color: var(--muted); }
+@media (max-width: 960px) {
+  .board { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .rail { position: static; padding-top: 24px; }
+  .rail ol { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+}
+
+/* Plate sizing is pure CSS: the column width is a unitless number chosen per
+   viewport step (always at or below the real column), each plate carries its
+   card's native size, and the scale falls out of the two. No script measures
+   anything, so nothing can loop when a host frame resizes around the page. */
+.main { min-width: 0; padding-top: 32px; display: grid; gap: 48px; --col: 1000; --cell: calc((var(--col) - 32) / 2); }
+@media (max-width: 1280px) { .main { --col: 920; } }
+@media (max-width: 1200px) { .main { --col: 840; } }
+@media (max-width: 1120px) { .main { --col: 760; } }
+@media (max-width: 1040px) { .main { --col: 680; } }
+@media (max-width: 960px)  { .main { --col: 840; } }
+@media (max-width: 880px)  { .main { --col: 760; } }
+@media (max-width: 800px)  { .main { --col: 680; } }
+@media (max-width: 720px)  { .main { --col: 600; --cell: var(--col); } }
+@media (max-width: 640px)  { .main { --col: 520; } }
+@media (max-width: 560px)  { .main { --col: 440; } }
+@media (max-width: 480px)  { .main { --col: 360; } }
+@media (max-width: 400px)  { .main { --col: 320; } }
+@media (max-width: 360px)  { .main { --col: 280; } }
+
+.mast { display: grid; gap: 14px; max-width: 70ch; }
+.eyebrow { font: 500 12px/1.4 var(--mono); color: var(--muted); margin: 0; }
+h1 { font: 700 clamp(30px, 4vw, 42px)/1.08 var(--display); letter-spacing: -.01em; margin: 0; text-wrap: balance; }
+.lede { font-size: 18px; line-height: 1.5; color: var(--ink-2); margin: 0; }
+.facts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; font-size: 14px; color: var(--ink-2); }
+.pill { display: inline-flex; align-items: center; gap: 6px; font: 700 11px/1 var(--display); letter-spacing: .12em; text-transform: uppercase; padding: 5px 9px; border-radius: 3px; }
+.pill-built { color: var(--teal); background: var(--teal-bg); }
+.pill-soon { color: var(--amber); background: var(--amber-bg); }
+.pill-sug { color: var(--blue); background: var(--blue-bg); }
+
+.calls { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 18px 0; display: grid; gap: 8px; max-width: 70ch; }
+.calls h2 { font: 700 12px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin: 0 0 2px; }
+.calls ol { margin: 0; padding-left: 22px; display: grid; gap: 6px; font-size: 15px; color: var(--ink-2); }
+.calls li::marker { font-family: var(--mono); color: var(--muted); }
+
+.plate { display: grid; gap: 10px; scroll-margin-top: 20px; min-width: 0; }
+.plate-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.plate-h code { font-size: 13px; color: var(--muted); }
+.plate-h h2 { font: 700 22px/1.2 var(--display); margin: 0; text-wrap: balance; }
+.dims { font: 400 12px/1 var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.open { margin-left: auto; font-size: 14px; white-space: nowrap; }
+.plate-sub { margin: 0; color: var(--ink-2); font-size: 15px; max-width: 70ch; }
+
+.frame { --s: min(1, calc(var(--col) / var(--w))); position: relative; overflow: hidden; height: calc(var(--h) * var(--s) * 1px);
+         border: 1px solid var(--line-2); background: var(--screen); }
+.frame iframe { position: absolute; top: 0; left: 50%; width: calc(var(--w) * 1px); height: calc(var(--h) * 1px); border: 0;
+                transform: translateX(-50%) scale(var(--s)); transform-origin: top center; background: var(--screen); }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; align-items: start; }
+.pair .frame { --s: min(1, calc(var(--cell) / var(--w))); }
+@media (max-width: 720px) { .pair { grid-template-columns: 1fr; } }
+
+.foot { border-top: 1px solid var(--line); padding-top: 16px; font-size: 14px; color: var(--muted); max-width: 70ch; display: grid; gap: 6px; }
+.foot p { margin: 0; }
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+<div class="board">
+  <nav class="rail" aria-label="Cards">
+    <p class="rail-title">Cards</p>
+    <ol>
+      <li><a href="#c01"><code>01</code><span>Network row · the modal, annotated</span></a></li>
+      <li><a href="#c02"><code>02</code><span>Peer row · Federation view</span></a></li>
+      <li><a href="#c10"><code>10</code><span>Collection destination</span></a></li>
+      <li><a href="#c09"><code>09</code><span>Peer row · Plug-Ins view</span></a></li>
+      <li><a href="#c03"><code>03</code><span>Get it · every job state</span></a></li>
+      <li><a href="#c04"><code>04</code><span>Send to · hand-off states</span></a></li>
+      <li><a href="#c05"><code>05</code><span>Listen · preview &amp; play states</span></a></li>
+      <li><a href="#c06"><code>06</code><span>Mobile · bottom sheet</span></a></li>
+      <li><a href="#c07"><code>07</code><span>Downloads tray</span></a></li>
+      <li><a href="#c08"><code>08</code><span>Flow, rules &amp; keys</span></a></li>
+      <li><a href="#c00"><code>00</code><span>Tokens</span></a></li>
+    </ol>
+  </nav>
+
+  <div class="main">
+    <header class="mast">
+      <p class="eyebrow">mStream · Discover panel · design review · revision 2.2 · 16 Sep 2026</p>
+      <h1>Discover Recommendation Modal</h1>
+      <p class="lede">Clicking a row under <em>From the network</em> opens a window of plug-in sections. A row under <em>From your peers</em> opens on a <em>Federation</em> view built around the paired server’s song, album and artist, with a switch to the plug-in sections. Each card is a live page; open it at full size to read the small text.</p>
+      <div class="facts">
+        <span class="pill pill-built">built</span><span>the window itself (branch <code>feat/discovery-modal</code>): previews, the invite row, play and queue from a peer, album and artist views, more-like-this on one peer, find-elsewhere links, copy title</span>
+      </div>
+      <div class="facts">
+        <span class="pill pill-soon">planned</span><span>downloads, hand-offs, collection copies and their destination picker, the downloads tray</span>
+      </div>
+      <div class="facts">
+        <span class="pill pill-sug">suggested</span><span>my additions to the Federation view, easy to strike</span>
+      </div>
+    </header>
+
+    <section class="calls" aria-labelledby="calls-h">
+      <h2 id="calls-h">Decided</h2>
+      <ol>
+        <li>“Collection” means your library: the files are copied from the peer into a local folder the user sets or chooses, with <code>{{ARTIST}}/{{ALBUM}}</code> as the default. Card 10 shows the picker; card 02 shows the destination bar it feeds.</li>
+      </ol>
+    </section>
+
+    <section class="calls" aria-labelledby="calls2-h">
+      <h2 id="calls2-h">Four calls to make</h2>
+      <ol>
+        <li>Copies go through the same stream proxy as playback, so the peer cannot tell them apart and the pairing key’s daily allowance is the only cap. Add a per-key “allow copies” switch (the client would declare intent with a header), or leave it to the allowance?</li>
+        <li>Library rows: open the window too, or keep the one-click queue they have now?</li>
+        <li>Where finished downloads live: a strip in the Discover panel (card 07), or a tab in the Upload window?</li>
+        <li>Preview plug-ins ship on by default today. Keep that, or make them opt-in?</li>
+      </ol>
+    </section>
+
+    <section class="calls" aria-labelledby="api-h">
+      <h2 id="api-h">Needs API work first</h2>
+      <ol>
+        <li>The peer's health route has to report the caller's transfer limits and usage before any allowance can be shown; today the peer only answers 429. The cards show "online · last seen" instead.</li>
+        <li>The accepts-requests flag arrives with sidecar 1.1.0; until then the Federate hint cannot know the peer's inbox state.</li>
+        <li>A "may create jobs" flag on the plug-in list, so Get it can be left out for a gated account instead of failing with a 403.</li>
+        <li>User-settings routes and a Connected services page; only the database module exists, on the jobs branch, which itself is not on master yet.</li>
+        <li>Collection copies: a federation-copy acquire plug-in on the jobs branch, a PEER variable in the torrent path-template engine, and the destination saved per account through the user-settings routes. The picker’s Browse… reuses the file explorer listing that exists today.</li>
+      </ol>
+    </section>
+
+    <article class="plate" id="c01">
+      <div class="plate-h"><code>01</code><h2>Recommendation modal · network row</h2><span class="dims">1120 × 990</span><a class="open" href="01-modal-network.html" target="_blank" rel="noopener">Open full size ↗</a></div>
+      <p class="plate-sub">The hero: Listen, Federate (admins only), Get it, Send to, Find elsewhere. No action bar and no footer; the copy-title button sits under the close button.</p>
+      <div class="frame" style="--w: 1120; --h: 990"><iframe src="01-modal-network.html" title="Recommendation modal, network row"></iframe></div>
+    </article>
+
+    <article class="plate" id="c02">
+      <div class="plate-h"><code>02</code><h2>Peer row · Federation view</h2><span class="dims">1000 × 1170</span><a class="open" href="02-modal-peer.html" target="_blank" rel="noopener">Open full size ↗</a></div>
+      <p class="plate-sub">The default view for a paired server’s song: the destination bar, then play, queue and copy the song, the album and the artist, plus two suggested extras.</p>
+      <div class="frame" style="--w: 1000; --h: 1170"><iframe src="02-modal-peer.html" title="Recommendation modal, peer row, Federation view" loading="lazy"></iframe></div>
+    </article>
+
+    <article class="plate" id="c10">
+      <div class="plate-h"><code>10</code><h2>Collection destination</h2><span class="dims">1120 × 1400</span><a class="open" href="10-collection-destination.html" target="_blank" rel="noopener">Open full size ↗</a></div>
+      <p class="plate-sub">Where copies land and how the user sets or chooses the folder: the bar, the in-place picker (library, base folder with Browse…, layout with the torrent template syntax and a live preview), validation, the compilation nudge, Keep… reusing it, and the hidden case.</p>
+      <div class="frame" style="--w: 1120; --h: 1400"><iframe src="10-collection-destination.html" title="Collection destination picker" loading="lazy"></iframe></div>
+    </article>
+
+    <article class="plate" id="c09">
+      <div class="plate-h"><code>09</code><h2>Peer row · Plug-Ins view</h2><span class="dims">1000 × 900</span><a class="open" href="09-modal-peer-plugins.html" target="_blank" rel="noopener">Open full size ↗</a></div>
+      <p class="plate-sub">The selector on Plug-Ins: the network row’s sections for a peer song, without duplicating anything the Federation view already does.</p>
+      <div class="frame" style="--w: 1000; --h: 900"><iframe src="09-modal-peer-plugins.html" title="Recommendation modal, peer row, Plug-Ins view" loading="lazy"></iframe></div>
+    </article>
+
+    <article class="plate" id="c03">
+      <div class="plate-h"><code>03</code><h2>Get it · job states</h2><span class="dims">1120 × 1110</span><a class="open" href="03-get-it-states.html" target="_blank" rel="noopener">Open full size ↗</a></div>
+      <p class="plate-sub">The download section as the job moves: idle, queued, downloading, done, failed, cancelled, a peer copy in flight, and the one “not available” state, which is absence.</p>
+      <div class="frame" style="--w: 1120; --h: 1110"><iframe src="03-get-it-states.html" title="Get it section, job states" loading="lazy"></iframe></div>
+    </article>
+
+    <article class="plate" id="c04">
+      <div class="plate-h"><code>04</code><h2>Send to · hand-off states</h2><span class="dims">1120 × 930</span><a class="open" href="04-send-to-states.html" target="_blank" rel="noopener">Open full size ↗</a></div>
+      <p class="plate-sub">Idle with everything configured, the not-connected case where the row is simply absent, then sending, sent, failed and already-there.</p>
+      <div class="frame" style="--w: 1120; --h: 930"><iframe src="04-send-to-states.html" title="Send to section, hand-off states" loading="lazy"></iframe></div>
+    </article>
+
+    <article class="plate" id="c05">
+      <div class="plate-h"><code>05</code><h2>Listen · preview &amp; play states</h2><span class="dims">1120 × 1040</span><a class="open" href="05-listen-states.html" target="_blank" rel="noopener">Open full size ↗</a></div>
+      <p class="plate-sub">Previews from idle to playing, the honest empty state, busy and failed, and the Federation view’s song row playing or with the peer offline.</p>
+      <div class="frame" style="--w: 1120; --h: 1040"><iframe src="05-listen-states.html" title="Listen section, preview and play states" loading="lazy"></iframe></div>
+    </article>
+
+    <div class="pair">
+      <article class="plate" id="c06">
+        <div class="plate-h"><code>06</code><h2>Mobile · bottom sheet</h2><span class="dims">440 × 1030</span><a class="open" href="06-mobile-sheet.html" target="_blank" rel="noopener">Open full size ↗</a></div>
+        <p class="plate-sub">The network modal at 390 px: the same sections stacked, close and copy inside the window.</p>
+        <div class="frame" style="--w: 440; --h: 1030"><iframe src="06-mobile-sheet.html" title="Mobile bottom sheet" loading="lazy"></iframe></div>
+      </article>
+      <article class="plate" id="c07">
+        <div class="plate-h"><code>07</code><h2>Downloads tray</h2><span class="dims">470 × 910</span><a class="open" href="07-downloads-tray.html" target="_blank" rel="noopener">Open full size ↗</a></div>
+        <p class="plate-sub">Where downloads and peer copies live after the window closes: a strip at the bottom of the Discover panel.</p>
+        <div class="frame" style="--w: 470; --h: 910"><iframe src="07-downloads-tray.html" title="Downloads tray" loading="lazy"></iframe></div>
+      </article>
+    </div>
+
+    <article class="plate" id="c08">
+      <div class="plate-h"><code>08</code><h2>Flow, rules &amp; keys</h2><span class="dims">1000 × 1810</span><a class="open" href="08-flow-and-rules.html" target="_blank" rel="noopener">Open full size ↗</a></div>
+      <p class="plate-sub">Row to window to job, the source-to-view-to-section map, the hide-when-unavailable rules, the API additions needed, the i18n key list, the decided collection semantics and the open questions.</p>
+      <div class="frame" style="--w: 1000; --h: 1810"><iframe src="08-flow-and-rules.html" title="Flow, rules and keys" loading="lazy"></iframe></div>
+    </article>
+
+    <article class="plate" id="c00">
+      <div class="plate-h"><code>00</code><h2>Tokens</h2><span class="dims">1000 × 1060</span><a class="open" href="00-tokens.html" target="_blank" rel="noopener">Open full size ↗</a></div>
+      <p class="plate-sub">Every colour is already in the app; the window adds no new hue. Type scale, the view selector, buttons, tags and the destination form controls for reference.</p>
+      <div class="frame" style="--w: 1000; --h: 1060"><iframe src="00-tokens.html" title="Tokens" loading="lazy"></iframe></div>
+    </article>
+
+    <footer class="foot">
+      <p>Files: <code>docs/designs/discover-modal/</code> in the mStream worktree, not committed yet. Each card is a standalone page with a first-line <code>@dsCard</code> marker.</p>
+      <p>To update Claude Design, run <code>/design-sync</code> from an interactive <code>claude</code> terminal in the repo; the project is already pinned in <code>.design-sync/config.json</code>.</p>
+    </footer>
+  </div>
+</div>
