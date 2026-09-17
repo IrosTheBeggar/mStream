@@ -26,11 +26,19 @@ Project: **mStream design cards** — https://claude.ai/design/p/9bec91f3-4103-4
 3. Read `ds-bundle/_screenshots/contact-sheet-1.png` once.
 4. Atomic upload: sentinel → all 24 files → `list_files` diff → delete orphans → sentinel re-arm. No anchor to write.
 
+## Sync log
+- 2026-09-16 first sync: 9 cards, 24 files.
+- 2026-09-16 re-sync (atomic path, pinned project): 11 cards (+ ModalPeerPlugins, CollectionDestination), 28 files, 11/11 render clean; conventions.md had been revised by the author with the cards and every name verified.
+
 ## Known validate warns (legitimate)
 - `_ds_sync.json absent` — see above.
 - `tokens: 2 missing` = `--c` and `--pct`, per-element inline variables on `.dm-matchbar` /
   progress bars (`style="--pct:92%;--c:#657ee4"`), not design tokens.
 - `.d.ts parse check skipped` — there are no `.d.ts` files in this shape.
+
+## Conventions-check false positives
+- `b`, `i`, `em`, `s`, `label` in conventions.md are HTML element selectors (`.path b`, `.dest-preview em`, `.field > label`), not classes — the class grep flags them; ignore.
+- `.stage` (page padding wrapper in DownloadsTray + MobileSheet) is design-spec scaffolding that survives the scaffolding cut; not in the header on purpose.
 
 ## Gotchas
 - Cards must size themselves with CSS only (no ResizeObserver / measurement scripts) and carry
