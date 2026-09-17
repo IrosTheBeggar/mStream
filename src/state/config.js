@@ -683,6 +683,28 @@ const discoveryPluginsOptions = Joi.object({
   'federation-play': Joi.object({
     enabled: Joi.boolean().default(true),
   }).default({ enabled: true }),
+  // "Add to your collection": copies a paired peer's file into a folder of
+  // the user's own library as a job (through the same stream proxy playback
+  // uses, so the peer's key limits apply). Runs only for accounts that may
+  // upload and may start jobs (discoveryJobs.enabledFor); the destination
+  // is a per-user setting (library · base folder · layout template).
+  'federation-copy': Joi.object({
+    enabled: Joi.boolean().default(true),
+  }).default({ enabled: true }),
+});
+
+// The discovery plug-in JOB runner (acquire / hand-off plug-ins —
+// src/discovery-plugins/jobs.js). `enabledFor` is the acquisition gate,
+// mirroring torrent.enabledFor: 'all' lets every user start jobs,
+// 'whitelist' only users with users.allow_discovery_jobs = 1 (V74).
+// Flipped live by POST /api/v1/admin/config/discovery-jobs.
+const discoveryJobsOptions = Joi.object({
+  enabledFor: Joi.string().valid('all', 'whitelist').default('all'),
+  // Jobs in flight at once across every plug-in (each plug-in also caps
+  // itself). Small on purpose: these are catalogue fetches and downloads.
+  maxConcurrent: Joi.number().integer().min(1).max(16).default(2),
+  // Finished rows (done / failed / cancelled) older than this are pruned.
+  retentionDays: Joi.number().integer().min(1).max(3650).default(30),
 });
 
 const torrentOptions = Joi.object({
@@ -848,6 +870,7 @@ const schema = Joi.object({
   federation: federationOptions.default(federationOptions.validate({}).value),
   discoveryP2p: discoveryP2pOptions.default(discoveryP2pOptions.validate({}).value),
   discoveryPlugins: discoveryPluginsOptions.default(discoveryPluginsOptions.validate({}).value),
+  discoveryJobs: discoveryJobsOptions.default(discoveryJobsOptions.validate({}).value),
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
   discovery: discoveryOptions.default(discoveryOptions.validate({}).value),
   torrent: torrentOptions.default(torrentOptions.validate({}).value),

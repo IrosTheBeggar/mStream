@@ -51,9 +51,18 @@ export const RESOLVING_CAPABILITIES = Object.freeze([
   CAPABILITIES.LINKS, CAPABILITIES.PREVIEW, CAPABILITIES.PLAY,
 ]);
 
+// The capabilities that run as jobs (src/discovery-plugins/jobs.js): the
+// plug-in implements `run(ctx)` and may declare `concurrency` (default 1).
+export const RUNNABLE_CAPABILITIES = Object.freeze([
+  CAPABILITIES.ACQUIRE, CAPABILITIES.HANDOFF,
+]);
+
 export const SCOPES = Object.freeze({ SERVER: 'server', USER: 'user' });
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+// Same key rule as src/db/user-settings.js — a key the store would refuse
+// must not pass registration.
+const SETTING_KEY_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 
 const plugins = new Map();
 
@@ -69,9 +78,41 @@ export function registerPlugin(def) {
   if (!Object.values(SCOPES).includes(def.scope)) { throw new Error(`registerPlugin: ${def.name} needs a scope`); }
   const resolves = def.capabilities.some((c) => RESOLVING_CAPABILITIES.includes(c));
   if (resolves && typeof def.resolve !== 'function') { throw new Error(`registerPlugin: ${def.name} must implement resolve()`); }
+  const runnable = def.capabilities.some((c) => RUNNABLE_CAPABILITIES.includes(c));
+  if (runnable && typeof def.run !== 'function') { throw new Error(`registerPlugin: ${def.name} must implement run(ctx)`); }
+  if (def.concurrency !== undefined && !(Number.isInteger(def.concurrency) && def.concurrency > 0)) {
+    throw new Error(`registerPlugin: ${def.name} concurrency must be a positive integer`);
+  }
+  // Per-user settings (user_settings, namespace discovery-plugin:<name>):
+  //   userSettings: { <key>: { schema: Joi, secret?: bool } }   what may be stored
+  //   validateSetting(key, value, { user })                     semantic checks; throws
+  //   describeSettings({ user, stored })                        the effective view
+  // The routes in src/api/discovery-plugins.js read these; a plug-in
+  // without `userSettings` has no settings routes.
+  if (def.userSettings !== undefined) {
+    if (!def.userSettings || typeof def.userSettings !== 'object' || Array.isArray(def.userSettings)) {
+      throw new Error(`registerPlugin: ${def.name} userSettings must be an object of key -> { schema }`);
+    }
+    for (const [key, spec] of Object.entries(def.userSettings)) {
+      if (!SETTING_KEY_RE.test(key)) { throw new Error(`registerPlugin: ${def.name} has an invalid setting key ${JSON.stringify(key)}`); }
+      if (!spec || typeof spec !== 'object' || !spec.schema || typeof spec.schema.validate !== 'function') {
+        throw new Error(`registerPlugin: ${def.name} setting ${key} needs a Joi schema`);
+      }
+    }
+  }
+  for (const hook of ['validateSetting', 'describeSettings']) {
+    if (def[hook] !== undefined && typeof def[hook] !== 'function') {
+      throw new Error(`registerPlugin: ${def.name} ${hook} must be a function`);
+    }
+  }
   const frozen = Object.freeze({ description: '', ...def, capabilities: Object.freeze([...def.capabilities]) });
   plugins.set(frozen.name, frozen);
   return frozen;
+}
+
+// The plug-ins the job runner drives (registration order).
+export function runnablePlugins() {
+  return [...plugins.values()].filter((p) => p.capabilities.some((c) => RUNNABLE_CAPABILITIES.includes(c)));
 }
 
 export function getPlugin(name) {
@@ -102,6 +143,8 @@ export function listPlugins({ includeDisabled = false, config: cfg } = {}) {
     out.push({
       name: p.name, title: p.title, description: p.description,
       capabilities: [...p.capabilities], scope: p.scope, enabled,
+      // The keys a client may read and write through the settings routes.
+      settings: p.userSettings ? Object.keys(p.userSettings) : [],
     });
   }
   return out;
