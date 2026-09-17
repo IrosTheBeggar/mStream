@@ -27,7 +27,9 @@
 // permissively-licensed alternative, and was removed — nobody ran it, and it
 // was the sole reason `@huggingface/transformers` was a dependency, which
 // dragged in ~174 MB (onnxruntime-web + sharp + protobufjs) and a high-severity
-// sharp CVE that no published parent allowed us to patch. Consequences worth
+// sharp CVE that no published parent allowed us to patch. (onnxruntime-web is
+// back today ON PURPOSE, as a direct dependency and the portable runtime —
+// see embedding-runtime.js; sharp was the problem.) Consequences worth
 // knowing BEFORE you need them:
 //
 //   • Every exported discovery dataset now inherits CC BY-NC-SA 4.0 —
@@ -44,9 +46,12 @@
 // sidecar (the rust-parser / p2p-sidecar pattern) rather than re-adding the
 // npm chain — that gets the model without re-importing sharp.
 //
-// All heavy runtimes are OPTIONAL dependencies imported lazily per model
-// kind — a failed native install must never break the music server; the
-// worker surfaces a clean error instead.
+// Runtimes are imported lazily, per model kind, only when there is work.
+// EffNet runs on ONNX Runtime — native (the OPTIONAL onnxruntime-node addon)
+// where it loads, the bundled WebAssembly build (onnxruntime-web) everywhere
+// else; the selection, its reasons and its platform history live in
+// embedding-runtime.js. A failed optional install must never break the
+// music server; the worker surfaces a clean error instead.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -54,6 +59,7 @@ import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { decodePcmF32 } from './audio-analysis-lib.js';
+import { loadEmbeddingRuntime } from './embedding-runtime.js';
 
 // ── Registry ─────────────────────────────────────────────────────────────────
 //
@@ -263,47 +269,44 @@ export async function ensureModelFile({ filename, url, sha256 }, modelCacheDir) 
 //   genreTags: string[] | null      // model-derived style tags, when the
 // }> }                              // model has a classification head
 //
-// MTG's Discogs-EffNet through onnxruntime-node, fed by the pure-JS mel
-// front-end in effnet-mel.js — a parity-exact reimplementation of essentia's
+// MTG's Discogs-EffNet through ONNX Runtime — the native onnxruntime-node
+// addon where it loads, the WebAssembly build (onnxruntime-web) otherwise;
+// embedding-runtime.js picks — fed by the pure-JS mel front-end in
+// effnet-mel.js, a parity-exact reimplementation of essentia's
 // TensorflowInputMusiCNN (the pipeline the model was trained on), ~20×
 // faster than the WASM-per-frame original and with no AGPL dependency in
 // this path. One inference yields both the 1280-d embedding and the
-// 400-style activations (→ genre tags).
-async function createEffnetEmbedder(spec, { modelCacheDir } = {}) {
-  let ort;
-  try {
-    // NOTE for Bun `--compile`: onnxruntime-node's loader requires a
-    // per-(platform,arch) .node binary that upstream doesn't ship for every
-    // target, so bundling it breaks cross-builds. It is marked `--external`
-    // in scripts/build-bun.mjs — concatenation tricks don't help because
-    // Bun's bundler constant-folds them. In a standalone binary this import
-    // fails at runtime and lands in the catch below.
-    ort = (await import('onnxruntime-node')).default;
-  } catch (err) {
-    // Distinguish "the package isn't there" from "it's there but this OS
-    // can't load it". onnxruntime ships glibc-only binaries; on musl they
-    // load through a glibc compat layer, and a modern one genuinely works —
-    // verified 2026-07 on Alpine 3.24 + gcompat (the linuxserver.io image,
-    // x64 and arm64): loads AND runs inference. The dlopen-failure hint
-    // below is for systems that still can't — no compat layer, or one too
-    // old to cover onnxruntime's fortified symbols.
-    const muslHint = /ld-linux|Error relocating|ERR_DLOPEN/i.test(`${err.message} ${err.code || ''}`)
-      ? ' — this system cannot load onnxruntime’s glibc binaries (on musl/Alpine, install or update the gcompat package; otherwise use a glibc-based image such as Debian/Ubuntu)'
-      : '';
-    const e = new Error(`onnxruntime-node is not available — the '${spec.weights.filename}' embedding model cannot run${muslHint} (${err.message})`);
-    e.dependencyMissing = true;
-    throw e;
-  }
+// 400-style activations (→ genre tags). `runtime` ('auto' | 'native' |
+// 'wasm') and `threads` come from scanOptions via the worker.
+async function createEffnetEmbedder(spec, { modelCacheDir, runtime = 'auto', threads } = {}) {
   const { createMelExtractor } = await import('./effnet-mel.js');
   const { melFrames } = createMelExtractor();
 
   const modelPath = await ensureModelFile(spec.weights, modelCacheDir);
   const labelsPath = await ensureModelFile(spec.labels, modelCacheDir);
   const classes = JSON.parse(fs.readFileSync(labelsPath, 'utf8')).classes;
+  // Both runtimes take the model as bytes (the file was just read for its
+  // checksum anyway), and the wasm build can only open paths through fetch
+  // — bytes sidestep that on every platform.
+  const modelBytes = new Uint8Array(fs.readFileSync(modelPath));
 
-  const session = await ort.InferenceSession.create(modelPath);
+  // Loading the runtime AND building the session are one step so that a
+  // native install that imports but can't create a session still ends on
+  // the wasm build (auto mode). Failure of every candidate rejects with
+  // dependencyMissing — the worker's exit-4 contract.
+  const loaded = await loadEmbeddingRuntime({
+    setting: runtime,
+    threads,
+    createSession: (ort, sessionOptions) => ort.InferenceSession.create(modelBytes, sessionOptions),
+  });
+  const { ort, session } = loaded;
 
   return {
+    // Which runtime serves this embedder, how many threads, and which
+    // candidates were passed over (and why) — the worker reports all three.
+    runtime: loaded.runtime,
+    threads: loaded.threads,
+    skippedRuntimes: loaded.skipped,
     // Core path: pre-cut segments (either sliced from one decoded signal by
     // analyzeSignal below, or seek-decoded windows from analyzeFile).
     async analyzeSegments(segs) {
@@ -366,6 +369,9 @@ async function createEffnetEmbedder(spec, { modelCacheDir } = {}) {
 // segment. Same audio → same vector, on every platform, no dependencies.
 function createFakeEmbedder(spec) {
   return {
+    runtime: 'fake',
+    threads: null,
+    skippedRuntimes: [],
     // Not declared async (nothing to await) — callers `await` it anyway,
     // which is a no-op on a plain value, so the interface stays uniform
     // with the real embedders.

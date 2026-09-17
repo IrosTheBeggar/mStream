@@ -71,6 +71,7 @@
     "mime-types": "^3.0.2",
     "music-metadata": "^11.15.0",
     "nanoid": "^6.0.1",
+    "onnxruntime-web": "1.29.0",
     "tree-kill": "^1.2.2",
     "winston": "^3.19.0",
     "ws": "^8.21.3"

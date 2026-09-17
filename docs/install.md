@@ -246,14 +246,16 @@ enabling Quick Connect yourself later always sticks, flag or no flag.
 * **Alpine / musl Linux** — use the `*-musl` bundle (the glibc Linux build can't
   run on musl). Bun's musl binary needs the GNU C++ runtime: `apk add libstdc++`.
   For transcoding/waveforms also `apk add ffmpeg`.
-  **Known limitation:** the discovery/recommendation embedding model runs on
-  onnxruntime, which ships glibc-only binaries — it cannot load on musl (and
-  Alpine's `gcompat` shim is not sufficient: onnxruntime needs fortified glibc
-  symbols the shim doesn't implement). Everything else works, but
-  recommendations/Discover/sonic Auto-DJ won't build their data on musl —
-  including Alpine-based Docker images. Use a glibc system or a Debian/Ubuntu-
-  based image for that feature; the server detects this case, logs one clear
-  error, and disables the embedding pass instead of retrying it.
+* **Recommendations on bundles** (Discover, similar tracks, sonic Auto-DJ) work
+  on every bundle, musl and Intel Mac included: bundles run the embedding model
+  on the WebAssembly build of ONNX Runtime shipped in `bin/onnxruntime-web`,
+  which needs no native library. It is a few times slower per track than the
+  native runtime a source or Docker install uses, so the first backfill of a
+  large library on a Raspberry Pi takes hours rather than one; it runs in the
+  background and resumes across restarts. `scanOptions.embeddingThreads` caps
+  the worker's threads (default two, one on machines with 2 GB or less), and
+  `scanOptions.embeddingRuntime` (`auto` / `native` / `wasm`) forces a runtime
+  when diagnosing. The server log names the runtime each pass used.
 * The fast Rust library scanner needs glibc ≥ 2.34 on glibc systems; on older
   glibc it automatically falls back to a portable static build, so scanning stays
   fast. ffmpeg (transcoding/waveforms) is auto-downloaded on first use, or
