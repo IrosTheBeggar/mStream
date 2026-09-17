@@ -1896,11 +1896,12 @@ const DISCOVERY_MAX_DURATION_SEC = 30 * 60;
 // eligible track already has a current-model embedding. Exported so the
 // admin collect-discovery-data toggle routes through the same gates as the
 // scan-drain trigger.
-// Latched true when the embedding worker reports the environment can't
-// load onnxruntime-node at all (exit code 4 — e.g. musl/Alpine images,
-// where onnxruntime's glibc-only binaries can never load). A structural
-// failure, identical on every retry, so the pass stays off until restart
-// instead of failing (and error-logging) on every scan drain.
+// Latched true when the embedding worker reports that NO embedding runtime
+// could be loaded (exit code 4): neither the native onnxruntime-node addon
+// nor the WebAssembly build shipped with mStream — src/db/embedding-
+// runtime.js. A structural failure, identical on every retry, so the pass
+// stays off until restart instead of failing (and error-logging) on every
+// scan drain.
 let discoveryRuntimeUnavailable = false;
 
 export function maybeEnqueueDiscovery() {
@@ -1985,6 +1986,10 @@ function runDiscoveryTask(taskObj) {
     // Weights cache lives under an operator-configurable dir — NOT inside
     // node_modules (transformers.js's default), which updates would wipe.
     modelCacheDir: config.program.storage.modelCacheDirectory,
+    // Runtime selection + thread cap (src/db/embedding-runtime.js). An unset
+    // thread count is dropped by JSON.stringify → the worker's own policy.
+    runtime: config.program.scanOptions.embeddingRuntime,
+    threads: config.program.scanOptions.embeddingThreads,
     maxPerRun: config.program.scanOptions.discoveryPerRun || 50,
     expectedSchemaVersion: SCHEMA_VERSION,
     // Duration window / cooldowns / budget use the worker defaults.
@@ -2027,6 +2032,17 @@ function runDiscoveryTask(taskObj) {
           winston.info(`Discovery-embedding: ${evt.attempted}/${evt.total} tracks attempted`);
           return;
         }
+        if (evt.event === 'discoveryRuntime') {
+          // Which ONNX Runtime build serves this run and why the others
+          // were passed over — the one line that answers "why is it slow"
+          // (wasm is a few times slower than native) from the log alone.
+          const skipped = Array.isArray(evt.skipped) && evt.skipped.length
+            ? `; skipped ${evt.skipped.map((s) => `${s.runtime} (${s.reason})`).join(', ')}`
+            : '';
+          const threads = evt.threads ? `, ${evt.threads} thread(s)` : '';
+          winston.info(`Discovery-embedding runtime: ${evt.runtime}${threads}${skipped}`);
+          return;
+        }
         if (evt.event === 'error') {
           winston.error(`Discovery-embedding: ${evt.message}`);
           return;
@@ -2046,22 +2062,20 @@ function runDiscoveryTask(taskObj) {
     } else if (code === 3) {
       winston.warn('Discovery-embedding pass aborted: library schema changed under it (another instance migrating?)');
     } else if (code === 4) {
-      // The environment can't load onnxruntime-node at all (worker exit
-      // contract: RUNTIME_UNAVAILABLE_EXIT). Retrying every batch would
-      // fail identically and spam the log — latch it off until restart.
-      // Typical causes: the optional dep never installed, or a musl system
-      // without a working glibc compat layer for onnxruntime's glibc-only
-      // binaries. Modern musl images are NOT categorically broken —
-      // verified 2026-07: Alpine 3.24 + gcompat (the linuxserver.io image)
-      // loads and runs it fine on x64 and arm64; older/leaner musl setups
-      // are what land here.
+      // No embedding runtime could be loaded (worker exit contract:
+      // RUNTIME_UNAVAILABLE_EXIT): neither the native onnxruntime-node addon
+      // nor the WebAssembly build — the worker's error event just above
+      // names each runtime's reason. Retrying every batch would fail
+      // identically and spam the log — latch it off until restart. With the
+      // wasm build a regular dependency this is rare: a bundle missing its
+      // bin/onnxruntime-web files, or a JavaScript engine without
+      // WebAssembly SIMD.
       discoveryRuntimeUnavailable = true;
       winston.error(
-        'Discovery-embedding pass halted: this environment cannot load onnxruntime-node, '
-        + 'so the embedding model cannot run (optional dependency missing, or a musl/Alpine '
-        + 'system without a working glibc compat layer — install/update gcompat, or use a '
-        + 'glibc-based image such as Debian/Ubuntu). Recommendations will not build here. '
-        + 'The pass is disabled until the server restarts.');
+        'Discovery-embedding pass halted: no ONNX runtime could be loaded on this install '
+        + '(the Discovery-embedding error above gives each runtime\'s reason), so the '
+        + 'embedding model cannot run. Recommendations will not build here. The pass is '
+        + 'disabled until the server restarts.');
     } else if (code !== 0 && code !== null) {
       winston.warn(`Discovery-embedding pass exited with code ${code}`);
     }

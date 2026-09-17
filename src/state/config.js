@@ -204,10 +204,11 @@ const scanOptions = Joi.object({
   // local recommendation features without ever exposing its library. The
   // pass is CPU-heavy but bounded (discoveryPerRun tracks per batch,
   // re-enqueued while a backlog remains) and downloads its model weights
-  // once (~18 MB EffNet). Where the ML runtime is unavailable (onnxruntime
-  // missing, or a musl system without a working glibc compat layer) the
-  // worker degrades once, loudly, and stops. Set false to skip discovery
-  // collection entirely.
+  // once (~18 MB EffNet). The model runs on ONNX Runtime — native where the
+  // optional onnxruntime-node addon loads, otherwise the WebAssembly build
+  // shipped with mStream (embeddingRuntime below) — so it works on every
+  // install method; only if no runtime loads at all does the worker degrade
+  // once, loudly, and stop. Set false to skip discovery collection entirely.
   collectDiscoveryData: Joi.boolean().default(true),
   // Which embedding engine the discovery pass runs — a key into the model
   // registry in src/db/discovery-features-lib.js. Deliberately swappable:
@@ -221,6 +222,20 @@ const scanOptions = Joi.object({
   // runBudget and re-enqueues while a backlog remains — this just bounds
   // one batch. Mirrors analyzeBpmPerRun.
   discoveryPerRun: Joi.number().integer().min(1).max(10000).default(50),
+  // Which ONNX Runtime build the embedding worker uses (src/db/embedding-
+  // runtime.js). 'auto': the native onnxruntime-node addon where it loads,
+  // else the WebAssembly build shipped with mStream; standalone bundles
+  // always use the WebAssembly build (nothing native ships there). 'native'
+  // / 'wasm' force one and fail instead of falling back — the switch to
+  // flip when diagnosing speed (wasm is a few times slower per track) or a
+  // broken native install. The worker logs the runtime it ended up on.
+  embeddingRuntime: Joi.string().valid('auto', 'native', 'wasm').default('auto'),
+  // Inference threads for the embedding worker, either runtime. Unset = two,
+  // or one on machines with 2 GB of memory or less — enough to keep a
+  // background backfill from monopolising a Pi (native ONNX Runtime would
+  // otherwise take every core). Raise it on a big box that should chew
+  // through its first backfill faster.
+  embeddingThreads: Joi.number().integer().min(1).max(64).optional(),
   autoAlbumArt: Joi.boolean().default(true),
   // What the post-scan album-art downloader targets. 'missing' (default):
   // only albums with no cover at all — the fill-in-the-blanks pass.

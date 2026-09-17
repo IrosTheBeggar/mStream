@@ -31,17 +31,19 @@
 //
 // CLI input — single argv entry, JSON-encoded (built in task-queue.js):
 //   { discoveryDbPath, libraryDbPath, ffmpegPath, model, modelCacheDir,
-//     maxPerRun, expectedSchemaVersion, minDurationSec, maxDurationSec,
-//     maxAnalyzeSeconds, errorCooldownSec, runBudgetSec, skipGenres }
+//     runtime, threads, maxPerRun, expectedSchemaVersion, minDurationSec,
+//     maxDurationSec, maxAnalyzeSeconds, errorCooldownSec, runBudgetSec,
+//     skipGenres }
 //
 // stdout protocol — line-buffered single-line JSON events:
+//   { event: 'discoveryRuntime', runtime, threads, skipped }   once per run with work
 //   { event: 'discoveryProgress', attempted, total }
 //   { event: 'discoveryComplete', attempted, embedded, errors, hitCap }
-//   { event: 'error', message }     ← always followed by exit 1
+//   { event: 'error', message }     ← always followed by a non-zero exit
 //
 // Exit codes: 0 completed (per-track failures recorded, not fatal);
-// 1 fatal (bad input, DB open failure, model runtime unavailable);
-// 3 library schema-version guard.
+// 1 fatal (bad input, DB open failure, model download failure);
+// 3 library schema-version guard; 4 no embedding runtime could be loaded.
 
 import path from 'node:path';
 import Joi from 'joi';
@@ -53,11 +55,11 @@ import {
 import { createEmbedder, analyzeFile, EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL } from './discovery-features-lib.js';
 
 const SCHEMA_GUARD_EXIT = 3;
-// Exit contract with task-queue.js: the environment can't load
-// onnxruntime-node at all (missing optional dep, or a musl system whose
-// glibc compat layer can't load onnxruntime's glibc-only binaries) — the
-// queue latches the pass off until restart instead of retrying an identical
-// failure every batch.
+// Exit contract with task-queue.js: NO embedding runtime could be loaded —
+// neither the native onnxruntime-node addon nor the WebAssembly build (see
+// src/db/embedding-runtime.js for what each needs) — so the queue latches
+// the pass off until restart instead of retrying an identical failure every
+// batch. The error event before this exit names each runtime's reason.
 const RUNTIME_UNAVAILABLE_EXIT = 4;
 
 // discovery-db.js logs through winston; a forked child has no transports
@@ -88,6 +90,12 @@ const schema = Joi.object({
   model: Joi.string().valid(...Object.keys(EMBEDDING_MODELS)).default(DEFAULT_EMBEDDING_MODEL),
   // Where model weights download/cache (kept out of node_modules).
   modelCacheDir: Joi.string().optional(),
+  // ONNX Runtime build for the model — 'auto' (native where it loads, else
+  // the WebAssembly build), 'native' or 'wasm'; src/db/embedding-runtime.js.
+  runtime: Joi.string().valid('auto', 'native', 'wasm').default('auto'),
+  // Inference threads for either runtime; unset = embedding-runtime.js's
+  // policy (two, one on small-memory machines).
+  threads: Joi.number().integer().min(1).max(64).optional(),
   maxPerRun: Joi.number().integer().min(1).default(50),
   // Guard against the LIBRARY db being mid-migration under us (same contract
   // as the other enrichment workers). discovery.db needs no equivalent —
@@ -255,10 +263,25 @@ async function run() {
   }
 
   // Load the model only when there's work — a no-op fork must stay cheap.
-  // Real models take ~20 s + a first-use download; fatal if unavailable
-  // (missing optional dep, no network for the first download): nothing can
-  // be embedded, so exit 1 and let the next drain retry.
-  const embedder = await createEmbedder(cfg.model, { modelCacheDir: cfg.modelCacheDir });
+  // Real models take seconds + a first-use download; fatal if unavailable
+  // (no network for the first download → exit 1, the next drain retries;
+  // no runtime loads at all → exit 4, the queue latches the pass off).
+  const embedder = await createEmbedder(cfg.model, {
+    modelCacheDir: cfg.modelCacheDir,
+    runtime: cfg.runtime,
+    threads: cfg.threads,
+  });
+  // Which runtime serves this run, with how many threads, and which
+  // candidates were passed over and why — the parent logs it, and the
+  // admin enrichment status shows the meta key, so "why is this slow" and
+  // "which build am I on" are answerable from the server alone.
+  emit({
+    event: 'discoveryRuntime',
+    runtime: embedder.runtime || 'none',
+    threads: embedder.threads ?? null,
+    skipped: embedder.skippedRuntimes || [],
+  });
+  setMeta('embedding_runtime', embedder.runtime || 'none');
 
   // Pin the active model in discovery_meta — the export manifest reads it,
   // and the (future) network layer declares it. Per-row pins still allow a
@@ -375,8 +398,9 @@ run()
     emit({ event: 'error', message: err?.message || String(err) });
     publishEpochBestEffort();
     try { db.close(); } catch (_) { /* best-effort */ }
-    // dependencyMissing (set by createEmbedder): onnxruntime-node absent
-    // or unloadable here — a structural failure that repeats identically
-    // every batch, so tell the queue to latch the pass off until restart.
+    // dependencyMissing (set by embedding-runtime.js): no runtime could be
+    // loaded here, native or wasm — a structural failure that repeats
+    // identically every batch, so tell the queue to latch the pass off
+    // until restart.
     process.exit(err?.dependencyMissing === true ? RUNTIME_UNAVAILABLE_EXIT : 1);
   });

@@ -1483,6 +1483,15 @@ paths:
                             unit:
                               type: string
                               enum: [tracks, albums]
+                            runtime:
+                              type: string
+                              nullable: true
+                              description: |
+                                Discovery pass only — which ONNX Runtime build the last embedding run used:
+                                `native` (the onnxruntime-node addon) or `wasm` (the WebAssembly build shipped
+                                with mStream, used by every standalone bundle and wherever the addon cannot
+                                load; a few times slower per track). Null before the first run. Absent for
+                                other passes.
                             done: { type: integer }
                             remaining:
                               type: integer

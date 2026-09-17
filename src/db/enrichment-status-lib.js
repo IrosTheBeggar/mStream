@@ -350,10 +350,19 @@ function discoveryCoverage() {
   const outcomes = {};
   for (const r of outcomeRows) { outcomes[r.outcome] = r.n; }
 
+  // Which ONNX Runtime build the last pass ran on — 'native' or 'wasm'
+  // (src/db/embedding-runtime.js), written by the worker once it has work;
+  // null before the first pass. The "why is this slow" answer for the UI:
+  // wasm is a few times slower per track than native.
+  const runtimeRow = ddb.prepare(
+    "SELECT value FROM discovery_meta WHERE key = 'embedding_runtime'"
+  ).get();
+
   return {
     scope: 'global',
     unit: 'tracks',
     model,
+    runtime: runtimeRow ? runtimeRow.value : null,
     done,
     remaining,
     outcomes,

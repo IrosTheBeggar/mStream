@@ -72,15 +72,17 @@ const winMeta = canonicalFields(pkg);
 const winVersion = winMeta.version;
 
 const buildArgs = ['build', '--compile', `--target=${t.bun}`];
-// The discovery feature's ML runtime CANNOT be bundled: onnxruntime-node's
-// loader requires a per-(platform,arch) native binary that upstream doesn't
-// ship for every target (darwin-x64 has none at all), and Bun folds
-// process.platform/arch to the COMPILE TARGET's constants, so any target
-// missing its binary fails the build at resolve time. External = left as a
-// runtime import instead; in a standalone binary that import fails cleanly
-// and the discovery worker reports the model runtime as unavailable (the
-// dependencyMissing path in src/db/discovery-features-lib.js). Discovery in
-// Bun bundles awaits a sidecar-staging strategy like iroh's below.
+// The discovery feature's NATIVE ML runtime cannot be bundled: onnxruntime-node
+// loads a per-(platform,arch) addon that upstream doesn't ship for every
+// target (darwin-x64 has none at all), and Bun folds process.platform/arch to
+// the COMPILE TARGET's constants, so any target missing its binary fails the
+// build at resolve time. External = left as a runtime import; and since Bun
+// 1.3.4 a standalone binary doesn't resolve external packages at all, so in a
+// bundle that import can never succeed (issue #999). That is by design now:
+// in a bundle the embedding worker never tries native and runs the
+// WebAssembly build of the same runtime (onnxruntime-web, a regular
+// dependency that bundles like any other JS), whose two runtime files are
+// staged into bin/onnxruntime-web below. Selection: src/db/embedding-runtime.js.
 buildArgs.push('--external', 'onnxruntime-node');
 if (t.win && process.platform === 'win32') {
   buildArgs.push(
@@ -266,6 +268,43 @@ for (const [dir, file] of sidecars) {
     }
   } else {
     console.warn(`  sidecar not found, skipping: bin/${dir}/${file}`);
+  }
+}
+
+// ONNX Runtime's WebAssembly build — the discovery-embedding worker's runtime
+// in every bundle (the native addon can't ship here; see the --external note
+// above). Two files from the onnxruntime-web package: the .wasm module and
+// the .mjs glue its worker threads import. They MUST be real files on disk —
+// the worker threads can't load from Bun's virtual filesystem — and the
+// server resolves them at appRoot/bin/onnxruntime-web (wasmRuntimeDir in
+// src/db/embedding-runtime.js). On macOS the real files live in
+// Contents/Resources with a relative symlink from MacOS/bin, exactly like
+// webapp/: codesign's nested-code scan rejects loose non-Mach-O files under
+// MacOS, and a symlink is sealed as a symlink. CI without the package = a
+// broken release (every bundle would silently lose recommendations), so fail
+// loud there; a local build without node_modules warns and ships without.
+{
+  const ortDist = join(root, 'node_modules', 'onnxruntime-web', 'dist');
+  const files = ['ort-wasm-simd-threaded.wasm', 'ort-wasm-simd-threaded.mjs'];
+  const missing = files.filter((f) => !existsSync(join(ortDist, f)));
+  if (missing.length) {
+    const why = `node_modules/onnxruntime-web/dist is missing ${missing.join(', ')} (run npm ci)`;
+    if (process.env.CI && !process.env.MSTREAM_ALLOW_MISSING_ORT_WASM) {
+      console.error(`  FATAL: ONNX Runtime wasm staging failed for ${key}: ${why} (set MSTREAM_ALLOW_MISSING_ORT_WASM=1 to bundle without it on purpose)`);
+      process.exit(1);
+    }
+    console.warn(`  onnxruntime-web runtime not staged (${why}) — this bundle cannot build recommendations`);
+  } else {
+    const realDir = isMac
+      ? join(stageDir, 'mStream.app', 'Contents', 'Resources', 'onnxruntime-web')
+      : join(contentRoot, 'bin', 'onnxruntime-web');
+    mkdirSync(realDir, { recursive: true });
+    for (const f of files) { cpSync(join(ortDist, f), join(realDir, f)); }
+    if (isMac) {
+      mkdirSync(join(contentRoot, 'bin'), { recursive: true });
+      symlinkSync(join('..', '..', 'Resources', 'onnxruntime-web'), join(contentRoot, 'bin', 'onnxruntime-web'));
+    }
+    console.log(`  staged ONNX Runtime wasm: bin/onnxruntime-web/{${files.join(',')}}`);
   }
 }
 
