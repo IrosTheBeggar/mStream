@@ -10,12 +10,14 @@
 //           library. Fastest (~5 ms per 128-frame patch on a desktop core).
 //           An OPTIONAL npm dependency: upstream ships binaries for Linux
 //           x64/arm64 (glibc), Windows x64/arm64 and Apple Silicon only, so
-//           it is absent on Intel Macs and 32-bit ARM, loads on musl only
-//           through gcompat, and can never ship inside the Bun standalone
-//           binary (the addon can't be embedded, and since Bun 1.3.4 a
-//           compiled binary doesn't resolve external packages either —
-//           issue #999 was exactly that: no bundle, on any platform, could
-//           ever load it).
+//           it is absent on Intel Macs and 32-bit ARM; on musl it does not
+//           load even through gcompat (Alpine 3.24 + gcompat 1.1.0 + ORT
+//           1.29: "Error relocating libonnxruntime.so.1: fcntl64: symbol not
+//           found" — the Docker image's shape, measured 2026-09-17); and it
+//           can never ship inside the Bun standalone binary (the addon can't
+//           be embedded, and since Bun 1.3.4 a compiled binary doesn't
+//           resolve external packages either — issue #999 was exactly that:
+//           no bundle, on any platform, could ever load it).
 //   wasm    onnxruntime-web's WebAssembly build — no native code, so it runs
 //           wherever the JavaScript engine does: every bundle (musl and
 //           Intel Mac included), Node on any CPU, Alpine without gcompat.
