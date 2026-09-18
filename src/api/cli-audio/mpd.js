@@ -71,7 +71,7 @@ export function probeMpd({ target, timeoutMs = 1000 } = {}) {
 
 export class MpdAdapter extends BaseCliAdapter {
   constructor(hostArg) {
-    super('mpd');
+    super();
     const envHost = process.env.MSTREAM_MPD_HOST;
     this.target = parseMpdHost(hostArg || envHost || '');
     this._sock = null;

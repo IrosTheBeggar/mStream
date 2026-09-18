@@ -40,13 +40,6 @@ export function getActiveBackend() {
   return { backend: null, player: null };
 }
 
-// Can a missing player binary be fetched for this platform? Surfaced on the
-// admin info endpoint so the UI can tell "one download away" apart from
-// "not available here" (musl hosts).
-export function playerBinaryFetchable() {
-  return canAutoFetch();
-}
-
 function getRustPort() {
   return config.program.rustPlayerPort || 3333;
 }
@@ -76,7 +69,7 @@ function findRustBinary() {
       // downstream spawn will surface the real error if exec is truly
       // blocked (noexec mount, SELinux). Matches the rust-parser's fix in
       // src/db/task-queue.js.
-      try { fs.chmodSync(bin, 0o755); } catch (_) {}
+      try { fs.chmodSync(bin, 0o755); } catch (_err) { /* read-only volume: the spawn surfaces the real error */ }
       return bin;
     }
   }
@@ -121,9 +114,9 @@ async function bootCliFallback(reason, preferredPlayer = null) {
  *                                to other installed CLI players if MPD isn't
  *                                available.
  *
- * Name is kept for backwards-compatibility with existing callers in
- * src/server.js and src/api/admin.js. Returns a Promise; callers that don't
- * need to await may fire-and-forget.
+ * Still named for the Rust-first preference it implements; it boots whichever
+ * backend applies. Returns a Promise; callers that don't need to await may
+ * fire-and-forget.
  */
 export async function bootRustPlayer() {
   if (rustPlayerProcess) { return; }
@@ -206,8 +199,8 @@ export function killRustPlayer() {
 }
 
 // Proxy a request to the Rust binary and pipe the response back.
-// Exported: cli-audio/index.js's proxyToCli is its drop-in counterpart.
-export function proxyToRust(method, rustPath, body) {
+// cli-audio/index.js's proxyToCli is its drop-in counterpart.
+function proxyToRust(method, rustPath, body) {
   return new Promise((resolve, reject) => {
     const postData = body ? JSON.stringify(body) : '';
     const options = {
@@ -258,7 +251,7 @@ function proxyPlayback(method, rustPath, body) {
 }
 
 // Resolve a virtual path (e.g. "55/song.mp3") to an absolute filesystem path
-export function resolveFilePath(filePath, user) {
+function resolveFilePath(filePath, user) {
   const info = vpath.getVPathInfo(filePath, user);
   return info.fullPath;
 }
@@ -273,7 +266,7 @@ export function isWithin(child, root) {
 }
 
 // Reverse: convert an absolute path back to a virtual path (e.g. "55/song.mp3")
-export function absoluteToVpath(absolutePath) {
+function absoluteToVpath(absolutePath) {
   const normalized = path.normalize(absolutePath);
   const libraries = db.getAllLibraries();
   for (const lib of libraries) {
@@ -285,6 +278,35 @@ export function absoluteToVpath(absolutePath) {
   }
   // If no vpath matches, return the filename as fallback
   return path.basename(absolutePath);
+}
+
+// The /server-remote page is index.html with the browser player swapped for
+// the server-audio client. Pure and exported so a unit test can pin it against
+// the REAL index.html: every step is an exact-string or regex match that
+// silently no-ops when the markup drifts (three visualizer-script strips sat
+// here as dead code for months for exactly that reason). Hiding the sidebar
+// items and buttons that make no sense in this mode is the client's job —
+// mstream.server-audio.js injects that CSS at parse time.
+export function rewriteIndexForServerAudio(page) {
+  return page
+    // Swap mstream.player.js for mstream.server-audio.js, which implements the
+    // same MSTREAMPLAYER interface but routes every command through the
+    // server-playback API. The flag must be set before the client script runs.
+    .replace(
+      '<script src="assets/js/mstream.player.js"></script>',
+      '<script>var serverAudioMode = true;</script>\n  <script src="assets/js/mstream.server-audio.js"></script>'
+    )
+    // Scripts with no role in server-audio mode: the jukebox remote, the QR
+    // pairing code, and the visualizer loader (the client stubs VIZ).
+    .replace('<script src="assets/js/mstream.jukebox.js"></script>', '')
+    .replace('<script defer src="assets/js/lib/qr.js"></script>', '')
+    .replace('<script src="assets/js/t.js"></script>', '')
+    // Replace the visualizer button (the equalizer SVG inside div.grow.flex-center)
+    // with a "Server Audio" badge so the player bar keeps its layout spacer.
+    .replace(
+      /(<div class="grow flex-center">)\s*<svg v-on:click="fadeOverlay"[^]*?<\/svg>\s*(<\/div>)/,
+      '$1<span style="background:#264679;color:#fff;padding:3px 10px;border-radius:4px;font-size:11px;opacity:0.85;">Server Audio</span>$2'
+    );
 }
 
 // Single source of truth for "may this user touch server audio?" — shared
@@ -455,10 +477,10 @@ export function setup(mstream) {
 
   // ── /server-remote page (serves the webapp with serverAudioMode flag) ──
   //
-  // Previously lived in setupBeforeAuth() so anyone could hit the page, but
-  // that let unauthenticated users probe whether server audio was running.
-  // The page only makes sense for users who can actually control playback,
-  // so it now sits behind the same auth + permission checks as the APIs.
+  // Previously registered ahead of the auth wall so anyone could hit the
+  // page, but that let unauthenticated users probe whether server audio was
+  // running. The page only makes sense for users who can actually control
+  // playback, so it sits behind the same auth + permission checks as the APIs.
   mstream.get('/server-remote', async (req, res) => {
     if (!userCanUseServerAudio(req.user)) {
       return res.status(403).json({ error: 'Server audio access disabled for this user' });
@@ -488,44 +510,11 @@ export function setup(mstream) {
     }
 
     try {
-      let page = await fsPromises.readFile(path.join(config.program.webAppDirectory, 'index.html'), 'utf-8');
-      // Replace the browser audio player with the server audio player.
-      // This swaps mstream.player.js for mstream.server-audio.js which
-      // implements the same MSTREAMPLAYER interface but routes all commands
-      // to the Rust audio binary via the server-playback API.
-      // Swap browser audio player for server audio player
-      page = page.replace(
-        '<script src="assets/js/mstream.player.js"></script>',
-        '<script>var serverAudioMode = true;</script>\n  <script src="assets/js/mstream.server-audio.js"></script>'
-      );
-
-      // Strip out scripts not needed in server audio mode
-      page = page.replace('<script src="assets/js/mstream.jukebox.js"></script>', '');
-      page = page.replace('<script defer src="assets/js/lib/qr.js"></script>', '');
-      page = page.replace('<script src="assets/js/t.js"></script>', '');
-      page = page.replace('<script async src="assets/js/lib/butterchurn.min.js"></script>', '');
-      page = page.replace('<script async src="assets/js/lib/butterchurn-presets.min.js"></script>', '');
-      page = page.replace('<script async src="assets/js/lib/butterchurn-presets-extra.js"></script>', '');
-
-      // Remove sidebar items not relevant to server audio mode (Auto DJ, Transcode, Jukebox)
-      page = page.replace(/\s*<div[^>]*onclick="changeView\(autoDjPanel[^]*?<\/span>\s*<\/div>/i, '');
-      page = page.replace(/\s*<div[^>]*onclick="changeView\(setupTranscodePanel[^]*?<\/span>\s*<\/div>/i, '');
-      page = page.replace(/\s*<div[^>]*onclick="changeView\(setupJukeboxPanel[^]*?<\/span>\s*<\/div>/i, '');
-
-      // Replace the visualizer button (div.grow.flex-center with the equalizer SVG)
-      // with a "Server Audio" badge to preserve the layout spacer
-      page = page.replace(
-        /(<div class="grow flex-center">)\s*<svg v-on:click="fadeOverlay"[^]*?<\/svg>\s*(<\/div>)/,
-        '$1<span style="background:#264679;color:#fff;padding:3px 10px;border-radius:4px;font-size:11px;opacity:0.85;">Server Audio</span>$2'
-      );
-
-      res.send(page);
-    } catch (_e) {
+      const page = await fsPromises.readFile(path.join(config.program.webAppDirectory, 'index.html'), 'utf-8');
+      res.send(rewriteIndexForServerAudio(page));
+    } catch (err) {
+      winston.warn(`[server-audio] failed to serve /server-remote: ${err.message}`);
       res.status(500).json({ error: 'Failed to serve server-remote page' });
     }
   });
 }
-
-// Retained so existing call sites in src/server.js keep compiling — /server-
-// remote was moved into setup() so it sits behind auth now.
-export function setupBeforeAuth() {}
