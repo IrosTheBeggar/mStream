@@ -1,0 +1,377 @@
+<!-- @dsCard group="Admin" name="Plug-in row · states" subtitle="On · off · switching · cannot run (probe failed) · still starting · needs setup · per-user with a connected count · switch failed" width="1200" height="1253" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin · plug-in row states</title>
+<style>
+/* mStream admin panel — design mock (not shipped CSS).
+   Values are read off the running admin (webapp/admin: Materialize 1.x cards on
+   #f2f2f2, a #333 sidebar set in Jura, inline Material colours in the views) so
+   a mock sits next to the real Discovery, Torrent and Settings views unnoticed.
+   Everything is prefixed adm- / --adm- so this sheet can share one bundle with
+   the dark Discover-modal cards. */
+:root {
+  --adm-page: #f2f2f2;          /* #content */
+  --adm-card: #ffffff;
+  --adm-ink: rgba(0,0,0,.87);   /* body text */
+  --adm-ink-2: #616161;         /* status lines */
+  --adm-ink-3: #757575;         /* captions */
+  --adm-ink-4: #9e9e9e;         /* hints, brackets */
+  --adm-line: #e0e0e0;          /* boxes, tiles, pill borders */
+  --adm-rule: rgba(0,0,0,.12);  /* table row rules */
+  --adm-link: #039be5;          /* Materialize link */
+  --adm-teal: #26a69a;          /* .btn */
+  --adm-teal-2: #2bbbad;
+  --adm-green: #2e7d32; --adm-red: #c62828; --adm-red-2: #b71c1c; --adm-orange: #e65100; --adm-grey: #9e9e9e;
+  --adm-badge: #ff9800;         /* BETA */
+  --adm-pill: #505061;          /* selected nav item, active pill tab */
+  --adm-side: #333333; --adm-side-ink: #dddddd; --adm-side-h: #eeeeee;
+  --adm-info-bg: #e3f2fd; --adm-info-line: #2196f3;
+  --adm-warn-bg: #fff8e1; --adm-warn-line: #ffa000;
+  --adm-font: "Open Sans", "Open Sans Light", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --adm-nav-font: Jura, "Segoe UI", Roboto, Arial, sans-serif;
+  --adm-mono: ui-monospace, Consolas, "SF Mono", Menlo, monospace;
+  --adm-shadow: 0 2px 2px 0 rgba(0,0,0,.14), 0 3px 1px -2px rgba(0,0,0,.12), 0 1px 5px 0 rgba(0,0,0,.2);
+}
+.adm-page, .adm-page * { box-sizing: border-box; }
+.adm-page { margin: 0; background: var(--adm-page); color: var(--adm-ink); font: 300 15px/1.5 var(--adm-font); -webkit-font-smoothing: antialiased; }
+.adm-page a { color: var(--adm-link); text-decoration: none; cursor: pointer; }
+.adm-page b { font-weight: 700; }
+.adm-page svg { display: block; }
+.adm-page code { font-family: var(--adm-mono); font-size: 12.5px; background: rgba(0,0,0,.06); padding: 0 4px; border-radius: 2px; }
+.adm-page p { margin: 0 0 10px; }
+
+/* ── app frame: sidebar + content ───────────────────── */
+.adm-app { display: flex; align-items: stretch; min-height: 100%; }
+.adm-side { width: 200px; flex-shrink: 0; background: var(--adm-side); color: var(--adm-side-ink); padding-bottom: 16px; }
+.adm-logo { height: 46px; display: flex; align-items: center; justify-content: center; font: 700 24px/1 var(--adm-nav-font); color: #6684b2; letter-spacing: .5px; }
+.adm-logo b { color: #26477b; }
+.adm-side-h { font: 300 16px/24px var(--adm-font); color: var(--adm-side-h); padding: 0 10px; margin-top: 2px; }
+.adm-nav { display: flex; align-items: center; height: 38px; font: 700 16px/1 var(--adm-nav-font); color: var(--adm-side-ink); cursor: pointer; }
+.adm-nav svg { width: 28px; height: 28px; margin: 0 10px; flex-shrink: 0; }
+.adm-nav-on { background: var(--adm-pill); color: #fff; }
+.adm-nav .adm-badge { margin-left: 8px; }
+.adm-content { flex: 1; min-width: 0; padding: 20px 0 60px; }
+.adm-container { width: 70%; max-width: 1280px; min-width: 0; margin: 0 auto; }
+
+/* ── card ───────────────────────────────────────────── */
+.adm-card { background: var(--adm-card); border-radius: 2px; box-shadow: var(--adm-shadow); margin: 0 0 24px; position: relative; }
+.adm-card-content { padding: 24px; }
+.adm-card-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 24px; font-weight: 300; line-height: 32px; margin-bottom: 8px; }
+.adm-card-action { border-top: 1px solid rgba(160,160,160,.2); padding: 16px 24px; display: flex; justify-content: flex-end; gap: 10px; align-items: center; }
+.adm-lead { color: var(--adm-ink); margin: 0 0 12px; }
+.adm-sub { font-size: .9em; color: var(--adm-ink-3); }
+.adm-current { margin: 14px 0 12px; }
+
+/* ── buttons, bracket links, badges ─────────────────── */
+.adm-btn { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 16px; border-radius: 2px; border: 0; cursor: pointer;
+           background: var(--adm-teal); color: #fff; font: 400 14px/36px var(--adm-font); letter-spacing: .5px; text-transform: uppercase;
+           box-shadow: 0 2px 2px 0 rgba(0,0,0,.14), 0 3px 1px -2px rgba(0,0,0,.12), 0 1px 5px 0 rgba(0,0,0,.2); white-space: nowrap; }
+.adm-page a.adm-btn { color: #fff; }
+.adm-btn:hover { background: var(--adm-teal-2); }
+.adm-btn-green { background: #4caf50; }
+.adm-btn-flat, .adm-page a.adm-btn-flat { background: transparent; color: var(--adm-ink-2); box-shadow: none; }
+.adm-btn-flat:hover { background: rgba(0,0,0,.06); }
+.adm-btn.is-disabled { background: #dfdfdf; color: #9f9f9f; box-shadow: none; cursor: default; }
+.adm-page a.adm-btn.is-disabled { color: #9f9f9f; }
+.adm-btn svg { width: 16px; height: 16px; }
+.adm-br { color: var(--adm-ink-4); white-space: nowrap; font-size: .9em; }         /* [<a>edit</a>] */
+.adm-br a.adm-danger, .adm-page a.adm-danger { color: var(--adm-red-2); }
+.adm-badge { display: inline-block; background: var(--adm-badge); color: #fff; font: 700 10.4px/1.5 var(--adm-font); letter-spacing: .4px; padding: 1px 6px; border-radius: 3px; text-transform: uppercase; vertical-align: middle; }
+.adm-badge-lg { font-size: 12px; padding: 3px 8px; }
+.adm-tag { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--adm-ink-2); border: 1px solid var(--adm-line); border-radius: 2px; padding: 0 6px; line-height: 18px; white-space: nowrap; }
+.adm-tag-user { color: #4527a0; border-color: #d1c4e9; background: #f6f2fc; }
+.adm-tag-new { color: var(--adm-orange); border-color: #ffccbc; background: #fff6f2; }
+
+/* ── status dot + line ──────────────────────────────── */
+.adm-status { display: inline-flex; align-items: center; gap: 7px; font-size: .9em; color: var(--adm-ink-2); flex-wrap: wrap; }
+.adm-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--adm-grey); flex-shrink: 0; display: inline-block; }
+.adm-dot-ok { background: var(--adm-green); } .adm-dot-warn { background: var(--adm-orange); } .adm-dot-err { background: var(--adm-red); }
+.adm-ok { color: var(--adm-green); font-weight: 600; } .adm-warn { color: var(--adm-orange); font-weight: 600; } .adm-err { color: var(--adm-red); font-weight: 600; } .adm-off { font-weight: 600; }
+
+/* ── boxed header, pill tabs, stat tiles (Discovery view) ── */
+.adm-box { border: 1px solid var(--adm-line); border-radius: 2px; padding: 16px 20px; margin-bottom: 14px; }
+.adm-box-h { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.adm-box-act { display: flex; gap: 12px; font-size: .9em; flex-shrink: 0; }
+.adm-pills { display: flex; gap: 8px; flex-wrap: wrap; }
+.adm-pill { padding: 6px 16px; border-radius: 2px; font-size: .85em; font-weight: 600; letter-spacing: .4px; cursor: pointer; color: var(--adm-ink-2); border: 1px solid var(--adm-line); background: transparent; line-height: 1.5; }
+.adm-pill-on { background: var(--adm-pill); color: #fff; border-color: var(--adm-pill); }
+.adm-pill small { font-weight: 400; opacity: .8; margin-left: 4px; font-size: 1em; }
+.adm-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.adm-tile { border: 1px solid var(--adm-line); border-radius: 2px; padding: 12px 14px; }
+.adm-tile-n { font-size: 1.3em; font-weight: 700; color: #212121; }
+.adm-tile-n small { font-size: .7em; color: var(--adm-ink-3); font-weight: 400; }
+.adm-tile-l { font-size: .85em; color: var(--adm-ink-3); margin-top: 2px; }
+.adm-tile-s { font-size: .8em; color: var(--adm-ink-4); margin-top: 4px; }
+
+/* ── settings rows ("Label: value … [edit]") and tables ── */
+.adm-rows { width: 100%; border-collapse: collapse; }
+.adm-rows td { padding: 15px 5px; border-bottom: 1px solid var(--adm-rule); vertical-align: middle; }
+.adm-rows td:last-child { text-align: right; white-space: nowrap; width: 1%; }
+.adm-rows .adm-note { display: block; font-size: .85em; color: var(--adm-ink-3); margin-top: 2px; }
+.adm-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.adm-table th { text-align: left; font-weight: 700; padding: 12px 5px; border-bottom: 1px solid var(--adm-rule); white-space: nowrap; }
+.adm-table td { padding: 11px 5px; border-bottom: 1px solid var(--adm-rule); vertical-align: middle; }
+.adm-table tr:last-child td { border-bottom: 0; }
+.adm-table .adm-num { text-align: right; white-space: nowrap; }
+.adm-table .adm-muted td, .adm-muted { color: var(--adm-ink-4); }
+.adm-table .adm-detail td { padding-top: 0; font-size: 12.5px; color: var(--adm-ink-2); }
+.adm-table .adm-detail code { white-space: pre-wrap; display: block; padding: 8px 10px; }
+
+/* ── form controls (Materialize look) ───────────────── */
+.adm-switch { display: inline-flex; align-items: center; cursor: pointer; flex-shrink: 0; }
+.adm-switch i { position: relative; display: inline-block; width: 36px; height: 14px; border-radius: 15px; background: rgba(0,0,0,.38); }
+.adm-switch i::after { content: ""; position: absolute; top: -3px; left: 0; width: 20px; height: 20px; border-radius: 50%; background: #f1f1f1; box-shadow: 0 3px 1px -2px rgba(0,0,0,.2), 0 2px 2px 0 rgba(0,0,0,.14), 0 1px 5px 0 rgba(0,0,0,.12); }
+.adm-switch-on i { background: #84c7c1; }
+.adm-switch-on i::after { left: 16px; background: var(--adm-teal); }
+.adm-switch-busy i { opacity: .5; }
+.adm-check { display: inline-block; width: 20px; height: 20px; border: 2px solid #5a5a5a; border-radius: 2px; position: relative; vertical-align: middle; cursor: pointer; }
+.adm-check-on { background: var(--adm-teal); border-color: var(--adm-teal); }
+.adm-check-on::after { content: ""; position: absolute; left: 5px; top: 1px; width: 6px; height: 11px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(40deg); }
+.adm-check-off { border-color: #bdbdbd; background: #f3f3f3; cursor: default; }
+.adm-radio { display: flex; align-items: flex-start; gap: 10px; padding: 4px 0; cursor: pointer; }
+.adm-radio > i { width: 16px; height: 16px; border-radius: 50%; border: 2px solid #5a5a5a; flex-shrink: 0; margin-top: 3px; position: relative; }
+.adm-radio-on > i { border-color: var(--adm-teal); }
+.adm-radio-on > i::after { content: ""; position: absolute; inset: 2px; border-radius: 50%; background: var(--adm-teal); }
+.adm-radio span { color: var(--adm-ink-3); }
+.adm-radio b { color: var(--adm-ink); }
+.adm-radio-off { cursor: default; opacity: .55; }
+.adm-field { margin: 0 0 18px; }
+.adm-field > label { display: block; font-size: 12.8px; color: var(--adm-ink-4); margin-bottom: 2px; }
+.adm-input { display: flex; align-items: center; gap: 8px; min-height: 40px; border-bottom: 1px solid #9e9e9e; font-size: 16px; color: var(--adm-ink); padding: 0 0 2px; }
+.adm-input-focus { border-bottom: 2px solid var(--adm-teal); }
+.adm-input-err { border-bottom: 2px solid #f44336; }
+.adm-input .adm-mono, .adm-mono { font-family: var(--adm-mono); font-size: 14px; }
+.adm-input .adm-unit { margin-left: auto; color: var(--adm-ink-4); font-size: 14px; }
+.adm-input .adm-caret { display: inline-block; width: 1px; height: 18px; background: var(--adm-ink); margin-left: 1px; }
+.adm-select { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 40px; border: 1px solid #f2f2f2; border-bottom: 1px solid #9e9e9e; background: rgba(255,255,255,.9); font-size: 15px; padding: 0 8px; max-width: 320px; }
+.adm-select svg { width: 14px; height: 14px; color: var(--adm-ink-2); }
+.adm-help { font-size: 12px; color: var(--adm-ink-3); margin-top: 4px; line-height: 1.4; }
+.adm-help-err { color: #f44336; }
+.adm-help-ok { color: var(--adm-green); }
+
+/* ── callouts ───────────────────────────────────────── */
+.adm-callout { background: var(--adm-info-bg); border-left: 3px solid var(--adm-info-line); padding: 8px 12px; font-size: .85em; margin: 10px 0; line-height: 1.45; }
+.adm-callout-warn { background: var(--adm-warn-bg); border-left-color: var(--adm-warn-line); }
+.adm-callout-err { background: #ffebee; border-left-color: var(--adm-red); }
+
+/* ── plug-in list ───────────────────────────────────── */
+.adm-group { display: flex; align-items: baseline; gap: 10px; margin: 18px 0 2px; padding-bottom: 6px; border-bottom: 1px solid var(--adm-line); }
+.adm-group:first-child { margin-top: 6px; }
+.adm-group b { font-size: 13px; letter-spacing: .6px; text-transform: uppercase; color: var(--adm-ink-2); }
+.adm-group span { font-size: .85em; color: var(--adm-ink-4); }
+.adm-plugin { display: flex; align-items: flex-start; gap: 16px; padding: 14px 5px; border-bottom: 1px solid var(--adm-rule); }
+.adm-plugin:last-child { border-bottom: 0; }
+.adm-plugin-sw { padding-top: 5px; }
+.adm-plugin-body { flex: 1; min-width: 0; }
+.adm-plugin-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.adm-plugin-h b { font-size: 15.5px; }
+.adm-plugin-d { font-size: .9em; color: var(--adm-ink-2); margin-top: 2px; }
+.adm-plugin-meta { display: flex; align-items: center; gap: 6px 14px; flex-wrap: wrap; margin-top: 6px; font-size: .85em; color: var(--adm-ink-3); }
+.adm-plugin-meta svg { width: 13px; height: 13px; display: inline-block; vertical-align: -2px; margin-right: 4px; color: var(--adm-ink-4); }
+.adm-plugin-act { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; padding-top: 2px; }
+.adm-plugin-off .adm-plugin-h b, .adm-plugin-off .adm-plugin-d { color: var(--adm-ink-4); }
+.adm-reason { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; padding: 8px 10px; background: #fff3e0; border-left: 3px solid var(--adm-orange); font-size: .85em; color: #5d4037; }
+.adm-reason code { background: rgba(0,0,0,.07); }
+.adm-reason-err { background: #ffebee; border-left-color: var(--adm-red); color: #6d1b1b; }
+
+/* ── modal (Materialize .modal) ─────────────────────── */
+.adm-modal { background: #fafafa; border-radius: 2px; box-shadow: 0 24px 38px 3px rgba(0,0,0,.14), 0 9px 46px 8px rgba(0,0,0,.12), 0 11px 15px -7px rgba(0,0,0,.2); width: 100%; max-width: 560px; }
+.adm-modal-content { padding: 24px; }
+.adm-modal-content h4 { font-size: 26px; font-weight: 300; margin: 0 0 16px; line-height: 1.2; }
+.adm-modal-footer { padding: 4px 6px; height: 56px; display: flex; justify-content: flex-end; align-items: center; gap: 4px; background: #fafafa; border-top: 1px solid rgba(0,0,0,.1); }
+.adm-progress { height: 4px; background: #acece6; border-radius: 2px; overflow: hidden; position: relative; }
+.adm-progress i { position: absolute; top: 0; bottom: 0; left: 0; background: var(--adm-teal); }
+.adm-progress-indet i { width: 35%; animation: adm-indet 1.6s ease-in-out infinite; }
+@keyframes adm-indet { 0% { left: -35%; } 100% { left: 100%; } }
+.adm-toast { display: inline-flex; align-items: center; gap: 10px; background: #323232; color: #fff; font-size: 14px; padding: 10px 18px; border-radius: 2px; box-shadow: var(--adm-shadow); }
+.adm-toast-ok { border-left: 4px solid #4caf50; } .adm-toast-err { border-left: 4px solid #f44336; }
+
+/* ── design-spec scaffolding (not part of the UI) ───── */
+.spec { display: flex; gap: 28px; align-items: flex-start; padding: 28px; }
+.spec-notes { width: 320px; flex-shrink: 0; font-size: 13px; color: var(--adm-ink-2); line-height: 1.5; }
+.spec-notes h1 { font-size: 17px; font-weight: 600; color: #212121; margin: 0 0 6px; }
+.spec-notes h2 { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--adm-ink-3); margin: 18px 0 6px; font-weight: 700; }
+.spec-notes p { margin: 0 0 8px; }
+.spec-notes ol { margin: 0; padding: 0; list-style: none; }
+.spec-notes li { display: flex; gap: 10px; margin-bottom: 9px; }
+.co { display: inline-flex; align-items: center; justify-content: center; width: 19px; height: 19px; border-radius: 50%; background: #d81b60; color: #fff; font: 700 11px/1 var(--adm-font); flex-shrink: 0; }
+.co-pin { position: absolute; left: -28px; top: 22px; }
+.co-in { position: absolute; left: -24px; top: 14px; }
+.frame { border: 1px solid #cfcfcf; border-radius: 4px; overflow: hidden; background: var(--adm-page); flex: 1; min-width: 0; }
+.page-h { padding: 24px 24px 0; }
+.page-h h1 { font-size: 18px; font-weight: 600; color: #212121; margin: 0 0 4px; }
+.page-h p { margin: 0; font-size: 13px; color: var(--adm-ink-2); max-width: 980px; line-height: 1.5; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 24px; padding: 24px; align-items: start; }
+.grid-1 { grid-template-columns: minmax(0, 1fr); }
+.cell h3 { margin: 0 0 8px; font-size: 13px; font-weight: 700; color: var(--adm-ink-2); letter-spacing: .02em; }
+.cell h3 small { font-weight: 400; color: var(--adm-ink-4); margin-left: 6px; font-size: 1em; }
+.cell > .adm-card:last-child { margin-bottom: 0; }
+.stage { padding: 24px; display: flex; justify-content: center; align-items: flex-start; }
+.dashed { border: 1px dashed #bdbdbd; border-radius: 4px; padding: 14px 16px; font-size: 13px; color: var(--adm-ink-2); line-height: 1.5; background: #fafafa; }
+.dashed b { color: #212121; }
+.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.swatch { border: 1px solid var(--adm-line); border-radius: 2px; overflow: hidden; background: #fff; font-size: 12px; }
+.swatch i { display: block; height: 38px; }
+.swatch span { display: block; padding: 5px 8px; color: var(--adm-ink-2); }
+.swatch code { background: none; padding: 0; font-size: 11px; color: var(--adm-ink-4); display: block; }
+.api { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.api th { text-align: left; font-weight: 700; padding: 6px 8px; border-bottom: 1px solid var(--adm-rule); color: var(--adm-ink-2); }
+.api td { padding: 6px 8px; border-bottom: 1px solid var(--adm-rule); vertical-align: top; }
+.api code { white-space: nowrap; }
+</style>
+</head>
+<body class="adm-page">
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <!-- sidebar glyphs (stroke icons, coloured per item like the real admin nav) -->
+  <symbol id="a-users" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></g></symbol>
+  <symbol id="a-folder" viewBox="0 0 24 24"><path fill="currentColor" d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></symbol>
+  <symbol id="a-bolt" viewBox="0 0 24 24"><polygon fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></symbol>
+  <symbol id="a-nodes" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></g></symbol>
+  <symbol id="a-plug" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6"/><path d="M6 8h12v4a6 6 0 0 1-12 0V8z"/><path d="M12 18v4"/></g></symbol>
+  <symbol id="a-cast" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></g></symbol>
+  <symbol id="a-download" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></g></symbol>
+  <symbol id="a-link2" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7h3a5 5 0 0 1 0 10h-3m-6 0H6A5 5 0 0 1 6 7h3"/><line x1="8" y1="12" x2="16" y2="12"/></g></symbol>
+  <symbol id="a-info" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="12" y1="11" x2="12" y2="16"/><line x1="12" y1="8" x2="12.01" y2="8"/></g></symbol>
+  <symbol id="a-gear" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></g></symbol>
+  <symbol id="a-db" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></g></symbol>
+  <symbol id="a-log" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></g></symbol>
+  <symbol id="a-shield" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
+  <symbol id="a-menu" viewBox="0 0 24 24"><path fill="currentColor" d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></symbol>
+  <!-- UI glyphs -->
+  <symbol id="a-check" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></symbol>
+  <symbol id="a-warn" viewBox="0 0 24 24"><path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></symbol>
+  <symbol id="a-close" viewBox="0 0 24 24"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></symbol>
+  <symbol id="a-chev" viewBox="0 0 24 24"><path fill="currentColor" d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></symbol>
+  <symbol id="a-eye" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></g></symbol>
+  <symbol id="a-row" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/></g></symbol>
+  <symbol id="a-sweep" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></g></symbol>
+  <symbol id="a-refresh" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></g></symbol>
+</svg>
+<div class="page-h">
+  <h1>A plug-in row — every state</h1>
+  <p>One row per registered plug-in, from <code>listPlugins({ includeDisabled: true })</code>: <code>enabled</code> is the switch, <code>available</code> and <code>reason</code> are the availability probe. The switch posts to <code>POST /api/v1/admin/config/discovery-plugins { name, enabled }</code>, which answers with the whole list, so the header sentence and every row redraw from one response. Status words are lower-case, as in the Discovery view.</p>
+</div>
+<div class="grid">
+
+  <div class="cell"><h3>On<small>enabled · probe passing (or no probe)</small></h3>
+    <div class="adm-card"><div class="adm-card-content" style="padding:6px 24px">
+      <div class="adm-plugin">
+        <span class="adm-plugin-sw"><span class="adm-switch adm-switch-on"><i></i></span></span>
+        <div class="adm-plugin-body">
+          <div class="adm-plugin-h"><b>Preview on Deezer</b><span class="adm-tag">preview</span></div>
+          <div class="adm-plugin-d">A 30-second clip from Deezer’s public catalogue, matched by ISRC or by artist, title and length.</div>
+        </div>
+        <div class="adm-plugin-act"><span class="adm-status"><span class="adm-dot adm-dot-ok"></span><span class="adm-ok">on</span></span></div>
+      </div>
+    </div></div>
+  </div>
+
+  <div class="cell"><h3>Off<small>enabled = false · the text greys out</small></h3>
+    <div class="adm-card"><div class="adm-card-content" style="padding:6px 24px">
+      <div class="adm-plugin adm-plugin-off">
+        <span class="adm-plugin-sw"><span class="adm-switch"><i></i></span></span>
+        <div class="adm-plugin-body">
+          <div class="adm-plugin-h"><b>Preview on Deezer</b><span class="adm-tag">preview</span></div>
+          <div class="adm-plugin-d">A 30-second clip from Deezer’s public catalogue, matched by ISRC or by artist, title and length.</div>
+        </div>
+        <div class="adm-plugin-act"><span class="adm-status"><span class="adm-dot"></span><span class="adm-off">off</span></span></div>
+      </div>
+    </div></div>
+  </div>
+
+  <div class="cell"><h3>Switching<small>request in flight · the switch is inert · then a toast</small></h3>
+    <div class="adm-card"><div class="adm-card-content" style="padding:6px 24px">
+      <div class="adm-plugin">
+        <span class="adm-plugin-sw"><span class="adm-switch adm-switch-on adm-switch-busy"><i></i></span></span>
+        <div class="adm-plugin-body">
+          <div class="adm-plugin-h"><b>Play from a paired server</b><span class="adm-tag">play</span></div>
+          <div class="adm-plugin-d">Streams a “From your peers” song through this server’s federation proxy.</div>
+        </div>
+        <div class="adm-plugin-act"><span class="adm-status"><span class="adm-dot"></span><span>saving…</span></span></div>
+      </div>
+    </div></div>
+    <div style="margin-top:10px"><span class="adm-toast adm-toast-ok">Play from a paired server: on</span></div>
+  </div>
+
+  <div class="cell"><h3>Switch failed<small>the switch springs back · the server’s message in the toast</small></h3>
+    <div class="adm-card"><div class="adm-card-content" style="padding:6px 24px">
+      <div class="adm-plugin adm-plugin-off">
+        <span class="adm-plugin-sw"><span class="adm-switch"><i></i></span></span>
+        <div class="adm-plugin-body">
+          <div class="adm-plugin-h"><b>YouTube</b><span class="adm-tag">acquire</span></div>
+          <div class="adm-plugin-d">Searches YouTube, scores the uploads against the recommendation and saves the best one’s audio into Discover downloads with yt-dlp.</div>
+        </div>
+        <div class="adm-plugin-act"><span class="adm-status"><span class="adm-dot"></span><span class="adm-off">off</span></span><span class="adm-br">[<a>settings</a>]</span></div>
+      </div>
+    </div></div>
+    <div style="margin-top:10px"><span class="adm-toast adm-toast-err">Could not switch YouTube on · the config file is not writable</span></div>
+  </div>
+
+  <div class="cell"><h3>Cannot run<small>enabled · available = false · reason = the probe’s own words</small></h3>
+    <div class="adm-card"><div class="adm-card-content" style="padding:6px 24px">
+      <div class="adm-plugin">
+        <span class="adm-plugin-sw"><span class="adm-switch adm-switch-on"><i></i></span></span>
+        <div class="adm-plugin-body">
+          <div class="adm-plugin-h"><b>YouTube</b><span class="adm-tag">acquire</span></div>
+          <div class="adm-plugin-d">Searches YouTube, scores the uploads against the recommendation and saves the best one’s audio into Discover downloads with yt-dlp.</div>
+          <div class="adm-reason"><svg width="16" height="16" style="color:var(--adm-orange);flex-shrink:0;margin-top:1px"><use href="#a-warn"/></svg><span><b>Cannot run:</b> yt-dlp not found (<code>yt-dlp</code>). Install it or point the plug-in at the binary. Until then nobody sees a YouTube row.</span></div>
+        </div>
+        <div class="adm-plugin-act"><span class="adm-status"><span class="adm-dot adm-dot-warn"></span><span class="adm-warn">cannot run</span></span><span class="adm-br">[<a>settings</a>]</span><span class="adm-br">[<a>check again</a>]</span></div>
+      </div>
+    </div></div>
+  </div>
+
+  <div class="cell"><h3>Still starting<small>the same state with a reason that fixes itself · ffmpeg is fetched on first boot</small></h3>
+    <div class="adm-card"><div class="adm-card-content" style="padding:6px 24px">
+      <div class="adm-plugin">
+        <span class="adm-plugin-sw"><span class="adm-switch adm-switch-on"><i></i></span></span>
+        <div class="adm-plugin-body">
+          <div class="adm-plugin-h"><b>YouTube</b><span class="adm-tag">acquire</span></div>
+          <div class="adm-reason"><svg width="16" height="16" style="color:var(--adm-orange);flex-shrink:0;margin-top:1px"><use href="#a-warn"/></svg><span><b>Cannot run yet:</b> ffmpeg is not available yet. The server is still fetching it; this clears by itself. A failing probe is re-checked every 5 seconds.</span></div>
+        </div>
+        <div class="adm-plugin-act"><span class="adm-status"><span class="adm-dot adm-dot-warn"></span><span class="adm-warn">cannot run</span></span><span class="adm-br">[<a>check again</a>]</span></div>
+      </div>
+    </div></div>
+  </div>
+
+  <div class="cell"><h3>Needs setup<span class="adm-tag adm-tag-new" style="margin-left:8px">planned</span><small>a server-scoped hand-off with no target yet · the switch is inert until it is configured</small></h3>
+    <div class="adm-card"><div class="adm-card-content" style="padding:6px 24px">
+      <div class="adm-plugin adm-plugin-off">
+        <span class="adm-plugin-sw"><span class="adm-switch adm-switch-busy"><i></i></span></span>
+        <div class="adm-plugin-body">
+          <div class="adm-plugin-h"><b>Webhook</b><span class="adm-tag">handoff</span></div>
+          <div class="adm-plugin-d">Posts the recommendation as JSON to a URL you choose (Home Assistant, n8n, a script).</div>
+        </div>
+        <div class="adm-plugin-act"><span class="adm-status"><span class="adm-dot"></span><span class="adm-off">needs setup</span></span><span class="adm-br">[<a>set up</a>]</span></div>
+      </div>
+    </div></div>
+  </div>
+
+  <div class="cell"><h3>Per user, with credentials<span class="adm-tag adm-tag-new" style="margin-left:8px">planned</span><small>the admin switches it on; each user connects their own account</small></h3>
+    <div class="adm-card"><div class="adm-card-content" style="padding:6px 24px">
+      <div class="adm-plugin">
+        <span class="adm-plugin-sw"><span class="adm-switch adm-switch-on"><i></i></span></span>
+        <div class="adm-plugin-body">
+          <div class="adm-plugin-h"><b>ListenBrainz</b><span class="adm-tag">handoff</span><span class="adm-tag adm-tag-user">per user</span></div>
+          <div class="adm-plugin-d">Saves the recommendation to the user’s “From mStream” playlist on ListenBrainz.</div>
+          <div class="adm-plugin-meta"><span><svg><use href="#a-users"/></svg>2 of 8 users connected</span></div>
+        </div>
+        <div class="adm-plugin-act"><span class="adm-status"><span class="adm-dot adm-dot-ok"></span><span class="adm-ok">on</span></span></div>
+      </div>
+    </div></div>
+  </div>
+
+  <div class="cell" style="grid-column:1 / -1"><h3>Anatomy and rules</h3>
+    <div class="dashed">
+      <b>Left:</b> the switch (Materialize <code>.switch</code>, as on Federation → “Accept requests”). <b>Middle:</b> title, capability tag (<code>links · preview · play · acquire · handoff</code>), scope tag only when it is <code>per user</code>, and the registry’s one-line description. A per-user plug-in with credentials adds one grey line: how many accounts connected. <b>Right:</b> status, then bracket links: <code>[settings]</code> only for a plug-in that has admin settings, <code>[check again]</code> only while it cannot run.
+      <br><br><b>Status words:</b> <span class="adm-ok">on</span> · <span class="adm-off">off</span> · <span class="adm-warn">cannot run</span> · <span class="adm-off">needs setup</span> · saving…. The header sentence counts them: “5 of 6 plug-ins on, 1 cannot run” turns the dot orange; everything on and running is green; nothing on is grey.
+      <br><br><b>Order:</b> groups follow the recommendation window top to bottom — Listen, Get it, Send to, Find elsewhere — so the list reads like the window it configures. Inside a group, registry order. A group with no plug-in installed is not drawn.
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
