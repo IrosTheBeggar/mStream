@@ -426,14 +426,35 @@ export async function editDiscoveryPlugin(name, enabled) {
   config.program.discoveryPlugins[name] = { ...(config.program.discoveryPlugins[name] || {}), enabled };
 }
 
-// Patch the discovery job runner's settings (gate, concurrency, retention)
-// — live: the gate is read per request, the cap per runner tick. The caller
-// has Joi-validated `patch`; this persists only the keys it names.
-export async function editDiscoveryJobs(patch) {
+// A discovery plug-in's own settings (yt-dlp's binary, the iTunes storefront)
+// — live: plug-ins read config.program per call. The caller has validated
+// `settings` against the plug-in's config schema and stripped `enabled`
+// (that is the switch above); only the keys it names are written.
+export async function editDiscoveryPluginSettings(name, settings) {
   const loadConfig = await loadFile(config.configFile);
-  loadConfig.discoveryJobs = { ...(loadConfig.discoveryJobs || {}), ...patch };
+  loadConfig.discoveryPlugins = loadConfig.discoveryPlugins || {};
+  loadConfig.discoveryPlugins[name] = { ...(loadConfig.discoveryPlugins[name] || {}), ...settings };
   await saveFile(loadConfig, config.configFile);
-  config.program.discoveryJobs = { ...(config.program.discoveryJobs || {}), ...patch };
+  config.program.discoveryPlugins = config.program.discoveryPlugins || {};
+  config.program.discoveryPlugins[name] = { ...(config.program.discoveryPlugins[name] || {}), ...settings };
+}
+
+// Patch the discovery job runner's settings (gate, concurrency, retention)
+// — live: the gate is read per request, the cap per runner tick, the
+// downloads clock per retention pass. The caller has Joi-validated `patch`;
+// this persists only the keys it names. `downloads` is merged one level
+// down, so naming its retention never drops its folder.
+export async function editDiscoveryJobs(patch) {
+  const { downloads, ...flat } = patch;
+  const merged = (cur) => {
+    const next = { ...(cur || {}), ...flat };
+    if (downloads) { next.downloads = { ...((cur && cur.downloads) || {}), ...downloads }; }
+    return next;
+  };
+  const loadConfig = await loadFile(config.configFile);
+  loadConfig.discoveryJobs = merged(loadConfig.discoveryJobs);
+  await saveFile(loadConfig, config.configFile);
+  config.program.discoveryJobs = merged(config.program.discoveryJobs);
 }
 
 // Per-user half of the discovery acquisition gate (V74 users.allow_discovery_jobs).

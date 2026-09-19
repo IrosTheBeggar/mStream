@@ -30,24 +30,12 @@ import { removeDownloadedTrack } from '../db/insert-downloaded-track.js';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const BOOT_DELAY_MS = 90 * 1000;
 const INTERVAL_MS = 6 * 60 * 60 * 1000;
-const PARTIAL_RE = /\.(part|ytdl|temp)$/i;
 
 let bootTimer = null;
 let intervalTimer = null;
 let running = false;
-
-async function walk(dir, out = []) {
-  let entries;
-  try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch (err) {
-    if (err.code !== 'ENOENT') { winston.warn(`discovery retention: cannot read ${dir}: ${err.message}`); }
-    return out;
-  }
-  for (const e of entries) {
-    const full = path.join(dir, e.name);
-    if (e.isDirectory()) { await walk(full, out); } else if (e.isFile()) { out.push(full); }
-  }
-  return out;
-}
+let startedAt = null;   // when start() armed the timers
+let lastRun = null;     // { at, removedFiles, removedPartials, skipped, prunedJobs }
 
 // Deepest first, never the root itself.
 async function removeEmptyDirs(root, dir = root) {
@@ -70,11 +58,11 @@ export async function sweep({ now = Date.now() } = {}) {
   const days = downloads.retentionDays();
   if (lib) {
     const cutoff = days > 0 ? now - days * DAY_MS : null;
-    for (const file of await walk(lib.root_path)) {
+    for (const file of await downloads.walkFiles(lib.root_path)) {
       let stat;
       try { stat = await fs.stat(file); } catch (_e) { continue; }   // went away under us
       const name = path.basename(file);
-      const partial = PARTIAL_RE.test(name) || name.startsWith('.mstream-copy-');
+      const partial = downloads.isPartialFile(name);
       const expired = partial ? stat.mtimeMs < now - DAY_MS : (cutoff !== null && stat.mtimeMs < cutoff);
       if (!expired) { continue; }
       try {
@@ -100,7 +88,22 @@ export async function sweep({ now = Date.now() } = {}) {
     winston.info(`discovery retention: removed ${out.removedFiles} expired download(s) and ${out.removedPartials} partial file(s), `
       + `pruned ${out.prunedJobs} job row(s)${out.skipped ? `, ${out.skipped} file(s) in use left for the next pass` : ''}`);
   }
+  lastRun = { at: Date.now(), ...out };
   return out;
+}
+
+// For the admin panel: is a pass running, what did the last one do, and when
+// is the next one due. The interval ticks from start(); the first pass is the
+// boot delay.
+export function status({ now = Date.now() } = {}) {
+  let nextRunAt = null;
+  if (startedAt !== null) {
+    const firstAt = startedAt + BOOT_DELAY_MS;
+    nextRunAt = now < firstAt
+      ? firstAt
+      : startedAt + (Math.floor((now - startedAt) / INTERVAL_MS) + 1) * INTERVAL_MS;
+  }
+  return { running, lastRun, nextRunAt, intervalMs: INTERVAL_MS };
 }
 
 async function safeRun() {
@@ -111,6 +114,7 @@ async function safeRun() {
 
 export function start() {
   stop();
+  startedAt = Date.now();
   bootTimer = setTimeout(safeRun, BOOT_DELAY_MS);
   intervalTimer = setInterval(safeRun, INTERVAL_MS);
   if (bootTimer.unref) { bootTimer.unref(); }
@@ -120,4 +124,5 @@ export function start() {
 export function stop() {
   if (bootTimer) { clearTimeout(bootTimer); bootTimer = null; }
   if (intervalTimer) { clearInterval(intervalTimer); intervalTimer = null; }
+  startedAt = null;
 }

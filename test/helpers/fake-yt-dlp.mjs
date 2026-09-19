@@ -39,6 +39,11 @@ function entryFor(s, id) {
 
 const s = script();
 
+if (has('--version')) {
+  process.stdout.write(`${s.version || '2026.02.04'}\n`);
+  process.exit(0);
+}
+
 if (has('--dump-json')) {
   if (/^ytsearch\d*:/i.test(url)) {
     const q = url.replace(/^ytsearch\d*:/i, '').toLowerCase();

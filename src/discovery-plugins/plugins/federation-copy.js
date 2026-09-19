@@ -235,7 +235,7 @@ async function run(ctx) {
 export default Object.freeze({
   name: NAME,
   title: 'Add to your collection',
-  description: 'Copies a paired peer\'s song into your collection destination (library · base folder · layout such as {{ARTIST}}/{{ALBUM}}), through the same stream proxy playback uses, and adds it to the library at once. Needs upload rights.',
+  description: 'Copies a paired server\'s song into the user\'s own library folder (their collection destination) and adds it to the library at once. Needs upload rights; never overwrites; skips songs they already have.',
   capabilities: [CAPABILITIES.ACQUIRE],
   scope: SCOPES.USER,
   concurrency: 1,

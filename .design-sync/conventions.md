@@ -55,3 +55,65 @@ No provider or wrapper is needed. Load `styles.css`; the page background is the 
 ```
 
 Rules the cards encode: a row exists only when the plug-in or service behind it exists and is configured — nothing is ever shown locked or greyed; no action bar and no footer; peer rows open on the Federation view with a Federation | Plug-Ins selector, network rows have no selector; the option row itself shows job state (queued, running with `progress`, done, failed) rather than opening anything else; previews, downloads, copies and hand-offs only start on an explicit press; "collection" means the user's own library, and every Add row copies into the destination the `dm-dest` bar shows (default `{{ARTIST}}/{{ALBUM}}`, editable in place — see the CollectionDestination card). See the FlowAndRules card before adding a section.
+
+---
+
+# Second set: the admin panel (group `Admin`, light)
+
+Two card sets share this project and they never mix. The **Discover window** above is the player: dark, `dm-*` / `opt` / `btn` classes, un-prefixed tokens. The **admin panel** (`webapp/admin`, Vue 2 on Materialize 1.x) is light, and everything it uses is prefixed: tokens `--adm-*`, classes `adm-*`. Pick the set by the screen you are drawing; never put a `dm-*` class on an admin screen or an `adm-*` class in the window.
+
+## Admin setup
+
+Put `class="adm-page"` on `<body>` (page ground `--adm-page`, Open Sans Light 15 px, links `--adm-link`). A full screen is `adm-app` > `adm-side` (the `#333` sidebar: `adm-logo`, `adm-side-h` group labels, `adm-nav` items with a 28 px icon, the selected one `adm-nav-on`) + `adm-content` > `adm-container`. A view is a column of cards.
+
+## Admin tokens
+
+| Family | Tokens | Use |
+| --- | --- | --- |
+| Surfaces | `--adm-page` `--adm-card` `--adm-side` `--adm-pill` | page · card · sidebar · selected nav item and active pill tab |
+| Text | `--adm-ink` `--adm-ink-2` `--adm-ink-3` `--adm-ink-4` `--adm-side-ink` | body · status lines · captions · hints and brackets · sidebar text |
+| Lines | `--adm-line` `--adm-rule` | boxes, tiles, pill borders · table row rules |
+| Action | `--adm-teal` `--adm-teal-2` `--adm-link` | buttons, switch, tick (base · hover) · links |
+| Status | `--adm-green` `--adm-orange` `--adm-red` `--adm-red-2` `--adm-grey` `--adm-badge` | ok · needs attention · failed · destructive link · off · BETA badge |
+| Callouts | `--adm-info-bg` `--adm-info-line` `--adm-warn-bg` `--adm-warn-line` | blue info · amber heads-up |
+| Type | `--adm-font` `--adm-nav-font` `--adm-mono` | Open Sans · Jura (sidebar only) · monospace for paths, commands, config keys |
+
+## Admin class vocabulary
+
+- **Card:** `adm-card` > `adm-card-content` (24 px) > `adm-card-title` (24 px / 300, may hold an `adm-badge`); a card's one main button sits right in `adm-card-action`. Text helpers: `adm-lead`, `adm-sub` (0.9 em grey captions such as “Changes apply immediately.”), `adm-muted`, `adm-mono`.
+- **Settings rows:** `table.adm-rows` > `tr` > `td` “**Label:** value” with an optional `adm-note` under it, and a last `td` holding a bracket link. **Bracket links:** `<span class="adm-br">[<a>edit</a>]</span>`; brackets stay grey, a destructive link adds `adm-danger`.
+- **Status header (from the Discovery view):** `adm-box` > `adm-box-h` > `adm-status` (an `adm-dot` with `adm-dot-ok|warn|err`, then a lower-case status word in `adm-ok|warn|err|off`, then plain spans) + `adm-box-act` (bracket links). Tabs are `adm-pills` > `adm-pill`, the active one `adm-pill-on`; a `<small>` inside a pill is its count. Stat tiles: `adm-tiles` > `adm-tile` > `adm-tile-n` (number, units in `<small>`), `adm-tile-l`, `adm-tile-s`.
+- **Tables:** `table.adm-table` (`adm-num` right-aligns a column, `adm-muted` on a `tr` dims it, `tr.adm-detail` is an opened row holding a `code` block).
+- **Controls:** `adm-switch` (`adm-switch-on`, `adm-switch-busy`) for anything that applies at once; `adm-check` (`adm-check-on`, `adm-check-off`) for a per-row grant; `adm-radio` (`adm-radio-on`, `adm-radio-off` dimmed with its reason in the sentence) for one-of, written “**Choice** — what it means”. Form fields in modals: `adm-field` > `label` + `adm-input` (`adm-input-focus`, `adm-input-err`, an `adm-unit` on the right, `adm-caret`) or `adm-select`, then `adm-help` (`adm-help-err`, `adm-help-ok`).
+- **Buttons:** `adm-btn` (teal, uppercase) with `adm-btn-green`, `adm-btn-flat` (modal footers, inline Test), `is-disabled`.
+- **Tags and badges:** `adm-tag` (capability: links · preview · play · acquire · handoff), `adm-tag-user` (scope “per user”), `adm-tag-new` (planned / to build), `adm-badge` (orange BETA).
+- **Callouts:** `adm-callout` (blue info), `adm-callout-warn` (amber), `adm-callout-err`; `adm-reason` (amber block with the server's own reason, `adm-reason-err` for red); `adm-toast` (`adm-toast-ok`, `adm-toast-err`); `adm-progress` (`adm-progress-indet`).
+- **Modal:** `adm-modal` > `adm-modal-content` (an `h4` title) + `adm-modal-footer` (flat buttons, Save in teal text).
+- **Plug-in list (the one new component):** `adm-group` (a `b` section label + a grey `span` hint) then rows `adm-plugin` (`adm-plugin-off` greys the text) > `adm-plugin-sw` (the switch) + `adm-plugin-body` > `adm-plugin-h` (title in `b`, tags), `adm-plugin-d` (description), optional `adm-plugin-meta` (one grey fact line, e.g. “2 of 8 users connected”), optional `adm-reason` + `adm-plugin-act` (status, then bracket links, right-aligned).
+
+## Admin snippet (from the AdminPluginsPanel card)
+
+```html
+<div class="adm-card"><div class="adm-card-content">
+  <span class="adm-card-title">Discovery Plugins</span>
+  <div class="adm-box">
+    <div class="adm-box-h">
+      <div class="adm-status"><span class="adm-dot adm-dot-warn"></span><span class="adm-warn">5 of 6 plug-ins on, 1 cannot run</span><span>· jobs open to <b>all users</b></span></div>
+      <div class="adm-box-act"><span class="adm-br">[<a>Refresh</a>]</span></div>
+    </div>
+    <div class="adm-pills"><div class="adm-pill adm-pill-on">Plug-ins</div><div class="adm-pill">Jobs</div><div class="adm-pill">Downloads</div><div class="adm-pill">Activity<small>2</small></div></div>
+    <div class="adm-group"><b>Get it</b><span>runs as a job · gated by the Jobs tab</span></div>
+    <div class="adm-plugin">
+      <span class="adm-plugin-sw"><span class="adm-switch adm-switch-on"><i></i></span></span>
+      <div class="adm-plugin-body">
+        <div class="adm-plugin-h"><b>YouTube</b><span class="adm-tag">acquire</span></div>
+        <div class="adm-plugin-d">Saves the best-matching upload’s audio into Discover downloads with yt-dlp.</div>
+        <div class="adm-reason"><span><b>Cannot run:</b> yt-dlp not found (<code>yt-dlp</code>).</span></div>
+      </div>
+      <div class="adm-plugin-act"><span class="adm-status"><span class="adm-dot adm-dot-warn"></span><span class="adm-warn">cannot run</span></span><span class="adm-br">[<a>settings</a>]</span><span class="adm-br">[<a>check again</a>]</span></div>
+    </div>
+  </div>
+</div></div>
+```
+
+Rules the admin cards encode: everything on the Discovery Plugins view applies at once and toasts — no APPLY button, no restart note (the one non-live value, the downloads folder, is shown read-only); status words are lower-case (`on`, `off`, `cannot run`, `needs setup`, `saving…`); a plug-in that cannot run shows the probe's own reason to the admin and is never shown to users; a row carries no “what leaves the server” line (decided against); Discover downloads has a size cap as well as a clock, and “full” is an orange state with its reason; nothing destructive happens without a sentence saying what it will do. See the AdminPluginsRules card before adding a tab or a row state.

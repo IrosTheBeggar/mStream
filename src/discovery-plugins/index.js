@@ -28,7 +28,7 @@ if (process.env.MSTREAM_TEST_DISCOVERY_NOOP_PLUGIN === '1') {
 export {
   CAPABILITIES, RESOLVING_CAPABILITIES, RUNNABLE_CAPABILITIES, SCOPES,
   getPlugin, isPluginEnabled, listPlugins, anyPluginEnabled, pluginNames, runnablePlugins,
-  refreshProbes, probeStatus, isPluginUnavailable,
+  refreshProbes, probeStatus, isPluginUnavailable, probePlugin, forgetProbe,
 } from './registry.js';
 export {
   RECOMMENDATION_SOURCES, recommendationSchema, normalizeRecommendation, recommendationKey, searchPhrase,

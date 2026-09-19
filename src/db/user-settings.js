@@ -75,3 +75,13 @@ export function describeUserSettings(userId, namespace) {
     return { key: row.key, secret, set: true, ...(secret ? {} : { value }), updatedAt: row.updated_at };
   });
 }
+
+// How many accounts hold a SECRET under this namespace — "2 of 8 users
+// connected" on the admin panel. A count only: which accounts, and the
+// values, stay the users' own.
+export function countUsersWithSecret(namespace) {
+  const row = d().prepare(
+    'SELECT COUNT(DISTINCT user_id) AS n FROM user_settings WHERE namespace = ? AND secret = 1'
+  ).get(ns(namespace));
+  return row ? Number(row.n) : 0;
+}

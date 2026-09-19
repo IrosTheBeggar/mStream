@@ -4,6 +4,10 @@
   "shape": "off-script",
   "generator": ".design-sync/build-cards.mjs",
   "cardsDir": "docs/designs/discover-modal",
+  "cardSets": [
+    "docs/designs/discover-modal",
+    "docs/designs/discovery-plugins-admin"
+  ],
   "globalName": "MStream",
   "readmeHeader": ".design-sync/conventions.md",
   "out": "./ds-bundle",

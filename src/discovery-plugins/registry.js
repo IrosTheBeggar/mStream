@@ -105,14 +105,28 @@ export function registerPlugin(def) {
       throw new Error(`registerPlugin: ${def.name} ${hook} must be a function`);
     }
   }
-  const frozen = Object.freeze({ description: '', ...def, capabilities: Object.freeze([...def.capabilities]) });
+  // What the ADMIN panel edits (src/api/admin.js):
+  //   adminSettings  the keys of config.discoveryPlugins.<name> an admin may
+  //                  edit (never `enabled` — that is the switch)
+  if (def.adminSettings !== undefined) {
+    if (!Array.isArray(def.adminSettings) || !def.adminSettings.every((k) => typeof k === 'string' && SETTING_KEY_RE.test(k) && k !== 'enabled')) {
+      throw new Error(`registerPlugin: ${def.name} adminSettings must be a list of config keys (not "enabled")`);
+    }
+  }
+  const frozen = Object.freeze({
+    description: '', ...def,
+    capabilities: Object.freeze([...def.capabilities]),
+    adminSettings: Object.freeze([...(def.adminSettings || [])]),
+  });
   plugins.set(frozen.name, frozen);
   return frozen;
 }
 
 // ── Availability probes ───────────────────────────────────────────────────
 // A plug-in that needs something outside this process (a binary, a daemon)
-// declares `probe()` → { ok, reason }. An enabled plug-in whose probe fails
+// declares `probe({ settings? })` → { ok, reason, detail? } (`detail` = what
+// it found, e.g. a version, for the admin panel; `settings` = config values
+// to try INSTEAD of the saved ones). An enabled plug-in whose probe fails
 // is treated as absent — not listed, its routes answer 404 — so an
 // unconfigured plug-in never shows a row that cannot work (the cards'
 // "hidden, never locked" rule). Results are cached and refreshed in the
@@ -124,25 +138,51 @@ const PROBE_FAIL_TTL_MS = 5_000;
 const probes = new Map();
 const probeTtl = (s) => (s && s.ok === false ? PROBE_FAIL_TTL_MS : PROBE_TTL_MS);
 
+async function runProbe(p, opts) {
+  try {
+    const r = await p.probe(opts || {});
+    return {
+      ok: !(r && r.ok === false),
+      reason: r && r.reason ? String(r.reason) : null,
+      detail: r && r.detail && typeof r.detail === 'object' ? r.detail : null,
+    };
+  } catch (err) {
+    return { ok: false, reason: err && err.message ? err.message : String(err), detail: null };
+  }
+}
+
 export async function refreshProbes({ force = false } = {}) {
   const now = Date.now();
   await Promise.all([...plugins.values()].filter((p) => typeof p.probe === 'function').map(async (p) => {
     const cur = probes.get(p.name);
     if (!force && cur && now - cur.at < probeTtl(cur)) { return; }
-    let result;
-    try {
-      const r = await p.probe();
-      result = { ok: !(r && r.ok === false), reason: r && r.reason ? String(r.reason) : null };
-    } catch (err) {
-      result = { ok: false, reason: err && err.message ? err.message : String(err) };
-    }
-    probes.set(p.name, { ...result, at: Date.now() });
+    probes.set(p.name, { ...(await runProbe(p)), at: Date.now() });
   }));
 }
 
 export function probeStatus(name) {
   const s = probes.get(name);
-  return s ? { ok: s.ok, reason: s.reason } : null;
+  return s ? { ok: s.ok, reason: s.reason, detail: s.detail || null } : null;
+}
+
+// Probe ONE plug-in now (the admin panel's "check again" and its settings
+// modal's Test). Without `settings` the answer replaces the cached one, so
+// the user listing follows at once. With `settings` it is a dry run against
+// values that are not saved: the cache is left alone. A plug-in without a
+// probe is always available. null = no such plug-in.
+export async function probePlugin(name, { settings } = {}) {
+  const p = plugins.get(name);
+  if (!p) { return null; }
+  if (typeof p.probe !== 'function') { return { ok: true, reason: null, detail: null }; }
+  const dryRun = settings && typeof settings === 'object';
+  const result = await runProbe(p, dryRun ? { settings } : {});
+  if (!dryRun) { probes.set(name, { ...result, at: Date.now() }); }
+  return result;
+}
+
+// Saved settings changed: what the last probe saw may no longer be true.
+export function forgetProbe(name) {
+  probes.delete(name);
 }
 
 // true only when a probe ran and failed. A stale or missing probe kicks a
@@ -199,6 +239,10 @@ export function listPlugins({ includeDisabled = false, config: cfg } = {}) {
     if (includeDisabled) {
       const status = probeStatus(p.name);
       row.reason = status && !status.ok ? status.reason : null;
+      // Admin-only facts: what the probe found, and which config keys the
+      // panel may edit.
+      row.detail = status ? status.detail : null;
+      row.adminSettings = [...p.adminSettings];
     }
     out.push(row);
   }

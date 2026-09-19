@@ -705,6 +705,14 @@ const discoveryPluginsOptions = Joi.object({
   }).default({ enabled: false, binary: 'yt-dlp', codec: 'mp3', maxFilesizeMb: 100, searchResults: 8 }),
 });
 
+// One plug-in's config schema, for the admin panel's settings editor: the
+// panel validates with the schema the config file is held to, so the two can
+// never disagree. null = a plug-in this build keeps no config for.
+export function discoveryPluginSchema(name) {
+  const known = discoveryPluginsOptions.describe().keys || {};
+  return Object.prototype.hasOwnProperty.call(known, String(name)) ? discoveryPluginsOptions.extract(String(name)) : null;
+}
+
 // The discovery plug-in JOB runner (acquire / hand-off plug-ins —
 // src/discovery-plugins/jobs.js). `enabledFor` is the acquisition gate,
 // mirroring torrent.enabledFor: 'all' lets every user start jobs,
@@ -721,10 +729,16 @@ const discoveryJobsOptions = Joi.object({
   // (src/discovery-plugins/downloads.js): created on first use, one
   // subfolder per user, files nobody kept swept after retentionDays
   // (src/discovery-plugins/retention.js; 0 = never).
+  // `maxSizeMb` is the quota retention is not: retentionDays is a clock, and
+  // a busy server can fill a disk inside it. Once the folder holds this much,
+  // a new download fails with "Discover downloads is full" until something is
+  // kept, removed or expires. Checked before a download starts, so it can be
+  // overshot by one file (youtube.maxFilesizeMb bounds that). 0 = no cap.
   downloads: Joi.object({
     dir: Joi.string().default(path.join(dataRoot, 'discover-downloads')),
     retentionDays: Joi.number().integer().min(0).max(3650).default(30),
-  }).default({ dir: path.join(dataRoot, 'discover-downloads'), retentionDays: 30 }),
+    maxSizeMb: Joi.number().integer().min(0).max(10_000_000).default(5120),
+  }).default({ dir: path.join(dataRoot, 'discover-downloads'), retentionDays: 30, maxSizeMb: 5120 }),
 });
 
 const torrentOptions = Joi.object({

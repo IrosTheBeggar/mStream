@@ -110,6 +110,7 @@ export default Object.freeze({
   description: 'A 30-second preview from the iTunes Search API, matched by ISRC when the recommendation carries one, else by artist, title, album and length. No key; sends the search to Apple only when a user asks for the preview. Results carry the "Provided courtesy of iTunes" attribution and a store link.',
   capabilities: [CAPABILITIES.PREVIEW],
   scope: SCOPES.SERVER,
+  adminSettings: ['country'],
   async resolve(rec) {
     if (!settings().enabled) { return { preview: null }; }
     return { preview: await findPreview(rec) };

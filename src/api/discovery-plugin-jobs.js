@@ -27,6 +27,7 @@ import Joi from 'joi';
 import * as plugins from '../discovery-plugins/index.js';
 import * as runner from '../discovery-plugins/jobs.js';
 import * as jobsDb from '../db/discovery-plugin-jobs.js';
+import * as db from '../db/manager.js';
 import * as downloads from '../discovery-plugins/downloads.js';
 import * as destinations from '../discovery-plugins/destination.js';
 import * as config from '../state/config.js';
@@ -128,7 +129,17 @@ export function setup(mstream) {
       states: value.state ? [value.state] : null,
       limit: value.limit,
     });
-    res.json({ jobs: jobs.map(present), runner: { running: runner.runningCount(), active: runner.isRunning() } });
+    let shown = jobs.map(present);
+    if (everyone) {
+      // The admin's all-accounts view names each job's owner. A job outlives
+      // its account (the id goes NULL), so a missing name is simply null — and
+      // so is the shared anonymous account of a server with no users, whose
+      // internal name means nothing to an operator.
+      const names = jobsDb.usernamesFor(jobs.map((j) => j.userId));
+      const anonId = db.getAnonymousUserId();
+      shown = shown.map((j) => ({ ...j, username: (j.userId !== anonId && names.get(j.userId)) || null }));
+    }
+    res.json({ jobs: shown, runner: { running: runner.runningCount(), active: runner.isRunning() } });
   });
 
   mstream.get('/api/v1/discovery/plugin-jobs/:id', (req, res) => {
