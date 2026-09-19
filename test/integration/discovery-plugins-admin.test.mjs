@@ -328,6 +328,14 @@ describe('discovery plug-ins · admin API · the configured binary', () => {
     assert.match(notRunnable.body.reason, /^yt-dlp \(.*fake-yt-dlp\.mjs\) /);
     assert.doesNotMatch(notRunnable.body.reason, /not found/, 'it exists; the reason says it cannot be run');
 
+    // A file named like a program that is not one: a sentence on every
+    // platform (Windows answers this with the bare code UNKNOWN).
+    const impostor = path.join(dir, 'yt-dlp-impostor.exe');
+    fs.writeFileSync(impostor, 'not a program', { mode: 0o644 });
+    const notAProgram = await open('POST', PROBE, { name: 'youtube', settings: { binary: impostor } });
+    assert.equal(notAProgram.body.available, false, JSON.stringify(notAProgram.body));
+    assert.match(notAProgram.body.reason, /impostor\.exe\) is not something this system can run \(\w+\)$/);
+
     // Neither try was saved.
     assert.match(pluginOf((await open('GET', STATUS)).body, 'youtube').config.binary, /no-such-yt-dlp$/);
   });

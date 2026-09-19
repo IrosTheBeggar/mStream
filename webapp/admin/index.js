@@ -8551,14 +8551,19 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
       if (this.tab === 'activity') { await this.loadActivity(); }
       this.schedulePoll();
     },
-    // Poll only while something is queued or running, and only while this
-    // view is on screen (beforeDestroy clears the timer).
+    // Every 3 s while something is queued or running; every 30 s otherwise,
+    // so a job a user starts later shows up without [Refresh]. Only while
+    // this view is on screen (beforeDestroy clears the timer), and a hidden
+    // browser tab asks nothing.
     schedulePoll: function() {
       if (this.pollTimer) { clearTimeout(this.pollTimer); this.pollTimer = null; }
       const live = this.dp.status && this.liveCount > 0;
       const watching = this.tab === 'activity' && this.activity.jobs.some((j) => DISCOVERJOBS.isLive(j));
-      if (!live && !watching) { return; }
-      this.pollTimer = setTimeout(() => { this.pollTimer = null; this.load(); }, 3000);
+      this.pollTimer = setTimeout(() => {
+        this.pollTimer = null;
+        if (document.hidden) { this.schedulePoll(); return; }
+        this.load();
+      }, (live || watching) ? 3000 : 30000);
     },
     showTab: function(name) {
       this.tab = name;
@@ -8683,12 +8688,16 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
       return hit ? this.t('admin.dplugins.act.hint.' + hit[1]) : '';
     },
     cancelJob: function(job) {
-      const ask = this.t('admin.dplugins.act.cancelAsk', { user: job.username || '—', title: (job.recommendation && job.recommendation.title) || '' });
+      // A server with no accounts has nobody to name.
+      const title = (job.recommendation && job.recommendation.title) || '';
+      const ask = job.username
+        ? this.t('admin.dplugins.act.cancelAsk', { user: job.username, title })
+        : this.t('admin.dplugins.act.cancelAskNoUser', { title });
       iziToast.question({
         timeout: 20000, close: false, overlayClose: true, overlay: true, displayMode: 'once', zindex: 99999, layout: 2, maxWidth: 600,
         title: escHtml(ask), position: 'center',
         buttons: [
-          [`<button>${escHtml(this.t('admin.dplugins.act.cancel'))}</button>`, async (instance, toast) => {
+          [`<button>${escHtml(this.t('admin.dplugins.act.cancelConfirm'))}</button>`, async (instance, toast) => {
             instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
             this.$set(this.activity.cancelling, job.id, true);
             try {

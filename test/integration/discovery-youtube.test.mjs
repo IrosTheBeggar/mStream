@@ -290,6 +290,25 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
     assert.ok(fs.existsSync(freshAbs));
   });
 
+  test('a song fetched twice is one file: keeping it through either job settles both', async () => {
+    // The download above is still waiting; a second job for the same song
+    // lands on the same path.
+    const waiting = (await api(server, 'GET', '/api/v1/discovery/plugin-jobs?state=done')).body.jobs
+      .filter((j) => j.result && j.result.downloaded && !j.result.kept && !j.result.removed);
+    assert.equal(waiting.length, 1, JSON.stringify(waiting.map((j) => j.result)));
+    const again = await api(server, 'POST', JOBS, { recommendation: { ...REC, year: 2015 } });
+    const twin = await untilFinished(again.body.job.id);
+    assert.equal(twin.state, 'done', `job error: ${twin.error}`);
+    assert.equal(twin.result.downloaded.filepath, waiting[0].result.downloaded.filepath);
+
+    const kept = await api(server, 'POST', `/api/v1/discovery/plugin-jobs/${twin.id}/keep`, { destination: { vpath: 'collection', base: 'Twins', layout: '{{ARTIST}}' } });
+    assert.equal(kept.status, 200, JSON.stringify(kept.body));
+    const other = (await api(server, 'GET', `/api/v1/discovery/plugin-jobs/${waiting[0].id}`)).body.job;
+    assert.equal(other.result.kept.filepath, 'collection/Twins/Nova/Remote_Hit.mp3', 'the first job no longer offers a file that moved');
+    assert.equal(other.result.expiresAt, undefined);
+    assert.equal((await api(server, 'POST', `/api/v1/discovery/plugin-jobs/${waiting[0].id}/keep`)).status, 409);
+  });
+
   test('no results, and results that are not the song, fail with a clear reason', async () => {
     const none = await api(server, 'POST', JOBS, { recommendation: { ...REC, title: 'Ghost Song' } });
     const j1 = await untilFinished(none.body.job.id);

@@ -271,7 +271,14 @@ export async function keepDownload({ job, user, destination }) {
   const to = `${destination.vpath}/${inserted.relativePath}`;
   const playlistEntries = db.getDB().prepare('UPDATE playlist_tracks SET filepath = ? WHERE filepath = ?').run(to, from).changes;
   winston.info(`discovery downloads: kept ${from} as ${to}${playlistEntries ? ` (${playlistEntries} playlist entr${playlistEntries === 1 ? 'y' : 'ies'} followed)` : ''}`);
-  return jobsDb.patchResult(job.id, {
+  const note = {
     kept: { vpath: destination.vpath, filepath: to, trackId: inserted.trackId, playlistEntries, missingVars: target.missingVars, at: Date.now() },
-  });
+  };
+  // A recommendation fetched twice leaves two jobs on one file: it went with
+  // this one, so the other must not go on offering Play and Keep… for a
+  // path that is empty now (the retention pass marks its jobs the same way).
+  for (const other of jobsDb.findByDownloadedFilepath(from)) {
+    if (other.id !== job.id && other.result && !other.result.kept && !other.result.removed) { jobsDb.patchResult(other.id, note); }
+  }
+  return jobsDb.patchResult(job.id, note);
 }

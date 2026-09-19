@@ -576,12 +576,16 @@ const VUEPLAYERCORE = (() => {
         }
         return null;
       },
-      // "<peer> online · last seen 2 min ago" from the peers listing —
-      // as of the last contact, which is all the server knows.
+      // "<peer> online" when it answered this window's own reads; otherwise
+      // the peers listing's word, "<peer> offline · last seen 2 days ago" —
+      // as of the admin's last health check, which is all the server knows.
       dmPeerStatus: function () {
         const p = this.discover.modal.peer;
         if (!p) { return ''; }
-        const online = p.lastStatus === 'ok';
+        if (p.answered === true) { return `${p.name} ${this.tt('discover.modal.online')}`; }
+        // None of this window's reads came back: it is not answering now,
+        // whatever the last health check said.
+        const online = p.answered === false ? false : p.lastStatus === 'ok';
         const seen = p.lastSeen ? this.dmAgo(p.lastSeen) : this.tt('discover.modal.never');
         return `${p.name} ${this.tt(online ? 'discover.modal.online' : 'discover.modal.offline')} · ${this.tt('discover.modal.lastSeen')} ${seen}`;
       },
@@ -687,8 +691,12 @@ const VUEPLAYERCORE = (() => {
         ]);
         if (!this.dmLive(gen)) { return; }
         const peer = peers && Array.isArray(peers.peers) ? peers.peers.find((p) => p.id === peerId) : null;
+        // The listing's last_seen is the admin's last health check; the three
+        // proxied reads above are this very minute. One that answered means
+        // the peer is up now, whatever the listing remembers.
+        const answered = [meta, albumSongs, peerAlbums].some((v) => v !== null && !(v && v.error));
         this.discover.modal.peer = peer
-          ? { name: peer.name || track.peer.name || 'peer', lastSeen: peer.lastSeen || null, lastStatus: peer.lastStatus || null }
+          ? { name: peer.name || track.peer.name || 'peer', lastSeen: peer.lastSeen || null, lastStatus: peer.lastStatus || null, answered }
           : null;
         const md = meta && typeof meta === 'object' ? (meta.metadata || meta) : null;
         this.discover.modal.file = md && typeof md === 'object' && !md.error

@@ -135,7 +135,9 @@ export async function version(bin, { timeoutMs = 8000 } = {}) {
   } catch (err) {
     const code = err && err.code;
     if (code === 'ENOENT') { throw new Error('not found', { cause: err }); }
-    if (code === 'EACCES' || code === 'EFTYPE' || code === 'EPERM' || code === 'ENOEXEC') {
+    // UNKNOWN is what Windows answers for a file that is named like a
+    // program and is not one.
+    if (code === 'EACCES' || code === 'EFTYPE' || code === 'EPERM' || code === 'ENOEXEC' || code === 'UNKNOWN') {
       throw new Error(`is not something this system can run (${code})`, { cause: err });
     }
     throw err;
