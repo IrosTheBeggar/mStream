@@ -5,6 +5,8 @@
 //   GET  /api/v1/discovery/plugin-jobs/:id       one job
 //   POST /api/v1/discovery/plugin-jobs/:id/cancel
 //   POST /api/v1/discovery/plugin-jobs/:id/keep   move a finished download into the collection
+//   POST /api/v1/discovery/plugin-jobs/lookup     the caller's newest job per plug-in for one recommendation
+//   POST /api/v1/discovery/plugin-jobs/clear      drop the caller's settled rows ("Clear finished")
 //
 // A download's expiry is computed on every read from the current retention
 // setting (never stored): `result.expiresAt` is present while the file is
@@ -18,7 +20,8 @@
 //
 // The same (plug-in, recommendation) is never queued twice while a job for
 // it is live: the second ask answers 200 with the existing job instead of
-// 202 with a new one.
+// 202 with a new one. When the live job is somebody else's the caller gets a
+// 409 rather than a row they could not read again.
 
 import Joi from 'joi';
 import * as plugins from '../discovery-plugins/index.js';
@@ -40,9 +43,15 @@ function present(job) {
   return { ...job, result: { ...job.result, expiresAt: downloads.expiresAt(job.finishedAt) } };
 }
 
-export function checkJobsAccess(user) {
+// The acquisition gate as a yes/no — the plug-in listing carries it so a
+// client hides what the caller could only be refused.
+export function jobsAllowed(user) {
   const gate = (config.program && config.program.discoveryJobs) || {};
-  if (gate.enabledFor === 'whitelist' && !(user && user.allow_discovery_jobs === 1)) {
+  return !(gate.enabledFor === 'whitelist' && !(user && user.allow_discovery_jobs === 1));
+}
+
+export function checkJobsAccess(user) {
+  if (!jobsAllowed(user)) {
     throw new WebError('you are not allowed to start discovery jobs on this server', 403);
   }
 }
@@ -82,7 +91,28 @@ export function setup(mstream) {
       recommendation,
     });
     if (created) { runner.kick(); }
+    // The live job that already covers this recommendation may be another
+    // account's. Its row is theirs (the caller could never poll it), so say
+    // only that it is being fetched.
+    if (!created && !isAdmin(req.user) && job.userId !== (req.user ? req.user.id : null)) {
+      throw new WebError('someone else on this server is already getting this — try again in a moment', 409);
+    }
     res.status(created ? 202 : 200).json({ job: present(job), created });
+  });
+
+  // What has the caller already done with this recommendation? Their newest
+  // job per plug-in, so a client can draw each row in its real state when a
+  // recommendation is opened again (the key is the server's to compute).
+  mstream.post('/api/v1/discovery/plugin-jobs/lookup', (req, res) => {
+    const schema = Joi.object({ recommendation: plugins.recommendationSchema.required() });
+    const { value: { recommendation } } = joiValidate(schema, req.body);
+    const key = plugins.recommendationKey(recommendation);
+    const jobs = jobsDb.latestForKey({ userId: req.user ? req.user.id : null, key });
+    res.json({ key, jobs: jobs.map(present) });
+  });
+
+  mstream.post('/api/v1/discovery/plugin-jobs/clear', (req, res) => {
+    res.json({ removed: jobsDb.clearFinished(req.user ? req.user.id : null) });
   });
 
   mstream.get('/api/v1/discovery/plugin-jobs', (req, res) => {

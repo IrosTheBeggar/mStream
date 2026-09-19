@@ -1,6 +1,7 @@
 // Discovery plug-ins — what a user may do with a network recommendation.
 //
-//   GET  /api/v1/discovery/plugins                 the enabled plug-ins + capabilities
+//   GET  /api/v1/discovery/plugins                 the enabled plug-ins + capabilities, and
+//                                                   whether the caller may start jobs
 //   POST /api/v1/discovery/plugins/:name/resolve   run a links/preview plug-in on one
 //                                                   recommendation (body: { recommendation })
 //   GET  /api/v1/discovery/plugins/:name/settings  the caller's settings for a plug-in
@@ -26,6 +27,7 @@ import Joi from 'joi';
 import winston from 'winston';
 import * as plugins from '../discovery-plugins/index.js';
 import * as settingsDb from '../db/user-settings.js';
+import { jobsAllowed } from './discovery-plugin-jobs.js';
 import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 
@@ -69,7 +71,9 @@ async function settingsView(plugin, req, userId) {
 
 export function setup(mstream) {
   mstream.get('/api/v1/discovery/plugins', (req, res) => {
-    res.json({ plugins: plugins.listPlugins() });
+    // `jobs.allowed` is the acquisition gate for THIS caller: a client hides
+    // the acquire / hand-off rows instead of offering a button that answers 403.
+    res.json({ plugins: plugins.listPlugins(), jobs: { allowed: jobsAllowed(req.user) } });
   });
 
   mstream.get('/api/v1/discovery/plugins/:name/settings', async (req, res) => {

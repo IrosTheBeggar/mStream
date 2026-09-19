@@ -2328,6 +2328,17 @@ paths:
                             (yt-dlp or ffmpeg missing for `youtube`) is left out of this
                             list and answers 404, so an unconfigured plug-in never shows a
                             row that cannot work. The admin listing shows it with `reason`.
+                  jobs:
+                    type: object
+                    properties:
+                      allowed:
+                        type: boolean
+                        description: >
+                          The acquisition gate for THIS caller
+                          (`config.discoveryJobs.enabledFor`, and the account's
+                          `allow_discovery_jobs` flag in whitelist mode). When false,
+                          starting a job answers 403 — a client hides the `acquire` and
+                          `handoff` rows instead of offering them.
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/v1/discovery/plugins/{name}/settings:
@@ -2549,7 +2560,9 @@ paths:
         Gated by `config.discoveryJobs.enabledFor`: `all`, or `whitelist`
         with the caller's `allow_discovery_jobs` flag. The same
         (plug-in, recommendation) is never queued twice while a job for it is
-        live: a second ask answers `200` with the existing job.
+        live: a second ask answers `200` with the existing job — or `409`
+        when that live job belongs to another account (its row is theirs; an
+        admin still gets it).
 
         `federation-copy` ("Add to your collection") takes a federation
         recommendation (`source: federation`, the peer's `filepath`, `peer.id`)
@@ -2608,6 +2621,65 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "The acquisition gate is in whitelist mode and the caller is not allowed." }
         "404": { description: "Unknown or disabled plug-in." }
+        "409": { description: "Another account's live job already covers this recommendation — try again when it has finished." }
+
+  /api/v1/discovery/plugin-jobs/lookup:
+    post:
+      tags: [Discovery]
+      summary: The caller's jobs for one recommendation
+      description: |
+        What the caller has already done with a recommendation: their newest
+        job per plug-in, so a client can draw each acquire / hand-off row in
+        its real state (running, downloaded and waiting to be kept, kept,
+        failed…) when the recommendation is opened again. The server computes
+        the recommendation key (MBID first, else a normalised text digest), so
+        a client never has to mirror it. Not gated: it reads only the
+        caller's own rows.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recommendation]
+              properties:
+                recommendation: { type: object, description: "Same shape as the resolve body." }
+      responses:
+        "200":
+          description: At most one job per plug-in, newest first; empty when the caller never acted on it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key: { type: string, example: "text:3f9a…", description: The recommendation key the jobs were matched on. }
+                  jobs:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "400": { description: "Malformed body." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/discovery/plugin-jobs/clear:
+    post:
+      tags: [Discovery]
+      summary: Clear the caller's finished jobs
+      description: |
+        Drops the caller's rows that have nothing left to act on: `failed`,
+        `cancelled`, and `done` jobs whose outcome is settled (a copy, a skip,
+        a kept or an expired download). Live jobs stay, and so does a finished
+        download that is still in the `discover-downloads` scratch library —
+        its row is the only handle for Keep… and the only place its expiry
+        shows. Files are never touched.
+      responses:
+        "200":
+          description: How many rows went.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed: { type: integer, example: 4 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/v1/discovery/plugin-jobs:
     get:

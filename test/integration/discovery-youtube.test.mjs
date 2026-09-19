@@ -176,6 +176,13 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
     const dest = await api(server, 'PUT', DEST, { destination: { vpath: 'collection', base: '', layout: '{{PEER}}/{{ARTIST}}/{{ALBUM}}' } });
     assert.equal(dest.status, 200, JSON.stringify(dest.body));
 
+    // "Clear finished" never drops a download that is still waiting to be
+    // kept: the row is the only handle on it, and the lookup still finds it.
+    assert.equal((await api(server, 'POST', '/api/v1/discovery/plugin-jobs/clear')).body.removed, 0);
+    const waiting = await api(server, 'POST', '/api/v1/discovery/plugin-jobs/lookup', { recommendation: REC });
+    assert.deepEqual(waiting.body.jobs.map((j) => j.id), [firstJobId]);
+    assert.ok(waiting.body.jobs[0].result.expiresAt > Date.now(), 'a looked-up download carries its expiry');
+
     const kept = await api(server, 'POST', `/api/v1/discovery/plugin-jobs/${firstJobId}/keep`);
     assert.equal(kept.status, 200, JSON.stringify(kept.body));
     const result = kept.body.job.result;
@@ -206,6 +213,11 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
     const again = await api(server, 'GET', `/api/v1/discovery/plugin-jobs/${firstJobId}`);
     assert.equal(again.body.job.result.kept.filepath, result.kept.filepath);
     assert.equal((await api(server, 'POST', `/api/v1/discovery/plugin-jobs/${firstJobId}/keep`)).status, 409);
+
+    // Kept is settled: now the row may be cleared, and the file stays put.
+    assert.equal((await api(server, 'POST', '/api/v1/discovery/plugin-jobs/clear')).body.removed, 1);
+    assert.equal((await api(server, 'GET', `/api/v1/discovery/plugin-jobs/${firstJobId}`)).status, 404);
+    assert.ok(fs.existsSync(path.join(collectionDir, 'Nova', 'Night Ferry', 'Remote_Hit.mp3')));
   });
 
   test('Keep… refusals: nothing to keep, uploads off, a bad destination, a file already there', async () => {

@@ -97,6 +97,42 @@ export function listJobs({ userId, states = null, limit = 100 } = {}) {
   return d().prepare(sql).all(...params).map(rowToJob);
 }
 
+// One user's newest job per plug-in for one recommendation — what a client
+// needs to draw a recommendation's rows ("Get it" is idle, running, done…)
+// without walking the whole list. Newest first.
+export function latestForKey({ userId = null, key }) {
+  const rows = d().prepare(`
+    SELECT * FROM discovery_plugin_jobs
+     WHERE user_id IS ? AND rec_key = ?
+     ORDER BY created_at DESC, id DESC
+  `).all(userId, String(key));
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    if (seen.has(row.plugin)) { continue; }
+    seen.add(row.plugin);
+    out.push(rowToJob(row));
+  }
+  return out;
+}
+
+// "Clear finished": drop one user's rows that have nothing left to act on —
+// failed, cancelled, and done jobs whose outcome is settled (a copy, a kept
+// or expired download, a skip). Live jobs stay, and so does a finished
+// download that is still in the scratch library: its row is the only handle
+// for Keep… and the only place its expiry shows.
+export function clearFinished(userId = null) {
+  return d().prepare(`
+    DELETE FROM discovery_plugin_jobs
+     WHERE user_id IS ?
+       AND (state IN ('failed', 'cancelled')
+            OR (state = 'done' AND NOT (
+                  json_extract(result, '$.downloaded') IS NOT NULL
+              AND json_extract(result, '$.kept') IS NULL
+              AND json_extract(result, '$.removed') IS NULL)))
+  `).run(userId).changes;
+}
+
 // Atomically take the oldest queued job for one plug-in. RETURNING makes
 // the claim and the read one statement; the process is single-threaded
 // anyway, so two runners can't race — this just keeps it that way.

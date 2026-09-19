@@ -6,11 +6,13 @@
  *   GET  /api/v1/discovery/plugin-jobs[?state=&all=1]
  *   GET  /api/v1/discovery/plugin-jobs/:id
  *   POST /api/v1/discovery/plugin-jobs/:id/cancel
+ *   POST /api/v1/discovery/plugin-jobs/lookup            (a recommendation's jobs)
+ *   POST /api/v1/discovery/plugin-jobs/clear             ("Clear finished")
  *   POST /api/v1/admin/config/discovery-jobs            (gate + cap, live)
  *   POST /api/v1/admin/users/discovery-jobs-access      (per-user flag)
  *
- * Two users so ownership and the whitelist gate are real: an admin and a
- * regular user. Jobs run in the server process; the test polls the job.
+ * Three users so ownership and the whitelist gate are real: an admin and two
+ * regular users. Jobs run in the server process; the test polls the job.
  */
 
 import { describe, before, after, test } from 'node:test';
@@ -19,9 +21,11 @@ import { startServer } from '../helpers/server.mjs';
 
 const ADMIN = { username: 'admin', password: 'pw-admin' };
 const USER = { username: 'dana', password: 'pw-dana' };
+const OTHER = { username: 'eli', password: 'pw-eli' };
 let server;
 let adminToken;
 let userToken;
+let otherToken;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function login(u) {
@@ -52,10 +56,11 @@ describe('discovery plug-in jobs API', () => {
       dlnaMode: 'disabled', waitForScan: false,
       env: { MSTREAM_TEST_DISCOVERY_NOOP_PLUGIN: '1' },
       extraConfig: { discoveryPlugins: { 'noop-acquire': { enabled: true } } },
-      users: [{ ...ADMIN, admin: true, vpaths: ['testlib'] }, { ...USER, vpaths: ['testlib'] }],
+      users: [{ ...ADMIN, admin: true, vpaths: ['testlib'] }, { ...USER, vpaths: ['testlib'] }, { ...OTHER, vpaths: ['testlib'] }],
     });
     adminToken = await login(ADMIN);
     userToken = await login(USER);
+    otherToken = await login(OTHER);
   });
   after(async () => { if (server) { await server.stop(); } });
 
@@ -66,6 +71,7 @@ describe('discovery plug-in jobs API', () => {
     assert.deepEqual(p.capabilities, ['acquire']);
     const r = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/resolve', { recommendation: rec('X') });
     assert.equal(r.status, 400, 'acquire plug-ins do not resolve');
+    assert.deepEqual(body.jobs, { allowed: true }, 'the gate is open to everyone by default');
   });
 
   test('a job runs to done with progress and a result; the same recommendation is not queued twice', async () => {
@@ -108,6 +114,44 @@ describe('discovery plug-in jobs API', () => {
     assert.equal(again.status, 409);
   });
 
+  test('lookup: the caller\'s newest job per plug-in for a recommendation', async () => {
+    const first = await post(userToken, '/api/v1/discovery/plugin-jobs/lookup', { recommendation: rec('Opening') });
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    assert.match(first.body.key, /^text:/);
+    assert.equal(first.body.jobs.length, 1);
+    assert.equal(first.body.jobs[0].plugin, 'noop-acquire');
+    assert.equal(first.body.jobs[0].state, 'done');
+    // Asked for again, the newer job is the one a client should draw.
+    const again = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('Opening') });
+    assert.equal(again.status, 202);
+    await untilState(userToken, again.body.job.id, ['done', 'failed']);
+    const second = await post(userToken, '/api/v1/discovery/plugin-jobs/lookup', { recommendation: rec('Opening') });
+    assert.deepEqual(second.body.jobs.map((j) => j.id), [again.body.job.id]);
+    assert.equal(second.body.key, first.body.key);
+    // Nobody else's, nothing unknown, and a recommendation is required.
+    assert.deepEqual((await post(otherToken, '/api/v1/discovery/plugin-jobs/lookup', { recommendation: rec('Opening') })).body.jobs, []);
+    assert.deepEqual((await post(userToken, '/api/v1/discovery/plugin-jobs/lookup', { recommendation: rec('Never asked for') })).body.jobs, []);
+    assert.equal((await post(userToken, '/api/v1/discovery/plugin-jobs/lookup', {})).status, 400);
+  });
+
+  test('a live job that is another account\'s answers 409; an admin gets the job', async () => {
+    const mine = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('slow shared') });
+    assert.equal(mine.status, 202);
+    const theirs = await post(otherToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('slow shared') });
+    assert.equal(theirs.status, 409, JSON.stringify(theirs.body));
+    assert.ok(!JSON.stringify(theirs.body).includes('"userId"'), 'nothing of the other account\'s row leaks');
+    const admin = await post(adminToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('slow shared') });
+    assert.equal(admin.status, 200);
+    assert.equal(admin.body.job.id, mine.body.job.id);
+    await post(userToken, `/api/v1/discovery/plugin-jobs/${mine.body.job.id}/cancel`);
+    await untilState(userToken, mine.body.job.id, ['cancelled', 'done']);
+    // Once it is over the other account may ask for itself.
+    const after = await post(otherToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('slow shared') });
+    assert.equal(after.status, 202);
+    await post(otherToken, `/api/v1/discovery/plugin-jobs/${after.body.job.id}/cancel`);
+    await untilState(otherToken, after.body.job.id, ['cancelled', 'done']);
+  });
+
   test('ownership: a user sees only their jobs; an admin sees all with ?all=1; foreign ids are 404', async () => {
     const mine = await get(userToken, '/api/v1/discovery/plugin-jobs');
     assert.equal(mine.status, 200);
@@ -132,17 +176,42 @@ describe('discovery plug-in jobs API', () => {
     assert.equal(gate.body.discoveryJobs.enabledFor, 'whitelist');
     const blocked = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('gated') });
     assert.equal(blocked.status, 403);
-    const allow = await post(adminToken, '/api/v1/admin/users/discovery-jobs-access', { username: USER.username, allowDiscoveryJobs: true });
+    assert.deepEqual((await get(userToken, '/api/v1/discovery/plugins')).body.jobs, { allowed: false }, 'the listing says so up front');
+    const allow =await post(adminToken, '/api/v1/admin/users/discovery-jobs-access', { username: USER.username, allowDiscoveryJobs: true });
     assert.equal(allow.status, 200);
     // The user object on the request comes from the DB; a fresh login picks up the flag.
     userToken = await login(USER);
-    const allowed = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('gated') });
+    assert.deepEqual((await get(userToken, '/api/v1/discovery/plugins')).body.jobs, { allowed: true });
+    assert.deepEqual((await get(otherToken, '/api/v1/discovery/plugins')).body.jobs, { allowed: false }, 'per account');
+    const allowed =await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('gated') });
     assert.equal(allowed.status, 202, JSON.stringify(allowed.body));
     await untilState(userToken, allowed.body.job.id, ['done', 'failed']);
     const back = await post(adminToken, '/api/v1/admin/config/discovery-jobs', { enabledFor: 'all' });
     assert.equal(back.body.discoveryJobs.enabledFor, 'all');
     assert.equal((await post(adminToken, '/api/v1/admin/config/discovery-jobs', { enabledFor: 'everyone' })).status, 400);
     assert.equal((await post(adminToken, '/api/v1/admin/users/discovery-jobs-access', { username: 'nobody', allowDiscoveryJobs: true })).status, 404);
+  });
+
+  test('clear: the caller\'s settled rows go, a live job stays, other accounts are untouched', async () => {
+    const live = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('slow survivor') });
+    assert.equal(live.status, 202);
+    await untilState(userToken, live.body.job.id, ['running']);
+    const before = (await get(userToken, '/api/v1/discovery/plugin-jobs')).body.jobs;
+    assert.ok(before.length >= 5, 'done, failed and cancelled history from the tests above');
+    const othersBefore = (await get(otherToken, '/api/v1/discovery/plugin-jobs')).body.jobs.length;
+    assert.ok(othersBefore >= 1);
+
+    const cleared = await post(userToken, '/api/v1/discovery/plugin-jobs/clear');
+    assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+    assert.equal(cleared.body.removed, before.length - 1);
+    const left = (await get(userToken, '/api/v1/discovery/plugin-jobs')).body.jobs;
+    assert.deepEqual(left.map((j) => j.id), [live.body.job.id], 'the running job is the only row left');
+    assert.equal((await get(otherToken, '/api/v1/discovery/plugin-jobs')).body.jobs.length, othersBefore);
+    assert.deepEqual((await post(userToken, '/api/v1/discovery/plugin-jobs/lookup', { recommendation: rec('Opening') })).body.jobs, []);
+
+    await post(userToken, `/api/v1/discovery/plugin-jobs/${live.body.job.id}/cancel`);
+    await untilState(userToken, live.body.job.id, ['cancelled', 'done']);
+    assert.equal((await post(userToken, '/api/v1/discovery/plugin-jobs/clear')).body.removed, 1);
   });
 
   test('unknown plug-in, non-runnable plug-in and bad bodies', async () => {

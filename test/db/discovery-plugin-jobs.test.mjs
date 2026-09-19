@@ -231,6 +231,61 @@ describe('results after the fact, and the retention pass', () => {
     assert.equal(jobsDb.getJob(job.id), null);
   });
 
+  test('latestForKey: the newest job per plug-in for one owner; clearFinished keeps live jobs and unkept downloads', async () => {
+    const ins = manager.getDB().prepare('INSERT INTO users (username, password, salt) VALUES (?, ?, ?)');
+    const me = Number(ins.run('tray-owner', 'h', 's').lastInsertRowid);
+    const other = Number(ins.run('tray-other', 'h', 's').lastInsertRowid);
+    // A finished job on a plug-in: create → claim (the only queued one) → finish.
+    const finished = (plugin, userId, key, result) => {
+      const { job, created } = jobsDb.createJob({ plugin, userId, key, recommendation: rec(key) });
+      assert.equal(created, true);
+      assert.equal(jobsDb.claimNextQueued(plugin).id, job.id);
+      if (result instanceof Error) { jobsDb.failJob(job.id, result); } else { jobsDb.finishJob(job.id, result); }
+      return job.id;
+    };
+
+    const first = finished('unit-done', me, 'text:look', { ok: 1 });
+    await sleep(5); // created_at is a ms clock; the id breaks a tie anyway
+    const second = finished('unit-done', me, 'text:look', { ok: 2 });
+    const otherPlugin = finished('unit-slow', me, 'text:look', { ok: 3 });
+    finished('unit-done', other, 'text:look', { ok: 'theirs' });
+    const found = jobsDb.latestForKey({ userId: me, key: 'text:look' });
+    assert.deepEqual(found.map((j) => j.id).sort(), [second, otherPlugin].sort(), `newest per plug-in, never #${first} or another owner's`);
+    assert.deepEqual(jobsDb.latestForKey({ userId: me, key: 'text:nothing' }), []);
+
+    // One of each fate. A copy and a skip are settled; so are a kept and an
+    // expired download; a download still in the scratch library is not.
+    const failed = finished('unit-done', me, 'text:c-failed', new Error('nope'));
+    const copied = finished('unit-done', me, 'text:c-copied', { copied: { filepath: 'music/a.mp3' } });
+    const skipped = finished('unit-done', me, 'text:c-skipped', { skipped: 'owned' });
+    const kept = finished('unit-done', me, 'text:c-kept', { downloaded: { filepath: 'discover-downloads/x/k.mp3' } });
+    jobsDb.patchResult(kept, { kept: { filepath: 'music/k.mp3' } });
+    const expired = finished('unit-done', me, 'text:c-expired', { downloaded: { filepath: 'discover-downloads/x/e.mp3' } });
+    jobsDb.patchResult(expired, { removed: { at: Date.now() } });
+    const unkept = finished('unit-done', me, 'text:c-unkept', { downloaded: { filepath: 'discover-downloads/x/u.mp3' } });
+    const noResult = finished('unit-done', me, 'text:c-null', null);
+    const cancelled = jobsDb.createJob({ plugin: 'unit-done', userId: me, key: 'text:c-cancelled', recommendation: rec('c') }).job.id;
+    jobsDb.requestCancel(cancelled);
+    const queued = jobsDb.createJob({ plugin: 'unit-done', userId: me, key: 'text:c-queued', recommendation: rec('q') }).job.id;
+    const running = jobsDb.createJob({ plugin: 'unit-slow', userId: me, key: 'text:c-running', recommendation: rec('r') }).job.id;
+    assert.equal(jobsDb.claimNextQueued('unit-slow').id, running);
+
+    const theirsBefore = jobsDb.listJobs({ userId: other }).length;
+    const removed = jobsDb.clearFinished(me);
+    const left = jobsDb.listJobs({ userId: me }).map((j) => j.id).sort((a, b) => a - b);
+    assert.deepEqual(left, [unkept, queued, running].sort((a, b) => a - b), 'only what can still be acted on stays');
+    for (const gone of [first, second, otherPlugin, failed, copied, skipped, kept, expired, noResult, cancelled]) {
+      assert.equal(jobsDb.getJob(gone), null, `job ${gone} was settled`);
+    }
+    assert.equal(removed, 10);
+    assert.equal(jobsDb.listJobs({ userId: other }).length, theirsBefore, 'another owner\'s history is not touched');
+    assert.equal(jobsDb.clearFinished(me), 0, 'nothing settled is left');
+
+    // Leave nothing live behind for the suites below.
+    jobsDb.requestCancel(queued);
+    jobsDb.cancelJob(running);
+  });
+
   test('sweep: expired downloads go with their rows and tell their job; partials after a day; 0 days = never', async () => {
     const day = 24 * 60 * 60 * 1000;
     const dlDir = path.join(tmpDir, 'discover-downloads');
