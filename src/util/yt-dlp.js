@@ -323,13 +323,12 @@ export function startDownload({ bin, url, dir, codec = 'mp3', ffmpegPath, maxFil
 // wrote in the same seconds would match too.
 const PARTIAL_RE = /\.(part|ytdl|temp|f\d+\.\w+)$/i;
 const BY_PRODUCT_RE = /\.(jpe?g|png|webp|webm|m4a|mp4|mkv)$/i;
-export async function removePartials(dir, since, { byProducts = false, keepExt = null } = {}) {
+export async function removePartials(dir, since, { byProducts = false } = {}) {
   let names;
   try { names = await fs.readdir(dir); } catch (_e) { return 0; }
   let n = 0;
   for (const name of names) {
-    const stray = byProducts && BY_PRODUCT_RE.test(name) && !(keepExt && name.toLowerCase().endsWith(`.${String(keepExt).toLowerCase()}`));
-    if (!PARTIAL_RE.test(name) && !stray) { continue; }
+    if (!PARTIAL_RE.test(name) && !(byProducts && BY_PRODUCT_RE.test(name))) { continue; }
     const full = path.join(dir, name);
     try {
       const stat = await fs.stat(full);
