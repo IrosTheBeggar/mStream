@@ -6309,7 +6309,9 @@ paths:
 
         The ping's `federationBrowse` flag tells a client whether to offer
         any of this (federation on, at least one peer), so clients never
-        probe.
+        probe. Each peer also carries `direct`: what this server has learned
+        about reaching it directly through the access route, so a client
+        need not learn a refusal one access call at a time.
       responses:
         "200":
           description: The peers, oldest first.
@@ -6336,6 +6338,19 @@ paths:
                             credential) — lets a client tell that two parents
                             list the same server. Null when this build cannot
                             read tickets.
+                        direct:
+                          type: boolean
+                          nullable: true
+                          description: >
+                            What this server has learned about reaching the
+                            peer directly (the access route): true — a guest
+                            token is cached, the peer mints; false — the peer's
+                            last mint attempt was refused (an older build, or
+                            federation disabled there); null — never asked. A
+                            hint, not a credential: a client still fetches the
+                            token through the access route, and keeps its own
+                            aging for `false` so a peer that was upgraded gets
+                            asked again. Absent on older builds.
         "403":
           description: Federation is disabled on this server.
 

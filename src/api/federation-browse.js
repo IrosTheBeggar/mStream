@@ -124,6 +124,13 @@ const GUEST_REMINT_AT = 0.75; // fraction of the lifetime after which we re-mint
 const GUEST_REFRESH_MIN_GAP_MS = 5 * 1000; // a refresh right after a mint is served from cache
 const guestAccess = new Map(); // peerId -> { token, expiresAt: ms, mintedAt: ms }
 const guestPending = new Map(); // peerId -> Promise<entry|null> (one mint in flight per peer)
+// Peers that answered the mint with a refusal (an older build, or federation
+// switched off there), by when they did. The cache above only ever held
+// successes, so this server forgot every "no" the moment it heard it — and
+// each client learned the same "no" again, one access call and one bridge
+// dial per peer per session. Cleared by a mint that succeeds, and with the
+// row. Read by the peers projection as its `direct` hint (directHintFor).
+const guestRefused = new Map(); // peerId -> ms
 
 function guestIsFresh(entry, { refresh }) {
   if (!entry) { return false; }
@@ -134,9 +141,36 @@ function guestIsFresh(entry, { refresh }) {
 }
 
 // Drop a peer's cached guest token — on removal (the row is gone; a re-added
-// peer gets a fresh id anyway, this just keeps the map honest).
+// peer gets a fresh id anyway, this just keeps the maps honest).
 export function forgetPeerAccess(peerId) {
   guestAccess.delete(peerId);
+  guestRefused.delete(peerId);
+}
+
+// File the outcome of one mint attempt: the cache entry on success, null
+// when the peer declined. guestAccessFor is the caller; exported so the
+// hint's rules can be unit-tested without a peer.
+export function noteGuestOutcome(peerId, entry) {
+  if (entry) {
+    guestAccess.set(peerId, entry);
+    guestRefused.delete(peerId);
+  } else {
+    guestAccess.delete(peerId);
+    guestRefused.set(peerId, Date.now());
+  }
+}
+
+// What the peers projection says about reaching a peer directly, from what
+// this server has learned: true — a guest token is cached, the peer mints;
+// false — its last mint attempt was refused; null — never asked (a peer
+// that could not be reached gave no answer, so a 502 leaves it null). A
+// hint, not a credential: `true` still means fetching the token through the
+// access route, and a client keeps its own aging for `false` so a peer that
+// was upgraded gets asked again.
+export function directHintFor(peerId) {
+  if (guestAccess.has(peerId)) { return true; }
+  if (guestRefused.has(peerId)) { return false; }
+  return null;
 }
 
 // Ask the peer for a guest token. Resolves to the cache entry, or null when
@@ -165,7 +199,7 @@ function guestAccessFor(peer, { refresh = false } = {}) {
   const inFlight = guestPending.get(peer.id);
   if (inFlight) { return inFlight; }
   const p = mintGuestFromPeer(peer).then((entry) => {
-    if (entry) { guestAccess.set(peer.id, entry); } else { guestAccess.delete(peer.id); }
+    noteGuestOutcome(peer.id, entry);
     return entry;
   }).finally(() => guestPending.delete(peer.id));
   guestPending.set(peer.id, p);
@@ -193,6 +227,10 @@ export function setup(mstream) {
         // client tells that two parents list the same server. Null when
         // this build cannot read tickets (no native module).
         endpointId: endpointIdFromTicket(p.endpoint_ticket),
+        // What this server has learned about reaching the peer directly
+        // (directHintFor): a client can skip the access call for a peer
+        // that declined instead of learning the same "no" every session.
+        direct: directHintFor(p.id),
       })),
     });
   });
