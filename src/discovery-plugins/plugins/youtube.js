@@ -218,10 +218,11 @@ async function run(ctx) {
   try {
     ({ filePath, warning } = await handle.done);
   } catch (err) {
-    if (err.cancelled || ctx.isCancelled()) {
-      await ytdlp.removePartials(dir, startedAt);
-      return null;   // the runner records the cancel
-    }
+    // Cancelled or failed, nothing of this run stays: the half-written media
+    // and the thumbnail yt-dlp fetches BEFORE it (a refused download leaves a
+    // whole .jpg behind, which would sit in the folder as a "download").
+    await ytdlp.removePartials(dir, startedAt, { byProducts: true });
+    if (err.cancelled || ctx.isCancelled()) { return null; }   // the runner records the cancel
     throw new Error(`YouTube download failed: ${err.message}`, { cause: err });
   } finally {
     clearInterval(poll);

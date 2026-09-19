@@ -320,13 +320,18 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
     assert.match(j2.error, /Nothing matched closely enough \(best score \d\.\d\d, needs 0\.62\)/);
   });
 
-  test('yt-dlp\'s own error reaches the job', async () => {
+  test('yt-dlp\'s own error reaches the job, and the thumbnail it fetched first does not stay behind', async () => {
     writeScript({ download: { fail: 'Sign in to confirm you’re not a bot' } });
     try {
+      const shared = path.join(downloadsDir, 'shared');
+      const before = fs.existsSync(shared) ? fs.readdirSync(shared).sort() : [];
       const started = await api(server, 'POST', JOBS, { recommendation: { ...REC, title: 'Remote Hit', album: 'Night Ferry', year: 2020 } });
       const job = await untilFinished(started.body.job.id);
       assert.equal(job.state, 'failed');
       assert.match(job.error, /Sign in to confirm/);
+      // The real yt-dlp writes <title>.jpg before the media; a refused
+      // download used to leave it in the folder, counted as a download.
+      assert.deepEqual((fs.existsSync(shared) ? fs.readdirSync(shared) : []).sort(), before, 'a failed download leaves no file');
     } finally {
       writeScript();
     }

@@ -213,9 +213,15 @@ export async function details(url, { bin, signal } = {}) {
 // the file name ASCII-only; `--no-overwrites` blocks a hostile title from
 // clobbering an existing file if it collides post-restriction; `--print
 // after_move:filepath` tells us the final path instead of guessing it.
+//
+// `-f ba/b`, never a bare `ba`: a yt-dlp with no JavaScript runtime beside it
+// (the common install) is often offered ONE format by YouTube, a 360p mp4
+// with sound and no audio-only stream, and `ba` alone then fails with
+// "Requested format is not available". `/b` takes that file; -x keeps its
+// audio. `--max-filesize` bounds either choice.
 export function downloadArgs({ url, dir, codec = 'mp3', ffmpegPath = null, maxFilesizeMb = null }) {
   const args = [
-    '-f', 'ba', '-x', '--no-playlist', url,
+    '-f', 'ba/b', '-x', '--no-playlist', url,
     '-o', path.join(dir, '%(title)s.%(ext)s'),
     '--restrict-filenames', '--no-overwrites',
     '--audio-format', AUDIO_FORMAT_MAP[codec] || codec,
@@ -307,13 +313,23 @@ export function startDownload({ bin, url, dir, codec = 'mp3', ffmpegPath, maxFil
   return { pid: proc.pid, done: result, abort: () => abort.abort() };
 }
 
-// After a cancel: the partial files yt-dlp leaves behind.
-export async function removePartials(dir, since) {
+// After a cancel or a failure: the partial files yt-dlp leaves behind.
+//
+// `byProducts` also takes what a run that died half way leaves WHOLE: the
+// thumbnail it fetched for --embed-thumbnail (written before the media, so a
+// download YouTube refuses with a 403 leaves a .jpg and nothing else) and an
+// unconverted media file. Only for a folder this server owns (the Discover
+// downloads scratch folder): in a real library folder a cover the scanner
+// wrote in the same seconds would match too.
+const PARTIAL_RE = /\.(part|ytdl|temp|f\d+\.\w+)$/i;
+const BY_PRODUCT_RE = /\.(jpe?g|png|webp|webm|m4a|mp4|mkv)$/i;
+export async function removePartials(dir, since, { byProducts = false, keepExt = null } = {}) {
   let names;
   try { names = await fs.readdir(dir); } catch (_e) { return 0; }
   let n = 0;
   for (const name of names) {
-    if (!/\.(part|ytdl|temp|f\d+\.\w+)$/i.test(name)) { continue; }
+    const stray = byProducts && BY_PRODUCT_RE.test(name) && !(keepExt && name.toLowerCase().endsWith(`.${String(keepExt).toLowerCase()}`));
+    if (!PARTIAL_RE.test(name) && !stray) { continue; }
     const full = path.join(dir, name);
     try {
       const stat = await fs.stat(full);

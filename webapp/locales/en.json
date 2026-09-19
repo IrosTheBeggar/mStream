@@ -1011,6 +1011,7 @@
   "admin.dplugins.group.linksHint": "links out of the window",
   "admin.dplugins.tag.perUser": "per user",
   "admin.dplugins.connected": "{{count}} of {{total}} users connected",
+  "admin.dplugins.ytdlpOld": "about {{count}} months old. YouTube changes often, so update it if downloads start failing",
   "admin.dplugins.status.on": "on",
   "admin.dplugins.status.off": "off",
   "admin.dplugins.status.cannotRun": "cannot run",
@@ -1122,6 +1123,7 @@
     "other": "The last 100 jobs. Finished jobs leave this list after {{count}} days (Jobs tab)."
   },
   "admin.dplugins.act.hint.botCheck": "This one is YouTube’s doing, not the server’s: it throttles addresses that download a lot. Updating yt-dlp often helps.",
+  "admin.dplugins.act.hint.ytdlpStale": "This is usually an out-of-date yt-dlp: YouTube changes often and older versions get refused. Update yt-dlp on the server (its own warnings also ask for a JavaScript runtime such as Deno) and try the download again. The Plug-ins tab shows the version this server found.",
   "admin.dplugins.act.hint.noMatch": "The search found nothing close enough to this song, so nothing was downloaded rather than the wrong thing.",
   "admin.dplugins.act.hint.full": "The Discover downloads folder was at its size cap (Downloads tab).",
   "admin.dplugins.act.hint.peerLimit": "The paired server’s daily limit for this server’s key was spent. It resets on their side.",

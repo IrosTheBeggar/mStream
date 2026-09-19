@@ -107,7 +107,9 @@ describe('youtube · ranking', () => {
 describe('yt-dlp helper · pure parts', () => {
   test('downloadArgs: the shared argument set, per codec', () => {
     const args = ytdlp.downloadArgs({ url: 'https://www.youtube.com/watch?v=x', dir: '/tmp/dl', codec: 'mp3', ffmpegPath: path.resolve('/opt/ffmpeg/ffmpeg'), maxFilesizeMb: 100 });
-    assert.deepEqual(args.slice(0, 5), ['-f', 'ba', '-x', '--no-playlist', 'https://www.youtube.com/watch?v=x']);
+    // `ba/b`, not `ba`: YouTube often offers a yt-dlp without a JS runtime no
+    // audio-only stream at all, and a bare `ba` then has nothing to pick.
+    assert.deepEqual(args.slice(0, 5), ['-f', 'ba/b', '-x', '--no-playlist', 'https://www.youtube.com/watch?v=x']);
     assert.equal(args[args.indexOf('-o') + 1], path.join('/tmp/dl', '%(title)s.%(ext)s'));
     assert.ok(args.includes('--restrict-filenames') && args.includes('--no-overwrites'));
     assert.equal(args[args.indexOf('--audio-format') + 1], 'mp3');

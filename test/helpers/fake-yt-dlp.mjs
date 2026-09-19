@@ -65,7 +65,15 @@ if (has('-x')) {
   const ext = fmt === 'vorbis' ? 'ogg' : fmt;
   const out = String(valueOf('-o') || '%(title)s.%(ext)s').replace('%(title)s', restricted).replace('%(ext)s', ext);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Like the real thing: the thumbnail for --embed-thumbnail lands BEFORE the
+  // media, whole, and is only removed once it has been embedded — so a
+  // download that fails leaves it behind.
+  const thumb = has('--embed-thumbnail') ? out.replace(/\.[^.]+$/, '.jpg') : null;
   (async () => {
+    if (thumb) {
+      fs.mkdirSync(path.dirname(thumb), { recursive: true });
+      fs.writeFileSync(thumb, 'a thumbnail');
+    }
     for (const p of [12.5, 43.2, 78.9, 100]) {
       process.stdout.write(`[download]  ${p}% of    5.10MiB at    1.20MiB/s ETA 00:03\n`);
       if (dl.slowMs) { await sleep(dl.slowMs); }
@@ -76,6 +84,7 @@ if (has('-x')) {
     }
     fs.mkdirSync(path.dirname(out), { recursive: true });
     fs.copyFileSync(process.env.MSTREAM_FAKE_YTDLP_FIXTURE, out);
+    if (thumb) { fs.rmSync(thumb, { force: true }); }   // "embedded"
     if (has('--print')) { process.stdout.write(out + '\n'); }
     process.exit(0);
   })();

@@ -8302,6 +8302,7 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
                           <div class="dp-plugin-h"><b>{{ p.title }}</b><span v-for="c in p.capabilities" :key="c" class="dp-tag">{{ c }}</span><span v-if="p.scope === 'user'" class="dp-tag dp-tag-user">{{ t('admin.dplugins.tag.perUser') }}</span></div>
                           <div class="dp-plugin-d">{{ p.description }}</div>
                           <div v-if="p.connectedUsers !== undefined" class="dp-plugin-meta">{{ t('admin.dplugins.connected', { count: p.connectedUsers, total: userCount }) }}</div>
+                          <div v-if="p.enabled && p.available && toolLine(p)" class="dp-plugin-meta">yt-dlp {{ toolLine(p).version }}<span v-if="toolLine(p).old" class="dp-warn-soft"> &middot; {{ t('admin.dplugins.ytdlpOld', { count: toolLine(p).months }) }}</span></div>
                           <div v-if="p.enabled && !p.available" class="dp-reason"><span><b>{{ t('admin.dplugins.status.cannotRunLead') }}</b> {{ p.reason }} {{ t('admin.dplugins.status.hiddenFromUsers', { title: p.title }) }}</span></div>
                         </div>
                         <div class="dp-plugin-act">
@@ -8570,6 +8571,16 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
       if (name === 'activity') { this.loadActivity().then(() => this.schedulePoll()); }
       if (name === 'downloads') { this.load(); }
     },
+    // The external tool a plug-in's probe reported. yt-dlp's version IS its
+    // release date, and a stale one is the usual reason downloads fail, so
+    // past 90 days (the age yt-dlp itself starts warning at) the row says so.
+    toolLine: function(p) {
+      const version = p.detail && typeof p.detail.ytdlp === 'string' ? p.detail.ytdlp : null;
+      if (!version) { return null; }
+      const m = /^(\d{4})\.(\d{1,2})\.(\d{1,2})/.exec(version);
+      const days = m ? Math.floor((Date.now() - Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))) / 86400000) : null;
+      return { version, old: days !== null && days > 90, months: days === null ? 0 : Math.max(3, Math.round(days / 30)) };
+    },
     pluginState: function(p) {
       if (this.busy[p.name] === true) { return { word: 'saving', dot: 'off' }; }
       if (!p.enabled) { return { word: 'off', dot: 'off' }; }
@@ -8677,6 +8688,9 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
       const e = String(job.error || '');
       const known = [
         [/not a bot|sign in to confirm/i, 'botCheck'],
+        // What an out-of-date yt-dlp (or one with no JavaScript runtime
+        // beside it) says when YouTube has moved on.
+        [/HTTP Error 403|requested format is not available|nsig|signature extraction|unable to extract|no video formats/i, 'ytdlpStale'],
         [/nothing matched closely enough|returned no results/i, 'noMatch'],
         [/discover downloads is full/i, 'full'],
         [/\b429\b|transfer limit|daily limit/i, 'peerLimit'],
