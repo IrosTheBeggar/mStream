@@ -1,0 +1,361 @@
+<!-- @dsCard group="Discover" name="Recommendation modal · peer row · Federation view" subtitle="Desktop · Federation | Plug-Ins selector · destination bar · song, album, artist actions · annotated" width="1000" height="1170" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Discover · recommendation modal (peer row, Federation view)</title>
+<style>
+/* Discover recommendation modal — design mock (not shipped CSS).
+   Colours come from webapp/alpha/spa.css (Discover panel) and
+   webapp/assets/css/modal.css (hystmodal window) so the mock matches the app. */
+:root {
+  --win: #2d333b;        /* hystmodal window */
+  --well: #23282f;       /* option rows */
+  --well-2: #1a1e25;     /* icon tiles, progress track, selector track */
+  --line: #3a4149;       /* section dividers */
+  --line-2: #444c56;     /* app-wide border colour */
+  --chip: #363d47; --chip-h: #414957;
+  --t1: #f0f2f5; --t2: #dfe3ea; --t3: #b8bcc6; --t4: #8a919e; --t5: #6f7683;
+  --blue: #657ee4; --blue-2: #8ea0f0;   /* library accent */
+  --teal: #4fb8a8; --teal-2: #5ec9b9;   /* "From the network" */
+  --amber: #d9a441; --amber-2: #e6b85c; /* "From your peers" */
+  --green: #4fc27a; --red: #e0616a; --ink: #0f1216;
+  --src: var(--teal); --src-2: var(--teal-2);
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, Consolas, "SF Mono", Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: #0f1216; color: var(--t2); font: 13px/1.4 var(--font); -webkit-font-smoothing: antialiased; }
+a { color: inherit; text-decoration: none; cursor: pointer; }
+svg { display: block; }
+b { font-weight: 600; color: var(--t2); }
+code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.07); padding: 0 4px; border-radius: 3px; }
+.stage { padding: 24px; display: flex; justify-content: center; align-items: flex-start; }
+
+/* ── window ─────────────────────────────────────────── */
+.dm { position: relative; width: 520px; max-width: 100%; background: var(--win); border-radius: 6px;
+      box-shadow: 0 16px 48px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.04); color: var(--t2); }
+.dm-network { --src: var(--teal); --src-2: var(--teal-2); }
+.dm-peer { --src: var(--amber); --src-2: var(--amber-2); }
+.dm-local { --src: var(--blue); --src-2: var(--blue-2); }
+.dm > .dm-section:first-child { border-top: 0; }
+.dm-close { position: absolute; top: 10px; right: 10px; width: 28px; height: 28px; border-radius: 4px; z-index: 2;
+            display: flex; align-items: center; justify-content: center; color: var(--t4); }
+.dm-close:hover { background: var(--chip); color: var(--t1); }
+.dm-close svg { width: 16px; height: 16px; }
+.dm-tools { position: absolute; top: 44px; right: 10px; z-index: 2; display: flex; gap: 4px; }
+.dm-head { position: relative; display: flex; gap: 14px; padding: 18px 48px 12px 20px; }
+.dm-art { width: 72px; height: 72px; border-radius: 4px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+          background: linear-gradient(135deg, #2a3140, #1a1e25); color: rgba(255,255,255,.3); border: 1px solid var(--line); }
+.dm-art svg { width: 28px; height: 28px; }
+.dm-art-real { background: linear-gradient(160deg, #6b4fb8 0%, #2f7ea8 55%, #1a1e25 100%); color: rgba(255,255,255,.75); }
+.dm-head-text { min-width: 0; flex: 1; }
+.dm-title { font-size: 16px; font-weight: 600; color: var(--t1); line-height: 1.25; }
+.dm-artist { font-size: 13px; color: var(--t3); margin-top: 2px; }
+.dm-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 6px; font-size: 11.5px; color: var(--t4); }
+.dm-isrc { font-family: var(--mono); font-size: 10.5px; background: var(--well-2); padding: 1px 5px; border-radius: 3px; color: var(--t4); }
+.dm-source { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 7px; font-size: 11.5px; color: var(--t3); }
+.dm-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--src); flex-shrink: 0; }
+.dm-status { display: flex; align-items: center; gap: 6px; margin-top: 5px; font-size: 11px; color: var(--t4); }
+.dm-status i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+.dm-matchbar { display: inline-flex; align-items: center; gap: 6px; }
+.dm-matchbar i { display: block; width: 4px; height: 14px; border-radius: 2px; background: var(--well-2); position: relative; overflow: hidden; }
+.dm-matchbar i::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: var(--pct, 50%); background: var(--src); border-radius: 2px; }
+
+/* ── view selector (peer rows: Federation | Plug-Ins) ── */
+.dm-tabs { position: relative; display: flex; gap: 3px; margin: 2px 20px 12px; padding: 3px; background: var(--well-2); border-radius: 6px; }
+.dm-tab { flex: 1; text-align: center; padding: 6px 10px; border-radius: 4px; font: 600 12px/1.2 var(--font); color: var(--t3); cursor: pointer; }
+.dm-tab:hover { color: var(--t1); }
+.dm-tab-on { background: var(--src); color: var(--ink); }
+.dm-tab-on:hover { color: var(--ink); }
+
+/* ── buttons ────────────────────────────────────────── */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 4px; border: 0; cursor: pointer;
+       font: 600 12.5px/1.2 var(--font); background: var(--chip); color: var(--t2); white-space: nowrap; }
+.btn:hover { background: var(--chip-h); color: var(--t1); }
+.btn-primary { background: var(--src); color: var(--ink); }
+.btn-primary:hover { background: var(--src-2); color: var(--ink); }
+.btn-ghost { background: transparent; border: 1px solid var(--line-2); color: var(--t3); }
+.btn-ghost:hover { border-color: var(--src); color: var(--t1); background: transparent; }
+.btn-sm { padding: 4px 9px; font-size: 11.5px; }
+.btn-icon { padding: 4px 6px; }
+.btn-danger { color: var(--red); }
+.btn.is-disabled { opacity: .45; cursor: default; }
+.btn svg { width: 14px; height: 14px; }
+.btn .tag { margin-left: 2px; }
+
+/* ── sections ───────────────────────────────────────── */
+.dm-section { position: relative; border-top: 1px solid var(--line); padding: 11px 20px 13px; }
+.dm-section-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.dm-label { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--t4);
+            display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.dm-label svg { width: 12px; height: 12px; }
+.dm-hint { font-size: 11px; color: var(--t5); font-style: italic; text-align: right; }
+.dm-hint a { color: var(--t4); text-decoration: underline; }
+.dm-note { font-size: 11px; color: var(--t5); margin-top: 8px; line-height: 1.4; }
+.opt { display: flex; align-items: center; gap: 10px; padding: 7px 10px; background: var(--well); border-radius: 4px; }
+.opt + .opt { margin-top: 6px; }
+.opt-ic { width: 28px; height: 28px; border-radius: 6px; background: var(--well-2); display: flex; align-items: center;
+          justify-content: center; color: var(--t3); flex-shrink: 0; }
+.opt-ic svg { width: 16px; height: 16px; }
+.opt-ic-on { background: var(--src); color: var(--ink); }
+.opt-ic-ok { color: var(--green); }
+.opt-ic-err { color: var(--red); }
+.opt-body { flex: 1; min-width: 0; }
+.opt-title { font-size: 12.5px; color: var(--t2); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.opt-sub { font-size: 11px; color: var(--t4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.opt-sub a { text-decoration: underline; }
+.opt-act { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
+.opt-muted .opt-title, .opt-muted .opt-sub { color: var(--t5); }
+/* A row whose actions sit on their own line under the text (three buttons never fit beside it). */
+.opt-wrap { flex-wrap: wrap; }
+.opt-wrap > .opt-act { flex-basis: 100%; padding-left: 38px; justify-content: flex-start; margin-top: 2px; flex-wrap: wrap; }
+.progress { height: 4px; background: var(--well-2); border-radius: 2px; overflow: hidden; margin-top: 6px; }
+.progress i { display: block; height: 100%; background: var(--src); border-radius: 2px; }
+.progress-indet i { width: 35%; animation: indet 1.4s ease-in-out infinite; }
+@keyframes indet { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+.attrib { font-size: 10.5px; color: var(--t5); margin-top: 7px; }
+.attrib a { color: var(--t4); text-decoration: underline; }
+
+/* ── chips (find elsewhere) ─────────────────────────── */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--t2); background: var(--chip);
+        border-radius: 4px; padding: 4px 9px; }
+.chip:hover { background: var(--chip-h); color: var(--t1); }
+.chip svg { width: 11px; height: 11px; opacity: .75; }
+.chip-canon { background: transparent; border: 1px solid var(--blue); color: var(--blue-2); }
+.chip-canon:hover { background: rgba(101,126,228,.12); }
+
+/* ── tags ───────────────────────────────────────────── */
+.tag { display: inline-flex; align-items: center; gap: 4px; font-size: 9.5px; font-weight: 700; letter-spacing: .06em;
+       text-transform: uppercase; padding: 1px 6px; border-radius: 8px; background: var(--well-2); color: var(--t4); white-space: nowrap; vertical-align: middle; }
+.tag svg { width: 9px; height: 9px; }
+.tag-soon { background: transparent; border: 1px solid var(--amber); color: var(--amber); }
+.tag-sug { background: transparent; border: 1px solid var(--blue); color: var(--blue-2); }
+.tag-ok { color: var(--green); }
+.tag-err { color: var(--red); }
+.tag-src { color: var(--src); }
+
+/* ── misc ───────────────────────────────────────────── */
+.kbd { font-family: var(--mono); font-size: 10.5px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.25);
+       border-radius: 3px; padding: 0 5px; color: var(--t3); }
+.dashed { border: 1px dashed var(--line-2); border-radius: 6px; padding: 14px 16px; font-size: 12px; color: var(--t4); line-height: 1.45; }
+
+/* ── destination (where collection copies land) ────── */
+/* The bar sits under the view selector and always shows the real path for
+   the song in the window; Change… swaps it for the form. Same form serves
+   the Get it section's Keep… step. */
+.dm-dest { position: relative; display: flex; align-items: center; gap: 10px; margin: 0 20px 12px; padding: 7px 10px;
+           background: var(--well-2); border-radius: 6px; font-size: 11.5px; color: var(--t3); }
+.dm-dest > svg { width: 14px; height: 14px; color: var(--src); flex-shrink: 0; }
+.dm-dest .path { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-dest .path b { color: var(--t1); font-weight: 600; }
+.dm-dest .path i { font-style: normal; color: var(--t5); margin: 0 4px; }
+.dm-dest .opt-act { gap: 4px; }
+.dest-form { margin: 0 20px 12px; padding: 12px 12px 10px; background: var(--well); border-radius: 6px; display: grid; gap: 9px; }
+.field { display: grid; grid-template-columns: 78px 1fr; gap: 5px 12px; align-items: center; font-size: 11.5px; }
+.field > label { color: var(--t4); font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.field-body { display: flex; gap: 6px; align-items: center; min-width: 0; flex-wrap: wrap; }
+.field-body > .static { color: var(--t2); }
+.input, .select { font: 12px/1.2 var(--font); color: var(--t1); background: var(--well-2); border: 1px solid var(--line-2);
+                  border-radius: 4px; padding: 6px 8px; min-width: 0; display: inline-flex; align-items: center; gap: 6px; }
+.input { flex: 1; font-family: var(--mono); font-size: 11.5px; }
+.input.is-err { border-color: var(--red); }
+.input .caret { display: inline-block; width: 1px; height: 12px; background: var(--t1); margin-left: 1px; }
+.select svg { width: 12px; height: 12px; color: var(--t4); margin-left: auto; }
+.toks { display: flex; flex-wrap: wrap; gap: 4px; grid-column: 2; }
+.tok { font: 500 10.5px/1 var(--mono); color: var(--t3); background: var(--chip); border-radius: 3px; padding: 3px 6px; cursor: pointer; }
+.tok:hover { background: var(--chip-h); color: var(--t1); }
+.tok-new { background: transparent; border: 1px solid var(--blue); color: var(--blue-2); }
+.tok-preset { background: transparent; border: 1px solid var(--line-2); color: var(--t4); }
+.field-hint { grid-column: 2; font-size: 10.5px; color: var(--t5); line-height: 1.4; }
+.field-err { grid-column: 2; font-size: 10.5px; color: var(--red); line-height: 1.4; }
+.dest-preview { grid-column: 1 / -1; font: 11px/1.4 var(--mono); color: var(--t3); background: var(--well-2); border-radius: 4px;
+                padding: 6px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dest-preview b { color: var(--src); font-weight: 600; }
+.dest-preview s { color: var(--t5); }
+.dest-preview em { font-style: normal; color: var(--t5); }
+.tree { grid-column: 2; background: var(--well-2); border: 1px solid var(--line-2); border-radius: 4px; overflow: hidden; font-size: 11.5px; }
+.tree-crumb { display: flex; gap: 4px; padding: 5px 8px; color: var(--t4); border-bottom: 1px solid var(--line); font-size: 11px; }
+.tree-crumb b { color: var(--t2); font-weight: 600; }
+.tree-row { display: flex; align-items: center; gap: 7px; padding: 4px 8px; color: var(--t3); cursor: pointer; }
+.tree-row svg { width: 12px; height: 12px; color: var(--t5); flex-shrink: 0; }
+.tree-row:hover, .tree-row-on { background: var(--chip); color: var(--t1); }
+.tree-row-on svg { color: var(--src); }
+.tree-row .tag { margin-left: auto; }
+.dest-act { display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
+.dest-act .spacer { flex: 1; font-size: 10.5px; color: var(--t5); }
+
+/* ── design-spec scaffolding (not part of the UI) ───── */
+.spec { display: flex; gap: 28px; align-items: flex-start; padding: 28px; }
+.spec-notes { width: 330px; flex-shrink: 0; font-size: 12px; color: var(--t3); line-height: 1.45; }
+.spec-notes h1 { font-size: 15px; color: var(--t1); margin: 0 0 4px; }
+.spec-notes h2 { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--t4); margin: 16px 0 6px; }
+.spec-notes p { margin: 0 0 8px; }
+.spec-notes ol { margin: 0; padding-left: 0; list-style: none; }
+.spec-notes li { display: flex; gap: 10px; margin-bottom: 8px; }
+.co { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%;
+      background: var(--amber); color: var(--ink); font: 700 10.5px/1 var(--font); flex-shrink: 0; }
+.co-pin { position: absolute; left: -32px; top: 10px; }
+.legend { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.grid { display: grid; grid-template-columns: repeat(2, 520px); gap: 22px 24px; padding: 24px; align-items: start; }
+.cell h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--t3); letter-spacing: .02em; }
+.cell h3 small { font-weight: 400; color: var(--t5); margin-left: 6px; }
+.page-h { padding: 24px 24px 0; }
+.page-h h1 { font-size: 16px; color: var(--t1); margin: 0 0 4px; }
+.page-h p { margin: 0; font-size: 12px; color: var(--t4); max-width: 960px; line-height: 1.5; }
+</style>
+<style>
+  .spec-stage { position: relative; width: 580px; flex-shrink: 0; padding: 20px 0 20px 40px; }
+</style>
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><path fill="currentColor" d="M6 6h12v12H6z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path fill="currentColor" d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path fill="currentColor" d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zM5 5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h12c1.1 0 2-.9 2-2v-7h-2v7H5V7h7V5H5z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></symbol>
+  <symbol id="i-retry" viewBox="0 0 24 24"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></symbol>
+  <symbol id="i-note" viewBox="0 0 24 24"><path fill="currentColor" d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></symbol>
+  <symbol id="i-youtube" viewBox="0 0 24 24"><path fill="currentColor" d="M10 15l5.19-3L10 9v6zm11.56-7.83c.13.47.22 1.1.28 1.9.07.8.1 1.49.1 2.09L22 12c0 2.19-.16 3.8-.44 4.83-.25.9-.83 1.48-1.73 1.73-.47.13-1.33.22-2.65.28-1.3.07-2.49.1-3.59.1L12 19c-4.19 0-6.8-.16-7.83-.44-.9-.25-1.48-.83-1.73-1.73-.13-.47-.22-1.1-.28-1.9-.07-.8-.1-1.49-.1-2.09L2 12c0-2.19.16-3.8.44-4.83.25-.9.83-1.48 1.73-1.73.47-.13 1.33-.22 2.65-.28 1.3-.07 2.49-.1 3.59-.1L12 5c4.19 0 6.8.16 7.83.44.9.25 1.48.83 1.73 1.73z"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path fill="currentColor" d="M7 2v11h3v9l7-12h-4l4-8z"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24"><path fill="currentColor" d="M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 19c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM20 3H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zM7 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></symbol>
+  <symbol id="i-headphones" viewBox="0 0 24 24"><path fill="currentColor" d="M12 1c-4.97 0-9 4.03-9 9v7c0 1.66 1.34 3 3 3h3v-8H5v-2c0-3.87 3.13-7 7-7s7 3.13 7 7v2h-4v8h3c1.66 0 3-1.34 3-3v-7c0-4.97-4.03-9-9-9z"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path fill="currentColor" d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path fill="currentColor" d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><path fill="currentColor" d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path fill="currentColor" d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></symbol>
+  <symbol id="i-compass" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10 10-4.49 10-10S17.51 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm3-13-6.5 3.5L5 17l6.5-3.5L15 7zm-3 6.25c-.69 0-1.25-.56-1.25-1.25s.56-1.25 1.25-1.25 1.25.56 1.25 1.25-.56 1.25-1.25 1.25z" transform="rotate(45 12 12)"/></symbol>
+</svg>
+<div class="spec">
+  <div class="spec-stage">
+    <div class="dm dm-peer" role="dialog" aria-modal="true" aria-labelledby="dm-title">
+      <a class="dm-close" title="Close · Esc"><svg><use href="#i-close"/></svg></a>
+      <div class="dm-tools"><a class="btn btn-sm btn-ghost btn-icon" title="Copy “Marlowe Vale – Paper Lanterns”"><svg><use href="#i-copy"/></svg></a></div>
+      <div class="dm-head">
+        <span class="co co-pin" style="top:18px">1</span>
+        <div class="dm-art dm-art-real"><svg><use href="#i-note"/></svg></div>
+        <div class="dm-head-text">
+          <div class="dm-title" id="dm-title">Paper Lanterns</div>
+          <div class="dm-artist">Marlowe Vale · Night Ferry</div>
+          <div class="dm-meta"><span>2019</span><span>3:48</span><span>FLAC</span><span class="dm-matchbar"><i style="--pct:79%"></i>79% match to “Alpha Song”</span></div>
+          <div class="dm-source"><span class="dm-dot"></span>From your peers · Sam’s server (paired)<span class="tag tag-src">playable</span></div>
+          <div class="dm-status"><i></i>Sam’s server online · last seen 2 min ago</div>
+        </div>
+      </div>
+
+      <div class="dm-tabs" role="tablist">
+        <span class="co co-pin" style="top:6px">2</span>
+        <a class="dm-tab dm-tab-on" role="tab" aria-selected="true">Federation</a>
+        <a class="dm-tab" role="tab" aria-selected="false">Plug-Ins</a>
+      </div>
+
+      <div class="dm-dest">
+        <span class="co co-pin" style="top:8px">3</span>
+        <svg><use href="#i-folder"/></svg>
+        <span class="path">Copies go to <b>Music</b><i>›</i>Marlowe Vale<i>›</i>Night Ferry</span>
+        <span class="tag">library default</span>
+        <div class="opt-act"><a class="btn btn-sm btn-ghost">Change…</a></div>
+      </div>
+
+      <section class="dm-section">
+        <span class="co co-pin">4</span>
+        <div class="dm-section-h"><span class="dm-label"><svg><use href="#i-play"/></svg>This song</span><span class="dm-hint">Streams through your server</span></div>
+        <div class="opt opt-wrap">
+          <div class="opt-ic opt-ic-on"><svg><use href="#i-play"/></svg></div>
+          <div class="opt-body"><div class="opt-title">Paper Lanterns<span class="tag tag-src">full track</span></div><div class="opt-sub">Counted on your stats, never on Sam’s · FLAC · 3:48</div></div>
+          <div class="opt-act"><a class="btn btn-sm btn-primary"><svg><use href="#i-play"/></svg>Play now</a><a class="btn btn-sm">Queue next</a><a class="btn btn-sm"><svg><use href="#i-plus"/></svg>Add to queue</a></div>
+        </div>
+        <div class="opt">
+          <div class="opt-ic"><svg><use href="#i-folder"/></svg></div>
+          <div class="opt-body"><div class="opt-title">Add to your collection</div><div class="opt-sub">Copies the file to the folder above · 28 MB · skipped if you already have it</div></div>
+          <div class="opt-act"><a class="btn btn-sm"><svg><use href="#i-download"/></svg>Add</a></div>
+        </div>
+      </section>
+
+      <section class="dm-section">
+        <span class="co co-pin">5</span>
+        <div class="dm-section-h"><span class="dm-label"><svg><use href="#i-note"/></svg>Album</span><span class="dm-hint">Night Ferry · 2019 · 11 songs · none in your library</span></div>
+        <div class="opt opt-wrap">
+          <div class="opt-ic"><svg><use href="#i-note"/></svg></div>
+          <div class="opt-body"><div class="opt-title">Night Ferry</div><div class="opt-sub">11 songs · 46 min · on Sam’s server</div></div>
+          <div class="opt-act"><a class="btn btn-sm btn-primary"><svg><use href="#i-open"/></svg>View album</a><a class="btn btn-sm"><svg><use href="#i-play"/></svg>Play album</a><a class="btn btn-sm"><svg><use href="#i-plus"/></svg>Add album to queue</a></div>
+        </div>
+        <div class="opt">
+          <div class="opt-ic"><svg><use href="#i-folder"/></svg></div>
+          <div class="opt-body"><div class="opt-title">Add album to your collection</div><div class="opt-sub">11 songs · 98 MB · one folder · songs you already have are skipped</div></div>
+          <div class="opt-act"><a class="btn btn-sm"><svg><use href="#i-download"/></svg>Add</a></div>
+        </div>
+      </section>
+
+      <section class="dm-section">
+        <span class="co co-pin">6</span>
+        <div class="dm-section-h"><span class="dm-label"><svg><use href="#i-server"/></svg>Artist</span><span class="dm-hint">Marlowe Vale · 4 albums on Sam’s server · you have 1</span></div>
+        <div class="opt">
+          <div class="opt-ic"><svg><use href="#i-server"/></svg></div>
+          <div class="opt-body"><div class="opt-title">Marlowe Vale</div><div class="opt-sub">4 albums · 51 songs · 2016 – 2023</div></div>
+          <div class="opt-act"><a class="btn btn-sm btn-primary"><svg><use href="#i-open"/></svg>View artist</a></div>
+        </div>
+        <div class="opt">
+          <div class="opt-ic"><svg><use href="#i-folder"/></svg></div>
+          <div class="opt-body"><div class="opt-title">Add artist to your collection</div><div class="opt-sub">4 albums · 51 songs · 410 MB · one job, album by album · a cancel keeps what finished</div></div>
+          <div class="opt-act"><a class="btn btn-sm"><svg><use href="#i-download"/></svg>Add</a></div>
+        </div>
+        <div class="opt">
+          <div class="opt-ic"><svg><use href="#i-plus"/></svg></div>
+          <div class="opt-body"><div class="opt-title">Add what you’re missing<span class="tag tag-sug">suggested</span></div><div class="opt-sub">3 albums · 34 songs · 290 MB that aren’t in your library</div></div>
+          <div class="opt-act"><a class="btn btn-sm"><svg><use href="#i-download"/></svg>Add missing</a></div>
+        </div>
+      </section>
+
+      <section class="dm-section">
+        <span class="co co-pin">7</span>
+        <div class="dm-section-h"><span class="dm-label"><svg><use href="#i-compass"/></svg>More from Sam’s server<span class="tag tag-sug">suggested</span></span></div>
+        <div class="opt">
+          <div class="opt-ic"><svg><use href="#i-compass"/></svg></div>
+          <div class="opt-body"><div class="opt-title">More like this on Sam’s server</div><div class="opt-sub">Refills the Discover panel from Sam’s library only</div></div>
+          <div class="opt-act"><a class="btn btn-sm">Show</a></div>
+        </div>
+        <div class="opt">
+          <div class="opt-ic"><svg><use href="#i-headphones"/></svg></div>
+          <div class="opt-body"><div class="opt-title">Auto DJ from here</div><div class="opt-sub">Starts a session seeded by this song, playing from Sam’s server</div></div>
+          <div class="opt-act"><a class="btn btn-sm"><svg><use href="#i-play"/></svg>Start</a></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <aside class="spec-notes">
+    <h1>Peer row · Federation view</h1>
+    <p>A paired server’s song, album and artist are fully reachable, so the window opens on a <b>Federation</b> view built around them. The Plug-Ins view (card 09) keeps the network-row sections. <b>Collection</b> is decided: your library; Add copies files into a folder you choose (card 10).</p>
+    <h2>Callouts</h2>
+    <ol>
+      <li><span class="co">1</span><div><b>Header</b> in the peers’ amber. Title, album, year and length ride in the recommendation row; format, size and artwork come from one metadata call to the peer. The status line is the peers listing’s last contact. The peer enforces its transfer limits but reports nothing about them, so no allowance is shown.</div></li>
+      <li><span class="co">2</span><div><b>Selector.</b> Federation is the default for peer rows; Plug-Ins shows the same sections a network row gets. The last choice is remembered for the session. Network rows have no selector.</div></li>
+      <li><span class="co">3</span><div><b>Destination bar.</b> Where every Add row puts its files, resolved for <i>this</i> song so the path is the real one: library › base folder › layout. Default: the library’s Path Template when an admin set one (the torrent template), else <code>{{ARTIST}}/{{ALBUM}}</code> at the root; the file keeps the peer’s name. Change… opens the picker in place (card 10); the choice is remembered per account.</div></li>
+      <li><span class="co">4</span><div><b>This song.</b> Play now inserts it next and starts playback; Queue next and Add to queue are the federation song wizard’s two positions. <b>Add to your collection</b> copies the file through the stream proxy into the folder above and inserts the row like a Youtube DL download, so it plays at once and is an ordinary song from then on. The row becomes the copy job while it runs.</div></li>
+      <li><span class="co">5</span><div><b>Album.</b> Song count and length come from the peer’s album-songs route, one call. View album opens the peer browser panel; Play album replaces the queue, Add album to queue appends. The copy renders the layout per song (an album whose tags agree lands in one folder), skips songs you already have and never overwrites a file at the same path.</div></li>
+      <li><span class="co">6</span><div><b>Artist.</b> View artist likewise. Add artist copies every album as one job, album by album, so a cancel keeps what finished. <b>Add what you’re missing</b> (suggested) diffs Sam’s discography against your library by album identity and copies only the gaps.</div></li>
+      <li><span class="co">7</span><div><b>Suggested extras.</b> More like this on Sam’s server sends the seed vector to that one peer’s similarity responder through the read proxy; Auto DJ from here uses the DJ’s existing explicit seed and cross-server anchors. Both need only an entry point.</div></li>
+    </ol>
+    <h2>Decided · 16 Sep</h2>
+    <p>“Collection” means <b>your library</b>: Add copies files from the peer into a local folder the user sets or chooses, default <code>{{ARTIST}}/{{ALBUM}}</code>. Copies use the playback stream proxy and spend the pairing key’s daily quota; the Add rows exist only for accounts that may create jobs and may upload.</p>
+    <h2>Legend</h2>
+    <div class="legend"><span class="tag tag-sug">suggested</span><span>my addition, strike if unwanted</span></div>
+  </aside>
+</div>
+</body>
+</html>
