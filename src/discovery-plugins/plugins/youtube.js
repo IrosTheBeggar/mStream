@@ -256,7 +256,7 @@ async function run(ctx) {
 export default Object.freeze({
   name: NAME,
   title: 'YouTube',
-  description: 'Searches YouTube for the recommendation, downloads the best-matching upload\'s audio with yt-dlp into the Discover downloads folder, tags it and adds it to the library. Needs yt-dlp and ffmpeg; off by default.',
+  description: 'Searches YouTube, scores the uploads against the recommendation and saves the best match\'s audio into Discover downloads with yt-dlp, tagged and playable at once. Needs yt-dlp and ffmpeg.',
   capabilities: [CAPABILITIES.ACQUIRE],
   scope: SCOPES.SERVER,
   adminSettings: ['binary', 'codec', 'maxFilesizeMb', 'searchResults'],

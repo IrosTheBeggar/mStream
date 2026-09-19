@@ -292,8 +292,9 @@ describe('discovery plug-ins · admin API · the configured binary', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-dpadmin2-'));
     plain = await startServer({
       dlnaMode: 'disabled', waitForScan: false,
+      env: { MSTREAM_TEST_DISCOVERY_NOOP_PLUGIN: '1' },
       extraConfig: {
-        discoveryPlugins: { youtube: { enabled: true, binary: path.join(dir, 'no-such-yt-dlp') } },
+        discoveryPlugins: { youtube: { enabled: true, binary: path.join(dir, 'no-such-yt-dlp') }, 'noop-acquire': { enabled: true } },
         discoveryJobs: { downloads: { dir: path.join(dir, 'discover-downloads') } },
       },
     });
@@ -329,6 +330,14 @@ describe('discovery plug-ins · admin API · the configured binary', () => {
 
     // Neither try was saved.
     assert.match(pluginOf((await open('GET', STATUS)).body, 'youtube').config.binary, /no-such-yt-dlp$/);
+  });
+
+  test('a server with no users: the jobs list names nobody, never the shared account\'s internal name', async () => {
+    const started = await open('POST', '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: { artist: 'Nova', title: 'Anyone' } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const all = await open('GET', '/api/v1/discovery/plugin-jobs?all=1');
+    assert.ok(all.body.jobs.length >= 1);
+    assert.ok(all.body.jobs.every((j) => j.username === null), JSON.stringify(all.body.jobs.map((j) => j.username)));
   });
 
   test('saving a new binary re-probes at once: the row redraws from the answer', async () => {

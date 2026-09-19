@@ -32,6 +32,9 @@
 
   <script defer src="../assets/js/lib/materialize.js"></script>
   <script defer src="../assets/js/spa.js"></script>
+  <!-- The Discover job rows' pure half (window.DISCOVERJOBS): the Discovery
+       Plugins view words a job exactly as the player does. -->
+  <script defer src="../alpha/discover-jobs.js"></script>
   <script defer src="index.js"></script>
   <script defer src="../assets/js/lib/cookie.min.js"></script>
 
@@ -102,6 +105,10 @@
     <div class="side-nav-item waves-effect waves-purple" onclick="changeView('discovery-view', this)">
       <svg xmlns="http://www.w3.org/2000/svg" height="28" viewBox="0 0 24 24" fill="none" stroke="#4dd0e1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
       <span data-i18n="admin.nav.discovery">Discovery</span>
+    </div>
+    <div class="side-nav-item waves-effect waves-purple" onclick="changeView('discovery-plugins-view', this)">
+      <svg xmlns="http://www.w3.org/2000/svg" height="28" viewBox="0 0 24 24" fill="none" stroke="#4dd0e1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6"/><path d="M6 8h12v4a6 6 0 0 1-12 0V8z"/><path d="M12 18v4"/></svg>
+      <span data-i18n="admin.nav.discoveryPlugins">Discovery Plugins</span>
     </div>
     <div class="side-nav-header">
       <span data-i18n="admin.nav.features">Features</span>

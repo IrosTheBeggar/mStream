@@ -2718,7 +2718,7 @@ paths:
           schema: { type: string, enum: [queued, running, done, failed, cancelled] }
         - name: all
           in: query
-          description: "Admins only — every user's jobs; each then carries `username` (null when the account is gone)."
+          description: "Admins only — every user's jobs; each then carries `username` (null when the account is gone, and for the shared anonymous account of a server with no users)."
           schema: { type: boolean }
         - name: limit
           in: query

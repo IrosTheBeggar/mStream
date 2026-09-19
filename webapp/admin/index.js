@@ -520,6 +520,25 @@ const ADMINDATA = (() => {
     } catch (_err) {}
   };
 
+  // Discovery Plugins view (GET /api/v1/admin/discovery-plugins/status). The
+  // keys are declared up front so the view's bindings are reactive from the
+  // first render; `editing` / `editingNumber` hand the clicked row to its modal.
+  module.discoveryPlugins = { loaded: false, status: null, editing: null, editingNumber: null };
+  module.getDiscoveryPlugins = async () => {
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/discovery-plugins/status`
+      });
+      module.discoveryPlugins.status = res.data;
+    } catch (err) {
+      // A failed refresh keeps what was on screen; a failed first load shows
+      // the view's retry.
+      console.error('failed to load discovery plug-ins', err);
+    }
+    module.discoveryPlugins.loaded = true;
+  };
+
   return module;
 })();
 
@@ -8185,6 +8204,538 @@ const discoveryView = Vue.component('discovery-view', {
   }
 });
 
+// ── Discovery Plugins ─────────────────────────────────────────────────────
+// What people on this server can DO with a Discover recommendation, and who
+// may: every registered plug-in (src/discovery-plugins/) as a switch, the job
+// gate, the Discover downloads folder with its clock and size cap, and every
+// account's jobs. One card, four tabs, in the Discovery view's vocabulary.
+// Everything here is live — the server reads these values per request, per
+// runner tick or per retention pass — so nothing needs a restart and nothing
+// has an APPLY button. Design: docs/designs/discovery-plugins-admin.
+//
+// The groups are the recommendation window's sections, in the window's order,
+// so a switch reads as "this adds a row under Listen".
+const DP_GROUPS = [
+  { id: 'listen', caps: ['preview', 'play'] },
+  { id: 'getIt', caps: ['acquire'] },
+  { id: 'sendTo', caps: ['handoff'] },
+  { id: 'links', caps: ['links'] },
+];
+
+// How the settings modal draws each plug-in's editable config keys (the
+// server says WHICH keys: `adminSettings`). A key without an entry is a plain
+// text field, so a new plug-in needs no code here to be editable.
+const DP_FIELDS = {
+  youtube: {
+    binary: { kind: 'text', mono: true, test: true },
+    codec: { kind: 'select', options: ['mp3', 'm4a', 'aac', 'opus', 'ogg', 'flac', 'wav'] },
+    maxFilesizeMb: { kind: 'number', min: 1, max: 4096, unit: 'MB' },
+    searchResults: { kind: 'number', min: 1, max: 20 },
+  },
+  itunes: {
+    country: { kind: 'text', maxlength: 2, upper: true, narrow: true },
+  },
+};
+
+function dpErrorText(err, fallback) {
+  const msg = err && err.response && err.response.data && err.response.data.error;
+  return typeof msg === 'string' && msg ? msg : fallback;
+}
+
+const discoveryPluginsView = Vue.component('discovery-plugins-view', {
+  data() {
+    return {
+      dp: ADMINDATA.discoveryPlugins,
+      users: ADMINDATA.users,
+      usersTS: ADMINDATA.usersUpdated,
+      tab: 'plugins',
+      busy: {},               // plug-in name → true while a switch or a probe is in flight
+      gatePending: false,
+      grantPending: {},
+      sweeping: false,
+      sweepResult: null,
+      activity: { loaded: false, jobs: [], filter: 'all', open: {}, cancelling: {} },
+      pollTimer: null,
+    };
+  },
+  template: `
+    <div>
+      <div class="container">
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">{{ t('admin.dplugins.title') }}</span>
+                <p>{{ t('admin.dplugins.lead') }}</p>
+                <div v-if="!dp.loaded"><p>{{ t('admin.dplugins.loading') }}</p></div>
+                <div v-else-if="!dp.status">
+                  <p style="color:#b71c1c">{{ t('admin.dplugins.loadFailed') }}</p>
+                  <a class="waves-effect waves-light btn" v-on:click="load()">{{ t('admin.dplugins.retry') }}</a>
+                </div>
+                <div v-else class="dp-box">
+                  <div class="dp-box-h">
+                    <div class="dp-status">
+                      <span class="dp-dot" :class="'dp-dot-' + headline.dot"></span>
+                      <span :class="'dp-' + headline.dot">{{ headline.text }}</span>
+                      <span>&middot; {{ t(dp.status.jobs.enabledFor === 'whitelist' ? 'admin.dplugins.header.jobsWhitelist' : 'admin.dplugins.header.jobsAll') }}</span>
+                      <span v-if="liveCount > 0">&middot; {{ t('admin.dplugins.header.running', { count: liveCount }) }}</span>
+                      <span v-if="dp.status.downloads.full" class="dp-warn">&middot; {{ t('admin.dplugins.header.full') }}</span>
+                    </div>
+                    <div class="dp-box-act"><span class="dp-br">[<a v-on:click="load()">{{ t('admin.dplugins.refresh') }}</a>]</span></div>
+                  </div>
+                  <div class="dp-pills">
+                    <div v-for="name in ['plugins', 'jobs', 'downloads', 'activity']" :key="name" class="dp-pill" :class="{ 'dp-pill-on': tab === name }" v-on:click="showTab(name)">{{ t('admin.dplugins.tab.' + name) }}<small v-if="name === 'activity' && liveCount > 0">{{ liveCount }}</small></div>
+                  </div>
+
+                  <!-- Plug-ins -->
+                  <div v-if="tab === 'plugins'">
+                    <template v-for="g in groups">
+                      <div class="dp-group" :key="'g-' + g.id"><b>{{ t('admin.dplugins.group.' + g.id) }}</b><span>{{ t('admin.dplugins.group.' + g.id + 'Hint') }}</span></div>
+                      <div v-for="p in g.plugins" :key="p.name" class="dp-plugin" :class="{ 'dp-plugin-off': !p.enabled }">
+                        <div class="dp-plugin-sw">
+                          <div class="switch"><label>
+                            <input type="checkbox" :checked="p.enabled" :disabled="busy[p.name] === true" v-on:change="toggle(p, $event)" :aria-label="p.title"/>
+                            <span class="lever"></span>
+                          </label></div>
+                        </div>
+                        <div class="dp-plugin-body">
+                          <div class="dp-plugin-h"><b>{{ p.title }}</b><span v-for="c in p.capabilities" :key="c" class="dp-tag">{{ c }}</span><span v-if="p.scope === 'user'" class="dp-tag dp-tag-user">{{ t('admin.dplugins.tag.perUser') }}</span></div>
+                          <div class="dp-plugin-d">{{ p.description }}</div>
+                          <div v-if="p.connectedUsers !== undefined" class="dp-plugin-meta">{{ t('admin.dplugins.connected', { count: p.connectedUsers, total: userCount }) }}</div>
+                          <div v-if="p.enabled && !p.available" class="dp-reason"><span><b>{{ t('admin.dplugins.status.cannotRunLead') }}</b> {{ p.reason }} {{ t('admin.dplugins.status.hiddenFromUsers', { title: p.title }) }}</span></div>
+                        </div>
+                        <div class="dp-plugin-act">
+                          <span class="dp-status"><span class="dp-dot" :class="'dp-dot-' + pluginState(p).dot"></span><span :class="'dp-' + pluginState(p).dot">{{ t('admin.dplugins.status.' + pluginState(p).word) }}</span></span>
+                          <span v-if="p.adminSettings.length > 0" class="dp-br">[<a v-on:click="openSettings(p)">{{ t('admin.dplugins.settings') }}</a>]</span>
+                          <span v-if="p.enabled && !p.available" class="dp-br">[<a v-on:click="checkAgain(p)">{{ t('admin.dplugins.checkAgain') }}</a>]</span>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+
+                  <!-- Jobs -->
+                  <div v-if="tab === 'jobs'">
+                    <p style="margin-top:14px"><b>{{ t('admin.dplugins.jobs.who') }}</b></p>
+                    <p class="dp-sub">{{ t('admin.dplugins.jobs.applies') }}</p>
+                    <p>
+                      <label>
+                        <input type="radio" name="dp-gate" value="all" :checked="dp.status.jobs.enabledFor !== 'whitelist'" :disabled="gatePending" v-on:change="setGate('all')"/>
+                        <span><b>{{ t('admin.dplugins.jobs.all') }}</b> &mdash; {{ t(userCount === 0 ? 'admin.dplugins.jobs.allPublic' : 'admin.dplugins.jobs.allHint') }}</span>
+                      </label>
+                    </p>
+                    <p>
+                      <label>
+                        <input type="radio" name="dp-gate" value="whitelist" :checked="dp.status.jobs.enabledFor === 'whitelist'" :disabled="gatePending || (userCount === 0 && dp.status.jobs.enabledFor !== 'whitelist')" v-on:change="setGate('whitelist')"/>
+                        <span><b>{{ t('admin.dplugins.jobs.whitelist') }}</b> &mdash; {{ t(userCount === 0 ? 'admin.dplugins.jobs.whitelistNoUsers' : 'admin.dplugins.jobs.whitelistHint') }}</span>
+                      </label>
+                    </p>
+                    <div v-if="userCount === 0" class="dp-callout dp-callout-warn">{{ t('admin.dplugins.jobs.noUsers') }}</div>
+                    <div v-else class="dp-callout">{{ t('admin.dplugins.jobs.uploadNote') }}</div>
+
+                    <div v-if="dp.status.jobs.enabledFor === 'whitelist' && userCount > 0">
+                      <div v-if="usersTS.ts === 0" style="margin-top:16px">
+                        <svg class="spinner" width="36px" height="36px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+                      </div>
+                      <table v-else class="dp-table" style="margin-top:12px">
+                        <thead><tr><th>{{ t('admin.dplugins.jobs.col.user') }}</th><th>{{ t('admin.dplugins.jobs.col.admin') }}</th><th>{{ t('admin.dplugins.jobs.col.upload') }}</th><th>{{ t('admin.dplugins.jobs.col.jobs') }}</th></tr></thead>
+                        <tbody>
+                          <tr v-for="(v, k) in users" :key="k">
+                            <td :data-label="t('admin.dplugins.jobs.col.user')">{{ k }}</td>
+                            <td :data-label="t('admin.dplugins.jobs.col.admin')">{{ t(v.admin ? 'admin.dplugins.yes' : 'admin.dplugins.no') }}</td>
+                            <td :data-label="t('admin.dplugins.jobs.col.upload')"><span :class="{ 'dp-warn-soft': v.allowUpload === false && v.allowDiscoveryJobs === true }">{{ t(v.allowUpload === false ? 'admin.dplugins.no' : 'admin.dplugins.yes') }}</span></td>
+                            <td :data-label="t('admin.dplugins.jobs.col.jobs')">
+                              <label>
+                                <input type="checkbox" class="filled-in" :checked="v.allowDiscoveryJobs === true" :disabled="grantPending[k] === true" v-on:change="toggleAccess(k, $event.target.checked)"/>
+                                <span>&nbsp;</span>
+                              </label>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      <p v-if="uploadlessGranted.length > 0" class="dp-help">{{ t('admin.dplugins.jobs.noUploadNote', { users: uploadlessGranted.join(', ') }) }}</p>
+                    </div>
+
+                    <table class="dp-rows" style="margin-top:18px">
+                      <tbody>
+                        <tr><td><b>{{ t('admin.dplugins.jobs.atOnce') }}</b> {{ dp.status.jobs.maxConcurrent }}<span class="dp-note">{{ t('admin.dplugins.jobs.atOnceNote') }}</span></td><td>[<a v-on:click="editNumber('maxConcurrent')">{{ t('admin.settings.edit') }}</a>]</td></tr>
+                        <tr><td><b>{{ t('admin.dplugins.jobs.history') }}</b> {{ t('admin.dplugins.days', { count: dp.status.jobs.retentionDays }) }}<span class="dp-note">{{ t('admin.dplugins.jobs.historyNote') }}</span></td><td>[<a v-on:click="editNumber('retentionDays')">{{ t('admin.settings.edit') }}</a>]</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <!-- Downloads -->
+                  <div v-if="tab === 'downloads'">
+                    <p v-if="!dl.exists" class="dp-muted" style="margin-top:14px"><i>{{ t('admin.dplugins.dl.unused') }}</i></p>
+                    <div v-else class="dp-tiles">
+                      <div class="dp-tile"><div class="dp-tile-n">{{ dl.files }}<span v-if="dl.truncated">+</span></div><div class="dp-tile-l">{{ t('admin.dplugins.dl.waiting') }}</div><div class="dp-tile-s">{{ t('admin.dplugins.dl.waitingSub', { count: dl.byUser.length }) }}<span v-if="dl.partials > 0"> &middot; {{ t('admin.dplugins.dl.partials', { count: dl.partials }) }}</span></div></div>
+                      <div class="dp-tile" :class="{ 'dp-tile-warn': dl.full }">
+                        <div class="dp-tile-n">{{ bytes(dl.bytes + dl.partialBytes) || '0 MB' }}<small v-if="dl.maxSizeMb > 0"> {{ t('admin.dplugins.dl.of', { cap: capText }) }}</small></div>
+                        <div class="dp-tile-l">{{ t('admin.dplugins.dl.onDisk') }}<span v-if="dl.full" class="dp-warn"> &middot; {{ t('admin.dplugins.dl.full') }}</span></div>
+                        <div v-if="dl.maxSizeMb > 0" class="dp-bar" :class="{ 'dp-bar-warn': dl.full }"><i :style="{ width: capPct + '%' }"></i></div>
+                        <div v-if="dl.freeBytes !== null" class="dp-tile-s">{{ t('admin.dplugins.dl.free', { size: bytes(dl.freeBytes) }) }}</div>
+                      </div>
+                      <div class="dp-tile">
+                        <template v-if="dl.retentionDays === 0"><div class="dp-tile-n">&mdash;</div><div class="dp-tile-l">{{ t('admin.dplugins.dl.never') }}</div><div class="dp-tile-s">{{ t('admin.dplugins.dl.neverSub') }}</div></template>
+                        <template v-else-if="dl.oldestAt === null"><div class="dp-tile-n">&mdash;</div><div class="dp-tile-l">{{ t('admin.dplugins.dl.oldest') }}</div></template>
+                        <template v-else><div class="dp-tile-n">{{ ageDays(dl.oldestAt) }} <small>{{ t('admin.dplugins.dayUnit', { count: ageDays(dl.oldestAt) }) }}</small></div><div class="dp-tile-l">{{ t('admin.dplugins.dl.oldest') }}</div><div class="dp-tile-s">{{ leftText(dl.oldestAt) }}</div></template>
+                      </div>
+                      <div class="dp-tile"><div class="dp-tile-n">{{ dl.sweeping ? '…' : untilText(dl.nextSweepAt) }}</div><div class="dp-tile-l">{{ t('admin.dplugins.dl.nextPass') }}</div><div v-if="dl.lastSweep" class="dp-tile-s">{{ t('admin.dplugins.dl.lastPass', { count: dl.lastSweep.removedFiles }) }}</div></div>
+                    </div>
+                    <div v-if="dl.full" class="dp-reason" style="margin-top:12px"><span><b>{{ t('admin.dplugins.dl.fullLead') }}</b> {{ t('admin.dplugins.dl.fullBody') }}</span></div>
+
+                    <table class="dp-rows" style="margin-top:14px">
+                      <tbody>
+                        <tr><td><b>{{ t('admin.dplugins.dl.retention') }}</b> {{ dl.retentionDays === 0 ? t('admin.dplugins.dl.neverShort') : t('admin.dplugins.days', { count: dl.retentionDays }) }}<span class="dp-note">{{ t('admin.dplugins.dl.retentionNote') }}</span></td><td>[<a v-on:click="editNumber('downloadsRetentionDays')">{{ t('admin.settings.edit') }}</a>]</td></tr>
+                        <tr><td><b>{{ t('admin.dplugins.dl.cap') }}</b> {{ dl.maxSizeMb === 0 ? t('admin.dplugins.dl.noCap') : capText }}<span class="dp-note">{{ t('admin.dplugins.dl.capNote') }}</span></td><td>[<a v-on:click="editNumber('downloadsMaxSizeMb')">{{ t('admin.settings.edit') }}</a>]</td></tr>
+                        <tr><td><b>{{ t('admin.dplugins.dl.folder') }}</b> <span class="dp-mono">{{ dl.dir }}</span><span class="dp-note">{{ t(dl.exists ? 'admin.dplugins.dl.folderNote' : 'admin.dplugins.dl.folderNew') }}</span></td><td></td></tr>
+                      </tbody>
+                    </table>
+
+                    <table v-if="dl.byUser.length > 0" class="dp-table" style="margin-top:18px">
+                      <thead><tr><th>{{ t('admin.dplugins.dl.col.user') }}</th><th class="dp-num">{{ t('admin.dplugins.dl.col.waiting') }}</th><th class="dp-num">{{ t('admin.dplugins.dl.col.size') }}</th><th>{{ t('admin.dplugins.dl.col.oldest') }}</th><th>{{ t('admin.dplugins.dl.col.newest') }}</th></tr></thead>
+                      <tbody>
+                        <tr v-for="u in dl.byUser" :key="u.folder">
+                          <td :data-label="t('admin.dplugins.dl.col.user')">{{ u.folder || '—' }}</td>
+                          <td class="dp-num" :data-label="t('admin.dplugins.dl.col.waiting')">{{ u.files }}</td>
+                          <td class="dp-num" :data-label="t('admin.dplugins.dl.col.size')">{{ bytes(u.bytes) }}</td>
+                          <td :data-label="t('admin.dplugins.dl.col.oldest')">{{ t('admin.dplugins.days', { count: ageDays(u.oldestAt) }) }}<span v-if="dl.retentionDays > 0 && daysLeft(u.oldestAt) <= 7" class="dp-warn-soft"> &middot; {{ leftText(u.oldestAt) }}</span></td>
+                          <td :data-label="t('admin.dplugins.dl.col.newest')">{{ ago(u.newestAt) }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+
+                    <div v-if="sweeping" style="margin-top:16px"><div class="progress" style="margin:0 0 4px 0"><div class="indeterminate"></div></div><span class="dp-sub">{{ t('admin.dplugins.dl.sweeping') }}</span></div>
+                    <div v-else-if="sweepResult" class="dp-callout" style="margin-top:16px"><b>{{ t('admin.dplugins.dl.done') }}</b> {{ sweepText }}</div>
+                    <div class="dp-actions">
+                      <span class="dp-sub">{{ t('admin.dplugins.dl.passNote') }}</span>
+                      <a class="waves-effect waves-light btn" :class="{ disabled: sweeping }" v-on:click="sweepNow()">{{ t(sweeping ? 'admin.dplugins.dl.sweepingBtn' : 'admin.dplugins.dl.sweep') }}</a>
+                    </div>
+                  </div>
+
+                  <!-- Activity -->
+                  <div v-if="tab === 'activity'">
+                    <div v-if="!activity.loaded" style="margin-top:14px"><p>{{ t('admin.dplugins.loading') }}</p></div>
+                    <p v-else-if="activity.jobs.length === 0" class="dp-muted" style="margin-top:14px"><i>{{ t('admin.dplugins.act.empty') }}</i></p>
+                    <div v-else>
+                      <div class="dp-act-h">
+                        <div class="dp-status">
+                          <span class="dp-dot" :class="dp.status.jobs.running > 0 ? 'dp-dot-ok' : 'dp-dot-off'"></span>
+                          <span :class="dp.status.jobs.running > 0 ? 'dp-ok' : 'dp-off'">{{ t('admin.dplugins.act.running', { count: dp.status.jobs.running }) }}</span>
+                          <span>{{ t('admin.dplugins.act.ofAllowed', { max: dp.status.jobs.maxConcurrent }) }}<template v-if="dp.status.jobs.queued > 0"> &middot; {{ t('admin.dplugins.act.waiting', { count: dp.status.jobs.queued }) }}</template></span>
+                        </div>
+                        <div class="dp-pills dp-pills-sm">
+                          <div v-for="f in ['all', 'live', 'failed']" :key="f" class="dp-pill" :class="{ 'dp-pill-on': activity.filter === f }" v-on:click="activity.filter = f">{{ t('admin.dplugins.act.filter.' + f) }}<small>{{ filterCount(f) }}</small></div>
+                        </div>
+                      </div>
+                      <table class="dp-table dp-table-act">
+                        <thead><tr><th>{{ t('admin.dplugins.act.col.when') }}</th><th>{{ t('admin.dplugins.act.col.user') }}</th><th>{{ t('admin.dplugins.act.col.plugin') }}</th><th>{{ t('admin.dplugins.act.col.rec') }}</th><th>{{ t('admin.dplugins.act.col.state') }}</th><th></th></tr></thead>
+                        <tbody>
+                          <template v-for="a in shownJobs">
+                            <tr :key="a.job.id" :class="{ 'dp-muted-row': a.row.muted }">
+                              <td :data-label="t('admin.dplugins.act.col.when')">{{ ago(a.job.createdAt) }}</td>
+                              <td :data-label="t('admin.dplugins.act.col.user')">{{ a.job.username || '—' }}</td>
+                              <td :data-label="t('admin.dplugins.act.col.plugin')">{{ pluginTitle(a.job.plugin) }}</td>
+                              <td :data-label="t('admin.dplugins.act.col.rec')">{{ a.title }}<span v-if="a.peer" class="dp-muted"> &middot; {{ a.peer }}</span></td>
+                              <td :data-label="t('admin.dplugins.act.col.state')" class="dp-state">
+                                <span class="dp-status"><span class="dp-dot" :class="'dp-dot-' + a.dot"></span><span :class="'dp-' + a.dot">{{ a.word }}</span><span v-if="a.sub">{{ a.sub }}</span></span>
+                                <div v-if="a.row.progress !== null" class="progress" style="margin:5px 0 0 0"><div :class="a.row.progress === 'indeterminate' ? 'indeterminate' : 'determinate'" :style="a.row.progress === 'indeterminate' ? null : { width: a.row.progress + '%' }"></div></div>
+                              </td>
+                              <td class="dp-num">
+                                <span v-if="a.row.live && activity.cancelling[a.job.id] !== true" class="dp-br">[<a style="color:#b71c1c" v-on:click="cancelJob(a.job)">{{ t('admin.dplugins.act.cancel') }}</a>]</span>
+                                <span v-else-if="a.job.state === 'failed'" class="dp-br">[<a v-on:click="toggleWhy(a.job)">{{ t(activity.open[a.job.id] ? 'admin.dplugins.act.hide' : 'admin.dplugins.act.why') }}</a>]</span>
+                              </td>
+                            </tr>
+                            <tr v-if="a.job.state === 'failed' && activity.open[a.job.id]" :key="a.job.id + '-why'" class="dp-detail">
+                              <td></td>
+                              <td colspan="5">
+                                <code>{{ a.job.error || t('admin.dplugins.act.noReason') }}</code>
+                                <div>{{ t('admin.dplugins.act.facts', { attempts: a.job.attempts, id: a.job.id }) }}<template v-if="hint(a.job)"> {{ hint(a.job) }}</template></div>
+                              </td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                      <p class="dp-sub" style="margin:12px 0 0">{{ t('admin.dplugins.act.footer', { count: dp.status.jobs.retentionDays }) }}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`,
+  computed: {
+    userCount: function() {
+      // eslint-disable-next-line no-unused-expressions
+      this.usersTS.ts;
+      return Object.keys(this.users).length;
+    },
+    dl: function() { return this.dp.status.downloads; },
+    liveCount: function() { return this.dp.status.jobs.running + this.dp.status.jobs.queued; },
+    groups: function() {
+      const left = [...this.dp.status.plugins];
+      const out = [];
+      for (const g of DP_GROUPS) {
+        const mine = [];
+        for (let i = left.length - 1; i >= 0; i--) {
+          if (left[i].capabilities.some((c) => g.caps.includes(c))) { mine.unshift(left.splice(i, 1)[0]); }
+        }
+        if (mine.length > 0) { out.push({ id: g.id, plugins: mine }); }
+      }
+      return out;
+    },
+    // "5 of 6 plug-ins on, 1 cannot run": orange while anything that is on
+    // cannot run (or the downloads folder is full), grey when nothing is on.
+    headline: function() {
+      const all = this.dp.status.plugins;
+      const on = all.filter((p) => p.enabled).length;
+      const broken = all.filter((p) => p.enabled && !p.available).length;
+      let text = this.t('admin.dplugins.header.on', { on, total: all.length });
+      if (broken > 0) { text += ', ' + this.t('admin.dplugins.header.cannotRun', { count: broken }); }
+      return { text, dot: (broken > 0 || this.dl.full) ? 'warn' : (on === 0 ? 'off' : 'ok') };
+    },
+    capText: function() { return this.bytes(this.dl.maxSizeMb * 1024 * 1024); },
+    capPct: function() {
+      if (!(this.dl.maxSizeMb > 0)) { return 0; }
+      return Math.min(100, Math.round(((this.dl.bytes + this.dl.partialBytes) / (this.dl.maxSizeMb * 1024 * 1024)) * 100));
+    },
+    uploadlessGranted: function() {
+      // eslint-disable-next-line no-unused-expressions
+      this.usersTS.ts;
+      return Object.keys(this.users).filter((k) => this.users[k].allowDiscoveryJobs === true && this.users[k].allowUpload === false);
+    },
+    sweepText: function() {
+      const r = this.sweepResult;
+      if (!r) { return ''; }
+      if (!r.removedFiles && !r.removedPartials && !r.prunedJobs && !r.skipped) { return this.t('admin.dplugins.dl.nothing'); }
+      let text = this.t('admin.dplugins.dl.result', { files: r.removedFiles, partials: r.removedPartials, jobs: r.prunedJobs });
+      if (r.skipped > 0) { text += ' ' + this.t('admin.dplugins.dl.skipped', { count: r.skipped }); }
+      return text;
+    },
+    // The Activity rows: a job through the player's own row vocabulary
+    // (webapp/alpha/discover-jobs.js), so an operator and a user describe the
+    // same thing with the same words.
+    shownJobs: function() {
+      const f = this.activity.filter;
+      return this.activity.jobs
+        .filter((j) => f === 'all' || (f === 'live' ? DISCOVERJOBS.isLive(j) : j.state === 'failed'))
+        .map((job) => {
+          const row = DISCOVERJOBS.jobRowState(job);
+          const rec = job.recommendation || {};
+          const sub = row.state === 'failed' ? '' : (row.sub ? (row.sub.key ? this.t(row.sub.key, row.sub.params) : row.sub.text) : '');
+          return {
+            job, row, sub,
+            title: [rec.artist, rec.title].filter(Boolean).join(' — ') || '—',
+            peer: rec.source === 'federation' && rec.peer ? (rec.peer.name || '') : '',
+            word: row.tag ? this.t(row.tag) : job.state,
+            dot: row.iconCls === 'err' ? 'err' : ((row.iconCls === 'on' || row.iconCls === 'ok') ? 'ok' : 'off'),
+          };
+        });
+    },
+  },
+  mounted: function() {
+    this.load();
+    if (this.usersTS.ts === 0) { ADMINDATA.getUsers(); }
+  },
+  beforeDestroy: function() {
+    if (this.pollTimer) { clearTimeout(this.pollTimer); this.pollTimer = null; }
+  },
+  methods: {
+    openModal: function(modalView) {
+      modVM.currentViewModal = modalView;
+      M.Modal.getInstance(document.getElementById('admin-modal')).open();
+    },
+    load: async function() {
+      await ADMINDATA.getDiscoveryPlugins();
+      if (this.tab === 'activity') { await this.loadActivity(); }
+      this.schedulePoll();
+    },
+    // Poll only while something is queued or running, and only while this
+    // view is on screen (beforeDestroy clears the timer).
+    schedulePoll: function() {
+      if (this.pollTimer) { clearTimeout(this.pollTimer); this.pollTimer = null; }
+      const live = this.dp.status && this.liveCount > 0;
+      const watching = this.tab === 'activity' && this.activity.jobs.some((j) => DISCOVERJOBS.isLive(j));
+      if (!live && !watching) { return; }
+      this.pollTimer = setTimeout(() => { this.pollTimer = null; this.load(); }, 3000);
+    },
+    showTab: function(name) {
+      this.tab = name;
+      if (name === 'activity') { this.loadActivity().then(() => this.schedulePoll()); }
+      if (name === 'downloads') { this.load(); }
+    },
+    pluginState: function(p) {
+      if (this.busy[p.name] === true) { return { word: 'saving', dot: 'off' }; }
+      if (!p.enabled) { return { word: 'off', dot: 'off' }; }
+      return p.available ? { word: 'on', dot: 'ok' } : { word: 'cannotRun', dot: 'warn' };
+    },
+    pluginTitle: function(name) {
+      const p = this.dp.status.plugins.find((x) => x.name === name);
+      return p ? p.title : name;
+    },
+    toggle: async function(p, ev) {
+      const enabled = ev.target.checked === true;
+      this.$set(this.busy, p.name, true);
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/config/discovery-plugins`, data: { name: p.name, enabled } });
+        this.dp.status.plugins = res.data.plugins;
+        iziToast.success({ title: escHtml(this.t(enabled ? 'admin.dplugins.toast.on' : 'admin.dplugins.toast.off', { title: p.title })), position: 'topCenter', timeout: 2500 });
+      } catch (err) {
+        ev.target.checked = !enabled;   // the switch springs back
+        iziToast.error({ title: escHtml(this.t('admin.dplugins.toast.switchFailed', { title: p.title })), message: escHtml(dpErrorText(err, '')), position: 'topCenter', timeout: 4000 });
+      } finally {
+        this.$set(this.busy, p.name, false);
+      }
+    },
+    checkAgain: async function(p) {
+      this.$set(this.busy, p.name, true);
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/discovery-plugins/probe`, data: { name: p.name } });
+        await ADMINDATA.getDiscoveryPlugins();
+      } catch (err) {
+        iziToast.error({ title: escHtml(dpErrorText(err, this.t('admin.dplugins.toast.failed'))), position: 'topCenter', timeout: 4000 });
+      } finally {
+        this.$set(this.busy, p.name, false);
+      }
+    },
+    openSettings: function(p) {
+      ADMINDATA.discoveryPlugins.editing = p.name;
+      this.openModal('dp-plugin-settings-modal');
+    },
+    editNumber: function(key) {
+      ADMINDATA.discoveryPlugins.editingNumber = key;
+      this.openModal('dp-edit-number-modal');
+    },
+    setGate: async function(enabledFor) {
+      if (this.dp.status.jobs.enabledFor === enabledFor) { return; }
+      this.gatePending = true;
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/config/discovery-jobs`, data: { enabledFor } });
+        this.dp.status.jobs.enabledFor = res.data.discoveryJobs.enabledFor;
+        iziToast.success({ title: escHtml(this.t(enabledFor === 'whitelist' ? 'admin.dplugins.toast.gateWhitelist' : 'admin.dplugins.toast.gateAll')), position: 'topCenter', timeout: 2500 });
+      } catch (err) {
+        iziToast.error({ title: escHtml(dpErrorText(err, this.t('admin.dplugins.toast.failed'))), position: 'topCenter', timeout: 4000 });
+        await ADMINDATA.getDiscoveryPlugins();
+      } finally {
+        this.gatePending = false;
+      }
+    },
+    toggleAccess: async function(username, allowDiscoveryJobs) {
+      this.$set(this.grantPending, username, true);
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/users/discovery-jobs-access`, data: { username, allowDiscoveryJobs } });
+        Vue.set(ADMINDATA.users[username], 'allowDiscoveryJobs', allowDiscoveryJobs);
+        ADMINDATA.usersUpdated.ts = Date.now();
+        iziToast.success({ title: escHtml(this.t(allowDiscoveryJobs ? 'admin.dplugins.toast.granted' : 'admin.dplugins.toast.revoked', { user: username })), position: 'topCenter', timeout: 2500 });
+      } catch (err) {
+        iziToast.error({ title: escHtml(dpErrorText(err, this.t('admin.dplugins.toast.failed'))), position: 'topCenter', timeout: 4000 });
+        ADMINDATA.getUsers();
+      } finally {
+        this.$set(this.grantPending, username, false);
+      }
+    },
+    sweepNow: async function() {
+      if (this.sweeping) { return; }
+      this.sweeping = true;
+      this.sweepResult = null;
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/discovery-jobs/sweep` });
+        this.sweepResult = res.data;
+        await ADMINDATA.getDiscoveryPlugins();
+      } catch (err) {
+        iziToast.error({ title: escHtml(dpErrorText(err, this.t('admin.dplugins.toast.failed'))), position: 'topCenter', timeout: 4000 });
+      } finally {
+        this.sweeping = false;
+      }
+    },
+    loadActivity: async function() {
+      try {
+        const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/discovery/plugin-jobs?all=1&limit=100` });
+        this.activity.jobs = res.data.jobs || [];
+      } catch (err) {
+        console.error('failed to load discovery plug-in jobs', err);
+      }
+      this.activity.loaded = true;
+    },
+    filterCount: function(f) {
+      const jobs = this.activity.jobs;
+      if (f === 'all') { return jobs.length; }
+      return jobs.filter((j) => (f === 'live' ? DISCOVERJOBS.isLive(j) : j.state === 'failed')).length;
+    },
+    toggleWhy: function(job) {
+      this.$set(this.activity.open, job.id, !this.activity.open[job.id]);
+    },
+    // One plain sentence for the failures we recognise; the verbatim error is
+    // always shown above it.
+    hint: function(job) {
+      const e = String(job.error || '');
+      const known = [
+        [/not a bot|sign in to confirm/i, 'botCheck'],
+        [/nothing matched closely enough|returned no results/i, 'noMatch'],
+        [/discover downloads is full/i, 'full'],
+        [/\b429\b|transfer limit|daily limit/i, 'peerLimit'],
+        [/unreachable|timed out|ECONNREFUSED|did not answer/i, 'peerUnreachable'],
+        [/uploading disabled|may not upload|uploads are off/i, 'uploadsOff'],
+        [/no library/i, 'noLibrary'],
+      ];
+      const hit = known.find(([re]) => re.test(e));
+      return hit ? this.t('admin.dplugins.act.hint.' + hit[1]) : '';
+    },
+    cancelJob: function(job) {
+      const ask = this.t('admin.dplugins.act.cancelAsk', { user: job.username || '—', title: (job.recommendation && job.recommendation.title) || '' });
+      iziToast.question({
+        timeout: 20000, close: false, overlayClose: true, overlay: true, displayMode: 'once', zindex: 99999, layout: 2, maxWidth: 600,
+        title: escHtml(ask), position: 'center',
+        buttons: [
+          [`<button>${escHtml(this.t('admin.dplugins.act.cancel'))}</button>`, async (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            this.$set(this.activity.cancelling, job.id, true);
+            try {
+              await API.axios({ method: 'POST', url: `${API.url()}/api/v1/discovery/plugin-jobs/${job.id}/cancel` });
+            } catch (err) {
+              // 409 = it finished first; the reload below shows how.
+              if (!(err.response && err.response.status === 409)) {
+                iziToast.error({ title: escHtml(dpErrorText(err, this.t('admin.dplugins.toast.failed'))), position: 'topCenter', timeout: 4000 });
+              }
+            }
+            this.$set(this.activity.cancelling, job.id, false);
+            await this.load();
+            if (this.tab !== 'activity') { await this.loadActivity(); }
+          }, true],
+          [`<button>${escHtml(this.t('admin.modal.goBack'))}</button>`, (instance, toast) => { instance.hide({ transitionOut: 'fadeOut' }, toast, 'button'); }],
+        ],
+      });
+    },
+    bytes: function(n) { return DISCOVERJOBS.fmtBytes(n); },
+    ageDays: function(ts) { return Math.max(0, Math.floor((Date.now() - Number(ts)) / 86400000)); },
+    daysLeft: function(ts) {
+      if (!(this.dl.retentionDays > 0)) { return Infinity; }
+      return Math.max(0, Math.ceil((Number(ts) + this.dl.retentionDays * 86400000 - Date.now()) / 86400000));
+    },
+    leftText: function(ts) {
+      const left = this.daysLeft(ts);
+      return left === 0 ? this.t('admin.dplugins.dl.leftToday') : this.t('admin.dplugins.dl.left', { count: left });
+    },
+    untilText: function(ts) {
+      if (ts === null || ts === undefined) { return '—'; }
+      const min = Math.max(0, Math.round((Number(ts) - Date.now()) / 60000));
+      if (min < 60) { return this.t('admin.dplugins.minutes', { count: min }); }
+      return this.t('admin.dplugins.hoursMinutes', { h: Math.floor(min / 60), m: min % 60 });
+    },
+    ago: function(ts) {
+      const s = Math.max(0, Math.round((Date.now() - Number(ts)) / 1000));
+      if (s < 60) { return this.t('admin.dplugins.ago.now'); }
+      if (s < 3600) { return this.t('admin.dplugins.ago.min', { count: Math.floor(s / 60) }); }
+      if (s < 86400) { return this.t('admin.dplugins.ago.hour', { count: Math.floor(s / 3600) }); }
+      const d = Math.floor(s / 86400);
+      if (d === 1) { return this.t('admin.dplugins.ago.yesterday'); }
+      if (d < 14) { return this.t('admin.dplugins.ago.day', { count: d }); }
+      return this.t('admin.dplugins.ago.week', { count: Math.floor(d / 7) });
+    },
+  },
+});
+
 const irohView = Vue.component('iroh-view', {
   data() {
     return {
@@ -8326,7 +8877,7 @@ function _initialViewFromHash() {
     'folders-view','users-view','db-view','advanced-view','info-view',
     'transcode-view','federation-view','dlna-view','iroh-view',
     'torrent-view','logs-view','rpn-view','security-view','backup-view',
-    'lyrics-view','discovery-view',
+    'lyrics-view','discovery-view','discovery-plugins-view',
   ]);
   const raw = (location.hash || '').replace(/^#/, '');
   const name = raw.startsWith('view=') ? raw.slice(5) : raw;
@@ -8346,6 +8897,7 @@ const vm = new Vue({
     'dlna-view': dlnaView,
     'iroh-view': irohView,
     'discovery-view': discoveryView,
+    'discovery-plugins-view': discoveryPluginsView,
     'torrent-view': torrentView,
     'logs-view': logsView,
     'rpn-view': rpnView,
@@ -11026,6 +11578,198 @@ const backupEditModal = Vue.component('backup-edit-modal', {
   },
 });
 
+// ── Discovery Plugins · modals ────────────────────────────────────────────
+// [settings] on a plug-in row: one generic form over the config keys the
+// server says are editable (`adminSettings`), drawn per DP_FIELDS. Saving is
+// live and re-probes, so a plug-in that could not run flips to "on" behind the
+// modal. Test (where a field has one) is a dry run of the availability probe
+// against the values in the form — nothing is saved by it.
+const dpPluginSettingsModal = Vue.component('dp-plugin-settings-modal', {
+  data() {
+    const store = ADMINDATA.discoveryPlugins;
+    const plugin = ((store.status && store.status.plugins) || []).find((p) => p.name === store.editing)
+      || { name: '', title: '', adminSettings: [], config: {} };
+    const values = {};
+    for (const k of plugin.adminSettings) { values[k] = plugin.config[k] === null || plugin.config[k] === undefined ? '' : plugin.config[k]; }
+    return { plugin, values, errors: {}, general: '', submitPending: false, test: { state: 'idle', text: '' } };
+  },
+  template: `
+    <form @submit.prevent="save">
+      <div class="modal-content">
+        <h4>{{ t('admin.dplugins.settingsTitle', { title: plugin.title }) }}</h4>
+        <div v-for="key in plugin.adminSettings" :key="key" class="dp-field">
+          <label :for="'dp-set-' + key">{{ label(key) }}</label>
+          <div class="dp-field-row">
+            <select v-if="def(key).kind === 'select'" :id="'dp-set-' + key" class="browser-default dp-select" v-model="values[key]">
+              <option v-for="o in def(key).options" :key="o" :value="o">{{ optionLabel(key, o) }}</option>
+            </select>
+            <input v-else :id="'dp-set-' + key" class="dp-input" :class="{ 'dp-input-mono': def(key).mono, 'dp-input-narrow': def(key).narrow || def(key).kind === 'number', invalid: !!errors[key] }"
+                   :type="def(key).kind === 'number' ? 'number' : 'text'" :min="def(key).min" :max="def(key).max" :maxlength="def(key).maxlength"
+                   v-model="values[key]" v-on:input="touched(key)" autocomplete="off" spellcheck="false">
+            <span v-if="def(key).unit" class="dp-unit">{{ def(key).unit }}</span>
+            <a v-if="def(key).test" class="btn-flat waves-effect" :class="{ disabled: test.state === 'running' }" v-on:click="runTest()">{{ t(test.state === 'running' ? 'admin.dplugins.testing' : 'admin.dplugins.test') }}</a>
+          </div>
+          <div v-if="def(key).test && test.state === 'running'" class="progress" style="margin:6px 0 0 0"><div class="indeterminate"></div></div>
+          <div v-if="errors[key]" class="dp-help dp-help-err">{{ errors[key] }}</div>
+          <div v-else-if="def(key).test && test.state === 'ok'" class="dp-help dp-help-ok">{{ test.text }}</div>
+          <div v-else-if="def(key).test && test.state === 'fail'" class="dp-help dp-help-err">{{ test.text }}</div>
+          <div v-else-if="help(key)" class="dp-help">{{ help(key) }}</div>
+        </div>
+        <div v-if="general" class="dp-help dp-help-err">{{ general }}</div>
+        <div v-if="note" class="dp-callout">{{ note }}</div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.dplugins.save') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  computed: {
+    note: function() {
+      const key = 'admin.dplugins.field.' + this.plugin.name + '.note';
+      const text = this.t(key);
+      return text === key ? '' : text;
+    },
+  },
+  methods: {
+    def: function(key) {
+      return (DP_FIELDS[this.plugin.name] && DP_FIELDS[this.plugin.name][key]) || { kind: 'text' };
+    },
+    // A field's label and help come from the locale when it has them; a key
+    // nobody has described yet falls back to its own name.
+    label: function(key) {
+      const k = 'admin.dplugins.field.' + this.plugin.name + '.' + key;
+      const text = this.t(k);
+      return text === k ? key : text;
+    },
+    help: function(key) {
+      const k = 'admin.dplugins.field.' + this.plugin.name + '.' + key + 'Help';
+      const text = this.t(k);
+      return text === k ? '' : text;
+    },
+    optionLabel: function(key, option) {
+      const k = 'admin.dplugins.field.' + this.plugin.name + '.' + key + 'Option.' + option;
+      const text = this.t(k);
+      return text === k ? option : text;
+    },
+    touched: function(key) {
+      this.$delete(this.errors, key);
+      this.general = '';
+      if (this.def(key).test) { this.test = { state: 'idle', text: '' }; }
+    },
+    payload: function() {
+      const out = {};
+      for (const key of this.plugin.adminSettings) {
+        const d = this.def(key);
+        let v = this.values[key];
+        if (d.kind === 'number') { v = Number(v); } else { v = String(v === null || v === undefined ? '' : v).trim(); if (d.upper) { v = v.toUpperCase(); } }
+        out[key] = v;
+      }
+      return out;
+    },
+    // "<field>: <why>" from the server goes under that field.
+    showRefusal: function(err) {
+      const msg = dpErrorText(err, this.t('admin.dplugins.toast.failed'));
+      const m = /^([A-Za-z0-9_.-]+):\s+(.*)$/.exec(msg);
+      if (m && this.plugin.adminSettings.includes(m[1])) { this.$set(this.errors, m[1], m[2]); } else { this.general = msg; }
+    },
+    runTest: async function() {
+      if (this.test.state === 'running') { return; }
+      this.test = { state: 'running', text: '' };
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/discovery-plugins/probe`, data: { name: this.plugin.name, settings: this.payload() } });
+        const r = res.data;
+        if (r.available) {
+          const d = r.detail || {};
+          this.test = { state: 'ok', text: d.ytdlp ? this.t('admin.dplugins.field.youtube.testOk', { version: d.ytdlp }) : this.t('admin.dplugins.testOk') };
+        } else {
+          this.test = { state: 'fail', text: `${r.reason || ''} ${this.t('admin.dplugins.testFailNote')}`.trim() };
+        }
+      } catch (err) {
+        this.test = { state: 'idle', text: '' };
+        this.showRefusal(err);
+      }
+    },
+    save: async function() {
+      this.submitPending = true;
+      this.errors = {};
+      this.general = '';
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/config/discovery-plugins`, data: { name: this.plugin.name, settings: this.payload() } });
+        ADMINDATA.discoveryPlugins.status.plugins = res.data.plugins;
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+        iziToast.success({ title: escHtml(this.t('admin.dplugins.toast.saved', { title: this.plugin.title })), position: 'topCenter', timeout: 2500 });
+      } catch (err) {
+        this.showRefusal(err);
+      } finally {
+        this.submitPending = false;
+      }
+    },
+  },
+});
+
+// The four numbers on the Jobs and Downloads tabs share one modal. The size
+// cap is kept in MB and edited in GB (decimals allowed), since nobody thinks
+// of 5120.
+const DP_NUMBERS = {
+  maxConcurrent: { min: 1, max: 16, step: 1, value: (s) => s.jobs.maxConcurrent },
+  retentionDays: { min: 1, max: 3650, step: 1, unit: 'days', value: (s) => s.jobs.retentionDays },
+  downloadsRetentionDays: { min: 0, max: 3650, step: 1, unit: 'days', value: (s) => s.downloads.retentionDays },
+  downloadsMaxSizeMb: { min: 0, max: 9765, step: 'any', unit: 'gb', gb: true, value: (s) => s.downloads.maxSizeMb },
+};
+
+const dpEditNumberModal = Vue.component('dp-edit-number-modal', {
+  data() {
+    const store = ADMINDATA.discoveryPlugins;
+    const key = store.editingNumber;
+    const def = DP_NUMBERS[key] || DP_NUMBERS.maxConcurrent;
+    const raw = store.status ? def.value(store.status) : 0;
+    return { key, def, value: def.gb ? Math.round((raw / 1024) * 100) / 100 : raw, error: '', submitPending: false };
+  },
+  template: `
+    <form @submit.prevent="save">
+      <div class="modal-content">
+        <h4>{{ t('admin.dplugins.num.' + key + '.title') }}</h4>
+        <div class="dp-field">
+          <label for="dp-edit-number">{{ t('admin.dplugins.num.' + key + '.label') }}</label>
+          <div class="dp-field-row">
+            <input id="dp-edit-number" class="dp-input dp-input-narrow" :class="{ invalid: !!error }" type="number" :min="def.min" :max="def.max" :step="def.step" required v-model="value" v-on:input="error = ''">
+            <span v-if="def.unit" class="dp-unit">{{ t('admin.dplugins.unit.' + def.unit) }}</span>
+          </div>
+          <div v-if="error" class="dp-help dp-help-err">{{ error }}</div>
+          <div v-else class="dp-help">{{ t('admin.dplugins.num.' + key + '.help') }}</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="#!" class="modal-close waves-effect waves-green btn-flat">{{ t('admin.modal.goBack') }}</a>
+        <button class="btn green waves-effect waves-light" type="submit" :disabled="submitPending === true">
+          {{ submitPending === false ? t('admin.dplugins.save') : t('admin.modal.updating') }}
+        </button>
+      </div>
+    </form>`,
+  methods: {
+    save: async function() {
+      const n = Number(this.value);
+      if (!Number.isFinite(n) || n < this.def.min || n > this.def.max || (!this.def.gb && !Number.isInteger(n))) {
+        this.error = this.t('admin.dplugins.num.range', { min: this.def.min, max: this.def.max });
+        return;
+      }
+      this.submitPending = true;
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/config/discovery-jobs`, data: { [this.key]: this.def.gb ? Math.round(n * 1024) : n } });
+        await ADMINDATA.getDiscoveryPlugins();
+        M.Modal.getInstance(document.getElementById('admin-modal')).close();
+        iziToast.success({ title: escHtml(this.t('admin.dplugins.toast.numberSaved')), position: 'topCenter', timeout: 2500 });
+      } catch (err) {
+        this.error = dpErrorText(err, this.t('admin.dplugins.toast.failed'));
+      } finally {
+        this.submitPending = false;
+      }
+    },
+  },
+});
+
 const modVM = new Vue({
   el: '#dynamic-modal',
   components: {
@@ -11051,6 +11795,8 @@ const modVM = new Vue({
     'edit-log-buffer-size-modal': editLogBufferSizeModal,
     'backup-history-modal': backupHistoryModal,
     'backup-edit-modal': backupEditModal,
+    'dp-plugin-settings-modal': dpPluginSettingsModal,
+    'dp-edit-number-modal': dpEditNumberModal,
     'null-modal': nullModal
   },
   data: {
