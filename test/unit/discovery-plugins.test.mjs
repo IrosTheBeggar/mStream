@@ -87,7 +87,7 @@ describe('registry', () => {
     assert.equal(all.find((p) => p.name === 'links').enabled, false);
     const on = listPlugins({ config: ON });
     assert.equal(on.length >= 1, true);
-    assert.deepEqual(Object.keys(on[0]).sort(), ['capabilities', 'description', 'enabled', 'name', 'scope', 'title']);
+    assert.deepEqual(Object.keys(on[0]).sort(), ['available', 'capabilities', 'description', 'enabled', 'name', 'scope', 'settings', 'title']);
   });
 
   test('registerPlugin enforces the contract', () => {
@@ -95,7 +95,9 @@ describe('registry', () => {
     assert.throws(() => registerPlugin({ name: 'links', title: 'x', capabilities: ['links'], scope: 'server', resolve() {} }), /already registered/);
     assert.throws(() => registerPlugin({ name: 'p1', title: 'x', capabilities: ['teleport'], scope: 'server' }), /unknown capabilities/);
     assert.throws(() => registerPlugin({ name: 'p2', title: 'x', capabilities: ['links'], scope: 'server' }), /must implement resolve/);
-    const def = registerPlugin({ name: 'unit-test-plugin', title: 'Unit', capabilities: ['handoff'], scope: 'user' });
+    assert.throws(() => registerPlugin({ name: 'p3', title: 'x', capabilities: ['handoff'], scope: 'user' }), /must implement run/);
+    assert.throws(() => registerPlugin({ name: 'p4', title: 'x', capabilities: ['acquire'], scope: 'server', run() {}, concurrency: 0 }), /concurrency/);
+    const def = registerPlugin({ name: 'unit-test-plugin', title: 'Unit', capabilities: ['handoff'], scope: 'user', run() {} });
     assert.ok(Object.isFrozen(def));
     assert.equal(def.description, '');
   });

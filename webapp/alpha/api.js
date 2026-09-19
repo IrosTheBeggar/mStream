@@ -118,8 +118,11 @@ const MSTREAMAPI = (() => {
   // The federated side of Discover: live similarity answers from the
   // servers this one is PAIRED with (Admin → Federation). Leads for now —
   // they become playable once the federation stream proxy lands.
-  mstreamModule.discoveryFederationSimilar = (filePath, limit, newArtistsOnly) => {
+  // `peerId` narrows the ask to ONE paired server (the recommendation
+  // modal's "more like this on <peer>"); omitted = every peer.
+  mstreamModule.discoveryFederationSimilar = (filePath, limit, newArtistsOnly, peerId) => {
     return discoveryReq('api/v1/discovery/federation/similar', {
+      ...(peerId ? { peerId } : {}),
       filePath, limit: limit || 5, newArtistsOnly: newArtistsOnly === true,
     });
   };
@@ -162,6 +165,31 @@ const MSTREAMAPI = (() => {
   // know). Same degrade contract as the calls above.
   mstreamModule.discoveryPluginResolve = (name, recommendation) => {
     return discoveryReq('api/v1/discovery/plugins/' + encodeURIComponent(name) + '/resolve', { recommendation });
+  };
+
+  // Plug-in jobs (acquire / hand-off) and the collection destination they
+  // copy into. Unlike the calls above these THROW (req's err.status +
+  // err.body): a job row shows the server's own reason — "someone else is
+  // already getting this", "a file already exists at …" — not a shrug.
+  const jobsRoute = (tail) => mstreamModule.currentServer.host + 'api/v1/discovery/plugin-jobs' + (tail || '');
+  mstreamModule.discoveryJobStart = (name, recommendation) => {
+    return req('POST', mstreamModule.currentServer.host + 'api/v1/discovery/plugins/' + encodeURIComponent(name) + '/jobs', { recommendation });
+  };
+  mstreamModule.discoveryJobs = () => req('GET', jobsRoute());
+  mstreamModule.discoveryJob = (id) => req('GET', jobsRoute('/' + encodeURIComponent(id)));
+  mstreamModule.discoveryJobLookup = (recommendation) => req('POST', jobsRoute('/lookup'), { recommendation });
+  mstreamModule.discoveryJobCancel = (id) => req('POST', jobsRoute('/' + encodeURIComponent(id) + '/cancel'), {});
+  // `destination` = a one-off { vpath, base, layout }; omitted = the saved one.
+  mstreamModule.discoveryJobKeep = (id, destination) => {
+    return req('POST', jobsRoute('/' + encodeURIComponent(id) + '/keep'), destination ? { destination } : {});
+  };
+  mstreamModule.discoveryJobsClear = () => req('POST', jobsRoute('/clear'), {});
+  mstreamModule.discoveryDestination = () => {
+    return req('GET', mstreamModule.currentServer.host + 'api/v1/discovery/collection/destination');
+  };
+  // null = back to the library default.
+  mstreamModule.discoverySaveDestination = (destination) => {
+    return req('PUT', mstreamModule.currentServer.host + 'api/v1/discovery/collection/destination', { destination });
   };
 
   // POST /api/v1/db/genres → { genres: [{ name, track_count }] }.
@@ -310,6 +338,22 @@ const MSTREAMAPI = (() => {
     health: (peerId) => peerReq(peerId, 'GET', 'api/v1/federation/health'),
     discoveryEmbeddings: (peerId, filePaths) => peerReq(peerId, 'POST', 'api/v1/discovery/local/embeddings', { filePaths }),
     randomSongs: (peerId, postObject) => peerReq(peerId, 'POST', 'api/v1/db/random-songs', postObject),
+    // One track's full metadata on the peer (format, bitrate, size, art
+    // file) — what the recommendation modal's header shows beyond the
+    // similar row's own fields.
+    metadata: (peerId, filepath) => peerReq(peerId, 'POST', 'api/v1/db/metadata', { filepath }),
+  };
+
+  ///////////////////// Federation requests (admin) — the Discover modal's
+  // "Invite <peer> to federate" row. Both are admin routes: a non-admin
+  // (or a locked admin API) gets a 403 and the modal simply hides the row.
+  mstreamModule.federationRequests = () => {
+    return req('GET', mstreamModule.currentServer.host + 'api/v1/admin/federation/requests', false);
+  };
+  mstreamModule.composeFederationRequest = (endpointId, offerVpaths, message) => {
+    return req('POST', mstreamModule.currentServer.host + 'api/v1/admin/federation/requests', {
+      endpointId, offerVpaths: offerVpaths || [], message: message || '',
+    });
   };
 
   mstreamModule.searchAlbumArt = (postObject) => {
@@ -492,6 +536,14 @@ const MSTREAMAPI = (() => {
   mstreamModule.login =  (username, password, url) => {
     return req('POST', url ? url + "api/v1/auth/login" : "api/v1/auth/login", { username: username, password: password });
   }
+
+  // The layered server-info endpoint: `user` (identity — username, admin,
+  // vpaths…) + `features` + an `admin` layer for admins. The player reads
+  // `user.admin` from it; ping is a frozen flat contract and never carries
+  // identity.
+  mstreamModule.serverInfo = () => {
+    return req('GET', mstreamModule.currentServer.host + "api/", false);
+  };
 
   mstreamModule.ping =  () => {
     return req('GET', mstreamModule.currentServer.host + "api/v1/ping", false);

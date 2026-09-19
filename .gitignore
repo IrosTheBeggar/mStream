@@ -128,3 +128,10 @@ model-cache/
 # Scratch files left in the repo root by `bun build --compile`; one per build.
 .*.bun-build
 
+
+# design-sync (claude.ai/design) staged scripts + build output
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules

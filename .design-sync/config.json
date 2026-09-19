@@ -1,0 +1,12 @@
+{
+  "projectId": "9bec91f3-4103-41ed-866e-5e9731e19f6d",
+  "projectName": "mStream design cards",
+  "shape": "off-script",
+  "generator": ".design-sync/build-cards.mjs",
+  "cardsDir": "docs/designs/discover-modal",
+  "globalName": "MStream",
+  "readmeHeader": ".design-sync/conventions.md",
+  "out": "./ds-bundle",
+  "pkg": ".",
+  "lastSync": "2026-09-16 (re-sync, 11 cards)"
+}

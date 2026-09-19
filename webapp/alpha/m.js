@@ -738,6 +738,13 @@ async function init() {
     // Discovery plug-ins (actions on a recommendation row) — the flag says
     // the server has at least one switched on; the list is fetched lazily.
     VUEPLAYERCORE.setDiscoveryPluginsAvailable(response.discoveryPlugins === true);
+    // Admins get the "Invite <peer> to federate" row in the recommendation
+    // modal. Identity lives on the layered /api/ endpoint (ping is a frozen
+    // flat contract); a server without /api/ or a failed call = not admin,
+    // and the row simply never shows.
+    MSTREAMAPI.serverInfo()
+      .then((info) => { VUEPLAYERCORE.setAdmin(!!(info && info.user && info.user.admin === true)); })
+      .catch(() => { VUEPLAYERCORE.setAdmin(false); });
     // Sonic Path is a standalone side-nav panel — reveal its nav entry
     // only when the server has the route (never probed).
     MSTREAMAPI.currentServer.discoveryPath = response.discoveryPath === true;

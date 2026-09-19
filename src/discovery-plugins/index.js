@@ -8,14 +8,27 @@ import links from './plugins/links.js';
 import deezer from './plugins/deezer.js';
 import itunes from './plugins/itunes.js';
 import federationPlay from './plugins/federation-play.js';
+import federationCopy from './plugins/federation-copy.js';
+import youtube from './plugins/youtube.js';
 
 registerPlugin(links);
 registerPlugin(deezer);
 registerPlugin(itunes);
 registerPlugin(federationPlay);
+registerPlugin(federationCopy);
+registerPlugin(youtube);
+
+// Test-only runnable plug-in — exercises the job path end to end without a
+// catalogue or a disk. Never registered unless the environment asks.
+if (process.env.MSTREAM_TEST_DISCOVERY_NOOP_PLUGIN === '1') {
+  const { default: noopAcquire } = await import('./plugins/noop-acquire.js');
+  registerPlugin(noopAcquire);
+}
 
 export {
-  CAPABILITIES, RESOLVING_CAPABILITIES, SCOPES, getPlugin, isPluginEnabled, listPlugins, anyPluginEnabled, pluginNames,
+  CAPABILITIES, RESOLVING_CAPABILITIES, RUNNABLE_CAPABILITIES, SCOPES,
+  getPlugin, isPluginEnabled, listPlugins, anyPluginEnabled, pluginNames, runnablePlugins,
+  refreshProbes, probeStatus, isPluginUnavailable,
 } from './registry.js';
 export {
   RECOMMENDATION_SOURCES, recommendationSchema, normalizeRecommendation, recommendationKey, searchPhrase,

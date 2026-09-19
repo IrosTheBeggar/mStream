@@ -1,21 +1,18 @@
-import commandExists from "command-exists";
-import { spawn } from "child_process";
+// Youtube DL: download a YouTube URL the user pasted into a library folder.
+// The yt-dlp mechanics (binary, download, cover, tags) live in
+// src/util/yt-dlp.js, shared with the discovery "youtube" plug-in; the row
+// insert in src/db/insert-downloaded-track.js, shared with every download.
+
 import winston from "winston";
 import Joi from 'joi';
-import path from 'path';
 import * as config from '../state/config.js';
 import * as transcode from './transcode.js';
 import { joiValidate } from '../util/validation.js';
 import * as vpath from '../util/vpath.js';
-import * as db from '../db/manager.js';
-import { refreshDirtyAlbums } from '../db/album-aggregate.js';
-import { refreshDirtyArtists } from '../db/artist-aggregate.js';
+import { insertDownloadedTrack } from '../db/insert-downloaded-track.js';
 import WebError from '../util/web-error.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
-import { parseFile } from 'music-metadata';
-import { generateThumbnails } from '../util/image-thumbs.js';
-import mime from 'mime-types';
-import crypto from 'crypto';
+import * as ytdlp from '../util/yt-dlp.js';
 import fs from 'fs/promises';
 
 const downloadTracker = new Map();
@@ -37,35 +34,14 @@ function sanitizeYoutubeUrl(url) {
   return parsed.toString();
 }
 
-function lookupMetadata(url) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn('yt-dlp', ['--dump-json', '--no-download', url]);
-    let stdout = '';
-    let stderr = '';
+// One setting says where yt-dlp is, for the route and the plug-in alike.
+function binary() {
+  const cfg = config.program.discoveryPlugins && config.program.discoveryPlugins.youtube;
+  return ytdlp.resolveBinary(cfg && cfg.binary);
+}
 
-    proc.stdout.on('data', (data) => { stdout += data; });
-    proc.stderr.on('data', (data) => { stderr += data; });
-
-    proc.on('close', (code) => {
-      if (code !== 0) {
-        winston.error(`yt-dlp metadata lookup failed: ${stderr}`);
-        return reject(new Error('Failed to lookup metadata'));
-      }
-
-      try {
-        const json = JSON.parse(stdout);
-        resolve({
-          title: json.title || null,
-          artist: json.artist || json.creator || json.uploader || null,
-          album: json.album || null,
-          year: json.release_year || json.release_date?.substring(0, 4) || null,
-          thumbnail: json.thumbnail || null,
-        });
-      } catch (e) {
-        reject(new Error('Failed to parse yt-dlp output'));
-      }
-    });
-  });
+function forget(pid) {
+  setTimeout(() => downloadTracker.delete(pid), 30000);
 }
 
 export function setup(mstream) {
@@ -100,384 +76,54 @@ export function setup(mstream) {
 
     value.url = sanitizeYoutubeUrl(value.url);
 
-    // Pass in ffmpeg directory
     const ffmpegPath = ffmpegBin();
-
-    try {
-      const exists = await commandExists('yt-dlp')
-      if (!exists) {
-        winston.error('yt-dlp is not installed');
-        return res.status(500).json({ error: 'yt-dlp is not installed' });
-      }
-    } catch (err) {
-      winston.error('Error in ytdl API', err);
-      res.status(500).json({ error: 'Error - failed to find yt-dlp' });
+    const bin = binary();
+    if (!(await ytdlp.isAvailable(bin))) {
+      winston.error('yt-dlp is not installed');
+      return res.status(500).json({ error: 'yt-dlp is not installed' });
     }
 
-    // `--restrict-filenames` keeps yt-dlp's filename ASCII-only and
-    // strips chars that need shell escaping; `--no-overwrites` blocks
-    // a hostile title from clobbering an existing file in the target
-    // directory if it happens to collide post-restriction.
-    const downloadDir = path.join(pathInfo.fullPath, `%(title)s.%(ext)s`);
-    const formatMap = { 'ogg': 'vorbis', 'm4b': 'm4a' };
-    const ytdlAudioFormat = formatMap[value.outputCodec] || value.outputCodec;
-    const ytdlArgs = ['-f', "ba", "-x", value.url, '-o', downloadDir,
-      "--restrict-filenames", "--no-overwrites",
-      "--audio-format", ytdlAudioFormat, "--embed-metadata"];
-    // yt-dlp's --ffmpeg-location takes a filesystem path/dir, NOT a PATH-
-    // resolved command name. Only pass it when we manage an on-disk binary;
-    // for the system-PATH fallback (bare 'ffmpeg', e.g. musl/Alpine) omit it
-    // and let yt-dlp find ffmpeg itself — passing 'ffmpeg' makes it look in cwd.
-    if (ffmpegPath && path.isAbsolute(ffmpegPath)) {
-      ytdlArgs.push("--ffmpeg-location", ffmpegPath);
-    }
-    const noEmbedThumbnail = ['wav', 'opus', 'ogg'];
-    if (!noEmbedThumbnail.includes(value.outputCodec)) {
-      ytdlArgs.push("--embed-thumbnail", "--convert-thumbnails", "jpg");
-    }
-    const ytdl = spawn('yt-dlp', ytdlArgs);
-    
-    downloadTracker.set(ytdl.pid, {
-      process: ytdl,
+    const codec = value.outputCodec;
+    const expectedExt = ytdlp.outputExtension(codec);
+    const userMeta = value.metadata || {};
+    const handle = ytdlp.startDownload({
+      bin, url: value.url, dir: pathInfo.fullPath, codec, ffmpegPath,
+      onLog: (line) => winston.info(`yt-dlp output: ${line}`),
+    });
+    const entry = {
       url: value.url,
       directory: value.directory,
-      outputCodec: value.outputCodec,
-      metadata: value.metadata,
+      outputCodec: codec,
+      metadata: userMeta,
       status: 'downloading',
       startTime: Date.now(),
-    });
+    };
+    downloadTracker.set(handle.pid, entry);
 
-    ytdl.stdout.on('data', (data) => {
-      winston.info(`yt-dlp output: ${data}`);
-    });
-
-    ytdl.stderr.on('data', (data) => {
-      winston.error(`yt-dlp error: failed to download file - ${value.url}`);
-      winston.error(`yt-dlp error: ${data.toString()}`);
-    });
-
-    ytdl.on('close', async (code) => {
-      const entry = downloadTracker.get(ytdl.pid);
-
-      if (code !== 0) {
-        winston.warn(`yt-dlp process exited with code ${code}, checking for downloaded file anyway`);
+    handle.done.then(async ({ filePath, warning }) => {
+      if (warning) { winston.warn(`yt-dlp exited unhappily but left a file (${warning}) — carrying on with ${filePath}`); }
+      if (ytdlp.FFMPEG_THUMBNAIL_CODECS.includes(codec)) {
+        const info = await ytdlp.lookupMetadata(value.url, { bin }).catch(() => ({}));
+        await ytdlp.embedThumbnailIfMissing(filePath, { codec, thumbnailUrl: info.thumbnail, ffmpegPath });
       }
-
-      try {
-        // Find the downloaded file by scanning for new files matching the output codec
-        // Some formats produce a different file extension than the codec name
-        const extMap = { 'aac': 'm4a' };
-        const expectedExt = extMap[value.outputCodec] || value.outputCodec;
-        const dirFiles = await fs.readdir(pathInfo.fullPath);
-        let downloadedFile = null;
-        let downloadedStat = null;
-        for (const file of dirFiles) {
-          if (!file.endsWith('.' + expectedExt)) continue;
-          const filePath = path.join(pathInfo.fullPath, file);
-          const stat = await fs.stat(filePath);
-          if (stat.mtime.getTime() >= entry.startTime) {
-            downloadedFile = filePath;
-            downloadedStat = stat;
-            break;
-          }
-        }
-
-        if (!downloadedFile) {
-          if (entry) {
-            entry.status = 'error';
-            setTimeout(() => downloadTracker.delete(ytdl.pid), 30000);
-          }
-          winston.error('yt-dlp: could not find downloaded file in ' + pathInfo.fullPath);
-          return;
-        }
-
-        // For FLAC/Opus/OGG files, yt-dlp often fails to embed the thumbnail.
-        // Download it separately and embed via ffmpeg.
-        if (value.outputCodec === 'flac' || value.outputCodec === 'opus' || value.outputCodec === 'ogg') {
-          try {
-            // Check if the file already has an embedded picture
-            const checkMeta = await parseFile(downloadedFile, { skipCovers: false });
-            if (!checkMeta.common.picture || checkMeta.common.picture.length === 0) {
-              // Fetch thumbnail URL from yt-dlp metadata
-              const metaInfo = await lookupMetadata(value.url);
-              if (metaInfo.thumbnail) {
-                // Download thumbnail to a temp file
-                const thumbPath = downloadedFile + '.thumb.jpg';
-                const rawThumbPath = thumbPath + '.tmp';
-                const thumbResponse = await fetch(metaInfo.thumbnail);
-                if (!thumbResponse.ok) throw new Error('thumbnail download failed');
-                await fs.writeFile(rawThumbPath, Buffer.from(await thumbResponse.arrayBuffer()));
-                await new Promise((resolve, reject) => {
-                  const proc = spawn(ffmpegPath, ['-y', '-i', rawThumbPath, thumbPath]);
-                  proc.on('close', (c) => c === 0 ? resolve() : reject(new Error('thumbnail conversion failed')));
-                  proc.on('error', reject);
-                });
-                try { await fs.unlink(rawThumbPath); } catch { /* ignore */ }
-
-                try {
-                  await fs.access(thumbPath);
-                  const tmpEmbed = downloadedFile + '.tmp.' + expectedExt;
-
-                  if (value.outputCodec === 'flac') {
-                    // FLAC supports attached_pic via ffmpeg directly
-                    await new Promise((resolve, reject) => {
-                      const proc = spawn(ffmpegPath, [
-                        '-i', downloadedFile, '-i', thumbPath,
-                        '-map', '0:a', '-map', '1:0',
-                        '-c', 'copy', '-disposition:v', 'attached_pic',
-                        '-y', tmpEmbed
-                      ]);
-                      proc.on('close', (c) => c === 0 ? resolve() : reject(new Error('ffmpeg thumbnail embed failed')));
-                      proc.on('error', reject);
-                    });
-                  } else {
-                    // OGG/Opus need METADATA_BLOCK_PICTURE encoded in Vorbis comments
-                    const imgData = await fs.readFile(thumbPath);
-                    const mimeStr = 'image/jpeg';
-                    // Build METADATA_BLOCK_PICTURE binary: type(4) + mime_len(4) + mime + desc_len(4) + desc + width(4) + height(4) + depth(4) + colors(4) + data_len(4) + data
-                    const header = Buffer.alloc(32 + mimeStr.length);
-                    let offset = 0;
-                    header.writeUInt32BE(3, offset); offset += 4;              // picture type: front cover
-                    header.writeUInt32BE(mimeStr.length, offset); offset += 4; // MIME length
-                    header.write(mimeStr, offset); offset += mimeStr.length;   // MIME string
-                    header.writeUInt32BE(0, offset); offset += 4;              // description length
-                    header.writeUInt32BE(0, offset); offset += 4;              // width (0 = unknown)
-                    header.writeUInt32BE(0, offset); offset += 4;              // height (0 = unknown)
-                    header.writeUInt32BE(0, offset); offset += 4;              // color depth
-                    header.writeUInt32BE(0, offset); offset += 4;              // indexed colors
-                    header.writeUInt32BE(imgData.length, offset);              // data length
-                    const pictureBlock = Buffer.concat([header, imgData]);
-                    const b64 = pictureBlock.toString('base64');
-
-                    // Write to temp file to avoid OS command-line length limits
-                    const metaFilePath = downloadedFile + '.ffmeta';
-                    await new Promise((resolve, reject) => {
-                      const proc = spawn(ffmpegPath, [
-                        '-y', '-i', downloadedFile,
-                        '-f', 'ffmetadata', metaFilePath
-                      ]);
-                      proc.on('close', (c) => c === 0 ? resolve() : reject(new Error('metadata extraction failed')));
-                      proc.on('error', reject);
-                    });
-                    await fs.appendFile(metaFilePath, `METADATA_BLOCK_PICTURE=${b64}\n`);
-                    await new Promise((resolve, reject) => {
-                      const proc = spawn(ffmpegPath, [
-                        '-y', '-i', downloadedFile,
-                        '-f', 'ffmetadata', '-i', metaFilePath,
-                        '-map', '0:a', '-map_metadata', '1',
-                        '-c:a', 'copy', tmpEmbed
-                      ]);
-                      proc.on('close', (c) => c === 0 ? resolve() : reject(new Error('ffmpeg thumbnail embed failed')));
-                      proc.on('error', reject);
-                    });
-                    try { await fs.unlink(metaFilePath); } catch { /* ignore */ }
-                  }
-
-                  await fs.rename(tmpEmbed, downloadedFile);
-                  downloadedStat = await fs.stat(downloadedFile);
-                  winston.info('yt-dlp: embedded thumbnail into ' + value.outputCodec + ' file');
-                } finally {
-                  try { await fs.unlink(thumbPath); } catch { /* ignore */ }
-                  try { await fs.unlink(thumbPath + '.tmp'); } catch { /* ignore */ }
-                  try { await fs.unlink(downloadedFile + '.tmp.' + expectedExt); } catch { /* ignore */ }
-                }
-              }
-            }
-          } catch (thumbErr) {
-            winston.warn('yt-dlp: failed to embed thumbnail into ' + value.outputCodec, { stack: thumbErr });
-          }
-        }
-
-        // Write user-submitted metadata + the MSTREAM_SOURCE provenance
-        // marker to the file's audio tags via ffmpeg. MSTREAM_SOURCE is
-        // written unconditionally so the provenance signal travels with
-        // the file (across copies, moves, re-scans on another machine);
-        // user metadata is added only when supplied. Per-container ffmpeg
-        // emits the metadata key as:
-        //   - MP3 / WAV (ID3v2): TXXX frame, description='MSTREAM_SOURCE'
-        //   - FLAC / OGG / Opus (Vorbis comments): MSTREAM_SOURCE=ytdl
-        //   - M4A / M4B / AAC: ffmpeg's MP4 muxer silently drops
-        //     non-standard `-metadata` keys on write. The tag does NOT
-        //     land in the file. yt-dlp itself faces the same limitation,
-        //     and `purl` is dropped too. The scanners READ freeform
-        //     iTunes atoms fine (lofty + music-metadata both handle
-        //     them) — files tagged externally via mutagen or
-        //     AtomicParsley work. But ytdl-downloaded M4As won't carry
-        //     a recoverable marker. The DB-side INSERT below still
-        //     attributes the row (source='ytdl'), and the scanner's
-        //     mtime fast-path preserves that across normal rescans. The
-        //     gap is the re-extract-after-mtime-drift case for M4A
-        //     specifically — accepted limitation.
-        // The scanner's tag-readback (src/db/scanner.mjs + rust-parser/src/main.rs)
-        // recognises all working encodings and translates to tracks.source.
-        const userMeta = entry.metadata || {};
-        try {
-          const tmpFile = downloadedFile + '.tmp.' + expectedExt;
-          const ffmpegArgs = ['-i', downloadedFile, '-c', 'copy'];
-          if (userMeta.title) { ffmpegArgs.push('-metadata', `title=${userMeta.title}`); }
-          if (userMeta.artist) { ffmpegArgs.push('-metadata', `artist=${userMeta.artist}`); }
-          if (userMeta.album) { ffmpegArgs.push('-metadata', `album=${userMeta.album}`); }
-          if (userMeta.year) { ffmpegArgs.push('-metadata', `date=${userMeta.year}`); }
-          ffmpegArgs.push('-metadata', 'MSTREAM_SOURCE=ytdl');
-          ffmpegArgs.push('-y', tmpFile);
-
-          await new Promise((resolve, reject) => {
-            const proc = spawn(ffmpegPath, ffmpegArgs);
-            proc.on('close', (ffCode) => {
-              if (ffCode !== 0) { return reject(new Error(`ffmpeg exited with code ${ffCode}`)); }
-              resolve();
-            });
-            proc.on('error', reject);
-          });
-
-          await fs.rename(tmpFile, downloadedFile);
-          downloadedStat = await fs.stat(downloadedFile);
-          winston.info('yt-dlp: wrote metadata tags + MSTREAM_SOURCE marker to file');
-        } catch (tagErr) {
-          winston.error('yt-dlp: failed to write metadata tags', { stack: tagErr });
-          try { await fs.unlink(downloadedFile + '.tmp.' + expectedExt); } catch { /* ignore */ }
-        }
-
-        // Parse metadata from the downloaded file (include covers for album art)
-        const skipImg = config.program.scanOptions.skipImg === true;
-        let metadata;
-        try {
-          metadata = (await parseFile(downloadedFile, { skipCovers: skipImg })).common;
-        } catch (err) {
-          winston.error('yt-dlp: metadata parse error', { stack: err });
-          metadata = { track: { no: null, of: null }, disk: { no: null, of: null } };
-        }
-
-        // Compute both whole-file and audio-region hashes. The scanner uses
-        // the same helper so ytdl-inserted rows are identity-compatible with
-        // scanned rows — which since V60 includes stamping hash_v with the
-        // helper's HASH_GENERATION: a row left at the column default (1)
-        // would re-arm the boot convergence epoch (a full re-key pass of
-        // the stale-generation rows) after every download.
-        const audioHashLib = await import('../db/audio-hash.js');
-        const { fileHash: hash, audioHash } = await audioHashLib.computeHashes(downloadedFile);
-        const hashV = audioHashLib.HASH_GENERATION;
-
-        // Build DB record matching the scanner schema
-        // User-submitted metadata overrides take priority over parsed file metadata
-        const relativePath = path.relative(pathInfo.basePath, downloadedFile);
-        const data = {
-          title: userMeta.title || (metadata.title ? String(metadata.title) : null),
-          artist: userMeta.artist || (metadata.artist ? String(metadata.artist) : null),
-          year: userMeta.year ? Number(userMeta.year) : (metadata.year || null),
-          album: userMeta.album || (metadata.album ? String(metadata.album) : null),
-          filepath: relativePath,
-          format: expectedExt,
-          track: metadata.track?.no || null,
-          disk: metadata.disk?.no || null,
-          modified: downloadedStat.mtime.getTime(),
-          hash: hash,
-          audioHash: audioHash,
-          aaFile: null,
-          vpath: pathInfo.vpath,
-          ts: Math.floor(Date.now() / 1000),
-          // Leave scan_id NULL: the scanner stamps it only when it
-          // rewrites a row, and the first scan that walks this file
-          // claims the row normally (the stale sweep keys on the
-          // scanner's in-memory seen tracking, not this column). The
-          // 'ytdl' provenance signal lives in tracks.source (V36).
-          sID: null,
-          replaygainTrackDb: metadata.replaygain_track_gain ? metadata.replaygain_track_gain.dB : null,
-        };
-
-        // Extract and save album art from embedded thumbnail
-        if (!skipImg && metadata.picture && metadata.picture[0]) {
-          try {
-            const picData = metadata.picture[0].data;
-            const picHashString = crypto.createHash('md5').update(picData.toString('utf-8')).digest('hex');
-            const extension = mime.extension(metadata.picture[0].format) || 'jpg';
-            data.aaFile = picHashString + '.' + extension;
-
-            const aaDir = config.program.storage.albumArtDirectory;
-            const aaFilePath = path.join(aaDir, data.aaFile);
-
-            // Save original if it doesn't already exist in the cache
-            let isNewFile = false;
-            try {
-              await fs.access(aaFilePath);
-            } catch {
-              await fs.writeFile(aaFilePath, picData);
-              isNewFile = true;
-            }
-
-            // Create compressed versions for thumbnails. Off the event loop
-            // + pixel-count guarded (util/image-thumbs.js): embedded covers
-            // come from downloaded media, so their dimensions are not ours to
-            // trust, and a pure-JS decode here stalls every other request.
-            if (isNewFile && config.program.scanOptions.compressImage) {
-              await generateThumbnails(picData, aaFilePath, aaDir, data.aaFile);
-            }
-          } catch (err) {
-            winston.error('yt-dlp: failed to extract album art', { stack: err });
-          }
-        }
-
-        // Insert into SQLite. V34 dropped tracks.genre — genre data flows
-        // through the track_genres M2M instead (the scanner populates it
-        // via setTrackGenres; ytdl downloads commonly have no embedded
-        // genre tag from YouTube anyway, so we don't write the M2M here —
-        // the next scan picks it up if the file ends up with one).
-        // V36: tracks.source = 'ytdl' records provenance.
-        const d = db.getDB();
-        const lib = db.getLibraryByName(data.vpath);
-        if (d && lib) {
-          const artistId = db.findOrCreateArtist(data.artist);
-          const albumId = db.findOrCreateAlbum(data.album, artistId, data.year);
-          // V71: tag_album / tag_compilation are the album consensus inputs
-          // the scanners stamp per track; stamping them here means this
-          // row votes on its album like any scanned row (a ytdl download
-          // carries no ALBUMARTIST, so that input stays NULL).
-          d.prepare(
-            `INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
-             disc_number, year, format, file_hash, audio_hash, album_art_file, replaygain_track_db,
-             modified, scan_id, source, hash_v, tag_album, tag_compilation, artist_display)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
-          ).run(
-            data.filepath, lib.id, data.title || null, artistId, albumId,
-            data.track, data.disk, data.year, data.format, data.hash, data.audioHash || null,
-            data.aaFile, data.replaygainTrackDb, data.modified, data.sID, 'ytdl', hashV,
-            data.album || null,
-            // V73: the display string is the uploader / artist as given.
-            String(data.artist || '').trim() || null
-          );
-          // V72: the primary-artist credit row, with the raw spelling that
-          // votes on the artist's display name (the scanners write the same
-          // row from the split ARTIST tag).
-          if (artistId) {
-            // Trimmed, like the scanners' split credits — a " Foo" vote
-            // would win a 1:1 tie on BINARY order and rename the artist.
-            const credit = String(data.artist).trim() || null;
-            d.prepare(
-              `INSERT OR IGNORE INTO track_artists (track_id, artist_id, role, position, tag_name)
-               VALUES ((SELECT id FROM tracks WHERE filepath = ? AND library_id = ?), ?, 'main', 0, ?)`
-            ).run(data.filepath, lib.id, artistId, credit);
-          }
-          // The insert (and the REPLACE of any earlier row at this path)
-          // flagged the affected album(s) / artist(s) through the *_agg
-          // triggers; recompute them now so the album's year range / count
-          // and the artist's counts reflect this track before any scan runs
-          // — the album-songs API matches `year` against that range.
-          refreshDirtyAlbums(d);
-          refreshDirtyArtists(d);
-        }
-        winston.info(`yt-dlp: added ${relativePath} to database`);
-
-        if (entry) {
-          entry.status = 'complete';
-          setTimeout(() => downloadTracker.delete(ytdl.pid), 30000);
-        }
-      } catch (err) {
-        winston.error('yt-dlp: failed to add file to database', { stack: err });
-        if (entry) {
-          entry.status = 'error';
-          setTimeout(() => downloadTracker.delete(ytdl.pid), 30000);
-        }
-      }
+      // User-submitted metadata + the MSTREAM_SOURCE provenance marker,
+      // then the row the way a scan would write it. V36: source = 'ytdl'.
+      await ytdlp.writeTags(filePath, { codec, meta: userMeta, source: 'ytdl', ffmpegPath });
+      await insertDownloadedTrack({
+        filePath,
+        vpath: pathInfo.vpath,
+        basePath: pathInfo.basePath,
+        source: 'ytdl',
+        format: expectedExt,
+        userMeta,
+        log: 'yt-dlp',
+      });
+      entry.status = 'complete';
+      forget(handle.pid);
+    }).catch((err) => {
+      winston.error(`yt-dlp: failed to download ${value.url}: ${err && err.message ? err.message : err}`, { stack: err });
+      entry.status = 'error';
+      forget(handle.pid);
     });
 
     res.json({ message: 'Download started' });
@@ -487,14 +133,13 @@ export function setup(mstream) {
     const schema = Joi.object({ url: youtubeUrlSchema });
     const { value } = joiValidate(schema, req.query);
 
-    try {
-      await commandExists('yt-dlp');
-    } catch (err) {
+    const bin = binary();
+    if (!(await ytdlp.isAvailable(bin))) {
       return res.status(500).json({ error: 'yt-dlp is not installed' });
     }
 
     const url = sanitizeYoutubeUrl(value.url);
-    const metadata = await lookupMetadata(url);
+    const metadata = await ytdlp.lookupMetadata(url, { bin });
     res.json(metadata);
   });
 

@@ -203,6 +203,64 @@ components:
       name: x-access-token
 
   schemas:
+    DiscoveryCollectionDestination:
+      type: object
+      description: Where files the user decides to own are put — a library, a base folder inside it, and a layout rendered per song.
+      required: [vpath, layout]
+      properties:
+        vpath: { type: string, description: "A library the caller may upload to.", example: Music }
+        base: { type: string, description: 'A relative folder inside the library; "" = its root.', example: From peers }
+        layout: { type: string, description: 'Torrent path-template syntax; see `variables` in the view.', example: "{{ARTIST}}/{{ALBUM}}" }
+    DiscoveryCollectionDestinationView:
+      type: object
+      properties:
+        destination:
+          description: The effective destination; `null` when the caller may not put files anywhere (uploads off, or no library).
+          type: object
+          nullable: true
+          allOf:
+            - { $ref: "#/components/schemas/DiscoveryCollectionDestination" }
+          properties:
+            source: { type: string, enum: [default, user], description: "`user` = the saved one is in force; `default` = the library default." }
+        saved:
+          description: What is stored, as typed; `null` when nothing is.
+          type: object
+          nullable: true
+          allOf:
+            - { $ref: "#/components/schemas/DiscoveryCollectionDestination" }
+        libraries:
+          type: array
+          description: The libraries the caller may put files into, each with its admin Path Template.
+          items:
+            type: object
+            properties:
+              vpath: { type: string }
+              template: { type: string, nullable: true }
+        defaultLayout: { type: string, example: "{{ARTIST}}/{{ALBUM}}" }
+        variables:
+          type: array
+          items: { type: string }
+          example: [ARTIST, ALBUM, YEAR, GENRE, ALBUMARTIST, PEER]
+    DiscoveryPluginJob:
+      type: object
+      description: One thing a discovery plug-in was asked to do with a recommendation (acquire / hand-off). Timestamps are ms epochs.
+      properties:
+        id: { type: integer }
+        plugin: { type: string, example: soulseek }
+        userId: { type: integer, nullable: true, description: "Who asked; null in public mode or after the user was deleted." }
+        key: { type: string, description: "The recommendation's persistence key (mbid:… or text:…)." }
+        recommendation: { type: object, description: The normalised recommendation the job was started with. }
+        state: { type: string, enum: [queued, running, done, failed, cancelled] }
+        progress: { type: number, nullable: true, minimum: 0, maximum: 1 }
+        statusText: { type: string, nullable: true, description: "The plug-in's own progress line." }
+        result: { type: object, nullable: true, description: "What the plug-in produced (plug-in specific), once done." }
+        error: { type: string, nullable: true }
+        attempts: { type: integer }
+        cancelRequested: { type: boolean }
+        createdAt: { type: integer }
+        updatedAt: { type: integer }
+        startedAt: { type: integer, nullable: true }
+        finishedAt: { type: integer, nullable: true }
     Error:
       type: object
       required: [error]
@@ -2259,7 +2317,156 @@ paths:
                           items: { type: string, enum: [links, preview, play, acquire, handoff] }
                         scope: { type: string, enum: [server, user], description: "server = admin configuration only; user = needs per-user credentials" }
                         enabled: { type: boolean }
+                        settings:
+                          type: array
+                          items: { type: string }
+                          description: The per-user setting keys this plug-in keeps (see the settings routes); empty for most.
+                        available:
+                          type: boolean
+                          description: >
+                            Always true here: a plug-in whose availability probe failed
+                            (yt-dlp or ffmpeg missing for `youtube`) is left out of this
+                            list and answers 404, so an unconfigured plug-in never shows a
+                            row that cannot work. The admin listing shows it with `reason`.
+                  jobs:
+                    type: object
+                    properties:
+                      allowed:
+                        type: boolean
+                        description: >
+                          The acquisition gate for THIS caller
+                          (`config.discoveryJobs.enabledFor`, and the account's
+                          `allow_discovery_jobs` flag in whitelist mode). When false,
+                          starting a job answers 403 — a client hides the `acquire` and
+                          `handoff` rows instead of offering them.
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/discovery/plugins/{name}/settings:
+    get:
+      tags: [Discovery]
+      summary: The caller's settings for a plug-in
+      description: |
+        Per-user settings a plug-in keeps (`user_settings`, namespace
+        `discovery-plugin:{name}`), plus the plug-in's own description of the
+        effective view. Secret values (tokens) never come back; the entry
+        says only that one is set. In public mode the settings belong to the
+        shared anonymous account. This is where a plug-in keeps what is its
+        own — a service token, say. The collection destination is NOT a
+        plug-in setting: it is shared by every acquire plug-in and has its
+        own route, `/api/v1/discovery/collection/destination`.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+      responses:
+        "200":
+          description: The settings view.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plugin: { type: string }
+                  keys: { type: array, items: { type: string } }
+                  settings:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        value: { description: The stored value (absent for secrets). }
+                        secret: { type: boolean }
+                        set: { type: boolean }
+                        updatedAt: { type: integer }
+                additionalProperties: true
+        "400": { description: "The plug-in keeps no settings." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The caller has no user account to keep settings under." }
+        "404": { description: "Unknown or disabled plug-in." }
+    put:
+      tags: [Discovery]
+      summary: Store one plug-in setting for the caller
+      description: |
+        Stores one key, validated by the plug-in's schema for it and then by
+        the plug-in's own checks. `value: null` deletes the key. Answers with
+        the same view as GET.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, value]
+              properties:
+                key: { type: string }
+                value:
+                  description: "Any JSON value the plug-in's schema for that key accepts; `null` deletes the key."
+            example:
+              key: token
+              value: "a-service-token"
+      responses:
+        "200": { description: "Stored; the settings view." }
+        "400": { description: "Unknown key, a value the schema or the plug-in refused, or a plug-in with no settings." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The caller has no user account to keep settings under." }
+        "404": { description: "Unknown or disabled plug-in." }
+
+  /api/v1/discovery/collection/destination:
+    get:
+      tags: [Discovery]
+      summary: Where the caller's collection copies and kept downloads land
+      description: |
+        The collection destination: a library the caller may upload to, a
+        base folder inside it (`""` = the root) and a layout rendered from
+        each song's tags with the torrent path-template syntax
+        (`{{ARTIST}}/{{ALBUM}}`; variables as listed, `{{PEER}}` being the
+        paired server a copy came from — empty, so dropped, for anything
+        else). One per user, shared by every acquire plug-in: the
+        `federation-copy` job copies into it, and Keep… moves a finished
+        download into it. Nothing saved means the library default: the first
+        writable library's admin Path Template when it has one, else
+        `{{ARTIST}}/{{ALBUM}}` at its root. In public mode the anonymous
+        account keeps the one shared setting.
+      responses:
+        "200":
+          description: The effective destination and what a picker needs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveryCollectionDestinationView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [Discovery]
+      summary: Save the collection destination, or go back to the default
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [destination]
+              properties:
+                destination:
+                  description: "`null` removes the saved destination."
+                  type: object
+                  nullable: true
+                  allOf:
+                    - { $ref: "#/components/schemas/DiscoveryCollectionDestination" }
+            example:
+              destination: { vpath: Music, base: "From peers", layout: "{{PEER}}/{{ARTIST}}/{{ALBUM}}" }
+      responses:
+        "200":
+          description: Saved; the same view as GET.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveryCollectionDestinationView" }
+        "400": { description: "A library the caller cannot put files into, a base folder that climbs out of it, or a layout the template engine refuses (unknown variable, stray brace, absolute path)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The caller has no user account to keep a destination under." }
 
   /api/v1/discovery/plugins/{name}/resolve:
     post:
@@ -2341,6 +2548,251 @@ paths:
         "404": { description: "Unknown or disabled plug-in (disabled plug-ins are invisible, not forbidden)." }
         "429": { description: "The plug-in's own request budget for its catalogue is spent — try again shortly." }
         "502": { description: "The plug-in failed to resolve this recommendation (a catalogue was unreachable); the cause is logged server-side." }
+
+  /api/v1/discovery/plugins/{name}/jobs:
+    post:
+      tags: [Discovery]
+      summary: Start a job (acquire / hand-off plug-ins)
+      description: |
+        Asks a runnable plug-in (capability `acquire` or `handoff`) to act on
+        one recommendation. The job is queued and run by the server's plug-in
+        job runner; poll it through `/api/v1/discovery/plugin-jobs/{id}`.
+        Gated by `config.discoveryJobs.enabledFor`: `all`, or `whitelist`
+        with the caller's `allow_discovery_jobs` flag. The same
+        (plug-in, recommendation) is never queued twice while a job for it is
+        live: a second ask answers `200` with the existing job — or `409`
+        when that live job belongs to another account (its row is theirs; an
+        admin still gets it).
+
+        `federation-copy` ("Add to your collection") takes a federation
+        recommendation (`source: federation`, the peer's `filepath`, `peer.id`)
+        and copies the file into the caller's collection destination
+        (`/api/v1/discovery/collection/destination`). Its `result` is `{ copied: { vpath, filepath, trackId, bytes,
+        title, artist, album }, missingVars, peer, destination }`, or
+        `{ skipped: owned, existing: { filepath, by } }` when the library
+        already has the song (by hash or by artist + album + title), or
+        `{ skipped: exists, filepath }` when a file already sits at the target
+        path — nothing is ever overwritten. It fails (state `failed`, `error`)
+        when uploads are off for the account, the peer is unreachable, or the
+        peer answers 429 for its transfer limit.
+
+        `youtube` ("Get it" from YouTube; off by default, needs yt-dlp and
+        ffmpeg) searches YouTube for the recommendation, scores the uploads
+        against it (the shared match scorer, a bonus for the artist's Topic
+        channel, covers / karaoke / live takes dropped) and downloads the best
+        one's audio into the `discover-downloads` scratch library (a per-user
+        subfolder), tagged from the recommendation. Its `result` is
+        `{ downloaded: { vpath, filepath, trackId, bytes, format }, match:
+        { score, url, title, channel, durationSec } }`. Every read of the job
+        adds `expiresAt` (ms; `null` when downloads never expire), computed
+        from the current `discoveryJobs.downloads.retentionDays`, while the
+        file is neither kept nor removed; Keep… adds `kept: { vpath,
+        filepath, trackId, playlistEntries, missingVars, at }` and the
+        retention pass adds `removed: { at }`. It fails
+        with `Nothing matched closely enough (best score …, needs 0.62)`,
+        `YouTube returned no results …`, or yt-dlp's own last error line
+        (for example its sign-in / bot check).
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recommendation]
+              properties:
+                recommendation: { type: object, description: "Same shape as the resolve body." }
+      responses:
+        "202":
+          description: Queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created: { type: boolean, example: true }
+                  job: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "200": { description: "A live job for this recommendation already exists; `created: false` and that job." }
+        "400": { description: "Malformed body, or the plug-in does not run jobs (use resolve)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The acquisition gate is in whitelist mode and the caller is not allowed." }
+        "404": { description: "Unknown or disabled plug-in." }
+        "409": { description: "Another account's live job already covers this recommendation — try again when it has finished." }
+
+  /api/v1/discovery/plugin-jobs/lookup:
+    post:
+      tags: [Discovery]
+      summary: The caller's jobs for one recommendation
+      description: |
+        What the caller has already done with a recommendation: their newest
+        job per plug-in, so a client can draw each acquire / hand-off row in
+        its real state (running, downloaded and waiting to be kept, kept,
+        failed…) when the recommendation is opened again. The server computes
+        the recommendation key (MBID first, else a normalised text digest), so
+        a client never has to mirror it. Not gated: it reads only the
+        caller's own rows.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recommendation]
+              properties:
+                recommendation: { type: object, description: "Same shape as the resolve body." }
+      responses:
+        "200":
+          description: At most one job per plug-in, newest first; empty when the caller never acted on it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key: { type: string, example: "text:3f9a…", description: The recommendation key the jobs were matched on. }
+                  jobs:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "400": { description: "Malformed body." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/discovery/plugin-jobs/clear:
+    post:
+      tags: [Discovery]
+      summary: Clear the caller's finished jobs
+      description: |
+        Drops the caller's rows that have nothing left to act on: `failed`,
+        `cancelled`, and `done` jobs whose outcome is settled (a copy, a skip,
+        a kept or an expired download). Live jobs stay, and so does a finished
+        download that is still in the `discover-downloads` scratch library —
+        its row is the only handle for Keep… and the only place its expiry
+        shows. Files are never touched.
+      responses:
+        "200":
+          description: How many rows went.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed: { type: integer, example: 4 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/discovery/plugin-jobs:
+    get:
+      tags: [Discovery]
+      summary: The caller's plug-in jobs
+      parameters:
+        - name: state
+          in: query
+          schema: { type: string, enum: [queued, running, done, failed, cancelled] }
+        - name: all
+          in: query
+          description: Admins only — every user's jobs.
+          schema: { type: boolean }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        "200":
+          description: Newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+                  runner:
+                    type: object
+                    properties:
+                      running: { type: integer, description: Jobs in flight right now. }
+                      active: { type: boolean, description: The runner is armed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/discovery/plugin-jobs/{id}:
+    get:
+      tags: [Discovery]
+      summary: One plug-in job
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: The job.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "No such job, or not the caller's (uniform, so ids can't be enumerated)." }
+
+  /api/v1/discovery/plugin-jobs/{id}/cancel:
+    post:
+      tags: [Discovery]
+      summary: Cancel a plug-in job
+      description: |
+        A queued job is cancelled at once; a running one is flagged and the
+        plug-in stops at its next step, after which the job reads `cancelled`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: The job as it now stands.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  outcome: { type: string, enum: [cancelled, requested] }
+                  job: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "No such job, or not the caller's." }
+        "409": { description: "The job has already finished." }
+
+  /api/v1/discovery/plugin-jobs/{id}/keep:
+    post:
+      tags: [Discovery]
+      summary: Keep a finished download (move it into the collection)
+      description: |
+        A download an acquire plug-in landed in the `discover-downloads`
+        scratch library expires unless it is kept. Keep… moves the file into
+        the caller's collection destination — or the one-off `destination` in
+        the body, checked like a saved one — rendering the layout from the
+        file's own tags. It never overwrites; the library row follows the
+        file; ratings and play counts follow by themselves (they key on the
+        track hash); playlist entries that pointed at the old path are
+        rewritten; the job's `result` gains `kept` and stops reporting an
+        expiry. Needs upload rights: keeping is an upload by another road.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                destination: { $ref: "#/components/schemas/DiscoveryCollectionDestination" }
+      responses:
+        "200":
+          description: Kept; the job as it now stands.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "400": { description: "The job has no download to keep (it failed, or its plug-in does not download), or the one-off destination was refused." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Uploads are disabled for the caller, or there is no library to keep into." }
+        "404": { description: "No such job, or not the caller's." }
+        "409": { description: "Already kept, already expired and removed, a file already exists at the target path, or the file is in use right now (try again)." }
 
   # ── Search ───────────────────────────────────────────────────────────────
 
@@ -5560,6 +6012,32 @@ paths:
                 noUpload: { type: boolean }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/discovery-jobs/sweep:
+    post:
+      tags: [Admin - Config]
+      summary: Run the discovery retention pass now
+      description: |
+        The pass the server runs shortly after boot and every few hours:
+        Discover downloads older than `discoveryJobs.downloads.retentionDays`
+        are removed with their library rows and their jobs marked `removed`
+        (0 days = never); partial files a killed download left behind go once
+        a day old; folders the pass emptied are removed; finished job rows
+        older than `discoveryJobs.retentionDays` are pruned. A file that is
+        in use is skipped and caught by the next pass.
+      responses:
+        "200":
+          description: What this pass did.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removedFiles: { type: integer }
+                  removedPartials: { type: integer }
+                  skipped: { type: integer, description: "Files in use, left for the next pass." }
+                  prunedJobs: { type: integer }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/config/nomkdir:

@@ -51,9 +51,18 @@ export const RESOLVING_CAPABILITIES = Object.freeze([
   CAPABILITIES.LINKS, CAPABILITIES.PREVIEW, CAPABILITIES.PLAY,
 ]);
 
+// The capabilities that run as jobs (src/discovery-plugins/jobs.js): the
+// plug-in implements `run(ctx)` and may declare `concurrency` (default 1).
+export const RUNNABLE_CAPABILITIES = Object.freeze([
+  CAPABILITIES.ACQUIRE, CAPABILITIES.HANDOFF,
+]);
+
 export const SCOPES = Object.freeze({ SERVER: 'server', USER: 'user' });
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+// Same key rule as src/db/user-settings.js — a key the store would refuse
+// must not pass registration.
+const SETTING_KEY_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 
 const plugins = new Map();
 
@@ -69,9 +78,86 @@ export function registerPlugin(def) {
   if (!Object.values(SCOPES).includes(def.scope)) { throw new Error(`registerPlugin: ${def.name} needs a scope`); }
   const resolves = def.capabilities.some((c) => RESOLVING_CAPABILITIES.includes(c));
   if (resolves && typeof def.resolve !== 'function') { throw new Error(`registerPlugin: ${def.name} must implement resolve()`); }
+  const runnable = def.capabilities.some((c) => RUNNABLE_CAPABILITIES.includes(c));
+  if (runnable && typeof def.run !== 'function') { throw new Error(`registerPlugin: ${def.name} must implement run(ctx)`); }
+  if (def.concurrency !== undefined && !(Number.isInteger(def.concurrency) && def.concurrency > 0)) {
+    throw new Error(`registerPlugin: ${def.name} concurrency must be a positive integer`);
+  }
+  // Per-user settings (user_settings, namespace discovery-plugin:<name>):
+  //   userSettings: { <key>: { schema: Joi, secret?: bool } }   what may be stored
+  //   validateSetting(key, value, { user })                     semantic checks; throws
+  //   describeSettings({ user, stored })                        the effective view
+  // The routes in src/api/discovery-plugins.js read these; a plug-in
+  // without `userSettings` has no settings routes.
+  if (def.userSettings !== undefined) {
+    if (!def.userSettings || typeof def.userSettings !== 'object' || Array.isArray(def.userSettings)) {
+      throw new Error(`registerPlugin: ${def.name} userSettings must be an object of key -> { schema }`);
+    }
+    for (const [key, spec] of Object.entries(def.userSettings)) {
+      if (!SETTING_KEY_RE.test(key)) { throw new Error(`registerPlugin: ${def.name} has an invalid setting key ${JSON.stringify(key)}`); }
+      if (!spec || typeof spec !== 'object' || !spec.schema || typeof spec.schema.validate !== 'function') {
+        throw new Error(`registerPlugin: ${def.name} setting ${key} needs a Joi schema`);
+      }
+    }
+  }
+  for (const hook of ['validateSetting', 'describeSettings', 'probe']) {
+    if (def[hook] !== undefined && typeof def[hook] !== 'function') {
+      throw new Error(`registerPlugin: ${def.name} ${hook} must be a function`);
+    }
+  }
   const frozen = Object.freeze({ description: '', ...def, capabilities: Object.freeze([...def.capabilities]) });
   plugins.set(frozen.name, frozen);
   return frozen;
+}
+
+// ── Availability probes ───────────────────────────────────────────────────
+// A plug-in that needs something outside this process (a binary, a daemon)
+// declares `probe()` → { ok, reason }. An enabled plug-in whose probe fails
+// is treated as absent — not listed, its routes answer 404 — so an
+// unconfigured plug-in never shows a row that cannot work (the cards'
+// "hidden, never locked" rule). Results are cached and refreshed in the
+// background; until the first probe answers, a plug-in counts as available.
+// A passing probe is trusted for a minute; a failing one is retried sooner,
+// so a binary installed (or ffmpeg finishing its bootstrap) shows up fast.
+const PROBE_TTL_MS = 60_000;
+const PROBE_FAIL_TTL_MS = 5_000;
+const probes = new Map();
+const probeTtl = (s) => (s && s.ok === false ? PROBE_FAIL_TTL_MS : PROBE_TTL_MS);
+
+export async function refreshProbes({ force = false } = {}) {
+  const now = Date.now();
+  await Promise.all([...plugins.values()].filter((p) => typeof p.probe === 'function').map(async (p) => {
+    const cur = probes.get(p.name);
+    if (!force && cur && now - cur.at < probeTtl(cur)) { return; }
+    let result;
+    try {
+      const r = await p.probe();
+      result = { ok: !(r && r.ok === false), reason: r && r.reason ? String(r.reason) : null };
+    } catch (err) {
+      result = { ok: false, reason: err && err.message ? err.message : String(err) };
+    }
+    probes.set(p.name, { ...result, at: Date.now() });
+  }));
+}
+
+export function probeStatus(name) {
+  const s = probes.get(name);
+  return s ? { ok: s.ok, reason: s.reason } : null;
+}
+
+// true only when a probe ran and failed. A stale or missing probe kicks a
+// refresh in the background and answers "available" meanwhile.
+export function isPluginUnavailable(name) {
+  const p = plugins.get(name);
+  if (!p || typeof p.probe !== 'function') { return false; }
+  const s = probes.get(name);
+  if (!s || Date.now() - s.at >= probeTtl(s)) { refreshProbes().catch(() => {}); }
+  return !!(s && s.ok === false);
+}
+
+// The plug-ins the job runner drives (registration order).
+export function runnablePlugins() {
+  return [...plugins.values()].filter((p) => p.capabilities.some((c) => RUNNABLE_CAPABILITIES.includes(c)));
 }
 
 export function getPlugin(name) {
@@ -99,10 +185,22 @@ export function listPlugins({ includeDisabled = false, config: cfg } = {}) {
   for (const p of plugins.values()) {
     const enabled = isPluginEnabled(p.name, { config: cfg });
     if (!enabled && !includeDisabled) { continue; }
-    out.push({
+    const unavailable = isPluginUnavailable(p.name);
+    if (unavailable && !includeDisabled) { continue; }
+    const row = {
       name: p.name, title: p.title, description: p.description,
       capabilities: [...p.capabilities], scope: p.scope, enabled,
-    });
+      // The keys a client may read and write through the settings routes.
+      settings: p.userSettings ? Object.keys(p.userSettings) : [],
+      // false only when the plug-in's probe failed (admin listing only —
+      // the user listing simply omits it).
+      available: !unavailable,
+    };
+    if (includeDisabled) {
+      const status = probeStatus(p.name);
+      row.reason = status && !status.ok ? status.reason : null;
+    }
+    out.push(row);
   }
   return out;
 }
@@ -119,4 +217,5 @@ export function pluginNames() {
 // Tests register throwaway plug-ins; nothing in the server calls this.
 export function unregisterPluginForTests(name) {
   plugins.delete(name);
+  probes.delete(name);
 }

@@ -1,0 +1,255 @@
+/**
+ * webapp/alpha/discover-jobs.js — the Discover job rows' pure half, on node:
+ * the layout preview held to the server's engine (src/torrent/path-template.js
+ * and src/discovery-plugins/destination.js render the real path; the picker
+ * must show the same thing as the user types), a job as a row in every state,
+ * the downloads strip, and the queue after Keep… moves a file.
+ */
+
+import { describe, test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import * as pathTemplate from '../../src/torrent/path-template.js';
+import * as destination from '../../src/discovery-plugins/destination.js';
+
+const require = createRequire(import.meta.url);
+const J = require('../../webapp/alpha/discover-jobs.js');
+
+const TAGS = [
+  { artist: 'Marlowe Vale', album: 'Night Ferry', year: 2019, genre: 'Dream Pop', albumartist: null },
+  { artist: 'AC/DC', album: 'Back in Black: Deluxe?', year: '1980', genre: null, albumartist: 'AC/DC' },
+  { artist: '  ...Trail of Dead. ', album: 'Source Tags & Codes', year: null, genre: '', albumartist: '' },
+  { artist: null, album: null, year: null, genre: null, albumartist: null },
+  { artist: 'x'.repeat(260), album: 'tab\there', year: 0, genre: 'a\\b', albumartist: 'Various' },
+  { artist: 'Björk', album: '音楽 / ロック', year: 1997, genre: 'Électro', albumartist: null },
+];
+const LAYOUTS = [
+  '{{ARTIST}}/{{ALBUM}}', '{{ALBUMARTIST}}/{{ALBUM}} ({{YEAR}})', '{{PEER}}/{{ARTIST}}/{{ALBUM}}', '{{ artist }}\\{{Album}}',
+  'From peers/{{GENRE}}/{{ARTIST}} - {{ALBUM}}', '{{YEAR}}', 'literal only', '{{ARTIST}}//{{ALBUM}}/', '{{GENRE}}/{{YEAR}}/{{PEER}}',
+];
+const BAD_LAYOUTS = [
+  '', '/{{ARTIST}}', '\\{{ARTIST}}', '{{ARTIST}}/{{TRACK}}', '{{ARTIST}/{{ALBUM}}', '{ARTIST}', '{{ARTIST}}/../{{ALBUM}}', '~/{{ARTIST}}',
+  '$HOME/{{ARTIST}}', 'C:/{{ARTIST}}', '{{ARTIST}}/D:stuff', 'a\u0001b/{{ARTIST}}', 'x'.repeat(501), '{{YEAR}}{{GENRE}}',
+];
+const BASES = ['', 'From peers', ' From peers / Sam ', 'a\\b\\c', '/lead/and/trail/', '..', 'ok/../up', '~home', 'C:/x', 'x'.repeat(600), 'tab\tin'];
+
+describe('the layout preview agrees with the server engine', () => {
+  test('sanitizeSegment and resolveLayout, value for value', () => {
+    for (const raw of [null, undefined, '', 'AC/DC', ' . dots . ', 'a:b*c?d<e>f|g"h', 'multi   space', 'x'.repeat(300), 42, 'new\nline']) {
+      assert.equal(J.sanitizeSegment(raw), pathTemplate.sanitizeSegment(raw), `sanitize ${JSON.stringify(raw)}`);
+    }
+    for (const layout of [...LAYOUTS, ...BAD_LAYOUTS]) {
+      for (const tags of TAGS) {
+        for (const peer of ["Sam's server", null, 'a/b']) {
+          const mine = J.resolveLayout(layout, { ...tags, peer });
+          const theirs = pathTemplate.resolveTemplate(layout, { ...tags, peer });
+          assert.deepEqual(mine, theirs, `resolve ${JSON.stringify(layout)} with ${JSON.stringify(tags)} / ${peer}`);
+        }
+      }
+    }
+  });
+
+  test('validateLayout accepts and refuses what the server does, with the same error code', () => {
+    for (const layout of [...LAYOUTS, ...BAD_LAYOUTS]) {
+      const mine = J.validateLayout(layout);
+      const theirs = destination.validateLayout(layout);
+      assert.equal(mine.valid, theirs.valid, `validity of ${JSON.stringify(layout.slice(0, 40))}`);
+      if (!theirs.valid) { assert.equal(mine.error, theirs.error, `error code for ${JSON.stringify(layout.slice(0, 40))}`); }
+    }
+    assert.deepEqual(J.validateLayout('{{ARTIST}}/{{TRACK}}'), { valid: false, error: 'unknown_variable', variable: 'TRACK' });
+    assert.equal(J.validateLayout(null).valid, false);
+    assert.deepEqual([...J.LAYOUT_VARS].sort(), [...destination.LAYOUT_VARS].sort(), 'the same variables are offered');
+    assert.equal(J.DEFAULT_LAYOUT, destination.DEFAULT_LAYOUT);
+  });
+
+  test('the base folder and the file name follow the same rules', () => {
+    for (const base of BASES) {
+      const mine = J.normalizeBase(base);
+      const theirs = destination.normalizeBase(base);
+      assert.equal(mine.valid, theirs.valid, `base ${JSON.stringify(base.slice(0, 30))}`);
+      if (theirs.valid) { assert.equal(mine.base, theirs.base); } else { assert.equal(mine.error, theirs.error); }
+    }
+    for (const name of ['shared/03 Paper Lanterns.flac', 'a/b/..', '', 'dir/', 'bad:name?.mp3', '   .hidden. ', 'x/y\\z.mp3']) {
+      assert.equal(J.safeFileName(name), destination.safeFileName(name), `file name ${JSON.stringify(name)}`);
+    }
+  });
+
+  test('previewTarget is renderTarget for everything the server would accept', () => {
+    for (const layout of LAYOUTS) {
+      for (const tags of TAGS) {
+        for (const base of ['', 'From peers', 'a\\b']) {
+          const theirs = destination.renderTarget({
+            destination: { vpath: 'music', base: destination.normalizeBase(base).base, layout },
+            tags, peerName: "Sam's server", fileName: destination.safeFileName('shared/03 Paper Lanterns.flac'),
+          });
+          const mine = J.previewTarget({ vpath: 'music', base, layout, tags, peerName: "Sam's server", fileName: 'shared/03 Paper Lanterns.flac' });
+          assert.equal(mine.valid, true);
+          assert.equal(mine.relPath, theirs.relPath, `${layout} / ${base}`);
+          assert.deepEqual(mine.missingVars, theirs.missingVars);
+        }
+      }
+    }
+  });
+
+  test('previewTarget names the broken field, and splits the path for the preview line', () => {
+    const ok = J.previewTarget({ vpath: 'music', base: 'From peers', layout: '{{ARTIST}}/{{ALBUM}} ({{YEAR}})', tags: { artist: 'Marlowe Vale', album: 'Night Ferry' }, peerName: 'Sam', fileName: 'x/03 Paper Lanterns.flac' });
+    assert.deepEqual(
+      { library: ok.library, base: ok.base, rendered: ok.rendered, file: ok.file, relPath: ok.relPath, missingVars: ok.missingVars },
+      { library: 'music', base: 'From peers', rendered: 'Marlowe Vale/Night Ferry ()', file: '03 Paper Lanterns.flac', relPath: 'From peers/Marlowe Vale/Night Ferry ()/03 Paper Lanterns.flac', missingVars: ['YEAR'] });
+    const badLayout = J.previewTarget({ vpath: 'music', base: '', layout: '{{ARTIST}}/{{TRACK}}', tags: {}, fileName: 'a.mp3' });
+    assert.deepEqual([badLayout.valid, badLayout.field, badLayout.error, badLayout.variable], [false, 'layout', 'unknown_variable', 'TRACK']);
+    const badBase = J.previewTarget({ vpath: 'music', base: '../up', layout: '{{ARTIST}}', tags: {}, fileName: 'a.mp3' });
+    assert.deepEqual([badBase.valid, badBase.field, badBase.error], [false, 'base', 'traversal']);
+    // Tags that render nothing: the file lands in the base folder itself.
+    const bare = J.previewTarget({ vpath: 'music', base: 'Inbox', layout: '{{GENRE}}', tags: {}, fileName: 'a.mp3' });
+    assert.equal(bare.relPath, 'Inbox/a.mp3');
+    assert.deepEqual(J.pathCrumbs('music/A/B/c.mp3'), ['music', 'A', 'B', 'c.mp3']);
+  });
+});
+
+const NOW = Date.UTC(2026, 8, 18, 12);
+const DAY = 24 * 60 * 60 * 1000;
+const job = (over) => ({ id: 1, plugin: 'youtube', state: 'queued', progress: null, statusText: null, result: null, error: null, cancelRequested: false, createdAt: NOW, recommendation: { artist: 'Neon Harbor', title: 'Salt & Static' }, ...over });
+
+describe('a job as a row', () => {
+  test('idle: a download offers Download, a copy offers Add', () => {
+    const dl = J.jobRowState(null, { plugin: 'youtube' });
+    assert.deepEqual([dl.state, dl.actions, dl.icon, dl.live], ['idle', ['start'], 'download', false]);
+    assert.equal(J.jobRowState(null, { plugin: 'federation-copy' }).icon, 'folder');
+  });
+
+  test('queued and running: progress, the status line, Cancel; a requested cancel takes the button away', () => {
+    const q = J.jobRowState(job({ state: 'queued' }));
+    assert.deepEqual([q.state, q.tag, q.actions, q.live, q.icon], ['queued', 'discover.job.queued', ['cancel'], true, 'clock']);
+    const r = J.jobRowState(job({ state: 'running', progress: 0.432, statusText: 'Neon Harbor – Salt & Static (Official Audio)' }));
+    assert.deepEqual([r.state, r.tag, r.progress, r.actions], ['running', 'discover.job.downloading', 43, ['cancel']]);
+    assert.deepEqual(r.sub, { text: 'Neon Harbor – Salt & Static (Official Audio) · 43%' });
+    // A status line with its own percentage is not given a second one.
+    assert.deepEqual(J.jobRowState(job({ state: 'running', progress: 0.45, statusText: '43% of “Salt & Static”' })).sub, { text: '43% of “Salt & Static”' });
+    const searching = J.jobRowState(job({ state: 'running', progress: null, statusText: 'Searching YouTube' }));
+    assert.deepEqual([searching.progress, searching.sub], ['indeterminate', { text: 'Searching YouTube' }]);
+    assert.deepEqual(J.jobRowState(job({ state: 'running' })).sub, { key: 'discover.job.starting' });
+    const copying = J.jobRowState(job({ plugin: 'federation-copy', state: 'running', progress: 0.5 }));
+    assert.deepEqual([copying.tag, copying.sub], ['discover.job.copying', { text: '50%' }]);
+    const stopping = J.jobRowState(job({ state: 'running', progress: 0.5, cancelRequested: true }));
+    assert.deepEqual([stopping.tag, stopping.actions], ['discover.job.stopping', []]);
+  });
+
+  test('a finished download: ready with its expiry, then kept or expired', () => {
+    const downloaded = { vpath: 'discover-downloads', filepath: 'discover-downloads/dana/Salt_Static.mp3', trackId: 9, bytes: 10066329, format: 'mp3' };
+    const ready = J.jobRowState(job({ state: 'done', result: { downloaded, expiresAt: NOW + 29.2 * DAY } }), { now: NOW });
+    assert.deepEqual([ready.state, ready.actions, ready.filepath, ready.expiresInDays], ['ready', ['play', 'queue', 'keep'], downloaded.filepath, 30]);
+    assert.deepEqual(ready.sub, { key: 'discover.job.readyDays', params: { facts: 'Salt_Static.mp3 · 9.6 MB', count: 30 } });
+    assert.equal(J.jobRowState(job({ state: 'done', result: { downloaded, expiresAt: NOW + 1000 } }), { now: NOW }).sub.params.count, 1);
+    assert.equal(J.jobRowState(job({ state: 'done', result: { downloaded, expiresAt: NOW - DAY } }), { now: NOW }).sub.key, 'discover.job.readyToday');
+    assert.equal(J.jobRowState(job({ state: 'done', result: { downloaded, expiresAt: null } }), { now: NOW }).sub.key, 'discover.job.readyForever');
+
+    const kept = J.jobRowState(job({ state: 'done', result: { downloaded, kept: { vpath: 'music', filepath: 'music/Neon Harbor/Low Tide/Salt_Static.mp3' } } }));
+    assert.deepEqual([kept.state, kept.tag, kept.actions, kept.filepath], ['kept', 'discover.job.inLibrary', ['play', 'queue'], 'music/Neon Harbor/Low Tide/Salt_Static.mp3']);
+    assert.deepEqual(kept.sub, { text: 'music / Neon Harbor / Low Tide / Salt_Static.mp3' });
+    const expired = J.jobRowState(job({ state: 'done', result: { downloaded, removed: { at: NOW } } }));
+    assert.deepEqual([expired.state, expired.muted, expired.actions, expired.filepath], ['expired', true, ['start'], null]);
+  });
+
+  test('a finished copy: copied, already owned, or a file in the way', () => {
+    const copied = J.jobRowState(job({ plugin: 'federation-copy', state: 'done', result: { copied: { vpath: 'music', filepath: 'music/Marlowe Vale/Night Ferry/03 Paper Lanterns.flac' } } }));
+    assert.deepEqual([copied.state, copied.tag, copied.actions], ['copied', 'discover.job.inCollection', ['play', 'queue']]);
+    assert.equal(copied.filepath, 'music/Marlowe Vale/Night Ferry/03 Paper Lanterns.flac');
+    const owned = J.jobRowState(job({ plugin: 'federation-copy', state: 'done', result: { skipped: 'owned', existing: { filepath: 'music/x/y.flac', by: 'hash' } } }));
+    assert.deepEqual([owned.state, owned.actions, owned.filepath], ['owned', ['play', 'queue'], 'music/x/y.flac']);
+    const exists = J.jobRowState(job({ plugin: 'federation-copy', state: 'done', result: { skipped: 'exists', filepath: 'music/x/y.flac' } }));
+    assert.deepEqual([exists.state, exists.actions, exists.sub], ['exists', ['retry'], { key: 'discover.job.existsSub', params: { path: 'music / x / y.flac' } }]);
+  });
+
+  test('failed carries the server\'s reason; cancelled offers the download again; an unknown result is just done', () => {
+    const failed = J.jobRowState(job({ state: 'failed', error: 'Nothing matched closely enough (best score 0.41, needs 0.62)' }));
+    assert.deepEqual([failed.state, failed.tagCls, failed.actions, failed.sub], ['failed', 'err', ['retry'], { text: 'Nothing matched closely enough (best score 0.41, needs 0.62)' }]);
+    assert.deepEqual(J.jobRowState(job({ state: 'failed' })).sub, { key: 'discover.job.failedSub' });
+    const cancelled = J.jobRowState(job({ state: 'cancelled' }));
+    assert.deepEqual([cancelled.state, cancelled.muted, cancelled.actions, cancelled.sub.key], ['cancelled', true, ['start'], 'discover.job.cancelledSub']);
+    assert.equal(J.jobRowState(job({ plugin: 'federation-copy', state: 'cancelled' })).sub.key, 'discover.job.cancelledCopySub');
+    assert.deepEqual([J.jobRowState(job({ state: 'done', result: { echoed: 'x' } })).state, J.jobRowState(job({ state: 'done' })).actions], ['done', []]);
+  });
+
+  test('formatting helpers', () => {
+    assert.deepEqual([0, 512, 2048, 5.5 * 1024 * 1024, 98 * 1024 * 1024, 3 * 1024 ** 3, NaN].map(J.fmtBytes), ['', '512 B', '2 KB', '5.5 MB', '98 MB', '3.0 GB', '']);
+    assert.deepEqual([J.daysLeft(null, NOW), J.daysLeft(NOW + 1, NOW), J.daysLeft(NOW + 2 * DAY, NOW), J.daysLeft(NOW - 5, NOW)], [null, 1, 2, 0]);
+    assert.deepEqual(J.jobsByPlugin([job({ id: 5, plugin: 'youtube' }), job({ id: 4, plugin: 'youtube' }), job({ id: 3, plugin: 'federation-copy' })]), {
+      youtube: job({ id: 5, plugin: 'youtube' }), 'federation-copy': job({ id: 3, plugin: 'federation-copy' }),
+    });
+    assert.deepEqual(J.jobsByPlugin(null), {});
+  });
+});
+
+describe('the downloads strip', () => {
+  const downloaded = { filepath: 'discover-downloads/dana/a.mp3' };
+  const jobs = [
+    job({ id: 1, state: 'done', createdAt: NOW - 50, result: { copied: { filepath: 'music/a.flac' } } }),
+    job({ id: 2, state: 'failed', createdAt: NOW - 40, error: 'nope' }),
+    job({ id: 3, state: 'done', createdAt: NOW - 30, result: { downloaded } }),
+    job({ id: 4, state: 'queued', createdAt: NOW - 20 }),
+    job({ id: 5, state: 'running', createdAt: NOW - 10 }),
+    job({ id: 6, state: 'cancelled', createdAt: NOW - 5 }),
+    job({ id: 7, state: 'done', createdAt: NOW - 4, result: { downloaded, kept: { filepath: 'music/a.mp3' } } }),
+    job({ id: 8, state: 'done', createdAt: NOW - 3, result: { downloaded, removed: { at: NOW } } }),
+    job({ id: 9, state: 'running', createdAt: NOW - 2 }),
+  ];
+
+  test('holds what still wants the user, live work first, newest first within a kind', () => {
+    assert.deepEqual(J.trayRows(jobs).map((j) => j.id), [9, 5, 4, 3, 2]);
+    assert.deepEqual(J.trayRows(null), []);
+  });
+
+  test('a failure that was retried leaves the strip: a newer job for the same plug-in and recommendation supersedes it', () => {
+    const retried = [
+      job({ id: 10, key: 'text:a', state: 'failed', createdAt: NOW - 30 }),
+      job({ id: 11, key: 'text:a', state: 'running', createdAt: NOW - 20 }),
+      job({ id: 12, key: 'text:b', state: 'failed', createdAt: NOW - 10 }),
+      job({ id: 13, key: 'text:a', plugin: 'other', state: 'failed', createdAt: NOW - 5 }),
+    ];
+    assert.deepEqual(J.trayRows(retried).map((j) => j.id), [11, 13, 12]);
+    // Even a cancelled retry closes the matter; the newest failure still shows.
+    assert.deepEqual(J.trayRows([job({ id: 20, key: 'text:c', state: 'failed' }), job({ id: 21, key: 'text:c', state: 'cancelled' })]), []);
+    assert.deepEqual(J.trayRows([job({ id: 30, key: 'text:d', state: 'failed' }), job({ id: 31, key: 'text:d', state: 'failed' })]).map((j) => j.id), [31]);
+    assert.equal(J.traySummary(retried).failed, 2);
+  });
+
+  test('the summary counts running, ready and failed, leaves zeroes out, and says whether to keep polling fast', () => {
+    const s = J.traySummary(jobs);
+    assert.deepEqual([s.total, s.running, s.ready, s.failed, s.live, s.clearable], [5, 3, 1, 1, true, true]);
+    assert.deepEqual(s.parts, [{ key: 'discover.tray.running', count: 3 }, { key: 'discover.tray.ready', count: 1 }, { key: 'discover.tray.failed', count: 1 }]);
+    const quiet = J.traySummary([jobs[2]]);
+    assert.deepEqual([quiet.total, quiet.live, quiet.clearable, quiet.parts], [1, false, false, [{ key: 'discover.tray.ready', count: 1 }]]);
+    assert.equal(J.traySummary([]).total, 0);
+  });
+
+  test('titles, and what finished between two polls', () => {
+    assert.equal(J.jobTitle(jobs[0]), 'Salt & Static — Neon Harbor');
+    assert.equal(J.jobTitle({ recommendation: { title: 'Only a title' } }), 'Only a title');
+    assert.equal(J.jobTitle(null), '');
+    const before = [job({ id: 1, state: 'running' }), job({ id: 2, state: 'queued' }), job({ id: 3, state: 'failed' })];
+    const after = [job({ id: 1, state: 'done', result: { downloaded } }), job({ id: 2, state: 'running' }), job({ id: 3, state: 'failed' }), job({ id: 4, state: 'done' })];
+    assert.deepEqual(J.finishedSince(before, after).map((j) => j.id), [1], 'only a job seen live and now finished is news');
+    assert.deepEqual(J.finishedSince(null, after), []);
+  });
+});
+
+describe('the queue after Keep… moves a file', () => {
+  test('entries on the old path are re-pointed; peer tracks and other songs are left alone', () => {
+    const from = 'discover-downloads/dana/Salt #1.mp3';
+    const to = 'music/Neon Harbor/Low Tide/Salt #1.mp3';
+    const songFor = (raw) => ({ filepath: raw.replace(/#/g, '%23'), url: `http://host/media/${raw.replace(/#/g, '%23')}?token=t` });
+    const playlist = [
+      { rawFilePath: from, filepath: from.replace(/#/g, '%23'), url: 'old', metadata: { filepath: from, title: 'Salt' } },
+      { rawFilePath: 'music/other.mp3', filepath: 'music/other.mp3', url: 'keep', metadata: {} },
+      { rawFilePath: from, filepath: 'peer-side', url: 'peer', federation: { peerId: 'p1' }, metadata: {} },
+      { rawFilePath: from, filepath: 'x', url: 'old2', metadata: null },
+    ];
+    assert.equal(J.patchQueuePaths(playlist, from, to, songFor), 2);
+    assert.deepEqual(playlist[0], { rawFilePath: to, filepath: 'music/Neon Harbor/Low Tide/Salt %231.mp3', url: 'http://host/media/music/Neon Harbor/Low Tide/Salt %231.mp3?token=t', metadata: { filepath: to, title: 'Salt' } });
+    assert.equal(playlist[1].url, 'keep');
+    assert.equal(playlist[2].url, 'peer');
+    assert.equal(playlist[3].rawFilePath, to);
+    assert.equal(J.patchQueuePaths(null, from, to, songFor), 0);
+  });
+});
