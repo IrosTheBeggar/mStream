@@ -156,9 +156,13 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
     // The library exists, is served, and the row carries the plug-in's provenance
     // and the RECOMMENDATION's tags, not the upload's.
     assert.ok(row("SELECT id FROM libraries WHERE name = 'discover-downloads'"));
-    const track = row('SELECT source, title FROM tracks WHERE filepath = ?', rel);
+    const track = row('SELECT source, title, duration FROM tracks WHERE filepath = ?', rel);
     assert.equal(track.source, 'plugin:youtube');
     assert.equal(track.title, 'Remote Hit');
+    // The row has its length at once (the fixture is a 2 s tone): it used to
+    // sit at NULL until a rescan, so the song showed no length and its
+    // album's total ran short.
+    assert.ok(track.duration > 1.5 && track.duration < 3, `duration ${track.duration}`);
     const meta = await api(server, 'POST', '/api/v1/db/metadata', { filepath: result.downloaded.filepath });
     assert.equal(meta.status, 200);
     assert.equal(meta.body.metadata.artist, 'Nova');

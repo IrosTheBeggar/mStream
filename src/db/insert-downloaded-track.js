@@ -45,8 +45,14 @@ export async function insertDownloadedTrack({ filePath, vpath, basePath, source,
   // Parse metadata from the file (include covers for album art)
   const skipImg = config.program.scanOptions.skipImg === true;
   let metadata;
+  // The length, the way the scanner reads it (scanner.mjs). Without it the
+  // row sat at NULL until a rescan rewrote it: the song showed no length and
+  // its album's total ran short.
+  let duration = null;
   try {
-    metadata = (await parseFile(filePath, { skipCovers: skipImg })).common;
+    const parsed = await parseFile(filePath, { skipCovers: skipImg });
+    metadata = parsed.common;
+    duration = (parsed.format && parsed.format.duration) || null;
   } catch (err) {
     winston.error(`${log}: metadata parse error`, { stack: err });
     metadata = EMPTY_TAGS;
@@ -136,12 +142,12 @@ export async function insertDownloadedTrack({ filePath, vpath, basePath, source,
     // one stays NULL).
     d.prepare(
       `INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
-       disc_number, year, format, file_hash, audio_hash, album_art_file, replaygain_track_db,
+       disc_number, year, duration, format, file_hash, audio_hash, album_art_file, replaygain_track_db,
        modified, scan_id, source, hash_v, tag_album, tag_compilation, artist_display)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
     ).run(
       data.filepath, lib.id, data.title || null, artistId, albumId,
-      data.track, data.disk, data.year, data.format, data.hash, data.audioHash || null,
+      data.track, data.disk, data.year, duration, data.format, data.hash, data.audioHash || null,
       data.aaFile, data.replaygainTrackDb, data.modified, data.sID, source, hashV,
       data.album || null,
       // V73: the display string is the artist as given.

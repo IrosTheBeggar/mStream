@@ -209,11 +209,12 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     assert.equal(fs.statSync(onDisk).size, fs.statSync(path.join(sharedDir, 'Remote_Hit.mp3')).size, 'byte for byte');
     assert.ok(!fs.readdirSync(path.join(collectionDir, 'From peers')).some((f) => f.endsWith('.part')), 'no .part left behind');
 
-    const row = bRow('SELECT source, title, file_hash, hash_v FROM tracks WHERE filepath = ?', 'From peers/copier/Nova/Night Ferry/Remote_Hit.mp3');
+    const row = bRow('SELECT source, title, file_hash, hash_v, duration FROM tracks WHERE filepath = ?', 'From peers/copier/Nova/Night Ferry/Remote_Hit.mp3');
     assert.ok(row, 'a tracks row exists at the forward-slash path');
     assert.equal(row.source, PLUGIN);
     assert.equal(row.title, 'Remote Hit');
     assert.ok(row.file_hash);
+    assert.ok(row.duration > 0, `a copied song has its length at once, not after a rescan (duration ${row.duration})`);
 
     const meta = await api(srvB, 'POST', '/api/v1/db/metadata', { filepath: result.copied.filepath });
     assert.equal(meta.status, 200);
