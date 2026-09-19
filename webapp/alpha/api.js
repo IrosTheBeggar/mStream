@@ -167,6 +167,31 @@ const MSTREAMAPI = (() => {
     return discoveryReq('api/v1/discovery/plugins/' + encodeURIComponent(name) + '/resolve', { recommendation });
   };
 
+  // Plug-in jobs (acquire / hand-off) and the collection destination they
+  // copy into. Unlike the calls above these THROW (req's err.status +
+  // err.body): a job row shows the server's own reason — "someone else is
+  // already getting this", "a file already exists at …" — not a shrug.
+  const jobsRoute = (tail) => mstreamModule.currentServer.host + 'api/v1/discovery/plugin-jobs' + (tail || '');
+  mstreamModule.discoveryJobStart = (name, recommendation) => {
+    return req('POST', mstreamModule.currentServer.host + 'api/v1/discovery/plugins/' + encodeURIComponent(name) + '/jobs', { recommendation });
+  };
+  mstreamModule.discoveryJobs = () => req('GET', jobsRoute());
+  mstreamModule.discoveryJob = (id) => req('GET', jobsRoute('/' + encodeURIComponent(id)));
+  mstreamModule.discoveryJobLookup = (recommendation) => req('POST', jobsRoute('/lookup'), { recommendation });
+  mstreamModule.discoveryJobCancel = (id) => req('POST', jobsRoute('/' + encodeURIComponent(id) + '/cancel'), {});
+  // `destination` = a one-off { vpath, base, layout }; omitted = the saved one.
+  mstreamModule.discoveryJobKeep = (id, destination) => {
+    return req('POST', jobsRoute('/' + encodeURIComponent(id) + '/keep'), destination ? { destination } : {});
+  };
+  mstreamModule.discoveryJobsClear = () => req('POST', jobsRoute('/clear'), {});
+  mstreamModule.discoveryDestination = () => {
+    return req('GET', mstreamModule.currentServer.host + 'api/v1/discovery/collection/destination');
+  };
+  // null = back to the library default.
+  mstreamModule.discoverySaveDestination = (destination) => {
+    return req('PUT', mstreamModule.currentServer.host + 'api/v1/discovery/collection/destination', { destination });
+  };
+
   // POST /api/v1/db/genres → { genres: [{ name, track_count }] }.
   // Used by the Auto-DJ panel's genre filter dropdown. POST (not GET)
   // so callers can pass ignoreVPaths in the body to scope the count;

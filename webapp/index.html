@@ -1032,6 +1032,43 @@
                 </div>
               </template>
             </div>
+            <!-- Downloads strip (design card 07): the plug-in jobs that still
+                 want the user — running, waiting to be kept, failed. A job
+                 outlives the window that started it, so the strip sits under
+                 the leads it came from, shows only while there are any, and
+                 stays put when the panel body is folded. A row opens the
+                 window its job came from. -->
+            <div v-if="discover.plugins.available && dtRows().length" class="discover-tray">
+              <div class="discover-tray-h pointer" v-on:click="toggleDiscoverTray">
+                <dm-icon name="download" :size="12"></dm-icon>
+                <span>{{ tt('discover.tray.title') }}</span>
+                <span class="discover-tray-count">{{ dtSummary() }}</span>
+                <span class="grow"></span>
+                <svg class="discover-chevron" v-bind:class="{ 'discover-chevron-open': !discover.tray.collapsed }" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="currentColor" d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
+              </div>
+              <template v-if="!discover.tray.collapsed">
+                <div v-for="tr in dtRows()" :key="tr.job.id" class="discover-job pointer" v-on:click="openDiscoverModalForJob(tr.job)" :title="tr.title">
+                  <span class="discover-job-ic" v-bind:class="{ 'discover-job-ic-on': tr.row.iconCls === 'on' && tr.job.plugin !== 'federation-copy', 'discover-job-ic-peer': tr.row.iconCls === 'on' && tr.job.plugin === 'federation-copy', 'discover-job-ic-ok': tr.row.iconCls === 'ok', 'discover-job-ic-err': tr.row.iconCls === 'err' }"><dm-icon :name="tr.row.icon" :size="13"></dm-icon></span>
+                  <div class="discover-job-t">
+                    <b>{{ tr.title }}</b>
+                    <small>{{ tr.plugin }}<template v-if="dmText(tr.row.sub)"> &middot; {{ dmText(tr.row.sub) }}</template></small>
+                    <div v-if="tr.row.progress !== null" class="dm-progress" v-bind:class="{ 'dm-progress-indet': tr.row.progress === 'indeterminate', 'dm-progress-peer': tr.job.plugin === 'federation-copy' }"><i :style="tr.row.progress === 'indeterminate' ? null : { width: tr.row.progress + '%' }"></i></div>
+                  </div>
+                  <div class="discover-job-act">
+                    <a v-if="tr.row.actions.indexOf('play') !== -1" href="javascript:void(0)" v-on:click.stop="playDiscoverFile(tr.row.filepath)" :title="tt('discover.modal.play')"><dm-icon name="play" :size="14"></dm-icon></a>
+                    <a v-if="tr.row.actions.indexOf('queue') !== -1" href="javascript:void(0)" v-on:click.stop="queueDiscoverFile(tr.row.filepath)" :title="tt('discover.modal.addToQueue')"><dm-icon name="plus" :size="14"></dm-icon></a>
+                    <a v-if="tr.row.actions.indexOf('keep') !== -1" href="javascript:void(0)" v-on:click.stop="openDiscoverModalForJob(tr.job, true)" :title="tt('discover.tray.keep')"><dm-icon name="folder" :size="14"></dm-icon></a>
+                    <a v-if="tr.row.actions.indexOf('retry') !== -1" href="javascript:void(0)" v-on:click.stop="dtRetry(tr.job)" :title="tt('discover.job.retry')"><dm-icon name="retry" :size="14"></dm-icon></a>
+                    <a v-if="tr.row.actions.indexOf('cancel') !== -1" href="javascript:void(0)" v-on:click.stop="cancelDiscoverJob(tr.job)" :title="tt('discover.modal.cancel')"><dm-icon name="close" :size="14"></dm-icon></a>
+                  </div>
+                </div>
+                <div class="discover-tray-f">
+                  <a v-if="dtClearable()" class="pointer" href="javascript:void(0)" v-on:click="dtClear">{{ tt('discover.tray.clear') }}</a>
+                  <span class="grow"></span>
+                  <span v-if="dtWaiting()">{{ dtWaiting() }}</span>
+                </div>
+              </template>
+            </div>
           </div>
 
           <!-- Recommendation modal: one window for a "From the network" or
@@ -1063,7 +1100,7 @@
                     <span v-if="discover.modal.track.duration">{{ dmDuration(discover.modal.track.duration) }}</span>
                     <span v-if="discover.modal.file && discover.modal.file.format">{{ discover.modal.file.format }}</span>
                     <span v-if="discover.modal.track.isrc" class="dmodal-isrc">{{ discover.modal.track.isrc }}</span>
-                    <span class="dmodal-matchbar"><i :style="{ '--pct': dmPct(discover.modal.track) + '%' }"></i>{{ dmPct(discover.modal.track) }}% {{ tt('discover.modal.matchTo') }} &ldquo;{{ discover.seedTitle }}&rdquo;</span>
+                    <span v-if="discover.modal.track.similarity != null" class="dmodal-matchbar"><i :style="{ '--pct': dmPct(discover.modal.track) + '%' }"></i>{{ dmPct(discover.modal.track) }}% {{ tt('discover.modal.matchTo') }} &ldquo;{{ discover.seedTitle }}&rdquo;</span>
                   </div>
                   <div class="dmodal-source">
                     <span class="dmodal-dot"></span>
@@ -1077,6 +1114,83 @@
               <div v-if="discover.modal.source === 'federation' && discover.plugins.available" class="dmodal-tabs" role="tablist">
                 <a class="dmodal-tab" href="javascript:void(0)" role="tab" v-bind:class="{ 'dmodal-tab-on': discover.modal.view === 'federation' }" v-on:click="setDiscoverModalView('federation')">{{ tt('discover.modal.tabFederation') }}</a>
                 <a class="dmodal-tab" href="javascript:void(0)" role="tab" v-bind:class="{ 'dmodal-tab-on': discover.modal.view === 'plugins' }" v-on:click="setDiscoverModalView('plugins')">{{ tt('discover.modal.tabPlugins') }}</a>
+              </div>
+
+              <!-- Collection destination (design card 10): where "Add to your
+                   collection" copies and kept downloads land. The bar shows
+                   the path resolved for THIS song and lives in the Federation
+                   view while a copy row exists; Change… (or a download's
+                   Keep…) swaps in the form, in place. Absent — never locked —
+                   when the account has nowhere to put a file. -->
+              <div v-if="discover.modal.picker" class="dm-dest-form" ref="dmPicker">
+                <div v-if="discover.modal.picker.mode === 'keep'" class="dm-dest-title">{{ tt('discover.modal.dest.keepTitle', { title: discover.modal.track.title || '' }) }}</div>
+                <div class="dm-field">
+                  <label>{{ tt('discover.modal.dest.library') }}</label>
+                  <div class="dm-field-body">
+                    <select v-if="dmPickerLibraries().length > 1" class="dm-select browser-default" v-model="discover.modal.picker.vpath" v-on:change="dmPickerLibraryChanged">
+                      <option v-for="lib in dmPickerLibraries()" :key="lib.vpath" :value="lib.vpath">{{ lib.vpath }}</option>
+                    </select>
+                    <span v-else class="dm-static">{{ discover.modal.picker.vpath }}</span>
+                    <span class="dm-field-hint dm-field-hint-inline">{{ tt(dmPickerLibraries().length > 1 ? 'discover.modal.dest.libraryHint' : 'discover.modal.dest.onlyLibrary') }}</span>
+                  </div>
+                </div>
+                <div class="dm-field">
+                  <label>{{ tt('discover.modal.dest.base') }}</label>
+                  <div class="dm-field-body">
+                    <input class="dm-input browser-default" type="text" maxlength="500" v-model="discover.modal.picker.base" v-on:change="dmPickerLibraryChanged" :placeholder="tt('discover.modal.dest.root')" v-bind:class="{ 'is-err': dmPickerPreview().field === 'base' }">
+                    <a class="dm-btn dm-btn-sm" v-bind:class="{ 'dm-btn-ghost': discover.modal.picker.browse }" href="javascript:void(0)" v-on:click="dmBrowseToggle"><dm-icon name="folder" :size="14"></dm-icon>{{ tt(discover.modal.picker.browse ? 'discover.modal.close' : 'discover.modal.dest.browse') }}</a>
+                  </div>
+                  <div v-if="discover.modal.picker.browse" class="dm-tree">
+                    <div class="dm-tree-crumb"><template v-for="(c, i) in dmBrowseCrumbs()"><span v-if="i > 0">&rsaquo;</span><b>{{ c }}</b></template></div>
+                    <div v-if="dmBrowseCrumbs().length > 1" class="dm-tree-row" v-on:click="dmBrowseUp"><dm-icon name="up" :size="12"></dm-icon>{{ tt('discover.modal.dest.up', { name: dmBrowseCrumbs()[dmBrowseCrumbs().length - 2] }) }}</div>
+                    <div v-if="discover.modal.picker.browse.loading" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.lookingUp') }}</div>
+                    <template v-else>
+                      <div v-if="discover.modal.picker.browse.missing" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.dest.willCreate') }}</div>
+                      <div v-else-if="discover.modal.picker.browse.dirs.length === 0" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.dest.noFolders') }}</div>
+                      <div v-for="d in discover.modal.picker.browse.dirs" :key="d" class="dm-tree-row" v-on:click="dmBrowseInto(d)"><dm-icon name="folder" :size="12"></dm-icon>{{ d }}</div>
+                    </template>
+                    <div v-if="!discover.modal.picker.browse.naming" class="dm-tree-row" v-on:click="dmBrowseNewFolder"><dm-icon name="plus" :size="12"></dm-icon>{{ tt('discover.modal.dest.newFolder') }}</div>
+                    <div v-else class="dm-tree-row dm-tree-new">
+                      <dm-icon name="plus" :size="12"></dm-icon>
+                      <input class="dm-input browser-default" type="text" maxlength="200" ref="dmNewFolder" v-model="discover.modal.picker.browse.newName" v-on:keydown.enter.prevent="dmBrowseNewFolder" :placeholder="tt('discover.modal.dest.newFolderName')">
+                      <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmBrowseNewFolder">{{ tt('discover.modal.dest.newFolderAdd') }}</a>
+                    </div>
+                  </div>
+                  <div v-if="dmPickerPreview().field === 'base'" class="dm-field-err">{{ dmPickerProblem(dmPickerPreview()) }}</div>
+                  <div v-else class="dm-field-hint">{{ tt('discover.modal.dest.baseHint', { library: discover.modal.picker.vpath }) }}</div>
+                </div>
+                <div class="dm-field">
+                  <label>{{ tt('discover.modal.dest.layout') }}</label>
+                  <div class="dm-field-body">
+                    <input class="dm-input dm-input-mono browser-default" type="text" maxlength="500" spellcheck="false" ref="dmLayoutInput" v-model="discover.modal.picker.layout" v-bind:class="{ 'is-err': dmPickerPreview().field === 'layout' }">
+                  </div>
+                  <div class="dm-toks">
+                    <span v-for="v in dmPickerVars()" :key="v" class="dm-tok" v-bind:class="{ 'dm-tok-new': v === 'PEER' }" v-on:click="dmInsertVar(v)">{{ dmVarToken(v) }}</span>
+                    <span class="dm-tok dm-tok-preset" v-on:click="dmUseLibraryTemplate">{{ tt('discover.modal.dest.libraryTemplate') }}</span>
+                  </div>
+                  <div v-if="dmPickerPreview().field === 'layout'" class="dm-field-err">{{ dmPickerProblem(dmPickerPreview()) }}</div>
+                  <div v-else-if="dmPickerPreview().missingVars.length" class="dm-field-hint">{{ tt('discover.modal.dest.missing', { vars: dmPickerPreview().missingVars.join(', ') }) }}</div>
+                  <div v-else class="dm-field-hint">{{ tt('discover.modal.dest.layoutHint') }}</div>
+                </div>
+                <div v-if="dmPickerPreview().valid" class="dm-dest-preview" :title="discover.modal.picker.vpath + '/' + dmPickerPreview().relPath">{{ discover.modal.picker.vpath }}/<template v-if="dmPickerPreview().base">{{ dmPickerPreview().base }}/</template><b v-if="dmPickerPreview().rendered">{{ dmPickerPreview().rendered }}</b><template v-if="dmPickerPreview().rendered">/</template>{{ dmPickerPreview().file }}</div>
+                <div v-if="discover.modal.picker.error" class="dm-field-err dm-field-err-wide">{{ discover.modal.picker.error }}</div>
+                <div class="dm-dest-act">
+                  <label v-if="discover.modal.picker.mode === 'keep'" class="dm-check dm-spacer"><input type="checkbox" v-model="discover.modal.picker.remember"><span>{{ tt('discover.modal.dest.remember') }}</span></label>
+                  <span v-else class="dm-spacer">{{ tt('discover.modal.dest.remembered') }}</span>
+                  <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="dmClosePicker">{{ tt('discover.modal.cancel') }}</a>
+                  <a class="dm-btn dm-btn-sm dm-btn-primary" v-bind:class="{ 'is-disabled': !dmPickerPreview().valid || discover.modal.picker.saving }" href="javascript:void(0)" v-on:click="dmPickerSubmit">
+                    <dm-icon :name="discover.modal.picker.mode === 'keep' ? 'folder' : 'check'" :size="14"></dm-icon>{{ tt(discover.modal.picker.mode === 'keep' ? 'discover.modal.dest.moveHere' : 'discover.modal.dest.use') }}
+                  </a>
+                </div>
+              </div>
+              <div v-else-if="discover.modal.source === 'federation' && discover.modal.view === 'federation' && dmCopyRows().length" class="dm-dest">
+                <dm-icon name="folder" :size="14"></dm-icon>
+                <span class="dm-dest-path" :title="[discover.dest.view.destination.vpath].concat(dmDestCrumbs()).join(' / ')">{{ tt('discover.modal.dest.goTo') }} <b>{{ discover.dest.view.destination.vpath }}</b><template v-for="c in dmDestCrumbs()"><i>&rsaquo;</i>{{ c }}</template></span>
+                <span class="dm-tag" v-bind:class="{ 'dm-tag-src': discover.dest.view.destination.source === 'user' }">{{ tt(discover.dest.view.destination.source === 'user' ? 'discover.modal.dest.yours' : 'discover.modal.dest.default') }}</span>
+                <div class="dm-opt-act">
+                  <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="dmOpenPicker('save')">{{ tt('discover.modal.dest.change') }}</a>
+                  <a v-if="discover.dest.view.destination.source === 'user'" class="dm-btn dm-btn-sm dm-btn-ghost dm-btn-icon" href="javascript:void(0)" v-on:click="dmResetDestination" :title="tt('discover.modal.dest.reset')"><dm-icon name="retry" :size="14"></dm-icon></a>
+                </div>
               </div>
 
               <!-- Federation view: a paired server's song, album and artist -->
@@ -1095,6 +1209,12 @@
                       <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmAddToQueue">+ {{ tt('discover.modal.addToQueue') }}</a>
                     </div>
                   </div>
+                  <!-- Add to your collection: the federation-copy plug-in's job row -->
+                  <dm-job-row v-for="cr in dmCopyRows()" :key="cr.plugin.name" :row="cr.row"
+                              :title="tt('discover.modal.addToCollection')" :idle-sub="tt('discover.modal.addToCollectionSub', { peer: discover.modal.track.peer.name || 'peer' })"
+                              :start-label="tt('discover.modal.add')" start-icon="folder"
+                              :busy="discover.modal.jobBusy[cr.plugin.name] === true" :can-keep="false"
+                              v-on:start="dmJobStart(cr.plugin)" v-on:cancel="dmJobCancel(cr.plugin)" v-on:play="dmJobPlay(cr.plugin)" v-on:queue="dmJobQueue(cr.plugin)"></dm-job-row>
                 </section>
                 <section v-if="discover.modal.track.album" class="dmodal-section">
                   <div class="dmodal-section-h">
@@ -1168,6 +1288,18 @@
                       </a>
                     </div>
                   </div>
+                </section>
+
+                <!-- Get it: one row per acquire plug-in; a row IS its job
+                     (design card 03). Absent when no acquire plug-in is
+                     listed or this account may not start jobs. -->
+                <section v-if="dmGetItRows().length" class="dmodal-section">
+                  <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.getIt') }}</span><span class="dmodal-hint">{{ tt(dmAnyJobLive() ? 'discover.modal.getItLiveHint' : 'discover.modal.getItHint') }}</span></div>
+                  <dm-job-row v-for="gr in dmGetItRows()" :key="gr.plugin.name" :row="gr.row"
+                              :title="gr.plugin.title" :idle-sub="tt('discover.modal.getItSub', { query: dmSearchWords() })" :hint="gr.plugin.description"
+                              :start-label="tt('discover.modal.download')"
+                              :busy="discover.modal.jobBusy[gr.plugin.name] === true" :can-keep="dmHasDestination()"
+                              v-on:start="dmJobStart(gr.plugin)" v-on:cancel="dmJobCancel(gr.plugin)" v-on:play="dmJobPlay(gr.plugin)" v-on:queue="dmJobQueue(gr.plugin)" v-on:keep="dmOpenPicker('keep', gr.plugin)"></dm-job-row>
                 </section>
 
                 <section v-if="discover.modal.federate && discover.modal.federate.visible" class="dmodal-section">
@@ -1245,6 +1377,8 @@
     </a>
   </div>
 
+  <!-- The Discover job rows' pure half (window.DISCOVERJOBS) — vp.js reads it. -->
+  <script src="alpha/discover-jobs.js"></script>
   <script src="alpha/vp.js"></script>
   <script src="alpha/scan-progress.js"></script>
 </body>

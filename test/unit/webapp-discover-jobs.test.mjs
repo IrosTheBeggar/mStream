@@ -124,6 +124,8 @@ describe('a job as a row', () => {
     const r = J.jobRowState(job({ state: 'running', progress: 0.432, statusText: 'Neon Harbor – Salt & Static (Official Audio)' }));
     assert.deepEqual([r.state, r.tag, r.progress, r.actions], ['running', 'discover.job.downloading', 43, ['cancel']]);
     assert.deepEqual(r.sub, { text: 'Neon Harbor – Salt & Static (Official Audio) · 43%' });
+    // A status line with its own percentage is not given a second one.
+    assert.deepEqual(J.jobRowState(job({ state: 'running', progress: 0.45, statusText: '43% of “Salt & Static”' })).sub, { text: '43% of “Salt & Static”' });
     const searching = J.jobRowState(job({ state: 'running', progress: null, statusText: 'Searching YouTube' }));
     assert.deepEqual([searching.progress, searching.sub], ['indeterminate', { text: 'Searching YouTube' }]);
     assert.deepEqual(J.jobRowState(job({ state: 'running' })).sub, { key: 'discover.job.starting' });
@@ -196,6 +198,20 @@ describe('the downloads strip', () => {
   test('holds what still wants the user, live work first, newest first within a kind', () => {
     assert.deepEqual(J.trayRows(jobs).map((j) => j.id), [9, 5, 4, 3, 2]);
     assert.deepEqual(J.trayRows(null), []);
+  });
+
+  test('a failure that was retried leaves the strip: a newer job for the same plug-in and recommendation supersedes it', () => {
+    const retried = [
+      job({ id: 10, key: 'text:a', state: 'failed', createdAt: NOW - 30 }),
+      job({ id: 11, key: 'text:a', state: 'running', createdAt: NOW - 20 }),
+      job({ id: 12, key: 'text:b', state: 'failed', createdAt: NOW - 10 }),
+      job({ id: 13, key: 'text:a', plugin: 'other', state: 'failed', createdAt: NOW - 5 }),
+    ];
+    assert.deepEqual(J.trayRows(retried).map((j) => j.id), [11, 13, 12]);
+    // Even a cancelled retry closes the matter; the newest failure still shows.
+    assert.deepEqual(J.trayRows([job({ id: 20, key: 'text:c', state: 'failed' }), job({ id: 21, key: 'text:c', state: 'cancelled' })]), []);
+    assert.deepEqual(J.trayRows([job({ id: 30, key: 'text:d', state: 'failed' }), job({ id: 31, key: 'text:d', state: 'failed' })]).map((j) => j.id), [31]);
+    assert.equal(J.traySummary(retried).failed, 2);
   });
 
   test('the summary counts running, ready and failed, leaves zeroes out, and says whether to keep polling fast', () => {

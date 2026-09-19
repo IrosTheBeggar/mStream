@@ -2249,7 +2249,9 @@ select {
 .dmodal-shadow {
   position: fixed;
   inset: 0;
-  z-index: 4000;
+  /* One above the phone layout's floating menu button (.fixed-action-btn,
+     4000), which otherwise sits on the window's form and close button. */
+  z-index: 4001;
   background: rgba(0, 0, 0, .6);
   overflow-y: auto;
   display: flex;
@@ -2357,6 +2359,71 @@ select {
 }
 .dm-tag-ok { color: #4fc27a; }
 .dm-tag-src { color: var(--src); }
+.dm-tag-err { color: #e0616a; }
+/* Job rows (Get it · Add to your collection): the row is its job */
+.dm-opt-sub-err { color: #e0616a; }
+.dm-progress { height: 4px; background: #1a1e25; border-radius: 2px; overflow: hidden; margin-top: 6px; }
+.dm-progress i { display: block; height: 100%; background: var(--src); border-radius: 2px; transition: width .4s ease; }
+.dm-progress-indet i { width: 35%; animation: dm-indet 1.4s ease-in-out infinite; }
+@keyframes dm-indet { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+/* Collection destination: the bar under the view selector, and the form
+   (library · base folder · layout) that replaces it */
+.dm-dest {
+  display: flex; align-items: center; gap: 10px; margin: 0 20px 12px; padding: 7px 10px;
+  background: #1a1e25; border-radius: 6px; font-size: 11.5px; color: #b8bcc6;
+}
+.dm-dest > svg { color: var(--src); flex-shrink: 0; }
+.dm-dest-path { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-dest-path b { color: #f0f2f5; font-weight: 600; }
+.dm-dest-path i { font-style: normal; color: #6f7683; margin: 0 4px; }
+.dm-dest .dm-opt-act { gap: 4px; }
+.dm-dest-form { margin: 0 20px 12px; padding: 12px 12px 10px; background: #23282f; border-radius: 6px; display: grid; gap: 9px; }
+.dm-dest-title { font-size: 12.5px; font-weight: 600; color: #dfe3ea; }
+.dm-field { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 5px 12px; align-items: center; font-size: 11.5px; }
+.dm-field > label { color: #8a919e; font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.dm-field-body { display: flex; gap: 6px; align-items: center; min-width: 0; flex-wrap: wrap; }
+.dm-static { color: #dfe3ea; }
+.dm-input-mono, .dm-input-mono[type="text"] { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
+.dm-input.is-err, .dm-input[type="text"].is-err { border-color: #e0616a; }
+.dm-select {
+  height: 28px; min-width: 140px; max-width: 100%; margin: 0; padding: 0 8px; font-size: 12px; color: #f0f2f5;
+  background: #1a1e25; border: 1px solid #444c56; border-radius: 4px;
+}
+.dm-select:focus { border-color: var(--src); outline: none; }
+.dm-toks { display: flex; flex-wrap: wrap; gap: 4px; grid-column: 2; }
+.dm-tok {
+  font: 500 10.5px/1 ui-monospace, Consolas, monospace; color: #b8bcc6; background: #363d47;
+  border-radius: 3px; padding: 3px 6px; cursor: pointer; user-select: none;
+}
+.dm-tok:hover { background: #414957; color: #f0f2f5; }
+.dm-tok-new { background: transparent; border: 1px solid #657ee4; color: #8ea0f0; }
+.dm-tok-preset { background: transparent; border: 1px solid #444c56; color: #8a919e; font-family: inherit; }
+.dm-field-hint { grid-column: 2; font-size: 10.5px; color: #6f7683; line-height: 1.4; }
+.dm-field-hint-inline { grid-column: auto; }
+.dm-field-err { grid-column: 2; font-size: 10.5px; color: #e0616a; line-height: 1.4; }
+.dm-field-err-wide { grid-column: 1 / -1; }
+.dm-dest-preview {
+  font: 11px/1.4 ui-monospace, Consolas, monospace; color: #b8bcc6; background: #1a1e25; border-radius: 4px;
+  padding: 6px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dm-dest-preview b { color: var(--src); font-weight: 600; }
+.dm-tree { grid-column: 2; background: #1a1e25; border: 1px solid #444c56; border-radius: 4px; overflow: hidden; font-size: 11.5px; max-height: 190px; overflow-y: auto; }
+.dm-tree-crumb { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px 8px; color: #8a919e; border-bottom: 1px solid #3a4149; font-size: 11px; }
+.dm-tree-crumb b { color: #dfe3ea; font-weight: 600; }
+.dm-tree-row { display: flex; align-items: center; gap: 7px; padding: 4px 8px; color: #b8bcc6; cursor: pointer; }
+.dm-tree-row svg { color: #6f7683; flex-shrink: 0; }
+.dm-tree-row:hover { background: #363d47; color: #f0f2f5; }
+.dm-tree-row:hover svg { color: var(--src); }
+.dm-tree-note, .dm-tree-note:hover { font-style: italic; color: #6f7683; background: transparent; cursor: default; }
+.dm-tree-new, .dm-tree-new:hover { background: transparent; cursor: default; }
+.dm-dest-act { display: flex; gap: 6px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
+.dm-spacer { flex: 1; min-width: 0; font-size: 10.5px; color: #6f7683; }
+/* Materialize hides every native checkbox and draws its own from a sibling
+   span; this one is small and plain, so bring the real box back. */
+.dm-check { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #b8bcc6; cursor: pointer; }
+.dm-check input[type="checkbox"] { position: static; opacity: 1; pointer-events: auto; width: 14px; height: 14px; margin: 0; accent-color: var(--src); }
+.dm-check input[type="checkbox"] + span { padding: 0; height: auto; line-height: 1.3; font-size: 11.5px; color: #b8bcc6; }
+.dm-check input[type="checkbox"] + span::before, .dm-check input[type="checkbox"] + span::after { display: none; }
 /* Phones: a bottom sheet */
 @media (max-width: 600px) {
   .dmodal-shadow { padding: 0; align-items: flex-end; }
@@ -2367,7 +2434,42 @@ select {
   .dmodal-section-h { flex-direction: column; align-items: flex-start; gap: 2px; }
   .dmodal-hint { text-align: left; }
   .dmodal-tabs { margin: 2px 16px 10px; }
+  .dm-dest, .dm-dest-form { margin: 0 16px 10px; }
+  .dm-dest { flex-wrap: wrap; }
+  .dm-dest-path { flex-basis: 100%; white-space: normal; }
+  .dm-field { grid-template-columns: minmax(0, 1fr); }
+  .dm-toks, .dm-field-hint, .dm-field-err, .dm-tree { grid-column: 1; }
 }
+/* Downloads strip: plug-in jobs that outlive the window that started them */
+.discover-tray { border-top: 1px solid #21252d; margin-top: 4px; padding-bottom: 6px; }
+.discover-tray-h {
+  display: flex; align-items: center; gap: 8px; padding: 6px 14px 4px; font-size: 10px; font-weight: 700;
+  letter-spacing: 1.2px; text-transform: uppercase; color: #6f7683;
+}
+.discover-tray-h > svg { flex-shrink: 0; }
+.discover-tray-count { font-weight: 600; letter-spacing: 0; text-transform: none; color: #8a919e; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.discover-job { display: flex; align-items: center; gap: 10px; padding: 4px 14px 4px 12px; }
+.discover-job:hover { background: #1e222a; }
+.discover-job-ic {
+  width: 22px; height: 22px; border-radius: 5px; background: #1a1e25; display: flex; align-items: center;
+  justify-content: center; color: #b8bcc6; flex-shrink: 0;
+}
+.discover-job-ic-on { background: #4fb8a8; color: #0f1216; }
+.discover-job-ic-peer { background: #d9a441; color: #0f1216; }
+.discover-job-ic-ok { color: #4fc27a; }
+.discover-job-ic-err { color: #e0616a; }
+.discover-job-t { flex: 1; min-width: 0; line-height: 1.3; }
+.discover-job-t b { display: block; font-size: 12px; color: #dfe3ea; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.discover-job-t small { display: block; font-size: 10.5px; color: #8a919e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.discover-job .dm-progress { --src: #4fb8a8; margin-top: 3px; height: 3px; background: #262b33; }
+.discover-job .dm-progress-peer { --src: #d9a441; }
+.discover-job-act { display: flex; gap: 4px; flex-shrink: 0; }
+.discover-job-act a { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 4px; color: #8a919e; }
+.discover-job-act a:hover { background: #262b33; color: #dfe3ea; }
+.discover-tray-f { display: flex; align-items: center; padding: 4px 14px 0 12px; font-size: 11px; color: #657ee4; font-weight: 600; min-height: 16px; }
+.discover-tray-f a { color: #657ee4; }
+.discover-tray-f a:hover { color: #8ea0f0; }
+.discover-tray-f span:last-child { color: #4d535e; font-weight: 400; font-style: italic; font-size: 10px; }
 /* "From your peers" — federation leads. Same anatomy as the network
    section; the amber match bar + peer name mark rows as coming from a
    PAIRED server (playable once the federation stream proxy lands). */

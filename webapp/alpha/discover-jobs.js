@@ -200,7 +200,8 @@
         ...row, state: 'running', tag: stopping ? 'discover.job.stopping' : (copy ? 'discover.job.copying' : 'discover.job.downloading'),
         tagCls: 'src', iconCls: 'on',
         progress: pct === null ? 'indeterminate' : pct,
-        sub: text ? { text: pct === null ? text : `${text} · ${pct}%` } : (pct === null ? { key: 'discover.job.starting' } : { text: `${pct}%` }),
+        // A status line that already carries a percentage ("43% of …") says enough.
+        sub: text ? { text: (pct === null || text.indexOf('%') !== -1) ? text : `${text} · ${pct}%` } : (pct === null ? { key: 'discover.job.starting' } : { text: `${pct}%` }),
         actions: stopping ? [] : ['cancel'],
       };
     }
@@ -278,7 +279,16 @@
   }
 
   function trayRows(jobs) {
-    return (Array.isArray(jobs) ? jobs : []).filter(inTray).sort((a, b) => {
+    const list = Array.isArray(jobs) ? jobs : [];
+    // A failure the user already retried is old news: a newer job for the
+    // same plug-in and recommendation (whatever became of it) supersedes it.
+    const newest = {};
+    for (const job of list) {
+      const k = job ? `${job.plugin}|${job.key}` : '';
+      if (job && (newest[k] === undefined || job.id > newest[k])) { newest[k] = job.id; }
+    }
+    const superseded = (job) => job.state === 'failed' && job.key != null && newest[`${job.plugin}|${job.key}`] > job.id;
+    return list.filter((job) => inTray(job) && !superseded(job)).sort((a, b) => {
       const byRank = trayRank(a) - trayRank(b);
       if (byRank !== 0) { return byRank; }
       return (b.createdAt || 0) - (a.createdAt || 0) || (b.id || 0) - (a.id || 0);
