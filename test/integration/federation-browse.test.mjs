@@ -106,9 +106,10 @@ describe('federation browse proxy — guards', () => {
     const { peers } = await res.json();
 
     assert.equal(peers.length, 1);
-    assert.deepEqual(Object.keys(peers[0]).sort(), ['endpointId', 'id', 'lastSeen', 'lastStatus', 'name', 'useDiscovery']);
+    assert.deepEqual(Object.keys(peers[0]).sort(), ['direct', 'endpointId', 'id', 'lastSeen', 'lastStatus', 'name', 'useDiscovery']);
     assert.equal(peers[0].name, 'Ghost NAS');
     assert.equal(peers[0].endpointId, null, 'a ticket that does not parse yields no id (never throws)');
+    assert.equal(peers[0].direct, null, 'nobody has asked for direct access yet');
 
     // The credential columns must not appear under ANY key spelling.
     const serialized = JSON.stringify(peers);
@@ -205,6 +206,11 @@ describe('federation browse proxy — guards', () => {
     });
     const listenerToken = (await login.json()).token;
     assert.equal((await fetch(`${srv.baseUrl}/api/v1/federation/peers/${peerId}/access`, { headers: json(listenerToken) })).status, 502);
+
+    // A peer that could not be reached gave no answer: the listing's hint
+    // stays null, not false — false is reserved for a peer that declined.
+    const { peers } = await (await fetch(`${srv.baseUrl}/api/v1/federation/peers`, { headers: json(adminToken) })).json();
+    assert.equal(peers[0].direct, null, 'unreachable is not a refusal');
   });
 
   test('a federation key cannot chain a proxy through us', async () => {
@@ -338,6 +344,7 @@ describe('federation browse proxy over iroh (B reads A)', {
     assert.equal(res.status, 200);
     const { peers } = await res.json();
     assert.equal(peers.length, 1);
+    assert.equal(peers[0].direct, null, 'no access call yet, so no hint');
     assert.equal(peers[0].id, peerId);
   });
 
@@ -421,9 +428,10 @@ describe('federation browse proxy over iroh (B reads A)', {
     assert.equal(parsed.endpointTicket, access.endpointTicket);
     assert.equal(parsed.guestToken, access.guestToken);
 
-    // The peers projection agrees on who A is.
+    // The peers projection agrees on who A is, and now knows A mints.
     const { peers } = await (await fetch(`${srvB.baseUrl}/api/v1/federation/peers`)).json();
     assert.equal(peers[0].endpointId, access.endpointId);
+    assert.equal(peers[0].direct, true, 'a cached guest token is the hint');
 
     // The token is A's: it works against A's HTTP wall directly, scoped to
     // the grant, and A knows it is a guest.

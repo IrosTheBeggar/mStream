@@ -65,6 +65,12 @@ payload missing `t` or `g`.
 6. Before the token expires the device asks B again (step 2). B's cache
    hands out the same token until it is due for a re-mint, so this is
    cheap.
+7. B's peers listing (`GET /api/v1/federation/peers`) carries what B has
+   learned as a per-peer `direct` hint — `true` once a token is cached,
+   `false` after a refused mint, `null` before either — so a device need
+   not learn a refusal one access call at a time. A hint, not a
+   credential: the token still comes from step 2, and a device keeps its
+   own aging for `false` so a peer that was upgraded gets asked again.
 
 ## Security
 
