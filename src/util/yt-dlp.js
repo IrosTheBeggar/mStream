@@ -118,6 +118,32 @@ export function spawnYtDlp(bin, args, { signal, onStdoutLine, onStderrLine } = {
   return { proc, done };
 }
 
+// What `--version` prints (yt-dlp's are dates: "2026.02.04"). Running it is
+// the only honest availability check: a path can exist and still not be
+// something the OS will execute (a script without its interpreter, a file
+// without the execute bit). Rejects with a message an admin can act on.
+export async function version(bin, { timeoutMs = 8000 } = {}) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const { done } = spawnYtDlp(bin, ['--version'], { signal: ac.signal });
+    const { code, stdout, stderr } = await done;
+    if (ac.signal.aborted) { throw new Error(`did not answer within ${Math.round(timeoutMs / 1000)} s`); }
+    const line = String(stdout || '').split(/\r?\n/).map((l) => l.trim()).find(Boolean) || '';
+    if (code !== 0 || !line) { throw new Error(lastMeaningfulLine(stderr) || `exited with code ${code}`); }
+    return line.slice(0, 64);
+  } catch (err) {
+    const code = err && err.code;
+    if (code === 'ENOENT') { throw new Error('not found', { cause: err }); }
+    if (code === 'EACCES' || code === 'EFTYPE' || code === 'EPERM' || code === 'ENOEXEC') {
+      throw new Error(`is not something this system can run (${code})`, { cause: err });
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // One video's record, from either a flat search entry or a full dump.
 export function entryToRecord(json) {
   const j = json || {};

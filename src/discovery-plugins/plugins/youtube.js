@@ -136,20 +136,32 @@ async function ffmpegReady() {
   if (transcode.isDownloaded() && ffmpegBin()) { return true; }
   await Promise.race([
     transcode.downloadedFFmpeg().catch(() => {}),
-    new Promise((r) => setTimeout(r, FFMPEG_WAIT_MS)),
+    // unref'd: a probe still waiting must never be what keeps a process alive.
+    new Promise((r) => { const t = setTimeout(r, FFMPEG_WAIT_MS); if (t.unref) { t.unref(); } }),
   ]);
   return !!(transcode.isDownloaded() && ffmpegBin());
 }
 
-async function probe() {
-  const bin = ytdlp.resolveBinary(cfg().binary);
+// `settings` = values to try instead of the saved ones (the admin panel's
+// Test button). The answer's `detail` is what an operator wants to read
+// back: which yt-dlp answered.
+async function probe({ settings } = {}) {
+  const tried = { ...cfg(), ...(settings && typeof settings === 'object' ? settings : {}) };
+  const bin = ytdlp.resolveBinary(tried.binary);
+  const label = bin.script || bin.cmd;
   if (!(await ytdlp.isAvailable(bin))) {
-    return { ok: false, reason: `yt-dlp not found (${bin.script || bin.cmd})` };
+    return { ok: false, reason: `yt-dlp not found (${label})` };
+  }
+  let version;
+  try {
+    version = await ytdlp.version(bin);
+  } catch (err) {
+    return { ok: false, reason: `yt-dlp (${label}) ${err.message}` };
   }
   if (!(await ffmpegReady())) {
-    return { ok: false, reason: 'ffmpeg is not available yet' };
+    return { ok: false, reason: 'ffmpeg is not available yet', detail: { ytdlp: version, ffmpeg: false } };
   }
-  return { ok: true };
+  return { ok: true, detail: { ytdlp: version, ffmpeg: true } };
 }
 
 async function run(ctx) {
@@ -160,6 +172,8 @@ async function run(ctx) {
   if (!(await ffmpegReady())) { throw new Error('ffmpeg is not available yet'); }
   const phrase = searchPhrase(rec);
   if (!phrase) { throw new Error('the recommendation has no artist or title to search for'); }
+  // The folder's size cap, before anything is searched for or fetched.
+  await downloads.assertRoom();
 
   // 1. Search, rank, confirm the top results with their full record.
   ctx.progress(0.02, `searching YouTube for “${phrase}”`);
@@ -245,6 +259,7 @@ export default Object.freeze({
   description: 'Searches YouTube for the recommendation, downloads the best-matching upload\'s audio with yt-dlp into the Discover downloads folder, tags it and adds it to the library. Needs yt-dlp and ffmpeg; off by default.',
   capabilities: [CAPABILITIES.ACQUIRE],
   scope: SCOPES.SERVER,
+  adminSettings: ['binary', 'codec', 'maxFilesizeMb', 'searchResults'],
   concurrency: 1,
   probe,
   run,

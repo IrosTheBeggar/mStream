@@ -54,6 +54,103 @@ export function expiresAt(from = Date.now()) {
   return days > 0 && Number.isFinite(from) ? from + days * 24 * 60 * 60 * 1000 : null;
 }
 
+// The most the folder may hold, in bytes (discoveryJobs.downloads.maxSizeMb);
+// 0 = no cap.
+export function maxSizeBytes() {
+  const n = Number(cfg().maxSizeMb);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) * 1024 * 1024 : 0;
+}
+
+function fmtSize(bytes) {
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+}
+
+// A file a download or a copy was still writing when it stopped: yt-dlp's own
+// temporaries and the collection copy's `.mstream-copy-<job>.part`. Never a
+// download somebody could play or keep.
+const PARTIAL_RE = /\.(part|ytdl|temp)$/i;
+export function isPartialFile(name) {
+  return PARTIAL_RE.test(name) || String(name).startsWith('.mstream-copy-');
+}
+
+// Every file under `dir`, depth first. A folder that is not there is simply
+// empty; anything else unreadable is logged and skipped.
+export async function walkFiles(dir, out = []) {
+  let entries;
+  try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch (err) {
+    if (err.code !== 'ENOENT') { winston.warn(`discover downloads: cannot read ${dir}: ${err.message}`); }
+    return out;
+  }
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) { await walkFiles(full, out); } else if (e.isFile()) { out.push(full); }
+  }
+  return out;
+}
+
+// What is sitting in Discover downloads, for the admin panel: how many files
+// are waiting to be kept, how big, how old, and whose. Read from the folder
+// itself (size and mtime), the same clock the retention pass uses, so "4
+// days left" here and "removed in 4 days" in a user's window agree. Counting
+// stops at `limit` files (`truncated` says so) — this is a status line, not
+// an inventory.
+export async function usage({ limit = 5000 } = {}) {
+  const lib = db.getLibraryByName(LIBRARY_NAME);
+  const dir = (lib && lib.root_path) || downloadsDir();
+  const out = {
+    library: LIBRARY_NAME, dir, exists: !!lib, retentionDays: retentionDays(),
+    files: 0, bytes: 0, partials: 0, partialBytes: 0, oldestAt: null, newestAt: null, freeBytes: null, truncated: false, byUser: [],
+    // The quota: `full` is what a new download is checked against (everything
+    // on disk counts, half-written files included).
+    maxSizeMb: Math.round(maxSizeBytes() / (1024 * 1024)), full: false,
+  };
+  if (lib) {
+    const folders = new Map();
+    for (const file of await walkFiles(lib.root_path)) {
+      if (out.files >= limit) { out.truncated = true; break; }
+      let stat;
+      try { stat = await fs.stat(file); } catch (_e) { continue; }   // went away under us
+      if (isPartialFile(path.basename(file))) { out.partials += 1; out.partialBytes += stat.size; continue; }
+      const rel = path.relative(lib.root_path, file).split(path.sep);
+      const folder = rel.length > 1 ? rel[0] : '';
+      const row = folders.get(folder) || { folder, files: 0, bytes: 0, oldestAt: null, newestAt: null };
+      for (const t of [out, row]) {
+        t.files += 1;
+        t.bytes += stat.size;
+        t.oldestAt = t.oldestAt === null ? stat.mtimeMs : Math.min(t.oldestAt, stat.mtimeMs);
+        t.newestAt = t.newestAt === null ? stat.mtimeMs : Math.max(t.newestAt, stat.mtimeMs);
+      }
+      folders.set(folder, row);
+    }
+    out.byUser = [...folders.values()].sort((a, b) => b.bytes - a.bytes || a.folder.localeCompare(b.folder));
+  }
+  const cap = maxSizeBytes();
+  out.full = cap > 0 && out.bytes + out.partialBytes >= cap;
+  try {
+    const st = await fs.statfs(lib ? lib.root_path : path.dirname(dir));
+    out.freeBytes = Number(st.bavail) * Number(st.bsize);
+  } catch (err) {
+    // Not every runtime or filesystem answers statfs; the tile just omits it.
+    winston.debug(`discover downloads: no free-space figure for ${dir}: ${err.message}`);
+  }
+  return out;
+}
+
+// Refuse a new download while the folder is at its cap. An acquire plug-in
+// calls this BEFORE it does any work: what it is about to fetch has no size
+// yet, so the cap can be overshot by one file (each plug-in bounds that
+// itself — youtube's maxFilesizeMb). Throws the sentence the user's row shows.
+export async function assertRoom() {
+  const cap = maxSizeBytes();
+  if (cap === 0) { return; }
+  const u = await usage();
+  const used = u.bytes + u.partialBytes;
+  if (used >= cap) {
+    throw new Error(`Discover downloads is full (${fmtSize(used)} of ${fmtSize(cap)}). Keep or remove some downloads, or ask the admin to raise the limit.`);
+  }
+}
+
 // The per-user subfolder name: the username, made path-safe; the anonymous
 // account of a public-mode server shares one folder.
 export function folderNameFor(user) {

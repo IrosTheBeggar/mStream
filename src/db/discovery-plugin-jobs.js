@@ -243,3 +243,24 @@ export function findByDownloadedFilepath(filepath) {
      WHERE state = 'done' AND json_extract(result, '$.downloaded.filepath') = ?
   `).all(String(filepath)).map(rowToJob);
 }
+
+// The runner's load across every account, for the admin panel's header.
+export function countLive() {
+  const rows = d().prepare(`
+    SELECT state, COUNT(*) AS n FROM discovery_plugin_jobs
+     WHERE state IN ('queued', 'running') GROUP BY state
+  `).all();
+  const out = { running: 0, queued: 0 };
+  for (const r of rows) { out[r.state] = Number(r.n); }
+  return out;
+}
+
+// id → username for the accounts behind a list of jobs (the admin's
+// all-users view). A job outlives its account (user_id goes NULL), so a
+// missing id simply has no name.
+export function usernamesFor(userIds) {
+  const ids = [...new Set((userIds || []).filter((id) => Number.isInteger(id)))];
+  if (ids.length === 0) { return new Map(); }
+  const rows = d().prepare(`SELECT id, username FROM users WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids);
+  return new Map(rows.map((r) => [r.id, r.username]));
+}

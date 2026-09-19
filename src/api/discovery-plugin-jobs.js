@@ -128,7 +128,14 @@ export function setup(mstream) {
       states: value.state ? [value.state] : null,
       limit: value.limit,
     });
-    res.json({ jobs: jobs.map(present), runner: { running: runner.runningCount(), active: runner.isRunning() } });
+    let shown = jobs.map(present);
+    if (everyone) {
+      // The admin's all-accounts view names each job's owner. A job outlives
+      // its account (the id goes NULL), so a missing name is simply null.
+      const names = jobsDb.usernamesFor(jobs.map((j) => j.userId));
+      shown = shown.map((j) => ({ ...j, username: names.get(j.userId) || null }));
+    }
+    res.json({ jobs: shown, runner: { running: runner.runningCount(), active: runner.isRunning() } });
   });
 
   mstream.get('/api/v1/discovery/plugin-jobs/:id', (req, res) => {
