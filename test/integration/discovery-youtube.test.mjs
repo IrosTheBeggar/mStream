@@ -2,11 +2,13 @@
  * "Get it" from YouTube end to end, against a fake yt-dlp
  * (test/helpers/fake-yt-dlp.mjs, selected by MSTREAM_YTDLP_BIN): the
  * youtube plug-in (src/discovery-plugins/plugins/youtube.js), the Discover
- * downloads scratch library it creates on first use, the availability
- * probe, and the Youtube DL route that now shares the helper.
+ * downloads scratch library it creates on first use, Keep… (the download
+ * moves into the collection destination), the retention sweep, the
+ * availability probe, and the Youtube DL route that now shares the helper.
  *
  * Public mode: the downloads land in the 'shared' subfolder and admin
- * routes need no token. Every folder is per run; the fixture library is
+ * routes need no token. Every folder is per run ('collection' receives what
+ * is kept, 'inbox' the Youtube DL route's file); the fixture library is
  * never written to. Needs the bundled ffmpeg (the tag pass); skipped
  * without it.
  */
@@ -30,7 +32,10 @@ const FAKE = path.join(REPO_ROOT, 'test', 'helpers', 'fake-yt-dlp.mjs');
 const hasFfmpeg = fs.existsSync(FFMPEG);
 
 const JOBS = '/api/v1/discovery/plugins/youtube/jobs';
-const REC = { source: 'p2p', artist: 'Nova', title: 'Remote Hit', album: 'Night Ferry', year: 2019, duration: 2 };
+const DEST = '/api/v1/discovery/collection/destination';
+const SWEEP = '/api/v1/admin/discovery-jobs/sweep';
+const DAY_MS = 24 * 60 * 60 * 1000;
+const REC ={ source: 'p2p', artist: 'Nova', title: 'Remote Hit', album: 'Night Ferry', year: 2019, duration: 2 };
 const yt = (id) => `https://www.youtube.com/watch?v=${id}`;
 const SEARCH = {
   'remote hit': [
@@ -42,7 +47,10 @@ const SEARCH = {
   '*': [{ id: 'other', url: yt('other'), title: 'Something Else Entirely', duration: 300, channel: 'Rando' }],
 };
 
-let server, workDir, scriptPath, fixturePath, downloadsDir, inboxDir;
+let server, workDir, scriptPath, fixturePath, downloadsDir, inboxDir, collectionDir;
+// The first finished download, handed from the download test to Keep….
+let firstJobId = null;
+let scratchPath = null;
 
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
@@ -84,7 +92,9 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
     workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-ytplugin-'));
     downloadsDir = path.join(workDir, 'discover-downloads');
     inboxDir = path.join(workDir, 'inbox');
+    collectionDir = path.join(workDir, 'collection');
     fs.mkdirSync(inboxDir, { recursive: true });
+    fs.mkdirSync(collectionDir, { recursive: true });
     fixturePath = path.join(workDir, 'fixture.mp3');
     scriptPath = path.join(workDir, 'fake-yt-dlp.json');
     await runFfmpeg(['-nostdin', '-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
@@ -92,7 +102,7 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
     writeScript();
     server = await startServer({
       dlnaMode: 'disabled',
-      extraFolders: { inbox: inboxDir },
+      extraFolders: { inbox: inboxDir, collection: collectionDir },
       env: { MSTREAM_YTDLP_BIN: FAKE, MSTREAM_FAKE_YTDLP_SCRIPT: scriptPath, MSTREAM_FAKE_YTDLP_FIXTURE: fixturePath },
       extraConfig: {
         discoveryPlugins: { youtube: { enabled: true } },
@@ -134,7 +144,10 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
     assert.equal(result.downloaded.format, 'mp3');
     assert.ok(result.downloaded.trackId > 0);
     assert.ok(result.downloaded.bytes > 1000);
-    assert.ok(result.expiresAt > Date.now() + 29 * 24 * 3600 * 1000);
+    // Computed on read from the retention setting (30 days here), never stored.
+    assert.ok(result.expiresAt > Date.now() + 29 * DAY_MS && result.expiresAt < Date.now() + 31 * DAY_MS);
+    firstJobId = job.id;
+    scratchPath = result.downloaded.filepath;
 
     const rel = result.downloaded.filepath.replace(/^discover-downloads\//, '');
     const onDisk = path.join(downloadsDir, ...rel.split('/'));
@@ -153,6 +166,116 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
     const media = await fetch(`${server.baseUrl}/media/${result.downloaded.filepath.split('/').map(encodeURIComponent).join('/')}`);
     assert.equal(media.status, 200, 'served through /media without a reboot');
     assert.equal((await media.arrayBuffer()).byteLength, fs.statSync(onDisk).size);
+  });
+
+  test('Keep… moves the download into the collection; its rating and playlist entry follow', async () => {
+    assert.ok(firstJobId && scratchPath, 'needs the download above');
+    // What the user did with the song while it sat in Discover downloads.
+    assert.equal((await api(server, 'POST', '/api/v1/db/rate-song', { filepath: scratchPath, rating: 8 })).status, 200);
+    assert.equal((await api(server, 'POST', '/api/v1/playlist/save', { title: 'finds', songs: [scratchPath] })).status, 200);
+    const dest = await api(server, 'PUT', DEST, { destination: { vpath: 'collection', base: '', layout: '{{PEER}}/{{ARTIST}}/{{ALBUM}}' } });
+    assert.equal(dest.status, 200, JSON.stringify(dest.body));
+
+    const kept = await api(server, 'POST', `/api/v1/discovery/plugin-jobs/${firstJobId}/keep`);
+    assert.equal(kept.status, 200, JSON.stringify(kept.body));
+    const result = kept.body.job.result;
+    // {{PEER}} has no value for a download, so it drops out of the path.
+    assert.equal(result.kept.filepath, 'collection/Nova/Night Ferry/Remote_Hit.mp3');
+    assert.equal(result.kept.vpath, 'collection');
+    assert.ok(result.kept.trackId > 0);
+    assert.equal(result.kept.playlistEntries, 1);
+    assert.deepEqual(result.kept.missingVars, ['PEER']);
+    assert.equal(result.expiresAt, undefined, 'a kept download no longer expires');
+
+    const scratchAbs = path.join(downloadsDir, ...scratchPath.replace(/^discover-downloads\//, '').split('/'));
+    assert.ok(!fs.existsSync(scratchAbs), 'gone from Discover downloads');
+    assert.ok(fs.existsSync(path.join(collectionDir, 'Nova', 'Night Ferry', 'Remote_Hit.mp3')), 'in the collection');
+    assert.equal(row('SELECT id FROM tracks WHERE filepath = ?', scratchPath.replace(/^discover-downloads\//, '')), undefined, 'the scratch row went with it');
+    const moved = row('SELECT source, title FROM tracks WHERE filepath = ?', 'Nova/Night Ferry/Remote_Hit.mp3');
+    assert.equal(moved.source, 'plugin:youtube', 'provenance survives the move');
+    assert.equal(moved.title, 'Remote Hit');
+
+    // Ratings key on the track hash, so the rating followed by itself; the
+    // playlist keys on the path, so Keep… rewrote it.
+    const meta = await api(server, 'POST', '/api/v1/db/metadata', { filepath: result.kept.filepath });
+    assert.equal(meta.body.metadata.rating, 8);
+    const playlist = await api(server, 'POST', '/api/v1/playlist/load', { playlistname: 'finds' });
+    assert.deepEqual(playlist.body.map((t) => t.filepath), [result.kept.filepath]);
+
+    // The job remembers, and a second Keep… is refused.
+    const again = await api(server, 'GET', `/api/v1/discovery/plugin-jobs/${firstJobId}`);
+    assert.equal(again.body.job.result.kept.filepath, result.kept.filepath);
+    assert.equal((await api(server, 'POST', `/api/v1/discovery/plugin-jobs/${firstJobId}/keep`)).status, 409);
+  });
+
+  test('Keep… refusals: nothing to keep, uploads off, a bad destination, a file already there', async () => {
+    assert.equal((await api(server, 'POST', '/api/v1/discovery/plugin-jobs/999999/keep')).status, 404);
+    const failed = await api(server, 'POST', JOBS, { recommendation: { ...REC, title: 'Ghost Song' } });
+    const failedJob = await untilFinished(failed.body.job.id);
+    assert.equal(failedJob.state, 'failed');
+    assert.equal((await api(server, 'POST', `/api/v1/discovery/plugin-jobs/${failedJob.id}/keep`)).status, 400, 'a failed job has no download');
+
+    // The same song again: the earlier job is finished, so this is a new one,
+    // and its file lands where the kept one used to sit.
+    const second = await api(server, 'POST', JOBS, { recommendation: { ...REC, year: 2018 } });
+    const job = await untilFinished(second.body.job.id);
+    assert.equal(job.state, 'done', `job error: ${job.error}`);
+    const keep = (body) => api(server, 'POST', `/api/v1/discovery/plugin-jobs/${job.id}/keep`, body);
+
+    assert.equal((await api(server, 'POST', '/api/v1/admin/config/noupload', { noUpload: true })).status, 200);
+    try {
+      assert.equal((await keep()).status, 403, 'keeping is an upload by another road');
+    } finally {
+      assert.equal((await api(server, 'POST', '/api/v1/admin/config/noupload', { noUpload: false })).status, 200);
+    }
+    assert.equal((await keep({ destination: { vpath: 'nope', base: '', layout: '{{ARTIST}}' } })).status, 400, 'a one-off destination is checked like a saved one');
+    assert.equal((await keep({ destination: { vpath: 'collection', base: '', layout: '{{TRACK}}' } })).status, 400);
+
+    const clash = await keep();
+    assert.equal(clash.status, 409, JSON.stringify(clash.body));
+    assert.match(clash.body.error, /already exists at collection\/Nova\/Night Ferry\/Remote_Hit\.mp3/);
+    const abs = path.join(downloadsDir, ...job.result.downloaded.filepath.replace(/^discover-downloads\//, '').split('/'));
+    assert.ok(fs.existsSync(abs), 'a refused Keep… leaves the download where it was');
+
+    // A one-off destination that is free works, without touching the saved one.
+    const elsewhere = await keep({ destination: { vpath: 'collection', base: 'Second copy', layout: '{{ARTIST}}' } });
+    assert.equal(elsewhere.status, 200, JSON.stringify(elsewhere.body));
+    assert.equal(elsewhere.body.job.result.kept.filepath, 'collection/Second copy/Nova/Remote_Hit.mp3');
+    assert.equal((await api(server, 'GET', DEST)).body.destination.layout, '{{PEER}}/{{ARTIST}}/{{ALBUM}}');
+  });
+
+  test('the sweep removes a download past its retention, tells the job, and leaves a fresh one alone', async () => {
+    const old = await api(server, 'POST', JOBS, { recommendation: { ...REC, year: 2017 } });
+    const oldJob = await untilFinished(old.body.job.id);
+    assert.equal(oldJob.state, 'done', `job error: ${oldJob.error}`);
+    const rel = oldJob.result.downloaded.filepath.replace(/^discover-downloads\//, '');
+    const abs = path.join(downloadsDir, ...rel.split('/'));
+    // A stale partial from a killed download, and the download itself, both past their time.
+    const partial = path.join(path.dirname(abs), 'Some_Song.mp3.part');
+    fs.writeFileSync(partial, 'half a file');
+    const longAgo = new Date(Date.now() - 31 * DAY_MS);
+    fs.utimesSync(abs, longAgo, longAgo);
+    fs.utimesSync(partial, longAgo, longAgo);
+
+    const swept = await api(server, 'POST', SWEEP);
+    assert.equal(swept.status, 200, JSON.stringify(swept.body));
+    assert.equal(swept.body.removedFiles, 1);
+    assert.equal(swept.body.removedPartials, 1);
+    assert.ok(!fs.existsSync(abs) && !fs.existsSync(partial));
+    assert.equal(row('SELECT id FROM tracks WHERE filepath = ?', rel), undefined, 'the library row went with the file');
+    const after = (await api(server, 'GET', `/api/v1/discovery/plugin-jobs/${oldJob.id}`)).body.job;
+    assert.ok(after.result.removed.at > 0, 'the job says the download expired');
+    assert.equal(after.result.expiresAt, undefined);
+    assert.equal((await api(server, 'POST', `/api/v1/discovery/plugin-jobs/${oldJob.id}/keep`)).status, 409, 'nothing left to keep');
+
+    // A fresh download is not touched by the next pass.
+    const fresh = await api(server, 'POST', JOBS, { recommendation: { ...REC, year: 2016 } });
+    const freshJob = await untilFinished(fresh.body.job.id);
+    assert.equal(freshJob.state, 'done', `job error: ${freshJob.error}`);
+    const again = await api(server, 'POST', SWEEP);
+    assert.equal(again.body.removedFiles, 0);
+    const freshAbs = path.join(downloadsDir, ...freshJob.result.downloaded.filepath.replace(/^discover-downloads\//, '').split('/'));
+    assert.ok(fs.existsSync(freshAbs));
   });
 
   test('no results, and results that are not the song, fail with a clear reason', async () => {

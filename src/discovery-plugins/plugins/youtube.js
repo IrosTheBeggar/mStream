@@ -234,7 +234,8 @@ async function run(ctx) {
       trackId: inserted.trackId, bytes: stat.size, format: ytdlp.outputExtension(settings.codec),
     },
     match: { score: best.score, url: best.entry.url, title: best.entry.title, channel: chosen.channel, durationSec: chosen.durationSec },
-    expiresAt: downloads.expiresAt(),
+    // No expiry here: the jobs API computes it on read from the current
+    // retention setting (src/api/discovery-plugin-jobs.js).
   };
 }
 

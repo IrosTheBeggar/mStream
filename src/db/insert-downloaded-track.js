@@ -172,3 +172,25 @@ export async function insertDownloadedTrack({ filePath, vpath, basePath, source,
   winston.info(`${log}: added ${relativePath} to database`);
   return { relativePath, trackId, title: data.title, artist: data.artist, album: data.album, year: data.year };
 }
+
+// The inverse: a downloaded file left the library outside the scanner (a
+// kept download moved on, an expired one was swept). A plain DELETE is what
+// the scanner's own sweep does — credits and genre links cascade, the
+// tracks_ad_agg trigger flags the album / artist it leaves, and the search
+// index is trigger-kept; the aggregates are recomputed here so counts are
+// right before any scan runs. Hash-keyed user data (ratings, play counts)
+// is deliberately untouched: it belongs to the recording, not the row.
+// Returns how many rows went (0 when the scanner got there first).
+export function removeDownloadedTrack({ vpath, relativePath, log = 'download' }) {
+  const d = db.getDB();
+  const lib = db.getLibraryByName(vpath);
+  if (!d || !lib) { return 0; }
+  const rel = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const changes = d.prepare('DELETE FROM tracks WHERE library_id = ? AND filepath = ?').run(lib.id, rel).changes;
+  if (changes > 0) {
+    refreshDirtyAlbums(d);
+    refreshDirtyArtists(d);
+    winston.info(`${log}: removed ${vpath}/${rel} from database`);
+  }
+  return changes;
+}

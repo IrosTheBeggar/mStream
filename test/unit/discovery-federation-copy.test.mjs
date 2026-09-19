@@ -1,8 +1,9 @@
 /**
- * The federation-copy plug-in's pure parts (src/discovery-plugins/plugins/
- * federation-copy.js) and the PEER variable it adds to the torrent path
- * template engine. No server, no disk: the destination rules, the layout
- * validation, the base-folder rules, the file name, and the rendered target.
+ * The pure parts behind "Add to your collection": the collection destination
+ * rules (src/discovery-plugins/destination.js — shared by the federation-copy
+ * plug-in and Keep…), the PEER variable they add to the torrent path template
+ * engine, the registry's per-user settings contract, and the plug-in's shape.
+ * No server, no disk.
  */
 
 import { describe, test } from 'node:test';
@@ -10,10 +11,11 @@ import assert from 'node:assert/strict';
 import Joi from 'joi';
 import * as pathTemplate from '../../src/torrent/path-template.js';
 import { registerPlugin, unregisterPluginForTests, listPlugins } from '../../src/discovery-plugins/registry.js';
-import plugin, {
-  DEFAULT_LAYOUT, LAYOUT_VARS, writableLibraries, destinationFor, validateLayout,
-  normalizeBase, safeFileName, renderTarget,
-} from '../../src/discovery-plugins/plugins/federation-copy.js';
+import plugin from '../../src/discovery-plugins/plugins/federation-copy.js';
+import {
+  NAMESPACE, KEY, DEFAULT_LAYOUT, LAYOUT_VARS, destinationSchema, uploadsAllowed, writableLibraries,
+  destinationFor, validateLayout, normalizeBase, safeFileName, tagsForLayout, renderTarget,
+} from '../../src/discovery-plugins/destination.js';
 
 const LIBS = [
   { name: 'music', torrent_path_template: '{{ALBUMARTIST}}/{{ALBUM}}' },
@@ -24,19 +26,16 @@ const user = (over = {}) => ({ id: 7, vpaths: ['music', 'other'], allow_upload: 
 const opts = { libraries: LIBS, noUpload: false };
 
 describe('federation-copy · plug-in shape', () => {
-  test('an acquire plug-in with one user setting, run(), one at a time', () => {
+  test('an acquire plug-in with run(), one at a time, and no settings of its own', () => {
     assert.equal(plugin.name, 'federation-copy');
     assert.deepEqual([...plugin.capabilities], ['acquire']);
     assert.equal(plugin.scope, 'user');
     assert.equal(plugin.concurrency, 1);
     assert.equal(typeof plugin.run, 'function');
-    assert.deepEqual(Object.keys(plugin.userSettings), ['destination']);
-    assert.equal(typeof plugin.validateSetting, 'function');
-    assert.equal(typeof plugin.describeSettings, 'function');
-    const ok = plugin.userSettings.destination.schema.validate({ vpath: 'music', base: '', layout: DEFAULT_LAYOUT });
-    assert.equal(ok.error, undefined);
-    const bad = plugin.userSettings.destination.schema.validate({ vpath: 'music' });
-    assert.ok(bad.error, 'layout is required');
+    // The destination is the user's, shared by every acquire plug-in — not this one's setting.
+    assert.equal(plugin.userSettings, undefined);
+    assert.equal(plugin.validateSetting, undefined);
+    assert.equal(plugin.describeSettings, undefined);
   });
 });
 
@@ -49,6 +48,7 @@ describe('registry · the per-user settings contract', () => {
     assert.throws(() => registerPlugin({ ...base, name: 'us-no-schema', userSettings: { token: {} } }), /needs a Joi schema/);
     assert.throws(() => registerPlugin({ ...base, name: 'us-bad-hook', userSettings: { token: { schema: Joi.string() } }, describeSettings: 'nope' }), /describeSettings must be a function/);
     assert.throws(() => registerPlugin({ ...base, name: 'us-bad-hook-2', userSettings: { token: { schema: Joi.string() } }, validateSetting: 42 }), /validateSetting must be a function/);
+    assert.throws(() => registerPlugin({ ...base, name: 'us-bad-probe', probe: true }), /probe must be a function/);
   });
 
   test('a plug-in with settings lists their keys; one without lists none', () => {
@@ -66,13 +66,13 @@ describe('registry · the per-user settings contract', () => {
   });
 });
 
-describe('federation-copy · the PEER variable', () => {
+describe('collection destination · the PEER variable', () => {
   test('LAYOUT_VARS is the torrent set plus PEER, in that order', () => {
     assert.deepEqual([...LAYOUT_VARS], [...pathTemplate.SUPPORTED_VARS, 'PEER']);
     assert.equal(pathTemplate.EXTRA_VARS.PEER, 'PEER');
   });
 
-  test('the copy layout accepts PEER; the torrent validator still refuses it', () => {
+  test('the layout accepts PEER; the torrent validator still refuses it', () => {
     assert.equal(validateLayout('{{PEER}}/{{ARTIST}}/{{ALBUM}}').valid, true);
     const torrent = pathTemplate.validateForSave('{{PEER}}/{{ARTIST}}');
     assert.equal(torrent.valid, false);
@@ -100,7 +100,16 @@ describe('federation-copy · the PEER variable', () => {
   });
 });
 
-describe('federation-copy · destination', () => {
+describe('collection destination · rules', () => {
+  test('it lives in a neutral namespace the settings store accepts', () => {
+    assert.equal(NAMESPACE, 'discovery:collection');
+    assert.equal(KEY, 'destination');
+    assert.match(NAMESPACE, /^[a-z0-9][a-z0-9:_-]{0,63}$/);
+    assert.equal(destinationSchema.validate({ vpath: 'music', base: '', layout: DEFAULT_LAYOUT }).error, undefined);
+    assert.equal(destinationSchema.validate({ vpath: 'music', layout: DEFAULT_LAYOUT }).value.base, '', 'base defaults to the root');
+    assert.ok(destinationSchema.validate({ vpath: 'music' }).error, 'layout is required');
+  });
+
   test('writable libraries: the user\'s vpaths, with each admin template', () => {
     assert.deepEqual(writableLibraries(user(), opts), [
       { vpath: 'music', template: '{{ALBUMARTIST}}/{{ALBUM}}' },
@@ -108,7 +117,10 @@ describe('federation-copy · destination', () => {
     ]);
   });
 
-  test('no upload rights, no library, no user → nothing to copy into', () => {
+  test('no upload rights, no library, no user → nowhere to put a file', () => {
+    assert.equal(uploadsAllowed(user(), { noUpload: true }), false);
+    assert.equal(uploadsAllowed(user({ allow_upload: 0 }), { noUpload: false }), false);
+    assert.equal(uploadsAllowed(user(), { noUpload: false }), true);
     assert.deepEqual(writableLibraries(user(), { ...opts, noUpload: true }), []);
     assert.deepEqual(writableLibraries(user({ allow_upload: 0 }), opts), []);
     assert.deepEqual(writableLibraries(user({ allow_upload: false }), opts), []);
@@ -120,20 +132,20 @@ describe('federation-copy · destination', () => {
   test('the default: the first library, its admin template or {{ARTIST}}/{{ALBUM}}, at the root', () => {
     assert.deepEqual(destinationFor(user(), null, opts),
       { vpath: 'music', base: '', layout: '{{ALBUMARTIST}}/{{ALBUM}}', source: 'default' });
-    assert.deepEqual(destinationFor(user({ vpaths: ['other'] }), {}, opts),
+    assert.deepEqual(destinationFor(user({ vpaths: ['other'] }), null, opts),
       { vpath: 'other', base: '', layout: DEFAULT_LAYOUT, source: 'default' });
   });
 
   test('a saved destination wins while it still makes sense', () => {
-    const saved = { destination: { vpath: 'other', base: 'From peers/', layout: '{{PEER}}/{{ARTIST}}/{{ALBUM}}' } };
+    const saved = { vpath: 'other', base: 'From peers/', layout: '{{PEER}}/{{ARTIST}}/{{ALBUM}}' };
     assert.deepEqual(destinationFor(user(), saved, opts),
       { vpath: 'other', base: 'From peers', layout: '{{PEER}}/{{ARTIST}}/{{ALBUM}}', source: 'user' });
     // A library the user lost, a layout that no longer validates, a base
     // that climbs out: back to the default, never a half-applied setting.
-    assert.equal(destinationFor(user(), { destination: { vpath: 'private', base: '', layout: DEFAULT_LAYOUT } }, opts).source, 'default');
-    assert.equal(destinationFor(user(), { destination: { vpath: 'other', base: '', layout: '{{TRACK}}' } }, opts).source, 'default');
-    assert.equal(destinationFor(user(), { destination: { vpath: 'other', base: '../up', layout: DEFAULT_LAYOUT } }, opts).source, 'default');
-    assert.equal(destinationFor(user(), { destination: 'nonsense' }, opts).source, 'default');
+    assert.equal(destinationFor(user(), { vpath: 'private', base: '', layout: DEFAULT_LAYOUT }, opts).source, 'default');
+    assert.equal(destinationFor(user(), { vpath: 'other', base: '', layout: '{{TRACK}}' }, opts).source, 'default');
+    assert.equal(destinationFor(user(), { vpath: 'other', base: '../up', layout: DEFAULT_LAYOUT }, opts).source, 'default');
+    assert.equal(destinationFor(user(), 'nonsense', opts).source, 'default');
   });
 
   test('base folder: relative, inside the library, normalised', () => {
@@ -148,14 +160,22 @@ describe('federation-copy · destination', () => {
   });
 });
 
-describe('federation-copy · file name and target', () => {
-  test('the peer\'s file name is kept, minus what a path cannot carry', () => {
+describe('collection destination · file name and target', () => {
+  test('the file name is kept, minus what a path cannot carry', () => {
     assert.equal(safeFileName('shared/Nova/Remote Hit.mp3'), 'Remote Hit.mp3');
     assert.equal(safeFileName('shared/Nova/ 01. Song?.flac '), '01. Song-.flac');
     assert.equal(safeFileName('x:y|z.mp3'), 'x-y-z.mp3');
     assert.equal(safeFileName('shared/'), 'shared', 'the last non-empty segment');
     assert.equal(safeFileName(''), 'track');
     assert.equal(safeFileName('a/..'), 'track');
+  });
+
+  test('tagsForLayout: the file\'s tags first, the recommendation\'s where it has none', () => {
+    assert.deepEqual(tagsForLayout({ artist: 'A', album: 'B', year: 2019, genre: ['Dub', 'Techno'], albumartist: 'VA' }, { artist: 'X', title: 'T' }),
+      { artist: 'A', album: 'B', title: 'T', year: 2019, genre: 'Dub', albumartist: 'VA' });
+    assert.deepEqual(tagsForLayout({}, { artist: 'X', album: 'Y', title: 'T', year: 2001 }),
+      { artist: 'X', album: 'Y', title: 'T', year: 2001, genre: null, albumartist: null });
+    assert.deepEqual(tagsForLayout(null), { artist: null, album: null, title: null, year: null, genre: null, albumartist: null });
   });
 
   test('renderTarget: base + layout per song + file name, forward slashes', () => {
@@ -174,6 +194,11 @@ describe('federation-copy · file name and target', () => {
     });
     assert.equal(noYear.relPath, 'From peers/Sam/A/B ()/x.mp3');
     assert.deepEqual(noYear.missingVars, ['YEAR']);
+
+    // No peer (a kept download): PEER drops out of the path.
+    const kept = renderTarget({ destination, peerName: null, fileName: 'x.mp3', tags: { artist: 'A', album: 'B', year: 2020 } });
+    assert.equal(kept.relPath, 'From peers/A/B (2020)/x.mp3');
+    assert.deepEqual(kept.missingVars, ['PEER']);
 
     // No base, every variable empty: the file lands at the library root.
     const bare = renderTarget({ destination: { vpath: 'music', base: '', layout: DEFAULT_LAYOUT }, peerName: 'Sam', fileName: 'x.mp3', tags: {} });

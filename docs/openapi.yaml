@@ -203,6 +203,44 @@ components:
       name: x-access-token
 
   schemas:
+    DiscoveryCollectionDestination:
+      type: object
+      description: Where files the user decides to own are put — a library, a base folder inside it, and a layout rendered per song.
+      required: [vpath, layout]
+      properties:
+        vpath: { type: string, description: "A library the caller may upload to.", example: Music }
+        base: { type: string, description: 'A relative folder inside the library; "" = its root.', example: From peers }
+        layout: { type: string, description: 'Torrent path-template syntax; see `variables` in the view.', example: "{{ARTIST}}/{{ALBUM}}" }
+    DiscoveryCollectionDestinationView:
+      type: object
+      properties:
+        destination:
+          description: The effective destination; `null` when the caller may not put files anywhere (uploads off, or no library).
+          type: object
+          nullable: true
+          allOf:
+            - { $ref: "#/components/schemas/DiscoveryCollectionDestination" }
+          properties:
+            source: { type: string, enum: [default, user], description: "`user` = the saved one is in force; `default` = the library default." }
+        saved:
+          description: What is stored, as typed; `null` when nothing is.
+          type: object
+          nullable: true
+          allOf:
+            - { $ref: "#/components/schemas/DiscoveryCollectionDestination" }
+        libraries:
+          type: array
+          description: The libraries the caller may put files into, each with its admin Path Template.
+          items:
+            type: object
+            properties:
+              vpath: { type: string }
+              template: { type: string, nullable: true }
+        defaultLayout: { type: string, example: "{{ARTIST}}/{{ALBUM}}" }
+        variables:
+          type: array
+          items: { type: string }
+          example: [ARTIST, ALBUM, YEAR, GENRE, ALBUMARTIST, PEER]
     DiscoveryPluginJob:
       type: object
       description: One thing a discovery plug-in was asked to do with a recommendation (acquire / hand-off). Timestamps are ms epochs.
@@ -2301,14 +2339,10 @@ paths:
         `discovery-plugin:{name}`), plus the plug-in's own description of the
         effective view. Secret values (tokens) never come back; the entry
         says only that one is set. In public mode the settings belong to the
-        shared anonymous account.
-
-        `federation-copy` describes `destination` (`{ vpath, base, layout,
-        source: default|user }` — the copy destination with the library
-        default filled in when nothing is saved; `null` when the caller may
-        not copy anywhere), `libraries` (`[{ vpath, template }]` — the
-        libraries the caller may copy into, each with its admin Path
-        Template), `defaultLayout` and `variables`.
+        shared anonymous account. This is where a plug-in keeps what is its
+        own — a service token, say. The collection destination is NOT a
+        plug-in setting: it is shared by every acquire plug-in and has its
+        own route, `/api/v1/discovery/collection/destination`.
       parameters:
         - name: name
           in: path
@@ -2342,11 +2376,9 @@ paths:
       tags: [Discovery]
       summary: Store one plug-in setting for the caller
       description: |
-        Stores one key (validated by the plug-in's schema and its own
-        checks — `federation-copy` refuses a library the caller cannot
-        upload to, a base folder that climbs out, or a layout with an
-        unknown variable). `value: null` deletes the key. Answers with the
-        same view as GET.
+        Stores one key, validated by the plug-in's schema for it and then by
+        the plug-in's own checks. `value: null` deletes the key. Answers with
+        the same view as GET.
       parameters:
         - name: name
           in: path
@@ -2362,16 +2394,68 @@ paths:
               properties:
                 key: { type: string }
                 value:
-                  description: "Any JSON value the plug-in's schema for that key accepts (`federation-copy.destination` = `{ vpath, base, layout }`); `null` deletes the key."
+                  description: "Any JSON value the plug-in's schema for that key accepts; `null` deletes the key."
             example:
-              key: destination
-              value: { vpath: Music, base: "From peers", layout: "{{PEER}}/{{ARTIST}}/{{ALBUM}}" }
+              key: token
+              value: "a-service-token"
       responses:
         "200": { description: "Stored; the settings view." }
         "400": { description: "Unknown key, a value the schema or the plug-in refused, or a plug-in with no settings." }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "The caller has no user account to keep settings under." }
         "404": { description: "Unknown or disabled plug-in." }
+
+  /api/v1/discovery/collection/destination:
+    get:
+      tags: [Discovery]
+      summary: Where the caller's collection copies and kept downloads land
+      description: |
+        The collection destination: a library the caller may upload to, a
+        base folder inside it (`""` = the root) and a layout rendered from
+        each song's tags with the torrent path-template syntax
+        (`{{ARTIST}}/{{ALBUM}}`; variables as listed, `{{PEER}}` being the
+        paired server a copy came from — empty, so dropped, for anything
+        else). One per user, shared by every acquire plug-in: the
+        `federation-copy` job copies into it, and Keep… moves a finished
+        download into it. Nothing saved means the library default: the first
+        writable library's admin Path Template when it has one, else
+        `{{ARTIST}}/{{ALBUM}}` at its root. In public mode the anonymous
+        account keeps the one shared setting.
+      responses:
+        "200":
+          description: The effective destination and what a picker needs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveryCollectionDestinationView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [Discovery]
+      summary: Save the collection destination, or go back to the default
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [destination]
+              properties:
+                destination:
+                  description: "`null` removes the saved destination."
+                  type: object
+                  nullable: true
+                  allOf:
+                    - { $ref: "#/components/schemas/DiscoveryCollectionDestination" }
+            example:
+              destination: { vpath: Music, base: "From peers", layout: "{{PEER}}/{{ARTIST}}/{{ALBUM}}" }
+      responses:
+        "200":
+          description: Saved; the same view as GET.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveryCollectionDestinationView" }
+        "400": { description: "A library the caller cannot put files into, a base folder that climbs out of it, or a layout the template engine refuses (unknown variable, stray brace, absolute path)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The caller has no user account to keep a destination under." }
 
   /api/v1/discovery/plugins/{name}/resolve:
     post:
@@ -2469,8 +2553,8 @@ paths:
 
         `federation-copy` ("Add to your collection") takes a federation
         recommendation (`source: federation`, the peer's `filepath`, `peer.id`)
-        and copies the file into the caller's destination (see the settings
-        routes). Its `result` is `{ copied: { vpath, filepath, trackId, bytes,
+        and copies the file into the caller's collection destination
+        (`/api/v1/discovery/collection/destination`). Its `result` is `{ copied: { vpath, filepath, trackId, bytes,
         title, artist, album }, missingVars, peer, destination }`, or
         `{ skipped: owned, existing: { filepath, by } }` when the library
         already has the song (by hash or by artist + album + title), or
@@ -2486,7 +2570,12 @@ paths:
         one's audio into the `discover-downloads` scratch library (a per-user
         subfolder), tagged from the recommendation. Its `result` is
         `{ downloaded: { vpath, filepath, trackId, bytes, format }, match:
-        { score, url, title, channel, durationSec }, expiresAt }`. It fails
+        { score, url, title, channel, durationSec } }`. Every read of the job
+        adds `expiresAt` (ms; `null` when downloads never expire), computed
+        from the current `discoveryJobs.downloads.retentionDays`, while the
+        file is neither kept nor removed; Keep… adds `kept: { vpath,
+        filepath, trackId, playlistEntries, missingVars, at }` and the
+        retention pass adds `removed: { at }`. It fails
         with `Nothing matched closely enough (best score …, needs 0.62)`,
         `YouTube returned no results …`, or yt-dlp's own last error line
         (for example its sign-in / bot check).
@@ -2593,6 +2682,45 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { description: "No such job, or not the caller's." }
         "409": { description: "The job has already finished." }
+
+  /api/v1/discovery/plugin-jobs/{id}/keep:
+    post:
+      tags: [Discovery]
+      summary: Keep a finished download (move it into the collection)
+      description: |
+        A download an acquire plug-in landed in the `discover-downloads`
+        scratch library expires unless it is kept. Keep… moves the file into
+        the caller's collection destination — or the one-off `destination` in
+        the body, checked like a saved one — rendering the layout from the
+        file's own tags. It never overwrites; the library row follows the
+        file; ratings and play counts follow by themselves (they key on the
+        track hash); playlist entries that pointed at the old path are
+        rewritten; the job's `result` gains `kept` and stops reporting an
+        expiry. Needs upload rights: keeping is an upload by another road.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                destination: { $ref: "#/components/schemas/DiscoveryCollectionDestination" }
+      responses:
+        "200":
+          description: Kept; the job as it now stands.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "400": { description: "The job has no download to keep (it failed, or its plug-in does not download), or the one-off destination was refused." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Uploads are disabled for the caller, or there is no library to keep into." }
+        "404": { description: "No such job, or not the caller's." }
+        "409": { description: "Already kept, already expired and removed, a file already exists at the target path, or the file is in use right now (try again)." }
 
   # ── Search ───────────────────────────────────────────────────────────────
 
@@ -5812,6 +5940,32 @@ paths:
                 noUpload: { type: boolean }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/discovery-jobs/sweep:
+    post:
+      tags: [Admin - Config]
+      summary: Run the discovery retention pass now
+      description: |
+        The pass the server runs shortly after boot and every few hours:
+        Discover downloads older than `discoveryJobs.downloads.retentionDays`
+        are removed with their library rows and their jobs marked `removed`
+        (0 days = never); partial files a killed download left behind go once
+        a day old; folders the pass emptied are removed; finished job rows
+        older than `discoveryJobs.retentionDays` are pruned. A file that is
+        in use is skipped and caught by the next pass.
+      responses:
+        "200":
+          description: What this pass did.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removedFiles: { type: integer }
+                  removedPartials: { type: integer }
+                  skipped: { type: integer, description: "Files in use, left for the next pass." }
+                  prunedJobs: { type: integer }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/config/nomkdir:

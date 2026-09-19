@@ -1,8 +1,8 @@
 /**
  * "Add to your collection" end to end over real iroh: the federation-copy
- * plug-in (src/discovery-plugins/plugins/federation-copy.js), its per-user
- * destination through the plug-in settings routes, and the job that copies
- * a paired peer's file into this library.
+ * plug-in (src/discovery-plugins/plugins/federation-copy.js), the caller's
+ * collection destination (src/discovery-plugins/destination.js) through its
+ * own routes, and the job that copies a paired peer's file into this library.
  *
  *   Server A (the peer): federation ON, one 'shared' library of three
  *                        ffmpeg-made, tagged mp3s.
@@ -42,7 +42,7 @@ const FFMPEG = process.platform === 'win32'
   : path.join(REPO_ROOT, 'bin', 'ffmpeg', 'ffmpeg');
 
 const PLUGIN = 'federation-copy';
-const SETTINGS = `/api/v1/discovery/plugins/${PLUGIN}/settings`;
+const DEST = '/api/v1/discovery/collection/destination';
 const JOBS = `/api/v1/discovery/plugins/${PLUGIN}/jobs`;
 
 // [file, title, artist, album, year]
@@ -140,50 +140,46 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     }
   });
 
-  test('the plug-in is listed as an acquire plug-in with a destination setting', async () => {
+  test('the plug-in is listed as an acquire plug-in; the destination is not its setting', async () => {
     const r = await api(srvB, 'GET', '/api/v1/discovery/plugins');
     assert.equal(r.status, 200);
     const p = r.body.plugins.find((x) => x.name === PLUGIN);
     assert.ok(p, 'federation-copy is on by default');
     assert.deepEqual(p.capabilities, ['acquire']);
-    assert.deepEqual(p.settings, ['destination']);
+    assert.deepEqual(p.settings, []);
+    assert.equal((await api(srvB, 'GET', `/api/v1/discovery/plugins/${PLUGIN}/settings`)).status, 400, 'no plug-in settings of its own');
   });
 
   test('the default destination: the first library, {{ARTIST}}/{{ALBUM}} at its root', async () => {
-    const r = await api(srvB, 'GET', SETTINGS);
+    const r = await api(srvB, 'GET', DEST);
     assert.equal(r.status, 200, JSON.stringify(r.body));
-    assert.equal(r.body.plugin, PLUGIN);
-    assert.deepEqual(r.body.keys, ['destination']);
-    assert.deepEqual(r.body.settings, {});
+    assert.equal(r.body.saved, null);
     assert.deepEqual([...r.body.libraries].sort((a, b) => a.vpath.localeCompare(b.vpath)),
       [{ vpath: 'collection', template: null }, { vpath: 'testlib', template: null }]);
     assert.deepEqual(r.body.destination, { vpath: r.body.libraries[0].vpath, base: '', layout: '{{ARTIST}}/{{ALBUM}}', source: 'default' });
     assert.equal(r.body.defaultLayout, '{{ARTIST}}/{{ALBUM}}');
     assert.ok(r.body.variables.includes('PEER'));
-    // A plug-in without settings, and an unknown one.
-    assert.equal((await api(srvB, 'GET', '/api/v1/discovery/plugins/links/settings')).status, 400);
-    assert.equal((await api(srvB, 'GET', '/api/v1/discovery/plugins/nope/settings')).status, 404);
   });
 
   test('storing a destination: refusals, the round trip, and the reset', async () => {
-    const put = (value) => api(srvB, 'PUT', SETTINGS, { key: 'destination', value });
+    const put = (value) => api(srvB, 'PUT', DEST, { destination: value });
     assert.equal((await put({ vpath: 'nope', base: '', layout: '{{ARTIST}}' })).status, 400, 'a library the caller cannot write to');
     assert.equal((await put({ vpath: 'collection', base: '', layout: '{{TRACK}}' })).status, 400, 'an unknown variable');
     assert.equal((await put({ vpath: 'collection', base: '../up', layout: '{{ARTIST}}' })).status, 400, 'a base folder that climbs out');
     assert.equal((await put({ vpath: 'collection' })).status, 400, 'the schema: layout is required');
-    assert.equal((await api(srvB, 'PUT', SETTINGS, { key: 'colour', value: 'red' })).status, 400, 'an unknown key');
+    assert.equal((await api(srvB, 'PUT', DEST, {})).status, 400, 'a destination (or null) is required');
 
     const ok = await put({ vpath: 'collection', base: 'From peers/', layout: '{{PEER}}/{{ARTIST}}/{{ALBUM}}' });
     assert.equal(ok.status, 200, JSON.stringify(ok.body));
     assert.deepEqual(ok.body.destination, { vpath: 'collection', base: 'From peers', layout: '{{PEER}}/{{ARTIST}}/{{ALBUM}}', source: 'user' });
-    assert.deepEqual(ok.body.settings.destination.value, { vpath: 'collection', base: 'From peers/', layout: '{{PEER}}/{{ARTIST}}/{{ALBUM}}' });
-    const again = await api(srvB, 'GET', SETTINGS);
+    assert.deepEqual(ok.body.saved, { vpath: 'collection', base: 'From peers/', layout: '{{PEER}}/{{ARTIST}}/{{ALBUM}}' });
+    const again = await api(srvB, 'GET', DEST);
     assert.equal(again.body.destination.source, 'user');
 
     const reset = await put(null);
     assert.equal(reset.status, 200);
     assert.equal(reset.body.destination.source, 'default');
-    assert.deepEqual(reset.body.settings, {});
+    assert.equal(reset.body.saved, null);
 
     // The custom destination for the copies below — always the per-run
     // 'collection' library, never the shared fixture folder.
@@ -265,7 +261,7 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
   test('uploads off for the account: no destination, and a copy refuses', async () => {
     assert.equal((await api(srvB, 'POST', '/api/v1/admin/config/noupload', { noUpload: true })).status, 200);
     try {
-      const view = await api(srvB, 'GET', SETTINGS);
+      const view = await api(srvB, 'GET', DEST);
       assert.equal(view.status, 200);
       assert.equal(view.body.destination, null);
       assert.deepEqual(view.body.libraries, []);
@@ -280,7 +276,7 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
   });
 
   test('a copy at the library root with an empty tag reports the dropped variable', async () => {
-    assert.equal((await api(srvB, 'PUT', SETTINGS, { key: 'destination', value: { vpath: 'collection', base: '', layout: '{{ARTIST}}/{{ALBUM}} ({{YEAR}})' } })).status, 200);
+    assert.equal((await api(srvB, 'PUT', DEST, { destination: { vpath: 'collection', base: '', layout: '{{ARTIST}}/{{ALBUM}} ({{YEAR}})' } })).status, 200);
     const started = await api(srvB, 'POST', JOBS, { recommendation: rec('Third_Song.mp3') });
     const job = await untilFinished(started.body.job.id);
     assert.equal(job.state, 'done', `job error: ${job.error}`);

@@ -1,14 +1,11 @@
 // "federation-copy" — "Add to your collection": copies a PAIRED peer's
 // recommendation into a folder of the user's own library, as a job.
 //
-// What the user sees (docs/designs/discover-modal, cards 02 and 10): the
-// Federation view's Add rows copy into one DESTINATION — a library the user
-// may upload to, a base folder inside it, and a layout rendered from the
-// song's tags with the torrent path-template engine
-// ({{ARTIST}}/{{ALBUM}}, plus {{PEER}} for the server it came from). The
-// destination is a per-user setting; unset means the library default: the
-// library's admin Path Template when one exists, else {{ARTIST}}/{{ALBUM}}
-// at the root. The file keeps the peer's name.
+// Where it lands is the user's collection destination
+// (src/discovery-plugins/destination.js; design cards 02 and 10): a library
+// the user may upload to, a base folder, and a layout rendered from the
+// song's tags ({{ARTIST}}/{{ALBUM}} by default, {{PEER}} = the server it
+// came from). The file keeps the peer's name.
 //
 // How a copy runs (run(ctx), one at a time per server):
 //   1. the peer's metadata for the file (its hash) — a song this library
@@ -32,102 +29,21 @@
 
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import Joi from 'joi';
 import winston from 'winston';
 import * as config from '../../state/config.js';
 import * as db from '../../db/manager.js';
 import * as fedDb from '../../db/federation.js';
 import * as vpathUtil from '../../util/vpath.js';
-import * as pathTemplate from '../../torrent/path-template.js';
-import WebError from '../../util/web-error.js';
+import * as destinations from '../destination.js';
 import { CAPABILITIES, SCOPES } from '../registry.js';
 import { RECOMMENDATION_SOURCES } from '../recommendation.js';
 
 export const NAME = 'federation-copy';
-export const NAMESPACE = `discovery-plugin:${NAME}`;
-export const DEFAULT_LAYOUT = '{{ARTIST}}/{{ALBUM}}';
-export const LAYOUT_VARS = Object.freeze([...pathTemplate.SUPPORTED_VARS, pathTemplate.EXTRA_VARS.PEER]);
-const EXTRA_VARS = [pathTemplate.EXTRA_VARS.PEER];
-const SAMPLE = Object.freeze({ ...pathTemplate.SAMPLE_METADATA, peer: "Sam's server" });
 
 // Dial + headers only (fedFetchWithDeadline); the body streams for as long
 // as the file takes.
 const HEADER_DEADLINE_MS = 15_000;
 const PROGRESS_EVERY_MS = 400;
-
-// ── Pure helpers (unit-tested) ────────────────────────────────────────────
-
-export function uploadsAllowed(user, { noUpload } = {}) {
-  const serverOff = noUpload === undefined ? !!(config.program && config.program.noUpload) : noUpload;
-  if (serverOff) { return false; }
-  return !(user && (user.allow_upload === false || user.allow_upload === 0));
-}
-
-// The libraries this user may copy into, each with its admin Path Template
-// (libraries.torrent_path_template — the same template torrents use).
-export function writableLibraries(user, { libraries, noUpload } = {}) {
-  if (!user || !Array.isArray(user.vpaths) || !uploadsAllowed(user, { noUpload })) { return []; }
-  const all = libraries || db.getAllLibraries();
-  return all
-    .filter((lib) => user.vpaths.includes(lib.name))
-    .map((lib) => ({ vpath: lib.name, template: lib.torrent_path_template || null }));
-}
-
-export function validateLayout(layout) {
-  return pathTemplate.validateForSave(layout, { extraVars: EXTRA_VARS, sampleMetadata: SAMPLE });
-}
-
-// A base folder is a relative path inside the library ('' = the root),
-// under the same rules as a resolved template path, so nothing climbs out.
-export function normalizeBase(base) {
-  const raw = String(base == null ? '' : base).replace(/\\/g, '/').split('/').map((s) => s.trim()).filter(Boolean).join('/');
-  if (raw === '') { return { valid: true, base: '' }; }
-  const check = pathTemplate.validateResolvedPath(raw);
-  if (!check.valid) { return { valid: false, error: check.error, message: check.message }; }
-  return { valid: true, base: raw };
-}
-
-// The effective destination: the user's saved one when it still makes
-// sense (the library is still theirs, the layout still validates), else the
-// library default. null when there is nowhere to copy to.
-export function destinationFor(user, stored, opts = {}) {
-  const libs = writableLibraries(user, opts);
-  if (libs.length === 0) { return null; }
-  const saved = stored && stored.destination;
-  if (saved && typeof saved === 'object') {
-    const lib = libs.find((l) => l.vpath === saved.vpath);
-    const base = normalizeBase(saved.base);
-    if (lib && base.valid && typeof saved.layout === 'string' && validateLayout(saved.layout).valid) {
-      return { vpath: lib.vpath, base: base.base, layout: saved.layout, source: 'user' };
-    }
-  }
-  const lib = libs[0];
-  return { vpath: lib.vpath, base: '', layout: lib.template || DEFAULT_LAYOUT, source: 'default' };
-}
-
-// The peer's file name, kept — minus anything a path must not carry.
-export function safeFileName(remotePath) {
-  const base = String(remotePath || '').split('/').filter(Boolean).pop() || '';
-  // eslint-disable-next-line no-control-regex
-  let name = base.replace(/[/\\:*?<>|"\x00-\x1f]+/g, '-').replace(/\s+/g, ' ').replace(/^[.\s]+|[.\s]+$/g, '');
-  if (name === '' || name === '..') { name = 'track'; }
-  return name;
-}
-
-// Where one song goes: base folder + rendered layout + file name, relative
-// to the library root, forward slashes.
-export function renderTarget({ destination, tags, peerName, fileName }) {
-  const { path: rendered, missingVars } = pathTemplate.resolveTemplate(destination.layout, {
-    artist: tags.artist, album: tags.album, year: tags.year, genre: tags.genre,
-    albumartist: tags.albumartist, peer: peerName,
-  });
-  if (rendered) {
-    const check = pathTemplate.validateResolvedPath(rendered);
-    if (!check.valid) { throw new Error(`the layout rendered an unusable path: ${check.message}`); }
-  }
-  const relDir = [destination.base, rendered].filter(Boolean).join('/');
-  return { relDir, relPath: relDir ? `${relDir}/${fileName}` : fileName, missingVars };
-}
 
 // A song this library already has: by file hash, by audio hash, or by the
 // exact artist + album + title (case-insensitive).
@@ -159,8 +75,6 @@ export function ownedTrack({ hash, audioHash, artist, title, album }, database =
   return null;
 }
 
-// ── The job ───────────────────────────────────────────────────────────────
-
 // The job carries a user id; the request that queued it is gone. Rebuild
 // what auth.js gives a request: the row plus vpaths. The anonymous sentinel
 // (public mode) sees every library and copies like the operator it is.
@@ -182,18 +96,6 @@ function peerStatusError(status, peerName) {
   if (status === 404) { return new Error(`${peerName} no longer has this file`); }
   if (status === 401 || status === 403) { return new Error(`${peerName} refused this server's key`); }
   return new Error(`${peerName} answered http ${status}`);
-}
-
-function fileTags(common, rec) {
-  const first = (v) => (Array.isArray(v) ? v[0] : v);
-  return {
-    artist: (common.artist && String(common.artist)) || rec.artist || null,
-    album: (common.album && String(common.album)) || rec.album || null,
-    title: (common.title && String(common.title)) || rec.title || null,
-    year: common.year || rec.year || null,
-    genre: first(common.genre) ? String(first(common.genre)) : null,
-    albumartist: common.albumartist ? String(common.albumartist) : null,
-  };
 }
 
 async function copyBody(res, tmpPath, ctx, total) {
@@ -233,9 +135,8 @@ async function run(ctx) {
 
   const user = userForJob(ctx.userId);
   if (!user) { throw new Error('the account that asked for this copy no longer exists'); }
-  if (!uploadsAllowed(user)) { throw new Error('uploads are disabled for this account, and a copy is an upload'); }
-  const settingsDb = await import('../../db/user-settings.js');
-  const destination = destinationFor(user, settingsDb.getUserSettings(user.id, NAMESPACE));
+  if (!destinations.uploadsAllowed(user)) { throw new Error('uploads are disabled for this account, and a copy is an upload'); }
+  const destination = destinations.getDestination(user);
   if (!destination) { throw new Error('no library to copy into'); }
 
   // 1. The peer's word on the file: its hash, for the pre-copy owned check.
@@ -289,9 +190,9 @@ async function run(ctx) {
     try { common = (await parseFile(tmpPath, { skipCovers: true })).common || {}; } catch (err) {
       winston.warn(`federation-copy: could not read tags from the copied file (${err.message}); using the recommendation's`);
     }
-    const tags = fileTags(common, rec);
-    const fileName = safeFileName(rec.filepath);
-    const target = renderTarget({ destination, tags, peerName: peer.name, fileName });
+    const tags = destinations.tagsForLayout(common, rec);
+    const fileName = destinations.safeFileName(rec.filepath);
+    const target = destinations.renderTarget({ destination, tags, peerName: peer.name, fileName });
     const targetInfo = vpathUtil.getVPathInfo(`${destination.vpath}/${target.relPath}`, user);
 
     const audioHashLib = await import('../../db/audio-hash.js');
@@ -331,40 +232,12 @@ async function run(ctx) {
   }
 }
 
-const destinationSchema = Joi.object({
-  vpath: Joi.string().min(1).max(200).required(),
-  base: Joi.string().allow('').max(500).default(''),
-  layout: Joi.string().min(1).max(500).required(),
-});
-
 export default Object.freeze({
   name: NAME,
   title: 'Add to your collection',
-  description: 'Copies a paired peer\'s song into a folder of your library (library · base folder · layout such as {{ARTIST}}/{{ALBUM}}), through the same stream proxy playback uses, and adds it to the library at once. Needs upload rights.',
+  description: 'Copies a paired peer\'s song into your collection destination (library · base folder · layout such as {{ARTIST}}/{{ALBUM}}), through the same stream proxy playback uses, and adds it to the library at once. Needs upload rights.',
   capabilities: [CAPABILITIES.ACQUIRE],
   scope: SCOPES.USER,
   concurrency: 1,
-  userSettings: {
-    destination: { schema: destinationSchema },
-  },
-  validateSetting(key, value, { user }) {
-    if (key !== 'destination') { return; }
-    const libs = writableLibraries(user);
-    if (!libs.some((l) => l.vpath === value.vpath)) {
-      throw new WebError(`destination: you cannot copy into library '${value.vpath}'`, 400);
-    }
-    const base = normalizeBase(value.base);
-    if (!base.valid) { throw new WebError(`destination base folder: ${base.message}`, 400); }
-    const layout = validateLayout(value.layout);
-    if (!layout.valid) { throw new WebError(`destination layout: ${layout.message}`, 400); }
-  },
-  describeSettings({ user, stored }) {
-    return {
-      destination: destinationFor(user, stored),
-      libraries: writableLibraries(user),
-      defaultLayout: DEFAULT_LAYOUT,
-      variables: [...LAYOUT_VARS],
-    };
-  },
   run,
 });

@@ -150,4 +150,47 @@ describe('discovery plug-in jobs API', () => {
     assert.equal((await post(userToken, '/api/v1/discovery/plugins/links/jobs', { recommendation: rec('x') })).status, 400);
     assert.equal((await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', {})).status, 400);
   });
+
+  test('per-user plug-in settings: stored per account, checked, secrets never read back', async () => {
+    const route = '/api/v1/discovery/plugins/noop-acquire/settings';
+    const put = (token, body) => fetch(`${server.baseUrl}${route}`, { method: 'PUT', headers: hdr(token), body: JSON.stringify(body) })
+      .then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+
+    const empty = await get(userToken, route);
+    assert.equal(empty.status, 200, JSON.stringify(empty.body));
+    assert.deepEqual(empty.body.keys, ['note', 'token']);
+    assert.deepEqual(empty.body.settings, {});
+    assert.equal(empty.body.connected, false);
+    const listed = (await get(userToken, '/api/v1/discovery/plugins')).body.plugins.find((p) => p.name === 'noop-acquire');
+    assert.deepEqual(listed.settings, ['note', 'token']);
+
+    const note = await put(userToken, { key: 'note', value: 'hello' });
+    assert.equal(note.status, 200, JSON.stringify(note.body));
+    assert.equal(note.body.settings.note.value, 'hello');
+    const token = await put(userToken, { key: 'token', value: 'lb-secret-token' });
+    assert.equal(token.status, 200);
+    assert.deepEqual(Object.keys(token.body.settings.token).sort(), ['secret', 'set', 'updatedAt']);
+    assert.equal(token.body.connected, true, 'the plug-in sees its secret server-side');
+    assert.ok(!JSON.stringify(token.body).includes('lb-secret-token'), 'the secret never comes back');
+
+    // Shape and meaning are both checked; an unknown key is refused.
+    assert.equal((await put(userToken, { key: 'token', value: 'abc' })).status, 400, 'the schema (min length)');
+    assert.equal((await put(userToken, { key: 'note', value: 'a forbidden word' })).status, 400, 'the plug-in\'s own check');
+    assert.equal((await put(userToken, { key: 'colour', value: 'red' })).status, 400, 'an unknown key');
+    assert.equal((await put(userToken, { key: 'note' })).status, 400, 'a value is required (null deletes)');
+
+    // Another account has its own, empty set.
+    const other = await get(adminToken, route);
+    assert.deepEqual(other.body.settings, {});
+    assert.equal(other.body.connected, false);
+
+    const gone = await put(userToken, { key: 'token', value: null });
+    assert.equal(gone.status, 200);
+    assert.equal(gone.body.settings.token, undefined);
+    assert.equal(gone.body.connected, false);
+
+    // A plug-in without settings, and one that is not here.
+    assert.equal((await get(userToken, '/api/v1/discovery/plugins/links/settings')).status, 400);
+    assert.equal((await get(userToken, '/api/v1/discovery/plugins/no-such/settings')).status, 404);
+  });
 });

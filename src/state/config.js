@@ -719,10 +719,11 @@ const discoveryJobsOptions = Joi.object({
   retentionDays: Joi.number().integer().min(1).max(3650).default(30),
   // The "Discover downloads" scratch library acquire plug-ins land files in
   // (src/discovery-plugins/downloads.js): created on first use, one
-  // subfolder per user, files nobody kept swept after retentionDays.
+  // subfolder per user, files nobody kept swept after retentionDays
+  // (src/discovery-plugins/retention.js; 0 = never).
   downloads: Joi.object({
     dir: Joi.string().default(path.join(dataRoot, 'discover-downloads')),
-    retentionDays: Joi.number().integer().min(1).max(3650).default(30),
+    retentionDays: Joi.number().integer().min(0).max(3650).default(30),
   }).default({ dir: path.join(dataRoot, 'discover-downloads'), retentionDays: 30 }),
 });
 

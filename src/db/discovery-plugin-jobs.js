@@ -178,9 +178,32 @@ export function requeueInterrupted() {
 }
 
 // Finished rows older than the cut-off are history nobody reads.
-export function pruneFinished(olderThanMs) {
+export function pruneFinished(olderThanMs, now = Date.now()) {
   return d().prepare(`
     DELETE FROM discovery_plugin_jobs
      WHERE state IN ('done', 'failed', 'cancelled') AND finished_at IS NOT NULL AND finished_at < ?
-  `).run(Date.now() - olderThanMs).changes;
+  `).run(now - olderThanMs).changes;
+}
+
+// What happened to a finished job's result AFTER it finished — a kept
+// download moved into the collection, an expired one swept. A shallow merge
+// into the stored result; only a 'done' job has one to amend. Returns the
+// job as it now stands, or null when there was nothing to patch.
+export function patchResult(id, patch) {
+  const row = d().prepare("SELECT result FROM discovery_plugin_jobs WHERE id = ? AND state = 'done'").get(id);
+  if (!row) { return null; }
+  const merged = { ...(parse(row.result) || {}), ...(patch || {}) };
+  d().prepare('UPDATE discovery_plugin_jobs SET result = ?, updated_at = ? WHERE id = ?')
+    .run(JSON.stringify(merged), Date.now(), id);
+  return getJob(id);
+}
+
+// The finished jobs whose download landed at this library path
+// ("<vpath>/<relpath>") — how the retention sweep finds the job behind a
+// file it removes.
+export function findByDownloadedFilepath(filepath) {
+  return d().prepare(`
+    SELECT * FROM discovery_plugin_jobs
+     WHERE state = 'done' AND json_extract(result, '$.downloaded.filepath') = ?
+  `).all(String(filepath)).map(rowToJob);
 }

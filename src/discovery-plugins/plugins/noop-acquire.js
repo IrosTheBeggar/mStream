@@ -6,7 +6,14 @@
 // title steers it — "fail" throws, "slow" takes several steps, anything else
 // finishes in three quick ones — so a test can script every outcome.
 
+//
+// It also keeps two per-user settings, so the generic plug-in settings routes
+// have something to exercise: a plain `note` (one value is refused on
+// meaning, not shape) and a secret `token` that must never be read back.
+
+import Joi from 'joi';
 import { CAPABILITIES, SCOPES } from '../registry.js';
+import WebError from '../../util/web-error.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -17,6 +24,16 @@ export default Object.freeze({
   capabilities: [CAPABILITIES.ACQUIRE],
   scope: SCOPES.SERVER,
   concurrency: 2,
+  userSettings: {
+    note: { schema: Joi.string().max(100) },
+    token: { schema: Joi.string().min(4).max(200), secret: true },
+  },
+  validateSetting(key, value) {
+    if (key === 'note' && /forbidden/i.test(value)) { throw new WebError('note: that word is not allowed', 400); }
+  },
+  describeSettings({ stored }) {
+    return { connected: typeof stored.token === 'string' && stored.token.length > 0 };
+  },
   async run(ctx) {
     const title = String((ctx.recommendation && ctx.recommendation.title) || '');
     if (/fail/i.test(title)) { throw new Error(`noop-acquire refused "${title}"`); }

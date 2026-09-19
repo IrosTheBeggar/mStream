@@ -205,3 +205,92 @@ describe('job runner', () => {
     assert.equal(runner.isRunning(), false);
   });
 });
+
+describe('results after the fact, and the retention pass', () => {
+  test('patchResult amends a finished job only; findByDownloadedFilepath finds the job behind a file', () => {
+    const { job } = jobsDb.createJob({ plugin: 'unit-done', userId: null, key: 'text:patch-1', recommendation: { title: 'patch' } });
+    assert.equal(jobsDb.patchResult(job.id, { kept: true }), null, 'a queued job has no result to amend');
+    jobsDb.claimNextQueued('unit-done');
+    jobsDb.finishJob(job.id, { downloaded: { filepath: 'discover-downloads/shared/patch.mp3' }, match: { score: 1 } });
+    const patched = jobsDb.patchResult(job.id, { kept: { filepath: 'music/a/b/patch.mp3' } });
+    assert.deepEqual(patched.result, {
+      downloaded: { filepath: 'discover-downloads/shared/patch.mp3' }, match: { score: 1 }, kept: { filepath: 'music/a/b/patch.mp3' },
+    });
+    assert.deepEqual(jobsDb.findByDownloadedFilepath('discover-downloads/shared/patch.mp3').map((j) => j.id), [job.id]);
+    assert.deepEqual(jobsDb.findByDownloadedFilepath('discover-downloads/shared/other.mp3'), []);
+  });
+
+  test('pruneFinished measures from the clock it is given', () => {
+    const { job } = jobsDb.createJob({ plugin: 'unit-done', userId: null, key: 'text:prune-clock', recommendation: { title: 'prune' } });
+    jobsDb.claimNextQueued('unit-done');
+    jobsDb.finishJob(job.id, { ok: true });
+    const day = 24 * 60 * 60 * 1000;
+    assert.equal(jobsDb.pruneFinished(30 * day, Date.now() + 29 * day), 0, 'not old enough yet');
+    assert.ok(jobsDb.getJob(job.id));
+    assert.ok(jobsDb.pruneFinished(30 * day, Date.now() + 31 * day) >= 1);
+    assert.equal(jobsDb.getJob(job.id), null);
+  });
+
+  test('sweep: expired downloads go with their rows and tell their job; partials after a day; 0 days = never', async () => {
+    const day = 24 * 60 * 60 * 1000;
+    const dlDir = path.join(tmpDir, 'discover-downloads');
+    config.program.discoveryJobs = { ...(config.program.discoveryJobs || {}), retentionDays: 30, downloads: { dir: dlDir, retentionDays: 30 } };
+    const downloads = await import('../../src/discovery-plugins/downloads.js');
+    const retention = await import('../../src/discovery-plugins/retention.js');
+    const { insertDownloadedTrack } = await import('../../src/db/insert-downloaded-track.js');
+    await downloads.ensureLibrary(null);
+    const userDir = await downloads.userDir(null);
+    assert.equal(path.basename(userDir), 'shared');
+
+    const land = async (name) => {
+      const file = path.join(userDir, name);
+      fs.writeFileSync(file, `not really audio: ${name}`);
+      await insertDownloadedTrack({ filePath: file, vpath: downloads.LIBRARY_NAME, basePath: dlDir, source: 'plugin:unit', log: 'unit' });
+      return file;
+    };
+    const oldFile = await land('old.mp3');
+    const freshFile = await land('fresh.mp3');
+    const stalePartial = path.join(userDir, 'killed.mp3.part');
+    const livePartial = path.join(userDir, 'running.mp3.part');
+    fs.writeFileSync(stalePartial, 'x');
+    fs.writeFileSync(livePartial, 'x');
+    const { job } = jobsDb.createJob({ plugin: 'unit-done', userId: null, key: 'text:sweep-old', recommendation: { title: 'old' } });
+    jobsDb.claimNextQueued('unit-done');
+    jobsDb.finishJob(job.id, { downloaded: { filepath: 'discover-downloads/shared/old.mp3' } });
+
+    const now = Date.now();
+    const past = (ms) => new Date(now - ms);
+    fs.utimesSync(oldFile, past(31 * day), past(31 * day));
+    fs.utimesSync(stalePartial, past(2 * day), past(2 * day));
+    const rowFor = (rel) => manager.getDB().prepare(
+      'SELECT t.id FROM tracks t JOIN libraries l ON l.id = t.library_id WHERE l.name = ? AND t.filepath = ?').get(downloads.LIBRARY_NAME, rel);
+    assert.ok(rowFor('shared/old.mp3') && rowFor('shared/fresh.mp3'));
+
+    // Retention off: nothing expires (stale partials still go).
+    config.program.discoveryJobs.downloads.retentionDays = 0;
+    assert.equal(downloads.expiresAt(now), null);
+    const off = await retention.sweep({ now });
+    assert.equal(off.removedFiles, 0);
+    assert.equal(off.removedPartials, 1);
+    assert.ok(fs.existsSync(oldFile) && !fs.existsSync(stalePartial) && fs.existsSync(livePartial));
+
+    config.program.discoveryJobs.downloads.retentionDays = 30;
+    assert.equal(downloads.expiresAt(now), now + 30 * day);
+    const on = await retention.sweep({ now });
+    assert.equal(on.removedFiles, 1);
+    assert.ok(!fs.existsSync(oldFile) && fs.existsSync(freshFile) && fs.existsSync(livePartial));
+    assert.equal(rowFor('shared/old.mp3'), undefined);
+    assert.ok(rowFor('shared/fresh.mp3'));
+    assert.equal(jobsDb.getJob(job.id).result.removed.at, now);
+
+    // Much later everything has expired: the folder the pass empties goes
+    // too, and the job rows past their own retention are pruned.
+    const later = await retention.sweep({ now: now + 40 * day });
+    assert.equal(later.removedFiles, 1);
+    assert.equal(later.removedPartials, 1);
+    assert.ok(later.prunedJobs >= 1);
+    assert.ok(!fs.existsSync(userDir), 'the emptied user folder is removed');
+    assert.ok(fs.existsSync(dlDir), 'never the library root');
+    assert.equal(jobsDb.getJob(job.id), null);
+  });
+});

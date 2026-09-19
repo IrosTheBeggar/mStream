@@ -1627,6 +1627,14 @@ export function setup(mstream) {
     res.json({ discoveryJobs: config.program.discoveryJobs });
   });
 
+  // Run the discovery retention pass now (src/discovery-plugins/retention.js):
+  // expired Discover downloads and their rows, stale partial files, old job
+  // rows. The same pass the server runs on its own schedule.
+  mstream.post("/api/v1/admin/discovery-jobs/sweep", async (req, res) => {
+    const retention = await import('../discovery-plugins/retention.js');
+    res.json(await retention.sweep());
+  });
+
   // Per-user half of the acquisition gate (whitelist mode), the same shape
   // as /api/v1/admin/users/torrent-access.
   mstream.post("/api/v1/admin/users/discovery-jobs-access", async (req, res) => {
