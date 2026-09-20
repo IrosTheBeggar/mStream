@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { canonicalFields, stampWindowsVersionInfo } from './win-versioninfo.mjs';
+import { fetchBytesWithRetry } from './fetch-retry.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
@@ -357,9 +358,7 @@ for (const [dir, file] of sidecars) {
     if (!bytes) {
       console.log(`  fetching p2p-sidecar: ${url}`);
       try {
-        const res = await fetch(url, { redirect: 'follow' });
-        if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
-        bytes = Buffer.from(await res.arrayBuffer());
+        bytes = await fetchBytesWithRetry(url, { label: 'p2p-sidecar' });
       } catch (err) {
         bytes = null;
         skip(`download failed: ${err.message}`);
@@ -476,9 +475,7 @@ if (!t.musl) {
     if (!bytes) {
       console.log(`  fetching mstream-player: ${url}`);
       try {
-        const res = await fetch(url, { redirect: 'follow' });
-        if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
-        bytes = Buffer.from(await res.arrayBuffer());
+        bytes = await fetchBytesWithRetry(url, { label: 'mstream-player' });
       } catch (err) {
         bytes = null;
         skip(`download failed: ${err.message}`);
@@ -553,9 +550,7 @@ if (isMac) {
     if (!ok) {
       console.log(`  fetching ghostty console: ${url}`);
       try {
-        const res = await fetch(url, { redirect: 'follow' });
-        if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
-        const bytes = Buffer.from(await res.arrayBuffer());
+        const bytes = await fetchBytesWithRetry(url, { label: 'ghostty console' });
         const gotSha = createHash('sha256').update(bytes).digest('hex');
         if (gotSha !== gm.sha256 || bytes.length !== gm.size) {
           // A hash mismatch is NEVER skippable — wrong bytes must not ship,
