@@ -22,7 +22,7 @@
  *   - Binaries the OPERATOR placed (anything without our install receipt)
  *     are never overwritten or second-guessed; a dev cargo build of the
  *     player repo wins before this module is consulted (see
- *     src/api/server-playback.js resolvePlayerBinary()).
+ *     src/api/server-playback.js findRustBinary()).
  *
  * There is no musl build of the player (server audio is opt-in and needs a
  * sound device — not an Alpine-container feature). On musl hosts the key

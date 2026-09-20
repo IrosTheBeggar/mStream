@@ -19,7 +19,7 @@ function pickPort() {
 
 export class VlcAdapter extends BaseCliAdapter {
   constructor(binary = 'vlc') {
-    super('vlc');
+    super();
     this.binary = binary;
     this._port = pickPort();
     this._proc = null;
