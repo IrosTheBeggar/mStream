@@ -1,23 +1,26 @@
 /**
  * The admin surface of server audio, end to end through a real server:
  *
- *   GET  /api/v1/admin/server-audio/info      the backend snapshot
- *   POST /api/v1/admin/server-audio/detect    re-probe the CLI players
+ *   GET  /api/v1/admin/server-audio/info      is the engine running?
  *   POST /api/v1/admin/config/auto-boot-server-audio
- *                                             persist the preference and
+ *                                             persist the on/off switch and
  *                                             RESTART server audio to match
  *
  * The toggle is the one admin path that drives the lifecycle module
  * (src/state/server-audio.js restart()), so this pins its wiring: the
- * request must come back 200 with the preference persisted and the info
- * endpoint still answering afterwards.
+ * request must come back 200 with the switch persisted and the info endpoint
+ * still answering afterwards.
  *
- * Runs on any host, players or not: with autoBoot kept OFF nothing is ever
- * downloaded, and a box without mpv/MPD/VLC/MPlayer simply reports no
- * backend. The test asserts shapes and the persisted flag, never that a
- * player started. (Toggling autoBoot ON is deliberately not exercised —
- * on a host whose platform the manifest pins, that would fetch the engine
- * from GitHub inside the test.)
+ * It also pins the engine-only cut: autoBootServerAudio=false starts NOTHING,
+ * on any host. It used to mean "use an installed mpv / VLC / MPlayer or a
+ * reachable MPD", so a backend could be up with the feature "off" — which is
+ * why this test once had to tolerate any backend value. The detection
+ * snapshot and its endpoint are gone with the players.
+ *
+ * Turning the switch ON is deliberately not exercised here: on a developer
+ * machine that already has the engine installed it would spawn a real audio
+ * process on the default port. That path is the unit suite's (fake spawner)
+ * and the real-engine smoke's.
  *
  * Public-access mode (no users) makes the admin routes token-free.
  */
@@ -39,7 +42,7 @@ async function postJson(pathname, body) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body ?? {}),
   });
-  return { status: r.status, body: await r.json() };
+  return { status: r.status, body: await r.json().catch(() => null) };
 }
 
 describe('server-audio admin surface', () => {
@@ -49,37 +52,28 @@ describe('server-audio admin surface', () => {
 
   after(async () => { await srv?.stop(); });
 
-  test('info reports the backend snapshot in the documented shape', async () => {
+  test('off by default, and off means nothing is running — whatever the host has installed', async () => {
+    const config = await getJson('/api/v1/admin/config');
+    assert.equal(config.body.autoBootServerAudio, false);
+
     const { status, body } = await getJson('/api/v1/admin/server-audio/info');
     assert.equal(status, 200);
-    assert.ok(['rust', 'cli', null].includes(body.backend), `backend: ${body.backend}`);
-    assert.ok(body.player === null || typeof body.player === 'string');
-    assert.ok(Array.isArray(body.detectedCliPlayers));
+    assert.equal(body.backend, null);
+    assert.equal(body.player, null);
     assert.equal(typeof body.binaryFetchable, 'boolean');
-    // A CLI backend can only be active when a CLI player was detected.
-    if (body.backend === 'cli') { assert.ok(body.detectedCliPlayers.includes(body.player)); }
   });
 
-  test('detect re-probes and feeds the snapshot the info endpoint reports', async () => {
+  test('info has no detected-players list, and the detect endpoint is gone with the CLI backends', async () => {
+    const { body } = await getJson('/api/v1/admin/server-audio/info');
+    assert.deepEqual(Object.keys(body).sort(), ['backend', 'binaryFetchable', 'player']);
+
     const detect = await postJson('/api/v1/admin/server-audio/detect');
-    assert.equal(detect.status, 200);
-    assert.ok(Array.isArray(detect.body.detectedCliPlayers));
-    for (const name of detect.body.detectedCliPlayers) {
-      assert.ok(['mpv', 'mpd', 'vlc', 'mplayer'].includes(name), `unknown player name ${name}`);
-    }
-
-    const info = await getJson('/api/v1/admin/server-audio/info');
-    assert.deepEqual(info.body.detectedCliPlayers, detect.body.detectedCliPlayers,
-      'info reads the snapshot the last detect wrote');
+    assert.equal(detect.status, 404);
   });
 
-  test('the autoBoot toggle persists the preference and restarts server audio', async () => {
-    const before = await getJson('/api/v1/admin/config');
-    assert.equal(before.body.autoBootServerAudio, false, 'the default preference is CLI-only');
-
-    // Same value as before: still a full restart on the server side, and
-    // the request must survive it (an engine-less host makes this the
-    // "stop nothing, boot nothing, come back 200" path).
+  test('the toggle persists the switch and restarts server audio', async () => {
+    // Off → off is still a full stop-then-boot on the server side, and the
+    // request must survive it.
     const toggled = await postJson('/api/v1/admin/config/auto-boot-server-audio', { autoBootServerAudio: false });
     assert.equal(toggled.status, 200, JSON.stringify(toggled.body));
 
@@ -88,7 +82,7 @@ describe('server-audio admin surface', () => {
 
     const info = await getJson('/api/v1/admin/server-audio/info');
     assert.equal(info.status, 200, 'the lifecycle module answers after a restart');
-    assert.ok(['rust', 'cli', null].includes(info.body.backend));
+    assert.equal(info.body.backend, null);
   });
 
   test('the toggle validates its body', async () => {

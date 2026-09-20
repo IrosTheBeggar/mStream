@@ -1,10 +1,9 @@
 /**
  * /api/v1/server-playback/* and /server-remote through a real server.
  *
- * No test host has an audio backend (the helper points the engine fetch at a
- * dead port, and CI runners carry no mpv/MPD/VLC/MPlayer), so this pins what
- * the route layer owes a caller when NOTHING is running — which is also the
- * state where the old handlers went wrong:
+ * Server audio is off by default, and off means nothing is running — so this
+ * pins what the route layer owes a caller when there is no engine, which is
+ * also the state where the old handlers went wrong:
  *
  *   - the per-user gate: the flag or the admin role, on the API and the page
  *   - every proxied route answers a JSON 503 rather than hanging or 500ing
@@ -14,10 +13,10 @@
  *     flattened vpath's deliberate 404 to a 400.
  *   - /server-remote serves the unavailable page, with advice that is true
  *
- * The backend-up half (path translation, playback, the UI) is covered by the
+ * The engine-up half (path translation, playback, the UI) is covered by the
  * unit tests with a fake proxy and by the real-engine smoke; it cannot run
- * here. If a developer's machine happens to have a CLI player installed, the
- * assertions that need "no backend" skip themselves.
+ * here (the helper points the engine fetch at a dead port, and no CI host has
+ * a sound device).
  */
 
 import { describe, before, after, test } from 'node:test';
@@ -55,8 +54,6 @@ const ROUTES = [
 ];
 
 describe('server-playback routes', () => {
-  let noBackend = false;
-
   before(async () => {
     srv = await startServer({
       waitForScan: false,
@@ -75,9 +72,6 @@ describe('server-playback routes', () => {
     });
     assert.equal(made.status, 200, made.text);
     tokens.dj = await login('dj');
-
-    const info = await call('GET', '/api/v1/admin/server-audio/info', { token: tokens.boss });
-    noBackend = info.json.backend === null;
   });
 
   after(async () => { await srv?.stop(); });
@@ -101,8 +95,14 @@ describe('server-playback routes', () => {
     }
   });
 
-  test('no backend: every proxied route answers a JSON 503', async (t) => {
-    if (!noBackend) { return t.skip('a CLI player is installed on this host, so a backend is up'); }
+  test('off by default: nothing is running, whatever is installed on the host', async () => {
+    const info = await call('GET', '/api/v1/admin/server-audio/info', { token: tokens.boss });
+    assert.equal(info.status, 200);
+    assert.equal(info.json.backend, null);
+    assert.equal(info.json.player, null);
+  });
+
+  test('no engine: every proxied route answers a JSON 503', async () => {
     for (const [method, route, body] of ROUTES) {
       const r = await call(method, `/api/v1/server-playback${route}`, { token: tokens.dj, body });
       assert.equal(r.status, 503, `${method} ${route}: ${r.text}`);
@@ -110,8 +110,7 @@ describe('server-playback routes', () => {
     }
   });
 
-  test('no backend: /server-remote is the unavailable page, and its advice is true', async (t) => {
-    if (!noBackend) { return t.skip('a CLI player is installed on this host, so a backend is up'); }
+  test('no engine: /server-remote is the unavailable page, and its advice is true', async () => {
     const page = await call('GET', '/server-remote', { token: tokens.dj });
     assert.equal(page.status, 503);
     assert.match(page.text, /<h1>Server Audio Unavailable<\/h1>/);

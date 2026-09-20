@@ -1704,10 +1704,10 @@ export function setup(mstream) {
 
     await admin.editAutoBootServerAudio(req.body.autoBootServerAudio);
 
-    // The flag is a backend preference (engine-first vs CLI-only), so
-    // restart server audio to make the active backend match it. restart()
-    // waits for the old engine to exit before spawning, so the port is free
-    // and a stale exit can't trip the crash fallback.
+    // The flag is server audio's on/off switch, applied live: restart()
+    // stops the engine and boots it again only if the flag now says so. It
+    // waits for the old engine to exit first, so a re-enable spawns into a
+    // free port.
     await serverAudio.restart();
 
     res.json({});
@@ -1728,20 +1728,11 @@ export function setup(mstream) {
     res.json({
       backend: active.backend,
       player: active.player,
-      detectedCliPlayers: serverAudio.getDetectedCliPlayers(),
       // Whether a missing player binary could be fetched for this platform
       // (npm/source installs download it on first autoBoot; musl hosts
       // have no build and report false).
       binaryFetchable: playerBootstrap.canAutoFetch(),
     });
-  });
-
-  // Re-run the CLI player detection probe. Use this after installing or
-  // removing a player (mpv, vlc, mplayer, or an MPD daemon) without having
-  // to restart the server.
-  mstream.post("/api/v1/admin/server-audio/detect", async (req, res) => {
-    const detected = await serverAudio.refreshDetectedCliPlayers();
-    res.json({ detectedCliPlayers: detected });
   });
 
   mstream.post("/api/v1/admin/config/secret", async (req, res) => {

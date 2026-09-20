@@ -26,8 +26,8 @@
  *
  * There is no musl build of the player (server audio is opt-in and needs a
  * sound device — not an Alpine-container feature). On musl hosts the key
- * carries a -musl suffix, the manifest lookup finds nothing, and callers
- * degrade to the CLI players exactly as musl bundles always have.
+ * carries a -musl suffix, the manifest lookup finds nothing, and server
+ * audio is simply unavailable there: the engine is the only backend.
  *
  * MSTREAM_PLAYER_BASE overrides the derived URL's BASE (sha256 pins still
  * apply) for air-gapped mirrors and the unit tests' loopback server.
@@ -251,11 +251,11 @@ let _ensure = null;
  *   - absent + manifest has an entry → downloaded, verified, probed,
  *     installed.
  *   - absent + no manifest entry for this platform (musl hosts today) →
- *     null; callers degrade to the CLI players.
+ *     null; server audio is unavailable there.
  *
  * Throws on download/verification/probe failures — the caller
- * (src/state/server-audio.js boot()) degrades to the CLI fallback and
- * logs the cause.
+ * (src/state/server-audio.js boot()) logs what that means and leaves
+ * server audio off.
  */
 export function ensurePlayer(opts = {}) {
   const installDir = opts.installDir || managedPlayerDir();
@@ -279,7 +279,7 @@ async function ensureInto({ manifestDir = defaultManifestDir(), installDir, key 
     if (exists) { return dest; } // no manifest coverage, but a binary is here — use it
     winston.warn(
       `[${FAMILY}] no prebuilt player is published for this platform (${key}) — ` +
-      `server audio uses the CLI players instead (bin/${FAMILY}/README.md has the manual options)`);
+      `server audio is unavailable here (bin/${FAMILY}/README.md has the manual options)`);
     return null;
   }
 

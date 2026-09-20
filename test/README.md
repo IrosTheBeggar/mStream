@@ -25,7 +25,6 @@ Non-test support code lives alongside but is **not** picked up by the runner
 | `helpers/`    | Shared harness: server spawner, fixtures, scanner runner, DB snapshot…   |
 | `fixtures/`   | Generated media library (built lazily by ffmpeg, gitignored).            |
 | `smoke/`      | Manual live-daemon smoke harnesses (`test:smoke:*`) — see [smoke/README.md](smoke/README.md). |
-| `cli-audio/`  | Manual Docker harness for the mpv/vlc/mplayer/mpd adapters (`test:cli-audio`).           |
 
 ## Running
 
@@ -56,11 +55,9 @@ These exercise real external systems, so they're **not** part of `npm test` —
 run them deliberately:
 
 ```bash
-npm run test:cli-audio      # mpv/vlc/mplayer/mpd adapter routing, inside Docker
 npm run test:smoke:docker   # mStream + torrent daemons, all in Docker
 npm run test:smoke:windows  # native-Windows Transmission / qBittorrent
 ```
 
-`test:cli-audio` is self-contained (it builds its own image). The two
-`test:smoke:*` harnesses need their daemons brought up first — see
+The two `test:smoke:*` harnesses need their daemons brought up first — see
 [smoke/README.md](smoke/README.md).

@@ -21,6 +21,22 @@ removed.
   libraries, playlists, user metadata, and shared playlists into the
   new schema; **track metadata is re-scanned** (the scanner is much
   faster in 6.5).
+- **Server audio: the CLI player backends are gone; `autoBootServerAudio`
+  is now a plain on/off switch.** mpv, VLC, MPlayer and MPD are no longer
+  used for server-side playback — the mstream-player engine is the only
+  backend. `autoBootServerAudio: false` (the default) used to mean "skip
+  the engine and use an installed CLI player", so a default-config server
+  spawned an idle mpv / VLC / MPlayer when it found one, or connected to a
+  reachable MPD and cleared its queue, for a feature nobody had enabled. It
+  now starts nothing. **If you relied on one of those players, set
+  `autoBootServerAudio: true`** — the engine ships in the release bundles
+  and is fetched (sha256-pinned) on first use elsewhere; builds exist for
+  Windows x64, macOS x64/arm64 and glibc Linux x64/arm64/armv7. There is no
+  musl or BSD build, so server audio is unavailable there. Removed with
+  them: `POST /api/v1/admin/server-audio/detect`, the `detectedCliPlayers`
+  field of `GET /api/v1/admin/server-audio/info`, the `MSTREAM_MPD_HOST`
+  env var and `npm run test:cli-audio`. `backend` in the status and info
+  responses is now only ever `"rust"` or `null`.
 - **`allow_server_audio` defaults to `0` for all non-admin users.**
   V17 (introduced mid-cycle on the `dlna` branch) originally defaulted
   to `1`; V23 in this release revokes the flag for every non-admin user
@@ -141,9 +157,10 @@ removed.
   `GET /api/v1/db/waveform` handles `.opus` and JS-fallback scans.
 - **Server-side audio playback.** `/api/v1/server-playback/*` +
   `/server-remote` page, gated per user by the new
-  `allow_server_audio` flag. Auto-detect and prefer MPD, falling
-  back to MPV / VLC / MPlayer; `autoBootServerAudio` config flag
-  opts into the native rust-server-audio binary.
+  `allow_server_audio` flag. Played by the mstream-player engine on
+  the server's own sound device; the `autoBootServerAudio` config flag
+  turns it on. (The MPD / mpv / VLC / MPlayer backends this first shipped
+  with were later removed — see Breaking changes.)
 - **Extended Subsonic / OpenSubsonic fields.** `sample_rate`,
   `channels`, `bit_depth` (V16) — clients that render "24/96
   FLAC" badges get them for free.
