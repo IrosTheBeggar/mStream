@@ -3,33 +3,35 @@
 // and the /server-remote page (src/api/server-playback.js owns those routes;
 // this module owns the process).
 //
-// Two kinds of backend, one at a time:
-//   rust  the mstream-player engine (IrosTheBeggar/mstream-terminal-player),
-//         spawned as `mstream-player --port N` and driven over loopback HTTP.
-//         Resolved dev-build → bundle-staged → managed install, fetched on
-//         first use where the committed manifest pins a build
-//         (src/util/mstream-player-bootstrap.js).
-//   cli   an installed mpv / MPD / VLC / MPlayer behind an adapter that
-//         answers the same HTTP-shaped requests in-process (./cli-audio/).
+// There is one backend: the mstream-player engine
+// (IrosTheBeggar/mstream-terminal-player), spawned as `mstream-player --port N`
+// and driven over loopback HTTP. It is resolved dev-build → bundle-staged →
+// managed install, and fetched on first use where the committed manifest pins
+// a build for this platform (src/util/mstream-player-bootstrap.js).
 //
-// Which one runs is a preference, not a switch. autoBootServerAudio=true
-// prefers the engine and rolls over to a CLI player when the binary is
-// missing, the spawn fails, or the engine dies inside its settle window;
-// false skips the engine and takes a CLI player, MPD first — the option most
-// often already running on self-hosted / NAS setups.
+// autoBootServerAudio is the on/off switch: true boots the engine with the
+// server, false starts nothing at all. Until the engine-only cut there were
+// four more backends here — adapters for an installed mpv, VLC, MPlayer or a
+// running MPD — and "false" meant "skip the engine and use one of those", so a
+// default-config server spawned whichever player it found (or connected to a
+// reachable MPD and cleared its queue) for a feature nobody had turned on. Two
+// of the four never advanced the queue, none was covered by CI, and the one
+// that could have reached speakers on another machine (MPD) only accepted
+// paths from a same-host socket. If remote speakers or an existing audio
+// chain ever matter, that is a feature to design on purpose — the engine
+// already has --host and --auth-token — not a fallback to keep alive.
 //
 // SHAPE: mirrors discovery-p2p.js — module-level state, one in-flight boot
 // shared by concurrent callers, a stop generation that aborts a boot still
 // acquiring its binary, and per-spawn bookkeeping so a stale child's exit can
 // never touch its successor. The previous home of this code (the route
-// module) kept a single settle flag and a single process handle across
-// generations: a boot racing an admin toggle could double-spawn on one port,
-// and an old engine exiting after a new spawn nulled the NEW handle and
-// started a CLI player beside a live engine.
+// module) kept a single process handle across generations: a boot racing an
+// admin toggle could double-spawn on one port, and an old engine exiting
+// after a new spawn nulled the NEW handle.
 //
-// createController(deps) exists for the unit tests (fake spawner, fake CLI
-// registry, short settle timer); production uses the default instance the
-// named exports below are bound to.
+// createController(deps) exists for the unit tests (fake spawner, short stop
+// wait); production uses the default instance the named exports below are
+// bound to.
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -38,13 +40,12 @@ import child_process from 'node:child_process';
 import winston from 'winston';
 import * as config from './config.js';
 import * as killQueue from './kill-list.js';
-import * as cliAudio from './cli-audio/index.js';
 import { appRoot } from '../util/esm-helpers.js';
 import WebError from '../util/web-error.js';
 import { playerKey, managedPlayerPath, ensurePlayer, canAutoFetch } from '../util/mstream-player-bootstrap.js';
 
-// Every way the proxy can fail means the same thing to a caller: no backend
-// answered. One typed 503 lets the routes tell "backend down" from "bad
+// Every way the proxy can fail means the same thing to a caller: the engine
+// did not answer. One typed 503 lets the routes tell "backend down" from "bad
 // request" by type rather than by reading message text — the path-translating
 // routes used to grep the message for "not running", so an engine timeout
 // came back as a 400.
@@ -52,13 +53,9 @@ function unavailable(message) {
   return new WebError(message, 503);
 }
 
-// A freshly spawned engine must stay up this long before an exit counts as a
-// runtime crash (no fallback) rather than a failed start (roll over to CLI).
-export const RUST_SETTLE_MS = 2000;
 // stop() waits this long for the engine to actually exit before giving up on
 // the wait (the kill was still sent). Spawning a successor while the old
-// engine still holds the port makes the successor fail to bind, which looks
-// exactly like a failed start and would trip the CLI fallback.
+// engine still holds the port makes the successor fail to bind.
 export const STOP_WAIT_MS = 3000;
 export const RUST_REQUEST_TIMEOUT_MS = 5000;
 
@@ -72,15 +69,8 @@ const defaultDeps = {
   managedPlayerPath,
   ensurePlayer,
   canAutoFetch,
-  detectCliPlayers: () => cliAudio.detectAvailablePlayers(),
-  bootCliPlayer: (preferred) => cliAudio.bootCliPlayer(preferred),
-  killCliPlayer: () => cliAudio.killCliPlayer(),
-  isCliActive: () => cliAudio.isCliActive(),
-  cliPlayerName: () => cliAudio.getActivePlayerName(),
-  proxyToCli: (method, rustPath, body) => cliAudio.proxyToCli(method, rustPath, body),
   autoBoot: () => !!config.program.autoBootServerAudio,
   port: () => config.program.rustPlayerPort || 3333,
-  settleMs: RUST_SETTLE_MS,
   stopWaitMs: STOP_WAIT_MS,
 };
 
@@ -91,19 +81,21 @@ export function createController(overrides = {}) {
   // its handlers close over it, so an exit from generation N can only clear
   // `engine` while `engine` still IS generation N.
   let engine = null;
-  // CLI detection snapshot: names in fallback priority order. Refreshed at
-  // every boot and by the admin's redetect endpoint; read by the admin info
-  // endpoint without re-probing.
-  let detected = [];
   // The boot in flight, shared by concurrent boot() callers. stop() detaches
   // it (the chain aborts at its next generation check) so the next boot()
   // starts fresh instead of joining a chain that will refuse to spawn.
   let bootInFlight = null;
-  let cliBootInFlight = null;
-  // Bumped by every stop. A boot chain re-checks it right before spawning and
-  // after starting a CLI player — acquiring the binary can involve a download,
-  // and a stop() landing in that window must win.
+  // Bumped by every stop. A boot chain re-checks it right before spawning —
+  // acquiring the binary can involve a download, and a stop() landing in that
+  // window must win.
   let stopGen = 0;
+  // The exit of the engine most recently told to stop, until it lands (or
+  // STOP_WAIT_MS gives up on it). Whoever is about to spawn waits for it, not
+  // just the stop() that sent the kill: a second stop() arriving meanwhile
+  // finds no engine of its own to wait on, and reboot() fires stop() without
+  // awaiting it — either way a successor spawned too early would find the
+  // port still held and die of a bind failure.
+  let pendingExit = null;
   // Did the engine answer its last request? Lets a wedged or unreachable
   // engine be logged when it STOPS answering, with the real socket error,
   // instead of on every request: the remote page polls /status twice a second,
@@ -142,57 +134,12 @@ export function createController(overrides = {}) {
     return null;
   }
 
-  // ── Detection snapshot ────────────────────────────────────────────────────
-
-  async function refreshDetectedCliPlayers() {
-    detected = await deps.detectCliPlayers();
-    return detected;
-  }
-
-  function getDetectedCliPlayers() {
-    return detected;
-  }
-
+  // The API's name for what is running. `backend` keeps its historical value
+  // — 'rust' — because /server-playback/status and the admin info endpoint
+  // have always reported it that way.
   function getActiveBackend() {
     if (engine) { return { backend: 'rust', player: 'mstream-player' }; }
-    if (deps.isCliActive()) { return { backend: 'cli', player: deps.cliPlayerName() }; }
     return { backend: null, player: null };
-  }
-
-  // ── CLI fallback ──────────────────────────────────────────────────────────
-
-  // Single-flight on purpose: a failed spawn emits BOTH 'error' and 'close',
-  // and each used to start a CLI player of its own.
-  function bootCliFallback(reason, preferredPlayer = null) {
-    if (cliBootInFlight) { return cliBootInFlight; }
-    const gen = stopGen;
-    cliBootInFlight = (async () => {
-      if (deps.isCliActive()) { return; }
-      if (detected.length === 0) {
-        winston.warn(`[server-audio] ${reason}; no CLI audio players detected — server audio unavailable`);
-        return;
-      }
-      let name;
-      try {
-        name = await deps.bootCliPlayer(preferredPlayer);
-      } catch (err) {
-        winston.error(`[server-audio] CLI fallback failed: ${err.message}`);
-        return;
-      }
-      if (!name) {
-        winston.warn(`[server-audio] ${reason}; CLI players detected but none would start`);
-        return;
-      }
-      if (gen !== stopGen) {
-        // A stop() overtook the adapter's startup; it found nothing to kill
-        // then, so the player that just came up is ours to put down.
-        winston.info(`[server-audio] ${name} started after a stop() — shutting it down again`);
-        await deps.killCliPlayer().catch(() => {});
-        return;
-      }
-      winston.info(`[server-audio] ${reason}; using CLI fallback: ${name}`);
-    })().finally(() => { cliBootInFlight = null; });
-    return cliBootInFlight;
   }
 
   // ── Engine ────────────────────────────────────────────────────────────────
@@ -207,14 +154,13 @@ export function createController(overrides = {}) {
     } catch (err) {
       // Windows throws synchronously ("spawn UNKNOWN") for a corrupt image
       // instead of emitting the async 'error' event.
-      winston.error(`Failed to start mstream-player: ${err.message}`);
-      return bootCliFallback(`mstream-player spawn failed: ${err.message}`);
+      winston.error(`Failed to start mstream-player: ${err.message} — server audio is unavailable`);
+      return;
     }
 
-    const gen = { proc, settled: false, stopping: false, ended: false, timer: null, onEnd: [] };
+    const gen = { proc, startedAt: Date.now(), stopping: false, ended: false, onEnd: [] };
     engine = gen;
     engineAnswering = true;   // a new generation's first failure is worth a line
-    gen.timer = setTimeout(() => { gen.settled = true; }, deps.settleMs);
 
     if (proc.stdout) {
       proc.stdout.on('data', (data) => { winston.info(`[mstream-player] ${String(data).trim()}`); });
@@ -227,54 +173,53 @@ export function createController(overrides = {}) {
 
     // A failed spawn emits 'error' AND 'close'; whichever lands first ends the
     // generation, the other is a no-op. Only this generation's own record is
-    // touched — never `engine` if a successor has already taken it — and a
-    // death that stop() asked for is not a start failure.
-    const ended = (reason) => {
-      if (gen.ended) { return; }
+    // touched — never `engine` if a successor has already taken it.
+    const ended = () => {
+      if (gen.ended) { return false; }
       gen.ended = true;
-      clearTimeout(gen.timer);
       if (engine === gen) { engine = null; }
       for (const fn of gen.onEnd) { fn(); }
-      if (!gen.settled && !gen.stopping) {
-        bootCliFallback(reason).catch(() => {});
-      }
+      return true;
     };
     proc.on('close', (code) => {
-      winston.info(`mstream-player exited with code ${code}`);
-      ended(`mstream-player exited early (code ${code})`);
+      if (!ended()) { return; }
+      if (gen.stopping) {
+        winston.info(`mstream-player exited with code ${code}`);
+        return;
+      }
+      // Nobody asked for this. There is no supervisor to bring it back — the
+      // engine returns with the next server boot or autoBoot toggle — so say
+      // so, and say how long it lived: an exit in the first second or two is
+      // almost always a start failure (the port is taken, no audio device),
+      // and the engine's own stderr line above says which.
+      const lived = ((Date.now() - gen.startedAt) / 1000).toFixed(1);
+      winston.warn(`mstream-player exited with code ${code} after ${lived} s — server audio is down until the next boot or autoBoot toggle`);
     });
     proc.on('error', (err) => {
-      winston.error(`Failed to start mstream-player: ${err.message}`);
-      ended(`mstream-player spawn failed: ${err.message}`);
+      if (!ended()) { return; }
+      winston.error(`Failed to start mstream-player: ${err.message} — server audio is unavailable`);
     });
-    return Promise.resolve();
   }
 
   async function doBoot() {
     const gen = stopGen;
-
-    // Refresh the CLI detection snapshot so the fallback decision (and the
-    // admin /info endpoint) have current data.
-    await refreshDetectedCliPlayers();
-    if (gen !== stopGen) { return; }
     if (engine) { return; }
 
-    if (!deps.autoBoot()) {
-      await bootCliFallback('autoBootServerAudio=false', 'mpd');
-      return;
-    }
+    // Off means off: nothing is probed, fetched or spawned.
+    if (!deps.autoBoot()) { return; }
 
     let bin = findRustBinary();
     if (!bin && deps.canAutoFetch()) {
       // npm/source/Docker installs: the binary left git — fetch the pinned
       // release build on first use (bundles ship it staged, so they never
-      // land here). A failed fetch degrades to the CLI players like any
-      // other miss; the cause is already logged by the bootstrap.
+      // land here). The bootstrap has already logged WHY a fetch failed; this
+      // adds what it means.
       try {
         bin = await deps.ensurePlayer();
       } catch (err) {
-        if (gen !== stopGen) { return; }
-        await bootCliFallback(`mstream-player fetch failed: ${err.message}`);
+        if (gen === stopGen) {
+          winston.warn(`[server-audio] the mstream-player engine could not be fetched (${err.message}) — server audio is unavailable`);
+        }
         return;
       }
     }
@@ -283,19 +228,24 @@ export function createController(overrides = {}) {
       return;
     }
     if (!bin) {
-      await bootCliFallback('mstream-player binary not found');
+      winston.warn(`[server-audio] no mstream-player engine is available for this platform (${deps.playerKey()}) — server audio is unavailable (bin/mstream-player/README.md has the manual options)`);
       return;
     }
-    await spawnEngine(bin);
+    // Let a predecessor finish dying before taking its port (see pendingExit).
+    if (pendingExit) {
+      await pendingExit;
+      if (gen !== stopGen) { return; }
+    }
+    spawnEngine(bin);
   }
 
   /**
-   * Boot whichever backend applies (see the module header). Idempotent and
-   * single-flight: while a boot is in progress every caller awaits the same
-   * chain, and once an engine is up further calls return at once. Resolves
-   * when the engine has been spawned (not when it is ready — the settle
-   * window decides that) or the CLI fallback attempt has finished. Never
-   * rejects for a backend that merely failed to start; that is logged.
+   * Boot the engine if autoBootServerAudio asks for it (see the module
+   * header). Idempotent and single-flight: while a boot is in progress every
+   * caller awaits the same chain, and once an engine is up further calls
+   * return at once. Resolves when the engine has been spawned (not when it is
+   * ready to answer) or when there is nothing to start. Never rejects for an
+   * engine that merely failed to start; that is logged.
    */
   function boot() {
     if (engine) { return Promise.resolve(); }
@@ -311,40 +261,35 @@ export function createController(overrides = {}) {
 
   // The synchronous half of stopping: bump the generation, detach the boot in
   // flight, send the kill. Split out so the process-exit hook can run it
-  // without awaiting anything.
-  function beginStop() {
+  // without awaiting anything (trackExit=false: see below).
+  function beginStop(trackExit = true) {
     stopGen += 1;
     bootInFlight = null;
     const gen = engine;
     engine = null;
     if (gen && !gen.ended) {
       gen.stopping = true;
-      clearTimeout(gen.timer);
       try { gen.proc.kill(); } catch (_err) { /* already gone */ }
+      // The process-exit hook has nobody left to wait, and a timer there
+      // would only hold the dying process open.
+      if (!trackExit) { return; }
+      const exit = new Promise((resolve) => {
+        const timer = setTimeout(resolve, deps.stopWaitMs);
+        gen.onEnd.push(() => { clearTimeout(timer); resolve(); });
+      }).finally(() => { if (pendingExit === exit) { pendingExit = null; } });
+      pendingExit = exit;
     }
-    return gen;
   }
 
   /**
-   * Stop whatever is running. Resolves once the engine has exited (or
-   * STOP_WAIT_MS has passed with the kill still sent) and the CLI adapter has
-   * stopped, so a restart() that follows spawns into a free port. Never
-   * rejects.
+   * Stop the engine. Resolves once it has exited (or STOP_WAIT_MS has passed
+   * with the kill still sent) — including an engine that an EARLIER stop()
+   * killed and that is still on its way out — so a restart() that follows
+   * spawns into a free port. Never rejects.
    */
   async function stop() {
-    const gen = beginStop();
-    // Invoked synchronously on purpose: the adapters send their kill before
-    // their first await, which is what the process-exit path relies on.
-    const cliStopped = deps.killCliPlayer().catch((err) => {
-      winston.warn(`[server-audio] CLI player did not stop cleanly: ${err.message}`);
-    });
-    if (gen && !gen.ended) {
-      await new Promise((resolve) => {
-        const timer = setTimeout(resolve, deps.stopWaitMs);
-        gen.onEnd.push(() => { clearTimeout(timer); resolve(); });
-      });
-    }
-    await cliStopped;
+    beginStop();
+    if (pendingExit) { await pendingExit; }
   }
 
   // Stop, then boot against the current config — the admin's autoBoot toggle.
@@ -355,14 +300,12 @@ export function createController(overrides = {}) {
 
   // Process-exit hook: everything stop() does before its first await.
   function killSync() {
-    beginStop();
-    deps.killCliPlayer().catch(() => {});
+    beginStop(false);
   }
 
   // ── Proxy ─────────────────────────────────────────────────────────────────
 
-  // Proxy one request to the engine's loopback HTTP API. cli-audio's
-  // proxyToCli answers the same {status, data} shape in-process.
+  // Proxy one request to the engine's loopback HTTP API.
   function proxyToRust(method, rustPath, body) {
     return new Promise((resolve, reject) => {
       const postData = body ? JSON.stringify(body) : '';
@@ -428,12 +371,10 @@ export function createController(overrides = {}) {
     });
   }
 
-  // Dispatch to whichever backend is active: the engine first, then a CLI
-  // adapter. Rejects with a 503 WebError when neither is up — see
+  // Proxy to the engine, or reject with a 503 WebError when none is up — see
   // unavailable() at the top of this file.
   function proxy(method, rustPath, body) {
     if (engine) { return proxyToRust(method, rustPath, body); }
-    if (deps.isCliActive()) { return deps.proxyToCli(method, rustPath, body); }
     return Promise.reject(unavailable('Server audio player is not running'));
   }
 
@@ -444,8 +385,6 @@ export function createController(overrides = {}) {
     killSync,
     proxy,
     getActiveBackend,
-    refreshDetectedCliPlayers,
-    getDetectedCliPlayers,
     findRustBinary,
   };
 }
@@ -461,5 +400,3 @@ export const stop = () => controller.stop();
 export const restart = () => controller.restart();
 export const proxy = (method, rustPath, body) => controller.proxy(method, rustPath, body);
 export const getActiveBackend = () => controller.getActiveBackend();
-export const refreshDetectedCliPlayers = () => controller.refreshDetectedCliPlayers();
-export const getDetectedCliPlayers = () => controller.getDetectedCliPlayers();

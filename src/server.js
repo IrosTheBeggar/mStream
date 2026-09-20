@@ -833,8 +833,8 @@ export async function serveIt(configFile, { relisten = null } = {}) {
       mdns.start();
     }
 
-    // Boot server audio (engine preferred, CLI fallback) — runs CLI detection
-    // eagerly so the admin endpoint has fresh data by the time it's called.
+    // Boot server audio — the mstream-player engine, and only when
+    // autoBootServerAudio is on; otherwise this starts nothing.
     serverAudio.boot().catch(() => {});
   };
 

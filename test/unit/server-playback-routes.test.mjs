@@ -114,7 +114,7 @@ describe('proxyRoute', () => {
   });
 
   test('"no backend answered" is a quiet 503 — by type, whatever the message says', async () => {
-    for (const message of ['Server audio player is not running', 'Server audio player timed out', 'CLI audio player is not running']) {
+    for (const message of ['Server audio player is not running', 'Server audio player timed out']) {
       const { proxy } = fakeProxy(new WebError(message, 503));
       const res = fakeRes();
 
@@ -193,7 +193,9 @@ describe('the unavailable page', () => {
     // hand-started binary is never reachable — the old copy said otherwise.
     assert.ok(!/start the mstream-player binary/i.test(UNAVAILABLE_PAGE));
     assert.match(UNAVAILABLE_PAGE, /autoBootServerAudio/);
-    assert.match(UNAVAILABLE_PAGE, /mpv, MPD, VLC or MPlayer/);
+    assert.match(UNAVAILABLE_PAGE, /server log/, 'when the switch is already on, the log is where the reason is');
+    // The engine is the only backend: installing a player is no longer a way out.
+    assert.ok(!/\b(mpv|MPD|VLC|MPlayer)\b/.test(UNAVAILABLE_PAGE));
     assert.match(UNAVAILABLE_PAGE, /href="\/server-remote">Retry</);
   });
 });

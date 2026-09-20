@@ -110,10 +110,11 @@ tags:
       plays to `/api/v1/stats/plays` instead.
   - name: Server Playback
     description: >-
-      Server-side playback. Proxies to the mstream-player engine, or to a CLI
-      player (mpv, MPD, VLC, MPlayer) when the engine is unavailable. Every
-      route requires the per-user allow_server_audio flag; admins always pass.
-      Every route answers 503 while no backend is running. Files are named by
+      Server-side playback: plays on the sound device of the machine mStream
+      runs on, by proxying to the mstream-player engine (the only backend; it
+      runs when autoBootServerAudio is on). Every route requires the per-user
+      allow_server_audio flag; admins always pass. Every route answers 503
+      while the engine is not running. Files are named by
       library path ("library/folder/track.mp3") in both directions: no
       filesystem path is accepted from, or returned to, a client.
   - name: Jukebox
@@ -1034,7 +1035,7 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     ServerAudioUnavailable:
       description: >-
-        No server-audio backend answered: none is running, or the engine did
+        The server-audio engine did not answer: it is not running, or it did
         not respond in time. Every /api/v1/server-playback route can answer
         this.
       content:
@@ -4456,12 +4457,12 @@ paths:
                   backend:
                     type: string
                     nullable: true
-                    enum: [rust, cli, null]
-                    description: "`rust` for the mstream-player engine, `cli` for a CLI fallback."
+                    enum: [rust, null]
+                    description: "`rust` — the mstream-player engine, the only backend. The field predates the removal of the CLI players and keeps its value."
                   player:
                     type: string
                     nullable: true
-                    description: "`mstream-player`, or the CLI player name (`mpv`, `mpd`, `vlc`, `mplayer`)."
+                    description: "`mstream-player`."
         "503": { $ref: "#/components/responses/ServerAudioUnavailable" }
   /api/v1/server-playback/queue:
     get:
@@ -5721,12 +5722,12 @@ paths:
   /api/v1/admin/config/auto-boot-server-audio:
     post:
       tags: [Admin - Config]
-      summary: Choose the server-audio backend preference
+      summary: Turn server audio on or off
       description: >-
-        true prefers the mstream-player engine (fetching it on first use where a
-        build is published) and falls back to a CLI player if it is missing or
-        dies during startup; false skips the engine and uses a CLI player only,
-        MPD first. Server audio is re-booted immediately either way.
+        true boots the mstream-player engine with the server (fetching the
+        sha256-pinned build on first use where one is published for this
+        platform); false starts nothing. Applied immediately: the engine is
+        stopped, then started again only if the new value says so.
       requestBody:
         required: true
         content:
@@ -5760,13 +5761,10 @@ paths:
   /api/v1/admin/server-audio/info:
     get:
       tags: [Admin - Config]
-      summary: Active server-audio backend and what else is available
-      description: >-
-        Reads the CLI-detection snapshot taken at boot, on every autoBoot
-        change, and by /api/v1/admin/server-audio/detect. Never probes.
+      summary: Is the server-audio engine running?
       responses:
         "200":
-          description: Backend status.
+          description: Engine status.
           content:
             application/json:
               schema:
@@ -5775,44 +5773,18 @@ paths:
                   backend:
                     type: string
                     nullable: true
-                    enum: [rust, cli, null]
-                    description: null when no backend is running.
+                    enum: [rust, null]
+                    description: "`rust` while the mstream-player engine is running, null otherwise."
                   player:
                     type: string
                     nullable: true
-                    description: mstream-player, or the active CLI player's name.
-                  detectedCliPlayers:
-                    type: array
-                    items: { type: string, enum: [mpv, mpd, vlc, mplayer] }
-                    description: Installed or reachable CLI players, in fallback priority order.
+                    description: "`mstream-player` while the engine is running, null otherwise."
                   binaryFetchable:
                     type: boolean
                     description: >-
                       Whether a missing mstream-player binary can be downloaded for
                       this platform. npm and source installs fetch it on the first
                       autoBoot; musl hosts have no build and report false.
-        "405": { $ref: "#/components/responses/AdminLocked" }
-
-  /api/v1/admin/server-audio/detect:
-    post:
-      tags: [Admin - Config]
-      summary: Re-run CLI player detection
-      description: >-
-        Probes for mpv, MPD, VLC and MPlayer again and refreshes the snapshot
-        that /api/v1/admin/server-audio/info reports. Use it after installing
-        or removing a player without restarting the server. Does not change
-        the active backend.
-      responses:
-        "200":
-          description: Fresh detection result.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  detectedCliPlayers:
-                    type: array
-                    items: { type: string, enum: [mpv, mpd, vlc, mplayer] }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/config/secret:

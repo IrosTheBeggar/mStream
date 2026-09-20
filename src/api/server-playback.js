@@ -74,7 +74,7 @@ function manyFiles(req) {
 
 // ── Response bodies ─────────────────────────────────────────────────────────
 //
-// Both backends speak absolute paths — that is what they were handed — and no
+// The engine speaks absolute paths — that is what it was handed — and no
 // absolute path may reach a client: it tells every user with server-audio
 // access how the host's disks are laid out. /queue always translated; /status
 // handed `file` through untouched until this was caught. Pure and exported so
@@ -174,12 +174,13 @@ export function rewriteIndexForServerAudio(page) {
     );
 }
 
-// What /server-remote answers while no backend is up. The advice has to match
-// what the lifecycle can actually do: the proxy only ever talks to an engine
-// the SERVER spawned, so "start the mstream-player binary yourself" — what
-// this page said for months — never worked. autoBootServerAudio brings the
-// engine up (fetching it on first use); without it a CLI player is picked at
-// boot, which is why installing one needs a restart.
+// What /server-remote answers while the engine is not up. The advice has to
+// match what the lifecycle can actually do: the proxy only ever talks to an
+// engine the SERVER spawned, so "start the mstream-player binary yourself" —
+// what this page said for months — never worked. autoBootServerAudio is the
+// one switch: it brings the engine up (fetching it on first use), and when it
+// is already on and the engine still is not running, the reason is in the
+// server log.
 export const UNAVAILABLE_PAGE =
   '<!doctype html><html><head><meta charset="utf-8"><title>Server Audio Unavailable</title>' +
   '<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
@@ -191,9 +192,9 @@ export const UNAVAILABLE_PAGE =
   'a{color:#7aabdf;text-decoration:none;}a:hover{text-decoration:underline;}' +
   '</style></head><body><div class="box">' +
   '<h1>Server Audio Unavailable</h1>' +
-  '<p>No server-audio backend is running. Enable <b>autoBootServerAudio</b> in the ' +
-  '<a href="/admin">admin panel</a> to use the built-in mstream-player engine, or install ' +
-  'mpv, MPD, VLC or MPlayer and restart mStream.</p>' +
+  '<p>The server audio engine is not running. Turn on <b>autoBootServerAudio</b> in the ' +
+  '<a href="/admin">admin panel</a> to start it. If it is already on, the engine failed to ' +
+  'start on this machine and the server log says why.</p>' +
   '<a href="/server-remote">Retry</a> &middot; <a href="/">Normal Mode</a>' +
   '</div></body></html>';
 
@@ -256,8 +257,8 @@ export function setup(mstream) {
       return res.status(403).json({ error: 'Server audio access disabled for this user' });
     }
 
-    // Is any backend (engine or CLI fallback) answering? Not an error worth a
-    // log line when it isn't — see proxyRoute — just a different page.
+    // Is the engine answering? Not an error worth a log line when it isn't —
+    // see proxyRoute — just a different page.
     try {
       await serverAudio.proxy('GET', '/status');
     } catch (_err) {
