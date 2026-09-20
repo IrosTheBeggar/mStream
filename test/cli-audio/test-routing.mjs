@@ -14,16 +14,15 @@
  * pre-generated at /tmp/test-tone.mp3.
  */
 
-import { MpvAdapter } from '../../src/api/cli-audio/mpv.js';
-import { VlcAdapter } from '../../src/api/cli-audio/vlc.js';
-import { MplayerAdapter } from '../../src/api/cli-audio/mplayer.js';
-import { MpdAdapter } from '../../src/api/cli-audio/mpd.js';
+import { MpvAdapter } from '../../src/state/cli-audio/mpv.js';
+import { VlcAdapter } from '../../src/state/cli-audio/vlc.js';
+import { MplayerAdapter } from '../../src/state/cli-audio/mplayer.js';
+import { MpdAdapter } from '../../src/state/cli-audio/mpd.js';
 import {
   detectAvailablePlayers,
   bootCliPlayer,
   killCliPlayer,
-  getActivePlayerName,
-} from '../../src/api/cli-audio/index.js';
+} from '../../src/state/cli-audio/index.js';
 
 const TEST_FILE = process.env.TEST_FILE || '/tmp/test-tone.mp3';
 

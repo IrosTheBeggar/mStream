@@ -5,7 +5,7 @@
  * (e.g. _loadFile, _pause, _getPosition). The base class manages queue,
  * shuffle, loop, and translates the REST-ish routes used by the Rust binary
  * into adapter method calls, so `proxyToCli()` can be a drop-in replacement
- * for `proxyToRust()` in server-playback.js.
+ * for `proxyToRust()` in src/state/server-audio.js.
  */
 
 import WebError from '../../util/web-error.js';

@@ -9,7 +9,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BaseCliAdapter } from '../../src/api/cli-audio/base.js';
+import { BaseCliAdapter } from '../../src/state/cli-audio/base.js';
 
 class StubAdapter extends BaseCliAdapter {
   async _loadFile() {}
