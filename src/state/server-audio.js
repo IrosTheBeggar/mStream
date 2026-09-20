@@ -350,12 +350,21 @@ export function createController(overrides = {}) {
   function proxyToRust(method, rustPath, body) {
     return new Promise((resolve, reject) => {
       const postData = body ? JSON.stringify(body) : '';
+      const headers = { 'Content-Type': 'application/json' };
+      // Declare the body's length. Without it Node frames the body as
+      // Transfer-Encoding: chunked, and the engine refuses a body it cannot
+      // account for with 411 "Length required" (mstream-terminal-player
+      // src/serve/mod.rs, every release since v0.1.0). The in-tree engine this
+      // proxy was written against accepted chunked bodies, so every POST —
+      // play, pause, queue, volume — had been bouncing since the pin moved to
+      // the external engine, while the GETs kept working.
+      if (postData) { headers['Content-Length'] = Buffer.byteLength(postData); }
       const options = {
         hostname: '127.0.0.1',
         port: deps.port(),
         path: rustPath,
         method: method,
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         timeout: RUST_REQUEST_TIMEOUT_MS
       };
 
@@ -380,8 +389,7 @@ export function createController(overrides = {}) {
         reject(new Error('Server audio player timed out'));
       });
 
-      if (postData) { req.write(postData); }
-      req.end();
+      req.end(postData || undefined);
     });
   }
 

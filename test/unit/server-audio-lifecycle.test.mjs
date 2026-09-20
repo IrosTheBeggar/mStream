@@ -279,8 +279,18 @@ describe('server-audio lifecycle', () => {
   });
 
   test('proxy() prefers the engine, then the CLI adapter, then rejects', async () => {
-    // A loopback server plays the engine's HTTP API.
+    // A loopback server plays the engine's HTTP API — including its one hard
+    // rule about framing: a body with no declared length is refused with 411
+    // (mstream-terminal-player src/serve/mod.rs). The proxy used to write its
+    // body before ending the request, which makes Node send it chunked, and
+    // every POST to the real engine bounced while the GETs kept working.
     const server = http.createServer((req, res) => {
+      req.resume();
+      if (req.headers['transfer-encoding'] && !req.headers['content-length']) {
+        res.writeHead(411, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Length required' }));
+        return;
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ via: 'rust', method: req.method, path: req.url }));
     });
