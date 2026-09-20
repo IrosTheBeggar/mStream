@@ -27,8 +27,10 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import winston from 'winston';
 
 import { createController } from '../../src/state/server-audio.js';
+import WebError from '../../src/util/web-error.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -315,6 +317,89 @@ describe('server-audio lifecycle', () => {
       cli.active = false;
       await assert.rejects(() => c.proxy('GET', '/status'), /not running/);
     } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  test('every way the proxy fails is one typed 503, and the real cause is logged once per outage', async () => {
+    // The routes tell "no backend answered" from "bad request" by TYPE. They
+    // used to grep the message for "not running", so an engine timeout on
+    // /play came back as a 400. The callers only ever see the generic 503, so
+    // the socket error has to be logged here — but once, not per request: the
+    // remote page polls /status twice a second.
+    let broken = false;
+    const server = http.createServer((req, res) => {
+      if (broken) { req.socket.destroy(); return; }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    const warned = [];
+    const realWarn = winston.warn;
+    winston.warn = (line) => { warned.push(String(line)); };
+
+    const is503 = (err) => err instanceof WebError && err.status === 503;
+    try {
+      const { deps } = makeDeps({ port: () => port });
+      const c = createController(deps);
+
+      await assert.rejects(() => c.proxy('GET', '/status'), is503, 'nothing up');
+      assert.deepEqual(warned, [], 'no backend at all is a state the lifecycle already explained');
+
+      await c.boot();
+      assert.equal((await c.proxy('GET', '/status')).status, 200);
+
+      broken = true;
+      await assert.rejects(() => c.proxy('GET', '/status'), is503, 'engine stopped answering');
+      await assert.rejects(() => c.proxy('GET', '/status'), is503);
+      await assert.rejects(() => c.proxy('POST', '/play', { file: '/x.mp3' }), is503);
+      const outage = warned.filter((l) => /stopped answering/.test(l));
+      assert.equal(outage.length, 1, `three failed requests, one line: ${JSON.stringify(warned)}`);
+      assert.match(outage[0], new RegExp(`port ${port}: \\S+`), 'the line carries the real socket error');
+
+      broken = false;
+      assert.equal((await c.proxy('GET', '/status')).status, 200, 'recovered');
+      broken = true;
+      await assert.rejects(() => c.proxy('GET', '/status'), is503);
+      assert.equal(warned.filter((l) => /stopped answering/.test(l)).length, 2, 'a NEW outage after a recovery is logged again');
+    } finally {
+      winston.warn = realWarn;
+      server.closeAllConnections?.();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  test('a request in flight when stop() takes the engine down fails quietly — a restart is not an outage', async () => {
+    // The remote page polls twice a second, so a toggle or a soft reboot
+    // routinely lands mid-request. That request fails like any other, but the
+    // "stopped answering" line is for an engine that went quiet on its own.
+    const held = [];
+    const server = http.createServer((req) => { held.push(req.socket); });   // never answers
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    const warned = [];
+    const realWarn = winston.warn;
+    winston.warn = (line) => { warned.push(String(line)); };
+    try {
+      const { deps } = makeDeps({ port: () => port });
+      const c = createController(deps);
+      await c.boot();
+
+      const inFlight = c.proxy('GET', '/status');
+      const settled = assert.rejects(() => inFlight, (err) => err instanceof WebError && err.status === 503);
+      while (held.length === 0) { await sleep(5); }   // the request has reached the "engine"
+
+      await c.stop();
+      for (const s of held) { s.destroy(); }          // its connection dies with the engine
+      await settled;
+
+      assert.deepEqual(warned.filter((l) => /stopped answering/.test(l)), [], 'a death we asked for is not reported as the engine going quiet');
+    } finally {
+      winston.warn = realWarn;
+      server.closeAllConnections?.();
       await new Promise((resolve) => server.close(resolve));
     }
   });

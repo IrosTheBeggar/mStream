@@ -113,6 +113,9 @@ tags:
       Server-side playback. Proxies to the mstream-player engine, or to a CLI
       player (mpv, MPD, VLC, MPlayer) when the engine is unavailable. Every
       route requires the per-user allow_server_audio flag; admins always pass.
+      Every route answers 503 while no backend is running. Files are named by
+      library path ("library/folder/track.mp3") in both directions: no
+      filesystem path is accepted from, or returned to, a client.
   - name: Jukebox
     description: Remote-control mode via WebSocket-backed REST.
   - name: YouTube DL
@@ -1026,6 +1029,14 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     NotFound:
       description: Resource not found.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ServerAudioUnavailable:
+      description: >-
+        No server-audio backend answered: none is running, or the engine did
+        not respond in time. Every /api/v1/server-playback route can answer
+        this.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -4428,6 +4439,8 @@ paths:
         The active backend's own status object (playing, paused, position,
         duration, volume, queue_index, queue_length, shuffle, loop_mode, ...)
         with two fields added by the proxy that say which backend answered.
+        `file`, the current track, is translated to a library path like the
+        queue's entries; it is an empty string while nothing is loaded.
       responses:
         "200":
           description: Proxied status.
@@ -4437,6 +4450,9 @@ paths:
                 type: object
                 additionalProperties: true
                 properties:
+                  file:
+                    type: string
+                    description: Library path of the current track, or "" when idle.
                   backend:
                     type: string
                     nullable: true
@@ -4446,11 +4462,7 @@ paths:
                     type: string
                     nullable: true
                     description: "`mstream-player`, or the CLI player name (`mpv`, `mpd`, `vlc`, `mplayer`)."
-        "503":
-          description: No server-audio backend is running.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/ServerAudioUnavailable" }
   /api/v1/server-playback/queue:
     get:
       tags: [Server Playback]
@@ -4479,15 +4491,23 @@ paths:
               type: object
               required: [file]
               properties:
-                file: { type: string }
+                file: { type: string, description: "Library path, e.g. `music/Artist/track.mp3`." }
       responses:
         "200": { description: Proxied response. }
-        "400": { $ref: "#/components/responses/Forbidden" }
-        "503":
-          description: Rust audio server unavailable.
+        "400":
+          description: Malformed body.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            The path names a library that does not exist or that this user
+            cannot access (the same answer for both, as everywhere else).
+            Judged before the backend is contacted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/ServerAudioUnavailable" }
   /api/v1/server-playback/queue/add:
     post:
       tags: [Server Playback]
@@ -4500,8 +4520,23 @@ paths:
               type: object
               required: [file]
               properties:
-                file: { type: string }
-      responses: { "200": { description: Proxied response. } }
+                file: { type: string, description: Library path. }
+      responses:
+        "200": { description: Proxied response. }
+        "400":
+          description: Malformed body.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            The path names a library that does not exist or that this user
+            cannot access (the same answer for both, as everywhere else).
+            Judged before the backend is contacted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/ServerAudioUnavailable" }
   /api/v1/server-playback/queue/add-many:
     post:
       tags: [Server Playback]
@@ -4516,8 +4551,23 @@ paths:
               properties:
                 files:
                   type: array
-                  items: { type: string }
-      responses: { "200": { description: Proxied response. } }
+                  items: { type: string, description: Library path. }
+      responses:
+        "200": { description: Proxied response. }
+        "400":
+          description: Malformed body.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            The path names a library that does not exist or that this user
+            cannot access (the same answer for both, as everywhere else).
+            Judged before the backend is contacted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/ServerAudioUnavailable" }
   /api/v1/server-playback/queue/play-index:
     post:
       tags: [Server Playback]
@@ -4568,7 +4618,7 @@ paths:
               schema: { type: string }
         "403": { $ref: "#/components/responses/Forbidden" }
         "503":
-          description: No server-audio backend is running (an HTML error page with a retry link).
+          description: No server-audio backend is running (an HTML page with a retry link and how to get one running).
           content:
             text/html:
               schema: { type: string }

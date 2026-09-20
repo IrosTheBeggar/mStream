@@ -40,7 +40,17 @@ import * as config from './config.js';
 import * as killQueue from './kill-list.js';
 import * as cliAudio from './cli-audio/index.js';
 import { appRoot } from '../util/esm-helpers.js';
+import WebError from '../util/web-error.js';
 import { playerKey, managedPlayerPath, ensurePlayer, canAutoFetch } from '../util/mstream-player-bootstrap.js';
+
+// Every way the proxy can fail means the same thing to a caller: no backend
+// answered. One typed 503 lets the routes tell "backend down" from "bad
+// request" by type rather than by reading message text — the path-translating
+// routes used to grep the message for "not running", so an engine timeout
+// came back as a 400.
+function unavailable(message) {
+  return new WebError(message, 503);
+}
 
 // A freshly spawned engine must stay up this long before an exit counts as a
 // runtime crash (no fallback) rather than a failed start (roll over to CLI).
@@ -94,6 +104,11 @@ export function createController(overrides = {}) {
   // after starting a CLI player — acquiring the binary can involve a download,
   // and a stop() landing in that window must win.
   let stopGen = 0;
+  // Did the engine answer its last request? Lets a wedged or unreachable
+  // engine be logged when it STOPS answering, with the real socket error,
+  // instead of on every request: the remote page polls /status twice a second,
+  // and the callers only ever see the generic 503.
+  let engineAnswering = true;
 
   // ── Binary resolution ─────────────────────────────────────────────────────
 
@@ -198,6 +213,7 @@ export function createController(overrides = {}) {
 
     const gen = { proc, settled: false, stopping: false, ended: false, timer: null, onEnd: [] };
     engine = gen;
+    engineAnswering = true;   // a new generation's first failure is worth a line
     gen.timer = setTimeout(() => { gen.settled = true; }, deps.settleMs);
 
     if (proc.stdout) {
@@ -368,7 +384,26 @@ export function createController(overrides = {}) {
         timeout: RUST_REQUEST_TIMEOUT_MS
       };
 
+      // The caller gets a generic 503; the real reason (ECONNREFUSED, a reset,
+      // a timeout) is logged here, once per outage. A timeout destroys the
+      // request, which then also emits 'error' — by then the flag is down, so
+      // the pair logs a single line. Only the LIVE generation's silence is
+      // news: a poll that was in flight when stop() took its engine down fails
+      // too, and that is a restart, not an outage — nor may a stale request
+      // touch the flag of the engine that replaced it.
+      const gen = engine;
+      const failed = (why, message) => {
+        if (engine === gen) {
+          if (engineAnswering) {
+            winston.warn(`[server-audio] mstream-player stopped answering on port ${options.port}: ${why}`);
+          }
+          engineAnswering = false;
+        }
+        reject(unavailable(message));
+      };
+
       const req = http.request(options, (res) => {
+        if (engine === gen) { engineAnswering = true; }
         let data = '';
         res.on('data', (chunk) => { data += chunk; });
         res.on('end', () => {
@@ -380,13 +415,13 @@ export function createController(overrides = {}) {
         });
       });
 
-      req.on('error', (_e) => {
-        reject(new Error('Server audio player is not running'));
+      req.on('error', (err) => {
+        failed(err.code || err.message, 'Server audio player is not running');
       });
 
       req.on('timeout', () => {
         req.destroy();
-        reject(new Error('Server audio player timed out'));
+        failed(`no response within ${RUST_REQUEST_TIMEOUT_MS} ms`, 'Server audio player timed out');
       });
 
       req.end(postData || undefined);
@@ -394,11 +429,12 @@ export function createController(overrides = {}) {
   }
 
   // Dispatch to whichever backend is active: the engine first, then a CLI
-  // adapter. Rejects when neither is up.
+  // adapter. Rejects with a 503 WebError when neither is up — see
+  // unavailable() at the top of this file.
   function proxy(method, rustPath, body) {
     if (engine) { return proxyToRust(method, rustPath, body); }
     if (deps.isCliActive()) { return deps.proxyToCli(method, rustPath, body); }
-    return Promise.reject(new Error('Server audio player is not running'));
+    return Promise.reject(unavailable('Server audio player is not running'));
   }
 
   return {

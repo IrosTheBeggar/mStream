@@ -12,6 +12,7 @@
 
 import child_process from 'child_process';
 import winston from 'winston';
+import WebError from '../../util/web-error.js';
 import { MpvAdapter } from './mpv.js';
 import { VlcAdapter } from './vlc.js';
 import { MplayerAdapter } from './mplayer.js';
@@ -135,11 +136,13 @@ export async function killCliPlayer() {
 
 /**
  * Drop-in counterpart to server-audio.js's proxyToRust. Takes the same
- * method/rustPath/body triple and returns `{ status, data }`.
+ * method/rustPath/body triple and returns `{ status, data }`. No adapter is
+ * the same 503 the engine side rejects with; callers only reach it in the
+ * narrow window where the adapter stops between their active-check and here.
  */
 export function proxyToCli(method, rustPath, body) {
   if (!activeAdapter) {
-    return Promise.reject(new Error('CLI audio player is not running'));
+    return Promise.reject(new WebError('CLI audio player is not running', 503));
   }
   return activeAdapter.handleRequest(method, rustPath, body);
 }
