@@ -163,23 +163,80 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Build rust-parser FROM THIS PR'S SOURCE. The committed bin/ binaries
-      # are rebuilt by CI only AFTER a merge to master, so on a PR that
-      # changes the Rust scanner they are one generation stale — and the
-      # capability-probed suites (sampled hashes, hash-generation migration)
-      # would silently SKIP their Rust halves, leaving the JS↔Rust hash
-      # parity contract unverified at the exact moment it's being changed.
-      # The test helper prefers rust-parser/target/release over bin/, so
-      # this build puts the PR's own scanner under test on every OS.
+      # Build rust-parser FROM THIS PR'S SOURCE — but only when the committed
+      # bin/ binaries don't already carry exactly this source.
+      #
+      # Why the build exists at all: the committed bin/ binaries are rebuilt by
+      # CI only AFTER a merge to master, so on a PR that CHANGES the Rust
+      # scanner they are one generation stale — and the capability-probed
+      # suites (sampled hashes, hash-generation migration) would silently SKIP
+      # their Rust halves, leaving the JS↔Rust hash parity contract unverified
+      # at the exact moment it's being changed. The test helper prefers
+      # rust-parser/target/release over bin/, so the build puts the PR's own
+      # scanner under test on every OS.
+      #
+      # Why it can be skipped: build-rust-parser.yml stamps each committed set
+      # with the rust-parser/ source TREE it was built from. When that stamp
+      # equals this checkout's tree hash, the shipped binary IS this PR's
+      # source — compiling it again produces the same scanner and the fallback
+      # in scanner-runner.mjs:37-47 / ensure-prereqs.mjs:32-38 resolves it on
+      # every OS. This is the same staleness test the suite itself already
+      # trusts (scanner-runner.mjs:72-83 rustParserIsStale).
+      #
+      # BOTH stamps must match, because the runners resolve DIFFERENT binaries:
+      # Linux takes the -musl set (scanner-runner.mjs:39 appends `-musl` on
+      # linux) stamped by .source-tree-musl, while Windows and macOS take the
+      # plain set stamped by .source-tree. Checking only one would skip the
+      # build on a matrix leg whose binary is stale.
+      #
+      # FAILS CLOSED: no git, a missing/unreadable stamp, or any mismatch all
+      # fall through to `build=true`. The only way to skip is an exact tree-hash
+      # match on both stamps. ~8 of the last 159 merges touched rust-parser/, so
+      # this skips a 73-198s compile on the large majority of PRs.
+      - name: Is the committed rust-parser already this PR's source?
+        id: rustparser
+        shell: bash
+        run: |
+          want="$(git rev-parse HEAD:rust-parser 2>/dev/null || echo unknown)"
+          have="$(cat bin/rust-parser/.source-tree 2>/dev/null || echo none)"
+          have_musl="$(cat bin/rust-parser/.source-tree-musl 2>/dev/null || echo none)"
+          echo "tree=$want stamp=$have stamp-musl=$have_musl"
+          if [ "$want" != unknown ] && [ "$want" = "$have" ] && [ "$want" = "$have_musl" ]; then
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+            echo "::notice::Committed rust-parser matches this PR's source ($want) — skipping cargo build."
+          else
+            echo 'build=true' >> "$GITHUB_OUTPUT"
+            echo "::notice::Building rust-parser from source (tree $want, stamps $have / $have_musl)."
+          fi
+
       # rust-cache keys off Cargo.lock; warm runs restore in seconds.
       - name: Rust build cache
+        if: steps.rustparser.outputs.build == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust-parser
 
+      # --locked so a drifted Cargo.lock fails loudly instead of being silently
+      # updated, matching build-rust-parser.yml:103.
       - name: Build rust-parser from source
+        if: steps.rustparser.outputs.build == 'true'
         working-directory: rust-parser
-        run: cargo build --release
+        run: cargo build --release --locked
+
+      # Whichever path ran, a usable scanner must be on disk — otherwise the
+      # capability-probed suites would skip their Rust halves and the matrix
+      # would go green having never exercised the scanner. ensure-prereqs only
+      # soft-warns, so assert here.
+      - name: Assert a rust-parser is resolvable
+        shell: bash
+        run: |
+          node -e '
+            const { findRustParser, rustParserIsStale } = await import("./test/helpers/scanner-runner.mjs");
+            const bin = findRustParser();
+            if (!bin) { console.error("::error::no rust-parser resolved"); process.exit(1); }
+            if (rustParserIsStale(bin)) { console.error(`::error::resolved a STALE rust-parser: ${bin}`); process.exit(1); }
+            console.log(`rust-parser: ${bin}`);
+          ' --input-type=module
 
       # Build the fixture library once (normally npm's `pretest`), then run this
       # shard. The freshly built rust-parser above drives the scanner-parity
