@@ -219,8 +219,18 @@ var MSTREAMPLAYER = (function () {
     }
   };
 
+  // The volume belongs to the engine: it is the room's volume, shared by
+  // every remote. While the webapp boots it restores "my last volume" from
+  // localStorage (vp.js created()) — right for a browser player, wrong here,
+  // where it made merely OPENING the remote on another device yank the room
+  // to whatever that device last used. Until the first status sync has told
+  // this page what the engine's volume is, there is nothing of the user's to
+  // send.
+  var engineVolumeKnown = false;
+
   mstreamModule.changeVolume = function (newVolume) {
     if (isNaN(newVolume) || newVolume < 0 || newVolume > 100) { return; }
+    if (!engineVolumeKnown) { return; }
     mstreamModule.playerStats.volume = newVolume;
     apiPost('/api/v1/server-playback/volume', { volume: newVolume / 100 });
   };
@@ -328,6 +338,7 @@ var MSTREAMPLAYER = (function () {
 
       if (typeof data.volume === 'number') {
         mstreamModule.playerStats.volume = Math.round(data.volume * 100);
+        engineVolumeKnown = true;
       }
 
       if (typeof data.shuffle === 'boolean') {
@@ -357,38 +368,75 @@ var MSTREAMPLAYER = (function () {
   }
 
   // ── Load existing queue from Rust on page load ────────────────────────
+  //
+  // The engine outlives the page, so a reload rebuilds the list from the
+  // engine's queue. Nothing here waits for a login token. This page is only
+  // served to a session the server already accepted, and the webapp's
+  // deferred scripts have put the API token in place by DOMContentLoaded —
+  // getToken() finds it, falls back to the login cookie, and sends nothing
+  // on a server with no users, where there is no token AT ALL. Waiting for
+  // one is what used to leave the list empty there forever while the engine
+  // kept playing.
+  //
+  // What can really happen is a transient miss (an engine mid-restart
+  // answers 503, a dropped request): retry a few times, then say so once.
 
-  function loadExistingQueue() {
-    apiGet('/api/v1/server-playback/queue').then(function (data) {
-      if (!data || !data.queue || data.queue.length === 0) { return; }
+  var QUEUE_LOAD_ATTEMPTS = 5;
+  var QUEUE_LOAD_RETRY_MS = 1000;
 
-      // Build local playlist from the Rust queue (vpaths from proxy)
-      data.queue.forEach(function (filepath) {
-        mstreamModule.playlist.push({
-          url: '',
-          rawFilePath: filepath,
-          filepath: filepath,
-          metadata: {},
-          authToken: getToken(),
-          error: false
-        });
+  function restoreQueue(data) {
+    if (!data || !Array.isArray(data.queue) || data.queue.length === 0) { return; }
+
+    // The engine's queue is the truth. A retry can land after something was
+    // queued from this page, and that song is already in the engine's list —
+    // so rebuild rather than append. splice, not a new array: Vue watches
+    // this one.
+    mstreamModule.playlist.splice(0, mstreamModule.playlist.length);
+
+    // Build local playlist from the Rust queue (vpaths from proxy)
+    data.queue.forEach(function (filepath) {
+      mstreamModule.playlist.push({
+        url: '',
+        rawFilePath: filepath,
+        filepath: filepath,
+        metadata: {},
+        authToken: getToken(),
+        error: false
       });
+    });
 
-      mstreamModule.positionCache.val = data.current_index || 0;
+    mstreamModule.positionCache.val = typeof data.current_index === 'number' ? data.current_index : 0;
 
-      // Look up metadata for each song
-      if (typeof MSTREAMAPI !== 'undefined' && MSTREAMAPI.lookupMetadata) {
-        mstreamModule.playlist.forEach(function (song) {
-          MSTREAMAPI.lookupMetadata(song.rawFilePath).then(function (response) {
-            if (response && response.metadata) {
-              song.metadata = response.metadata;
-            }
-          }).catch(function () {});
-        });
+    // Look up metadata for each song
+    if (typeof MSTREAMAPI !== 'undefined' && MSTREAMAPI.lookupMetadata) {
+      mstreamModule.playlist.forEach(function (song) {
+        MSTREAMAPI.lookupMetadata(song.rawFilePath).then(function (response) {
+          if (response && response.metadata) {
+            song.metadata = response.metadata;
+          }
+        }).catch(function () {});
+      });
+    }
+
+    // Sync status to get current position/playing state
+    syncStatus();
+  }
+
+  function loadExistingQueue(attempt) {
+    attempt = attempt || 1;
+    // Not apiGet(): it folds every failure into {}, which reads as "the
+    // queue is empty" — and an empty queue is not retried.
+    fetch('/api/v1/server-playback/queue', {
+      headers: { 'x-access-token': getToken() }
+    }).then(function (r) {
+      if (!r.ok) { throw new Error('HTTP ' + r.status); }
+      return r.json();
+    }).then(restoreQueue).catch(function (err) {
+      if (attempt >= QUEUE_LOAD_ATTEMPTS) {
+        console.warn('[mStream] Could not load the server audio queue: ' + (err && err.message ? err.message : err));
+        return;
       }
-
-      // Sync status to get current position/playing state
-      syncStatus();
+      setTimeout(function () { loadExistingQueue(attempt + 1); }, QUEUE_LOAD_RETRY_MS);
     });
   }
 
@@ -423,18 +471,13 @@ var MSTREAMPLAYER = (function () {
     get: function () { return null; }
   };
 
-  // Start polling when DOM is ready
+  // Start polling when DOM is ready. The webapp's deferred scripts
+  // (alpha/api.js, alpha/m.js) have run by DOMContentLoaded, so MSTREAMAPI
+  // and its token are in place for the queue restore.
   function init() {
     startPolling();
-    // Wait for MSTREAMAPI to be available before loading queue
-    function tryLoadQueue() {
-      if (typeof MSTREAMAPI !== 'undefined' && MSTREAMAPI.currentServer && MSTREAMAPI.currentServer.token) {
-        loadExistingQueue();
-      } else {
-        setTimeout(tryLoadQueue, 500);
-      }
-    }
-    tryLoadQueue();
+    syncStatus();   // adopt the engine's state now, not at the first 500 ms tick
+    loadExistingQueue();
   }
 
   if (document.readyState === 'loading') {
