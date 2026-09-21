@@ -117,8 +117,10 @@ export function initEmptyDb(dbPath, libraryRoot, vpath = 'testlib') {
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
-
-  // V34 introduced procedural migrations — see apply-migrations.mjs.
+  // V34 introduced procedural migrations — see apply-migrations.mjs. That
+  // helper also sets synchronous = NORMAL on this connection, matching what
+  // both real scanners open with (src/db/scanner.mjs, rust-parser's main.rs)
+  // so the fixture DB behaves like the one production hands the scanner.
   applyAllMigrations(db);
 
   db.prepare('INSERT INTO libraries (name, root_path, type) VALUES (?, ?, ?)')
@@ -168,6 +170,7 @@ export function runJsScan(config) {
   return runScanProcess(process.execPath,
     [path.join(REPO_ROOT, 'src', 'db', 'scanner.mjs'), JSON.stringify(config)]);
 }
+
 
 function runScanProcess(cmd, args) {
   return new Promise((resolve, reject) => {

@@ -71,6 +71,13 @@ after(async () => {
 // file measured 87-135s and one blew the then-120s cap, again with nothing
 // wrong. Hence the uniform 240s per-test timeout: the caps exist to fail a
 // genuinely hung ffmpeg rather than hang the shard, not to race the runner.
+//
+// 2026-09: profiling finally attributed this file's runtime, and it was NOT
+// ffmpeg — it was the migration chain makeCase ran per case (see
+// schemaTemplatePath below). Hoisting that took the file from 89s to 2.7s
+// locally, with ffmpeg accounting for ~2s of what remains. The spawn-cost
+// reasoning above still stands and the caps stay: they are sized for a
+// pathological runner, not for the happy path.
 const fixtureCache = new Map();
 async function fixtureFor(name, codec, freq) {
   const ext = path.extname(name);
@@ -92,6 +99,38 @@ async function fixtureFor(name, codec, freq) {
   return out;
 }
 
+// Apply the migration chain ONCE for the whole file, into a template we copy
+// per case — the same trick as fixtureCache above, for the other per-case
+// cost.
+//
+// The chain is 70+ DDL statements, and makeCase used to run it on a fresh
+// connection with no pragmas at all: a rollback-journal DB at SQLite's
+// default synchronous = FULL, which fsyncs per statement. That is the most
+// expensive combination available, and this file pays it 17 times. It — not
+// ffmpeg — was the bulk of this file's runtime.
+//
+// Copying is equivalent to re-migrating: the chain is deterministic and
+// seeds no per-run state (its only seeded row is the static "Various
+// Artists" artist, plus the FTS shadow rows), so every case still starts
+// from exactly the schema applyAllMigrations produces.
+//
+// journal_mode is persisted in the DB file header, so the copies inherit
+// WAL. The template is CLOSED before any copy, which checkpoints its WAL
+// back into the single .db file — so there are no -wal/-shm siblings that a
+// plain copyFile would leave behind.
+let schemaTemplate;
+function schemaTemplatePath() {
+  if (schemaTemplate) { return schemaTemplate; }
+  const p = path.join(tmp, 'schema-template.db');
+  const db = new DatabaseSync(p);
+  db.exec('PRAGMA journal_mode = WAL');
+  db.exec('PRAGMA synchronous = NORMAL');
+  applyAllMigrations(db); // shared helper: runs the JS hooks (V59 recreates fts_tracks)
+  db.close();
+  schemaTemplate = p;
+  return p;
+}
+
 // A minimal DB with hand-written track rows: this module reads
 // tracks+libraries and nothing else, so a real scan would only add
 // runtime and a rust-binary dependency the fallback itself doesn't have.
@@ -102,8 +141,12 @@ async function makeCase(tracks) {
   await fsp.mkdir(lib, { recursive: true });
   await fsp.mkdir(cache, { recursive: true });
 
-  const db = new DatabaseSync(path.join(root, 'wf.db'));
-  applyAllMigrations(db); // shared helper: runs the JS hooks (V59 recreates fts_tracks)
+  const dbPath = path.join(root, 'wf.db');
+  await fsp.copyFile(schemaTemplatePath(), dbPath);
+  const db = new DatabaseSync(dbPath);
+  // Match the template (and the real scanners) rather than inheriting the
+  // FULL default on this connection's own writes.
+  db.exec('PRAGMA synchronous = NORMAL');
   db.prepare('INSERT INTO libraries (id, name, root_path) VALUES (1, ?, ?)').run('lib', lib);
 
   for (const t of tracks) {

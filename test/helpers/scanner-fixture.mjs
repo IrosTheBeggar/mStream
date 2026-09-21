@@ -22,7 +22,11 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { FFMPEG } from './scanner-runner.mjs';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 import { appendId3v23TextFrames } from './id3.mjs';
 import { appendFlacVorbisComments } from './vorbis.mjs';
 
@@ -46,18 +50,58 @@ export function ffmpeg(args) {
 // wins for most formats; for our purposes the parity test cares about
 // what the SCANNER reads back, so single-value-per-tag is enough to
 // drive the codepaths.
+// ── Content-addressed encode cache ───────────────────────────────────────────
+//
+// ffmpeg's anullsrc+lame output is byte-deterministic for a given
+// (codecArgs, meta, duration, extension), so two calls with the same spec
+// already produce identical files today — they just each pay a ~1.8s process
+// spawn + encode (measured on Windows; ~0.3s on Linux CI). The scanner suites
+// rebuild the same handful of fixtures inside every test AND inside the
+// `for (const engine of ['rust','js'])` parity loop, so the same three-file
+// library gets encoded dozens of times per file.
+//
+// Encode each distinct spec once into a cache dir, then copyFile into the
+// sandbox. The bytes handed to the scanner are identical, so audio_hash and
+// every parity assertion are unaffected.
+//
+// Race-safe across concurrently-running test FILES (node --test runs several
+// at once): encode to a pid-unique temp name and rename into place. rename is
+// atomic, so a loser just overwrites with identical bytes.
+const ENCODE_CACHE = path.join(REPO_ROOT, 'test', 'fixtures', '.encode-cache');
+
+function cacheKey(parts, ext) {
+  return createHash('sha1').update(JSON.stringify(parts)).digest('hex').slice(0, 32) + ext;
+}
+
+async function cachedEncode(filepath, key, encodeTo) {
+  if (process.env.MSTREAM_NO_ENCODE_CACHE) { return encodeTo(filepath); }
+  const cached = path.join(ENCODE_CACHE, key);
+  try {
+    await fs.copyFile(cached, filepath);
+    return;
+  } catch { /* cache miss — encode below */ }
+  await fs.mkdir(ENCODE_CACHE, { recursive: true });
+  // Keep the extension LAST — ffmpeg picks its muxer from the output suffix.
+  const tmp = `${cached}.${process.pid}.tmp${path.extname(key)}`;
+  await encodeTo(tmp);
+  try { await fs.rename(tmp, cached); } catch { /* raced; identical bytes */ }
+  await fs.copyFile(cached, filepath);
+}
+
 export async function makeAudio(filepath, codecArgs, meta = {}, durationSec = 1) {
   await fs.mkdir(path.dirname(filepath), { recursive: true });
   const metaArgs = [];
   for (const [k, v] of Object.entries(meta)) {
     metaArgs.push('-metadata', `${k}=${v}`);
   }
-  await ffmpeg([
-    '-nostdin', '-y', '-loglevel', 'error',
-    '-f', 'lavfi', '-i', `anullsrc=r=44100:cl=stereo:duration=${durationSec}`,
-    ...codecArgs, ...metaArgs,
-    filepath,
-  ]);
+  const ext = path.extname(filepath);
+  await cachedEncode(filepath, cacheKey(['audio', codecArgs, metaArgs, durationSec], ext), out =>
+    ffmpeg([
+      '-nostdin', '-y', '-loglevel', 'error',
+      '-f', 'lavfi', '-i', `anullsrc=r=44100:cl=stereo:duration=${durationSec}`,
+      ...codecArgs, ...metaArgs,
+      out,
+    ]));
 }
 
 // MP3 with one or more EMBEDDED APIC pictures: tone + lavfi solid-color
