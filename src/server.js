@@ -61,6 +61,7 @@ import * as backupApi from './api/backup.js';
 import * as backupManager from './backup/manager.js';
 import { classifyError } from './util/web-error.js';
 import { isAdminAllowed } from './util/admin-network.js';
+import { settleWithin } from './util/async.js';
 import { writeJsonAtomic, completedWrites } from './util/atomic-json.js';
 import * as adminUtil from './util/admin.js';
 import * as updateCheck from './util/update-check.js';
@@ -1064,10 +1065,7 @@ export function reboot() {
       stopOf('federation-client', () => import('./state/federation-client.js').then((m) => m.stopAll())),
       stopOf('federation', () => import('./state/federation.js').then((m) => m.stop())),
     ]);
-    const teardownsDone = Promise.race([
-      teardowns,
-      new Promise((resolve) => setTimeout(resolve, 5000)),
-    ]);
+    const teardownsDone = settleWithin(teardowns, 5000);
 
     // Park the listener rather than closing it: the socket stays bound and
     // answers 503 while the app is rebuilt, and serveIt() either swaps the
