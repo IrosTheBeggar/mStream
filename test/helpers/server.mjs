@@ -310,7 +310,28 @@ export async function startServer(opts = {}) {
     // CPU-saturation boot-timeout flakiness we've hit before. The
     // audio-analysis suites drive that worker directly / opt in explicitly.
     ...extraConfig,
-    scanOptions: { autoAlbumArt: false, collectDiscoveryData: false, analyzeBpm: false, ...(extraConfig.scanOptions || {}) },
+    scanOptions: {
+      autoAlbumArt: false, collectDiscoveryData: false, analyzeBpm: false,
+      // config.js defaults bootScanDelay to 3 SECONDS, and task-queue.js arms
+      // the boot scan with `setTimeout(..., bootScanDelay * 1000)` once the
+      // server is listening. waitForReady() returns as soon as the API
+      // answers — which is BEFORE that timer fires — so a boot that then
+      // waits for the scan sat through 3s of pure sleep before the thing it
+      // was waiting for had even been enqueued. Measured over 8 interleaved
+      // boots: 5420ms -> 2312ms, a saving of ~3.1s each.
+      //
+      // Only when we are going to WAIT for the scan. `waitForScan: false`
+      // does not cancel the boot scan, it only stops the harness blocking on
+      // it (see below) — so forcing 0 there would move a rust-parser child to
+      // t=0 on every such boot, which on a 4-vCPU Windows runner is exactly
+      // the CPU starvation .github/workflows/test.yml drops to
+      // --test-concurrency=2 to avoid. Those boots keep the 3s.
+      //
+      // Deliberately BEFORE the caller spread: a suite that needs the real
+      // delay (or 9999 to suppress the scan outright) still overrides it.
+      ...(waitForScan ? { bootScanDelay: 0 } : {}),
+      ...(extraConfig.scanOptions || {}),
+    },
     // Same guard idea for the discovery network's community seeds — THREE
     // layers, all load-bearing:
     //  - seedListUrl → dead local port, so no test fetches GitHub;
