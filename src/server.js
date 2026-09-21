@@ -683,12 +683,16 @@ export async function serveIt(configFile, { relisten = null } = {}) {
 
     const c = classifyError(error);
     if (c.kind === 'web') {
+      // c.message is set for a request Express itself refused (a body it
+      // could not parse, a URL that does not decode): a fixed text, because
+      // the parser's own message quotes the request back.
+      const message = c.message || error.message;
       if (c.level === 'error') {
-        winston.error(`Request failed: ${req.method} ${req.originalUrl} (${from}) — ${c.status}: ${error.message}`);
+        winston.error(`Request failed: ${req.method} ${req.originalUrl} (${from}) — ${c.status}: ${message}`);
       } else {
-        winston.warn(`Rejected ${req.method} ${req.originalUrl} (${from}) — ${c.status}: ${error.message}`);
+        winston.warn(`Rejected ${req.method} ${req.originalUrl} (${from}) — ${c.status}: ${message}`);
       }
-      return res.status(c.status).json({ error: error.message });
+      return res.status(c.status).json({ error: message });
     }
 
     // Unchanged wording + stack metadata on purpose: this line now MEANS

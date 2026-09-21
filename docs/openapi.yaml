@@ -39,13 +39,18 @@ info:
 
     | Code | Meaning |
     |------|---------|
-    | 400  | Bad request (invalid input) |
+    | 400  | Bad request (invalid input: a body that fails schema validation, a body that is not valid JSON, or a URL whose percent-escapes do not decode) |
     | 401  | Unauthenticated |
-    | 403  | Forbidden (Joi validation error, missing permission, non-admin caller on an admin route, or admin request from outside the allowed network) |
+    | 403  | Forbidden (missing permission, non-admin caller on an admin route, or admin request from outside the allowed network) |
     | 404  | Resource not found |
     | 405  | Admin API locked by configuration (adminAccess.mode = 'none') |
+    | 413  | Request body larger than the server's `maxRequestSize` (or a download over its size limit) |
+    | 415  | Request body in a charset or content-encoding the server does not accept |
     | 500  | Server error |
     | 503  | External dependency unavailable (ffmpeg, rust audio server) |
+
+    A request body the server cannot parse or will not accept (the 400 / 413 / 415 cases above) is
+    refused before authentication is checked, so those answers do not depend on credentials.
 
     ## Virtual paths (vpaths)
 
