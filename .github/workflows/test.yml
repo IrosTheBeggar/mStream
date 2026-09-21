@@ -134,31 +134,55 @@ jobs:
           Remove-Item $zip, "ffmpeg-$tag-full_build" -Recurse -Force
 
       # Homebrew-core ffmpeg (8.x) dropped libvorbis, but the suite encodes
-      # .ogg fixtures with it. The homebrew-ffmpeg tap ships a full-codec build
-      # (with libvorbis) and provides bottles, so this stays fast.
+      # .ogg fixtures with it, so this used to install the homebrew-ffmpeg tap.
+      # That tap's DEPENDENCIES pour as bottles in seconds — but the ffmpeg
+      # formula itself then COMPILES FROM SOURCE. The logs read "built in 5
+      # minutes"; the step measured 225-351 s on every macOS job (~800 s of
+      # runner time per run) against the 15-minute cap it ran under.
+      #
+      # So do what the Linux and Windows legs do: fetch a pinned, static,
+      # checksum-verified build. The pins are READ FROM bin/ffmpeg/manifest.json
+      # rather than copied into this file — that manifest is what
+      # src/util/ffmpeg-bootstrap.js already ships to real macOS users, and
+      # update-ffmpeg-manifest.yml already refreshes it on a cron. CI therefore
+      # tracks the same build the product does, with no second copy of the pins
+      # to drift. (The Linux/Windows legs predate the manifest and still
+      # hardcode theirs; moving them over is a separate change.)
+      #
+      # This source does carry libvorbis: the pinned build's own codecs.txt
+      # lists "vorbis ... (encoders: vorbis libvorbis)". The assert below stays
+      # regardless, exactly as on the other two legs — it is what turns a bad
+      # build into a loud, macOS-only failure instead of a mystery later.
+      #
+      # No rolling fallback here, deliberately: martin-riedl keeps its versioned
+      # download paths (see the comment on installMacBinary), so a miss is a
+      # real failure, not a pruned pin. curl retries cover the transient case.
       - name: Install ffmpeg (macOS)
-        if: runner.os == 'macOS'
-        timeout-minutes: 15
-        run: brew install homebrew-ffmpeg/ffmpeg/ffmpeg
-
-      # The fixture generator (and the server's transcoder) look for ffmpeg at
-      # bin/ffmpeg/ — the bundled binary is gitignored, so it isn't in the
-      # checkout. The Linux and Windows steps above install straight into
-      # bin/ffmpeg/; macOS stages Homebrew's ffmpeg here. Use Homebrew's build
-      # explicitly — the runner's preinstalled ffmpeg (which `command -v` may
-      # resolve first) lacks libvorbis, and the suite generates .ogg fixtures.
-      # Fail loudly if the codec is missing.
-      - name: Stage ffmpeg into bin/ffmpeg/ (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
+          set -euo pipefail
+          entry() { node -p "require('./bin/ffmpeg/manifest.json').assets['darwin-'+process.arch].files.$1.$2"; }
           mkdir -p bin/ffmpeg
-          ff="$(brew --prefix)/bin"
-          "$ff/ffmpeg" -hide_banner -encoders | grep -qi libvorbis \
+          for name in ffmpeg ffprobe; do
+            rel="$(entry "$name" path)"
+            want="$(entry "$name" sha256)"
+            curl -fsSL --retry 3 --retry-delay 5 -o "$name.zip" \
+              "https://ffmpeg.martin-riedl.de/$rel"
+            got="$(shasum -a 256 "$name.zip" | cut -d' ' -f1)"
+            if [ "$got" != "$want" ]; then
+              echo "::error::macOS $name download checksum mismatch (got $got, want $want)"
+              exit 1
+            fi
+            # Same invocation as the shipped extractor (extractZipUnix): pull
+            # the NAMED member with -j, so a nested path inside the zip is
+            # handled rather than assumed away.
+            unzip -q -o -j "$name.zip" "$name" -d bin/ffmpeg
+            chmod +x "bin/ffmpeg/$name"
+            rm -f "$name.zip"
+          done
+          bin/ffmpeg/ffmpeg -hide_banner -encoders | grep -qi libvorbis \
             || { echo "::error::macOS ffmpeg is missing the libvorbis encoder"; exit 1; }
-          cp "$ff/ffmpeg"  bin/ffmpeg/ffmpeg
-          cp "$ff/ffprobe" bin/ffmpeg/ffprobe
-          chmod +x bin/ffmpeg/ffmpeg bin/ffmpeg/ffprobe
 
       - name: Install dependencies
         run: npm ci
