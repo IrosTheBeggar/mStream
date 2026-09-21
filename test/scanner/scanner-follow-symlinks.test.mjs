@@ -87,7 +87,26 @@ async function triggerRescan() {
     });
     if (r.ok) {
       const j = await r.json();
-      if (!j.locked) { return j.totalFileCount; }
+      if (!j.locked) {
+        // `locked` alone is NOT "the scan is done". It reads false in the lull
+        // between two per-library scan tasks — and this suite mounts two
+        // libraries (the shared fixtures plus symtest), so that lull exists on
+        // every rescan here. test/helpers/server.mjs:168-176 spells the same
+        // thing out and closes it with two extra kind checks against the queue
+        // itself; the 250ms sleep above only guards the FRONT edge, not this
+        // one. Returning in the lull hands the caller a half-rescanned library,
+        // which is how PR #803's half-scanned-fixture flake worked.
+        const qr = await fetch(`${server.baseUrl}/api/v1/scan/status`, {
+          headers: { 'x-access-token': tk },
+        });
+        if (qr.ok) {
+          const { queue } = await qr.json();
+          const pending = queue.scanning
+            || queue.activeTask === 'scan'
+            || queue.queued.includes('scan');
+          if (!pending) { return j.totalFileCount; }
+        }
+      }
     }
     await new Promise(r => setTimeout(r, 100));
   }
