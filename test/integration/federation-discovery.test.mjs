@@ -125,7 +125,13 @@ describe('federation discovery similar (peer side)', () => {
       }),
       startServer({
         dlnaMode: 'disabled',
-        waitForScan: false,
+        // Must WAIT for this peer's own scan: the last assertion below asks it
+        // for a plain random-songs pick and expects 200, which needs its
+        // library populated. It previously passed without waiting only by
+        // accident — the sibling boot above sat out its 3s bootScanDelay, and
+        // that pause happened to be long enough for this server's unwaited
+        // scan to finish too. That is a timing coincidence, not a guarantee,
+        // and it would not survive a loaded CI runner either.
         extraConfig: { federation: { enabled: true } },
         users: [{ ...ADMIN, admin: true, vpaths: ['testlib'] }],
       }),
