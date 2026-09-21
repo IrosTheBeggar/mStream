@@ -128,3 +128,8 @@ model-cache/
 # Scratch files left in the repo root by `bun build --compile`; one per build.
 .*.bun-build
 
+# Generated test fixtures: the content-addressed ffmpeg encode cache built by
+# test/helpers/scanner-fixture.mjs, and scratch benchmark dirs. Both are
+# regenerated on demand and must never be committed.
+test/fixtures/.encode-cache/
+test/tmp-bench/
