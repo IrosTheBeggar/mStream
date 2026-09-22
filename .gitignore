@@ -133,3 +133,11 @@ model-cache/
 # regenerated on demand and must never be committed.
 test/fixtures/.encode-cache/
 test/tmp-bench/
+
+# iroh native binding (bin/iroh/): the bundler stages @number0/iroh's prebuilt
+# .node here for the release bundles, and CI cross-builds the darwin-x64 one
+# from source (upstream publishes none — see bin/iroh/README.md). Only the
+# README and the source pin are tracked; a .node is a build product.
+bin/iroh/*
+!bin/iroh/README.md
+!bin/iroh/iroh-ffi-pin.json
