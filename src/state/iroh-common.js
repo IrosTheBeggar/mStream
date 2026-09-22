@@ -42,7 +42,13 @@ export async function loadIroh() {
     if (isBunStandalone && !process.env.NAPI_RS_NATIVE_LIBRARY_PATH) {
       try {
         const dir = join(appRoot, 'bin', 'iroh');
-        const node = existsSync(dir) && readdirSync(dir).find((f) => f.endsWith('.node'));
+        const nodes = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.node')) : [];
+        // A bundle stages exactly one .node (iroh.<napi triple>.node, the
+        // bundler names it); prefer the one for THIS platform/arch anyway, so
+        // a stray binding for another triple next to it can't be dlopen'd —
+        // bin/iroh/ also holds locally cross-built ones (bin/iroh/README.md).
+        const mine = `iroh.${process.platform}-${process.arch}`;
+        const node = nodes.find((f) => f.startsWith(mine)) || nodes[0];
         if (node) { process.env.NAPI_RS_NATIVE_LIBRARY_PATH = join(dir, node); }
       } catch { /* fall back to the loader's default resolution */ }
     }
