@@ -1,6 +1,6 @@
 {
   "name": "mstream",
-  "version": "6.28.1",
+  "version": "6.29.0",
   "description": "music streaming server",
   "type": "module",
   "main": "cli-boot-wrapper.js",
@@ -34,7 +34,6 @@
     "test:torrent": "node --test --test-reporter=spec \"test/torrent/**/*.test.mjs\"",
     "test:integration": "node --test --test-reporter=spec \"test/integration/**/*.test.mjs\"",
     "test:dlna": "node --test --test-reporter=spec \"test/**/dlna.test.mjs\"",
-    "test:cli-audio": "docker build -f test/cli-audio/Dockerfile -t mstream-cli-audio-smoke . && docker run --rm mstream-cli-audio-smoke",
     "test:smoke:docker": "node test/smoke/docker/run-docker-stack-smoke.mjs",
     "test:smoke:windows": "node test/smoke/windows-native-daemons.mjs",
     "test:smoke:update-watchdog": "sh test/smoke/update-watchdog-smoke.sh",

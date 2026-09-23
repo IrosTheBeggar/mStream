@@ -39,13 +39,18 @@ info:
 
     | Code | Meaning |
     |------|---------|
-    | 400  | Bad request (invalid input) |
+    | 400  | Bad request (invalid input: a body that fails schema validation, a body that is not valid JSON, or a URL whose percent-escapes do not decode) |
     | 401  | Unauthenticated |
-    | 403  | Forbidden (Joi validation error, missing permission, non-admin caller on an admin route, or admin request from outside the allowed network) |
+    | 403  | Forbidden (missing permission, non-admin caller on an admin route, or admin request from outside the allowed network) |
     | 404  | Resource not found |
     | 405  | Admin API locked by configuration (adminAccess.mode = 'none') |
+    | 413  | Request body larger than the server's `maxRequestSize` (or a download over its size limit) |
+    | 415  | Request body in a charset or content-encoding the server does not accept |
     | 500  | Server error |
     | 503  | External dependency unavailable (ffmpeg, rust audio server) |
+
+    A request body the server cannot parse or will not accept (the 400 / 413 / 415 cases above) is
+    refused before authentication is checked, so those answers do not depend on credentials.
 
     ## Virtual paths (vpaths)
 
@@ -109,7 +114,14 @@ tags:
       scrobble routes older clients still call. A new client reports its
       plays to `/api/v1/stats/plays` instead.
   - name: Server Playback
-    description: Proxy to the bundled Rust audio player.
+    description: >-
+      Server-side playback: plays on the sound device of the machine mStream
+      runs on, by proxying to the mstream-player engine (the only backend; it
+      runs when autoBootServerAudio is on). Every route requires the per-user
+      allow_server_audio flag; admins always pass. Every route answers 503
+      while the engine is not running. Files are named by
+      library path ("library/folder/track.mp3") in both directions: no
+      filesystem path is accepted from, or returned to, a client.
   - name: Jukebox
     description: Remote-control mode via WebSocket-backed REST.
   - name: YouTube DL
@@ -1107,6 +1119,14 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     NotFound:
       description: Resource not found.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ServerAudioUnavailable:
+      description: >-
+        The server-audio engine did not answer: it is not running, or it did
+        not respond in time. Every /api/v1/server-playback route can answer
+        this.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -4900,7 +4920,34 @@ paths:
     get:
       tags: [Server Playback]
       summary: Get playback state
-      responses: { "200": { description: Proxied response. } }
+      description: >-
+        The active backend's own status object (playing, paused, position,
+        duration, volume, queue_index, queue_length, shuffle, loop_mode, ...)
+        with two fields added by the proxy that say which backend answered.
+        `file`, the current track, is translated to a library path like the
+        queue's entries; it is an empty string while nothing is loaded.
+      responses:
+        "200":
+          description: Proxied status.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                properties:
+                  file:
+                    type: string
+                    description: Library path of the current track, or "" when idle.
+                  backend:
+                    type: string
+                    nullable: true
+                    enum: [rust, null]
+                    description: "`rust` — the mstream-player engine, the only backend. The field predates the removal of the CLI players and keeps its value."
+                  player:
+                    type: string
+                    nullable: true
+                    description: "`mstream-player`."
+        "503": { $ref: "#/components/responses/ServerAudioUnavailable" }
   /api/v1/server-playback/queue:
     get:
       tags: [Server Playback]
@@ -4929,15 +4976,23 @@ paths:
               type: object
               required: [file]
               properties:
-                file: { type: string }
+                file: { type: string, description: "Library path, e.g. `music/Artist/track.mp3`." }
       responses:
         "200": { description: Proxied response. }
-        "400": { $ref: "#/components/responses/Forbidden" }
-        "503":
-          description: Rust audio server unavailable.
+        "400":
+          description: Malformed body.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            The path names a library that does not exist or that this user
+            cannot access (the same answer for both, as everywhere else).
+            Judged before the backend is contacted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/ServerAudioUnavailable" }
   /api/v1/server-playback/queue/add:
     post:
       tags: [Server Playback]
@@ -4950,8 +5005,23 @@ paths:
               type: object
               required: [file]
               properties:
-                file: { type: string }
-      responses: { "200": { description: Proxied response. } }
+                file: { type: string, description: Library path. }
+      responses:
+        "200": { description: Proxied response. }
+        "400":
+          description: Malformed body.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            The path names a library that does not exist or that this user
+            cannot access (the same answer for both, as everywhere else).
+            Judged before the backend is contacted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/ServerAudioUnavailable" }
   /api/v1/server-playback/queue/add-many:
     post:
       tags: [Server Playback]
@@ -4966,8 +5036,23 @@ paths:
               properties:
                 files:
                   type: array
-                  items: { type: string }
-      responses: { "200": { description: Proxied response. } }
+                  items: { type: string, description: Library path. }
+      responses:
+        "200": { description: Proxied response. }
+        "400":
+          description: Malformed body.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: >-
+            The path names a library that does not exist or that this user
+            cannot access (the same answer for both, as everywhere else).
+            Judged before the backend is contacted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/ServerAudioUnavailable" }
   /api/v1/server-playback/queue/play-index:
     post:
       tags: [Server Playback]
@@ -5006,16 +5091,22 @@ paths:
     get:
       tags: [Server Playback]
       summary: Server-audio webapp
-      description: Static HTML for the server-audio player mode.
-      security: []
+      description: >-
+        index.html with the browser player swapped for the server-audio
+        client. Sits behind the same auth wall and per-user allow_server_audio
+        gate as the /api/v1/server-playback/* routes.
       responses:
         "200":
           description: HTML.
           content:
             text/html:
               schema: { type: string }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "503":
-          description: Rust audio server unavailable.
+          description: No server-audio backend is running (an HTML page with a retry link and how to get one running).
+          content:
+            text/html:
+              schema: { type: string }
 
   # ── Jukebox ──────────────────────────────────────────────────────────────
 
@@ -6370,7 +6461,12 @@ paths:
   /api/v1/admin/config/auto-boot-server-audio:
     post:
       tags: [Admin - Config]
-      summary: Toggle auto-start of the Rust audio server
+      summary: Turn server audio on or off
+      description: >-
+        true boots the mstream-player engine with the server (fetching the
+        sha256-pinned build on first use where one is published for this
+        platform); false starts nothing. Applied immediately: the engine is
+        stopped, then started again only if the new value says so.
       requestBody:
         required: true
         content:
@@ -6399,6 +6495,35 @@ paths:
                 rustPlayerPort: { type: integer, minimum: 1, maximum: 65535 }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/server-audio/info:
+    get:
+      tags: [Admin - Config]
+      summary: Is the server-audio engine running?
+      responses:
+        "200":
+          description: Engine status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backend:
+                    type: string
+                    nullable: true
+                    enum: [rust, null]
+                    description: "`rust` while the mstream-player engine is running, null otherwise."
+                  player:
+                    type: string
+                    nullable: true
+                    description: "`mstream-player` while the engine is running, null otherwise."
+                  binaryFetchable:
+                    type: boolean
+                    description: >-
+                      Whether a missing mstream-player binary can be downloaded for
+                      this platform. npm and source installs fetch it on the first
+                      autoBoot; musl hosts have no build and report false.
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/config/secret:

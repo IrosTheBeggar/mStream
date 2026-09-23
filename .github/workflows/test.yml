@@ -134,52 +134,133 @@ jobs:
           Remove-Item $zip, "ffmpeg-$tag-full_build" -Recurse -Force
 
       # Homebrew-core ffmpeg (8.x) dropped libvorbis, but the suite encodes
-      # .ogg fixtures with it. The homebrew-ffmpeg tap ships a full-codec build
-      # (with libvorbis) and provides bottles, so this stays fast.
+      # .ogg fixtures with it, so this used to install the homebrew-ffmpeg tap.
+      # That tap's DEPENDENCIES pour as bottles in seconds — but the ffmpeg
+      # formula itself then COMPILES FROM SOURCE. The logs read "built in 5
+      # minutes"; the step measured 225-351 s on every macOS job (~800 s of
+      # runner time per run) against the 15-minute cap it ran under.
+      #
+      # So do what the Linux and Windows legs do: fetch a pinned, static,
+      # checksum-verified build. The pins are READ FROM bin/ffmpeg/manifest.json
+      # rather than copied into this file — that manifest is what
+      # src/util/ffmpeg-bootstrap.js already ships to real macOS users, and
+      # update-ffmpeg-manifest.yml already refreshes it on a cron. CI therefore
+      # tracks the same build the product does, with no second copy of the pins
+      # to drift. (The Linux/Windows legs predate the manifest and still
+      # hardcode theirs; moving them over is a separate change.)
+      #
+      # This source does carry libvorbis: the pinned build's own codecs.txt
+      # lists "vorbis ... (encoders: vorbis libvorbis)". The assert below stays
+      # regardless, exactly as on the other two legs — it is what turns a bad
+      # build into a loud, macOS-only failure instead of a mystery later.
+      #
+      # No rolling fallback here, deliberately: martin-riedl keeps its versioned
+      # download paths (see the comment on installMacBinary), so a miss is a
+      # real failure, not a pruned pin. curl retries cover the transient case.
       - name: Install ffmpeg (macOS)
-        if: runner.os == 'macOS'
-        timeout-minutes: 15
-        run: brew install homebrew-ffmpeg/ffmpeg/ffmpeg
-
-      # The fixture generator (and the server's transcoder) look for ffmpeg at
-      # bin/ffmpeg/ — the bundled binary is gitignored, so it isn't in the
-      # checkout. The Linux and Windows steps above install straight into
-      # bin/ffmpeg/; macOS stages Homebrew's ffmpeg here. Use Homebrew's build
-      # explicitly — the runner's preinstalled ffmpeg (which `command -v` may
-      # resolve first) lacks libvorbis, and the suite generates .ogg fixtures.
-      # Fail loudly if the codec is missing.
-      - name: Stage ffmpeg into bin/ffmpeg/ (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
+          set -euo pipefail
+          entry() { node -p "require('./bin/ffmpeg/manifest.json').assets['darwin-'+process.arch].files.$1.$2"; }
           mkdir -p bin/ffmpeg
-          ff="$(brew --prefix)/bin"
-          "$ff/ffmpeg" -hide_banner -encoders | grep -qi libvorbis \
+          for name in ffmpeg ffprobe; do
+            rel="$(entry "$name" path)"
+            want="$(entry "$name" sha256)"
+            curl -fsSL --retry 3 --retry-delay 5 -o "$name.zip" \
+              "https://ffmpeg.martin-riedl.de/$rel"
+            got="$(shasum -a 256 "$name.zip" | cut -d' ' -f1)"
+            if [ "$got" != "$want" ]; then
+              echo "::error::macOS $name download checksum mismatch (got $got, want $want)"
+              exit 1
+            fi
+            # Same invocation as the shipped extractor (extractZipUnix): pull
+            # the NAMED member with -j, so a nested path inside the zip is
+            # handled rather than assumed away.
+            unzip -q -o -j "$name.zip" "$name" -d bin/ffmpeg
+            chmod +x "bin/ffmpeg/$name"
+            rm -f "$name.zip"
+          done
+          bin/ffmpeg/ffmpeg -hide_banner -encoders | grep -qi libvorbis \
             || { echo "::error::macOS ffmpeg is missing the libvorbis encoder"; exit 1; }
-          cp "$ff/ffmpeg"  bin/ffmpeg/ffmpeg
-          cp "$ff/ffprobe" bin/ffmpeg/ffprobe
-          chmod +x bin/ffmpeg/ffmpeg bin/ffmpeg/ffprobe
 
       - name: Install dependencies
         run: npm ci
 
-      # Build rust-parser FROM THIS PR'S SOURCE. The committed bin/ binaries
-      # are rebuilt by CI only AFTER a merge to master, so on a PR that
-      # changes the Rust scanner they are one generation stale — and the
-      # capability-probed suites (sampled hashes, hash-generation migration)
-      # would silently SKIP their Rust halves, leaving the JS↔Rust hash
-      # parity contract unverified at the exact moment it's being changed.
-      # The test helper prefers rust-parser/target/release over bin/, so
-      # this build puts the PR's own scanner under test on every OS.
+      # Build rust-parser FROM THIS PR'S SOURCE — but only when the committed
+      # bin/ binaries don't already carry exactly this source.
+      #
+      # Why the build exists at all: the committed bin/ binaries are rebuilt by
+      # CI only AFTER a merge to master, so on a PR that CHANGES the Rust
+      # scanner they are one generation stale — and the capability-probed
+      # suites (sampled hashes, hash-generation migration) would silently SKIP
+      # their Rust halves, leaving the JS↔Rust hash parity contract unverified
+      # at the exact moment it's being changed. The test helper prefers
+      # rust-parser/target/release over bin/, so the build puts the PR's own
+      # scanner under test on every OS.
+      #
+      # Why it can be skipped: build-rust-parser.yml stamps each committed set
+      # with the rust-parser/ source TREE it was built from. When that stamp
+      # equals this checkout's tree hash, the shipped binary IS this PR's
+      # source — compiling it again produces the same scanner and the fallback
+      # in scanner-runner.mjs:37-47 / ensure-prereqs.mjs:32-38 resolves it on
+      # every OS. This is the same staleness test the suite itself already
+      # trusts (scanner-runner.mjs:72-83 rustParserIsStale).
+      #
+      # BOTH stamps must match, because the runners resolve DIFFERENT binaries:
+      # Linux takes the -musl set (scanner-runner.mjs:39 appends `-musl` on
+      # linux) stamped by .source-tree-musl, while Windows and macOS take the
+      # plain set stamped by .source-tree. Checking only one would skip the
+      # build on a matrix leg whose binary is stale.
+      #
+      # FAILS CLOSED: no git, a missing/unreadable stamp, or any mismatch all
+      # fall through to `build=true`. The only way to skip is an exact tree-hash
+      # match on both stamps. ~8 of the last 159 merges touched rust-parser/, so
+      # this skips a 73-198s compile on the large majority of PRs.
+      - name: Is the committed rust-parser already this PR's source?
+        id: rustparser
+        shell: bash
+        run: |
+          want="$(git rev-parse HEAD:rust-parser 2>/dev/null || echo unknown)"
+          have="$(cat bin/rust-parser/.source-tree 2>/dev/null || echo none)"
+          have_musl="$(cat bin/rust-parser/.source-tree-musl 2>/dev/null || echo none)"
+          echo "tree=$want stamp=$have stamp-musl=$have_musl"
+          if [ "$want" != unknown ] && [ "$want" = "$have" ] && [ "$want" = "$have_musl" ]; then
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+            echo "::notice::Committed rust-parser matches this PR's source ($want) — skipping cargo build."
+          else
+            echo 'build=true' >> "$GITHUB_OUTPUT"
+            echo "::notice::Building rust-parser from source (tree $want, stamps $have / $have_musl)."
+          fi
+
       # rust-cache keys off Cargo.lock; warm runs restore in seconds.
       - name: Rust build cache
+        if: steps.rustparser.outputs.build == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust-parser
 
+      # --locked so a drifted Cargo.lock fails loudly instead of being silently
+      # updated, matching build-rust-parser.yml:103.
       - name: Build rust-parser from source
+        if: steps.rustparser.outputs.build == 'true'
         working-directory: rust-parser
-        run: cargo build --release
+        run: cargo build --release --locked
+
+      # Whichever path ran, a usable scanner must be on disk — otherwise the
+      # capability-probed suites would skip their Rust halves and the matrix
+      # would go green having never exercised the scanner. ensure-prereqs only
+      # soft-warns, so assert here.
+      - name: Assert a rust-parser is resolvable
+        shell: bash
+        run: |
+          node -e '
+            const { findRustParser, rustParserIsStale } = await import("./test/helpers/scanner-runner.mjs");
+            const bin = findRustParser();
+            if (!bin) { console.error("::error::no rust-parser resolved"); process.exit(1); }
+            if (rustParserIsStale(bin)) { console.error(`::error::resolved a STALE rust-parser: ${bin}`); process.exit(1); }
+            console.log(`rust-parser: ${bin}`);
+          ' --input-type=module
 
       # Build the fixture library once (normally npm's `pretest`), then run this
       # shard. The freshly built rust-parser above drives the scanner-parity

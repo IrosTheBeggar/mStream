@@ -1,0 +1,11 @@
+{
+  "family": "iroh-ffi",
+  "schema": 1,
+  "repo": "n0-computer/iroh-ffi",
+  "tag": "v1.1.0",
+  "commit": "5e451092dba0c1a09ee83ff6e5be37b1152a5c58",
+  "crate": "number0_iroh",
+  "builds": {
+    "darwin-x64": { "target": "x86_64-apple-darwin", "macosxDeploymentTarget": "11.0" }
+  }
+}

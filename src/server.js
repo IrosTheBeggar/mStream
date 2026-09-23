@@ -57,6 +57,7 @@ import * as dlnaSsdp from './dlna/ssdp.js';
 import * as dlnaServer from './dlna/dlna-server.js';
 import * as mdns from './discovery/mdns.js';
 import * as serverPlaybackApi from './api/server-playback.js';
+import * as serverAudio from './state/server-audio.js';
 import * as albumArtApi from './api/album-art.js';
 import * as waveformApi from './api/waveform.js';
 import * as scanApi from './api/scan.js';
@@ -548,9 +549,6 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     }
   });
 
-  // Server-remote route (must be before static middleware to intercept /server-remote)
-  serverPlaybackApi.setupBeforeAuth(mstream);
-
   // Give access to public folder.
   mstream.use('/', express.static(config.program.webAppDirectory));
 
@@ -696,12 +694,16 @@ export async function serveIt(configFile, { relisten = null } = {}) {
 
     const c = classifyError(error);
     if (c.kind === 'web') {
+      // c.message is set for a request Express itself refused (a body it
+      // could not parse, a URL that does not decode): a fixed text, because
+      // the parser's own message quotes the request back.
+      const message = c.message || error.message;
       if (c.level === 'error') {
-        winston.error(`Request failed: ${req.method} ${req.originalUrl} (${from}) — ${c.status}: ${error.message}`);
+        winston.error(`Request failed: ${req.method} ${req.originalUrl} (${from}) — ${c.status}: ${message}`);
       } else {
-        winston.warn(`Rejected ${req.method} ${req.originalUrl} (${from}) — ${c.status}: ${error.message}`);
+        winston.warn(`Rejected ${req.method} ${req.originalUrl} (${from}) — ${c.status}: ${message}`);
       }
-      return res.status(c.status).json({ error: error.message });
+      return res.status(c.status).json({ error: message });
     }
 
     // Unchanged wording + stack metadata on purpose: this line now MEANS
@@ -859,9 +861,9 @@ export async function serveIt(configFile, { relisten = null } = {}) {
       mdns.start();
     }
 
-    // Boot server audio (Rust preferred, CLI fallback) — runs CLI detection
-    // eagerly so the admin endpoint has fresh data by the time it's called.
-    serverPlaybackApi.bootRustPlayer().catch(() => {});
+    // Boot server audio — the mstream-player engine, and only when
+    // autoBootServerAudio is on; otherwise this starts nothing.
+    serverAudio.boot().catch(() => {});
   };
 
   if (keepListener) {
@@ -1040,7 +1042,7 @@ export function reboot() {
     // no second chance: the secondary server stayed dead until the next
     // restart.
     mdns.stop();
-    serverPlaybackApi.killRustPlayer();
+    serverAudio.stop().catch(() => {});
     // Tear down the /remote WebSocket server: it detaches its upgrade/error
     // listeners from the HTTP server (serveIt attaches a fresh one) and closes
     // its clients — an open WS client would otherwise keep a recycled listener

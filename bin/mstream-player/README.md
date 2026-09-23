@@ -24,8 +24,8 @@ re-hashing every binary before pinning it. Never edit it by hand.
 Binary naming convention: `mstream-player-{platform}-{arch}[.exe]`,
 matching Node's `process.platform` / `process.arch`. There is no musl
 build (server audio needs a sound device — not an Alpine-container
-feature); on musl hosts server audio uses the CLI players (MPD, mpv, …)
-exactly as before.
+feature), so on musl hosts server audio is unavailable: this engine is
+its only backend.
 
 Release bundles are different: they ship the player staged next to the
 server at build time (and VersionInfo-stamped on Windows), so bundle

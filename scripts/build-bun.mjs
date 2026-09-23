@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { canonicalFields, stampWindowsVersionInfo } from './win-versioninfo.mjs';
+import { fetchBytesWithRetry } from './fetch-retry.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
@@ -357,9 +358,7 @@ for (const [dir, file] of sidecars) {
     if (!bytes) {
       console.log(`  fetching p2p-sidecar: ${url}`);
       try {
-        const res = await fetch(url, { redirect: 'follow' });
-        if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
-        bytes = Buffer.from(await res.arrayBuffer());
+        bytes = await fetchBytesWithRetry(url, { label: 'p2p-sidecar' });
       } catch (err) {
         bytes = null;
         skip(`download failed: ${err.message}`);
@@ -476,9 +475,7 @@ if (!t.musl) {
     if (!bytes) {
       console.log(`  fetching mstream-player: ${url}`);
       try {
-        const res = await fetch(url, { redirect: 'follow' });
-        if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
-        bytes = Buffer.from(await res.arrayBuffer());
+        bytes = await fetchBytesWithRetry(url, { label: 'mstream-player' });
       } catch (err) {
         bytes = null;
         skip(`download failed: ${err.message}`);
@@ -553,9 +550,7 @@ if (isMac) {
     if (!ok) {
       console.log(`  fetching ghostty console: ${url}`);
       try {
-        const res = await fetch(url, { redirect: 'follow' });
-        if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
-        const bytes = Buffer.from(await res.arrayBuffer());
+        const bytes = await fetchBytesWithRetry(url, { label: 'ghostty console' });
         const gotSha = createHash('sha256').update(bytes).digest('hex');
         if (gotSha !== gm.sha256 || bytes.length !== gm.size) {
           // A hash mismatch is NEVER skippable — wrong bytes must not ship,
@@ -615,7 +610,10 @@ if (isMac) {
 // to the binary and point the loader at it at runtime via
 // NAPI_RS_NATIVE_LIBRARY_PATH (see src/state/iroh.js). Best-effort: a build that
 // can't obtain the .node still ships — remote access just stays unavailable,
-// exactly as on an unsupported platform.
+// exactly as on an unsupported platform. The exception is darwin-x64, which
+// has no npm prebuilt to obtain (upstream gap): CI cross-builds the binding
+// from iroh-ffi's pinned source and pre-places it in bin/iroh/ before running
+// this script, and a CI bundle without it is a build error, not a warning.
 stageIroh(t, contentRoot);
 
 // App icon. Windows embeds it in the .exe at compile time (--windows-icon
@@ -830,14 +828,47 @@ function napiTriple(target) {
 }
 
 // Stage @number0/iroh's prebuilt .node for `target` into <contentRoot>/bin/iroh/.
-// Native targets reuse the host-installed platform package (npm install picks
-// the host triple); cross targets fetch the matching package from npm via
+// A binding pre-placed in the checkout's bin/iroh/ wins; otherwise native
+// targets reuse the host-installed platform package (npm install picks the
+// host triple) and cross targets fetch the matching package from npm via
 // `npm pack` (which ignores os/cpu, unlike `npm install`). Best-effort — warns
-// and returns on any miss so the bundle still ships without remote access.
+// and returns on any miss so the bundle still ships without remote access —
+// except where the miss can only be a broken pipeline (see darwin-x64 below).
 function stageIroh(target, dest) {
   const triple = napiTriple(target);
   const file = `iroh.${triple}.node`;
   const destDir = join(dest, 'bin', 'iroh');
+
+  // 0) A binding pre-placed in bin/iroh/ (gitignored) — how the darwin-x64
+  // bundle ships Quick Connect at all. Upstream publishes no darwin-x64
+  // platform package (x86_64-apple-darwin isn't in @number0/iroh's napi
+  // target list; its macOS CI is Apple-silicon only), so build-bun.yml
+  // cross-builds iroh-ffi's own iroh-js crate at the tag pinned in
+  // bin/iroh/iroh-ffi-pin.json and drops the result here before invoking this
+  // script. The same path serves a local cross-bundle, or a self-built
+  // binding for any triple (bin/iroh/README.md). Matched by the full triple
+  // filename, so a darwin-x64 .node left behind by a local cross-bundle is
+  // never staged into an arm64 one.
+  const prePlaced = join(root, 'bin', 'iroh', file);
+  if (existsSync(prePlaced)) {
+    mkdirSync(destDir, { recursive: true });
+    cpSync(prePlaced, join(destDir, file));
+    console.log(`  iroh: staged ${file} (pre-built, bin/iroh/)`);
+    return;
+  }
+  if (triple === 'darwin-x64') {
+    // Nothing below can help this triple (no npm package exists), and a
+    // bundle without the .node ships Intel Macs a dead Quick Connect — under
+    // CI that means the cross-build step didn't run, so fail here rather than
+    // in the Rosetta smoke (which would also catch it) with a clear cause.
+    const msg = `iroh: no bin/iroh/${file} — upstream ships no darwin-x64 prebuilt; build-bun.yml's "Build iroh native binding" step must pre-place one (see bin/iroh/README.md)`;
+    if (process.env.CI && !process.env.MSTREAM_ALLOW_MISSING_IROH) {
+      console.error(`  FATAL: ${msg} (set MSTREAM_ALLOW_MISSING_IROH=1 to bundle without remote access on purpose)`);
+      process.exit(1);
+    }
+    console.warn(`  WARN: ${msg} — remote access unavailable in this bundle`);
+    return;
+  }
 
   // 1) Host-matching prebuilt already installed by `npm ci` (native targets).
   const installed = join(root, 'node_modules', `@number0/iroh-${triple}`, file);

@@ -49,7 +49,3 @@ documented at:
   with the binary it just built) — this table stays the manual entry point
   for everything else, and for the 5.1 harness, which needs a real
   Windows PowerShell.
-
-The CLI-audio adapter routing harness is a sibling but self-contained (it runs
-mpv/vlc/mplayer/mpd inside Docker, no external daemons): `npm run test:cli-audio`
-— see [../cli-audio/](../cli-audio/).

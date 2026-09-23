@@ -44,8 +44,8 @@ const ADMINDATA = (() => {
   // server settings
   module.serverParams = {};
   module.serverParamsUpdated = { ts: 0 };
-  // server audio backend (rust vs CLI fallback)
-  module.serverAudioInfo = { backend: null, player: null, detectedCliPlayers: [] };
+  // server audio: whether the mstream-player engine is running
+  module.serverAudioInfo = { backend: null, player: null };
   module.serverAudioInfoUpdated = { ts: 0 };
   // transcoding
   module.transcodeParams = {};
@@ -258,19 +258,7 @@ const ADMINDATA = (() => {
       });
       module.serverAudioInfo.backend = res.data.backend;
       module.serverAudioInfo.player = res.data.player;
-      module.serverAudioInfo.detectedCliPlayers = res.data.detectedCliPlayers || [];
       module.serverAudioInfoUpdated.ts = Date.now();
-    } catch (_err) {}
-  }
-
-  // Force a fresh detection probe server-side, then pull the updated info.
-  module.redetectCliPlayers = async () => {
-    try {
-      await API.axios({
-        method: 'POST',
-        url: `${API.url()}/api/v1/admin/server-audio/detect`
-      });
-      await module.getServerAudioInfo();
     } catch (_err) {}
   }
 
@@ -1479,13 +1467,8 @@ const advancedView = Vue.component('advanced-view', {
   computed: {
     activePlayerLabel: function() {
       if (!this.audioInfo.backend) { return 'None'; }
-      if (this.audioInfo.backend === 'rust') { return 'mstream-player (native)'; }
-      if (this.audioInfo.backend === 'cli') { return (this.audioInfo.player || 'cli') + ' (CLI fallback)'; }
+      if (this.audioInfo.backend === 'rust') { return 'mstream-player'; }
       return this.audioInfo.player || 'Unknown';
-    },
-    detectedCliPlayersLabel: function() {
-      const d = this.audioInfo.detectedCliPlayers || [];
-      return d.length ? d.join(', ') : 'None';
     }
   },
   template: `
@@ -1594,10 +1577,6 @@ const advancedView = Vue.component('advanced-view', {
                       <td>
                         [<a v-on:click="refreshServerAudioInfo()">refresh</a>]
                       </td>
-                    </tr>
-                    <tr>
-                      <td><b>Detected CLI players:</b> {{ detectedCliPlayersLabel }}</td>
-                      <td></td>
                     </tr>
                   </tbody>
                 </table>
@@ -1874,7 +1853,7 @@ const advancedView = Vue.component('advanced-view', {
       });
     },
     refreshServerAudioInfo: function() {
-      ADMINDATA.redetectCliPlayers();
+      ADMINDATA.getServerAudioInfo();
     },
     toggleDbSynchronous: async function() {
       const next = (this.params.dbSynchronous === 'NORMAL') ? 'FULL' : 'NORMAL';

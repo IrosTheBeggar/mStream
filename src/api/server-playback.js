@@ -1,266 +1,34 @@
-import http from 'http';
-import fs from 'fs';
+// Routes for server-side playback: /api/v1/server-playback/* and the
+// /server-remote page. The backend itself — which process is running, how it
+// is found, spawned, watched and stopped — lives in src/state/server-audio.js;
+// this module only translates paths, gates access and proxies.
+
 import fsPromises from 'fs/promises';
 import path from 'path';
-import child_process from 'child_process';
+import Joi from 'joi';
 import winston from 'winston';
 import * as config from '../state/config.js';
+import * as serverAudio from '../state/server-audio.js';
 import * as vpath from '../util/vpath.js';
 import * as db from '../db/manager.js';
-import { appRoot } from '../util/esm-helpers.js';
-import * as killQueue from '../state/kill-list.js';
-import * as cliAudio from './cli-audio/index.js';
-import { playerKey, managedPlayerPath, ensurePlayer, canAutoFetch } from '../util/mstream-player-bootstrap.js';
+import { joiValidate } from '../util/validation.js';
+import WebError from '../util/web-error.js';
 
-let rustPlayerProcess = null;
+// ── Path translation ────────────────────────────────────────────────────────
 
-killQueue.addToKillQueue(() => {
-  if (rustPlayerProcess) {
-    rustPlayerProcess.kill();
-    rustPlayerProcess = null;
-  }
-  cliAudio.killCliPlayer().catch(() => {});
-});
-
-// Snapshot of CLI detection. Refreshed eagerly at boot, on autoBoot toggle,
-// and whenever an admin hits /api/v1/admin/server-audio/detect. Exported so
-// the admin info endpoint can read it without re-probing on every hit.
-let _detectedCliPlayers = [];
-export async function refreshDetectedCliPlayers() {
-  _detectedCliPlayers = await cliAudio.detectAvailablePlayers();
-  return _detectedCliPlayers;
-}
-export function getDetectedCliPlayers() {
-  return _detectedCliPlayers;
-}
-
-export function getActiveBackend() {
-  if (rustPlayerProcess) { return { backend: 'rust', player: 'mstream-player' }; }
-  if (cliAudio.isCliActive()) { return { backend: 'cli', player: cliAudio.getActivePlayerName() }; }
-  return { backend: null, player: null };
-}
-
-// Can a missing player binary be fetched for this platform? Surfaced on the
-// admin info endpoint so the UI can tell "one download away" apart from
-// "not available here" (musl hosts).
-export function playerBinaryFetchable() {
-  return canAutoFetch();
-}
-
-function getRustPort() {
-  return config.program.rustPlayerPort || 3333;
-}
-
-// ── Auto-boot logic ───────────────────────────────────────────────────────
-
-// Sync, side-effect-free-ish resolver (mirrors discovery-p2p's
-// resolveSidecarBinary). Rungs, in trust order:
-//   1. dev cargo build of the player repo cloned into this checkout
-//   2. bundle-staged / operator-placed copy under appRoot
-//   3. the managed dataRoot home where the runtime fetch installs
-// The manifest key IS the filename, so there is no mapping to drift.
-function findRustBinary() {
-  const ext = process.platform === 'win32' ? '.exe' : '';
-  const candidates = [
-    path.join(appRoot, `mstream-terminal-player/target/release/mstream-player${ext}`),
-    path.join(appRoot, 'bin', 'mstream-player', playerKey()),
-  ];
-  const managed = managedPlayerPath();
-  if (!candidates.includes(managed)) { candidates.push(managed); }
-
-  for (const bin of candidates) {
-    if (fs.existsSync(bin)) {
-      // Docker image builds / tarball extraction / zip commonly strip the
-      // execute bit — without this, spawn fails with EACCES on every boot.
-      // No-op on Windows. `chmod` fails silently on read-only volumes; the
-      // downstream spawn will surface the real error if exec is truly
-      // blocked (noexec mount, SELinux). Matches the rust-parser's fix in
-      // src/db/task-queue.js.
-      try { fs.chmodSync(bin, 0o755); } catch (_) {}
-      return bin;
-    }
-  }
-  return null;
-}
-
-// Has the currently-spawned rust process stayed up long enough that we
-// consider startup successful? Used by the rust-fallback path: if rust dies
-// before this goes true, we treat the spawn as failed and roll over to CLI.
-let _rustStartupSettled = false;
-const RUST_SETTLE_MS = 2000;
-
-async function bootCliFallback(reason, preferredPlayer = null) {
-  if (cliAudio.isCliActive()) { return; }
-  if (_detectedCliPlayers.length === 0) {
-    winston.warn(`[server-audio] ${reason}; no CLI audio players detected — server audio unavailable`);
-    return;
-  }
+// Resolve a virtual path (e.g. "55/song.mp3") to an absolute filesystem path,
+// on behalf of THIS user: getVPathInfo enforces the caller's library access
+// and rejects with a typed 404. Clients build vpaths from what the server
+// handed them, so a rejected one is almost never an honest mistake — it is
+// stale client state or someone probing, and gets a line naming who sent what
+// before the 404 goes out (the transcode routes' convention).
+function resolveFilePath(filePath, user) {
   try {
-    const name = await cliAudio.bootCliPlayer(preferredPlayer);
-    if (name) {
-      winston.info(`[server-audio] ${reason}; using CLI fallback: ${name}`);
-    } else {
-      winston.warn(`[server-audio] ${reason}; CLI players detected but none would start`);
-    }
+    return vpath.getVPathInfo(filePath, user).fullPath;
   } catch (err) {
-    winston.error(`[server-audio] CLI fallback failed: ${err.message}`);
+    winston.warn(`[server-audio] vpath rejected for user '${user?.username}': '${filePath}' (${err.message})`);
+    throw err;
   }
-}
-
-/**
- * Boot whichever server-audio backend is appropriate.
- *
- *   autoBootServerAudio: true  → prefer the Rust binary; fall back to a CLI
- *                                player if the binary is missing, the spawn
- *                                fails (permission denied, etc.), or the
- *                                process exits during startup.
- *   autoBootServerAudio: false → skip Rust entirely and prefer MPD, since
- *                                that's the CLI option most often used on
- *                                self-hosted / NAS setups where a dedicated
- *                                audio daemon is already running. Falls back
- *                                to other installed CLI players if MPD isn't
- *                                available.
- *
- * Name is kept for backwards-compatibility with existing callers in
- * src/server.js and src/api/admin.js. Returns a Promise; callers that don't
- * need to await may fire-and-forget.
- */
-export async function bootRustPlayer() {
-  if (rustPlayerProcess) { return; }
-
-  // Refresh the CLI detection snapshot so the fallback decision (and the
-  // admin /info endpoint) have current data.
-  await refreshDetectedCliPlayers();
-
-  if (!config.program.autoBootServerAudio) {
-    await bootCliFallback('autoBootServerAudio=false', 'mpd');
-    return;
-  }
-
-  let bin = findRustBinary();
-  if (!bin && canAutoFetch()) {
-    // npm/source/Docker installs: the binary left git — fetch the pinned
-    // release build on first use (bundles ship it staged, so they never
-    // land here). A failed fetch degrades to the CLI players like any
-    // other miss; the cause is already logged by the bootstrap.
-    try {
-      bin = await ensurePlayer();
-    } catch (err) {
-      await bootCliFallback(`mstream-player fetch failed: ${err.message}`);
-      return;
-    }
-  }
-  if (!bin) {
-    await bootCliFallback('mstream-player binary not found');
-    return;
-  }
-
-  const port = getRustPort();
-  winston.info(`Starting mstream-player (server audio) on port ${port}`);
-
-  _rustStartupSettled = false;
-  rustPlayerProcess = child_process.spawn(bin, ['--port', String(port)], {
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-
-  const settleTimer = setTimeout(() => {
-    _rustStartupSettled = true;
-  }, RUST_SETTLE_MS);
-
-  rustPlayerProcess.stdout.on('data', (data) => {
-    winston.info(`[mstream-player] ${data.toString().trim()}`);
-  });
-
-  rustPlayerProcess.stderr.on('data', (data) => {
-    winston.error(`[mstream-player] ${data.toString().trim()}`);
-  });
-
-  rustPlayerProcess.on('close', (code) => {
-    clearTimeout(settleTimer);
-    winston.info(`mstream-player exited with code ${code}`);
-    const settled = _rustStartupSettled;
-    rustPlayerProcess = null;
-    if (!settled) {
-      // Died during startup → roll over to CLI.
-      bootCliFallback(`mstream-player exited early (code ${code})`).catch(() => {});
-    }
-  });
-
-  rustPlayerProcess.on('error', (err) => {
-    clearTimeout(settleTimer);
-    winston.error(`Failed to start mstream-player: ${err.message}`);
-    const settled = _rustStartupSettled;
-    rustPlayerProcess = null;
-    if (!settled) {
-      bootCliFallback(`mstream-player spawn failed: ${err.message}`).catch(() => {});
-    }
-  });
-}
-
-export function killRustPlayer() {
-  if (rustPlayerProcess) {
-    rustPlayerProcess.kill();
-    rustPlayerProcess = null;
-  }
-  cliAudio.killCliPlayer().catch(() => {});
-}
-
-// Proxy a request to the Rust binary and pipe the response back.
-// Exported: cli-audio/index.js's proxyToCli is its drop-in counterpart.
-export function proxyToRust(method, rustPath, body) {
-  return new Promise((resolve, reject) => {
-    const postData = body ? JSON.stringify(body) : '';
-    const options = {
-      hostname: '127.0.0.1',
-      port: getRustPort(),
-      path: rustPath,
-      method: method,
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 5000
-    };
-
-    const req = http.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
-      res.on('end', () => {
-        try {
-          resolve({ status: res.statusCode, data: JSON.parse(data) });
-        } catch (_e) {
-          resolve({ status: res.statusCode, data: { raw: data } });
-        }
-      });
-    });
-
-    req.on('error', (_e) => {
-      reject(new Error('Server audio player is not running'));
-    });
-
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new Error('Server audio player timed out'));
-    });
-
-    if (postData) { req.write(postData); }
-    req.end();
-  });
-}
-
-// Dispatch to whichever backend is active. Rust is preferred; CLI is used
-// when the Rust binary is missing but a CLI fallback has been booted.
-function proxyPlayback(method, rustPath, body) {
-  if (rustPlayerProcess) {
-    return proxyToRust(method, rustPath, body);
-  }
-  if (cliAudio.isCliActive()) {
-    return cliAudio.proxyToCli(method, rustPath, body);
-  }
-  return Promise.reject(new Error('Server audio player is not running'));
-}
-
-// Resolve a virtual path (e.g. "55/song.mp3") to an absolute filesystem path
-export function resolveFilePath(filePath, user) {
-  const info = vpath.getVPathInfo(filePath, user);
-  return info.fullPath;
 }
 
 // Is `child` the same path as `root`, or inside it? A plain startsWith isn't
@@ -273,7 +41,7 @@ export function isWithin(child, root) {
 }
 
 // Reverse: convert an absolute path back to a virtual path (e.g. "55/song.mp3")
-export function absoluteToVpath(absolutePath) {
+function absoluteToVpath(absolutePath) {
   const normalized = path.normalize(absolutePath);
   const libraries = db.getAllLibraries();
   for (const lib of libraries) {
@@ -286,6 +54,149 @@ export function absoluteToVpath(absolutePath) {
   // If no vpath matches, return the filename as fallback
   return path.basename(absolutePath);
 }
+
+// ── Request bodies ──────────────────────────────────────────────────────────
+
+const oneFileSchema = Joi.object({ file: Joi.string().required() });
+const manyFilesSchema = Joi.object({ files: Joi.array().items(Joi.string()).required() });
+
+// { file: vpath } → { file: absolute path }. A malformed body is a 400 from
+// the schema; a library the caller lacks is resolveFilePath's 404.
+function oneFile(req) {
+  const { value } = joiValidate(oneFileSchema, req.body || {});
+  return { file: resolveFilePath(value.file, req.user) };
+}
+
+function manyFiles(req) {
+  const { value } = joiValidate(manyFilesSchema, req.body || {});
+  return { files: value.files.map((f) => resolveFilePath(f, req.user)) };
+}
+
+// ── Response bodies ─────────────────────────────────────────────────────────
+//
+// The engine speaks absolute paths — that is what it was handed — and no
+// absolute path may reach a client: it tells every user with server-audio
+// access how the host's disks are laid out. /queue always translated; /status
+// handed `file` through untouched until this was caught. Pure and exported so
+// the unit tests need no database (`toVpath` is injectable).
+
+// GET /status: the current track as a library path, plus which backend
+// answered. Anything that is not a status object passes through untouched.
+export function statusForClient(data, active, toVpath = absoluteToVpath) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) { return data; }
+  const out = { ...data, backend: active.backend, player: active.player };
+  if (typeof data.file === 'string' && data.file !== '') { out.file = toVpath(data.file); }
+  return out;
+}
+
+// GET /queue: every entry as a library path.
+export function queueForClient(data, toVpath = absoluteToVpath) {
+  if (!data || !Array.isArray(data.queue)) { return data; }
+  return { ...data, queue: data.queue.map(toVpath) };
+}
+
+// ── The one proxied-route handler ───────────────────────────────────────────
+
+/**
+ * Build the handler for one proxied route: shape the backend's request body,
+ * proxy, shape the answer.
+ *
+ *   mapBody(req)    → the body the backend gets. Default: the request's own
+ *                     body for a POST, none for a GET. Runs BEFORE the proxy,
+ *                     so a malformed body or a library the caller lacks is
+ *                     their error whether or not a backend is up. Its throws
+ *                     go to the terminal error handler like any other
+ *                     route's (schema → 400, WebError → its own status).
+ *   mapResult(data) → the body the client gets, for a backend success.
+ *
+ * The backend's own status code and body are passed through as they are: a
+ * 409 "already at end of queue" is the backend's answer, not a proxy failure.
+ *
+ * `proxy` is a parameter so the unit tests can drive a handler with no
+ * backend at all.
+ */
+export function proxyRoute(proxy, method, rustPath, { mapBody, mapResult } = {}) {
+  return async (req, res) => {
+    let body;
+    if (mapBody) { body = mapBody(req); }
+    else if (method !== 'GET') { body = req.body || {}; }
+
+    let result;
+    try {
+      result = await proxy(method, rustPath, body);
+    } catch (err) {
+      // "No backend answered" is a state, not an incident, so it is answered
+      // here instead of by the terminal handler: the remote page polls
+      // /status twice a second, and every one of those would be an
+      // error-level log line for as long as the backend stays down. The
+      // cause is not lost — the lifecycle module logs why a backend went
+      // away, and the proxy logs the socket error when an engine stops
+      // answering, once per outage.
+      if (err instanceof WebError && err.status === 503) {
+        return res.status(503).json({ error: err.message });
+      }
+      throw err;
+    }
+
+    const data = mapResult && result.status < 400 ? mapResult(result.data) : result.data;
+    res.status(result.status).json(data);
+  };
+}
+
+// ── /server-remote ──────────────────────────────────────────────────────────
+
+// The /server-remote page is index.html with the browser player swapped for
+// the server-audio client. Pure and exported so a unit test can pin it against
+// the REAL index.html: every step is an exact-string or regex match that
+// silently no-ops when the markup drifts (three visualizer-script strips sat
+// here as dead code for months for exactly that reason). Hiding the sidebar
+// items and buttons that make no sense in this mode is the client's job —
+// mstream.server-audio.js injects that CSS at parse time.
+export function rewriteIndexForServerAudio(page) {
+  return page
+    // Swap mstream.player.js for mstream.server-audio.js, which implements the
+    // same MSTREAMPLAYER interface but routes every command through the
+    // server-playback API. The flag must be set before the client script runs.
+    .replace(
+      '<script src="assets/js/mstream.player.js"></script>',
+      '<script>var serverAudioMode = true;</script>\n  <script src="assets/js/mstream.server-audio.js"></script>'
+    )
+    // Scripts with no role in server-audio mode: the jukebox remote, the QR
+    // pairing code, and the visualizer loader (the client stubs VIZ).
+    .replace('<script src="assets/js/mstream.jukebox.js"></script>', '')
+    .replace('<script defer src="assets/js/lib/qr.js"></script>', '')
+    .replace('<script src="assets/js/t.js"></script>', '')
+    // Replace the visualizer button (the equalizer SVG inside div.grow.flex-center)
+    // with a "Server Audio" badge so the player bar keeps its layout spacer.
+    .replace(
+      /(<div class="grow flex-center">)\s*<svg v-on:click="fadeOverlay"[^]*?<\/svg>\s*(<\/div>)/,
+      '$1<span style="background:#264679;color:#fff;padding:3px 10px;border-radius:4px;font-size:11px;opacity:0.85;">Server Audio</span>$2'
+    );
+}
+
+// What /server-remote answers while the engine is not up. The advice has to
+// match what the lifecycle can actually do: the proxy only ever talks to an
+// engine the SERVER spawned, so "start the mstream-player binary yourself" —
+// what this page said for months — never worked. autoBootServerAudio is the
+// one switch: it brings the engine up (fetching it on first use), and when it
+// is already on and the engine still is not running, the reason is in the
+// server log.
+export const UNAVAILABLE_PAGE =
+  '<!doctype html><html><head><meta charset="utf-8"><title>Server Audio Unavailable</title>' +
+  '<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+  'display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;' +
+  'background:#1a1a2e;color:#e4e4e4;text-align:center;}' +
+  '.box{max-width:440px;padding:40px;}' +
+  'h1{font-size:24px;margin-bottom:12px;color:#7aabdf;}' +
+  'p{color:#999;line-height:1.6;margin-bottom:24px;}' +
+  'a{color:#7aabdf;text-decoration:none;}a:hover{text-decoration:underline;}' +
+  '</style></head><body><div class="box">' +
+  '<h1>Server Audio Unavailable</h1>' +
+  '<p>The server audio engine is not running. Turn on <b>autoBootServerAudio</b> in the ' +
+  '<a href="/admin">admin panel</a> to start it. If it is already on, the engine failed to ' +
+  'start on this machine and the server log says why.</p>' +
+  '<a href="/server-remote">Retry</a> &middot; <a href="/">Normal Mode</a>' +
+  '</div></body></html>';
 
 // Single source of truth for "may this user touch server audio?" — shared
 // between the /api/v1/server-playback/* middleware and the /server-remote
@@ -308,224 +219,58 @@ export function setup(mstream) {
     next();
   });
 
-  // ── Simple proxy routes (no path translation needed) ────────────────────
+  // ── Proxied routes ──────────────────────────────────────────────────────
+  // Every route is the backend's own path under one prefix, so a single name
+  // serves both sides. Most need nothing else; the rest say what they map.
+  const routes = [
+    ['post', '/pause'],
+    ['post', '/resume'],
+    ['post', '/stop'],
+    ['post', '/next'],
+    ['post', '/previous'],
+    ['post', '/loop'],
+    ['post', '/seek'],             // { position: seconds }
+    ['post', '/volume'],           // { volume: 0..1 }
+    ['post', '/shuffle'],          // { value: boolean }
+    ['get',  '/status',           { mapResult: (data) => statusForClient(data, serverAudio.getActiveBackend()) }],
+    ['get',  '/queue',            { mapResult: (data) => queueForClient(data) }],
+    ['post', '/play',             { mapBody: oneFile }],     // clear queue, add file, play
+    ['post', '/queue/add',        { mapBody: oneFile }],
+    ['post', '/queue/add-many',   { mapBody: manyFiles }],
+    ['post', '/queue/play-index'], // { index }
+    ['post', '/queue/remove'],     // { index }
+    ['post', '/queue/clear',      { mapBody: () => ({}) }],  // stop and empty the queue
+  ];
 
-  const simplePostRoutes = {
-    '/api/v1/server-playback/pause': '/pause',
-    '/api/v1/server-playback/resume': '/resume',
-    '/api/v1/server-playback/stop': '/stop',
-    '/api/v1/server-playback/next': '/next',
-    '/api/v1/server-playback/previous': '/previous',
-    '/api/v1/server-playback/loop': '/loop',
-  };
-
-  for (const [mstreamPath, rustPath] of Object.entries(simplePostRoutes)) {
-    mstream.post(mstreamPath, async (req, res) => {
-      try {
-        const result = await proxyPlayback('POST', rustPath, req.body || {});
-        res.status(result.status).json(result.data);
-      } catch (e) {
-        res.status(503).json({ error: e.message });
-      }
-    });
+  for (const [verb, rustPath, opts] of routes) {
+    mstream[verb](`/api/v1/server-playback${rustPath}`, proxyRoute(serverAudio.proxy, verb.toUpperCase(), rustPath, opts));
   }
-
-  // ── POST routes with body passthrough ───────────────────────────────────
-
-  mstream.post('/api/v1/server-playback/seek', async (req, res) => {
-    try {
-      const result = await proxyPlayback('POST', '/seek', req.body);
-      res.status(result.status).json(result.data);
-    } catch (e) {
-      res.status(503).json({ error: e.message });
-    }
-  });
-
-  mstream.post('/api/v1/server-playback/volume', async (req, res) => {
-    try {
-      const result = await proxyPlayback('POST', '/volume', req.body);
-      res.status(result.status).json(result.data);
-    } catch (e) {
-      res.status(503).json({ error: e.message });
-    }
-  });
-
-  mstream.post('/api/v1/server-playback/shuffle', async (req, res) => {
-    try {
-      const result = await proxyPlayback('POST', '/shuffle', req.body);
-      res.status(result.status).json(result.data);
-    } catch (e) {
-      res.status(503).json({ error: e.message });
-    }
-  });
-
-  // ── GET routes ──────────────────────────────────────────────────────────
-
-  mstream.get('/api/v1/server-playback/status', async (req, res) => {
-    try {
-      const result = await proxyPlayback('GET', '/status');
-      if (result.data && typeof result.data === 'object' && !Array.isArray(result.data)) {
-        const active = getActiveBackend();
-        result.data.backend = active.backend;
-        result.data.player = active.player;
-      }
-      res.status(result.status).json(result.data);
-    } catch (e) {
-      res.status(503).json({ error: e.message });
-    }
-  });
-
-  mstream.get('/api/v1/server-playback/queue', async (req, res) => {
-    try {
-      const result = await proxyPlayback('GET', '/queue');
-      // Convert absolute paths back to virtual paths for the frontend
-      if (result.data && result.data.queue) {
-        result.data.queue = result.data.queue.map(absoluteToVpath);
-      }
-      res.status(result.status).json(result.data);
-    } catch (e) {
-      res.status(503).json({ error: e.message });
-    }
-  });
-
-  // ── Routes that need file path translation ──────────────────────────────
-
-  // POST /play — clear queue, add file, play
-  mstream.post('/api/v1/server-playback/play', async (req, res) => {
-    try {
-      const absolutePath = resolveFilePath(req.body.file, req.user);
-      const result = await proxyPlayback('POST', '/play', { file: absolutePath });
-      res.status(result.status).json(result.data);
-    } catch (e) {
-      res.status(e.message.includes('not running') ? 503 : 400).json({ error: e.message });
-    }
-  });
-
-  // POST /queue/add — append one file
-  mstream.post('/api/v1/server-playback/queue/add', async (req, res) => {
-    try {
-      const absolutePath = resolveFilePath(req.body.file, req.user);
-      const result = await proxyPlayback('POST', '/queue/add', { file: absolutePath });
-      res.status(result.status).json(result.data);
-    } catch (e) {
-      res.status(e.message.includes('not running') ? 503 : 400).json({ error: e.message });
-    }
-  });
-
-  // POST /queue/add-many — append multiple files
-  mstream.post('/api/v1/server-playback/queue/add-many', async (req, res) => {
-    try {
-      const files = req.body.files.map((f) => resolveFilePath(f, req.user));
-      const result = await proxyPlayback('POST', '/queue/add-many', { files });
-      res.status(result.status).json(result.data);
-    } catch (e) {
-      res.status(e.message.includes('not running') ? 503 : 400).json({ error: e.message });
-    }
-  });
-
-  // POST /queue/play-index — jump to index
-  mstream.post('/api/v1/server-playback/queue/play-index', async (req, res) => {
-    try {
-      const result = await proxyPlayback('POST', '/queue/play-index', req.body);
-      res.status(result.status).json(result.data);
-    } catch (e) {
-      res.status(503).json({ error: e.message });
-    }
-  });
-
-  // POST /queue/remove — remove by index
-  mstream.post('/api/v1/server-playback/queue/remove', async (req, res) => {
-    try {
-      const result = await proxyPlayback('POST', '/queue/remove', req.body);
-      res.status(result.status).json(result.data);
-    } catch (e) {
-      res.status(503).json({ error: e.message });
-    }
-  });
-
-  // POST /queue/clear — stop and empty queue
-  mstream.post('/api/v1/server-playback/queue/clear', async (req, res) => {
-    try {
-      const result = await proxyPlayback('POST', '/queue/clear', {});
-      res.status(result.status).json(result.data);
-    } catch (e) {
-      res.status(503).json({ error: e.message });
-    }
-  });
 
   // ── /server-remote page (serves the webapp with serverAudioMode flag) ──
   //
-  // Previously lived in setupBeforeAuth() so anyone could hit the page, but
-  // that let unauthenticated users probe whether server audio was running.
-  // The page only makes sense for users who can actually control playback,
-  // so it now sits behind the same auth + permission checks as the APIs.
+  // Previously registered ahead of the auth wall so anyone could hit the
+  // page, but that let unauthenticated users probe whether server audio was
+  // running. The page only makes sense for users who can actually control
+  // playback, so it sits behind the same auth + permission checks as the APIs.
   mstream.get('/server-remote', async (req, res) => {
     if (!userCanUseServerAudio(req.user)) {
       return res.status(403).json({ error: 'Server audio access disabled for this user' });
     }
 
-    // Check if any audio backend (rust or CLI fallback) is reachable
+    // Is the engine answering? Not an error worth a log line when it isn't —
+    // see proxyRoute — just a different page.
     try {
-      await proxyPlayback('GET', '/status');
-    } catch (_e) {
-      res.status(503).send(
-        '<!doctype html><html><head><meta charset="utf-8"><title>Server Audio Unavailable</title>' +
-        '<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
-        'display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;' +
-        'background:#1a1a2e;color:#e4e4e4;text-align:center;}' +
-        '.box{max-width:440px;padding:40px;}' +
-        'h1{font-size:24px;margin-bottom:12px;color:#7aabdf;}' +
-        'p{color:#999;line-height:1.6;margin-bottom:24px;}' +
-        'a{color:#7aabdf;text-decoration:none;}a:hover{text-decoration:underline;}' +
-        '</style></head><body><div class="box">' +
-        '<h1>Server Audio Unavailable</h1>' +
-        '<p>The server audio player is not running. Start the mstream-player binary or enable ' +
-        '<b>autoBootServerAudio</b> in the <a href="/admin">admin panel</a>.</p>' +
-        '<a href="/server-remote">Retry</a> &middot; <a href="/">Normal Mode</a>' +
-        '</div></body></html>'
-      );
-      return;
+      await serverAudio.proxy('GET', '/status');
+    } catch (_err) {
+      return res.status(503).send(UNAVAILABLE_PAGE);
     }
 
     try {
-      let page = await fsPromises.readFile(path.join(config.program.webAppDirectory, 'index.html'), 'utf-8');
-      // Replace the browser audio player with the server audio player.
-      // This swaps mstream.player.js for mstream.server-audio.js which
-      // implements the same MSTREAMPLAYER interface but routes all commands
-      // to the Rust audio binary via the server-playback API.
-      // Swap browser audio player for server audio player
-      page = page.replace(
-        '<script src="assets/js/mstream.player.js"></script>',
-        '<script>var serverAudioMode = true;</script>\n  <script src="assets/js/mstream.server-audio.js"></script>'
-      );
-
-      // Strip out scripts not needed in server audio mode
-      page = page.replace('<script src="assets/js/mstream.jukebox.js"></script>', '');
-      page = page.replace('<script defer src="assets/js/lib/qr.js"></script>', '');
-      page = page.replace('<script src="assets/js/t.js"></script>', '');
-      page = page.replace('<script async src="assets/js/lib/butterchurn.min.js"></script>', '');
-      page = page.replace('<script async src="assets/js/lib/butterchurn-presets.min.js"></script>', '');
-      page = page.replace('<script async src="assets/js/lib/butterchurn-presets-extra.js"></script>', '');
-
-      // Remove sidebar items not relevant to server audio mode (Auto DJ, Transcode, Jukebox)
-      page = page.replace(/\s*<div[^>]*onclick="changeView\(autoDjPanel[^]*?<\/span>\s*<\/div>/i, '');
-      page = page.replace(/\s*<div[^>]*onclick="changeView\(setupTranscodePanel[^]*?<\/span>\s*<\/div>/i, '');
-      page = page.replace(/\s*<div[^>]*onclick="changeView\(setupJukeboxPanel[^]*?<\/span>\s*<\/div>/i, '');
-
-      // Replace the visualizer button (div.grow.flex-center with the equalizer SVG)
-      // with a "Server Audio" badge to preserve the layout spacer
-      page = page.replace(
-        /(<div class="grow flex-center">)\s*<svg v-on:click="fadeOverlay"[^]*?<\/svg>\s*(<\/div>)/,
-        '$1<span style="background:#264679;color:#fff;padding:3px 10px;border-radius:4px;font-size:11px;opacity:0.85;">Server Audio</span>$2'
-      );
-
-      res.send(page);
-    } catch (_e) {
+      const page = await fsPromises.readFile(path.join(config.program.webAppDirectory, 'index.html'), 'utf-8');
+      res.send(rewriteIndexForServerAudio(page));
+    } catch (err) {
+      winston.warn(`[server-audio] failed to serve /server-remote: ${err.message}`);
       res.status(500).json({ error: 'Failed to serve server-remote page' });
     }
   });
 }
-
-// Retained so existing call sites in src/server.js keep compiling — /server-
-// remote was moved into setup() so it sits behind auth now.
-export function setupBeforeAuth() {}

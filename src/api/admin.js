@@ -18,6 +18,7 @@ import * as discoveryExport from '../db/discovery-export.js';
 import { EMBEDDING_MODELS } from '../db/discovery-features-lib.js';
 import * as discoveryP2p from '../state/discovery-p2p.js';
 import * as sidecarBootstrap from '../util/p2p-sidecar-bootstrap.js';
+import * as playerBootstrap from '../util/mstream-player-bootstrap.js';
 import * as discoveryCatalog from '../state/discovery-catalog.js';
 import * as discoverySeeds from '../state/discovery-seeds.js';
 import * as discoveryStack from '../state/discovery-p2p-stack.js';
@@ -29,7 +30,7 @@ import { joiValidate } from '../util/validation.js';
 import { expandHomeDir } from '../util/esm-helpers.js';
 import { isAdminAllowed } from '../util/admin-network.js';
 import WebError from '../util/web-error.js';
-import { bootRustPlayer, killRustPlayer, getActiveBackend, getDetectedCliPlayers, refreshDetectedCliPlayers, playerBinaryFetchable } from './server-playback.js';
+import * as serverAudio from '../state/server-audio.js';
 import * as lyricsLrclib from './lyrics-cache.js';
 import { warmScrobbleUser } from './scrobbler.js';
 // Torrent admin endpoints live in their own module — see
@@ -1862,12 +1863,11 @@ export function setup(mstream) {
 
     await admin.editAutoBootServerAudio(req.body.autoBootServerAudio);
 
-    // Flag controls Rust preference now. Either way, re-boot server audio so
-    // the active backend matches the new setting:
-    //   true  → kill current backend, boot Rust (with CLI fallback)
-    //   false → kill current backend, boot CLI directly (MPD preferred)
-    killRustPlayer();
-    await bootRustPlayer();
+    // The flag is server audio's on/off switch, applied live: restart()
+    // stops the engine and boots it again only if the flag now says so. It
+    // waits for the old engine to exit first, so a re-enable spawns into a
+    // free port.
+    await serverAudio.restart();
 
     res.json({});
   });
@@ -1883,24 +1883,15 @@ export function setup(mstream) {
   });
 
   mstream.get("/api/v1/admin/server-audio/info", (req, res) => {
-    const active = getActiveBackend();
+    const active = serverAudio.getActiveBackend();
     res.json({
       backend: active.backend,
       player: active.player,
-      detectedCliPlayers: getDetectedCliPlayers(),
       // Whether a missing player binary could be fetched for this platform
       // (npm/source installs download it on first autoBoot; musl hosts
       // have no build and report false).
-      binaryFetchable: playerBinaryFetchable(),
+      binaryFetchable: playerBootstrap.canAutoFetch(),
     });
-  });
-
-  // Re-run the CLI player detection probe. Use this after installing or
-  // removing a player (mpv, vlc, mplayer, or an MPD daemon) without having
-  // to restart the server.
-  mstream.post("/api/v1/admin/server-audio/detect", async (req, res) => {
-    const detected = await refreshDetectedCliPlayers();
-    res.json({ detectedCliPlayers: detected });
   });
 
   mstream.post("/api/v1/admin/config/secret", async (req, res) => {

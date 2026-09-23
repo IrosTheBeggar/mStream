@@ -659,6 +659,66 @@ jobs:
           # verifies their fetched bytes against sha256 pins per build.)
           [ "$fail" = 0 ]
 
+      # ── iroh native binding for darwin-x64 ───────────────────────────────
+      # @number0/iroh publishes no darwin-x64 platform package (upstream's
+      # macOS CI is Apple-silicon only; x86_64-apple-darwin is not in its napi
+      # target list), so stageIroh() in build-bun.mjs had nothing to fetch for
+      # this leg and every Intel-Mac bundle shipped with Quick Connect dead.
+      # Build the crate upstream publishes (iroh-js, at the tag pinned in
+      # bin/iroh/iroh-ffi-pin.json) for x86_64-apple-darwin right here — the
+      # arm64 runner cross-compiles it the way the launcher step above
+      # cross-builds the launcher — and pre-place it where stageIroh() looks
+      # first. The Rosetta smoke below then asserts the shipped x64 server
+      # dlopens it, and a darwin-x64 bundle without it is a bundler FATAL.
+      #
+      # Cache: non-tag runs restore the .node by pin-file hash (a cold build
+      # is ~5 min on this runner; the pin only moves with an @number0/iroh
+      # bump). Tag builds never touch the cache — the shipped binding is
+      # always compiled from the pinned commit on the release run itself.
+      - name: Restore cached iroh .node (darwin-x64, non-tag)
+        if: matrix.key == 'darwin-x64' && github.ref_type != 'tag'
+        uses: actions/cache@v4
+        with:
+          path: bin/iroh/iroh.darwin-x64.node
+          key: iroh-node-darwin-x64-${{ hashFiles('bin/iroh/iroh-ffi-pin.json') }}-v1
+
+      - name: Build iroh native binding from source (darwin-x64)
+        if: matrix.key == 'darwin-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=bin/iroh/iroh.darwin-x64.node
+          if [ -f "$OUT" ]; then
+            echo "restored from cache: $OUT ($(file -b "$OUT"))"
+            exit 0
+          fi
+          PIN=bin/iroh/iroh-ffi-pin.json
+          REPO=$(node -pe "require('./$PIN').repo")
+          TAG=$(node -pe "require('./$PIN').tag")
+          COMMIT=$(node -pe "require('./$PIN').commit")
+          CRATE=$(node -pe "require('./$PIN').crate")
+          TARGET=$(node -pe "require('./$PIN').builds['darwin-x64'].target")
+          MDT=$(node -pe "require('./$PIN').builds['darwin-x64'].macosxDeploymentTarget")
+          # The JS half (index.js, from the lockfile) and the native half
+          # built here must be one release.
+          LOCKVER=$(node -pe "require('./package-lock.json').packages['node_modules/@number0/iroh'].version")
+          [ "$TAG" = "v$LOCKVER" ] || { echo "::error::$PIN pins $TAG but package-lock.json installs @number0/iroh $LOCKVER — bump the pin with the dependency (bin/iroh/README.md)"; exit 1; }
+          SRC="$RUNNER_TEMP/iroh-ffi"
+          rm -rf "$SRC"
+          git clone -q --depth 1 --branch "$TAG" "https://github.com/$REPO.git" "$SRC"
+          HAVE=$(git -C "$SRC" rev-parse HEAD)
+          [ "$HAVE" = "$COMMIT" ] || { echo "::error::$REPO tag $TAG is commit $HAVE but $PIN pins $COMMIT — the tag moved; re-verify upstream before re-pinning"; exit 1; }
+          rustup target add "$TARGET"
+          # --locked: upstream's own Cargo.lock decides every transitive crate.
+          MACOSX_DEPLOYMENT_TARGET="$MDT" cargo build --release --locked \
+            --target "$TARGET" -p "$CRATE" --manifest-path "$SRC/Cargo.toml"
+          DYLIB="$SRC/target/$TARGET/release/lib${CRATE}.dylib"
+          strip -x "$DYLIB"
+          mkdir -p bin/iroh
+          cp "$DYLIB" "$OUT"
+          file -b "$OUT" | grep -q 'x86_64' || { echo "::error::$OUT is not an x86_64 Mach-O: $(file -b "$OUT")"; exit 1; }
+          echo "built $OUT from $REPO@$TAG ($COMMIT): $(file -b "$OUT")"
+
       - name: Build + bundle (${{ matrix.key }})
         run: bun scripts/build-bun.mjs --target=${{ matrix.key }} --bundle
 
@@ -1329,8 +1389,12 @@ jobs:
       # self-dispatch boots the x64 Bun binary far enough that JavaScriptCore
       # must JIT — the class of failure `codesign --verify` cannot see. Runs
       # on unsigned builds too (no secrets): still proves the x64 Bun blob
-      # executes, at ~2s cost. (iroh-selftest would be wrong here — darwin-x64
-      # ships without an iroh .node, an upstream prebuilt gap.)
+      # executes, at ~2s cost. A second self-dispatch is this leg's stand-in
+      # for the native legs' "Smoke test iroh native binding" step: the x64
+      # server must dlopen the iroh .node the source-build step above made
+      # (IROH_OK). On a signed build that also proves the binding passed
+      # hardened-runtime library validation — i.e. the sign step's find walk
+      # signed it with the same identity as the server.
       - name: Smoke x64 binary under Rosetta (darwin-x64)
         if: matrix.key == 'darwin-x64'
         shell: bash
@@ -1341,6 +1405,9 @@ jobs:
           OUT=$("$BIN" --mstream-worker=scanner '{}' 2>&1) || true
           echo "$OUT" | grep -q dbPath || { echo "::error::x64 mstream-server did not run under Rosetta (hardened-runtime/entitlement or Bun-blob problem)"; echo "$OUT" | head -20; exit 1; }
           echo "OK: x64 binary executes under Rosetta (JIT path exercised)"
+          OUT=$("$BIN" --mstream-worker=iroh-selftest '{}' 2>&1) || true
+          echo "$OUT" | grep -q IROH_OK || { echo "::error::x64 mstream-server did not load bin/iroh/iroh.darwin-x64.node under Rosetta — Intel-Mac Quick Connect would ship dead"; echo "$OUT" | head -20; exit 1; }
+          echo "OK: x64 binary loaded the source-built iroh binding under Rosetta"
 
       # NOTE: this step's `run:` scalar sits just under GitHub's 21000-byte
       # expression limit (it contains ${{ }} expressions, so the whole script
@@ -1919,7 +1986,8 @@ jobs:
         # Proves the standalone binary can dlopen the bundled @number0/iroh .node
         # (bin/iroh/, staged by build-bun.mjs) via NAPI_RS_NATIVE_LIBRARY_PATH —
         # remote access silently degrades if it can't, so assert it loudly. Only
-        # the native (non-cross) targets can run here, same as the boot smoke.
+        # the native (non-cross) targets can run here, same as the boot smoke
+        # (darwin-x64 gets the same assertion inside its Rosetta smoke above).
         if: matrix.smoke
         shell: bash
         run: |

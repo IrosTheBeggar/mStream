@@ -20,11 +20,13 @@
 // (not the sniffable QUIC ALPN). mStream's normal auth wall still gates the API
 // behind the tunnel — the secret only gates the pipe.
 //
-// PORTABILITY: @number0/iroh is an optional, prebuilt-native dependency with no
-// binary for some platforms (e.g. Intel macOS). It is loaded LAZILY via dynamic
-// import inside start()/connectTunnel(), so importing this module never throws;
-// the boot site wraps start() in try/catch and simply leaves the feature off if
-// the binary can't load.
+// PORTABILITY: @number0/iroh is an optional, prebuilt-native dependency that
+// upstream does not publish for every platform (npm has no darwin-x64 package
+// at all; the Intel-Mac bundle carries one CI builds from iroh's own source
+// instead — see bin/iroh/README.md — while a source install there has none).
+// It is loaded LAZILY via dynamic import inside start()/connectTunnel(), so
+// importing this module never throws; the boot site wraps start() in try/catch
+// and simply leaves the feature off if the binary can't load.
 //
 // The native loader, the byte pumps, and the ticket-envelope helpers are shared
 // with the federation endpoint — they live in src/state/iroh-common.js and are
