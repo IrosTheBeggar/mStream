@@ -417,8 +417,8 @@ const statsOptions = Joi.object({
 });
 
 const lastFMOptions = Joi.object({
-  apiKey: Joi.string().default('25627de528b6603d6471cd331ac819e0'),
-  apiSecret: Joi.string().default('a9df934fc504174d4cb68853d9feb143')
+  apiKey: Joi.string().allow('').default(process.env.LASTFM_API_KEY || ''),
+  apiSecret: Joi.string().allow('').default(process.env.LASTFM_API_SECRET || '')
 });
 
 // Iroh P2P remote-access tunnel. When enabled, mStream binds an Iroh endpoint
