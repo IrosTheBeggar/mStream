@@ -50,7 +50,7 @@ after(() => {
 });
 
 // A file in the library with a track row, the way a plug-in leaves one.
-async function land(relativePath) {
+function land(relativePath) {
   const file = path.join(libDir, ...relativePath.split('/'));
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `not really audio: ${relativePath}`);
@@ -84,19 +84,21 @@ describe('plugin downloads data access', () => {
     assert.throws(() => downloads.record({ plugin: 'youtube', vpath: VPATH }), /required/);
   });
 
-  test('a record at a path an earlier one held retires the earlier one instead of sitting beside it', async () => {
-    const first = downloads.findByPath(VPATH, 'Nova/Night Ferry/Remote_Hit.mp3');
+  test('a record at a path an earlier one held retires the earlier one instead of sitting beside it', () => {
+    // The live record at a path, as the list shows it (every account, no history).
+    const liveAt = (rel) => downloads.list({ limit: 500 }).find((d) => d.filepath === `${VPATH}/${rel}`);
+    const first = liveAt('Nova/Night Ferry/Remote_Hit.mp3');
     const again = downloads.record({ plugin: 'federation-copy', userId: bob, vpath: VPATH, relativePath: 'Nova/Night Ferry/Remote_Hit.mp3', origin: "Sam's server", at: 2000 });
     assert.notEqual(again.id, first.id);
     assert.equal(again.removedAt, null);
     const retired = downloads.get(first.id);
     assert.equal(retired.removedAt, 2000, 'the earlier record is history now');
     assert.equal(retired.removedBy, null);
-    assert.equal(downloads.findByPath(VPATH, 'Nova/Night Ferry/Remote_Hit.mp3').id, again.id, 'the live one wins');
+    assert.equal(liveAt('Nova/Night Ferry/Remote_Hit.mp3').id, again.id, 'the live one wins');
     // Back to alice's for the tests below (bob's copy was only a stand-in).
     downloads.markRemoved(again.id, { by: bob, at: 2100 });
     const back = downloads.record({ plugin: 'youtube', userId: alice, vpath: VPATH, relativePath: 'Nova/Night Ferry/Remote_Hit.mp3', at: 2200 });
-    assert.equal(downloads.findByPath(VPATH, 'Nova/Night Ferry/Remote_Hit.mp3').id, back.id);
+    assert.equal(liveAt('Nova/Night Ferry/Remote_Hit.mp3').id, back.id);
   });
 
   test('list: newest first, one account or every account, history only when asked, paged by id', async () => {
@@ -120,7 +122,7 @@ describe('plugin downloads data access', () => {
     assert.equal(downloads.list({ userId: null })[0].present, false, 'nothing was ever inserted for the pasted one');
   });
 
-  test('markRemoved: once, by whom; present follows the track row, not the record', async () => {
+  test('markRemoved: once, by whom; present follows the track row, not the record', () => {
     const rec = downloads.list({ userId: bob })[0];
     const removed = downloads.markRemoved(rec.id, { by: alice, at: 6000 });
     assert.deepEqual([removed.removedAt, removed.removedBy], [6000, alice]);

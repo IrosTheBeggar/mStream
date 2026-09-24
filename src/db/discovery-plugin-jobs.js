@@ -23,8 +23,6 @@ export const JOB_STATES = Object.freeze({
   FAILED: 'failed',
   CANCELLED: 'cancelled',
 });
-export const LIVE_STATES = Object.freeze([JOB_STATES.QUEUED, JOB_STATES.RUNNING]);
-export const FINISHED_STATES = Object.freeze([JOB_STATES.DONE, JOB_STATES.FAILED, JOB_STATES.CANCELLED]);
 
 const d = () => manager.getDB();
 

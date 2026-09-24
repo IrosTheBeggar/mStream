@@ -28,7 +28,7 @@
 //   play     resolve() returns { play: { url, kind, … } | null } — a
 //            full-length stream THIS server can serve for the recommendation
 //            (a paired peer's track through the federation proxy)
-//   acquire  (later) starts a job that lands a file in the scratch library
+//   acquire  starts a job that lands a file in the user's collection
 //   handoff  (later) pushes the recommendation to an external account
 //
 // Enablement lives in config.program.discoveryPlugins[name].enabled — the

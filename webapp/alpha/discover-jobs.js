@@ -210,14 +210,8 @@
     if (job.state !== 'done') { return row; }
 
     const r = job.result || {};
-    // A download that landed. Rows from before downloads went straight into
-    // the collection may carry where Keep… moved the file (`kept`), or that
-    // the old retention pass removed it (`removed`).
-    const at = (r.downloaded && r.downloaded.filepath) ? ((r.kept && r.kept.filepath) || r.downloaded.filepath) : null;
-    if (at && r.removed) {
-      return { ...row, state: 'gone', tag: 'discover.job.done', icon: 'close', muted: true,
-        sub: { key: 'discover.job.goneSub' }, actions: ['start'] };
-    }
+    // A download that landed in the collection.
+    const at = (r.downloaded && r.downloaded.filepath) || null;
     if (at) {
       return { ...row, state: 'downloaded', tag: 'discover.job.done', tagCls: 'ok', icon: 'check', iconCls: 'ok',
         sub: { key: 'discover.job.savedTo', params: { path: pathCrumbs(at).join(' / ') } }, actions: ['play', 'queue'], filepath: at };

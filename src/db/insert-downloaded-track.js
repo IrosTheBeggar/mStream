@@ -181,8 +181,8 @@ export async function insertDownloadedTrack({ filePath, vpath, basePath, source,
   return { relativePath, trackId, title: data.title, artist: data.artist, album: data.album, year: data.year, hash };
 }
 
-// The inverse: a downloaded file left the library outside the scanner (a
-// kept download moved on, an expired one was swept). A plain DELETE is what
+// The inverse: a downloaded file left the library outside the scanner (its
+// owner or an admin removed it). A plain DELETE is what
 // the scanner's own sweep does — credits and genre links cascade, the
 // tracks_ad_agg trigger flags the album / artist it leaves, and the search
 // index is trigger-kept; the aggregates are recomputed here so counts are

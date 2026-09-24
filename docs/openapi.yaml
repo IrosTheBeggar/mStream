@@ -2702,8 +2702,8 @@ paths:
       description: |
         What the caller has already done with a recommendation: their newest
         job per plug-in, so a client can draw each acquire / hand-off row in
-        its real state (running, downloaded and waiting to be kept, kept,
-        failed…) when the recommendation is opened again. The server computes
+        its real state (running, done and where the file landed, failed…)
+        when the recommendation is opened again. The server computes
         the recommendation key (MBID first, else a normalised text digest), so
         a client never has to mirror it. Not gated: it reads only the
         caller's own rows.

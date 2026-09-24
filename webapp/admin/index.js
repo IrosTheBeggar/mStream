@@ -8186,11 +8186,11 @@ const discoveryView = Vue.component('discovery-view', {
 // ── Discovery Plugins ─────────────────────────────────────────────────────
 // What people on this server can DO with a Discover recommendation, and who
 // may: every registered plug-in (src/discovery-plugins/) as a switch, the job
-// gate, the Discover downloads folder with its clock and size cap, and every
+// gate and its clock, what the plug-ins brought into the libraries, and every
 // account's jobs. One card, four tabs, in the Discovery view's vocabulary.
 // Everything here is live — the server reads these values per request, per
 // runner tick or per retention pass — so nothing needs a restart and nothing
-// has an APPLY button. Design: docs/designs/discovery-plugins-admin.
+// has an APPLY button.
 //
 // The groups are the recommendation window's sections, in the window's order,
 // so a switch reads as "this adds a row under Listen".

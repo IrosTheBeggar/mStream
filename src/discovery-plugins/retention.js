@@ -26,8 +26,6 @@ const INTERVAL_MS = 6 * 60 * 60 * 1000;
 let bootTimer = null;
 let intervalTimer = null;
 let running = false;
-let startedAt = null;   // when start() armed the timers
-let lastRun = null;     // { at, prunedJobs, removedStaging }
 
 export async function sweep({ now = Date.now() } = {}) {
   const out = { prunedJobs: 0, removedStaging: 0 };
@@ -37,22 +35,7 @@ export async function sweep({ now = Date.now() } = {}) {
   if (out.prunedJobs || out.removedStaging) {
     winston.info(`discovery retention: pruned ${out.prunedJobs} job row(s), removed ${out.removedStaging} stale staging folder(s)`);
   }
-  lastRun = { at: Date.now(), ...out };
   return out;
-}
-
-// For the admin panel: is a pass running, what did the last one do, and when
-// is the next one due. The interval ticks from start(); the first pass is the
-// boot delay.
-export function status({ now = Date.now() } = {}) {
-  let nextRunAt = null;
-  if (startedAt !== null) {
-    const firstAt = startedAt + BOOT_DELAY_MS;
-    nextRunAt = now < firstAt
-      ? firstAt
-      : startedAt + (Math.floor((now - startedAt) / INTERVAL_MS) + 1) * INTERVAL_MS;
-  }
-  return { running, lastRun, nextRunAt, intervalMs: INTERVAL_MS };
 }
 
 async function safeRun() {
@@ -63,7 +46,6 @@ async function safeRun() {
 
 export function start() {
   stop();
-  startedAt = Date.now();
   bootTimer = setTimeout(safeRun, BOOT_DELAY_MS);
   intervalTimer = setInterval(safeRun, INTERVAL_MS);
   if (bootTimer.unref) { bootTimer.unref(); }
@@ -73,5 +55,4 @@ export function start() {
 export function stop() {
   if (bootTimer) { clearTimeout(bootTimer); bootTimer = null; }
   if (intervalTimer) { clearInterval(intervalTimer); intervalTimer = null; }
-  startedAt = null;
 }

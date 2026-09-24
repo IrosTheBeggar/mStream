@@ -104,12 +104,6 @@ export function list({ userId, includeRemoved = false, limit = 100, before = nul
     LIMIT ?`).all(...params).map(rowToDownload);
 }
 
-// The record behind a library path, live or not (newest).
-export function findByPath(vpath, relativePath) {
-  const rel = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
-  return rowToDownload(d().prepare(`${SELECT} WHERE p.vpath = ? AND p.filepath = ? ORDER BY p.removed_at IS NOT NULL, p.id DESC`).get(vpath, rel));
-}
-
 // The download left the library (the remove route, or nothing was there
 // to remove). Returns the record as it now stands; null for an unknown id.
 export function markRemoved(id, { by = null, at = Date.now() } = {}) {

@@ -2,7 +2,7 @@
 // upload that is actually the song, download its audio with yt-dlp, tag it
 // from the recommendation and file it in the user's collection destination
 // (src/discovery-plugins/destination.js) the way a peer copy is filed, with
-// the row inserted so it plays at once (design card 03).
+// the row inserted so it plays at once.
 //
 // Off by default and listed only while yt-dlp and ffmpeg are actually
 // present (probe()): an enabled-but-unconfigured plug-in shows no row.

@@ -2,7 +2,7 @@
 // recommendation into a folder of the user's own library, as a job.
 //
 // Where it lands is the user's collection destination
-// (src/discovery-plugins/destination.js; design cards 02 and 10): a library
+// (src/discovery-plugins/destination.js): a library
 // the user may upload to, a base folder, and a layout rendered from the
 // song's tags ({{ARTIST}}/{{ALBUM}} by default, {{PEER}} = the server it
 // came from). The file keeps the peer's name.

@@ -1,6 +1,6 @@
-// The collection destination — where files the caller decides to own are
-// put (src/discovery-plugins/destination.js): collection copies from a
-// paired peer, and kept Discover downloads.
+// The collection destination — where the files a plug-in brings in are put
+// (src/discovery-plugins/destination.js): collection copies from a paired
+// peer, and "Get it" downloads.
 //
 //   GET /api/v1/discovery/collection/destination   the effective destination + what the picker needs
 //   PUT /api/v1/discovery/collection/destination   { destination: { vpath, base, layout } | null }

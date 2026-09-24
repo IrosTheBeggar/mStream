@@ -2378,7 +2378,6 @@ select {
 .dm-dest-path i { font-style: normal; color: #6f7683; margin: 0 4px; }
 .dm-dest .dm-opt-act { gap: 4px; }
 .dm-dest-form { margin: 0 20px 12px; padding: 12px 12px 10px; background: #23282f; border-radius: 6px; display: grid; gap: 9px; }
-.dm-dest-title { font-size: 12.5px; font-weight: 600; color: #dfe3ea; }
 .dm-field { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 5px 12px; align-items: center; font-size: 11.5px; }
 .dm-field > label { color: #8a919e; font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .dm-field-body { display: flex; gap: 6px; align-items: center; min-width: 0; flex-wrap: wrap; }
@@ -2420,10 +2419,6 @@ select {
 .dm-spacer { flex: 1; min-width: 0; font-size: 10.5px; color: #6f7683; }
 /* Materialize hides every native checkbox and draws its own from a sibling
    span; this one is small and plain, so bring the real box back. */
-.dm-check { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #b8bcc6; cursor: pointer; }
-.dm-check input[type="checkbox"] { position: static; opacity: 1; pointer-events: auto; width: 14px; height: 14px; margin: 0; accent-color: var(--src); }
-.dm-check input[type="checkbox"] + span { padding: 0; height: auto; line-height: 1.3; font-size: 11.5px; color: #b8bcc6; }
-.dm-check input[type="checkbox"] + span::before, .dm-check input[type="checkbox"] + span::after { display: none; }
 /* Phones: a bottom sheet */
 @media (max-width: 600px) {
   .dmodal-shadow { padding: 0; align-items: flex-end; }
@@ -2485,7 +2480,6 @@ select {
 .discover-tray-f { display: flex; align-items: center; padding: 4px 14px 0 12px; font-size: 11px; color: #657ee4; font-weight: 600; min-height: 16px; }
 .discover-tray-f a { color: #657ee4; }
 .discover-tray-f a:hover { color: #8ea0f0; }
-.discover-tray-f span:last-child { color: #4d535e; font-weight: 400; font-style: italic; font-size: 10px; }
 /* "From your peers" — federation leads. Same anatomy as the network
    section; the amber match bar + peer name mark rows as coming from a
    PAIRED server (playable once the federation stream proxy lands). */

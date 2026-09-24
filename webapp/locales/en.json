@@ -213,7 +213,6 @@
   "discover.job.cancelledCopySub": "Stopped · nothing was copied",
   "discover.job.done": "done",
   "discover.job.savedTo": "Saved to {{path}}",
-  "discover.job.goneSub": "The file is no longer there",
   "discover.job.inCollection": "in your collection",
   "discover.job.owned": "already yours",
   "discover.job.ownedSub": "Your library already has this song",
@@ -999,12 +998,6 @@
     "one": "{{count}} day",
     "other": "{{count}} days"
   },
-  "admin.dplugins.dayUnit": {
-    "one": "day",
-    "other": "days"
-  },
-  "admin.dplugins.minutes": "{{count}} min",
-  "admin.dplugins.hoursMinutes": "{{h}} h {{m}} min",
   "admin.dplugins.unit.days": "days",
   "admin.dplugins.header.on": "{{on}} of {{total}} plug-ins on",
   "admin.dplugins.header.cannotRun": "{{count}} cannot run",

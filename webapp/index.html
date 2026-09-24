@@ -1038,8 +1038,8 @@
                 </div>
               </template>
             </div>
-            <!-- Downloads strip (design card 07): the plug-in jobs that still
-                 want the user — running and failed. A job outlives the window
+            <!-- Downloads strip: the plug-in jobs that still want the user —
+                 running and failed. A job outlives the window
                  that started it, so the strip sits under the leads it came
                  from, shows only while there are any, and stays put when the
                  panel body is folded. A row opens the window its job came
@@ -1077,7 +1077,7 @@
           </div>
 
           <!-- Recommendation modal: one window for a "From the network" or
-               "From your peers" row (design: docs/designs/discover-modal).
+               "From your peers" row.
                Rendered by the #playlist Vue root as a fixed overlay, so its
                place in the DOM is immaterial. Sections appear only for
                what exists: preview / links plug-ins the server has on, the
@@ -1121,8 +1121,8 @@
                 <a class="dmodal-tab" href="javascript:void(0)" role="tab" v-bind:class="{ 'dmodal-tab-on': discover.modal.view === 'plugins' }" v-on:click="setDiscoverModalView('plugins')">{{ tt('discover.modal.tabPlugins') }}</a>
               </div>
 
-              <!-- Collection destination (design card 10): where "Add to your
-                   collection" copies and "Get it" downloads land. The bar shows
+              <!-- Collection destination: where "Add to your collection"
+                   copies and "Get it" downloads land. The bar shows
                    the path resolved for THIS song and lives above whichever
                    rows could put a file there; Change… swaps in the form, in
                    place. Absent — never locked — when the account has nowhere
@@ -1293,8 +1293,8 @@
                   </div>
                 </section>
 
-                <!-- Get it: one row per acquire plug-in; a row IS its job
-                     (design card 03). Absent when no acquire plug-in is
+                <!-- Get it: one row per acquire plug-in; a row IS its job.
+                     Absent when no acquire plug-in is
                      listed, this account may not start jobs, or there is no
                      library to download into (the bar above says where). -->
                 <section v-if="dmGetItRows().length" class="dmodal-section">

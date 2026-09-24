@@ -100,8 +100,8 @@ export function destinationFor(user, saved, opts = {}) {
   return { vpath: lib.vpath, base: '', layout: lib.template || DEFAULT_LAYOUT, source: 'default' };
 }
 
-// A destination a caller supplied (to save, or for one Keep…): the schema
-// has passed; this is the meaning. Throws a 400 the client can show.
+// A destination a caller supplied to save: the schema has passed; this is
+// the meaning. Throws a 400 the client can show.
 export function validateDestination(value, user) {
   const libs = writableLibraries(user);
   if (!libs.some((l) => l.vpath === value.vpath)) {

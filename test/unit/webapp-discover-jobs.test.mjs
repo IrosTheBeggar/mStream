@@ -141,13 +141,6 @@ describe('a job as a row', () => {
     const done = J.jobRowState(job({ state: 'done', result: { downloaded, match: { url: 'https://youtu.be/x' }, missingVars: [] } }));
     assert.deepEqual([done.state, done.tag, done.tagCls, done.actions, done.filepath], ['downloaded', 'discover.job.done', 'ok', ['play', 'queue'], downloaded.filepath]);
     assert.deepEqual(done.sub, { key: 'discover.job.savedTo', params: { path: 'music / Neon Harbor / Low Tide / Salt_Static.mp3' } });
-    // Rows from before downloads landed in the collection: Keep… moved the
-    // file (the row follows it), or the old retention pass removed it.
-    const scratch = { vpath: 'discover-downloads', filepath: 'discover-downloads/dana/Salt_Static.mp3', trackId: 9, bytes: 10066329, format: 'mp3' };
-    const kept = J.jobRowState(job({ state: 'done', result: { downloaded: scratch, kept: { vpath: 'music', filepath: 'music/Neon Harbor/Low Tide/Salt_Static.mp3' } } }));
-    assert.deepEqual([kept.state, kept.actions, kept.filepath], ['downloaded', ['play', 'queue'], 'music/Neon Harbor/Low Tide/Salt_Static.mp3']);
-    const gone = J.jobRowState(job({ state: 'done', result: { downloaded: scratch, removed: { at: NOW } } }));
-    assert.deepEqual([gone.state, gone.muted, gone.actions, gone.filepath, gone.sub], ['gone', true, ['start'], null, { key: 'discover.job.goneSub' }]);
   });
 
   test('a finished copy: copied, already owned, or a file in the way', () => {

@@ -145,10 +145,3 @@ test/tmp-bench/
 bin/iroh/*
 !bin/iroh/README.md
 !bin/iroh/iroh-ffi-pin.json
-
-# design-sync (claude.ai/design) staged scripts + build output
-.ds-sync/
-ds-bundle/
-.design-sync/.cache/
-.design-sync/learnings/
-.design-sync/node_modules

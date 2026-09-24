@@ -1,7 +1,7 @@
 /**
  * The pure parts behind "Add to your collection": the collection destination
  * rules (src/discovery-plugins/destination.js — shared by the federation-copy
- * plug-in and Keep…), the PEER variable they add to the torrent path template
+ * and youtube plug-ins), the PEER variable they add to the torrent path template
  * engine, the registry's per-user settings contract, and the plug-in's shape.
  * No server, no disk.
  */
@@ -195,7 +195,7 @@ describe('collection destination · file name and target', () => {
     assert.equal(noYear.relPath, 'From peers/Sam/A/B ()/x.mp3');
     assert.deepEqual(noYear.missingVars, ['YEAR']);
 
-    // No peer (a kept download): PEER drops out of the path.
+    // No peer (a download from a network row): PEER drops out of the path.
     const kept = renderTarget({ destination, peerName: null, fileName: 'x.mp3', tags: { artist: 'A', album: 'B', year: 2020 } });
     assert.equal(kept.relPath, 'From peers/A/B (2020)/x.mp3');
     assert.deepEqual(kept.missingVars, ['PEER']);
