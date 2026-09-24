@@ -53,6 +53,16 @@ import { ffmpegBin, ffprobeBin } from './ffmpeg-bootstrap.js';
 // bounds the work the ffmpeg child can be asked to do.
 export const MAX_IMAGE_PIXELS = 24_000_000;   // 24 MP
 
+// The header sniffs below read with Buffer methods, but not every caller has
+// a Buffer: music-metadata hands an embedded picture over as a plain
+// Uint8Array (the download paths pass it straight through), and the walk
+// would throw on the first readUInt16BE. Same bytes, no copy.
+function asBuffer(buf) {
+  if (!buf || Buffer.isBuffer(buf)) { return buf; }
+  if (buf instanceof Uint8Array) { return Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength); }
+  return buf;
+}
+
 const THUMB_TIMEOUT_MS = 20_000;
 const PROBE_TIMEOUT_MS = 10_000;
 
@@ -85,6 +95,7 @@ function releaseSlot() {
  *   truncated, or degenerate (a 0 dimension) — callers treat null as "unknown".
  */
 export function dimensionsOf(buf) {
+  buf = asBuffer(buf);
   if (!buf || buf.length < 16) { return null; }
   const ok = (w, h) => (w > 0 && h > 0 ? { width: w, height: h } : null);
 
@@ -165,6 +176,7 @@ export function dimensionsOf(buf) {
  * Shared by every entry point so they cannot drift apart.
  */
 export function isSupportedImage(buf) {
+  buf = asBuffer(buf);
   if (!buf || buf.length < 12) { return false; }
   const isJpeg = buf[0] === 0xFF && buf[1] === 0xD8;
   const isPng = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47;

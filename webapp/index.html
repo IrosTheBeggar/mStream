@@ -635,6 +635,12 @@
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="#DDD" d="M19 15.18V7c0-2.21-1.79-4-4-4s-4 1.79-4 4v10c0 1.1-.9 2-2 2s-2-.9-2-2V8.82C8.16 8.4 9 7.3 9 6c0-1.66-1.34-3-3-3S3 4.34 3 6c0 1.3.84 2.4 2 2.82V17c0 2.21 1.79 4 4 4s4-1.79 4-4V7c0-1.1.9-2 2-2s2 .9 2 2v8.18c-1.16.42-2 1.52-2 2.82 0 1.66 1.34 3 3 3s3-1.34 3-3c0-1.3-.84-2.4-2-2.82z"/></svg>
       <span data-i18n="nav.sonicPath">Sonic Path</span>
     </div>
+    <!-- Downloads — what the Discover plug-ins brought into the library.
+         Hidden until the ping advertises discoveryPlugins. -->
+    <div id="nav-discover-downloads" class="local-only side-nav-item my-waves super-hide" onclick="changeView(discoverDownloadsPanel, this);" data-panel="discoverDownloads">
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="#DDD" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+      <span data-i18n="nav.downloads">Downloads</span>
+    </div>
     <div class="local-only side-nav-item my-waves" onclick="changeView(setupTranscodePanel, this);">
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 48 48"><path id="ffmpeg-logo" fill="none" stroke="#DDD" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" d="M8.5 8.5h9l-9 9v11l20-20h11l-31 31h11l20-20v11l-9 9h9"/></svg>
       <span data-i18n="nav.transcode">Transcode</span>
@@ -957,36 +963,12 @@
                   </div>
                   <div v-if="discover.p2p.tracks.length" class="discover-rows">
                     <div v-for="pt in discover.p2p.tracks" :key="pt.peer.endpointId + pt.exportId" class="discover-row pointer"
-                         v-bind:class="{ 'discover-row-open': isDiscoverMenu(pt, 'p2p') }"
-                         v-on:click="openDiscoverMenu(pt, 'p2p')" :title="Math.round(pt.similarity * 100) + '% match — on ' + (pt.peer.name || 'a peer server') + (discover.plugins.available ? '' : '. Click to copy.')">
+                         v-on:click="openDiscoverModal(pt, 'p2p')" :title="Math.round(pt.similarity * 100) + '% match — on ' + (pt.peer.name || 'a peer server') + ((discover.plugins.available || discover.admin) ? '' : '. Click to copy.')">
                       <div class="discover-match"><div class="discover-match-fill discover-match-fill-p2p" :style="{ height: Math.max(15, Math.round(pt.similarity * 100)) + '%' }"></div></div>
                       <div class="discover-row-info">
                         <div class="discover-row-title">{{ pt.title || '(untitled)' }}</div>
                         <div class="discover-row-sub">
                           {{ pt.artist || '' }}<span class="discover-row-tags"><template v-if="pt.album"> &middot; {{ pt.album }}</template> &middot; {{ pt.peer.name || 'peer' }}</span>
-                        </div>
-                        <div v-if="isDiscoverMenu(pt, 'p2p')" class="discover-menu" v-on:click.stop>
-                          <a class="discover-menu-item" v-on:click="copyDiscoverP2p(pt)">{{ tt('discover.menu.copy') }}</a>
-                          <template v-if="discoverPreviewPlugins().length">
-                            <div class="discover-menu-label">{{ tt('discover.menu.preview') }}</div>
-                            <template v-for="pp in discoverPreviewPlugins()">
-                              <a :key="pp.name" class="discover-menu-item" v-bind:class="{ 'discover-menu-item-active': discover.menu.playing === pp.name, 'discover-menu-item-muted': discoverPreviewState(pp.name).status === 'none' || discoverPreviewState(pp.name).status === 'error' }"
-                                 v-on:click="toggleDiscoverPreview(pt, 'p2p', pp)">
-                                <template v-if="discover.menu.playing === pp.name">&#9632; {{ tt('discover.menu.stop') }}</template>
-                                <template v-else-if="discoverPreviewState(pp.name).status === 'loading'">{{ tt('discover.menu.loading') }}</template>
-                                <template v-else-if="discoverPreviewState(pp.name).status === 'none'">{{ pp.title }} &middot; {{ tt('discover.menu.previewNone') }}</template>
-                                <template v-else-if="discoverPreviewState(pp.name).status === 'error'">{{ pp.title }} &middot; {{ tt('discover.menu.previewFailed') }}</template>
-                                <template v-else>&#9654; {{ pp.title }}</template>
-                              </a>
-                              <span :key="pp.name + ':attrib'" v-if="discoverPreviewState(pp.name).preview" class="discover-menu-attrib">
-                                {{ discoverPreviewState(pp.name).preview.attribution }}<template v-if="discoverPreviewState(pp.name).preview.link"> &middot; <a :href="discoverPreviewState(pp.name).preview.link" target="_blank" rel="noopener">{{ tt('discover.menu.open') }}</a></template>
-                              </span>
-                            </template>
-                          </template>
-                          <div class="discover-menu-label">{{ tt('discover.menu.findElsewhere') }}</div>
-                          <div v-if="discover.menu.loading" class="discover-menu-note">{{ tt('discover.menu.loading') }}</div>
-                          <div v-else-if="discover.menu.error" class="discover-menu-note">{{ tt('discover.menu.failed') }}</div>
-                          <a v-for="l in discover.menu.links" :key="l.id" class="discover-menu-item" :href="l.url" target="_blank" rel="noopener">{{ l.label }}</a>
                         </div>
                       </div>
                       <a v-if="discoverP2pMbUrl(pt)" class="discover-add discover-mb-link" :href="discoverP2pMbUrl(pt)" target="_blank" rel="noopener"
@@ -1012,54 +994,26 @@
                 <div v-if="discover.fed.available && !discover.fed.disabled" class="discover-network discover-peers">
                   <div class="discover-artists-label discover-network-header">
                     <span data-i18n="discover.peers.label">From your peers</span>
+                    <span v-if="discover.fed.onlyPeer" class="discover-network-toggle discover-network-toggle-on pointer" v-on:click="clearDiscoverPeerFilter">{{ tt('discover.modal.onlyPeer', { name: discover.fed.onlyPeer.name }) }} &times;</span>
                     <span v-if="!discover.p2p.available || discover.p2p.disabled" class="discover-network-toggle pointer" v-bind:class="{ 'discover-network-toggle-on': discover.p2p.newArtistsOnly }"
                           v-on:click="toggleDiscoverNewArtists" data-i18n="discover.network.newArtistsOnly"
                           title="Only show artists your library doesn't have">new artists only</span>
                   </div>
                   <div v-if="discover.fed.tracks.length" class="discover-rows">
                     <div v-for="ft in discover.fed.tracks" :key="ft.peer.id + ':' + ft.filepath" class="discover-row pointer"
-                         v-bind:class="{ 'discover-row-open': isDiscoverMenu(ft, 'federation') }"
-                         v-on:click="queueDiscoverFed(ft)" :title="Math.round(ft.similarity * 100) + '% match — on ' + (ft.peer.name || 'a paired server') + '. Add to queue.'">
+                         v-on:click="openDiscoverModal(ft, 'federation')" :title="Math.round(ft.similarity * 100) + '% match — on ' + (ft.peer.name || 'a paired server')">
                       <div class="discover-match"><div class="discover-match-fill discover-match-fill-fed" :style="{ height: Math.max(15, Math.round(ft.similarity * 100)) + '%' }"></div></div>
                       <div class="discover-row-info">
                         <div class="discover-row-title">{{ ft.title || '(untitled)' }}</div>
                         <div class="discover-row-sub">
                           {{ ft.artist || '' }}<span class="discover-row-tags"><template v-if="ft.album"> &middot; {{ ft.album }}</template> &middot; {{ ft.peer.name || 'peer' }}<span v-if="discoverTags(ft.genreTags)"> &middot; {{ discoverTags(ft.genreTags) }}</span></span>
                         </div>
-                        <div v-if="isDiscoverMenu(ft, 'federation')" class="discover-menu" v-on:click.stop>
-                          <a class="discover-menu-item" v-on:click="queueDiscoverFed(ft)">{{ tt('discover.menu.queue') }}</a>
-                          <a class="discover-menu-item" v-on:click="copyDiscoverP2p(ft)">{{ tt('discover.menu.copy') }}</a>
-                          <template v-if="discoverPreviewPlugins().length">
-                            <div class="discover-menu-label">{{ tt('discover.menu.preview') }}</div>
-                            <template v-for="pp in discoverPreviewPlugins()">
-                              <a :key="pp.name" class="discover-menu-item" v-bind:class="{ 'discover-menu-item-active': discover.menu.playing === pp.name, 'discover-menu-item-muted': discoverPreviewState(pp.name).status === 'none' || discoverPreviewState(pp.name).status === 'error' }"
-                                 v-on:click="toggleDiscoverPreview(ft, 'federation', pp)">
-                                <template v-if="discover.menu.playing === pp.name">&#9632; {{ tt('discover.menu.stop') }}</template>
-                                <template v-else-if="discoverPreviewState(pp.name).status === 'loading'">{{ tt('discover.menu.loading') }}</template>
-                                <template v-else-if="discoverPreviewState(pp.name).status === 'none'">{{ pp.title }} &middot; {{ tt('discover.menu.previewNone') }}</template>
-                                <template v-else-if="discoverPreviewState(pp.name).status === 'error'">{{ pp.title }} &middot; {{ tt('discover.menu.previewFailed') }}</template>
-                                <template v-else>&#9654; {{ pp.title }}</template>
-                              </a>
-                              <span :key="pp.name + ':attrib'" v-if="discoverPreviewState(pp.name).preview" class="discover-menu-attrib">
-                                {{ discoverPreviewState(pp.name).preview.attribution }}<template v-if="discoverPreviewState(pp.name).preview.link"> &middot; <a :href="discoverPreviewState(pp.name).preview.link" target="_blank" rel="noopener">{{ tt('discover.menu.open') }}</a></template>
-                              </span>
-                            </template>
-                          </template>
-                          <div class="discover-menu-label">{{ tt('discover.menu.findElsewhere') }}</div>
-                          <div v-if="discover.menu.loading" class="discover-menu-note">{{ tt('discover.menu.loading') }}</div>
-                          <div v-else-if="discover.menu.error" class="discover-menu-note">{{ tt('discover.menu.failed') }}</div>
-                          <a v-for="l in discover.menu.links" :key="l.id" class="discover-menu-item" :href="l.url" target="_blank" rel="noopener">{{ l.label }}</a>
-                        </div>
-                      </div>
-                      <div v-if="discover.plugins.available" class="discover-add discover-more" :title="tt('discover.menu.more')"
-                           v-on:click.stop="openDiscoverMenu(ft, 'federation')">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
                       </div>
                       <a v-if="discoverP2pMbUrl(ft)" class="discover-add discover-mb-link" :href="discoverP2pMbUrl(ft)" target="_blank" rel="noopener"
                          v-on:click.stop title="Open on MusicBrainz">
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="currentColor" d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zM5 5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h12c1.1 0 2-.9 2-2v-7h-2v7H5V7h7V5H5z"/></svg>
                       </a>
-                      <div class="discover-add" title="Add to queue">
+                      <div class="discover-add" title="Add to queue" v-on:click.stop="queueDiscoverFed(ft)">
                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z"/></svg>
                       </div>
                     </div>
@@ -1082,6 +1036,323 @@
                   <span class="grow"></span>
                   <span class="discover-powered" data-i18n="discover.poweredBy">matched by sound</span>
                 </div>
+              </template>
+            </div>
+            <!-- Downloads strip: the plug-in jobs that still want the user —
+                 running and failed. A job outlives the window
+                 that started it, so the strip sits under the leads it came
+                 from, shows only while there are any, and stays put when the
+                 panel body is folded. A row opens the window its job came
+                 from; what landed is on the Downloads panel (m.js). -->
+            <div v-if="discover.plugins.available && dtRows().length" class="discover-tray">
+              <div class="discover-tray-h pointer" v-on:click="toggleDiscoverTray">
+                <dm-icon name="download" :size="12"></dm-icon>
+                <span>{{ tt('discover.tray.title') }}</span>
+                <span class="discover-tray-count">{{ dtSummary() }}</span>
+                <span class="grow"></span>
+                <svg class="discover-chevron" v-bind:class="{ 'discover-chevron-open': !discover.tray.collapsed }" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="currentColor" d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
+              </div>
+              <template v-if="!discover.tray.collapsed">
+                <div v-for="tr in dtRows()" :key="tr.job.id" class="discover-job pointer" v-on:click="openDiscoverModalForJob(tr.job)" :title="tr.title">
+                  <span class="discover-job-ic" v-bind:class="{ 'discover-job-ic-on': tr.row.iconCls === 'on' && tr.job.plugin !== 'federation-copy', 'discover-job-ic-peer': tr.row.iconCls === 'on' && tr.job.plugin === 'federation-copy', 'discover-job-ic-ok': tr.row.iconCls === 'ok', 'discover-job-ic-err': tr.row.iconCls === 'err' }"><dm-icon :name="tr.row.icon" :size="13"></dm-icon></span>
+                  <div class="discover-job-t">
+                    <b>{{ tr.title }}</b>
+                    <small>{{ tr.plugin }}<template v-if="dmText(tr.row.sub)"> &middot; {{ dmText(tr.row.sub) }}</template></small>
+                    <div v-if="tr.row.progress !== null" class="dm-progress" v-bind:class="{ 'dm-progress-indet': tr.row.progress === 'indeterminate', 'dm-progress-peer': tr.job.plugin === 'federation-copy' }"><i :style="tr.row.progress === 'indeterminate' ? null : { width: tr.row.progress + '%' }"></i></div>
+                  </div>
+                  <div class="discover-job-act">
+                    <a v-if="tr.row.actions.indexOf('play') !== -1" href="javascript:void(0)" v-on:click.stop="playDiscoverFile(tr.row.filepath)" :title="tt('discover.modal.play')"><dm-icon name="play" :size="14"></dm-icon></a>
+                    <a v-if="tr.row.actions.indexOf('queue') !== -1" href="javascript:void(0)" v-on:click.stop="queueDiscoverFile(tr.row.filepath)" :title="tt('discover.modal.addToQueue')"><dm-icon name="plus" :size="14"></dm-icon></a>
+                    <a v-if="tr.row.actions.indexOf('retry') !== -1" href="javascript:void(0)" v-on:click.stop="dtRetry(tr.job)" :title="tt('discover.job.retry')"><dm-icon name="retry" :size="14"></dm-icon></a>
+                    <a v-if="tr.row.actions.indexOf('cancel') !== -1" href="javascript:void(0)" v-on:click.stop="cancelDiscoverJob(tr.job)" :title="tt('discover.modal.cancel')"><dm-icon name="close" :size="14"></dm-icon></a>
+                  </div>
+                </div>
+                <div class="discover-tray-f">
+                  <a v-if="dtClearable()" class="pointer" href="javascript:void(0)" v-on:click="dtClear">{{ tt('discover.tray.clear') }}</a>
+                  <span class="grow"></span>
+                  <a class="pointer" href="javascript:void(0)" v-on:click="openDiscoverDownloads">{{ tt('discover.tray.all') }} &rsaquo;</a>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Recommendation modal: one window for a "From the network" or
+               "From your peers" row.
+               Rendered by the #playlist Vue root as a fixed overlay, so its
+               place in the DOM is immaterial. Sections appear only for
+               what exists: preview / links plug-ins the server has on, the
+               admin's invite row, and — for a peer row — the Federation view
+               built on the paired server's song, album and artist. -->
+          <div v-if="discover.modal.open && discover.modal.track" class="dmodal-shadow" v-on:click.self="closeDiscoverModal">
+            <div class="dmodal" v-bind:class="discover.modal.source === 'federation' ? 'dmodal-peer' : 'dmodal-network'" role="dialog" aria-modal="true" aria-labelledby="dmodal-title">
+              <a class="dmodal-close" href="javascript:void(0)" ref="dmodalClose" v-on:click="closeDiscoverModal" :title="tt('discover.modal.close')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+              </a>
+              <div class="dmodal-tools">
+                <a class="dm-btn dm-btn-sm dm-btn-ghost dm-btn-icon" href="javascript:void(0)" v-on:click="copyDiscoverP2p(discover.modal.track)" :title="tt('discover.modal.copyTitle')">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                </a>
+              </div>
+              <div class="dmodal-head">
+                <div class="dmodal-art" v-bind:class="{ 'dmodal-art-real': dmArt() }" :style="dmArt() ? { backgroundImage: 'url(' + dmArt() + ')' } : null">
+                  <svg v-if="!dmArt()" xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24"><path fill="currentColor" d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+                </div>
+                <div class="dmodal-head-text">
+                  <div class="dmodal-title" id="dmodal-title">{{ discover.modal.track.title || '(untitled)' }}</div>
+                  <div class="dmodal-artist">{{ discover.modal.track.artist || '' }}<template v-if="discover.modal.track.album"> &middot; {{ discover.modal.track.album }}</template></div>
+                  <div class="dmodal-meta">
+                    <span v-if="discover.modal.track.year">{{ discover.modal.track.year }}</span>
+                    <span v-if="discover.modal.track.duration">{{ dmDuration(discover.modal.track.duration) }}</span>
+                    <span v-if="discover.modal.file && discover.modal.file.format">{{ discover.modal.file.format }}</span>
+                    <span v-if="discover.modal.track.isrc" class="dmodal-isrc">{{ discover.modal.track.isrc }}</span>
+                    <span v-if="discover.modal.track.similarity != null" class="dmodal-matchbar"><i :style="{ '--pct': dmPct(discover.modal.track) + '%' }"></i>{{ dmPct(discover.modal.track) }}% {{ tt('discover.modal.matchTo') }} &ldquo;{{ discover.seedTitle }}&rdquo;</span>
+                  </div>
+                  <div class="dmodal-source">
+                    <span class="dmodal-dot"></span>
+                    <template v-if="discover.modal.source === 'federation'">{{ tt('discover.peers.label') }} &middot; {{ discover.modal.track.peer.name || 'peer' }}<span class="dm-tag dm-tag-src">{{ tt('discover.modal.playable') }}</span></template>
+                    <template v-else>{{ tt('discover.network.label') }} &middot; {{ discover.modal.track.peer.name || tt('discover.modal.anonPeer') }}<span class="dm-tag dm-tag-src">{{ tt('discover.modal.notInLibrary') }}</span></template>
+                  </div>
+                  <div v-if="discover.modal.peer" class="dmodal-status"><i v-bind:class="{ 'dmodal-status-off': discover.modal.peer.lastStatus !== 'ok' }"></i>{{ dmPeerStatus() }}</div>
+                </div>
+              </div>
+
+              <div v-if="discover.modal.source === 'federation' && discover.plugins.available" class="dmodal-tabs" role="tablist">
+                <a class="dmodal-tab" href="javascript:void(0)" role="tab" v-bind:class="{ 'dmodal-tab-on': discover.modal.view === 'federation' }" v-on:click="setDiscoverModalView('federation')">{{ tt('discover.modal.tabFederation') }}</a>
+                <a class="dmodal-tab" href="javascript:void(0)" role="tab" v-bind:class="{ 'dmodal-tab-on': discover.modal.view === 'plugins' }" v-on:click="setDiscoverModalView('plugins')">{{ tt('discover.modal.tabPlugins') }}</a>
+              </div>
+
+              <!-- Collection destination: where "Add to your collection"
+                   copies and "Get it" downloads land. The bar shows
+                   the path resolved for THIS song and lives above whichever
+                   rows could put a file there; Change… swaps in the form, in
+                   place. Absent — never locked — when the account has nowhere
+                   to put a file. -->
+              <div v-if="discover.modal.picker" class="dm-dest-form" ref="dmPicker">
+                <div class="dm-field">
+                  <label>{{ tt('discover.modal.dest.library') }}</label>
+                  <div class="dm-field-body">
+                    <select v-if="dmPickerLibraries().length > 1" class="dm-select browser-default" v-model="discover.modal.picker.vpath" v-on:change="dmPickerLibraryChanged">
+                      <option v-for="lib in dmPickerLibraries()" :key="lib.vpath" :value="lib.vpath">{{ lib.vpath }}</option>
+                    </select>
+                    <span v-else class="dm-static">{{ discover.modal.picker.vpath }}</span>
+                    <span class="dm-field-hint dm-field-hint-inline">{{ tt(dmPickerLibraries().length > 1 ? 'discover.modal.dest.libraryHint' : 'discover.modal.dest.onlyLibrary') }}</span>
+                  </div>
+                </div>
+                <div class="dm-field">
+                  <label>{{ tt('discover.modal.dest.base') }}</label>
+                  <div class="dm-field-body">
+                    <input class="dm-input browser-default" type="text" maxlength="500" v-model="discover.modal.picker.base" v-on:change="dmPickerLibraryChanged" :placeholder="tt('discover.modal.dest.root')" v-bind:class="{ 'is-err': dmPickerPreview().field === 'base' }">
+                    <a class="dm-btn dm-btn-sm" v-bind:class="{ 'dm-btn-ghost': discover.modal.picker.browse }" href="javascript:void(0)" v-on:click="dmBrowseToggle"><dm-icon name="folder" :size="14"></dm-icon>{{ tt(discover.modal.picker.browse ? 'discover.modal.close' : 'discover.modal.dest.browse') }}</a>
+                  </div>
+                  <div v-if="discover.modal.picker.browse" class="dm-tree">
+                    <div class="dm-tree-crumb"><template v-for="(c, i) in dmBrowseCrumbs()"><span v-if="i > 0">&rsaquo;</span><b>{{ c }}</b></template></div>
+                    <div v-if="dmBrowseCrumbs().length > 1" class="dm-tree-row" v-on:click="dmBrowseUp"><dm-icon name="up" :size="12"></dm-icon>{{ tt('discover.modal.dest.up', { name: dmBrowseCrumbs()[dmBrowseCrumbs().length - 2] }) }}</div>
+                    <div v-if="discover.modal.picker.browse.loading" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.lookingUp') }}</div>
+                    <template v-else>
+                      <div v-if="discover.modal.picker.browse.missing" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.dest.willCreate') }}</div>
+                      <div v-else-if="discover.modal.picker.browse.dirs.length === 0" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.dest.noFolders') }}</div>
+                      <div v-for="d in discover.modal.picker.browse.dirs" :key="d" class="dm-tree-row" v-on:click="dmBrowseInto(d)"><dm-icon name="folder" :size="12"></dm-icon>{{ d }}</div>
+                    </template>
+                    <div v-if="!discover.modal.picker.browse.naming" class="dm-tree-row" v-on:click="dmBrowseNewFolder"><dm-icon name="plus" :size="12"></dm-icon>{{ tt('discover.modal.dest.newFolder') }}</div>
+                    <div v-else class="dm-tree-row dm-tree-new">
+                      <dm-icon name="plus" :size="12"></dm-icon>
+                      <input class="dm-input browser-default" type="text" maxlength="200" ref="dmNewFolder" v-model="discover.modal.picker.browse.newName" v-on:keydown.enter.prevent="dmBrowseNewFolder" :placeholder="tt('discover.modal.dest.newFolderName')">
+                      <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmBrowseNewFolder">{{ tt('discover.modal.dest.newFolderAdd') }}</a>
+                    </div>
+                  </div>
+                  <div v-if="dmPickerPreview().field === 'base'" class="dm-field-err">{{ dmPickerProblem(dmPickerPreview()) }}</div>
+                  <div v-else class="dm-field-hint">{{ tt('discover.modal.dest.baseHint', { library: discover.modal.picker.vpath }) }}</div>
+                </div>
+                <div class="dm-field">
+                  <label>{{ tt('discover.modal.dest.layout') }}</label>
+                  <div class="dm-field-body">
+                    <input class="dm-input dm-input-mono browser-default" type="text" maxlength="500" spellcheck="false" ref="dmLayoutInput" v-model="discover.modal.picker.layout" v-bind:class="{ 'is-err': dmPickerPreview().field === 'layout' }">
+                  </div>
+                  <div class="dm-toks">
+                    <span v-for="v in dmPickerVars()" :key="v" class="dm-tok" v-bind:class="{ 'dm-tok-new': v === 'PEER' }" v-on:click="dmInsertVar(v)">{{ dmVarToken(v) }}</span>
+                    <span class="dm-tok dm-tok-preset" v-on:click="dmUseLibraryTemplate">{{ tt('discover.modal.dest.libraryTemplate') }}</span>
+                  </div>
+                  <div v-if="dmPickerPreview().field === 'layout'" class="dm-field-err">{{ dmPickerProblem(dmPickerPreview()) }}</div>
+                  <div v-else-if="dmPickerPreview().missingVars.length" class="dm-field-hint">{{ tt('discover.modal.dest.missing', { vars: dmPickerPreview().missingVars.join(', ') }) }}</div>
+                  <div v-else class="dm-field-hint">{{ tt('discover.modal.dest.layoutHint') }}</div>
+                </div>
+                <div v-if="dmPickerPreview().valid" class="dm-dest-preview" :title="discover.modal.picker.vpath + '/' + dmPickerPreview().relPath">{{ discover.modal.picker.vpath }}/<template v-if="dmPickerPreview().base">{{ dmPickerPreview().base }}/</template><b v-if="dmPickerPreview().rendered">{{ dmPickerPreview().rendered }}</b><template v-if="dmPickerPreview().rendered">/</template>{{ dmPickerPreview().file }}</div>
+                <div v-if="discover.modal.picker.error" class="dm-field-err dm-field-err-wide">{{ discover.modal.picker.error }}</div>
+                <div class="dm-dest-act">
+                  <span class="dm-spacer">{{ tt('discover.modal.dest.remembered') }}</span>
+                  <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="dmClosePicker">{{ tt('discover.modal.cancel') }}</a>
+                  <a class="dm-btn dm-btn-sm dm-btn-primary" v-bind:class="{ 'is-disabled': !dmPickerPreview().valid || discover.modal.picker.saving }" href="javascript:void(0)" v-on:click="dmPickerSubmit">
+                    <dm-icon name="check" :size="14"></dm-icon>{{ tt('discover.modal.dest.use') }}
+                  </a>
+                </div>
+              </div>
+              <div v-else-if="dmDestVisible()" class="dm-dest">
+                <dm-icon name="folder" :size="14"></dm-icon>
+                <span class="dm-dest-path" :title="[discover.dest.view.destination.vpath].concat(dmDestCrumbs()).join(' / ')">{{ tt('discover.modal.dest.goTo') }} <b>{{ discover.dest.view.destination.vpath }}</b><template v-for="c in dmDestCrumbs()"><i>&rsaquo;</i>{{ c }}</template></span>
+                <span class="dm-tag" v-bind:class="{ 'dm-tag-src': discover.dest.view.destination.source === 'user' }">{{ tt(discover.dest.view.destination.source === 'user' ? 'discover.modal.dest.yours' : 'discover.modal.dest.default') }}</span>
+                <div class="dm-opt-act">
+                  <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="dmOpenPicker">{{ tt('discover.modal.dest.change') }}</a>
+                  <a v-if="discover.dest.view.destination.source === 'user'" class="dm-btn dm-btn-sm dm-btn-ghost dm-btn-icon" href="javascript:void(0)" v-on:click="dmResetDestination" :title="tt('discover.modal.dest.reset')"><dm-icon name="retry" :size="14"></dm-icon></a>
+                </div>
+              </div>
+
+              <!-- Federation view: a paired server's song, album and artist -->
+              <template v-if="discover.modal.source === 'federation' && discover.modal.view === 'federation'">
+                <section class="dmodal-section">
+                  <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.song') }}</span><span class="dmodal-hint">{{ tt('discover.modal.songHint') }}</span></div>
+                  <div class="dm-opt dm-opt-wrap">
+                    <div class="dm-opt-ic dm-opt-ic-on"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg></div>
+                    <div class="dm-opt-body">
+                      <div class="dm-opt-title">{{ discover.modal.track.title || '(untitled)' }}<span class="dm-tag dm-tag-src">{{ tt('discover.modal.fullTrack') }}</span></div>
+                      <div class="dm-opt-sub">{{ tt('discover.modal.statsNote') }}<template v-if="discover.modal.file && discover.modal.file.format"> &middot; {{ discover.modal.file.format }}</template><template v-if="discover.modal.track.duration"> &middot; {{ dmDuration(discover.modal.track.duration) }}</template></div>
+                    </div>
+                    <div class="dm-opt-act">
+                      <a class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="dmPlayNow">&#9654; {{ tt('discover.modal.playNow') }}</a>
+                      <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmQueueNext">{{ tt('discover.modal.queueNext') }}</a>
+                      <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmAddToQueue">+ {{ tt('discover.modal.addToQueue') }}</a>
+                    </div>
+                  </div>
+                  <!-- Add to your collection: the federation-copy plug-in's job row -->
+                  <dm-job-row v-for="cr in dmCopyRows()" :key="cr.plugin.name" :row="cr.row"
+                              :title="tt('discover.modal.addToCollection')" :idle-sub="tt('discover.modal.addToCollectionSub', { peer: discover.modal.track.peer.name || 'peer' })"
+                              :start-label="tt('discover.modal.add')" start-icon="folder"
+                              :busy="discover.modal.jobBusy[cr.plugin.name] === true"
+                              v-on:start="dmJobStart(cr.plugin)" v-on:cancel="dmJobCancel(cr.plugin)" v-on:play="dmJobPlay(cr.plugin)" v-on:queue="dmJobQueue(cr.plugin)"></dm-job-row>
+                </section>
+                <section v-if="discover.modal.track.album" class="dmodal-section">
+                  <div class="dmodal-section-h">
+                    <span class="dmodal-label">{{ tt('discover.modal.album') }}</span>
+                    <span v-if="discover.modal.album" class="dmodal-hint">{{ discover.modal.album.owned ? tt('discover.modal.inLibrary') : tt('discover.modal.noneInLibrary') }}</span>
+                  </div>
+                  <div class="dm-opt dm-opt-wrap">
+                    <div class="dm-opt-ic"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg></div>
+                    <div class="dm-opt-body">
+                      <div class="dm-opt-title">{{ discover.modal.track.album }}</div>
+                      <div class="dm-opt-sub"><template v-if="discover.modal.track.year">{{ discover.modal.track.year }} &middot; </template><template v-if="discover.modal.album && discover.modal.album.count !== null">{{ tt('discover.modal.songCount', { count: discover.modal.album.count }) }} &middot; {{ dmDuration(discover.modal.album.seconds) }} &middot; </template>{{ tt('discover.modal.onPeer', { peer: discover.modal.track.peer.name || 'peer' }) }}</div>
+                    </div>
+                    <div class="dm-opt-act">
+                      <a class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="dmViewAlbum">{{ tt('discover.modal.viewAlbum') }}</a>
+                      <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmQueueAlbum(true)">&#9654; {{ tt('discover.modal.playAlbum') }}</a>
+                      <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmQueueAlbum(false)">+ {{ tt('discover.modal.queueAlbum') }}</a>
+                    </div>
+                  </div>
+                </section>
+                <section v-if="discover.modal.track.artist" class="dmodal-section">
+                  <div class="dmodal-section-h">
+                    <span class="dmodal-label">{{ tt('discover.modal.artist') }}</span>
+                    <span v-if="discover.modal.artist && discover.modal.artist.albums !== null" class="dmodal-hint">{{ tt('discover.modal.albumCount', { count: discover.modal.artist.albums }) }} {{ tt('discover.modal.onPeer', { peer: discover.modal.track.peer.name || 'peer' }) }} &middot; {{ tt('discover.modal.youHave', { count: discover.modal.artist.owned }) }}</span>
+                  </div>
+                  <div class="dm-opt">
+                    <div class="dm-opt-ic"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 19c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM20 3H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zM7 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg></div>
+                    <div class="dm-opt-body">
+                      <div class="dm-opt-title">{{ discover.modal.track.artist }}</div>
+                      <div v-if="discover.modal.artist && discover.modal.artist.albums !== null" class="dm-opt-sub">{{ tt('discover.modal.albumCount', { count: discover.modal.artist.albums }) }} &middot; {{ tt('discover.modal.songCount', { count: discover.modal.artist.songs }) }}<template v-if="discover.modal.artist.yearMin"> &middot; {{ discover.modal.artist.yearMin }}<template v-if="discover.modal.artist.yearMax && discover.modal.artist.yearMax !== discover.modal.artist.yearMin"> &ndash; {{ discover.modal.artist.yearMax }}</template></template></div>
+                    </div>
+                    <div class="dm-opt-act"><a class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="dmViewArtist">{{ tt('discover.modal.viewArtist') }}</a></div>
+                  </div>
+                </section>
+                <section class="dmodal-section">
+                  <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.more', { peer: discover.modal.track.peer.name || 'peer' }) }}</span></div>
+                  <div class="dm-opt">
+                    <div class="dm-opt-ic"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10 10-4.49 10-10S17.51 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm3-13-6.5 3.5L5 17l6.5-3.5L15 7zm-3 6.25c-.69 0-1.25-.56-1.25-1.25s.56-1.25 1.25-1.25 1.25.56 1.25 1.25-.56 1.25-1.25 1.25z" transform="rotate(45 12 12)"/></svg></div>
+                    <div class="dm-opt-body"><div class="dm-opt-title">{{ tt('discover.modal.moreLikeThis', { peer: discover.modal.track.peer.name || 'peer' }) }}</div><div class="dm-opt-sub">{{ tt('discover.modal.moreLikeThisSub') }}</div></div>
+                    <div class="dm-opt-act"><a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmMoreLikeThisOnPeer">{{ tt('discover.modal.show') }}</a></div>
+                  </div>
+                </section>
+              </template>
+
+              <!-- Plug-in sections: network rows, and peer rows on the Plug-Ins tab -->
+              <template v-else>
+                <section v-if="discoverPreviewPlugins().length" class="dmodal-section">
+                  <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.listen') }}</span><span class="dmodal-hint">{{ tt('discover.modal.listenHint') }}</span></div>
+                  <div v-for="pp in discoverPreviewPlugins()" :key="pp.name" class="dm-opt" v-bind:class="{ 'dm-opt-muted': discoverPreviewState(pp.name).status === 'none' || discoverPreviewState(pp.name).status === 'error' }">
+                    <div class="dm-opt-ic" v-bind:class="{ 'dm-opt-ic-on': discover.modal.playing === pp.name }">
+                      <svg v-if="discover.modal.playing === pp.name" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                      <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                    </div>
+                    <div class="dm-opt-body">
+                      <div class="dm-opt-title">{{ pp.title }}<span v-if="discoverPreviewState(pp.name).preview && discoverPreviewState(pp.name).preview.match" class="dm-tag dm-tag-ok">match {{ Math.round(discoverPreviewState(pp.name).preview.match * 100) }}%</span></div>
+                      <div class="dm-opt-sub">
+                        <template v-if="discoverPreviewState(pp.name).status === 'loading'">{{ tt('discover.modal.lookingUp') }}</template>
+                        <template v-else-if="discoverPreviewState(pp.name).status === 'none'">{{ tt('discover.modal.previewNone') }}</template>
+                        <template v-else-if="discoverPreviewState(pp.name).status === 'error'">{{ tt('discover.modal.previewFailed') }}</template>
+                        <template v-else-if="discoverPreviewState(pp.name).preview">{{ discoverPreviewState(pp.name).preview.title }}<template v-if="discoverPreviewState(pp.name).preview.artist"> &middot; {{ discoverPreviewState(pp.name).preview.artist }}</template><template v-if="discoverPreviewState(pp.name).preview.album"> &middot; {{ discoverPreviewState(pp.name).preview.album }}</template></template>
+                        <template v-else>{{ tt('discover.modal.preview30') }}</template>
+                      </div>
+                      <div v-if="discoverPreviewState(pp.name).preview" class="dm-attrib">{{ discoverPreviewState(pp.name).preview.attribution }}</div>
+                    </div>
+                    <div class="dm-opt-act">
+                      <a class="dm-btn dm-btn-sm" v-bind:class="{ 'dm-btn-primary': discover.modal.playing === pp.name }" href="javascript:void(0)" v-on:click="toggleDiscoverPreview(pp)">
+                        <template v-if="discover.modal.playing === pp.name">&#9632; {{ tt('discover.modal.stop') }}</template>
+                        <template v-else>&#9654; {{ tt('discover.modal.play') }}</template>
+                      </a>
+                      <a v-if="discoverPreviewState(pp.name).preview && discoverPreviewState(pp.name).preview.link" class="dm-btn dm-btn-sm dm-btn-ghost dm-btn-icon" :href="discoverPreviewState(pp.name).preview.link" target="_blank" rel="noopener" :title="tt('discover.modal.open')">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="currentColor" d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zM5 5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h12c1.1 0 2-.9 2-2v-7h-2v7H5V7h7V5H5z"/></svg>
+                      </a>
+                    </div>
+                  </div>
+                </section>
+
+                <!-- Get it: one row per acquire plug-in; a row IS its job.
+                     Absent when no acquire plug-in is
+                     listed, this account may not start jobs, or there is no
+                     library to download into (the bar above says where). -->
+                <section v-if="dmGetItRows().length" class="dmodal-section">
+                  <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.getIt') }}</span><span class="dmodal-hint">{{ tt(dmAnyJobLive() ? 'discover.modal.getItLiveHint' : 'discover.modal.getItHint') }}</span></div>
+                  <dm-job-row v-for="gr in dmGetItRows()" :key="gr.plugin.name" :row="gr.row"
+                              :title="gr.plugin.title" :idle-sub="tt('discover.modal.getItSub', { query: dmSearchWords() })" :hint="gr.plugin.description"
+                              :start-label="tt('discover.modal.download')"
+                              :busy="discover.modal.jobBusy[gr.plugin.name] === true"
+                              v-on:start="dmJobStart(gr.plugin)" v-on:cancel="dmJobCancel(gr.plugin)" v-on:play="dmJobPlay(gr.plugin)" v-on:queue="dmJobQueue(gr.plugin)"></dm-job-row>
+                </section>
+
+                <section v-if="discover.modal.federate && discover.modal.federate.visible" class="dmodal-section">
+                  <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.federate') }}</span><span class="dmodal-hint">{{ tt('discover.modal.federateHint') }}</span></div>
+                  <div class="dm-opt" v-bind:class="{ 'dm-opt-wrap': discover.modal.federate.form && discover.modal.federate.state !== 'sent' }">
+                    <div class="dm-opt-ic" v-bind:class="{ 'dm-opt-ic-ok': discover.modal.federate.state === 'paired' || discover.modal.federate.state === 'sent', 'dm-opt-ic-err': discover.modal.federate.state === 'failed' }">
+                      <svg v-if="discover.modal.federate.state === 'paired' || discover.modal.federate.state === 'sent'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                      <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 19c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM20 3H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zM7 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
+                    </div>
+                    <div class="dm-opt-body">
+                      <template v-if="discover.modal.federate.state === 'paired'">
+                        <div class="dm-opt-title">{{ tt('discover.modal.paired', { name: discover.modal.federate.peerName }) }}</div>
+                        <div class="dm-opt-sub">{{ tt('discover.modal.pairedSub') }}</div>
+                      </template>
+                      <template v-else-if="discover.modal.federate.state === 'sent'">
+                        <div class="dm-opt-title">{{ tt('discover.modal.inviteSent', { peer: discover.modal.federate.peerName || tt('discover.modal.anonPeer') }) }}</div>
+                        <div class="dm-opt-sub">{{ tt('discover.modal.inviteSentSub') }}</div>
+                      </template>
+                      <template v-else>
+                        <div class="dm-opt-title">{{ tt('discover.modal.inviteTitle', { peer: discover.modal.federate.peerName || tt('discover.modal.anonPeer') }) }}</div>
+                        <div class="dm-opt-sub">
+                          <template v-if="discover.modal.federate.state === 'checking'">{{ tt('discover.modal.checking') }}</template>
+                          <template v-else-if="discover.modal.federate.state === 'failed'">{{ tt('discover.modal.inviteFailed') }}<template v-if="discover.modal.federate.error"> &middot; {{ discover.modal.federate.error }}</template></template>
+                          <template v-else>{{ tt('discover.modal.inviteSub') }}</template>
+                        </div>
+                      </template>
+                    </div>
+                    <div v-if="discover.modal.federate.state === 'idle' && !discover.modal.federate.form" class="dm-opt-act">
+                      <a class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="dmInviteForm(true)">{{ tt('discover.modal.invite') }}</a>
+                    </div>
+                    <div v-else-if="discover.modal.federate.state === 'failed' && !discover.modal.federate.form" class="dm-opt-act">
+                      <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmInviteForm(true)">{{ tt('discover.modal.retry') }}</a>
+                    </div>
+                    <div v-if="discover.modal.federate.form && discover.modal.federate.state !== 'sent' && discover.modal.federate.state !== 'paired'" class="dm-form">
+                      <input class="dm-input browser-default" type="text" maxlength="500" v-model="discover.modal.federate.message" :placeholder="tt('discover.modal.inviteMessage')">
+                      <a class="dm-btn dm-btn-sm dm-btn-primary" v-bind:class="{ 'is-disabled': discover.modal.federate.state === 'sending' }" href="javascript:void(0)" v-on:click="dmSendInvite">{{ tt('discover.modal.sendRequest') }}</a>
+                      <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="dmInviteForm(false)">{{ tt('discover.modal.cancel') }}</a>
+                    </div>
+                  </div>
+                </section>
+
+                <section v-if="discover.modal.loading || discover.modal.error || discover.modal.links.length" class="dmodal-section">
+                  <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.findElsewhere') }}</span><span class="dmodal-hint">{{ tt('discover.modal.findHint') }}</span></div>
+                  <div v-if="discover.modal.loading" class="dmodal-note">{{ tt('discover.modal.lookingUp') }}</div>
+                  <div v-else-if="discover.modal.error" class="dmodal-note">{{ tt('discover.modal.linksFailed') }}</div>
+                  <div v-else class="dm-chips">
+                    <a v-for="l in discover.modal.links" :key="l.id" class="dm-chip" v-bind:class="{ 'dm-chip-canon': l.kind === 'canonical' }" :href="l.url" target="_blank" rel="noopener">{{ l.label }}</a>
+                  </div>
+                </section>
               </template>
             </div>
           </div>
@@ -1110,6 +1381,8 @@
     </a>
   </div>
 
+  <!-- The Discover job rows' pure half (window.DISCOVERJOBS) — vp.js reads it. -->
+  <script src="alpha/discover-jobs.js"></script>
   <script src="alpha/vp.js"></script>
   <script src="alpha/scan-progress.js"></script>
 </body>

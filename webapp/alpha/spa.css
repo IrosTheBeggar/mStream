@@ -2240,45 +2240,246 @@ select {
 .discover-match-fill-p2p { background: #4fb8a8; }
 .discover-mb-link { color: #6f7683; }
 .discover-mb-link:hover { color: #4fb8a8; }
-/* Row action menu (discovery plug-ins): opens inside the row, so the
-   match bar and the peer's MusicBrainz link stay where they were. */
-.discover-row-open { align-items: flex-start; background: #1e222a; }
-.discover-menu {
-  margin-top: 6px;
-  padding: 6px 0 2px;
-  border-top: 1px solid #262b33;
+/* ── Recommendation modal (docs/designs/discover-modal) ────────────────
+   One window for a network or peer row. Same palette as the panel; the
+   source colour (--src) follows the row: teal = network, amber = peer.
+   Fixed overlay above the player and the nav bar (their z-indexes are
+   1000 / 2500); hystmodal windows sit at 5000+, and this never coexists
+   with one. */
+.dmodal-shadow {
+  position: fixed;
+  inset: 0;
+  /* One above the phone layout's floating menu button (.fixed-action-btn,
+     4000), which otherwise sits on the window's form and close button. */
+  z-index: 4001;
+  background: rgba(0, 0, 0, .6);
+  overflow-y: auto;
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  white-space: normal;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 12px;
 }
-.discover-menu-label {
-  width: 100%;
-  margin-top: 4px;
-  font-size: 10.5px;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-  color: #6f7683;
-}
-.discover-menu-item {
-  font-size: 11.5px;
+.dmodal {
+  --src: #4fb8a8; --src-2: #5ec9b9;
+  position: relative;
+  width: 520px;
+  max-width: 100%;
+  margin: auto 0;
+  background: #2d333b;
+  border-radius: 6px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .6), 0 0 0 1px rgba(255, 255, 255, .04);
   color: #dfe3ea;
-  background: #262b33;
-  border-radius: 4px;
-  padding: 3px 8px;
-  text-decoration: none;
-  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
 }
-.discover-menu-item:hover { background: #2e3440; color: #fff; }
-.discover-menu-item-active { background: #4fb8a8; color: #0f1216; }
-.discover-menu-item-active:hover { background: #5ec9b9; color: #0f1216; }
-.discover-menu-item-muted { color: #8a919e; }
-.discover-menu-attrib { width: 100%; font-size: 10.5px; color: #6f7683; }
-.discover-menu-attrib a { color: #8a919e; }
-.discover-menu-attrib a:hover { color: #dfe3ea; }
-.discover-menu-note { font-size: 11px; font-style: italic; color: #6f7683; }
-.discover-more { margin-left: 2px; color: #8a919e; }
-.discover-more:hover { color: #dfe3ea; }
+.dmodal-peer { --src: #d9a441; --src-2: #e6b85c; }
+.dmodal-close {
+  position: absolute; top: 10px; right: 10px; width: 28px; height: 28px; border-radius: 4px; z-index: 2;
+  display: flex; align-items: center; justify-content: center; color: #8a919e;
+}
+.dmodal-close:hover, .dmodal-close:focus { background: #363d47; color: #f0f2f5; outline: none; }
+.dmodal-tools { position: absolute; top: 44px; right: 10px; z-index: 2; display: flex; gap: 4px; }
+.dmodal-head { display: flex; gap: 14px; padding: 18px 48px 12px 20px; }
+.dmodal-art {
+  width: 72px; height: 72px; border-radius: 4px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #2a3140, #1a1e25); color: rgba(255, 255, 255, .3); border: 1px solid #3a4149;
+  background-size: cover; background-position: center;
+}
+.dmodal-head-text { min-width: 0; flex: 1; }
+.dmodal-title { font-size: 16px; font-weight: 600; color: #f0f2f5; line-height: 1.25; }
+.dmodal-artist { font-size: 13px; color: #b8bcc6; margin-top: 2px; }
+.dmodal-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 6px; font-size: 11.5px; color: #8a919e; }
+.dmodal-isrc { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; background: #1a1e25; padding: 1px 5px; border-radius: 3px; }
+.dmodal-source { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 7px; font-size: 11.5px; color: #b8bcc6; }
+.dmodal-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--src); flex-shrink: 0; }
+.dmodal-status { display: flex; align-items: center; gap: 6px; margin-top: 5px; font-size: 11px; color: #8a919e; }
+.dmodal-status i { width: 6px; height: 6px; border-radius: 50%; background: #4fc27a; flex-shrink: 0; }
+.dmodal-status i.dmodal-status-off { background: #e0616a; }
+.dmodal-matchbar { display: inline-flex; align-items: center; gap: 6px; }
+.dmodal-matchbar i { display: block; width: 4px; height: 14px; border-radius: 2px; background: #1a1e25; position: relative; overflow: hidden; }
+.dmodal-matchbar i::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: var(--pct, 50%); background: var(--src); border-radius: 2px; }
+/* Peer rows: Federation | Plug-Ins */
+.dmodal-tabs { display: flex; gap: 3px; margin: 2px 20px 12px; padding: 3px; background: #1a1e25; border-radius: 6px; }
+.dmodal-tab { flex: 1; text-align: center; padding: 6px 10px; border-radius: 4px; font-size: 12px; font-weight: 600; color: #b8bcc6; }
+.dmodal-tab:hover { color: #f0f2f5; }
+.dmodal-tab-on, .dmodal-tab-on:hover { background: var(--src); color: #0f1216; }
+/* Sections */
+.dmodal-section { border-top: 1px solid #3a4149; padding: 11px 20px 13px; }
+.dmodal-section-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.dmodal-label { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #8a919e; white-space: nowrap; }
+.dmodal-hint { font-size: 11px; color: #6f7683; font-style: italic; text-align: right; }
+.dmodal-note { font-size: 11px; font-style: italic; color: #6f7683; }
+/* Option rows */
+.dm-opt { display: flex; align-items: center; gap: 10px; padding: 7px 10px; background: #23282f; border-radius: 4px; }
+.dm-opt + .dm-opt { margin-top: 6px; }
+.dm-opt-ic { width: 28px; height: 28px; border-radius: 6px; background: #1a1e25; display: flex; align-items: center; justify-content: center; color: #b8bcc6; flex-shrink: 0; }
+.dm-opt-ic-on { background: var(--src); color: #0f1216; }
+.dm-opt-ic-ok { color: #4fc27a; }
+.dm-opt-ic-err { color: #e0616a; }
+.dm-opt-body { flex: 1; min-width: 0; }
+.dm-opt-title { font-size: 12.5px; color: #dfe3ea; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dm-opt-sub { font-size: 11px; color: #8a919e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-opt-act { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
+.dm-opt-muted .dm-opt-title, .dm-opt-muted .dm-opt-sub { color: #6f7683; }
+/* A row whose buttons sit on their own line under the text (three never fit beside it). */
+.dm-opt-wrap { flex-wrap: wrap; }
+.dm-opt-wrap > .dm-opt-act, .dm-opt-wrap > .dm-form { flex-basis: 100%; padding-left: 38px; justify-content: flex-start; margin-top: 2px; flex-wrap: wrap; }
+.dm-attrib { font-size: 10.5px; color: #6f7683; margin-top: 3px; }
+/* Buttons (anchors, so Materialize's button styling stays out of it) */
+.dm-btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 4px; cursor: pointer;
+  font-size: 12.5px; font-weight: 600; line-height: 1.2; background: #363d47; color: #dfe3ea; white-space: nowrap;
+}
+.dm-btn:hover, .dm-btn:focus { background: #414957; color: #f0f2f5; outline: none; }
+.dm-btn-primary, .dm-btn-primary:hover, .dm-btn-primary:focus { background: var(--src); color: #0f1216; }
+.dm-btn-primary:hover { background: var(--src-2); }
+.dm-btn-ghost { background: transparent; border: 1px solid #444c56; color: #b8bcc6; }
+.dm-btn-ghost:hover, .dm-btn-ghost:focus { background: transparent; border-color: var(--src); color: #f0f2f5; }
+.dm-btn-sm { padding: 4px 9px; font-size: 11.5px; }
+.dm-btn-icon { padding: 4px 6px; }
+.dm-btn.is-disabled { opacity: .45; pointer-events: none; }
+.dm-btn svg { flex-shrink: 0; }
+/* Invite form (inline, one line) */
+.dm-form { display: flex; gap: 6px; align-items: center; }
+.dm-input, .dm-input[type="text"] {
+  flex: 1; min-width: 0; height: 28px; margin: 0; padding: 0 8px; box-sizing: border-box;
+  font-size: 12px; color: #dfe3ea; background: #1a1e25; border: 1px solid #444c56; border-radius: 4px; box-shadow: none;
+}
+.dm-input[type="text"]:focus { border-color: var(--src); box-shadow: none; }
+/* Chips (find elsewhere) and tags */
+.dm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dm-chip { display: inline-flex; align-items: center; font-size: 11.5px; color: #dfe3ea; background: #363d47; border-radius: 4px; padding: 4px 9px; }
+.dm-chip:hover { background: #414957; color: #f0f2f5; }
+.dm-chip-canon { background: transparent; border: 1px solid #657ee4; color: #8ea0f0; }
+.dm-chip-canon:hover { background: rgba(101, 126, 228, .12); color: #8ea0f0; }
+.dm-tag {
+  display: inline-flex; align-items: center; font-size: 9.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  padding: 1px 6px; border-radius: 8px; background: #1a1e25; color: #8a919e; white-space: nowrap; vertical-align: middle;
+}
+.dm-tag-ok { color: #4fc27a; }
+.dm-tag-src { color: var(--src); }
+.dm-tag-err { color: #e0616a; }
+/* Job rows (Get it · Add to your collection): the row is its job */
+.dm-opt-sub-err { color: #e0616a; }
+.dm-progress { height: 4px; background: #1a1e25; border-radius: 2px; overflow: hidden; margin-top: 6px; }
+.dm-progress i { display: block; height: 100%; background: var(--src); border-radius: 2px; transition: width .4s ease; }
+.dm-progress-indet i { width: 35%; animation: dm-indet 1.4s ease-in-out infinite; }
+@keyframes dm-indet { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+/* Collection destination: the bar under the view selector, and the form
+   (library · base folder · layout) that replaces it */
+.dm-dest {
+  display: flex; align-items: center; gap: 10px; margin: 0 20px 12px; padding: 7px 10px;
+  background: #1a1e25; border-radius: 6px; font-size: 11.5px; color: #b8bcc6;
+}
+.dm-dest > svg { color: var(--src); flex-shrink: 0; }
+.dm-dest-path { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-dest-path b { color: #f0f2f5; font-weight: 600; }
+.dm-dest-path i { font-style: normal; color: #6f7683; margin: 0 4px; }
+.dm-dest .dm-opt-act { gap: 4px; }
+.dm-dest-form { margin: 0 20px 12px; padding: 12px 12px 10px; background: #23282f; border-radius: 6px; display: grid; gap: 9px; }
+.dm-field { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 5px 12px; align-items: center; font-size: 11.5px; }
+.dm-field > label { color: #8a919e; font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.dm-field-body { display: flex; gap: 6px; align-items: center; min-width: 0; flex-wrap: wrap; }
+.dm-static { color: #dfe3ea; }
+.dm-input-mono, .dm-input-mono[type="text"] { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
+.dm-input.is-err, .dm-input[type="text"].is-err { border-color: #e0616a; }
+.dm-select {
+  height: 28px; min-width: 140px; max-width: 100%; margin: 0; padding: 0 8px; font-size: 12px; color: #f0f2f5;
+  background: #1a1e25; border: 1px solid #444c56; border-radius: 4px;
+}
+.dm-select:focus { border-color: var(--src); outline: none; }
+.dm-toks { display: flex; flex-wrap: wrap; gap: 4px; grid-column: 2; }
+.dm-tok {
+  font: 500 10.5px/1 ui-monospace, Consolas, monospace; color: #b8bcc6; background: #363d47;
+  border-radius: 3px; padding: 3px 6px; cursor: pointer; user-select: none;
+}
+.dm-tok:hover { background: #414957; color: #f0f2f5; }
+.dm-tok-new { background: transparent; border: 1px solid #657ee4; color: #8ea0f0; }
+.dm-tok-preset { background: transparent; border: 1px solid #444c56; color: #8a919e; font-family: inherit; }
+.dm-field-hint { grid-column: 2; font-size: 10.5px; color: #6f7683; line-height: 1.4; }
+.dm-field-hint-inline { grid-column: auto; }
+.dm-field-err { grid-column: 2; font-size: 10.5px; color: #e0616a; line-height: 1.4; }
+.dm-field-err-wide { grid-column: 1 / -1; }
+.dm-dest-preview {
+  font: 11px/1.4 ui-monospace, Consolas, monospace; color: #b8bcc6; background: #1a1e25; border-radius: 4px;
+  padding: 6px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dm-dest-preview b { color: var(--src); font-weight: 600; }
+.dm-tree { grid-column: 2; background: #1a1e25; border: 1px solid #444c56; border-radius: 4px; overflow: hidden; font-size: 11.5px; max-height: 190px; overflow-y: auto; }
+.dm-tree-crumb { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px 8px; color: #8a919e; border-bottom: 1px solid #3a4149; font-size: 11px; }
+.dm-tree-crumb b { color: #dfe3ea; font-weight: 600; }
+.dm-tree-row { display: flex; align-items: center; gap: 7px; padding: 4px 8px; color: #b8bcc6; cursor: pointer; }
+.dm-tree-row svg { color: #6f7683; flex-shrink: 0; }
+.dm-tree-row:hover { background: #363d47; color: #f0f2f5; }
+.dm-tree-row:hover svg { color: var(--src); }
+.dm-tree-note, .dm-tree-note:hover { font-style: italic; color: #6f7683; background: transparent; cursor: default; }
+.dm-tree-new, .dm-tree-new:hover { background: transparent; cursor: default; }
+.dm-dest-act { display: flex; gap: 6px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
+.dm-spacer { flex: 1; min-width: 0; font-size: 10.5px; color: #6f7683; }
+/* Materialize hides every native checkbox and draws its own from a sibling
+   span; this one is small and plain, so bring the real box back. */
+/* Phones: a bottom sheet */
+@media (max-width: 600px) {
+  .dmodal-shadow { padding: 0; align-items: flex-end; }
+  .dmodal { width: 100%; margin: 24px 0 0; border-radius: 14px 14px 0 0; }
+  .dmodal-head { padding: 12px 48px 10px 16px; }
+  .dmodal-art { width: 56px; height: 56px; }
+  .dmodal-section { padding: 10px 16px 12px; }
+  .dmodal-section-h { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .dmodal-hint { text-align: left; }
+  .dmodal-tabs { margin: 2px 16px 10px; }
+  .dm-dest, .dm-dest-form { margin: 0 16px 10px; }
+  .dm-dest { flex-wrap: wrap; }
+  .dm-dest-path { flex-basis: 100%; white-space: normal; }
+  .dm-field { grid-template-columns: minmax(0, 1fr); }
+  .dm-toks, .dm-field-hint, .dm-field-err, .dm-tree { grid-column: 1; }
+}
+/* Downloads strip: plug-in jobs that outlive the window that started them */
+.discover-tray { border-top: 1px solid #21252d; margin-top: 4px; padding-bottom: 6px; }
+.discover-tray-h {
+  display: flex; align-items: center; gap: 8px; padding: 6px 14px 4px; font-size: 10px; font-weight: 700;
+  letter-spacing: 1.2px; text-transform: uppercase; color: #6f7683;
+}
+.discover-tray-h > svg { flex-shrink: 0; }
+.discover-tray-count { font-weight: 600; letter-spacing: 0; text-transform: none; color: #8a919e; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.discover-job { display: flex; align-items: center; gap: 10px; padding: 4px 14px 4px 12px; }
+.discover-job:hover { background: #1e222a; }
+.discover-job-ic {
+  width: 22px; height: 22px; border-radius: 5px; background: #1a1e25; display: flex; align-items: center;
+  justify-content: center; color: #b8bcc6; flex-shrink: 0;
+}
+.discover-job-ic-on { background: #4fb8a8; color: #0f1216; }
+.discover-job-ic-peer { background: #d9a441; color: #0f1216; }
+.discover-job-ic-ok { color: #4fc27a; }
+.discover-job-ic-err { color: #e0616a; }
+.discover-job-t { flex: 1; min-width: 0; line-height: 1.3; }
+.discover-job-t b { display: block; font-size: 12px; color: #dfe3ea; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.discover-job-t small { display: block; font-size: 10.5px; color: #8a919e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.discover-job .dm-progress { --src: #4fb8a8; margin-top: 3px; height: 3px; background: #262b33; }
+.discover-job .dm-progress-peer { --src: #d9a441; }
+.discover-job-act { display: flex; gap: 4px; flex-shrink: 0; }
+.discover-job-act a { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 4px; color: #8a919e; }
+.discover-job-act a:hover { background: #262b33; color: #dfe3ea; }
+/* Downloads panel (m.js discoverDownloadsPanel): the usual file rows with
+   the song's provenance under its name. */
+.dl-panel { padding-bottom: 4px; }
+.dl-lead { margin: 0 0 8px; color: #b8bcc6; font-size: 14px; }
+.dl-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.dl-totals { font-size: 13px; color: #8a919e; }
+.dl-toggle { font-size: 13px; }
+.dl-toggle span { padding-left: 28px; }
+.dl-empty { color: #8a919e; }
+.dl-item .dl-ic { color: #8bb7f0; flex-shrink: 0; }
+.dl-item .dl-facts { display: block; font-size: 12px; color: #8a919e; }
+.dl-item .dl-where { display: block; font-size: 11.5px; color: #6f7683; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.dl-item-muted .dl-ic, .dl-item-muted b, .dl-item-muted .dl-facts { color: #6f7683; }
+.dl-dead { cursor: default; }
+.dl-remove { cursor: pointer; color: #e0616a; font-size: 12px; padding: 0 6px; }
+.dl-remove:hover { text-decoration: underline; }
+.discover-tray-f { display: flex; align-items: center; padding: 4px 14px 0 12px; font-size: 11px; color: #657ee4; font-weight: 600; min-height: 16px; }
+.discover-tray-f a { color: #657ee4; }
+.discover-tray-f a:hover { color: #8ea0f0; }
 /* "From your peers" — federation leads. Same anatomy as the network
    section; the amber match bar + peer name mark rows as coming from a
    PAIRED server (playable once the federation stream proxy lands). */

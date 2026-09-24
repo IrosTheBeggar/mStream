@@ -116,6 +116,10 @@ save/logs-*-smoke/
 save/image-cache-smoke/
 save/waveform-cache-smoke/
 
+# Where a Discover download is assembled before it enters a library
+# (discoveryJobs.stagingDir): one folder per job, removed when the job ends.
+save/discover-staging/
+
 .claude/*
 
 /TODO.md

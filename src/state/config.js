@@ -683,6 +683,57 @@ const discoveryPluginsOptions = Joi.object({
   'federation-play': Joi.object({
     enabled: Joi.boolean().default(true),
   }).default({ enabled: true }),
+  // "Add to your collection": copies a paired peer's file into a folder of
+  // the user's own library as a job (through the same stream proxy playback
+  // uses, so the peer's key limits apply). Runs only for accounts that may
+  // upload and may start jobs (discoveryJobs.enabledFor); the destination
+  // is a per-user setting (library · base folder · layout template).
+  'federation-copy': Joi.object({
+    enabled: Joi.boolean().default(true),
+  }).default({ enabled: true }),
+  // "Get it" from YouTube: search, score, download with yt-dlp into the
+  // user's collection destination, the way a peer copy lands (so the same
+  // upload rules apply). Lands files from outside the federation, so OFF by
+  // default; listed only while yt-dlp and ffmpeg are present. `binary` is
+  // also where the Youtube DL route looks for yt-dlp (a name on PATH or a
+  // path). It is a config-file setting only — the admin API never edits an
+  // executable path (that would hand an admin session command execution on
+  // the host); a change needs a restart.
+  youtube: Joi.object({
+    enabled: Joi.boolean().default(false),
+    binary: Joi.string().min(1).default('yt-dlp'),
+    codec: Joi.string().valid('mp3', 'm4a', 'aac', 'opus', 'ogg', 'flac', 'wav').default('mp3'),
+    maxFilesizeMb: Joi.number().integer().min(1).max(4096).default(100),
+    searchResults: Joi.number().integer().min(1).max(20).default(8),
+  }).default({ enabled: false, binary: 'yt-dlp', codec: 'mp3', maxFilesizeMb: 100, searchResults: 8 }),
+});
+
+// One plug-in's config schema, for the admin panel's settings editor: the
+// panel validates with the schema the config file is held to, so the two can
+// never disagree. null = a plug-in this build keeps no config for.
+export function discoveryPluginSchema(name) {
+  const known = discoveryPluginsOptions.describe().keys || {};
+  return Object.prototype.hasOwnProperty.call(known, String(name)) ? discoveryPluginsOptions.extract(String(name)) : null;
+}
+
+// The discovery plug-in JOB runner (acquire / hand-off plug-ins —
+// src/discovery-plugins/jobs.js). `enabledFor` is the acquisition gate,
+// mirroring torrent.enabledFor: 'all' lets every user start jobs,
+// 'whitelist' only users with users.allow_discovery_jobs = 1 (V74).
+// Flipped live by POST /api/v1/admin/config/discovery-jobs.
+const discoveryJobsOptions = Joi.object({
+  enabledFor: Joi.string().valid('all', 'whitelist').default('all'),
+  // Jobs in flight at once across every plug-in (each plug-in also caps
+  // itself). Small on purpose: these are catalogue fetches and downloads.
+  maxConcurrent: Joi.number().integer().min(1).max(16).default(2),
+  // Finished rows (done / failed / cancelled) older than this are pruned.
+  retentionDays: Joi.number().integer().min(1).max(3650).default(30),
+  // Where a download is assembled before it enters a library
+  // (src/discovery-plugins/staging.js): one folder per job, removed when the
+  // job ends; a folder a crash left behind goes at the next retention pass.
+  // A config-file setting only — put it on the same drive as the libraries
+  // and the finished file is moved into place, not copied.
+  stagingDir: Joi.string().default(path.join(dataRoot, 'save', 'discover-staging')),
 });
 
 const torrentOptions = Joi.object({
@@ -848,6 +899,7 @@ const schema = Joi.object({
   federation: federationOptions.default(federationOptions.validate({}).value),
   discoveryP2p: discoveryP2pOptions.default(discoveryP2pOptions.validate({}).value),
   discoveryPlugins: discoveryPluginsOptions.default(discoveryPluginsOptions.validate({}).value),
+  discoveryJobs: discoveryJobsOptions.default(discoveryJobsOptions.validate({}).value),
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
   discovery: discoveryOptions.default(discoveryOptions.validate({}).value),
   torrent: torrentOptions.default(torrentOptions.validate({}).value),

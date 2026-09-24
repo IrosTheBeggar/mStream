@@ -24,6 +24,7 @@ import * as discoverySeeds from '../state/discovery-seeds.js';
 import * as discoveryStack from '../state/discovery-p2p-stack.js';
 import * as discoveryPeerDbs from '../state/discovery-peer-dbs.js';
 import * as discoveryPlugins from '../discovery-plugins/index.js';
+import * as userSettingsDb from '../db/user-settings.js';
 import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
 import { expandHomeDir } from '../util/esm-helpers.js';
@@ -72,6 +73,53 @@ async function resolveLibraryDirectory(raw) {
   }
   if (!stat.isDirectory()) { throw reject('not a directory'); }
   return directory;
+}
+
+// ── Discovery plug-ins, as the admin panel sees them ─────────────────────
+// The registry's full listing (on or off, with why a plug-in cannot run)
+// plus, per plug-in, the config values an admin may edit
+// and — for one that keeps a per-user secret — how many accounts connected.
+function adminPluginRows() {
+  const all = config.program.discoveryPlugins || {};
+  return discoveryPlugins.listPlugins({ includeDisabled: true }).map((row) => {
+    const entry = all[row.name] || {};
+    const values = {};
+    for (const key of row.adminSettings) { values[key] = entry[key] === undefined ? null : entry[key]; }
+    const out = { ...row, config: values };
+    const def = discoveryPlugins.getPlugin(row.name);
+    const keepsSecret = def && def.userSettings && Object.values(def.userSettings).some((s) => s && s.secret === true);
+    if (keepsSecret) { out.connectedUsers = userSettingsDb.countUsersWithSecret(`discovery-plugin:${row.name}`); }
+    return out;
+  });
+}
+
+// `settings` from the panel → the values to write: only keys the plug-in
+// declares, checked with the schema the config file is held to. Throws a 400
+// that names the field.
+function checkedPluginSettings(name, settings) {
+  const def = discoveryPlugins.getPlugin(name);
+  const allowed = def ? def.adminSettings : [];
+  const unknown = Object.keys(settings).filter((k) => !allowed.includes(k));
+  if (unknown.length > 0) {
+    throw new WebError(allowed.length === 0
+      ? `plug-in ${name} has no settings`
+      : `plug-in ${name} has no setting "${unknown[0]}" (it has: ${allowed.join(', ')})`, 400);
+  }
+  const schema = config.discoveryPluginSchema(name);
+  if (!schema) { throw new WebError(`plug-in ${name} has no settings`, 400); }
+  const current = (config.program.discoveryPlugins || {})[name] || {};
+  const { error, value } = schema.validate({ ...current, ...settings }, { abortEarly: true });
+  if (error) {
+    // "<field>: <why>" — the error envelope carries one string, so the field
+    // leads it and the panel puts the message under that input.
+    const detail = error.details[0];
+    const field = detail.path && detail.path.length ? detail.path.join('.') : 'settings';
+    const why = detail.message.replace(/"/g, '').replace(new RegExp(`^${field}\\s+`), '');
+    throw new WebError(`${field}: ${why}`, 400);
+  }
+  const out = {};
+  for (const key of Object.keys(settings)) { out[key] = value[key]; }
+  return out;
 }
 
 export function setup(mstream) {
@@ -1298,7 +1346,10 @@ export function setup(mstream) {
         // Only consulted by request handlers when
         // config.torrent.enabledFor === 'whitelist'; in 'all' mode this
         // is informational only.
-        allowTorrent: user.allow_torrent === 1
+        allowTorrent: user.allow_torrent === 1,
+        // V74: the same, for discovery plug-in jobs
+        // (config.discoveryJobs.enabledFor === 'whitelist').
+        allowDiscoveryJobs: user.allow_discovery_jobs === 1
       };
     }
     res.json(result);
@@ -1504,6 +1555,8 @@ export function setup(mstream) {
       // Per-plug-in enablement (src/discovery-plugins/); the registry's
       // full listing, including disabled ones, is what an admin panel edits.
       discoveryPlugins: config.program.discoveryPlugins,
+      // The job runner's gate and caps (acquire / hand-off plug-ins).
+      discoveryJobs: config.program.discoveryJobs,
       autoBootServerAudio: config.program.autoBootServerAudio,
       rustPlayerPort: config.program.rustPlayerPort,
       dbSynchronous: config.program.db?.synchronous || 'FULL',
@@ -1598,18 +1651,110 @@ export function setup(mstream) {
   // config.program per call — so the next /api/v1/discovery/plugins and the
   // ping flag reflect it at once. The name must be a registered plug-in:
   // config.json never grows an entry the code doesn't know.
+  //
+  // `settings` edits the plug-in's own config (the download format, the
+  // iTunes storefront): only the keys the plug-in declares as
+  // `adminSettings`, checked with the schema the config file is held to,
+  // applied live. A refusal names the field, so the panel can show it under
+  // the right input. An executable path (yt-dlp's `binary`) is never one of
+  // those keys: it stays a config-file setting.
   mstream.post("/api/v1/admin/config/discovery-plugins", async (req, res) => {
     const schema = Joi.object({
       name: Joi.string().pattern(/^[a-z0-9][a-z0-9-]{0,31}$/).required(),
-      enabled: Joi.boolean().strict().required(),
-    });
+      enabled: Joi.boolean().strict().optional(),
+      settings: Joi.object().unknown(true).optional(),
+    }).or('enabled', 'settings');
     joiValidate(schema, req.body);
-    if (!discoveryPlugins.getPlugin(req.body.name)) {
-      throw new WebError(`unknown discovery plug-in: ${req.body.name}`, 400);
+    const { name, enabled, settings } = req.body;
+    if (!discoveryPlugins.getPlugin(name)) {
+      throw new WebError(`unknown discovery plug-in: ${name}`, 400);
     }
 
-    await admin.editDiscoveryPlugin(req.body.name, req.body.enabled);
-    res.json({ plugins: discoveryPlugins.listPlugins({ includeDisabled: true }) });
+    if (settings !== undefined) {
+      const checked = checkedPluginSettings(name, settings);
+      await admin.editDiscoveryPluginSettings(name, checked);
+      // What the last probe saw may no longer be true.
+      discoveryPlugins.forgetProbe(name);
+    }
+    if (enabled !== undefined) { await admin.editDiscoveryPlugin(name, enabled); }
+    await discoveryPlugins.refreshProbes();
+    res.json({ plugins: adminPluginRows() });
+  });
+
+  // Everything the admin panel's Discovery Plugins view shows, in one answer:
+  // every registered plug-in (on or off, with why it cannot run and its
+  // editable settings), the job runner's gate and load, and what the
+  // plug-ins have brought into the libraries, counted by plug-in (the
+  // Downloads tab's tiles; its list is GET /api/v1/discovery/downloads?all=1).
+  mstream.get("/api/v1/admin/discovery-plugins/status", async (req, res) => {
+    await discoveryPlugins.refreshProbes();
+    const jobsDb = await import('../db/discovery-plugin-jobs.js');
+    const downloadsDb = await import('../db/plugin-downloads.js');
+    const jobsCfg = config.program.discoveryJobs || {};
+    res.json({
+      plugins: adminPluginRows(),
+      jobs: {
+        enabledFor: jobsCfg.enabledFor,
+        maxConcurrent: jobsCfg.maxConcurrent,
+        retentionDays: jobsCfg.retentionDays,
+        ...jobsDb.countLive(),
+      },
+      downloads: downloadsDb.summary(),
+    });
+  });
+
+  // Run one plug-in's availability probe NOW: the panel's "check again"
+  // (no `settings` — the answer replaces the cached one, so the user listing
+  // follows at once) and its settings modal's Test (`settings` = unsaved
+  // values to try; a dry run that leaves the cache and the config alone).
+  mstream.post("/api/v1/admin/discovery-plugins/probe", async (req, res) => {
+    const schema = Joi.object({
+      name: Joi.string().pattern(/^[a-z0-9][a-z0-9-]{0,31}$/).required(),
+      settings: Joi.object().unknown(true).optional(),
+    });
+    joiValidate(schema, req.body);
+    const { name, settings } = req.body;
+    if (!discoveryPlugins.getPlugin(name)) {
+      throw new WebError(`unknown discovery plug-in: ${name}`, 400);
+    }
+    const tried = settings === undefined ? undefined : checkedPluginSettings(name, settings);
+    const result = await discoveryPlugins.probePlugin(name, { settings: tried });
+    res.json({ name, available: result.ok, reason: result.ok ? null : result.reason, detail: result.detail, dryRun: tried !== undefined });
+  });
+
+  // The discovery plug-in JOB runner's knobs (acquire / hand-off plug-ins):
+  // the acquisition gate, the concurrency cap and how long finished job rows
+  // are kept. Live — the gate is read per request, the cap per tick, the
+  // clock by the next retention pass. Partial bodies patch what they name.
+  mstream.post("/api/v1/admin/config/discovery-jobs", async (req, res) => {
+    const schema = Joi.object({
+      enabledFor: Joi.string().valid('all', 'whitelist').optional(),
+      maxConcurrent: Joi.number().integer().min(1).max(16).optional(),
+      retentionDays: Joi.number().integer().min(1).max(3650).optional(),
+    }).min(1);
+    const { value } = joiValidate(schema, req.body || {});
+    await admin.editDiscoveryJobs(value);
+    res.json({ discoveryJobs: config.program.discoveryJobs });
+  });
+
+  // Run the discovery retention pass now (src/discovery-plugins/retention.js):
+  // finished job rows past discoveryJobs.retentionDays, and staging folders
+  // a crash left behind. The same pass the server runs on its own schedule.
+  mstream.post("/api/v1/admin/discovery-jobs/sweep", async (req, res) => {
+    const retention = await import('../discovery-plugins/retention.js');
+    res.json(await retention.sweep());
+  });
+
+  // Per-user half of the acquisition gate (whitelist mode), the same shape
+  // as /api/v1/admin/users/torrent-access.
+  mstream.post("/api/v1/admin/users/discovery-jobs-access", async (req, res) => {
+    const schema = Joi.object({
+      username: Joi.string().required(),
+      allowDiscoveryJobs: Joi.boolean().required(),
+    });
+    const { value } = joiValidate(schema, req.body || {});
+    await admin.editUserAllowDiscoveryJobs(value.username, value.allowDiscoveryJobs);
+    res.json({});
   });
 
   mstream.post("/api/v1/admin/config/port", async (req, res) => {

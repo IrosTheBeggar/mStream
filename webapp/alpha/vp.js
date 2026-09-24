@@ -176,6 +176,7 @@ const VUEPLAYERCORE = (() => {
       searchedPeers: null,    // null = never fetched; 0 = nobody answered
       unreachable: 0,         // peers that timed out/failed on the last ask
       mismatched: 0,          // peers on a different embedding model
+      onlyPeer: null,         // { id, name } while "more like this on <peer>" narrows the ask
     },
     // Discovery plug-ins: what this server lets a user DO with a network or
     // peer row (/api/v1/discovery/plugins). Same reveal contract — ping's
@@ -184,20 +185,66 @@ const VUEPLAYERCORE = (() => {
     plugins: {
       available: false,
       list: null,             // null = not fetched yet
+      jobsAllowed: false,     // the listing's jobs.allowed — may this account start jobs
     },
-    // The one open row menu (key = source + row identity), with the links
-    // the "links" plug-in resolved for it, one preview state per preview
-    // plug-in (idle | loading | ready | none | error), and which preview is
-    // playing.
-    menu: {
-      key: null,
+    // The collection destination — where "Add to your collection" copies and
+    // "Get it" downloads land (GET /api/v1/discovery/collection/destination).
+    // Fetched with the first window that could use it. `view.destination`
+    // null = nowhere to put a file (uploads off, no library): the acquire
+    // rows and the bar stay hidden rather than fail.
+    dest: {
+      loaded: false,
+      view: null,
+    },
+    // The downloads strip under the panel: the caller's plug-in jobs that
+    // still want them (live, failed). Shows only while there are any; what
+    // landed is listed by the Downloads panel (m.js).
+    tray: {
+      jobs: [],
+      collapsed: (() => { try { return localStorage.getItem('discoverTrayCollapsed') === 'true'; } catch (_) { return false; } })(),
+    },
+    // Whether this user is an admin (/api/'s `user.admin`): the
+    // recommendation modal shows its "Invite <peer> to federate" row to
+    // admins only.
+    admin: false,
+    // The seed path of the current Discover fetch — what "more like this on
+    // <peer>" re-asks with.
+    seedPath: '',
+    // The one open recommendation modal (a network or peer row). `gen`
+    // fences async answers: a reply for a closed or replaced window is
+    // dropped. `view` is the peer rows' Federation | Plug-Ins selector.
+    // links / previews / playing = the plug-in sections; peer / file /
+    // album / artist = the facts a peer row's Federation view fetches;
+    // federate = the admin's invite row on a network row; recKey / jobs /
+    // jobBusy / jobErrors = the acquire rows (plug-in name → the caller's
+    // newest job for this recommendation); picker = the collection
+    // destination form, open in place.
+    modal: blankDiscoverModal(),
+  };
+  function blankDiscoverModal(over) {
+    return Object.assign({
+      open: false,
+      gen: 0,
+      source: null,           // 'p2p' | 'federation'
+      track: null,
+      view: 'federation',     // 'federation' | 'plugins'
       loading: false,
       links: [],
       error: false,
       previews: {},
       playing: null,
-    },
-  };
+      peer: null,
+      file: null,
+      album: null,
+      artist: null,
+      federate: null,
+      recKey: null,
+      jobs: {},
+      jobBusy: {},
+      jobErrors: {},
+      picker: null,
+    }, over || {});
+  }
   let discoverDebounce = null;
   let discoverReqId = 0;
   let discoverDirty = false;   // song changed while collapsed → refetch on expand
@@ -205,6 +252,79 @@ const VUEPLAYERCORE = (() => {
   // paused the main player to make room for it.
   let discoverPreviewAudio = null;
   let discoverPreviewPausedMain = false;
+  // Recommendation modal bookkeeping: a generation counter that fences
+  // async answers, the peer rows' last selector choice (remembered for the
+  // session), and the Esc handler installed only while a window is open.
+  let discoverModalGen = 0;
+  let discoverModalView = 'federation';
+  function onDiscoverModalKey(e) {
+    if (e.key !== 'Escape') { return; }
+    // Esc closes the innermost thing first: the folder tree, the
+    // destination form, then the window.
+    const picker = discoverState.modal.picker;
+    if (picker && picker.browse) { picker.browse = null; return; }
+    if (picker) { discoverState.modal.picker = null; return; }
+    playlistVue.closeDiscoverModal();
+  }
+  // Plug-in jobs: the one in-flight fetch of the plug-in list (the window's
+  // sections and the strip all wait on the same answer), the poll timer, and
+  // whether the hidden-tab listener is installed. Polling runs only while a
+  // job is live and the tab is visible.
+  let discoverPluginsPromise = null;
+  let discoverJobsTimer = null;
+  let discoverJobsVisibilityHooked = false;
+  let discoverJobsFailures = 0;   // consecutive failed polls — the beat slows while the server is away
+
+  // Icons the job rows and the downloads strip share (24-unit box).
+  const DM_ICONS = {
+    download: 'M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z',
+    folder: 'M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z',
+    clock: 'M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z',
+    check: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
+    warn: 'M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z',
+    close: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
+    play: 'M8 5v14l11-7z',
+    plus: 'M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z',
+    retry: 'M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z',
+    up: 'M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z',
+  };
+  Vue.component('dm-icon', {
+    props: { name: String, size: { type: Number, default: 16 } },
+    computed: { path: function () { return DM_ICONS[this.name] || ''; } },
+    template: '<svg xmlns="http://www.w3.org/2000/svg" :width="size" :height="size" viewBox="0 0 24 24"><path fill="currentColor" :d="path"/></svg>',
+  });
+
+  // One plug-in's row in the recommendation window — "Get it" and "Add to
+  // your collection" are the same thing: the row IS its job. `row` comes
+  // from DISCOVERJOBS.jobRowState; the buttons only say what was pressed.
+  Vue.component('dm-job-row', {
+    props: { title: String, idleSub: String, startLabel: String, startIcon: { type: String, default: 'download' }, hint: String, row: Object, busy: Boolean },
+    methods: {
+      tt: function (key, params) { return (typeof t === 'function') ? t(key, params) : key; },
+      has: function (action) { return this.row.actions.indexOf(action) !== -1; },
+      sub: function () {
+        const part = this.row.sub;
+        if (!part) { return this.idleSub || ''; }
+        return part.key ? this.tt(part.key, part.params) : String(part.text || '');
+      },
+    },
+    template: `
+      <div class="dm-opt" :class="{ 'dm-opt-muted': row.muted, 'dm-opt-wrap': row.actions.length > 2 }">
+        <div class="dm-opt-ic" :class="{ 'dm-opt-ic-on': row.iconCls === 'on', 'dm-opt-ic-ok': row.iconCls === 'ok', 'dm-opt-ic-err': row.iconCls === 'err' }"><dm-icon :name="row.icon"></dm-icon></div>
+        <div class="dm-opt-body">
+          <div class="dm-opt-title" :title="hint">{{ title }}<span v-if="row.tag" class="dm-tag" :class="{ 'dm-tag-ok': row.tagCls === 'ok', 'dm-tag-src': row.tagCls === 'src', 'dm-tag-err': row.tagCls === 'err' }">{{ tt(row.tag) }}</span></div>
+          <div class="dm-opt-sub" :class="{ 'dm-opt-sub-err': row.errored }" :title="sub()">{{ sub() }}</div>
+          <div v-if="row.progress !== null" class="dm-progress" :class="{ 'dm-progress-indet': row.progress === 'indeterminate' }" role="progressbar" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="row.progress === 'indeterminate' ? null : row.progress"><i :style="row.progress === 'indeterminate' ? null : { width: row.progress + '%' }"></i></div>
+        </div>
+        <div class="dm-opt-act">
+          <a v-if="has('play')" class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="$emit('play')"><dm-icon name="play" :size="14"></dm-icon>{{ tt('discover.modal.play') }}</a>
+          <a v-if="has('queue')" class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="$emit('queue')"><dm-icon name="plus" :size="14"></dm-icon>{{ tt('discover.modal.queue') }}</a>
+          <a v-if="has('start')" class="dm-btn dm-btn-sm dm-btn-primary" :class="{ 'is-disabled': busy }" href="javascript:void(0)" v-on:click="$emit('start')"><dm-icon :name="startIcon" :size="14"></dm-icon>{{ startLabel }}</a>
+          <a v-if="has('retry')" class="dm-btn dm-btn-sm" :class="{ 'is-disabled': busy }" href="javascript:void(0)" v-on:click="$emit('start')"><dm-icon name="retry" :size="14"></dm-icon>{{ tt('discover.job.retry') }}</a>
+          <a v-if="has('cancel')" class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="$emit('cancel')">{{ tt('discover.modal.cancel') }}</a>
+        </div>
+      </div>`,
+  });
 
   const playlistVue = new Vue({
     el: '#playlist',
@@ -352,6 +472,8 @@ const VUEPLAYERCORE = (() => {
         }
         discoverDirty = false;
         const seedPath = song.rawFilePath.charAt(0) === '/' ? song.rawFilePath.substr(1) : song.rawFilePath;
+        this.discover.seedPath = seedPath;
+        this.discover.fed.onlyPeer = null;   // a fresh ask is every peer again
         const reqId = ++discoverReqId;
         this.discover.loading = true;
 
@@ -423,51 +545,342 @@ const VUEPLAYERCORE = (() => {
           duration: ft.duration || null,
         }, true);
       },
-      // ── Row action menu (discovery plug-ins) ──────────────────────────
+      // ── Recommendation modal ───────────────────────────────────────────
+      // One window for a network or peer row.
       // Translations inside v-if blocks: the data-i18n scan only sees nodes
-      // present at load, so dynamic menu text goes through t() directly.
-      tt: function (key) {
-        return (typeof t === 'function') ? t(key) : key;
+      // present at load, so dynamic text goes through t() directly.
+      tt: function (key, params) {
+        return (typeof t === 'function') ? t(key, params) : key;
       },
-      discoverMenuKey: function (track, source) {
-        return source + ':' + (track.exportId || track.filepath || ((track.artist || '') + '|' + (track.title || '')));
+      dmDuration: function (seconds) {
+        const s = Math.round(Number(seconds) || 0);
+        if (!s) { return ''; }
+        return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
       },
-      isDiscoverMenu: function (track, source) {
-        return this.discover.menu.key !== null && this.discover.menu.key === this.discoverMenuKey(track, source);
+      dmPct: function (track) {
+        return Math.round(((track && track.similarity) || 0) * 100);
       },
-      closeDiscoverMenu: function () {
-        this.stopDiscoverPreview();
-        this.discover.menu = { key: null, loading: false, links: [], error: false, previews: {}, playing: null };
+      // Header artwork: the peer's own art file for a peer row, else the
+      // first preview provider that answered with artwork.
+      dmArt: function () {
+        const m = this.discover.modal;
+        if (!m.open) { return null; }
+        if (m.source === 'federation' && m.file && m.file.art && m.track.peer) {
+          return MSTREAMAPI.peerArtUrl(m.track.peer.id, m.file.art, 's');
+        }
+        for (const name of Object.keys(m.previews || {})) {
+          const p = m.previews[name] && m.previews[name].preview;
+          if (p && p.artwork) { return p.artwork; }
+        }
+        return null;
       },
-      // The preview plug-ins the server has on — one button each.
+      // "<peer> online" when it answered this window's own reads; otherwise
+      // the peers listing's word, "<peer> offline · last seen 2 days ago" —
+      // as of the admin's last health check, which is all the server knows.
+      dmPeerStatus: function () {
+        const p = this.discover.modal.peer;
+        if (!p) { return ''; }
+        if (p.answered === true) { return `${p.name} ${this.tt('discover.modal.online')}`; }
+        // None of this window's reads came back: it is not answering now,
+        // whatever the last health check said.
+        const online = p.answered === false ? false : p.lastStatus === 'ok';
+        const seen = p.lastSeen ? this.dmAgo(p.lastSeen) : this.tt('discover.modal.never');
+        return `${p.name} ${this.tt(online ? 'discover.modal.online' : 'discover.modal.offline')} · ${this.tt('discover.modal.lastSeen')} ${seen}`;
+      },
+      dmAgo: function (stamp) {
+        // SQLite's datetime('now') is UTC without a zone marker.
+        const iso = String(stamp).replace(' ', 'T');
+        const t0 = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + 'Z');
+        if (!Number.isFinite(t0)) { return String(stamp); }
+        const s = Math.max(0, Math.round((Date.now() - t0) / 1000));
+        if (s < 60) { return this.tt('discover.modal.justNow'); }
+        const when = s < 3600 ? `${Math.floor(s / 60)} min` : s < 86400 ? `${Math.floor(s / 3600)} h` : `${Math.floor(s / 86400)} d`;
+        return this.tt('discover.modal.ago', { when });
+      },
+      discoverLinksPlugin: function () {
+        return (this.discover.plugins.list || []).find((p) => (p.capabilities || []).indexOf('links') !== -1) || null;
+      },
+      // The preview plug-ins the server has on — one row each.
       discoverPreviewPlugins: function () {
         return (this.discover.plugins.list || []).filter((p) => (p.capabilities || []).indexOf('preview') !== -1);
       },
       discoverPreviewState: function (name) {
-        return (this.discover.menu.previews && this.discover.menu.previews[name]) || { status: 'idle', preview: null };
+        return (this.discover.modal.previews && this.discover.modal.previews[name]) || { status: 'idle', preview: null };
       },
+      // The row as the similar route returned it, plus provenance; the
+      // server strips what it doesn't know.
+      dmRecommendation: function () {
+        const m = this.discover.modal;
+        return { ...m.track, source: m.source, filepath: m.source === 'federation' ? m.track.filepath : null };
+      },
+      dmLive: function (gen) {
+        return this.discover.modal.open && this.discover.modal.gen === gen;
+      },
+      // Open the window for one row. A network row with neither plug-ins
+      // nor an admin's invite row keeps the old behaviour: copy the title.
+      openDiscoverModal: async function (track, source) {
+        if (source === 'p2p' && !this.discover.plugins.available && !this.discover.admin) { return this.copyDiscoverP2p(track); }
+        this.stopDiscoverPreview();
+        const gen = ++discoverModalGen;
+        this.discover.modal = blankDiscoverModal({
+          open: true, gen, source, track,
+          view: (source === 'federation' && this.discover.plugins.available) ? discoverModalView : (source === 'federation' ? 'federation' : 'plugins'),
+        });
+        document.addEventListener('keydown', onDiscoverModalKey);
+        this.$nextTick(() => { const el = this.$refs.dmodalClose; if (el && el.focus) { el.focus(); } });
+        const jobs = [];
+        if (this.discover.plugins.available) { jobs.push(this.dmLoadLinks(gen)); jobs.push(this.dmLoadJobs(gen)); }
+        if (source === 'federation') { jobs.push(this.dmLoadPeerFacts(gen)); }
+        if (source === 'p2p' && this.discover.admin) { jobs.push(this.dmLoadFederate(gen)); }
+        await Promise.all(jobs);
+      },
+      closeDiscoverModal: function () {
+        this.stopDiscoverPreview();
+        document.removeEventListener('keydown', onDiscoverModalKey);
+        discoverModalGen++;
+        this.discover.modal = blankDiscoverModal({ gen: discoverModalGen });
+        this.scheduleDiscoverJobsPoll();   // back to the strip's slower beat
+      },
+      // Peer rows: Federation | Plug-Ins. The choice is remembered for the
+      // session; switching to Federation stops a preview clip.
+      setDiscoverModalView: function (view) {
+        this.discover.modal.view = view;
+        discoverModalView = view;
+        this.discover.modal.picker = null;   // the form belongs to the view it was opened in
+        if (view === 'federation') { this.stopDiscoverPreview(); }
+      },
+      dmLoadLinks: async function (gen) {
+        this.discover.modal.loading = true;
+        try {
+          await this.ensureDiscoverPlugins();
+          if (!this.dmLive(gen)) { return; }
+          const linksPlugin = this.discoverLinksPlugin();
+          let links = [];
+          if (linksPlugin) {
+            const res = await MSTREAMAPI.discoveryPluginResolve(linksPlugin.name, this.dmRecommendation());
+            if (!res || res.disabled) { throw new Error('resolve failed'); }
+            links = (res.result && res.result.links) || [];
+          }
+          if (!this.dmLive(gen)) { return; }
+          this.discover.modal.links = links;
+          this.discover.modal.loading = false;
+        } catch (_) {
+          if (!this.dmLive(gen)) { return; }
+          this.discover.modal.loading = false;
+          this.discover.modal.error = true;
+        }
+      },
+      // A peer row's Federation view: the peer's status from the peers
+      // listing, the file's own facts (format, size, art) from its metadata
+      // route, album and artist facts through the read proxy, and what of
+      // that artist this library already holds. Every call is optional —
+      // a missing answer leaves its line blank.
+      dmLoadPeerFacts: async function (gen) {
+        const track = this.discover.modal.track;
+        const peerId = track.peer && track.peer.id;
+        if (!peerId) { return; }
+        const settle = (p) => Promise.resolve(p).then((v) => v, () => null);
+        const [peers, meta, albumSongs, peerAlbums, localAlbums] = await Promise.all([
+          settle(MSTREAMAPI.federationPeers()),
+          settle(MSTREAMAPI.peer.metadata(peerId, track.filepath)),
+          track.album ? settle(MSTREAMAPI.peer.albumSongs(peerId, { album: track.album, artist: track.artist || null, year: track.year || null })) : Promise.resolve(null),
+          track.artist ? settle(MSTREAMAPI.peer.artistAlbums(peerId, { artist: track.artist })) : Promise.resolve(null),
+          track.artist ? settle(MSTREAMAPI.artistAlbums({ artist: track.artist })) : Promise.resolve(null),
+        ]);
+        if (!this.dmLive(gen)) { return; }
+        const peer = peers && Array.isArray(peers.peers) ? peers.peers.find((p) => p.id === peerId) : null;
+        // The listing's last_seen is the admin's last health check; the three
+        // proxied reads above are this very minute. One that answered means
+        // the peer is up now, whatever the listing remembers.
+        const answered = [meta, albumSongs, peerAlbums].some((v) => v !== null && !(v && v.error));
+        this.discover.modal.peer = peer
+          ? { name: peer.name || track.peer.name || 'peer', lastSeen: peer.lastSeen || null, lastStatus: peer.lastStatus || null, answered }
+          : null;
+        const md = meta && typeof meta === 'object' ? (meta.metadata || meta) : null;
+        this.discover.modal.file = md && typeof md === 'object' && !md.error
+          ? { format: md.format || null, art: md['album-art'] || null, metadata: md }
+          : null;
+        const norm = (s) => String(s || '').trim().toLowerCase();
+        const localList = localAlbums && Array.isArray(localAlbums.albums) ? localAlbums.albums : [];
+        const songs = Array.isArray(albumSongs) ? albumSongs : null;
+        this.discover.modal.album = track.album ? {
+          songs,
+          count: songs ? songs.length : null,
+          seconds: songs ? songs.reduce((sum, s) => sum + ((s.metadata && Number(s.metadata.duration)) || 0), 0) : null,
+          owned: localList.some((a) => norm(a.name) === norm(track.album)),
+        } : null;
+        const remote = peerAlbums && Array.isArray(peerAlbums.albums) ? peerAlbums.albums : null;
+        const years = remote ? remote.map((a) => Number(a.year_min || a.year)).filter((y) => y > 0) : [];
+        this.discover.modal.artist = track.artist ? {
+          albums: remote ? remote.length : null,
+          songs: remote ? remote.reduce((sum, a) => sum + (Number(a.track_count) || 0), 0) : null,
+          yearMin: years.length ? Math.min(...years) : null,
+          yearMax: remote ? Math.max(...remote.map((a) => Number(a.year_max || a.year) || 0), 0) || null : null,
+          owned: localList.length,
+        } : null;
+      },
+      // ── Federation view actions ────────────────────────────────────────
+      dmSongMeta: function () {
+        const m = this.discover.modal;
+        const t = m.track;
+        const base = { title: t.title || '', artist: t.artist || '', album: t.album || '', year: t.year || null, duration: t.duration || null };
+        return (m.file && m.file.metadata) ? { ...base, ...m.file.metadata } : base;
+      },
+      dmPlayNow: function () {
+        const m = this.discover.modal;
+        mstreamModule.addFederationSongWizard(m.track.peer, m.track.filepath, this.dmSongMeta(), false, MSTREAMPLAYER.positionCache.val + 1, true);
+        this.closeDiscoverModal();
+      },
+      dmQueueNext: function () {
+        const m = this.discover.modal;
+        mstreamModule.addFederationSongWizard(m.track.peer, m.track.filepath, this.dmSongMeta(), true, MSTREAMPLAYER.positionCache.val + 1, false);
+        iziToast.success({ title: this.tt('discover.modal.queuedNext'), position: 'topCenter', timeout: 1800 });
+      },
+      dmAddToQueue: function () {
+        const m = this.discover.modal;
+        mstreamModule.addFederationSongWizard(m.track.peer, m.track.filepath, this.dmSongMeta(), true);
+        iziToast.success({ title: this.tt('discover.modal.queued'), position: 'topCenter', timeout: 1800 });
+      },
+      // View album / View artist open the peer's album or artist in the
+      // browser panel, the way goToAlbum / goToArtist do for the playing
+      // track: the element carries the peer so the panel resolves on that
+      // server (adoptPeer).
+      dmViewAlbum: function () {
+        const m = this.discover.modal;
+        const el = document.createElement('DIV');
+        el.setAttribute('data-album', m.track.album);
+        if (m.track.artist) { el.setAttribute('data-artist', m.track.artist); }
+        if (m.track.year) { el.setAttribute('data-year', String(m.track.year)); }
+        el.setAttribute('data-peer', m.track.peer.id);
+        this.closeDiscoverModal();
+        getAlbumsOnClick(el);
+      },
+      dmViewArtist: function () {
+        const m = this.discover.modal;
+        const el = document.createElement('DIV');
+        el.setAttribute('data-artist', m.track.artist);
+        el.setAttribute('data-peer', m.track.peer.id);
+        this.closeDiscoverModal();
+        getArtistz(el);
+      },
+      // Play album replaces the queue with the album; Add album appends it.
+      dmQueueAlbum: async function (play) {
+        const m = this.discover.modal;
+        const gen = m.gen;
+        let songs = m.album && m.album.songs;
+        if (!songs) {
+          try {
+            songs = await MSTREAMAPI.peer.albumSongs(m.track.peer.id, { album: m.track.album, artist: m.track.artist || null, year: m.track.year || null });
+          } catch (_) { songs = null; }
+          if (!this.dmLive(gen)) { return; }
+        }
+        if (!Array.isArray(songs) || songs.length === 0) {
+          iziToast.warning({ title: this.tt('discover.modal.albumEmpty'), position: 'topCenter', timeout: 2500 });
+          return;
+        }
+        if (play) { mstreamModule.clearQueue(); }
+        songs.forEach((s, i) => {
+          mstreamModule.addFederationSongWizard(m.track.peer, s.filepath, s.metadata || {}, !(play && i === 0));
+        });
+        this.closeDiscoverModal();
+        if (!play) { iziToast.success({ title: this.tt('discover.modal.albumQueued', { count: songs.length }), position: 'topCenter', timeout: 2000 }); }
+      },
+      // "More like this on <peer>": the same similar ask, narrowed to that
+      // one paired server; the panel shows the narrowing as a chip.
+      dmMoreLikeThisOnPeer: async function () {
+        const m = this.discover.modal;
+        const peer = m.track.peer;
+        const seedPath = this.discover.seedPath;
+        if (!seedPath || !peer) { return; }
+        this.closeDiscoverModal();
+        this.discover.fed.onlyPeer = { id: peer.id, name: peer.name || 'peer' };
+        const reqId = ++discoverReqId;
+        this.discover.loading = true;
+        const fed = await MSTREAMAPI.discoveryFederationSimilar(seedPath, 5, this.discover.p2p.newArtistsOnly, peer.id);
+        if (reqId !== discoverReqId) { return; }
+        this.discover.loading = false;
+        if (fed && !fed.disabled && Array.isArray(fed.results)) {
+          this.discover.fed.tracks = fed.results;
+          this.discover.fed.searchedPeers = (fed.searched && fed.searched.peers) || 0;
+          this.discover.fed.unreachable = (fed.searched && fed.searched.unreachable) || 0;
+          this.discover.fed.mismatched = (fed.searched && fed.searched.mismatched) || 0;
+        }
+      },
+      clearDiscoverPeerFilter: function () {
+        this.discover.fed.onlyPeer = null;
+        this.refreshDiscover();
+      },
+      // ── Federate row (network rows, admins) ────────────────────────────
+      // Paired already (the peers listing exposes each peer's endpoint id)
+      // → say so; an outbound request in flight → "sent"; else the invite.
+      // Both lookups are admin routes: a 403 (not an admin, or a locked
+      // admin API) hides the row rather than explaining it.
+      dmLoadFederate: async function (gen) {
+        const m = this.discover.modal;
+        const endpointId = m.track.peer && m.track.peer.endpointId;
+        if (!endpointId) { return; }
+        this.discover.modal.federate = { visible: true, state: 'checking', peerName: m.track.peer.name || '', message: '', form: false, error: '' };
+        try {
+          const [peers, reqs] = await Promise.all([MSTREAMAPI.federationPeers(), MSTREAMAPI.federationRequests()]);
+          if (!this.dmLive(gen)) { return; }
+          const paired = peers && Array.isArray(peers.peers) ? peers.peers.find((p) => p.endpointId === endpointId) : null;
+          if (paired) {
+            this.discover.modal.federate.peerName = paired.name || this.discover.modal.federate.peerName;
+            this.discover.modal.federate.state = 'paired';
+            return;
+          }
+          const rows = reqs && Array.isArray(reqs.requests) ? reqs.requests : [];
+          const mine = rows.filter((r) => r.peer_endpoint_id === endpointId);
+          if (mine.some((r) => r.state === 'completed')) { this.discover.modal.federate.state = 'paired'; return; }
+          const active = mine.some((r) => r.direction === 'out' && ['pending-delivery', 'delivered', 'accepted', 'granting'].indexOf(r.state) !== -1);
+          this.discover.modal.federate.state = active ? 'sent' : 'idle';
+        } catch (_) {
+          if (!this.dmLive(gen)) { return; }
+          this.discover.modal.federate.visible = false;
+        }
+      },
+      dmInviteForm: function (show) {
+        if (this.discover.modal.federate) { this.discover.modal.federate.form = show; }
+      },
+      dmSendInvite: async function () {
+        const m = this.discover.modal;
+        const f = m.federate;
+        const gen = m.gen;
+        if (!f || f.state === 'sending') { return; }
+        f.state = 'sending';
+        f.error = '';
+        try {
+          await MSTREAMAPI.composeFederationRequest(m.track.peer.endpointId, MSTREAMAPI.currentServer.vpaths || [], f.message);
+          if (!this.dmLive(gen)) { return; }
+          f.state = 'sent';
+          f.form = false;
+        } catch (err) {
+          if (!this.dmLive(gen)) { return; }
+          f.state = 'failed';
+          f.error = (err && err.message) ? String(err.message) : '';
+        }
+      },
+      // ── Previews ───────────────────────────────────────────────────────
       // Ask one provider for its 30-second clip and play it. Nothing is sent
       // to a catalogue until the user presses this. A second press stops it.
       // The main player is paused for the clip and resumed afterwards if it
       // was playing.
-      toggleDiscoverPreview: async function (track, source, plugin) {
+      toggleDiscoverPreview: async function (plugin) {
         const name = plugin.name;
-        if (this.discover.menu.playing === name) { this.stopDiscoverPreview(); return; }
+        if (this.discover.modal.playing === name) { this.stopDiscoverPreview(); return; }
         const state = this.discoverPreviewState(name);
         if (state.status === 'ready' && state.preview) { this.playDiscoverPreview(name, state.preview); return; }
         if (state.status === 'loading') { return; }
-        const key = this.discover.menu.key;
-        this.$set(this.discover.menu.previews, name, { status: 'loading', preview: null });
-        const res = await MSTREAMAPI.discoveryPluginResolve(name, {
-          ...track, source, filepath: source === 'federation' ? track.filepath : null,
-        });
-        if (this.discover.menu.key !== key) { return; }   // menu closed or switched meanwhile
+        const gen = this.discover.modal.gen;
+        this.$set(this.discover.modal.previews, name, { status: 'loading', preview: null });
+        const res = await MSTREAMAPI.discoveryPluginResolve(name, this.dmRecommendation());
+        if (!this.dmLive(gen)) { return; }   // window closed or replaced meanwhile
         if (!res || res.disabled || !res.result) {
-          this.$set(this.discover.menu.previews, name, { status: 'error', preview: null });
+          this.$set(this.discover.modal.previews, name, { status: 'error', preview: null });
           return;
         }
         const preview = res.result.preview || null;
-        this.$set(this.discover.menu.previews, name, { status: preview ? 'ready' : 'none', preview });
+        this.$set(this.discover.modal.previews, name, { status: preview ? 'ready' : 'none', preview });
         if (preview) { this.playDiscoverPreview(name, preview); }
       },
       playDiscoverPreview: function (name, preview) {
@@ -478,7 +891,7 @@ const VUEPLAYERCORE = (() => {
         }
         const audio = new Audio(preview.url);
         discoverPreviewAudio = audio;
-        this.discover.menu.playing = name;
+        this.discover.modal.playing = name;
         const done = () => { if (discoverPreviewAudio === audio) { this.stopDiscoverPreview(); } };
         audio.addEventListener('ended', done);
         audio.addEventListener('error', done);
@@ -489,7 +902,7 @@ const VUEPLAYERCORE = (() => {
           try { discoverPreviewAudio.pause(); } catch (_) { /* already gone */ }
           discoverPreviewAudio = null;
         }
-        if (this.discover.menu) { this.discover.menu.playing = null; }
+        if (this.discover.modal) { this.discover.modal.playing = null; }
         if (discoverPreviewPausedMain) {
           discoverPreviewPausedMain = false;
           if (typeof MSTREAMPLAYER !== 'undefined' && MSTREAMPLAYER.playerStats && MSTREAMPLAYER.playerStats.playing !== true) {
@@ -497,39 +910,475 @@ const VUEPLAYERCORE = (() => {
           }
         }
       },
-      // Open (or close) the menu for one row and ask the "links" plug-in
-      // where else the recording can be found. Without plug-ins on the
-      // server, a click keeps the old behaviour: copy the title.
-      openDiscoverMenu: async function (track, source) {
-        if (!this.discover.plugins.available) { return this.copyDiscoverP2p(track); }
-        const key = this.discoverMenuKey(track, source);
-        if (this.discover.menu.key === key) { this.closeDiscoverMenu(); return; }
-        this.stopDiscoverPreview();
-        this.discover.menu = { key, loading: true, links: [], error: false, previews: {}, playing: null };
-        try {
-          if (!this.discover.plugins.list) {
-            const res = await MSTREAMAPI.discoveryPlugins();
+
+      // ── Plug-in jobs: Get it · Add to your collection · the strip ──────
+      // A row IS its job (alpha/discover-jobs.js turns one into what the row
+      // shows). Rows exist only for what would work: the plug-in listed (on,
+      // and its probe passing), this account allowed to start jobs, and
+      // somewhere to put the file — a download lands in the collection
+      // destination exactly like a copy.
+      ensureDiscoverPlugins: function () {
+        if (this.discover.plugins.list) { return Promise.resolve(this.discover.plugins.list); }
+        if (!discoverPluginsPromise) {
+          const host = MSTREAMAPI.currentServer.host;
+          const pending = MSTREAMAPI.discoveryPlugins().then((res) => {
+            if (discoverPluginsPromise === pending) { discoverPluginsPromise = null; }
+            if (host !== MSTREAMAPI.currentServer.host) { return []; }   // the app moved to another server meanwhile
             this.discover.plugins.list = (res && res.plugins) || [];
-          }
-          const linksPlugin = this.discover.plugins.list.find((p) => (p.capabilities || []).indexOf('links') !== -1);
-          let links = [];
-          if (linksPlugin) {
-            // The row as the similar route returned it, plus provenance;
-            // the server strips what it doesn't know.
-            const res = await MSTREAMAPI.discoveryPluginResolve(linksPlugin.name, {
-              ...track, source, filepath: source === 'federation' ? track.filepath : null,
-            });
-            if (!res || res.disabled) { throw new Error('resolve failed'); }
-            links = (res.result && res.result.links) || [];
-          }
-          if (this.discover.menu.key !== key) { return; }   // closed or switched meanwhile
-          this.discover.menu.links = links;
-          this.discover.menu.loading = false;
-        } catch (_) {
-          if (this.discover.menu.key !== key) { return; }
-          this.discover.menu.loading = false;
-          this.discover.menu.error = true;
+            this.discover.plugins.jobsAllowed = !!(res && res.jobs && res.jobs.allowed === true);
+            return this.discover.plugins.list;
+          });
+          discoverPluginsPromise = pending;
         }
+        return discoverPluginsPromise;
+      },
+      discoverAcquirePlugins: function () {
+        if (!this.discover.plugins.jobsAllowed) { return []; }
+        return (this.discover.plugins.list || []).filter((p) => (p.capabilities || []).indexOf('acquire') !== -1);
+      },
+      discoverPluginTitle: function (name) {
+        const p = (this.discover.plugins.list || []).find((x) => x.name === name);
+        return (p && p.title) || name;
+      },
+      dmHasDestination: function () {
+        const v = this.discover.dest.view;
+        return !!(v && v.destination);
+      },
+      // "Get it": every acquire plug-in but the peer copy, which belongs to
+      // the Federation view. One { plugin, row } per plug-in; none without
+      // a destination to land in.
+      dmGetItRows: function () {
+        if (!this.dmHasDestination()) { return []; }
+        return this.discoverAcquirePlugins()
+          .filter((p) => p.name !== DISCOVERJOBS.COPY_PLUGIN)
+          .map((plugin) => ({ plugin, row: this.dmJobRow(plugin.name) }));
+      },
+      // The destination bar shows wherever a file could land from this view.
+      dmDestVisible: function () {
+        if (!this.dmHasDestination()) { return false; }
+        const m = this.discover.modal;
+        const federationView = m.source === 'federation' && m.view === 'federation';
+        return federationView ? this.dmCopyRows().length > 0 : this.dmGetItRows().length > 0;
+      },
+      // "Add to your collection": none or one.
+      dmCopyRows: function () {
+        if (this.discover.modal.source !== 'federation' || !this.dmHasDestination()) { return []; }
+        return this.discoverAcquirePlugins()
+          .filter((p) => p.name === DISCOVERJOBS.COPY_PLUGIN)
+          .map((plugin) => ({ plugin, row: this.dmJobRow(plugin.name) }));
+      },
+      dmJobRow: function (name) {
+        const m = this.discover.modal;
+        const row = DISCOVERJOBS.jobRowState(m.jobs[name] || null, { plugin: name });
+        const err = m.jobErrors[name];
+        return err ? Object.assign({}, row, { sub: { text: err }, errored: true }) : row;
+      },
+      dmAnyJobLive: function () {
+        const jobs = this.discover.modal.jobs;
+        return Object.keys(jobs).some((n) => DISCOVERJOBS.isLive(jobs[n]));
+      },
+      // A row's line: an i18n key with params, or the server's own text.
+      dmText: function (part) {
+        if (!part) { return ''; }
+        return part.key ? this.tt(part.key, part.params) : String(part.text || '');
+      },
+      dmErrorText: function (err) {
+        const body = err && err.body;
+        return (body && typeof body.error === 'string' && body.error) || this.tt('discover.job.requestFailed');
+      },
+      // What this account already did with the recommendation, and where
+      // files go — both only when a row could use them.
+      dmLoadJobs: async function (gen) {
+        await this.ensureDiscoverPlugins();
+        if (!this.dmLive(gen) || this.discoverAcquirePlugins().length === 0) { return; }
+        const settle = (p) => Promise.resolve(p).then((v) => v, () => null);
+        const [found, dest] = await Promise.all([
+          settle(MSTREAMAPI.discoveryJobLookup(this.dmRecommendation())),
+          this.discover.dest.loaded ? Promise.resolve(null) : settle(MSTREAMAPI.discoveryDestination()),
+        ]);
+        if (dest) { this.discover.dest.view = dest; this.discover.dest.loaded = true; }
+        if (!this.dmLive(gen)) { return; }
+        if (found) {
+          this.discover.modal.recKey = found.key || null;
+          this.discover.modal.jobs = DISCOVERJOBS.jobsByPlugin(found.jobs);
+        }
+        this.scheduleDiscoverJobsPoll();
+      },
+      dmJobStart: async function (plugin) {
+        const name = plugin.name;
+        const gen = this.discover.modal.gen;
+        if (this.discover.modal.jobBusy[name]) { return; }
+        this.$set(this.discover.modal.jobBusy, name, true);
+        this.$delete(this.discover.modal.jobErrors, name);
+        try {
+          const res = await MSTREAMAPI.discoveryJobStart(name, this.dmRecommendation());
+          if (res && res.job) {
+            this.noteDiscoverJob(res.job);
+            if (this.dmLive(gen)) {
+              this.$set(this.discover.modal.jobs, name, res.job);
+              if (!this.discover.modal.recKey) { this.discover.modal.recKey = res.job.key || null; }
+            }
+          }
+        } catch (err) {
+          if (this.dmLive(gen)) { this.$set(this.discover.modal.jobErrors, name, this.dmErrorText(err)); }
+        }
+        if (this.dmLive(gen)) { this.$set(this.discover.modal.jobBusy, name, false); }
+        this.scheduleDiscoverJobsPoll();
+      },
+      dmJobCancel: async function (plugin) {
+        const job = this.discover.modal.jobs[plugin.name];
+        if (job) { await this.cancelDiscoverJob(job); }
+      },
+      dmJobPlay: function (plugin) {
+        const row = this.dmJobRow(plugin.name);
+        if (!row.filepath) { return; }
+        this.playDiscoverFile(row.filepath);
+        this.closeDiscoverModal();
+      },
+      dmJobQueue: function (plugin) {
+        const row = this.dmJobRow(plugin.name);
+        if (row.filepath) { this.queueDiscoverFile(row.filepath); }
+      },
+      // A finished download or copy is a library song: the wizard looks its
+      // metadata up like any file-browser add.
+      playDiscoverFile: function (filepath) {
+        mstreamModule.addSongWizard(filepath, {}, true, MSTREAMPLAYER.positionCache.val + 1);
+      },
+      queueDiscoverFile: function (filepath) {
+        mstreamModule.addSongWizard(filepath, {}, true, undefined, false, true);
+        iziToast.success({ title: this.tt('discover.modal.queued'), position: 'topCenter', timeout: 1800 });
+      },
+      cancelDiscoverJob: async function (job) {
+        try {
+          const res = await MSTREAMAPI.discoveryJobCancel(job.id);
+          if (res && res.job) { this.noteDiscoverJob(res.job); }
+        } catch (_) { /* 409: it finished first — the refresh below shows how */ }
+        await this.refreshDiscoverJobs();
+      },
+
+      // ── Collection destination: the bar and the picker ─────────────────
+      // Where a copy or a download lands for THIS song under the saved
+      // destination (the bar), and under the one being typed (the picker's
+      // preview). The server renders the real path from the file's own
+      // tags; this is the same engine on what the window knows.
+      dmLayoutTags: function () {
+        const m = this.discover.modal;
+        const t = m.track || {};
+        const md = m.file && m.file.metadata;
+        const g = md && Array.isArray(md.genres) ? md.genres[0] : null;
+        return {
+          artist: (md && (md['artist-display'] || md.artist)) || t.artist || null,
+          album: (md && md.album) || t.album || null,
+          year: (md && md.year) || t.year || null,
+          genre: g || null,
+          albumartist: null,
+        };
+      },
+      dmLayoutFile: function () {
+        const m = this.discover.modal;
+        return (m.track && m.track.filepath) || 'track';
+      },
+      // A network row's download has no peer: {{PEER}} drops out of its path.
+      dmLayoutPeer: function () {
+        const m = this.discover.modal;
+        return (m.source === 'federation' && m.track && m.track.peer && m.track.peer.name) || null;
+      },
+      dmDestCrumbs: function () {
+        const d = this.discover.dest.view && this.discover.dest.view.destination;
+        if (!d) { return []; }
+        const p = DISCOVERJOBS.previewTarget({ vpath: d.vpath, base: d.base, layout: d.layout, tags: this.dmLayoutTags(), peerName: this.dmLayoutPeer(), fileName: this.dmLayoutFile() });
+        return DISCOVERJOBS.pathCrumbs(p.valid ? p.relDir : d.base);
+      },
+      dmOpenPicker: function () {
+        const d = this.discover.dest.view && this.discover.dest.view.destination;
+        if (!d) { return; }
+        this.discover.modal.picker = {
+          vpath: d.vpath, base: d.base || '', layout: d.layout,
+          browse: null, saving: false, error: '',
+        };
+        // The form opens where the bar lives, above the rows.
+        this.$nextTick(() => {
+          const el = this.$refs.dmPicker;
+          if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'nearest' }); }
+        });
+      },
+      // What an acquire plug-in searches for, as the idle row says it.
+      dmSearchWords: function () {
+        const t = this.discover.modal.track || {};
+        return [t.artist, t.title].filter(Boolean).join(' ');
+      },
+      dmClosePicker: function () {
+        this.discover.modal.picker = null;
+      },
+      dmPickerLibraries: function () {
+        const v = this.discover.dest.view;
+        return (v && v.libraries) || [];
+      },
+      dmPickerVars: function () {
+        const v = this.discover.dest.view;
+        return (v && v.variables) || DISCOVERJOBS.LAYOUT_VARS;
+      },
+      dmPickerPreview: function () {
+        const k = this.discover.modal.picker;
+        if (!k) { return null; }
+        return DISCOVERJOBS.previewTarget({ vpath: k.vpath, base: k.base, layout: k.layout, tags: this.dmLayoutTags(), peerName: this.dmLayoutPeer(), fileName: this.dmLayoutFile() });
+      },
+      // The engine's refusal in words (the server's codes, one table).
+      dmPickerProblem: function (preview) {
+        if (!preview || preview.valid) { return ''; }
+        if (preview.error === 'unknown_variable') {
+          return this.tt('discover.modal.dest.errUnknownVar', { name: preview.variable || '', vars: this.dmPickerVars().join(', ') });
+        }
+        const known = ['empty_template', 'unbalanced_braces', 'absolute_template', 'traversal', 'empty_path'];
+        return this.tt(known.indexOf(preview.error) !== -1 ? 'discover.modal.dest.err.' + preview.error : 'discover.modal.dest.errGeneric');
+      },
+      dmVarToken: function (name) {
+        return '{' + '{' + name + '}' + '}';
+      },
+      // A variable chip drops {{VAR}} where the caret is.
+      dmInsertVar: function (name) {
+        const k = this.discover.modal.picker;
+        if (!k) { return; }
+        const token = '{{' + name + '}}';
+        const el = this.$refs.dmLayoutInput;
+        const at = el && typeof el.selectionStart === 'number' ? el.selectionStart : k.layout.length;
+        const end = el && typeof el.selectionEnd === 'number' ? el.selectionEnd : at;
+        k.layout = k.layout.slice(0, at) + token + k.layout.slice(end);
+        this.$nextTick(() => {
+          if (!el || !el.focus) { return; }
+          el.focus();
+          try { el.setSelectionRange(at + token.length, at + token.length); } catch (_) { /* not a text input */ }
+        });
+      },
+      // The "library template" chip: the chosen library's admin Path
+      // Template, else the plain default.
+      dmUseLibraryTemplate: function () {
+        const k = this.discover.modal.picker;
+        if (!k) { return; }
+        const lib = this.dmPickerLibraries().find((l) => l.vpath === k.vpath);
+        const v = this.discover.dest.view;
+        k.layout = (lib && lib.template) || (v && v.defaultLayout) || DISCOVERJOBS.DEFAULT_LAYOUT;
+      },
+      dmPickerLibraryChanged: function () {
+        const k = this.discover.modal.picker;
+        if (k && k.browse) { this.dmBrowseLoad(); }
+      },
+      // Browse…: the file explorer's own listing, folders only, one level at
+      // a time. A folder that does not exist yet is fine — the first copy
+      // creates it.
+      dmBrowseToggle: function () {
+        const k = this.discover.modal.picker;
+        if (!k) { return; }
+        if (k.browse) { k.browse = null; return; }
+        k.browse = { loading: false, dirs: [], missing: false, naming: false, newName: '' };
+        this.dmBrowseLoad();
+      },
+      dmBrowseLoad: async function () {
+        const k = this.discover.modal.picker;
+        if (!k || !k.browse) { return; }
+        const norm = DISCOVERJOBS.normalizeBase(k.base);
+        const base = norm.valid ? norm.base : '';
+        const asked = k.vpath + '/' + base;
+        k.browse.loading = true;
+        let dirs = [];
+        let missing = false;
+        try {
+          const res = await MSTREAMAPI.dirparser('/' + k.vpath + (base ? '/' + base : ''));
+          dirs = ((res && res.directories) || []).map((d) => d.name).filter(Boolean);
+        } catch (_) { missing = true; }
+        const now = this.discover.modal.picker;
+        if (now !== k || !k.browse) { return; }
+        const current = DISCOVERJOBS.normalizeBase(k.base);
+        if (k.vpath + '/' + (current.valid ? current.base : '') !== asked) { return; }   // moved on meanwhile
+        k.browse.loading = false;
+        k.browse.dirs = dirs;
+        k.browse.missing = missing;
+      },
+      dmBrowseCrumbs: function () {
+        const k = this.discover.modal.picker;
+        if (!k) { return []; }
+        const norm = DISCOVERJOBS.normalizeBase(k.base);
+        return [k.vpath].concat(DISCOVERJOBS.pathCrumbs(norm.valid ? norm.base : ''));
+      },
+      dmBrowseInto: function (name, fresh) {
+        const k = this.discover.modal.picker;
+        if (!k) { return; }
+        const norm = DISCOVERJOBS.normalizeBase(k.base);
+        k.base = [norm.valid ? norm.base : '', DISCOVERJOBS.sanitizeSegment(name)].filter(Boolean).join('/');
+        if (k.browse) { k.browse.naming = false; k.browse.newName = ''; }
+        // A folder the user just named is known not to exist: nothing to list.
+        if (fresh && k.browse) { k.browse.loading = false; k.browse.dirs = []; k.browse.missing = true; return; }
+        this.dmBrowseLoad();
+      },
+      dmBrowseUp: function () {
+        const k = this.discover.modal.picker;
+        if (!k) { return; }
+        const parts = this.dmBrowseCrumbs().slice(1);
+        parts.pop();
+        k.base = parts.join('/');
+        this.dmBrowseLoad();
+      },
+      dmBrowseNewFolder: function () {
+        const k = this.discover.modal.picker;
+        if (!k || !k.browse) { return; }
+        if (!k.browse.naming) {
+          k.browse.naming = true;
+          this.$nextTick(() => { const el = this.$refs.dmNewFolder; if (el && el.focus) { el.focus(); } });
+          return;
+        }
+        const name = DISCOVERJOBS.sanitizeSegment(k.browse.newName);
+        if (name) { this.dmBrowseInto(name, k.browse.dirs.indexOf(name) === -1); }
+      },
+      // Use this folder: saved for the account, so every copy and download
+      // from now on lands under it.
+      dmPickerSubmit: async function () {
+        const m = this.discover.modal;
+        const k = m.picker;
+        const gen = m.gen;
+        const preview = this.dmPickerPreview();
+        if (!k || k.saving || !preview || !preview.valid) { return; }
+        const destination = { vpath: k.vpath, base: preview.base, layout: k.layout };
+        k.saving = true;
+        k.error = '';
+        try {
+          this.discover.dest.view = await MSTREAMAPI.discoverySaveDestination(destination);
+          this.discover.dest.loaded = true;
+          if (this.dmLive(gen)) { this.discover.modal.picker = null; }
+        } catch (err) {
+          if (this.dmLive(gen) && this.discover.modal.picker === k) {
+            k.saving = false;
+            k.error = this.dmErrorText(err);
+          }
+        }
+      },
+      dmResetDestination: async function () {
+        try {
+          this.discover.dest.view = await MSTREAMAPI.discoverySaveDestination(null);
+        } catch (err) {
+          iziToast.error({ title: this.dmErrorText(err), position: 'topCenter', timeout: 3500 });
+        }
+      },
+
+      // ── The downloads strip ────────────────────────────────────────────
+      // One list (GET plugin-jobs) feeds the strip and the open window's
+      // rows. Polled only while a job is live and the tab is visible: fast
+      // with a live row in an open window, slower for the strip alone.
+      noteDiscoverJob: function (job) {
+        const jobs = this.discover.tray.jobs.filter((j) => j.id !== job.id);
+        jobs.unshift(job);
+        this.discover.tray.jobs = jobs;
+      },
+      discoverJobsLive: function () {
+        return this.dmAnyJobLive() || DISCOVERJOBS.traySummary(this.discover.tray.jobs).live;
+      },
+      refreshDiscoverJobs: async function () {
+        if (!this.discover.plugins.available) { return; }
+        let res = null;
+        try { res = await MSTREAMAPI.discoveryJobs(); } catch (_) { res = null; }
+        if (res && Array.isArray(res.jobs)) {
+          discoverJobsFailures = 0;
+          await this.applyDiscoverJobs(res.jobs);
+        } else {
+          discoverJobsFailures += 1;
+        }
+        this.scheduleDiscoverJobsPoll();
+      },
+      applyDiscoverJobs: async function (jobs) {
+        const finished = DISCOVERJOBS.finishedSince(this.discover.tray.jobs, jobs);
+        this.discover.tray.jobs = jobs;
+        const m = this.discover.modal;
+        if (m.open && m.recKey) {
+          const mine = DISCOVERJOBS.jobsByPlugin(jobs.filter((j) => j.key === m.recKey));
+          for (const name of Object.keys(mine)) {
+            const held = m.jobs[name];
+            if (!held || mine[name].id >= held.id) { this.$set(m.jobs, name, mine[name]); }
+          }
+          // A live row whose job is not in the caller's list (an admin handed
+          // another account's job): follow it by id.
+          for (const name of Object.keys(m.jobs)) {
+            const held = m.jobs[name];
+            if (!DISCOVERJOBS.isLive(held) || jobs.some((j) => j.id === held.id)) { continue; }
+            try {
+              const one = await MSTREAMAPI.discoveryJob(held.id);
+              if (one && one.job && this.discover.modal === m) { this.$set(m.jobs, name, one.job); }
+            } catch (_) { this.$delete(m.jobs, name); }
+          }
+        }
+        for (const job of finished) {
+          if (!(m.open && m.recKey && m.recKey === job.key)) { this.toastDiscoverJob(job); }
+        }
+        if (DISCOVERJOBS.trayRows(jobs).length > 0) { this.ensureDiscoverPlugins(); }
+      },
+      toastDiscoverJob: function (job) {
+        const row = DISCOVERJOBS.jobRowState(job);
+        const message = DISCOVERJOBS.jobTitle(job);
+        if (row.state === 'failed') {
+          iziToast.error({ title: this.tt('discover.job.toastFailed', { plugin: this.discoverPluginTitle(job.plugin) }), message: job.error || message, position: 'topCenter', timeout: 5000 });
+        } else if (row.state === 'copied') {
+          iziToast.success({ title: this.tt('discover.job.toastCopied'), message, position: 'topCenter', timeout: 3000 });
+        } else if (row.state === 'downloaded') {
+          const where = row.filepath ? DISCOVERJOBS.pathCrumbs(row.filepath).join(' / ') : '';
+          iziToast.success({ title: this.tt('discover.job.toastDownloaded'), message: [message, where].filter(Boolean).join(' · '), position: 'topCenter', timeout: 4000 });
+        } else if (row.state === 'owned') {
+          iziToast.info({ title: this.tt('discover.job.toastOwned'), message, position: 'topCenter', timeout: 3000 });
+        }
+      },
+      scheduleDiscoverJobsPoll: function () {
+        if (discoverJobsTimer) { clearTimeout(discoverJobsTimer); discoverJobsTimer = null; }
+        if (!this.discover.plugins.available || !this.discoverJobsLive()) { return; }
+        if (!discoverJobsVisibilityHooked) {
+          discoverJobsVisibilityHooked = true;
+          document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && playlistVue.discoverJobsLive()) { playlistVue.refreshDiscoverJobs(); }
+          });
+        }
+        if (document.hidden) { return; }   // the listener picks it up when the tab is back
+        const beat = this.dmAnyJobLive() ? 1500 : ((this.discover.tray.collapsed || this.discover.collapsed) ? 10000 : 4000);
+        const delay = Math.min(60000, beat * Math.pow(2, Math.min(discoverJobsFailures, 6)));
+        discoverJobsTimer = setTimeout(() => { discoverJobsTimer = null; this.refreshDiscoverJobs(); }, delay);
+      },
+      dtRows: function () {
+        return DISCOVERJOBS.trayRows(this.discover.tray.jobs).map((job) => ({
+          job, row: DISCOVERJOBS.jobRowState(job), title: DISCOVERJOBS.jobTitle(job), plugin: this.discoverPluginTitle(job.plugin),
+        }));
+      },
+      dtSummary: function () {
+        return DISCOVERJOBS.traySummary(this.discover.tray.jobs).parts.map((p) => this.tt(p.key, { count: p.count })).join(' · ');
+      },
+      dtClearable: function () {
+        return DISCOVERJOBS.traySummary(this.discover.tray.jobs).clearable;
+      },
+      // "All downloads": the Downloads panel (m.js) — everything that landed.
+      openDiscoverDownloads: function () {
+        if (typeof changeView !== 'function' || typeof discoverDownloadsPanel !== 'function') { return; }
+        changeView(discoverDownloadsPanel, document.getElementById('nav-discover-downloads'));
+      },
+      toggleDiscoverTray: function () {
+        this.discover.tray.collapsed = !this.discover.tray.collapsed;
+        try { localStorage.setItem('discoverTrayCollapsed', String(this.discover.tray.collapsed)); } catch (_) { /* private mode */ }
+        this.scheduleDiscoverJobsPoll();
+      },
+      dtRetry: async function (job) {
+        try {
+          const res = await MSTREAMAPI.discoveryJobStart(job.plugin, job.recommendation);
+          if (res && res.job) { this.noteDiscoverJob(res.job); }
+        } catch (err) {
+          iziToast.error({ title: this.dmErrorText(err), position: 'topCenter', timeout: 3500 });
+        }
+        this.scheduleDiscoverJobsPoll();
+      },
+      dtClear: async function () {
+        try { await MSTREAMAPI.discoveryJobsClear(); } catch (_) { /* the refresh shows what is left */ }
+        await this.refreshDiscoverJobs();
+      },
+      // A strip row opens the window its job came from.
+      openDiscoverModalForJob: async function (job) {
+        const rec = job.recommendation || {};
+        const source = rec.source === 'federation' ? 'federation' : 'p2p';
+        await this.openDiscoverModal(Object.assign({}, rec, { peer: rec.peer || {} }), source);
+        const m = this.discover.modal;
+        if (!m.open) { return; }
+        if (source === 'federation' && job.plugin !== DISCOVERJOBS.COPY_PLUGIN && this.discover.plugins.available) { m.view = 'plugins'; }
       },
 
       // ── "From the network" rows ────────────────────────────────────
@@ -1188,7 +2037,10 @@ const VUEPLAYERCORE = (() => {
   // `position` (added for the peer-browse panels) inserts and plays, the
   // way addSongWizard's own position argument does — without it a peer row
   // could only ever be appended, so "Play Now" did nothing on peer tracks.
-  mstreamModule.addFederationSongWizard = (peer, remotePath, metadata, autoPlayOff, position) => {
+  // `playNow` (default true, the historical behaviour) matters only with a
+  // position: false inserts there without jumping to it — the modal's
+  // "Queue next".
+  mstreamModule.addFederationSongWizard = (peer, remotePath, metadata, autoPlayOff, position, playNow = true) => {
     let escaped = remotePath.replace(/\%/g, '%25').replace(/\#/g, '%23').replace(/\?/g, '%3F');
     if (escaped.charAt(0) === '/') { escaped = escaped.substr(1); }
     let url = `${MSTREAMAPI.currentServer.host}api/v1/federation/peers/${peer.id}/stream/${escaped}?`;
@@ -1206,7 +2058,7 @@ const VUEPLAYERCORE = (() => {
     // `if (position)` treated it as "no position" and fell through to a paused
     // append.
     if (position !== undefined) {
-      MSTREAMPLAYER.insertSongAt(newSong, position, true);
+      MSTREAMPLAYER.insertSongAt(newSong, position, playNow !== false);
       return;
     }
     MSTREAMPLAYER.addSong(newSong, autoPlayOff);
@@ -1603,6 +2455,14 @@ const VUEPLAYERCORE = (() => {
   mstreamModule.setDiscoveryPluginsAvailable = (available) => {
     discoverState.plugins.available = available === true;
     discoverState.plugins.list = null;
+    discoverState.plugins.jobsAllowed = false;
+    discoverPluginsPromise = null;
+    discoverState.dest = { loaded: false, view: null };
+    discoverState.tray.jobs = [];
+    if (discoverJobsTimer) { clearTimeout(discoverJobsTimer); discoverJobsTimer = null; }
+    // The strip's one up-front request: this account's jobs (one may still
+    // be running, or have failed, since an earlier visit).
+    if (discoverState.plugins.available) { playlistVue.refreshDiscoverJobs(); }
     if (discoverPreviewAudio) {
       try { discoverPreviewAudio.pause(); } catch (_) { /* already gone */ }
       discoverPreviewAudio = null;
@@ -1616,6 +2476,12 @@ const VUEPLAYERCORE = (() => {
   // one paired peer is opted into discovery queries.
   mstreamModule.setFederationDiscoveryAvailable = (available) => {
     discoverState.fed.available = available === true;
+  };
+
+  // Admins see the "Invite <peer> to federate" row in the recommendation
+  // modal (/api/'s `user.admin`; a server without /api/ = false).
+  mstreamModule.setAdmin = (admin) => {
+    discoverState.admin = admin === true;
   };
 
   return mstreamModule;

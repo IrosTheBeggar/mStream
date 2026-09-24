@@ -130,6 +130,23 @@ describe('dimensionsOf (advisory pre-filter)', () => {
     }
   });
 
+  test('takes a plain Uint8Array too (music-metadata hands embedded pictures over that way)', async () => {
+    // A downloaded song's cover reaches generateThumbnails as picture[0].data,
+    // a Uint8Array, not a Buffer: the JPEG walk used to throw
+    // "buf.readUInt16BE is not a function" and the song lost its thumbnails.
+    const buf = await fsp.readFile(await makeImage('u8.jpg', '640x480'));
+    const u8 = new Uint8Array(buf);            // a copy: not a Buffer any more
+    assert.ok(!Buffer.isBuffer(u8));
+    assert.deepEqual(dimensionsOf(u8), { width: 640, height: 480 }, 'jpeg via Uint8Array');
+    assert.equal(tooManyPixels(u8), null, 'within the limit');
+    assert.equal(isSupportedImage(u8), true, 'recognised');
+    const png = new Uint8Array(await fsp.readFile(await makeImage('u8.png', '30x20')));
+    assert.deepEqual(dimensionsOf(png), { width: 30, height: 20 }, 'png via Uint8Array');
+    const webp = new Uint8Array(craftWebp('VP8X', Buffer.from([0, 0, 0, 0, 0x3F, 0x01, 0x00, 0xFF, 0x00, 0x00])));
+    assert.deepEqual(dimensionsOf(webp), { width: 320, height: 256 }, 'webp via Uint8Array');
+    assert.equal(dimensionsOf(new Uint8Array(8)), null, 'too short');
+  });
+
   test('reads WebP dimensions from all three fourcc forms (no encoder involved)', () => {
     // VP8 (lossy): the real embedded file.
     assert.deepEqual(dimensionsOf(WEBP_64), { width: 64, height: 64 }, 'VP8 fixture');

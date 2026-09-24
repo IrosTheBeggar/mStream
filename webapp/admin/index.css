@@ -363,3 +363,112 @@ tr.backup-row-active:hover { background: #bbdefb; }
   0%   { transform: translateX(-250%); }
   100% { transform: translateX(350%); }
 }
+
+/* ── Discovery Plugins view ─────────────────────────────────────────────
+   The Discovery view's vocabulary (boxed status header, pill tabs, stat
+   tiles, lower-case status words) as classes, plus the one new component:
+   the plug-in row. Design: docs/designs/discovery-plugins-admin. */
+.dp-box { border: 1px solid #e0e0e0; border-radius: 2px; padding: 16px 20px; margin-top: 14px; }
+.dp-box-h { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.dp-box-act { display: flex; gap: 12px; font-size: 0.9em; flex-shrink: 0; }
+.dp-status { display: inline-flex; align-items: center; gap: 7px; font-size: 0.9em; color: #616161; flex-wrap: wrap; }
+.dp-dot { width: 9px; height: 9px; border-radius: 50%; background: #9e9e9e; flex-shrink: 0; display: inline-block; }
+.dp-dot-ok { background: #2e7d32; }
+.dp-dot-warn { background: #e65100; }
+.dp-dot-err { background: #c62828; }
+.dp-ok { color: #2e7d32; font-weight: 600; }
+.dp-warn { color: #e65100; font-weight: 600; }
+.dp-err { color: #c62828; font-weight: 600; }
+.dp-off { font-weight: 600; }
+.dp-warn-soft { color: #e65100; }
+.dp-br { color: #9e9e9e; white-space: nowrap; font-size: 0.9em; }
+.dp-muted { color: #9e9e9e; }
+.dp-sub { font-size: 0.9em; color: #757575; }
+.dp-mono { font-family: ui-monospace, Consolas, monospace; font-size: 0.9em; word-break: break-all; }
+.dp-pills { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; border-bottom: 1px solid #e0e0e0; padding-bottom: 10px; }
+.dp-pill { padding: 6px 16px; border-radius: 2px; font-size: 0.85em; font-weight: 600; letter-spacing: 0.4px; cursor: pointer; color: #616161; border: 1px solid #e0e0e0; user-select: none; }
+.dp-pill-on { background: #505061; color: #fff; border-color: #505061; }
+.dp-pill small { font-weight: 400; opacity: 0.8; margin-left: 5px; font-size: 1em; }
+.dp-pills-sm { margin-top: 0; border-bottom: 0; padding-bottom: 0; }
+.dp-pills-sm .dp-pill { padding: 3px 12px; }
+.dp-group { display: flex; align-items: baseline; gap: 10px; margin: 18px 0 2px; padding-bottom: 6px; border-bottom: 1px solid #e0e0e0; }
+.dp-group b { font-size: 13px; letter-spacing: 0.6px; text-transform: uppercase; color: #616161; }
+.dp-group span { font-size: 0.85em; color: #9e9e9e; }
+.dp-plugin { display: flex; align-items: flex-start; gap: 16px; padding: 14px 5px; border-bottom: 1px solid rgba(0, 0, 0, 0.12); }
+.dp-plugin:last-child { border-bottom: 0; }
+.dp-plugin-sw { padding-top: 3px; flex-shrink: 0; }
+.dp-plugin-sw .switch label .lever { margin: 0; }
+.dp-plugin-body { flex: 1; min-width: 0; }
+.dp-plugin-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dp-plugin-h b { font-size: 15.5px; }
+.dp-plugin-d { font-size: 0.9em; color: #616161; margin-top: 2px; }
+.dp-plugin-meta { font-size: 0.85em; color: #757575; margin-top: 6px; }
+.dp-plugin-act { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; padding-top: 2px; }
+.dp-plugin-off .dp-plugin-h b, .dp-plugin-off .dp-plugin-d { color: #9e9e9e; }
+.dp-tag { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase; color: #616161; border: 1px solid #e0e0e0; border-radius: 2px; padding: 0 6px; line-height: 18px; white-space: nowrap; }
+.dp-tag-user { color: #4527a0; border-color: #d1c4e9; background: #f6f2fc; }
+.dp-reason { display: flex; gap: 8px; margin-top: 8px; padding: 8px 10px; background: #fff3e0; border-left: 3px solid #e65100; font-size: 0.85em; color: #5d4037; }
+.dp-callout { background: #e3f2fd; border-left: 3px solid #2196f3; padding: 8px 12px; font-size: 0.85em; margin: 12px 0 0; line-height: 1.45; }
+.dp-callout-warn { background: #fff8e1; border-left-color: #ffa000; }
+.dp-help { font-size: 12px; color: #757575; margin-top: 4px; line-height: 1.4; }
+.dp-help-err { color: #f44336; }
+.dp-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-top: 14px; }
+.dp-tile { border: 1px solid #e0e0e0; border-radius: 2px; padding: 12px 14px; }
+.dp-tile-n { font-size: 1.3em; font-weight: 700; color: #212121; }
+.dp-tile-n small { font-size: 0.7em; color: #757575; font-weight: 400; }
+.dp-tile-l { font-size: 0.85em; color: #757575; margin-top: 2px; }
+.dp-tile-s { font-size: 0.8em; color: #9e9e9e; margin-top: 4px; }
+.dp-rows { width: 100%; }
+.dp-rows td { padding: 15px 5px; vertical-align: middle; }
+.dp-rows td:last-child { text-align: right; white-space: nowrap; width: 1%; }
+.dp-note { display: block; font-size: 0.85em; color: #757575; margin-top: 2px; }
+.dp-table { font-size: 14px; }
+.dp-table th { padding: 12px 5px; white-space: nowrap; }
+.dp-table td { padding: 11px 5px; vertical-align: middle; }
+.dp-table .dp-num { text-align: right; white-space: nowrap; }
+.dp-table .dp-muted-row td { color: #9e9e9e; }
+.dp-table .dp-state { min-width: 210px; }
+.dp-detail td { padding-top: 0; font-size: 12.5px; color: #616161; }
+.dp-detail code { display: block; white-space: pre-wrap; word-break: break-word; padding: 8px 10px; margin-bottom: 6px; background: rgba(0, 0, 0, 0.06); border-radius: 2px; font-family: ui-monospace, Consolas, monospace; }
+.dp-act-h { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin: 14px 0 6px; }
+.dp-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(160, 160, 160, 0.2); }
+/* Settings modals: plain labelled fields (Materialize's floating labels fight
+   values that are there from the start). */
+.dp-field { margin: 0 0 18px; }
+.dp-field > label { display: block; font-size: 12.8px; color: #9e9e9e; margin-bottom: 2px; }
+.dp-field-row { display: flex; align-items: center; gap: 10px; }
+.dp-field-row input.dp-input { margin: 0; flex: 1; min-width: 0; }
+.dp-field-row input.dp-input-narrow { flex: 0 0 140px; }
+.dp-field-row input.dp-input-mono { font-family: ui-monospace, Consolas, monospace; font-size: 14px; }
+.dp-field-row .dp-select { max-width: 320px; }
+.dp-unit { color: #9e9e9e; font-size: 14px; }
+/* Phones: a plug-in row wraps so its status sits under the text, and the two
+   tables become stacked rows (five columns do not fit, and sideways scrolling
+   inside a card hides the column that matters). */
+@media (max-width: 600px) {
+  .dp-box { padding: 12px 14px; }
+  .dp-pill { padding: 5px 11px; }
+  .dp-plugin { flex-wrap: wrap; gap: 10px 12px; }
+  .dp-plugin-body { flex-basis: calc(100% - 60px); }
+  .dp-plugin-act { flex-direction: row; flex-wrap: wrap; flex-basis: 100%; justify-content: flex-start; align-items: center; gap: 4px 12px; padding-left: 56px; }
+  .dp-plugin-act .dp-status { flex-wrap: nowrap; white-space: nowrap; }
+  .dp-table thead { display: none; }
+  .dp-table, .dp-table tbody, .dp-table tr, .dp-table td { display: block; width: 100%; }
+  .dp-table tr { padding: 8px 0; border-bottom: 1px solid rgba(0, 0, 0, 0.12); }
+  .dp-table td { padding: 2px 5px; border: 0; text-align: left; }
+  .dp-table td[data-label]::before { content: attr(data-label) ": "; color: #9e9e9e; font-size: 12px; }
+  .dp-table .dp-num { text-align: left; }
+}
+/* The Activity table has six columns and the admin's card is 70 % of what the
+   sidebar leaves, so it stacks far earlier than the other two. */
+@media (max-width: 1400px) {
+  .dp-table-act thead { display: none; }
+  .dp-table-act, .dp-table-act tbody, .dp-table-act tr, .dp-table-act td { display: block; width: 100%; }
+  .dp-table-act tr { padding: 8px 0; border-bottom: 1px solid rgba(0, 0, 0, 0.12); }
+  .dp-table-act td { padding: 2px 5px; border: 0; text-align: left; }
+  .dp-table-act td[data-label]::before { content: attr(data-label) ": "; color: #9e9e9e; font-size: 12px; }
+  .dp-table-act .dp-num { text-align: left; }
+  .dp-table-act .dp-state { min-width: 0; }
+  .dp-table-act .dp-detail { padding-top: 0; border-bottom: 1px solid rgba(0, 0, 0, 0.12); }
+  .dp-table-act .dp-detail td:first-child { display: none; }
+}

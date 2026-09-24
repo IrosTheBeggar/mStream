@@ -215,6 +215,114 @@ components:
       name: x-access-token
 
   schemas:
+    DiscoveryCollectionDestination:
+      type: object
+      description: Where files the user decides to own are put — a library, a base folder inside it, and a layout rendered per song.
+      required: [vpath, layout]
+      properties:
+        vpath: { type: string, description: "A library the caller may upload to.", example: Music }
+        base: { type: string, description: 'A relative folder inside the library; "" = its root.', example: From peers }
+        layout: { type: string, description: 'Torrent path-template syntax; see `variables` in the view.', example: "{{ARTIST}}/{{ALBUM}}" }
+    DiscoveryCollectionDestinationView:
+      type: object
+      properties:
+        destination:
+          description: The effective destination; `null` when the caller may not put files anywhere (uploads off, or no library).
+          type: object
+          nullable: true
+          allOf:
+            - { $ref: "#/components/schemas/DiscoveryCollectionDestination" }
+          properties:
+            source: { type: string, enum: [default, user], description: "`user` = the saved one is in force; `default` = the library default." }
+        saved:
+          description: What is stored, as typed; `null` when nothing is.
+          type: object
+          nullable: true
+          allOf:
+            - { $ref: "#/components/schemas/DiscoveryCollectionDestination" }
+        libraries:
+          type: array
+          description: The libraries the caller may put files into, each with its admin Path Template.
+          items:
+            type: object
+            properties:
+              vpath: { type: string }
+              template: { type: string, nullable: true }
+        defaultLayout: { type: string, example: "{{ARTIST}}/{{ALBUM}}" }
+        variables:
+          type: array
+          items: { type: string }
+          example: [ARTIST, ALBUM, YEAR, GENRE, ALBUMARTIST, PEER]
+    DiscoveryPluginAdminRow:
+      type: object
+      description: A registered discovery plug-in as the admin panel sees it (on or off).
+      properties:
+        name: { type: string, example: youtube }
+        title: { type: string, example: YouTube }
+        description: { type: string }
+        capabilities:
+          type: array
+          items: { type: string, enum: [links, preview, play, acquire, handoff] }
+        scope: { type: string, enum: [server, user] }
+        enabled: { type: boolean }
+        available: { type: boolean, description: "False when the plug-in is on but its availability probe failed." }
+        reason: { type: string, nullable: true, example: "yt-dlp not found (yt-dlp)" }
+        detail: { type: object, nullable: true, additionalProperties: true, description: "What the probe found. For `youtube`: `{ ytdlp, ffmpeg, binary }` — the version, whether ffmpeg is ready, and the executable it runs (`discoveryPlugins.youtube.binary` from the config file, or the `MSTREAM_YTDLP_BIN` hook)." }
+        settings:
+          type: array
+          items: { type: string }
+          description: The per-USER setting keys the plug-in keeps.
+        adminSettings:
+          type: array
+          items: { type: string }
+          description: The config keys an admin may edit.
+        config: { type: object, additionalProperties: true, description: "Current values of `adminSettings`." }
+        connectedUsers: { type: integer, description: "Only for a plug-in that keeps a per-user secret: how many accounts hold one." }
+
+    PluginDownload:
+      type: object
+      description: One song a discovery plug-in (or the Youtube DL route) brought into a library, and what became of it. Timestamps are ms epochs.
+      properties:
+        id: { type: integer }
+        plugin: { type: string, example: youtube, description: "`youtube`, `federation-copy`, or `ytdl` for the Youtube DL route." }
+        userId: { type: integer, nullable: true, description: "Who asked; null for the anonymous account or after the user was deleted." }
+        username: { type: string, nullable: true, description: "Only in an admin's `?all=1` listing." }
+        jobId: { type: integer, nullable: true, description: "The plug-in job that fetched it (its row is pruned later); null for the Youtube DL route." }
+        vpath: { type: string, description: The library it was filed in. }
+        filepath: { type: string, example: "music/Nova/Night Ferry/Remote_Hit.mp3", description: "The full library path, spelled as every other API spells a song." }
+        relativePath: { type: string, description: The path inside the library. }
+        fileHash: { type: string, nullable: true }
+        origin: { type: string, nullable: true, description: "The YouTube URL, or the paired server's name." }
+        title: { type: string, nullable: true }
+        artist: { type: string, nullable: true }
+        album: { type: string, nullable: true }
+        bytes: { type: integer, nullable: true }
+        downloadedAt: { type: number }
+        removedAt: { type: number, nullable: true }
+        removedBy: { type: integer, nullable: true, description: The account that removed it. }
+        present: { type: boolean, description: "Whether a track row still sits at that path; false once a scan or a hand removed the file." }
+        trackId: { type: integer, nullable: true }
+
+    DiscoveryPluginJob:
+      type: object
+      description: One thing a discovery plug-in was asked to do with a recommendation (acquire / hand-off). Timestamps are ms epochs.
+      properties:
+        id: { type: integer }
+        plugin: { type: string, example: soulseek }
+        userId: { type: integer, nullable: true, description: "Who asked; null in public mode or after the user was deleted." }
+        key: { type: string, description: "The recommendation's persistence key (mbid:… or text:…)." }
+        recommendation: { type: object, description: The normalised recommendation the job was started with. }
+        state: { type: string, enum: [queued, running, done, failed, cancelled] }
+        progress: { type: number, nullable: true, minimum: 0, maximum: 1 }
+        statusText: { type: string, nullable: true, description: "The plug-in's own progress line." }
+        result: { type: object, nullable: true, description: "What the plug-in produced (plug-in specific), once done." }
+        error: { type: string, nullable: true }
+        attempts: { type: integer }
+        cancelRequested: { type: boolean }
+        createdAt: { type: integer }
+        updatedAt: { type: integer }
+        startedAt: { type: integer, nullable: true }
+        finishedAt: { type: integer, nullable: true }
     Error:
       type: object
       required: [error]
@@ -2279,7 +2387,156 @@ paths:
                           items: { type: string, enum: [links, preview, play, acquire, handoff] }
                         scope: { type: string, enum: [server, user], description: "server = admin configuration only; user = needs per-user credentials" }
                         enabled: { type: boolean }
+                        settings:
+                          type: array
+                          items: { type: string }
+                          description: The per-user setting keys this plug-in keeps (see the settings routes); empty for most.
+                        available:
+                          type: boolean
+                          description: >
+                            Always true here: a plug-in whose availability probe failed
+                            (yt-dlp or ffmpeg missing for `youtube`) is left out of this
+                            list and answers 404, so an unconfigured plug-in never shows a
+                            row that cannot work. The admin listing shows it with `reason`.
+                  jobs:
+                    type: object
+                    properties:
+                      allowed:
+                        type: boolean
+                        description: >
+                          The acquisition gate for THIS caller
+                          (`config.discoveryJobs.enabledFor`, and the account's
+                          `allow_discovery_jobs` flag in whitelist mode). When false,
+                          starting a job answers 403 — a client hides the `acquire` and
+                          `handoff` rows instead of offering them.
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/discovery/plugins/{name}/settings:
+    get:
+      tags: [Discovery]
+      summary: The caller's settings for a plug-in
+      description: |
+        Per-user settings a plug-in keeps (`user_settings`, namespace
+        `discovery-plugin:{name}`), plus the plug-in's own description of the
+        effective view. Secret values (tokens) never come back; the entry
+        says only that one is set. In public mode the settings belong to the
+        shared anonymous account. This is where a plug-in keeps what is its
+        own — a service token, say. The collection destination is NOT a
+        plug-in setting: it is shared by every acquire plug-in and has its
+        own route, `/api/v1/discovery/collection/destination`.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+      responses:
+        "200":
+          description: The settings view.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plugin: { type: string }
+                  keys: { type: array, items: { type: string } }
+                  settings:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        value: { description: The stored value (absent for secrets). }
+                        secret: { type: boolean }
+                        set: { type: boolean }
+                        updatedAt: { type: integer }
+                additionalProperties: true
+        "400": { description: "The plug-in keeps no settings." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The caller has no user account to keep settings under." }
+        "404": { description: "Unknown or disabled plug-in." }
+    put:
+      tags: [Discovery]
+      summary: Store one plug-in setting for the caller
+      description: |
+        Stores one key, validated by the plug-in's schema for it and then by
+        the plug-in's own checks. `value: null` deletes the key. Answers with
+        the same view as GET.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, value]
+              properties:
+                key: { type: string }
+                value:
+                  description: "Any JSON value the plug-in's schema for that key accepts; `null` deletes the key."
+            example:
+              key: token
+              value: "a-service-token"
+      responses:
+        "200": { description: "Stored; the settings view." }
+        "400": { description: "Unknown key, a value the schema or the plug-in refused, or a plug-in with no settings." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The caller has no user account to keep settings under." }
+        "404": { description: "Unknown or disabled plug-in." }
+
+  /api/v1/discovery/collection/destination:
+    get:
+      tags: [Discovery]
+      summary: Where the caller's collection copies and downloads land
+      description: |
+        The collection destination: a library the caller may upload to, a
+        base folder inside it (`""` = the root) and a layout rendered from
+        each song's tags with the torrent path-template syntax
+        (`{{ARTIST}}/{{ALBUM}}`; variables as listed, `{{PEER}}` being the
+        paired server a copy came from — empty, so dropped, for anything
+        else). One per user, shared by every acquire plug-in: the
+        `federation-copy` job copies into it, and the `youtube` job files its
+        download in it. Nothing saved means the library default: the first
+        writable library's admin Path Template when it has one, else
+        `{{ARTIST}}/{{ALBUM}}` at its root. In public mode the anonymous
+        account keeps the one shared setting.
+      responses:
+        "200":
+          description: The effective destination and what a picker needs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveryCollectionDestinationView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [Discovery]
+      summary: Save the collection destination, or go back to the default
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [destination]
+              properties:
+                destination:
+                  description: "`null` removes the saved destination."
+                  type: object
+                  nullable: true
+                  allOf:
+                    - { $ref: "#/components/schemas/DiscoveryCollectionDestination" }
+            example:
+              destination: { vpath: Music, base: "From peers", layout: "{{PEER}}/{{ARTIST}}/{{ALBUM}}" }
+      responses:
+        "200":
+          description: Saved; the same view as GET.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveryCollectionDestinationView" }
+        "400": { description: "A library the caller cannot put files into, a base folder that climbs out of it, or a layout the template engine refuses (unknown variable, stray brace, absolute path)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The caller has no user account to keep a destination under." }
 
   /api/v1/discovery/plugins/{name}/resolve:
     post:
@@ -2361,6 +2618,276 @@ paths:
         "404": { description: "Unknown or disabled plug-in (disabled plug-ins are invisible, not forbidden)." }
         "429": { description: "The plug-in's own request budget for its catalogue is spent — try again shortly." }
         "502": { description: "The plug-in failed to resolve this recommendation (a catalogue was unreachable); the cause is logged server-side." }
+
+  /api/v1/discovery/plugins/{name}/jobs:
+    post:
+      tags: [Discovery]
+      summary: Start a job (acquire / hand-off plug-ins)
+      description: |
+        Asks a runnable plug-in (capability `acquire` or `handoff`) to act on
+        one recommendation. The job is queued and run by the server's plug-in
+        job runner; poll it through `/api/v1/discovery/plugin-jobs/{id}`.
+        Gated by `config.discoveryJobs.enabledFor`: `all`, or `whitelist`
+        with the caller's `allow_discovery_jobs` flag. The same
+        (plug-in, recommendation) is never queued twice while a job for it is
+        live: a second ask answers `200` with the existing job — or `409`
+        when that live job belongs to another account (its row is theirs; an
+        admin still gets it).
+
+        `federation-copy` ("Add to your collection") takes a federation
+        recommendation (`source: federation`, the peer's `filepath`, `peer.id`)
+        and copies the file into the caller's collection destination
+        (`/api/v1/discovery/collection/destination`). Its `result` is `{ copied: { vpath, filepath, trackId, bytes,
+        title, artist, album }, missingVars, peer, destination }`, or
+        `{ skipped: owned, existing: { filepath, by } }` when the library
+        already has the song (by hash or by artist + album + title), or
+        `{ skipped: exists, filepath }` when a file already sits at the target
+        path — nothing is ever overwritten. It fails (state `failed`, `error`)
+        when uploads are off for the account, the peer is unreachable, or the
+        peer answers 429 for its transfer limit.
+
+        `youtube` ("Get it" from YouTube; off by default, needs yt-dlp and
+        ffmpeg) searches YouTube for the recommendation, scores the uploads
+        against it (the shared match scorer, a bonus for the artist's Topic
+        channel, covers / karaoke / live takes dropped), downloads the best
+        one's audio, tags it from the recommendation and files it in the
+        caller's collection destination exactly as a copy is filed — the same
+        upload rules, the same owned checks (by artist + album + title before
+        the search, by hash after the download), never over an existing file.
+        Its `result` is `{ downloaded: { vpath, filepath, trackId, bytes,
+        format, title, artist, album }, match: { score, url, title, channel,
+        durationSec }, missingVars, destination }`, or the same `skipped`
+        shapes as `federation-copy`. It fails with `uploads are disabled for
+        this account, and a download is an upload`, `no library to download
+        into`, `Nothing matched closely enough (best score …, needs 0.62)`,
+        `YouTube returned no results …`, or yt-dlp's own last error line (for
+        example its sign-in / bot check). yt-dlp works in a staging folder of
+        the job's own (`discoveryJobs.stagingDir`); a failed or cancelled
+        download leaves nothing anywhere.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recommendation]
+              properties:
+                recommendation: { type: object, description: "Same shape as the resolve body." }
+      responses:
+        "202":
+          description: Queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created: { type: boolean, example: true }
+                  job: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "200": { description: "A live job for this recommendation already exists; `created: false` and that job." }
+        "400": { description: "Malformed body, or the plug-in does not run jobs (use resolve)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The acquisition gate is in whitelist mode and the caller is not allowed." }
+        "404": { description: "Unknown or disabled plug-in." }
+        "409": { description: "Another account's live job already covers this recommendation — try again when it has finished." }
+
+  /api/v1/discovery/plugin-jobs/lookup:
+    post:
+      tags: [Discovery]
+      summary: The caller's jobs for one recommendation
+      description: |
+        What the caller has already done with a recommendation: their newest
+        job per plug-in, so a client can draw each acquire / hand-off row in
+        its real state (running, done and where the file landed, failed…)
+        when the recommendation is opened again. The server computes
+        the recommendation key (MBID first, else a normalised text digest), so
+        a client never has to mirror it. Not gated: it reads only the
+        caller's own rows.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recommendation]
+              properties:
+                recommendation: { type: object, description: "Same shape as the resolve body." }
+      responses:
+        "200":
+          description: At most one job per plug-in, newest first; empty when the caller never acted on it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key: { type: string, example: "text:3f9a…", description: The recommendation key the jobs were matched on. }
+                  jobs:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "400": { description: "Malformed body." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/discovery/plugin-jobs/clear:
+    post:
+      tags: [Discovery]
+      summary: Clear the caller's finished jobs
+      description: |
+        Drops the caller's finished rows (`done`, `failed`, `cancelled`). A
+        finished job has nothing left to act on — what it fetched is in the
+        library, or nothing is. Live jobs stay. Files are never touched.
+      responses:
+        "200":
+          description: How many rows went.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed: { type: integer, example: 4 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/discovery/plugin-jobs:
+    get:
+      tags: [Discovery]
+      summary: The caller's plug-in jobs
+      parameters:
+        - name: state
+          in: query
+          schema: { type: string, enum: [queued, running, done, failed, cancelled] }
+        - name: all
+          in: query
+          description: "Admins only — every user's jobs; each then carries `username` (null when the account is gone, and for the shared anonymous account of a server with no users)."
+          schema: { type: boolean }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        "200":
+          description: Newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+                  runner:
+                    type: object
+                    properties:
+                      running: { type: integer, description: Jobs in flight right now. }
+                      active: { type: boolean, description: The runner is armed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/discovery/plugin-jobs/{id}:
+    get:
+      tags: [Discovery]
+      summary: One plug-in job
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: The job.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "No such job, or not the caller's (uniform, so ids can't be enumerated)." }
+
+  /api/v1/discovery/plugin-jobs/{id}/cancel:
+    post:
+      tags: [Discovery]
+      summary: Cancel a plug-in job
+      description: |
+        A queued job is cancelled at once; a running one is flagged and the
+        plug-in stops at its next step, after which the job reads `cancelled`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: The job as it now stands.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  outcome: { type: string, enum: [cancelled, requested] }
+                  job: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "No such job, or not the caller's." }
+        "409": { description: "The job has already finished." }
+
+  /api/v1/discovery/downloads:
+    get:
+      tags: [Discovery]
+      summary: What the plug-ins brought into the library
+      description: |
+        The record of every song the discovery plug-ins (`youtube`,
+        `federation-copy`) and the Youtube DL route filed in a library,
+        newest first: which plug-in, for whom, from where (`origin`: the
+        YouTube URL, the peer's name), where it was filed, the tags as filed,
+        and whether the track row is still there (`present`; a scan that
+        removed the file makes it false without anyone telling the record).
+        The caller's own by default; an admin's `?all=1` lists every
+        account's, each with its `username` (`null` for an account that is
+        gone, and for the anonymous account of a server with no users).
+        Removed downloads are history and hidden unless `?removed=1`.
+        `?before=<id>` pages backwards.
+      parameters:
+        - { name: all, in: query, schema: { type: boolean }, description: "Admins: every account's." }
+        - { name: removed, in: query, schema: { type: boolean }, description: "Include removed records." }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+        - { name: before, in: query, schema: { type: integer }, description: "Only records with a smaller id." }
+      responses:
+        "200":
+          description: The records.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  downloads:
+                    type: array
+                    items: { $ref: "#/components/schemas/PluginDownload" }
+        "400": { description: "A parameter out of range." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/discovery/downloads/{id}:
+    delete:
+      tags: [Discovery]
+      summary: Remove a download the plug-ins brought in
+      description: |
+        Deletes the file, its library row and the playlist entries that
+        pointed at it, and marks the record removed. Only the account that
+        asked for the download, or an admin; anyone else gets the same 404 as
+        an unknown id. A file that is already gone (a scan swept it, a hand
+        removed it) still settles the record, answered with `fileRemoved:
+        false`. Ratings and play counts key on the recording's hash and are
+        left alone. This is the one place the API deletes music.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: Removed; the record as it now stands.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  download: { $ref: "#/components/schemas/PluginDownload" }
+                  fileRemoved: { type: boolean, description: "False when the file was already gone." }
+                  rowsRemoved: { type: integer, description: "Track rows deleted (0 when a scan got there first)." }
+                  playlistEntries: { type: integer, description: "Playlist entries that pointed at the file." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "No such download, not the caller's, or the caller no longer sees the library it landed in." }
+        "409": { description: "Already removed, or the file is in use right now (try again)." }
 
   # ── Search ───────────────────────────────────────────────────────────────
 
@@ -5651,6 +6178,223 @@ paths:
                 noUpload: { type: boolean }
       responses:
         "200": { $ref: "#/components/responses/EmptySuccess" }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/discovery-plugins/status:
+    get:
+      tags: [Admin - Config]
+      summary: Discovery plug-ins and the job gate, in one answer
+      description: |
+        Everything the admin panel's Discovery Plugins view shows. `plugins`
+        is every REGISTERED plug-in, on or off: `available: false` with a
+        `reason` when the plug-in is on but its availability probe fails (users
+        never see such a plug-in), `detail` = what the probe found (for
+        `youtube`: `{ ytdlp: "<version>", ffmpeg: true }`), `adminSettings` = the
+        config keys an admin may edit with their current values in `config`,
+        and `connectedUsers` (only for a plug-in that keeps a per-user secret)
+        = how many accounts hold one. `jobs` is the runner's gate, cap, clock
+        and load. `downloads` counts what the plug-ins have brought into the
+        libraries and are still there (live records of
+        `GET /api/v1/discovery/downloads`), one entry per plug-in; the
+        Downloads tab's list itself is that route with `all=1`.
+      responses:
+        "200":
+          description: The view's data.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plugins:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscoveryPluginAdminRow" }
+                  jobs:
+                    type: object
+                    properties:
+                      enabledFor: { type: string, enum: [all, whitelist] }
+                      maxConcurrent: { type: integer }
+                      retentionDays: { type: integer, description: Days a finished job row is kept. }
+                      running: { type: integer, description: Jobs in flight across every account. }
+                      queued: { type: integer }
+                  downloads:
+                    type: array
+                    description: Live download records by plug-in, alphabetical; empty when nothing was brought in.
+                    items:
+                      type: object
+                      properties:
+                        plugin: { type: string, example: youtube }
+                        count: { type: integer }
+                        bytes: { type: integer, description: Sum of the files' sizes as recorded when they landed. }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/config/discovery-plugins:
+    post:
+      tags: [Admin - Config]
+      summary: Switch a discovery plug-in on or off, or edit its settings
+      description: |
+        Live: the registry reads the config per call, so the next
+        `GET /api/v1/discovery/plugins` and the ping flag follow at once.
+        `settings` may name only the keys the plug-in declares as
+        `adminSettings` (never `enabled`), is checked with the schema the
+        config file is held to, and re-probes the plug-in, so a plug-in that
+        could not run flips to available in the answer. A refused value
+        answers 400 with `"<field>: <why>"`. The executable a plug-in runs
+        (`discoveryPlugins.youtube.binary`) is never among those keys: it is a
+        config-file setting, applied at boot, so no admin session can point
+        the server at a program of its choosing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, example: youtube }
+                enabled: { type: boolean }
+                settings:
+                  type: object
+                  additionalProperties: true
+                  example: { codec: opus, maxFilesizeMb: 250 }
+      responses:
+        "200":
+          description: Every plug-in as it now stands.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plugins:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscoveryPluginAdminRow" }
+        "400": { description: "Unknown plug-in, neither `enabled` nor `settings`, a key the plug-in does not declare, or a value its schema refuses." }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/discovery-plugins/probe:
+    post:
+      tags: [Admin - Config]
+      summary: Run a plug-in's availability probe now
+      description: |
+        Without `settings` this is the panel's "check again": the answer
+        replaces the cached one, so the user listing follows at once. With
+        `settings` it is a dry run against values that are NOT saved, leaving
+        the cache and the config alone; the keys are the plug-in's
+        `adminSettings`, so the executable (`binary`) cannot be tried this
+        way. A plug-in without a probe is always available. For `youtube` the
+        probe runs the configured `yt-dlp --version`, so a path that exists
+        but cannot be executed is caught here instead of failing every job.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, example: youtube }
+                settings: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: What the probe found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: { type: string }
+                  available: { type: boolean }
+                  reason: { type: string, nullable: true, example: "yt-dlp not found (/opt/yt-dlp)" }
+                  detail: { type: object, nullable: true, additionalProperties: true, example: { ytdlp: "2026.02.04", ffmpeg: true } }
+                  dryRun: { type: boolean }
+        "400": { description: "Unknown plug-in, or settings its schema refuses." }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/config/discovery-jobs:
+    post:
+      tags: [Admin - Config]
+      summary: The discovery job runner's gate, cap and clock
+      description: |
+        Live; a partial body patches what it names. `enabledFor` is the
+        acquisition gate (`whitelist` = only accounts with
+        `allowDiscoveryJobs`), `maxConcurrent` the jobs in flight at once, and
+        `retentionDays` how long a finished job row is kept. The staging
+        folder downloads are assembled in (`discoveryJobs.stagingDir`) is a
+        config-file setting.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                enabledFor: { type: string, enum: [all, whitelist] }
+                maxConcurrent: { type: integer, minimum: 1, maximum: 16 }
+                retentionDays: { type: integer, minimum: 1, maximum: 3650 }
+      responses:
+        "200":
+          description: The settings as they now stand.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  discoveryJobs:
+                    type: object
+                    properties:
+                      enabledFor: { type: string }
+                      maxConcurrent: { type: integer }
+                      retentionDays: { type: integer }
+                      stagingDir: { type: string }
+        "400": { description: "An empty body, an unknown key or a value out of range." }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/users/discovery-jobs-access:
+    post:
+      tags: [Admin - Users]
+      summary: Let one account start discovery jobs (whitelist mode)
+      description: |
+        The per-account half of the acquisition gate; consulted only while
+        `discoveryJobs.enabledFor` is `whitelist`. `GET /api/v1/admin/users`
+        reports it as `allowDiscoveryJobs`. Being an admin does not skip the
+        list. Applies to the account's next request; jobs already running are
+        not cancelled by revoking it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, allowDiscoveryJobs]
+              properties:
+                username: { type: string }
+                allowDiscoveryJobs: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "404": { description: "No such user." }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/discovery-jobs/sweep:
+    post:
+      tags: [Admin - Config]
+      summary: Run the discovery retention pass now
+      description: |
+        The pass the server runs shortly after boot and every few hours:
+        finished job rows older than `discoveryJobs.retentionDays` are
+        pruned, and staging folders a crashed download left behind
+        (`discoveryJobs.stagingDir`) are removed once nothing has written to
+        them for a day. A folder that cannot be removed is left for the next
+        pass.
+      responses:
+        "200":
+          description: What this pass did.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  prunedJobs: { type: integer }
+                  removedStaging: { type: integer, description: "Stale staging folders removed." }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/config/nomkdir:

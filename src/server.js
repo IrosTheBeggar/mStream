@@ -28,6 +28,12 @@ import * as irohApi from './api/iroh.js';
 import * as discoveryP2pApi from './api/discovery-p2p.js';
 import * as discoveryFederationApi from './api/discovery-federation.js';
 import * as discoveryPluginsApi from './api/discovery-plugins.js';
+import * as discoveryPluginJobsApi from './api/discovery-plugin-jobs.js';
+import * as discoveryPluginJobs from './discovery-plugins/jobs.js';
+import * as discoveryPlugins from './discovery-plugins/index.js';
+import * as discoveryRetention from './discovery-plugins/retention.js';
+import * as discoveryCollectionApi from './api/discovery-collection.js';
+import * as discoveryDownloadsApi from './api/discovery-downloads.js';
 import * as remoteApi from './api/remote.js';
 import * as sharedApi from './api/shared.js';
 import * as scrobblerApi from './api/scrobbler.js';
@@ -573,6 +579,9 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   discoveryP2pApi.setup(mstream);
   discoveryFederationApi.setup(mstream);
   discoveryPluginsApi.setup(mstream);
+  discoveryPluginJobsApi.setup(mstream);
+  discoveryCollectionApi.setup(mstream);
+  discoveryDownloadsApi.setup(mstream);
   dbApi.setup(mstream);
   syncApi.setup(mstream);
   statsApi.setup(mstream);
@@ -754,6 +763,19 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     // full scan. Cheap no-op when no torrent client is active.
     const completionWatcher = await import('./torrent/completion-watcher.js');
     completionWatcher.start();
+
+    // Discovery plug-in job runner (V74): re-queues whatever the last
+    // process left running and arms its tick. Idle cost is one timer; it
+    // only does work when a user has asked a plug-in to acquire or hand
+    // off a recommendation.
+    discoveryPluginJobs.start();
+    // Availability probes (yt-dlp, ffmpeg): a plug-in whose probe fails is
+    // listed nowhere until it passes. Runs in the background; the listing
+    // treats an unprobed plug-in as available meanwhile.
+    discoveryPlugins.refreshProbes().catch((err) => winston.warn(`discovery plug-in probes failed: ${err.message}`));
+    // Old job rows and staging folders a crash left behind: a pass shortly
+    // after boot, then every few hours.
+    discoveryRetention.start();
 
     if (config.program.dlna.mode !== 'disabled') {
       dlnaSsdp.start();
@@ -1032,6 +1054,10 @@ export function reboot() {
     backupManager.shutdown();
     // The stats retention sweep is re-armed by the setup path on reboot.
     stopRetentionSweep();
+    // Disarm the plug-in job runner's tick; serveIt's boot path start()s it
+    // again (re-queueing anything still marked running).
+    discoveryPluginJobs.stop();
+    discoveryRetention.stop();
 
     // Tear down the Iroh tunnel, the federation endpoint (+ its peer bridges)
     // and the discovery-network gossip stack. Each binds its own sockets
