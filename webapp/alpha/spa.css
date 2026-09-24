@@ -2279,7 +2279,6 @@ select {
   display: flex; align-items: center; justify-content: center; color: #8a919e;
 }
 .dmodal-close:hover, .dmodal-close:focus { background: #363d47; color: #f0f2f5; outline: none; }
-.dmodal-tools { position: absolute; top: 44px; right: 10px; z-index: 2; display: flex; gap: 4px; }
 .dmodal-head { display: flex; gap: 14px; padding: 18px 48px 12px 20px; }
 .dmodal-art {
   width: 72px; height: 72px; border-radius: 4px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
@@ -2291,8 +2290,6 @@ select {
 .dmodal-artist { font-size: 13px; color: #b8bcc6; margin-top: 2px; }
 .dmodal-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 6px; font-size: 11.5px; color: #8a919e; }
 .dmodal-isrc { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; background: #1a1e25; padding: 1px 5px; border-radius: 3px; }
-.dmodal-source { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 7px; font-size: 11.5px; color: #b8bcc6; }
-.dmodal-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--src); flex-shrink: 0; }
 .dmodal-status { display: flex; align-items: center; gap: 6px; margin-top: 5px; font-size: 11px; color: #8a919e; }
 .dmodal-status i { width: 6px; height: 6px; border-radius: 50%; background: #4fc27a; flex-shrink: 0; }
 .dmodal-status i.dmodal-status-off { background: #e0616a; }
@@ -2326,6 +2323,12 @@ select {
 .dm-opt-wrap { flex-wrap: wrap; }
 .dm-opt-wrap > .dm-opt-act, .dm-opt-wrap > .dm-form { flex-basis: 100%; padding-left: 38px; justify-content: flex-start; margin-top: 2px; flex-wrap: wrap; }
 .dm-attrib { font-size: 10.5px; color: #6f7683; margin-top: 3px; }
+/* Preview tiles: two up; the whole tile is the play / stop button */
+.dm-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.dm-tiles > .dm-opt { margin-top: 0; }
+.dm-opt-btn { cursor: pointer; user-select: none; transition: background .12s; }
+.dm-opt-btn:hover, .dm-opt-btn:focus-visible { background: #2c323c; outline: none; }
+.dm-opt-btn:focus-visible, .dm-opt-playing, .dm-opt-playing:hover { box-shadow: inset 0 0 0 1px var(--src); }
 /* Buttons (anchors, so Materialize's button styling stays out of it) */
 .dm-btn {
   display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 4px; cursor: pointer;
@@ -2349,10 +2352,11 @@ select {
 .dm-input[type="text"]:focus { border-color: var(--src); box-shadow: none; }
 /* Chips (find elsewhere) and tags */
 .dm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.dm-chip { display: inline-flex; align-items: center; font-size: 11.5px; color: #dfe3ea; background: #363d47; border-radius: 4px; padding: 4px 9px; }
+.dm-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: #dfe3ea; background: #363d47; border-radius: 4px; padding: 4px 9px; }
 .dm-chip:hover { background: #414957; color: #f0f2f5; }
 .dm-chip-canon { background: transparent; border: 1px solid #657ee4; color: #8ea0f0; }
 .dm-chip-canon:hover { background: rgba(101, 126, 228, .12); color: #8ea0f0; }
+.dmodal-note + .dm-chips { margin-top: 8px; }
 .dm-tag {
   display: inline-flex; align-items: center; font-size: 9.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
   padding: 1px 6px; border-radius: 8px; background: #1a1e25; color: #8a919e; white-space: nowrap; vertical-align: middle;
@@ -2366,10 +2370,10 @@ select {
 .dm-progress i { display: block; height: 100%; background: var(--src); border-radius: 2px; transition: width .4s ease; }
 .dm-progress-indet i { width: 35%; animation: dm-indet 1.4s ease-in-out infinite; }
 @keyframes dm-indet { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
-/* Collection destination: the bar under the view selector, and the form
-   (library · base folder · layout) that replaces it */
+/* Collection destination (dm-dest): the bar in the section whose rows use
+   it, and the form (library · base folder · layout) that replaces it */
 .dm-dest {
-  display: flex; align-items: center; gap: 10px; margin: 0 20px 12px; padding: 7px 10px;
+  display: flex; align-items: center; gap: 10px; margin: 0; padding: 7px 10px;
   background: #1a1e25; border-radius: 6px; font-size: 11.5px; color: #b8bcc6;
 }
 .dm-dest > svg { color: var(--src); flex-shrink: 0; }
@@ -2377,7 +2381,8 @@ select {
 .dm-dest-path b { color: #f0f2f5; font-weight: 600; }
 .dm-dest-path i { font-style: normal; color: #6f7683; margin: 0 4px; }
 .dm-dest .dm-opt-act { gap: 4px; }
-.dm-dest-form { margin: 0 20px 12px; padding: 12px 12px 10px; background: #23282f; border-radius: 6px; display: grid; gap: 9px; }
+.dm-opt + .dm-dest, .dm-opt + .dm-dest-form, .dm-dest + .dm-opt, .dm-dest-form + .dm-opt { margin-top: 6px; }
+.dm-dest-form { margin: 0; padding: 12px 12px 10px; background: #23282f; border-radius: 6px; display: grid; gap: 9px; }
 .dm-field { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 5px 12px; align-items: center; font-size: 11.5px; }
 .dm-field > label { color: #8a919e; font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .dm-field-body { display: flex; gap: 6px; align-items: center; min-width: 0; flex-wrap: wrap; }
@@ -2429,11 +2434,13 @@ select {
   .dmodal-section-h { flex-direction: column; align-items: flex-start; gap: 2px; }
   .dmodal-hint { text-align: left; }
   .dmodal-tabs { margin: 2px 16px 10px; }
-  .dm-dest, .dm-dest-form { margin: 0 16px 10px; }
   .dm-dest { flex-wrap: wrap; }
   .dm-dest-path { flex-basis: 100%; white-space: normal; }
   .dm-field { grid-template-columns: minmax(0, 1fr); }
   .dm-toks, .dm-field-hint, .dm-field-err, .dm-tree { grid-column: 1; }
+}
+@media (max-width: 480px) {
+  .dm-tiles { grid-template-columns: minmax(0, 1fr); }
 }
 /* Downloads strip: plug-in jobs that outlive the window that started them */
 .discover-tray { border-top: 1px solid #21252d; margin-top: 4px; padding-bottom: 6px; }
