@@ -64,7 +64,11 @@ describe('V75 plugin_downloads', () => {
     assert.ok(tables(db).includes('plugin_downloads'));
     assert.ok(columns(db, 'discovery_plugin_jobs').includes('params'), 'V76: params on the jobs table');
     assert.deepEqual(db.prepare("SELECT * FROM users WHERE username = 'alice'").get(), userBefore);
-    assert.deepEqual(db.prepare('SELECT * FROM discovery_plugin_jobs').get(), jobBefore);
+    // The V76 column is new on the upgraded row and empty; everything else is as it was.
+    const jobAfter = db.prepare('SELECT * FROM discovery_plugin_jobs').get();
+    assert.equal(jobAfter.params, null);
+    delete jobAfter.params;
+    assert.deepEqual(jobAfter, jobBefore);
     db.close();
   });
 
