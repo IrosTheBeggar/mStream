@@ -8203,10 +8203,11 @@ const DP_GROUPS = [
 
 // How the settings modal draws each plug-in's editable config keys (the
 // server says WHICH keys: `adminSettings`). A key without an entry is a plain
-// text field, so a new plug-in needs no code here to be editable.
+// text field, so a new plug-in needs no code here to be editable. The yt-dlp
+// executable is not editable here at all: it is a config-file setting, and
+// the plug-in row shows which one runs.
 const DP_FIELDS = {
   youtube: {
-    binary: { kind: 'text', mono: true, test: true },
     codec: { kind: 'select', options: ['mp3', 'm4a', 'aac', 'opus', 'ogg', 'flac', 'wav'] },
     maxFilesizeMb: { kind: 'number', min: 1, max: 4096, unit: 'MB' },
     searchResults: { kind: 'number', min: 1, max: 20 },
@@ -8283,8 +8284,8 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
                           <div class="dp-plugin-h"><b>{{ p.title }}</b><span v-for="c in p.capabilities" :key="c" class="dp-tag">{{ c }}</span><span v-if="p.scope === 'user'" class="dp-tag dp-tag-user">{{ t('admin.dplugins.tag.perUser') }}</span></div>
                           <div class="dp-plugin-d">{{ p.description }}</div>
                           <div v-if="p.connectedUsers !== undefined" class="dp-plugin-meta">{{ t('admin.dplugins.connected', { count: p.connectedUsers, total: userCount }) }}</div>
-                          <div v-if="p.enabled && p.available && toolLine(p)" class="dp-plugin-meta">yt-dlp {{ toolLine(p).version }}<span v-if="toolLine(p).old" class="dp-warn-soft"> &middot; {{ t('admin.dplugins.ytdlpOld', { count: toolLine(p).months }) }}</span></div>
-                          <div v-if="p.enabled && !p.available" class="dp-reason"><span><b>{{ t('admin.dplugins.status.cannotRunLead') }}</b> {{ p.reason }} {{ t('admin.dplugins.status.hiddenFromUsers', { title: p.title }) }}</span></div>
+                          <div v-if="p.enabled && p.available && toolLine(p)" class="dp-plugin-meta">yt-dlp {{ toolLine(p).version }}<span v-if="toolLine(p).binary"> &middot; <span class="dp-mono">{{ toolLine(p).binary }}</span></span><span v-if="toolLine(p).old" class="dp-warn-soft"> &middot; {{ t('admin.dplugins.ytdlpOld', { count: toolLine(p).months }) }}</span></div>
+                          <div v-if="p.enabled && !p.available" class="dp-reason"><span><b>{{ t('admin.dplugins.status.cannotRunLead') }}</b> {{ p.reason }} {{ t('admin.dplugins.status.hiddenFromUsers', { title: p.title }) }}<template v-if="p.name === 'youtube'"> {{ t('admin.dplugins.ytdlpConfigNote') }}</template></span></div>
                         </div>
                         <div class="dp-plugin-act">
                           <span class="dp-status"><span class="dp-dot" :class="'dp-dot-' + pluginState(p).dot"></span><span :class="'dp-' + pluginState(p).dot">{{ t('admin.dplugins.status.' + pluginState(p).word) }}</span></span>
@@ -8610,7 +8611,9 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
       if (!version) { return null; }
       const m = /^(\d{4})\.(\d{1,2})\.(\d{1,2})/.exec(version);
       const days = m ? Math.floor((Date.now() - Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))) / 86400000) : null;
-      return { version, old: days !== null && days > 90, months: days === null ? 0 : Math.max(3, Math.round(days / 30)) };
+      // The executable it runs — read-only here (discoveryPlugins.youtube.binary in the config file).
+      const binary = typeof p.detail.binary === 'string' && p.detail.binary ? p.detail.binary : null;
+      return { version, binary, old: days !== null && days > 90, months: days === null ? 0 : Math.max(3, Math.round(days / 30)) };
     },
     pluginState: function(p) {
       if (this.busy[p.name] === true) { return { word: 'saving', dot: 'off' }; }
@@ -11629,7 +11632,7 @@ const dpPluginSettingsModal = Vue.component('dp-plugin-settings-modal', {
       || { name: '', title: '', adminSettings: [], config: {} };
     const values = {};
     for (const k of plugin.adminSettings) { values[k] = plugin.config[k] === null || plugin.config[k] === undefined ? '' : plugin.config[k]; }
-    return { plugin, values, errors: {}, general: '', submitPending: false, test: { state: 'idle', text: '' } };
+    return { plugin, values, errors: {}, general: '', submitPending: false };
   },
   template: `
     <form @submit.prevent="save">
@@ -11645,12 +11648,8 @@ const dpPluginSettingsModal = Vue.component('dp-plugin-settings-modal', {
                    :type="def(key).kind === 'number' ? 'number' : 'text'" :min="def(key).min" :max="def(key).max" :maxlength="def(key).maxlength"
                    v-model="values[key]" v-on:input="touched(key)" autocomplete="off" spellcheck="false">
             <span v-if="def(key).unit" class="dp-unit">{{ def(key).unit }}</span>
-            <a v-if="def(key).test" class="btn-flat waves-effect" :class="{ disabled: test.state === 'running' }" v-on:click="runTest()">{{ t(test.state === 'running' ? 'admin.dplugins.testing' : 'admin.dplugins.test') }}</a>
           </div>
-          <div v-if="def(key).test && test.state === 'running'" class="progress" style="margin:6px 0 0 0"><div class="indeterminate"></div></div>
           <div v-if="errors[key]" class="dp-help dp-help-err">{{ errors[key] }}</div>
-          <div v-else-if="def(key).test && test.state === 'ok'" class="dp-help dp-help-ok">{{ test.text }}</div>
-          <div v-else-if="def(key).test && test.state === 'fail'" class="dp-help dp-help-err">{{ test.text }}</div>
           <div v-else-if="help(key)" class="dp-help">{{ help(key) }}</div>
         </div>
         <div v-if="general" class="dp-help dp-help-err">{{ general }}</div>
@@ -11694,7 +11693,6 @@ const dpPluginSettingsModal = Vue.component('dp-plugin-settings-modal', {
     touched: function(key) {
       this.$delete(this.errors, key);
       this.general = '';
-      if (this.def(key).test) { this.test = { state: 'idle', text: '' }; }
     },
     payload: function() {
       const out = {};
@@ -11711,23 +11709,6 @@ const dpPluginSettingsModal = Vue.component('dp-plugin-settings-modal', {
       const msg = dpErrorText(err, this.t('admin.dplugins.toast.failed'));
       const m = /^([A-Za-z0-9_.-]+):\s+(.*)$/.exec(msg);
       if (m && this.plugin.adminSettings.includes(m[1])) { this.$set(this.errors, m[1], m[2]); } else { this.general = msg; }
-    },
-    runTest: async function() {
-      if (this.test.state === 'running') { return; }
-      this.test = { state: 'running', text: '' };
-      try {
-        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/discovery-plugins/probe`, data: { name: this.plugin.name, settings: this.payload() } });
-        const r = res.data;
-        if (r.available) {
-          const d = r.detail || {};
-          this.test = { state: 'ok', text: d.ytdlp ? this.t('admin.dplugins.field.youtube.testOk', { version: d.ytdlp }) : this.t('admin.dplugins.testOk') };
-        } else {
-          this.test = { state: 'fail', text: `${r.reason || ''} ${this.t('admin.dplugins.testFailNote')}`.trim() };
-        }
-      } catch (err) {
-        this.test = { state: 'idle', text: '' };
-        this.showRefusal(err);
-      }
     },
     save: async function() {
       this.submitPending = true;

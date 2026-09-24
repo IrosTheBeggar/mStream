@@ -696,7 +696,9 @@ const discoveryPluginsOptions = Joi.object({
   // upload rules apply). Lands files from outside the federation, so OFF by
   // default; listed only while yt-dlp and ffmpeg are present. `binary` is
   // also where the Youtube DL route looks for yt-dlp (a name on PATH or a
-  // path).
+  // path). It is a config-file setting only — the admin API never edits an
+  // executable path (that would hand an admin session command execution on
+  // the host); a change needs a restart.
   youtube: Joi.object({
     enabled: Joi.boolean().default(false),
     binary: Joi.string().min(1).default('yt-dlp'),

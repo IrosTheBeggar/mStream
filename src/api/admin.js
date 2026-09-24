@@ -1652,10 +1652,12 @@ export function setup(mstream) {
   // ping flag reflect it at once. The name must be a registered plug-in:
   // config.json never grows an entry the code doesn't know.
   //
-  // `settings` edits the plug-in's own config (yt-dlp's binary, the iTunes
-  // storefront): only the keys the plug-in declares as `adminSettings`,
-  // checked with the schema the config file is held to, applied live. A
-  // refusal names the field, so the panel can show it under the right input.
+  // `settings` edits the plug-in's own config (the download format, the
+  // iTunes storefront): only the keys the plug-in declares as
+  // `adminSettings`, checked with the schema the config file is held to,
+  // applied live. A refusal names the field, so the panel can show it under
+  // the right input. An executable path (yt-dlp's `binary`) is never one of
+  // those keys: it stays a config-file setting.
   mstream.post("/api/v1/admin/config/discovery-plugins", async (req, res) => {
     const schema = Joi.object({
       name: Joi.string().pattern(/^[a-z0-9][a-z0-9-]{0,31}$/).required(),
@@ -1671,7 +1673,7 @@ export function setup(mstream) {
     if (settings !== undefined) {
       const checked = checkedPluginSettings(name, settings);
       await admin.editDiscoveryPluginSettings(name, checked);
-      // What the last probe saw may no longer be true (a new binary path).
+      // What the last probe saw may no longer be true.
       discoveryPlugins.forgetProbe(name);
     }
     if (enabled !== undefined) { await admin.editDiscoveryPlugin(name, enabled); }

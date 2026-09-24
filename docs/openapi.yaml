@@ -267,7 +267,7 @@ components:
         enabled: { type: boolean }
         available: { type: boolean, description: "False when the plug-in is on but its availability probe failed." }
         reason: { type: string, nullable: true, example: "yt-dlp not found (yt-dlp)" }
-        detail: { type: object, nullable: true, additionalProperties: true, description: "What the probe found, e.g. `{ ytdlp, ffmpeg }`." }
+        detail: { type: object, nullable: true, additionalProperties: true, description: "What the probe found. For `youtube`: `{ ytdlp, ffmpeg, binary }` — the version, whether ffmpeg is ready, and the executable it runs (`discoveryPlugins.youtube.binary` from the config file, or the `MSTREAM_YTDLP_BIN` hook)." }
         settings:
           type: array
           items: { type: string }
@@ -6238,7 +6238,10 @@ paths:
         `adminSettings` (never `enabled`), is checked with the schema the
         config file is held to, and re-probes the plug-in, so a plug-in that
         could not run flips to available in the answer. A refused value
-        answers 400 with `"<field>: <why>"`.
+        answers 400 with `"<field>: <why>"`. The executable a plug-in runs
+        (`discoveryPlugins.youtube.binary`) is never among those keys: it is a
+        config-file setting, applied at boot, so no admin session can point
+        the server at a program of its choosing.
       requestBody:
         required: true
         content:
@@ -6252,7 +6255,7 @@ paths:
                 settings:
                   type: object
                   additionalProperties: true
-                  example: { binary: /usr/local/bin/yt-dlp, codec: opus }
+                  example: { codec: opus, maxFilesizeMb: 250 }
       responses:
         "200":
           description: Every plug-in as it now stands.
@@ -6274,11 +6277,12 @@ paths:
       description: |
         Without `settings` this is the panel's "check again": the answer
         replaces the cached one, so the user listing follows at once. With
-        `settings` it is the settings modal's Test: a dry run against values
-        that are NOT saved, leaving the cache and the config alone. A plug-in
-        without a probe is always available. For `youtube` the probe runs
-        `yt-dlp --version`, so a path that exists but cannot be executed is
-        caught here instead of failing every job.
+        `settings` it is a dry run against values that are NOT saved, leaving
+        the cache and the config alone; the keys are the plug-in's
+        `adminSettings`, so the executable (`binary`) cannot be tried this
+        way. A plug-in without a probe is always available. For `youtube` the
+        probe runs the configured `yt-dlp --version`, so a path that exists
+        but cannot be executed is caught here instead of failing every job.
       requestBody:
         required: true
         content:

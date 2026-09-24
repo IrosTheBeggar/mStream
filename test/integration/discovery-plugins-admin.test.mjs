@@ -114,9 +114,11 @@ describe('discovery plug-ins · admin API', { skip: hasFfmpeg ? false : 'bundled
     for (const n of ['links', 'deezer', 'itunes', 'federation-play', 'federation-copy', 'youtube']) { assert.ok(names.includes(n), `${n} is listed`); }
     const youtube = pluginOf(r.body, 'youtube');
     assert.deepEqual([youtube.enabled, youtube.available, youtube.reason], [true, true, null]);
-    assert.deepEqual(youtube.adminSettings, ['binary', 'codec', 'maxFilesizeMb', 'searchResults']);
-    assert.deepEqual(youtube.config, { binary: 'yt-dlp', codec: 'mp3', maxFilesizeMb: 100, searchResults: 8 });
-    assert.deepEqual(youtube.detail, { ytdlp: '2026.02.04', ffmpeg: true }, 'the probe says what it found');
+    // The executable is not an admin setting (a config-file key only); the
+    // probe's detail says which one runs, so the panel can show it read-only.
+    assert.deepEqual(youtube.adminSettings, ['codec', 'maxFilesizeMb', 'searchResults']);
+    assert.deepEqual(youtube.config, { codec: 'mp3', maxFilesizeMb: 100, searchResults: 8 });
+    assert.deepEqual(youtube.detail, { ytdlp: '2026.02.04', ffmpeg: true, binary: FAKE }, 'the probe says what it found, and from where');
     assert.deepEqual(pluginOf(r.body, 'itunes').config, { country: 'US' });
     assert.deepEqual(pluginOf(r.body, 'links').config, {});
     assert.deepEqual(pluginOf(r.body, 'links').adminSettings, []);
@@ -145,7 +147,7 @@ describe('discovery plug-ins · admin API', { skip: hasFfmpeg ? false : 'bundled
     const saved = await api(adminToken, 'POST', PLUGINS, { name: 'youtube', settings: { codec: 'opus', maxFilesizeMb: 250 } });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
     const y = pluginOf(saved.body, 'youtube');
-    assert.deepEqual(y.config, { binary: 'yt-dlp', codec: 'opus', maxFilesizeMb: 250, searchResults: 8 });
+    assert.deepEqual(y.config, { codec: 'opus', maxFilesizeMb: 250, searchResults: 8 });
     assert.equal(y.enabled, true, 'settings do not touch the switch');
     const onDisk = JSON.parse(fs.readFileSync(path.join(server.tmpDir, 'config.json'), 'utf8'));
     assert.deepEqual([onDisk.discoveryPlugins.youtube.codec, onDisk.discoveryPlugins.youtube.maxFilesizeMb], ['opus', 250], 'persisted');
@@ -157,6 +159,11 @@ describe('discovery plug-ins · admin API', { skip: hasFfmpeg ? false : 'bundled
     assert.match(badCodec.body.error, /^codec: /);
     assert.equal((await api(adminToken, 'POST', PLUGINS, { name: 'youtube', settings: { enabled: false } })).status, 400, '`enabled` is not a setting');
     assert.equal((await api(adminToken, 'POST', PLUGINS, { name: 'youtube', settings: { nope: 1 } })).status, 400);
+    // The executable is not a setting either: an admin session can never
+    // point the server at a program of its choosing.
+    const exe = await api(adminToken, 'POST', PLUGINS, { name: 'youtube', settings: { binary: path.join(workDir, 'evil.exe') } });
+    assert.equal(exe.status, 400);
+    assert.match(exe.body.error, /no setting "binary" \(it has: codec, maxFilesizeMb, searchResults\)/);
     assert.equal((await api(adminToken, 'POST', PLUGINS, { name: 'links', settings: { anything: 1 } })).status, 400, 'a plug-in without settings');
     assert.equal((await api(adminToken, 'POST', PLUGINS, { name: 'youtube' })).status, 400, 'enabled or settings is required');
     assert.deepEqual(pluginOf((await api(adminToken, 'GET', STATUS)).body, 'youtube').config.codec, 'opus', 'a refused save changed nothing');
@@ -168,18 +175,21 @@ describe('discovery plug-ins · admin API', { skip: hasFfmpeg ? false : 'bundled
     await api(adminToken, 'POST', PLUGINS, { name: 'youtube', settings: { codec: 'mp3', maxFilesizeMb: 100 } });
   });
 
-  test('probe: Test is a dry run that saves nothing; check again replaces the cached answer', async () => {
-    // (This suite's MSTREAM_YTDLP_BIN hook outranks the configured binary, so
-    // a dry run still finds the stand-in; the suite below has no hook.)
-    const dry = await api(adminToken, 'POST', PROBE, { name: 'youtube', settings: { binary: path.join(workDir, 'no-such-yt-dlp'), codec: 'flac' } });
+  test('probe: a dry run saves nothing and cannot try another executable; check again replaces the cached answer', async () => {
+    const dry = await api(adminToken, 'POST', PROBE, { name: 'youtube', settings: { codec: 'flac' } });
     assert.equal(dry.status, 200, JSON.stringify(dry.body));
     assert.equal(dry.body.dryRun, true);
     const after = await api(adminToken, 'GET', STATUS);
-    assert.deepEqual(pluginOf(after.body, 'youtube').config, { binary: 'yt-dlp', codec: 'mp3', maxFilesizeMb: 100, searchResults: 8 }, 'nothing was saved');
+    assert.deepEqual(pluginOf(after.body, 'youtube').config, { codec: 'mp3', maxFilesizeMb: 100, searchResults: 8 }, 'nothing was saved');
+    // The executable is not a setting, so the dry run cannot run one of the
+    // caller's choosing: refused before anything is spawned.
+    const exe = await api(adminToken, 'POST', PROBE, { name: 'youtube', settings: { binary: path.join(workDir, 'no-such-yt-dlp') } });
+    assert.equal(exe.status, 400, JSON.stringify(exe.body));
+    assert.match(exe.body.error, /no setting "binary"/);
 
     const again = await api(adminToken, 'POST', PROBE, { name: 'youtube' });
     assert.deepEqual([again.body.available, again.body.reason, again.body.dryRun], [true, null, false]);
-    assert.deepEqual(again.body.detail, { ytdlp: '2026.02.04', ffmpeg: true });
+    assert.deepEqual(again.body.detail, { ytdlp: '2026.02.04', ffmpeg: true, binary: FAKE });
 
     // A plug-in without a probe is simply available; unknown names and bad settings are refused.
     assert.deepEqual((await api(adminToken, 'POST', PROBE, { name: 'links' })).body.available, true);
@@ -268,29 +278,18 @@ describe('discovery plug-ins · admin API · the configured binary', () => {
     assert.equal((await open('POST', '/api/v1/discovery/plugins/youtube/jobs', { recommendation: REC })).status, 404);
   });
 
-  test('Test tries unsaved values: a missing path, and a file that exists but cannot be run', async () => {
-    const missing = await open('POST', PROBE, { name: 'youtube', settings: { binary: path.join(dir, 'still-not-here') } });
-    assert.deepEqual([missing.body.available, missing.body.dryRun], [false, true]);
-    assert.match(missing.body.reason, /yt-dlp not found \(.*still-not-here\)/);
-
-    // The stand-in script EXISTS, but without the env hook nothing runs it
-    // under node — the case that used to pass the probe and then fail every
-    // job with "spawn EFTYPE".
-    const notRunnable = await open('POST', PROBE, { name: 'youtube', settings: { binary: FAKE } });
-    assert.equal(notRunnable.body.available, false, JSON.stringify(notRunnable.body));
-    assert.match(notRunnable.body.reason, /^yt-dlp \(.*fake-yt-dlp\.mjs\) /);
-    assert.doesNotMatch(notRunnable.body.reason, /not found/, 'it exists; the reason says it cannot be run');
-
-    // A file named like a program that is not one: a sentence on every
-    // platform (Windows answers this with the bare code UNKNOWN).
-    const impostor = path.join(dir, 'yt-dlp-impostor.exe');
-    fs.writeFileSync(impostor, 'not a program', { mode: 0o644 });
-    const notAProgram = await open('POST', PROBE, { name: 'youtube', settings: { binary: impostor } });
-    assert.equal(notAProgram.body.available, false, JSON.stringify(notAProgram.body));
-    assert.match(notAProgram.body.reason, /impostor\.exe\) is not something this system can run \(\w+\)$/);
-
-    // Neither try was saved.
-    assert.match(pluginOf((await open('GET', STATUS)).body, 'youtube').config.binary, /no-such-yt-dlp$/);
+  test('the executable cannot be tried or changed through the API, only read: the row names the one in use', async () => {
+    // No dry run against another program (what a file that exists but cannot
+    // be run says is pinned in test/unit/yt-dlp-binary.test.mjs).
+    const tried = await open('POST', PROBE, { name: 'youtube', settings: { binary: FAKE } });
+    assert.equal(tried.status, 400, JSON.stringify(tried.body));
+    assert.match(tried.body.error, /no setting "binary" \(it has: codec, maxFilesizeMb, searchResults\)/);
+    const set = await open('POST', PLUGINS, { name: 'youtube', settings: { binary: FAKE } });
+    assert.equal(set.status, 400, JSON.stringify(set.body));
+    // The row still says which executable it looked for.
+    const y = pluginOf((await open('GET', STATUS)).body, 'youtube');
+    assert.equal(y.config.binary, undefined, 'not echoed as a setting');
+    assert.match(y.reason, /no-such-yt-dlp/);
   });
 
   test('a server with no users: the jobs list names nobody, never the shared account\'s internal name', async () => {
@@ -301,13 +300,13 @@ describe('discovery plug-ins · admin API · the configured binary', () => {
     assert.ok(all.body.jobs.every((j) => j.username === null), JSON.stringify(all.body.jobs.map((j) => j.username)));
   });
 
-  test('saving a new binary re-probes at once: the row redraws from the answer', async () => {
-    const saved = await open('POST', PLUGINS, { name: 'youtube', settings: { binary: path.join(dir, 'another-missing-one') } });
+  test('saving a setting re-probes at once: the row redraws from the answer, still against the configured executable', async () => {
+    const saved = await open('POST', PLUGINS, { name: 'youtube', settings: { codec: 'opus' } });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
     const y = pluginOf(saved.body, 'youtube');
-    assert.match(y.config.binary, /another-missing-one$/);
+    assert.equal(y.config.codec, 'opus');
     assert.equal(y.available, false);
-    assert.match(y.reason, /another-missing-one/, 'the reason is about the NEW path, not the cached old one');
+    assert.match(y.reason, /yt-dlp not found \(.*no-such-yt-dlp\)/, 'the reason still names the configured executable');
   });
 });
 

@@ -156,11 +156,14 @@ async function ffmpegReady() {
   return !!(transcode.isDownloaded() && ffmpegBin());
 }
 
-// `settings` = values to try instead of the saved ones (the admin panel's
-// Test button). The answer's `detail` is what an operator wants to read
-// back: which yt-dlp answered.
+// `settings` = values to try instead of the saved ones (the admin probe
+// route's dry run). The executable itself is not among them: `binary` is a
+// config-file setting, never editable through the admin API — an executable
+// path settable by an admin session would be code execution on the host —
+// so the probe always runs the configured one. The answer's `detail` is what
+// an operator wants to read back: which yt-dlp answered, and from where.
 async function probe({ settings } = {}) {
-  const tried = { ...cfg(), ...(settings && typeof settings === 'object' ? settings : {}) };
+  const tried = { ...cfg(), ...(settings && typeof settings === 'object' ? settings : {}), binary: cfg().binary };
   const bin = ytdlp.resolveBinary(tried.binary);
   const label = bin.script || bin.cmd;
   if (!(await ytdlp.isAvailable(bin))) {
@@ -173,9 +176,9 @@ async function probe({ settings } = {}) {
     return { ok: false, reason: `yt-dlp (${label}) ${err.message}` };
   }
   if (!(await ffmpegReady())) {
-    return { ok: false, reason: 'ffmpeg is not available yet', detail: { ytdlp: version, ffmpeg: false } };
+    return { ok: false, reason: 'ffmpeg is not available yet', detail: { ytdlp: version, ffmpeg: false, binary: label } };
   }
-  return { ok: true, detail: { ytdlp: version, ffmpeg: true } };
+  return { ok: true, detail: { ytdlp: version, ffmpeg: true, binary: label } };
 }
 
 async function run(ctx) {
@@ -313,7 +316,8 @@ export default Object.freeze({
   description: 'Searches YouTube, scores the uploads against the recommendation and saves the best match\'s audio into the user\'s collection with yt-dlp, tagged and playable at once. Needs yt-dlp and ffmpeg, and upload rights.',
   capabilities: [CAPABILITIES.ACQUIRE],
   scope: SCOPES.SERVER,
-  adminSettings: ['binary', 'codec', 'maxFilesizeMb', 'searchResults'],
+  // `binary` is deliberately not here: see probe().
+  adminSettings: ['codec', 'maxFilesizeMb', 'searchResults'],
   concurrency: 1,
   probe,
   run,

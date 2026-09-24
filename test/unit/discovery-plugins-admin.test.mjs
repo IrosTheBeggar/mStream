@@ -52,7 +52,10 @@ describe('what a plug-in declares for the admin panel', () => {
       for (const k of def.adminSettings) { assert.ok(keys.includes(k), `${name}.${k} exists in the config schema`); }
     }
     assert.equal(discoveryPluginSchema('no-such-plugin'), null);
-    assert.deepEqual([...getPlugin('youtube').adminSettings], ['binary', 'codec', 'maxFilesizeMb', 'searchResults']);
+    // The executable is a config-file setting, never an admin one: an editable
+    // program path would hand an admin session command execution on the host.
+    assert.deepEqual([...getPlugin('youtube').adminSettings], ['codec', 'maxFilesizeMb', 'searchResults']);
+    assert.ok(!getPlugin('youtube').adminSettings.includes('binary'));
     assert.deepEqual([...getPlugin('itunes').adminSettings], ['country']);
   });
 });
