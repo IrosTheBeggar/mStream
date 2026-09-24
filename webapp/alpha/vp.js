@@ -326,6 +326,106 @@ const VUEPLAYERCORE = (() => {
       </div>`,
   });
 
+  // The collection destination — where "Get it" downloads and "Add to your
+  // collection" copies land — rendered in the section whose rows use it, in
+  // either view: the bar (the path resolved for THIS song · yours / default
+  // · Change…), or the form that replaces it in place. State and behaviour
+  // stay on the playlist Vue (discover.dest, discover.modal.picker and the
+  // dm* methods); this only puts them where the rows are. The parent shows
+  // it only when a row could put a file somewhere — never locked.
+  Vue.component('dm-dest', {
+    computed: {
+      picker: function () { return this.$root.discover.modal.picker; },
+      dest: function () { const v = this.$root.discover.dest.view; return (v && v.destination) || null; },
+      preview: function () { return this.$root.dmPickerPreview(); },
+      naming: function () { const k = this.picker; return !!(k && k.browse && k.browse.naming); },
+    },
+    watch: {
+      // The form opens in the bar's place; make sure it is in view.
+      picker: function (k) {
+        if (!k) { return; }
+        this.$nextTick(() => { const el = this.$refs.form; if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'nearest' }); } });
+      },
+      // "New folder…" turns into a name field: put the caret in it.
+      naming: function (on) {
+        if (!on) { return; }
+        this.$nextTick(() => { const el = this.$refs.newFolder; if (el && el.focus) { el.focus(); } });
+      },
+    },
+    methods: {
+      tt: function (key, params) { return (typeof t === 'function') ? t(key, params) : key; },
+    },
+    template: `
+      <div v-if="picker" class="dm-dest-form" ref="form">
+        <div class="dm-field">
+          <label>{{ tt('discover.modal.dest.library') }}</label>
+          <div class="dm-field-body">
+            <select v-if="$root.dmPickerLibraries().length > 1" class="dm-select browser-default" v-model="picker.vpath" v-on:change="$root.dmPickerLibraryChanged()">
+              <option v-for="lib in $root.dmPickerLibraries()" :key="lib.vpath" :value="lib.vpath">{{ lib.vpath }}</option>
+            </select>
+            <span v-else class="dm-static">{{ picker.vpath }}</span>
+            <span class="dm-field-hint dm-field-hint-inline">{{ tt($root.dmPickerLibraries().length > 1 ? 'discover.modal.dest.libraryHint' : 'discover.modal.dest.onlyLibrary') }}</span>
+          </div>
+        </div>
+        <div class="dm-field">
+          <label>{{ tt('discover.modal.dest.base') }}</label>
+          <div class="dm-field-body">
+            <input class="dm-input browser-default" type="text" maxlength="500" v-model="picker.base" v-on:change="$root.dmPickerLibraryChanged()" :placeholder="tt('discover.modal.dest.root')" :class="{ 'is-err': preview.field === 'base' }">
+            <a class="dm-btn dm-btn-sm" :class="{ 'dm-btn-ghost': picker.browse }" href="javascript:void(0)" v-on:click="$root.dmBrowseToggle()"><dm-icon name="folder" :size="14"></dm-icon>{{ tt(picker.browse ? 'discover.modal.close' : 'discover.modal.dest.browse') }}</a>
+          </div>
+          <div v-if="picker.browse" class="dm-tree">
+            <div class="dm-tree-crumb"><template v-for="(c, i) in $root.dmBrowseCrumbs()"><span v-if="i > 0">&rsaquo;</span><b>{{ c }}</b></template></div>
+            <div v-if="$root.dmBrowseCrumbs().length > 1" class="dm-tree-row" v-on:click="$root.dmBrowseUp()"><dm-icon name="up" :size="12"></dm-icon>{{ tt('discover.modal.dest.up', { name: $root.dmBrowseCrumbs()[$root.dmBrowseCrumbs().length - 2] }) }}</div>
+            <div v-if="picker.browse.loading" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.lookingUp') }}</div>
+            <template v-else>
+              <div v-if="picker.browse.missing" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.dest.willCreate') }}</div>
+              <div v-else-if="picker.browse.dirs.length === 0" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.dest.noFolders') }}</div>
+              <div v-for="d in picker.browse.dirs" :key="d" class="dm-tree-row" v-on:click="$root.dmBrowseInto(d)"><dm-icon name="folder" :size="12"></dm-icon>{{ d }}</div>
+            </template>
+            <div v-if="!picker.browse.naming" class="dm-tree-row" v-on:click="$root.dmBrowseNewFolder()"><dm-icon name="plus" :size="12"></dm-icon>{{ tt('discover.modal.dest.newFolder') }}</div>
+            <div v-else class="dm-tree-row dm-tree-new">
+              <dm-icon name="plus" :size="12"></dm-icon>
+              <input class="dm-input browser-default" type="text" maxlength="200" ref="newFolder" v-model="picker.browse.newName" v-on:keydown.enter.prevent="$root.dmBrowseNewFolder()" :placeholder="tt('discover.modal.dest.newFolderName')">
+              <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="$root.dmBrowseNewFolder()">{{ tt('discover.modal.dest.newFolderAdd') }}</a>
+            </div>
+          </div>
+          <div v-if="preview.field === 'base'" class="dm-field-err">{{ $root.dmPickerProblem(preview) }}</div>
+          <div v-else class="dm-field-hint">{{ tt('discover.modal.dest.baseHint', { library: picker.vpath }) }}</div>
+        </div>
+        <div class="dm-field">
+          <label>{{ tt('discover.modal.dest.layout') }}</label>
+          <div class="dm-field-body">
+            <input class="dm-input dm-input-mono browser-default" type="text" maxlength="500" spellcheck="false" ref="layout" v-model="picker.layout" :class="{ 'is-err': preview.field === 'layout' }">
+          </div>
+          <div class="dm-toks">
+            <span v-for="v in $root.dmPickerVars()" :key="v" class="dm-tok" :class="{ 'dm-tok-new': v === 'PEER' }" v-on:click="$root.dmInsertVar(v, $refs.layout)">{{ $root.dmVarToken(v) }}</span>
+            <span class="dm-tok dm-tok-preset" v-on:click="$root.dmUseLibraryTemplate()">{{ tt('discover.modal.dest.libraryTemplate') }}</span>
+          </div>
+          <div v-if="preview.field === 'layout'" class="dm-field-err">{{ $root.dmPickerProblem(preview) }}</div>
+          <div v-else-if="preview.missingVars.length" class="dm-field-hint">{{ tt('discover.modal.dest.missing', { vars: preview.missingVars.join(', ') }) }}</div>
+          <div v-else class="dm-field-hint">{{ tt('discover.modal.dest.layoutHint') }}</div>
+        </div>
+        <div v-if="preview.valid" class="dm-dest-preview" :title="picker.vpath + '/' + preview.relPath">{{ picker.vpath }}/<template v-if="preview.base">{{ preview.base }}/</template><b v-if="preview.rendered">{{ preview.rendered }}</b><template v-if="preview.rendered">/</template>{{ preview.file }}</div>
+        <div v-if="picker.error" class="dm-field-err dm-field-err-wide">{{ picker.error }}</div>
+        <div class="dm-dest-act">
+          <span class="dm-spacer">{{ tt('discover.modal.dest.remembered') }}</span>
+          <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="$root.dmClosePicker()">{{ tt('discover.modal.cancel') }}</a>
+          <a class="dm-btn dm-btn-sm dm-btn-primary" :class="{ 'is-disabled': !preview.valid || picker.saving }" href="javascript:void(0)" v-on:click="$root.dmPickerSubmit()">
+            <dm-icon name="check" :size="14"></dm-icon>{{ tt('discover.modal.dest.use') }}
+          </a>
+        </div>
+      </div>
+      <div v-else-if="dest" class="dm-dest">
+        <dm-icon name="folder" :size="14"></dm-icon>
+        <span class="dm-dest-path" :title="[dest.vpath].concat($root.dmDestCrumbs()).join(' / ')">{{ tt('discover.modal.dest.goTo') }} <b>{{ dest.vpath }}</b><template v-for="c in $root.dmDestCrumbs()"><i>&rsaquo;</i>{{ c }}</template></span>
+        <span class="dm-tag" :class="{ 'dm-tag-src': dest.source === 'user' }">{{ tt(dest.source === 'user' ? 'discover.modal.dest.yours' : 'discover.modal.dest.default') }}</span>
+        <div class="dm-opt-act">
+          <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="$root.dmOpenPicker()">{{ tt('discover.modal.dest.change') }}</a>
+          <a v-if="dest.source === 'user'" class="dm-btn dm-btn-sm dm-btn-ghost dm-btn-icon" href="javascript:void(0)" v-on:click="$root.dmResetDestination()" :title="tt('discover.modal.dest.reset')"><dm-icon name="retry" :size="14"></dm-icon></a>
+        </div>
+      </div>`,
+  });
+
   const playlistVue = new Vue({
     el: '#playlist',
     data: {
@@ -551,6 +651,11 @@ const VUEPLAYERCORE = (() => {
       // present at load, so dynamic text goes through t() directly.
       tt: function (key, params) {
         return (typeof t === 'function') ? t(key, params) : key;
+      },
+      // The header's second line: artist · album · year · length.
+      dmSubtitle: function () {
+        const tr = this.discover.modal.track || {};
+        return [tr.artist, tr.album, tr.year, tr.duration ? this.dmDuration(tr.duration) : ''].filter(Boolean).join(' · ');
       },
       dmDuration: function (seconds) {
         const s = Math.round(Number(seconds) || 0);
@@ -953,12 +1058,11 @@ const VUEPLAYERCORE = (() => {
           .filter((p) => p.name !== DISCOVERJOBS.COPY_PLUGIN)
           .map((plugin) => ({ plugin, row: this.dmJobRow(plugin.name) }));
       },
-      // The destination bar shows wherever a file could land from this view.
-      dmDestVisible: function () {
-        if (!this.dmHasDestination()) { return false; }
-        const m = this.discover.modal;
-        const federationView = m.source === 'federation' && m.view === 'federation';
-        return federationView ? this.dmCopyRows().length > 0 : this.dmGetItRows().length > 0;
+      // The admin's invite row — the first option under "Get it" on a
+      // network row (dmLoadFederate decides whether there is one).
+      dmFederateVisible: function () {
+        const f = this.discover.modal.federate;
+        return !!(f && f.visible);
       },
       // "Add to your collection": none or one.
       dmCopyRows: function () {
@@ -1096,11 +1200,7 @@ const VUEPLAYERCORE = (() => {
           vpath: d.vpath, base: d.base || '', layout: d.layout,
           browse: null, saving: false, error: '',
         };
-        // The form opens where the bar lives, above the rows.
-        this.$nextTick(() => {
-          const el = this.$refs.dmPicker;
-          if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'nearest' }); }
-        });
+        // The form opens in the bar's place; dm-dest scrolls it into view.
       },
       // What an acquire plug-in searches for, as the idle row says it.
       dmSearchWords: function () {
@@ -1135,12 +1235,13 @@ const VUEPLAYERCORE = (() => {
       dmVarToken: function (name) {
         return '{' + '{' + name + '}' + '}';
       },
-      // A variable chip drops {{VAR}} where the caret is.
-      dmInsertVar: function (name) {
+      // A variable chip drops {{VAR}} where the caret is (`input` is the
+      // layout field, handed over by the dm-dest form).
+      dmInsertVar: function (name, input) {
         const k = this.discover.modal.picker;
         if (!k) { return; }
         const token = '{{' + name + '}}';
-        const el = this.$refs.dmLayoutInput;
+        const el = input || null;
         const at = el && typeof el.selectionStart === 'number' ? el.selectionStart : k.layout.length;
         const end = el && typeof el.selectionEnd === 'number' ? el.selectionEnd : at;
         k.layout = k.layout.slice(0, at) + token + k.layout.slice(end);
@@ -1222,8 +1323,7 @@ const VUEPLAYERCORE = (() => {
         const k = this.discover.modal.picker;
         if (!k || !k.browse) { return; }
         if (!k.browse.naming) {
-          k.browse.naming = true;
-          this.$nextTick(() => { const el = this.$refs.dmNewFolder; if (el && el.focus) { el.focus(); } });
+          k.browse.naming = true;   // dm-dest puts the caret in the name field
           return;
         }
         const name = DISCOVERJOBS.sanitizeSegment(k.browse.newName);
