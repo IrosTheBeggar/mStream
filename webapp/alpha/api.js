@@ -179,11 +179,20 @@ const MSTREAMAPI = (() => {
   mstreamModule.discoveryJob = (id) => req('GET', jobsRoute('/' + encodeURIComponent(id)));
   mstreamModule.discoveryJobLookup = (recommendation) => req('POST', jobsRoute('/lookup'), { recommendation });
   mstreamModule.discoveryJobCancel = (id) => req('POST', jobsRoute('/' + encodeURIComponent(id) + '/cancel'), {});
-  // `destination` = a one-off { vpath, base, layout }; omitted = the saved one.
-  mstreamModule.discoveryJobKeep = (id, destination) => {
-    return req('POST', jobsRoute('/' + encodeURIComponent(id) + '/keep'), destination ? { destination } : {});
-  };
   mstreamModule.discoveryJobsClear = () => req('POST', jobsRoute('/clear'), {});
+  // What the plug-ins brought into the library (the Downloads view). Own
+  // records; `all` = every account's (admins), `removed` = history too.
+  mstreamModule.discoveryDownloads = (opts) => {
+    const o = opts || {};
+    const q = [];
+    if (o.all) { q.push('all=1'); }
+    if (o.removed) { q.push('removed=1'); }
+    if (o.limit) { q.push('limit=' + encodeURIComponent(o.limit)); }
+    if (o.before) { q.push('before=' + encodeURIComponent(o.before)); }
+    return req('GET', mstreamModule.currentServer.host + 'api/v1/discovery/downloads' + (q.length ? '?' + q.join('&') : ''));
+  };
+  // Deletes the file and its library row, and settles the record.
+  mstreamModule.discoveryDownloadRemove = (id) => req('DELETE', mstreamModule.currentServer.host + 'api/v1/discovery/downloads/' + encodeURIComponent(id));
   mstreamModule.discoveryDestination = () => {
     return req('GET', mstreamModule.currentServer.host + 'api/v1/discovery/collection/destination');
   };

@@ -6192,9 +6192,11 @@ paths:
         `youtube`: `{ ytdlp: "<version>", ffmpeg: true }`), `adminSettings` = the
         config keys an admin may edit with their current values in `config`,
         and `connectedUsers` (only for a plug-in that keeps a per-user secret)
-        = how many accounts hold one. `downloads` is read from the Discover
-        downloads folder itself (size and mtime, the clock the retention pass
-        uses); half-written files count as `partials`, never as downloads.
+        = how many accounts hold one. `jobs` is the runner's gate, cap, clock
+        and load. `downloads` counts what the plug-ins have brought into the
+        libraries and are still there (live records of
+        `GET /api/v1/discovery/downloads`), one entry per plug-in; the
+        Downloads tab's list itself is that route with `all=1`.
       responses:
         "200":
           description: The view's data.
@@ -6215,44 +6217,14 @@ paths:
                       running: { type: integer, description: Jobs in flight across every account. }
                       queued: { type: integer }
                   downloads:
-                    type: object
-                    properties:
-                      library: { type: string, example: discover-downloads }
-                      dir: { type: string }
-                      exists: { type: boolean, description: False until the first download creates the library. }
-                      retentionDays: { type: integer, description: "0 = downloads never expire." }
-                      files: { type: integer, description: Downloads nobody has kept yet. }
-                      bytes: { type: integer }
-                      partials: { type: integer, description: Half-written files a killed download left behind. }
-                      partialBytes: { type: integer }
-                      maxSizeMb: { type: integer, description: "The size cap; 0 = no cap." }
-                      full: { type: boolean, description: "At or over the cap (half-written files count): a new download is refused until something is kept, removed or expires." }
-                      oldestAt: { type: number, nullable: true, description: ms epoch (file mtime). }
-                      newestAt: { type: number, nullable: true }
-                      freeBytes: { type: number, nullable: true, description: Free space on that volume; null when the runtime cannot say. }
-                      truncated: { type: boolean, description: Counting stopped at 5000 files. }
-                      byUser:
-                        type: array
-                        items:
-                          type: object
-                          properties:
-                            folder: { type: string, description: "The account's subfolder (its username made path-safe; `shared` in public mode)." }
-                            files: { type: integer }
-                            bytes: { type: integer }
-                            oldestAt: { type: number }
-                            newestAt: { type: number }
-                      sweeping: { type: boolean }
-                      lastSweep:
-                        type: object
-                        nullable: true
-                        description: What the last retention pass did (since this process started).
-                        properties:
-                          at: { type: number }
-                          removedFiles: { type: integer }
-                          removedPartials: { type: integer }
-                          skipped: { type: integer }
-                          prunedJobs: { type: integer }
-                      nextSweepAt: { type: number, nullable: true }
+                    type: array
+                    description: Live download records by plug-in, alphabetical; empty when nothing was brought in.
+                    items:
+                      type: object
+                      properties:
+                        plugin: { type: string, example: youtube }
+                        count: { type: integer }
+                        bytes: { type: integer, description: Sum of the files' sizes as recorded when they landed. }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/config/discovery-plugins:

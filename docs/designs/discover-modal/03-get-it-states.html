@@ -245,7 +245,7 @@ code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.
 
   <div class="cell"><h3>Idle<small>two providers configured</small></h3>
     <div class="dm dm-network"><section class="dm-section">
-      <div class="dm-section-h"><span class="dm-label"><svg><use href="#i-download"/></svg>Get it</span><span class="dm-hint">Saved to your Discover downloads · kept 30 days unless you keep it</span></div>
+      <div class="dm-section-h"><span class="dm-label"><svg><use href="#i-download"/></svg>Get it</span><span class="dm-hint">Lands in the folder above, like a copy from a peer</span></div>
       <div class="opt"><div class="opt-ic"><svg><use href="#i-youtube"/></svg></div><div class="opt-body"><div class="opt-title">YouTube</div><div class="opt-sub">Searches “Neon Harbor Salt &amp; Static”, saves the best audio (yt-dlp)</div></div><div class="opt-act"><a class="btn btn-sm btn-primary"><svg><use href="#i-download"/></svg>Download</a></div></div>
       <div class="opt"><div class="opt-ic"><svg><use href="#i-search"/></svg></div><div class="opt-body"><div class="opt-title">Soulseek</div><div class="opt-sub">Searches the Soulseek network through slskd · lossless first · slower</div></div><div class="opt-act"><a class="btn btn-sm btn-primary"><svg><use href="#i-download"/></svg>Download</a></div></div>
     </section></div>
@@ -267,12 +267,12 @@ code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.
     </section></div>
   </div>
 
-  <div class="cell"><h3>Done<small>state = done · result = a file in the Discover downloads folder</small></h3>
+  <div class="cell"><h3>Done<small>state = done · result = a file in your collection</small></h3>
     <div class="dm dm-network"><section class="dm-section">
       <div class="dm-section-h"><span class="dm-label"><svg><use href="#i-download"/></svg>Get it</span><span class="dm-hint">Playable now, like any library song</span></div>
-      <div class="opt"><div class="opt-ic opt-ic-ok"><svg><use href="#i-check"/></svg></div><div class="opt-body"><div class="opt-title">YouTube<span class="tag tag-ok">done</span></div><div class="opt-sub">Salt &amp; Static.m4a · 9.6 MB · Discover downloads · removed in 30 days unless kept</div></div><div class="opt-act"><a class="btn btn-sm btn-primary"><svg><use href="#i-play"/></svg>Play</a><a class="btn btn-sm"><svg><use href="#i-plus"/></svg>Queue</a><a class="btn btn-sm"><svg><use href="#i-folder"/></svg>Keep…</a></div></div>
+      <div class="opt"><div class="opt-ic opt-ic-ok"><svg><use href="#i-check"/></svg></div><div class="opt-body"><div class="opt-title">YouTube<span class="tag tag-ok">done</span></div><div class="opt-sub">Saved to Music / Neon Harbor / Low Tide Recordings / Salt_Static.m4a</div></div><div class="opt-act"><a class="btn btn-sm btn-primary"><svg><use href="#i-play"/></svg>Play</a><a class="btn btn-sm"><svg><use href="#i-plus"/></svg>Queue</a></div></div>
       <div class="opt opt-muted"><div class="opt-ic"><svg><use href="#i-search"/></svg></div><div class="opt-body"><div class="opt-title">Soulseek</div><div class="opt-sub">A second, lossless copy</div></div><div class="opt-act"><a class="btn btn-sm btn-ghost"><svg><use href="#i-download"/></svg>Download</a></div></div>
-      <div class="dm-note"><b>Keep…</b> opens the collection destination picker (card 10), moves the file into that folder and rescans it; the row then says “In your library”. Until then the file lives in Discover downloads (a real folder in your library tree) and expires with the retention sweep.</div>
+      <div class="dm-note">The file lands where the destination bar says (card 10), exactly like a copy from a peer: under the account’s folder and layout, tagged from the recommendation, a library row at once. Nothing waits to be kept and nothing expires. The Downloads panel (card 07) lists every song a plug-in brought in and can remove one — file, row and record.</div>
     </section></div>
   </div>
 
@@ -297,14 +297,14 @@ code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.
       <div class="dm-section-h"><span class="dm-label"><svg><use href="#i-note"/></svg>Album</span><span class="dm-hint">Night Ferry · 2019 · 11 songs</span></div>
       <div class="opt"><div class="opt-ic opt-ic-on"><svg><use href="#i-download"/></svg></div><div class="opt-body"><div class="opt-title">Add album to your collection<span class="tag tag-src">copying</span></div><div class="opt-sub">4 of 11 songs · 38 MB of 98 MB · 05 Harbour Lights.flac</div><div class="progress"><i style="width:39%"></i></div></div><div class="opt-act"><a class="btn btn-sm btn-ghost">Cancel</a></div></div>
       <div class="opt"><div class="opt-ic opt-ic-ok"><svg><use href="#i-check"/></svg></div><div class="opt-body"><div class="opt-title">Add to your collection<span class="tag tag-ok">in your collection</span></div><div class="opt-sub">Music / Marlowe Vale / Night Ferry / 03 Paper Lanterns.flac</div></div><div class="opt-act"><a class="btn btn-sm btn-primary"><svg><use href="#i-play"/></svg>Play</a><a class="btn btn-sm"><svg><use href="#i-folder"/></svg>Open folder</a></div></div>
-      <div class="dm-note">Copies land in the folder you chose (card 10; default <code>{{ARTIST}}/{{ALBUM}}</code> in your library), not in Discover downloads, so there is no Keep step and no expiry. Cancelling an album or artist copy keeps the songs that finished.</div>
+      <div class="dm-note">Copies and downloads land in the same folder (card 10; default <code>{{ARTIST}}/{{ALBUM}}</code> in your library). Cancelling an album or artist copy keeps the songs that finished.</div>
     </section></div>
   </div>
 
   <div class="cell"><h3>Hidden<small>the only “not available” state</small></h3>
     <div class="dashed">
-      <b>The row, or the whole section, does not render.</b> No acquire plug-in enabled; a plug-in that is enabled but unconfigured (no slskd URL, no yt-dlp binary); downloads not enabled for this account (<code>discoveryJobs.enabledFor = whitelist</code>) — all three look the same to the user: the option is not there. Nothing is ever shown locked or greyed out, and the API answers 404 for what the list omits. For the account gate the plug-in list has to tell the webapp whether this user may create jobs — a flag still to add — so the section can be left out instead of failing with a 403.
-      <br><br>The Federation view’s Add-to-collection rows follow the same rule, plus two of their own: uploads off for this account, or no library to write to, and the rows and the destination bar are absent (card 10).
+      <b>The row, or the whole section, does not render.</b> No acquire plug-in enabled; a plug-in that is enabled but unconfigured (no slskd URL, no yt-dlp binary); jobs not enabled for this account (<code>discoveryJobs.enabledFor = whitelist</code>, the listing’s <code>jobs.allowed</code>); nowhere to put the file (uploads off for this account, or no library it may write to) — all of them look the same to the user: the option is not there. Nothing is ever shown locked or greyed out, and the API answers 404 for what the list omits.
+      <br><br>The Federation view’s Add-to-collection rows follow exactly the same rules, and so does the destination bar above either (card 10).
       <br><br>With no plug-ins at all the Plug-Ins tab disappears on peer rows, and a network row falls back to today’s copy-to-clipboard.
     </div>
   </div>

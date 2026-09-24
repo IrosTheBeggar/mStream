@@ -265,13 +265,16 @@
       <p class="adm-sub" style="margin-top:-6px">Applies to <b>Get it</b> and <b>Send to</b>. Changes apply immediately.</p>
       <div class="adm-radio adm-radio-on"><i></i><span><b>All users</b> — everyone signed in can download and copy.</span></div>
       <div class="adm-radio"><i></i><span><b>Whitelist</b> — only the accounts you tick below.</span></div>
-      <div class="adm-callout" style="margin-top:14px">A copy from a paired server, and keeping a download, also put a file into a library. Those two need the account’s <b>upload</b> right as well (Users view) and respect “Disable Uploading” on the Settings view.</div>
+      <div class="adm-callout" style="margin-top:14px">A download and a copy from a paired server both put a file into a library, so both need the account’s <b>upload</b> right as well (Users view) and respect “Disable Uploading” on the Settings view.</div>
 
       <table class="adm-rows" style="margin-top:18px">
         <tr><td><b>Jobs at once:</b> 2<span class="adm-note">Across every plug-in. Each plug-in also limits itself (one copy, one download at a time).</span></td><td><span class="adm-br">[<a>edit</a>]</span></td></tr>
         <tr><td><b>Finished jobs kept for:</b> 30 days<span class="adm-note">Done, failed and cancelled rows older than this leave the Activity tab. Files are not touched.</span></td><td><span class="adm-br">[<a>edit</a>]</span></td></tr>
       </table>
-    </div></div>
+      <div class="adm-callout" style="margin-top:16px"><b>Done.</b> Pruned 14 old job rows and removed 1 leftover staging folder.</div>
+    </div>
+    <div class="adm-card-action"><span class="adm-sub" style="margin-right:auto">The pass prunes finished job rows past the clock above and removes staging folders a crash left behind. It runs by itself 90 seconds after a start and then every 6 hours.</span><a class="adm-btn"><svg><use href="#a-sweep"/></svg>Sweep now</a></div>
+    </div>
   </div>
 
   <div class="cell"><h3>Whitelist<small>the table appears under the radios · ticking applies at once</small></h3>
@@ -289,7 +292,7 @@
           <tr><td>guest</td><td>no</td><td>no</td><td><span class="adm-check"></span></td></tr>
         </tbody>
       </table>
-      <div class="adm-help" style="margin-top:8px"><b>eli</b> may download into Discover downloads, but cannot keep a download or copy from a peer until the account may upload. Being an admin does not skip the list.</div>
+      <div class="adm-help" style="margin-top:8px"><b>eli</b> may start jobs but cannot upload, so a download or a copy fails for eli with that reason until the account may upload. Being an admin does not skip the list.</div>
     </div></div>
     <div style="margin-top:10px"><span class="adm-toast adm-toast-ok">dana: discovery jobs granted</span></div>
   </div>
@@ -323,6 +326,7 @@
       <br><br><b>What the user sees.</b> The plug-in listing already tells the webapp <code>jobs.allowed</code> for the caller, so an account that is not on the list simply has no Get it section and no “Add to your collection” row. Jobs that were already running are not cancelled by taking an account off the list.
       <br><br><b>“Can upload”</b> is read-only here (it is edited on the Users view) and is shown because it decides half of what a job can do. The column needs <code>allowDiscoveryJobs</code> added to <code>GET /api/v1/admin/users</code> next to <code>allowTorrent</code>.
       <br><br><b>No per-plug-in lists.</b> One gate, like torrents. If YouTube should be narrower than peer copies, the answer today is the whitelist; a per-plug-in gate is an open question on the rules card.
+      <br><br><b>Sweep now lives here.</b> <code>POST /api/v1/admin/discovery-jobs/sweep</code> → <code>{ prunedJobs, removedStaging }</code>: the finished-jobs clock above and the staging folders a crash left behind (<code>discoveryJobs.stagingDir</code>, a config-file key). Files in libraries are never touched — a download is a library song from the moment it lands.
     </div>
   </div>
 

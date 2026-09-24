@@ -188,17 +188,17 @@ const VUEPLAYERCORE = (() => {
       jobsAllowed: false,     // the listing's jobs.allowed — may this account start jobs
     },
     // The collection destination — where "Add to your collection" copies and
-    // kept downloads land (GET /api/v1/discovery/collection/destination).
+    // "Get it" downloads land (GET /api/v1/discovery/collection/destination).
     // Fetched with the first window that could use it. `view.destination`
-    // null = nowhere to put a file (uploads off, no library): the copy row,
-    // the bar and Keep… stay hidden rather than fail.
+    // null = nowhere to put a file (uploads off, no library): the acquire
+    // rows and the bar stay hidden rather than fail.
     dest: {
       loaded: false,
       view: null,
     },
     // The downloads strip under the panel: the caller's plug-in jobs that
-    // still want them (live, waiting to be kept, failed). Shows only while
-    // there are any.
+    // still want them (live, failed). Shows only while there are any; what
+    // landed is listed by the Downloads panel (m.js).
     tray: {
       jobs: [],
       collapsed: (() => { try { return localStorage.getItem('discoverTrayCollapsed') === 'true'; } catch (_) { return false; } })(),
@@ -299,10 +299,10 @@ const VUEPLAYERCORE = (() => {
   // your collection" are the same thing: the row IS its job. `row` comes
   // from DISCOVERJOBS.jobRowState; the buttons only say what was pressed.
   Vue.component('dm-job-row', {
-    props: { title: String, idleSub: String, startLabel: String, startIcon: { type: String, default: 'download' }, hint: String, row: Object, busy: Boolean, canKeep: Boolean },
+    props: { title: String, idleSub: String, startLabel: String, startIcon: { type: String, default: 'download' }, hint: String, row: Object, busy: Boolean },
     methods: {
       tt: function (key, params) { return (typeof t === 'function') ? t(key, params) : key; },
-      has: function (action) { return this.row.actions.indexOf(action) !== -1 && (action !== 'keep' || this.canKeep); },
+      has: function (action) { return this.row.actions.indexOf(action) !== -1; },
       sub: function () {
         const part = this.row.sub;
         if (!part) { return this.idleSub || ''; }
@@ -320,7 +320,6 @@ const VUEPLAYERCORE = (() => {
         <div class="dm-opt-act">
           <a v-if="has('play')" class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="$emit('play')"><dm-icon name="play" :size="14"></dm-icon>{{ tt('discover.modal.play') }}</a>
           <a v-if="has('queue')" class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="$emit('queue')"><dm-icon name="plus" :size="14"></dm-icon>{{ tt('discover.modal.queue') }}</a>
-          <a v-if="has('keep')" class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="$emit('keep')"><dm-icon name="folder" :size="14"></dm-icon>{{ tt('discover.modal.keep') }}</a>
           <a v-if="has('start')" class="dm-btn dm-btn-sm dm-btn-primary" :class="{ 'is-disabled': busy }" href="javascript:void(0)" v-on:click="$emit('start')"><dm-icon :name="startIcon" :size="14"></dm-icon>{{ startLabel }}</a>
           <a v-if="has('retry')" class="dm-btn dm-btn-sm" :class="{ 'is-disabled': busy }" href="javascript:void(0)" v-on:click="$emit('start')"><dm-icon name="retry" :size="14"></dm-icon>{{ tt('discover.job.retry') }}</a>
           <a v-if="has('cancel')" class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="$emit('cancel')">{{ tt('discover.modal.cancel') }}</a>
@@ -916,8 +915,9 @@ const VUEPLAYERCORE = (() => {
       // ── Plug-in jobs: Get it · Add to your collection · the strip ──────
       // A row IS its job (alpha/discover-jobs.js turns one into what the row
       // shows). Rows exist only for what would work: the plug-in listed (on,
-      // and its probe passing), this account allowed to start jobs, and —
-      // for a copy or Keep… — somewhere to put the file.
+      // and its probe passing), this account allowed to start jobs, and
+      // somewhere to put the file — a download lands in the collection
+      // destination exactly like a copy.
       ensureDiscoverPlugins: function () {
         if (this.discover.plugins.list) { return Promise.resolve(this.discover.plugins.list); }
         if (!discoverPluginsPromise) {
@@ -946,11 +946,20 @@ const VUEPLAYERCORE = (() => {
         return !!(v && v.destination);
       },
       // "Get it": every acquire plug-in but the peer copy, which belongs to
-      // the Federation view. One { plugin, row } per plug-in.
+      // the Federation view. One { plugin, row } per plug-in; none without
+      // a destination to land in.
       dmGetItRows: function () {
+        if (!this.dmHasDestination()) { return []; }
         return this.discoverAcquirePlugins()
           .filter((p) => p.name !== DISCOVERJOBS.COPY_PLUGIN)
           .map((plugin) => ({ plugin, row: this.dmJobRow(plugin.name) }));
+      },
+      // The destination bar shows wherever a file could land from this view.
+      dmDestVisible: function () {
+        if (!this.dmHasDestination()) { return false; }
+        const m = this.discover.modal;
+        const federationView = m.source === 'federation' && m.view === 'federation';
+        return federationView ? this.dmCopyRows().length > 0 : this.dmGetItRows().length > 0;
       },
       // "Add to your collection": none or one.
       dmCopyRows: function () {
@@ -1049,14 +1058,14 @@ const VUEPLAYERCORE = (() => {
       },
 
       // ── Collection destination: the bar and the picker ─────────────────
-      // Where copies land for THIS song under the saved destination (the
-      // bar), and under the one being typed (the picker's preview). The
-      // server renders the real path from the file's own tags; this is the
-      // same engine on what the window knows.
+      // Where a copy or a download lands for THIS song under the saved
+      // destination (the bar), and under the one being typed (the picker's
+      // preview). The server renders the real path from the file's own
+      // tags; this is the same engine on what the window knows.
       dmLayoutTags: function () {
         const m = this.discover.modal;
         const t = m.track || {};
-        const md = (m.picker && m.picker.mode === 'keep') ? null : (m.file && m.file.metadata);
+        const md = m.file && m.file.metadata;
         const g = md && Array.isArray(md.genres) ? md.genres[0] : null;
         return {
           artist: (md && (md['artist-display'] || md.artist)) || t.artist || null,
@@ -1068,16 +1077,11 @@ const VUEPLAYERCORE = (() => {
       },
       dmLayoutFile: function () {
         const m = this.discover.modal;
-        if (m.picker && m.picker.mode === 'keep') {
-          const job = m.jobs[m.picker.plugin];
-          const at = job && job.result && job.result.downloaded && job.result.downloaded.filepath;
-          return at || 'track';
-        }
         return (m.track && m.track.filepath) || 'track';
       },
+      // A network row's download has no peer: {{PEER}} drops out of its path.
       dmLayoutPeer: function () {
         const m = this.discover.modal;
-        if (m.picker && m.picker.mode === 'keep') { return null; }   // a download has no peer; {{PEER}} drops out
         return (m.source === 'federation' && m.track && m.track.peer && m.track.peer.name) || null;
       },
       dmDestCrumbs: function () {
@@ -1086,16 +1090,14 @@ const VUEPLAYERCORE = (() => {
         const p = DISCOVERJOBS.previewTarget({ vpath: d.vpath, base: d.base, layout: d.layout, tags: this.dmLayoutTags(), peerName: this.dmLayoutPeer(), fileName: this.dmLayoutFile() });
         return DISCOVERJOBS.pathCrumbs(p.valid ? p.relDir : d.base);
       },
-      dmOpenPicker: function (mode, plugin) {
+      dmOpenPicker: function () {
         const d = this.discover.dest.view && this.discover.dest.view.destination;
         if (!d) { return; }
         this.discover.modal.picker = {
-          mode, plugin: plugin ? plugin.name : null,
           vpath: d.vpath, base: d.base || '', layout: d.layout,
-          remember: true, browse: null, saving: false, error: '',
+          browse: null, saving: false, error: '',
         };
-        // The form opens where the bar lives, above the rows; a Keep…
-        // pressed further down the window brings it into view.
+        // The form opens where the bar lives, above the rows.
         this.$nextTick(() => {
           const el = this.$refs.dmPicker;
           if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'nearest' }); }
@@ -1228,8 +1230,8 @@ const VUEPLAYERCORE = (() => {
         const name = DISCOVERJOBS.sanitizeSegment(k.browse.newName);
         if (name) { this.dmBrowseInto(name, k.browse.dirs.indexOf(name) === -1); }
       },
-      // Use this folder (remembered for the account) · Move here (Keep…,
-      // remembered only when the box is ticked).
+      // Use this folder: saved for the account, so every copy and download
+      // from now on lands under it.
       dmPickerSubmit: async function () {
         const m = this.discover.modal;
         const k = m.picker;
@@ -1240,22 +1242,8 @@ const VUEPLAYERCORE = (() => {
         k.saving = true;
         k.error = '';
         try {
-          if (k.mode === 'save' || k.remember) {
-            this.discover.dest.view = await MSTREAMAPI.discoverySaveDestination(destination);
-            this.discover.dest.loaded = true;
-          }
-          if (k.mode === 'keep') {
-            const job = m.jobs[k.plugin];
-            const from = job && job.result && job.result.downloaded && job.result.downloaded.filepath;
-            const res = await MSTREAMAPI.discoveryJobKeep(job.id, k.remember ? undefined : destination);
-            if (res && res.job) {
-              this.noteDiscoverJob(res.job);
-              if (this.dmLive(gen)) { this.$set(this.discover.modal.jobs, k.plugin, res.job); }
-              const to = res.job.result && res.job.result.kept && res.job.result.kept.filepath;
-              if (from && to) { this.discoverFileMoved(from, to); }
-              iziToast.success({ title: this.tt('discover.job.toastKept'), message: DISCOVERJOBS.pathCrumbs(to).join(' / '), position: 'topCenter', timeout: 3000 });
-            }
-          }
+          this.discover.dest.view = await MSTREAMAPI.discoverySaveDestination(destination);
+          this.discover.dest.loaded = true;
           if (this.dmLive(gen)) { this.discover.modal.picker = null; }
         } catch (err) {
           if (this.dmLive(gen) && this.discover.modal.picker === k) {
@@ -1270,18 +1258,6 @@ const VUEPLAYERCORE = (() => {
         } catch (err) {
           iziToast.error({ title: this.dmErrorText(err), position: 'topCenter', timeout: 3500 });
         }
-      },
-      // Keep… moved a file: queue entries on the old path follow it.
-      discoverFileMoved: function (from, to) {
-        const patched = DISCOVERJOBS.patchQueuePaths(MSTREAMPLAYER.playlist, from, to, (raw) => {
-          let escaped = raw.replace(/%/g, '%25').replace(/#/g, '%23').replace(/\?/g, '%3F');
-          if (escaped.charAt(0) === '/') { escaped = escaped.substr(1); }
-          const transcode = MSTREAMPLAYER.transcodeOptions.serverEnabled && MSTREAMPLAYER.transcodeOptions.frontendEnabled;
-          let url = MSTREAMAPI.currentServer.host + (transcode ? 'transcode/' : 'media/') + escaped + '?';
-          if (MSTREAMAPI.currentServer.token) { url += 'token=' + MSTREAMAPI.currentServer.token; }
-          return { filepath: escaped, url };
-        });
-        if (patched > 0) { saveLiveQueue(); }
       },
 
       // ── The downloads strip ────────────────────────────────────────────
@@ -1341,8 +1317,9 @@ const VUEPLAYERCORE = (() => {
           iziToast.error({ title: this.tt('discover.job.toastFailed', { plugin: this.discoverPluginTitle(job.plugin) }), message: job.error || message, position: 'topCenter', timeout: 5000 });
         } else if (row.state === 'copied') {
           iziToast.success({ title: this.tt('discover.job.toastCopied'), message, position: 'topCenter', timeout: 3000 });
-        } else if (row.state === 'ready') {
-          iziToast.success({ title: this.tt('discover.job.toastDownloaded'), message, position: 'topCenter', timeout: 3000 });
+        } else if (row.state === 'downloaded') {
+          const where = row.filepath ? DISCOVERJOBS.pathCrumbs(row.filepath).join(' / ') : '';
+          iziToast.success({ title: this.tt('discover.job.toastDownloaded'), message: [message, where].filter(Boolean).join(' · '), position: 'topCenter', timeout: 4000 });
         } else if (row.state === 'owned') {
           iziToast.info({ title: this.tt('discover.job.toastOwned'), message, position: 'topCenter', timeout: 3000 });
         }
@@ -1372,12 +1349,10 @@ const VUEPLAYERCORE = (() => {
       dtClearable: function () {
         return DISCOVERJOBS.traySummary(this.discover.tray.jobs).clearable;
       },
-      // "Discover downloads · 2 files · 28 MB": what is waiting to be kept.
-      dtWaiting: function () {
-        const ready = DISCOVERJOBS.trayRows(this.discover.tray.jobs).filter((j) => j.state === 'done');
-        if (ready.length === 0) { return ''; }
-        const bytes = ready.reduce((sum, j) => sum + (Number(j.result && j.result.downloaded && j.result.downloaded.bytes) || 0), 0);
-        return [this.tt('discover.tray.waiting', { count: ready.length }), DISCOVERJOBS.fmtBytes(bytes)].filter(Boolean).join(' · ');
+      // "All downloads": the Downloads panel (m.js) — everything that landed.
+      openDiscoverDownloads: function () {
+        if (typeof changeView !== 'function' || typeof discoverDownloadsPanel !== 'function') { return; }
+        changeView(discoverDownloadsPanel, document.getElementById('nav-discover-downloads'));
       },
       toggleDiscoverTray: function () {
         this.discover.tray.collapsed = !this.discover.tray.collapsed;
@@ -1397,18 +1372,14 @@ const VUEPLAYERCORE = (() => {
         try { await MSTREAMAPI.discoveryJobsClear(); } catch (_) { /* the refresh shows what is left */ }
         await this.refreshDiscoverJobs();
       },
-      // A strip row opens the window its job came from; Keep… opens it on
-      // the destination form.
-      openDiscoverModalForJob: async function (job, keep) {
+      // A strip row opens the window its job came from.
+      openDiscoverModalForJob: async function (job) {
         const rec = job.recommendation || {};
         const source = rec.source === 'federation' ? 'federation' : 'p2p';
         await this.openDiscoverModal(Object.assign({}, rec, { peer: rec.peer || {} }), source);
         const m = this.discover.modal;
         if (!m.open) { return; }
         if (source === 'federation' && job.plugin !== DISCOVERJOBS.COPY_PLUGIN && this.discover.plugins.available) { m.view = 'plugins'; }
-        if (keep && this.dmHasDestination() && m.jobs[job.plugin] && m.jobs[job.plugin].id === job.id) {
-          this.dmOpenPicker('keep', { name: job.plugin });
-        }
       },
 
       // ── "From the network" rows ────────────────────────────────────

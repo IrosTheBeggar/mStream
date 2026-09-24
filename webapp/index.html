@@ -635,6 +635,12 @@
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="#DDD" d="M19 15.18V7c0-2.21-1.79-4-4-4s-4 1.79-4 4v10c0 1.1-.9 2-2 2s-2-.9-2-2V8.82C8.16 8.4 9 7.3 9 6c0-1.66-1.34-3-3-3S3 4.34 3 6c0 1.3.84 2.4 2 2.82V17c0 2.21 1.79 4 4 4s4-1.79 4-4V7c0-1.1.9-2 2-2s2 .9 2 2v8.18c-1.16.42-2 1.52-2 2.82 0 1.66 1.34 3 3 3s3-1.34 3-3c0-1.3-.84-2.4-2-2.82z"/></svg>
       <span data-i18n="nav.sonicPath">Sonic Path</span>
     </div>
+    <!-- Downloads — what the Discover plug-ins brought into the library.
+         Hidden until the ping advertises discoveryPlugins. -->
+    <div id="nav-discover-downloads" class="local-only side-nav-item my-waves super-hide" onclick="changeView(discoverDownloadsPanel, this);" data-panel="discoverDownloads">
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="#DDD" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+      <span data-i18n="nav.downloads">Downloads</span>
+    </div>
     <div class="local-only side-nav-item my-waves" onclick="changeView(setupTranscodePanel, this);">
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 48 48"><path id="ffmpeg-logo" fill="none" stroke="#DDD" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10" d="M8.5 8.5h9l-9 9v11l20-20h11l-31 31h11l20-20v11l-9 9h9"/></svg>
       <span data-i18n="nav.transcode">Transcode</span>
@@ -1033,11 +1039,11 @@
               </template>
             </div>
             <!-- Downloads strip (design card 07): the plug-in jobs that still
-                 want the user — running, waiting to be kept, failed. A job
-                 outlives the window that started it, so the strip sits under
-                 the leads it came from, shows only while there are any, and
-                 stays put when the panel body is folded. A row opens the
-                 window its job came from. -->
+                 want the user — running and failed. A job outlives the window
+                 that started it, so the strip sits under the leads it came
+                 from, shows only while there are any, and stays put when the
+                 panel body is folded. A row opens the window its job came
+                 from; what landed is on the Downloads panel (m.js). -->
             <div v-if="discover.plugins.available && dtRows().length" class="discover-tray">
               <div class="discover-tray-h pointer" v-on:click="toggleDiscoverTray">
                 <dm-icon name="download" :size="12"></dm-icon>
@@ -1057,7 +1063,6 @@
                   <div class="discover-job-act">
                     <a v-if="tr.row.actions.indexOf('play') !== -1" href="javascript:void(0)" v-on:click.stop="playDiscoverFile(tr.row.filepath)" :title="tt('discover.modal.play')"><dm-icon name="play" :size="14"></dm-icon></a>
                     <a v-if="tr.row.actions.indexOf('queue') !== -1" href="javascript:void(0)" v-on:click.stop="queueDiscoverFile(tr.row.filepath)" :title="tt('discover.modal.addToQueue')"><dm-icon name="plus" :size="14"></dm-icon></a>
-                    <a v-if="tr.row.actions.indexOf('keep') !== -1" href="javascript:void(0)" v-on:click.stop="openDiscoverModalForJob(tr.job, true)" :title="tt('discover.tray.keep')"><dm-icon name="folder" :size="14"></dm-icon></a>
                     <a v-if="tr.row.actions.indexOf('retry') !== -1" href="javascript:void(0)" v-on:click.stop="dtRetry(tr.job)" :title="tt('discover.job.retry')"><dm-icon name="retry" :size="14"></dm-icon></a>
                     <a v-if="tr.row.actions.indexOf('cancel') !== -1" href="javascript:void(0)" v-on:click.stop="cancelDiscoverJob(tr.job)" :title="tt('discover.modal.cancel')"><dm-icon name="close" :size="14"></dm-icon></a>
                   </div>
@@ -1065,7 +1070,7 @@
                 <div class="discover-tray-f">
                   <a v-if="dtClearable()" class="pointer" href="javascript:void(0)" v-on:click="dtClear">{{ tt('discover.tray.clear') }}</a>
                   <span class="grow"></span>
-                  <span v-if="dtWaiting()">{{ dtWaiting() }}</span>
+                  <a class="pointer" href="javascript:void(0)" v-on:click="openDiscoverDownloads">{{ tt('discover.tray.all') }} &rsaquo;</a>
                 </div>
               </template>
             </div>
@@ -1117,13 +1122,12 @@
               </div>
 
               <!-- Collection destination (design card 10): where "Add to your
-                   collection" copies and kept downloads land. The bar shows
-                   the path resolved for THIS song and lives in the Federation
-                   view while a copy row exists; Change… (or a download's
-                   Keep…) swaps in the form, in place. Absent — never locked —
-                   when the account has nowhere to put a file. -->
+                   collection" copies and "Get it" downloads land. The bar shows
+                   the path resolved for THIS song and lives above whichever
+                   rows could put a file there; Change… swaps in the form, in
+                   place. Absent — never locked — when the account has nowhere
+                   to put a file. -->
               <div v-if="discover.modal.picker" class="dm-dest-form" ref="dmPicker">
-                <div v-if="discover.modal.picker.mode === 'keep'" class="dm-dest-title">{{ tt('discover.modal.dest.keepTitle', { title: discover.modal.track.title || '' }) }}</div>
                 <div class="dm-field">
                   <label>{{ tt('discover.modal.dest.library') }}</label>
                   <div class="dm-field-body">
@@ -1175,20 +1179,19 @@
                 <div v-if="dmPickerPreview().valid" class="dm-dest-preview" :title="discover.modal.picker.vpath + '/' + dmPickerPreview().relPath">{{ discover.modal.picker.vpath }}/<template v-if="dmPickerPreview().base">{{ dmPickerPreview().base }}/</template><b v-if="dmPickerPreview().rendered">{{ dmPickerPreview().rendered }}</b><template v-if="dmPickerPreview().rendered">/</template>{{ dmPickerPreview().file }}</div>
                 <div v-if="discover.modal.picker.error" class="dm-field-err dm-field-err-wide">{{ discover.modal.picker.error }}</div>
                 <div class="dm-dest-act">
-                  <label v-if="discover.modal.picker.mode === 'keep'" class="dm-check dm-spacer"><input type="checkbox" v-model="discover.modal.picker.remember"><span>{{ tt('discover.modal.dest.remember') }}</span></label>
-                  <span v-else class="dm-spacer">{{ tt('discover.modal.dest.remembered') }}</span>
+                  <span class="dm-spacer">{{ tt('discover.modal.dest.remembered') }}</span>
                   <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="dmClosePicker">{{ tt('discover.modal.cancel') }}</a>
                   <a class="dm-btn dm-btn-sm dm-btn-primary" v-bind:class="{ 'is-disabled': !dmPickerPreview().valid || discover.modal.picker.saving }" href="javascript:void(0)" v-on:click="dmPickerSubmit">
-                    <dm-icon :name="discover.modal.picker.mode === 'keep' ? 'folder' : 'check'" :size="14"></dm-icon>{{ tt(discover.modal.picker.mode === 'keep' ? 'discover.modal.dest.moveHere' : 'discover.modal.dest.use') }}
+                    <dm-icon name="check" :size="14"></dm-icon>{{ tt('discover.modal.dest.use') }}
                   </a>
                 </div>
               </div>
-              <div v-else-if="discover.modal.source === 'federation' && discover.modal.view === 'federation' && dmCopyRows().length" class="dm-dest">
+              <div v-else-if="dmDestVisible()" class="dm-dest">
                 <dm-icon name="folder" :size="14"></dm-icon>
                 <span class="dm-dest-path" :title="[discover.dest.view.destination.vpath].concat(dmDestCrumbs()).join(' / ')">{{ tt('discover.modal.dest.goTo') }} <b>{{ discover.dest.view.destination.vpath }}</b><template v-for="c in dmDestCrumbs()"><i>&rsaquo;</i>{{ c }}</template></span>
                 <span class="dm-tag" v-bind:class="{ 'dm-tag-src': discover.dest.view.destination.source === 'user' }">{{ tt(discover.dest.view.destination.source === 'user' ? 'discover.modal.dest.yours' : 'discover.modal.dest.default') }}</span>
                 <div class="dm-opt-act">
-                  <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="dmOpenPicker('save')">{{ tt('discover.modal.dest.change') }}</a>
+                  <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="dmOpenPicker">{{ tt('discover.modal.dest.change') }}</a>
                   <a v-if="discover.dest.view.destination.source === 'user'" class="dm-btn dm-btn-sm dm-btn-ghost dm-btn-icon" href="javascript:void(0)" v-on:click="dmResetDestination" :title="tt('discover.modal.dest.reset')"><dm-icon name="retry" :size="14"></dm-icon></a>
                 </div>
               </div>
@@ -1213,7 +1216,7 @@
                   <dm-job-row v-for="cr in dmCopyRows()" :key="cr.plugin.name" :row="cr.row"
                               :title="tt('discover.modal.addToCollection')" :idle-sub="tt('discover.modal.addToCollectionSub', { peer: discover.modal.track.peer.name || 'peer' })"
                               :start-label="tt('discover.modal.add')" start-icon="folder"
-                              :busy="discover.modal.jobBusy[cr.plugin.name] === true" :can-keep="false"
+                              :busy="discover.modal.jobBusy[cr.plugin.name] === true"
                               v-on:start="dmJobStart(cr.plugin)" v-on:cancel="dmJobCancel(cr.plugin)" v-on:play="dmJobPlay(cr.plugin)" v-on:queue="dmJobQueue(cr.plugin)"></dm-job-row>
                 </section>
                 <section v-if="discover.modal.track.album" class="dmodal-section">
@@ -1292,14 +1295,15 @@
 
                 <!-- Get it: one row per acquire plug-in; a row IS its job
                      (design card 03). Absent when no acquire plug-in is
-                     listed or this account may not start jobs. -->
+                     listed, this account may not start jobs, or there is no
+                     library to download into (the bar above says where). -->
                 <section v-if="dmGetItRows().length" class="dmodal-section">
                   <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.getIt') }}</span><span class="dmodal-hint">{{ tt(dmAnyJobLive() ? 'discover.modal.getItLiveHint' : 'discover.modal.getItHint') }}</span></div>
                   <dm-job-row v-for="gr in dmGetItRows()" :key="gr.plugin.name" :row="gr.row"
                               :title="gr.plugin.title" :idle-sub="tt('discover.modal.getItSub', { query: dmSearchWords() })" :hint="gr.plugin.description"
                               :start-label="tt('discover.modal.download')"
-                              :busy="discover.modal.jobBusy[gr.plugin.name] === true" :can-keep="dmHasDestination()"
-                              v-on:start="dmJobStart(gr.plugin)" v-on:cancel="dmJobCancel(gr.plugin)" v-on:play="dmJobPlay(gr.plugin)" v-on:queue="dmJobQueue(gr.plugin)" v-on:keep="dmOpenPicker('keep', gr.plugin)"></dm-job-row>
+                              :busy="discover.modal.jobBusy[gr.plugin.name] === true"
+                              v-on:start="dmJobStart(gr.plugin)" v-on:cancel="dmJobCancel(gr.plugin)" v-on:play="dmJobPlay(gr.plugin)" v-on:queue="dmJobQueue(gr.plugin)"></dm-job-row>
                 </section>
 
                 <section v-if="discover.modal.federate && discover.modal.federate.visible" class="dmodal-section">

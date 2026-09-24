@@ -269,8 +269,8 @@ code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.
     <div class="step"><b>1 · Row click</b><span>Any network or peer row. Opens the window and stops a running preview.</span></div>
     <div class="step"><b>2 · Window opens</b><span>Network row: the plug-in sections. Peer row: the Federation view, with a Federation | Plug-Ins selector. Links resolve offline; no provider is contacted.</span></div>
     <div class="step"><b>3 · An action</b><span>Play / queue act at once. Preview → one provider lookup, cached 10 min. Download, Add to collection, Send → a job is created (202) and the row becomes the job.</span></div>
-    <div class="step"><b>4 · Job runs</b><span>In-process runner, 2 at a time by default; progress and status text refresh in the row, and in the Downloads tray after the window closes.</span><span class="tag tag-soon">planned UI</span></div>
-    <div class="step"><b>5 · Done</b><span>Downloads land in Discover downloads (Keep moves them, 30-day expiry). Peer copies land in the folder you chose: default <code>{{ARTIST}}/{{ALBUM}}</code> in your library (card 10).</span><span class="tag tag-soon">planned</span></div>
+    <div class="step"><b>4 · Job runs</b><span>In-process runner, 2 at a time by default; progress and status text refresh in the row, and in the Downloads strip after the window closes.</span></div>
+    <div class="step"><b>5 · Done</b><span>Downloads and peer copies both land in the folder you chose — default <code>{{ARTIST}}/{{ALBUM}}</code> in your library (card 10) — with a record of where they came from. The Downloads panel lists them and can remove one (card 07). Nothing waits to be kept, nothing expires.</span></div>
   </div>
 
   <h2>Views and sections</h2>
@@ -288,8 +288,8 @@ code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.
     <div>
       <h2>Visibility rules</h2>
       <ul>
-        <li><b>Not available → not shown.</b> A row exists only when its plug-in is enabled and configured; a section with no rows does not render; a user-scoped service (ListenBrainz) needs this user’s token, else no row. Downloads off for this account → no Get it. Nothing is ever locked or greyed.</li>
-        <li>The Add-to-collection rows and the destination bar exist only when the federation-copy plug-in is on and this account may create jobs, may upload and has a library to write to.</li>
+        <li><b>Not available → not shown.</b> A row exists only when its plug-in is enabled and configured; a section with no rows does not render; a user-scoped service (ListenBrainz) needs this user’s token, else no row. Jobs off for this account → no Get it. Nothing is ever locked or greyed.</li>
+        <li>The Get it rows, the Add-to-collection rows and the destination bar exist only when this account may create jobs, may upload and has a library to write to (the Add rows also need the federation-copy plug-in on): a download is an upload, like a copy.</li>
         <li>Plug-ins the admin turned off are invisible, not forbidden (the API answers 404).</li>
         <li>Federate shows to admins only, and only for a network peer this server is not paired with.</li>
         <li>The Federation | Plug-Ins selector exists on peer rows only; without any plug-in the selector goes and the window is the Federation view alone. Without any plug-in a network row falls back to today’s copy-to-clipboard.</li>
@@ -308,7 +308,7 @@ code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.
     </div>
     <div>
       <h2>i18n keys (discover.modal.*)</h2>
-      <div class="keys">notInLibrary · playable · matchTo · copyTitle · online · lastSeen · tab.federation · tab.plugins · listen · listenHint · federate · federateHint · federate.invite · federate.sent · federate.paired · federate.unknownInbox · getIt · getItHint · getItPeerHint · sendTo · findElsewhere · findHint · song · song.playNow · song.queueNext · song.addToQueue · song.addToCollection · album · album.view · album.play · album.addToQueue · album.addToCollection · artist · artist.view · artist.addToCollection · artist.addMissing · more · more.similarHere · more.autoDj · retry · keep · keepHint · job.queued · job.running · job.copying · job.done · job.inCollection · job.failed · job.cancelled · preview.lookingUp · preview.none · preview.busy · preview.failed · handoff.sending · handoff.sent · handoff.failed · handoff.already · peerOffline · tray.title · tray.clear · dest.copiesTo · dest.default · dest.yours · dest.change · dest.reset · dest.library · dest.libraryHint · dest.baseFolder · dest.baseHint · dest.browse · dest.up · dest.newFolder · dest.layout · dest.layoutHint · dest.preset · dest.use · dest.moveHere · dest.remembered · dest.unknownVar · dest.emptyVar · dest.splits · dest.switchAlbumArtist</div>
+      <div class="keys">notInLibrary · playable · matchTo · copyTitle · online · lastSeen · tab.federation · tab.plugins · listen · listenHint · federate · federateHint · federate.invite · federate.sent · federate.paired · federate.unknownInbox · getIt · getItHint · getItPeerHint · sendTo · findElsewhere · findHint · song · song.playNow · song.queueNext · song.addToQueue · song.addToCollection · album · album.view · album.play · album.addToQueue · album.addToCollection · artist · artist.view · artist.addToCollection · artist.addMissing · more · more.similarHere · more.autoDj · retry · job.queued · job.running · job.copying · job.done · job.savedTo · job.inCollection · job.failed · job.cancelled · preview.lookingUp · preview.none · preview.busy · preview.failed · handoff.sending · handoff.sent · handoff.failed · handoff.already · peerOffline · tray.title · tray.clear · tray.all · dest.goTo · dest.default · dest.yours · dest.change · dest.reset · dest.library · dest.libraryHint · dest.baseFolder · dest.baseHint · dest.browse · dest.up · dest.newFolder · dest.layout · dest.layoutHint · dest.preset · dest.use · dest.remembered · dest.unknownVar · dest.emptyVar · dest.splits · dest.switchAlbumArtist · downloads.* (the Downloads panel)</div>
       <p style="margin-top:8px">Strings inside the window go through <code>tt()</code>: the panel renders after load, so <code>data-i18n</code> never reaches it.</p>
       <h2>API additions needed</h2>
       <ul>
@@ -324,7 +324,7 @@ code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.
         <li><b>Decided:</b> “collection” = your library; copies land in a folder the user sets or chooses, default <code>{{ARTIST}}/{{ALBUM}}</code> (card 10).</li>
         <li>Copy policy on the peer: copies use the same stream proxy as playback, so the peer cannot tell them apart and the pairing key’s daily quota is the only cap. Add a per-key “allow copies” switch (the client would have to declare intent with a header), or leave it to the quota?</li>
         <li>Should library rows open the window too (Play now / Queue / Go to album), or stay one-click queue?</li>
-        <li>Downloads home: the panel strip (this design) or a tab in the Upload window?</li>
+        <li><b>Decided (23 Sep 2026):</b> downloads land in the collection destination like copies — no scratch folder, no Keep step, no expiry. The strip holds live work and failures; a Downloads panel in the side nav lists what landed and removes it (card 07).</li>
         <li>Preview plug-ins ship on by default today. Keep that, or make them opt-in?</li>
       </ul>
     </div>

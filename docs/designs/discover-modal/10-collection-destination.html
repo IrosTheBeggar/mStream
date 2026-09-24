@@ -242,14 +242,14 @@ code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.
 </svg>
 <div class="page-h">
   <h1>Collection destination — set or choose the folder</h1>
-  <p>Every <b>Add … to your collection</b> row copies into one destination: a <b>library</b> you can upload to, a <b>base folder</b> inside it (chosen by browsing, the library root by default) and a <b>layout</b> rendered from the song’s tags with the template engine torrents already use (<code>{{ARTIST}}/{{ALBUM}}</code>, same variables, same sanitising). The file keeps the peer’s name. The bar under the view selector always shows the path resolved for the song in the window; Change… opens the picker in place, and the choice is remembered for your account.</p>
+  <p>Every <b>Add … to your collection</b> row and every <b>Get it</b> download lands in one destination: a <b>library</b> you can upload to, a <b>base folder</b> inside it (chosen by browsing, the library root by default) and a <b>layout</b> rendered from the song’s tags with the template engine torrents already use (<code>{{ARTIST}}/{{ALBUM}}</code>, same variables, same sanitising). A copy keeps the peer’s file name; a download keeps yt-dlp’s. The bar under the view selector always shows the path resolved for the song in the window; Change… opens the picker in place, and the choice is remembered for your account.</p>
 </div>
 <div class="grid">
 
   <div class="cell"><h3>The bar<small>under the selector · resolved for this song · two states</small></h3>
     <div class="dm dm-peer pad">
-      <div class="dm-dest"><svg><use href="#i-folder"/></svg><span class="path">Copies go to <b>Music</b><i>›</i>Marlowe Vale<i>›</i>Night Ferry</span><span class="tag">library default</span><div class="opt-act"><a class="btn btn-sm btn-ghost">Change…</a></div></div>
-      <div class="dm-dest"><svg><use href="#i-folder"/></svg><span class="path">Copies go to <b>Music</b><i>›</i>From peers<i>›</i>Marlowe Vale<i>›</i>Night Ferry</span><span class="tag tag-src">yours</span><div class="opt-act"><a class="btn btn-sm btn-ghost">Change…</a><a class="btn btn-sm btn-ghost btn-icon" title="Back to the library default"><svg><use href="#i-retry"/></svg></a></div></div>
+      <div class="dm-dest"><svg><use href="#i-folder"/></svg><span class="path">Files go to <b>Music</b><i>›</i>Marlowe Vale<i>›</i>Night Ferry</span><span class="tag">library default</span><div class="opt-act"><a class="btn btn-sm btn-ghost">Change…</a></div></div>
+      <div class="dm-dest"><svg><use href="#i-folder"/></svg><span class="path">Files go to <b>Music</b><i>›</i>From peers<i>›</i>Marlowe Vale<i>›</i>Night Ferry</span><span class="tag tag-src">yours</span><div class="opt-act"><a class="btn btn-sm btn-ghost">Change…</a><a class="btn btn-sm btn-ghost btn-icon" title="Back to the library default"><svg><use href="#i-retry"/></svg></a></div></div>
       <div class="dm-note" style="margin:0 20px 12px">“Library default” = the library’s Path Template when an admin set one (the torrent template on <code>libraries</code>), else <code>{{ARTIST}}/{{ALBUM}}</code> at the root. “Yours” = a destination you saved; the reset icon returns to the default.</div>
     </div>
   </div>
@@ -258,7 +258,7 @@ code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.
     <div class="dm dm-peer pad">
       <div class="dest-form">
         <div class="field"><label>Library</label><div class="field-body"><span class="select" style="min-width:160px">Music<svg><use href="#i-chev"/></svg></span><span class="field-hint" style="grid-column:auto">only libraries you may upload to</span></div></div>
-        <div class="field"><label>Base folder</label><div class="field-body"><span class="input" style="font-family:var(--font)">From peers</span><a class="btn btn-sm"><svg><use href="#i-folder"/></svg>Browse…</a></div><div class="field-hint">Inside Music. Leave empty for the library root. Created on the first copy if it does not exist.</div></div>
+        <div class="field"><label>Base folder</label><div class="field-body"><span class="input" style="font-family:var(--font)">From peers</span><a class="btn btn-sm"><svg><use href="#i-folder"/></svg>Browse…</a></div><div class="field-hint">Inside Music. Leave empty for the library root. Created by the first file if it does not exist.</div></div>
         <div class="field"><label>Layout</label><div class="field-body"><span class="input">{{ARTIST}}/{{ALBUM}}<span class="caret"></span></span></div>
           <div class="toks"><span class="tok">{{ARTIST}}</span><span class="tok">{{ALBUM}}</span><span class="tok">{{ALBUMARTIST}}</span><span class="tok">{{YEAR}}</span><span class="tok">{{GENRE}}</span><span class="tok tok-new">{{PEER}}</span><span class="tok tok-preset">library template</span></div>
           <div class="field-hint">Click a variable to insert it. Separators make folders; anything else is literal. Empty tags drop out of the path.</div>
@@ -281,7 +281,7 @@ code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.
             <div class="tree-row"><svg><use href="#i-folder"/></svg>Sam’s server</div>
             <div class="tree-row"><svg><use href="#i-plus"/></svg>New folder…</div>
           </div>
-          <div class="field-hint">Folders only, from <code>POST /api/v1/file-explorer</code> as the Folders panel lists them. New folder… names a folder that is created on the first copy.</div>
+          <div class="field-hint">Folders only, from <code>POST /api/v1/file-explorer</code> as the Folders panel lists them. New folder… names a folder that is created by the first file.</div>
         </div>
         <div class="dest-preview">Music/From peers/<b>Marlowe Vale/Night Ferry</b>/03 Paper Lanterns.flac</div>
       </div>
@@ -314,28 +314,23 @@ code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.
     </div>
   </div>
 
-  <div class="cell"><h3>Keep… in Get it<small>network row · the same picker moves a finished download</small></h3>
+  <div class="cell"><h3>Get it uses it too<small>network row · the same bar above the Get it rows · no peer, so {{PEER}} drops out</small></h3>
     <div class="dm dm-network pad">
-      <div class="dest-form">
-        <div class="field"><label>Library</label><div class="field-body"><span class="static">Music</span><span class="field-hint" style="grid-column:auto">your only library</span></div></div>
-        <div class="field"><label>Base folder</label><div class="field-body"><span class="input" style="font-family:var(--font);color:var(--t5)">library root</span><a class="btn btn-sm"><svg><use href="#i-folder"/></svg>Browse…</a></div></div>
-        <div class="field"><label>Layout</label><div class="field-body"><span class="input">{{ARTIST}}/{{ALBUM}}<span class="caret"></span></span></div></div>
-        <div class="dest-preview">Music/<b>Neon Harbor/Low Tide Recordings</b>/Salt &amp; Static.m4a</div>
-        <div class="dest-act"><span class="spacer">Moves the file out of Discover downloads and rescans</span><a class="btn btn-sm btn-ghost">Cancel</a><a class="btn btn-sm btn-primary"><svg><use href="#i-folder"/></svg>Move here</a></div>
-      </div>
+      <div class="dm-dest"><svg><use href="#i-folder"/></svg><span class="path">Files go to <b>Music</b><i>›</i>Neon Harbor<i>›</i>Low Tide Recordings</span><span class="tag tag-src">yours</span><div class="opt-act"><a class="btn btn-sm btn-ghost">Change…</a><a class="btn btn-sm btn-ghost btn-icon" title="Back to the library default"><svg><use href="#i-retry"/></svg></a></div></div>
+      <div class="dm-note" style="margin:0 20px 12px">A download renders the same layout from the recommendation’s tags and lands in the same place a copy would — the file keeps yt-dlp’s name, tagged from the recommendation. With <code>{{PEER}}</code> in the layout that segment is empty for a download and drops out; other songs render with their own tags.</div>
     </div>
   </div>
 
   <div class="cell"><h3>Hidden<small>the only “not available” state</small></h3>
     <div class="dashed">
-      <b>No Add rows and no destination bar</b> when the federation-copy plug-in is off, when this account may not create jobs, when uploads are off for this account (<code>noUpload</code> on <code>/api/</code>) or when it has no library. The Federation view then holds Play, Queue, View album and View artist only. Nothing is shown locked, and the picker never lists a library you cannot write to.
+      <b>No Add rows, no Get it rows and no destination bar</b> when this account may not create jobs, when uploads are off for this account (<code>noUpload</code> on <code>/api/</code>) or when it has no library it may write to; the Add rows also need the federation-copy plug-in on. The Federation view then holds Play, Queue, View album and View artist only. Nothing is shown locked, and the picker never lists a library you cannot write to.
     </div>
   </div>
 
-  <div class="cell"><h3>Storage and rules<small>what the webapp saves and what the job does</small></h3>
+  <div class="cell"><h3>Storage and rules<small>what the webapp saves and what the jobs do</small></h3>
     <div class="dashed">
-      <b>Saved per account</b> as <code>user_settings</code> · namespace <code>discovery-plugin:federation-copy</code> · key <code>destination</code> = <code>{ vpath, base, layout }</code>, read and written through the user-settings routes (to build). Unset = the library default, computed on the server so the bar, the preview and the job agree.
-      <br><br><b>The job</b> renders the layout per song with the torrent engine (<code>resolveTemplate</code>, plus a new <code>PEER</code> variable), keeps the peer’s file name, creates folders as uploads do, skips songs you already have and never overwrites a file at the same path, then inserts the row like a Youtube DL download so it plays at once. Cancelling an album or artist copy keeps the songs that finished.
+      <b>Saved per account</b> as <code>user_settings</code> · key <code>destination</code> = <code>{ vpath, base, layout }</code>, read and written through <code>GET/PUT /api/v1/discovery/collection/destination</code>. Unset = the library default, computed on the server so the bar, the preview and the jobs agree.
+      <br><br><b>The jobs</b> render the layout per song with the torrent engine (<code>resolveTemplate</code>, plus the <code>PEER</code> variable), keep the file’s own name, create folders as uploads do, skip songs you already have (by hash, and by tags before a download starts) and never overwrite a file at the same path, then insert the row like a Youtube DL download so it plays at once, and write a record of where the file came from (<code>plugin_downloads</code>, the Downloads panel). Cancelling an album or artist copy keeps the songs that finished.
     </div>
   </div>
 

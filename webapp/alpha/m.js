@@ -743,12 +743,19 @@ async function init() {
     // flat contract); a server without /api/ or a failed call = not admin,
     // and the row simply never shows.
     MSTREAMAPI.serverInfo()
-      .then((info) => { VUEPLAYERCORE.setAdmin(!!(info && info.user && info.user.admin === true)); })
-      .catch(() => { VUEPLAYERCORE.setAdmin(false); });
+      .then((info) => {
+        const admin = !!(info && info.user && info.user.admin === true);
+        MSTREAMAPI.currentServer.admin = admin;   // the Downloads panel's "All accounts"
+        VUEPLAYERCORE.setAdmin(admin);
+      })
+      .catch(() => { MSTREAMAPI.currentServer.admin = false; VUEPLAYERCORE.setAdmin(false); });
     // Sonic Path is a standalone side-nav panel — reveal its nav entry
     // only when the server has the route (never probed).
     MSTREAMAPI.currentServer.discoveryPath = response.discoveryPath === true;
     document.getElementById('nav-sonic-path').classList.toggle('super-hide', response.discoveryPath !== true);
+    // Downloads: what the discovery plug-ins brought in — the same flag as
+    // the "Get it" rows, so the panel exists only where a download can.
+    document.getElementById('nav-discover-downloads').classList.toggle('super-hide', response.discoveryPlugins !== true);
 
     // Federation: is there another server to point this app at? The flag
     // means "federation is on AND at least one peer is paired" — no probing.
@@ -3576,6 +3583,206 @@ function submitRecentlyAdded() {
   }
 }
 
+///////////////// Downloads (what the Discover plug-ins brought in)
+// GET /api/v1/discovery/downloads: the caller's records — every account's
+// for an admin who ticks "All accounts" — newest first, with "Show removed"
+// adding the history. A present row is a library song: the usual file row
+// (a click queues it, the arrow plays it now, the chevron adds it to a
+// playlist) with its provenance underneath, plus "Show in library" and
+// Remove. Remove deletes the file, its library row and any queue entry on
+// it, and settles the record (DELETE /api/v1/discovery/downloads/:id). The
+// pure parts — a record as a row, the totals, the queue indexes — live in
+// alpha/discover-jobs.js with the Discover job rows.
+const discoverDownloadsView = { all: false, removed: false, list: [], plugins: null };
+
+function discoverDownloadsPanel() {
+  setBrowserRootPanel(t('panel.downloads'), false);
+  programState = [{ state: 'discoverDownloads' }];
+  currentBrowsingList = [];
+  document.getElementById('filelist').innerHTML = getLoadingSvg();
+  redoDiscoverDownloads();
+}
+
+async function redoDiscoverDownloads() {
+  const v = discoverDownloadsView;
+  const gen = browseGeneration;
+  try {
+    const [res, plugins] = await Promise.all([
+      MSTREAMAPI.discoveryDownloads({ all: v.all && MSTREAMAPI.currentServer.admin === true, removed: v.removed, limit: 200 }),
+      // The plug-in list names each row's origin ("YouTube"); a server that
+      // will not list it just leaves the plug-in's own name.
+      v.plugins ? Promise.resolve(v.plugins) : MSTREAMAPI.discoveryPlugins().then((r) => (r && r.plugins) || []).catch(() => []),
+    ]);
+    if (gen !== browseGeneration || programState[0].state !== 'discoverDownloads') { return; }
+    v.plugins = plugins;
+    v.list = (res && res.downloads) || [];
+  } catch (err) {
+    if (gen !== browseGeneration || programState[0].state !== 'discoverDownloads') { return; }
+    document.getElementById('filelist').innerHTML = `<div class="pad-6">${escapeHtml(t('downloads.loadFailed'))}</div>`;
+    return boilerplateFailure(err);
+  }
+  renderDiscoverDownloads();
+}
+
+function discoverDownloadPluginTitle(name) {
+  const p = (discoverDownloadsView.plugins || []).find((x) => x.name === name);
+  if (p && p.title) { return p.title; }
+  const key = 'downloads.plugin.' + name;
+  const known = t(key);
+  return known === key ? name : known;
+}
+
+function discoverDownloadsAgo(ts) {
+  if (ts === null || ts === undefined) { return ''; }
+  const s = Math.max(0, Math.round((Date.now() - Number(ts)) / 1000));
+  if (s < 60) { return t('downloads.ago.now'); }
+  if (s < 3600) { return t('downloads.ago.min', { count: Math.floor(s / 60) }); }
+  if (s < 86400) { return t('downloads.ago.hour', { count: Math.floor(s / 3600) }); }
+  const d = Math.floor(s / 86400);
+  if (d === 1) { return t('downloads.ago.yesterday'); }
+  if (d < 14) { return t('downloads.ago.day', { count: d }); }
+  return t('downloads.ago.week', { count: Math.floor(d / 7) });
+}
+
+function renderDiscoverDownloads() {
+  const v = discoverDownloadsView;
+  const rows = v.list.map((d) => DISCOVERJOBS.downloadRow(d));
+  const totals = DISCOVERJOBS.downloadsTotals(v.list);
+  const isAdmin = MSTREAMAPI.currentServer.admin === true;
+  currentBrowsingList = [];
+
+  let html = `<div class="browser-panel dl-panel">
+    <p class="dl-lead">${escapeHtml(t('downloads.lead'))}</p>
+    <div class="dl-bar">
+      <span class="dl-totals">${totals.count > 0 ? escapeHtml(t('downloads.totals', { count: totals.count, size: DISCOVERJOBS.fmtBytes(totals.bytes) || '0 B' })) : ''}</span>
+      <span class="grow"></span>
+      ${isAdmin ? `<label class="dl-toggle"><input type="checkbox" class="filled-in" ${v.all ? 'checked' : ''} onchange="toggleDiscoverDownloadsAll(this);"><span>${escapeHtml(t('downloads.allAccounts'))}</span></label>` : ''}
+      <label class="dl-toggle"><input type="checkbox" class="filled-in" ${v.removed ? 'checked' : ''} onchange="toggleDiscoverDownloadsRemoved(this);"><span>${escapeHtml(t('downloads.showRemoved'))}</span></label>
+    </div>
+  </div>`;
+  if (rows.length === 0) {
+    html += `<div class="pad-6 dl-empty">${escapeHtml(t(v.all ? 'downloads.emptyAll' : 'downloads.empty'))}</div>`;
+  } else {
+    html += '<ul class="collection">';
+    for (const row of rows) {
+      if (row.present) {
+        currentBrowsingList.push({ type: 'file', name: row.artist ? `${row.artist} - ${row.title}` : row.title, path: row.filepath, title: row.title, subtitle: row.artist });
+      }
+      html += renderDiscoverDownloadRow(row);
+    }
+    html += '</ul>';
+  }
+  document.getElementById('filelist').innerHTML = html;
+}
+
+function renderDiscoverDownloadRow(row) {
+  const facts = [discoverDownloadPluginTitle(row.plugin), row.size, discoverDownloadsAgo(row.at)];
+  if (row.username) { facts.push(t('downloads.by', { user: row.username })); }
+  if (row.state === 'missing') { facts.push(t('downloads.missing')); }
+  if (row.state === 'removed') { facts.push(t('downloads.removed', { when: discoverDownloadsAgo(row.removedAt) })); }
+  const where = row.crumbs.join(' / ');
+  const body = `
+      <svg class="music-image dl-ic" height="18" width="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+      <span>
+        <b><span>${escapeHtml(row.title)}</span></b>
+        ${row.artist || row.album ? `<br><span style="font-size:15px;">${escapeHtml([row.artist, row.album].filter(Boolean).join(' · '))}</span>` : ''}
+        <br><span class="dl-facts">${escapeHtml(facts.filter(Boolean).join(' · '))}</span>
+        <br><span class="dl-where" title="${escapeHtml(where)}">${escapeHtml(where)}</span>
+      </span>`;
+  const actions = [];
+  if (row.actions.indexOf('play') !== -1) {
+    actions.push(`<span title="Play Now" onclick="playNow(this);" data-file_location="${escapeHtml(row.filepath)}" class="songDropdown">
+        <svg xmlns="http://www.w3.org/2000/svg" height="14" width="14" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
+      </span>
+      <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(row.filepath)}" class="fileAddToPlaylist">
+        <svg class="pop-f" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362"><path class="pop-f" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>
+      </span>`);
+  }
+  if (row.actions.indexOf('show') !== -1) {
+    actions.push(`<span title="${escapeHtml(t('downloads.show'))}" onclick="showDiscoverDownloadInLibrary(this);" data-file_location="${escapeHtml(row.filepath)}" class="songDropdown dl-show">
+        <svg xmlns="http://www.w3.org/2000/svg" height="14" width="14" viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
+      </span>`);
+  }
+  if (row.actions.indexOf('remove') !== -1) {
+    actions.push(`<span class="dl-remove" onclick="removeDiscoverDownload(this);" data-dlid="${row.id}">${escapeHtml(t('downloads.remove'))}</span>`);
+  }
+  return `<li class="collection-item dl-item${row.present ? '' : ' dl-item-muted'}" data-dlid="${row.id}">
+    ${row.present
+      ? `<div data-file_location="${escapeHtml(row.filepath)}" class="filez flex2" onclick="onFileClick(this);">${body}</div>`
+      : `<div class="flex2 dl-dead">${body}</div>`}
+    <div class="song-button-box">${actions.join('')}</div>
+  </li>`;
+}
+
+function toggleDiscoverDownloadsAll(el) {
+  discoverDownloadsView.all = el.checked === true;
+  redoDiscoverDownloads();
+}
+
+function toggleDiscoverDownloadsRemoved(el) {
+  discoverDownloadsView.removed = el.checked === true;
+  redoDiscoverDownloads();
+}
+
+// The file explorer, opened on the song's folder.
+function showDiscoverDownloadInLibrary(el) {
+  const parts = DISCOVERJOBS.pathCrumbs(el.getAttribute('data-file_location'));
+  parts.pop();
+  if (parts.length === 0) { return; }
+  document.querySelectorAll('.side-nav-item').forEach((item) => item.classList.remove('select'));
+  const nav = document.querySelector('.side-nav-item[data-panel="fileExplorer"]');
+  if (nav) { nav.classList.add('select'); }
+  setBrowserRootPanel(t('panel.fileExplorer'));
+  programState = [{ state: 'fileExplorer' }];
+  fileExplorerArray = [];
+  for (const part of parts) {
+    fileExplorerArray.push(part);
+    programState.push({ state: 'fileExplorer', previousScroll: 0, previousSearch: '' });
+  }
+  senddir();
+}
+
+function removeDiscoverDownload(el) {
+  const id = Number(el.getAttribute('data-dlid'));
+  const record = discoverDownloadsView.list.find((d) => d.id === id);
+  if (!record) { return; }
+  const row = DISCOVERJOBS.downloadRow(record);
+  iziToast.question({
+    timeout: 20000,
+    close: false,
+    overlayClose: true,
+    overlay: true,
+    displayMode: 'once',
+    id: 'remove-download-question',
+    zindex: 99999,
+    title: escapeHtml(t('downloads.removeAsk', { title: row.title })),
+    message: escapeHtml(t(row.present ? 'downloads.removeAskSub' : 'downloads.removeSettle')),
+    position: 'center',
+    buttons: [
+      [`<button><b>${escapeHtml(t('downloads.removeConfirm'))}</b></button>`, async (instance, toast) => {
+        instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+        try {
+          await MSTREAMAPI.discoveryDownloadRemove(id);
+          // Queue entries on that path would 404 on their next play.
+          for (const i of DISCOVERJOBS.queueIndexesFor(MSTREAMPLAYER.playlist, row.filepath)) {
+            MSTREAMPLAYER.removeSongAtPosition(i, false);
+          }
+          iziToast.success({ title: escapeHtml(t('downloads.removedToast')), message: escapeHtml(row.title), position: 'topCenter', timeout: 2500 });
+        } catch (err) {
+          const msg = err && err.status === 409
+            ? t('downloads.inUse')
+            : ((err && err.body && typeof err.body.error === 'string' && err.body.error) || t('downloads.removeFailed'));
+          iziToast.error({ title: escapeHtml(msg), position: 'topCenter', timeout: 4000 });
+        }
+        if (programState[0].state === 'discoverDownloads') { redoDiscoverDownloads(); }
+      }, true],
+      [`<button>${escapeHtml(t('discover.modal.cancel'))}</button>`, (instance, toast) => {
+        instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+      }],
+    ],
+  });
+}
+
 ///////////////// Transcode
 function setupTranscodePanel(){
   setBrowserRootPanel(t('panel.transcode'), false);
@@ -5527,6 +5734,7 @@ const PANELS_BY_STATE = {
   mostPlayed: () => getMostPlayed(),
   allRated: () => getRatedSongs(),
   searchPanel: () => setupSearchPanel(),
+  discoverDownloads: () => discoverDownloadsPanel(),
 };
 
 // Which of those a federated server can actually answer: its library, and

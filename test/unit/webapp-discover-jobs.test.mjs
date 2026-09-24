@@ -3,7 +3,8 @@
  * the layout preview held to the server's engine (src/torrent/path-template.js
  * and src/discovery-plugins/destination.js render the real path; the picker
  * must show the same thing as the user types), a job as a row in every state,
- * the downloads strip, and the queue after Keep… moves a file.
+ * the downloads strip, a download record as a row (the Downloads view), and
+ * the queue after a download is removed.
  */
 
 import { describe, test } from 'node:test';
@@ -135,20 +136,18 @@ describe('a job as a row', () => {
     assert.deepEqual([stopping.tag, stopping.actions], ['discover.job.stopping', []]);
   });
 
-  test('a finished download: ready with its expiry, then kept or expired', () => {
-    const downloaded = { vpath: 'discover-downloads', filepath: 'discover-downloads/dana/Salt_Static.mp3', trackId: 9, bytes: 10066329, format: 'mp3' };
-    const ready = J.jobRowState(job({ state: 'done', result: { downloaded, expiresAt: NOW + 29.2 * DAY } }), { now: NOW });
-    assert.deepEqual([ready.state, ready.actions, ready.filepath, ready.expiresInDays], ['ready', ['play', 'queue', 'keep'], downloaded.filepath, 30]);
-    assert.deepEqual(ready.sub, { key: 'discover.job.readyDays', params: { facts: 'Salt_Static.mp3 · 9.6 MB', count: 30 } });
-    assert.equal(J.jobRowState(job({ state: 'done', result: { downloaded, expiresAt: NOW + 1000 } }), { now: NOW }).sub.params.count, 1);
-    assert.equal(J.jobRowState(job({ state: 'done', result: { downloaded, expiresAt: NOW - DAY } }), { now: NOW }).sub.key, 'discover.job.readyToday');
-    assert.equal(J.jobRowState(job({ state: 'done', result: { downloaded, expiresAt: null } }), { now: NOW }).sub.key, 'discover.job.readyForever');
-
-    const kept = J.jobRowState(job({ state: 'done', result: { downloaded, kept: { vpath: 'music', filepath: 'music/Neon Harbor/Low Tide/Salt_Static.mp3' } } }));
-    assert.deepEqual([kept.state, kept.tag, kept.actions, kept.filepath], ['kept', 'discover.job.inLibrary', ['play', 'queue'], 'music/Neon Harbor/Low Tide/Salt_Static.mp3']);
-    assert.deepEqual(kept.sub, { text: 'music / Neon Harbor / Low Tide / Salt_Static.mp3' });
-    const expired = J.jobRowState(job({ state: 'done', result: { downloaded, removed: { at: NOW } } }));
-    assert.deepEqual([expired.state, expired.muted, expired.actions, expired.filepath], ['expired', true, ['start'], null]);
+  test('a finished download: done, saved to its place in the collection, playable', () => {
+    const downloaded = { vpath: 'music', filepath: 'music/Neon Harbor/Low Tide/Salt_Static.mp3', trackId: 9, bytes: 10066329, format: 'mp3', downloadId: 4 };
+    const done = J.jobRowState(job({ state: 'done', result: { downloaded, match: { url: 'https://youtu.be/x' }, missingVars: [] } }));
+    assert.deepEqual([done.state, done.tag, done.tagCls, done.actions, done.filepath], ['downloaded', 'discover.job.done', 'ok', ['play', 'queue'], downloaded.filepath]);
+    assert.deepEqual(done.sub, { key: 'discover.job.savedTo', params: { path: 'music / Neon Harbor / Low Tide / Salt_Static.mp3' } });
+    // Rows from before downloads landed in the collection: Keep… moved the
+    // file (the row follows it), or the old retention pass removed it.
+    const scratch = { vpath: 'discover-downloads', filepath: 'discover-downloads/dana/Salt_Static.mp3', trackId: 9, bytes: 10066329, format: 'mp3' };
+    const kept = J.jobRowState(job({ state: 'done', result: { downloaded: scratch, kept: { vpath: 'music', filepath: 'music/Neon Harbor/Low Tide/Salt_Static.mp3' } } }));
+    assert.deepEqual([kept.state, kept.actions, kept.filepath], ['downloaded', ['play', 'queue'], 'music/Neon Harbor/Low Tide/Salt_Static.mp3']);
+    const gone = J.jobRowState(job({ state: 'done', result: { downloaded: scratch, removed: { at: NOW } } }));
+    assert.deepEqual([gone.state, gone.muted, gone.actions, gone.filepath, gone.sub], ['gone', true, ['start'], null, { key: 'discover.job.goneSub' }]);
   });
 
   test('a finished copy: copied, already owned, or a file in the way', () => {
@@ -173,7 +172,6 @@ describe('a job as a row', () => {
 
   test('formatting helpers', () => {
     assert.deepEqual([0, 512, 2048, 5.5 * 1024 * 1024, 98 * 1024 * 1024, 3 * 1024 ** 3, NaN].map(J.fmtBytes), ['', '512 B', '2 KB', '5.5 MB', '98 MB', '3.0 GB', '']);
-    assert.deepEqual([J.daysLeft(null, NOW), J.daysLeft(NOW + 1, NOW), J.daysLeft(NOW + 2 * DAY, NOW), J.daysLeft(NOW - 5, NOW)], [null, 1, 2, 0]);
     assert.deepEqual(J.jobsByPlugin([job({ id: 5, plugin: 'youtube' }), job({ id: 4, plugin: 'youtube' }), job({ id: 3, plugin: 'federation-copy' })]), {
       youtube: job({ id: 5, plugin: 'youtube' }), 'federation-copy': job({ id: 3, plugin: 'federation-copy' }),
     });
@@ -182,7 +180,7 @@ describe('a job as a row', () => {
 });
 
 describe('the downloads strip', () => {
-  const downloaded = { filepath: 'discover-downloads/dana/a.mp3' };
+  const downloaded = { filepath: 'music/Neon Harbor/a.mp3' };
   const jobs = [
     job({ id: 1, state: 'done', createdAt: NOW - 50, result: { copied: { filepath: 'music/a.flac' } } }),
     job({ id: 2, state: 'failed', createdAt: NOW - 40, error: 'nope' }),
@@ -190,13 +188,13 @@ describe('the downloads strip', () => {
     job({ id: 4, state: 'queued', createdAt: NOW - 20 }),
     job({ id: 5, state: 'running', createdAt: NOW - 10 }),
     job({ id: 6, state: 'cancelled', createdAt: NOW - 5 }),
-    job({ id: 7, state: 'done', createdAt: NOW - 4, result: { downloaded, kept: { filepath: 'music/a.mp3' } } }),
-    job({ id: 8, state: 'done', createdAt: NOW - 3, result: { downloaded, removed: { at: NOW } } }),
+    job({ id: 7, state: 'done', createdAt: NOW - 4, result: { skipped: 'owned', existing: { filepath: 'music/a.mp3' } } }),
+    job({ id: 8, state: 'failed', createdAt: NOW - 3, error: 'also nope' }),
     job({ id: 9, state: 'running', createdAt: NOW - 2 }),
   ];
 
-  test('holds what still wants the user, live work first, newest first within a kind', () => {
-    assert.deepEqual(J.trayRows(jobs).map((j) => j.id), [9, 5, 4, 3, 2]);
+  test('holds what still wants the user — live work first, then failures, newest first within a kind; a landed download is settled', () => {
+    assert.deepEqual(J.trayRows(jobs).map((j) => j.id), [9, 5, 4, 8, 2]);
     assert.deepEqual(J.trayRows(null), []);
   });
 
@@ -214,13 +212,13 @@ describe('the downloads strip', () => {
     assert.equal(J.traySummary(retried).failed, 2);
   });
 
-  test('the summary counts running, ready and failed, leaves zeroes out, and says whether to keep polling fast', () => {
+  test('the summary counts running and failed, leaves zeroes out, and says whether to keep polling fast', () => {
     const s = J.traySummary(jobs);
-    assert.deepEqual([s.total, s.running, s.ready, s.failed, s.live, s.clearable], [5, 3, 1, 1, true, true]);
-    assert.deepEqual(s.parts, [{ key: 'discover.tray.running', count: 3 }, { key: 'discover.tray.ready', count: 1 }, { key: 'discover.tray.failed', count: 1 }]);
-    const quiet = J.traySummary([jobs[2]]);
-    assert.deepEqual([quiet.total, quiet.live, quiet.clearable, quiet.parts], [1, false, false, [{ key: 'discover.tray.ready', count: 1 }]]);
-    assert.equal(J.traySummary([]).total, 0);
+    assert.deepEqual([s.total, s.running, s.failed, s.live, s.clearable], [5, 3, 2, true, true]);
+    assert.deepEqual(s.parts, [{ key: 'discover.tray.running', count: 3 }, { key: 'discover.tray.failed', count: 2 }]);
+    const quiet = J.traySummary([jobs[1]]);
+    assert.deepEqual([quiet.total, quiet.live, quiet.clearable, quiet.parts], [1, false, true, [{ key: 'discover.tray.failed', count: 1 }]]);
+    assert.deepEqual([J.traySummary([jobs[2]]).total, J.traySummary([]).total], [0, 0], 'a landed download is not in the strip');
   });
 
   test('titles, and what finished between two polls', () => {
@@ -234,22 +232,51 @@ describe('the downloads strip', () => {
   });
 });
 
-describe('the queue after Keep… moves a file', () => {
-  test('entries on the old path are re-pointed; peer tracks and other songs are left alone', () => {
-    const from = 'discover-downloads/dana/Salt #1.mp3';
-    const to = 'music/Neon Harbor/Low Tide/Salt #1.mp3';
-    const songFor = (raw) => ({ filepath: raw.replace(/#/g, '%23'), url: `http://host/media/${raw.replace(/#/g, '%23')}?token=t` });
+describe('a download record as a row', () => {
+  const record = {
+    id: 7, plugin: 'youtube', userId: 3, username: undefined, jobId: 12, vpath: 'music', filepath: 'music/Neon Harbor/Low Tide/Salt #1.mp3',
+    relativePath: 'Neon Harbor/Low Tide/Salt #1.mp3', fileHash: 'abc', origin: 'https://youtu.be/x', title: 'Salt #1', artist: 'Neon Harbor', album: 'Low Tide',
+    bytes: 10066329, downloadedAt: NOW - DAY, removedAt: null, removedBy: null, present: true, trackId: 9,
+  };
+
+  test('present: the song, its origin and its place, every action', () => {
+    const r = J.downloadRow(record);
+    assert.deepEqual([r.id, r.state, r.title, r.artist, r.album, r.plugin, r.filepath], [7, 'present', 'Salt #1', 'Neon Harbor', 'Low Tide', 'youtube', record.filepath]);
+    assert.deepEqual(r.crumbs, ['music', 'Neon Harbor', 'Low Tide', 'Salt #1.mp3']);
+    assert.deepEqual([r.present, r.removed, r.size, r.bytes, r.at, r.removedAt, r.username], [true, false, '9.6 MB', 10066329, NOW - DAY, null, null]);
+    assert.deepEqual(r.actions, ['play', 'queue', 'show', 'remove']);
+    assert.equal(J.downloadRow({ ...record, username: 'dana' }).username, 'dana', "the admin's list names the owner");
+  });
+
+  test('missing: the file is gone but the record stays, so Remove settles it; removed: history, nothing to do', () => {
+    const missing = J.downloadRow({ ...record, present: false, trackId: null });
+    assert.deepEqual([missing.state, missing.present, missing.actions], ['missing', false, ['remove']]);
+    const removed = J.downloadRow({ ...record, present: false, trackId: null, removedAt: NOW, removedBy: 3 });
+    assert.deepEqual([removed.state, removed.present, removed.removed, removed.removedAt, removed.actions], ['removed', false, true, NOW, []]);
+    // A record with no tags falls back to the file name.
+    assert.equal(J.downloadRow({ ...record, title: null, artist: null, album: null }).title, 'Salt #1.mp3');
+    assert.deepEqual([J.downloadRow(null).state, J.downloadRow(null).crumbs, J.downloadRow(null).size], ['missing', [], '']);
+  });
+
+  test('the totals count what is still there', () => {
+    const list = [record, { ...record, id: 8, bytes: 1024, removedAt: NOW }, { ...record, id: 9, bytes: 2048, present: false }];
+    assert.deepEqual(J.downloadsTotals(list), { count: 2, bytes: 10066329 + 2048 });
+    assert.deepEqual(J.downloadsTotals(null), { count: 0, bytes: 0 });
+  });
+});
+
+describe('the queue after a download is removed', () => {
+  test('the entries on that path, highest index first; peer tracks and other songs are left alone', () => {
+    const gone = 'music/Neon Harbor/Low Tide/Salt #1.mp3';
     const playlist = [
-      { rawFilePath: from, filepath: from.replace(/#/g, '%23'), url: 'old', metadata: { filepath: from, title: 'Salt' } },
+      { rawFilePath: gone, filepath: 'music/Neon Harbor/Low Tide/Salt %231.mp3', url: 'a', metadata: { filepath: gone, title: 'Salt' } },
       { rawFilePath: 'music/other.mp3', filepath: 'music/other.mp3', url: 'keep', metadata: {} },
-      { rawFilePath: from, filepath: 'peer-side', url: 'peer', federation: { peerId: 'p1' }, metadata: {} },
-      { rawFilePath: from, filepath: 'x', url: 'old2', metadata: null },
+      { rawFilePath: gone, filepath: 'peer-side', url: 'peer', federation: { peerId: 'p1' }, metadata: {} },
+      null,
+      { rawFilePath: gone, filepath: 'x', url: 'b', metadata: null },
     ];
-    assert.equal(J.patchQueuePaths(playlist, from, to, songFor), 2);
-    assert.deepEqual(playlist[0], { rawFilePath: to, filepath: 'music/Neon Harbor/Low Tide/Salt %231.mp3', url: 'http://host/media/music/Neon Harbor/Low Tide/Salt %231.mp3?token=t', metadata: { filepath: to, title: 'Salt' } });
-    assert.equal(playlist[1].url, 'keep');
-    assert.equal(playlist[2].url, 'peer');
-    assert.equal(playlist[3].rawFilePath, to);
-    assert.equal(J.patchQueuePaths(null, from, to, songFor), 0);
+    assert.deepEqual(J.queueIndexesFor(playlist, gone), [4, 0]);
+    assert.deepEqual(J.queueIndexesFor(playlist, 'music/none.mp3'), []);
+    assert.deepEqual(J.queueIndexesFor(null, gone), []);
   });
 });

@@ -125,7 +125,7 @@ describe('discovery plug-ins · admin API', { skip: hasFfmpeg ? false : 'bundled
     assert.equal(pluginOf(r.body, 'links').connectedUsers, undefined);
 
     assert.deepEqual(r.body.jobs, { enabledFor: 'all', maxConcurrent: 2, retentionDays: 30, running: 0, queued: 0 });
-    assert.equal(r.body.downloads, undefined, 'no scratch folder to report on');
+    assert.deepEqual(r.body.downloads, [], 'nothing brought in yet: no plug-in to count');
 
     assert.equal((await api(userToken, 'GET', STATUS)).status, 403, 'admins only');
   });
@@ -196,6 +196,10 @@ describe('discovery plug-ins · admin API', { skip: hasFfmpeg ? false : 'bundled
     assert.equal(job.result.downloaded.filepath, 'collection/Nova/Night Ferry/Remote_Hit.mp3');
     assert.ok(fs.existsSync(path.join(collectionDir, 'Nova', 'Night Ferry', 'Remote_Hit.mp3')));
     assert.deepEqual(fs.readdirSync(path.join(workDir, 'staging')), [], 'nothing is left in staging');
+    // The Downloads tab's tiles: the landing is counted under its plug-in.
+    const counted = (await api(adminToken, 'GET', STATUS)).body.downloads;
+    assert.deepEqual(counted.map((d) => [d.plugin, d.count]), [['youtube', 1]]);
+    assert.equal(counted[0].bytes, fs.statSync(path.join(collectionDir, 'Nova', 'Night Ferry', 'Remote_Hit.mp3')).size);
 
     const set = await api(adminToken, 'POST', JOBS_CFG, { retentionDays: 14 });
     assert.equal(set.status, 200, JSON.stringify(set.body));

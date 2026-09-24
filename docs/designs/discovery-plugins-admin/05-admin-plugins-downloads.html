@@ -1,4 +1,4 @@
-<!-- @dsCard group="Admin" name="Downloads tab" subtitle="Discover downloads: what is waiting, how big against the cap, how old · per-user use · retention and the size cap · Sweep now · full · never used · never expires" width="1200" height="2308" -->
+<!-- @dsCard group="Admin" name="Downloads tab" subtitle="What the plug-ins brought into the libraries, every account · counted by plug-in · the list with [remove] · missing and removed rows · nothing yet" width="1200" height="1560" -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -251,8 +251,8 @@
   <symbol id="a-refresh" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></g></symbol>
 </svg>
 <div class="page-h">
-  <h1>Downloads tab — the scratch library and its clock</h1>
-  <p>Get it plug-ins land files in <b>Discover downloads</b>, a real library (<code>discover-downloads</code>) created on the first download, one subfolder per user. A file stays until its owner presses <b>Keep…</b> (it moves into their collection) or it turns <code>discoveryJobs.downloads.retentionDays</code> old and the retention pass removes it. Retention is a clock, not a quota, so the folder also has a <b>size cap</b> (<code>maxSizeMb</code>, 5 GB by default): at the cap, new downloads are refused until something is kept, removed or expires. This tab is where the operator watches the disk and sets both. Copies from a paired server never come here: they go straight into the user’s library.</p>
+  <h1>Downloads tab — what the plug-ins brought in</h1>
+  <p>A <b>Get it</b> download and a copy from a paired server both land in the user’s own collection folder, like any upload, and leave a record of where the file came from (<code>plugin_downloads</code>, V75). There is no scratch folder, no clock and no cap: a download is a library song from the moment it lands, and the user’s own Downloads panel lists and removes it. This tab is the operator’s view of the same records across every account — counted by plug-in, listed newest first, with <b>[remove]</b> for any of them. The classic Youtube DL upload writes the same record, so it shows here too.</p>
 </div>
 <div class="grid">
 
@@ -262,102 +262,68 @@
         <div class="adm-pill">Plug-ins</div><div class="adm-pill">Jobs</div><div class="adm-pill adm-pill-on">Downloads</div><div class="adm-pill">Activity</div>
       </div>
       <div class="adm-tiles">
-        <div class="adm-tile"><div class="adm-tile-n">7</div><div class="adm-tile-l">downloads waiting</div><div class="adm-tile-s">not kept yet · 3 users</div></div>
-        <div class="adm-tile"><div class="adm-tile-n">212 <small>MB of 5 GB</small></div><div class="adm-tile-l">on disk</div><div class="adm-progress" style="margin-top:6px"><i style="width:4%"></i></div><div class="adm-tile-s">41 GB free on that volume</div></div>
-        <div class="adm-tile"><div class="adm-tile-n">26 <small>days</small></div><div class="adm-tile-l">oldest download</div><div class="adm-tile-s">removed in 4 days unless kept</div></div>
-        <div class="adm-tile"><div class="adm-tile-n">3 <small>h</small> 12 <small>min</small></div><div class="adm-tile-l">until the next pass</div><div class="adm-tile-s">last pass removed 2 files</div></div>
+        <div class="adm-tile"><div class="adm-tile-n">9</div><div class="adm-tile-l">songs brought in</div><div class="adm-tile-s">still in a library · every account</div></div>
+        <div class="adm-tile"><div class="adm-tile-n">212 <small>MB</small></div><div class="adm-tile-l">on disk</div><div class="adm-tile-s">as recorded when each file landed</div></div>
+        <div class="adm-tile"><div class="adm-tile-n">6</div><div class="adm-tile-l">YouTube</div><div class="adm-tile-s">58 MB</div></div>
+        <div class="adm-tile"><div class="adm-tile-n">3</div><div class="adm-tile-l">Add to your collection</div><div class="adm-tile-s">154 MB</div></div>
       </div>
+      <div class="adm-callout" style="margin-top:12px">A download or a copy lands in the user’s own collection folder like any upload, with a record of where it came from. Removing one here deletes the file, its library row and the record — the same as the user’s own Remove.</div>
 
-      <table class="adm-rows" style="margin-top:14px">
-        <tr><td><b>Remove downloads nobody kept after:</b> 30 days<span class="adm-note">Counted from the day the file landed. 0 = never remove. A kept file is out of this folder and never expires.</span></td><td><span class="adm-br">[<a>edit</a>]</span></td></tr>
-        <tr><td><b>Stop downloading above:</b> 5 GB<span class="adm-note">Checked before a download starts, so the folder can end one file over. 0 = no cap. Copies from a paired server do not count: they never land here.</span></td><td><span class="adm-br">[<a>edit</a>]</span></td></tr>
-        <tr><td><b>Folder:</b> <span class="adm-mono">C:\Users\paul\AppData\Roaming\mstream\discover-downloads</span><span class="adm-note">Set by <code>discoveryJobs.downloads.dir</code> in the config file. The library points at it, so it is changed there and needs a restart.</span></td><td></td></tr>
-      </table>
-
-      <table class="adm-table" style="margin-top:18px">
-        <thead><tr><th>User</th><th class="adm-num">Waiting</th><th class="adm-num">Size</th><th>Oldest</th><th>Newest</th></tr></thead>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px">
+        <span class="adm-status">The last 200, newest first</span>
+        <div class="adm-pills"><div class="adm-pill adm-pill-on">In the library</div><div class="adm-pill">With removed</div></div>
+      </div>
+      <table class="adm-table" style="margin-top:10px">
+        <thead><tr><th>When</th><th>User</th><th>Plug-in</th><th>Song</th><th>Where</th><th class="adm-num">Size</th><th></th></tr></thead>
         <tbody>
-          <tr><td>dana</td><td class="adm-num">4</td><td class="adm-num">131 MB</td><td>26 days · <span class="adm-warn" style="font-weight:400">4 days left</span></td><td>yesterday</td></tr>
-          <tr><td>paul</td><td class="adm-num">2</td><td class="adm-num">58 MB</td><td>9 days</td><td>2 days ago</td></tr>
-          <tr><td>eli</td><td class="adm-num">1</td><td class="adm-num">23 MB</td><td>3 days</td><td>3 days ago</td></tr>
+          <tr><td>yesterday</td><td>dana</td><td>YouTube</td><td>Salt &amp; Static <span class="adm-muted">· Neon Harbor</span></td><td><span class="adm-mono">music / Neon Harbor / Low Tide Recordings / Salt_Static.mp3</span></td><td class="adm-num">9.6 MB</td><td class="adm-num"><span class="adm-br">[<a class="adm-danger">remove</a>]</span></td></tr>
+          <tr><td>3 days ago</td><td>dana</td><td>Add to your collection</td><td>Paper Lanterns <span class="adm-muted">· Marlowe Vale</span></td><td><span class="adm-mono">music / Marlowe Vale / Night Ferry / 03 Paper Lanterns.flac</span></td><td class="adm-num">28 MB</td><td class="adm-num"><span class="adm-br">[<a class="adm-danger">remove</a>]</span></td></tr>
+          <tr><td>3 days ago</td><td>paul</td><td>Youtube DL</td><td>Monkeys Spinning Monkeys <span class="adm-muted">· Kevin MacLeod</span></td><td><span class="adm-mono">archive / Inbox / Monkeys_Spinning_Monkeys.mp3</span></td><td class="adm-num">2.0 MB</td><td class="adm-num"><span class="adm-br">[<a class="adm-danger">remove</a>]</span></td></tr>
+          <tr class="adm-muted"><td>2 weeks ago</td><td>eli</td><td>YouTube</td><td>Glass Hours <span class="adm-muted">· Ondine</span></td><td><span class="adm-mono">music / Ondine / Night Swimming / Glass_Hours.mp3</span> <span class="adm-warn" style="font-weight:400">· file missing</span></td><td class="adm-num">9.2 MB</td><td class="adm-num"><span class="adm-br">[<a class="adm-danger">remove</a>]</span></td></tr>
         </tbody>
       </table>
-    </div>
-    <div class="adm-card-action"><span class="adm-sub" style="margin-right:auto">The pass runs by itself 90 seconds after a start and then every 6 hours.</span><a class="adm-btn"><svg><use href="#a-sweep"/></svg>Sweep now</a></div>
-    </div>
-  </div>
-
-  <div class="cell" style="grid-column:1 / -1"><h3>Full<small>at or over the cap · the header sentence turns orange too · users’ rows fail with the reason</small></h3>
-    <div class="adm-card"><div class="adm-card-content">
-      <div class="adm-tiles">
-        <div class="adm-tile"><div class="adm-tile-n">412</div><div class="adm-tile-l">downloads waiting</div><div class="adm-tile-s">not kept yet · 6 users</div></div>
-        <div class="adm-tile" style="border-color:var(--adm-orange)"><div class="adm-tile-n" style="color:var(--adm-orange)">5.1 <small>GB of 5 GB</small></div><div class="adm-tile-l">on disk · <span class="adm-warn">full</span></div><div class="adm-progress" style="margin-top:6px;background:#ffe0b2"><i style="width:100%;background:var(--adm-orange)"></i></div><div class="adm-tile-s">41 GB free on that volume</div></div>
-        <div class="adm-tile"><div class="adm-tile-n">29 <small>days</small></div><div class="adm-tile-l">oldest download</div><div class="adm-tile-s">removed tomorrow unless kept</div></div>
-      </div>
-      <div class="adm-reason" style="margin-top:12px"><svg width="16" height="16" style="color:var(--adm-orange);flex-shrink:0;margin-top:1px"><use href="#a-warn"/></svg><span><b>New downloads are being refused.</b> A user who presses Download sees “Discover downloads is full (5.1 GB of 5 GB). Keep or remove some downloads, or ask the admin to raise the limit.” Raise the cap, shorten the clock and sweep, or wait for the next files to expire.</span></div>
+      <p class="adm-sub" style="margin:12px 0 0">A file removed by hand or lost by a scan shows as missing; its entry stays until someone removes it.</p>
     </div></div>
   </div>
 
-  <div class="cell"><h3>Sweep now · running, then its result<small>POST /api/v1/admin/discovery-jobs/sweep</small></h3>
-    <div class="adm-card">
-      <div class="adm-card-content" style="padding-bottom:16px">
-        <div class="adm-progress adm-progress-indet"><i></i></div>
-        <p class="adm-sub" style="margin:8px 0 0">Looking for expired downloads…</p>
+  <div class="cell"><h3>[remove] · asks once, names the owner<small>DELETE /api/v1/discovery/downloads/:id</small></h3>
+    <div class="adm-card"><div class="adm-card-content">
+      <div class="adm-toast" style="display:block;max-width:420px;background:#fff;color:var(--adm-ink);border-left:0;box-shadow:var(--adm-shadow)">
+        <b>Remove dana’s “Salt &amp; Static”?</b><br><span class="adm-sub">The file is deleted from the library. The plug-in can fetch it again later.</span>
+        <div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end"><a class="adm-btn adm-btn-flat">Go back</a><a class="adm-btn">Remove</a></div>
       </div>
-      <div class="adm-card-action"><a class="adm-btn is-disabled"><svg><use href="#a-sweep"/></svg>Sweeping…</a></div>
-    </div>
-    <div class="adm-card">
-      <div class="adm-card-content" style="padding-bottom:16px">
-        <div class="adm-callout" style="margin:0"><b>Done.</b> Removed 2 expired downloads and 1 partial file, and 14 old job rows. 1 file was in use and was left for the next pass.</div>
-      </div>
-      <div class="adm-card-action"><a class="adm-btn"><svg><use href="#a-sweep"/></svg>Sweep now</a></div>
-    </div>
-    <div class="adm-card" style="margin-bottom:0">
-      <div class="adm-card-content" style="padding-bottom:16px">
-        <div class="adm-callout" style="margin:0"><b>Done.</b> Nothing had expired.</div>
-      </div>
-    </div>
+      <div style="margin-top:12px"><span class="adm-toast adm-toast-ok">Removed “Salt &amp; Static”</span></div>
+      <div style="margin-top:8px"><span class="adm-toast adm-toast-err">The file is in use — try again in a moment</span></div>
+    </div></div>
   </div>
 
-  <div class="cell"><h3>Never used<small>the library does not exist until the first download</small></h3>
+  <div class="cell"><h3>With removed<small>the history · nothing to do on those rows</small></h3>
     <div class="adm-card"><div class="adm-card-content">
-      <p class="adm-muted" style="margin:0 0 12px"><i>Nobody has downloaded anything yet. The folder and its library are created by the first download.</i></p>
-      <table class="adm-rows">
-        <tr><td><b>Remove downloads nobody kept after:</b> 30 days</td><td><span class="adm-br">[<a>edit</a>]</span></td></tr>
-        <tr><td><b>Folder:</b> <span class="adm-mono">/var/lib/mstream/discover-downloads</span><span class="adm-note">will be created</span></td><td></td></tr>
+      <table class="adm-table">
+        <thead><tr><th>When</th><th>User</th><th>Plug-in</th><th>Song</th><th>Where</th><th class="adm-num">Size</th><th></th></tr></thead>
+        <tbody>
+          <tr><td>yesterday</td><td>dana</td><td>YouTube</td><td>Salt &amp; Static</td><td><span class="adm-mono">music / Neon Harbor / … / Salt_Static.mp3</span></td><td class="adm-num">9.6 MB</td><td class="adm-num"><span class="adm-br">[<a class="adm-danger">remove</a>]</span></td></tr>
+          <tr class="adm-muted"><td>5 days ago</td><td>dana</td><td>YouTube</td><td>Slow Tide</td><td><span class="adm-mono">music / Neon Harbor / … / Slow_Tide.mp3</span> · removed 2 days ago</td><td class="adm-num">8.1 MB</td><td></td></tr>
+        </tbody>
       </table>
     </div></div>
 
-    <h3 style="margin-top:6px">Never expires<small>retentionDays = 0 · the tiles say so</small></h3>
+    <h3 style="margin-top:6px">Nothing yet</h3>
     <div class="adm-card" style="margin-bottom:0"><div class="adm-card-content">
       <div class="adm-tiles">
-        <div class="adm-tile"><div class="adm-tile-n">31</div><div class="adm-tile-l">downloads waiting</div><div class="adm-tile-s">not kept yet · 5 users</div></div>
-        <div class="adm-tile"><div class="adm-tile-n">1.4 <small>GB</small></div><div class="adm-tile-l">on disk</div><div class="adm-tile-s">41 GB free on that volume</div></div>
-        <div class="adm-tile"><div class="adm-tile-n">—</div><div class="adm-tile-l">nothing expires</div><div class="adm-tile-s">downloads stay until someone keeps or deletes them</div></div>
+        <div class="adm-tile"><div class="adm-tile-n">0</div><div class="adm-tile-l">songs brought in</div><div class="adm-tile-s">still in a library · every account</div></div>
+        <div class="adm-tile"><div class="adm-tile-n">0 MB</div><div class="adm-tile-l">on disk</div><div class="adm-tile-s">as recorded when each file landed</div></div>
       </div>
+      <p class="adm-muted" style="margin:14px 0 0"><i>Nothing yet. When someone presses Download or “Add to your collection” in the recommendation window, the song shows up here.</i></p>
     </div></div>
   </div>
 
-  <div class="cell"><h3>[edit] · retention<small>live · the next pass uses it</small></h3>
-    <div class="adm-modal">
-      <div class="adm-modal-content">
-        <h4>Remove downloads nobody kept</h4>
-        <div class="adm-field">
-          <label>After</label>
-          <div class="adm-input adm-input-focus" style="max-width:180px"><span>14<span class="adm-caret"></span></span><span class="adm-unit">days</span></div>
-          <div class="adm-help">0 – 3650. 0 = never. Shortening it makes older downloads due at once: <b>5 files (171 MB)</b> are older than 14 days and go on the next pass. Their owners see “removed in 0 days” until then.</div>
-        </div>
-      </div>
-      <div class="adm-modal-footer"><a class="adm-btn adm-btn-flat">Cancel</a><a class="adm-btn adm-btn-flat" style="color:var(--adm-teal)">Save</a></div>
-    </div>
-  </div>
-
-  <div class="cell"><h3>Rules</h3>
+  <div class="cell" style="grid-column:1 / -1"><h3>Rules</h3>
     <div class="dashed">
-      <b>Numbers come from one route:</b> <code>GET /api/v1/admin/discovery-plugins/status</code> → <code>downloads { dir, exists, retentionDays, files, bytes, partials, freeBytes, oldestAt, newestAt, byUser[], sweeping, lastSweep { at, removedFiles, removedPartials, skipped, prunedJobs }, nextSweepAt }</code>. It reads the folder itself (size and mtime), the way the pass does, and stops counting at 5,000 files; half-written files are counted apart, never as downloads. <code>freeBytes</code> is one <code>statfs</code> and is null where the runtime cannot say (the tile then drops its grey line).
-      <br><br><b>The User column is the account’s subfolder</b> (its username made path-safe; <code>shared</code> on a server with no users). <b>The file’s age is its mtime</b>, the same clock the pass uses, so “4 days left” here and “removed in 4 days” in the user’s window agree.
-      <br><br><b>The admin does not delete individual files here.</b> They are library songs: the file explorer and the library already do that. The panel owns the clock and the one button.
-      <br><br><b>The clock and the cap are two keys on the existing setter:</b> <code>POST /api/v1/admin/config/discovery-jobs { downloadsRetentionDays, downloadsMaxSizeMb }</code>. The cap’s <code>[edit]</code> takes gigabytes (decimals allowed) and saves megabytes; the status answer carries <code>maxSizeMb</code> and <code>full</code>. Half-written files count against the cap.
+      <b>The tiles come from the status route:</b> <code>GET /api/v1/admin/discovery-plugins/status</code> → <code>downloads[] { plugin, count, bytes }</code>, live records only (removed ones are history), one entry per plug-in; the two totals add them up. <b>The list is the user’s own route with the admin switch:</b> <code>GET /api/v1/discovery/downloads?all=1&amp;limit=200</code> (+ <code>removed=1</code> for the history), each record with its <code>username</code> — the shared anonymous account of a server with no users stays nameless — and <code>present</code>, which follows the library row: a scan that loses the file, or a file deleted by hand, makes a row <i>missing</i> without touching the record.
+      <br><br><b>[remove] is the same route the user has</b>, <code>DELETE /api/v1/discovery/downloads/:id</code>, open to admins for any account: it deletes the file (EBUSY answers 409 “in use”), the library row and any playlist entry on it, then settles the record (<code>removed_at</code>, <code>removed_by</code>). A missing file settles the record alone. It asks once and names the owner, like [cancel] on the Activity tab.
+      <br><br><b>Nothing is set here.</b> No clock, no cap, no folder: the only download-related config key left is <code>discoveryJobs.stagingDir</code> (where a download is assembled before it enters a library), a config-file key with no row; the Jobs tab’s Sweep now removes staging folders a crash left behind.
+      <br><br><b>Words come from the player:</b> the admin page loads <code>webapp/alpha/discover-jobs.js</code> and draws each row through <code>downloadRow</code>, the same function behind the user’s Downloads panel, so “file missing” means the same thing on both.
     </div>
   </div>
 

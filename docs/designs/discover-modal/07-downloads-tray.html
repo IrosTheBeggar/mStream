@@ -1,4 +1,4 @@
-<!-- @dsCard group="Discover" name="Downloads tray" subtitle="Where jobs live after the window closes · downloads and peer copies · a strip in the Discover panel · planned" width="470" height="910" -->
+<!-- @dsCard group="Discover" name="Downloads tray" subtitle="Where live jobs and failures wait after the window closes · a strip in the Discover panel · what landed is on the Downloads panel" width="470" height="1330" -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -297,19 +297,31 @@ code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.
     <div class="p-label"><span>From your peers</span></div>
     <div class="p-row"><i class="bar" style="--pct:79%;--c:#d9a441"></i><div class="t"><b>Paper Lanterns</b><small>Marlowe Vale · Night Ferry · Sam’s server</small></div><span class="quick"><svg><use href="#i-plus"/></svg></span></div>
     <div class="tray">
-      <div class="tray-h"><svg><use href="#i-download"/></svg>Downloads <span class="cnt">2 running · 1 ready · 1 failed</span><span class="tag tag-soon">planned</span><svg class="chev"><use href="#i-chev"/></svg></div>
+      <div class="tray-h"><svg><use href="#i-download"/></svg>Downloads <span class="cnt">2 running · 1 failed</span><svg class="chev"><use href="#i-chev"/></svg></div>
       <div class="j"><span class="ic ic-on"><svg><use href="#i-download"/></svg></span><div class="t"><b>Salt &amp; Static — Neon Harbor</b><small>YouTube · 43% · Neon Harbor – Salt &amp; Static (Official Audio)</small><div class="progress"><i style="width:43%;background:#4fb8a8"></i></div></div><div class="act"><a title="Cancel"><svg><use href="#i-close"/></svg></a></div></div>
       <div class="j"><span class="ic ic-peer"><svg><use href="#i-folder"/></svg></span><div class="t"><b>Night Ferry — Marlowe Vale</b><small>Sam’s server · album → Music / Marlowe Vale / Night Ferry · 4 of 11 songs · 39%</small><div class="progress"><i style="width:39%;background:#d9a441"></i></div></div><div class="act"><a title="Cancel"><svg><use href="#i-close"/></svg></a></div></div>
-      <div class="j"><span class="ic ic-ok"><svg><use href="#i-check"/></svg></span><div class="t"><b>Glass Hours — Ondine</b><small>Soulseek · FLAC · 28 MB · ready · removed in 29 days</small></div><div class="act"><a title="Play"><svg><use href="#i-play"/></svg></a><a title="Add to queue"><svg><use href="#i-plus"/></svg></a><a title="Keep in library"><svg><use href="#i-folder"/></svg></a></div></div>
-      <div class="j"><span class="ic ic-err"><svg><use href="#i-warn"/></svg></span><div class="t"><b>Slow Tide — Neon Harbor</b><small>YouTube · failed · nothing matched closely enough</small></div><div class="act"><a title="Retry"><svg><use href="#i-retry"/></svg></a><a title="Dismiss"><svg><use href="#i-close"/></svg></a></div></div>
-      <div class="tray-f"><a>Clear finished</a><span>Discover downloads · 1 file · 28 MB</span></div>
+      <div class="j"><span class="ic ic-err"><svg><use href="#i-warn"/></svg></span><div class="t"><b>Slow Tide — Neon Harbor</b><small>YouTube · failed · nothing matched closely enough</small></div><div class="act"><a title="Retry"><svg><use href="#i-retry"/></svg></a></div></div>
+      <div class="tray-f"><a>Clear finished</a><a style="margin-left:auto">All downloads ›</a></div>
     </div>
   </div>
   <div class="notes">
     <h2>Why a strip in the panel</h2>
-    <p>A download or a peer copy outlives the window that started it. The strip sits under the leads it came from, shows only while the user has jobs (<code>GET /api/v1/discovery/plugin-jobs</code>), and folds to its one-line header when collapsed. Ready downloads play in place and <b>Keep</b> moves them into a library folder through the collection destination picker (card 10); peer copies (amber) go straight into the folder that picker names and simply disappear from the strip when they finish.</p>
+    <p>A download or a peer copy outlives the window that started it. The strip sits under the leads it came from, shows only while the user has live or failed jobs (<code>GET /api/v1/discovery/plugin-jobs</code>), and folds to its one-line header when collapsed. A finished download or copy is a library song: it leaves the strip by itself (a toast says where it landed) and the <b>Downloads</b> panel below lists it.</p>
     <p><b>Alternative considered:</b> a fourth tab in the Upload window next to Youtube DL and Torrent, where mStream already shows downloads. It keeps the panel lean but puts the result two clicks away from the lead; the strip wins on continuity.</p>
     <p><b>Rows:</b> the hover “+” stays on rows that can be queued (library and peer rows). Network rows have no hover control any more: the whole row opens the window.</p>
+  </div>
+
+  <div class="col" style="margin-top:18px">
+    <div class="np">Downloads</div>
+    <div style="padding:8px 14px 2px;font-size:11.5px;color:#8a919e">Songs the Discover plug-ins brought into your collection. Removing one deletes the file.</div>
+    <div style="display:flex;align-items:center;gap:14px;padding:2px 14px 8px;font-size:11px;color:#8a919e"><span>3 songs · 47 MB</span><span style="margin-left:auto">☐ All accounts</span><span>☐ Show removed</span></div>
+    <div class="j" style="align-items:flex-start"><span class="ic"><svg><use href="#i-download"/></svg></span><div class="t"><b>Salt &amp; Static</b><small>Neon Harbor · Low Tide Recordings</small><small>YouTube · 9.6 MB · yesterday</small><small style="color:#6f7683">Music / Neon Harbor / Low Tide Recordings / Salt_Static.mp3</small></div><div class="act"><a title="Play now"><svg><use href="#i-play"/></svg></a><a title="Add to playlist"><svg><use href="#i-chev"/></svg></a><a title="Show in library"><svg><use href="#i-folder"/></svg></a><a title="Remove" style="width:auto;color:#e0616a;font-size:11px;padding:0 6px">Remove</a></div></div>
+    <div class="j" style="align-items:flex-start"><span class="ic"><svg><use href="#i-download"/></svg></span><div class="t"><b>Paper Lanterns</b><small>Marlowe Vale · Night Ferry</small><small>Copied from a peer · 28 MB · 3 days ago</small><small style="color:#6f7683">Music / Marlowe Vale / Night Ferry / 03 Paper Lanterns.flac</small></div><div class="act"><a title="Play now"><svg><use href="#i-play"/></svg></a><a title="Add to playlist"><svg><use href="#i-chev"/></svg></a><a title="Show in library"><svg><use href="#i-folder"/></svg></a><a title="Remove" style="width:auto;color:#e0616a;font-size:11px;padding:0 6px">Remove</a></div></div>
+    <div class="j" style="align-items:flex-start;opacity:.6"><span class="ic"><svg><use href="#i-download"/></svg></span><div class="t"><b>Glass Hours</b><small>Ondine · Night Swimming</small><small>YouTube · 9.2 MB · 2 weeks ago · file missing</small><small style="color:#6f7683">Music / Ondine / Night Swimming / Glass_Hours.mp3</small></div><div class="act"><a title="Remove" style="width:auto;color:#e0616a;font-size:11px;padding:0 6px">Remove</a></div></div>
+  </div>
+  <div class="notes">
+    <h2>The Downloads panel</h2>
+    <p>Side nav → <b>Downloads</b>, shown when the ping advertises <code>discoveryPlugins</code>. <code>GET /api/v1/discovery/downloads</code> lists the caller’s records newest first — what a plug-in brought in, where it is, whether the file is still there. A present row is the ordinary file row (click = queue, the arrow = play now, the chevron = add to a playlist) with its origin underneath, plus <b>Show in library</b> (the file explorer on that folder) and <b>Remove</b> (<code>DELETE …/downloads/:id</code>: the file, its library row, any queue entry on it, and the record). A file lost by a scan or deleted by hand shows as <i>file missing</i> with Remove alone, which settles the entry. Admins get an <b>All accounts</b> tick that names each owner; <b>Show removed</b> adds the history.</p>
   </div>
 </div>
 </body>

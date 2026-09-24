@@ -8234,6 +8234,9 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
       sweeping: false,
       sweepResult: null,
       activity: { loaded: false, jobs: [], filter: 'all', open: {}, cancelling: {} },
+      // The Downloads tab: every account's records (GET
+      // /api/v1/discovery/downloads?all=1), history on request.
+      downloads: { loaded: false, list: [], removed: false, removing: {} },
       pollTimer: null,
     };
   },
@@ -8258,7 +8261,6 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
                       <span :class="'dp-' + headline.dot">{{ headline.text }}</span>
                       <span>&middot; {{ t(dp.status.jobs.enabledFor === 'whitelist' ? 'admin.dplugins.header.jobsWhitelist' : 'admin.dplugins.header.jobsAll') }}</span>
                       <span v-if="liveCount > 0">&middot; {{ t('admin.dplugins.header.running', { count: liveCount }) }}</span>
-                      <span v-if="dl.full" class="dp-warn">&middot; {{ t('admin.dplugins.header.full') }}</span>
                     </div>
                     <div class="dp-box-act"><span class="dp-br">[<a v-on:click="load()">{{ t('admin.dplugins.refresh') }}</a>]</span></div>
                   </div>
@@ -8341,55 +8343,50 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
                         <tr><td><b>{{ t('admin.dplugins.jobs.history') }}</b> {{ t('admin.dplugins.days', { count: dp.status.jobs.retentionDays }) }}<span class="dp-note">{{ t('admin.dplugins.jobs.historyNote') }}</span></td><td>[<a v-on:click="editNumber('retentionDays')">{{ t('admin.settings.edit') }}</a>]</td></tr>
                       </tbody>
                     </table>
+
+                    <!-- The retention pass: old job rows, staging folders a crash left behind -->
+                    <div v-if="sweeping" style="margin-top:16px"><div class="progress" style="margin:0 0 4px 0"><div class="indeterminate"></div></div><span class="dp-sub">{{ t('admin.dplugins.jobs.sweeping') }}</span></div>
+                    <div v-else-if="sweepResult" class="dp-callout" style="margin-top:16px"><b>{{ t('admin.dplugins.jobs.sweepDone') }}</b> {{ sweepText }}</div>
+                    <div class="dp-actions">
+                      <span class="dp-sub">{{ t('admin.dplugins.jobs.passNote') }}</span>
+                      <a class="waves-effect waves-light btn" :class="{ disabled: sweeping }" v-on:click="sweepNow()">{{ t(sweeping ? 'admin.dplugins.jobs.sweepingBtn' : 'admin.dplugins.jobs.sweep') }}</a>
+                    </div>
                   </div>
 
-                  <!-- Downloads -->
+                  <!-- Downloads: what the plug-ins brought into the libraries, every account -->
                   <div v-if="tab === 'downloads'">
-                    <p v-if="!dl.exists" class="dp-muted" style="margin-top:14px"><i>{{ t('admin.dplugins.dl.unused') }}</i></p>
-                    <div v-else class="dp-tiles">
-                      <div class="dp-tile"><div class="dp-tile-n">{{ dl.files }}<span v-if="dl.truncated">+</span></div><div class="dp-tile-l">{{ t('admin.dplugins.dl.waiting') }}</div><div class="dp-tile-s">{{ t('admin.dplugins.dl.waitingSub', { count: dl.byUser.length }) }}<span v-if="dl.partials > 0"> &middot; {{ t('admin.dplugins.dl.partials', { count: dl.partials }) }}</span></div></div>
-                      <div class="dp-tile" :class="{ 'dp-tile-warn': dl.full }">
-                        <div class="dp-tile-n">{{ bytes(dl.bytes + dl.partialBytes) || '0 MB' }}<small v-if="dl.maxSizeMb > 0"> {{ t('admin.dplugins.dl.of', { cap: capText }) }}</small></div>
-                        <div class="dp-tile-l">{{ t('admin.dplugins.dl.onDisk') }}<span v-if="dl.full" class="dp-warn"> &middot; {{ t('admin.dplugins.dl.full') }}</span></div>
-                        <div v-if="dl.maxSizeMb > 0" class="dp-bar" :class="{ 'dp-bar-warn': dl.full }"><i :style="{ width: capPct + '%' }"></i></div>
-                        <div v-if="dl.freeBytes !== null" class="dp-tile-s">{{ t('admin.dplugins.dl.free', { size: bytes(dl.freeBytes) }) }}</div>
-                      </div>
-                      <div class="dp-tile">
-                        <template v-if="dl.retentionDays === 0"><div class="dp-tile-n">&mdash;</div><div class="dp-tile-l">{{ t('admin.dplugins.dl.never') }}</div><div class="dp-tile-s">{{ t('admin.dplugins.dl.neverSub') }}</div></template>
-                        <template v-else-if="dl.oldestAt === null"><div class="dp-tile-n">&mdash;</div><div class="dp-tile-l">{{ t('admin.dplugins.dl.oldest') }}</div></template>
-                        <template v-else><div class="dp-tile-n">{{ ageDays(dl.oldestAt) }} <small>{{ t('admin.dplugins.dayUnit', { count: ageDays(dl.oldestAt) }) }}</small></div><div class="dp-tile-l">{{ t('admin.dplugins.dl.oldest') }}</div><div class="dp-tile-s">{{ leftText(dl.oldestAt) }}</div></template>
-                      </div>
-                      <div class="dp-tile"><div class="dp-tile-n">{{ dl.sweeping ? '…' : untilText(dl.nextSweepAt) }}</div><div class="dp-tile-l">{{ t('admin.dplugins.dl.nextPass') }}</div><div v-if="dl.lastSweep" class="dp-tile-s">{{ t('admin.dplugins.dl.lastPass', { count: dl.lastSweep.removedFiles }) }}</div></div>
+                    <div class="dp-tiles" style="margin-top:14px">
+                      <div class="dp-tile"><div class="dp-tile-n">{{ dlTotals.count }}</div><div class="dp-tile-l">{{ t('admin.dplugins.dl.songs') }}</div><div class="dp-tile-s">{{ t('admin.dplugins.dl.songsSub') }}</div></div>
+                      <div class="dp-tile"><div class="dp-tile-n">{{ bytes(dlTotals.bytes) || '0 MB' }}</div><div class="dp-tile-l">{{ t('admin.dplugins.dl.onDisk') }}</div><div class="dp-tile-s">{{ t('admin.dplugins.dl.onDiskSub') }}</div></div>
+                      <div v-for="s in dp.status.downloads" :key="s.plugin" class="dp-tile"><div class="dp-tile-n">{{ s.count }}</div><div class="dp-tile-l">{{ dlPluginTitle(s.plugin) }}</div><div class="dp-tile-s">{{ bytes(s.bytes) || '0 MB' }}</div></div>
                     </div>
-                    <div v-if="dl.full" class="dp-reason" style="margin-top:12px"><span><b>{{ t('admin.dplugins.dl.fullLead') }}</b> {{ t('admin.dplugins.dl.fullBody') }}</span></div>
+                    <div class="dp-callout" style="margin-top:12px">{{ t('admin.dplugins.dl.note') }}</div>
 
-                    <table class="dp-rows" style="margin-top:14px">
+                    <div class="dp-act-h" style="margin-top:14px">
+                      <div class="dp-status"><span>{{ t('admin.dplugins.dl.listLead') }}</span></div>
+                      <div class="dp-pills dp-pills-sm">
+                        <div v-for="f in ['live', 'history']" :key="f" class="dp-pill" :class="{ 'dp-pill-on': (downloads.removed ? 'history' : 'live') === f }" v-on:click="setDownloadsFilter(f)">{{ t('admin.dplugins.dl.filter.' + f) }}</div>
+                      </div>
+                    </div>
+                    <div v-if="!downloads.loaded" style="margin-top:14px"><p>{{ t('admin.dplugins.loading') }}</p></div>
+                    <p v-else-if="dlRows.length === 0" class="dp-muted" style="margin-top:14px"><i>{{ t('admin.dplugins.dl.empty') }}</i></p>
+                    <table v-else class="dp-table dp-table-act">
+                      <thead><tr><th>{{ t('admin.dplugins.dl.col.when') }}</th><th>{{ t('admin.dplugins.dl.col.user') }}</th><th>{{ t('admin.dplugins.dl.col.plugin') }}</th><th>{{ t('admin.dplugins.dl.col.song') }}</th><th>{{ t('admin.dplugins.dl.col.where') }}</th><th class="dp-num">{{ t('admin.dplugins.dl.col.size') }}</th><th></th></tr></thead>
                       <tbody>
-                        <tr><td><b>{{ t('admin.dplugins.dl.retention') }}</b> {{ dl.retentionDays === 0 ? t('admin.dplugins.dl.neverShort') : t('admin.dplugins.days', { count: dl.retentionDays }) }}<span class="dp-note">{{ t('admin.dplugins.dl.retentionNote') }}</span></td><td>[<a v-on:click="editNumber('downloadsRetentionDays')">{{ t('admin.settings.edit') }}</a>]</td></tr>
-                        <tr><td><b>{{ t('admin.dplugins.dl.cap') }}</b> {{ dl.maxSizeMb === 0 ? t('admin.dplugins.dl.noCap') : capText }}<span class="dp-note">{{ t('admin.dplugins.dl.capNote') }}</span></td><td>[<a v-on:click="editNumber('downloadsMaxSizeMb')">{{ t('admin.settings.edit') }}</a>]</td></tr>
-                        <tr><td><b>{{ t('admin.dplugins.dl.folder') }}</b> <span class="dp-mono">{{ dl.dir }}</span><span class="dp-note">{{ t(dl.exists ? 'admin.dplugins.dl.folderNote' : 'admin.dplugins.dl.folderNew') }}</span></td><td></td></tr>
-                      </tbody>
-                    </table>
-
-                    <table v-if="dl.byUser.length > 0" class="dp-table" style="margin-top:18px">
-                      <thead><tr><th>{{ t('admin.dplugins.dl.col.user') }}</th><th class="dp-num">{{ t('admin.dplugins.dl.col.waiting') }}</th><th class="dp-num">{{ t('admin.dplugins.dl.col.size') }}</th><th>{{ t('admin.dplugins.dl.col.oldest') }}</th><th>{{ t('admin.dplugins.dl.col.newest') }}</th></tr></thead>
-                      <tbody>
-                        <tr v-for="u in dl.byUser" :key="u.folder">
-                          <td :data-label="t('admin.dplugins.dl.col.user')">{{ u.folder || '—' }}</td>
-                          <td class="dp-num" :data-label="t('admin.dplugins.dl.col.waiting')">{{ u.files }}</td>
-                          <td class="dp-num" :data-label="t('admin.dplugins.dl.col.size')">{{ bytes(u.bytes) }}</td>
-                          <td :data-label="t('admin.dplugins.dl.col.oldest')">{{ t('admin.dplugins.days', { count: ageDays(u.oldestAt) }) }}<span v-if="dl.retentionDays > 0 && daysLeft(u.oldestAt) <= 7" class="dp-warn-soft"> &middot; {{ leftText(u.oldestAt) }}</span></td>
-                          <td :data-label="t('admin.dplugins.dl.col.newest')">{{ ago(u.newestAt) }}</td>
+                        <tr v-for="r in dlRows" :key="r.id" :class="{ 'dp-muted-row': !r.present }">
+                          <td :data-label="t('admin.dplugins.dl.col.when')">{{ ago(r.at) }}</td>
+                          <td :data-label="t('admin.dplugins.dl.col.user')">{{ r.username || '—' }}</td>
+                          <td :data-label="t('admin.dplugins.dl.col.plugin')">{{ dlPluginTitle(r.plugin) }}</td>
+                          <td :data-label="t('admin.dplugins.dl.col.song')">{{ r.title }}<span v-if="r.artist" class="dp-muted"> &middot; {{ r.artist }}</span></td>
+                          <td :data-label="t('admin.dplugins.dl.col.where')"><span class="dp-mono">{{ r.crumbs.join(' / ') }}</span><span v-if="r.state === 'missing'" class="dp-warn-soft"> &middot; {{ t('admin.dplugins.dl.missing') }}</span><span v-else-if="r.state === 'removed'" class="dp-muted"> &middot; {{ t('admin.dplugins.dl.removed', { when: ago(r.removedAt) }) }}</span></td>
+                          <td class="dp-num" :data-label="t('admin.dplugins.dl.col.size')">{{ r.size || '—' }}</td>
+                          <td class="dp-num">
+                            <span v-if="r.actions.indexOf('remove') !== -1 && downloads.removing[r.id] !== true" class="dp-br">[<a style="color:#b71c1c" v-on:click="removeDownload(r)">{{ t('admin.dplugins.dl.remove') }}</a>]</span>
+                          </td>
                         </tr>
                       </tbody>
                     </table>
-
-                    <div v-if="sweeping" style="margin-top:16px"><div class="progress" style="margin:0 0 4px 0"><div class="indeterminate"></div></div><span class="dp-sub">{{ t('admin.dplugins.dl.sweeping') }}</span></div>
-                    <div v-else-if="sweepResult" class="dp-callout" style="margin-top:16px"><b>{{ t('admin.dplugins.dl.done') }}</b> {{ sweepText }}</div>
-                    <div class="dp-actions">
-                      <span class="dp-sub">{{ t('admin.dplugins.dl.passNote') }}</span>
-                      <a class="waves-effect waves-light btn" :class="{ disabled: sweeping }" v-on:click="sweepNow()">{{ t(sweeping ? 'admin.dplugins.dl.sweepingBtn' : 'admin.dplugins.dl.sweep') }}</a>
-                    </div>
+                    <p v-if="downloads.loaded && dlRows.length > 0" class="dp-sub" style="margin:12px 0 0">{{ t('admin.dplugins.dl.footer') }}</p>
                   </div>
 
                   <!-- Activity -->
@@ -8451,10 +8448,17 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
       this.usersTS.ts;
       return Object.keys(this.users).length;
     },
-    // The scratch library is gone from the server (slice A of dropping it);
-    // the Downloads tab is redrawn in slice C. Until then it reads an empty
-    // object rather than throwing.
-    dl: function() { return this.dp.status.downloads || { byUser: [] }; },
+    // The Downloads tab's tiles: the status answer counts live records by
+    // plug-in; the two totals add them up.
+    dlTotals: function() {
+      const by = this.dp.status.downloads || [];
+      return { count: by.reduce((n, s) => n + (Number(s.count) || 0), 0), bytes: by.reduce((n, s) => n + (Number(s.bytes) || 0), 0) };
+    },
+    // The Downloads tab's rows, through the player's own vocabulary
+    // (webapp/alpha/discover-jobs.js downloadRow), newest first as served.
+    dlRows: function() {
+      return this.downloads.list.map((d) => DISCOVERJOBS.downloadRow(d));
+    },
     liveCount: function() { return this.dp.status.jobs.running + this.dp.status.jobs.queued; },
     groups: function() {
       const left = [...this.dp.status.plugins];
@@ -8469,32 +8473,26 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
       return out;
     },
     // "5 of 6 plug-ins on, 1 cannot run": orange while anything that is on
-    // cannot run (or the downloads folder is full), grey when nothing is on.
+    // cannot run, grey when nothing is on.
     headline: function() {
       const all = this.dp.status.plugins;
       const on = all.filter((p) => p.enabled).length;
       const broken = all.filter((p) => p.enabled && !p.available).length;
       let text = this.t('admin.dplugins.header.on', { on, total: all.length });
       if (broken > 0) { text += ', ' + this.t('admin.dplugins.header.cannotRun', { count: broken }); }
-      return { text, dot: (broken > 0 || this.dl.full) ? 'warn' : (on === 0 ? 'off' : 'ok') };
-    },
-    capText: function() { return this.bytes(this.dl.maxSizeMb * 1024 * 1024); },
-    capPct: function() {
-      if (!(this.dl.maxSizeMb > 0)) { return 0; }
-      return Math.min(100, Math.round(((this.dl.bytes + this.dl.partialBytes) / (this.dl.maxSizeMb * 1024 * 1024)) * 100));
+      return { text, dot: broken > 0 ? 'warn' : (on === 0 ? 'off' : 'ok') };
     },
     uploadlessGranted: function() {
       // eslint-disable-next-line no-unused-expressions
       this.usersTS.ts;
       return Object.keys(this.users).filter((k) => this.users[k].allowDiscoveryJobs === true && this.users[k].allowUpload === false);
     },
+    // The pass's answer: { prunedJobs, removedStaging }.
     sweepText: function() {
       const r = this.sweepResult;
       if (!r) { return ''; }
-      if (!r.removedFiles && !r.removedPartials && !r.prunedJobs && !r.skipped) { return this.t('admin.dplugins.dl.nothing'); }
-      let text = this.t('admin.dplugins.dl.result', { files: r.removedFiles, partials: r.removedPartials, jobs: r.prunedJobs });
-      if (r.skipped > 0) { text += ' ' + this.t('admin.dplugins.dl.skipped', { count: r.skipped }); }
-      return text;
+      if (!r.prunedJobs && !r.removedStaging) { return this.t('admin.dplugins.jobs.sweepNothing'); }
+      return this.t('admin.dplugins.jobs.sweepResult', { jobs: r.prunedJobs || 0, staging: r.removedStaging || 0 });
     },
     // The Activity rows: a job through the player's own row vocabulary
     // (webapp/alpha/discover-jobs.js), so an operator and a user describe the
@@ -8551,7 +8549,58 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
     showTab: function(name) {
       this.tab = name;
       if (name === 'activity') { this.loadActivity().then(() => this.schedulePoll()); }
-      if (name === 'downloads') { this.load(); }
+      if (name === 'downloads') { this.load(); this.loadDownloads(); }
+    },
+    loadDownloads: async function() {
+      try {
+        const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/discovery/downloads?all=1&limit=200${this.downloads.removed ? '&removed=1' : ''}` });
+        this.downloads.list = res.data.downloads || [];
+      } catch (err) {
+        console.error('failed to load the discovery downloads', err);
+      }
+      this.downloads.loaded = true;
+    },
+    setDownloadsFilter: function(f) {
+      const removed = f === 'history';
+      if (this.downloads.removed === removed) { return; }
+      this.downloads.removed = removed;
+      this.downloads.loaded = false;
+      this.loadDownloads();
+    },
+    // A plug-in's title for a record; the classic Youtube DL route writes
+    // records too and is no plug-in, so it has a name of its own.
+    dlPluginTitle: function(name) {
+      const p = this.dp.status.plugins.find((x) => x.name === name);
+      if (p) { return p.title; }
+      const key = 'admin.dplugins.dl.plugin.' + name;
+      const known = this.t(key);
+      return known === key ? name : known;
+    },
+    // Remove: the file, its library row and the record — for any account.
+    removeDownload: function(row) {
+      const ask = row.username
+        ? this.t('admin.dplugins.dl.removeAsk', { user: row.username, title: row.title })
+        : this.t('admin.dplugins.dl.removeAskNoUser', { title: row.title });
+      iziToast.question({
+        timeout: 20000, close: false, overlayClose: true, overlay: true, displayMode: 'once', zindex: 99999, layout: 2, maxWidth: 600,
+        title: escHtml(ask), message: escHtml(this.t(row.present ? 'admin.dplugins.dl.removeAskSub' : 'admin.dplugins.dl.removeSettle')), position: 'center',
+        buttons: [
+          [`<button>${escHtml(this.t('admin.dplugins.dl.removeConfirm'))}</button>`, async (instance, toast) => {
+            instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+            this.$set(this.downloads.removing, row.id, true);
+            try {
+              await API.axios({ method: 'DELETE', url: `${API.url()}/api/v1/discovery/downloads/${row.id}` });
+              iziToast.success({ title: escHtml(this.t('admin.dplugins.dl.removedToast', { title: row.title })), position: 'topCenter', timeout: 2500 });
+            } catch (err) {
+              const inUse = err.response && err.response.status === 409;
+              iziToast.error({ title: escHtml(inUse ? this.t('admin.dplugins.dl.inUse') : dpErrorText(err, this.t('admin.dplugins.toast.failed'))), position: 'topCenter', timeout: 4000 });
+            }
+            this.$set(this.downloads.removing, row.id, false);
+            await Promise.all([this.loadDownloads(), ADMINDATA.getDiscoveryPlugins()]);
+          }, true],
+          [`<button>${escHtml(this.t('admin.modal.goBack'))}</button>`, (instance, toast) => { instance.hide({ transitionOut: 'fadeOut' }, toast, 'button'); }],
+        ],
+      });
     },
     // The external tool a plug-in's probe reported. yt-dlp's version IS its
     // release date, and a stale one is the usual reason downloads fail, so
@@ -8674,10 +8723,9 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
         // beside it) says when YouTube has moved on.
         [/HTTP Error 403|requested format is not available|nsig|signature extraction|unable to extract|no video formats/i, 'ytdlpStale'],
         [/nothing matched closely enough|returned no results/i, 'noMatch'],
-        [/discover downloads is full/i, 'full'],
         [/\b429\b|transfer limit|daily limit/i, 'peerLimit'],
         [/unreachable|timed out|ECONNREFUSED|did not answer/i, 'peerUnreachable'],
-        [/uploading disabled|may not upload|uploads are off/i, 'uploadsOff'],
+        [/uploading disabled|may not upload|uploads are (off|disabled)/i, 'uploadsOff'],
         [/no library/i, 'noLibrary'],
       ];
       const hit = known.find(([re]) => re.test(e));
@@ -8713,21 +8761,6 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
       });
     },
     bytes: function(n) { return DISCOVERJOBS.fmtBytes(n); },
-    ageDays: function(ts) { return Math.max(0, Math.floor((Date.now() - Number(ts)) / 86400000)); },
-    daysLeft: function(ts) {
-      if (!(this.dl.retentionDays > 0)) { return Infinity; }
-      return Math.max(0, Math.ceil((Number(ts) + this.dl.retentionDays * 86400000 - Date.now()) / 86400000));
-    },
-    leftText: function(ts) {
-      const left = this.daysLeft(ts);
-      return left === 0 ? this.t('admin.dplugins.dl.leftToday') : this.t('admin.dplugins.dl.left', { count: left });
-    },
-    untilText: function(ts) {
-      if (ts === null || ts === undefined) { return '—'; }
-      const min = Math.max(0, Math.round((Number(ts) - Date.now()) / 60000));
-      if (min < 60) { return this.t('admin.dplugins.minutes', { count: min }); }
-      return this.t('admin.dplugins.hoursMinutes', { h: Math.floor(min / 60), m: min % 60 });
-    },
     ago: function(ts) {
       const s = Math.max(0, Math.round((Date.now() - Number(ts)) / 1000));
       if (s < 60) { return this.t('admin.dplugins.ago.now'); }
@@ -11714,14 +11747,10 @@ const dpPluginSettingsModal = Vue.component('dp-plugin-settings-modal', {
   },
 });
 
-// The four numbers on the Jobs and Downloads tabs share one modal. The size
-// cap is kept in MB and edited in GB (decimals allowed), since nobody thinks
-// of 5120.
+// The two numbers on the Jobs tab share one modal.
 const DP_NUMBERS = {
   maxConcurrent: { min: 1, max: 16, step: 1, value: (s) => s.jobs.maxConcurrent },
   retentionDays: { min: 1, max: 3650, step: 1, unit: 'days', value: (s) => s.jobs.retentionDays },
-  downloadsRetentionDays: { min: 0, max: 3650, step: 1, unit: 'days', value: (s) => (s.downloads || {}).retentionDays },
-  downloadsMaxSizeMb: { min: 0, max: 9765, step: 'any', unit: 'gb', gb: true, value: (s) => (s.downloads || {}).maxSizeMb },
 };
 
 const dpEditNumberModal = Vue.component('dp-edit-number-modal', {

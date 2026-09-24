@@ -1681,10 +1681,13 @@ export function setup(mstream) {
 
   // Everything the admin panel's Discovery Plugins view shows, in one answer:
   // every registered plug-in (on or off, with why it cannot run and its
-  // editable settings) and the job runner's gate and load.
+  // editable settings), the job runner's gate and load, and what the
+  // plug-ins have brought into the libraries, counted by plug-in (the
+  // Downloads tab's tiles; its list is GET /api/v1/discovery/downloads?all=1).
   mstream.get("/api/v1/admin/discovery-plugins/status", async (req, res) => {
     await discoveryPlugins.refreshProbes();
     const jobsDb = await import('../db/discovery-plugin-jobs.js');
+    const downloadsDb = await import('../db/plugin-downloads.js');
     const jobsCfg = config.program.discoveryJobs || {};
     res.json({
       plugins: adminPluginRows(),
@@ -1694,6 +1697,7 @@ export function setup(mstream) {
         retentionDays: jobsCfg.retentionDays,
         ...jobsDb.countLive(),
       },
+      downloads: downloadsDb.summary(),
     });
   });
 

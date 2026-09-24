@@ -1,10 +1,12 @@
 // The Discover job rows' pure half: what a plug-in job looks like as a row
 // ("Get it", "Add to your collection", the downloads strip), where a
-// collection copy will land for the layout being typed, and what has to
-// change in the queue when a download is kept. No DOM, no Vue, no fetch —
-// vp.js wires it to the window; the unit test
-// (test/unit/webapp-discover-jobs.test.mjs) drives it on node and holds the
-// layout half to the server's engine. Same UMD shape as alpha/auto-dj.js.
+// download or a collection copy will land for the layout being typed, what
+// a download record looks like as a row (the Downloads view, the admin's
+// Downloads tab), and what has to leave the queue when a download is
+// removed. No DOM, no Vue, no fetch — vp.js and m.js wire it to the app;
+// the unit test (test/unit/webapp-discover-jobs.test.mjs) drives it on node
+// and holds the layout half to the server's engine. Same UMD shape as
+// alpha/auto-dj.js.
 //
 // Text never leaves here as English: a row carries i18n KEYS with their
 // params ({ key, params }) and the caller translates. Server text (a job's
@@ -150,11 +152,12 @@
 
   // ── a job as a row ─────────────────────────────────────────────────────
   // The copy plug-in's rows read differently from a download's ("copying" /
-  // "in your collection" against "downloading" / "done"); everything else is
-  // the job's state and the shape of its result.
+  // "in your collection" against "downloading" / "done · saved to …");
+  // everything else is the job's state and the shape of its result. Both
+  // land in the collection destination, so nothing waits to be kept and
+  // nothing expires: a finished row is a library song.
   const COPY_PLUGIN = 'federation-copy';
   const LIVE_STATES = ['queued', 'running'];
-  const DAY_MS = 24 * 60 * 60 * 1000;
 
   function isLive(job) { return !!job && LIVE_STATES.indexOf(job.state) !== -1; }
 
@@ -168,19 +171,10 @@
     return `${(mb / 1024).toFixed(1)} GB`;
   }
 
-  // Whole days until a download expires: 0 = today, null = it never does.
-  function daysLeft(expiresAt, now) {
-    if (expiresAt == null) { return null; }
-    const ms = Number(expiresAt) - (now == null ? Date.now() : now);
-    return Math.max(0, Math.ceil(ms / DAY_MS));
-  }
-
-  const fileOf = (filepath) => pathCrumbs(filepath).pop() || '';
-
   // What one plug-in's row shows for the job the caller last ran with it
   // (null = never asked). `actions` are names the window maps to buttons:
-  //   start · cancel · retry · play · queue · keep
-  function jobRowState(job, { plugin, now } = {}) {
+  //   start · cancel · retry · play · queue
+  function jobRowState(job, { plugin } = {}) {
     const copy = (plugin || (job && job.plugin)) === COPY_PLUGIN;
     const row = {
       state: 'idle', tag: null, tagCls: '', icon: copy ? 'folder' : 'download', iconCls: '', muted: false,
@@ -216,22 +210,17 @@
     if (job.state !== 'done') { return row; }
 
     const r = job.result || {};
-    if (r.kept && r.kept.filepath) {
-      return { ...row, state: 'kept', tag: 'discover.job.inLibrary', tagCls: 'ok', icon: 'check', iconCls: 'ok',
-        sub: { text: pathCrumbs(r.kept.filepath).join(' / ') }, actions: ['play', 'queue'], filepath: r.kept.filepath };
+    // A download that landed. Rows from before downloads went straight into
+    // the collection may carry where Keep… moved the file (`kept`), or that
+    // the old retention pass removed it (`removed`).
+    const at = (r.downloaded && r.downloaded.filepath) ? ((r.kept && r.kept.filepath) || r.downloaded.filepath) : null;
+    if (at && r.removed) {
+      return { ...row, state: 'gone', tag: 'discover.job.done', icon: 'close', muted: true,
+        sub: { key: 'discover.job.goneSub' }, actions: ['start'] };
     }
-    if (r.removed) {
-      return { ...row, state: 'expired', tag: 'discover.job.expired', icon: 'close', muted: true,
-        sub: { key: 'discover.job.expiredSub' }, actions: ['start'] };
-    }
-    if (r.downloaded && r.downloaded.filepath) {
-      const days = daysLeft(r.expiresAt, now);
-      const facts = [fileOf(r.downloaded.filepath), fmtBytes(r.downloaded.bytes)].filter(Boolean).join(' · ');
-      return { ...row, state: 'ready', tag: 'discover.job.done', tagCls: 'ok', icon: 'check', iconCls: 'ok',
-        sub: days === null
-          ? { key: 'discover.job.readyForever', params: { facts } }
-          : { key: days === 0 ? 'discover.job.readyToday' : 'discover.job.readyDays', params: { facts, count: days } },
-        actions: ['play', 'queue', 'keep'], filepath: r.downloaded.filepath, expiresInDays: days };
+    if (at) {
+      return { ...row, state: 'downloaded', tag: 'discover.job.done', tagCls: 'ok', icon: 'check', iconCls: 'ok',
+        sub: { key: 'discover.job.savedTo', params: { path: pathCrumbs(at).join(' / ') } }, actions: ['play', 'queue'], filepath: at };
     }
     if (r.copied && r.copied.filepath) {
       return { ...row, state: 'copied', tag: 'discover.job.inCollection', tagCls: 'ok', icon: 'check', iconCls: 'ok',
@@ -260,22 +249,18 @@
   }
 
   // ── the downloads strip ────────────────────────────────────────────────
-  // It holds what still wants the user: live jobs, downloads waiting to be
-  // kept, and failures. A finished copy, a kept or expired download and a
-  // cancelled job are settled — they leave the strip by themselves (and
-  // "Clear finished" drops their rows on the server).
+  // It holds what still wants the user: live jobs and failures. A finished
+  // download or copy is settled — it is a library song, listed by the
+  // Downloads view — and a cancelled job is over; both leave the strip by
+  // themselves ("Clear finished" drops their rows on the server).
   function trayRank(job) {
     if (job.state === 'running') { return 0; }
     if (job.state === 'queued') { return 1; }
-    if (job.state === 'done') { return 2; }
-    return 3;
+    return 2;
   }
 
   function inTray(job) {
-    if (!job) { return false; }
-    if (isLive(job) || job.state === 'failed') { return true; }
-    const r = job.result || {};
-    return job.state === 'done' && !!(r.downloaded && !r.kept && !r.removed);
+    return !!job && (isLive(job) || job.state === 'failed');
   }
 
   function trayRows(jobs) {
@@ -295,17 +280,16 @@
     });
   }
 
-  // "2 running · 1 ready · 1 failed" as counted parts, in that order, zeroes
-  // left out. `live` tells the poller whether to keep its short interval.
+  // "2 running · 1 failed" as counted parts, in that order, zeroes left
+  // out. `live` tells the poller whether to keep its short interval.
   function traySummary(jobs) {
     const rows = trayRows(jobs);
-    const count = { running: 0, ready: 0, failed: 0 };
+    const count = { running: 0, failed: 0 };
     for (const job of rows) {
-      if (isLive(job)) { count.running += 1; } else if (job.state === 'failed') { count.failed += 1; } else { count.ready += 1; }
+      if (isLive(job)) { count.running += 1; } else { count.failed += 1; }
     }
     const parts = [];
     if (count.running) { parts.push({ key: 'discover.tray.running', count: count.running }); }
-    if (count.ready) { parts.push({ key: 'discover.tray.ready', count: count.ready }); }
     if (count.failed) { parts.push({ key: 'discover.tray.failed', count: count.failed }); }
     return { total: rows.length, live: count.running > 0, clearable: count.failed > 0, ...count, parts };
   }
@@ -324,28 +308,53 @@
     return (Array.isArray(after) ? after : []).filter((job) => was[job.id] && !isLive(job));
   }
 
-  // ── the queue after a move ─────────────────────────────────────────────
-  // Keep… moves a file; queue entries that point at the old path would 404
-  // on their next play. `songFor(rawPath)` builds the fields a queue entry
-  // derives from its path ({ url, filepath }); peer tracks are never ours.
-  function patchQueuePaths(playlist, from, to, songFor) {
-    let patched = 0;
-    for (const song of (Array.isArray(playlist) ? playlist : [])) {
-      if (!song || song.federation || song.rawFilePath !== from) { continue; }
-      const next = songFor(to) || {};
-      song.rawFilePath = to;
-      if (next.filepath !== undefined) { song.filepath = next.filepath; }
-      if (next.url !== undefined) { song.url = next.url; }
-      if (song.metadata && typeof song.metadata === 'object' && song.metadata.filepath === from) { song.metadata.filepath = to; }
-      patched += 1;
-    }
-    return patched;
+  // ── a download as a row ────────────────────────────────────────────────
+  // A record from GET /api/v1/discovery/downloads (the Downloads view and
+  // the admin's Downloads tab): what a plug-in brought in, where it is, and
+  // whether the file is still there — `present` follows the library row, so
+  // a file a scan lost, or one deleted by hand, shows as missing while its
+  // record stays; a removed record is history.
+  //   present  → play · queue · show · remove
+  //   missing  → remove (settles the record)
+  //   removed  → nothing
+  function downloadRow(record) {
+    const d = record || {};
+    const crumbs = pathCrumbs(d.filepath);
+    const removed = d.removedAt != null;
+    const present = !removed && d.present === true;
+    return {
+      id: d.id, state: removed ? 'removed' : (present ? 'present' : 'missing'),
+      title: d.title || crumbs[crumbs.length - 1] || '', artist: d.artist || '', album: d.album || '',
+      plugin: d.plugin || '', filepath: d.filepath || '', crumbs, present, removed,
+      bytes: Number(d.bytes) || 0, size: fmtBytes(d.bytes), at: d.downloadedAt == null ? null : Number(d.downloadedAt),
+      removedAt: d.removedAt == null ? null : Number(d.removedAt), username: d.username || null,
+      actions: removed ? [] : (present ? ['play', 'queue', 'show', 'remove'] : ['remove']),
+    };
+  }
+
+  // "12 songs · 118 MB": the live records of a list (removed ones are history).
+  function downloadsTotals(records) {
+    const live = (Array.isArray(records) ? records : []).filter((d) => d && d.removedAt == null);
+    return { count: live.length, bytes: live.reduce((sum, d) => sum + (Number(d.bytes) || 0), 0) };
+  }
+
+  // ── the queue after a removal ──────────────────────────────────────────
+  // Remove deletes a file; queue entries that point at it would 404 on
+  // their next play. Their indexes, highest first, so the caller can drop
+  // them one by one; peer tracks are never ours.
+  function queueIndexesFor(playlist, filepath) {
+    const out = [];
+    (Array.isArray(playlist) ? playlist : []).forEach((song, i) => {
+      if (song && !song.federation && song.rawFilePath === filepath) { out.push(i); }
+    });
+    return out.reverse();
   }
 
   return {
     LAYOUT_VARS, DEFAULT_LAYOUT, SAMPLE_TAGS, SAMPLE_PEER, COPY_PLUGIN,
     sanitizeSegment, resolveLayout, validateLayout, validateResolvedPath, normalizeBase, safeFileName, previewTarget, pathCrumbs,
-    isLive, fmtBytes, daysLeft, jobRowState, jobsByPlugin,
-    inTray, trayRows, traySummary, jobTitle, finishedSince, patchQueuePaths,
+    isLive, fmtBytes, jobRowState, jobsByPlugin,
+    inTray, trayRows, traySummary, jobTitle, finishedSince,
+    downloadRow, downloadsTotals, queueIndexesFor,
   };
 }));
