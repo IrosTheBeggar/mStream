@@ -11,7 +11,7 @@ import path from 'node:path';
 import * as ytdlp from '../../src/util/yt-dlp.js';
 import plugin, {
   TOPIC_BONUS, cleanTitle, blockedWord, splitArtistTitle, isTopicChannel, channelArtist,
-  toCandidates, rankCandidates, pickBest,
+  toCandidates, rankCandidates, pickBest, isYouTubeUrl, lookupCandidates, isUnavailableMessage,
 } from '../../src/discovery-plugins/plugins/youtube.js';
 import { MIN_SCORE } from '../../src/discovery-plugins/match.js';
 
@@ -19,13 +19,15 @@ const REC = { artist: 'Neon Harbor', title: 'Salt & Static', album: 'Low Tide Re
 const entry = (over) => ({ id: 'x', url: 'https://www.youtube.com/watch?v=x', title: '', durationSec: 253, channel: null, uploader: null, artist: null, album: null, ...over });
 
 describe('youtube · plug-in shape', () => {
-  test('an acquire plug-in, server scope, one at a time, with a probe', () => {
+  test('an acquire plug-in with a lookup, server scope, one at a time, with a probe', () => {
     assert.equal(plugin.name, 'youtube');
-    assert.deepEqual([...plugin.capabilities], ['acquire']);
+    assert.deepEqual([...plugin.capabilities], ['acquire', 'lookup']);
     assert.equal(plugin.scope, 'server');
     assert.equal(plugin.concurrency, 1);
     assert.equal(typeof plugin.run, 'function');
     assert.equal(typeof plugin.probe, 'function');
+    assert.equal(typeof plugin.resolve, 'function');
+    assert.equal(typeof plugin.validateChoice, 'function');
   });
 });
 
@@ -167,6 +169,66 @@ describe('yt-dlp helper · pure parts', () => {
       assert.deepEqual(ytdlp.resolveBinary('yt-dlp'), { cmd: '/x/yt-dlp.exe', prefix: [] });
     } finally {
       if (saved === undefined) { delete process.env.MSTREAM_YTDLP_BIN; } else { process.env.MSTREAM_YTDLP_BIN = saved; }
+    }
+  });
+});
+
+describe('youtube · the lookup', () => {
+  test('a chosen upload must be a YouTube link: watch pages, shorts, live pages, youtu.be — nothing else', () => {
+    for (const ok of [
+      'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'https://youtube.com/watch?v=abc123', 'https://m.youtube.com/watch?v=abc123&t=10',
+      'https://music.youtube.com/watch?v=abc123', 'https://youtu.be/abc123', 'https://www.youtube.com/shorts/abc123', 'https://www.youtube.com/live/abc123',
+    ]) {
+      assert.equal(isYouTubeUrl(ok), true, ok);
+    }
+    for (const bad of [
+      'https://example.com/watch?v=abc123', 'https://www.youtube.com/', 'https://www.youtube.com/watch', 'https://www.youtube.com/playlist?list=PL1',
+      'ftp://www.youtube.com/watch?v=abc123', 'https://evil.youtube.com.example/watch?v=abc123', 'https://notyoutube.com/watch?v=abc123', 'not a url', '', null,
+    ]) {
+      assert.equal(isYouTubeUrl(bad), false, String(bad));
+    }
+    assert.throws(() => plugin.validateChoice({ url: 'https://example.com/x' }), /YouTube link/);
+    assert.throws(() => plugin.validateChoice(null), /YouTube link/);
+    plugin.validateChoice({ url: 'https://youtu.be/abc123' });
+  });
+
+  test('lookupCandidates: the ranked list as a window shows it — best first, capped, the upload\'s own title and link', () => {
+    const entries = [
+      entry({ id: 'topic', url: 'https://www.youtube.com/watch?v=topic1', title: 'Salt & Static', channel: 'Neon Harbor - Topic', thumbnail: 'https://i/t.jpg' }),
+      entry({ id: 'lyric', url: 'https://www.youtube.com/watch?v=lyric1', title: 'Neon Harbor - Salt & Static (Lyric Video)', channel: 'LyricsHub' }),
+      entry({ id: 'live', url: 'https://www.youtube.com/watch?v=live1', title: 'Neon Harbor - Salt & Static (Live)', channel: 'Neon Harbor' }),
+    ];
+    const ranked = rankCandidates(REC, entries);
+    const out = lookupCandidates(ranked);
+    assert.deepEqual(out.map((c) => c.id), ['topic', 'lyric'], 'the live take is not offered');
+    assert.deepEqual(Object.keys(out[0]).sort(), ['channel', 'durationSec', 'id', 'score', 'thumbnail', 'title', 'topic', 'url']);
+    assert.equal(out[0].title, 'Salt & Static');
+    assert.equal(out[0].channel, 'Neon Harbor - Topic');
+    assert.equal(out[0].topic, true);
+    assert.equal(out[0].thumbnail, 'https://i/t.jpg');
+    assert.equal(out[0].durationSec, 253);
+    assert.ok(out[0].score >= out[1].score, `${out[0].score} > ${out[1].score}`);
+    assert.equal(out[1].title, 'Neon Harbor - Salt & Static (Lyric Video)', 'as titled on YouTube, not cleaned');
+    assert.equal(lookupCandidates(ranked, { max: 1 }).length, 1);
+    assert.deepEqual(lookupCandidates([]), []);
+  });
+});
+
+describe('youtube · what the search hands back', () => {
+  test('a flat search entry lists its thumbnails; the record takes the largest, a full dump names one', () => {
+    const flat = ytdlp.entryToRecord({ id: 'a', title: 'A', duration: 10, thumbnails: [{ url: 'https://i/small.jpg', height: 94 }, { url: 'https://i/large.jpg', height: 720 }] });
+    assert.equal(flat.thumbnail, 'https://i/large.jpg');
+    assert.equal(ytdlp.entryToRecord({ id: 'b', title: 'B', duration: 10, thumbnail: 'https://i/one.jpg', thumbnails: [{ url: 'https://i/x.jpg' }] }).thumbnail, 'https://i/one.jpg');
+    assert.equal(ytdlp.entryToRecord({ id: 'c', title: 'C', duration: 10, thumbnails: [] }).thumbnail, null);
+    assert.equal(ytdlp.entryToRecord({ id: 'd', title: 'D', duration: 10 }).thumbnail, null);
+  });
+
+  test('the words yt-dlp uses for an upload it cannot serve', () => {
+    for (const m of ['[youtube] DvE7O3bLQgE: This video is not available', 'Video unavailable', 'Private video. Sign in if you\'ve been granted access', 'This video has been removed by the uploader', 'Sign in to confirm your age']) {
+      assert.equal(isUnavailableMessage(m), true, m);
+    }
+    for (const m of ['HTTP Error 429: Too Many Requests', 'Unable to download webpage: timed out', '', null]) {
+      assert.equal(isUnavailableMessage(m), false, String(m));
     }
   });
 });

@@ -70,13 +70,28 @@ export function setup(mstream) {
     }
     checkJobsAccess(req.user);
 
-    const schema = Joi.object({ recommendation: plugins.recommendationSchema.required() });
-    const { value: { recommendation } } = joiValidate(schema, req.body);
+    const schema = Joi.object({
+      recommendation: plugins.recommendationSchema.required(),
+      // An upload the caller picked from the plug-in's lookup: the job
+      // fetches that one instead of searching. Only a plug-in with a
+      // lookup takes one, and it checks the link itself (validateChoice).
+      choice: Joi.object({ url: Joi.string().uri({ scheme: ['http', 'https'] }).max(2048).required() }).optional(),
+    });
+    const { value: { recommendation, choice } } = joiValidate(schema, req.body);
+    if (choice) {
+      if (!plugin.capabilities.includes(plugins.CAPABILITIES.LOOKUP)) {
+        throw new WebError(`plug-in ${name} takes no choice — it has no lookup`, 400);
+      }
+      if (typeof plugin.validateChoice === 'function') {
+        try { plugin.validateChoice(choice); } catch (err) { throw new WebError(err.message, 400); }
+      }
+    }
     const { job, created } = jobsDb.createJob({
       plugin: name,
       userId: req.user ? req.user.id : null,
       key: plugins.recommendationKey(recommendation),
       recommendation,
+      params: choice ? { choice } : null,
     });
     if (created) { runner.kick(); }
     // The live job that already covers this recommendation may be another

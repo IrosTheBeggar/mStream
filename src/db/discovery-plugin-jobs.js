@@ -39,6 +39,9 @@ export function rowToJob(row) {
     userId: row.user_id,
     key: row.rec_key,
     recommendation: parse(row.recommendation),
+    // What the job was started with beyond the recommendation (V76):
+    // { choice: { url } } when the caller picked a lookup candidate.
+    params: parse(row.params),
     state: row.state,
     progress: row.progress,
     statusText: row.status_text,
@@ -55,14 +58,14 @@ export function rowToJob(row) {
 
 // Enqueue, or return the live job that already covers this
 // (plugin, recommendation). `created` says which.
-export function createJob({ plugin, userId = null, key, recommendation }) {
+export function createJob({ plugin, userId = null, key, recommendation, params = null }) {
   if (!plugin || !key || !recommendation) { throw new Error('createJob: plugin, key and recommendation are required'); }
   const now = Date.now();
   const res = d().prepare(`
     INSERT OR IGNORE INTO discovery_plugin_jobs
-      (plugin, user_id, rec_key, recommendation, state, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 'queued', ?, ?)
-  `).run(plugin, userId, key, JSON.stringify(recommendation), now, now);
+      (plugin, user_id, rec_key, recommendation, params, state, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)
+  `).run(plugin, userId, key, JSON.stringify(recommendation), params == null ? null : JSON.stringify(params), now, now);
   if (res.changes === 1) {
     return { job: getJob(Number(res.lastInsertRowid)), created: true };
   }

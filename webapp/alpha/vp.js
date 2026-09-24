@@ -242,6 +242,8 @@ const VUEPLAYERCORE = (() => {
       jobs: {},
       jobBusy: {},
       jobErrors: {},
+      // plug-in name → its lookup (what "Get it" would fetch): see dmLookup.
+      lookups: {},
       picker: null,
     }, over || {});
   }
@@ -287,6 +289,9 @@ const VUEPLAYERCORE = (() => {
     plus: 'M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z',
     retry: 'M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z',
     up: 'M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z',
+    down: 'M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z',
+    search: 'M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z',
+    open: 'M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zM5 5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h12c1.1 0 2-.9 2-2v-7h-2v7H5V7h7V5H5z',
   };
   Vue.component('dm-icon', {
     props: { name: String, size: { type: Number, default: 16 } },
@@ -322,6 +327,84 @@ const VUEPLAYERCORE = (() => {
           <a v-if="has('start')" class="dm-btn dm-btn-sm dm-btn-primary" :class="{ 'is-disabled': busy }" href="javascript:void(0)" v-on:click="$emit('start')"><dm-icon :name="startIcon" :size="14"></dm-icon>{{ startLabel }}</a>
           <a v-if="has('retry')" class="dm-btn dm-btn-sm" :class="{ 'is-disabled': busy }" href="javascript:void(0)" v-on:click="$emit('start')"><dm-icon name="retry" :size="14"></dm-icon>{{ tt('discover.job.retry') }}</a>
           <a v-if="has('cancel')" class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="$emit('cancel')">{{ tt('discover.modal.cancel') }}</a>
+        </div>
+      </div>`,
+  });
+
+  // The lookup card: what an acquire plug-in with a lookup ("Get it" from
+  // YouTube) WOULD fetch, before anything is. Idle it offers the lookup and
+  // the plain download; once the plug-in answered it shows the best upload
+  // (thumbnail, title, channel, length, score) with "Download this", a link
+  // out and the other candidates to pick from. `lookup` is the window's
+  // state for the plug-in (vp.js dmLookup); the card is
+  // DISCOVERJOBS.lookupCard of it. Once a job exists the job row takes over.
+  Vue.component('dm-lookup-row', {
+    props: { plugin: Object, lookup: Object, query: String, busy: Boolean, error: String },
+    data: function () { return { othersOpen: false }; },
+    computed: {
+      card: function () { return DISCOVERJOBS.lookupCard(this.lookup); },
+      state: function () { return this.card.state; },
+      meta: function () { return this.card.card ? [this.card.card.channel, this.card.card.length, this.plugin.title].filter(Boolean).join(' · ') : ''; },
+    },
+    methods: {
+      tt: function (key, params) { return (typeof t === 'function') ? t(key, params) : key; },
+      choose: function (url) { this.othersOpen = false; this.$emit('choose', url); },
+      tag: function (item) { return this.tt(item.loose ? 'discover.lookup.loose' : 'discover.lookup.match', { pct: item.scorePct }); },
+    },
+    template: `
+      <div class="dm-opt" :class="{ 'dm-opt-wrap': state === 'ready', 'dm-opt-muted': state === 'none' }">
+        <div v-if="state === 'ready' && card.card.thumbnail" class="dm-thumb" :style="{ backgroundImage: 'url(' + card.card.thumbnail + ')' }"></div>
+        <div v-else class="dm-opt-ic" :class="{ 'dm-opt-ic-ok': state === 'owned', 'dm-opt-ic-err': state === 'error' }"><dm-icon :name="state === 'owned' ? 'check' : (state === 'error' ? 'warn' : (state === 'loading' ? 'search' : 'download'))"></dm-icon></div>
+        <div class="dm-opt-body">
+          <template v-if="state === 'ready'">
+            <div class="dm-opt-title" :title="card.card.title">{{ card.card.title }}<span class="dm-tag" :class="card.card.loose ? 'dm-tag-err' : 'dm-tag-ok'">{{ tag(card.card) }}</span></div>
+            <div class="dm-opt-sub" :class="{ 'dm-opt-sub-err': !!error }" :title="error || meta">{{ error || meta }}</div>
+          </template>
+          <template v-else-if="state === 'loading'">
+            <div class="dm-opt-title">{{ plugin.title }}<span class="dm-tag dm-tag-src">{{ tt('discover.lookup.searching') }}</span></div>
+            <div class="dm-opt-sub">{{ tt('discover.lookup.searchingSub', { plugin: plugin.title, query: query }) }}</div>
+            <div class="dm-progress dm-progress-indet" role="progressbar"><i></i></div>
+          </template>
+          <template v-else-if="state === 'owned'">
+            <div class="dm-opt-title">{{ plugin.title }}<span class="dm-tag dm-tag-ok">{{ tt('discover.job.owned') }}</span></div>
+            <div class="dm-opt-sub">{{ tt('discover.job.ownedSub') }}</div>
+          </template>
+          <template v-else-if="state === 'none'">
+            <div class="dm-opt-title">{{ plugin.title }}</div>
+            <div class="dm-opt-sub">{{ tt('discover.lookup.none', { plugin: plugin.title, query: query }) }}</div>
+          </template>
+          <template v-else-if="state === 'error'">
+            <div class="dm-opt-title">{{ plugin.title }}<span class="dm-tag dm-tag-err">{{ tt('discover.job.failed') }}</span></div>
+            <div class="dm-opt-sub dm-opt-sub-err" :title="card.error">{{ card.error || tt('discover.lookup.failed') }}</div>
+          </template>
+          <template v-else>
+            <div class="dm-opt-title" :title="plugin.description">{{ plugin.title }}</div>
+            <div class="dm-opt-sub" :class="{ 'dm-opt-sub-err': !!error }" :title="error || ''">{{ error || tt('discover.lookup.idleSub', { query: query }) }}</div>
+          </template>
+        </div>
+        <div class="dm-opt-act">
+          <template v-if="state === 'ready'">
+            <a class="dm-btn dm-btn-sm dm-btn-ghost dm-btn-icon" :href="card.card.url" target="_blank" rel="noopener" :title="tt('discover.lookup.open', { plugin: plugin.title })"><dm-icon name="open" :size="14"></dm-icon></a>
+            <a v-if="card.others.length" class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="othersOpen = !othersOpen">{{ tt('discover.lookup.others', { count: card.others.length }) }}<dm-icon :name="othersOpen ? 'up' : 'down'" :size="14"></dm-icon></a>
+            <a class="dm-btn dm-btn-sm dm-btn-primary" :class="{ 'is-disabled': busy }" href="javascript:void(0)" v-on:click="$emit('download', card.card.url)"><dm-icon name="download" :size="14"></dm-icon>{{ tt('discover.lookup.downloadThis') }}</a>
+          </template>
+          <template v-else-if="state === 'owned'">
+            <a v-if="card.owned && card.owned.filepath" class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="$emit('play', card.owned.filepath)"><dm-icon name="play" :size="14"></dm-icon>{{ tt('discover.modal.play') }}</a>
+            <a v-if="card.owned && card.owned.filepath" class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="$emit('queue', card.owned.filepath)"><dm-icon name="plus" :size="14"></dm-icon>{{ tt('discover.modal.queue') }}</a>
+          </template>
+          <template v-else-if="state === 'none' || state === 'error'">
+            <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="$emit('lookup')"><dm-icon name="retry" :size="14"></dm-icon>{{ tt('discover.lookup.again') }}</a>
+          </template>
+          <template v-else-if="state !== 'loading'">
+            <a class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="$emit('lookup')"><dm-icon name="search" :size="14"></dm-icon>{{ tt('discover.lookup.find') }}</a>
+            <a class="dm-btn dm-btn-sm" :class="{ 'is-disabled': busy }" href="javascript:void(0)" v-on:click="$emit('download', null)"><dm-icon name="download" :size="14"></dm-icon>{{ tt('discover.modal.download') }}</a>
+          </template>
+        </div>
+        <div v-if="state === 'ready' && othersOpen" class="dm-others">
+          <div v-for="o in card.others" :key="o.url" class="dm-other" role="button" tabindex="0" v-on:click="choose(o.url)" v-on:keydown.enter.prevent="choose(o.url)">
+            <div class="dm-thumb dm-thumb-sm" :style="o.thumbnail ? { backgroundImage: 'url(' + o.thumbnail + ')' } : null"></div>
+            <div class="dm-other-t"><b :title="o.title">{{ o.title }}</b><small>{{ [o.channel, o.length].filter(Boolean).join(' · ') }} · {{ tag(o) }}</small></div>
+          </div>
         </div>
       </div>`,
   });
@@ -1108,14 +1191,21 @@ const VUEPLAYERCORE = (() => {
         }
         this.scheduleDiscoverJobsPoll();
       },
-      dmJobStart: async function (plugin) {
+      // `choice` = { url } picked from the plug-in's lookup; null = the plain
+      // download (the plug-in searches); undefined (a Retry) = whatever the
+      // lookup chose, if it did.
+      dmJobStart: async function (plugin, choice) {
         const name = plugin.name;
         const gen = this.discover.modal.gen;
         if (this.discover.modal.jobBusy[name]) { return; }
+        if (choice === undefined) {
+          const l = this.discover.modal.lookups[name];
+          choice = (l && l.status === 'ready' && l.chosen) ? { url: l.chosen } : null;
+        }
         this.$set(this.discover.modal.jobBusy, name, true);
         this.$delete(this.discover.modal.jobErrors, name);
         try {
-          const res = await MSTREAMAPI.discoveryJobStart(name, this.dmRecommendation());
+          const res = await MSTREAMAPI.discoveryJobStart(name, this.dmRecommendation(), choice || undefined);
           if (res && res.job) {
             this.noteDiscoverJob(res.job);
             if (this.dmLive(gen)) {
@@ -1128,6 +1218,42 @@ const VUEPLAYERCORE = (() => {
         }
         if (this.dmLive(gen)) { this.$set(this.discover.modal.jobBusy, name, false); }
         this.scheduleDiscoverJobsPoll();
+      },
+      // ── The lookup card ("what would Get it fetch?") ───────────────────
+      // A plug-in with a lookup shows the card until a job exists for it.
+      dmLookupRow: function (gr) {
+        return DISCOVERJOBS.hasLookup(gr.plugin) && gr.row.state === 'idle';
+      },
+      dmLookupState: function (name) {
+        return this.discover.modal.lookups[name] || { status: 'idle', query: this.dmSearchWords(), candidates: [], chosen: null, owned: null, error: '' };
+      },
+      // Ask the plug-in what it would fetch. Nothing is asked until the user
+      // presses (a search is a request to YouTube from this server).
+      dmLookup: async function (plugin) {
+        const name = plugin.name;
+        const gen = this.discover.modal.gen;
+        const current = this.discover.modal.lookups[name];
+        if (current && current.status === 'loading') { return; }
+        const blank = { status: 'loading', query: this.dmSearchWords(), minScore: null, candidates: [], chosen: null, owned: null, error: '' };
+        this.$set(this.discover.modal.lookups, name, blank);
+        let res = null;
+        try { res = await MSTREAMAPI.discoveryPluginResolve(name, this.dmRecommendation()); } catch (_) { res = null; }
+        if (!this.dmLive(gen)) { return; }
+        const answer = res && !res.disabled && res.result && res.result.lookup;
+        if (!answer) {
+          this.$set(this.discover.modal.lookups, name, { ...blank, status: 'error', error: (res && typeof res.error === 'string') ? res.error : '' });
+          return;
+        }
+        const candidates = Array.isArray(answer.candidates) ? answer.candidates.filter((c) => c && c.url) : [];
+        this.$set(this.discover.modal.lookups, name, {
+          status: answer.owned ? 'owned' : (candidates.length ? 'ready' : 'none'),
+          query: answer.query || this.dmSearchWords(), minScore: answer.minScore, candidates,
+          chosen: candidates.length ? candidates[0].url : null, owned: answer.owned || null, error: '',
+        });
+      },
+      dmLookupChoose: function (plugin, url) {
+        const l = this.discover.modal.lookups[plugin.name];
+        if (l && l.candidates.some((c) => c.url === url)) { l.chosen = url; }
       },
       dmJobCancel: async function (plugin) {
         const job = this.discover.modal.jobs[plugin.name];

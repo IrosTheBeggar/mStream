@@ -34,6 +34,7 @@ const FAKE = path.join(REPO_ROOT, 'test', 'helpers', 'fake-yt-dlp.mjs');
 const hasFfmpeg = fs.existsSync(FFMPEG);
 
 const JOBS = '/api/v1/discovery/plugins/youtube/jobs';
+const RESOLVE = '/api/v1/discovery/plugins/youtube/resolve';
 const DEST = '/api/v1/discovery/collection/destination';
 const SWEEP = '/api/v1/admin/discovery-jobs/sweep';
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -46,6 +47,10 @@ const SEARCH = {
     { id: 'live', url: yt('live'), title: 'Nova - Remote Hit (Live at the Pier)', duration: 4, channel: 'Nova' },
   ],
   'ghost song': [],
+  'vanished': [
+    { id: 'gone', url: yt('gone'), title: 'Vanished', duration: 2, channel: 'Nova - Topic', uploader: 'Nova - Topic', fail: 'This video is not available' },
+    { id: 'still', url: yt('still'), title: 'Nova - Vanished (Lyric Video)', duration: 2, channel: 'LyricsHub', uploader: 'LyricsHub' },
+  ],
   '*': [{ id: 'other', url: yt('other'), title: 'Something Else Entirely', duration: 300, channel: 'Rando' }],
 };
 
@@ -139,9 +144,36 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
       await new Promise((res) => setTimeout(res, 200));
     }
     assert.ok(p, 'youtube is listed');
-    assert.deepEqual(p.capabilities, ['acquire']);
+    assert.deepEqual(p.capabilities, ['acquire', 'lookup']);
     assert.equal(p.available, true);
     assert.equal(p.enabled, true);
+  });
+
+  test('the lookup answers what a job would fetch — best first, the live take left out — with nothing fetched', async () => {
+    const r = await api(server, 'POST', RESOLVE, { recommendation: REC });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.capabilities, ['acquire', 'lookup']);
+    const { lookup } = r.body.result;
+    assert.equal(lookup.query, 'Nova Remote Hit');
+    assert.equal(lookup.minScore, 0.62);
+    assert.equal(lookup.owned, null);
+    assert.deepEqual(lookup.candidates.map((c) => c.id), ['topic', 'lyric']);
+    const best = lookup.candidates[0];
+    assert.equal(best.url, yt('topic'));
+    assert.equal(best.title, 'Remote Hit');
+    assert.equal(best.channel, 'Nova - Topic');
+    assert.equal(best.topic, true);
+    assert.equal(best.durationSec, 2);
+    assert.ok(best.score >= 0.62 && best.score <= 1, `score ${best.score}`);
+    assert.ok(lookup.candidates[1].score <= best.score);
+    assert.deepEqual(collectionFiles(), [], 'nothing was fetched');
+    assert.deepEqual(staged(), []);
+    assert.deepEqual((await api(server, 'POST', '/api/v1/discovery/plugin-jobs/lookup', { recommendation: REC })).body.jobs, [], 'and no job exists');
+    // Nothing close is an empty answer, not a failure.
+    const none = await api(server, 'POST', RESOLVE, { recommendation: { ...REC, title: 'Ghost Song' } });
+    assert.equal(none.status, 200, JSON.stringify(none.body));
+    assert.deepEqual(none.body.result.lookup.candidates, []);
+    assert.equal(none.body.result.lookup.query, 'Nova Ghost Song');
   });
 
   test('a job searches, picks the Topic upload over the lyric video, downloads, and files the song in the collection destination', async () => {
@@ -181,6 +213,62 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
     const media = await fetch(`${server.baseUrl}/media/${result.downloaded.filepath.split('/').map(encodeURIComponent).join('/')}`);
     assert.equal(media.status, 200, 'served like any library song');
     assert.equal((await media.arrayBuffer()).byteLength, fs.statSync(inCollection('Nova', 'Night Ferry', 'Remote_Hit.mp3')).size);
+  });
+
+  test('the lookup answers owned for a song the library has, without asking YouTube', async () => {
+    const r = await api(server, 'POST', RESOLVE, { recommendation: REC });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const { lookup } = r.body.result;
+    assert.deepEqual(lookup.candidates, []);
+    assert.equal(lookup.owned.filepath, 'collection/Nova/Night Ferry/Remote_Hit.mp3');
+    assert.equal(lookup.owned.by, 'tags');
+  });
+
+  test('a job started with a chosen upload fetches that one: the pick stands even where the scorer would pass it over', async () => {
+    const rec = { ...REC, title: 'Harbour Days' };
+    const keepFixture = fs.readFileSync(fixturePath);   // other audio for this one: the hash check must not call it owned
+    writeScript({ details: { hd: { id: 'hd', url: yt('hd'), title: 'Nova - Harbour Days (Live at the Pier)', duration: 2, channel: 'Nova' } } });
+    await makeFixture({ frequency: 660, duration: 2 });
+    try {
+      // Not a YouTube link: refused before a job exists.
+      const bad = await api(server, 'POST', JOBS, { recommendation: rec, choice: { url: 'https://example.com/song.mp3' } });
+      assert.equal(bad.status, 400, JSON.stringify(bad.body));
+      assert.match(bad.body.error, /YouTube link/);
+      assert.deepEqual((await api(server, 'POST', '/api/v1/discovery/plugin-jobs/lookup', { recommendation: rec })).body.jobs, []);
+
+      const started = await api(server, 'POST', JOBS, { recommendation: rec, choice: { url: yt('hd') } });
+      assert.equal(started.status, 202, JSON.stringify(started.body));
+      assert.deepEqual(started.body.job.params, { choice: { url: yt('hd') } });
+      const job = await untilFinished(started.body.job.id);
+      assert.equal(job.state, 'done', `job error: ${job.error}`);
+      assert.equal(job.result.match.url, yt('hd'));
+      assert.equal(job.result.match.chosen, true);
+      assert.equal(job.result.match.title, 'Nova - Harbour Days (Live at the Pier)', 'a live take the search would have dropped');
+      assert.ok(job.result.downloaded.filepath.startsWith('collection/Nova/Night Ferry/'), job.result.downloaded.filepath);
+      assert.deepEqual([job.result.downloaded.title, job.result.downloaded.artist, job.result.downloaded.album], ['Harbour Days', 'Nova', 'Night Ferry'], 'tagged from the recommendation');
+      assert.ok(fs.existsSync(inCollection(...job.result.downloaded.filepath.split('/').slice(1))));
+      assert.deepEqual(staged(), []);
+    } finally {
+      fs.writeFileSync(fixturePath, keepFixture);
+      writeScript();
+    }
+  });
+
+  test('an upload YouTube will not serve is not offered, and a job takes the next one', async () => {
+    const rec = { ...REC, title: 'Vanished' };
+    const r = await api(server, 'POST', RESOLVE, { recommendation: rec });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.result.lookup.candidates.map((c) => c.id), ['still'], 'the Topic upload YouTube refuses to serve is left out');
+    const keepFixture = fs.readFileSync(fixturePath);
+    await makeFixture({ frequency: 880, duration: 2 });
+    try {
+      const job = await runJob(rec);
+      assert.equal(job.state, 'done', `job error: ${job.error}`);
+      assert.equal(job.result.match.url, yt('still'));
+      assert.equal(job.result.match.chosen, false);
+    } finally {
+      fs.writeFileSync(fixturePath, keepFixture);
+    }
   });
 
   test('a song the library has is skipped: by its tags before the search, by its audio after a download under other tags', async () => {

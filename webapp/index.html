@@ -1261,11 +1261,19 @@
                       <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="dmInviteForm(false)">{{ tt('discover.modal.cancel') }}</a>
                     </div>
                   </div>
-                  <dm-job-row v-for="gr in dmGetItRows()" :key="gr.plugin.name" :row="gr.row"
-                              :title="gr.plugin.title" :idle-sub="tt('discover.modal.getItSub', { query: dmSearchWords() })" :hint="gr.plugin.description"
-                              :start-label="tt('discover.modal.download')"
-                              :busy="discover.modal.jobBusy[gr.plugin.name] === true"
-                              v-on:start="dmJobStart(gr.plugin)" v-on:cancel="dmJobCancel(gr.plugin)" v-on:play="dmJobPlay(gr.plugin)" v-on:queue="dmJobQueue(gr.plugin)"></dm-job-row>
+                  <!-- A plug-in with a lookup shows what it would fetch first
+                       (the card) until a job exists; then the row is its job. -->
+                  <template v-for="gr in dmGetItRows()">
+                    <dm-lookup-row v-if="dmLookupRow(gr)" :key="'lookup-' + gr.plugin.name" :plugin="gr.plugin" :lookup="dmLookupState(gr.plugin.name)" :query="dmSearchWords()"
+                                   :busy="discover.modal.jobBusy[gr.plugin.name] === true" :error="discover.modal.jobErrors[gr.plugin.name] || ''"
+                                   v-on:lookup="dmLookup(gr.plugin)" v-on:choose="dmLookupChoose(gr.plugin, $event)" v-on:download="dmJobStart(gr.plugin, $event ? { url: $event } : null)"
+                                   v-on:play="playDiscoverFile($event); closeDiscoverModal()" v-on:queue="queueDiscoverFile($event)"></dm-lookup-row>
+                    <dm-job-row v-else :key="'job-' + gr.plugin.name" :row="gr.row"
+                                :title="gr.plugin.title" :idle-sub="tt('discover.modal.getItSub', { query: dmSearchWords() })" :hint="gr.plugin.description"
+                                :start-label="tt('discover.modal.download')"
+                                :busy="discover.modal.jobBusy[gr.plugin.name] === true"
+                                v-on:start="dmJobStart(gr.plugin)" v-on:cancel="dmJobCancel(gr.plugin)" v-on:play="dmJobPlay(gr.plugin)" v-on:queue="dmJobQueue(gr.plugin)"></dm-job-row>
+                  </template>
                 </section>
 
                 <!-- Find elsewhere: the links plug-in's pages, and the title

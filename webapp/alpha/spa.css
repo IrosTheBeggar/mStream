@@ -2366,6 +2366,15 @@ select {
 .dm-tag-err { color: #e0616a; }
 /* Job rows (Get it · Add to your collection): the row is its job */
 .dm-opt-sub-err { color: #e0616a; }
+/* The lookup card: the upload "Get it" would fetch, and the others to pick from */
+.dm-thumb { width: 52px; height: 29px; border-radius: 4px; background: #1a1e25 center / cover no-repeat; flex-shrink: 0; }
+.dm-thumb-sm { width: 40px; height: 23px; }
+.dm-others { flex-basis: 100%; padding-left: 38px; margin-top: 4px; display: grid; gap: 2px; }
+.dm-other { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+.dm-other:hover, .dm-other:focus-visible { background: #2c323c; outline: none; }
+.dm-other-t { min-width: 0; line-height: 1.3; }
+.dm-other-t b { display: block; font-size: 12px; font-weight: 400; color: #dfe3ea; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-other-t small { display: block; font-size: 10.5px; color: #8a919e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dm-progress { height: 4px; background: #1a1e25; border-radius: 2px; overflow: hidden; margin-top: 6px; }
 .dm-progress i { display: block; height: 100%; background: var(--src); border-radius: 2px; transition: width .4s ease; }
 .dm-progress-indet i { width: 35%; animation: dm-indet 1.4s ease-in-out infinite; }

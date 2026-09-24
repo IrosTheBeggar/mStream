@@ -3,7 +3,8 @@
 //
 //   MSTREAM_FAKE_YTDLP_SCRIPT   a JSON file:
 //     { search:   { "<query substring>": [entries], "*": [entries] },
-//       details:  { "<id>": entry },
+//       details:  { "<id>": entry },           an entry with `fail` refuses
+//                                              its details call with that text
 //       download: { fail: "message", exitCode: 1, slowMs: 400 } }
 //   MSTREAM_FAKE_YTDLP_FIXTURE  the audio file a "download" copies into place
 //
@@ -53,7 +54,12 @@ if (has('--dump-json')) {
     for (const r of rows) { process.stdout.write(JSON.stringify(r) + '\n'); }
     process.exit(0);
   }
-  process.stdout.write(JSON.stringify(entryFor(s, idOf(url))) + '\n');
+  const e = entryFor(s, idOf(url));
+  if (e.fail) {
+    process.stderr.write(`ERROR: [youtube] ${e.id}: ${e.fail}\n`);
+    process.exit(1);
+  }
+  process.stdout.write(JSON.stringify(e) + '\n');
   process.exit(0);
 }
 

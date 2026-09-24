@@ -172,8 +172,9 @@ const MSTREAMAPI = (() => {
   // err.body): a job row shows the server's own reason — "someone else is
   // already getting this", "a file already exists at …" — not a shrug.
   const jobsRoute = (tail) => mstreamModule.currentServer.host + 'api/v1/discovery/plugin-jobs' + (tail || '');
-  mstreamModule.discoveryJobStart = (name, recommendation) => {
-    return req('POST', mstreamModule.currentServer.host + 'api/v1/discovery/plugins/' + encodeURIComponent(name) + '/jobs', { recommendation });
+  // `choice` = { url }: an upload picked from the plug-in's lookup.
+  mstreamModule.discoveryJobStart = (name, recommendation, choice) => {
+    return req('POST', mstreamModule.currentServer.host + 'api/v1/discovery/plugins/' + encodeURIComponent(name) + '/jobs', choice ? { recommendation, choice } : { recommendation });
   };
   mstreamModule.discoveryJobs = () => req('GET', jobsRoute());
   mstreamModule.discoveryJob = (id) => req('GET', jobsRoute('/' + encodeURIComponent(id)));

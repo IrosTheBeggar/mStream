@@ -104,6 +104,7 @@ async function runJob(plugin, job) {
   const ctx = {
     job,
     recommendation: job.recommendation,
+    params: job.params || null,
     userId: job.userId,
     progress: (fraction, text) => { try { jobsDb.updateProgress(job.id, fraction, text); } catch (_e) { /* best-effort */ } },
     isCancelled: () => { try { return jobsDb.isCancelRequested(job.id); } catch (_e) { return false; } },

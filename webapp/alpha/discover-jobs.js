@@ -344,11 +344,62 @@
     return out.reverse();
   }
 
+  // ── the lookup card ────────────────────────────────────────────────────
+  // What "Get it" would fetch, before anything is fetched: an acquire
+  // plug-in's lookup answer (candidates best first, the score bar, or
+  // `owned`) as the row shows it. `lookup` is the window's state for the
+  // plug-in (vp.js dmLookup):
+  //   { status: 'idle' | 'loading' | 'ready' | 'none' | 'owned' | 'error',
+  //     query, minScore, candidates, chosen (a url), owned, error }
+  const LOOKUP_CAPABILITY = 'lookup';
+
+  function hasLookup(plugin) {
+    return !!plugin && Array.isArray(plugin.capabilities) && plugin.capabilities.indexOf(LOOKUP_CAPABILITY) !== -1;
+  }
+
+  // 253 → "4:13"; 3725 → "1:02:05"; '' for an unknown length.
+  function fmtSeconds(sec) {
+    if (sec == null || sec === '') { return ''; }
+    const s = Math.round(Number(sec));
+    if (!Number.isFinite(s) || s < 0) { return ''; }
+    const two = (n) => (n < 10 ? '0' + n : String(n));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return h > 0 ? `${h}:${two(m)}:${two(s % 60)}` : `${m}:${two(s % 60)}`;
+  }
+
+  function lookupItem(c, minScore) {
+    const score = Number(c.score) || 0;
+    return {
+      url: c.url, title: c.title || '', channel: c.channel || '', length: fmtSeconds(c.durationSec),
+      thumbnail: c.thumbnail || null, topic: c.topic === true,
+      scorePct: Math.round(score * 100), loose: score < (Number(minScore) || 0),
+    };
+  }
+
+  // The row's view of a lookup: the candidate shown (the chosen one, else
+  // the best) and the others to pick from.
+  function lookupCard(lookup) {
+    const l = lookup || { status: 'idle' };
+    const candidates = Array.isArray(l.candidates) ? l.candidates : [];
+    const shown = candidates.find((c) => c.url === l.chosen) || candidates[0] || null;
+    const state = l.status === 'ready' && !shown ? 'none' : (l.status || 'idle');
+    return {
+      state,
+      query: l.query || '',
+      card: shown ? lookupItem(shown, l.minScore) : null,
+      others: shown ? candidates.filter((c) => c !== shown).map((c) => lookupItem(c, l.minScore)) : [],
+      owned: l.owned || null,
+      error: l.error || '',
+    };
+  }
+
   return {
-    LAYOUT_VARS, DEFAULT_LAYOUT, SAMPLE_TAGS, SAMPLE_PEER, COPY_PLUGIN,
+    LAYOUT_VARS, DEFAULT_LAYOUT, SAMPLE_TAGS, SAMPLE_PEER, COPY_PLUGIN, LOOKUP_CAPABILITY,
     sanitizeSegment, resolveLayout, validateLayout, validateResolvedPath, normalizeBase, safeFileName, previewTarget, pathCrumbs,
     isLive, fmtBytes, jobRowState, jobsByPlugin,
     inTray, trayRows, traySummary, jobTitle, finishedSince,
     downloadRow, downloadsTotals, queueIndexesFor,
+    hasLookup, fmtSeconds, lookupCard,
   };
 }));
