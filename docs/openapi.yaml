@@ -279,6 +279,30 @@ components:
         config: { type: object, additionalProperties: true, description: "Current values of `adminSettings`." }
         connectedUsers: { type: integer, description: "Only for a plug-in that keeps a per-user secret: how many accounts hold one." }
 
+    PluginDownload:
+      type: object
+      description: One song a discovery plug-in (or the Youtube DL route) brought into a library, and what became of it. Timestamps are ms epochs.
+      properties:
+        id: { type: integer }
+        plugin: { type: string, example: youtube, description: "`youtube`, `federation-copy`, or `ytdl` for the Youtube DL route." }
+        userId: { type: integer, nullable: true, description: "Who asked; null for the anonymous account or after the user was deleted." }
+        username: { type: string, nullable: true, description: "Only in an admin's `?all=1` listing." }
+        jobId: { type: integer, nullable: true, description: "The plug-in job that fetched it (its row is pruned later); null for the Youtube DL route." }
+        vpath: { type: string, description: The library it was filed in. }
+        filepath: { type: string, example: "music/Nova/Night Ferry/Remote_Hit.mp3", description: "The full library path, spelled as every other API spells a song." }
+        relativePath: { type: string, description: The path inside the library. }
+        fileHash: { type: string, nullable: true }
+        origin: { type: string, nullable: true, description: "The YouTube URL, or the paired server's name." }
+        title: { type: string, nullable: true }
+        artist: { type: string, nullable: true }
+        album: { type: string, nullable: true }
+        bytes: { type: integer, nullable: true }
+        downloadedAt: { type: number }
+        removedAt: { type: number, nullable: true }
+        removedBy: { type: integer, nullable: true, description: The account that removed it. }
+        present: { type: boolean, description: "Whether a track row still sits at that path; false once a scan or a hand removed the file." }
+        trackId: { type: integer, nullable: true }
+
     DiscoveryPluginJob:
       type: object
       description: One thing a discovery plug-in was asked to do with a recommendation (acquire / hand-off). Timestamps are ms epochs.
@@ -2800,44 +2824,70 @@ paths:
         "404": { description: "No such job, or not the caller's." }
         "409": { description: "The job has already finished." }
 
-  /api/v1/discovery/plugin-jobs/{id}/keep:
-    post:
+  /api/v1/discovery/downloads:
+    get:
       tags: [Discovery]
-      summary: Keep a finished download (move it into the collection)
+      summary: What the plug-ins brought into the library
       description: |
-        A download an acquire plug-in landed in the `discover-downloads`
-        scratch library expires unless it is kept. Keep… moves the file into
-        the caller's collection destination — or the one-off `destination` in
-        the body, checked like a saved one — rendering the layout from the
-        file's own tags. It never overwrites; the library row follows the
-        file; ratings and play counts follow by themselves (they key on the
-        track hash); playlist entries that pointed at the old path are
-        rewritten; the job's `result` gains `kept` and stops reporting an
-        expiry. Needs upload rights: keeping is an upload by another road.
+        The record of every song the discovery plug-ins (`youtube`,
+        `federation-copy`) and the Youtube DL route filed in a library,
+        newest first: which plug-in, for whom, from where (`origin`: the
+        YouTube URL, the peer's name), where it was filed, the tags as filed,
+        and whether the track row is still there (`present`; a scan that
+        removed the file makes it false without anyone telling the record).
+        The caller's own by default; an admin's `?all=1` lists every
+        account's, each with its `username` (`null` for an account that is
+        gone, and for the anonymous account of a server with no users).
+        Removed downloads are history and hidden unless `?removed=1`.
+        `?before=<id>` pages backwards.
       parameters:
-        - { name: id, in: path, required: true, schema: { type: integer } }
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                destination: { $ref: "#/components/schemas/DiscoveryCollectionDestination" }
+        - { name: all, in: query, schema: { type: boolean }, description: "Admins: every account's." }
+        - { name: removed, in: query, schema: { type: boolean }, description: "Include removed records." }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+        - { name: before, in: query, schema: { type: integer }, description: "Only records with a smaller id." }
       responses:
         "200":
-          description: Kept; the job as it now stands.
+          description: The records.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  job: { $ref: "#/components/schemas/DiscoveryPluginJob" }
-        "400": { description: "The job has no download to keep (it failed, or its plug-in does not download), or the one-off destination was refused." }
+                  downloads:
+                    type: array
+                    items: { $ref: "#/components/schemas/PluginDownload" }
+        "400": { description: "A parameter out of range." }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { description: "Uploads are disabled for the caller, or there is no library to keep into." }
-        "404": { description: "No such job, or not the caller's." }
-        "409": { description: "Already kept, already expired and removed, a file already exists at the target path, or the file is in use right now (try again)." }
+
+  /api/v1/discovery/downloads/{id}:
+    delete:
+      tags: [Discovery]
+      summary: Remove a download the plug-ins brought in
+      description: |
+        Deletes the file, its library row and the playlist entries that
+        pointed at it, and marks the record removed. Only the account that
+        asked for the download, or an admin; anyone else gets the same 404 as
+        an unknown id. A file that is already gone (a scan swept it, a hand
+        removed it) still settles the record, answered with `fileRemoved:
+        false`. Ratings and play counts key on the recording's hash and are
+        left alone. This is the one place the API deletes music.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: Removed; the record as it now stands.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  download: { $ref: "#/components/schemas/PluginDownload" }
+                  fileRemoved: { type: boolean, description: "False when the file was already gone." }
+                  rowsRemoved: { type: integer, description: "Track rows deleted (0 when a scan got there first)." }
+                  playlistEntries: { type: integer, description: "Playlist entries that pointed at the file." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "No such download, not the caller's, or the caller no longer sees the library it landed in." }
+        "409": { description: "Already removed, or the file is in use right now (try again)." }
 
   # ── Search ───────────────────────────────────────────────────────────────
 

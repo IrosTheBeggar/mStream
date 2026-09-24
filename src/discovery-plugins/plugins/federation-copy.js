@@ -34,6 +34,7 @@ import * as config from '../../state/config.js';
 import * as fedDb from '../../db/federation.js';
 import * as vpathUtil from '../../util/vpath.js';
 import * as destinations from '../destination.js';
+import * as downloadsDb from '../../db/plugin-downloads.js';
 import { ownedTrack } from '../owned.js';
 import { CAPABILITIES, SCOPES } from '../registry.js';
 import { RECOMMENDATION_SOURCES } from '../recommendation.js';
@@ -170,11 +171,17 @@ async function run(ctx) {
       filePath: targetInfo.fullPath, vpath: destination.vpath, basePath: targetInfo.basePath,
       source: NAME, log: 'federation-copy',
     });
+    // The record of what this plug-in brought in (src/db/plugin-downloads.js).
+    const recorded = downloadsDb.recordQuietly({
+      plugin: NAME, userId: ctx.userId, jobId: ctx.job.id, vpath: destination.vpath, relativePath: inserted.relativePath,
+      fileHash: inserted.hash, origin: peer.name, title: inserted.title, artist: inserted.artist, album: inserted.album, bytes,
+    });
     winston.info(`federation-copy: copied '${rec.filepath}' from peer '${peer.name}' (id=${peer.id}) to ${destination.vpath}/${inserted.relativePath} (${bytes} bytes)`);
     return {
       copied: {
         vpath: destination.vpath, filepath: `${destination.vpath}/${inserted.relativePath}`,
         trackId: inserted.trackId, bytes, title: inserted.title, artist: inserted.artist, album: inserted.album,
+        downloadId: recorded ? recorded.id : null,
       },
       missingVars: target.missingVars,
       peer: { id: peer.id, name: peer.name },

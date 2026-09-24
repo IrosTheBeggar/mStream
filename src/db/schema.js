@@ -87,7 +87,11 @@ import { mergeAlbumInto, backfillAlbumAggregates } from './album-merge.js';
 // V69 drops the velvet-only tables (smart_playlists, user_settings,
 // cue_points, play_events) and users.listenbrainz_token — the velvet UI and
 // the API modules that existed only for it were removed. See SCHEMA_V69.
-export const SCHEMA_VERSION = 74;
+// V74 adds the discovery plug-in jobs, the per-user settings store and
+// users.allow_discovery_jobs. See SCHEMA_V74.
+// V75 adds plugin_downloads, the record of what the plug-ins brought into the
+// library. See SCHEMA_V75.
+export const SCHEMA_VERSION = 75;
 
 // The schema version at which the SCANNER'S WRITE CONTRACT last changed —
 // the columns / identity rules a rust-parser binary must know to write rows
@@ -3229,6 +3233,43 @@ export const SCHEMA_V74 = `
   ALTER TABLE users ADD COLUMN allow_discovery_jobs INTEGER NOT NULL DEFAULT 0;
 `;
 
+// V75: plugin_downloads — the record of every song a discovery plug-in (or
+// the Youtube DL route) brought into a library: which plug-in, for whom
+// (user_id, NULL once the account is gone or for the anonymous account),
+// from where (`origin`: the YouTube URL, the peer's name), filed where
+// (vpath + filepath, the track row's own spelling), the file hash and the
+// tags as filed, when, and when and by whom it was removed. Its own table
+// because the track row is rewritten from the file's tags by every rescan
+// (a byte-for-byte copy carries no provenance marker) and the job row is
+// pruned; a removed record stays as history. One LIVE record per path: a
+// new download at a path an earlier one once had retires the earlier
+// record (src/db/plugin-downloads.js record()).
+export const SCHEMA_V75 = `
+  CREATE TABLE IF NOT EXISTS plugin_downloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plugin TEXT NOT NULL,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    job_id INTEGER,
+    vpath TEXT NOT NULL,
+    filepath TEXT NOT NULL,
+    file_hash TEXT,
+    origin TEXT,
+    title TEXT,
+    artist TEXT,
+    album TEXT,
+    bytes INTEGER,
+    downloaded_at INTEGER NOT NULL,
+    removed_at INTEGER,
+    removed_by INTEGER
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_plugin_downloads_live
+    ON plugin_downloads(vpath, filepath) WHERE removed_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_plugin_downloads_user
+    ON plugin_downloads(user_id, downloaded_at);
+  CREATE INDEX IF NOT EXISTS idx_plugin_downloads_hash
+    ON plugin_downloads(file_hash);
+`;
+
 export const MIGRATIONS = [
   { version: 1,  sql: SCHEMA_V1  },
   { version: 2,  sql: SCHEMA_V2  },
@@ -3518,4 +3559,8 @@ export const MIGRATIONS = [
   // V74 — discovery plug-in jobs + user_settings + users.allow_discovery_jobs.
   // New tables and an ADD COLUMN; nothing comes from tags. See SCHEMA_V74.
   { version: 74, sql: SCHEMA_V74 },
+  // V75 — plugin_downloads, the record of what the discovery plug-ins (and
+  // the Youtube DL route) brought into the library. A new table; nothing
+  // comes from tags. See SCHEMA_V75.
+  { version: 75, sql: SCHEMA_V75 },
 ];

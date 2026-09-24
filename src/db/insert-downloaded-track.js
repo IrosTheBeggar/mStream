@@ -176,7 +176,9 @@ export async function insertDownloadedTrack({ filePath, vpath, basePath, source,
     trackId = row ? row.id : null;
   }
   winston.info(`${log}: added ${relativePath} to database`);
-  return { relativePath, trackId, title: data.title, artist: data.artist, album: data.album, year: data.year };
+  // `hash` = the file hash the row carries, for the plugin_downloads record
+  // (src/db/plugin-downloads.js) a caller keeps beside the row.
+  return { relativePath, trackId, title: data.title, artist: data.artist, album: data.album, year: data.year, hash };
 }
 
 // The inverse: a downloaded file left the library outside the scanner (a

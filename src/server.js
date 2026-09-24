@@ -33,6 +33,7 @@ import * as discoveryPluginJobs from './discovery-plugins/jobs.js';
 import * as discoveryPlugins from './discovery-plugins/index.js';
 import * as discoveryRetention from './discovery-plugins/retention.js';
 import * as discoveryCollectionApi from './api/discovery-collection.js';
+import * as discoveryDownloadsApi from './api/discovery-downloads.js';
 import * as remoteApi from './api/remote.js';
 import * as sharedApi from './api/shared.js';
 import * as scrobblerApi from './api/scrobbler.js';
@@ -580,6 +581,7 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   discoveryPluginsApi.setup(mstream);
   discoveryPluginJobsApi.setup(mstream);
   discoveryCollectionApi.setup(mstream);
+  discoveryDownloadsApi.setup(mstream);
   dbApi.setup(mstream);
   syncApi.setup(mstream);
   statsApi.setup(mstream);

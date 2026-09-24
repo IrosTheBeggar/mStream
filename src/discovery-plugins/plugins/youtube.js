@@ -35,6 +35,7 @@ import * as ytdlp from '../../util/yt-dlp.js';
 import * as vpathUtil from '../../util/vpath.js';
 import * as destinations from '../destination.js';
 import * as staging from '../staging.js';
+import * as downloadsDb from '../../db/plugin-downloads.js';
 import { ownedTrack } from '../owned.js';
 import { scoreCandidate, MIN_SCORE } from '../match.js';
 import { searchPhrase } from '../recommendation.js';
@@ -283,12 +284,18 @@ async function run(ctx) {
     });
     const stat = await fs.stat(targetInfo.fullPath);
     await staging.discardStaging(dir);
+    // The record of what this plug-in brought in (src/db/plugin-downloads.js).
+    const recorded = downloadsDb.recordQuietly({
+      plugin: NAME, userId: ctx.userId, jobId: ctx.job.id, vpath: destination.vpath, relativePath: inserted.relativePath,
+      fileHash: inserted.hash, origin: best.entry.url, title: inserted.title, artist: inserted.artist, album: inserted.album, bytes: stat.size,
+    });
     winston.info(`youtube: downloaded “${best.entry.title}” (${best.entry.url}, score ${best.score}) to ${destination.vpath}/${inserted.relativePath}`);
     return {
       downloaded: {
         vpath: destination.vpath, filepath: `${destination.vpath}/${inserted.relativePath}`,
         trackId: inserted.trackId, bytes: stat.size, format: ytdlp.outputExtension(settings.codec),
         title: inserted.title, artist: inserted.artist, album: inserted.album,
+        downloadId: recorded ? recorded.id : null,
       },
       match: { score: best.score, url: best.entry.url, title: best.entry.title, channel: chosen.channel, durationSec: chosen.durationSec },
       missingVars: target.missingVars,

@@ -10,6 +10,7 @@ import * as transcode from './transcode.js';
 import { joiValidate } from '../util/validation.js';
 import * as vpath from '../util/vpath.js';
 import { insertDownloadedTrack } from '../db/insert-downloaded-track.js';
+import * as downloadsDb from '../db/plugin-downloads.js';
 import WebError from '../util/web-error.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import * as ytdlp from '../util/yt-dlp.js';
@@ -86,6 +87,7 @@ export function setup(mstream) {
     const codec = value.outputCodec;
     const expectedExt = ytdlp.outputExtension(codec);
     const userMeta = value.metadata || {};
+    const requester = req.user ? req.user.id : null;   // the request is gone by the time the file lands
     const handle = ytdlp.startDownload({
       bin, url: value.url, dir: pathInfo.fullPath, codec, ffmpegPath,
       onLog: (line) => winston.info(`yt-dlp output: ${line}`),
@@ -109,7 +111,7 @@ export function setup(mstream) {
       // User-submitted metadata + the MSTREAM_SOURCE provenance marker,
       // then the row the way a scan would write it. V36: source = 'ytdl'.
       await ytdlp.writeTags(filePath, { codec, meta: userMeta, source: 'ytdl', ffmpegPath });
-      await insertDownloadedTrack({
+      const inserted = await insertDownloadedTrack({
         filePath,
         vpath: pathInfo.vpath,
         basePath: pathInfo.basePath,
@@ -117,6 +119,14 @@ export function setup(mstream) {
         format: expectedExt,
         userMeta,
         log: 'yt-dlp',
+      });
+      // The same record the discovery plug-ins keep of what they bring in
+      // (src/db/plugin-downloads.js), so the Downloads view is complete.
+      const stat = await fs.stat(filePath).catch(() => null);
+      downloadsDb.recordQuietly({
+        plugin: 'ytdl', userId: requester, vpath: pathInfo.vpath, relativePath: inserted.relativePath,
+        fileHash: inserted.hash, origin: value.url, title: inserted.title, artist: inserted.artist, album: inserted.album,
+        bytes: stat ? stat.size : null,
       });
       entry.status = 'complete';
       forget(handle.pid);

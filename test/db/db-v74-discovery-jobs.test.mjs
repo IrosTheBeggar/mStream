@@ -55,7 +55,7 @@ describe('V74 discovery plug-in jobs + user settings', () => {
     assert.ok(!columns(db, 'users').includes('allow_discovery_jobs'));
     db.prepare("INSERT INTO users (username, password, salt, allow_torrent) VALUES ('alice', 'h', 's', 1)").run();
     const before = db.prepare("SELECT * FROM users WHERE username = 'alice'").get();
-    applyAllMigrations(db, { fromVersion: 73 });
+    applyAllMigrations(db, { fromVersion: 73, upToVersion: 74 });
     assert.equal(db.prepare('PRAGMA user_version').get().user_version, 74);
     const after = db.prepare("SELECT * FROM users WHERE username = 'alice'").get();
     assert.equal(after.allow_discovery_jobs, 0);
