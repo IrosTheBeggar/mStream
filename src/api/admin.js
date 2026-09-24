@@ -1681,17 +1681,11 @@ export function setup(mstream) {
 
   // Everything the admin panel's Discovery Plugins view shows, in one answer:
   // every registered plug-in (on or off, with why it cannot run and its
-  // editable settings), the job runner's gate and load, and what is sitting
-  // in Discover downloads.
+  // editable settings) and the job runner's gate and load.
   mstream.get("/api/v1/admin/discovery-plugins/status", async (req, res) => {
     await discoveryPlugins.refreshProbes();
-    const [downloads, retention, jobsDb] = await Promise.all([
-      import('../discovery-plugins/downloads.js'),
-      import('../discovery-plugins/retention.js'),
-      import('../db/discovery-plugin-jobs.js'),
-    ]);
+    const jobsDb = await import('../db/discovery-plugin-jobs.js');
     const jobsCfg = config.program.discoveryJobs || {};
-    const sweep = retention.status();
     res.json({
       plugins: adminPluginRows(),
       jobs: {
@@ -1699,10 +1693,6 @@ export function setup(mstream) {
         maxConcurrent: jobsCfg.maxConcurrent,
         retentionDays: jobsCfg.retentionDays,
         ...jobsDb.countLive(),
-      },
-      downloads: {
-        ...(await downloads.usage()),
-        sweeping: sweep.running, lastSweep: sweep.lastRun, nextSweepAt: sweep.nextRunAt,
       },
     });
   });
@@ -1727,33 +1717,23 @@ export function setup(mstream) {
   });
 
   // The discovery plug-in JOB runner's knobs (acquire / hand-off plug-ins):
-  // the acquisition gate and the concurrency cap. Live — the gate is read
-  // per request, the cap per tick. Partial bodies patch what they name.
+  // the acquisition gate, the concurrency cap and how long finished job rows
+  // are kept. Live — the gate is read per request, the cap per tick, the
+  // clock by the next retention pass. Partial bodies patch what they name.
   mstream.post("/api/v1/admin/config/discovery-jobs", async (req, res) => {
     const schema = Joi.object({
       enabledFor: Joi.string().valid('all', 'whitelist').optional(),
       maxConcurrent: Joi.number().integer().min(1).max(16).optional(),
       retentionDays: Joi.number().integer().min(1).max(3650).optional(),
-      // The Discover downloads clock (discoveryJobs.downloads.retentionDays):
-      // days a download nobody kept stays; 0 = never removed. Read by the
-      // next retention pass and by every job read (a download's expiry).
-      downloadsRetentionDays: Joi.number().integer().min(0).max(3650).optional(),
-      // The Discover downloads size cap (discoveryJobs.downloads.maxSizeMb):
-      // a new download is refused while the folder holds this much; 0 = no
-      // cap. Read before every download.
-      downloadsMaxSizeMb: Joi.number().integer().min(0).max(10_000_000).optional(),
     }).min(1);
     const { value } = joiValidate(schema, req.body || {});
-    const { downloadsRetentionDays, downloadsMaxSizeMb, ...patch } = value;
-    if (downloadsRetentionDays !== undefined) { patch.downloads = { ...(patch.downloads || {}), retentionDays: downloadsRetentionDays }; }
-    if (downloadsMaxSizeMb !== undefined) { patch.downloads = { ...(patch.downloads || {}), maxSizeMb: downloadsMaxSizeMb }; }
-    await admin.editDiscoveryJobs(patch);
+    await admin.editDiscoveryJobs(value);
     res.json({ discoveryJobs: config.program.discoveryJobs });
   });
 
   // Run the discovery retention pass now (src/discovery-plugins/retention.js):
-  // expired Discover downloads and their rows, stale partial files, old job
-  // rows. The same pass the server runs on its own schedule.
+  // finished job rows past discoveryJobs.retentionDays, and staging folders
+  // a crash left behind. The same pass the server runs on its own schedule.
   mstream.post("/api/v1/admin/discovery-jobs/sweep", async (req, res) => {
     const retention = await import('../discovery-plugins/retention.js');
     res.json(await retention.sweep());

@@ -2,16 +2,16 @@
  * The admin side of the discovery plug-ins — what the admin panel's
  * "Discovery Plugins" view stands on (src/api/admin.js):
  *
- *   GET  /api/v1/admin/discovery-plugins/status     plug-ins + jobs + downloads, one answer
+ *   GET  /api/v1/admin/discovery-plugins/status     plug-ins + jobs, one answer
  *   POST /api/v1/admin/config/discovery-plugins     { name, enabled? , settings? }
  *   POST /api/v1/admin/discovery-plugins/probe      { name, settings? }  check again / Test
- *   POST /api/v1/admin/config/discovery-jobs        + downloadsRetentionDays
+ *   POST /api/v1/admin/config/discovery-jobs        the gate, the cap, the jobs clock
  *   GET  /api/v1/admin/users                        + allowDiscoveryJobs
  *   GET  /api/v1/discovery/plugin-jobs?all=1        + username
  *
  * yt-dlp is the scripted stand-in (test/helpers/fake-yt-dlp.mjs), so the
  * youtube plug-in's probe has something to run, and a download can land in a
- * per-run Discover downloads folder for the usage numbers.
+ * per-run collection library.
  */
 
 import { describe, test, before, after } from 'node:test';
@@ -43,7 +43,7 @@ const SEARCH = {
   'remote hit': [{ id: 'topic', url: yt('topic'), title: 'Remote Hit', duration: 2, channel: 'Nova - Topic', uploader: 'Nova - Topic', artist: 'Nova', album: 'Night Ferry', webpage_url: yt('topic') }],
 };
 
-let server, workDir, downloadsDir, adminToken, userToken;
+let server, workDir, collectionDir, adminToken, userToken;
 
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
@@ -81,19 +81,23 @@ async function untilFinished(token, id, timeoutMs = 30_000) {
 describe('discovery plug-ins · admin API', { skip: hasFfmpeg ? false : 'bundled ffmpeg missing (bin/ffmpeg)' }, () => {
   before(async () => {
     workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-dpadmin-'));
-    downloadsDir = path.join(workDir, 'discover-downloads');
+    collectionDir = path.join(workDir, 'collection');
+    fs.mkdirSync(collectionDir, { recursive: true });
     const fixturePath = path.join(workDir, 'fixture.mp3');
     const scriptPath = path.join(workDir, 'fake-yt-dlp.json');
     await runFfmpeg(['-nostdin', '-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-ac', '1', fixturePath]);
     fs.writeFileSync(scriptPath, JSON.stringify({ search: SEARCH, details: {}, download: {}, version: '2026.02.04' }));
     server = await startServer({
       dlnaMode: 'disabled', waitForScan: false,
+      extraFolders: { collection: collectionDir },
       env: { MSTREAM_YTDLP_BIN: FAKE, MSTREAM_FAKE_YTDLP_SCRIPT: scriptPath, MSTREAM_FAKE_YTDLP_FIXTURE: fixturePath, MSTREAM_TEST_DISCOVERY_NOOP_PLUGIN: '1' },
       extraConfig: {
         discoveryPlugins: { youtube: { enabled: true }, 'noop-acquire': { enabled: true } },
-        discoveryJobs: { downloads: { dir: downloadsDir, retentionDays: 30 } },
+        discoveryJobs: { stagingDir: path.join(workDir, 'staging') },
       },
-      users: [{ ...ADMIN, admin: true, vpaths: ['testlib'] }, { ...USER, vpaths: ['testlib'] }],
+      // dana's only library is the per-run collection, so her download's
+      // default destination is that and never the shared fixture library.
+      users: [{ ...ADMIN, admin: true, vpaths: ['testlib', 'collection'] }, { ...USER, vpaths: ['collection'] }],
     });
     adminToken = await login(ADMIN);
     userToken = await login(USER);
@@ -103,7 +107,7 @@ describe('discovery plug-ins · admin API', { skip: hasFfmpeg ? false : 'bundled
     if (workDir) { fs.rmSync(workDir, { recursive: true, force: true }); }
   });
 
-  test('status: every plug-in with its editable config and probe detail; the job gate; an unused downloads folder', async () => {
+  test('status: every plug-in with its editable config and probe detail; the job gate', async () => {
     const r = await api(adminToken, 'GET', STATUS);
     assert.equal(r.status, 200, JSON.stringify(r.body));
     const names = r.body.plugins.map((p) => p.name);
@@ -121,11 +125,7 @@ describe('discovery plug-ins · admin API', { skip: hasFfmpeg ? false : 'bundled
     assert.equal(pluginOf(r.body, 'links').connectedUsers, undefined);
 
     assert.deepEqual(r.body.jobs, { enabledFor: 'all', maxConcurrent: 2, retentionDays: 30, running: 0, queued: 0 });
-    const d = r.body.downloads;
-    assert.deepEqual([d.library, d.exists, d.retentionDays, d.files, d.bytes, d.byUser], ['discover-downloads', false, 30, 0, 0, []]);
-    assert.equal(d.dir, downloadsDir);
-    assert.equal(d.lastSweep, null);
-    assert.ok(d.nextSweepAt > Date.now(), 'the first pass is still ahead (boot delay)');
+    assert.equal(r.body.downloads, undefined, 'no scratch folder to report on');
 
     assert.equal((await api(userToken, 'GET', STATUS)).status, 403, 'admins only');
   });
@@ -188,79 +188,28 @@ describe('discovery plug-ins · admin API', { skip: hasFfmpeg ? false : 'bundled
     assert.equal((await api(userToken, 'POST', PROBE, { name: 'youtube' })).status, 403);
   });
 
-  test('the downloads clock is set on the jobs route; a download shows up in the numbers with its owner', async () => {
-    const set = await api(adminToken, 'POST', JOBS_CFG, { downloadsRetentionDays: 14 });
-    assert.equal(set.status, 200, JSON.stringify(set.body));
-    assert.deepEqual(set.body.discoveryJobs.downloads, { dir: downloadsDir, retentionDays: 14, maxSizeMb: 5120 }, 'the folder and the cap survive a retention edit');
-    assert.equal((await api(adminToken, 'POST', JOBS_CFG, { downloadsRetentionDays: -1 })).status, 400);
-    assert.equal((await api(adminToken, 'POST', JOBS_CFG, { downloadsRetentionDays: 0 })).status, 200, '0 = never');
-    assert.equal((await api(adminToken, 'GET', STATUS)).body.downloads.retentionDays, 0);
-    await api(adminToken, 'POST', JOBS_CFG, { downloadsRetentionDays: 30 });
-
+  test('a user\'s download lands in their collection destination; the jobs clock is the one setting left on the jobs route', async () => {
     const started = await api(userToken, 'POST', '/api/v1/discovery/plugins/youtube/jobs', { recommendation: REC });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     const job = await untilFinished(userToken, started.body.job.id);
     assert.equal(job.state, 'done', job.error || '');
+    assert.equal(job.result.downloaded.filepath, 'collection/Nova/Night Ferry/Remote_Hit.mp3');
+    assert.ok(fs.existsSync(path.join(collectionDir, 'Nova', 'Night Ferry', 'Remote_Hit.mp3')));
+    assert.deepEqual(fs.readdirSync(path.join(workDir, 'staging')), [], 'nothing is left in staging');
 
-    const r = await api(adminToken, 'GET', STATUS);
-    const d = r.body.downloads;
-    assert.deepEqual([d.exists, d.files, d.partials, d.truncated], [true, 1, 0, false]);
-    assert.ok(d.bytes > 0);
-    assert.ok(d.oldestAt <= Date.now() && d.newestAt >= d.oldestAt);
-    assert.deepEqual(d.byUser.map((u) => [u.folder, u.files]), [['dana', 1]]);
-    assert.equal(d.byUser[0].bytes, d.bytes);
-    // A half-written file is not a download.
-    fs.writeFileSync(path.join(downloadsDir, 'dana', 'killed.mp3.part'), 'x');
-    const withPartial = (await api(adminToken, 'GET', STATUS)).body.downloads;
-    assert.deepEqual([withPartial.files, withPartial.partials], [1, 1]);
-
-    // Sweep now is remembered for the header.
-    const sweep = await api(adminToken, 'POST', '/api/v1/admin/discovery-jobs/sweep');
-    assert.equal(sweep.status, 200);
-    const afterSweep = (await api(adminToken, 'GET', STATUS)).body.downloads;
-    assert.ok(afterSweep.lastSweep && afterSweep.lastSweep.at <= Date.now());
-    assert.deepEqual(
-      [afterSweep.lastSweep.removedFiles, afterSweep.lastSweep.removedPartials, afterSweep.lastSweep.prunedJobs],
-      [0, 0, 0], 'nothing was old enough');
-  });
-
-  test('the size cap: a full folder refuses a new download with the reason; raising or lifting the cap lets it through', async () => {
-    const fresh = (await api(adminToken, 'GET', STATUS)).body.downloads;
-    assert.deepEqual([fresh.maxSizeMb, fresh.full], [5120, false], '5 GB by default');
-
-    // 2 MB of something in the folder, and a 1 MB cap.
-    const filler = path.join(downloadsDir, 'dana', 'filler.bin');
-    fs.writeFileSync(filler, Buffer.alloc(2 * 1024 * 1024));
-    const set = await api(adminToken, 'POST', JOBS_CFG, { downloadsMaxSizeMb: 1 });
+    const set = await api(adminToken, 'POST', JOBS_CFG, { retentionDays: 14 });
     assert.equal(set.status, 200, JSON.stringify(set.body));
-    assert.deepEqual(set.body.discoveryJobs.downloads, { dir: downloadsDir, retentionDays: 30, maxSizeMb: 1 }, 'the folder and the clock survive');
-    const full = (await api(adminToken, 'GET', STATUS)).body.downloads;
-    assert.deepEqual([full.maxSizeMb, full.full], [1, true]);
+    assert.equal(set.body.discoveryJobs.retentionDays, 14);
+    assert.equal((await api(adminToken, 'GET', STATUS)).body.jobs.retentionDays, 14);
+    assert.equal((await api(adminToken, 'POST', JOBS_CFG, { retentionDays: 0 })).status, 400);
+    assert.equal((await api(adminToken, 'POST', JOBS_CFG, { downloadsMaxSizeMb: 1 })).status, 400, 'the scratch cap is gone');
+    assert.equal((await api(adminToken, 'POST', JOBS_CFG, { downloadsRetentionDays: 1 })).status, 400, 'and so is its clock');
+    await api(adminToken, 'POST', JOBS_CFG, { retentionDays: 30 });
 
-    const refused = await api(userToken, 'POST', '/api/v1/discovery/plugins/youtube/jobs', { recommendation: { ...REC, title: 'Remote Hit', album: 'Cap Test' } });
-    assert.equal(refused.status, 202, 'the job is taken; the plug-in refuses when it runs');
-    const job = await untilFinished(userToken, refused.body.job.id);
-    assert.equal(job.state, 'failed');
-    assert.match(job.error, /^Discover downloads is full \(2\.\d MB of 1\.0 MB\)\. Keep or remove some downloads/);
-
-    // Half-written files count against the cap too.
-    fs.rmSync(filler);
-    fs.writeFileSync(path.join(downloadsDir, 'dana', 'big.mp3.part'), Buffer.alloc(2 * 1024 * 1024));
-    assert.equal((await api(adminToken, 'GET', STATUS)).body.downloads.full, true);
-    fs.rmSync(path.join(downloadsDir, 'dana', 'big.mp3.part'));
-    fs.rmSync(path.join(downloadsDir, 'dana', 'killed.mp3.part'), { force: true });
-    assert.equal((await api(adminToken, 'GET', STATUS)).body.downloads.full, false, 'under the cap again');
-
-    // 0 = no cap.
-    fs.writeFileSync(filler, Buffer.alloc(2 * 1024 * 1024));
-    assert.equal((await api(adminToken, 'POST', JOBS_CFG, { downloadsMaxSizeMb: 0 })).status, 200);
-    const lifted = (await api(adminToken, 'GET', STATUS)).body.downloads;
-    assert.deepEqual([lifted.maxSizeMb, lifted.full], [0, false]);
-    const through = await api(userToken, 'POST', '/api/v1/discovery/plugins/youtube/jobs', { recommendation: { ...REC, title: 'Remote Hit', album: 'Cap Test' } });
-    assert.equal((await untilFinished(userToken, through.body.job.id)).state, 'done');
-    assert.equal((await api(adminToken, 'POST', JOBS_CFG, { downloadsMaxSizeMb: -5 })).status, 400);
-    fs.rmSync(filler);
-    await api(adminToken, 'POST', JOBS_CFG, { downloadsMaxSizeMb: 5120 });
+    // Sweep now: nothing is old enough.
+    const sweep = await api(adminToken, 'POST', '/api/v1/admin/discovery-jobs/sweep');
+    assert.equal(sweep.status, 200, JSON.stringify(sweep.body));
+    assert.deepEqual(sweep.body, { prunedJobs: 0, removedStaging: 0 });
   });
 
   test('the users listing carries the whitelist flag; the all-accounts jobs list names each owner', async () => {
@@ -295,7 +244,7 @@ describe('discovery plug-ins · admin API · the configured binary', () => {
       env: { MSTREAM_TEST_DISCOVERY_NOOP_PLUGIN: '1' },
       extraConfig: {
         discoveryPlugins: { youtube: { enabled: true, binary: path.join(dir, 'no-such-yt-dlp') }, 'noop-acquire': { enabled: true } },
-        discoveryJobs: { downloads: { dir: path.join(dir, 'discover-downloads') } },
+        discoveryJobs: { stagingDir: path.join(dir, 'staging') },
       },
     });
   });

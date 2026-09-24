@@ -313,31 +313,6 @@ export function startDownload({ bin, url, dir, codec = 'mp3', ffmpegPath, maxFil
   return { pid: proc.pid, done: result, abort: () => abort.abort() };
 }
 
-// After a cancel or a failure: the partial files yt-dlp leaves behind.
-//
-// `byProducts` also takes what a run that died half way leaves WHOLE: the
-// thumbnail it fetched for --embed-thumbnail (written before the media, so a
-// download YouTube refuses with a 403 leaves a .jpg and nothing else) and an
-// unconverted media file. Only for a folder this server owns (the Discover
-// downloads scratch folder): in a real library folder a cover the scanner
-// wrote in the same seconds would match too.
-const PARTIAL_RE = /\.(part|ytdl|temp|f\d+\.\w+)$/i;
-const BY_PRODUCT_RE = /\.(jpe?g|png|webp|webm|m4a|mp4|mkv)$/i;
-export async function removePartials(dir, since, { byProducts = false } = {}) {
-  let names;
-  try { names = await fs.readdir(dir); } catch (_e) { return 0; }
-  let n = 0;
-  for (const name of names) {
-    if (!PARTIAL_RE.test(name) && !(byProducts && BY_PRODUCT_RE.test(name))) { continue; }
-    const full = path.join(dir, name);
-    try {
-      const stat = await fs.stat(full);
-      if (stat.mtime.getTime() >= since - 1000) { await fs.unlink(full); n += 1; }
-    } catch (_e) { /* gone already */ }
-  }
-  return n;
-}
-
 function runFfmpeg(ffmpegPath, args) {
   return new Promise((resolve, reject) => {
     const proc = spawn(ffmpegPath || 'ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });

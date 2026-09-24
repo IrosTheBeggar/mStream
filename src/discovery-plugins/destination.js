@@ -1,8 +1,8 @@
-// The collection destination — where files the user decides to OWN end up:
-// a collection copy from a paired peer (plugins/federation-copy.js) and a
-// kept Discover download (downloads.js keepDownload). One per user, shared
-// by every acquire plug-in, so it lives here rather than in any one of them
-// (design card 10).
+// The collection destination — where files the acquire plug-ins land: a
+// collection copy from a paired peer (plugins/federation-copy.js) and a
+// YouTube download (plugins/youtube.js). One per user, shared by every
+// acquire plug-in, so it lives here rather than in any one of them (design
+// card 10).
 //
 // A destination is a LIBRARY the user may upload to, a BASE FOLDER inside it
 // ('' = the root) and a LAYOUT rendered from the song's tags by the torrent
@@ -40,6 +40,23 @@ export function uploadsAllowed(user, { noUpload } = {}) {
   const serverOff = noUpload === undefined ? !!(config.program && config.program.noUpload) : noUpload;
   if (serverOff) { return false; }
   return !(user && (user.allow_upload === false || user.allow_upload === 0));
+}
+
+// The user an acquire job runs for, rebuilt from the id the job carries (the
+// request that queued it is gone): what auth.js gives a request, the row
+// plus vpaths. The anonymous sentinel (public mode) sees every library and
+// uploads like the operator it is, unless the admin is locked.
+export function userForJob(userId) {
+  const anonId = db.getAnonymousUserId();
+  if (userId != null && anonId != null && userId === anonId) {
+    const sentinel = db.getAnonymousUser() || { id: anonId };
+    const locked = !!(config.program && config.program.lockAdmin === true);
+    return { ...sentinel, id: anonId, allow_upload: locked ? 0 : 1, admin: !locked, vpaths: db.getAllLibraries().map((l) => l.name) };
+  }
+  const row = db.getAllUsers().find((u) => u.id === userId);
+  if (!row) { return null; }
+  const libIds = db.getUserLibraryIds(row);
+  return { ...row, admin: row.is_admin === 1, vpaths: db.getAllLibraries().filter((l) => libIds.includes(l.id)).map((l) => l.name) };
 }
 
 // The libraries this user may put files into, each with its admin Path

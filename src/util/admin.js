@@ -440,21 +440,14 @@ export async function editDiscoveryPluginSettings(name, settings) {
 }
 
 // Patch the discovery job runner's settings (gate, concurrency, retention)
-// — live: the gate is read per request, the cap per runner tick, the
-// downloads clock per retention pass. The caller has Joi-validated `patch`;
-// this persists only the keys it names. `downloads` is merged one level
-// down, so naming its retention never drops its folder.
+// — live: the gate is read per request, the cap per runner tick, the clock
+// per retention pass. The caller has Joi-validated `patch`; this persists
+// only the keys it names.
 export async function editDiscoveryJobs(patch) {
-  const { downloads, ...flat } = patch;
-  const merged = (cur) => {
-    const next = { ...(cur || {}), ...flat };
-    if (downloads) { next.downloads = { ...((cur && cur.downloads) || {}), ...downloads }; }
-    return next;
-  };
   const loadConfig = await loadFile(config.configFile);
-  loadConfig.discoveryJobs = merged(loadConfig.discoveryJobs);
+  loadConfig.discoveryJobs = { ...(loadConfig.discoveryJobs || {}), ...patch };
   await saveFile(loadConfig, config.configFile);
-  config.program.discoveryJobs = merged(config.program.discoveryJobs);
+  config.program.discoveryJobs = { ...(config.program.discoveryJobs || {}), ...patch };
 }
 
 // Per-user half of the discovery acquisition gate (V74 users.allow_discovery_jobs).

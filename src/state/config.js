@@ -692,10 +692,11 @@ const discoveryPluginsOptions = Joi.object({
     enabled: Joi.boolean().default(true),
   }).default({ enabled: true }),
   // "Get it" from YouTube: search, score, download with yt-dlp into the
-  // Discover downloads folder (discoveryJobs.downloads). Lands files from
-  // outside the federation, so OFF by default; listed only while yt-dlp
-  // and ffmpeg are present. `binary` is also where the Youtube DL route
-  // looks for yt-dlp (a name on PATH or a path).
+  // user's collection destination, the way a peer copy lands (so the same
+  // upload rules apply). Lands files from outside the federation, so OFF by
+  // default; listed only while yt-dlp and ffmpeg are present. `binary` is
+  // also where the Youtube DL route looks for yt-dlp (a name on PATH or a
+  // path).
   youtube: Joi.object({
     enabled: Joi.boolean().default(false),
     binary: Joi.string().min(1).default('yt-dlp'),
@@ -725,20 +726,12 @@ const discoveryJobsOptions = Joi.object({
   maxConcurrent: Joi.number().integer().min(1).max(16).default(2),
   // Finished rows (done / failed / cancelled) older than this are pruned.
   retentionDays: Joi.number().integer().min(1).max(3650).default(30),
-  // The "Discover downloads" scratch library acquire plug-ins land files in
-  // (src/discovery-plugins/downloads.js): created on first use, one
-  // subfolder per user, files nobody kept swept after retentionDays
-  // (src/discovery-plugins/retention.js; 0 = never).
-  // `maxSizeMb` is the quota retention is not: retentionDays is a clock, and
-  // a busy server can fill a disk inside it. Once the folder holds this much,
-  // a new download fails with "Discover downloads is full" until something is
-  // kept, removed or expires. Checked before a download starts, so it can be
-  // overshot by one file (youtube.maxFilesizeMb bounds that). 0 = no cap.
-  downloads: Joi.object({
-    dir: Joi.string().default(path.join(dataRoot, 'discover-downloads')),
-    retentionDays: Joi.number().integer().min(0).max(3650).default(30),
-    maxSizeMb: Joi.number().integer().min(0).max(10_000_000).default(5120),
-  }).default({ dir: path.join(dataRoot, 'discover-downloads'), retentionDays: 30, maxSizeMb: 5120 }),
+  // Where a download is assembled before it enters a library
+  // (src/discovery-plugins/staging.js): one folder per job, removed when the
+  // job ends; a folder a crash left behind goes at the next retention pass.
+  // A config-file setting only — put it on the same drive as the libraries
+  // and the finished file is moved into place, not copied.
+  stagingDir: Joi.string().default(path.join(dataRoot, 'save', 'discover-staging')),
 });
 
 const torrentOptions = Joi.object({

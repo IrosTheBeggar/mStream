@@ -4,13 +4,8 @@
 //   GET  /api/v1/discovery/plugin-jobs           the caller's jobs (admins: ?all=1)
 //   GET  /api/v1/discovery/plugin-jobs/:id       one job
 //   POST /api/v1/discovery/plugin-jobs/:id/cancel
-//   POST /api/v1/discovery/plugin-jobs/:id/keep   move a finished download into the collection
 //   POST /api/v1/discovery/plugin-jobs/lookup     the caller's newest job per plug-in for one recommendation
-//   POST /api/v1/discovery/plugin-jobs/clear      drop the caller's settled rows ("Clear finished")
-//
-// A download's expiry is computed on every read from the current retention
-// setting (never stored): `result.expiresAt` is present while the file is
-// neither kept nor removed, and null when downloads never expire.
+//   POST /api/v1/discovery/plugin-jobs/clear      drop the caller's finished rows ("Clear finished")
 //
 // Starting a job is gated twice: the plug-in must be on and runnable, and
 // the acquisition gate must admit the caller — config.discoveryJobs.enabledFor
@@ -28,8 +23,6 @@ import * as plugins from '../discovery-plugins/index.js';
 import * as runner from '../discovery-plugins/jobs.js';
 import * as jobsDb from '../db/discovery-plugin-jobs.js';
 import * as db from '../db/manager.js';
-import * as downloads from '../discovery-plugins/downloads.js';
-import * as destinations from '../discovery-plugins/destination.js';
 import * as config from '../state/config.js';
 import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
@@ -37,12 +30,6 @@ import WebError from '../util/web-error.js';
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 function isAdmin(user) { return !!(user && user.admin === true); }
-
-// A job as clients see it: a live download carries its expiry.
-function present(job) {
-  if (!job || !job.result || !job.result.downloaded || job.result.kept || job.result.removed) { return job; }
-  return { ...job, result: { ...job.result, expiresAt: downloads.expiresAt(job.finishedAt) } };
-}
 
 // The acquisition gate as a yes/no — the plug-in listing carries it so a
 // client hides what the caller could only be refused.
@@ -98,7 +85,7 @@ export function setup(mstream) {
     if (!created && !isAdmin(req.user) && job.userId !== (req.user ? req.user.id : null)) {
       throw new WebError('someone else on this server is already getting this — try again in a moment', 409);
     }
-    res.status(created ? 202 : 200).json({ job: present(job), created });
+    res.status(created ? 202 : 200).json({ job, created });
   });
 
   // What has the caller already done with this recommendation? Their newest
@@ -109,7 +96,7 @@ export function setup(mstream) {
     const { value: { recommendation } } = joiValidate(schema, req.body);
     const key = plugins.recommendationKey(recommendation);
     const jobs = jobsDb.latestForKey({ userId: req.user ? req.user.id : null, key });
-    res.json({ key, jobs: jobs.map(present) });
+    res.json({ key, jobs });
   });
 
   mstream.post('/api/v1/discovery/plugin-jobs/clear', (req, res) => {
@@ -129,7 +116,7 @@ export function setup(mstream) {
       states: value.state ? [value.state] : null,
       limit: value.limit,
     });
-    let shown = jobs.map(present);
+    let shown = jobs;
     if (everyone) {
       // The admin's all-accounts view names each job's owner. A job outlives
       // its account (the id goes NULL), so a missing name is simply null — and
@@ -143,7 +130,7 @@ export function setup(mstream) {
   });
 
   mstream.get('/api/v1/discovery/plugin-jobs/:id', (req, res) => {
-    res.json({ job: present(ownJob(req, req.params.id)) });
+    res.json({ job: ownJob(req, req.params.id) });
   });
 
   mstream.post('/api/v1/discovery/plugin-jobs/:id/cancel', (req, res) => {
@@ -152,29 +139,6 @@ export function setup(mstream) {
     if (outcome === null) {
       throw new WebError(`job ${job.id} is already ${job.state}`, 409);
     }
-    res.json({ job: present(jobsDb.getJob(job.id)), outcome });
-  });
-
-  // Keep…: a finished download leaves the scratch library for the caller's
-  // collection destination (or the one-off destination in the body). The
-  // file moves, the library row follows, playlists that pointed at the old
-  // path are rewritten, and the job records where it went.
-  mstream.post('/api/v1/discovery/plugin-jobs/:id/keep', async (req, res) => {
-    const job = ownJob(req, req.params.id);
-    const { value } = joiValidate(Joi.object({
-      destination: destinations.destinationSchema.optional(),
-    }), req.body || {});
-    if (job.state !== jobsDb.JOB_STATES.DONE || !job.result || !job.result.downloaded) {
-      throw new WebError(`job ${job.id} has no download to keep`, 400);
-    }
-    if (job.result.kept) { throw new WebError(`job ${job.id} was already kept at ${job.result.kept.filepath}`, 409); }
-    if (job.result.removed) { throw new WebError(`job ${job.id}'s download expired and was removed`, 409); }
-    if (!destinations.uploadsAllowed(req.user)) { throw new WebError('Uploading Disabled', 403); }
-    const destination = value.destination
-      ? destinations.validateDestination(value.destination, req.user)
-      : destinations.getDestination(req.user);
-    if (!destination) { throw new WebError('no library to keep the download in', 403); }
-    const kept = await downloads.keepDownload({ job, user: req.user, destination });
-    res.json({ job: present(kept) });
+    res.json({ job: jobsDb.getJob(job.id), outcome });
   });
 }

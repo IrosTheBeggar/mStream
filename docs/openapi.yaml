@@ -2465,7 +2465,7 @@ paths:
   /api/v1/discovery/collection/destination:
     get:
       tags: [Discovery]
-      summary: Where the caller's collection copies and kept downloads land
+      summary: Where the caller's collection copies and downloads land
       description: |
         The collection destination: a library the caller may upload to, a
         base folder inside it (`""` = the root) and a layout rendered from
@@ -2473,8 +2473,8 @@ paths:
         (`{{ARTIST}}/{{ALBUM}}`; variables as listed, `{{PEER}}` being the
         paired server a copy came from — empty, so dropped, for anything
         else). One per user, shared by every acquire plug-in: the
-        `federation-copy` job copies into it, and Keep… moves a finished
-        download into it. Nothing saved means the library default: the first
+        `federation-copy` job copies into it, and the `youtube` job files its
+        download in it. Nothing saved means the library default: the first
         writable library's admin Path Template when it has one, else
         `{{ARTIST}}/{{ALBUM}}` at its root. In public mode the anonymous
         account keeps the one shared setting.
@@ -2625,20 +2625,21 @@ paths:
         `youtube` ("Get it" from YouTube; off by default, needs yt-dlp and
         ffmpeg) searches YouTube for the recommendation, scores the uploads
         against it (the shared match scorer, a bonus for the artist's Topic
-        channel, covers / karaoke / live takes dropped) and downloads the best
-        one's audio into the `discover-downloads` scratch library (a per-user
-        subfolder), tagged from the recommendation. Its `result` is
-        `{ downloaded: { vpath, filepath, trackId, bytes, format }, match:
-        { score, url, title, channel, durationSec } }`. Every read of the job
-        adds `expiresAt` (ms; `null` when downloads never expire), computed
-        from the current `discoveryJobs.downloads.retentionDays`, while the
-        file is neither kept nor removed; Keep… adds `kept: { vpath,
-        filepath, trackId, playlistEntries, missingVars, at }` and the
-        retention pass adds `removed: { at }`. It fails
-        with `Nothing matched closely enough (best score …, needs 0.62)`,
-        `YouTube returned no results …`, `Discover downloads is full (…)`
-        when the folder is at its size cap, or yt-dlp's own last error line
-        (for example its sign-in / bot check).
+        channel, covers / karaoke / live takes dropped), downloads the best
+        one's audio, tags it from the recommendation and files it in the
+        caller's collection destination exactly as a copy is filed — the same
+        upload rules, the same owned checks (by artist + album + title before
+        the search, by hash after the download), never over an existing file.
+        Its `result` is `{ downloaded: { vpath, filepath, trackId, bytes,
+        format, title, artist, album }, match: { score, url, title, channel,
+        durationSec }, missingVars, destination }`, or the same `skipped`
+        shapes as `federation-copy`. It fails with `uploads are disabled for
+        this account, and a download is an upload`, `no library to download
+        into`, `Nothing matched closely enough (best score …, needs 0.62)`,
+        `YouTube returned no results …`, or yt-dlp's own last error line (for
+        example its sign-in / bot check). yt-dlp works in a staging folder of
+        the job's own (`discoveryJobs.stagingDir`); a failed or cancelled
+        download leaves nothing anywhere.
       parameters:
         - name: name
           in: path
@@ -2711,12 +2712,9 @@ paths:
       tags: [Discovery]
       summary: Clear the caller's finished jobs
       description: |
-        Drops the caller's rows that have nothing left to act on: `failed`,
-        `cancelled`, and `done` jobs whose outcome is settled (a copy, a skip,
-        a kept or an expired download). Live jobs stay, and so does a finished
-        download that is still in the `discover-downloads` scratch library —
-        its row is the only handle for Keep… and the only place its expiry
-        shows. Files are never touched.
+        Drops the caller's finished rows (`done`, `failed`, `cancelled`). A
+        finished job has nothing left to act on — what it fetched is in the
+        library, or nothing is. Live jobs stay. Files are never touched.
       responses:
         "200":
           description: How many rows went.
@@ -6135,7 +6133,7 @@ paths:
   /api/v1/admin/discovery-plugins/status:
     get:
       tags: [Admin - Config]
-      summary: Discovery plug-ins, the job gate and Discover downloads, in one answer
+      summary: Discovery plug-ins and the job gate, in one answer
       description: |
         Everything the admin panel's Discovery Plugins view shows. `plugins`
         is every REGISTERED plug-in, on or off: `available: false` with a
@@ -6288,18 +6286,14 @@ paths:
   /api/v1/admin/config/discovery-jobs:
     post:
       tags: [Admin - Config]
-      summary: The discovery job runner's gate, limits and clocks
+      summary: The discovery job runner's gate, cap and clock
       description: |
         Live; a partial body patches what it names. `enabledFor` is the
         acquisition gate (`whitelist` = only accounts with
-        `allowDiscoveryJobs`), `maxConcurrent` the jobs in flight at once,
-        `retentionDays` how long a finished job row is kept, and
-        `downloadsRetentionDays` how long a Discover download nobody kept
-        stays (0 = never removed), and `downloadsMaxSizeMb` the most the
-        Discover downloads folder may hold: while it holds that much a new
-        download fails with `Discover downloads is full (…)`. The cap is
-        checked before a download starts, so it can be overshot by one file;
-        0 = no cap. The downloads folder itself is a config-file setting.
+        `allowDiscoveryJobs`), `maxConcurrent` the jobs in flight at once, and
+        `retentionDays` how long a finished job row is kept. The staging
+        folder downloads are assembled in (`discoveryJobs.stagingDir`) is a
+        config-file setting.
       requestBody:
         required: true
         content:
@@ -6311,8 +6305,6 @@ paths:
                 enabledFor: { type: string, enum: [all, whitelist] }
                 maxConcurrent: { type: integer, minimum: 1, maximum: 16 }
                 retentionDays: { type: integer, minimum: 1, maximum: 3650 }
-                downloadsRetentionDays: { type: integer, minimum: 0, maximum: 3650 }
-                downloadsMaxSizeMb: { type: integer, minimum: 0, maximum: 10000000 }
       responses:
         "200":
           description: The settings as they now stand.
@@ -6327,13 +6319,8 @@ paths:
                       enabledFor: { type: string }
                       maxConcurrent: { type: integer }
                       retentionDays: { type: integer }
-                      downloads:
-                        type: object
-                        properties:
-                          dir: { type: string }
-                          retentionDays: { type: integer }
-                          maxSizeMb: { type: integer }
-        "400": { description: "An empty body or a value out of range." }
+                      stagingDir: { type: string }
+        "400": { description: "An empty body, an unknown key or a value out of range." }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/users/discovery-jobs-access:
@@ -6367,12 +6354,11 @@ paths:
       summary: Run the discovery retention pass now
       description: |
         The pass the server runs shortly after boot and every few hours:
-        Discover downloads older than `discoveryJobs.downloads.retentionDays`
-        are removed with their library rows and their jobs marked `removed`
-        (0 days = never); partial files a killed download left behind go once
-        a day old; folders the pass emptied are removed; finished job rows
-        older than `discoveryJobs.retentionDays` are pruned. A file that is
-        in use is skipped and caught by the next pass.
+        finished job rows older than `discoveryJobs.retentionDays` are
+        pruned, and staging folders a crashed download left behind
+        (`discoveryJobs.stagingDir`) are removed once nothing has written to
+        them for a day. A folder that cannot be removed is left for the next
+        pass.
       responses:
         "200":
           description: What this pass did.
@@ -6381,10 +6367,8 @@ paths:
               schema:
                 type: object
                 properties:
-                  removedFiles: { type: integer }
-                  removedPartials: { type: integer }
-                  skipped: { type: integer, description: "Files in use, left for the next pass." }
                   prunedJobs: { type: integer }
+                  removedStaging: { type: integer, description: "Stale staging folders removed." }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   /api/v1/admin/config/nomkdir:

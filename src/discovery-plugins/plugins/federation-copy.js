@@ -31,10 +31,10 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import winston from 'winston';
 import * as config from '../../state/config.js';
-import * as db from '../../db/manager.js';
 import * as fedDb from '../../db/federation.js';
 import * as vpathUtil from '../../util/vpath.js';
 import * as destinations from '../destination.js';
+import { ownedTrack } from '../owned.js';
 import { CAPABILITIES, SCOPES } from '../registry.js';
 import { RECOMMENDATION_SOURCES } from '../recommendation.js';
 
@@ -44,52 +44,6 @@ export const NAME = 'federation-copy';
 // as the file takes.
 const HEADER_DEADLINE_MS = 15_000;
 const PROGRESS_EVERY_MS = 400;
-
-// A song this library already has: by file hash, by audio hash, or by the
-// exact artist + album + title (case-insensitive).
-export function ownedTrack({ hash, audioHash, artist, title, album }, database = db.getDB()) {
-  if (!database) { return null; }
-  const found = (row) => (row ? { vpath: row.vpath, filepath: `${row.vpath}/${row.filepath}`, by: row.by } : null);
-  if (hash) {
-    const row = database.prepare(`
-      SELECT t.filepath, l.name AS vpath, 'hash' AS by FROM tracks t JOIN libraries l ON l.id = t.library_id
-       WHERE t.file_hash = ? LIMIT 1`).get(hash);
-    if (row) { return found(row); }
-  }
-  if (audioHash) {
-    const row = database.prepare(`
-      SELECT t.filepath, l.name AS vpath, 'audio-hash' AS by FROM tracks t JOIN libraries l ON l.id = t.library_id
-       WHERE t.audio_hash = ? LIMIT 1`).get(audioHash);
-    if (row) { return found(row); }
-  }
-  if (artist && title && album) {
-    const row = database.prepare(`
-      SELECT t.filepath, l.name AS vpath, 'tags' AS by FROM tracks t
-        JOIN libraries l ON l.id = t.library_id
-        JOIN artists a ON a.id = t.artist_id
-        JOIN albums al ON al.id = t.album_id
-       WHERE lower(t.title) = lower(?) AND lower(a.name) = lower(?) AND lower(al.name) = lower(?) LIMIT 1`)
-      .get(String(title), String(artist), String(album));
-    if (row) { return found(row); }
-  }
-  return null;
-}
-
-// The job carries a user id; the request that queued it is gone. Rebuild
-// what auth.js gives a request: the row plus vpaths. The anonymous sentinel
-// (public mode) sees every library and copies like the operator it is.
-function userForJob(userId) {
-  const anonId = db.getAnonymousUserId();
-  if (userId != null && anonId != null && userId === anonId) {
-    const sentinel = db.getAnonymousUser() || { id: anonId };
-    const locked = !!(config.program && config.program.lockAdmin === true);
-    return { ...sentinel, id: anonId, allow_upload: locked ? 0 : 1, admin: !locked, vpaths: db.getAllLibraries().map((l) => l.name) };
-  }
-  const row = db.getAllUsers().find((u) => u.id === userId);
-  if (!row) { return null; }
-  const libIds = db.getUserLibraryIds(row);
-  return { ...row, admin: row.is_admin === 1, vpaths: db.getAllLibraries().filter((l) => libIds.includes(l.id)).map((l) => l.name) };
-}
 
 function peerStatusError(status, peerName) {
   if (status === 429) { return new Error(`${peerName} has reached its transfer limit for this server — try again later`); }
@@ -133,7 +87,7 @@ async function run(ctx) {
   const peer = fedDb.getFederationPeerById(Number(rec.peer.id));
   if (!peer) { throw new Error('this server is no longer paired with that peer'); }
 
-  const user = userForJob(ctx.userId);
+  const user = destinations.userForJob(ctx.userId);
   if (!user) { throw new Error('the account that asked for this copy no longer exists'); }
   if (!destinations.uploadsAllowed(user)) { throw new Error('uploads are disabled for this account, and a copy is an upload'); }
   const destination = destinations.getDestination(user);

@@ -3,8 +3,7 @@
  * (src/discovery-plugins/registry.js): the editable config keys a plug-in
  * declares, what its availability probe found, and the
  * on-demand probe — "check again" replaces the cached answer, the settings
- * modal's Test is a dry run that leaves it alone. Plus the downloads module's
- * partial-file rule the usage numbers and the retention pass share.
+ * modal's Test is a dry run that leaves it alone.
  */
 
 import { describe, test, after } from 'node:test';
@@ -14,7 +13,6 @@ import {
 } from '../../src/discovery-plugins/registry.js';
 import { pluginNames, getPlugin } from '../../src/discovery-plugins/index.js';
 import { discoveryPluginSchema } from '../../src/state/config.js';
-import { isPartialFile } from '../../src/discovery-plugins/downloads.js';
 
 const registered = [];
 function reg(def) {
@@ -112,16 +110,5 @@ describe('probing on demand', () => {
     // detail must be an object to be passed on.
     reg({ name: 'unit-odd-detail', probe: async () => ({ ok: true, detail: 'a string' }) });
     assert.equal((await probePlugin('unit-odd-detail')).detail, null);
-  });
-});
-
-describe('Discover downloads · what counts as a download', () => {
-  test('yt-dlp temporaries and a collection copy in flight are partial files, never downloads', () => {
-    for (const name of ['song.mp3.part', 'song.webm.ytdl', 'x.temp', 'Song.PART', '.mstream-copy-41.part', '.mstream-copy-7']) {
-      assert.equal(isPartialFile(name), true, name);
-    }
-    for (const name of ['song.mp3', 'part.mp3', 'my.part.flac', 'temp.ogg', 'copy-of-mstream.mp3']) {
-      assert.equal(isPartialFile(name), false, name);
-    }
   });
 });

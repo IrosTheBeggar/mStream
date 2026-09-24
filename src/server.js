@@ -31,7 +31,6 @@ import * as discoveryPluginsApi from './api/discovery-plugins.js';
 import * as discoveryPluginJobsApi from './api/discovery-plugin-jobs.js';
 import * as discoveryPluginJobs from './discovery-plugins/jobs.js';
 import * as discoveryPlugins from './discovery-plugins/index.js';
-import * as discoveryDownloads from './discovery-plugins/downloads.js';
 import * as discoveryRetention from './discovery-plugins/retention.js';
 import * as discoveryCollectionApi from './api/discovery-collection.js';
 import * as remoteApi from './api/remote.js';
@@ -581,9 +580,6 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   discoveryPluginsApi.setup(mstream);
   discoveryPluginJobsApi.setup(mstream);
   discoveryCollectionApi.setup(mstream);
-  // The Discover downloads library is created on first use; it needs the
-  // app to serve itself without a reboot.
-  discoveryDownloads.attachApp(mstream);
   dbApi.setup(mstream);
   syncApi.setup(mstream);
   statsApi.setup(mstream);
@@ -775,8 +771,8 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     // listed nowhere until it passes. Runs in the background; the listing
     // treats an unprobed plug-in as available meanwhile.
     discoveryPlugins.refreshProbes().catch((err) => winston.warn(`discovery plug-in probes failed: ${err.message}`));
-    // Expired Discover downloads, stale partials and old job rows: a pass
-    // shortly after boot, then every few hours.
+    // Old job rows and staging folders a crash left behind: a pass shortly
+    // after boot, then every few hours.
     discoveryRetention.start();
 
     if (config.program.dlna.mode !== 'disabled') {

@@ -8258,7 +8258,7 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
                       <span :class="'dp-' + headline.dot">{{ headline.text }}</span>
                       <span>&middot; {{ t(dp.status.jobs.enabledFor === 'whitelist' ? 'admin.dplugins.header.jobsWhitelist' : 'admin.dplugins.header.jobsAll') }}</span>
                       <span v-if="liveCount > 0">&middot; {{ t('admin.dplugins.header.running', { count: liveCount }) }}</span>
-                      <span v-if="dp.status.downloads.full" class="dp-warn">&middot; {{ t('admin.dplugins.header.full') }}</span>
+                      <span v-if="dl.full" class="dp-warn">&middot; {{ t('admin.dplugins.header.full') }}</span>
                     </div>
                     <div class="dp-box-act"><span class="dp-br">[<a v-on:click="load()">{{ t('admin.dplugins.refresh') }}</a>]</span></div>
                   </div>
@@ -8451,7 +8451,10 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
       this.usersTS.ts;
       return Object.keys(this.users).length;
     },
-    dl: function() { return this.dp.status.downloads; },
+    // The scratch library is gone from the server (slice A of dropping it);
+    // the Downloads tab is redrawn in slice C. Until then it reads an empty
+    // object rather than throwing.
+    dl: function() { return this.dp.status.downloads || { byUser: [] }; },
     liveCount: function() { return this.dp.status.jobs.running + this.dp.status.jobs.queued; },
     groups: function() {
       const left = [...this.dp.status.plugins];
@@ -11717,8 +11720,8 @@ const dpPluginSettingsModal = Vue.component('dp-plugin-settings-modal', {
 const DP_NUMBERS = {
   maxConcurrent: { min: 1, max: 16, step: 1, value: (s) => s.jobs.maxConcurrent },
   retentionDays: { min: 1, max: 3650, step: 1, unit: 'days', value: (s) => s.jobs.retentionDays },
-  downloadsRetentionDays: { min: 0, max: 3650, step: 1, unit: 'days', value: (s) => s.downloads.retentionDays },
-  downloadsMaxSizeMb: { min: 0, max: 9765, step: 'any', unit: 'gb', gb: true, value: (s) => s.downloads.maxSizeMb },
+  downloadsRetentionDays: { min: 0, max: 3650, step: 1, unit: 'days', value: (s) => (s.downloads || {}).retentionDays },
+  downloadsMaxSizeMb: { min: 0, max: 9765, step: 'any', unit: 'gb', gb: true, value: (s) => (s.downloads || {}).maxSizeMb },
 };
 
 const dpEditNumberModal = Vue.component('dp-edit-number-modal', {

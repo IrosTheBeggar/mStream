@@ -206,20 +206,7 @@ describe('job runner', () => {
   });
 });
 
-describe('results after the fact, and the retention pass', () => {
-  test('patchResult amends a finished job only; findByDownloadedFilepath finds the job behind a file', () => {
-    const { job } = jobsDb.createJob({ plugin: 'unit-done', userId: null, key: 'text:patch-1', recommendation: { title: 'patch' } });
-    assert.equal(jobsDb.patchResult(job.id, { kept: true }), null, 'a queued job has no result to amend');
-    jobsDb.claimNextQueued('unit-done');
-    jobsDb.finishJob(job.id, { downloaded: { filepath: 'discover-downloads/shared/patch.mp3' }, match: { score: 1 } });
-    const patched = jobsDb.patchResult(job.id, { kept: { filepath: 'music/a/b/patch.mp3' } });
-    assert.deepEqual(patched.result, {
-      downloaded: { filepath: 'discover-downloads/shared/patch.mp3' }, match: { score: 1 }, kept: { filepath: 'music/a/b/patch.mp3' },
-    });
-    assert.deepEqual(jobsDb.findByDownloadedFilepath('discover-downloads/shared/patch.mp3').map((j) => j.id), [job.id]);
-    assert.deepEqual(jobsDb.findByDownloadedFilepath('discover-downloads/shared/other.mp3'), []);
-  });
-
+describe('history and the retention pass', () => {
   test('pruneFinished measures from the clock it is given', () => {
     const { job } = jobsDb.createJob({ plugin: 'unit-done', userId: null, key: 'text:prune-clock', recommendation: { title: 'prune' } });
     jobsDb.claimNextQueued('unit-done');
@@ -231,7 +218,7 @@ describe('results after the fact, and the retention pass', () => {
     assert.equal(jobsDb.getJob(job.id), null);
   });
 
-  test('latestForKey: the newest job per plug-in for one owner; clearFinished keeps live jobs and unkept downloads', async () => {
+  test('latestForKey: the newest job per plug-in for one owner; clearFinished drops every finished row and keeps live jobs', async () => {
     const ins = manager.getDB().prepare('INSERT INTO users (username, password, salt) VALUES (?, ?, ?)');
     const me = Number(ins.run('tray-owner', 'h', 's').lastInsertRowid);
     const other = Number(ins.run('tray-other', 'h', 's').lastInsertRowid);
@@ -253,16 +240,12 @@ describe('results after the fact, and the retention pass', () => {
     assert.deepEqual(found.map((j) => j.id).sort(), [second, otherPlugin].sort(), `newest per plug-in, never #${first} or another owner's`);
     assert.deepEqual(jobsDb.latestForKey({ userId: me, key: 'text:nothing' }), []);
 
-    // One of each fate. A copy and a skip are settled; so are a kept and an
-    // expired download; a download still in the scratch library is not.
+    // One of each fate. Every finished row is settled — what it fetched is in
+    // the library, or nothing is — so all of them go; only live jobs stay.
     const failed = finished('unit-done', me, 'text:c-failed', new Error('nope'));
     const copied = finished('unit-done', me, 'text:c-copied', { copied: { filepath: 'music/a.mp3' } });
     const skipped = finished('unit-done', me, 'text:c-skipped', { skipped: 'owned' });
-    const kept = finished('unit-done', me, 'text:c-kept', { downloaded: { filepath: 'discover-downloads/x/k.mp3' } });
-    jobsDb.patchResult(kept, { kept: { filepath: 'music/k.mp3' } });
-    const expired = finished('unit-done', me, 'text:c-expired', { downloaded: { filepath: 'discover-downloads/x/e.mp3' } });
-    jobsDb.patchResult(expired, { removed: { at: Date.now() } });
-    const unkept = finished('unit-done', me, 'text:c-unkept', { downloaded: { filepath: 'discover-downloads/x/u.mp3' } });
+    const downloaded = finished('unit-done', me, 'text:c-downloaded', { downloaded: { filepath: 'music/d.mp3' } });
     const noResult = finished('unit-done', me, 'text:c-null', null);
     const cancelled = jobsDb.createJob({ plugin: 'unit-done', userId: me, key: 'text:c-cancelled', recommendation: rec('c') }).job.id;
     jobsDb.requestCancel(cancelled);
@@ -273,79 +256,58 @@ describe('results after the fact, and the retention pass', () => {
     const theirsBefore = jobsDb.listJobs({ userId: other }).length;
     const removed = jobsDb.clearFinished(me);
     const left = jobsDb.listJobs({ userId: me }).map((j) => j.id).sort((a, b) => a - b);
-    assert.deepEqual(left, [unkept, queued, running].sort((a, b) => a - b), 'only what can still be acted on stays');
-    for (const gone of [first, second, otherPlugin, failed, copied, skipped, kept, expired, noResult, cancelled]) {
-      assert.equal(jobsDb.getJob(gone), null, `job ${gone} was settled`);
+    assert.deepEqual(left, [queued, running].sort((a, b) => a - b), 'only live jobs stay');
+    for (const gone of [first, second, otherPlugin, failed, copied, skipped, downloaded, noResult, cancelled]) {
+      assert.equal(jobsDb.getJob(gone), null, `job ${gone} was finished`);
     }
-    assert.equal(removed, 10);
+    assert.equal(removed, 9);
     assert.equal(jobsDb.listJobs({ userId: other }).length, theirsBefore, 'another owner\'s history is not touched');
-    assert.equal(jobsDb.clearFinished(me), 0, 'nothing settled is left');
+    assert.equal(jobsDb.clearFinished(me), 0, 'nothing finished is left');
 
     // Leave nothing live behind for the suites below.
     jobsDb.requestCancel(queued);
     jobsDb.cancelJob(running);
   });
 
-  test('sweep: expired downloads go with their rows and tell their job; partials after a day; 0 days = never', async () => {
+  test('sweep: prunes old job rows, and removes staging folders a crash left behind once nothing has written to them for a day', async () => {
     const day = 24 * 60 * 60 * 1000;
-    const dlDir = path.join(tmpDir, 'discover-downloads');
-    config.program.discoveryJobs = { ...(config.program.discoveryJobs || {}), retentionDays: 30, downloads: { dir: dlDir, retentionDays: 30 } };
-    const downloads = await import('../../src/discovery-plugins/downloads.js');
+    const stagingDir = path.join(tmpDir, 'staging');
+    config.program.discoveryJobs = { ...(config.program.discoveryJobs || {}), retentionDays: 30, stagingDir };
+    const staging = await import('../../src/discovery-plugins/staging.js');
     const retention = await import('../../src/discovery-plugins/retention.js');
-    const { insertDownloadedTrack } = await import('../../src/db/insert-downloaded-track.js');
-    await downloads.ensureLibrary(null);
-    const userDir = await downloads.userDir(null);
-    assert.equal(path.basename(userDir), 'shared');
 
-    const land = async (name) => {
-      const file = path.join(userDir, name);
-      fs.writeFileSync(file, `not really audio: ${name}`);
-      await insertDownloadedTrack({ filePath: file, vpath: downloads.LIBRARY_NAME, basePath: dlDir, source: 'plugin:unit', log: 'unit' });
-      return file;
-    };
-    const oldFile = await land('old.mp3');
-    const freshFile = await land('fresh.mp3');
-    const stalePartial = path.join(userDir, 'killed.mp3.part');
-    const livePartial = path.join(userDir, 'running.mp3.part');
-    fs.writeFileSync(stalePartial, 'x');
-    fs.writeFileSync(livePartial, 'x');
+    // A job that died mid-download (its media and the thumbnail yt-dlp fetched
+    // first), and one still writing.
+    const dead = await staging.jobStagingDir(9001);
+    const live = await staging.jobStagingDir(9002);
+    fs.writeFileSync(path.join(dead, 'Song.mp3.part'), 'x');
+    fs.writeFileSync(path.join(dead, 'Song.jpg'), 'a thumbnail');
+    fs.writeFileSync(path.join(live, 'Song.mp3.part'), 'x');
+    const now = Date.now();
+    const old = new Date(now - 2 * day);
+    for (const p of [path.join(dead, 'Song.mp3.part'), path.join(dead, 'Song.jpg'), dead]) { fs.utimesSync(p, old, old); }
     const { job } = jobsDb.createJob({ plugin: 'unit-done', userId: null, key: 'text:sweep-old', recommendation: { title: 'old' } });
     jobsDb.claimNextQueued('unit-done');
-    jobsDb.finishJob(job.id, { downloaded: { filepath: 'discover-downloads/shared/old.mp3' } });
+    jobsDb.finishJob(job.id, { downloaded: { filepath: 'music/old.mp3' } });
 
-    const now = Date.now();
-    const past = (ms) => new Date(now - ms);
-    fs.utimesSync(oldFile, past(31 * day), past(31 * day));
-    fs.utimesSync(stalePartial, past(2 * day), past(2 * day));
-    const rowFor = (rel) => manager.getDB().prepare(
-      'SELECT t.id FROM tracks t JOIN libraries l ON l.id = t.library_id WHERE l.name = ? AND t.filepath = ?').get(downloads.LIBRARY_NAME, rel);
-    assert.ok(rowFor('shared/old.mp3') && rowFor('shared/fresh.mp3'));
+    const first = await retention.sweep({ now });
+    assert.deepEqual(first, { prunedJobs: 0, removedStaging: 1 });
+    assert.ok(!fs.existsSync(dead), 'the folder nothing wrote to for a day is gone');
+    assert.ok(fs.existsSync(path.join(live, 'Song.mp3.part')), 'the live one is untouched');
+    assert.ok(jobsDb.getJob(job.id), 'a job row younger than its retention stays');
 
-    // Retention off: nothing expires (stale partials still go).
-    config.program.discoveryJobs.downloads.retentionDays = 0;
-    assert.equal(downloads.expiresAt(now), null);
-    const off = await retention.sweep({ now });
-    assert.equal(off.removedFiles, 0);
-    assert.equal(off.removedPartials, 1);
-    assert.ok(fs.existsSync(oldFile) && !fs.existsSync(stalePartial) && fs.existsSync(livePartial));
+    // A job that runs again after the crash starts from an empty folder.
+    const again = await staging.jobStagingDir(9002);
+    assert.equal(again, live);
+    assert.deepEqual(fs.readdirSync(again), []);
+    fs.writeFileSync(path.join(again, 'Song.mp3.part'), 'x');
 
-    config.program.discoveryJobs.downloads.retentionDays = 30;
-    assert.equal(downloads.expiresAt(now), now + 30 * day);
-    const on = await retention.sweep({ now });
-    assert.equal(on.removedFiles, 1);
-    assert.ok(!fs.existsSync(oldFile) && fs.existsSync(freshFile) && fs.existsSync(livePartial));
-    assert.equal(rowFor('shared/old.mp3'), undefined);
-    assert.ok(rowFor('shared/fresh.mp3'));
-    assert.equal(jobsDb.getJob(job.id).result.removed.at, now);
-
-    // Much later everything has expired: the folder the pass empties goes
-    // too, and the job rows past their own retention are pruned.
+    // Much later: the job rows past their own retention are pruned, and the
+    // other folder is stale by then. The staging root itself stays.
     const later = await retention.sweep({ now: now + 40 * day });
-    assert.equal(later.removedFiles, 1);
-    assert.equal(later.removedPartials, 1);
     assert.ok(later.prunedJobs >= 1);
-    assert.ok(!fs.existsSync(userDir), 'the emptied user folder is removed');
-    assert.ok(fs.existsSync(dlDir), 'never the library root');
+    assert.equal(later.removedStaging, 1);
     assert.equal(jobsDb.getJob(job.id), null);
+    assert.ok(!fs.existsSync(live) && fs.existsSync(stagingDir));
   });
 });

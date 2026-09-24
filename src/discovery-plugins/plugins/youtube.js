@@ -1,10 +1,19 @@
 // "youtube" — "Get it" from YouTube: search for the recommendation, pick the
-// upload that is actually the song, download its audio with yt-dlp into the
-// Discover downloads scratch library, tag it from the recommendation and
-// insert the row so it plays at once (design card 03).
+// upload that is actually the song, download its audio with yt-dlp, tag it
+// from the recommendation and file it in the user's collection destination
+// (src/discovery-plugins/destination.js) the way a peer copy is filed, with
+// the row inserted so it plays at once (design card 03).
 //
 // Off by default and listed only while yt-dlp and ffmpeg are actually
 // present (probe()): an enabled-but-unconfigured plug-in shows no row.
+//
+// A download is an upload by another road: the account must be allowed to
+// upload and have a library to put files into, the copy plug-in's rules. A
+// song the library already has (by tags before the search, by hash after the
+// download) is skipped, and a file already at the target path is never
+// overwritten. yt-dlp works in a staging folder of the job's own
+// (src/discovery-plugins/staging.js); only the finished file enters the
+// library.
 //
 // Matching: a YouTube search is noisy — lyric videos, live takes, covers,
 // karaoke, the right song by the wrong artist. Every result is read two
@@ -16,13 +25,17 @@
 // the recommendation does not. Below MIN_SCORE the job fails with the
 // best score, rather than landing the wrong song.
 
+import path from 'node:path';
 import fs from 'node:fs/promises';
 import winston from 'winston';
 import * as config from '../../state/config.js';
 import * as transcode from '../../api/transcode.js';
 import { ffmpegBin } from '../../util/ffmpeg-bootstrap.js';
 import * as ytdlp from '../../util/yt-dlp.js';
-import * as downloads from '../downloads.js';
+import * as vpathUtil from '../../util/vpath.js';
+import * as destinations from '../destination.js';
+import * as staging from '../staging.js';
+import { ownedTrack } from '../owned.js';
 import { scoreCandidate, MIN_SCORE } from '../match.js';
 import { searchPhrase } from '../recommendation.js';
 import { CAPABILITIES, SCOPES } from '../registry.js';
@@ -172,8 +185,15 @@ async function run(ctx) {
   if (!(await ffmpegReady())) { throw new Error('ffmpeg is not available yet'); }
   const phrase = searchPhrase(rec);
   if (!phrase) { throw new Error('the recommendation has no artist or title to search for'); }
-  // The folder's size cap, before anything is searched for or fetched.
-  await downloads.assertRoom();
+
+  // Where it will land, settled before anything is searched for or fetched.
+  const user = destinations.userForJob(ctx.userId);
+  if (!user) { throw new Error('the account that asked for this download no longer exists'); }
+  if (!destinations.uploadsAllowed(user)) { throw new Error('uploads are disabled for this account, and a download is an upload'); }
+  const destination = destinations.getDestination(user);
+  if (!destination) { throw new Error('no library to download into'); }
+  const owned = ownedTrack({ artist: rec.artist, title: rec.title, album: rec.album });
+  if (owned) { return { skipped: 'owned', existing: owned, destination }; }
 
   // 1. Search, rank, confirm the top results with their full record.
   ctx.progress(0.02, `searching YouTube for “${phrase}”`);
@@ -200,14 +220,13 @@ async function run(ctx) {
     throw new Error(`Nothing matched closely enough (best score ${top}, needs ${MIN_SCORE})`);
   }
 
-  // 2. Download into the user's Discover downloads folder.
-  const user = downloads.userForJob(ctx.userId);
-  if (!user) { throw new Error('the account that asked for this download no longer exists'); }
-  await downloads.ensureLibrary(user);
-  const dir = await downloads.userDir(user);
+  // 2. Download into a staging folder of this job's own — never straight
+  // into a library folder, where what yt-dlp writes on the way (the
+  // thumbnail before the media, fragments, a .part) would be taken for
+  // songs and art.
   const chosen = best.candidate;
   ctx.progress(0.08, `downloading “${best.entry.title}” from ${chosen.channel || 'YouTube'}`);
-  const startedAt = Date.now();
+  const dir = await staging.jobStagingDir(ctx.job.id);
   const handle = ytdlp.startDownload({
     bin, url: best.entry.url, dir, codec: settings.codec, ffmpegPath: ffmpegBin(), maxFilesizeMb: settings.maxFilesizeMb,
     onProgress: (f) => ctx.progress(0.1 + 0.8 * f, `${Math.round(f * 100)}% of “${best.entry.title}”`),
@@ -218,10 +237,9 @@ async function run(ctx) {
   try {
     ({ filePath, warning } = await handle.done);
   } catch (err) {
-    // Cancelled or failed, nothing of this run stays: the half-written media
-    // and the thumbnail yt-dlp fetches BEFORE it (a refused download leaves a
-    // whole .jpg behind, which would sit in the folder as a "download").
-    await ytdlp.removePartials(dir, startedAt, { byProducts: true });
+    // Cancelled or failed: the folder goes whole, with whatever yt-dlp had
+    // reached.
+    await staging.discardStaging(dir);
     if (err.cancelled || ctx.isCancelled()) { return null; }   // the runner records the cancel
     throw new Error(`YouTube download failed: ${err.message}`, { cause: err });
   } finally {
@@ -229,35 +247,63 @@ async function run(ctx) {
   }
   if (warning) { winston.warn(`youtube: yt-dlp exited unhappily but left a file (${warning})`); }
 
-  // 3. Tags from the recommendation (YouTube's own are unreliable), the
-  // cover where yt-dlp could not embed it, then the row.
-  ctx.progress(0.93, 'tagging');
-  const meta = { title: rec.title, artist: rec.artist, album: rec.album, year: rec.year };
-  await ytdlp.embedThumbnailIfMissing(filePath, { codec: settings.codec, thumbnailUrl: chosen.thumbnail, ffmpegPath: ffmpegBin(), log: 'youtube' });
-  await ytdlp.writeTags(filePath, { codec: settings.codec, meta, source: SOURCE, ffmpegPath: ffmpegBin(), log: 'youtube' });
-  ctx.progress(0.97, 'adding to your library');
-  const { insertDownloadedTrack } = await import('../../db/insert-downloaded-track.js');
-  const inserted = await insertDownloadedTrack({
-    filePath, vpath: downloads.LIBRARY_NAME, basePath: downloads.downloadsDir(), source: SOURCE,
-    format: ytdlp.outputExtension(settings.codec), userMeta: meta, log: 'youtube',
-  });
-  const stat = await fs.stat(filePath);
-  winston.info(`youtube: downloaded “${best.entry.title}” (${best.entry.url}, score ${best.score}) to ${downloads.LIBRARY_NAME}/${inserted.relativePath}`);
-  return {
-    downloaded: {
-      vpath: downloads.LIBRARY_NAME, filepath: `${downloads.LIBRARY_NAME}/${inserted.relativePath}`,
-      trackId: inserted.trackId, bytes: stat.size, format: ytdlp.outputExtension(settings.codec),
-    },
-    match: { score: best.score, url: best.entry.url, title: best.entry.title, channel: chosen.channel, durationSec: chosen.durationSec },
-    // No expiry here: the jobs API computes it on read from the current
-    // retention setting (src/api/discovery-plugin-jobs.js).
-  };
+  try {
+    // 3. Tags from the recommendation (YouTube's own are unreliable), the
+    // cover where yt-dlp could not embed it.
+    ctx.progress(0.93, 'tagging');
+    const meta = { title: rec.title, artist: rec.artist, album: rec.album, year: rec.year };
+    await ytdlp.embedThumbnailIfMissing(filePath, { codec: settings.codec, thumbnailUrl: chosen.thumbnail, ffmpegPath: ffmpegBin(), log: 'youtube' });
+    await ytdlp.writeTags(filePath, { codec: settings.codec, meta, source: SOURCE, ffmpegPath: ffmpegBin(), log: 'youtube' });
+
+    // 4. Where it goes: the destination's layout from those tags, a second
+    // owned check by hash, and never over an existing file.
+    const audioHashLib = await import('../../db/audio-hash.js');
+    const hashes = await audioHashLib.computeHashes(filePath);
+    const ownedNow = ownedTrack({ hash: hashes.fileHash, audioHash: hashes.audioHash });
+    if (ownedNow) {
+      await staging.discardStaging(dir);
+      return { skipped: 'owned', existing: ownedNow, destination };
+    }
+    const tags = destinations.tagsForLayout(meta, rec);
+    const fileName = destinations.safeFileName(path.basename(filePath));
+    const target = destinations.renderTarget({ destination, tags, peerName: null, fileName });
+    const targetInfo = vpathUtil.getVPathInfo(`${destination.vpath}/${target.relPath}`, user);
+    if (await fs.stat(targetInfo.fullPath).then(() => true, () => false)) {
+      await staging.discardStaging(dir);
+      return { skipped: 'exists', filepath: `${destination.vpath}/${target.relPath}`, destination };
+    }
+    await staging.moveIntoPlace(filePath, targetInfo.fullPath);
+
+    // 5. A row, so it plays at once.
+    ctx.progress(0.97, 'adding to your library');
+    const { insertDownloadedTrack } = await import('../../db/insert-downloaded-track.js');
+    const inserted = await insertDownloadedTrack({
+      filePath: targetInfo.fullPath, vpath: destination.vpath, basePath: targetInfo.basePath, source: SOURCE,
+      format: ytdlp.outputExtension(settings.codec), userMeta: meta, log: 'youtube',
+    });
+    const stat = await fs.stat(targetInfo.fullPath);
+    await staging.discardStaging(dir);
+    winston.info(`youtube: downloaded “${best.entry.title}” (${best.entry.url}, score ${best.score}) to ${destination.vpath}/${inserted.relativePath}`);
+    return {
+      downloaded: {
+        vpath: destination.vpath, filepath: `${destination.vpath}/${inserted.relativePath}`,
+        trackId: inserted.trackId, bytes: stat.size, format: ytdlp.outputExtension(settings.codec),
+        title: inserted.title, artist: inserted.artist, album: inserted.album,
+      },
+      match: { score: best.score, url: best.entry.url, title: best.entry.title, channel: chosen.channel, durationSec: chosen.durationSec },
+      missingVars: target.missingVars,
+      destination,
+    };
+  } catch (err) {
+    await staging.discardStaging(dir);
+    throw err;
+  }
 }
 
 export default Object.freeze({
   name: NAME,
   title: 'YouTube',
-  description: 'Searches YouTube, scores the uploads against the recommendation and saves the best match\'s audio into Discover downloads with yt-dlp, tagged and playable at once. Needs yt-dlp and ffmpeg.',
+  description: 'Searches YouTube, scores the uploads against the recommendation and saves the best match\'s audio into the user\'s collection with yt-dlp, tagged and playable at once. Needs yt-dlp and ffmpeg, and upload rights.',
   capabilities: [CAPABILITIES.ACQUIRE],
   scope: SCOPES.SERVER,
   adminSettings: ['binary', 'codec', 'maxFilesizeMb', 'searchResults'],

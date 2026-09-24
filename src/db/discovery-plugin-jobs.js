@@ -116,20 +116,13 @@ export function latestForKey({ userId = null, key }) {
   return out;
 }
 
-// "Clear finished": drop one user's rows that have nothing left to act on —
-// failed, cancelled, and done jobs whose outcome is settled (a copy, a kept
-// or expired download, a skip). Live jobs stay, and so does a finished
-// download that is still in the scratch library: its row is the only handle
-// for Keep… and the only place its expiry shows.
+// "Clear finished": drop one user's finished rows (done, failed, cancelled).
+// Live jobs stay. A finished job has nothing left to act on — what it
+// fetched is in the library, or nothing is.
 export function clearFinished(userId = null) {
   return d().prepare(`
     DELETE FROM discovery_plugin_jobs
-     WHERE user_id IS ?
-       AND (state IN ('failed', 'cancelled')
-            OR (state = 'done' AND NOT (
-                  json_extract(result, '$.downloaded') IS NOT NULL
-              AND json_extract(result, '$.kept') IS NULL
-              AND json_extract(result, '$.removed') IS NULL)))
+     WHERE user_id IS ? AND state IN ('done', 'failed', 'cancelled')
   `).run(userId).changes;
 }
 
@@ -219,29 +212,6 @@ export function pruneFinished(olderThanMs, now = Date.now()) {
     DELETE FROM discovery_plugin_jobs
      WHERE state IN ('done', 'failed', 'cancelled') AND finished_at IS NOT NULL AND finished_at < ?
   `).run(now - olderThanMs).changes;
-}
-
-// What happened to a finished job's result AFTER it finished — a kept
-// download moved into the collection, an expired one swept. A shallow merge
-// into the stored result; only a 'done' job has one to amend. Returns the
-// job as it now stands, or null when there was nothing to patch.
-export function patchResult(id, patch) {
-  const row = d().prepare("SELECT result FROM discovery_plugin_jobs WHERE id = ? AND state = 'done'").get(id);
-  if (!row) { return null; }
-  const merged = { ...(parse(row.result) || {}), ...(patch || {}) };
-  d().prepare('UPDATE discovery_plugin_jobs SET result = ?, updated_at = ? WHERE id = ?')
-    .run(JSON.stringify(merged), Date.now(), id);
-  return getJob(id);
-}
-
-// The finished jobs whose download landed at this library path
-// ("<vpath>/<relpath>") — how the retention sweep finds the job behind a
-// file it removes.
-export function findByDownloadedFilepath(filepath) {
-  return d().prepare(`
-    SELECT * FROM discovery_plugin_jobs
-     WHERE state = 'done' AND json_extract(result, '$.downloaded.filepath') = ?
-  `).all(String(filepath)).map(rowToJob);
 }
 
 // The runner's load across every account, for the admin panel's header.
