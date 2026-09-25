@@ -37,6 +37,7 @@ import * as reqDb from '../db/federation-requests.js';
 import * as fedDb from '../db/federation.js';
 import * as db from '../db/manager.js';
 import * as p2p from './discovery-p2p.js';
+import * as trayStatus from '../util/tray-status.js';
 
 export const REQUEST_TTL_SECONDS = 14 * 24 * 3600;
 // Retry ladder for owed DMs (seconds): 1m → 5m → 30m → 6h, then 6h forever
@@ -204,6 +205,7 @@ export async function accept(id, { libraryIds, vpathNames, limits, expiresAt = n
     nextAttemptInSeconds: 0,
     failCount: 0,
   });
+  trayStatus.kick('request accepted');
   winston.info(`[federation-requests] ${row.uuid} accepted — minted key '${keyName}' `
     + `for [${vpathNames.join(', ')}]; sending the ticket`);
   attempt(id).catch((err) => winston.warn(`[federation-requests] accept delivery attempt failed: ${err.message}`));
@@ -216,6 +218,7 @@ export function reject(id, reason = null) {
   if (row.state !== 'received') { throw new Error(`cannot reject a request in state '${row.state}'`); }
   const clean = sanitize(reason, CAP.reason);
   reqDb.updateRequest(id, { state: 'rejected', rejectReason: clean, nextAttemptInSeconds: null });
+  trayStatus.kick('request rejected');
   winston.info(`[federation-requests] ${row.uuid} rejected${clean ? ` (${clean})` : ''} — `
     + `peer ${row.peer_endpoint_id.slice(0, 12)}… tombstoned for ${TOMBSTONE_DAYS} days`);
   sendCourtesy(row, { type: 'federation-reject', uuid: row.uuid, ...(clean ? { reason: clean } : {}) });
@@ -410,6 +413,10 @@ export async function runSweep() {
       }
     }
   }
+  // The tray file's catch-all: facts changed outside the transitions that
+  // kick it themselves (an expiry above, a config edit, a row moved by
+  // hand) land within one sweep. A no-op unless something differs.
+  trayStatus.kick('sweep');
   if (config.program.discoveryP2p.enabled !== true || !p2p.isRunning()) { return; }
   const due = reqDb.getDueRetries();
   await Promise.allSettled(due.map((row) => attempt(row.id)));
@@ -480,6 +487,7 @@ function handleRequest(from, payload) {
     state: 'received',
     ttlSeconds: REQUEST_TTL_SECONDS,
   });
+  trayStatus.kick('request received');
   winston.info(`[federation-requests] request ${row.uuid} received from `
     + `'${row.peer_name || 'unnamed'}' (${from.slice(0, 12)}…), offering `
     + `${offer.length ? offer.join(', ') : 'nothing'} — awaiting the operator`);
@@ -611,6 +619,7 @@ function handleWithdraw(from, payload) {
   if (!row) { return; }
   if (row.state === 'received') {
     reqDb.updateRequest(row.id, { state: 'cancelled', nextAttemptInSeconds: null });
+    trayStatus.kick('request withdrawn');
     winston.info(`[federation-requests] ${row.uuid} withdrawn by its sender`);
     return;
   }
