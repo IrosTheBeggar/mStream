@@ -203,11 +203,32 @@
       return { ...row, state: 'failed', tag: 'discover.job.failed', tagCls: 'err', icon: 'warn', iconCls: 'err',
         sub: job.error ? { text: String(job.error) } : { key: 'discover.job.failedSub' }, actions: ['retry'] };
     }
+    // An album's or an artist's copy: every song accounted for (songs.total).
+    const many = (job.result && job.result.songs && typeof job.result.songs.total === 'number') ? job.result : null;
     if (job.state === 'cancelled') {
+      if (many) {
+        return { ...row, state: 'cancelled', tag: 'discover.job.cancelled', icon: 'close', muted: true,
+          sub: { parts: [{ key: 'discover.job.cancelledMany' }, ...manyParts(many)] }, actions: ['start'] };
+      }
       return { ...row, state: 'cancelled', tag: 'discover.job.cancelled', icon: 'close', muted: true,
         sub: { key: copy ? 'discover.job.cancelledCopySub' : 'discover.job.cancelledSub' }, actions: ['start'] };
     }
     if (job.state !== 'done') { return row; }
+
+    if (many) {
+      const peer = (many.peer && many.peer.name) || '';
+      // The peer's transfer limit or the peer going away ended it: what
+      // landed is in, and starting again takes only the gaps.
+      if (many.stopped === 'quota' || many.stopped === 'peer') {
+        return { ...row, state: 'stopped', tag: 'discover.job.stopped', tagCls: 'err', icon: 'warn', iconCls: 'err',
+          sub: { parts: [{ key: many.stopped === 'quota' ? 'discover.job.stoppedQuota' : 'discover.job.stoppedPeer', params: { peer } }, ...manyParts(many)] },
+          actions: ['retry'] };
+      }
+      // Startable again: the copy is idempotent, so a second run takes only
+      // what the library lacks by then (a song removed, one the peer added).
+      return { ...row, state: 'copiedMany', tag: many.songs.copied.length ? 'discover.job.inCollection' : 'discover.job.owned', tagCls: 'ok', icon: 'check', iconCls: 'ok',
+        sub: { parts: manyParts(many) }, actions: ['start'] };
+    }
 
     const r = job.result || {};
     // A download that landed in the collection.
@@ -231,6 +252,57 @@
         sub: { key: 'discover.job.existsSub', params: { path: pathCrumbs(r.filepath).join(' / ') } }, actions: ['retry'] };
     }
     return { ...row, state: 'done', tag: 'discover.job.done', tagCls: 'ok', icon: 'check', iconCls: 'ok', sub: null, actions: [] };
+  }
+
+  // The counts of a many-song result as the parts of a sub-line (the
+  // caller translates each and joins them): the albums an artist job
+  // walked, songs copied, already yours, failed, albums left out — zeroes
+  // left out; "nothing to copy" when nothing happened at all.
+  function manyParts(many) {
+    const s = many.songs;
+    const parts = [];
+    if (Array.isArray(many.albums) && many.albums.length) { parts.push({ key: 'discover.job.albumsCount', params: { count: many.albums.length } }); }
+    if (s.copied.length) { parts.push({ key: 'discover.job.copiedCount', params: { count: s.copied.length } }); }
+    if (s.skipped.length) { parts.push({ key: 'discover.job.ownedCount', params: { count: s.skipped.length } }); }
+    if (s.failed.length) { parts.push({ key: 'discover.job.failedCount', params: { count: s.failed.length } }); }
+    if (Array.isArray(many.skippedAlbums) && many.skippedAlbums.length) { parts.push({ key: 'discover.job.albumsLeftOut', params: { count: many.skippedAlbums.length } }); }
+    if (parts.length === 0) { parts.push({ key: 'discover.job.nothingToCopy' }); }
+    return parts;
+  }
+
+  // ── scopes ───────────────────────────────────────────────────────────────
+  // What a job acts on (the server's JOB_SCOPES): the song, its album, its
+  // artist's albums, or only the ones the library lacks. The window keeps
+  // one job per plug-in AND scope, under a slot: the plug-in's name for a
+  // song job (as it always was), "<plugin>@<scope>" for the others.
+  const JOB_SCOPES = ['song', 'album', 'artist', 'artist-missing'];
+
+  function jobScope(job) {
+    return (job && job.params && job.params.scope) || 'song';
+  }
+
+  function jobSlot(plugin, scope) {
+    return (!scope || scope === 'song') ? plugin : plugin + '@' + scope;
+  }
+
+  // A lookup answer (the newest job per plug-in and scope) by slot.
+  function jobsBySlot(jobs) {
+    const out = {};
+    for (const job of (Array.isArray(jobs) ? jobs : [])) {
+      if (!job || !job.plugin) { continue; }
+      const slot = jobSlot(job.plugin, jobScope(job));
+      if (!out[slot]) { out[slot] = job; }
+    }
+    return out;
+  }
+
+  // The strip's word for what a job acts on beyond a song: an i18n key, or null.
+  function jobKind(job) {
+    const scope = jobScope(job);
+    if (scope === 'album') { return 'discover.tray.kindAlbum'; }
+    if (scope === 'artist') { return 'discover.tray.kindArtist'; }
+    if (scope === 'artist-missing') { return 'discover.tray.kindMissing'; }
+    return null;
   }
 
   // Index a lookup answer (newest job per plug-in) by plug-in name.
@@ -293,9 +365,13 @@
     return { total: rows.length, live: count.running > 0, clearable: count.failed > 0, ...count, parts };
   }
 
-  // A job's one-line title in the strip: "Title — Artist".
+  // A job's one-line title in the strip: "Title — Artist" for a song,
+  // "Album — Artist" for an album, the artist's name for the artist scopes.
   function jobTitle(job) {
     const rec = (job && job.recommendation) || {};
+    const scope = jobScope(job);
+    if (scope === 'album') { return [rec.album, rec.artist].filter(Boolean).join(' — ') || ''; }
+    if (scope === 'artist' || scope === 'artist-missing') { return rec.artist || ''; }
     return [rec.title, rec.artist].filter(Boolean).join(' — ') || '';
   }
 
@@ -403,6 +479,7 @@
     LAYOUT_VARS, DEFAULT_LAYOUT, SAMPLE_TAGS, SAMPLE_PEER, COPY_PLUGIN, LOOKUP_CAPABILITY,
     sanitizeSegment, resolveLayout, validateLayout, validateResolvedPath, normalizeBase, safeFileName, previewTarget, pathCrumbs,
     isLive, fmtBytes, jobRowState, jobsByPlugin,
+    JOB_SCOPES, jobScope, jobSlot, jobsBySlot, jobKind,
     inTray, trayRows, traySummary, jobTitle, finishedSince,
     downloadRow, downloadsTotals, queueIndexesFor,
     hasLookup, fmtSeconds, lookupCard,
