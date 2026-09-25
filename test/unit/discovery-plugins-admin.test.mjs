@@ -38,7 +38,7 @@ describe('what a plug-in declares for the admin panel', () => {
     const admin = rowOf('unit-declares');
     assert.deepEqual([admin.adminSettings, admin.detail, admin.reason], [['url', 'timeoutMs'], null, null]);
     const user = listPlugins({ config: ON('unit-declares') }).find((p) => p.name === 'unit-declares');
-    assert.deepEqual(Object.keys(user).sort(), ['available', 'capabilities', 'description', 'enabled', 'name', 'scope', 'settings', 'title']);
+    assert.deepEqual(Object.keys(user).sort(), ['available', 'capabilities', 'description', 'enabled', 'name', 'scope', 'scopes', 'settings', 'title']);
   });
 
   test('every shipped plug-in only declares settings its config schema knows', () => {
