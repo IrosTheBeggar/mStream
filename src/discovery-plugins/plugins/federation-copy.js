@@ -31,6 +31,15 @@
 // (the runner keeps the partial result). Re-running an album copies only
 // the gaps, since every song the library has is skipped.
 //
+// The artist scopes ('artist', 'artist-missing'): the peer's own listing of
+// the artist's albums, then the album copy above for each album whose
+// album artist IS the artist (a compilation or a collaboration the artist
+// merely appears on is listed as skipped, never pulled whole for one
+// track); 'artist-missing' also leaves out every album this library
+// already has by the artist (src/discovery-plugins/owned.js
+// ownedAlbumKeys, by normalised name). One job, album by album, so a cancel
+// keeps the finished albums and songs.
+//
 // Access: the account must be allowed to upload (config.noUpload and the
 // user's allow_upload — a copy is an upload by another road) and to start
 // jobs (the jobs route's gate). The webapp hides the rows and the
@@ -44,7 +53,8 @@ import * as fedDb from '../../db/federation.js';
 import * as vpathUtil from '../../util/vpath.js';
 import * as destinations from '../destination.js';
 import * as downloadsDb from '../../db/plugin-downloads.js';
-import { ownedTrack } from '../owned.js';
+import { ownedTrack, ownedAlbumKeys } from '../owned.js';
+import { nameKey } from '../../db/name-key.js';
 import { CAPABILITIES, SCOPES } from '../registry.js';
 import { JOB_SCOPES, RECOMMENDATION_SOURCES } from '../recommendation.js';
 
@@ -140,11 +150,11 @@ async function copyBody(res, tmpPath, ctx, total) {
 async function run(ctx) {
   const rec = ctx.recommendation || {};
   const scope = (ctx.params && ctx.params.scope) || JOB_SCOPES.SONG;
-  if (scope !== JOB_SCOPES.SONG && scope !== JOB_SCOPES.ALBUM) { throw new Error(`federation-copy has no "${scope}" scope`); }
-  const hasPath = typeof rec.filepath === 'string' && rec.filepath.trim().length > 0;
-  const hasAlbum = typeof rec.album === 'string' && rec.album.trim().length > 0;
+  if (!Object.values(JOB_SCOPES).includes(scope)) { throw new Error(`federation-copy has no "${scope}" scope`); }
+  const has = (v) => typeof v === 'string' && v.trim().length > 0;
+  const artistScope = scope === JOB_SCOPES.ARTIST || scope === JOB_SCOPES.ARTIST_MISSING;
   if (rec.source !== RECOMMENDATION_SOURCES.FEDERATION || !rec.peer || rec.peer.id == null
-    || (scope === JOB_SCOPES.SONG && !hasPath) || (scope === JOB_SCOPES.ALBUM && !hasAlbum)) {
+    || (scope === JOB_SCOPES.SONG && !has(rec.filepath)) || (scope === JOB_SCOPES.ALBUM && !has(rec.album)) || (artistScope && !has(rec.artist))) {
     throw new Error('only a paired peer\'s recommendation can be copied');
   }
   if (!(config.program && config.program.federation && config.program.federation.enabled === true)) {
@@ -164,11 +174,43 @@ async function run(ctx) {
   const env = { peer, user, destination, fedFetchWithDeadline, fedClient };
 
   if (scope === JOB_SCOPES.ALBUM) { return copyAlbum(ctx, env, rec); }
+  if (artistScope) { return copyArtist(ctx, env, rec, { onlyMissing: scope === JOB_SCOPES.ARTIST_MISSING }); }
 
   const r = await copyOne(ctx, env, { filepath: rec.filepath, title: rec.title, artist: rec.artist, album: rec.album });
   if (r === null) { return null; }   // the runner records the cancel
   if (r.skipped) { return { ...r, destination }; }
   return { copied: r.copied, missingVars: r.missingVars, peer: { id: peer.id, name: peer.name }, destination };
+}
+
+// One read of the peer's API, as JSON; a refusal or a dead peer is marked
+// (peerStatusError / peerUnreachable) so the loops know whether to stop.
+async function peerJson(env, route, body) {
+  let r;
+  try {
+    r = await env.fedFetchWithDeadline(env.fedClient, env.peer, route, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }, HEADER_DEADLINE_MS);
+  } catch (err) {
+    throw peerUnreachable(env.peer.name, err);
+  }
+  if (!r.ok) { throw peerStatusError(r.status, env.peer.name); }
+  return r.json();
+}
+
+// The peer's songs of one album, as copyOne takes them. `artist` narrows to
+// the track artist (the modal's album view's narrowing); `albumArtist` to
+// one album credit (the artist loop's, so a feature on the album still
+// comes along).
+async function listAlbumSongs(env, { album, artist = null, albumArtist = null, year = null, fallbackArtist = null }) {
+  const body = { album, artist: artist || null, year: year || null };
+  if (albumArtist) { body.album_artist = albumArtist; }
+  const listing = await peerJson(env, '/api/v1/db/album-songs', body);
+  return (Array.isArray(listing) ? listing : [])
+    .filter((s) => s && typeof s.filepath === 'string' && s.filepath.trim())
+    .map((s) => {
+      const md = (s.metadata && typeof s.metadata === 'object') ? s.metadata : {};
+      return { filepath: s.filepath, title: md.title || null, artist: md.artist || fallbackArtist || null, album: md.album || album };
+    });
 }
 
 // The album: the peer's own listing of its songs, then copyOne for each
@@ -177,23 +219,7 @@ async function run(ctx) {
 async function copyAlbum(ctx, env, rec) {
   const { peer, destination } = env;
   ctx.progress(0, `asking ${peer.name} for “${rec.album}”`);
-  let listing;
-  try {
-    const r = await env.fedFetchWithDeadline(env.fedClient, peer, '/api/v1/db/album-songs', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ album: rec.album, artist: rec.artist || null, year: rec.year || null }),
-    }, HEADER_DEADLINE_MS);
-    if (!r.ok) { throw peerStatusError(r.status, peer.name); }
-    listing = await r.json();
-  } catch (err) {
-    throw (err && (err.peerLimit || err.peerDown)) ? err : peerUnreachable(peer.name, err);
-  }
-  const songs = (Array.isArray(listing) ? listing : [])
-    .filter((s) => s && typeof s.filepath === 'string' && s.filepath.trim())
-    .map((s) => {
-      const md = (s.metadata && typeof s.metadata === 'object') ? s.metadata : {};
-      return { filepath: s.filepath, title: md.title || null, artist: md.artist || rec.artist || null, album: md.album || rec.album };
-    });
+  const songs = await listAlbumSongs(env, { album: rec.album, artist: rec.artist || null, year: rec.year || null, fallbackArtist: rec.artist || null });
   if (songs.length === 0) { throw new Error(`${peer.name} has no songs for “${rec.album}”`); }
 
   const outcome = await copySongs(songs, {
@@ -206,6 +232,113 @@ async function copyAlbum(ctx, env, rec) {
   return {
     scope: JOB_SCOPES.ALBUM,
     album: { name: rec.album, artist: rec.artist || null, year: rec.year || null },
+    songs: outcome.songs,
+    bytes: outcome.bytes,
+    stopped: outcome.stopped,
+    missingVars: outcome.missingVars,
+    peer: { id: peer.id, name: peer.name },
+    destination,
+  };
+}
+
+// ── The artist's albums (pure; unit-tested) ──────────────────────────────
+// Which of the peer's albums by an artist a job copies: the ones whose album
+// artist IS the artist (its primary album artist, or one of its credits
+// outside a compilation). An album the artist merely appears on is listed
+// as skipped ('appearance'); with `onlyMissing`, so is one this library
+// already has (`localKeys`, ownedAlbumKeys). The singles bucket (no album
+// name) is not an album.
+export function planArtistAlbums(listing, artist, { localKeys = new Set(), onlyMissing = false } = {}) {
+  const key = nameKey(artist);
+  const rows = Array.isArray(listing && listing.albums) ? listing.albums : [];
+  const plan = [];
+  const skipped = [];
+  for (const al of rows) {
+    if (!al || typeof al.name !== 'string' || !al.name.trim()) { continue; }
+    const year = al.year == null || !Number.isFinite(Number(al.year)) ? null : Number(al.year);
+    const entry = { name: al.name, year, trackCount: Number.isFinite(Number(al.track_count)) && al.track_count !== null ? Number(al.track_count) : null };
+    const credited = Array.isArray(al.artists) && al.artists.some((n) => nameKey(n) === key);
+    const theirs = nameKey(al.album_artist) === key || (credited && al.compilation !== true);
+    if (!theirs) { skipped.push({ ...entry, why: 'appearance' }); continue; }
+    if (onlyMissing && localKeys.has(nameKey(al.name))) { skipped.push({ ...entry, why: 'owned' }); continue; }
+    plan.push(entry);
+  }
+  return { plan, skipped };
+}
+
+// The artist loop's accounting (pure; unit-tested with a scripted
+// copyAlbum). Runs `albums` one by one through `copyAlbum(album, { progress })`,
+// which answers copySongs' shape ({ songs, bytes, stopped, missingVars }) or
+// throws for a listing that failed — `peerLimit` / `peerDown` end the run,
+// anything else marks the album and goes on. An album that stopped stops
+// the run the same way; a cancel between albums does too. The songs of
+// every album are gathered, each with its album's name, so a window can
+// count them the way it counts an album's. Progress reads
+// "album 2 of 5 · Night Ferry · 3 of 11 songs · 38.2 MB".
+export async function copyAlbums(albums, { copyAlbum, isCancelled = () => false, progress = () => {} }) {
+  const list = Array.isArray(albums) ? albums : [];
+  const out = { albums: [], songs: { total: 0, copied: [], skipped: [], failed: [] }, bytes: 0, stopped: null, missingVars: [] };
+  const missing = new Set();
+  const empty = () => ({ total: 0, copied: [], skipped: [], failed: [] });
+  for (let i = 0; i < list.length; i++) {
+    const al = list[i];
+    if (isCancelled()) { out.stopped = 'cancelled'; break; }
+    const head = `album ${i + 1} of ${list.length} · ${al.name}`;
+    const map = (f, text) => progress(Math.min(0.97, (i + Math.max(0, Math.min(1, Number.isFinite(f) ? f : 0))) / Math.max(1, list.length)), text ? `${head} · ${text}` : head);
+    map(0);
+    let r;
+    try {
+      r = await copyAlbum(al, { progress: map });
+    } catch (err) {
+      out.albums.push({ name: al.name, year: al.year == null ? null : al.year, error: err && err.message ? err.message : String(err), songs: empty(), bytes: 0, stopped: null });
+      if (err && err.peerLimit) { out.stopped = 'quota'; break; }
+      if (err && err.peerDown) { out.stopped = 'peer'; break; }
+      continue;
+    }
+    out.albums.push({ name: al.name, year: al.year == null ? null : al.year, songs: r.songs, bytes: r.bytes, stopped: r.stopped || null });
+    out.songs.total += r.songs.total;
+    for (const k of ['copied', 'skipped', 'failed']) { for (const s of r.songs[k]) { out.songs[k].push({ album: al.name, ...s }); } }
+    out.bytes += Number(r.bytes) || 0;
+    for (const v of (r.missingVars || [])) { missing.add(v); }
+    if (r.stopped) { out.stopped = r.stopped; break; }
+  }
+  const mb = (n) => (n / (1024 * 1024)).toFixed(1);
+  progress(Math.min(0.99, out.albums.length / Math.max(1, list.length)), `${out.albums.length} of ${list.length} albums · ${out.songs.copied.length} songs copied · ${mb(out.bytes)} MB`);
+  out.missingVars = [...missing];
+  return out;
+}
+
+// The artist: the peer's listing of the artist's albums, the plan
+// (planArtistAlbums — the artist's own albums, minus what this library has
+// for 'artist-missing'), then the album copy for each (copyAlbums keeps
+// the account).
+async function copyArtist(ctx, env, rec, { onlyMissing }) {
+  const { peer, destination } = env;
+  ctx.progress(0, `asking ${peer.name} for ${rec.artist}'s albums`);
+  const listing = await peerJson(env, '/api/v1/db/artists-albums', { artist: rec.artist });
+  const localKeys = onlyMissing ? ownedAlbumKeys(rec.artist) : new Set();
+  const { plan, skipped } = planArtistAlbums(listing, rec.artist, { localKeys, onlyMissing });
+  if (plan.length === 0 && skipped.length === 0) { throw new Error(`${peer.name} lists no albums for “${rec.artist}”`); }
+
+  const outcome = await copyAlbums(plan, {
+    isCancelled: ctx.isCancelled,
+    progress: ctx.progress,
+    copyAlbum: async (al, { progress }) => {
+      const songs = await listAlbumSongs(env, { album: al.name, albumArtist: rec.artist, year: al.year, fallbackArtist: rec.artist });
+      return copySongs(songs, {
+        isCancelled: ctx.isCancelled,
+        progress,
+        copyOne: (song, { progress: p }) => copyOne({ job: ctx.job, userId: ctx.userId, isCancelled: ctx.isCancelled, progress: p }, env, song),
+      });
+    },
+  });
+  const { copied, skipped: skippedSongs, failed } = outcome.songs;
+  winston.info(`federation-copy: ${onlyMissing ? 'what is missing of' : 'every album of'} “${rec.artist}” from peer '${peer.name}': ${outcome.albums.length} album(s), ${copied.length} copied, ${skippedSongs.length} skipped, ${failed.length} failed; ${skipped.length} album(s) left out${outcome.stopped ? ` — stopped: ${outcome.stopped}` : ''}`);
+  return {
+    scope: onlyMissing ? JOB_SCOPES.ARTIST_MISSING : JOB_SCOPES.ARTIST,
+    artist: { name: rec.artist },
+    albums: outcome.albums,
+    skippedAlbums: skipped,
     songs: outcome.songs,
     bytes: outcome.bytes,
     stopped: outcome.stopped,
@@ -327,8 +460,9 @@ export default Object.freeze({
   description: 'Copies a paired server\'s song into the user\'s own library folder (their collection destination) and adds it to the library at once. Needs upload rights; never overwrites; skips songs they already have.',
   capabilities: [CAPABILITIES.ACQUIRE],
   scope: SCOPES.USER,
-  // A song, or its whole album (song by song, the same rules for each).
-  scopes: [JOB_SCOPES.SONG, JOB_SCOPES.ALBUM],
+  // A song, its whole album, every album of its artist, or only the artist's
+  // albums this library lacks (song by song, the same rules for each).
+  scopes: [JOB_SCOPES.SONG, JOB_SCOPES.ALBUM, JOB_SCOPES.ARTIST, JOB_SCOPES.ARTIST_MISSING],
   concurrency: 1,
   run,
 });

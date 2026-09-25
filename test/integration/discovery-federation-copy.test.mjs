@@ -45,11 +45,14 @@ const PLUGIN = 'federation-copy';
 const DEST = '/api/v1/discovery/collection/destination';
 const JOBS = `/api/v1/discovery/plugins/${PLUGIN}/jobs`;
 
-// [file, title, artist, album, year]
+// [file, title, artist, album, year, albumArtist?]
 const REMOTE = [
   ['Remote_Hit.mp3', 'Remote Hit', 'Nova', 'Night Ferry', '2019'],
   ['Second_Song.mp3', 'Second Song', 'Nova', 'Night Ferry', '2019'],
   ['Third_Song.mp3', 'Third Song', 'Vosto', 'Solo', ''],
+  // The artist scopes: a second Nova album, and a compilation Nova merely appears on.
+  ['Fourth_Song.mp3', 'Fourth Song', 'Nova', 'Second Wind', '2021'],
+  ['Comp_Track.mp3', 'Comp Track', 'Nova', 'Various Hits', '2020', 'Various Artists'],
 ];
 
 let srvA, srvB, sharedDir, collectionDir, peerId;
@@ -98,9 +101,10 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
   before(async () => {
     sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-fedcopy-'));
     let freq = 400;
-    for (const [file, title, artist, album, year] of REMOTE) {
+    for (const [file, title, artist, album, year, albumArtist] of REMOTE) {
       const meta = ['-metadata', `artist=${artist}`, '-metadata', `title=${title}`, '-metadata', `album=${album}`];
       if (year) { meta.push('-metadata', `date=${year}`); }
+      if (albumArtist) { meta.push('-metadata', `album_artist=${albumArtist}`); }
       await runFfmpeg([
         '-nostdin', '-y', '-loglevel', 'error',
         '-f', 'lavfi', '-i', `sine=frequency=${freq += 55}:duration=2`,
@@ -146,7 +150,7 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     const p = r.body.plugins.find((x) => x.name === PLUGIN);
     assert.ok(p, 'federation-copy is on by default');
     assert.deepEqual(p.capabilities, ['acquire']);
-    assert.deepEqual(p.scopes, ['song', 'album']);
+    assert.deepEqual(p.scopes, ['song', 'album', 'artist', 'artist-missing']);
     assert.deepEqual(p.settings, []);
     assert.equal((await api(srvB, 'GET', `/api/v1/discovery/plugins/${PLUGIN}/settings`)).status, 400, 'no plug-in settings of its own');
   });
@@ -299,6 +303,53 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     const failed = await untilFinished(none.body.job.id);
     assert.equal(failed.state, 'failed');
     assert.match(failed.error, /no songs for/);
+  });
+
+  test('what you\'re missing: the artist\'s albums the library lacks, minus what the artist only appears on', async () => {
+    // B has Night Ferry (the album copy above). The peer lists Second Wind
+    // (Nova's) and Various Hits (a compilation Nova is on) besides it.
+    const started = await api(srvB, 'POST', JOBS, { recommendation: rec('Remote_Hit.mp3'), scope: 'artist-missing' });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    assert.deepEqual(started.body.job.params, { scope: 'artist-missing' });
+    assert.match(started.body.job.key, /^artist-missing:/);
+    const job = await untilFinished(started.body.job.id);
+    assert.equal(job.state, 'done', `job error: ${job.error}`);
+    const { result } = job;
+    assert.equal(result.scope, 'artist-missing');
+    assert.deepEqual(result.artist, { name: 'Nova' });
+    assert.deepEqual(result.skippedAlbums.map((a) => [a.name, a.why]).sort(), [['Night Ferry', 'owned'], ['Various Hits', 'appearance']]);
+    assert.deepEqual(result.albums.map((a) => [a.name, a.year, a.songs.total, a.songs.copied.length, a.stopped]), [['Second Wind', 2021, 1, 1, null]]);
+    assert.deepEqual([result.songs.total, result.songs.copied.length, result.songs.skipped.length, result.songs.failed.length, result.stopped], [1, 1, 0, 0, null]);
+    assert.equal(result.songs.copied[0].album, 'Second Wind');
+    assert.equal(result.songs.copied[0].filepath, 'collection/Albums/Nova/Second Wind/Fourth_Song.mp3');
+    assert.equal(result.bytes, result.songs.copied[0].bytes);
+    assert.ok(fs.existsSync(path.join(collectionDir, 'Albums', 'Nova', 'Second Wind', 'Fourth_Song.mp3')));
+    assert.ok(!fs.existsSync(path.join(collectionDir, 'Albums', 'Various Artists')), 'the compilation was not pulled');
+    assert.equal(bRow('SELECT COUNT(*) AS n FROM plugin_downloads WHERE job_id = ?', job.id).n, 1);
+  });
+
+  test('every album of the artist: album by album, the songs the library has skipped one by one', async () => {
+    const started = await api(srvB, 'POST', JOBS, { recommendation: rec('Second_Song.mp3'), scope: 'artist' });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    assert.match(started.body.job.key, /^artist:/);
+    const job = await untilFinished(started.body.job.id);
+    assert.equal(job.state, 'done', `job error: ${job.error}`);
+    const { result } = job;
+    assert.equal(result.scope, 'artist');
+    assert.deepEqual(result.albums.map((a) => [a.name, a.songs.total, a.songs.copied.length, a.songs.skipped.length]).sort(), [['Night Ferry', 2, 0, 2], ['Second Wind', 1, 0, 1]]);
+    assert.deepEqual(result.skippedAlbums.map((a) => [a.name, a.why]), [['Various Hits', 'appearance']]);
+    assert.deepEqual([result.songs.total, result.songs.copied.length, result.songs.skipped.length, result.songs.failed.length, result.stopped, result.bytes], [3, 0, 3, 0, null, 0]);
+    assert.ok(result.songs.skipped.every((s) => s.why === 'owned' && s.album));
+    // The lookup holds one job per scope.
+    const look = await api(srvB, 'POST', '/api/v1/discovery/plugin-jobs/lookup', { recommendation: rec('Second_Song.mp3') });
+    const byScope = Object.fromEntries((look.body.jobs || []).map((j) => [(j.params && j.params.scope) || 'song', j.id]));
+    assert.equal(byScope.artist, job.id);
+    assert.ok(byScope['artist-missing'] > 0 && byScope.album > 0, JSON.stringify(byScope));
+    // An artist the peer does not know fails with the reason.
+    const none = await api(srvB, 'POST', JOBS, { recommendation: rec('Remote_Hit.mp3', { artist: 'Nobody Here' }), scope: 'artist' });
+    const failed = await untilFinished(none.body.job.id);
+    assert.equal(failed.state, 'failed');
+    assert.match(failed.error, /lists no albums/);
   });
 
   test('a network (p2p) recommendation cannot be copied', async () => {

@@ -2670,7 +2670,19 @@ paths:
         destination }` — one song's own failure does not stop the album, the
         peer's transfer limit, the peer going away or a cancel does, and the
         finished songs stay (a cancelled job keeps the partial result).
-        Re-running an album copies only the gaps.
+        Re-running an album copies only the gaps. With `scope: artist` it
+        asks the peer for the artist's albums and copies, album by album,
+        every one whose album artist is the artist (a compilation or a
+        collaboration the artist merely appears on is listed under
+        `skippedAlbums` with `why: appearance`, never pulled whole for one
+        track); `scope: artist-missing` also leaves out the albums this
+        library already has by the artist (`why: owned`, by normalised
+        album name). The result is `{ scope, artist: { name }, albums:
+        [{ name, year, songs, bytes, stopped, error? }], skippedAlbums:
+        [{ name, year, trackCount, why }], songs: { total, copied, skipped,
+        failed } (every album's, each song with its `album`), bytes,
+        stopped, missingVars, peer, destination }`. One job, album by
+        album: a cancel keeps the finished albums and songs.
 
         `youtube` ("Get it" from YouTube; off by default, needs yt-dlp and
         ffmpeg) searches YouTube for the recommendation, scores the uploads
