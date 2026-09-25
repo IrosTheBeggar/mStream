@@ -38,14 +38,17 @@ export function ownedTrack({ hash, audioHash, artist, title, album }, database =
 // The albums this library already has by an artist — as its primary album
 // artist or an album credit — as normalised name keys (src/db/name-key.js),
 // for "what you're missing": an album whose key the set holds is not asked
-// for again. The whole library, like ownedTrack.
+// for again. The whole library, like ownedTrack. An album row with no songs
+// left (the Downloads view's Remove deletes tracks, not the album row) is
+// not an album the library has.
 export function ownedAlbumKeys(artist, database = db.getDB()) {
   if (!database || !artist) { return new Set(); }
   const key = nameKey(artist);
   const rows = database.prepare(`
     SELECT DISTINCT al.name FROM albums al
-     WHERE al.artist_id IN (SELECT id FROM artists WHERE name_key = ?)
-        OR al.id IN (SELECT aa.album_id FROM album_artists aa
-                      WHERE aa.artist_id IN (SELECT id FROM artists WHERE name_key = ?))`).all(key, key);
+     WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id)
+       AND (al.artist_id IN (SELECT id FROM artists WHERE name_key = ?)
+            OR al.id IN (SELECT aa.album_id FROM album_artists aa
+                          WHERE aa.artist_id IN (SELECT id FROM artists WHERE name_key = ?)))`).all(key, key);
   return new Set(rows.map((r) => nameKey(r.name)).filter(Boolean));
 }
