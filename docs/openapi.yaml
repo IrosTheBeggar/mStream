@@ -262,7 +262,7 @@ components:
         description: { type: string }
         capabilities:
           type: array
-          items: { type: string, enum: [links, preview, play, acquire, handoff] }
+          items: { type: string, enum: [links, preview, play, acquire, handoff, lookup] }
         scope: { type: string, enum: [server, user] }
         enabled: { type: boolean }
         available: { type: boolean, description: "False when the plug-in is on but its availability probe failed." }
@@ -312,6 +312,7 @@ components:
         userId: { type: integer, nullable: true, description: "Who asked; null in public mode or after the user was deleted." }
         key: { type: string, description: "The recommendation's persistence key (mbid:… or text:…)." }
         recommendation: { type: object, description: The normalised recommendation the job was started with. }
+        params: { type: object, nullable: true, description: "What the job was started with beyond the recommendation: `{ choice: { url } }` when the caller picked an upload from the plug-in's lookup; null otherwise." }
         state: { type: string, enum: [queued, running, done, failed, cancelled] }
         progress: { type: number, nullable: true, minimum: 0, maximum: 1 }
         statusText: { type: string, nullable: true, description: "The plug-in's own progress line." }
@@ -2384,7 +2385,7 @@ paths:
                         description: { type: string }
                         capabilities:
                           type: array
-                          items: { type: string, enum: [links, preview, play, acquire, handoff] }
+                          items: { type: string, enum: [links, preview, play, acquire, handoff, lookup] }
                         scope: { type: string, enum: [server, user], description: "server = admin configuration only; user = needs per-user credentials" }
                         enabled: { type: boolean }
                         settings:
@@ -2550,6 +2551,16 @@ paths:
         persistence `key` (`mbid:<recording-mbid>` when known, else a
         `text:` digest over artist, title and album) so a client can dedupe
         the same song offered by several peers.
+
+        A plug-in with the `lookup` capability (`youtube`) answers what its
+        job WOULD fetch, with nothing fetched: `result.lookup = { query,
+        minScore, candidates: [{ id, url, title, channel, durationSec,
+        thumbnail, topic, score }], owned }` — the uploads found for the
+        recommendation, scored, best first (at most five; covers, karaoke
+        and live takes are not offered), the score a job needs, and
+        `owned: { filepath, by }` in place of a search when the library
+        already has the song. Start the job with `choice: { url }` to fetch
+        one of them. Answers are cached on the server for a few hours.
       parameters:
         - name: name
           in: path
@@ -2656,7 +2667,7 @@ paths:
         the search, by hash after the download), never over an existing file.
         Its `result` is `{ downloaded: { vpath, filepath, trackId, bytes,
         format, title, artist, album }, match: { score, url, title, channel,
-        durationSec }, missingVars, destination }`, or the same `skipped`
+        durationSec, chosen }, missingVars, destination }`, or the same `skipped`
         shapes as `federation-copy`. It fails with `uploads are disabled for
         this account, and a download is an upload`, `no library to download
         into`, `Nothing matched closely enough (best score …, needs 0.62)`,
@@ -2678,6 +2689,12 @@ paths:
               required: [recommendation]
               properties:
                 recommendation: { type: object, description: "Same shape as the resolve body." }
+                choice:
+                  type: object
+                  required: [url]
+                  description: "An upload picked from the plug-in's lookup (`resolve` → `result.lookup.candidates[].url`): the job fetches that one instead of searching, and the pick stands even where the scorer would have passed it over. Only a plug-in with the `lookup` capability takes one, and it checks the link (`youtube`: YouTube links only)."
+                  properties:
+                    url: { type: string, format: uri }
       responses:
         "202":
           description: Queued.
@@ -2689,7 +2706,7 @@ paths:
                   created: { type: boolean, example: true }
                   job: { $ref: "#/components/schemas/DiscoveryPluginJob" }
         "200": { description: "A live job for this recommendation already exists; `created: false` and that job." }
-        "400": { description: "Malformed body, or the plug-in does not run jobs (use resolve)." }
+        "400": { description: "Malformed body, the plug-in does not run jobs (use resolve), or a `choice` for a plug-in without a lookup / a link it does not accept." }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "The acquisition gate is in whitelist mode and the caller is not allowed." }
         "404": { description: "Unknown or disabled plug-in." }

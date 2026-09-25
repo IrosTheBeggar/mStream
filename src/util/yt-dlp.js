@@ -165,7 +165,8 @@ export function entryToRecord(json) {
     album: j.album || null,
     track: j.track || null,
     year: year ? Number(year) || null : null,
-    thumbnail: j.thumbnail || null,
+    // A full dump names one; a flat search entry lists them (small to large).
+    thumbnail: j.thumbnail || (Array.isArray(j.thumbnails) && j.thumbnails.length ? (j.thumbnails[j.thumbnails.length - 1].url || null) : null),
     viewCount: j.view_count == null ? null : Number(j.view_count),
   };
 }

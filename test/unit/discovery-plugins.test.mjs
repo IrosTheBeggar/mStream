@@ -14,7 +14,7 @@ import { describe, test, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  CAPABILITIES, SCOPES, getPlugin, isPluginEnabled, listPlugins, anyPluginEnabled, pluginNames,
+  CAPABILITIES, RESOLVING_CAPABILITIES, RUNNABLE_CAPABILITIES, SCOPES, getPlugin, isPluginEnabled, listPlugins, anyPluginEnabled, pluginNames,
   normalizeRecommendation, recommendationKey, searchPhrase,
 } from '../../src/discovery-plugins/index.js';
 import { registerPlugin, unregisterPluginForTests } from '../../src/discovery-plugins/registry.js';
@@ -97,6 +97,10 @@ describe('registry', () => {
     assert.throws(() => registerPlugin({ name: 'p2', title: 'x', capabilities: ['links'], scope: 'server' }), /must implement resolve/);
     assert.throws(() => registerPlugin({ name: 'p3', title: 'x', capabilities: ['handoff'], scope: 'user' }), /must implement run/);
     assert.throws(() => registerPlugin({ name: 'p4', title: 'x', capabilities: ['acquire'], scope: 'server', run() {}, concurrency: 0 }), /concurrency/);
+    // lookup is answered by resolve(): an acquire plug-in that declares it needs both run() and resolve().
+    assert.equal(CAPABILITIES.LOOKUP, 'lookup');
+    assert.ok(RESOLVING_CAPABILITIES.includes('lookup') && !RUNNABLE_CAPABILITIES.includes('lookup'));
+    assert.throws(() => registerPlugin({ name: 'p5', title: 'x', capabilities: ['acquire', 'lookup'], scope: 'server', run() {} }), /must implement resolve/);
     const def = registerPlugin({ name: 'unit-test-plugin', title: 'Unit', capabilities: ['handoff'], scope: 'user', run() {} });
     assert.ok(Object.isFrozen(def));
     assert.equal(def.description, '');

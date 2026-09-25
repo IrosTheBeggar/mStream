@@ -29,6 +29,12 @@
 //            full-length stream THIS server can serve for the recommendation
 //            (a paired peer's track through the federation proxy)
 //   acquire  starts a job that lands a file in the user's collection
+//   lookup   resolve() returns { lookup: { query, minScore, candidates, owned } }
+//            — what an acquire plug-in WOULD fetch, before anything is:
+//            the uploads it found for the recommendation, scored, best
+//            first ({ id, url, title, channel, durationSec, thumbnail,
+//            topic, score }); `owned` when the library already has the
+//            song. A job started with `choice: { url }` fetches that one.
 //   handoff  (later) pushes the recommendation to an external account
 //
 // Enablement lives in config.program.discoveryPlugins[name].enabled — the
@@ -44,11 +50,12 @@ export const CAPABILITIES = Object.freeze({
   PLAY: 'play',
   ACQUIRE: 'acquire',
   HANDOFF: 'handoff',
+  LOOKUP: 'lookup',
 });
 
 // The capabilities answered by resolve() — the others start jobs.
 export const RESOLVING_CAPABILITIES = Object.freeze([
-  CAPABILITIES.LINKS, CAPABILITIES.PREVIEW, CAPABILITIES.PLAY,
+  CAPABILITIES.LINKS, CAPABILITIES.PREVIEW, CAPABILITIES.PLAY, CAPABILITIES.LOOKUP,
 ]);
 
 // The capabilities that run as jobs (src/discovery-plugins/jobs.js): the

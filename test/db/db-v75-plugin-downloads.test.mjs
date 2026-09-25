@@ -39,6 +39,7 @@ describe('V75 plugin_downloads', () => {
     const db = freshDb();
     applyAllMigrations(db);
     assert.ok(tables(db).includes('plugin_downloads'));
+    assert.ok(columns(db, 'discovery_plugin_jobs').includes('params'), 'V76: params on the jobs table');
     for (const c of ['plugin', 'user_id', 'job_id', 'vpath', 'filepath', 'file_hash', 'origin', 'title', 'artist', 'album', 'bytes', 'downloaded_at', 'removed_at', 'removed_by']) {
       assert.ok(columns(db, 'plugin_downloads').includes(c), c);
     }
@@ -59,10 +60,15 @@ describe('V75 plugin_downloads', () => {
     const userBefore = db.prepare("SELECT * FROM users WHERE username = 'alice'").get();
     const jobBefore = db.prepare('SELECT * FROM discovery_plugin_jobs').get();
     applyAllMigrations(db, { fromVersion: 74 });
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 75);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, SCHEMA_VERSION);
     assert.ok(tables(db).includes('plugin_downloads'));
+    assert.ok(columns(db, 'discovery_plugin_jobs').includes('params'), 'V76: params on the jobs table');
     assert.deepEqual(db.prepare("SELECT * FROM users WHERE username = 'alice'").get(), userBefore);
-    assert.deepEqual(db.prepare('SELECT * FROM discovery_plugin_jobs').get(), jobBefore);
+    // The V76 column is new on the upgraded row and empty; everything else is as it was.
+    const jobAfter = db.prepare('SELECT * FROM discovery_plugin_jobs').get();
+    assert.equal(jobAfter.params, null);
+    delete jobAfter.params;
+    assert.deepEqual(jobAfter, jobBefore);
     db.close();
   });
 

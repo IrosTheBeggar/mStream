@@ -77,6 +77,19 @@ after(() => {
 const rec = (title) => ({ artist: 'A', title, album: null, year: null, isrc: null, releaseGroupMbid: null, recordingMbid: null, duration: null, exportId: null, filepath: null, source: 'p2p', peer: null });
 
 describe('jobs data access', () => {
+  test('params ride along: what the job was started with beyond the recommendation', () => {
+    const chosen = { choice: { url: 'https://youtu.be/abc123' } };
+    const a = jobsDb.createJob({ plugin: 'unit-params', key: 'text:params', recommendation: rec('Params'), params: chosen });
+    assert.equal(a.created, true);
+    assert.deepEqual(a.job.params, chosen);
+    assert.deepEqual(jobsDb.getJob(a.job.id).params, chosen);
+    const b = jobsDb.createJob({ plugin: 'unit-params', key: 'text:noparams', recommendation: rec('No params') });
+    assert.equal(b.job.params, null);
+    // Out of the way of the tests below.
+    jobsDb.cancelJob(a.job.id);
+    jobsDb.cancelJob(b.job.id);
+  });
+
   test('createJob dedupes on a live (plugin, key); finished history does not block', () => {
     const a = jobsDb.createJob({ plugin: 'unit-done', userId: null, key: 'text:one', recommendation: rec('One') });
     assert.equal(a.created, true);

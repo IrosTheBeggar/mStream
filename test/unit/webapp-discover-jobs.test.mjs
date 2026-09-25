@@ -273,3 +273,37 @@ describe('the queue after a download is removed', () => {
     assert.deepEqual(J.queueIndexesFor(null, gone), []);
   });
 });
+
+describe('the lookup card', () => {
+  test('fmtSeconds: m:ss, h:mm:ss, nothing for an unknown length', () => {
+    assert.equal(J.fmtSeconds(253), '4:13');
+    assert.equal(J.fmtSeconds(3725), '1:02:05');
+    assert.equal(J.fmtSeconds(0), '0:00');
+    assert.equal(J.fmtSeconds(null), '');
+    assert.equal(J.fmtSeconds('x'), '');
+  });
+
+  test('hasLookup reads the capability', () => {
+    assert.equal(J.hasLookup({ capabilities: ['acquire', 'lookup'] }), true);
+    assert.equal(J.hasLookup({ capabilities: ['acquire'] }), false);
+    assert.equal(J.hasLookup(null), false);
+  });
+
+  test('lookupCard: the chosen candidate (else the best) and the others, each scored against the bar', () => {
+    const c = (id, score) => ({ id, url: 'https://youtu.be/' + id, title: 'T ' + id, channel: 'C', durationSec: 253, thumbnail: null, topic: id === 'a', score });
+    const ready = { status: 'ready', query: 'q', minScore: 0.62, candidates: [c('a', 0.9), c('b', 0.7), c('c', 0.4)], chosen: null, owned: null, error: '' };
+    let card = J.lookupCard(ready);
+    assert.equal(card.state, 'ready');
+    assert.equal(card.query, 'q');
+    assert.deepEqual([card.card.url, card.card.scorePct, card.card.loose, card.card.length, card.card.topic], ['https://youtu.be/a', 90, false, '4:13', true]);
+    assert.deepEqual(card.others.map((o) => [o.url, o.loose]), [['https://youtu.be/b', false], ['https://youtu.be/c', true]]);
+    card = J.lookupCard({ ...ready, chosen: 'https://youtu.be/c' });
+    assert.deepEqual([card.card.url, card.card.loose, card.card.scorePct], ['https://youtu.be/c', true, 40]);
+    assert.deepEqual(card.others.map((o) => o.url), ['https://youtu.be/a', 'https://youtu.be/b']);
+    assert.equal(J.lookupCard({ ...ready, candidates: [] }).state, 'none', 'ready with nothing to show reads as none');
+    assert.equal(J.lookupCard({ status: 'owned', owned: { filepath: 'music/x.mp3', by: 'tags' } }).owned.filepath, 'music/x.mp3');
+    assert.equal(J.lookupCard(null).state, 'idle');
+    assert.equal(J.lookupCard({ status: 'loading' }).card, null);
+    assert.equal(J.lookupCard({ status: 'error', error: 'boom' }).error, 'boom');
+  });
+});

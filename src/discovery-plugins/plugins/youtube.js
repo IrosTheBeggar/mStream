@@ -24,6 +24,15 @@
 // when its title carries a blocked word (cover, karaoke, live, remix, …)
 // the recommendation does not. Below MIN_SCORE the job fails with the
 // best score, rather than landing the wrong song.
+//
+// The lookup (capability `lookup`, resolve()): the same search, ranking
+// and confirmation with nothing fetched, answered as candidates best first
+// so a window can show what "Get it" would download and let the user pick
+// another upload. A job started with `choice: { url }` then reads that
+// upload instead of searching, and the user's pick stands even where the
+// scorer would have passed it over. Answers are cached for a while: a
+// search is a yt-dlp process and a request to YouTube, and one window is
+// opened more than once.
 
 import path from 'node:path';
 import fs from 'node:fs/promises';
@@ -38,7 +47,7 @@ import * as staging from '../staging.js';
 import * as downloadsDb from '../../db/plugin-downloads.js';
 import { ownedTrack } from '../owned.js';
 import { scoreCandidate, MIN_SCORE } from '../match.js';
-import { searchPhrase } from '../recommendation.js';
+import { recommendationKey, searchPhrase } from '../recommendation.js';
 import { CAPABILITIES, SCOPES } from '../registry.js';
 
 export const NAME = 'youtube';
@@ -47,6 +56,11 @@ export const TOPIC_BONUS = 0.05;
 
 const CONFIRM_TOP = 2;
 const CANCEL_POLL_MS = 500;
+// The lookup: how many candidates a window gets, how long an answer is
+// kept, and how many answers are kept.
+const LOOKUP_MAX = 5;
+const LOOKUP_TTL_MS = 6 * 60 * 60 * 1000;
+const LOOKUP_CACHE_MAX = 200;
 
 // ── Pure: reading YouTube titles (unit-tested) ────────────────────────────
 
@@ -135,6 +149,39 @@ export function pickBest(ranked, minScore = MIN_SCORE) {
   return ranked.length && ranked[0].score >= minScore ? ranked[0] : null;
 }
 
+// A chosen upload's link, as the job start route checks it: YouTube's own
+// hosts, a watch page, a short or a live page. Anything else is refused
+// before a job exists — yt-dlp fetches from hundreds of sites, and the
+// choice would otherwise be a way to make this server download from any
+// of them.
+export function isYouTubeUrl(url) {
+  let u;
+  try { u = new URL(String(url)); } catch (_e) { return false; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') { return false; }
+  const host = u.hostname.toLowerCase();
+  const ID = /^[A-Za-z0-9_-]+$/;
+  if (host === 'youtu.be') { return ID.test(u.pathname.slice(1)); }
+  if (!/^(www\.|m\.|music\.)?youtube\.com$/.test(host)) { return false; }
+  if (u.pathname === '/watch') { return ID.test(u.searchParams.get('v') || ''); }
+  const m = /^\/(shorts|live)\/([^/]+)$/.exec(u.pathname);
+  return !!m && ID.test(m[2]);
+}
+
+// The lookup's answer from the ranked results: what a window shows before
+// anything is fetched. Best first, at most `max`.
+export function lookupCandidates(ranked, { max = LOOKUP_MAX } = {}) {
+  return (ranked || []).slice(0, max).map(({ entry, candidate, score }) => ({
+    id: entry.id || null,
+    url: entry.url,
+    title: entry.title || '',
+    channel: candidate.channel || null,
+    durationSec: Number.isFinite(candidate.durationSec) ? candidate.durationSec : null,
+    thumbnail: candidate.thumbnail || null,
+    topic: candidate.topic === true,
+    score,
+  }));
+}
+
 // ── The job ───────────────────────────────────────────────────────────────
 
 function cfg() {
@@ -154,6 +201,95 @@ async function ffmpegReady() {
     new Promise((r) => { const t = setTimeout(r, FFMPEG_WAIT_MS); if (t.unref) { t.unref(); } }),
   ]);
   return !!(transcode.isDownloaded() && ffmpegBin());
+}
+
+// yt-dlp's own words for an upload it cannot serve: private, removed,
+// region-locked, "not available". Such a result is dropped rather than
+// scored thin — it would only fail the download later.
+const UNAVAILABLE_RE = /not available|unavailable|private video|has been removed|video is private|blocked|age.restricted|sign in to confirm your age/i;
+
+export function isUnavailableMessage(message) {
+  return UNAVAILABLE_RE.test(String(message || ''));
+}
+
+// Rank the search results, then confirm the top ones with their full
+// record (flat search entries are thin: no reliable duration or channel)
+// and rank those again. `top` is what a job picks from — confirmed
+// records only, so a thin entry never wins on missing data; `rest` is the
+// tail as found, for a lookup to offer. An upload YouTube will not serve
+// leaves the list. Null when the caller cancelled.
+async function rankConfirmed(rec, entries, { bin, isCancelled = () => false }) {
+  const ranked = rankCandidates(rec, entries);
+  if (ranked.length === 0) { return { top: [], rest: [] }; }
+  const confirmed = [];
+  for (const r of ranked.slice(0, CONFIRM_TOP)) {
+    if (isCancelled()) { return null; }
+    try {
+      const full = await ytdlp.details(r.entry.url, { bin });
+      confirmed.push({ ...r.entry, ...Object.fromEntries(Object.entries(full).filter(([, v]) => v != null)) });
+    } catch (err) {
+      if (isUnavailableMessage(err.message)) {
+        winston.info(`youtube: ${r.entry.url} is not served (${err.message}); not a candidate`);
+        continue;
+      }
+      winston.warn(`youtube: could not confirm ${r.entry.url} (${err.message}); scoring the search entry as is`);
+      confirmed.push(r.entry);
+    }
+  }
+  return { top: rankCandidates(rec, confirmed), rest: ranked.slice(CONFIRM_TOP) };
+}
+
+// ── The lookup ───────────────────────────────────────────────────────────
+// What "Get it" would fetch, before anything is: the uploads found for the
+// recommendation, scored, best first. A song the library already has
+// answers `owned` without asking YouTube. One search serves concurrent
+// askers, and an answer is kept for LOOKUP_TTL_MS.
+const lookupCache = new Map();      // key → { at, answer }
+const lookupInFlight = new Map();   // key → Promise<answer>
+
+function cachedLookup(key) {
+  const hit = lookupCache.get(key);
+  if (!hit) { return null; }
+  if (Date.now() - hit.at > LOOKUP_TTL_MS) { lookupCache.delete(key); return null; }
+  return hit.answer;
+}
+
+function rememberLookup(key, answer) {
+  lookupCache.set(key, { at: Date.now(), answer });
+  while (lookupCache.size > LOOKUP_CACHE_MAX) { lookupCache.delete(lookupCache.keys().next().value); }
+}
+
+export function forgetLookups() { lookupCache.clear(); }
+
+async function resolve(rec) {
+  const settings = cfg();
+  const query = searchPhrase(rec);
+  const answer = (over) => ({ lookup: { query, minScore: MIN_SCORE, candidates: [], owned: null, ...over } });
+  if (!query) { return answer(); }
+  const owned = ownedTrack({ artist: rec.artist, title: rec.title, album: rec.album });
+  if (owned) { return answer({ owned }); }
+  const key = `${recommendationKey(rec)}|${settings.searchResults}`;
+  const cached = cachedLookup(key);
+  if (cached) { return { lookup: cached }; }
+  if (!lookupInFlight.has(key)) {
+    const p = (async () => {
+      const bin = ytdlp.resolveBinary(settings.binary);
+      if (!(await ytdlp.isAvailable(bin))) { throw new Error('yt-dlp is not installed on this server'); }
+      const entries = await ytdlp.search(query, { bin, results: settings.searchResults });
+      const r = await rankConfirmed(rec, entries, { bin });
+      const found = { query, minScore: MIN_SCORE, candidates: lookupCandidates(r.top.concat(r.rest)), owned: null };
+      rememberLookup(key, found);
+      return found;
+    })().finally(() => lookupInFlight.delete(key));
+    lookupInFlight.set(key, p);
+  }
+  return { lookup: await lookupInFlight.get(key) };
+}
+
+// The job start route's check of `choice` (a lookup candidate the user
+// picked): a YouTube link, nothing else.
+function validateChoice(choice) {
+  if (!choice || !isYouTubeUrl(choice.url)) { throw new Error('the chosen upload must be a YouTube link'); }
 }
 
 // `settings` = values to try instead of the saved ones (the admin probe
@@ -199,29 +335,35 @@ async function run(ctx) {
   const owned = ownedTrack({ artist: rec.artist, title: rec.title, album: rec.album });
   if (owned) { return { skipped: 'owned', existing: owned, destination }; }
 
-  // 1. Search, rank, confirm the top results with their full record.
-  ctx.progress(0.02, `searching YouTube for “${phrase}”`);
-  const entries = await ytdlp.search(phrase, { bin, results: settings.searchResults });
-  if (entries.length === 0) { throw new Error(`YouTube returned no results for “${phrase}”`); }
-  let ranked = rankCandidates(rec, entries);
-  if (ranked.length > 0) {
-    const confirmed = [];
-    for (const r of ranked.slice(0, CONFIRM_TOP)) {
-      if (ctx.isCancelled()) { return null; }
-      try {
-        const full = await ytdlp.details(r.entry.url, { bin });
-        confirmed.push({ ...r.entry, ...Object.fromEntries(Object.entries(full).filter(([, v]) => v != null)) });
-      } catch (err) {
-        winston.warn(`youtube: could not confirm ${r.entry.url} (${err.message}); scoring the search entry as is`);
-        confirmed.push(r.entry);
-      }
+  // 1. The upload the user picked from the lookup, read in full — their
+  // pick stands even where the scorer would have passed it over (a live
+  // take, a length that does not fit), the score is only reported — or
+  // else the search: rank, confirm the top results with their full record,
+  // take the best.
+  const choice = ctx.params && ctx.params.choice;
+  let best;
+  if (choice) {
+    validateChoice(choice);
+    ctx.progress(0.02, 'reading the chosen upload');
+    let entry;
+    try {
+      entry = await ytdlp.details(choice.url, { bin });
+    } catch (err) {
+      throw new Error(`the chosen upload could not be read: ${err.message}`, { cause: err });
     }
-    ranked = rankCandidates(rec, confirmed);
-  }
-  const best = pickBest(ranked);
-  if (!best) {
-    const top = ranked.length ? ranked[0].score.toFixed(2) : '0.00';
-    throw new Error(`Nothing matched closely enough (best score ${top}, needs ${MIN_SCORE})`);
+    entry = { ...entry, url: entry.url || choice.url, title: entry.title || '' };
+    best = rankCandidates(rec, [entry])[0] || { entry, candidate: toCandidates(entry)[0], score: 0 };
+  } else {
+    ctx.progress(0.02, `searching YouTube for “${phrase}”`);
+    const entries = await ytdlp.search(phrase, { bin, results: settings.searchResults });
+    if (entries.length === 0) { throw new Error(`YouTube returned no results for “${phrase}”`); }
+    const r = await rankConfirmed(rec, entries, { bin, isCancelled: ctx.isCancelled });
+    if (!r) { return null; }
+    best = pickBest(r.top);
+    if (!best) {
+      const top = r.top.length ? r.top[0].score.toFixed(2) : '0.00';
+      throw new Error(`Nothing matched closely enough (best score ${top}, needs ${MIN_SCORE})`);
+    }
   }
 
   // 2. Download into a staging folder of this job's own — never straight
@@ -300,7 +442,7 @@ async function run(ctx) {
         title: inserted.title, artist: inserted.artist, album: inserted.album,
         downloadId: recorded ? recorded.id : null,
       },
-      match: { score: best.score, url: best.entry.url, title: best.entry.title, channel: chosen.channel, durationSec: chosen.durationSec },
+      match: { score: best.score, url: best.entry.url, title: best.entry.title, channel: chosen.channel, durationSec: chosen.durationSec, chosen: !!choice },
       missingVars: target.missingVars,
       destination,
     };
@@ -314,11 +456,13 @@ export default Object.freeze({
   name: NAME,
   title: 'YouTube',
   description: 'Searches YouTube, scores the uploads against the recommendation and saves the best match\'s audio into the user\'s collection with yt-dlp, tagged and playable at once. Needs yt-dlp and ffmpeg, and upload rights.',
-  capabilities: [CAPABILITIES.ACQUIRE],
+  capabilities: [CAPABILITIES.ACQUIRE, CAPABILITIES.LOOKUP],
   scope: SCOPES.SERVER,
   // `binary` is deliberately not here: see probe().
   adminSettings: ['codec', 'maxFilesizeMb', 'searchResults'],
   concurrency: 1,
   probe,
+  resolve,
+  validateChoice,
   run,
 });

@@ -91,7 +91,9 @@ import { mergeAlbumInto, backfillAlbumAggregates } from './album-merge.js';
 // users.allow_discovery_jobs. See SCHEMA_V74.
 // V75 adds plugin_downloads, the record of what the plug-ins brought into the
 // library. See SCHEMA_V75.
-export const SCHEMA_VERSION = 75;
+// V76 adds discovery_plugin_jobs.params, what a job was started with beyond
+// the recommendation. See SCHEMA_V76.
+export const SCHEMA_VERSION = 76;
 
 // The schema version at which the SCANNER'S WRITE CONTRACT last changed —
 // the columns / identity rules a rust-parser binary must know to write rows
@@ -3270,6 +3272,14 @@ export const SCHEMA_V75 = `
     ON plugin_downloads(file_hash);
 `;
 
+// V76: discovery_plugin_jobs.params — what the job was started with beyond
+// the recommendation, as JSON: { choice: { url } } when the caller picked
+// an upload from the plug-in's lookup instead of leaving the search to the
+// job. NULL for every job so far (and for a plain start).
+export const SCHEMA_V76 = `
+  ALTER TABLE discovery_plugin_jobs ADD COLUMN params TEXT;
+`;
+
 export const MIGRATIONS = [
   { version: 1,  sql: SCHEMA_V1  },
   { version: 2,  sql: SCHEMA_V2  },
@@ -3563,4 +3573,6 @@ export const MIGRATIONS = [
   // the Youtube DL route) brought into the library. A new table; nothing
   // comes from tags. See SCHEMA_V75.
   { version: 75, sql: SCHEMA_V75 },
+  // V76 — a nullable column on the jobs table. See SCHEMA_V76.
+  { version: 76, sql: SCHEMA_V76 },
 ];
