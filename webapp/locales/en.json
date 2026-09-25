@@ -163,6 +163,22 @@
   "discover.modal.addToCollection": "Add to your collection",
   "discover.modal.addToCollectionSub": "Copies the file from {{peer}} into your library",
   "discover.modal.add": "Add",
+  "discover.modal.addAlbum": "Add album to your collection",
+  "discover.modal.addAlbumStart": "Add album",
+  "discover.modal.addAlbumSub": "Copies its {{count}} songs from {{peer}} into your library",
+  "discover.modal.addAlbumSubNoCount": "Copies every song of it from {{peer}} into your library",
+  "discover.modal.addAlbumSubOwned": "You have this album · copies only the songs you lack",
+  "discover.modal.addArtist": "Add artist to your collection",
+  "discover.modal.addArtistStart": "Add artist",
+  "discover.modal.addArtistSub": "Every album by {{artist}} on {{peer}} · {{summary}}",
+  "discover.modal.addArtistSubNoCount": "Every album by {{artist}} on {{peer}}",
+  "discover.modal.addMissing": "Add what you’re missing",
+  "discover.modal.addMissingStart": "Add them",
+  "discover.modal.addMissingSub": {
+    "one": "1 album by {{artist}} you don’t have",
+    "other": "{{count}} albums by {{artist}} you don’t have"
+  },
+  "discover.modal.addMissingSubNoCount": "Only the albums by {{artist}} you don’t have",
   "discover.modal.dest.goTo": "Files go to",
   "discover.modal.dest.default": "library default",
   "discover.modal.dest.yours": "yours",
@@ -218,6 +234,36 @@
   "discover.job.toastDownloaded": "Downloaded into your collection",
   "discover.job.toastOwned": "Already in your library",
   "discover.job.toastFailed": "{{plugin}} failed",
+  "discover.job.toastCopiedMany": "Added to your collection",
+  "discover.job.toastStopped": "Stopped early",
+  "discover.job.albumsCount": {
+    "one": "1 album",
+    "other": "{{count}} albums"
+  },
+  "discover.job.copiedCount": {
+    "one": "1 song copied",
+    "other": "{{count}} songs copied"
+  },
+  "discover.job.ownedCount": {
+    "one": "1 already yours",
+    "other": "{{count}} already yours"
+  },
+  "discover.job.failedCount": {
+    "one": "1 failed",
+    "other": "{{count}} failed"
+  },
+  "discover.job.albumsLeftOut": {
+    "one": "1 album left out",
+    "other": "{{count}} albums left out"
+  },
+  "discover.job.nothingToCopy": "Nothing to copy · you have it all",
+  "discover.job.stopped": "stopped",
+  "discover.job.stoppedQuota": "{{peer}} has reached its transfer limit for today · try again later",
+  "discover.job.stoppedPeer": "{{peer}} went away",
+  "discover.job.cancelledMany": "Stopped",
+  "discover.tray.kindAlbum": "album",
+  "discover.tray.kindArtist": "every album",
+  "discover.tray.kindMissing": "what you’re missing",
   "discover.lookup.find": "Look it up",
   "discover.lookup.idleSub": "Finds the closest upload for “{{query}}” · nothing is downloaded yet",
   "discover.lookup.searching": "searching",

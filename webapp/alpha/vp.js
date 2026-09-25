@@ -239,6 +239,9 @@ const VUEPLAYERCORE = (() => {
       artist: null,
       federate: null,
       recKey: null,
+      // every scope's key for the recommendation (the lookup's `keys`), so a
+      // poll can tell which jobs are this window's
+      recKeys: null,
       jobs: {},
       jobBusy: {},
       jobErrors: {},
@@ -310,6 +313,7 @@ const VUEPLAYERCORE = (() => {
       sub: function () {
         const part = this.row.sub;
         if (!part) { return this.idleSub || ''; }
+        if (Array.isArray(part.parts)) { return part.parts.map((p) => (p.key ? this.tt(p.key, p.params) : String(p.text || ''))).filter(Boolean).join(' · '); }
         return part.key ? this.tt(part.key, part.params) : String(part.text || '');
       },
     },
@@ -1154,19 +1158,63 @@ const VUEPLAYERCORE = (() => {
           .filter((p) => p.name === DISCOVERJOBS.COPY_PLUGIN)
           .map((plugin) => ({ plugin, row: this.dmJobRow(plugin.name) }));
       },
-      dmJobRow: function (name) {
+      // A row's job: the plug-in's for the song, or the one for a scope.
+      dmJobRow: function (name, scope) {
         const m = this.discover.modal;
-        const row = DISCOVERJOBS.jobRowState(m.jobs[name] || null, { plugin: name });
-        const err = m.jobErrors[name];
+        const slot = DISCOVERJOBS.jobSlot(name, scope);
+        const row = DISCOVERJOBS.jobRowState(m.jobs[slot] || null, { plugin: name });
+        const err = m.jobErrors[slot];
         return err ? Object.assign({}, row, { sub: { text: err }, errored: true }) : row;
+      },
+      // The album and artist rows (the peer window's Federation view): the
+      // copy plug-in when it runs the scope, with a destination and the fact
+      // the scope needs — the same conditions as the song row.
+      dmScopeRows: function (scope) {
+        const m = this.discover.modal;
+        if (m.source !== 'federation' || !this.dmHasDestination() || !m.track) { return []; }
+        if (scope === 'album' ? !m.track.album : !m.track.artist) { return []; }
+        return this.discoverAcquirePlugins()
+          .filter((p) => p.name === DISCOVERJOBS.COPY_PLUGIN && Array.isArray(p.scopes) && p.scopes.indexOf(scope) !== -1)
+          .map((plugin) => ({ plugin, slot: DISCOVERJOBS.jobSlot(plugin.name, scope), row: this.dmJobRow(plugin.name, scope) }));
+      },
+      // "Add what you're missing" has nothing to add when the counts say
+      // the library has as many of the artist's albums as the peer.
+      dmMissingRows: function () {
+        const a = this.discover.modal.artist;
+        if (a && a.albums !== null && a.owned != null && a.owned >= a.albums) { return []; }
+        return this.dmScopeRows('artist-missing');
+      },
+      dmAlbumIdleSub: function () {
+        const m = this.discover.modal;
+        const peer = (m.track.peer && m.track.peer.name) || 'peer';
+        if (m.album && m.album.owned) { return this.tt('discover.modal.addAlbumSubOwned'); }
+        if (m.album && m.album.count !== null) { return this.tt('discover.modal.addAlbumSub', { count: m.album.count, peer }); }
+        return this.tt('discover.modal.addAlbumSubNoCount', { peer });
+      },
+      dmArtistIdleSub: function (scope) {
+        const m = this.discover.modal;
+        const peer = (m.track.peer && m.track.peer.name) || 'peer';
+        const artist = m.track.artist;
+        const a = m.artist;
+        const known = !!(a && a.albums !== null);
+        if (scope === 'artist-missing') {
+          return known
+            ? this.tt('discover.modal.addMissingSub', { count: Math.max(0, a.albums - (a.owned || 0)), artist })
+            : this.tt('discover.modal.addMissingSubNoCount', { artist });
+        }
+        if (!known) { return this.tt('discover.modal.addArtistSubNoCount', { artist, peer }); }
+        const summary = [this.tt('discover.job.albumsCount', { count: a.albums }), a.songs !== null ? this.tt('discover.modal.songCount', { count: a.songs }) : ''].filter(Boolean).join(', ');
+        return this.tt('discover.modal.addArtistSub', { artist, peer, summary });
       },
       dmAnyJobLive: function () {
         const jobs = this.discover.modal.jobs;
         return Object.keys(jobs).some((n) => DISCOVERJOBS.isLive(jobs[n]));
       },
-      // A row's line: an i18n key with params, or the server's own text.
+      // A row's line: an i18n key with params, the server's own text, or
+      // several of those joined (a many-song result's counts).
       dmText: function (part) {
         if (!part) { return ''; }
+        if (Array.isArray(part.parts)) { return part.parts.map((p) => this.dmText(p)).filter(Boolean).join(' · '); }
         return part.key ? this.tt(part.key, part.params) : String(part.text || '');
       },
       dmErrorText: function (err) {
@@ -1187,36 +1235,40 @@ const VUEPLAYERCORE = (() => {
         if (!this.dmLive(gen)) { return; }
         if (found) {
           this.discover.modal.recKey = found.key || null;
-          this.discover.modal.jobs = DISCOVERJOBS.jobsByPlugin(found.jobs);
+          this.discover.modal.recKeys = found.keys || null;
+          this.discover.modal.jobs = DISCOVERJOBS.jobsBySlot(found.jobs);
         }
         this.scheduleDiscoverJobsPoll();
       },
       // `choice` = { url } picked from the plug-in's lookup; null = the plain
       // download (the plug-in searches); undefined (a Retry) = whatever the
-      // lookup chose, if it did.
-      dmJobStart: async function (plugin, choice) {
+      // lookup chose, if it did. `scope` = album | artist | artist-missing
+      // for the rows that act on more than the song.
+      dmJobStart: async function (plugin, choice, scope) {
         const name = plugin.name;
+        const slot = DISCOVERJOBS.jobSlot(name, scope);
         const gen = this.discover.modal.gen;
-        if (this.discover.modal.jobBusy[name]) { return; }
+        if (this.discover.modal.jobBusy[slot]) { return; }
         if (choice === undefined) {
           const l = this.discover.modal.lookups[name];
           choice = (l && l.status === 'ready' && l.chosen) ? { url: l.chosen } : null;
         }
-        this.$set(this.discover.modal.jobBusy, name, true);
-        this.$delete(this.discover.modal.jobErrors, name);
+        this.$set(this.discover.modal.jobBusy, slot, true);
+        this.$delete(this.discover.modal.jobErrors, slot);
         try {
-          const res = await MSTREAMAPI.discoveryJobStart(name, this.dmRecommendation(), choice || undefined);
+          const res = await MSTREAMAPI.discoveryJobStart(name, this.dmRecommendation(), choice || undefined, scope);
           if (res && res.job) {
             this.noteDiscoverJob(res.job);
             if (this.dmLive(gen)) {
-              this.$set(this.discover.modal.jobs, name, res.job);
-              if (!this.discover.modal.recKey) { this.discover.modal.recKey = res.job.key || null; }
+              this.$set(this.discover.modal.jobs, slot, res.job);
+              if (!this.discover.modal.recKey && !scope) { this.discover.modal.recKey = res.job.key || null; }
+              this.discover.modal.recKeys = Object.assign({}, this.discover.modal.recKeys || {}, { [scope || 'song']: res.job.key });
             }
           }
         } catch (err) {
-          if (this.dmLive(gen)) { this.$set(this.discover.modal.jobErrors, name, this.dmErrorText(err)); }
+          if (this.dmLive(gen)) { this.$set(this.discover.modal.jobErrors, slot, this.dmErrorText(err)); }
         }
-        if (this.dmLive(gen)) { this.$set(this.discover.modal.jobBusy, name, false); }
+        if (this.dmLive(gen)) { this.$set(this.discover.modal.jobBusy, slot, false); }
         this.scheduleDiscoverJobsPoll();
       },
       // ── The lookup card ("what would Get it fetch?") ───────────────────
@@ -1255,8 +1307,8 @@ const VUEPLAYERCORE = (() => {
         const l = this.discover.modal.lookups[plugin.name];
         if (l && l.candidates.some((c) => c.url === url)) { l.chosen = url; }
       },
-      dmJobCancel: async function (plugin) {
-        const job = this.discover.modal.jobs[plugin.name];
+      dmJobCancel: async function (plugin, scope) {
+        const job = this.discover.modal.jobs[DISCOVERJOBS.jobSlot(plugin.name, scope)];
         if (job) { await this.cancelDiscoverJob(job); }
       },
       dmJobPlay: function (plugin) {
@@ -1513,8 +1565,9 @@ const VUEPLAYERCORE = (() => {
         const finished = DISCOVERJOBS.finishedSince(this.discover.tray.jobs, jobs);
         this.discover.tray.jobs = jobs;
         const m = this.discover.modal;
-        if (m.open && m.recKey) {
-          const mine = DISCOVERJOBS.jobsByPlugin(jobs.filter((j) => j.key === m.recKey));
+        const keys = Object.values(m.recKeys || {}).concat(m.recKey ? [m.recKey] : []);
+        if (m.open && keys.length) {
+          const mine = DISCOVERJOBS.jobsBySlot(jobs.filter((j) => keys.indexOf(j.key) !== -1));
           for (const name of Object.keys(mine)) {
             const held = m.jobs[name];
             if (!held || mine[name].id >= held.id) { this.$set(m.jobs, name, mine[name]); }
@@ -1531,7 +1584,7 @@ const VUEPLAYERCORE = (() => {
           }
         }
         for (const job of finished) {
-          if (!(m.open && m.recKey && m.recKey === job.key)) { this.toastDiscoverJob(job); }
+          if (!(m.open && keys.indexOf(job.key) !== -1)) { this.toastDiscoverJob(job); }
         }
         if (DISCOVERJOBS.trayRows(jobs).length > 0) { this.ensureDiscoverPlugins(); }
       },
@@ -1542,6 +1595,10 @@ const VUEPLAYERCORE = (() => {
           iziToast.error({ title: this.tt('discover.job.toastFailed', { plugin: this.discoverPluginTitle(job.plugin) }), message: job.error || message, position: 'topCenter', timeout: 5000 });
         } else if (row.state === 'copied') {
           iziToast.success({ title: this.tt('discover.job.toastCopied'), message, position: 'topCenter', timeout: 3000 });
+        } else if (row.state === 'copiedMany') {
+          iziToast.success({ title: this.tt('discover.job.toastCopiedMany'), message: [message, this.dmText(row.sub)].filter(Boolean).join(' · '), position: 'topCenter', timeout: 3500 });
+        } else if (row.state === 'stopped') {
+          iziToast.warning({ title: this.tt('discover.job.toastStopped'), message: [message, this.dmText(row.sub)].filter(Boolean).join(' · '), position: 'topCenter', timeout: 4500 });
         } else if (row.state === 'downloaded') {
           const where = row.filepath ? DISCOVERJOBS.pathCrumbs(row.filepath).join(' / ') : '';
           iziToast.success({ title: this.tt('discover.job.toastDownloaded'), message: [message, where].filter(Boolean).join(' · '), position: 'topCenter', timeout: 4000 });
@@ -1565,7 +1622,7 @@ const VUEPLAYERCORE = (() => {
       },
       dtRows: function () {
         return DISCOVERJOBS.trayRows(this.discover.tray.jobs).map((job) => ({
-          job, row: DISCOVERJOBS.jobRowState(job), title: DISCOVERJOBS.jobTitle(job), plugin: this.discoverPluginTitle(job.plugin),
+          job, row: DISCOVERJOBS.jobRowState(job), title: DISCOVERJOBS.jobTitle(job), kind: DISCOVERJOBS.jobKind(job), plugin: this.discoverPluginTitle(job.plugin),
         }));
       },
       dtSummary: function () {
@@ -1584,9 +1641,10 @@ const VUEPLAYERCORE = (() => {
         try { localStorage.setItem('discoverTrayCollapsed', String(this.discover.tray.collapsed)); } catch (_) { /* private mode */ }
         this.scheduleDiscoverJobsPoll();
       },
+      // Again, as it was started: the same scope, the same chosen upload.
       dtRetry: async function (job) {
         try {
-          const res = await MSTREAMAPI.discoveryJobStart(job.plugin, job.recommendation);
+          const res = await MSTREAMAPI.discoveryJobStart(job.plugin, job.recommendation, job.params && job.params.choice, DISCOVERJOBS.jobScope(job));
           if (res && res.job) { this.noteDiscoverJob(res.job); }
         } catch (err) {
           iziToast.error({ title: this.dmErrorText(err), position: 'topCenter', timeout: 3500 });

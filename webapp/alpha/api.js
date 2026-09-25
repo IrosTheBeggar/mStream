@@ -172,9 +172,13 @@ const MSTREAMAPI = (() => {
   // err.body): a job row shows the server's own reason — "someone else is
   // already getting this", "a file already exists at …" — not a shrug.
   const jobsRoute = (tail) => mstreamModule.currentServer.host + 'api/v1/discovery/plugin-jobs' + (tail || '');
-  // `choice` = { url }: an upload picked from the plug-in's lookup.
-  mstreamModule.discoveryJobStart = (name, recommendation, choice) => {
-    return req('POST', mstreamModule.currentServer.host + 'api/v1/discovery/plugins/' + encodeURIComponent(name) + '/jobs', choice ? { recommendation, choice } : { recommendation });
+  // `choice` = { url }: an upload picked from the plug-in's lookup. `scope`
+  // = album | artist | artist-missing for a job that acts on more than the song.
+  mstreamModule.discoveryJobStart = (name, recommendation, choice, scope) => {
+    const body = { recommendation };
+    if (choice) { body.choice = choice; }
+    if (scope && scope !== 'song') { body.scope = scope; }
+    return req('POST', mstreamModule.currentServer.host + 'api/v1/discovery/plugins/' + encodeURIComponent(name) + '/jobs', body);
   };
   mstreamModule.discoveryJobs = () => req('GET', jobsRoute());
   mstreamModule.discoveryJob = (id) => req('GET', jobsRoute('/' + encodeURIComponent(id)));

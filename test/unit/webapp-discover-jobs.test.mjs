@@ -322,3 +322,58 @@ describe('a lookup answer indexed by plug-in, per scope', () => {
     assert.deepEqual(J.jobsByPlugin(null), {});
   });
 });
+
+describe('album and artist jobs as rows', () => {
+  const many = (over) => ({ scope: 'album', album: { name: 'Night Ferry', artist: 'Nova' }, songs: { total: 4, copied: [{ from: 'a' }, { from: 'b' }], skipped: [{ from: 'c', why: 'owned' }], failed: [] }, bytes: 10, stopped: null, peer: { id: 1, name: "Sam's server" }, ...over });
+  const copyJob = (over) => job({ plugin: 'federation-copy', ...over });
+
+  test('scope, slot and the index by slot', () => {
+    assert.deepEqual(J.JOB_SCOPES, ['song', 'album', 'artist', 'artist-missing']);
+    assert.equal(J.jobScope(job({})), 'song');
+    assert.equal(J.jobScope(job({ params: { scope: 'album' } })), 'album');
+    assert.equal(J.jobSlot('federation-copy', 'song'), 'federation-copy');
+    assert.equal(J.jobSlot('federation-copy'), 'federation-copy');
+    assert.equal(J.jobSlot('federation-copy', 'album'), 'federation-copy@album');
+    const jobs = [copyJob({ id: 1, params: { scope: 'album' } }), copyJob({ id: 2 }), copyJob({ id: 3, params: { scope: 'artist-missing' } }), copyJob({ id: 4 })];
+    assert.deepEqual(Object.fromEntries(Object.entries(J.jobsBySlot(jobs)).map(([k, v]) => [k, v.id])), { 'federation-copy@album': 1, 'federation-copy': 2, 'federation-copy@artist-missing': 3 }, 'the first seen per slot');
+    assert.deepEqual(J.jobsBySlot(null), {});
+  });
+
+  test('done: in your collection with the counts; nothing copied reads as already yours; an artist job counts its albums', () => {
+    const done = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many() }));
+    assert.deepEqual([done.state, done.tag, done.tagCls, done.icon, done.actions], ['copiedMany', 'discover.job.inCollection', 'ok', 'check', ['start']], 'done, and startable again for the gaps');
+    assert.deepEqual(done.sub, { parts: [{ key: 'discover.job.copiedCount', params: { count: 2 } }, { key: 'discover.job.ownedCount', params: { count: 1 } }] });
+    const owned = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many({ songs: { total: 2, copied: [], skipped: [{}, {}], failed: [] } }) }));
+    assert.deepEqual([owned.state, owned.tag, owned.sub], ['copiedMany', 'discover.job.owned', { parts: [{ key: 'discover.job.ownedCount', params: { count: 2 } }] }]);
+    const artist = J.jobRowState(copyJob({ state: 'done', params: { scope: 'artist' }, result: many({ scope: 'artist', albums: [{ name: 'A' }, { name: 'B' }], skippedAlbums: [{ name: 'C', why: 'appearance' }], songs: { total: 3, copied: [{}, {}, {}], skipped: [], failed: [{ from: 'x', error: 'gone' }] } }) }));
+    assert.deepEqual(artist.sub.parts.map((p) => [p.key, p.params.count]), [['discover.job.albumsCount', 2], ['discover.job.copiedCount', 3], ['discover.job.failedCount', 1], ['discover.job.albumsLeftOut', 1]]);
+    const nothing = J.jobRowState(copyJob({ state: 'done', params: { scope: 'artist-missing' }, result: many({ scope: 'artist-missing', albums: [], skippedAlbums: [], songs: { total: 0, copied: [], skipped: [], failed: [] } }) }));
+    assert.deepEqual([nothing.tag, nothing.sub], ['discover.job.owned', { parts: [{ key: 'discover.job.nothingToCopy' }] }]);
+    const single = J.jobRowState(copyJob({ state: 'done', result: { copied: { vpath: 'music', filepath: 'music/x/y.flac' } } }));
+    assert.equal(single.state, 'copied', 'a single copy reads as before');
+  });
+
+  test('stopped by the peer\'s limit or the peer going away: a warning with the counts and Retry; a cancel keeps its counts', () => {
+    const quota = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many({ stopped: 'quota', songs: { total: 4, copied: [{}], skipped: [], failed: [{ from: 'b', error: 'limit' }] } }) }));
+    assert.deepEqual([quota.state, quota.tag, quota.tagCls, quota.icon, quota.iconCls, quota.actions], ['stopped', 'discover.job.stopped', 'err', 'warn', 'err', ['retry']]);
+    assert.deepEqual(quota.sub.parts[0], { key: 'discover.job.stoppedQuota', params: { peer: "Sam's server" } });
+    assert.deepEqual(quota.sub.parts.slice(1).map((p) => p.key), ['discover.job.copiedCount', 'discover.job.failedCount']);
+    const peer = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many({ stopped: 'peer' }) }));
+    assert.equal(peer.sub.parts[0].key, 'discover.job.stoppedPeer');
+    const cancelled = J.jobRowState(copyJob({ state: 'cancelled', params: { scope: 'album' }, result: many({ stopped: 'cancelled', songs: { total: 4, copied: [{}], skipped: [], failed: [] } }) }));
+    assert.deepEqual([cancelled.state, cancelled.muted, cancelled.actions], ['cancelled', true, ['start']]);
+    assert.deepEqual(cancelled.sub.parts.map((p) => p.key), ['discover.job.cancelledMany', 'discover.job.copiedCount']);
+    const plain = J.jobRowState(copyJob({ state: 'cancelled' }));
+    assert.equal(plain.sub.key, 'discover.job.cancelledCopySub', 'a single copy reads as before');
+  });
+
+  test('the strip names an album job by its album and an artist job by its artist, with the kind beside it', () => {
+    const rec = { title: 'Departure', artist: 'Marlowe Vale', album: 'Night Ferry' };
+    assert.equal(J.jobTitle(job({ recommendation: rec })), 'Departure — Marlowe Vale');
+    assert.equal(J.jobTitle(job({ recommendation: rec, params: { scope: 'album' } })), 'Night Ferry — Marlowe Vale');
+    assert.equal(J.jobTitle(job({ recommendation: rec, params: { scope: 'artist' } })), 'Marlowe Vale');
+    assert.equal(J.jobTitle(job({ recommendation: rec, params: { scope: 'artist-missing' } })), 'Marlowe Vale');
+    assert.deepEqual([J.jobKind(job({})), J.jobKind(job({ params: { scope: 'album' } })), J.jobKind(job({ params: { scope: 'artist' } })), J.jobKind(job({ params: { scope: 'artist-missing' } }))],
+      [null, 'discover.tray.kindAlbum', 'discover.tray.kindArtist', 'discover.tray.kindMissing']);
+  });
+});

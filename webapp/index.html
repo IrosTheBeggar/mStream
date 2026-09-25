@@ -1057,7 +1057,7 @@
                   <span class="discover-job-ic" v-bind:class="{ 'discover-job-ic-on': tr.row.iconCls === 'on' && tr.job.plugin !== 'federation-copy', 'discover-job-ic-peer': tr.row.iconCls === 'on' && tr.job.plugin === 'federation-copy', 'discover-job-ic-ok': tr.row.iconCls === 'ok', 'discover-job-ic-err': tr.row.iconCls === 'err' }"><dm-icon :name="tr.row.icon" :size="13"></dm-icon></span>
                   <div class="discover-job-t">
                     <b>{{ tr.title }}</b>
-                    <small>{{ tr.plugin }}<template v-if="dmText(tr.row.sub)"> &middot; {{ dmText(tr.row.sub) }}</template></small>
+                    <small>{{ tr.plugin }}<template v-if="tr.kind"> &middot; {{ tt(tr.kind) }}</template><template v-if="dmText(tr.row.sub)"> &middot; {{ dmText(tr.row.sub) }}</template></small>
                     <div v-if="tr.row.progress !== null" class="dm-progress" v-bind:class="{ 'dm-progress-indet': tr.row.progress === 'indeterminate', 'dm-progress-peer': tr.job.plugin === 'federation-copy' }"><i :style="tr.row.progress === 'indeterminate' ? null : { width: tr.row.progress + '%' }"></i></div>
                   </div>
                   <div class="discover-job-act">
@@ -1156,6 +1156,12 @@
                       <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmQueueAlbum(false)">+ {{ tt('discover.modal.queueAlbum') }}</a>
                     </div>
                   </div>
+                  <!-- Add album to your collection: the copy plug-in's album job -->
+                  <dm-job-row v-for="ar in dmScopeRows('album')" :key="ar.slot" :row="ar.row"
+                              :title="tt('discover.modal.addAlbum')" :idle-sub="dmAlbumIdleSub()"
+                              :start-label="tt('discover.modal.addAlbumStart')" start-icon="folder"
+                              :busy="discover.modal.jobBusy[ar.slot] === true"
+                              v-on:start="dmJobStart(ar.plugin, null, 'album')" v-on:cancel="dmJobCancel(ar.plugin, 'album')"></dm-job-row>
                 </section>
                 <section v-if="discover.modal.track.artist" class="dmodal-section">
                   <div class="dmodal-section-h">
@@ -1170,6 +1176,18 @@
                     </div>
                     <div class="dm-opt-act"><a class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="dmViewArtist">{{ tt('discover.modal.viewArtist') }}</a></div>
                   </div>
+                  <!-- Add artist to your collection / Add what you're missing:
+                       the copy plug-in's artist jobs, album by album -->
+                  <dm-job-row v-for="ar in dmScopeRows('artist')" :key="ar.slot" :row="ar.row"
+                              :title="tt('discover.modal.addArtist')" :idle-sub="dmArtistIdleSub('artist')"
+                              :start-label="tt('discover.modal.addArtistStart')" start-icon="folder"
+                              :busy="discover.modal.jobBusy[ar.slot] === true"
+                              v-on:start="dmJobStart(ar.plugin, null, 'artist')" v-on:cancel="dmJobCancel(ar.plugin, 'artist')"></dm-job-row>
+                  <dm-job-row v-for="ar in dmMissingRows()" :key="ar.slot" :row="ar.row"
+                              :title="tt('discover.modal.addMissing')" :idle-sub="dmArtistIdleSub('artist-missing')"
+                              :start-label="tt('discover.modal.addMissingStart')" start-icon="folder"
+                              :busy="discover.modal.jobBusy[ar.slot] === true"
+                              v-on:start="dmJobStart(ar.plugin, null, 'artist-missing')" v-on:cancel="dmJobCancel(ar.plugin, 'artist-missing')"></dm-job-row>
                 </section>
                 <section class="dmodal-section">
                   <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.more', { peer: discover.modal.track.peer.name || 'peer' }) }}</span></div>
