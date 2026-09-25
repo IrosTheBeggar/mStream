@@ -79,6 +79,11 @@ export function sanitizeSegment(raw) {
   let s = String(raw);
   // eslint-disable-next-line no-control-regex
   s = s.replace(/[/\\:*?<>|"\x00-\x1f]+/g, '-');
+  // A tag value is not a shell string: a "~" or a "$HOME" in an album name
+  // is a name, but validateResolvedPath refuses both in the rendered path
+  // (they are typos in a TEMPLATE), and a value that reaches it unchanged
+  // fails the copy after the whole file was transferred. Folded here.
+  s = s.replace(/\$\{HOME\}|\$HOME\b|~/g, '-');
   s = s.replace(/\s+/g, ' ');
   s = s.replace(/^[.\s]+|[.\s]+$/g, '');
   if (s.length > _MAX_SEGMENT_LEN) { s = s.slice(0, _MAX_SEGMENT_LEN); }

@@ -1739,6 +1739,7 @@ export function setup(mstream) {
     const schema = Joi.object({
       enabledFor: Joi.string().valid('all', 'whitelist').optional(),
       maxConcurrent: Joi.number().integer().min(1).max(16).optional(),
+      maxQueuedPerUser: Joi.number().integer().min(1).max(500).optional(),
       retentionDays: Joi.number().integer().min(1).max(3650).optional(),
     }).min(1);
     const { value } = joiValidate(schema, req.body || {});

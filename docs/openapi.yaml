@@ -2746,6 +2746,7 @@ paths:
         "403": { description: "The acquisition gate is in whitelist mode and the caller is not allowed; an acquire plug-in's job when uploads are off for the server or the caller (a download is an upload); or a jukebox session token." }
         "404": { description: "Unknown or disabled plug-in." }
         "409": { description: "Another account's live job already covers this recommendation — try again when it has finished." }
+        "429": { description: "The caller already has `discoveryJobs.maxQueuedPerUser` jobs queued or running — wait for some to finish." }
 
   /api/v1/discovery/plugin-jobs/lookup:
     post:

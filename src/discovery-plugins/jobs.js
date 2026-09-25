@@ -30,6 +30,11 @@ const running = new Map();   // job id -> plugin name
 let timer = null;
 let ticking = false;
 let stopped = true;
+// plugin name -> (account -> when its job was last claimed). The claim takes
+// turns between accounts: one account's long queue never holds every other
+// account's jobs behind it (the account served longest ago goes first;
+// within an account, the oldest job).
+const lastServed = new Map();
 
 function maxConcurrent() {
   const n = config.program && config.program.discoveryJobs && config.program.discoveryJobs.maxConcurrent;
@@ -40,6 +45,25 @@ function runningFor(pluginName) {
   let n = 0;
   for (const p of running.values()) { if (p === pluginName) { n += 1; } }
   return n;
+}
+
+// Which account's queued job a plug-in runs next.
+export function nextAccount(pluginName, queued) {
+  if (!queued.length) { return undefined; }
+  const served = lastServed.get(pluginName) || new Map();
+  const at = (u) => served.get(u.userId == null ? 'anon' : u.userId) || 0;
+  return [...queued].sort((a, b) => (at(a) - at(b)) || (a.oldest - b.oldest) || ((a.userId ?? -1) - (b.userId ?? -1)))[0];
+}
+
+function claimFor(plugin) {
+  const pick = nextAccount(plugin.name, jobsDb.queuedUsers(plugin.name));
+  if (!pick) { return null; }
+  const job = jobsDb.claimNextQueued(plugin.name, { userId: pick.userId });
+  if (job) {
+    if (!lastServed.has(plugin.name)) { lastServed.set(plugin.name, new Map()); }
+    lastServed.get(plugin.name).set(pick.userId == null ? 'anon' : pick.userId, Date.now());
+  }
+  return job;
 }
 
 function schedule(ms = TICK_MS) {
@@ -91,7 +115,7 @@ export async function tick() {
       if (!registry.isPluginEnabled(plugin.name)) { continue; }
       const per = Number.isInteger(plugin.concurrency) && plugin.concurrency > 0 ? plugin.concurrency : 1;
       while (running.size < maxConcurrent() && runningFor(plugin.name) < per) {
-        const job = jobsDb.claimNextQueued(plugin.name);
+        const job = claimFor(plugin);
         if (!job) { break; }
         // Intentionally not awaited — concurrency. runJob settles its own
         // failures; the catch is the backstop that keeps a rejection here

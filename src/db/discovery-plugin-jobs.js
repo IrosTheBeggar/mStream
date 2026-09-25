@@ -139,19 +139,49 @@ export function clearFinished(userId = null) {
 // Atomically take the oldest queued job for one plug-in. RETURNING makes
 // the claim and the read one statement; the process is single-threaded
 // anyway, so two runners can't race — this just keeps it that way.
-export function claimNextQueued(plugin) {
+// The oldest queued job of a plug-in — of one account's when `userId` is
+// given (the runner takes turns between accounts; see jobs.js). `userId`
+// may be null: the jobs of an account that has since been deleted.
+export function claimNextQueued(plugin, { userId } = {}) {
   const now = Date.now();
+  const byUser = userId === undefined ? '' : ' AND user_id IS ?';
+  const params = userId === undefined ? [now, now, plugin] : [now, now, plugin, userId];
   const row = d().prepare(`
     UPDATE discovery_plugin_jobs
        SET state = 'running', started_at = ?, updated_at = ?, attempts = attempts + 1
      WHERE id = (
        SELECT id FROM discovery_plugin_jobs
-        WHERE plugin = ? AND state = 'queued'
+        WHERE plugin = ? AND state = 'queued'${byUser}
         ORDER BY created_at, id
         LIMIT 1)
     RETURNING *
-  `).get(now, now, plugin);
+  `).get(...params);
   return rowToJob(row);
+}
+
+// The accounts with a queued job for a plug-in, each with its oldest one:
+// what the runner chooses between so that one account's long queue does
+// not hold every other account's jobs behind it.
+export function queuedUsers(plugin) {
+  return d().prepare(`
+    SELECT user_id AS userId, MIN(created_at) AS oldest FROM discovery_plugin_jobs
+     WHERE plugin = ? AND state = 'queued' GROUP BY user_id ORDER BY oldest, user_id
+  `).all(plugin).map((r) => ({ userId: r.userId == null ? null : r.userId, oldest: Number(r.oldest) }));
+}
+
+// One account's live jobs (queued + running), for the per-account cap.
+export function countLiveForUser(userId) {
+  return Number(d().prepare(`
+    SELECT COUNT(*) AS n FROM discovery_plugin_jobs WHERE user_id IS ? AND state IN ('queued', 'running')
+  `).get(userId == null ? null : userId).n);
+}
+
+// Every live job of one account cancelled — a queued one at once, a running
+// one at its next cancel poll. What deleting the account does first.
+export function cancelAllForUser(userId) {
+  const rows = d().prepare(`SELECT id, state FROM discovery_plugin_jobs WHERE user_id IS ? AND state IN ('queued', 'running')`).all(userId == null ? null : userId);
+  for (const r of rows) { requestCancel(r.id); }
+  return rows.length;
 }
 
 export function updateProgress(id, progress, statusText) {

@@ -58,6 +58,7 @@ import * as config from '../../state/config.js';
 import * as fedDb from '../../db/federation.js';
 import * as vpathUtil from '../../util/vpath.js';
 import * as destinations from '../destination.js';
+import * as staging from '../staging.js';
 import * as downloadsDb from '../../db/plugin-downloads.js';
 import { ownedTrack, ownedAlbumKeys, libraryIdsFor } from '../owned.js';
 import { nameKey } from '../../db/name-key.js';
@@ -281,13 +282,18 @@ async function run(ctx) {
   // The owned checks look only into the libraries this user may see.
   const env = { peer, user, destination, fedFetchWithDeadline, fedClient, libraryIds: libraryIdsFor(user) };
 
-  if (scope === JOB_SCOPES.ALBUM) { return copyAlbum(ctx, env, rec); }
-  if (artistScope) { return copyArtist(ctx, env, rec, { onlyMissing: scope === JOB_SCOPES.ARTIST_MISSING }); }
+  try {
+    if (scope === JOB_SCOPES.ALBUM) { return await copyAlbum(ctx, env, rec); }
+    if (artistScope) { return await copyArtist(ctx, env, rec, { onlyMissing: scope === JOB_SCOPES.ARTIST_MISSING }); }
 
-  const r = await copyOne(ctx, env, { filepath: rec.filepath, title: rec.title, artist: rec.artist, album: rec.album });
-  if (r === null) { return null; }   // the runner records the cancel
-  if (r.skipped) { return { ...r, destination }; }
-  return { copied: r.copied, missingVars: r.missingVars, peer: { id: peer.id, name: peer.name }, destination };
+    const r = await copyOne(ctx, env, { filepath: rec.filepath, title: rec.title, artist: rec.artist, album: rec.album });
+    if (r === null) { return null; }   // the runner records the cancel
+    if (r.skipped) { return { ...r, destination }; }
+    return { copied: r.copied, missingVars: r.missingVars, peer: { id: peer.id, name: peer.name }, destination };
+  } finally {
+    // The job's staging folder goes with the job, whatever happened in it.
+    await staging.discardStaging(staging.jobStagingPath(ctx.job.id));
+  }
 }
 
 // One read of the peer's API, as JSON; a refusal or a dead peer is marked
@@ -498,11 +504,23 @@ export async function copyOne(ctx, env, song) {
   if (!destinations.isSupportedAudioFile(fileName)) {
     throw new Error(`${peer.name} lists '${fileName}' as a song, but it is not an audio file this server plays`);
   }
+  // Where it would go, from what the listing says of it — so a layout that
+  // cannot place this song fails now, not after the bytes were transferred
+  // and counted against the peer's quota. (The file's own tags decide the
+  // final folder, below.)
+  try {
+    destinations.renderTarget({ destination, tags: destinations.tagsForLayout({}, song), peerName: peer.name, fileName });
+  } catch (err) {
+    throw new Error(`the collection layout cannot place this song: ${err.message}`, { cause: err });
+  }
+  // The account that asked may be gone by now (an album takes a while).
+  if (!destinations.userForJob(ctx.userId)) { throw new Error('the account that asked for this copy no longer exists'); }
 
-  // 2. The bytes, into a .part file inside the destination library.
-  const baseInfo = vpathUtil.getVPathInfo(destination.base ? `${destination.vpath}/${destination.base}` : destination.vpath, user);
-  await fs.mkdir(baseInfo.fullPath, { recursive: true });
-  const tmpPath = path.join(baseInfo.fullPath, `.mstream-copy-${ctx.job.id}.part`);
+  // 2. The bytes, into a .part file in the job's staging folder — never in
+  // the library, where a crash would leave it among the songs; the
+  // retention pass clears a stale staging folder.
+  const stagingDir = await staging.jobStagingDir(ctx.job.id);
+  const tmpPath = path.join(stagingDir, `.mstream-copy-${ctx.job.id}.part`);
   const remotePath = song.filepath.split('/').filter((s) => s && s !== '.' && s !== '..').map(encodeURIComponent).join('/');
   const abort = new AbortController();
   const res = await fetchMedia(env, ctx, `/media/${remotePath}`, abort.signal);
@@ -547,8 +565,7 @@ export async function copyOne(ctx, env, song) {
       await fs.unlink(tmpPath);
       return { skipped: 'exists', filepath: `${destination.vpath}/${target.relPath}` };
     }
-    await fs.mkdir(path.dirname(targetInfo.fullPath), { recursive: true });
-    await fs.rename(tmpPath, targetInfo.fullPath);
+    await staging.moveIntoPlace(tmpPath, targetInfo.fullPath);
 
     // 4. A row, so it plays at once.
     ctx.progress(0.97, 'adding to your library');
