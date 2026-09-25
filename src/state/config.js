@@ -734,6 +734,11 @@ const discoveryJobsOptions = Joi.object({
   // Jobs in flight at once across every plug-in (each plug-in also caps
   // itself). Small on purpose: these are catalogue fetches and downloads.
   maxConcurrent: Joi.number().integer().min(1).max(16).default(2),
+  // One account's share of the queue: jobs queued or running at once. Past
+  // it the job route answers 429 — an artist copy is one job however many
+  // songs it holds, so this is about how many asks, not how much work. The
+  // runner also takes turns between accounts (src/discovery-plugins/jobs.js).
+  maxQueuedPerUser: Joi.number().integer().min(1).max(500).default(20),
   // Finished rows (done / failed / cancelled) older than this are pruned.
   retentionDays: Joi.number().integer().min(1).max(3650).default(30),
   // Where a download is assembled before it enters a library

@@ -21,6 +21,10 @@
 // account itself (auth.js buildJukeboxUser marks the user; refuseJukebox
 // sits in front of every discovery plug-in route).
 //
+// One account may hold discoveryJobs.maxQueuedPerUser jobs queued or
+// running at once (429 past it), and the runner takes turns between
+// accounts, so nobody's Get it waits behind somebody else's discography.
+//
 // The same (plug-in, recommendation) is never queued twice while a job for
 // it is live: the second ask answers 200 with the existing job instead of
 // 202 with a new one. When the live job is somebody else's the caller gets a
@@ -101,6 +105,14 @@ export function setup(mstream) {
     }
     checkJobsAccess(req.user);
     if (plugin.capabilities.includes(plugins.CAPABILITIES.ACQUIRE)) { checkUploadRight(req.user); }
+    // One account's share of the queue (discoveryJobs.maxQueuedPerUser):
+    // past it, come back when some have finished. The runner takes turns
+    // between accounts besides, so a long queue never holds others' jobs.
+    const cap = Number((config.program && config.program.discoveryJobs && config.program.discoveryJobs.maxQueuedPerUser) || 20);
+    const live = jobsDb.countLiveForUser(req.user ? req.user.id : null);
+    if (live >= cap) {
+      throw new WebError(`you have ${live} jobs queued or running — wait for some to finish (the limit is ${cap})`, 429);
+    }
 
     const schema = Joi.object({
       recommendation: plugins.recommendationSchema.required(),

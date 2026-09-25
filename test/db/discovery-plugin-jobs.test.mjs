@@ -153,6 +153,31 @@ describe('jobs data access', () => {
     for (const j of jobsDb.listJobs({ states: ['queued'] })) { jobsDb.requestCancel(j.id); }
     assert.ok(jobsDb.pruneFinished(-1) >= 2, 'a cut-off in the future prunes everything finished');
   });
+
+  test('taking turns: the accounts with queued jobs, a claim per account, an account\'s live count, and cancel-all', () => {
+    const ins = manager.getDB().prepare('INSERT INTO users (username, password, salt) VALUES (?, ?, ?)');
+    const a = Number(ins.run('turn-a', 'h', 's').lastInsertRowid);
+    const b = Number(ins.run('turn-b', 'h', 's').lastInsertRowid);
+    const a1 = jobsDb.createJob({ plugin: 'unit-done', userId: a, key: 'text:turn-a1', recommendation: rec('A1') }).job;
+    const a2 = jobsDb.createJob({ plugin: 'unit-done', userId: a, key: 'text:turn-a2', recommendation: rec('A2') }).job;
+    const b1 = jobsDb.createJob({ plugin: 'unit-done', userId: b, key: 'text:turn-b1', recommendation: rec('B1') }).job;
+    const users = jobsDb.queuedUsers('unit-done').filter((u) => [a, b].includes(u.userId));
+    assert.deepEqual(users.map((u) => u.userId), [a, b], 'each account once, oldest first');
+    assert.ok(users[0].oldest <= users[1].oldest);
+    assert.equal(jobsDb.countLiveForUser(a), 2);
+    assert.equal(jobsDb.countLiveForUser(b), 1);
+    const claimed = jobsDb.claimNextQueued('unit-done', { userId: b });
+    assert.equal(claimed.id, b1.id, 'b\'s job, though a\'s are older');
+    assert.equal(jobsDb.claimNextQueued('unit-done', { userId: b }), null, 'nothing more of b\'s');
+    assert.equal(jobsDb.countLiveForUser(b), 1, 'running still counts');
+    assert.equal(jobsDb.cancelAllForUser(a), 2, 'both of a\'s go');
+    assert.equal(jobsDb.getJob(a1.id).state, 'cancelled');
+    assert.equal(jobsDb.getJob(a2.id).state, 'cancelled');
+    assert.equal(jobsDb.countLiveForUser(a), 0);
+    assert.equal(jobsDb.cancelAllForUser(b), 1, 'a running one is flagged');
+    assert.equal(jobsDb.getJob(b1.id).cancelRequested, true);
+    jobsDb.cancelJob(b1.id);
+  });
 });
 
 describe('user settings', () => {
@@ -266,6 +291,29 @@ describe('job runner', () => {
       assert.equal(row.state, 'done', 'the song is in the library, so the row says so');
       assert.deepEqual(row.result, { downloaded: { filepath: 'lib/x.mp3' } });
       assert.equal(row.cancelRequested, true, 'the request itself is on record');
+    } finally {
+      runner.stop();
+    }
+  });
+
+  test('taking turns: one account\'s long queue does not hold another account\'s job behind it', async () => {
+    config.program.discoveryJobs.maxConcurrent = 1;
+    config.program.discoveryPlugins['unit-turns'] = { enabled: true };
+    const order = [];
+    registry.registerPlugin({ name: 'unit-turns', title: 'Turns', capabilities: ['acquire'], scope: 'server', concurrency: 1,
+      async run(ctx) { order.push(ctx.userId); await sleep(30); return { ok: true }; } });
+    const ins = manager.getDB().prepare('INSERT INTO users (username, password, salt) VALUES (?, ?, ?)');
+    const a = Number(ins.run('turns-a', 'h', 's').lastInsertRowid);
+    const b = Number(ins.run('turns-b', 'h', 's').lastInsertRowid);
+    const mk = (u, t) => jobsDb.createJob({ plugin: 'unit-turns', userId: u, key: `text:turns-${t}`, recommendation: rec(t) }).job;
+    mk(a, 'a1'); mk(a, 'a2'); mk(a, 'a3');
+    const last = mk(b, 'b1');
+    try {
+      runner.start();
+      await until(() => order.length === 4);
+      await until(() => jobsDb.getJob(last.id).state === 'done');
+      assert.deepEqual(order, [a, b, a, a], 'b\'s only job runs second, not behind a\'s three');
+      assert.equal(runner.nextAccount('unit-turns', []), undefined);
     } finally {
       runner.stop();
     }

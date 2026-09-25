@@ -23,6 +23,12 @@ export function stagingRoot() {
   return (c && c.stagingDir) || null;
 }
 
+// Where one job's folder is (or would be), without touching the disk.
+export function jobStagingPath(jobId) {
+  const root = stagingRoot();
+  return root ? path.join(root, `${PREFIX}${jobId}`) : null;
+}
+
 // A folder for one job, made (or made again) empty.
 export async function jobStagingDir(jobId) {
   const root = stagingRoot();

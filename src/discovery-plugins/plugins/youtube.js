@@ -503,6 +503,9 @@ async function run(ctx) {
       await staging.discardStaging(dir);
       return { skipped: 'exists', filepath: `${destination.vpath}/${target.relPath}`, destination };
     }
+    // The account that asked may have been deleted while this ran: nothing
+    // is filed for an account that is gone (its record could not be kept).
+    if (!destinations.userForJob(ctx.userId)) { throw new Error('the account that asked for this download no longer exists'); }
     await staging.moveIntoPlace(filePath, targetInfo.fullPath);
 
     // 5. A row, so it plays at once.

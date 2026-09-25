@@ -28,6 +28,21 @@ const LIBS = [
 const user = (over = {}) => ({ id: 7, vpaths: ['music', 'other'], allow_upload: 1, ...over });
 const opts = { libraries: LIBS, noUpload: false };
 
+describe('federation-copy · a tag value is a name, not a shell string', () => {
+  test('a "~" or a "$HOME" in a tag folds to a dash, so the layout renders a usable path instead of failing after the transfer', () => {
+    assert.equal(pathTemplate.sanitizeSegment('~home'), '-home');
+    assert.equal(pathTemplate.sanitizeSegment('Nothing ~ Everything'), 'Nothing - Everything');
+    assert.equal(pathTemplate.sanitizeSegment('$HOME sweet ${HOME}'), '- sweet -');
+    assert.equal(pathTemplate.sanitizeSegment('Ke$ha'), 'Ke$ha', 'a dollar that is a name stays');
+    const destination = { vpath: 'music', base: '', layout: '{{ARTIST}}/{{ALBUM}}' };
+    const t = renderTarget({ destination, tags: { artist: 'Nova', album: 'Nothing ~ Everything' }, peerName: null, fileName: '01 Song.mp3' });
+    assert.equal(t.relPath, 'Nova/Nothing - Everything/01 Song.mp3');
+    assert.equal(pathTemplate.validateResolvedPath(t.relDir).valid, true);
+    // A template with a literal tilde is still the operator's typo.
+    assert.equal(validateLayout('~/{{ARTIST}}').valid, false);
+  });
+});
+
 describe('federation-copy · only audio goes into a library', () => {
   const supported = { mp3: true, flac: true, m4a: true, html: false };
   test('a peer-named file is taken only when its extension is one the server plays', () => {

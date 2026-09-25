@@ -330,6 +330,12 @@ export async function deleteUser(username) {
   if (!user) { throw new WebError(`'${username}' does not exist`, 404); }
 
   const d = db.getDB();
+  // The account's discovery plug-in jobs stop: a queued one now, a running
+  // one at its next cancel poll (the plug-ins also check the account before
+  // each song). Its rows stay, with user_id going NULL below.
+  const { cancelAllForUser } = await import('../db/discovery-plugin-jobs.js');
+  const stopped = cancelAllForUser(user.id);
+  if (stopped > 0) { winston.info(`deleting user ${username}: cancelled ${stopped} live discovery job(s)`); }
   // CASCADE will delete user_metadata, playlists, playlist_tracks, user_libraries
   d.prepare('DELETE FROM users WHERE id = ?').run(user.id);
 

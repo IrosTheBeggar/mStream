@@ -291,6 +291,49 @@ describe('discovery plug-in jobs API', () => {
     }
   });
 
+  test('one account\'s share of the queue: past maxQueuedPerUser the start answers 429, live', async () => {
+    assert.equal((await post(adminToken, '/api/v1/admin/config/discovery-jobs', { maxQueuedPerUser: 2 })).status, 200);
+    const started = [];
+    try {
+      for (const t of ['slow share one', 'slow share two']) {
+        const r = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec(t) });
+        assert.equal(r.status, 202, JSON.stringify(r.body));
+        started.push(r.body.job.id);
+      }
+      const third = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('slow share three') });
+      assert.equal(third.status, 429, JSON.stringify(third.body));
+      assert.match(third.body.error, /2 jobs queued or running .* limit is 2/);
+      const theirs = await post(otherToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('share is per account') });
+      assert.equal(theirs.status, 202, 'another account is not held by it');
+      started.push(theirs.body.job.id);
+    } finally {
+      assert.equal((await post(adminToken, '/api/v1/admin/config/discovery-jobs', { maxQueuedPerUser: 20 })).status, 200);
+      for (const id of started) { await post(userToken, `/api/v1/discovery/plugin-jobs/${id}/cancel`); await post(otherToken, `/api/v1/discovery/plugin-jobs/${id}/cancel`); }
+      for (const id of started) { await untilState(adminToken, id, ['cancelled', 'done']); }
+    }
+  });
+
+  test('deleting an account cancels its live jobs', async () => {
+    const TEMP = { username: 'temp', password: 'pw-temp' };
+    const made = await fetch(`${server.baseUrl}/api/v1/admin/users`, { method: 'PUT', headers: hdr(adminToken), body: JSON.stringify({ ...TEMP, admin: false, vpaths: ['testlib'], allowUpload: true, allowMkdir: true }) });
+    assert.equal(made.status, 200);
+    const tempToken = await login(TEMP);
+    const running = await post(tempToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('slow and gone') });
+    assert.equal(running.status, 202, JSON.stringify(running.body));
+    const queued = await post(tempToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('slow and gone too') });
+    assert.equal(queued.status, 202);
+    const third = await post(tempToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('slow and gone three') });
+    assert.equal(third.status, 202);
+    await untilState(adminToken, running.body.job.id, ['running']);
+    const gone = await fetch(`${server.baseUrl}/api/v1/admin/users`, { method: 'DELETE', headers: hdr(adminToken), body: JSON.stringify({ username: 'temp' }) });
+    assert.equal(gone.status, 200, await gone.text());
+    for (const id of [running.body.job.id, queued.body.job.id, third.body.job.id]) {
+      const job = await untilState(adminToken, id, ['cancelled', 'done', 'failed']);
+      assert.equal(job.state, 'cancelled', `job ${id}`);
+      assert.equal(job.userId, null, 'the row outlives the account, unowned');
+    }
+  });
+
   test('per-user plug-in settings: stored per account, checked, secrets never read back', async () => {
     const route = '/api/v1/discovery/plugins/noop-acquire/settings';
     const put = (token, body) => fetch(`${server.baseUrl}${route}`, { method: 'PUT', headers: hdr(token), body: JSON.stringify(body) })
