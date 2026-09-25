@@ -102,9 +102,9 @@ describe('pinned-binary core', () => {
 
   beforeEach(() => { hits.length = 0; });
 
-  test('the two policies part ways on the same disk: an unreceipted binary that misses the pin', async () => {
+  test('the three policies part ways on the same disk: an unreceipted binary that misses the pin', async () => {
     const outcomes = {};
-    for (const policy of ['pin-is-law', 'receipt-gated']) {
+    for (const policy of ['pin-is-law', 'receipt-gated', 'receipt-is-law']) {
       const bin = family(`contrast-${policy}`, policy);
       process.env[`MSTREAM_TEST_CONTRAST_${policy.toUpperCase().replace(/-/g, '_')}_BASE`] = baseUrl;
       const { manifestDir, installDir } = dirs(`contrast-${policy}`);
@@ -123,6 +123,73 @@ describe('pinned-binary core', () => {
     assert.deepEqual(outcomes['pin-is-law'].bytes, PINNED);
     assert.equal(outcomes['receipt-gated'].downloaded, 0, 'receipt-gated: no receipt means the operator’s — hands off');
     assert.equal(outcomes['receipt-gated'].bytes.toString(), 'a build somebody put here by hand');
+    assert.equal(outcomes['receipt-is-law'].downloaded, 0, 'receipt-is-law: no receipt means the operator’s — hands off');
+    assert.equal(outcomes['receipt-is-law'].bytes.toString(), 'a build somebody put here by hand');
+  });
+
+  test('receipt-is-law keeps a receipted binary that hashes to its receipt — whatever build that is — and replaces one that does not', async () => {
+    const bin = family('law', 'receipt-is-law');
+    process.env.MSTREAM_TEST_LAW_BASE = baseUrl;
+    const { manifestDir, installDir } = dirs('law');
+    writeManifest(manifestDir, bin.key());
+    const dest = path.join(installDir, bin.key());
+
+    // Ours, moved past the pin by a live update (an object receipt with the
+    // hash of what is on disk): current, no download.
+    const live = Buffer.from('a newer build the family installed itself');
+    fs.writeFileSync(dest, live);
+    fs.writeFileSync(path.join(installDir, '.fetched.json'), JSON.stringify({ [bin.key()]: { sha256: sha256(live), version: '2.0' } }));
+    await bin.ensure({ manifestDir, installDir, probe: okProbe });
+    assert.equal(hits.length, 0, 'a receipted, intact build is kept even though it does not hash to the pin');
+    assert.deepEqual(bin.receiptEntry({ installDir }), { sha256: sha256(live), version: '2.0' });
+
+    // Damaged since — no longer hashing to its receipt → the pin comes back.
+    fs.appendFileSync(dest, ' and then bit rot');
+    bin.reset();
+    const lines = await withLogs(() => bin.ensure({ manifestDir, installDir, probe: okProbe }));
+    assert.equal(hits.length, 1);
+    assert.deepEqual(fs.readFileSync(dest), PINNED);
+    assert.match(lines.info[0], /no longer matches its install receipt — replacing it with the pinned build$/);
+    assert.equal(bin.receiptEntry({ installDir }), sha256(PINNED), 'a pin install without pinReceipt writes the bare string');
+  });
+
+  test('install(): the download-verify-probe-swap step on its own, with a receipt that carries what the family hands it', async () => {
+    const bin = createPinnedBinary({
+      family: 'live', baseEnv: 'MSTREAM_TEST_LIVE_BASE', onDiskPolicy: 'receipt-is-law',
+      probe: { flag: '--probe', args: () => ['--probe'], accept: /ok/, scratchDir: false },
+      noun: 'binary', unpublishedMeans: 'the feature is unavailable',
+      pinReceipt: (entry) => ({ version: entry.tag, source: 'pin' }),
+    });
+    process.env.MSTREAM_TEST_LIVE_BASE = baseUrl;
+    const { manifestDir, installDir } = dirs('live');
+    writeManifest(manifestDir, bin.key());
+    const dest = path.join(installDir, bin.key());
+
+    await bin.ensure({ manifestDir, installDir, probe: okProbe });
+    assert.deepEqual(bin.receiptEntry({ installDir }), { sha256: sha256(PINNED), version: 'v1.0.0-test', source: 'pin' }, 'pinReceipt shapes the pin install\'s receipt');
+
+    // A live build: the URL and hash come from the family, the receipt meta
+    // from a function called once the probe has passed.
+    let probed = null;
+    await bin.install({
+      installDir, url: `${baseUrl}/${bin.key()}`, sha256: sha256(PINNED), maxBytes: PINNED.length, label: 'live-build',
+      probe: () => { probed = 'seen'; return Promise.resolve(true); },
+      receiptMeta: () => ({ version: probed, source: 'latest' }),
+    });
+    assert.deepEqual(bin.receiptEntry({ installDir }), { sha256: sha256(PINNED), version: 'seen', source: 'latest' });
+    assert.deepEqual(fs.readFileSync(dest), PINNED);
+
+    // A wrong hash is refused with the label in the message, the file untouched, and the receipt as it was.
+    const lines = await withLogs(() => assert.rejects(
+      bin.install({ installDir, url: `${baseUrl}/${bin.key()}`, sha256: 'e'.repeat(64), maxBytes: PINNED.length, label: 'live-build', probe: okProbe }),
+      /checksum mismatch for live-build/));
+    assert.match(lines.error[0], /^\[live\] fetch failed: checksum mismatch for live-build/);
+    assert.deepEqual(bin.receiptEntry({ installDir }), { sha256: sha256(PINNED), version: 'seen', source: 'latest' });
+    // And without a hash there is nothing to verify against: refused before any request.
+    const before = hits.length;
+    await assert.rejects(bin.install({ installDir, url: `${baseUrl}/${bin.key()}`, sha256: null, probe: okProbe }), /no sha256 to verify against/);
+    assert.equal(hits.length, before);
+    assert.equal(bin.mirrorBase(), baseUrl);
   });
 
   test('receipt-gated decides from the receipt, never from the file’s bytes', async () => {

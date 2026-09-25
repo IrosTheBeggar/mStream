@@ -4,12 +4,13 @@
  * The shared core of fetch-on-first-use for a prebuilt companion binary whose
  * source and releases live in their own repo: verify against a manifest
  * COMMITTED to this one, prove the download executes, swap it in.
- * p2p-sidecar-bootstrap.js and mstream-player-bootstrap.js are this module
- * configured twice; they were 352-line near-copies of each other until the
- * extraction, and each keeps its own header for what is particular to it.
- * (ffmpeg-bootstrap.js is the older, different shape — it trusts a live
- * upstream checksum file, not committed pins — and only lends its download
- * transport and its file hasher here.)
+ * p2p-sidecar-bootstrap.js, mstream-player-bootstrap.js and
+ * yt-dlp-bootstrap.js are this module configured three times; the first two
+ * were 352-line near-copies of each other until the extraction, and each
+ * keeps its own header for what is particular to it. (ffmpeg-bootstrap.js is
+ * the older, different shape — it trusts a live upstream checksum file, not
+ * committed pins — and only lends its download transport and its file hasher
+ * here.)
  *
  * What every family gets:
  *   - bin/<family>/manifest.json (manifest-musl.json for a -musl key) is
@@ -48,6 +49,18 @@
  *                    equals the pin, and is refreshed when the manifest moves
  *                    on. For a binary an operator may legitimately build or
  *                    place themselves (the player).
+ *
+ *   'receipt-is-law' A file WITHOUT our install receipt is the operator's and
+ *                    is returned untouched. A file we installed is current
+ *                    while it still HASHES TO ITS RECEIPT — whatever build
+ *                    that is: the manifest pin is what a FRESH install gets,
+ *                    and a family that follows its upstream's live releases
+ *                    (yt-dlp) moves the install past the pin through
+ *                    install() and records the new hash. A receipted file
+ *                    that no longer hashes to its receipt is damaged and is
+ *                    replaced with the pinned build. The pin is a floor, never
+ *                    a ceiling: a newer pin does not replace a live-updated
+ *                    file — the family's own update check does that.
  */
 
 import fs from 'node:fs';
@@ -72,8 +85,18 @@ const TOKEN_RE = /^[A-Za-z0-9._-]+$/;
 
 // Records the sha256 of every binary this module installed, keyed by
 // filename. What it MEANS is the on-disk policy's business: provenance only
-// under 'pin-is-law', the operator-vs-ours marker under 'receipt-gated'.
+// under 'pin-is-law', the operator-vs-ours marker under 'receipt-gated', the
+// build we stand behind under 'receipt-is-law'. A value is the bare sha256
+// string, or — for a family that records more than provenance — an object
+// carrying `sha256` plus whatever install() was handed (a version, a source).
 const RECEIPT_FILE = '.fetched.json';
+
+// The sha256 a receipt value records, whichever shape it has; null for a
+// value that is neither.
+export function receiptSha(value) {
+  if (typeof value === 'string') { return value; }
+  return value && typeof value === 'object' && typeof value.sha256 === 'string' ? value.sha256 : null;
+}
 
 // The one place a download URL is built from the pins. Exported so the
 // bundler and the unit tests share the exact shape — callers only ever hand
@@ -91,9 +114,11 @@ function readReceipt(installDir) {
   }
 }
 
-async function writeReceipt(installDir, key, sha256) {
+// `meta` (an object) turns the value into { sha256, ...meta }; without it the
+// value stays the bare string the two older families have always written.
+async function writeReceipt(installDir, key, sha256, meta = null) {
   const receipt = readReceipt(installDir);
-  receipt[key] = sha256;
+  receipt[key] = meta && typeof meta === 'object' ? { sha256, ...meta } : sha256;
   await writeJsonAtomic(path.join(installDir, RECEIPT_FILE), receipt);
 }
 
@@ -112,9 +137,19 @@ const ON_DISK_POLICIES = {
   },
   'receipt-gated': ({ key, entry, installDir, noun }) => {
     const receipt = readReceipt(installDir);
-    if (!(key in receipt)) { return { keep: true }; }               // operator-supplied: hands off
-    if (receipt[key] === entry.sha256) { return { keep: true }; }   // ours and current
+    if (!(key in receipt)) { return { keep: true }; }                          // operator-supplied: hands off
+    if (receiptSha(receipt[key]) === entry.sha256) { return { keep: true }; }  // ours and current
     return { keep: false, why: `a newer ${noun} build is pinned by the manifest — updating ${key}` };
+  },
+  'receipt-is-law': async ({ dest, key, installDir }) => {
+    const receipt = readReceipt(installDir);
+    if (!(key in receipt)) { return { keep: true }; }                          // operator-supplied: hands off
+    const actual = await computeFileChecksum(dest);
+    if (actual === receiptSha(receipt[key])) { return { keep: true }; }        // ours and intact, whatever build it is now
+    return {
+      keep: false,
+      why: `${key} on disk (${actual.slice(0, 12)}…) no longer matches its install receipt — replacing it with the pinned build`,
+    };
   },
 };
 
@@ -166,8 +201,11 @@ function runProbe(binPath, args, accept) {
  *                                   throwaway directory and sweep it after
  *   noun              what the log lines call the artifact
  *   unpublishedMeans  what no build for this platform means to the operator
+ *   pinReceipt        optional: (entry) => extra fields the receipt records
+ *                     for an install of the manifest pin (a version, a
+ *                     source); absent, the receipt stays a bare sha256
  */
-export function createPinnedBinary({ family, baseEnv, onDiskPolicy, probe: probeSpec, noun, unpublishedMeans }) {
+export function createPinnedBinary({ family, baseEnv, onDiskPolicy, probe: probeSpec, noun, unpublishedMeans, pinReceipt = null }) {
   const isCurrent = ON_DISK_POLICIES[onDiskPolicy];
   if (!isCurrent) { throw new Error(`pinned-binary: unknown onDiskPolicy '${onDiskPolicy}' for ${family}`); }
   if (!family || !baseEnv || !noun || !unpublishedMeans
@@ -259,7 +297,32 @@ export function createPinnedBinary({ family, baseEnv, onDiskPolicy, probe: probe
 
   const realProbe = (binPath, scratchDir) => runProbe(binPath, probeSpec.args(scratchDir), probeSpec.accept);
 
+  // The mirror / loopback base for this family, read lazily so tests and
+  // mirrors don't depend on import order; '' when the derived URL stands.
+  function mirrorBase() {
+    return (process.env[baseEnv] || '').replace(/\/+$/, '');
+  }
+
+  // What the receipt records for `key` in `installDir` — the bare sha256 or
+  // the object a family with pinReceipt / receiptMeta wrote — or null when we
+  // never installed it (an operator-placed file, or nothing there).
+  function receiptEntry({ installDir = managedDir(), key: k = key() } = {}) {
+    const receipt = readReceipt(installDir);
+    return k in receipt ? receipt[k] : null;
+  }
+
   let inFlight = null;
+
+  // One in-flight ensure OR install per install dir: concurrent callers share
+  // the one download instead of fighting over the staging file.
+  function singleFlight(installDir, start) {
+    if (inFlight && inFlight.dir === installDir) { return inFlight.promise; }
+    const promise = start().finally(() => {
+      if (inFlight && inFlight.promise === promise) { inFlight = null; }
+    });
+    inFlight = { dir: installDir, promise };
+    return promise;
+  }
 
   // Make sure a usable binary exists at the managed path; resolves with its
   // path, or null when no build is published for this platform and none is on
@@ -267,12 +330,7 @@ export function createPinnedBinary({ family, baseEnv, onDiskPolicy, probe: probe
   // a binary that is already there is the family's onDiskPolicy.
   function ensure(opts = {}) {
     const installDir = opts.installDir || managedDir();
-    if (inFlight && inFlight.dir === installDir) { return inFlight.promise; }
-    const promise = ensureInto({ ...opts, installDir }).finally(() => {
-      if (inFlight && inFlight.promise === promise) { inFlight = null; }
-    });
-    inFlight = { dir: installDir, promise };
-    return promise;
+    return singleFlight(installDir, () => ensureInto({ ...opts, installDir }));
   }
 
   // `probe` is injectable for the unit tests (their loopback server hands out
@@ -297,24 +355,46 @@ export function createPinnedBinary({ family, baseEnv, onDiskPolicy, probe: probe
       winston.info(`[${family}] ${verdict.why}`);
     }
 
+    // The URL is DERIVED from the validated pins — the manifest never carries
+    // a raw URL. <baseEnv> swaps the base (mirror / test loopback); the sha256
+    // pin still gates what gets installed.
+    const base = mirrorBase();
+    const url = base ? `${base}/${entry.file}` : deriveAssetUrl(entry);
+
+    winston.info(`[${family}] downloading ${entry.file} (${(entry.size / 1024 / 1024).toFixed(1)} MB) from ${base || `${entry.repo}@${entry.tag} release assets`}...`);
+    return installInto({
+      installDir, key: k, url, sha256: entry.sha256, maxBytes: entry.size, label: entry.file, probe,
+      receiptMeta: pinReceipt ? pinReceipt(entry) : null,
+    });
+  }
+
+  // Download `url` into `installDir` as `key`, verify it against `sha256` (and
+  // `maxBytes`), prove it executes with `probe`, and swap it in; the receipt
+  // records `sha256` — plus `receiptMeta` when given (an object, or a
+  // function called after the probe passed, for a family whose probe is what
+  // learns the version). The ONE download-verify-probe-swap sequence: ensure()
+  // runs it for the manifest pin, and a family that follows live upstream
+  // releases (yt-dlp) runs it through install() for a build verified against
+  // that release's own checksum file. Throws on any failure, with nothing
+  // replaced and the staging file gone.
+  function install(opts) {
+    const installDir = opts.installDir || managedDir();
+    return singleFlight(installDir, () => installInto({ ...opts, installDir }));
+  }
+
+  async function installInto({ installDir, key: k = key(), url, sha256, maxBytes, label = k, probe = realProbe, receiptMeta = null }) {
+    if (!/^[0-9a-f]{64}$/.test(sha256 || '')) { throw new Error(`[${family}] install of ${label} has no sha256 to verify against`); }
+    const dest = path.join(installDir, k);
     await fsp.mkdir(installDir, { recursive: true });
     const staged = path.join(installDir, `.staging-${k}`);
     await fsp.rm(staged, { force: true }).catch(() => {});
 
-    // The URL is DERIVED from the validated pins — the manifest never carries
-    // a raw URL. <baseEnv> swaps the base (mirror / test loopback); the sha256
-    // pin still gates what gets installed. Read lazily so tests and mirrors
-    // don't depend on import order.
-    const base = (process.env[baseEnv] || '').replace(/\/+$/, '');
-    const url = base ? `${base}/${entry.file}` : deriveAssetUrl(entry);
-
-    winston.info(`[${family}] downloading ${entry.file} (${(entry.size / 1024 / 1024).toFixed(1)} MB) from ${base || `${entry.repo}@${entry.tag} release assets`}...`);
     try {
-      await downloadToFile(url, staged, { maxBytes: entry.size });
+      await downloadToFile(url, staged, { maxBytes: Number.isInteger(maxBytes) && maxBytes > 0 ? maxBytes : null });
 
       const actual = await computeFileChecksum(staged);
-      if (actual !== entry.sha256) {
-        throw new Error(`checksum mismatch for ${entry.file}: expected ${entry.sha256}, got ${actual} — refusing the download`);
+      if (actual !== sha256) {
+        throw new Error(`checksum mismatch for ${label}: expected ${sha256}, got ${actual} — refusing the download`);
       }
       await fsp.chmod(staged, 0o755).catch(() => {});
 
@@ -330,7 +410,7 @@ export function createPinnedBinary({ family, baseEnv, onDiskPolicy, probe: probe
         probed = await probe(staged);
       }
       if (!probed) {
-        throw new Error(`downloaded ${entry.file} verified but failed its ${probeSpec.flag} execution probe — wrong platform build or unsupported host`);
+        throw new Error(`downloaded ${label} verified but failed its ${probeSpec.flag} execution probe — wrong platform build or unsupported host`);
       }
 
       // Swap in: rename the old aside first (Windows allows renaming a
@@ -353,7 +433,7 @@ export function createPinnedBinary({ family, baseEnv, onDiskPolicy, probe: probe
       }
       await fsp.rm(aside, { force: true }).catch(() => {});
 
-      await writeReceipt(installDir, k, entry.sha256);
+      await writeReceipt(installDir, k, sha256, typeof receiptMeta === 'function' ? receiptMeta() : receiptMeta);
       winston.info(`[${family}] checksum verified — installed ${k}`);
       return dest;
     } catch (err) {
@@ -368,5 +448,8 @@ export function createPinnedBinary({ family, baseEnv, onDiskPolicy, probe: probe
     inFlight = null;
   }
 
-  return { family, key, defaultManifestDir, managedDir, managedPath, manifestEntry, canAutoFetch, ensure, reset };
+  return {
+    family, key, defaultManifestDir, managedDir, managedPath, manifestEntry, canAutoFetch, mirrorBase, receiptEntry,
+    ensure, install, reset,
+  };
 }

@@ -58,6 +58,16 @@ bin/p2p-sidecar/*
 !bin/p2p-sidecar/manifest.json
 !bin/p2p-sidecar/manifest-musl.json
 
+# yt-dlp is FETCHED on first use from yt-dlp's own releases and kept current
+# by a daily check (src/util/yt-dlp-bootstrap.js). Only the committed pin
+# manifests — the build a fresh install gets — and the README are tracked;
+# the fetched binary, the install receipt and staging files land here on
+# checkouts whose data root is the app root.
+bin/yt-dlp/*
+!bin/yt-dlp/README.md
+!bin/yt-dlp/manifest.json
+!bin/yt-dlp/manifest-musl.json
+
 save/*.json
 
 .DS_Store

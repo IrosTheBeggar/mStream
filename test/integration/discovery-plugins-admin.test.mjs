@@ -118,7 +118,7 @@ describe('discovery plug-ins · admin API', { skip: hasFfmpeg ? false : 'bundled
     // probe's detail says which one runs, so the panel can show it read-only.
     assert.deepEqual(youtube.adminSettings, ['codec', 'maxFilesizeMb', 'searchResults']);
     assert.deepEqual(youtube.config, { codec: 'mp3', maxFilesizeMb: 100, searchResults: 8 });
-    assert.deepEqual(youtube.detail, { ytdlp: '2026.02.04', ffmpeg: true, binary: FAKE }, 'the probe says what it found, and from where');
+    assert.deepEqual(youtube.detail, { ytdlp: '2026.02.04', ffmpeg: true, binary: FAKE, source: 'env', note: null, latest: null, autoUpdate: true, checkedAt: null }, 'the probe says what it found, and from where');
     assert.deepEqual(pluginOf(r.body, 'itunes').config, { country: 'US' });
     assert.deepEqual(pluginOf(r.body, 'links').config, {});
     assert.deepEqual(pluginOf(r.body, 'links').adminSettings, []);
@@ -189,7 +189,7 @@ describe('discovery plug-ins · admin API', { skip: hasFfmpeg ? false : 'bundled
 
     const again = await api(adminToken, 'POST', PROBE, { name: 'youtube' });
     assert.deepEqual([again.body.available, again.body.reason, again.body.dryRun], [true, null, false]);
-    assert.deepEqual(again.body.detail, { ytdlp: '2026.02.04', ffmpeg: true, binary: FAKE });
+    assert.deepEqual(again.body.detail, { ytdlp: '2026.02.04', ffmpeg: true, binary: FAKE, source: 'env', note: null, latest: null, autoUpdate: true, checkedAt: null });
 
     // A plug-in without a probe is simply available; unknown names and bad settings are refused.
     assert.deepEqual((await api(adminToken, 'POST', PROBE, { name: 'links' })).body.available, true);

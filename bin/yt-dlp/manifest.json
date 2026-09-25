@@ -1,0 +1,45 @@
+{
+  "family": "yt-dlp",
+  "schema": 2,
+  "repo": "yt-dlp/yt-dlp",
+  "tag": "2026.08.19",
+  "release": "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19",
+  "publishedAt": "2026-08-19T23:48:43Z",
+  "assets": {
+    "yt-dlp-win32-x64.exe": {
+      "file": "yt-dlp.exe",
+      "sha256": "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a",
+      "size": 17840399
+    },
+    "yt-dlp-win32-arm64.exe": {
+      "file": "yt-dlp_arm64.exe",
+      "sha256": "05b438997bafc3affdfda9d041353c9d73e04dc842207254b655b0887c4445b0",
+      "size": 21159286
+    },
+    "yt-dlp-win32-ia32.exe": {
+      "file": "yt-dlp_x86.exe",
+      "sha256": "a8f91bd41452506bc81ebd2f369b186fea0ee7075413ba00cef9fd346a0a5d0c",
+      "size": 13199160
+    },
+    "yt-dlp-linux-x64": {
+      "file": "yt-dlp_linux",
+      "sha256": "58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a",
+      "size": 40446224
+    },
+    "yt-dlp-linux-arm64": {
+      "file": "yt-dlp_linux_aarch64",
+      "sha256": "b16e4dab368a816cd05d477d698a605a6ae87ccee1c8ffd38fa21d7254141fcc",
+      "size": 40167448
+    },
+    "yt-dlp-darwin-x64": {
+      "file": "yt-dlp_macos",
+      "sha256": "0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202",
+      "size": 37146048
+    },
+    "yt-dlp-darwin-arm64": {
+      "file": "yt-dlp_macos",
+      "sha256": "0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202",
+      "size": 37146048
+    }
+  }
+}

@@ -31,6 +31,7 @@ import * as discoveryPluginsApi from './api/discovery-plugins.js';
 import * as discoveryPluginJobsApi from './api/discovery-plugin-jobs.js';
 import * as discoveryPluginJobs from './discovery-plugins/jobs.js';
 import * as discoveryPlugins from './discovery-plugins/index.js';
+import * as ytDlpBootstrap from './util/yt-dlp-bootstrap.js';
 import * as discoveryRetention from './discovery-plugins/retention.js';
 import * as discoveryCollectionApi from './api/discovery-collection.js';
 import * as discoveryDownloadsApi from './api/discovery-downloads.js';
@@ -771,8 +772,15 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     discoveryPluginJobs.start();
     // Availability probes (yt-dlp, ffmpeg): a plug-in whose probe fails is
     // listed nowhere until it passes. Runs in the background; the listing
-    // treats an unprobed plug-in as available meanwhile.
+    // treats an unprobed plug-in as available meanwhile. The youtube probe
+    // is also what fetches mStream's own yt-dlp on a server without one.
     discoveryPlugins.refreshProbes().catch((err) => winston.warn(`discovery plug-in probes failed: ${err.message}`));
+    // Keep that yt-dlp current: a check shortly after boot, then daily
+    // (src/util/yt-dlp-bootstrap.js). Only armed while the plug-in is on —
+    // the Youtube DL route arms it itself on first use.
+    if (config.program.discoveryPlugins && config.program.discoveryPlugins.youtube && config.program.discoveryPlugins.youtube.enabled) {
+      ytDlpBootstrap.startAutoUpdate();
+    }
     // Old job rows and staging folders a crash left behind: a pass shortly
     // after boot, then every few hours.
     discoveryRetention.start();
@@ -1058,6 +1066,8 @@ export function reboot() {
     // again (re-queueing anything still marked running).
     discoveryPluginJobs.stop();
     discoveryRetention.stop();
+    // The yt-dlp update check; the boot path re-arms it when the plug-in is on.
+    ytDlpBootstrap.stopAutoUpdate();
 
     // Tear down the Iroh tunnel, the federation endpoint (+ its peer bridges)
     // and the discovery-network gossip stack. Each binds its own sockets

@@ -8284,7 +8284,8 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
                           <div class="dp-plugin-h"><b>{{ p.title }}</b><span v-for="c in p.capabilities" :key="c" class="dp-tag">{{ c }}</span><span v-if="p.scope === 'user'" class="dp-tag dp-tag-user">{{ t('admin.dplugins.tag.perUser') }}</span></div>
                           <div class="dp-plugin-d">{{ p.description }}</div>
                           <div v-if="p.connectedUsers !== undefined" class="dp-plugin-meta">{{ t('admin.dplugins.connected', { count: p.connectedUsers, total: userCount }) }}</div>
-                          <div v-if="p.enabled && p.available && toolLine(p)" class="dp-plugin-meta">yt-dlp {{ toolLine(p).version }}<span v-if="toolLine(p).binary"> &middot; <span class="dp-mono">{{ toolLine(p).binary }}</span></span><span v-if="toolLine(p).old" class="dp-warn-soft"> &middot; {{ t('admin.dplugins.ytdlpOld', { count: toolLine(p).months }) }}</span></div>
+                          <div v-if="p.enabled && p.available && toolLine(p)" class="dp-plugin-meta">yt-dlp {{ toolLine(p).version }}<span v-if="toolLine(p).sourceKey"> &middot; {{ t('admin.dplugins.ytdlpSource.' + toolLine(p).sourceKey) }}</span><span v-if="toolLine(p).binary"> &middot; <span class="dp-mono">{{ toolLine(p).binary }}</span></span><span v-if="toolLine(p).old" class="dp-warn-soft"> &middot; {{ t('admin.dplugins.ytdlpOld', { count: toolLine(p).months }) }}</span></div>
+                          <div v-if="p.enabled && p.available && toolLine(p) && toolLine(p).note" class="dp-plugin-meta dp-warn-soft">{{ toolLine(p).note }}</div>
                           <div v-if="p.enabled && !p.available" class="dp-reason"><span><b>{{ t('admin.dplugins.status.cannotRunLead') }}</b> {{ p.reason }} {{ t('admin.dplugins.status.hiddenFromUsers', { title: p.title }) }}<template v-if="p.name === 'youtube'"> {{ t('admin.dplugins.ytdlpConfigNote') }}</template></span></div>
                         </div>
                         <div class="dp-plugin-act">
@@ -8606,6 +8607,8 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
     // The external tool a plug-in's probe reported. yt-dlp's version IS its
     // release date, and a stale one is the usual reason downloads fail, so
     // past 90 days (the age yt-dlp itself starts warning at) the row says so.
+    // `source` says whose copy answered: mStream's own (fetched and kept
+    // current, or frozen), the server's, or the one the config file names.
     toolLine: function(p) {
       const version = p.detail && typeof p.detail.ytdlp === 'string' ? p.detail.ytdlp : null;
       if (!version) { return null; }
@@ -8613,7 +8616,12 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
       const days = m ? Math.floor((Date.now() - Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))) / 86400000) : null;
       // The executable it runs — read-only here (discoveryPlugins.youtube.binary in the config file).
       const binary = typeof p.detail.binary === 'string' && p.detail.binary ? p.detail.binary : null;
-      return { version, binary, old: days !== null && days > 90, months: days === null ? 0 : Math.max(3, Math.round(days / 30)) };
+      const source = typeof p.detail.source === 'string' ? p.detail.source : null;
+      let sourceKey = null;
+      if (source === 'managed') { sourceKey = p.detail.autoUpdate === false ? 'managedFrozen' : 'managed'; }
+      else if (source === 'system') { sourceKey = 'system'; }
+      const note = typeof p.detail.note === 'string' && p.detail.note ? p.detail.note : null;
+      return { version, binary, sourceKey, note, old: days !== null && days > 90, months: days === null ? 0 : Math.max(3, Math.round(days / 30)) };
     },
     pluginState: function(p) {
       if (this.busy[p.name] === true) { return { word: 'saving', dot: 'off' }; }

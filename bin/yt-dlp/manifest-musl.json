@@ -1,0 +1,20 @@
+{
+  "family": "yt-dlp",
+  "schema": 2,
+  "repo": "yt-dlp/yt-dlp",
+  "tag": "2026.08.19",
+  "release": "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19",
+  "publishedAt": "2026-08-19T23:48:43Z",
+  "assets": {
+    "yt-dlp-linux-x64-musl": {
+      "file": "yt-dlp_musllinux",
+      "sha256": "f3dec9cfeaf304cec98290fe41c6ad465d4b747d302473559643e7af24929722",
+      "size": 40523752
+    },
+    "yt-dlp-linux-arm64-musl": {
+      "file": "yt-dlp_musllinux_aarch64",
+      "sha256": "17b164c4d258be92bb1ad146cb7c336b783aedb380814aabbcb7d52937f77e57",
+      "size": 39806408
+    }
+  }
+}

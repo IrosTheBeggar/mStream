@@ -695,17 +695,25 @@ const discoveryPluginsOptions = Joi.object({
   // user's collection destination, the way a peer copy lands (so the same
   // upload rules apply). Lands files from outside the federation, so OFF by
   // default; listed only while yt-dlp and ffmpeg are present. `binary` is
-  // also where the Youtube DL route looks for yt-dlp (a name on PATH or a
-  // path). It is a config-file setting only — the admin API never edits an
-  // executable path (that would hand an admin session command execution on
-  // the host); a change needs a restart.
+  // also where the Youtube DL route looks for yt-dlp. Its default, `yt-dlp`,
+  // means: the copy on this server's PATH while it is no more than a month
+  // behind the newest release, otherwise a copy mStream downloads itself
+  // (verified against the pins in bin/yt-dlp/manifest.json) and keeps
+  // current with a daily check (src/util/yt-dlp-bootstrap.js). Any other
+  // value — a command name or a path — is used as it is. It is a config-file
+  // setting only — the admin API never edits an executable path (that would
+  // hand an admin session command execution on the host); a change needs a
+  // restart. `autoUpdate: false` freezes mStream's own copy at the build it
+  // has (air-gapped hosts, a release that regressed); the server's own copy
+  // is then measured against the pinned release alone.
   youtube: Joi.object({
     enabled: Joi.boolean().default(false),
     binary: Joi.string().min(1).default('yt-dlp'),
+    autoUpdate: Joi.boolean().default(true),
     codec: Joi.string().valid('mp3', 'm4a', 'aac', 'opus', 'ogg', 'flac', 'wav').default('mp3'),
     maxFilesizeMb: Joi.number().integer().min(1).max(4096).default(100),
     searchResults: Joi.number().integer().min(1).max(20).default(8),
-  }).default({ enabled: false, binary: 'yt-dlp', codec: 'mp3', maxFilesizeMb: 100, searchResults: 8 }),
+  }).default({ enabled: false, binary: 'yt-dlp', autoUpdate: true, codec: 'mp3', maxFilesizeMb: 100, searchResults: 8 }),
 });
 
 // One plug-in's config schema, for the admin panel's settings editor: the

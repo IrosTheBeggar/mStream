@@ -267,7 +267,7 @@ components:
         enabled: { type: boolean }
         available: { type: boolean, description: "False when the plug-in is on but its availability probe failed." }
         reason: { type: string, nullable: true, example: "yt-dlp not found (yt-dlp)" }
-        detail: { type: object, nullable: true, additionalProperties: true, description: "What the probe found. For `youtube`: `{ ytdlp, ffmpeg, binary }` — the version, whether ffmpeg is ready, and the executable it runs (`discoveryPlugins.youtube.binary` from the config file, or the `MSTREAM_YTDLP_BIN` hook)." }
+        detail: { type: object, nullable: true, additionalProperties: true, description: "What the probe found. For `youtube`: `{ ytdlp, ffmpeg, binary, source, note, latest, autoUpdate, checkedAt }` — the version, whether ffmpeg is ready, the executable it runs, whose copy that is (`managed` = downloaded by mStream and kept current daily, `system` = the server's own, `config` = `discoveryPlugins.youtube.binary` from the config file, `env` = the `MSTREAM_YTDLP_BIN` hook), a sentence worth showing an admin when the server's copy is old and the download failed, the newest release the daily check saw, whether updates are on, and when the check last ran." }
         settings:
           type: array
           items: { type: string }
