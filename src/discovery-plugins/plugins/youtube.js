@@ -41,6 +41,7 @@ import * as config from '../../state/config.js';
 import * as transcode from '../../api/transcode.js';
 import { ffmpegBin } from '../../util/ffmpeg-bootstrap.js';
 import * as ytdlp from '../../util/yt-dlp.js';
+import * as ytDlpBootstrap from '../../util/yt-dlp-bootstrap.js';
 import * as vpathUtil from '../../util/vpath.js';
 import * as destinations from '../destination.js';
 import * as staging from '../staging.js';
@@ -273,8 +274,7 @@ async function resolve(rec) {
   if (cached) { return { lookup: cached }; }
   if (!lookupInFlight.has(key)) {
     const p = (async () => {
-      const bin = ytdlp.resolveBinary(settings.binary);
-      if (!(await ytdlp.isAvailable(bin))) { throw new Error('yt-dlp is not installed on this server'); }
+      const bin = await ytDlpBin(settings);
       const entries = await ytdlp.search(query, { bin, results: settings.searchResults });
       const r = await rankConfirmed(rec, entries, { bin });
       const found = { query, minScore: MIN_SCORE, candidates: lookupCandidates(r.top.concat(r.rest)), owned: null };
@@ -292,36 +292,54 @@ function validateChoice(choice) {
   if (!choice || !isYouTubeUrl(choice.url)) { throw new Error('the chosen upload must be a YouTube link'); }
 }
 
+// The yt-dlp a lookup or a job runs: whichever copy the bootstrap decided
+// on (the server's own while it is current, else the managed one — fetched
+// on the spot the first time). Throws the sentence the job shows when there
+// is none.
+async function ytDlpBin(settings) {
+  const found = await ytDlpBootstrap.locate(settings.binary);
+  if (!found.bin) { throw new Error('yt-dlp is not installed on this server'); }
+  return found.bin;
+}
+
 // `settings` = values to try instead of the saved ones (the admin probe
 // route's dry run). The executable itself is not among them: `binary` is a
 // config-file setting, never editable through the admin API — an executable
 // path settable by an admin session would be code execution on the host —
 // so the probe always runs the configured one. The answer's `detail` is what
-// an operator wants to read back: which yt-dlp answered, and from where.
+// an operator wants to read back: which yt-dlp answered, from where, and
+// whether mStream keeps it current. On a server without yt-dlp this probe
+// is what fetches mStream's own copy (src/util/yt-dlp-bootstrap.js).
 async function probe({ settings } = {}) {
   const tried = { ...cfg(), ...(settings && typeof settings === 'object' ? settings : {}), binary: cfg().binary };
-  const bin = ytdlp.resolveBinary(tried.binary);
-  const label = bin.script || bin.cmd;
-  if (!(await ytdlp.isAvailable(bin))) {
-    return { ok: false, reason: `yt-dlp not found (${label})` };
+  const found = await ytDlpBootstrap.locate(tried.binary);
+  if (!found.bin) {
+    return { ok: false, reason: found.reason || `yt-dlp not found (${found.label || tried.binary})` };
   }
-  let version;
-  try {
-    version = await ytdlp.version(bin);
-  } catch (err) {
-    return { ok: false, reason: `yt-dlp (${label}) ${err.message}` };
+  const label = found.label || found.bin.script || found.bin.cmd;
+  let version = found.version;
+  if (!version) {
+    try {
+      version = await ytdlp.version(found.bin);
+    } catch (err) {
+      return { ok: false, reason: `yt-dlp (${label}) ${err.message}` };
+    }
   }
+  const st = ytDlpBootstrap.status();
+  const detail = {
+    ytdlp: version, ffmpeg: true, binary: label, source: found.source,
+    note: found.note || null, latest: st.latest, autoUpdate: st.autoUpdate, checkedAt: st.checkedAt,
+  };
   if (!(await ffmpegReady())) {
-    return { ok: false, reason: 'ffmpeg is not available yet', detail: { ytdlp: version, ffmpeg: false, binary: label } };
+    return { ok: false, reason: 'ffmpeg is not available yet', detail: { ...detail, ffmpeg: false } };
   }
-  return { ok: true, detail: { ytdlp: version, ffmpeg: true, binary: label } };
+  return { ok: true, detail };
 }
 
 async function run(ctx) {
   const rec = ctx.recommendation || {};
   const settings = cfg();
-  const bin = ytdlp.resolveBinary(settings.binary);
-  if (!(await ytdlp.isAvailable(bin))) { throw new Error('yt-dlp is not installed on this server'); }
+  const bin = await ytDlpBin(settings);
   if (!(await ffmpegReady())) { throw new Error('ffmpeg is not available yet'); }
   const phrase = searchPhrase(rec);
   if (!phrase) { throw new Error('the recommendation has no artist or title to search for'); }

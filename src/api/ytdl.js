@@ -14,6 +14,7 @@ import * as downloadsDb from '../db/plugin-downloads.js';
 import WebError from '../util/web-error.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import * as ytdlp from '../util/yt-dlp.js';
+import * as ytDlpBootstrap from '../util/yt-dlp-bootstrap.js';
 import fs from 'fs/promises';
 
 const downloadTracker = new Map();
@@ -35,10 +36,15 @@ function sanitizeYoutubeUrl(url) {
   return parsed.toString();
 }
 
-// One setting says where yt-dlp is, for the route and the plug-in alike.
-function binary() {
+// One setting says where yt-dlp is, for the route and the plug-in alike —
+// and one resolver decides which copy runs (src/util/yt-dlp-bootstrap.js:
+// the server's own while it is current, else mStream's managed copy,
+// fetched on first use and kept current). null when there is none.
+async function binary() {
   const cfg = config.program.discoveryPlugins && config.program.discoveryPlugins.youtube;
-  return ytdlp.resolveBinary(cfg && cfg.binary);
+  const found = await ytDlpBootstrap.locate(cfg && cfg.binary);
+  if (found.bin) { ytDlpBootstrap.startAutoUpdate(); }
+  return found.bin;
 }
 
 function forget(pid) {
@@ -78,8 +84,8 @@ export function setup(mstream) {
     value.url = sanitizeYoutubeUrl(value.url);
 
     const ffmpegPath = ffmpegBin();
-    const bin = binary();
-    if (!(await ytdlp.isAvailable(bin))) {
+    const bin = await binary();
+    if (!bin) {
       winston.error('yt-dlp is not installed');
       return res.status(500).json({ error: 'yt-dlp is not installed' });
     }
@@ -143,8 +149,8 @@ export function setup(mstream) {
     const schema = Joi.object({ url: youtubeUrlSchema });
     const { value } = joiValidate(schema, req.query);
 
-    const bin = binary();
-    if (!(await ytdlp.isAvailable(bin))) {
+    const bin = await binary();
+    if (!bin) {
       return res.status(500).json({ error: 'yt-dlp is not installed' });
     }
 

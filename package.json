@@ -42,6 +42,7 @@
     "test:smoke:boot-probe:win51": "powershell -NoProfile -ExecutionPolicy Bypass -File test/smoke/boot-probe-51-smoke.ps1",
     "fetch-p2p-sidecar": "node scripts/fetch-p2p-sidecar.mjs",
     "fetch-mstream-player": "node scripts/fetch-mstream-player.mjs",
+    "fetch-yt-dlp": "node scripts/fetch-yt-dlp.mjs",
     "test:smoke:sidecar-volume": "bash test/smoke/docker/p2p-sidecar-volume-smoke.sh",
     "test:smoke:api-errors": "node test/smoke/api-error-codes-smoke.mjs"
   },

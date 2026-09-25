@@ -401,7 +401,9 @@ for (const [dir, file] of sidecars) {
 // The p2p-sidecar manifest backs that family's runtime-fetch rung for
 // bundles built without the baked binary (MSTREAM_ALLOW_MISSING_SIDECAR /
 // offline local builds) — the "falls back to runtime fetch" promise above
-// holds only if the pins ship. macOS: real file in Contents/Resources,
+// holds only if the pins ship. yt-dlp is never baked: it is fetched on first
+// use and kept current daily (src/util/yt-dlp-bootstrap.js), so a bundle
+// only ever carries its pins. macOS: real file in Contents/Resources,
 // relative symlink from MacOS/bin/<family>/ — codesign's nested-code scan
 // rejects loose non-Mach-O files under MacOS (the same rule that put
 // webapp/ and install.sh in Resources), a symlink is sealed as a symlink,
@@ -409,6 +411,7 @@ for (const [dir, file] of sidecars) {
 for (const m of [
   { family: 'ffmpeg', file: 'manifest.json' },
   { family: 'p2p-sidecar', file: t.musl ? 'manifest-musl.json' : 'manifest.json' },
+  { family: 'yt-dlp', file: t.musl ? 'manifest-musl.json' : 'manifest.json' },
   ...(t.musl ? [] : [{ family: 'mstream-player', file: 'manifest.json' }]),
 ]) {
   const src = join(root, 'bin', m.family, m.file);
