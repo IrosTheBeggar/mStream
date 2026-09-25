@@ -265,6 +265,8 @@ describe('federation-copy · the album loop (copySongs with a scripted copyOne)'
     assert.equal(limit.songs.copied.length, 1);
     const down = await copySongs(['a', 'b'].map(song), { copyOne: async () => { throw Object.assign(new Error('copier is unreachable (dial)'), { peerDown: true }); } });
     assert.deepEqual([down.stopped, down.songs.failed.length, down.songs.copied.length], ['peer', 1, 0]);
+    const refused = await copySongs(['a', 'b'].map(song), { copyOne: async () => { throw Object.assign(new Error('copier does not allow copies with this server\'s key'), { peerDown: true, copiesOff: true }); } });
+    assert.deepEqual([refused.stopped, refused.songs.failed.length], ['refused', 1], 'the peer refusing copies is its own stop');
     assert.deepEqual(await copySongs([], { copyOne: async () => copied('x', 1) }), { songs: { total: 0, copied: [], skipped: [], failed: [] }, bytes: 0, stopped: null, missingVars: [] });
   });
 });

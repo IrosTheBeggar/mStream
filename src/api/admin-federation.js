@@ -33,6 +33,8 @@ const limitsSchema = {
   streamKbps: Joi.number().integer().min(0).max(10000000),
   dailyMb: Joi.number().integer().min(0).max(100000000),
   maxStreams: Joi.number().integer().min(0).max(1000),
+  // V77: may the key's holder copy files into its own library? On unless said.
+  allowCopies: Joi.boolean(),
 };
 
 function resolveLimits(body) {
@@ -41,6 +43,7 @@ function resolveLimits(body) {
     streamKbps: body.streamKbps ?? defaults.streamKbps,
     dailyMb: body.dailyMb ?? defaults.dailyMb,
     maxStreams: body.maxStreams ?? defaults.maxStreams,
+    allowCopies: body.allowCopies !== false,
   };
 }
 
@@ -200,6 +203,7 @@ export function register(mstream) {
       streamKbps: limitsSchema.streamKbps.required(),
       dailyMb: limitsSchema.dailyMb.required(),
       maxStreams: limitsSchema.maxStreams.required(),
+      allowCopies: limitsSchema.allowCopies.optional(),
       expiresAt: expirySchema,
     }), req.body);
 
@@ -213,8 +217,9 @@ export function register(mstream) {
       fedDb.setFederationKeyExpiry(id, expiresAt);
       expiryNote = `; expires: ${expiresAt || 'never'}`;
     }
+    const copiesNote = typeof req.body.allowCopies === 'boolean' ? `; copies ${req.body.allowCopies ? 'allowed' : 'off'}` : '';
     winston.info(`[federation] ${req.user.username} set limits on key id=${id}: `
-      + `${req.body.streamKbps} kbps, ${req.body.dailyMb} MB/day, ${req.body.maxStreams} streams${expiryNote}`);
+      + `${req.body.streamKbps} kbps, ${req.body.dailyMb} MB/day, ${req.body.maxStreams} streams${copiesNote}${expiryNote}`);
     res.json(fedDb.getFederationKeyById(id));
   });
 

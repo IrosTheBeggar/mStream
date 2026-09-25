@@ -3969,6 +3969,7 @@ const federationView = Vue.component('federation-view', {
       if (k.stream_kbps > 0) { parts.push(k.stream_kbps >= 1000 ? `${+(k.stream_kbps / 1000).toFixed(1)} Mbps` : `${k.stream_kbps} kbps`); }
       if (k.daily_mb > 0) { parts.push(k.daily_mb >= 1024 ? `${+(k.daily_mb / 1024).toFixed(1)} GB/day` : `${k.daily_mb} MB/day`); }
       if (k.max_streams > 0) { parts.push(`${k.max_streams} stream${k.max_streams === 1 ? '' : 's'}`); }
+      if (k.allow_copies === 0) { parts.push('no copies'); }
       return parts.length ? parts.join(' · ') : 'unlimited';
     },
     fmtBytes(n) {
@@ -10755,6 +10756,8 @@ const federationEditLimitsModal = Vue.component('federation-edit-limits-modal', 
       streamKbps: k.stream_kbps || 0,
       dailyMb: k.daily_mb || 0,
       maxStreams: k.max_streams || 0,
+      // V77: may the other server copy files into its own library with this key?
+      allowCopies: k.allow_copies !== 0,
       // Tri-state, so saving limit tweaks can't silently restart an expiry
       // clock: '' = leave expiry as it is, 0 = never, N = N days from now.
       expireDays: '',
@@ -10787,6 +10790,12 @@ const federationEditLimitsModal = Vue.component('federation-edit-limits-modal', 
             <label for="fed-edit-streams" class="active">Max streams</label>
           </div>
         </div>
+        <p style="margin:12px 0 4px">
+          <label>
+            <input type="checkbox" class="filled-in" v-model="allowCopies"/>
+            <span><b>Allow copies</b> — the other server may copy songs, albums and artists into its own library with this key ("Add to your collection"). Playback is never affected; the caps above still apply to copies.</span>
+          </label>
+        </p>
         <p style="margin:8px 0 4px"><b>Expiry</b> <span :style="{color: target.expired ? '#c62828' : '#777'}" style="font-size:0.85em">— currently: {{ currentExpiry }}</span></p>
         <div class="row" style="margin-bottom:0">
           <div class="input-field col s6">
@@ -10810,6 +10819,7 @@ const federationEditLimitsModal = Vue.component('federation-edit-limits-modal', 
           streamKbps: Number(this.streamKbps) || 0,
           dailyMb: Number(this.dailyMb) || 0,
           maxStreams: Number(this.maxStreams) || 0,
+          allowCopies: this.allowCopies !== false,
         };
         if (String(this.expireDays).trim() !== '') {
           const days = Number(this.expireDays) || 0;

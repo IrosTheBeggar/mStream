@@ -360,6 +360,8 @@ describe('album and artist jobs as rows', () => {
     assert.deepEqual(quota.sub.parts.slice(1).map((p) => p.key), ['discover.job.copiedCount', 'discover.job.failedCount']);
     const peer = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many({ stopped: 'peer' }) }));
     assert.equal(peer.sub.parts[0].key, 'discover.job.stoppedPeer');
+    const refused = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many({ stopped: 'refused' }) }));
+    assert.deepEqual([refused.state, refused.sub.parts[0], refused.actions], ['stopped', { key: 'discover.job.stoppedRefused', params: { peer: "Sam's server" } }, ['retry']]);
     const cancelled = J.jobRowState(copyJob({ state: 'cancelled', params: { scope: 'album' }, result: many({ stopped: 'cancelled', songs: { total: 4, copied: [{}], skipped: [], failed: [] } }) }));
     assert.deepEqual([cancelled.state, cancelled.muted, cancelled.actions], ['cancelled', true, ['start']]);
     assert.deepEqual(cancelled.sub.parts.map((p) => p.key), ['discover.job.cancelledMany', 'discover.job.copiedCount']);

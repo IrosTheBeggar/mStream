@@ -170,6 +170,8 @@ function buildFederationUser(row, req, { guest = false } = {}) {
       streamKbps: row.stream_kbps || 0,
       dailyMb: row.daily_mb || 0,
       maxStreams: row.max_streams || 0,
+      // V77: may the holder COPY files (its copy plug-in says so per request)?
+      allowCopies: row.allow_copies !== 0,
     },
     admin: false,
     vpaths: grants.map((g) => g.name),

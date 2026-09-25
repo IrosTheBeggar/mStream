@@ -2666,10 +2666,12 @@ paths:
         artist, year }, songs: { total, copied: [{ from, vpath, filepath,
         trackId, bytes, title, artist, album, downloadId }], skipped: [{ from,
         why: owned | exists, at }], failed: [{ from, error }] }, bytes,
-        stopped: null | cancelled | quota | peer, missingVars, peer,
-        destination }` — one song's own failure does not stop the album, the
-        peer's transfer limit, the peer going away or a cancel does, and the
-        finished songs stay (a cancelled job keeps the partial result).
+        stopped: null | cancelled | quota | peer | refused, missingVars,
+        peer, destination }` — one song's own failure does not stop the
+        album, the peer's transfer limit, the peer going away, the peer
+        refusing copies with this server's key (`refused`; its admin
+        switched `allowCopies` off) or a cancel does, and the finished songs
+        stay (a cancelled job keeps the partial result).
         Re-running an album copies only the gaps. With `scope: artist` it
         asks the peer for the artist's albums and copies, album by album,
         every one whose album artist is the artist (a compilation or a
@@ -7562,6 +7564,7 @@ paths:
                     stream_kbps: { type: integer, description: "Rate cap on /media responses, shared across the key's streams. 0 = unlimited." }
                     daily_mb: { type: integer, description: Per-UTC-day transfer quota. 0 = unlimited. }
                     max_streams: { type: integer, description: Concurrent /media response cap. 0 = unlimited. }
+                    allow_copies: { type: integer, enum: [0, 1], description: "V77: whether the server holding this key may copy files into its own library (its discovery copy plug-in announces a copy with `X-mStream-Purpose: copy`; with the switch off the file answers 403). Playback is never affected. 1 by default." }
                     usage_today_bytes: { type: integer, description: "Bytes served to this key today (UTC), live — includes traffic not yet flushed to the DB." }
                     expires_at: { type: string, nullable: true, description: "UTC cutoff ('YYYY-MM-DD HH:MM:SS'); null = never. Past it the key fails the auth wall and the pipe handshake." }
                     expired: { type: integer, description: 1 when expires_at has passed. The row survives expiry so the key can be renewed. }
@@ -7586,6 +7589,7 @@ paths:
                 streamKbps: { type: integer, minimum: 0, description: Rate cap in kbps. 0 = unlimited. Default from config. }
                 dailyMb: { type: integer, minimum: 0, description: Daily quota in MB. 0 = unlimited. Default from config. }
                 maxStreams: { type: integer, minimum: 0, description: Concurrent stream cap. 0 = unlimited. Default from config. }
+                allowCopies: { type: boolean, description: "May the key's holder copy files into its own library (`X-mStream-Purpose: copy` requests)? True unless said." }
                 expiresAt: { type: string, format: date-time, nullable: true, description: "ISO 8601 expiry, must be in the future. Absent/null = never. Also rides the ticket as the informational `e` field." }
       responses:
         "200":
@@ -7623,7 +7627,7 @@ paths:
     post:
       tags: [Federation]
       summary: Edit a key's bandwidth limits and expiry (live)
-      description: Applies from the key's next request; an already-open stream keeps the rate it started with. 0 = unlimited on any bandwidth field. `expiresAt` is tri-state — absent = unchanged, null = never, a future ISO date sets (or renews) the cutoff.
+      description: Applies from the key's next request; an already-open stream keeps the rate it started with. 0 = unlimited on any bandwidth field. `allowCopies` (absent = unchanged) switches copies by the other server's discovery plug-in on or off — a request that says `X-mStream-Purpose: copy` gets a 403 on the file while it is off; playback is untouched. `expiresAt` is tri-state — absent = unchanged, null = never, a future ISO date sets (or renews) the cutoff.
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       requestBody:
@@ -7637,6 +7641,7 @@ paths:
                 streamKbps: { type: integer, minimum: 0 }
                 dailyMb: { type: integer, minimum: 0 }
                 maxStreams: { type: integer, minimum: 0 }
+                allowCopies: { type: boolean, description: Absent = unchanged. }
                 expiresAt: { type: string, format: date-time, nullable: true, description: Absent = unchanged; null = never; future ISO date = new cutoff. }
       responses:
         "200":
