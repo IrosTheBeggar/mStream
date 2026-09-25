@@ -930,33 +930,54 @@
                 This song hasn&rsquo;t been analyzed yet &mdash; similar songs appear once the discovery scan reaches it.
               </div>
               <template v-else>
-                <div class="discover-rows">
-                  <div v-for="t in discover.tracks" :key="t.filepath" class="discover-row pointer" v-on:click="queueDiscoverTrack(t)" :title="Math.round(t.similarity * 100) + '% match — add to queue'">
-                    <div class="discover-match"><div class="discover-match-fill" :style="{ height: Math.max(15, Math.round(t.similarity * 100)) + '%' }"></div></div>
-                    <div class="discover-row-info">
-                      <div class="discover-row-title">{{ t.metadata.title || t.filepath.split('/').pop() }}</div>
-                      <div class="discover-row-sub">
-                        {{ t.metadata.artist || '' }}<span v-if="discoverTags(t.genreTags)" class="discover-row-tags"> &middot; {{ discoverTags(t.genreTags) }}</span>
+                <!-- One source at a time (docs/designs/discover-panel,
+                     alternate A): the switch names each source the server
+                     has — the library, the network, your peers — with its
+                     colour and its count for this song, and the chosen one
+                     gets the whole slot. With one source there is no switch
+                     and the panel is the library list alone. -->
+                <div v-if="discoverSources().length > 1" class="discover-seg" role="tablist">
+                  <a v-for="s in discoverSources()" :key="s.key" href="javascript:void(0)" role="tab" class="pointer"
+                     v-bind:class="['discover-seg-' + s.key, { 'discover-seg-on': discoverSource() === s.key }]" :aria-selected="discoverSource() === s.key ? 'true' : 'false'"
+                     v-on:click="setDiscoverSource(s.key)"><i></i>{{ tt(s.label) }}<small>{{ discover.loading ? '…' : s.count }}</small></a>
+                </div>
+                <!-- The library: the playable matches, the similar artists
+                     above them, Queue all under them. -->
+                <template v-if="discoverSource() === 'library'">
+                  <div v-if="discover.artists.length" class="discover-artists discover-artists-top">
+                    <span class="discover-artists-label" data-i18n="discover.similarArtists">Similar artists</span>
+                    <span v-for="a in discover.artists" :key="a.artist" class="discover-artist-chip">
+                      <span class="pointer discover-artist-name" v-on:click="goToDiscoverArtist(a)" :title="'Go to ' + a.artist">{{ a.artist }}</span><span v-if="discoverArtistTag(a)" class="discover-artist-tag">{{ discoverArtistTag(a) }}</span><svg v-if="a.entryPoints && a.entryPoints.length" class="pointer discover-artist-play" v-on:click="queueArtistEntryPoints(a)" :title="'Queue ' + a.entryPoints.length + ' songs that fit this vibe'" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                    </span>
+                  </div>
+                  <div class="discover-rows">
+                    <div v-for="t in discover.tracks" :key="t.filepath" class="discover-row pointer" v-on:click="queueDiscoverTrack(t)" :title="Math.round(t.similarity * 100) + '% match — add to queue'">
+                      <div class="discover-match"><div class="discover-match-fill" :style="{ height: Math.max(15, Math.round(t.similarity * 100)) + '%' }"></div></div>
+                      <div class="discover-row-info">
+                        <div class="discover-row-title">{{ t.metadata.title || t.filepath.split('/').pop() }}</div>
+                        <div class="discover-row-sub">
+                          {{ t.metadata.artist || '' }}<span v-if="discoverTags(t.genreTags)" class="discover-row-tags"> &middot; {{ discoverTags(t.genreTags) }}</span>
+                        </div>
+                      </div>
+                      <div class="discover-add" title="Add to queue">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z"/></svg>
                       </div>
                     </div>
-                    <div class="discover-add" title="Add to queue">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z"/></svg>
-                    </div>
                   </div>
-                </div>
-                <div v-if="discover.artists.length" class="discover-artists">
-                  <span class="discover-artists-label" data-i18n="discover.similarArtists">Similar artists</span>
-                  <span v-for="a in discover.artists" :key="a.artist" class="discover-artist-chip">
-                    <span class="pointer discover-artist-name" v-on:click="goToDiscoverArtist(a)" :title="'Go to ' + a.artist">{{ a.artist }}</span><span v-if="discoverArtistTag(a)" class="discover-artist-tag">{{ discoverArtistTag(a) }}</span><svg v-if="a.entryPoints && a.entryPoints.length" class="pointer discover-artist-play" v-on:click="queueArtistEntryPoints(a)" :title="'Queue ' + a.entryPoints.length + ' songs that fit this vibe'" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
-                  </span>
-                </div>
-                <!-- From the network: similar tracks on OTHER servers in the
+                  <div v-if="discover.tracks.length" class="discover-footer">
+                    <span class="discover-queue-all pointer" v-on:click="queueAllDiscover" data-i18n="discover.queueAll">+ Queue all</span>
+                    <span class="grow"></span>
+                    <span class="discover-powered" data-i18n="discover.poweredBy">matched by sound</span>
+                  </div>
+                </template>
+                <!-- The network: similar tracks on OTHER servers in the
                      discovery network. Metadata-only leads (not playable) —
-                     row click copies "Artist - Title"; the link-out icon
-                     opens the MusicBrainz recording page when known. -->
-                <div v-if="discover.p2p.available && !discover.p2p.disabled" class="discover-network">
-                  <div class="discover-artists-label discover-network-header">
-                    <span data-i18n="discover.network.label">From the network</span>
+                     a row opens its window; the link-out icon opens the
+                     MusicBrainz recording page when known. -->
+                <div v-else-if="discoverSource() === 'network'" class="discover-view discover-network">
+                  <div class="discover-listbar">
+                    <span>{{ discoverNetworkLine() }}</span>
+                    <span class="grow"></span>
                     <span class="discover-network-toggle pointer" v-bind:class="{ 'discover-network-toggle-on': discover.p2p.newArtistsOnly }"
                           v-on:click="toggleDiscoverNewArtists" data-i18n="discover.network.newArtistsOnly"
                           title="Only show artists your library doesn't have">new artists only</span>
@@ -983,18 +1004,23 @@
                   <div v-else-if="discover.p2p.searchedPeers > 0" class="discover-hint" data-i18n="discover.network.nothingNew">
                     Nothing new for this song &mdash; the network has no unfamiliar matches.
                   </div>
+                  <div v-if="discover.p2p.tracks.length" class="discover-footer">
+                    <span class="grow"></span>
+                    <span class="discover-powered">{{ tt('discover.rowOpens') }}</span>
+                  </div>
                 </div>
-                <!-- From your peers: live similarity answers from the servers
+                <!-- Your peers: live similarity answers from the servers
                      this one is PAIRED with (Admin → Federation). PLAYABLE —
-                     row click queues the track through this server's
-                     federation stream proxy; the link-out icon opens the
-                     MusicBrainz recording page when known. The
-                     newArtistsOnly toggle is shared with the network section;
-                     it renders here only when that section is hidden. -->
-                <div v-if="discover.fed.available && !discover.fed.disabled" class="discover-network discover-peers">
-                  <div class="discover-artists-label discover-network-header">
-                    <span data-i18n="discover.peers.label">From your peers</span>
-                    <span v-if="!discover.p2p.available || discover.p2p.disabled" class="discover-network-toggle pointer" v-bind:class="{ 'discover-network-toggle-on': discover.p2p.newArtistsOnly }"
+                     a row opens its window, the add icon queues the track
+                     through this server's federation stream proxy; the
+                     link-out icon opens the MusicBrainz recording page when
+                     known. The newArtistsOnly toggle is one knob shared with
+                     the network view. -->
+                <div v-else-if="discoverSource() === 'peers'" class="discover-view discover-network discover-peers">
+                  <div class="discover-listbar">
+                    <span>{{ discoverPeersLine() }}</span>
+                    <span class="grow"></span>
+                    <span class="discover-network-toggle pointer" v-bind:class="{ 'discover-network-toggle-on': discover.p2p.newArtistsOnly }"
                           v-on:click="toggleDiscoverNewArtists" data-i18n="discover.network.newArtistsOnly"
                           title="Only show artists your library doesn't have">new artists only</span>
                   </div>
@@ -1029,11 +1055,11 @@
                   <div v-else-if="discover.fed.searchedPeers > 0" class="discover-hint" data-i18n="discover.peers.nothingNew">
                     Nothing new for this song on your peers&rsquo; servers.
                   </div>
-                </div>
-                <div v-if="discover.tracks.length" class="discover-footer">
-                  <span class="discover-queue-all pointer" v-on:click="queueAllDiscover" data-i18n="discover.queueAll">+ Queue all</span>
-                  <span class="grow"></span>
-                  <span class="discover-powered" data-i18n="discover.poweredBy">matched by sound</span>
+                  <div v-if="discover.fed.tracks.length" class="discover-footer">
+                    <span class="discover-queue-all pointer" v-on:click="queueAllDiscoverFed" data-i18n="discover.queueAll">+ Queue all</span>
+                    <span class="grow"></span>
+                    <span class="discover-powered">{{ tt('discover.rowOpens') }}</span>
+                  </div>
                 </div>
               </template>
             </div>
@@ -1041,13 +1067,14 @@
                  running and failed. A job outlives the window
                  that started it, so the strip sits under the leads it came
                  from, shows only while there are any, and stays put when the
-                 panel body is folded. A row opens the window its job came
-                 from; what landed is on the Downloads panel (m.js). -->
+                 panel body is folded. Folded, its one line names the running
+                 job and how it is doing; open, a row opens the window its
+                 job came from. What landed is on the Downloads panel (m.js). -->
             <div v-if="discover.plugins.available && dtRows().length" class="discover-tray">
               <div class="discover-tray-h pointer" v-on:click="toggleDiscoverTray">
                 <dm-icon name="download" :size="12"></dm-icon>
-                <span>{{ tt('discover.tray.title') }}</span>
-                <span class="discover-tray-count">{{ dtSummary() }}</span>
+                <span v-if="!discover.tray.collapsed">{{ tt('discover.tray.title') }}</span>
+                <span class="discover-tray-count" :title="dtSummary()">{{ discover.tray.collapsed ? dtStripLine() : dtSummary() }}</span>
                 <span class="grow"></span>
                 <svg class="discover-chevron" v-bind:class="{ 'discover-chevron-open': !discover.tray.collapsed }" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="currentColor" d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
               </div>

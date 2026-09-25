@@ -151,6 +151,10 @@ const VUEPLAYERCORE = (() => {
     notAnalyzed: false,
     collapsed: (() => { try { return localStorage.getItem('discoverCollapsed') !== 'false'; } catch (_) { return true; } })(),
     seedTitle: '',
+    // Which source the panel shows — 'library' | 'network' | 'peers' — one
+    // at a time (docs/designs/discover-panel, alternate A). Remembered;
+    // discoverSource() falls back to the library when the choice is gone.
+    source: (() => { try { const v = localStorage.getItem('discoverSource'); return ['library', 'network', 'peers'].indexOf(v) !== -1 ? v : 'library'; } catch (_) { return 'library'; } })(),
     tracks: [],
     artists: [],
     // "From the network" (discovery P2P): similar tracks on OTHER servers'
@@ -200,7 +204,9 @@ const VUEPLAYERCORE = (() => {
     // landed is listed by the Downloads panel (m.js).
     tray: {
       jobs: [],
-      collapsed: (() => { try { return localStorage.getItem('discoverTrayCollapsed') === 'true'; } catch (_) { return false; } })(),
+      // Folded to one line unless the user opened it: the line says what
+      // is running and how it is doing.
+      collapsed: (() => { try { return localStorage.getItem('discoverTrayCollapsed') !== 'false'; } catch (_) { return true; } })(),
     },
     // Whether this user is an admin (/api/'s `user.admin`): the
     // recommendation modal shows its "Invite <peer> to federate" row to
@@ -1726,6 +1732,17 @@ const VUEPLAYERCORE = (() => {
       dtClearable: function () {
         return DISCOVERJOBS.traySummary(this.discover.tray.jobs).clearable;
       },
+      // The folded strip's one line: the running job and how it is doing,
+      // then how many failed; the plain summary when nothing runs.
+      dtStripLine: function () {
+        const rows = this.dtRows();
+        const live = rows.find((r) => r.row.live);
+        const failed = rows.filter((r) => r.row.state === 'failed' || r.row.state === 'stopped').length;
+        const bits = [];
+        if (live) { bits.push([live.title, this.dmText(live.row.sub)].filter(Boolean).join(' · ')); }
+        if (failed) { bits.push(this.tt('discover.tray.failed', { count: failed })); }
+        return bits.length ? bits.join(' · ') : this.dtSummary();
+      },
       // "All downloads": the Downloads panel (m.js) — everything that landed.
       openDiscoverDownloads: function () {
         if (typeof changeView !== 'function' || typeof discoverDownloadsPanel !== 'function') { return; }
@@ -1785,6 +1802,42 @@ const VUEPLAYERCORE = (() => {
         try { localStorage.setItem('discoverCollapsed', String(this.discover.collapsed)); } catch (_) { /* private mode */ }
         // Opening with stale (or no) content → fetch for the current song.
         if (!this.discover.collapsed && discoverDirty) { this.refreshDiscover(); }
+      },
+      // ── One source at a time ────────────────────────────────────────
+      // The sources this server has, in the switch's order, each with its
+      // count for the seed. `label` is an i18n key.
+      discoverSources: function () {
+        const d = this.discover;
+        const out = [{ key: 'library', label: 'discover.source.library', count: d.tracks.length }];
+        if (d.p2p.available && !d.p2p.disabled) { out.push({ key: 'network', label: 'discover.source.network', count: d.p2p.tracks.length }); }
+        if (d.fed.available && !d.fed.disabled) { out.push({ key: 'peers', label: 'discover.source.peers', count: d.fed.tracks.length }); }
+        return out;
+      },
+      // The chosen source — the library when the choice is gone (a feature
+      // switched off since it was remembered).
+      discoverSource: function () {
+        const want = this.discover.source;
+        return this.discoverSources().some((s) => s.key === want) ? want : 'library';
+      },
+      setDiscoverSource: function (key) {
+        this.discover.source = key;
+        try { localStorage.setItem('discoverSource', key); } catch (_) { /* private mode */ }
+      },
+      // The line above a remote list: who answered.
+      discoverNetworkLine: function () {
+        const n = this.discover.p2p.searchedPeers;
+        if (this.discover.loading || n === null) { return this.tt('discover.modal.lookingUp'); }
+        return n === 1 ? this.tt('discover.network.searchedOne') : this.tt('discover.network.searched', { count: n });
+      },
+      discoverPeersLine: function () {
+        const f = this.discover.fed;
+        if (this.discover.loading || f.searchedPeers === null) { return this.tt('discover.modal.lookingUp'); }
+        const bits = [f.searchedPeers === 1 ? this.tt('discover.peers.answeredOne') : this.tt('discover.peers.answered', { count: f.searchedPeers })];
+        if (f.unreachable > 0) { bits.push(this.tt('discover.peers.unreachableCount', { count: f.unreachable })); }
+        return bits.join(' · ');
+      },
+      queueAllDiscoverFed: function () {
+        for (const ft of this.discover.fed.tracks) { this.queueDiscoverFed(ft); }
       },
       queueDiscoverTrack: function (t) {
         mstreamModule.addSongWizard(t.filepath, t.metadata || {}, false, undefined, false, true);

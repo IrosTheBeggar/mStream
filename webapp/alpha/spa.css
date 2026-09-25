@@ -2203,24 +2203,55 @@ select {
 }
 .discover-artist-play { color: #657ee4; }
 .discover-artist-play:hover { color: #8ea0f0; }
-/* "From the network" — same row anatomy as local results, but visually
-   marked as leads (teal match bar + peer name where genre tags would be)
-   since these tracks aren't in the library and can't be queued. */
-.discover-network {
-  /* Deterministically bounded: at most ~3 lead rows visible (the inner
-     list scrolls for the rest), so it can never starve the local song
-     list of panel height — local results are playable, these are leads. */
+/* One source at a time (docs/designs/discover-panel, alternate A): the
+   switch under the header names each source with its colour and count;
+   the chosen source's view takes the whole slot. */
+.discover-seg {
+  display: flex;
+  gap: 3px;
+  margin: 0 14px 6px 14px;
+  padding: 3px;
+  background: #1a1e25;
+  border-radius: 6px;
   flex-shrink: 0;
-  border-top: 1px solid #21252d;
-  margin-top: 4px;
 }
-.discover-network .discover-rows { min-height: 0; max-height: 116px; }
-.discover-network-header {
+.discover-seg > a {
+  flex: 1;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 6px 14px 2px 14px;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #8a919e;
+  white-space: nowrap;
 }
+.discover-seg > a:hover { color: #dfe3ea; }
+.discover-seg > a > i { width: 7px; height: 7px; border-radius: 50%; background: #657ee4; flex-shrink: 0; }
+.discover-seg > a.discover-seg-network > i { background: #4fb8a8; }
+.discover-seg > a.discover-seg-peers > i { background: #d9a441; }
+.discover-seg > a > small { font-weight: 400; font-size: 10.5px; color: #6f7683; }
+.discover-seg > a.discover-seg-on { background: #262b33; color: #dfe3ea; box-shadow: inset 0 0 0 1px #444c56; }
+.discover-seg > a.discover-seg-on > small { color: #8a919e; }
+/* The similar-artists strip above the library list: no divider. */
+.discover-artists-top { border-top: 0; margin-top: 0; padding-top: 0; }
+/* A remote source's view: a line for who answered and the toggle, the
+   list, the footer — laid out like the library's so the list scrolls. */
+.discover-view { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+.discover-listbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px 4px 14px;
+  font-size: 11px;
+  color: #6f7683;
+  flex-shrink: 0;
+}
+/* "The network" — same row anatomy as local results, but visually marked
+   as leads (teal match bar + peer name where genre tags would be) since
+   these tracks aren't in the library and can't be queued. */
 .discover-network-toggle {
   font-size: 10px;
   letter-spacing: 0.5px;
@@ -2240,6 +2271,10 @@ select {
 .discover-match-fill-p2p { background: #4fb8a8; }
 .discover-mb-link { color: #6f7683; }
 .discover-mb-link:hover { color: #4fb8a8; }
+/* No hover on a touch screen: the add icons stay visible. */
+@media (hover: none) {
+  .discover-add { opacity: 1; }
+}
 /* ── Recommendation modal (docs/designs/discover-modal) ────────────────
    One window for a network or peer row. Same palette as the panel; the
    source colour (--src) follows the row: teal = network, amber = peer.
@@ -2458,7 +2493,7 @@ select {
   letter-spacing: 1.2px; text-transform: uppercase; color: #6f7683;
 }
 .discover-tray-h > svg { flex-shrink: 0; }
-.discover-tray-count { font-weight: 600; letter-spacing: 0; text-transform: none; color: #8a919e; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.discover-tray-count { font-weight: 600; letter-spacing: 0; text-transform: none; color: #8a919e; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .discover-job { display: flex; align-items: center; gap: 10px; padding: 4px 14px 4px 12px; }
 .discover-job:hover { background: #1e222a; }
 .discover-job-ic {
