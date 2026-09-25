@@ -7627,7 +7627,7 @@ paths:
     post:
       tags: [Federation]
       summary: Edit a key's bandwidth limits and expiry (live)
-      description: Applies from the key's next request; an already-open stream keeps the rate it started with. 0 = unlimited on any bandwidth field. `allowCopies` (absent = unchanged) switches copies by the other server's discovery plug-in on or off — a request that says `X-mStream-Purpose: copy` gets a 403 on the file while it is off; playback is untouched. `expiresAt` is tri-state — absent = unchanged, null = never, a future ISO date sets (or renews) the cutoff.
+      description: "Applies from the key's next request; an already-open stream keeps the rate it started with. 0 = unlimited on any bandwidth field. `allowCopies` (absent = unchanged) switches copies by the other server's discovery plug-in on or off — a request that says `X-mStream-Purpose: copy` gets a 403 on the file while it is off; playback is untouched. `expiresAt` is tri-state — absent = unchanged, null = never, a future ISO date sets (or renews) the cutoff."
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       requestBody:
