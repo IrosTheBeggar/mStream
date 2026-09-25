@@ -151,6 +151,17 @@ export function saveDestination(user, value) {
   settingsDb.setUserSetting(id, NAMESPACE, KEY, { vpath: value.vpath, base: value.base || '', layout: value.layout });
 }
 
+// Only audio goes into a library: a plug-in files nothing whose extension
+// the server does not list under supportedAudioFiles (a peer's listing, or
+// a download, may name anything — an .html in a library is served from
+// this origin as a page). `supported` is the config map unless a test
+// passes its own.
+export function isSupportedAudioFile(fileName, supported) {
+  const map = supported || (config.program && config.program.supportedAudioFiles) || {};
+  const ext = String(fileName || '').split('/').pop().split('.').slice(1).pop();
+  return !!ext && map[ext.toLowerCase()] === true;
+}
+
 // A file name kept — minus anything a path must not carry.
 export function safeFileName(filePath) {
   const base = String(filePath || '').split('/').filter(Boolean).pop() || '';

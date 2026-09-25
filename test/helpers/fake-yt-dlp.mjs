@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const args = process.argv.slice(2);
-const VALUED = new Set(['-o', '-f', '--audio-format', '--ffmpeg-location', '--max-filesize', '--print', '--convert-thumbnails']);
+const VALUED = new Set(['-o', '-f', '--audio-format', '--ffmpeg-location', '--max-filesize', '--print', '--convert-thumbnails', '--match-filters']);
 const has = (flag) => args.includes(flag);
 const valueOf = (flag) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : null);
 const positional = args.filter((a, i) => !a.startsWith('-') && !VALUED.has(args[i - 1]));
@@ -79,6 +79,12 @@ if (has('-x')) {
     if (thumb) {
       fs.mkdirSync(path.dirname(thumb), { recursive: true });
       fs.writeFileSync(thumb, 'a thumbnail');
+    }
+    // `partBytes`: a fragment file of that size lands first, as a
+    // fragmented fetch's do — for the size cap mStream enforces itself.
+    if (dl.partBytes) {
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+      fs.writeFileSync(`${out}.part-Frag1`, Buffer.alloc(Number(dl.partBytes)));
     }
     for (const p of [12.5, 43.2, 78.9, 100]) {
       process.stdout.write(`[download]  ${p}% of    5.10MiB at    1.20MiB/s ETA 00:03\n`);

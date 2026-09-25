@@ -11,9 +11,12 @@
 
 import Joi from 'joi';
 import * as destination from '../discovery-plugins/destination.js';
+import { refuseJukebox } from './discovery-plugin-jobs.js';
 import { joiValidate } from '../util/validation.js';
 
 export function setup(mstream) {
+  mstream.use('/api/v1/discovery/collection', refuseJukebox);
+
   mstream.get('/api/v1/discovery/collection/destination', (req, res) => {
     res.json(destination.describeDestination(req.user));
   });

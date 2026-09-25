@@ -15,9 +15,16 @@ import WebError from '../util/web-error.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import * as ytdlp from '../util/yt-dlp.js';
 import * as ytDlpBootstrap from '../util/yt-dlp-bootstrap.js';
+import * as staging from '../discovery-plugins/staging.js';
 import fs from 'fs/promises';
+import path from 'node:path';
 
 const downloadTracker = new Map();
+
+// A pasted URL is one song: the size cap and the wall clock the route
+// hands yt-dlp (src/util/yt-dlp.js enforces both, whatever yt-dlp fetches).
+const MAX_FILESIZE_MB = 500;
+const MAX_SECONDS = 60 * 60;
 
 const youtubeUrlSchema = Joi.string().uri({ scheme: ['http', 'https'] }).required().custom((value) => {
   const parsed = new URL(value);
@@ -94,8 +101,16 @@ export function setup(mstream) {
     const expectedExt = ytdlp.outputExtension(codec);
     const userMeta = value.metadata || {};
     const requester = req.user ? req.user.id : null;   // the request is gone by the time the file lands
+    // Into a staging folder of its own, never straight into the library
+    // folder: what yt-dlp writes on the way (a thumbnail, fragments, a
+    // .part) would be taken for songs and art, and a "<title>.<ext>" already
+    // there would be adopted as this download — under --no-overwrites yt-dlp
+    // skips the fetch and prints the existing file's path, which the route
+    // then re-tagged, re-inserted and recorded as the caller's. The finished
+    // file moves into the folder the caller named, never over an existing one.
+    const dir = await staging.scratchStagingDir('ytdl');
     const handle = ytdlp.startDownload({
-      bin, url: value.url, dir: pathInfo.fullPath, codec, ffmpegPath,
+      bin, url: value.url, dir, codec, ffmpegPath, maxFilesizeMb: MAX_FILESIZE_MB, maxSeconds: MAX_SECONDS,
       onLog: (line) => winston.info(`yt-dlp output: ${line}`),
     });
     const entry = {
@@ -108,15 +123,20 @@ export function setup(mstream) {
     };
     downloadTracker.set(handle.pid, entry);
 
-    handle.done.then(async ({ filePath, warning }) => {
-      if (warning) { winston.warn(`yt-dlp exited unhappily but left a file (${warning}) — carrying on with ${filePath}`); }
+    handle.done.then(async ({ filePath: staged, warning }) => {
+      if (warning) { winston.warn(`yt-dlp exited unhappily but left a file (${warning}) — carrying on with ${staged}`); }
       if (ytdlp.FFMPEG_THUMBNAIL_CODECS.includes(codec)) {
         const info = await ytdlp.lookupMetadata(value.url, { bin }).catch(() => ({}));
-        await ytdlp.embedThumbnailIfMissing(filePath, { codec, thumbnailUrl: info.thumbnail, ffmpegPath });
+        await ytdlp.embedThumbnailIfMissing(staged, { codec, thumbnailUrl: info.thumbnail, ffmpegPath });
       }
       // User-submitted metadata + the MSTREAM_SOURCE provenance marker,
       // then the row the way a scan would write it. V36: source = 'ytdl'.
-      await ytdlp.writeTags(filePath, { codec, meta: userMeta, source: 'ytdl', ffmpegPath });
+      await ytdlp.writeTags(staged, { codec, meta: userMeta, source: 'ytdl', ffmpegPath });
+      const filePath = path.join(pathInfo.fullPath, path.basename(staged));
+      if (await fs.stat(filePath).then(() => true, () => false)) {
+        throw new Error(`a file named ${path.basename(staged)} already exists in ${value.directory} — nothing was replaced`);
+      }
+      await staging.moveIntoPlace(staged, filePath);
       const inserted = await insertDownloadedTrack({
         filePath,
         vpath: pathInfo.vpath,
@@ -140,7 +160,7 @@ export function setup(mstream) {
       winston.error(`yt-dlp: failed to download ${value.url}: ${err && err.message ? err.message : err}`, { stack: err });
       entry.status = 'error';
       forget(handle.pid);
-    });
+    }).finally(() => staging.discardStaging(dir));
 
     res.json({ message: 'Download started' });
   });

@@ -45,6 +45,8 @@ const SEARCH = {
     { id: 'lyric', url: yt('lyric'), title: 'Nova - Remote Hit (Lyric Video)', duration: 2, channel: 'LyricsHub', uploader: 'LyricsHub' },
     { id: 'topic', url: yt('topic'), title: 'Remote Hit', duration: 2, channel: 'Nova - Topic', uploader: 'Nova - Topic', artist: 'Nova', album: 'Night Ferry', webpage_url: yt('topic') },
     { id: 'live', url: yt('live'), title: 'Nova - Remote Hit (Live at the Pier)', duration: 4, channel: 'Nova' },
+    // A stream that is on air right now, titled like the song: never a candidate.
+    { id: 'stream', url: yt('stream'), title: 'Remote Hit', duration: 2, channel: 'Nova - Topic', uploader: 'Nova - Topic', is_live: true, live_status: 'is_live', webpage_url: yt('stream') },
   ],
   'ghost song': [],
   'vanished': [
@@ -224,6 +226,18 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
     assert.equal(lookup.owned.by, 'tags');
   });
 
+  test('a live stream is never a candidate, and is refused as a choice', async () => {
+    const r = await api(server, 'POST', RESOLVE, { recommendation: REC });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.ok(!r.body.result.lookup.candidates.some((c) => c.id === 'stream'), 'the stream titled like the song is not offered');
+    const started = await api(server, 'POST', JOBS, { recommendation: { ...REC, title: 'Remote Hit', album: 'On Air' }, choice: { url: yt('stream') } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const job = await untilFinished(started.body.job.id);
+    assert.equal(job.state, 'failed');
+    assert.match(job.error, /live stream, not a song/);
+    assert.deepEqual(staged(), [], 'nothing was fetched');
+  });
+
   test('a job started with a chosen upload fetches that one: the pick stands even where the scorer would pass it over', async () => {
     const rec = { ...REC, title: 'Harbour Days' };
     const keepFixture = fs.readFileSync(fixturePath);   // other audio for this one: the hash check must not call it owned
@@ -306,15 +320,21 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
     assert.deepEqual(staged(), []);
   });
 
-  test('uploads off for the server: the job fails with the reason before anything is fetched', async () => {
+  test('uploads off for the server: the job is refused at the door, and so is the lookup', async () => {
     assert.equal((await api(server, 'POST', '/api/v1/admin/config/noupload', { noUpload: true })).status, 200);
     try {
       const before = collectionFiles();
-      const job = await runJob({ ...REC, album: 'Late Sessions', year: 2015 });
-      assert.equal(job.state, 'failed');
-      assert.match(job.error, /uploads are disabled for this account, and a download is an upload/);
+      // A download is an upload: the request is refused before a job exists
+      // (the run re-checks the account too, for rights that change later).
+      const started = await api(server, 'POST', JOBS, { recommendation: { ...REC, album: 'Late Sessions', year: 2015 } });
+      assert.equal(started.status, 403, JSON.stringify(started.body));
+      assert.match(started.body.error, /Uploading Disabled/);
       assert.deepEqual(collectionFiles(), before);
       assert.deepEqual(staged(), []);
+      // The lookup stands behind the same gate: a search on this server's
+      // behalf is not for a caller whose download would be refused.
+      const lookup = await api(server, 'POST', RESOLVE, { recommendation: REC });
+      assert.equal(lookup.status, 403, JSON.stringify(lookup.body));
     } finally {
       assert.equal((await api(server, 'POST', '/api/v1/admin/config/noupload', { noUpload: false })).status, 200);
     }

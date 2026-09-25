@@ -70,6 +70,9 @@ function killTree(proc) {
   }
 }
 
+const OUTPUT_KEEP_MAX = 4 * 1024 * 1024;
+const OUTPUT_KEEP_TAIL = 2 * 1024 * 1024;
+
 // Spawn yt-dlp. Resolves { code, stdout, stderr }; line callbacks fire as
 // output arrives; an AbortSignal kills the process tree.
 export function spawnYtDlp(bin, args, { signal, onStdoutLine, onStderrLine } = {}) {
@@ -93,14 +96,22 @@ export function spawnYtDlp(bin, args, { signal, onStdoutLine, onStderrLine } = {
       }
       return buf;
     };
+    // What is kept of the output is bounded: a run that goes on for hours
+    // (a stream, a stalled fetch) must not grow a string without end. The
+    // tail is what every reader wants (the printed path, the last error,
+    // the last JSON line).
+    const keep = (buf, chunk) => {
+      const next = buf + chunk;
+      return next.length > OUTPUT_KEEP_MAX ? next.slice(-OUTPUT_KEEP_TAIL) : next;
+    };
     proc.stdout.on('data', (d) => {
       const s = d.toString();
-      stdout += s;
+      stdout = keep(stdout, s);
       if (onStdoutLine) { outBuf = lines(outBuf, s, onStdoutLine); }
     });
     proc.stderr.on('data', (d) => {
       const s = d.toString();
-      stderr += s;
+      stderr = keep(stderr, s);
       if (onStderrLine) { errBuf = lines(errBuf, s, onStderrLine); }
     });
     proc.on('error', reject);
@@ -159,6 +170,10 @@ export function entryToRecord(json) {
     url: j.webpage_url || j.url || (j.id ? `https://www.youtube.com/watch?v=${j.id}` : null),
     title: j.title || null,
     durationSec: Number.isFinite(duration) && duration > 0 ? duration : null,
+    // Live, upcoming or just-ended streams are not songs (the plug-in
+    // refuses them): a full dump says live_status, a flat entry sometimes.
+    isLive: j.is_live === true || j.live_status === 'is_live',
+    liveStatus: typeof j.live_status === 'string' ? j.live_status : null,
     channel: j.channel || j.uploader || null,
     uploader: j.uploader || null,
     artist: j.artist || j.creator || null,
@@ -228,6 +243,9 @@ export function downloadArgs({ url, dir, codec = 'mp3', ffmpegPath = null, maxFi
     '--audio-format', AUDIO_FORMAT_MAP[codec] || codec,
     '--embed-metadata', '--newline', '--progress',
     '--print', 'after_move:filepath',
+    // A live stream is fetched through ffmpeg, where --max-filesize does
+    // not apply: yt-dlp itself refuses one (the callers check first).
+    '--match-filters', '!is_live',
   ];
   // --ffmpeg-location takes a filesystem path, NOT a PATH-resolved command
   // name: only pass it for the on-disk binary we manage.
@@ -276,15 +294,56 @@ async function newOutput(dir, ext, before) {
   return best ? best.full : null;
 }
 
+// Everything in a folder, in bytes (the staging folder of one download:
+// fragments, the .part, the thumbnail).
+async function dirBytes(dir) {
+  let names;
+  try { names = await fs.readdir(dir); } catch (_e) { return 0; }
+  let total = 0;
+  for (const name of names) {
+    try { total += (await fs.stat(path.join(dir, name))).size; } catch (_e) { /* went away */ }
+  }
+  return total;
+}
+
+const SIZE_POLL_MS = 2000;
+// yt-dlp's cap is on the media it downloads; the folder also holds a
+// fragment being written and the thumbnail. Tenth-over is the rule.
+const SIZE_HEADROOM = 1.1;
+
 // Start a download. { pid, done: Promise<{ filePath, stdout, stderr,
 // warning? }>, abort() }. Progress fractions arrive through onProgress; the
 // rest of yt-dlp's chatter through onLog. Abort kills the tree and rejects
 // with { cancelled: true }.
-export function startDownload({ bin, url, dir, codec = 'mp3', ffmpegPath, maxFilesizeMb, onProgress, onLog } = {}) {
+//
+// `maxFilesizeMb` is handed to yt-dlp AND enforced here: yt-dlp applies its
+// cap in its own HTTP downloader only, not to a fragmented (HLS/DASH) or
+// live fetch through ffmpeg, so the folder is measured while the download
+// runs and the tree is killed past the cap. `maxSeconds` is a wall clock
+// for the whole run. Either ends the run with a plain error (not a cancel).
+export function startDownload({ bin, url, dir, codec = 'mp3', ffmpegPath, maxFilesizeMb, maxSeconds, onProgress, onLog } = {}) {
   const before = snapshotDir(dir);
   const abort = new AbortController();
   let printed = null;
-  const { proc, done } = spawnYtDlp(bin, downloadArgs({ url, dir, codec, ffmpegPath, maxFilesizeMb }), {
+  let stoppedFor = null;
+  const capBytes = Number.isFinite(maxFilesizeMb) && maxFilesizeMb > 0 ? maxFilesizeMb * 1024 * 1024 * SIZE_HEADROOM : 0;
+  let measuring = false;
+  const sizeTimer = capBytes ? setInterval(async () => {
+    if (measuring || stoppedFor) { return; }
+    measuring = true;
+    try {
+      if (await dirBytes(dir) > capBytes) {
+        stoppedFor = `the download passed the ${Math.round(maxFilesizeMb)} MB size cap and was stopped`;
+        abort.abort();
+      }
+    } finally { measuring = false; }
+  }, SIZE_POLL_MS) : null;
+  const clock = Number.isFinite(maxSeconds) && maxSeconds > 0 ? setTimeout(() => {
+    if (!stoppedFor) { stoppedFor = `the download took longer than ${Math.round(maxSeconds / 60)} minutes and was stopped`; }
+    abort.abort();
+  }, maxSeconds * 1000) : null;
+  const cleanup = () => { if (sizeTimer) { clearInterval(sizeTimer); } if (clock) { clearTimeout(clock); } };
+  const { proc, done: spawned } = spawnYtDlp(bin, downloadArgs({ url, dir, codec, ffmpegPath, maxFilesizeMb }), {
     signal: abort.signal,
     onStdoutLine: (line) => {
       const frac = parseProgressLine(line);
@@ -297,10 +356,23 @@ export function startDownload({ bin, url, dir, codec = 'mp3', ffmpegPath, maxFil
     },
     onStderrLine: (line) => { if (onLog) { onLog(line); } },
   });
+  const done = spawned.finally(cleanup);
   const result = done.then(async ({ code, stdout, stderr }) => {
-    if (abort.signal.aborted) { throw Object.assign(new Error('cancelled'), { cancelled: true }); }
+    if (abort.signal.aborted) {
+      if (stoppedFor) { throw Object.assign(new Error(stoppedFor), { stopped: true }); }
+      throw Object.assign(new Error('cancelled'), { cancelled: true });
+    }
+    const seen = await before;
     let filePath = printed ? await fs.stat(printed).then((s) => (s.isFile() ? printed : null), () => null) : null;
-    if (!filePath) { filePath = await newOutput(dir, outputExtension(codec), await before); }
+    // A printed path that names a file which was there BEFORE the run is
+    // not a download: with --no-overwrites yt-dlp skips the fetch when
+    // "<title>.<ext>" already exists, yet still prints that path (and
+    // re-embeds metadata into the file). Adopting it would hand the caller
+    // somebody else's file as their download. The snapshot knows.
+    if (filePath && seen.has(path.basename(filePath))) {
+      throw Object.assign(new Error(`a file with that name already exists in this folder (${path.basename(filePath)})`), { exists: true });
+    }
+    if (!filePath) { filePath = await newOutput(dir, outputExtension(codec), seen); }
     if (code !== 0) {
       // A non-zero exit after the file landed is a post-processing grumble
       // (the old route carried on the same way); without a file it is the

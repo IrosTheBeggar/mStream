@@ -57,7 +57,9 @@ export function start() {
   if (!stopped) { return; }
   stopped = false;
   try {
-    const n = jobsDb.requeueInterrupted();
+    // A soft reboot start()s again in the same process: what is in
+    // `running` is alive and stays out of the re-queue.
+    const n = jobsDb.requeueInterrupted({ exceptIds: [...running.keys()] });
     if (n > 0) { winston.info(`discovery plug-in jobs: re-queued ${n} job(s) interrupted by the last shutdown`); }
   } catch (err) {
     winston.warn(`discovery plug-in jobs: could not re-queue interrupted jobs: ${err.message}`);
@@ -91,12 +93,47 @@ export async function tick() {
       while (running.size < maxConcurrent() && runningFor(plugin.name) < per) {
         const job = jobsDb.claimNextQueued(plugin.name);
         if (!job) { break; }
-        runJob(plugin, job);   // intentionally not awaited — concurrency
+        // Intentionally not awaited — concurrency. runJob settles its own
+        // failures; the catch is the backstop that keeps a rejection here
+        // from ever being unhandled (Node exits the process on one).
+        runJob(plugin, job).catch((err) => winston.warn(`discovery plug-in ${plugin.name}: job ${job.id} runner error: ${err && err.message ? err.message : err}`));
       }
     }
   } finally {
     ticking = false;
   }
+}
+
+// The row's final write. Separate from the run so a write that fails —
+// SQLITE_BUSY past busy_timeout while a scan holds the lock, SQLITE_FULL —
+// is caught by name: the row then stays 'running' and requeueInterrupted()
+// picks it up at the next start(), instead of the rejection escaping an
+// un-awaited promise and taking the server down.
+function settle(plugin, job, { result, error }) {
+  if (error === undefined) {
+    // A cancel is recorded only when the plug-in honoured it — it returned
+    // nothing, or a many-song account that says it stopped for the cancel.
+    // A cancel asked for after the point of no return (the file is being
+    // tagged, moved, added) lands the song; the row must say so, not
+    // "stopped, nothing was saved". What the plug-in returned on its way
+    // out stays with the row either way: an album copy's finished songs
+    // are in the library.
+    const honoured = result == null || (typeof result === 'object' && result.stopped === 'cancelled');
+    if (honoured && jobsDb.isCancelRequested(job.id)) {
+      jobsDb.cancelJob(job.id, result);
+    } else {
+      jobsDb.finishJob(job.id, result);
+    }
+    return;
+  }
+  if (jobsDb.isCancelRequested(job.id)) {
+    jobsDb.cancelJob(job.id);
+    return;
+  }
+  // The plug-in's failure, logged with the cause — a job that keeps
+  // failing is a signal worth reading in the logs.
+  winston.warn(`discovery plug-in ${plugin.name}: job ${job.id} failed: ${error && error.message ? error.message : error}`);
+  jobsDb.failJob(job.id, error);
 }
 
 async function runJob(plugin, job) {
@@ -109,24 +146,18 @@ async function runJob(plugin, job) {
     progress: (fraction, text) => { try { jobsDb.updateProgress(job.id, fraction, text); } catch (_e) { /* best-effort */ } },
     isCancelled: () => { try { return jobsDb.isCancelRequested(job.id); } catch (_e) { return false; } },
   };
+  let outcome;
   try {
     const result = await plugin.run(ctx);
-    if (jobsDb.isCancelRequested(job.id)) {
-      // What the plug-in returned on its way out stays with the row — an
-      // album copy's finished songs are in the library either way.
-      jobsDb.cancelJob(job.id, result === undefined ? null : result);
-    } else {
-      jobsDb.finishJob(job.id, result === undefined ? null : result);
-    }
+    outcome = { result: result === undefined ? null : result };
   } catch (err) {
-    if (jobsDb.isCancelRequested(job.id)) {
-      jobsDb.cancelJob(job.id);
-    } else {
-      // The plug-in's failure, logged with the cause — a job that keeps
-      // failing is a signal worth reading in the logs.
-      winston.warn(`discovery plug-in ${plugin.name}: job ${job.id} failed: ${err && err.message ? err.message : err}`);
-      jobsDb.failJob(job.id, err);
-    }
+    outcome = { error: err };
+  }
+  try {
+    settle(plugin, job, outcome);
+  } catch (err) {
+    winston.warn(`discovery plug-in ${plugin.name}: job ${job.id} could not be settled (${err && err.message ? err.message : err});`
+      + ' the row stays running and is re-queued at the next start');
   } finally {
     running.delete(job.id);
     if (!stopped) { schedule(0); }   // a slot freed up — look for more work now

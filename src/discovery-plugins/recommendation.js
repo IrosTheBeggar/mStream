@@ -67,11 +67,20 @@ export function normalizeRecommendation(input) {
 
 // Identity for persistence + dedupe. MBID-first: two rips of one recording
 // share it. The text fallback uses the novelty chain's norm() so it agrees
-// with "this library already has that song" everywhere else.
+// with "this library already has that song" everywhere else — norm() keeps
+// letters of every script, so a Cyrillic or CJK song has a key of its own.
+// A recommendation whose fields normalise to nothing at all (symbols only)
+// falls back to the raw text rather than sharing one empty key.
+function textKey(...parts) {
+  const normed = parts.map(norm);
+  if (normed.some(Boolean)) { return normed.join('|'); }
+  return parts.map((p) => String(p || '').trim().toLowerCase()).join('|');
+}
+
 export function recommendationKey(rec) {
   if (rec.recordingMbid) { return `mbid:${String(rec.recordingMbid).toLowerCase()}`; }
   const digest = crypto.createHash('sha1')
-    .update(`${norm(rec.artist)}|${norm(rec.title)}|${norm(rec.album)}`)
+    .update(textKey(rec.artist, rec.title, rec.album))
     .digest('hex');
   return `text:${digest.slice(0, 32)}`;
 }
@@ -112,7 +121,7 @@ export function scopeMissing(rec, scope) {
 // same song are two live jobs, never one deduped against the other.
 export function jobKey(rec, scope = JOB_SCOPES.SONG) {
   if (!scope || scope === JOB_SCOPES.SONG) { return recommendationKey(rec); }
-  const digest = (parts) => crypto.createHash('sha1').update(parts.map(norm).join('|')).digest('hex').slice(0, 32);
+  const digest = (parts) => crypto.createHash('sha1').update(textKey(...parts)).digest('hex').slice(0, 32);
   if (scope === JOB_SCOPES.ALBUM) { return `album:${digest([rec.artist, rec.album])}`; }
   return `${scope}:${digest([rec.artist])}`;
 }

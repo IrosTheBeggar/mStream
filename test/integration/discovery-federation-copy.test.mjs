@@ -367,11 +367,11 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
       assert.equal(view.status, 200);
       assert.equal(view.body.destination, null);
       assert.deepEqual(view.body.libraries, []);
+      // A copy is an upload: refused at the request, before a job exists
+      // (the run re-checks the account too, for rights that change later).
       const started = await api(srvB, 'POST', JOBS, { recommendation: rec('Third_Song.mp3') });
-      assert.equal(started.status, 202);
-      const job = await untilFinished(started.body.job.id);
-      assert.equal(job.state, 'failed');
-      assert.match(job.error, /uploads are disabled/);
+      assert.equal(started.status, 403, JSON.stringify(started.body));
+      assert.match(started.body.error, /Uploading Disabled/);
     } finally {
       assert.equal((await api(srvB, 'POST', '/api/v1/admin/config/noupload', { noUpload: false })).status, 200);
     }

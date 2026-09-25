@@ -13,9 +13,20 @@ describe('norm', () => {
   test('case, punctuation, and whitespace collide; null-ish → empty', () => {
     assert.equal(norm('The  Beatles!'), 'thebeatles');
     assert.equal(norm('the beatles'), 'thebeatles');
-    assert.equal(norm('Röyksopp'), 'ryksopp', 'non-ascii letters are stripped, consistently for both sides');
+    assert.equal(norm('Röyksopp'), 'royksopp', 'accents fold, consistently for both sides');
+    assert.equal(norm('Royksopp'), 'royksopp');
     assert.equal(norm(null), '');
     assert.equal(norm(undefined), '');
+  });
+
+  test('every script keeps its letters: two non-Latin names are two identities, not one empty one', () => {
+    assert.equal(norm('Кино'), 'кино');
+    assert.equal(norm('Группа крови'), 'группакрови');
+    assert.notEqual(norm('Кино'), norm('Сплин'));
+    assert.equal(norm('宇多田ヒカル'), '宇多田ヒカル');
+    assert.notEqual(norm('宇多田ヒカル'), norm('BTS 봄날'));
+    assert.equal(norm('ＡＢＣ　１２３'), 'abc123', 'compatibility forms fold to their plain letters');
+    assert.equal(norm('!!! ... ???'), '', 'symbols alone are still nothing');
   });
 });
 

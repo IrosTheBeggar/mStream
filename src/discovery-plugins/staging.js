@@ -33,6 +33,17 @@ export async function jobStagingDir(jobId) {
   return dir;
 }
 
+// A fresh folder for a download that is not a job (the Youtube DL route),
+// under the same root and the same `job-` prefix, so the retention pass
+// clears one a crash left behind exactly as it clears a job's. The name is
+// unique per call.
+export async function scratchStagingDir(label) {
+  const root = stagingRoot();
+  if (!root) { throw new Error('discoveryJobs.stagingDir is not configured'); }
+  await fs.mkdir(root, { recursive: true });
+  return fs.mkdtemp(path.join(root, `${PREFIX}${label}-`));
+}
+
 export async function discardStaging(dir) {
   if (!dir) { return; }
   await fs.rm(dir, { recursive: true, force: true })

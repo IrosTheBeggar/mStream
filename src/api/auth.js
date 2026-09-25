@@ -180,6 +180,10 @@ function verifyToken(token, req) {
 
 // A jukebox session's restricted user: real user's libraries, no writes,
 // never admin. Verifies the token belongs to an ACTIVE jukebox session.
+// `jukebox: true` marks it for the routes that act on the account itself
+// (the Discover plug-ins, whose jobs write files and whose removals delete
+// them) — those refuse a remote-control guest outright, whatever the
+// owner's own rights are.
 function buildJukeboxUser(decoded, token) {
   if (!isActiveJukeboxToken(token)) {
     throw new WebError('Jukebox session expired', 401);
@@ -192,10 +196,12 @@ function buildJukeboxUser(decoded, token) {
     ...user,
     vpaths: libraries.map(l => l.name),
     admin: false,
+    jukebox: true,
     allow_upload: 0,
     allow_mkdir: 0,
     allow_file_modify: 0,
-    allow_server_audio: 0
+    allow_server_audio: 0,
+    allow_discovery_jobs: 0
   };
 }
 

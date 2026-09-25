@@ -210,12 +210,24 @@ export function cancelJob(id, result = null) {
 
 // Boot: whatever this process's predecessor left 'running' never finished.
 // Back to the queue, attempts kept (a job that dies every boot is visible).
-export function requeueInterrupted() {
+// `exceptIds` = the jobs THIS process is still running (a soft reboot calls
+// start() again in the same process; their run()s are alive and their
+// rows must not be re-queued under them). A row whose cancel was asked
+// for before the shutdown is cancelled, not run again.
+export function requeueInterrupted({ exceptIds = [] } = {}) {
+  const ids = (Array.isArray(exceptIds) ? exceptIds : []).filter((n) => Number.isInteger(n));
+  const not = ids.length ? ` AND id NOT IN (${ids.map(() => '?').join(',')})` : '';
+  const now = Date.now();
+  d().prepare(`
+    UPDATE discovery_plugin_jobs
+       SET state = 'cancelled', progress = NULL, status_text = NULL, updated_at = ?, finished_at = ?
+     WHERE state = 'running' AND cancel_requested = 1${not}
+  `).run(now, now, ...ids);
   return d().prepare(`
     UPDATE discovery_plugin_jobs
        SET state = 'queued', progress = NULL, status_text = NULL, started_at = NULL, updated_at = ?
-     WHERE state = 'running'
-  `).run(Date.now()).changes;
+     WHERE state = 'running'${not}
+  `).run(now, ...ids).changes;
 }
 
 // Finished rows older than the cut-off are history nobody reads.

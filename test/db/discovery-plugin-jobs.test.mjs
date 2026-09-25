@@ -59,7 +59,7 @@ before(async () => {
   registry.registerPlugin({ name: 'unit-slow', title: 'Slow', capabilities: ['acquire'], scope: 'server', concurrency: 1,
     async run(ctx) {
       for (let i = 0; i < 100; i++) {
-        if (ctx.isCancelled()) { return { stoppedAt: i }; }
+        if (ctx.isCancelled()) { return { stopped: 'cancelled', stoppedAt: i }; }
         ctx.progress(i / 100, `step ${i}`);
         await sleep(20);
       }
@@ -140,9 +140,16 @@ describe('jobs data access', () => {
     jobsDb.createJob({ plugin: 'unit-done', userId: u2, key: 'text:theirs', recommendation: rec('Theirs') });
     assert.deepEqual(jobsDb.listJobs({ userId: u1 }).map((j) => j.id), [mine.id]);
     assert.ok(jobsDb.listJobs({ states: ['queued'] }).length >= 2);
-    jobsDb.claimNextQueued('unit-done');   // one of them is now 'running'
+    const running = jobsDb.claimNextQueued('unit-done');   // one of them is now 'running'
+    assert.equal(jobsDb.requeueInterrupted({ exceptIds: [running.id] }), 0, 'a job this process is still running is left alone');
+    assert.equal(jobsDb.getJob(running.id).state, 'running');
     assert.equal(jobsDb.requeueInterrupted(), 1, 'the running job goes back to the queue on boot');
     assert.equal(jobsDb.listJobs({ states: ['running'] }).length, 0);
+    // A cancel asked for before the shutdown is honoured, not undone.
+    const again = jobsDb.claimNextQueued('unit-done');
+    assert.equal(jobsDb.requestCancel(again.id), 'requested');
+    assert.equal(jobsDb.requeueInterrupted(), 0, 'nothing to re-queue');
+    assert.equal(jobsDb.getJob(again.id).state, 'cancelled', 'the interrupted, cancelled job is cancelled, not run again');
     for (const j of jobsDb.listJobs({ states: ['queued'] })) { jobsDb.requestCancel(j.id); }
     assert.ok(jobsDb.pruneFinished(-1) >= 2, 'a cut-off in the future prunes everything finished');
   });
@@ -216,6 +223,84 @@ describe('job runner', () => {
     await until(() => jobsDb.getJob(s2.id).state === 'cancelled');
     runner.stop();
     assert.equal(runner.isRunning(), false);
+  });
+
+  test('a soft reboot (stop, then start in the same process) leaves the job in flight alone: one run, its result kept', async () => {
+    let runs = 0;
+    let release;
+    config.program.discoveryPlugins['unit-reboot'] = { enabled: true };
+    registry.registerPlugin({ name: 'unit-reboot', title: 'Reboot', capabilities: ['acquire'], scope: 'server',
+      async run() { runs += 1; await new Promise((r) => { release = r; }); return { run: runs }; } });
+    const j = jobsDb.createJob({ plugin: 'unit-reboot', key: 'text:reboot', recommendation: rec('Reboot') }).job;
+    try {
+      runner.start();
+      await until(() => runs === 1);
+      // What server.js does on an admin save that needs a reboot.
+      runner.stop();
+      runner.start();
+      await sleep(150);
+      assert.equal(jobsDb.getJob(j.id).state, 'running', 'not re-queued under its own run');
+      assert.equal(runs, 1, 'not run a second time');
+      release();
+      await until(() => jobsDb.getJob(j.id).state === 'done');
+      assert.deepEqual(jobsDb.getJob(j.id).result, { run: 1 }, 'the first run\'s result is the result');
+      assert.equal(runs, 1);
+    } finally {
+      runner.stop();
+    }
+  });
+
+  test('a cancel the plug-in did not honour (the file landed) is recorded as done, not cancelled', async () => {
+    config.program.discoveryPlugins['unit-landed'] = { enabled: true };
+    let gate;
+    registry.registerPlugin({ name: 'unit-landed', title: 'Landed', capabilities: ['acquire'], scope: 'server',
+      async run() { await new Promise((r) => { gate = r; }); return { downloaded: { filepath: 'lib/x.mp3' } }; } });
+    const j = jobsDb.createJob({ plugin: 'unit-landed', key: 'text:landed', recommendation: rec('Landed') }).job;
+    try {
+      runner.start();
+      await until(() => jobsDb.getJob(j.id).state === 'running' && typeof gate === 'function');
+      assert.equal(jobsDb.requestCancel(j.id), 'requested');   // pressed while tagging: past the point of no return
+      gate();
+      await until(() => ['done', 'cancelled'].includes(jobsDb.getJob(j.id).state));
+      const row = jobsDb.getJob(j.id);
+      assert.equal(row.state, 'done', 'the song is in the library, so the row says so');
+      assert.deepEqual(row.result, { downloaded: { filepath: 'lib/x.mp3' } });
+      assert.equal(row.cancelRequested, true, 'the request itself is on record');
+    } finally {
+      runner.stop();
+    }
+  });
+
+  test('a settle write that fails is caught: no unhandled rejection, the row stays running, the next start re-queues it', async () => {
+    // SQLITE_FULL, or SQLITE_BUSY past busy_timeout while a scan holds the
+    // lock — here the connection is made read-only under the runner's feet.
+    let unhandled = 0;
+    const onUnhandled = () => { unhandled += 1; };
+    process.on('unhandledRejection', onUnhandled);
+    const d = manager.getDB();
+    let runs = 0;
+    config.program.discoveryPlugins['unit-settle'] = { enabled: true };
+    registry.registerPlugin({ name: 'unit-settle', title: 'Settle', capabilities: ['acquire'], scope: 'server',
+      run() { runs += 1; if (runs === 1) { d.exec('PRAGMA query_only = ON'); } return Promise.resolve({ run: runs }); } });
+    const j = jobsDb.createJob({ plugin: 'unit-settle', key: 'text:settle', recommendation: rec('Settle') }).job;
+    try {
+      runner.start();
+      await until(() => runs === 1);
+      await sleep(250);
+      assert.equal(unhandled, 0, 'the failed write never became an unhandled rejection');
+      assert.equal(jobsDb.getJob(j.id).state, 'running', 'the row is left as it was');
+      assert.equal(runner.runningCount(), 0, 'the slot was given back');
+      d.exec('PRAGMA query_only = OFF');
+      runner.stop();
+      runner.start();   // the next boot: the row is re-queued and runs again
+      await until(() => jobsDb.getJob(j.id).state === 'done');
+      assert.deepEqual(jobsDb.getJob(j.id).result, { run: 2 });
+      assert.equal(unhandled, 0);
+    } finally {
+      d.exec('PRAGMA query_only = OFF');
+      runner.stop();
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 });
 

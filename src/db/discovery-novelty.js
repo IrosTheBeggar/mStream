@@ -20,9 +20,19 @@ export const NEAR_DUP = 0.99;
 
 // "The Beatles" / "beatles" / "The  Beatles!" all collide — good enough for
 // an exclusion filter (false positives here just hide a result, never rank
-// a wrong one).
+// a wrong one). Every script counts: letters and digits of any alphabet
+// stay (NFKD, accents and other marks dropped, so "Röyksopp" and "Royksopp"
+// collide too); only punctuation, symbols and spaces go. The ASCII-only
+// form this once was turned every Cyrillic, CJK, Greek or Arabic name into
+// the empty string — one identity shared by whole catalogues — which hid
+// every such song as "already owned" here and handed the plug-ins' caches
+// and job keys (recommendation.js) one key for all of them.
 export function norm(s) {
-  return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return String(s || '')
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '');
 }
 
 // The local library's identity sets, cached across requests. The "built per

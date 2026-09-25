@@ -35,6 +35,18 @@ describe('match', () => {
     assert.equal(textSimilarity('Opening', 'Closing'), 0);
   });
 
+  test('every script scores: an exact Cyrillic, Japanese or Korean match is 1, not 0 (the ASCII-only normaliser emptied both sides)', () => {
+    assert.equal(textSimilarity('Группа крови', 'Группа Крови'), 1);
+    assert.equal(textSimilarity('宇多田ヒカル', '宇多田ヒカル'), 1);
+    assert.equal(textSimilarity('봄날', '봄날 (Spring Day)'), 0.85, 'a Latin gloss makes it containment, still a strong match');
+    assert.equal(textSimilarity('Кино', 'Сплин'), 0);
+    assert.equal(textSimilarity('Röyksopp', 'Royksopp'), 1, 'accents fold');
+    const rec = normalizeRecommendation({ artist: 'Кино', title: 'Группа крови', album: 'Группа крови', duration: 285 });
+    const exact = { title: 'Группа крови', artist: 'Кино', album: 'Группа крови', durationSec: 286 };
+    assert.ok(scoreCandidate(rec, exact) >= MIN_SCORE, `an exact non-Latin match clears the bar: ${scoreCandidate(rec, exact)}`);
+    assert.equal(scoreCandidate(rec, { title: 'Выхода нет', artist: 'Сплин', durationSec: 286 }), 0, 'a different non-Latin song is still no match');
+  });
+
   test('the right song scores high, a cover by another artist low, a different recording length is rejected', () => {
     const right = { title: 'Opening', artist: 'Compat Artist', album: 'First Album', durationSec: 217 };
     const cover = { title: 'Opening', artist: 'Karaoke Kings', album: 'Sing Along Vol. 3', durationSec: 216 };

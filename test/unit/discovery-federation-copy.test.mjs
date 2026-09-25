@@ -8,13 +8,16 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import Joi from 'joi';
 import * as pathTemplate from '../../src/torrent/path-template.js';
 import { registerPlugin, unregisterPluginForTests, listPlugins } from '../../src/discovery-plugins/registry.js';
-import plugin, { copySongs, copyAlbums, planArtistAlbums } from '../../src/discovery-plugins/plugins/federation-copy.js';
+import plugin, { copySongs, copyAlbums, planArtistAlbums, copyBody, MAX_COPY_BYTES, fetchMedia } from '../../src/discovery-plugins/plugins/federation-copy.js';
 import {
   NAMESPACE, KEY, DEFAULT_LAYOUT, LAYOUT_VARS, destinationSchema, uploadsAllowed, writableLibraries,
-  destinationFor, validateLayout, normalizeBase, safeFileName, tagsForLayout, renderTarget,
+  destinationFor, validateLayout, normalizeBase, safeFileName, tagsForLayout, renderTarget, isSupportedAudioFile,
 } from '../../src/discovery-plugins/destination.js';
 
 const LIBS = [
@@ -24,6 +27,126 @@ const LIBS = [
 ];
 const user = (over = {}) => ({ id: 7, vpaths: ['music', 'other'], allow_upload: 1, ...over });
 const opts = { libraries: LIBS, noUpload: false };
+
+describe('federation-copy · only audio goes into a library', () => {
+  const supported = { mp3: true, flac: true, m4a: true, html: false };
+  test('a peer-named file is taken only when its extension is one the server plays', () => {
+    assert.equal(isSupportedAudioFile('Nova/Night Ferry/01 Remote Hit.mp3', supported), true);
+    assert.equal(isSupportedAudioFile('01 Remote Hit.FLAC', supported), true, 'case does not matter');
+    assert.equal(isSupportedAudioFile('liner-notes.html', supported), false, 'a page is not a song');
+    assert.equal(isSupportedAudioFile('folder.jpg', supported), false);
+    assert.equal(isSupportedAudioFile('album.m3u', supported), false);
+    assert.equal(isSupportedAudioFile('notes.mp3.html', supported), false, 'the last extension counts');
+    assert.equal(isSupportedAudioFile('no-extension', supported), false);
+    assert.equal(isSupportedAudioFile('', supported), false);
+    assert.equal(isSupportedAudioFile('x.html', {}), false, 'nothing listed, nothing taken');
+  });
+});
+
+describe('federation-copy · the body a peer sends', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-copybody-'));
+  const ctx = { isCancelled: () => false, progress: () => {} };
+  const body = (chunks, { stallAfter = Infinity } = {}) => ({
+    body: {
+      async *[Symbol.asyncIterator]() {
+        for (let i = 0; i < chunks.length; i++) {
+          if (i >= stallAfter) { await new Promise(() => {}); }   // never yields again
+          yield chunks[i];
+        }
+      },
+    },
+  });
+  const chunk = (n) => Buffer.alloc(n, 7);
+
+  test('a declared length is the cap for that file, an undeclared body gets the ceiling; within them the bytes land', async () => {
+    const out = path.join(tmp, 'a.part');
+    assert.equal(await copyBody(body([chunk(100), chunk(100)]), out, ctx, 200), 200);
+    assert.equal(fs.statSync(out).size, 200);
+    assert.equal(await copyBody(body([chunk(100), chunk(100), chunk(50)]), out, ctx, null, { maxBytes: 250 }), 250, 'undeclared: the ceiling');
+    assert.ok(MAX_COPY_BYTES >= 1024 * 1024 * 1024, 'the real ceiling is gigabytes, not a lossless album');
+  });
+
+  test('a body that goes past its cap ends the copy, with the reason', async () => {
+    const out = path.join(tmp, 'b.part');
+    await assert.rejects(copyBody(body([chunk(100), chunk(100), chunk(1)]), out, ctx, 200), /more than the 0\.0 MB it declared/);
+    await assert.rejects(copyBody(body([chunk(100), chunk(100), chunk(100)]), out, ctx, null, { maxBytes: 250 }), /larger than the 0\.0 MB a copy may be/);
+    await assert.rejects(copyBody(body([chunk(100), chunk(100), chunk(100)]), out, ctx, 5000, { maxBytes: 250 }),
+      /larger than the .* a copy may be/, 'a declared length above the ceiling is held to the ceiling');
+  });
+
+  test('a peer that goes quiet mid-body ends the copy after the idle time, so a cancel is never stuck behind it', async () => {
+    const out = path.join(tmp, 'c.part');
+    const t0 = Date.now();
+    await assert.rejects(copyBody(body([chunk(10), chunk(10), chunk(10)], { stallAfter: 2 }), out, ctx, null, { idleMs: 80 }),
+      (err) => err.stalled === true && /no data for/.test(err.message));
+    assert.ok(Date.now() - t0 < 5000, 'ended by the idle timer, not by anything slower');
+    assert.equal(fs.statSync(out).size, 20, 'what arrived before the stall was written');
+  });
+
+  test('a cancel between chunks stops it', async () => {
+    const out = path.join(tmp, 'd.part');
+    let asked = 0;
+    const cancelling = { isCancelled: () => (++asked > 1), progress: () => {} };
+    await assert.rejects(copyBody(body([chunk(10), chunk(10), chunk(10)]), out, cancelling, null), (err) => err.cancelled === true);
+  });
+});
+
+describe('federation-copy · the peer\'s two 429s', () => {
+  const peer = { id: 1, name: 'Sam\'s server' };
+  const ctx = (cancelled = () => false) => ({ isCancelled: cancelled, progress: () => {} });
+  const answer = (status, { retryAfter = null, error = null } = {}) => ({
+    status, ok: status < 300, body: status < 300 ? {} : null,
+    headers: { get: (h) => (h === 'retry-after' ? retryAfter : null) },
+    json: () => Promise.resolve(error ? { error } : {}),
+  });
+  const env = (answers) => {
+    let i = 0;
+    return { peer, fedClient: {}, fedFetchWithDeadline: () => Promise.resolve(answers[Math.min(i++, answers.length - 1)]), asked: () => i };
+  };
+
+  test('the stream cap (a short Retry-After) is waited out and the song asked for again', async () => {
+    const e = env([answer(429, { retryAfter: '1', error: 'Too many concurrent streams' }), answer(200)]);
+    const t0 = Date.now();
+    const res = await fetchMedia(e, ctx(), '/media/x.mp3', null);
+    assert.equal(res.status, 200);
+    assert.equal(e.asked(), 2);
+    assert.ok(Date.now() - t0 >= 900, 'waited the Retry-After');
+  });
+
+  test('the daily quota, or a wait too long to sit through, is the transfer limit: peerLimit, no retry', async () => {
+    const quota = env([answer(429, { retryAfter: '43000', error: 'Daily transfer quota exceeded' })]);
+    await assert.rejects(fetchMedia(quota, ctx(), '/media/x.mp3', null), (err) => err.peerLimit === true && /transfer limit/.test(err.message));
+    assert.equal(quota.asked(), 1);
+    const long = env([answer(429, { retryAfter: '600', error: 'Too many concurrent streams' })]);
+    await assert.rejects(fetchMedia(long, ctx(), '/media/x.mp3', null), (err) => err.peerLimit === true);
+    const bare = env([answer(429)]);
+    await assert.rejects(fetchMedia(bare, ctx(), '/media/x.mp3', null), (err) => err.peerLimit === true, 'a 429 with no Retry-After is not waited on');
+  });
+
+  test('a peer that stays at its cap: three retries, then busy — and a cancel during the wait answers null', async () => {
+    const busy = env([answer(429, { retryAfter: '1', error: 'Too many concurrent streams' })]);
+    await assert.rejects(fetchMedia(busy, ctx(), '/media/x.mp3', null), (err) => err.peerBusy === true && !err.peerLimit && /too many streams/.test(err.message));
+    assert.equal(busy.asked(), 4, 'the first ask and three retries');
+    let polls = 0;
+    const cancelling = env([answer(429, { retryAfter: '5', error: 'Too many concurrent streams' })]);
+    assert.equal(await fetchMedia(cancelling, ctx(() => (++polls > 1)), '/media/x.mp3', null), null);
+    assert.equal(cancelling.asked(), 1);
+  });
+
+  test('busy ends an album and an artist copy with its own reason, like the quota does', async () => {
+    const song = (n) => ({ filepath: `Nova/Night Ferry/${n}.mp3`, title: n, artist: 'Nova', album: 'Night Ferry' });
+    const out = await copySongs([song('a'), song('b'), song('c')], {
+      copyOne: (s) => (s.title === 'b' ? Promise.reject(Object.assign(new Error('busy'), { peerBusy: true })) : Promise.resolve({ copied: { bytes: 1 } })),
+    });
+    assert.equal(out.stopped, 'busy');
+    assert.deepEqual([out.songs.copied.length, out.songs.failed.length], [1, 1], 'c was never asked for');
+    const albums = await copyAlbums([{ name: 'One' }, { name: 'Two' }], {
+      copyAlbum: () => Promise.reject(Object.assign(new Error('busy'), { peerBusy: true })),
+    });
+    assert.equal(albums.stopped, 'busy');
+    assert.equal(albums.albums.length, 1);
+  });
+});
 
 describe('federation-copy · plug-in shape', () => {
   test('an acquire plug-in with run(), one at a time, and no settings of its own', () => {

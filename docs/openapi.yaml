@@ -2630,8 +2630,9 @@ paths:
                       `?token=` the /media URLs use.
         "400": { description: "Malformed body, or the plug-in does not resolve recommendations." }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { description: "Unknown or disabled plug-in (disabled plug-ins are invisible, not forbidden)." }
-        "429": { description: "The plug-in's own request budget for its catalogue is spent — try again shortly." }
+        "403": { description: "A jukebox session token, or — for a plug-in with a lookup — the acquisition gate refuses the caller or uploads are off for them (the lookup stands behind the job's own gate)." }
+        "404": { description: "Unknown or disabled plug-in (disabled plug-ins are invisible, not forbidden); for a plug-in with a lookup, also one whose probe says it cannot run." }
+        "429": { description: "The plug-in's own request budget for its catalogue is spent, or (a lookup) too many lookups are running at once — try again shortly." }
         "502": { description: "The plug-in failed to resolve this recommendation (a catalogue was unreachable); the cause is logged server-side." }
 
   /api/v1/discovery/plugins/{name}/jobs:
@@ -2666,11 +2667,12 @@ paths:
         artist, year }, songs: { total, copied: [{ from, vpath, filepath,
         trackId, bytes, title, artist, album, downloadId }], skipped: [{ from,
         why: owned | exists, at }], failed: [{ from, error }] }, bytes,
-        stopped: null | cancelled | quota | peer | refused, missingVars,
+        stopped: null | cancelled | quota | busy | peer | refused, missingVars,
         peer, destination }` — one song's own failure does not stop the
-        album, the peer's transfer limit, the peer going away, the peer
-        refusing copies with this server's key (`refused`; its admin
-        switched `allowCopies` off) or a cancel does, and the finished songs
+        album, the peer's transfer limit (`quota`; its stream cap is waited
+        out and retried first, `busy` when it stays full), the peer going
+        away, the peer refusing copies with this server's key (`refused`;
+        its admin switched `allowCopies` off) or a cancel does, and the finished songs
         stay (a cancelled job keeps the partial result).
         Re-running an album copies only the gaps. With `scope: artist` it
         asks the peer for the artist's albums and copies, album by album,
@@ -2741,7 +2743,7 @@ paths:
         "200": { description: "A live job for this recommendation already exists; `created: false` and that job." }
         "400": { description: "Malformed body, the plug-in does not run jobs (use resolve), a `scope` the plug-in does not run or the recommendation cannot fill, or a `choice` for a plug-in without a lookup / a link it does not accept." }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { description: "The acquisition gate is in whitelist mode and the caller is not allowed." }
+        "403": { description: "The acquisition gate is in whitelist mode and the caller is not allowed; an acquire plug-in's job when uploads are off for the server or the caller (a download is an upload); or a jukebox session token." }
         "404": { description: "Unknown or disabled plug-in." }
         "409": { description: "Another account's live job already covers this recommendation — try again when it has finished." }
 
@@ -2927,11 +2929,16 @@ paths:
       description: |
         Deletes the file, its library row and the playlist entries that
         pointed at it, and marks the record removed. Only the account that
-        asked for the download, or an admin; anyone else gets the same 404 as
-        an unknown id. A file that is already gone (a scan swept it, a hand
-        removed it) still settles the record, answered with `fileRemoved:
-        false`. Ratings and play counts key on the recording's hash and are
-        left alone. This is the one place the API deletes music.
+        asked for the download (with the upload right the download needed),
+        or an admin; anyone else gets the same 404 as an unknown id. The file
+        goes only while it is still the download: its hash is checked against
+        the record's first, and a file that replaced it at the same path is
+        left alone, its row and playlist entries with it — the record alone
+        settles, answered with `kept: "changed"`. A file that is already gone
+        (a scan swept it, a hand removed it) still settles the record,
+        answered with `fileRemoved: false`. Ratings and play counts key on
+        the recording's hash and are left alone. This is the one place the
+        API deletes music.
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       responses:
@@ -2943,10 +2950,12 @@ paths:
                 type: object
                 properties:
                   download: { $ref: "#/components/schemas/PluginDownload" }
-                  fileRemoved: { type: boolean, description: "False when the file was already gone." }
-                  rowsRemoved: { type: integer, description: "Track rows deleted (0 when a scan got there first)." }
+                  fileRemoved: { type: boolean, description: "False when the file was already gone, or was left alone because it is no longer this download." }
+                  kept: { type: string, enum: [changed], description: "Present when the file at the path is no longer the download (its hash differs from the record's): nothing was deleted, the record alone settled." }
+                  rowsRemoved: { type: integer, description: "Track rows deleted (0 when a scan got there first, or the file was left alone)." }
                   playlistEntries: { type: integer, description: "Playlist entries that pointed at the file." }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The caller may not upload (and so may not remove), or a jukebox session token." }
         "404": { description: "No such download, not the caller's, or the caller no longer sees the library it landed in." }
         "409": { description: "Already removed, or the file is in use right now (try again)." }
 
