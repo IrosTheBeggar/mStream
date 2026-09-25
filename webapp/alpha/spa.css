@@ -2655,3 +2655,39 @@ body.on-federated-server .side-nav-note {
   color: #999;
   font-weight: 400;
 }
+/* The Federation view: Listen (one play line, the album and artist as a
+   line of facts and links each), then Keep a copy (one card: a choice of
+   scope, where the copy lands, one Add — the card is the job) */
+.dm-play { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.dm-play-btn { width: 40px; height: 40px; border-radius: 50%; background: var(--src); color: #0f1216; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.dm-play-btn:hover, .dm-play-btn:focus { background: var(--src-2); color: #0f1216; outline: none; }
+.dm-play-btn:focus-visible { box-shadow: 0 0 0 2px rgba(255, 255, 255, .35); }
+.dm-play-body { flex: 1 1 160px; min-width: 0; }
+.dm-play-title { font-size: 13px; font-weight: 600; color: #f0f2f5; }
+.dm-play-sub { font-size: 11px; color: #8a919e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-play-act { display: flex; gap: 6px; flex-shrink: 0; }
+.dm-links { display: grid; gap: 4px; margin-top: 10px; font-size: 11.5px; color: #b8bcc6; }
+.dm-links > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.dm-links b { color: #6f7683; font-weight: 400; min-width: 42px; }
+.dm-links span { color: #dfe3ea; }
+.dm-links small { color: #6f7683; font-size: 11px; }
+.dm-links a { color: var(--src); }
+.dm-links a:hover, .dm-links a:focus { color: var(--src-2); text-decoration: underline; outline: none; }
+.dm-keep { background: #23282f; border-radius: 6px; padding: 10px 12px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 9px; }
+.dm-keep > * { min-width: 0; }
+.dm-keep > .dm-opt, .dm-keep > .dm-dest, .dm-keep > .dm-dest-form { margin: 0; }
+.dm-keep > .dm-opt { background: #1a1e25; }
+.dm-choice { display: flex; gap: 4px; padding: 3px; background: #1a1e25; border-radius: 6px; }
+.dm-choice > a { flex: 1; text-align: center; padding: 5px 8px; border-radius: 4px; font-size: 11.5px; color: #b8bcc6; line-height: 1.3; }
+.dm-choice > a small { display: block; font-size: 10px; color: #6f7683; }
+.dm-choice > a:hover, .dm-choice > a:focus { color: #f0f2f5; outline: none; }
+.dm-choice > a.dm-on { background: #363d47; color: #f0f2f5; box-shadow: inset 0 0 0 1px var(--src); }
+.dm-choice > a.dm-on small { color: #8a919e; }
+.dm-check { position: relative; display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: #b8bcc6; cursor: pointer; }
+.dm-check input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
+.dm-check i { width: 13px; height: 13px; border: 1px solid #444c56; border-radius: 3px; background: #1a1e25; display: inline-flex; align-items: center; justify-content: center; color: transparent; flex-shrink: 0; }
+.dm-check input:checked + i { background: var(--src); border-color: var(--src); color: #0f1216; }
+.dm-check input:focus-visible + i { box-shadow: 0 0 0 2px rgba(255, 255, 255, .25); }
+@media (max-width: 480px) {
+  .dm-play-act { flex-basis: 100%; padding-left: 52px; }
+}

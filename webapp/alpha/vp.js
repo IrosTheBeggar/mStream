@@ -176,7 +176,6 @@ const VUEPLAYERCORE = (() => {
       searchedPeers: null,    // null = never fetched; 0 = nobody answered
       unreachable: 0,         // peers that timed out/failed on the last ask
       mismatched: 0,          // peers on a different embedding model
-      onlyPeer: null,         // { id, name } while "more like this on <peer>" narrows the ask
     },
     // Discovery plug-ins: what this server lets a user DO with a network or
     // peer row (/api/v1/discovery/plugins). Same reveal contract — ping's
@@ -248,6 +247,10 @@ const VUEPLAYERCORE = (() => {
       // plug-in name → its lookup (what "Get it" would fetch): see dmLookup.
       lookups: {},
       picker: null,
+      // The Federation view's Keep card: which scope the one Add acts on
+      // (song · album · artist), and whether an artist copy takes only the
+      // albums the library lacks.
+      keep: { scope: 'song', onlyMissing: true },
     }, over || {});
   }
   let discoverDebounce = null;
@@ -509,6 +512,7 @@ const VUEPLAYERCORE = (() => {
         <div class="dm-opt-act">
           <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="$root.dmOpenPicker()">{{ tt('discover.modal.dest.change') }}</a>
           <a v-if="dest.source === 'user'" class="dm-btn dm-btn-sm dm-btn-ghost dm-btn-icon" href="javascript:void(0)" v-on:click="$root.dmResetDestination()" :title="tt('discover.modal.dest.reset')"><dm-icon name="retry" :size="14"></dm-icon></a>
+          <slot name="act"></slot>
         </div>
       </div>`,
   });
@@ -660,7 +664,6 @@ const VUEPLAYERCORE = (() => {
         discoverDirty = false;
         const seedPath = song.rawFilePath.charAt(0) === '/' ? song.rawFilePath.substr(1) : song.rawFilePath;
         this.discover.seedPath = seedPath;
-        this.discover.fed.onlyPeer = null;   // a fresh ask is every peer again
         const reqId = ++discoverReqId;
         this.discover.loading = true;
 
@@ -977,31 +980,6 @@ const VUEPLAYERCORE = (() => {
         this.closeDiscoverModal();
         if (!play) { iziToast.success({ title: this.tt('discover.modal.albumQueued', { count: songs.length }), position: 'topCenter', timeout: 2000 }); }
       },
-      // "More like this on <peer>": the same similar ask, narrowed to that
-      // one paired server; the panel shows the narrowing as a chip.
-      dmMoreLikeThisOnPeer: async function () {
-        const m = this.discover.modal;
-        const peer = m.track.peer;
-        const seedPath = this.discover.seedPath;
-        if (!seedPath || !peer) { return; }
-        this.closeDiscoverModal();
-        this.discover.fed.onlyPeer = { id: peer.id, name: peer.name || 'peer' };
-        const reqId = ++discoverReqId;
-        this.discover.loading = true;
-        const fed = await MSTREAMAPI.discoveryFederationSimilar(seedPath, 5, this.discover.p2p.newArtistsOnly, peer.id);
-        if (reqId !== discoverReqId) { return; }
-        this.discover.loading = false;
-        if (fed && !fed.disabled && Array.isArray(fed.results)) {
-          this.discover.fed.tracks = fed.results;
-          this.discover.fed.searchedPeers = (fed.searched && fed.searched.peers) || 0;
-          this.discover.fed.unreachable = (fed.searched && fed.searched.unreachable) || 0;
-          this.discover.fed.mismatched = (fed.searched && fed.searched.mismatched) || 0;
-        }
-      },
-      clearDiscoverPeerFilter: function () {
-        this.discover.fed.onlyPeer = null;
-        this.refreshDiscover();
-      },
       // ── Federate row (network rows, admins) ────────────────────────────
       // Paired already (the peers listing exposes each peer's endpoint id)
       // → say so; an outbound request in flight → "sent"; else the invite.
@@ -1205,6 +1183,123 @@ const VUEPLAYERCORE = (() => {
         if (!known) { return this.tt('discover.modal.addArtistSubNoCount', { artist, peer }); }
         const summary = [this.tt('discover.job.albumsCount', { count: a.albums }), a.songs !== null ? this.tt('discover.modal.songCount', { count: a.songs }) : ''].filter(Boolean).join(', ');
         return this.tt('discover.modal.addArtistSub', { artist, peer, summary });
+      },
+      // ── The Federation view: Listen, then Keep a copy ─────────────────
+      // The album's and the artist's facts, one line each under the play
+      // line: what the peer reported, and what the library has of it.
+      dmAlbumFacts: function () {
+        const m = this.discover.modal;
+        const a = m.album;
+        return [
+          m.track.year || '',
+          a && a.count !== null ? this.tt('discover.modal.songCount', { count: a.count }) : '',
+          a && a.count !== null && a.seconds ? this.dmDuration(a.seconds) : '',
+          a ? this.tt(a.owned ? 'discover.modal.inLibrary' : 'discover.modal.noneInLibrary') : '',
+        ].filter(Boolean).join(' · ');
+      },
+      dmArtistFacts: function () {
+        const a = this.discover.modal.artist;
+        if (!a || a.albums === null) { return ''; }
+        const years = a.yearMin ? (a.yearMax && a.yearMax !== a.yearMin ? `${a.yearMin} – ${a.yearMax}` : String(a.yearMin)) : '';
+        return [
+          this.tt('discover.modal.albumCount', { count: a.albums }),
+          a.songs !== null ? this.tt('discover.modal.songCount', { count: a.songs }) : '',
+          years,
+          a.owned != null ? this.tt('discover.modal.youHave', { count: a.owned }) : '',
+        ].filter(Boolean).join(' · ');
+      },
+      // The Keep card's choices: one per scope the copy plug-in runs for
+      // this row (the same conditions as the rows they replace), with the
+      // size of what it would copy under each.
+      dmKeepChoices: function () {
+        const m = this.discover.modal;
+        if (!m.track) { return []; }
+        const out = [];
+        if (this.dmCopyRows().length) {
+          const bits = [m.track.duration ? this.dmDuration(m.track.duration) : '', m.file && m.file.format ? m.file.format : ''];
+          out.push({ scope: 'song', label: this.tt('discover.modal.song'), sub: bits.filter(Boolean).join(' · ') });
+        }
+        if (this.dmScopeRows('album').length) {
+          const a = m.album;
+          out.push({ scope: 'album', label: this.tt('discover.modal.album'), sub: a && a.count !== null ? this.tt('discover.modal.songCount', { count: a.count }) : '' });
+        }
+        if (this.dmScopeRows('artist').length) {
+          const a = m.artist;
+          const bits = a && a.albums !== null ? [this.tt('discover.modal.albumCount', { count: a.albums }), a.owned ? this.tt('discover.modal.youHave', { count: a.owned }) : ''] : [];
+          out.push({ scope: 'artist', label: this.tt('discover.modal.artist'), sub: bits.filter(Boolean).join(' · ') });
+        }
+        return out;
+      },
+      dmKeepChoose: function (scope) {
+        this.discover.modal.keep.scope = scope;
+      },
+      // The chosen scope — the first offered one when the choice is gone.
+      dmKeepChosen: function () {
+        const choices = this.dmKeepChoices();
+        const want = this.discover.modal.keep.scope;
+        return choices.some((c) => c.scope === want) ? want : (choices.length ? choices[0].scope : null);
+      },
+      // "Only the albums you don't have": offered with the artist choice
+      // when the library has some of them already and the plug-in runs
+      // that scope. With none of them, every album is missing anyway.
+      dmKeepMissingChoice: function () {
+        if (this.dmKeepChosen() !== 'artist') { return false; }
+        const a = this.discover.modal.artist;
+        return !!(a && a.albums !== null && a.owned > 0 && this.dmMissingRows().length);
+      },
+      dmKeepMissingCount: function () {
+        const a = this.discover.modal.artist;
+        return a && a.albums !== null ? Math.max(0, a.albums - (a.owned || 0)) : 0;
+      },
+      // The job scope the card acts on.
+      dmKeepScope: function () {
+        const chosen = this.dmKeepChosen();
+        if (chosen === 'artist' && this.dmKeepMissingChoice() && this.discover.modal.keep.onlyMissing) { return 'artist-missing'; }
+        return chosen;
+      },
+      // The card's job: { plugin, scope, slot, row } for the scope, or null.
+      dmKeepRow: function () {
+        const scope = this.dmKeepScope();
+        if (!scope) { return null; }
+        const rows = scope === 'song' ? this.dmCopyRows() : this.dmScopeRows(scope);
+        if (!rows.length) { return null; }
+        const r = rows[0];
+        return { plugin: r.plugin, scope: scope === 'song' ? undefined : scope, slot: r.slot || r.plugin.name, row: r.row };
+      },
+      // Idle = nothing pressed yet and no refused start: the card shows
+      // where the copy lands and the one button.
+      dmKeepIdle: function () {
+        const k = this.dmKeepRow();
+        return !!(k && k.row.state === 'idle' && !k.row.errored);
+      },
+      dmKeepTitle: function () {
+        const scope = this.dmKeepScope();
+        if (scope === 'album') { return this.tt('discover.modal.addAlbum'); }
+        if (scope === 'artist') { return this.tt('discover.modal.addArtist'); }
+        if (scope === 'artist-missing') { return this.tt('discover.modal.addMissing'); }
+        return this.tt('discover.modal.addToCollection');
+      },
+      dmKeepIdleSub: function () {
+        const m = this.discover.modal;
+        const scope = this.dmKeepScope();
+        if (scope === 'album') { return this.dmAlbumIdleSub(); }
+        if (scope === 'artist' || scope === 'artist-missing') { return this.dmArtistIdleSub(scope); }
+        return this.tt('discover.modal.addToCollectionSub', { peer: (m.track.peer && m.track.peer.name) || 'peer' });
+      },
+      dmKeepStartLabel: function () {
+        const scope = this.dmKeepScope();
+        if (scope === 'album') { return this.tt('discover.modal.addAlbumStart'); }
+        if (scope === 'artist') { return this.tt('discover.modal.addArtistStart'); }
+        if (scope === 'artist-missing') {
+          const n = this.dmKeepMissingCount();
+          return n ? this.tt('discover.modal.keepAddMissing', { count: n }) : this.tt('discover.modal.addMissingStart');
+        }
+        return this.tt('discover.modal.keepAddSong');
+      },
+      dmKeepStart: function () {
+        const k = this.dmKeepRow();
+        if (!k) { return; }
+        if (k.scope) { this.dmJobStart(k.plugin, null, k.scope); } else { this.dmJobStart(k.plugin); }
       },
       dmAnyJobLive: function () {
         const jobs = this.discover.modal.jobs;

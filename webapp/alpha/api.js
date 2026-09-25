@@ -115,14 +115,11 @@ const MSTREAMAPI = (() => {
     });
   };
 
-  // The federated side of Discover: live similarity answers from the
-  // servers this one is PAIRED with (Admin → Federation). Leads for now —
-  // they become playable once the federation stream proxy lands.
-  // `peerId` narrows the ask to ONE paired server (the recommendation
-  // modal's "more like this on <peer>"); omitted = every peer.
-  mstreamModule.discoveryFederationSimilar = (filePath, limit, newArtistsOnly, peerId) => {
+  // The federated side of Discover: live similarity answers from every
+  // server this one is PAIRED with (Admin → Federation). (The route also
+  // takes a `peerId` to ask one peer alone; the webapp no longer does.)
+  mstreamModule.discoveryFederationSimilar = (filePath, limit, newArtistsOnly) => {
     return discoveryReq('api/v1/discovery/federation/similar', {
-      ...(peerId ? { peerId } : {}),
       filePath, limit: limit || 5, newArtistsOnly: newArtistsOnly === true,
     });
   };
