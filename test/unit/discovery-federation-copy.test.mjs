@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import Joi from 'joi';
 import * as pathTemplate from '../../src/torrent/path-template.js';
 import { registerPlugin, unregisterPluginForTests, listPlugins } from '../../src/discovery-plugins/registry.js';
-import plugin, { copySongs } from '../../src/discovery-plugins/plugins/federation-copy.js';
+import plugin, { copySongs, copyAlbums, planArtistAlbums } from '../../src/discovery-plugins/plugins/federation-copy.js';
 import {
   NAMESPACE, KEY, DEFAULT_LAYOUT, LAYOUT_VARS, destinationSchema, uploadsAllowed, writableLibraries,
   destinationFor, validateLayout, normalizeBase, safeFileName, tagsForLayout, renderTarget,
@@ -29,7 +29,7 @@ describe('federation-copy · plug-in shape', () => {
   test('an acquire plug-in with run(), one at a time, and no settings of its own', () => {
     assert.equal(plugin.name, 'federation-copy');
     assert.deepEqual([...plugin.capabilities], ['acquire']);
-    assert.deepEqual([...plugin.scopes], ['song', 'album'], 'a song, or its album');
+    assert.deepEqual([...plugin.scopes], ['song', 'album', 'artist', 'artist-missing'], 'a song, its album, or its artist\'s albums');
     assert.equal(plugin.scope, 'user');
     assert.equal(plugin.concurrency, 1);
     assert.equal(typeof plugin.run, 'function');
@@ -266,5 +266,70 @@ describe('federation-copy · the album loop (copySongs with a scripted copyOne)'
     const down = await copySongs(['a', 'b'].map(song), { copyOne: async () => { throw Object.assign(new Error('copier is unreachable (dial)'), { peerDown: true }); } });
     assert.deepEqual([down.stopped, down.songs.failed.length, down.songs.copied.length], ['peer', 1, 0]);
     assert.deepEqual(await copySongs([], { copyOne: async () => copied('x', 1) }), { songs: { total: 0, copied: [], skipped: [], failed: [] }, bytes: 0, stopped: null, missingVars: [] });
+  });
+});
+
+describe('federation-copy · the artist\'s albums (planArtistAlbums) and the album loop (copyAlbums)', () => {
+  const album = (name, over = {}) => ({ name, year: 2019, album_artist: 'Nova', artists: ['Nova'], compilation: false, track_count: 4, ...over });
+
+  test('the artist\'s own albums are copied; appearances are listed, never pulled; the singles bucket is no album', () => {
+    const listing = { albums: [
+      album('Night Ferry'),
+      album('Second Wind', { year: 2021, album_artist: 'nova' }),
+      album('Various Hits', { album_artist: 'Various Artists', artists: ['Various Artists'], compilation: true, year: 2020 }),
+      album('Split EP', { album_artist: 'Nova & Vosto', artists: ['Nova', 'Vosto'] }),
+      album('Hits Comp', { album_artist: 'Various Artists', artists: ['Nova', 'Vosto'], compilation: true }),
+      album(null, { track_count: null }),
+      album('', {}),
+    ] };
+    const { plan, skipped } = planArtistAlbums(listing, 'Nova');
+    assert.deepEqual(plan.map((a) => [a.name, a.year, a.trackCount]), [['Night Ferry', 2019, 4], ['Second Wind', 2021, 4], ['Split EP', 2019, 4]], 'the primary album artist by normalised name, and a credit outside a compilation');
+    assert.deepEqual(skipped.map((a) => [a.name, a.why]), [['Various Hits', 'appearance'], ['Hits Comp', 'appearance']]);
+    assert.deepEqual(planArtistAlbums({ albums: [] }, 'Nova'), { plan: [], skipped: [] });
+    assert.deepEqual(planArtistAlbums(null, 'Nova'), { plan: [], skipped: [] });
+  });
+
+  test('what you\'re missing: the albums the library has by the artist are left out', () => {
+    const listing = { albums: [album('Night Ferry'), album('Second Wind', { year: 2021 }), album('Various Hits', { album_artist: 'Various Artists', artists: ['Various Artists'], compilation: true })] };
+    const localKeys = new Set(['night ferry']);
+    const { plan, skipped } = planArtistAlbums(listing, 'Nova', { localKeys, onlyMissing: true });
+    assert.deepEqual(plan.map((a) => a.name), ['Second Wind']);
+    assert.deepEqual(skipped.map((a) => [a.name, a.why]), [['Night Ferry', 'owned'], ['Various Hits', 'appearance']]);
+    assert.deepEqual(planArtistAlbums(listing, 'Nova', { localKeys }).plan.map((a) => a.name), ['Night Ferry', 'Second Wind'], 'without onlyMissing the owned album is still copied (its songs skip one by one)');
+  });
+
+  test('copyAlbums: every album\'s songs gathered with the album\'s name, bytes and missing variables summed, progress per album', async () => {
+    const answers = {
+      'Night Ferry': { songs: { total: 2, copied: [{ from: 'a', bytes: 10 }], skipped: [{ from: 'b', why: 'owned', at: 'x' }], failed: [] }, bytes: 10, stopped: null, missingVars: ['YEAR'] },
+      'Second Wind': { songs: { total: 1, copied: [{ from: 'c', bytes: 5 }], skipped: [], failed: [] }, bytes: 5, stopped: null, missingVars: ['GENRE', 'YEAR'] },
+    };
+    const lines = [];
+    const out = await copyAlbums([{ name: 'Night Ferry', year: 2019 }, { name: 'Second Wind', year: 2021 }], {
+      copyAlbum: async (al, { progress }) => { progress(0.5, '1 of 2 songs · 0.0 MB'); return answers[al.name]; },
+      progress: (f, text) => lines.push([Math.round(f * 100), text]),
+    });
+    assert.deepEqual(out.albums.map((a) => [a.name, a.year, a.songs.total, a.bytes, a.stopped]), [['Night Ferry', 2019, 2, 10, null], ['Second Wind', 2021, 1, 5, null]]);
+    assert.equal(out.songs.total, 3);
+    assert.deepEqual(out.songs.copied, [{ album: 'Night Ferry', from: 'a', bytes: 10 }, { album: 'Second Wind', from: 'c', bytes: 5 }]);
+    assert.deepEqual(out.songs.skipped, [{ album: 'Night Ferry', from: 'b', why: 'owned', at: 'x' }]);
+    assert.deepEqual([out.bytes, out.stopped, out.missingVars], [15, null, ['YEAR', 'GENRE']]);
+    assert.deepEqual(lines[0], [0, 'album 1 of 2 · Night Ferry']);
+    assert.deepEqual(lines[1], [25, 'album 1 of 2 · Night Ferry · 1 of 2 songs · 0.0 MB']);
+    assert.deepEqual(lines[lines.length - 1], [99, '2 of 2 albums · 2 songs copied · 0.0 MB']);
+  });
+
+  test('copyAlbums: an album that stopped stops the run; a listing that failed marks the album and goes on unless the peer is the problem; a cancel between albums', async () => {
+    const one = (stopped) => ({ songs: { total: 1, copied: [], skipped: [], failed: [] }, bytes: 0, stopped, missingVars: [] });
+    let tried = 0;
+    const quota = await copyAlbums([{ name: 'A' }, { name: 'B' }, { name: 'C' }], { copyAlbum: async (al) => { tried += 1; return one(al.name === 'B' ? 'quota' : null); } });
+    assert.deepEqual([tried, quota.stopped, quota.albums.map((a) => a.name)], [2, 'quota', ['A', 'B']]);
+    const listing = await copyAlbums([{ name: 'A' }, { name: 'B' }], { copyAlbum: async (al) => { if (al.name === 'A') { throw new Error('the peer answered http 500'); } return one(null); } });
+    assert.deepEqual([listing.stopped, listing.albums.map((a) => [a.name, a.error || null, a.songs.total])], [null, [['A', 'the peer answered http 500', 0], ['B', null, 1]]]);
+    const down = await copyAlbums([{ name: 'A' }, { name: 'B' }], { copyAlbum: async () => { throw Object.assign(new Error('copier is unreachable (dial)'), { peerDown: true }); } });
+    assert.deepEqual([down.stopped, down.albums.length], ['peer', 1]);
+    let calls = 0;
+    const cancelled = await copyAlbums([{ name: 'A' }, { name: 'B' }], { copyAlbum: async () => { calls += 1; return one(null); }, isCancelled: () => calls >= 1 });
+    assert.deepEqual([cancelled.stopped, calls], ['cancelled', 1]);
+    assert.deepEqual(await copyAlbums([], { copyAlbum: async () => one(null) }), { albums: [], songs: { total: 0, copied: [], skipped: [], failed: [] }, bytes: 0, stopped: null, missingVars: [] });
   });
 });

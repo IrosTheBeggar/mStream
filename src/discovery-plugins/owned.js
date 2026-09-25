@@ -5,6 +5,7 @@
 // existing file is, or null.
 
 import * as db from '../db/manager.js';
+import { nameKey } from '../db/name-key.js';
 
 export function ownedTrack({ hash, audioHash, artist, title, album }, database = db.getDB()) {
   if (!database) { return null; }
@@ -32,4 +33,19 @@ export function ownedTrack({ hash, audioHash, artist, title, album }, database =
     if (row) { return found(row); }
   }
   return null;
+}
+
+// The albums this library already has by an artist — as its primary album
+// artist or an album credit — as normalised name keys (src/db/name-key.js),
+// for "what you're missing": an album whose key the set holds is not asked
+// for again. The whole library, like ownedTrack.
+export function ownedAlbumKeys(artist, database = db.getDB()) {
+  if (!database || !artist) { return new Set(); }
+  const key = nameKey(artist);
+  const rows = database.prepare(`
+    SELECT DISTINCT al.name FROM albums al
+     WHERE al.artist_id IN (SELECT id FROM artists WHERE name_key = ?)
+        OR al.id IN (SELECT aa.album_id FROM album_artists aa
+                      WHERE aa.artist_id IN (SELECT id FROM artists WHERE name_key = ?))`).all(key, key);
+  return new Set(rows.map((r) => nameKey(r.name)).filter(Boolean));
 }
