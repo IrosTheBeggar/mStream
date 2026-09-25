@@ -294,6 +294,25 @@ describe('discovery downloads · the record and its removal', { skip: hasFfmpeg 
     assert.equal((await api(danaToken, 'DELETE', `${LIST}/${live[0].id}`)).status, 200);
   });
 
+  test('a download filed into a folder that already exists under other casing is recorded as the disk spells it', async () => {
+    // The layout renders "Nova/Night Ferry"; the disk already has this.
+    const existing = path.join(collectionDir, 'NOVA', 'night ferry');
+    fs.mkdirSync(existing, { recursive: true });
+    const fresh = await download(danaToken, { ...REC, year: 2016 });
+    const stored = fresh.result.downloaded.filepath;
+    // The one file in the collection, as the disk spells it.
+    const onDisk = fs.readdirSync(collectionDir, { recursive: true })
+      .map((p) => String(p).split(path.sep).join('/'))
+      .filter((p) => fs.statSync(path.join(collectionDir, p)).isFile());
+    assert.deepEqual(onDisk, [stored.replace(/^collection\//, '')], 'the row carries the on-disk spelling, so a scan finds the same row');
+    assert.ok(row('SELECT id FROM tracks WHERE filepath = ?', stored.replace(/^collection\//, '')), 'and the row is under that spelling');
+    const removed = await api(danaToken, 'DELETE', `${LIST}/${fresh.result.downloaded.downloadId}`);
+    assert.equal(removed.status, 200, JSON.stringify(removed.body));
+    assert.equal(removed.body.fileRemoved, true);
+    fs.rmSync(path.join(collectionDir, 'NOVA'), { recursive: true, force: true });
+    fs.rmSync(path.join(collectionDir, 'Nova'), { recursive: true, force: true });
+  });
+
   test('removing a download whose file was replaced leaves the file alone: the record settles, nothing is deleted', async () => {
     const fresh = await download(danaToken, { ...REC, year: 2017 });
     const id = fresh.result.downloaded.downloadId;

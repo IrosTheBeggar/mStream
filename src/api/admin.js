@@ -24,6 +24,7 @@ import * as discoverySeeds from '../state/discovery-seeds.js';
 import * as discoveryStack from '../state/discovery-p2p-stack.js';
 import * as discoveryPeerDbs from '../state/discovery-peer-dbs.js';
 import * as discoveryPlugins from '../discovery-plugins/index.js';
+import * as ytDlpBootstrap from '../util/yt-dlp-bootstrap.js';
 import * as userSettingsDb from '../db/user-settings.js';
 import * as logger from '../logger.js';
 import { joiValidate } from '../util/validation.js';
@@ -1676,7 +1677,15 @@ export function setup(mstream) {
       // What the last probe saw may no longer be true.
       discoveryPlugins.forgetProbe(name);
     }
-    if (enabled !== undefined) { await admin.editDiscoveryPlugin(name, enabled); }
+    if (enabled !== undefined) {
+      await admin.editDiscoveryPlugin(name, enabled);
+      // The daily yt-dlp check lives with the youtube plug-in: armed when
+      // it is switched on here (the boot path arms it only for a plug-in
+      // that is on at boot), disarmed when it is switched off.
+      if (name === 'youtube') {
+        if (enabled) { ytDlpBootstrap.startAutoUpdate(); } else { ytDlpBootstrap.stopAutoUpdate(); }
+      }
+    }
     await discoveryPlugins.refreshProbes();
     res.json({ plugins: adminPluginRows() });
   });

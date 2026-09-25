@@ -41,7 +41,9 @@ export default Object.freeze({
     if (/fail/i.test(title)) { throw new Error(`noop-acquire refused "${title}"`); }
     const steps = /slow/i.test(title) ? 40 : 3;
     for (let i = 1; i <= steps; i++) {
-      if (ctx.isCancelled()) { return { cancelledAt: i }; }
+      // What a plug-in returns when it honoured a cancel: the runner records
+      // the cancel only for a `stopped: 'cancelled'` account (or nothing).
+      if (ctx.isCancelled()) { return { stopped: 'cancelled', cancelledAt: i }; }
       ctx.progress(i / steps, `step ${i} of ${steps}`);
       await sleep(/slow/i.test(title) ? 100 : 10);
     }

@@ -14,7 +14,7 @@ import path from 'node:path';
 import Joi from 'joi';
 import * as pathTemplate from '../../src/torrent/path-template.js';
 import { registerPlugin, unregisterPluginForTests, listPlugins } from '../../src/discovery-plugins/registry.js';
-import plugin, { copySongs, copyAlbums, planArtistAlbums, copyBody, MAX_COPY_BYTES } from '../../src/discovery-plugins/plugins/federation-copy.js';
+import plugin, { copySongs, copyAlbums, planArtistAlbums, copyBody, MAX_COPY_BYTES, fetchMedia } from '../../src/discovery-plugins/plugins/federation-copy.js';
 import {
   NAMESPACE, KEY, DEFAULT_LAYOUT, LAYOUT_VARS, destinationSchema, uploadsAllowed, writableLibraries,
   destinationFor, validateLayout, normalizeBase, safeFileName, tagsForLayout, renderTarget, isSupportedAudioFile,
@@ -88,6 +88,63 @@ describe('federation-copy · the body a peer sends', () => {
     let asked = 0;
     const cancelling = { isCancelled: () => (++asked > 1), progress: () => {} };
     await assert.rejects(copyBody(body([chunk(10), chunk(10), chunk(10)]), out, cancelling, null), (err) => err.cancelled === true);
+  });
+});
+
+describe('federation-copy · the peer\'s two 429s', () => {
+  const peer = { id: 1, name: 'Sam\'s server' };
+  const ctx = (cancelled = () => false) => ({ isCancelled: cancelled, progress: () => {} });
+  const answer = (status, { retryAfter = null, error = null } = {}) => ({
+    status, ok: status < 300, body: status < 300 ? {} : null,
+    headers: { get: (h) => (h === 'retry-after' ? retryAfter : null) },
+    json: () => Promise.resolve(error ? { error } : {}),
+  });
+  const env = (answers) => {
+    let i = 0;
+    return { peer, fedClient: {}, fedFetchWithDeadline: () => Promise.resolve(answers[Math.min(i++, answers.length - 1)]), asked: () => i };
+  };
+
+  test('the stream cap (a short Retry-After) is waited out and the song asked for again', async () => {
+    const e = env([answer(429, { retryAfter: '1', error: 'Too many concurrent streams' }), answer(200)]);
+    const t0 = Date.now();
+    const res = await fetchMedia(e, ctx(), '/media/x.mp3', null);
+    assert.equal(res.status, 200);
+    assert.equal(e.asked(), 2);
+    assert.ok(Date.now() - t0 >= 900, 'waited the Retry-After');
+  });
+
+  test('the daily quota, or a wait too long to sit through, is the transfer limit: peerLimit, no retry', async () => {
+    const quota = env([answer(429, { retryAfter: '43000', error: 'Daily transfer quota exceeded' })]);
+    await assert.rejects(fetchMedia(quota, ctx(), '/media/x.mp3', null), (err) => err.peerLimit === true && /transfer limit/.test(err.message));
+    assert.equal(quota.asked(), 1);
+    const long = env([answer(429, { retryAfter: '600', error: 'Too many concurrent streams' })]);
+    await assert.rejects(fetchMedia(long, ctx(), '/media/x.mp3', null), (err) => err.peerLimit === true);
+    const bare = env([answer(429)]);
+    await assert.rejects(fetchMedia(bare, ctx(), '/media/x.mp3', null), (err) => err.peerLimit === true, 'a 429 with no Retry-After is not waited on');
+  });
+
+  test('a peer that stays at its cap: three retries, then busy — and a cancel during the wait answers null', async () => {
+    const busy = env([answer(429, { retryAfter: '1', error: 'Too many concurrent streams' })]);
+    await assert.rejects(fetchMedia(busy, ctx(), '/media/x.mp3', null), (err) => err.peerBusy === true && !err.peerLimit && /too many streams/.test(err.message));
+    assert.equal(busy.asked(), 4, 'the first ask and three retries');
+    let polls = 0;
+    const cancelling = env([answer(429, { retryAfter: '5', error: 'Too many concurrent streams' })]);
+    assert.equal(await fetchMedia(cancelling, ctx(() => (++polls > 1)), '/media/x.mp3', null), null);
+    assert.equal(cancelling.asked(), 1);
+  });
+
+  test('busy ends an album and an artist copy with its own reason, like the quota does', async () => {
+    const song = (n) => ({ filepath: `Nova/Night Ferry/${n}.mp3`, title: n, artist: 'Nova', album: 'Night Ferry' });
+    const out = await copySongs([song('a'), song('b'), song('c')], {
+      copyOne: (s) => (s.title === 'b' ? Promise.reject(Object.assign(new Error('busy'), { peerBusy: true })) : Promise.resolve({ copied: { bytes: 1 } })),
+    });
+    assert.equal(out.stopped, 'busy');
+    assert.deepEqual([out.songs.copied.length, out.songs.failed.length], [1, 1], 'c was never asked for');
+    const albums = await copyAlbums([{ name: 'One' }, { name: 'Two' }], {
+      copyAlbum: () => Promise.reject(Object.assign(new Error('busy'), { peerBusy: true })),
+    });
+    assert.equal(albums.stopped, 'busy');
+    assert.equal(albums.albums.length, 1);
   });
 });
 

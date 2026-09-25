@@ -57,7 +57,9 @@ export function start() {
   if (!stopped) { return; }
   stopped = false;
   try {
-    const n = jobsDb.requeueInterrupted();
+    // A soft reboot start()s again in the same process: what is in
+    // `running` is alive and stays out of the re-queue.
+    const n = jobsDb.requeueInterrupted({ exceptIds: [...running.keys()] });
     if (n > 0) { winston.info(`discovery plug-in jobs: re-queued ${n} job(s) interrupted by the last shutdown`); }
   } catch (err) {
     winston.warn(`discovery plug-in jobs: could not re-queue interrupted jobs: ${err.message}`);
@@ -109,9 +111,15 @@ export async function tick() {
 // un-awaited promise and taking the server down.
 function settle(plugin, job, { result, error }) {
   if (error === undefined) {
-    if (jobsDb.isCancelRequested(job.id)) {
-      // What the plug-in returned on its way out stays with the row — an
-      // album copy's finished songs are in the library either way.
+    // A cancel is recorded only when the plug-in honoured it — it returned
+    // nothing, or a many-song account that says it stopped for the cancel.
+    // A cancel asked for after the point of no return (the file is being
+    // tagged, moved, added) lands the song; the row must say so, not
+    // "stopped, nothing was saved". What the plug-in returned on its way
+    // out stays with the row either way: an album copy's finished songs
+    // are in the library.
+    const honoured = result == null || (typeof result === 'object' && result.stopped === 'cancelled');
+    if (honoured && jobsDb.isCancelRequested(job.id)) {
       jobsDb.cancelJob(job.id, result);
     } else {
       jobsDb.finishJob(job.id, result);

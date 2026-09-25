@@ -12,7 +12,7 @@ import * as ytdlp from '../../src/util/yt-dlp.js';
 import plugin, {
   TOPIC_BONUS, cleanTitle, blockedWord, splitArtistTitle, isTopicChannel, channelArtist,
   toCandidates, rankCandidates, pickBest, isYouTubeUrl, lookupCandidates, isUnavailableMessage,
-  lookupCacheKey, acquireLookupSlot, lookupLoad, LOOKUP_CONCURRENCY, LOOKUP_QUEUE_MAX,
+  lookupCacheKey, acquireLookupSlot, lookupLoad, LOOKUP_CONCURRENCY, LOOKUP_QUEUE_MAX, isLiveEntry,
 } from '../../src/discovery-plugins/plugins/youtube.js';
 import { MIN_SCORE } from '../../src/discovery-plugins/match.js';
 import { normalizeRecommendation } from '../../src/discovery-plugins/recommendation.js';
@@ -30,6 +30,35 @@ describe('youtube · plug-in shape', () => {
     assert.equal(typeof plugin.probe, 'function');
     assert.equal(typeof plugin.resolve, 'function');
     assert.equal(typeof plugin.validateChoice, 'function');
+  });
+});
+
+describe('youtube · a live stream is not a song', () => {
+  test('entryToRecord keeps what yt-dlp says about a live stream; isLiveEntry reads it', () => {
+    assert.deepEqual([ytdlp.entryToRecord({ id: 'a', is_live: true }).isLive, ytdlp.entryToRecord({ id: 'a', is_live: true }).liveStatus], [true, null]);
+    assert.deepEqual([ytdlp.entryToRecord({ id: 'b', live_status: 'is_upcoming' }).isLive, ytdlp.entryToRecord({ id: 'b', live_status: 'is_upcoming' }).liveStatus], [false, 'is_upcoming']);
+    assert.equal(ytdlp.entryToRecord({ id: 'c', live_status: 'not_live' }).isLive, false);
+    assert.equal(isLiveEntry(ytdlp.entryToRecord({ id: 'a', is_live: true })), true);
+    assert.equal(isLiveEntry(ytdlp.entryToRecord({ id: 'b', live_status: 'is_upcoming' })), true, 'not started yet');
+    assert.equal(isLiveEntry(ytdlp.entryToRecord({ id: 'c', live_status: 'post_live' })), true, 'just ended, still being processed');
+    assert.equal(isLiveEntry(ytdlp.entryToRecord({ id: 'd', live_status: 'was_live' })), false, 'a finished stream is an upload like any other');
+    assert.equal(isLiveEntry(ytdlp.entryToRecord({ id: 'e', live_status: 'not_live' })), false);
+    assert.equal(isLiveEntry(ytdlp.entryToRecord({ id: 'f' })), false);
+    assert.equal(isLiveEntry(null), false);
+  });
+
+  test('rankCandidates never offers a live stream, however well its title matches', () => {
+    const live = entry({ id: 'live', url: 'https://www.youtube.com/watch?v=live', title: 'Salt & Static', channel: 'Neon Harbor - Topic', isLive: true });
+    const song = entry({ id: 'song', url: 'https://www.youtube.com/watch?v=song', title: 'Salt & Static', channel: 'Neon Harbor - Topic' });
+    assert.deepEqual(rankCandidates(REC, [live, song]).map((r) => r.entry.id), ['song']);
+    assert.deepEqual(rankCandidates(REC, [{ ...live, isLive: false, liveStatus: 'is_upcoming' }]), []);
+  });
+
+  test('the download arguments tell yt-dlp the same, as a backstop', () => {
+    const args = ytdlp.downloadArgs({ url: 'https://www.youtube.com/watch?v=x', dir: '/tmp/x' });
+    const at = args.indexOf('--match-filters');
+    assert.ok(at > 0);
+    assert.equal(args[at + 1], '!is_live');
   });
 });
 

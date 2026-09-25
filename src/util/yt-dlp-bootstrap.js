@@ -463,25 +463,40 @@ let checkTimer = null;
 // decide afresh which copy runs — a server copy that fell behind is
 // superseded here, before anyone presses Get it. A no-op with updates off,
 // under the test hook, and for an operator's explicit binary.
-export async function checkForUpdate() {
+//   fetchImpl / findSystem / ensure / update / installDir / entry / key
+//                injectable for the unit tests
+export async function checkForUpdate({ fetchImpl, findSystem, ensure, update, installDir, entry, key } = {}) {
   if (!autoUpdateOn()) { return { skipped: 'updates are off' }; }
   if (process.env.MSTREAM_YTDLP_BIN) { return { skipped: 'MSTREAM_YTDLP_BIN' }; }
   if (settings().binary && settings().binary !== DEFAULT_BINARY) { return { skipped: 'an explicit binary is configured' }; }
+  const locateOpts = { fresh: true };
+  for (const [k, v] of Object.entries({ findSystem, ensure, update, installDir, entry, key })) { if (v !== undefined) { locateOpts[k] = v; } }
+  const refreshOpts = {};
+  for (const [k, v] of Object.entries({ installDir, entry, key })) { if (v !== undefined) { refreshOpts[k] = v; } }
   let result;
   try {
-    result = await refresh();
+    // The newest release first, whether or not a managed copy exists: the
+    // 30-days rule measures the server's own copy against it (newestKnown),
+    // and a server that runs its own yt-dlp has no managed copy for
+    // refresh() to compare — it would never have asked.
+    const latest = family.mirrorBase() ? null : await latestVersion({ ...(entry !== undefined ? { entry } : {}), ...(fetchImpl ? { fetchImpl } : {}) });
+    result = await refresh({ latest, ...refreshOpts });
+    // The check ran, whether or not there was a managed copy to move: the
+    // admin's probe shows when.
+    lastCheck = { at: Date.now(), error: null };
   } catch (err) {
     lastCheck = { at: Date.now(), error: err.message };
     winston.warn(`${TAG} update check failed: ${err.message}`);
     result = { updated: false, error: err.message };
   }
-  await locate(DEFAULT_BINARY, { fresh: true }).catch((err) => winston.warn(`${TAG} could not decide which copy runs: ${err.message}`));
+  await locate(DEFAULT_BINARY, locateOpts).catch((err) => winston.warn(`${TAG} could not decide which copy runs: ${err.message}`));
   return result;
 }
 
 // Arm the check: shortly after boot, then daily. Idempotent. Started by the
-// server when the youtube plug-in is enabled, and by the first locate() of
-// a route that needs yt-dlp regardless.
+// server when the youtube plug-in is enabled at boot, by the admin route
+// that enables it later, and by the youtube plug-in and the Youtube DL
+// route the first time they run yt-dlp.
 export function startAutoUpdate() {
   if (checkTimer) { return; }
   bootTimer = setTimeout(() => {

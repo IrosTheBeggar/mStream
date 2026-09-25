@@ -46,7 +46,7 @@ import * as vpathUtil from '../../util/vpath.js';
 import * as destinations from '../destination.js';
 import * as staging from '../staging.js';
 import * as downloadsDb from '../../db/plugin-downloads.js';
-import { ownedTrack } from '../owned.js';
+import { ownedTrack, libraryIdsFor } from '../owned.js';
 import { norm } from '../../db/discovery-novelty.js';
 import { scoreCandidate, MIN_SCORE } from '../match.js';
 import { recommendationKey, searchPhrase } from '../recommendation.js';
@@ -71,6 +71,18 @@ const LOOKUP_CACHE_MAX = 200;
 export const LOOKUP_CONCURRENCY = 2;
 export const LOOKUP_QUEUE_MAX = 6;
 const LOOKUP_TIMEOUT_MS = 90 * 1000;
+// A song is a song: a download runs at most this long, whatever yt-dlp is
+// pulling (the size cap is enforced by mStream too — src/util/yt-dlp.js).
+const DOWNLOAD_MAX_SECONDS = 30 * 60;
+
+// A live stream, one that has not started, or one just ended is not a
+// song: yt-dlp fetches those through ffmpeg, where --max-filesize does not
+// apply, and a 24/7 stream would run until the disk filled. Never picked,
+// never offered, and refused as a user's choice.
+export function isLiveEntry(entry) {
+  if (!entry) { return false; }
+  return entry.isLive === true || ['is_live', 'is_upcoming', 'post_live'].includes(entry.liveStatus);
+}
 
 // ── Pure: reading YouTube titles (unit-tested) ────────────────────────────
 
@@ -139,6 +151,7 @@ export function rankCandidates(rec, entries) {
   const out = [];
   for (const entry of entries || []) {
     if (!entry || !entry.url) { continue; }
+    if (isLiveEntry(entry)) { continue; }
     if (blockedWord(entry.title, rec.title)) { continue; }
     let best = null;
     for (const candidate of toCandidates(entry)) {
@@ -236,6 +249,10 @@ async function rankConfirmed(rec, entries, { bin, isCancelled = () => false, sig
     if (isCancelled()) { return null; }
     try {
       const full = await ytdlp.details(r.entry.url, { bin, signal });
+      if (isLiveEntry(full)) {
+        winston.info(`youtube: ${r.entry.url} is a live stream (${full.liveStatus || 'live'}); not a candidate`);
+        continue;
+      }
       confirmed.push({ ...r.entry, ...Object.fromEntries(Object.entries(full).filter(([, v]) => v != null)) });
     } catch (err) {
       if (isUnavailableMessage(err.message)) {
@@ -300,12 +317,12 @@ export function lookupCacheKey(rec, query, searchResults) {
   return [recommendationKey(rec), norm(query), norm(rec.album), rec.duration == null ? '' : String(rec.duration), String(searchResults)].join('|');
 }
 
-async function resolve(rec) {
+async function resolve(rec, { user = null } = {}) {
   const settings = cfg();
   const query = searchPhrase(rec);
   const answer = (over) => ({ lookup: { query, minScore: MIN_SCORE, candidates: [], owned: null, ...over } });
   if (!query) { return answer(); }
-  const owned = ownedTrack({ artist: rec.artist, title: rec.title, album: rec.album });
+  const owned = ownedTrack({ artist: rec.artist, title: rec.title, album: rec.album, duration: rec.duration, libraryIds: libraryIdsFor(user) });
   if (owned) { return answer({ owned }); }
   const key = lookupCacheKey(rec, query, settings.searchResults);
   const cached = cachedLookup(key);
@@ -343,6 +360,9 @@ function validateChoice(choice) {
 async function ytDlpBin(settings) {
   const found = await ytDlpBootstrap.locate(settings.binary);
   if (!found.bin) { throw new Error('yt-dlp is not installed on this server'); }
+  // The plug-in is on and running yt-dlp: keep that copy current from here
+  // on (idempotent; the boot path arms it too when the plug-in starts on).
+  ytDlpBootstrap.startAutoUpdate();
   return found.bin;
 }
 
@@ -394,7 +414,8 @@ async function run(ctx) {
   if (!destinations.uploadsAllowed(user)) { throw new Error('uploads are disabled for this account, and a download is an upload'); }
   const destination = destinations.getDestination(user);
   if (!destination) { throw new Error('no library to download into'); }
-  const owned = ownedTrack({ artist: rec.artist, title: rec.title, album: rec.album });
+  const libraryIds = libraryIdsFor(user);
+  const owned = ownedTrack({ artist: rec.artist, title: rec.title, album: rec.album, duration: rec.duration, libraryIds });
   if (owned) { return { skipped: 'owned', existing: owned, destination }; }
 
   // 1. The upload the user picked from the lookup, read in full — their
@@ -414,6 +435,7 @@ async function run(ctx) {
       throw new Error(`the chosen upload could not be read: ${err.message}`, { cause: err });
     }
     entry = { ...entry, url: entry.url || choice.url, title: entry.title || '' };
+    if (isLiveEntry(entry)) { throw new Error('the chosen upload is a live stream, not a song — pick another'); }
     best = rankCandidates(rec, [entry])[0] || { entry, candidate: toCandidates(entry)[0], score: 0 };
   } else {
     ctx.progress(0.02, `searching YouTube for “${phrase}”`);
@@ -437,6 +459,7 @@ async function run(ctx) {
   const dir = await staging.jobStagingDir(ctx.job.id);
   const handle = ytdlp.startDownload({
     bin, url: best.entry.url, dir, codec: settings.codec, ffmpegPath: ffmpegBin(), maxFilesizeMb: settings.maxFilesizeMb,
+    maxSeconds: DOWNLOAD_MAX_SECONDS,
     onProgress: (f) => ctx.progress(0.1 + 0.8 * f, `${Math.round(f * 100)}% of “${best.entry.title}”`),
   });
   const poll = setInterval(() => { if (ctx.isCancelled()) { handle.abort(); } }, CANCEL_POLL_MS);
@@ -467,7 +490,7 @@ async function run(ctx) {
     // owned check by hash, and never over an existing file.
     const audioHashLib = await import('../../db/audio-hash.js');
     const hashes = await audioHashLib.computeHashes(filePath);
-    const ownedNow = ownedTrack({ hash: hashes.fileHash, audioHash: hashes.audioHash });
+    const ownedNow = ownedTrack({ hash: hashes.fileHash, audioHash: hashes.audioHash, libraryIds });
     if (ownedNow) {
       await staging.discardStaging(dir);
       return { skipped: 'owned', existing: ownedNow, destination };

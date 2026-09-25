@@ -78,8 +78,14 @@ export async function insertDownloadedTrack({ filePath, vpath, basePath, source,
   // Build DB record matching the scanner schema. User-submitted metadata
   // overrides take priority over parsed file metadata. The path is stored
   // with forward slashes whatever the platform — that is how every lookup
-  // (getVPathInfo, pullMetaData) spells it.
-  const relativePath = path.relative(basePath, filePath).replace(/\\/g, '/');
+  // (getVPathInfo, pullMetaData) spells it — and as the DISK spells it: on
+  // a case-insensitive filesystem the folder a file was put into may have
+  // existed under other casing, and a row under the rendered spelling would
+  // be joined by a second row under the on-disk one at the next scan, with
+  // the sweep keeping both. realpath answers with the on-disk case.
+  const realFile = await fs.realpath(filePath).catch(() => filePath);
+  const realBase = await fs.realpath(basePath).catch(() => basePath);
+  const relativePath = path.relative(realBase, realFile).replace(/\\/g, '/');
   const data = {
     title: userMeta.title || (metadata.title ? String(metadata.title) : null),
     artist: userMeta.artist || (metadata.artist ? String(metadata.artist) : null),

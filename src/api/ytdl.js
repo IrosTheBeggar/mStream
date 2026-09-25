@@ -21,6 +21,11 @@ import path from 'node:path';
 
 const downloadTracker = new Map();
 
+// A pasted URL is one song: the size cap and the wall clock the route
+// hands yt-dlp (src/util/yt-dlp.js enforces both, whatever yt-dlp fetches).
+const MAX_FILESIZE_MB = 500;
+const MAX_SECONDS = 60 * 60;
+
 const youtubeUrlSchema = Joi.string().uri({ scheme: ['http', 'https'] }).required().custom((value) => {
   const parsed = new URL(value);
   if (parsed.hostname !== 'youtube.com' && !parsed.hostname.endsWith('.youtube.com') && parsed.hostname !== 'youtu.be') {
@@ -105,7 +110,7 @@ export function setup(mstream) {
     // file moves into the folder the caller named, never over an existing one.
     const dir = await staging.scratchStagingDir('ytdl');
     const handle = ytdlp.startDownload({
-      bin, url: value.url, dir, codec, ffmpegPath,
+      bin, url: value.url, dir, codec, ffmpegPath, maxFilesizeMb: MAX_FILESIZE_MB, maxSeconds: MAX_SECONDS,
       onLog: (line) => winston.info(`yt-dlp output: ${line}`),
     });
     const entry = {

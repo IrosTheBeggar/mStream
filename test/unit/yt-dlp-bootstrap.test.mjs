@@ -478,6 +478,30 @@ describe('yt-dlp bootstrap', () => {
       assert.equal(hits.length, 0);
     });
 
+    test('learns the newest release even with no managed copy, so a server copy that fell behind it is superseded', async () => {
+      // A server that runs its own yt-dlp, within a month of the pin — and
+      // the real newest release four months on. Without asking GitHub the
+      // check measured the copy against the pin and kept it for ever.
+      delete process.env.MSTREAM_YTDLP_BASE;
+      const installDir = path.join(tmpRoot, 'daily-no-managed');
+      const system = () => Promise.resolve({ cmd: 'yt-dlp', version: '2026.08.01' });
+      const fetchImpl = () => Promise.resolve({ status: 302, headers: new Headers({ location: 'https://github.com/yt-dlp/yt-dlp/releases/tag/2026.12.01' }), body: null });
+      let asked = 0;
+      const ensure = () => { asked++; return Promise.resolve(false); };   // the fetch itself is not this test's
+      try {
+        const result = await quietly(() => boot.checkForUpdate({ fetchImpl, findSystem: system, ensure, update: () => Promise.resolve({ updated: false }), installDir, entry }));
+        assert.deepEqual(result, { updated: false, skipped: 'not installed', version: null, latest: '2026.12.01' });
+        assert.equal(boot.status().latest, '2026.12.01', 'the newest release is known now');
+        assert.equal(boot.newestKnown({ entry, managed: null }), '2026.12.01');
+        assert.equal(asked, 1, 'the server copy, 122 days behind, is no longer current: the managed copy was asked for');
+        const d = await boot.locate('yt-dlp', { findSystem: system, ensure: () => Promise.resolve(false), update: () => Promise.resolve({ updated: false }), installDir, entry });
+        assert.equal(d.source, 'system');
+        assert.match(d.note, /122 days behind 2026\.12\.01/, 'measured against the real newest release');
+      } finally {
+        process.env.MSTREAM_YTDLP_BASE = baseUrl;
+      }
+    });
+
     test('startAutoUpdate arms once and stopAutoUpdate disarms', () => {
       boot.startAutoUpdate();
       boot.startAutoUpdate();

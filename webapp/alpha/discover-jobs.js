@@ -219,8 +219,8 @@
       const peer = (many.peer && many.peer.name) || '';
       // The peer's transfer limit or the peer going away ended it: what
       // landed is in, and starting again takes only the gaps.
-      if (many.stopped === 'quota' || many.stopped === 'peer' || many.stopped === 'refused') {
-        const why = { quota: 'discover.job.stoppedQuota', peer: 'discover.job.stoppedPeer', refused: 'discover.job.stoppedRefused' }[many.stopped];
+      if (many.stopped === 'quota' || many.stopped === 'busy' || many.stopped === 'peer' || many.stopped === 'refused') {
+        const why = { quota: 'discover.job.stoppedQuota', busy: 'discover.job.stoppedBusy', peer: 'discover.job.stoppedPeer', refused: 'discover.job.stoppedRefused' }[many.stopped];
         return { ...row, state: 'stopped', tag: 'discover.job.stopped', tagCls: 'err', icon: 'warn', iconCls: 'err',
           sub: { parts: [{ key: why, params: { peer } }, ...manyParts(many)] },
           actions: ['retry'] };

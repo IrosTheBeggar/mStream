@@ -2667,11 +2667,12 @@ paths:
         artist, year }, songs: { total, copied: [{ from, vpath, filepath,
         trackId, bytes, title, artist, album, downloadId }], skipped: [{ from,
         why: owned | exists, at }], failed: [{ from, error }] }, bytes,
-        stopped: null | cancelled | quota | peer | refused, missingVars,
+        stopped: null | cancelled | quota | busy | peer | refused, missingVars,
         peer, destination }` — one song's own failure does not stop the
-        album, the peer's transfer limit, the peer going away, the peer
-        refusing copies with this server's key (`refused`; its admin
-        switched `allowCopies` off) or a cancel does, and the finished songs
+        album, the peer's transfer limit (`quota`; its stream cap is waited
+        out and retried first, `busy` when it stays full), the peer going
+        away, the peer refusing copies with this server's key (`refused`;
+        its admin switched `allowCopies` off) or a cancel does, and the finished songs
         stay (a cancelled job keeps the partial result).
         Re-running an album copies only the gaps. With `scope: artist` it
         asks the peer for the artist's albums and copies, album by album,

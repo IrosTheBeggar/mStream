@@ -45,13 +45,72 @@ after(() => {
 });
 
 // A file in the library with a track row, tagged through userMeta the way a
-// copy or a download tags what it lands.
-async function land(relativePath, meta) {
-  const file = path.join(libDir, ...relativePath.split('/'));
+// copy or a download tags what it lands. `.mp3` names, as a copy's are: the
+// insert takes audio only.
+async function land(relativePath, meta, { vpath = VPATH, dir = libDir } = {}) {
+  const file = path.join(dir, ...relativePath.split('/'));
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `not really audio: ${relativePath}`);
-  return insertDownloadedTrack({ filePath: file, vpath: VPATH, basePath: libDir, source: 'plugin:unit', userMeta: meta, log: 'unit' });
+  return insertDownloadedTrack({ filePath: file, vpath, basePath: dir, source: 'plugin:unit', userMeta: meta, log: 'unit' });
 }
+
+describe('ownedTrack', () => {
+  let privateDir;
+  let publicId;
+  let privateId;
+  const setRow = (relPath, { track = null, disk = null, duration = null }) => manager.getDB()
+    .prepare('UPDATE tracks SET track_number = ?, disc_number = ?, duration = ? WHERE filepath = ?').run(track, disk, duration, relPath);
+
+  before(async () => {
+    privateDir = path.join(tmpDir, 'private');
+    fs.mkdirSync(privateDir, { recursive: true });
+    manager.getDB().prepare("INSERT INTO libraries (name, root_path, type) VALUES (?, ?, 'music')").run('owned-private', privateDir);
+    manager.invalidateCache();
+    publicId = manager.getLibraryByName(VPATH).id;
+    privateId = manager.getLibraryByName('owned-private').id;
+    // Two different recordings that share a title on one album (an artist of
+    // its own, so the ownedAlbumKeys cases below keep their counts).
+    await land('Riverbed/Interludes/03 Interlude.mp3', { title: 'Interlude', artist: 'Riverbed', album: 'Interludes' });
+    setRow('Riverbed/Interludes/03 Interlude.mp3', { track: 3, disk: 1, duration: 61 });
+    // A song only the private library has.
+    await land('Secret/Album/01 Song.mp3', { title: 'Song', artist: 'Secret', album: 'Album' }, { vpath: 'owned-private', dir: privateDir });
+  });
+
+  test('the tag arm matches the recording, not the name: track and disc numbers and the length tell same-titled tracks apart', () => {
+    const rec = { artist: 'Riverbed', title: 'Interlude', album: 'Interludes' };
+    assert.ok(owned.ownedTrack(rec), 'nothing known about the recording: the name is enough');
+    assert.equal(owned.ownedTrack(rec).filepath, `${VPATH}/Riverbed/Interludes/03 Interlude.mp3`);
+    assert.ok(owned.ownedTrack({ ...rec, track: 3 }), 'the same track number');
+    assert.ok(owned.ownedTrack({ ...rec, track: 3, disk: 1, duration: 63 }), 'a length within tolerance');
+    assert.equal(owned.ownedTrack({ ...rec, track: 9 }), null, 'track 9 is another recording — not owned');
+    assert.equal(owned.ownedTrack({ ...rec, track: 3, disk: 2 }), null, 'another disc');
+    assert.equal(owned.ownedTrack({ ...rec, duration: 240 }), null, 'a length that is not this recording');
+    assert.equal(owned.ownedTrack({ ...rec, track: '3', duration: '60' }).by, 'tags', 'numbers as strings, as a peer sends them');
+  });
+
+  test('libraryIds scopes every arm to the libraries the user may see', async () => {
+    const secret = { artist: 'Secret', title: 'Song', album: 'Album' };
+    assert.ok(owned.ownedTrack(secret), 'unscoped: the whole server');
+    assert.equal(owned.ownedTrack({ ...secret, libraryIds: [publicId] }), null, 'a library hidden from the user is not theirs');
+    assert.ok(owned.ownedTrack({ ...secret, libraryIds: [privateId] }));
+    assert.ok(owned.ownedTrack({ ...secret, libraryIds: [publicId, privateId] }));
+    assert.equal(owned.ownedTrack({ ...secret, libraryIds: [] }), null, 'no libraries, nothing owned');
+    const row = manager.getDB().prepare('SELECT file_hash, audio_hash FROM tracks WHERE filepath = ?').get('Secret/Album/01 Song.mp3');
+    assert.ok(owned.ownedTrack({ hash: row.file_hash }));
+    assert.equal(owned.ownedTrack({ hash: row.file_hash, libraryIds: [publicId] }), null, 'the hash arm too');
+    assert.equal(owned.libraryIdsFor({ vpaths: [VPATH] }).join(), String(publicId));
+    assert.equal(owned.libraryIdsFor({ vpaths: [] }).length, 0);
+    assert.equal(owned.libraryIdsFor({}), null, 'a caller without vpaths is not scoped');
+    assert.equal(owned.libraryIdsFor(null), null);
+  });
+
+  test('ownedAlbumKeys scopes the same way', () => {
+    assert.deepEqual([...owned.ownedAlbumKeys('Secret')], ['album']);
+    assert.deepEqual([...owned.ownedAlbumKeys('Secret', { libraryIds: [publicId] })], []);
+    assert.deepEqual([...owned.ownedAlbumKeys('Secret', { libraryIds: [privateId] })], ['album']);
+    assert.deepEqual([...owned.ownedAlbumKeys('Secret', { libraryIds: [] })], []);
+  });
+});
 
 describe('ownedAlbumKeys', () => {
   test('the albums with songs by the artist, as normalised name keys; a spelling of the artist resolves; nothing for an unknown one', async () => {
