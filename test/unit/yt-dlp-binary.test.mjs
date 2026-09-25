@@ -58,6 +58,32 @@ describe('the yt-dlp executable', () => {
     });
   });
 
+  test('startDownload never adopts a file that was already in the folder', async () => {
+    // The stand-in "downloads" by copying a fixture to <dir>/<title>.mp3 and
+    // printing that path — as yt-dlp prints an existing file's path when
+    // --no-overwrites made it skip the fetch. The snapshot taken before the
+    // run is what tells the two apart.
+    const fixture = path.join(dir, 'fixture.mp3');
+    fs.writeFileSync(fixture, 'the download');
+    const out = path.join(dir, 'out');
+    fs.mkdirSync(out, { recursive: true });
+    const bin = { cmd: process.execPath, prefix: [FAKE] };
+    const saved = { script: process.env.MSTREAM_FAKE_YTDLP_SCRIPT, fixture: process.env.MSTREAM_FAKE_YTDLP_FIXTURE };
+    delete process.env.MSTREAM_FAKE_YTDLP_SCRIPT;
+    process.env.MSTREAM_FAKE_YTDLP_FIXTURE = fixture;
+    try {
+      const fresh = await ytdlp.startDownload({ bin, url: 'https://www.youtube.com/watch?v=abcdefghijk', dir: out, codec: 'mp3' }).done;
+      assert.equal(path.basename(fresh.filePath), 'Unknown_Upload.mp3', 'a new file is the download');
+      // Now that file is "already there": a second run must not hand it back.
+      fs.writeFileSync(fresh.filePath, 'somebody else\'s file');
+      await assert.rejects(ytdlp.startDownload({ bin, url: 'https://www.youtube.com/watch?v=abcdefghijk', dir: out, codec: 'mp3' }).done,
+        (err) => err.exists === true && /already exists/.test(err.message));
+    } finally {
+      if (saved.script === undefined) { delete process.env.MSTREAM_FAKE_YTDLP_SCRIPT; } else { process.env.MSTREAM_FAKE_YTDLP_SCRIPT = saved.script; }
+      if (saved.fixture === undefined) { delete process.env.MSTREAM_FAKE_YTDLP_FIXTURE; } else { process.env.MSTREAM_FAKE_YTDLP_FIXTURE = saved.fixture; }
+    }
+  });
+
   test('a file named like a program that is not one says so, on every platform', async () => {
     // Windows answers this with the bare code UNKNOWN, the others with EACCES
     // or ENOEXEC: one sentence for all of them.

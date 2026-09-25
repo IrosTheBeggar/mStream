@@ -217,6 +217,38 @@ describe('job runner', () => {
     runner.stop();
     assert.equal(runner.isRunning(), false);
   });
+
+  test('a settle write that fails is caught: no unhandled rejection, the row stays running, the next start re-queues it', async () => {
+    // SQLITE_FULL, or SQLITE_BUSY past busy_timeout while a scan holds the
+    // lock — here the connection is made read-only under the runner's feet.
+    let unhandled = 0;
+    const onUnhandled = () => { unhandled += 1; };
+    process.on('unhandledRejection', onUnhandled);
+    const d = manager.getDB();
+    let runs = 0;
+    config.program.discoveryPlugins['unit-settle'] = { enabled: true };
+    registry.registerPlugin({ name: 'unit-settle', title: 'Settle', capabilities: ['acquire'], scope: 'server',
+      run() { runs += 1; if (runs === 1) { d.exec('PRAGMA query_only = ON'); } return Promise.resolve({ run: runs }); } });
+    const j = jobsDb.createJob({ plugin: 'unit-settle', key: 'text:settle', recommendation: rec('Settle') }).job;
+    try {
+      runner.start();
+      await until(() => runs === 1);
+      await sleep(250);
+      assert.equal(unhandled, 0, 'the failed write never became an unhandled rejection');
+      assert.equal(jobsDb.getJob(j.id).state, 'running', 'the row is left as it was');
+      assert.equal(runner.runningCount(), 0, 'the slot was given back');
+      d.exec('PRAGMA query_only = OFF');
+      runner.stop();
+      runner.start();   // the next boot: the row is re-queued and runs again
+      await until(() => jobsDb.getJob(j.id).state === 'done');
+      assert.deepEqual(jobsDb.getJob(j.id).result, { run: 2 });
+      assert.equal(unhandled, 0);
+    } finally {
+      d.exec('PRAGMA query_only = OFF');
+      runner.stop();
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
 });
 
 describe('history and the retention pass', () => {

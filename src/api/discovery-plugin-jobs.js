@@ -7,11 +7,19 @@
 //   POST /api/v1/discovery/plugin-jobs/lookup     the caller's newest job per plug-in for one recommendation
 //   POST /api/v1/discovery/plugin-jobs/clear      drop the caller's finished rows ("Clear finished")
 //
-// Starting a job is gated twice: the plug-in must be on and runnable, and
+// Starting a job is gated three times: the plug-in must be on and runnable,
 // the acquisition gate must admit the caller — config.discoveryJobs.enabledFor
 // 'all', or 'whitelist' with users.allow_discovery_jobs = 1 (the torrent
-// integration's pattern). Reading and cancelling are owner-only; an admin
-// sees everyone's.
+// integration's pattern) — and an acquire plug-in's job, which lands a file
+// in a library, needs the caller's upload right as the REQUEST carries it
+// (the job runs later under the account's own rights, which may be wider:
+// a jukebox token is the account with its writes switched off). Reading and
+// cancelling are owner-only; an admin sees everyone's.
+//
+// None of it is for a jukebox session: a remote-control guest holds the
+// owner's account with no writes, and every plug-in route here acts on the
+// account itself (auth.js buildJukeboxUser marks the user; refuseJukebox
+// sits in front of every discovery plug-in route).
 //
 // The same (plug-in, recommendation) is never queued twice while a job for
 // it is live: the second ask answers 200 with the existing job instead of
@@ -24,6 +32,7 @@ import * as runner from '../discovery-plugins/jobs.js';
 import * as jobsDb from '../db/discovery-plugin-jobs.js';
 import * as db from '../db/manager.js';
 import * as config from '../state/config.js';
+import * as destinations from '../discovery-plugins/destination.js';
 import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 
@@ -44,6 +53,25 @@ export function checkJobsAccess(user) {
   }
 }
 
+// A file a plug-in lands in a library is an upload by another road: the
+// server switch and the caller's allow_upload both apply, at the request
+// (the job's later run re-checks the account, but the account's rights are
+// not always the request's — see buildJukeboxUser).
+export function checkUploadRight(user) {
+  if (!destinations.uploadsAllowed(user)) {
+    throw new WebError('Uploading Disabled', 403);
+  }
+}
+
+// Express middleware for a route prefix: a jukebox session token reaches no
+// discovery plug-in route at all.
+export function refuseJukebox(req, res, next) {
+  if (req.user && req.user.jukebox === true) {
+    throw new WebError('not available in a jukebox session', 403);
+  }
+  next();
+}
+
 function ownJob(req) {
   const jobId = Number(req.params.id);
   if (!Number.isInteger(jobId) || jobId <= 0) { throw new WebError('job not found', 404); }
@@ -57,7 +85,10 @@ function ownJob(req) {
 }
 
 export function setup(mstream) {
+  mstream.use('/api/v1/discovery/plugin-jobs', refuseJukebox);
+
   mstream.post('/api/v1/discovery/plugins/:name/jobs', (req, res) => {
+    refuseJukebox(req, res, () => {});
     const name = String(req.params.name || '');
     const plugin = NAME_RE.test(name) ? plugins.getPlugin(name) : null;
     // Unknown, disabled and unavailable (its probe failed — no yt-dlp) all
@@ -69,6 +100,7 @@ export function setup(mstream) {
       throw new WebError(`plug-in ${name} does not run jobs — use resolve`, 400);
     }
     checkJobsAccess(req.user);
+    if (plugin.capabilities.includes(plugins.CAPABILITIES.ACQUIRE)) { checkUploadRight(req.user); }
 
     const schema = Joi.object({
       recommendation: plugins.recommendationSchema.required(),

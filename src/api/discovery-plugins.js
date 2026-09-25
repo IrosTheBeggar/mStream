@@ -11,7 +11,12 @@
 // a plug-in that resolves links or previews reveals nothing about the
 // library — it only re-describes a recommendation the caller already holds.
 // Plug-ins that acquire files or push to external accounts run as jobs
-// (src/api/discovery-plugin-jobs.js) behind their own gate.
+// (src/api/discovery-plugin-jobs.js) behind their own gate. A plug-in's
+// LOOKUP (what its job would fetch) stands behind the same gate as the job:
+// it is a search on this server's behalf — for the youtube plug-in a yt-dlp
+// process per call — so it is not for a caller the job would refuse, nor
+// while the plug-in's probe says it cannot run. No route here is for a
+// jukebox session (see discovery-plugin-jobs.js refuseJukebox).
 //
 // Settings are per user (user_settings, V74, namespace
 // discovery-plugin:<name>): a plug-in declares what may be stored
@@ -27,7 +32,7 @@ import Joi from 'joi';
 import winston from 'winston';
 import * as plugins from '../discovery-plugins/index.js';
 import * as settingsDb from '../db/user-settings.js';
-import { jobsAllowed } from './discovery-plugin-jobs.js';
+import { jobsAllowed, checkJobsAccess, checkUploadRight, refuseJukebox } from './discovery-plugin-jobs.js';
 import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 
@@ -70,6 +75,8 @@ async function settingsView(plugin, req, userId) {
 }
 
 export function setup(mstream) {
+  mstream.use('/api/v1/discovery/plugins', refuseJukebox);
+
   mstream.get('/api/v1/discovery/plugins', (req, res) => {
     // `jobs.allowed` is the acquisition gate for THIS caller: a client hides
     // the acquire / hand-off rows instead of offering a button that answers 403.
@@ -109,6 +116,14 @@ export function setup(mstream) {
     const resolves = plugin.capabilities.some((c) => plugins.RESOLVING_CAPABILITIES.includes(c));
     if (!resolves) {
       throw new WebError(`plug-in ${name} does not resolve recommendations`, 400);
+    }
+    // A lookup is the job's own gate, asked early: unavailable reads as
+    // absent (as the job route reads it), and a caller the job would refuse
+    // — the whitelist, no upload right — is refused here too.
+    if (plugin.capabilities.includes(plugins.CAPABILITIES.LOOKUP)) {
+      if (plugins.isPluginUnavailable(name)) { throw new WebError('unknown discovery plug-in', 404); }
+      checkJobsAccess(req.user);
+      checkUploadRight(req.user);
     }
 
     const schema = Joi.object({ recommendation: plugins.recommendationSchema.required() });

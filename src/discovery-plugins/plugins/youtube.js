@@ -47,6 +47,7 @@ import * as destinations from '../destination.js';
 import * as staging from '../staging.js';
 import * as downloadsDb from '../../db/plugin-downloads.js';
 import { ownedTrack } from '../owned.js';
+import { norm } from '../../db/discovery-novelty.js';
 import { scoreCandidate, MIN_SCORE } from '../match.js';
 import { recommendationKey, searchPhrase } from '../recommendation.js';
 import { CAPABILITIES, SCOPES } from '../registry.js';
@@ -62,6 +63,14 @@ const CANCEL_POLL_MS = 500;
 const LOOKUP_MAX = 5;
 const LOOKUP_TTL_MS = 6 * 60 * 60 * 1000;
 const LOOKUP_CACHE_MAX = 200;
+// A lookup that misses the cache is a yt-dlp search plus a details call per
+// confirmed result — processes and requests to YouTube on this server's
+// behalf. So few run at once, a short line waits, and the rest are told to
+// come back (429, which the resolve route passes through); a search that
+// hangs is cut off.
+export const LOOKUP_CONCURRENCY = 2;
+export const LOOKUP_QUEUE_MAX = 6;
+const LOOKUP_TIMEOUT_MS = 90 * 1000;
 
 // ── Pure: reading YouTube titles (unit-tested) ────────────────────────────
 
@@ -219,14 +228,14 @@ export function isUnavailableMessage(message) {
 // records only, so a thin entry never wins on missing data; `rest` is the
 // tail as found, for a lookup to offer. An upload YouTube will not serve
 // leaves the list. Null when the caller cancelled.
-async function rankConfirmed(rec, entries, { bin, isCancelled = () => false }) {
+async function rankConfirmed(rec, entries, { bin, isCancelled = () => false, signal } = {}) {
   const ranked = rankCandidates(rec, entries);
   if (ranked.length === 0) { return { top: [], rest: [] }; }
   const confirmed = [];
   for (const r of ranked.slice(0, CONFIRM_TOP)) {
     if (isCancelled()) { return null; }
     try {
-      const full = await ytdlp.details(r.entry.url, { bin });
+      const full = await ytdlp.details(r.entry.url, { bin, signal });
       confirmed.push({ ...r.entry, ...Object.fromEntries(Object.entries(full).filter(([, v]) => v != null)) });
     } catch (err) {
       if (isUnavailableMessage(err.message)) {
@@ -262,6 +271,35 @@ function rememberLookup(key, answer) {
 
 export function forgetLookups() { lookupCache.clear(); }
 
+// The lookup's slots: LOOKUP_CONCURRENCY searches at once, LOOKUP_QUEUE_MAX
+// waiting, the rest refused with a 429. acquire() resolves to the release
+// function; a released slot goes to the next in line.
+const lookupSlots = { busy: 0, waiting: [] };
+export function lookupLoad() { return { busy: lookupSlots.busy, waiting: lookupSlots.waiting.length }; }
+export function acquireLookupSlot() {
+  const release = () => {
+    const next = lookupSlots.waiting.shift();
+    if (next) { next(release); } else { lookupSlots.busy -= 1; }
+  };
+  if (lookupSlots.busy < LOOKUP_CONCURRENCY) {
+    lookupSlots.busy += 1;
+    return Promise.resolve(release);
+  }
+  if (lookupSlots.waiting.length >= LOOKUP_QUEUE_MAX) {
+    return Promise.reject(Object.assign(new Error('too many lookups at once — try again in a moment'), { status: 429 }));
+  }
+  return new Promise((resolve) => { lookupSlots.waiting.push(resolve); });
+}
+
+// What a lookup answered is a function of what was searched (the phrase)
+// and what the results were scored against (album, length), and of how
+// many results were asked for. The recommendation's identity is part of
+// the key, never the whole of it: an MBID alone would let any caller plant
+// an answer under a real recording's id for everyone who opens it.
+export function lookupCacheKey(rec, query, searchResults) {
+  return [recommendationKey(rec), norm(query), norm(rec.album), rec.duration == null ? '' : String(rec.duration), String(searchResults)].join('|');
+}
+
 async function resolve(rec) {
   const settings = cfg();
   const query = searchPhrase(rec);
@@ -269,17 +307,23 @@ async function resolve(rec) {
   if (!query) { return answer(); }
   const owned = ownedTrack({ artist: rec.artist, title: rec.title, album: rec.album });
   if (owned) { return answer({ owned }); }
-  const key = `${recommendationKey(rec)}|${settings.searchResults}`;
+  const key = lookupCacheKey(rec, query, settings.searchResults);
   const cached = cachedLookup(key);
   if (cached) { return { lookup: cached }; }
   if (!lookupInFlight.has(key)) {
     const p = (async () => {
-      const bin = await ytDlpBin(settings);
-      const entries = await ytdlp.search(query, { bin, results: settings.searchResults });
-      const r = await rankConfirmed(rec, entries, { bin });
-      const found = { query, minScore: MIN_SCORE, candidates: lookupCandidates(r.top.concat(r.rest)), owned: null };
-      rememberLookup(key, found);
-      return found;
+      const release = await acquireLookupSlot();
+      try {
+        const signal = AbortSignal.timeout(LOOKUP_TIMEOUT_MS);
+        const bin = await ytDlpBin(settings);
+        const entries = await ytdlp.search(query, { bin, results: settings.searchResults, signal });
+        const r = await rankConfirmed(rec, entries, { bin, signal });
+        const found = { query, minScore: MIN_SCORE, candidates: lookupCandidates(r.top.concat(r.rest)), owned: null };
+        rememberLookup(key, found);
+        return found;
+      } finally {
+        release();
+      }
     })().finally(() => lookupInFlight.delete(key));
     lookupInFlight.set(key, p);
   }

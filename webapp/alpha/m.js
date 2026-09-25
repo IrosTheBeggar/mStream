@@ -3762,12 +3762,19 @@ function removeDiscoverDownload(el) {
       [`<button><b>${escapeHtml(t('downloads.removeConfirm'))}</b></button>`, async (instance, toast) => {
         instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
         try {
-          await MSTREAMAPI.discoveryDownloadRemove(id);
-          // Queue entries on that path would 404 on their next play.
-          for (const i of DISCOVERJOBS.queueIndexesFor(MSTREAMPLAYER.playlist, row.filepath)) {
-            MSTREAMPLAYER.removeSongAtPosition(i, false);
+          const removed = await MSTREAMAPI.discoveryDownloadRemove(id);
+          if (removed && removed.kept === 'changed') {
+            // The file at that path is no longer the download (something
+            // replaced it): the record went to history, the file stays and
+            // still plays, so the queue keeps it.
+            iziToast.info({ title: escapeHtml(t('downloads.keptChanged')), message: escapeHtml(row.title), position: 'topCenter', timeout: 4000 });
+          } else {
+            // Queue entries on that path would 404 on their next play.
+            for (const i of DISCOVERJOBS.queueIndexesFor(MSTREAMPLAYER.playlist, row.filepath)) {
+              MSTREAMPLAYER.removeSongAtPosition(i, false);
+            }
+            iziToast.success({ title: escapeHtml(t('downloads.removedToast')), message: escapeHtml(row.title), position: 'topCenter', timeout: 2500 });
           }
-          iziToast.success({ title: escapeHtml(t('downloads.removedToast')), message: escapeHtml(row.title), position: 'topCenter', timeout: 2500 });
         } catch (err) {
           const msg = err && err.status === 409
             ? t('downloads.inUse')

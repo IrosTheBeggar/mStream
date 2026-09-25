@@ -306,15 +306,21 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
     assert.deepEqual(staged(), []);
   });
 
-  test('uploads off for the server: the job fails with the reason before anything is fetched', async () => {
+  test('uploads off for the server: the job is refused at the door, and so is the lookup', async () => {
     assert.equal((await api(server, 'POST', '/api/v1/admin/config/noupload', { noUpload: true })).status, 200);
     try {
       const before = collectionFiles();
-      const job = await runJob({ ...REC, album: 'Late Sessions', year: 2015 });
-      assert.equal(job.state, 'failed');
-      assert.match(job.error, /uploads are disabled for this account, and a download is an upload/);
+      // A download is an upload: the request is refused before a job exists
+      // (the run re-checks the account too, for rights that change later).
+      const started = await api(server, 'POST', JOBS, { recommendation: { ...REC, album: 'Late Sessions', year: 2015 } });
+      assert.equal(started.status, 403, JSON.stringify(started.body));
+      assert.match(started.body.error, /Uploading Disabled/);
       assert.deepEqual(collectionFiles(), before);
       assert.deepEqual(staged(), []);
+      // The lookup stands behind the same gate: a search on this server's
+      // behalf is not for a caller whose download would be refused.
+      const lookup = await api(server, 'POST', RESOLVE, { recommendation: REC });
+      assert.equal(lookup.status, 403, JSON.stringify(lookup.body));
     } finally {
       assert.equal((await api(server, 'POST', '/api/v1/admin/config/noupload', { noUpload: false })).status, 200);
     }

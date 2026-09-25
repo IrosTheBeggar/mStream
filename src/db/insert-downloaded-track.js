@@ -40,6 +40,13 @@ const EMPTY_TAGS = { track: { no: null, of: null }, disk: { no: null, of: null }
  * @returns {Promise<{ relativePath: string, trackId: number|null, title, artist, album, year }>}
  */
 export async function insertDownloadedTrack({ filePath, vpath, basePath, source, format, userMeta = {}, log = 'download' }) {
+  // A row only for what the server calls audio: the file explorer lists by
+  // the same map, and a stray .html or .m3u must not become a "song".
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+  const supported = (config.program && config.program.supportedAudioFiles) || {};
+  if (!ext || supported[ext] !== true) {
+    throw new Error(`not an audio file the server plays (.${ext || '?'}) — refusing to add it to the library`);
+  }
   const stat = await fs.stat(filePath);
 
   // Parse metadata from the file (include covers for album art)

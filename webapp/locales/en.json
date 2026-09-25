@@ -308,6 +308,7 @@
   "downloads.removeSettle": "The file is already gone — this clears the entry.",
   "downloads.removeConfirm": "Remove",
   "downloads.removedToast": "Removed",
+  "downloads.keptChanged": "The file there is no longer this download, so it was left alone",
   "downloads.removeFailed": "Couldn’t remove it",
   "downloads.inUse": "The file is in use — try again in a moment",
   "downloads.plugin.youtube": "YouTube",

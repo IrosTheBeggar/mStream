@@ -648,10 +648,21 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   //
   // Building each handler is guarded too: a library with a missing/invalid
   // root_path is logged and skipped rather than taking down all of /media.
+  //
+  // A library serves music. A page or a script that found its way into one
+  // (a copy from a peer that listed it as a song, a stray file) must never
+  // run on this origin, where the session cookie is: browsers are told not
+  // to sniff the type, and the active types are handed over as downloads.
+  const ACTIVE_TYPES = new Set(['.html', '.htm', '.xhtml', '.svg', '.xml', '.js', '.mjs']);
+  const mediaHeaders = (res, filePath) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    const dot = filePath.lastIndexOf('.');
+    if (dot >= 0 && ACTIVE_TYPES.has(filePath.slice(dot).toLowerCase())) { res.setHeader('Content-Disposition', 'attachment'); }
+  };
   const mediaHandlers = new Map();
   for (const lib of dbManager.getAllLibraries()) {
     try {
-      mediaHandlers.set(lib.name, express.static(lib.root_path));
+      mediaHandlers.set(lib.name, express.static(lib.root_path, { setHeaders: mediaHeaders }));
     } catch (err) {
       winston.error(`Failed to mount media library '${lib.name}' (root: ${lib.root_path}) — it will not be served`, { stack: err });
     }

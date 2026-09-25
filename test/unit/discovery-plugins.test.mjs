@@ -44,6 +44,24 @@ describe('recommendation contract', () => {
     assert.throws(() => normalizeRecommendation('Artist - Title'));
   });
 
+  test('key: every script has an identity of its own — non-Latin recommendations never share one key', () => {
+    const key = (fields) => recommendationKey(normalizeRecommendation(fields));
+    const kino = key({ artist: 'Кино', title: 'Группа крови', album: 'Группа крови' });
+    const splean = key({ artist: 'Сплин', title: 'Выхода нет', album: 'Гранатовый альбом' });
+    const utada = key({ artist: '宇多田ヒカル', title: 'First Love' });
+    const bts = key({ artist: 'BTS', title: '봄날' });
+    assert.equal(new Set([kino, splean, utada, bts]).size, 4, 'four songs, four keys');
+    assert.equal(kino, key({ artist: 'кино', title: 'ГРУППА КРОВИ', album: 'группа крови' }), 'case still collides');
+    assert.equal(key({ artist: 'Röyksopp', title: 'Eple' }), key({ artist: 'Royksopp', title: 'Eple' }), 'accents fold');
+    assert.equal(key({ artist: 'ＡＢＣ', title: '１２３' }), key({ artist: 'ABC', title: '123' }), 'compatibility forms fold');
+    assert.notEqual(key({ artist: '!!!', title: '???' }), key({ artist: '***', title: '???' }), 'symbol-only names fall back to their raw text, not to one empty key');
+    // The scopes' keys are built the same way.
+    const a = normalizeRecommendation({ artist: 'Кино', title: 'x', album: 'Группа крови' });
+    const b = normalizeRecommendation({ artist: 'Сплин', title: 'y', album: 'Гранатовый альбом' });
+    assert.notEqual(jobKey(a, 'album'), jobKey(b, 'album'));
+    assert.notEqual(jobKey(a, 'artist'), jobKey(b, 'artist'));
+  });
+
   test('key: MBID first, else a normalised artist|title|album digest that ignores case and punctuation', () => {
     const a = recommendationKey(normalizeRecommendation({ artist: 'The Beatles', title: 'Help!', album: 'Help!' }));
     const b = recommendationKey(normalizeRecommendation({ artist: 'the beatles', title: 'help', album: 'HELP' }));

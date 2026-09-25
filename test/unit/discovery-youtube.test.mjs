@@ -12,8 +12,10 @@ import * as ytdlp from '../../src/util/yt-dlp.js';
 import plugin, {
   TOPIC_BONUS, cleanTitle, blockedWord, splitArtistTitle, isTopicChannel, channelArtist,
   toCandidates, rankCandidates, pickBest, isYouTubeUrl, lookupCandidates, isUnavailableMessage,
+  lookupCacheKey, acquireLookupSlot, lookupLoad, LOOKUP_CONCURRENCY, LOOKUP_QUEUE_MAX,
 } from '../../src/discovery-plugins/plugins/youtube.js';
 import { MIN_SCORE } from '../../src/discovery-plugins/match.js';
+import { normalizeRecommendation } from '../../src/discovery-plugins/recommendation.js';
 
 const REC = { artist: 'Neon Harbor', title: 'Salt & Static', album: 'Low Tide Recordings', duration: 253 };
 const entry = (over) => ({ id: 'x', url: 'https://www.youtube.com/watch?v=x', title: '', durationSec: 253, channel: null, uploader: null, artist: null, album: null, ...over });
@@ -28,6 +30,47 @@ describe('youtube · plug-in shape', () => {
     assert.equal(typeof plugin.probe, 'function');
     assert.equal(typeof plugin.resolve, 'function');
     assert.equal(typeof plugin.validateChoice, 'function');
+  });
+});
+
+describe('youtube · the lookup cache key and its slots', () => {
+  test('the key is what was searched and scored against, never the MBID alone: no planting an answer under a real recording id', () => {
+    const real = normalizeRecommendation({ recordingMbid: 'b1a9c0de-0000-4000-8000-000000000001', artist: 'Nova', title: 'Remote Hit', album: 'Night Ferry', duration: 253 });
+    const planted = normalizeRecommendation({ recordingMbid: 'b1a9c0de-0000-4000-8000-000000000001', artist: 'Prank Band', title: 'Not The Song' });
+    const n = 8;
+    assert.notEqual(lookupCacheKey(planted, 'Prank Band Not The Song', n), lookupCacheKey(real, 'Nova Remote Hit', n));
+    assert.equal(lookupCacheKey(real, 'Nova Remote Hit', n), lookupCacheKey({ ...real }, 'nova remote hit!', n), 'the phrase is normalised');
+    assert.notEqual(lookupCacheKey(real, 'Nova Remote Hit', n), lookupCacheKey({ ...real, album: 'Late Sessions' }, 'Nova Remote Hit', n), 'the album it is scored against counts');
+    assert.notEqual(lookupCacheKey(real, 'Nova Remote Hit', n), lookupCacheKey({ ...real, duration: 400 }, 'Nova Remote Hit', n), 'so does the length');
+    assert.notEqual(lookupCacheKey(real, 'Nova Remote Hit', n), lookupCacheKey(real, 'Nova Remote Hit', 5), 'and how many results were asked for');
+    const kino = normalizeRecommendation({ artist: 'Кино', title: 'Группа крови' });
+    const splean = normalizeRecommendation({ artist: 'Сплин', title: 'Выхода нет' });
+    assert.notEqual(lookupCacheKey(kino, 'Кино Группа крови', n), lookupCacheKey(splean, 'Сплин Выхода нет', n), 'two non-Latin songs are two keys');
+  });
+
+  test('slots: two lookups run, six wait in line, the next is refused with a 429, and a release lets the next in', async () => {
+    const releases = [];
+    for (let i = 0; i < LOOKUP_CONCURRENCY; i++) { releases.push(await acquireLookupSlot()); }
+    assert.deepEqual(lookupLoad(), { busy: LOOKUP_CONCURRENCY, waiting: 0 });
+    const waiting = [];
+    for (let i = 0; i < LOOKUP_QUEUE_MAX; i++) {
+      let got = false;
+      const p = acquireLookupSlot().then((release) => { got = true; return release; });
+      waiting.push({ p, got: () => got });
+    }
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(lookupLoad(), { busy: LOOKUP_CONCURRENCY, waiting: LOOKUP_QUEUE_MAX });
+    assert.ok(waiting.every((w) => !w.got()), 'the line waits');
+    await assert.rejects(acquireLookupSlot(), (err) => err.status === 429 && /too many lookups/.test(err.message));
+    releases[0]();
+    const next = await waiting[0].p;
+    assert.equal(typeof next, 'function', 'the first in line got the freed slot');
+    assert.deepEqual(lookupLoad(), { busy: LOOKUP_CONCURRENCY, waiting: LOOKUP_QUEUE_MAX - 1 });
+    // Drain: every waiter is let through in order, then the slots empty.
+    next();
+    releases[1]();
+    for (let i = 1; i < waiting.length; i++) { (await waiting[i].p)(); }
+    assert.deepEqual(lookupLoad(), { busy: 0, waiting: 0 });
   });
 });
 

@@ -8,13 +8,16 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import Joi from 'joi';
 import * as pathTemplate from '../../src/torrent/path-template.js';
 import { registerPlugin, unregisterPluginForTests, listPlugins } from '../../src/discovery-plugins/registry.js';
-import plugin, { copySongs, copyAlbums, planArtistAlbums } from '../../src/discovery-plugins/plugins/federation-copy.js';
+import plugin, { copySongs, copyAlbums, planArtistAlbums, copyBody, MAX_COPY_BYTES } from '../../src/discovery-plugins/plugins/federation-copy.js';
 import {
   NAMESPACE, KEY, DEFAULT_LAYOUT, LAYOUT_VARS, destinationSchema, uploadsAllowed, writableLibraries,
-  destinationFor, validateLayout, normalizeBase, safeFileName, tagsForLayout, renderTarget,
+  destinationFor, validateLayout, normalizeBase, safeFileName, tagsForLayout, renderTarget, isSupportedAudioFile,
 } from '../../src/discovery-plugins/destination.js';
 
 const LIBS = [
@@ -24,6 +27,69 @@ const LIBS = [
 ];
 const user = (over = {}) => ({ id: 7, vpaths: ['music', 'other'], allow_upload: 1, ...over });
 const opts = { libraries: LIBS, noUpload: false };
+
+describe('federation-copy · only audio goes into a library', () => {
+  const supported = { mp3: true, flac: true, m4a: true, html: false };
+  test('a peer-named file is taken only when its extension is one the server plays', () => {
+    assert.equal(isSupportedAudioFile('Nova/Night Ferry/01 Remote Hit.mp3', supported), true);
+    assert.equal(isSupportedAudioFile('01 Remote Hit.FLAC', supported), true, 'case does not matter');
+    assert.equal(isSupportedAudioFile('liner-notes.html', supported), false, 'a page is not a song');
+    assert.equal(isSupportedAudioFile('folder.jpg', supported), false);
+    assert.equal(isSupportedAudioFile('album.m3u', supported), false);
+    assert.equal(isSupportedAudioFile('notes.mp3.html', supported), false, 'the last extension counts');
+    assert.equal(isSupportedAudioFile('no-extension', supported), false);
+    assert.equal(isSupportedAudioFile('', supported), false);
+    assert.equal(isSupportedAudioFile('x.html', {}), false, 'nothing listed, nothing taken');
+  });
+});
+
+describe('federation-copy · the body a peer sends', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-copybody-'));
+  const ctx = { isCancelled: () => false, progress: () => {} };
+  const body = (chunks, { stallAfter = Infinity } = {}) => ({
+    body: {
+      async *[Symbol.asyncIterator]() {
+        for (let i = 0; i < chunks.length; i++) {
+          if (i >= stallAfter) { await new Promise(() => {}); }   // never yields again
+          yield chunks[i];
+        }
+      },
+    },
+  });
+  const chunk = (n) => Buffer.alloc(n, 7);
+
+  test('a declared length is the cap for that file, an undeclared body gets the ceiling; within them the bytes land', async () => {
+    const out = path.join(tmp, 'a.part');
+    assert.equal(await copyBody(body([chunk(100), chunk(100)]), out, ctx, 200), 200);
+    assert.equal(fs.statSync(out).size, 200);
+    assert.equal(await copyBody(body([chunk(100), chunk(100), chunk(50)]), out, ctx, null, { maxBytes: 250 }), 250, 'undeclared: the ceiling');
+    assert.ok(MAX_COPY_BYTES >= 1024 * 1024 * 1024, 'the real ceiling is gigabytes, not a lossless album');
+  });
+
+  test('a body that goes past its cap ends the copy, with the reason', async () => {
+    const out = path.join(tmp, 'b.part');
+    await assert.rejects(copyBody(body([chunk(100), chunk(100), chunk(1)]), out, ctx, 200), /more than the 0\.0 MB it declared/);
+    await assert.rejects(copyBody(body([chunk(100), chunk(100), chunk(100)]), out, ctx, null, { maxBytes: 250 }), /larger than the 0\.0 MB a copy may be/);
+    await assert.rejects(copyBody(body([chunk(100), chunk(100), chunk(100)]), out, ctx, 5000, { maxBytes: 250 }),
+      /larger than the .* a copy may be/, 'a declared length above the ceiling is held to the ceiling');
+  });
+
+  test('a peer that goes quiet mid-body ends the copy after the idle time, so a cancel is never stuck behind it', async () => {
+    const out = path.join(tmp, 'c.part');
+    const t0 = Date.now();
+    await assert.rejects(copyBody(body([chunk(10), chunk(10), chunk(10)], { stallAfter: 2 }), out, ctx, null, { idleMs: 80 }),
+      (err) => err.stalled === true && /no data for/.test(err.message));
+    assert.ok(Date.now() - t0 < 5000, 'ended by the idle timer, not by anything slower');
+    assert.equal(fs.statSync(out).size, 20, 'what arrived before the stall was written');
+  });
+
+  test('a cancel between chunks stops it', async () => {
+    const out = path.join(tmp, 'd.part');
+    let asked = 0;
+    const cancelling = { isCancelled: () => (++asked > 1), progress: () => {} };
+    await assert.rejects(copyBody(body([chunk(10), chunk(10), chunk(10)]), out, cancelling, null), (err) => err.cancelled === true);
+  });
+});
 
 describe('federation-copy · plug-in shape', () => {
   test('an acquire plug-in with run(), one at a time, and no settings of its own', () => {

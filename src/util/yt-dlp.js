@@ -299,8 +299,17 @@ export function startDownload({ bin, url, dir, codec = 'mp3', ffmpegPath, maxFil
   });
   const result = done.then(async ({ code, stdout, stderr }) => {
     if (abort.signal.aborted) { throw Object.assign(new Error('cancelled'), { cancelled: true }); }
+    const seen = await before;
     let filePath = printed ? await fs.stat(printed).then((s) => (s.isFile() ? printed : null), () => null) : null;
-    if (!filePath) { filePath = await newOutput(dir, outputExtension(codec), await before); }
+    // A printed path that names a file which was there BEFORE the run is
+    // not a download: with --no-overwrites yt-dlp skips the fetch when
+    // "<title>.<ext>" already exists, yet still prints that path (and
+    // re-embeds metadata into the file). Adopting it would hand the caller
+    // somebody else's file as their download. The snapshot knows.
+    if (filePath && seen.has(path.basename(filePath))) {
+      throw Object.assign(new Error(`a file with that name already exists in this folder (${path.basename(filePath)})`), { exists: true });
+    }
+    if (!filePath) { filePath = await newOutput(dir, outputExtension(codec), seen); }
     if (code !== 0) {
       // A non-zero exit after the file landed is a post-processing grumble
       // (the old route carried on the same way); without a file it is the

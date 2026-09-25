@@ -211,6 +211,15 @@ export async function deleteLibraryRows(d, libraryId) {
     if (changes === 0) { break; }
     await new Promise((resolve) => setImmediate(resolve));
   }
+  // The plug-in download records key on the library NAME (plugin_downloads,
+  // V75), not the id, so they would outlive the library and match a library
+  // re-added under the same name at another root — where "Remove" would
+  // reach a stranger's file. They go to history with the library.
+  const lib = d.prepare('SELECT name FROM libraries WHERE id = ?').get(libraryId);
+  if (lib) {
+    d.prepare('UPDATE plugin_downloads SET removed_at = ?, removed_by = NULL WHERE vpath = ? AND removed_at IS NULL')
+      .run(Date.now(), lib.name);
+  }
   // CASCADE handles what's left: user_libraries, backup_destinations +
   // their backup_history.
   d.prepare('DELETE FROM libraries WHERE id = ?').run(libraryId);

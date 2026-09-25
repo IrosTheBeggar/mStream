@@ -34,6 +34,7 @@ const hasFfmpeg = fs.existsSync(FFMPEG);
 const ADMIN = { username: 'admin', password: 'pw-admin' };
 const DANA = { username: 'dana', password: 'pw-dana' };
 const ELI = { username: 'eli', password: 'pw-eli' };
+const FINN = { username: 'finn', password: 'pw-finn' };
 const LIST = '/api/v1/discovery/downloads';
 const JOBS = '/api/v1/discovery/plugins/youtube/jobs';
 const REC = { source: 'p2p', artist: 'Nova', title: 'Remote Hit', album: 'Night Ferry', year: 2019, duration: 2 };
@@ -43,7 +44,7 @@ const SEARCH = {
 };
 const SONG = 'collection/Nova/Night Ferry/Remote_Hit.mp3';
 
-let server, workDir, collectionDir, inboxDir, adminToken, danaToken, eliToken;
+let server, workDir, collectionDir, inboxDir, adminToken, danaToken, eliToken, finnToken;
 
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
@@ -128,11 +129,14 @@ describe('discovery downloads · the record and its removal', { skip: hasFfmpeg 
         { ...ADMIN, admin: true, vpaths: ['testlib', 'collection', 'inbox'] },
         { ...DANA, vpaths: ['collection'] },
         { ...ELI, vpaths: ['collection'] },
+        // finn sees the collection but may not upload — and so may not remove.
+        { ...FINN, vpaths: ['collection'], allowUpload: false },
       ],
     });
     adminToken = await login(ADMIN);
     danaToken = await login(DANA);
     eliToken = await login(ELI);
+    finnToken = await login(FINN);
   });
   after(async () => {
     if (server) { await server.stop(); }
@@ -249,6 +253,35 @@ describe('discovery downloads · the record and its removal', { skip: hasFfmpeg 
     assert.deepEqual(await listOf(adminToken, '?all=1'), []);
   });
 
+  test('the Youtube DL route never adopts a file that is already in the folder', async () => {
+    // yt-dlp under --no-overwrites skips the fetch when "<title>.mp3" exists
+    // and prints that path; the route used to re-tag it, re-insert it and
+    // record it as the caller's — then Remove would delete somebody else's
+    // file. Now the download runs in staging and lands only where nothing is.
+    const existing = path.join(inboxDir, 'Remote_Hit.mp3');
+    fs.writeFileSync(existing, 'somebody else\'s file, not a download');
+    const before = fs.readFileSync(existing);
+    const started = await api(adminToken, 'POST', '/api/v1/ytdl/', {
+      directory: 'inbox', url: yt('topic'), outputCodec: 'mp3', metadata: { artist: 'Nova', title: 'Remote Hit' },
+    });
+    assert.equal(started.status, 200, JSON.stringify(started.body));
+    const deadline = Date.now() + 20_000;
+    let status;
+    for (;;) {
+      // The newest entry is this download's (an earlier one lingers a while).
+      const entries = (await api(adminToken, 'GET', '/api/v1/ytdl/downloads')).body.downloads;
+      const mine = entries.reduce((a, b) => (!a || b.startTime > a.startTime ? b : a), null) || {};
+      status = mine.status;
+      if (status === 'complete' || status === 'error' || Date.now() > deadline) { break; }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    assert.equal(status, 'error', 'the download fails rather than adopt the file');
+    assert.deepEqual(fs.readFileSync(existing), before, 'the file was not touched');
+    assert.deepEqual(await listOf(adminToken, '?all=1'), [], 'and nothing was recorded');
+    assert.equal(row('SELECT id FROM tracks WHERE filepath = ?', 'Remote_Hit.mp3'), undefined, 'no row was written for it');
+    fs.rmSync(existing);
+  });
+
   test('downloading the song again after removing it makes a fresh record; the old one stays history', async () => {
     const again = await download(danaToken, { ...REC, year: 2018 });
     assert.equal(again.result.downloaded.filepath, SONG, 'not owned any more, so it lands again');
@@ -259,5 +292,38 @@ describe('discovery downloads · the record and its removal', { skip: hasFfmpeg 
     const history = await listOf(danaToken, '?removed=1');
     assert.deepEqual(history.map((d) => [d.id, d.removedAt > 0]), [[live[0].id, false], [danaId, true]]);
     assert.equal((await api(danaToken, 'DELETE', `${LIST}/${live[0].id}`)).status, 200);
+  });
+
+  test('removing a download whose file was replaced leaves the file alone: the record settles, nothing is deleted', async () => {
+    const fresh = await download(danaToken, { ...REC, year: 2017 });
+    const id = fresh.result.downloaded.downloadId;
+    const file = path.join(collectionDir, 'Nova', 'Night Ferry', 'Remote_Hit.mp3');
+    // The user's own rip, copied over it (a rescan reads it under the same
+    // path, so the record still says present).
+    fs.writeFileSync(file, Buffer.concat([fs.readFileSync(file), Buffer.from('and now a different file')]));
+    assert.equal((await api(danaToken, 'POST', '/api/v1/playlist/save', { title: 'keeps', songs: [SONG] })).status, 200);
+    const removed = await api(danaToken, 'DELETE', `${LIST}/${id}`);
+    assert.equal(removed.status, 200, JSON.stringify(removed.body));
+    assert.equal(removed.body.kept, 'changed');
+    assert.deepEqual([removed.body.fileRemoved, removed.body.rowsRemoved, removed.body.playlistEntries], [false, 0, 0]);
+    assert.ok(fs.existsSync(file), 'the file stays');
+    assert.ok(row('SELECT id FROM tracks WHERE filepath = ?', 'Nova/Night Ferry/Remote_Hit.mp3'), 'and its row');
+    assert.equal((await api(danaToken, 'POST', '/api/v1/playlist/load', { playlistname: 'keeps' })).body.length, 1, 'and the playlist entry');
+    assert.ok(removed.body.download.removedAt > 0, 'the record is history');
+    assert.equal((await api(danaToken, 'DELETE', `${LIST}/${id}`)).status, 409, 'settled');
+  });
+
+  test('removing needs the upload right the download needed: an account that may not upload is refused', async () => {
+    const mdb = new DatabaseSync(path.join(server.tmpDir, 'db', 'mstream.db'));
+    let id;
+    try {
+      const finn = mdb.prepare('SELECT id FROM users WHERE username = ?').get('finn').id;
+      id = Number(mdb.prepare(`INSERT INTO plugin_downloads (plugin, user_id, vpath, filepath, downloaded_at)
+        VALUES ('youtube', ?, 'collection', 'Nova/Night Ferry/Remote_Hit.mp3', ?)`).run(finn, Date.now()).lastInsertRowid);
+    } finally { mdb.close(); }
+    const r = await api(finnToken, 'DELETE', `${LIST}/${id}`);
+    assert.equal(r.status, 403, JSON.stringify(r.body));
+    assert.match(r.body.error, /Uploading Disabled/);
+    assert.ok(fs.existsSync(path.join(collectionDir, 'Nova', 'Night Ferry', 'Remote_Hit.mp3')), 'the file stays');
   });
 });

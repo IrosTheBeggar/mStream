@@ -92,7 +92,7 @@ function peerUnreachable(peerName, err) {
 // stopped: 'refused'), else the status as peerStatusError reads it.
 async function peerRefusal(res, peerName) {
   if (res.status === 403) {
-    let body = null;
+    let body;
     try { body = await res.json(); } catch (_e) { body = null; }
     if (body && /copies are not allowed/i.test(String(body.error || ''))) {
       return Object.assign(new Error(`${peerName} does not allow copies with this server's key`), { peerDown: true, copiesOff: true });
@@ -148,16 +148,46 @@ export async function copySongs(songs, { copyOne, isCancelled = () => false, pro
   return { songs: out, bytes, stopped, missingVars: [...missing] };
 }
 
-async function copyBody(res, tmpPath, ctx, total) {
+// How much one copy may be, and how long a peer may go quiet mid-body. A
+// length the peer declares is the cap for that file (undici holds it to
+// its word); a body with no declared length gets MAX_COPY_BYTES, so a peer
+// that streams for ever cannot fill the library's disk. A chunk that does
+// not arrive within IDLE_CHUNK_MS ends the copy — a cancel is polled
+// between chunks, so a stalled peer would otherwise hold the job.
+export const MAX_COPY_BYTES = 2 * 1024 * 1024 * 1024;
+export const IDLE_CHUNK_MS = 60_000;
+
+function nextWithin(iterator, ms) {
+  let timer;
+  return Promise.race([
+    iterator.next(),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error(`no data for ${Math.round(ms / 1000)} s`), { stalled: true })), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+// The bytes of `res.body` (any async iterable of chunks) into tmpPath.
+// Exported for the unit tests; the plug-in calls it from copyOne.
+export async function copyBody(res, tmpPath, ctx, total, { maxBytes = MAX_COPY_BYTES, idleMs = IDLE_CHUNK_MS } = {}) {
   const handle = await fs.open(tmpPath, 'w');
+  const cap = total && total <= maxBytes ? total : maxBytes;
   let bytes = 0;
   let lastReport = 0;
   const mb = (n) => (n / (1024 * 1024)).toFixed(1);
+  const iterator = res.body[Symbol.asyncIterator]();
   try {
-    for await (const chunk of res.body) {
+    for (;;) {
+      const { done, value: chunk } = await nextWithin(iterator, idleMs);
+      if (done) { break; }
       if (ctx.isCancelled()) { throw Object.assign(new Error('cancelled'), { cancelled: true }); }
-      await handle.write(chunk);
       bytes += chunk.length;
+      if (bytes > cap) {
+        throw new Error(total && total <= maxBytes
+          ? `the peer sent more than the ${mb(total)} MB it declared`
+          : `the file is larger than the ${mb(maxBytes)} MB a copy may be`);
+      }
+      await handle.write(chunk);
       const now = Date.now();
       if (now - lastReport >= PROGRESS_EVERY_MS) {
         lastReport = now;
@@ -165,6 +195,12 @@ async function copyBody(res, tmpPath, ctx, total) {
           total ? `${mb(bytes)} of ${mb(total)} MB` : `${mb(bytes)} MB`);
       }
     }
+  } catch (err) {
+    // Let the source go — without waiting on it: a stalled iterator settles
+    // its return() only once its pending read does (the caller's abort()
+    // sees to that for a real response).
+    if (typeof iterator.return === 'function') { try { iterator.return().catch(() => {}); } catch (_e) { /* already done */ } }
+    throw err;
   } finally {
     await handle.close();
   }
@@ -402,6 +438,15 @@ async function copyOne(ctx, env, song) {
   });
   if (owned) { return { skipped: 'owned', existing: owned }; }
 
+  // The name the file keeps — and only audio goes into a library: a peer's
+  // listing names what the peer chose to, and a page or a playlist filed
+  // among the songs would be served from this origin and read by the
+  // scanner. Refused before a byte moves.
+  const fileName = destinations.safeFileName(song.filepath);
+  if (!destinations.isSupportedAudioFile(fileName)) {
+    throw new Error(`${peer.name} lists '${fileName}' as a song, but it is not an audio file this server plays`);
+  }
+
   // 2. The bytes, into a .part file inside the destination library.
   const baseInfo = vpathUtil.getVPathInfo(destination.base ? `${destination.vpath}/${destination.base}` : destination.vpath, user);
   await fs.mkdir(baseInfo.fullPath, { recursive: true });
@@ -416,6 +461,10 @@ async function copyOne(ctx, env, song) {
   }
   if (!res.ok || !res.body) { throw await peerRefusal(res, peer.name); }
   const total = Number(res.headers.get('content-length')) || null;
+  if (total && total > MAX_COPY_BYTES) {
+    abort.abort();
+    throw new Error(`${peer.name} says the file is ${(total / (1024 * 1024)).toFixed(0)} MB, more than the ${MAX_COPY_BYTES / (1024 * 1024)} MB a copy may be`);
+  }
   let bytes;
   try {
     bytes = await copyBody(res, tmpPath, ctx, total);
@@ -434,7 +483,6 @@ async function copyOne(ctx, env, song) {
       winston.warn(`federation-copy: could not read tags from the copied file (${err.message}); using the recommendation's`);
     }
     const tags = destinations.tagsForLayout(common, song);
-    const fileName = destinations.safeFileName(song.filepath);
     const target = destinations.renderTarget({ destination, tags, peerName: peer.name, fileName });
     const targetInfo = vpathUtil.getVPathInfo(`${destination.vpath}/${target.relPath}`, user);
 
