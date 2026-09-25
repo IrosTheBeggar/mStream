@@ -219,9 +219,10 @@
       const peer = (many.peer && many.peer.name) || '';
       // The peer's transfer limit or the peer going away ended it: what
       // landed is in, and starting again takes only the gaps.
-      if (many.stopped === 'quota' || many.stopped === 'peer') {
+      if (many.stopped === 'quota' || many.stopped === 'peer' || many.stopped === 'refused') {
+        const why = { quota: 'discover.job.stoppedQuota', peer: 'discover.job.stoppedPeer', refused: 'discover.job.stoppedRefused' }[many.stopped];
         return { ...row, state: 'stopped', tag: 'discover.job.stopped', tagCls: 'err', icon: 'warn', iconCls: 'err',
-          sub: { parts: [{ key: many.stopped === 'quota' ? 'discover.job.stoppedQuota' : 'discover.job.stoppedPeer', params: { peer } }, ...manyParts(many)] },
+          sub: { parts: [{ key: why, params: { peer } }, ...manyParts(many)] },
           actions: ['retry'] };
       }
       // Startable again: the copy is idempotent, so a second run takes only

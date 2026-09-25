@@ -31,9 +31,9 @@ export function createFederationKey(name, libraryIds, limits = {}, expiresAt = n
   db.exec('BEGIN');
   try {
     const result = db.prepare(`
-      INSERT INTO federation_keys (key, name, stream_kbps, daily_mb, max_streams, expires_at)
-      VALUES (?, ?, ?, ?, ?, datetime(?))
-    `).run(key, name, limits.streamKbps || 0, limits.dailyMb || 0, limits.maxStreams || 0, expiresAt);
+      INSERT INTO federation_keys (key, name, stream_kbps, daily_mb, max_streams, allow_copies, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime(?))
+    `).run(key, name, limits.streamKbps || 0, limits.dailyMb || 0, limits.maxStreams || 0, limits.allowCopies === false ? 0 : 1, expiresAt);
     const keyId = Number(result.lastInsertRowid);
     const grant = db.prepare('INSERT INTO federation_key_libraries (key_id, library_id) VALUES (?, ?)');
     for (const libId of libraryIds) { grant.run(keyId, libId); }
@@ -45,10 +45,12 @@ export function createFederationKey(name, libraryIds, limits = {}, expiresAt = n
   }
 }
 
-export function setFederationKeyLimits(id, { streamKbps, dailyMb, maxStreams }) {
+// `allowCopies` (V77) is left as it is when the caller does not say.
+export function setFederationKeyLimits(id, { streamKbps, dailyMb, maxStreams, allowCopies }) {
+  const copies = allowCopies === undefined || allowCopies === null ? null : (allowCopies ? 1 : 0);
   return getDB().prepare(`
-    UPDATE federation_keys SET stream_kbps = ?, daily_mb = ?, max_streams = ? WHERE id = ?
-  `).run(streamKbps || 0, dailyMb || 0, maxStreams || 0, id).changes > 0;
+    UPDATE federation_keys SET stream_kbps = ?, daily_mb = ?, max_streams = ?, allow_copies = COALESCE(?, allow_copies) WHERE id = ?
+  `).run(streamKbps || 0, dailyMb || 0, maxStreams || 0, copies, id).changes > 0;
 }
 
 // Set or clear (null = never) a key's expiry. Setting a future date on an

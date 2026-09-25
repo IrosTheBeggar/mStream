@@ -118,6 +118,42 @@ describe('federation bandwidth limits e2e', () => {
       { kbps: 0, mb: 0, streams: 0 });
   });
 
+  test('a key with copies switched off refuses a request that says it is a copy; playback is untouched; the switch is live', async () => {
+    const nocopies = await mintKey('nocopies', { streamKbps: 0, dailyMb: 0, maxStreams: 0, allowCopies: false });
+    const row = (await listKeys()).find((k) => k.id === nocopies.id);
+    assert.equal(row.allow_copies, 0);
+    assert.equal((await listKeys()).find((k) => k.id === keys.open.id).allow_copies, 1, 'on unless said');
+    const media = (key, copy) => fetch(`${srv.baseUrl}/media/shared/c.bin`, { headers: { ...fedHeaders(key), ...(copy ? { 'x-mstream-purpose': 'copy' } : {}) } });
+    const refused = await media(nocopies.key, true);
+    assert.equal(refused.status, 403);
+    assert.match((await refused.json()).error, /copies are not allowed/);
+    const play = await media(nocopies.key, false);
+    assert.equal(play.status, 200, 'a plain stream is a stream');
+    await play.arrayBuffer();
+    const other = await media(keys.open.key, true);
+    assert.equal(other.status, 200, 'a key that allows copies serves one');
+    await other.arrayBuffer();
+    // A read that is not a file is never refused, whatever it says it is for.
+    const meta = await fetch(`${srv.baseUrl}/api/v1/db/metadata`, { method: 'POST', headers: { ...fedHeaders(nocopies.key), 'x-mstream-purpose': 'copy' }, body: JSON.stringify({ filepath: 'shared/c.bin' }) });
+    assert.equal(meta.status, 200);
+    // Switched on live, without touching the caps.
+    const on = await fetch(`${srv.baseUrl}/api/v1/admin/federation/keys/${nocopies.id}/limits`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-access-token': adminToken },
+      body: JSON.stringify({ streamKbps: 0, dailyMb: 0, maxStreams: 0, allowCopies: true }),
+    });
+    assert.equal(on.status, 200);
+    assert.equal((await on.json()).allow_copies, 1);
+    const now = await media(nocopies.key, true);
+    assert.equal(now.status, 200);
+    await now.arrayBuffer();
+    // Absent = unchanged.
+    const caps = await fetch(`${srv.baseUrl}/api/v1/admin/federation/keys/${nocopies.id}/limits`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-access-token': adminToken },
+      body: JSON.stringify({ streamKbps: 5, dailyMb: 0, maxStreams: 0 }),
+    });
+    assert.equal((await caps.json()).allow_copies, 1);
+  });
+
   test('limits edit route updates live, 404s unknown ids, 400s garbage', async () => {
     const ok = await fetch(`${srv.baseUrl}/api/v1/admin/federation/keys/${keys.edit.id}/limits`, {
       method: 'POST',

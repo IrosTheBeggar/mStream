@@ -302,6 +302,16 @@ function isHeavy(req) {
   return req.method === 'GET' && req.path.startsWith('/media/');
 }
 
+// A request that says it is a copy (the discovery copy plug-in sends
+// X-mStream-Purpose: copy on everything it asks a peer). A courtesy the
+// other server extends by saying so, not a boundary: a client that keeps
+// quiet is streaming, and streams are allowed.
+export const PURPOSE_HEADER = 'x-mstream-purpose';
+export const COPIES_OFF_MESSAGE = 'copies are not allowed with this key';
+function isCopy(req) {
+  return String(req.get(PURPOSE_HEADER) || '').trim().toLowerCase() === 'copy';
+}
+
 export function setup(mstream) {
   mstream.use((req, res, next) => {
     const user = req.user;
@@ -313,6 +323,10 @@ export function setup(mstream) {
 
     const heavy = isHeavy(req);
     if (heavy) {
+      if (limits.allowCopies === false && isCopy(req)) {
+        winston.info(`[federation] ${user.username} asked to copy ${req.path} from ${req.ip}; copies are switched off for the key`);
+        throw new WebError(COPIES_OFF_MESSAGE, 403);
+      }
       if (limits.maxStreams > 0 && activeStreamCount(keyId) >= limits.maxStreams) {
         winston.warn(`[federation] ${user.username} over the concurrent-stream cap `
           + `(${limits.maxStreams}) on ${req.path} from ${req.ip}`);

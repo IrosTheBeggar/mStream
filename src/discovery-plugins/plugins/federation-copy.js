@@ -44,6 +44,12 @@
 // user's allow_upload — a copy is an upload by another road) and to start
 // jobs (the jobs route's gate). The webapp hides the rows and the
 // destination bar when either is false; the job refuses either way.
+//
+// The peer's side: every request this plug-in makes carries
+// X-mStream-Purpose: copy, so a peer whose key for this server has copies
+// switched off (V77 allow_copies; api/federation-limits.js) answers 403 on
+// the file — the job fails with "does not allow copies", an album or artist
+// run stops with `stopped: 'refused'`. Playback is never affected.
 
 import path from 'node:path';
 import fs from 'node:fs/promises';
@@ -64,6 +70,9 @@ export const NAME = 'federation-copy';
 // as the file takes.
 const HEADER_DEADLINE_MS = 15_000;
 const PROGRESS_EVERY_MS = 400;
+// What this plug-in tells the peer it is doing (api/federation-limits.js
+// reads it on the peer's side).
+const COPY_HEADERS = Object.freeze({ 'X-mStream-Purpose': 'copy' });
 
 // `peerLimit` / `peerDown` mark the failures that end an album copy: the
 // rest of the songs would fail the same way.
@@ -76,6 +85,20 @@ function peerStatusError(status, peerName) {
 
 function peerUnreachable(peerName, err) {
   return Object.assign(new Error(`${peerName} is unreachable (${err.message})`), { peerDown: true, cause: err });
+}
+
+// A refusal on the file itself: a 403 whose body says copies are switched
+// off for this server's key (`copiesOff`, which ends an album with
+// stopped: 'refused'), else the status as peerStatusError reads it.
+async function peerRefusal(res, peerName) {
+  if (res.status === 403) {
+    let body = null;
+    try { body = await res.json(); } catch (_e) { body = null; }
+    if (body && /copies are not allowed/i.test(String(body.error || ''))) {
+      return Object.assign(new Error(`${peerName} does not allow copies with this server's key`), { peerDown: true, copiesOff: true });
+    }
+  }
+  return peerStatusError(res.status, peerName);
 }
 
 // ── The album loop's accounting (pure; unit-tested with a scripted copyOne) ──
@@ -104,6 +127,7 @@ export async function copySongs(songs, { copyOne, isCancelled = () => false, pro
     } catch (err) {
       out.failed.push({ from: song.filepath, error: err && err.message ? err.message : String(err) });
       if (err && err.peerLimit) { stopped = 'quota'; break; }
+      if (err && err.copiesOff) { stopped = 'refused'; break; }
       if (err && err.peerDown) { stopped = 'peer'; break; }
       continue;
     }
@@ -188,7 +212,7 @@ async function peerJson(env, route, body) {
   let r;
   try {
     r = await env.fedFetchWithDeadline(env.fedClient, env.peer, route, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...COPY_HEADERS }, body: JSON.stringify(body),
     }, HEADER_DEADLINE_MS);
   } catch (err) {
     throw peerUnreachable(env.peer.name, err);
@@ -292,6 +316,7 @@ export async function copyAlbums(albums, { copyAlbum, isCancelled = () => false,
     } catch (err) {
       out.albums.push({ name: al.name, year: al.year == null ? null : al.year, error: err && err.message ? err.message : String(err), songs: empty(), bytes: 0, stopped: null });
       if (err && err.peerLimit) { out.stopped = 'quota'; break; }
+      if (err && err.copiesOff) { out.stopped = 'refused'; break; }
       if (err && err.peerDown) { out.stopped = 'peer'; break; }
       continue;
     }
@@ -364,7 +389,7 @@ async function copyOne(ctx, env, song) {
   let peerMeta = null;
   try {
     const r = await fedFetchWithDeadline(fedClient, peer, '/api/v1/db/metadata', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filepath: song.filepath }),
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...COPY_HEADERS }, body: JSON.stringify({ filepath: song.filepath }),
     }, HEADER_DEADLINE_MS);
     if (r.ok) { peerMeta = ((await r.json()) || {}).metadata || null; }
   } catch (err) {
@@ -385,11 +410,11 @@ async function copyOne(ctx, env, song) {
   const abort = new AbortController();
   let res;
   try {
-    res = await fedFetchWithDeadline(fedClient, peer, `/media/${remotePath}`, { signal: abort.signal }, HEADER_DEADLINE_MS);
+    res = await fedFetchWithDeadline(fedClient, peer, `/media/${remotePath}`, { signal: abort.signal, headers: { ...COPY_HEADERS } }, HEADER_DEADLINE_MS);
   } catch (err) {
     throw peerUnreachable(peer.name, err);
   }
-  if (!res.ok || !res.body) { throw peerStatusError(res.status, peer.name); }
+  if (!res.ok || !res.body) { throw await peerRefusal(res, peer.name); }
   const total = Number(res.headers.get('content-length')) || null;
   let bytes;
   try {

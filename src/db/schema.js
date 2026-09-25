@@ -93,7 +93,9 @@ import { mergeAlbumInto, backfillAlbumAggregates } from './album-merge.js';
 // library. See SCHEMA_V75.
 // V76 adds discovery_plugin_jobs.params, what a job was started with beyond
 // the recommendation. See SCHEMA_V76.
-export const SCHEMA_VERSION = 76;
+// V77 adds federation_keys.allow_copies, the per-key switch for copies by
+// the other server's discovery plug-in. See SCHEMA_V77.
+export const SCHEMA_VERSION = 77;
 
 // The schema version at which the SCANNER'S WRITE CONTRACT last changed —
 // the columns / identity rules a rust-parser binary must know to write rows
@@ -3280,6 +3282,15 @@ export const SCHEMA_V76 = `
   ALTER TABLE discovery_plugin_jobs ADD COLUMN params TEXT;
 `;
 
+// V77: federation_keys.allow_copies — whether the server holding this key
+// may COPY files into its own library (its discovery copy plug-in says so
+// with an X-mStream-Purpose: copy header; api/federation-limits.js answers
+// 403 when the switch is off). Playback is untouched. On by default: a copy
+// costs the same bytes as a play, and the key's caps still apply.
+export const SCHEMA_V77 = `
+  ALTER TABLE federation_keys ADD COLUMN allow_copies INTEGER NOT NULL DEFAULT 1;
+`;
+
 export const MIGRATIONS = [
   { version: 1,  sql: SCHEMA_V1  },
   { version: 2,  sql: SCHEMA_V2  },
@@ -3575,4 +3586,6 @@ export const MIGRATIONS = [
   { version: 75, sql: SCHEMA_V75 },
   // V76 — a nullable column on the jobs table. See SCHEMA_V76.
   { version: 76, sql: SCHEMA_V76 },
+  // V77 — a switch on the key row. See SCHEMA_V77.
+  { version: 77, sql: SCHEMA_V77 },
 ];

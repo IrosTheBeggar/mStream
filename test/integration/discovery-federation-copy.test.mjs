@@ -387,6 +387,35 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     assert.ok(fs.existsSync(path.join(collectionDir, 'Vosto', 'Solo ()', 'Third_Song.mp3')));
   });
 
+  test('the peer can switch copies off for this server\'s key: a copy fails with the reason, an album stops with refused, playback goes on', async () => {
+    const keyId = (await api(srvA, 'GET', '/api/v1/admin/federation/keys')).body[0].id;
+    const setCopies = (allowCopies) => api(srvA, 'POST', `/api/v1/admin/federation/keys/${keyId}/limits`, { streamKbps: 0, dailyMb: 0, maxStreams: 0, allowCopies });
+    assert.equal((await setCopies(false)).status, 200);
+    try {
+      // A song B does not have (the compilation track the artist scopes left out).
+      const song = await api(srvB, 'POST', JOBS, { recommendation: rec('Comp_Track.mp3') });
+      const failed = await untilFinished(song.body.job.id);
+      assert.equal(failed.state, 'failed', JSON.stringify(failed.result));
+      assert.match(failed.error, /does not allow copies/);
+      const album = await api(srvB, 'POST', JOBS, { recommendation: rec('Comp_Track.mp3'), scope: 'album' });
+      const stopped = await untilFinished(album.body.job.id);
+      assert.equal(stopped.state, 'done', `job error: ${stopped.error}`);
+      assert.equal(stopped.result.stopped, 'refused');
+      assert.deepEqual([stopped.result.songs.copied.length, stopped.result.songs.failed.length], [0, 1]);
+      assert.match(stopped.result.songs.failed[0].error, /does not allow copies/);
+      // Playback through the stream proxy is untouched.
+      const stream = await fetch(`${srvB.baseUrl}/api/v1/federation/peers/${peerId}/stream/shared/Comp_Track.mp3`);
+      assert.equal(stream.status, 200);
+      await stream.arrayBuffer();
+    } finally {
+      assert.equal((await setCopies(true)).status, 200);
+    }
+    const again = await api(srvB, 'POST', JOBS, { recommendation: rec('Comp_Track.mp3') });
+    const copied = await untilFinished(again.body.job.id);
+    assert.equal(copied.state, 'done', `job error: ${copied.error}`);
+    assert.ok(copied.result.copied && copied.result.copied.filepath, 'switched back on, the copy lands');
+  });
+
   test('the shared fixture library never received a file', () => {
     // 'Vosto' is a real fixture artist; only the folders a stray copy would
     // create are checked.
