@@ -13,6 +13,7 @@
 
 import Joi from 'joi';
 import { CAPABILITIES, SCOPES } from '../registry.js';
+import { JOB_SCOPES } from '../recommendation.js';
 import WebError from '../../util/web-error.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -23,6 +24,7 @@ export default Object.freeze({
   description: 'Test-only plug-in that pretends to acquire a recommendation. Never registered outside the test environment.',
   capabilities: [CAPABILITIES.ACQUIRE],
   scope: SCOPES.SERVER,
+  scopes: [JOB_SCOPES.SONG, JOB_SCOPES.ALBUM],
   concurrency: 2,
   userSettings: {
     note: { schema: Joi.string().max(100) },
@@ -43,6 +45,6 @@ export default Object.freeze({
       ctx.progress(i / steps, `step ${i} of ${steps}`);
       await sleep(/slow/i.test(title) ? 100 : 10);
     }
-    return { echoed: title, steps };
+    return { echoed: title, steps, scope: (ctx.params && ctx.params.scope) || JOB_SCOPES.SONG };
   },
 });

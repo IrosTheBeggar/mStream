@@ -81,3 +81,48 @@ export function recommendationKey(rec) {
 export function searchPhrase(rec) {
   return [rec.artist, rec.title].filter((s) => typeof s === 'string' && s.trim()).join(' ').trim();
 }
+
+// ── Job scopes ───────────────────────────────────────────────────────────
+// What a job acts on: the one song (the default), the song's whole album,
+// every album of its artist, or only the artist's albums the library lacks.
+// A plug-in declares the scopes it runs (registry `scopes`, ['song'] unless
+// it says otherwise); the job start route keeps a wider scope in the job's
+// `params` and hands it to run() as ctx.params.scope.
+export const JOB_SCOPES = Object.freeze({
+  SONG: 'song',
+  ALBUM: 'album',
+  ARTIST: 'artist',
+  ARTIST_MISSING: 'artist-missing',
+});
+
+// What a scope needs from the recommendation: an album job the album's
+// name, the artist jobs the artist's. The missing field's name, or null
+// when the scope can run on this recommendation.
+export function scopeMissing(rec, scope) {
+  const has = (v) => typeof v === 'string' && v.trim().length > 0;
+  if (scope === JOB_SCOPES.ALBUM) { return has(rec && rec.album) ? null : 'album'; }
+  if (scope === JOB_SCOPES.ARTIST || scope === JOB_SCOPES.ARTIST_MISSING) { return has(rec && rec.artist) ? null : 'artist'; }
+  return null;
+}
+
+// The identity a job dedupes on, per scope. A song job keys as the
+// recommendation does; an album job on artist + album, so two songs of one
+// album ask for the same album job; the artist scopes on the artist. The
+// scope names the key's prefix, so a song copy and an album copy of the
+// same song are two live jobs, never one deduped against the other.
+export function jobKey(rec, scope = JOB_SCOPES.SONG) {
+  if (!scope || scope === JOB_SCOPES.SONG) { return recommendationKey(rec); }
+  const digest = (parts) => crypto.createHash('sha1').update(parts.map(norm).join('|')).digest('hex').slice(0, 32);
+  if (scope === JOB_SCOPES.ALBUM) { return `album:${digest([rec.artist, rec.album])}`; }
+  return `${scope}:${digest([rec.artist])}`;
+}
+
+// Every key a recommendation's jobs may sit under — one per scope its
+// fields allow. What the lookup route asks the table for.
+export function jobKeysFor(rec) {
+  const out = {};
+  for (const scope of Object.values(JOB_SCOPES)) {
+    if (scopeMissing(rec, scope) === null) { out[scope] = jobKey(rec, scope); }
+  }
+  return out;
+}

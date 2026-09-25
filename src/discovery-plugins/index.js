@@ -32,4 +32,5 @@ export {
 } from './registry.js';
 export {
   RECOMMENDATION_SOURCES, recommendationSchema, normalizeRecommendation, recommendationKey, searchPhrase,
+  JOB_SCOPES, scopeMissing, jobKey, jobKeysFor,
 } from './recommendation.js';

@@ -307,3 +307,18 @@ describe('the lookup card', () => {
     assert.equal(J.lookupCard({ status: 'error', error: 'boom' }).error, 'boom');
   });
 });
+
+describe('a lookup answer indexed by plug-in, per scope', () => {
+  test('jobsByPlugin: the song rows see song jobs, the album rows album jobs', () => {
+    const jobs = [
+      { id: 1, plugin: 'federation-copy', params: { scope: 'album' } },
+      { id: 2, plugin: 'federation-copy', params: null },
+      { id: 3, plugin: 'youtube', params: { choice: { url: 'x' } } },
+    ];
+    const ids = (index) => Object.fromEntries(Object.entries(index).map(([k, v]) => [k, v.id]));
+    assert.deepEqual(ids(J.jobsByPlugin(jobs)), { 'federation-copy': 2, youtube: 3 });
+    assert.deepEqual(ids(J.jobsByPlugin(jobs, 'album')), { 'federation-copy': 1 });
+    assert.deepEqual(J.jobsByPlugin(jobs, 'artist'), {});
+    assert.deepEqual(J.jobsByPlugin(null), {});
+  });
+});

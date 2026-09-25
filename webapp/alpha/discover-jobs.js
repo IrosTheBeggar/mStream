@@ -234,10 +234,15 @@
   }
 
   // Index a lookup answer (newest job per plug-in) by plug-in name.
-  function jobsByPlugin(jobs) {
+  // A lookup answer holds the newest job per plug-in AND scope; a row asks
+  // for its own scope — the song rows by default (a job with no scope in
+  // its params), the album and artist rows for theirs.
+  function jobsByPlugin(jobs, scope = 'song') {
     const out = {};
     for (const job of (Array.isArray(jobs) ? jobs : [])) {
-      if (job && job.plugin && !out[job.plugin]) { out[job.plugin] = job; }
+      if (!job || !job.plugin || out[job.plugin]) { continue; }
+      const jobScope = (job.params && job.params.scope) || 'song';
+      if (jobScope === scope) { out[job.plugin] = job; }
     }
     return out;
   }
