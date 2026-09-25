@@ -88,7 +88,7 @@ describe('discovery plug-in jobs API', () => {
     }
     const done = await untilState(userToken, a.body.job.id, ['done', 'failed']);
     assert.equal(done.state, 'done');
-    assert.deepEqual(done.result, { echoed: 'Opening', steps: 3 });
+    assert.deepEqual(done.result, { echoed: 'Opening', steps: 3, scope: 'song' });
     assert.equal(done.progress, 1);
     assert.equal(done.attempts, 1);
   });
@@ -110,6 +110,7 @@ describe('discovery plug-in jobs API', () => {
     assert.ok(['requested', 'cancelled'].includes(c.body.outcome));
     const cancelled = await untilState(userToken, a.body.job.id, ['cancelled', 'done']);
     assert.equal(cancelled.state, 'cancelled');
+    assert.ok(cancelled.result && cancelled.result.cancelledAt >= 1, 'what the plug-in handed back on its way out stays with the row');
     const again = await post(userToken, `/api/v1/discovery/plugin-jobs/${a.body.job.id}/cancel`);
     assert.equal(again.status, 409);
   });
@@ -212,6 +213,42 @@ describe('discovery plug-in jobs API', () => {
     await post(userToken, `/api/v1/discovery/plugin-jobs/${live.body.job.id}/cancel`);
     await untilState(userToken, live.body.job.id, ['cancelled', 'done']);
     assert.equal((await post(userToken, '/api/v1/discovery/plugin-jobs/clear')).body.removed, 1);
+  });
+
+  test('scopes: an album job beside a song job of one recommendation, its own key and params; refusals', async () => {
+    const r = rec('slow scoped');
+    const song = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: r });
+    const album = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: r, scope: 'album' });
+    assert.equal(song.status, 202, JSON.stringify(song.body));
+    assert.equal(album.status, 202, JSON.stringify(album.body));
+    assert.equal(album.body.created, true, 'not deduped against the live song job');
+    assert.notEqual(album.body.job.id, song.body.job.id);
+    assert.match(album.body.job.key, /^album:/);
+    assert.deepEqual(album.body.job.params, { scope: 'album' });
+    assert.equal(song.body.job.params, null, 'the song scope is the default and leaves no params');
+    // The lookup answers both, under their own keys.
+    const look = await post(userToken, '/api/v1/discovery/plugin-jobs/lookup', { recommendation: r });
+    assert.equal(look.status, 200, JSON.stringify(look.body));
+    assert.equal(look.body.key, song.body.job.key);
+    assert.deepEqual(Object.keys(look.body.keys), ['song', 'album', 'artist', 'artist-missing']);
+    assert.equal(look.body.keys.album, album.body.job.key);
+    assert.deepEqual(look.body.jobs.map((j) => j.id).sort(), [song.body.job.id, album.body.job.id].sort());
+    // The same album asked for through another of its songs is the same live job.
+    const again = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('other slow song'), scope: 'album' });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.equal(again.body.job.id, album.body.job.id);
+    // Refusals: a scope the plug-in did not declare, one the recommendation cannot fill, nonsense.
+    const artist = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: r, scope: 'artist' });
+    assert.equal(artist.status, 400);
+    assert.match(artist.body.error, /has no "artist" scope/);
+    const noAlbum = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: { artist: 'Compat Artist', title: 'no album' }, scope: 'album' });
+    assert.equal(noAlbum.status, 400);
+    assert.match(noAlbum.body.error, /needs the recommendation's album/);
+    assert.equal((await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: r, scope: 'galaxy' })).status, 400);
+    // The album job runs with its scope in hand.
+    const done = await untilState(userToken, album.body.job.id, ['done', 'failed']);
+    assert.equal(done.result.scope, 'album');
+    await untilState(userToken, song.body.job.id, ['done', 'failed']);
   });
 
   test('unknown plug-in, non-runnable plug-in and bad bodies', async () => {

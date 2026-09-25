@@ -72,12 +72,21 @@ export function setup(mstream) {
 
     const schema = Joi.object({
       recommendation: plugins.recommendationSchema.required(),
+      // What the job acts on (plugins.JOB_SCOPES): the song unless the
+      // plug-in declares wider scopes and the caller asks for one.
+      scope: Joi.string().valid(...Object.values(plugins.JOB_SCOPES)).optional(),
       // An upload the caller picked from the plug-in's lookup: the job
       // fetches that one instead of searching. Only a plug-in with a
       // lookup takes one, and it checks the link itself (validateChoice).
       choice: Joi.object({ url: Joi.string().uri({ scheme: ['http', 'https'] }).max(2048).required() }).optional(),
     });
-    const { value: { recommendation, choice } } = joiValidate(schema, req.body);
+    const { value: { recommendation, scope: askedScope, choice } } = joiValidate(schema, req.body);
+    const scope = askedScope || plugins.JOB_SCOPES.SONG;
+    if (!plugin.scopes.includes(scope)) {
+      throw new WebError(`plug-in ${name} has no "${scope}" scope (it has: ${plugin.scopes.join(', ')})`, 400);
+    }
+    const missing = plugins.scopeMissing(recommendation, scope);
+    if (missing) { throw new WebError(`a ${scope} job needs the recommendation's ${missing}`, 400); }
     if (choice) {
       if (!plugin.capabilities.includes(plugins.CAPABILITIES.LOOKUP)) {
         throw new WebError(`plug-in ${name} takes no choice — it has no lookup`, 400);
@@ -86,12 +95,15 @@ export function setup(mstream) {
         try { plugin.validateChoice(choice); } catch (err) { throw new WebError(err.message, 400); }
       }
     }
+    const params = {};
+    if (scope !== plugins.JOB_SCOPES.SONG) { params.scope = scope; }
+    if (choice) { params.choice = choice; }
     const { job, created } = jobsDb.createJob({
       plugin: name,
       userId: req.user ? req.user.id : null,
-      key: plugins.recommendationKey(recommendation),
+      key: plugins.jobKey(recommendation, scope),
       recommendation,
-      params: choice ? { choice } : null,
+      params: Object.keys(params).length ? params : null,
     });
     if (created) { runner.kick(); }
     // The live job that already covers this recommendation may be another
@@ -104,14 +116,16 @@ export function setup(mstream) {
   });
 
   // What has the caller already done with this recommendation? Their newest
-  // job per plug-in, so a client can draw each row in its real state when a
-  // recommendation is opened again (the key is the server's to compute).
+  // job per plug-in and scope — the song, its album, its artist — so a
+  // client can draw each row in its real state when a recommendation is
+  // opened again (the keys are the server's to compute). `key` is the song's,
+  // as it always was; `keys` names every scope's.
   mstream.post('/api/v1/discovery/plugin-jobs/lookup', (req, res) => {
     const schema = Joi.object({ recommendation: plugins.recommendationSchema.required() });
     const { value: { recommendation } } = joiValidate(schema, req.body);
-    const key = plugins.recommendationKey(recommendation);
-    const jobs = jobsDb.latestForKey({ userId: req.user ? req.user.id : null, key });
-    res.json({ key, jobs });
+    const keys = plugins.jobKeysFor(recommendation);
+    const jobs = jobsDb.latestForKeys({ userId: req.user ? req.user.id : null, keys: Object.values(keys) });
+    res.json({ key: keys.song, keys, jobs });
   });
 
   mstream.post('/api/v1/discovery/plugin-jobs/clear', (req, res) => {

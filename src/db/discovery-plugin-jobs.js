@@ -102,16 +102,25 @@ export function listJobs({ userId, states = null, limit = 100 } = {}) {
 // needs to draw a recommendation's rows ("Get it" is idle, running, done…)
 // without walking the whole list. Newest first.
 export function latestForKey({ userId = null, key }) {
+  return latestForKeys({ userId, keys: [key] });
+}
+
+// The same for several keys at once — a recommendation's jobs across every
+// scope its fields allow (jobKeysFor): the newest per (plug-in, key).
+export function latestForKeys({ userId = null, keys }) {
+  const list = [...new Set((Array.isArray(keys) ? keys : []).filter(Boolean).map(String))];
+  if (list.length === 0) { return []; }
   const rows = d().prepare(`
     SELECT * FROM discovery_plugin_jobs
-     WHERE user_id IS ? AND rec_key = ?
+     WHERE user_id IS ? AND rec_key IN (${list.map(() => '?').join(',')})
      ORDER BY created_at DESC, id DESC
-  `).all(userId, String(key));
+  `).all(userId, ...list);
   const seen = new Set();
   const out = [];
   for (const row of rows) {
-    if (seen.has(row.plugin)) { continue; }
-    seen.add(row.plugin);
+    const k = `${row.plugin}|${row.rec_key}`;
+    if (seen.has(k)) { continue; }
+    seen.add(k);
     out.push(rowToJob(row));
   }
   return out;
@@ -193,8 +202,10 @@ export function failJob(id, error) {
   finish(id, JOB_STATES.FAILED, { error: String(error && error.message ? error.message : error).slice(0, 1000) });
 }
 
-export function cancelJob(id) {
-  finish(id, JOB_STATES.CANCELLED, {});
+// A cancelled job keeps what the plug-in handed back on its way out (an
+// album copy's finished songs); null when it had nothing to say.
+export function cancelJob(id, result = null) {
+  finish(id, JOB_STATES.CANCELLED, { result: result == null ? null : JSON.stringify(result) });
 }
 
 // Boot: whatever this process's predecessor left 'running' never finished.

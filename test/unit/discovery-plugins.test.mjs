@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 
 import {
   CAPABILITIES, RESOLVING_CAPABILITIES, RUNNABLE_CAPABILITIES, SCOPES, getPlugin, isPluginEnabled, listPlugins, anyPluginEnabled, pluginNames,
-  normalizeRecommendation, recommendationKey, searchPhrase,
+  normalizeRecommendation, recommendationKey, searchPhrase, JOB_SCOPES, scopeMissing, jobKey, jobKeysFor,
 } from '../../src/discovery-plugins/index.js';
 import { registerPlugin, unregisterPluginForTests } from '../../src/discovery-plugins/registry.js';
 import { buildLinks } from '../../src/discovery-plugins/plugins/links.js';
@@ -87,7 +87,7 @@ describe('registry', () => {
     assert.equal(all.find((p) => p.name === 'links').enabled, false);
     const on = listPlugins({ config: ON });
     assert.equal(on.length >= 1, true);
-    assert.deepEqual(Object.keys(on[0]).sort(), ['available', 'capabilities', 'description', 'enabled', 'name', 'scope', 'settings', 'title']);
+    assert.deepEqual(Object.keys(on[0]).sort(), ['available', 'capabilities', 'description', 'enabled', 'name', 'scope', 'scopes', 'settings', 'title']);
   });
 
   test('registerPlugin enforces the contract', () => {
@@ -101,9 +101,15 @@ describe('registry', () => {
     assert.equal(CAPABILITIES.LOOKUP, 'lookup');
     assert.ok(RESOLVING_CAPABILITIES.includes('lookup') && !RUNNABLE_CAPABILITIES.includes('lookup'));
     assert.throws(() => registerPlugin({ name: 'p5', title: 'x', capabilities: ['acquire', 'lookup'], scope: 'server', run() {} }), /must implement resolve/);
+    // Job scopes: a known subset of JOB_SCOPES, never empty.
+    assert.throws(() => registerPlugin({ name: 'p6', title: 'x', capabilities: ['acquire'], scope: 'server', run() {}, scopes: ['album', 'galaxy'] }), /unknown job scopes/);
+    assert.throws(() => registerPlugin({ name: 'p7', title: 'x', capabilities: ['acquire'], scope: 'server', run() {}, scopes: [] }), /unknown job scopes/);
     const def = registerPlugin({ name: 'unit-test-plugin', title: 'Unit', capabilities: ['handoff'], scope: 'user', run() {} });
     assert.ok(Object.isFrozen(def));
     assert.equal(def.description, '');
+    assert.deepEqual([...def.scopes], ['song'], 'the song scope unless declared');
+    assert.deepEqual([...registerPlugin({ name: 'unit-album-plugin', title: 'Unit', capabilities: ['acquire'], scope: 'server', run() {}, scopes: [JOB_SCOPES.SONG, JOB_SCOPES.ALBUM] }).scopes], ['song', 'album']);
+    unregisterPluginForTests('unit-album-plugin');
   });
 });
 
@@ -141,5 +147,37 @@ describe('links plug-in', () => {
     assert.equal(mb.url, 'https://musicbrainz.org/recording/..%2Fx');
     const dz = links.find((l) => l.id === 'deezer-search');
     assert.equal(dz.url, 'https://www.deezer.com/search/A%26B%20%3Cscript%3E%20T%2F1%3F');
+  });
+});
+
+describe('job scopes: what a job acts on, and the key it dedupes on', () => {
+  const rec = normalizeRecommendation({ artist: 'Nova', title: 'Remote Hit', album: 'Night Ferry' });
+
+  test('a song job keys as the recommendation; an album job on artist + album; the artist scopes on the artist', () => {
+    assert.deepEqual(Object.values(JOB_SCOPES), ['song', 'album', 'artist', 'artist-missing']);
+    assert.equal(jobKey(rec), recommendationKey(rec));
+    assert.equal(jobKey(rec, 'song'), recommendationKey(rec));
+    assert.match(jobKey(rec, 'album'), /^album:[0-9a-f]{32}$/);
+    assert.match(jobKey(rec, 'artist'), /^artist:[0-9a-f]{32}$/);
+    assert.match(jobKey(rec, 'artist-missing'), /^artist-missing:[0-9a-f]{32}$/);
+    const other = normalizeRecommendation({ artist: 'Nova', title: 'Second Song', album: 'Night Ferry' });
+    assert.equal(jobKey(other, 'album'), jobKey(rec, 'album'), 'two songs of one album ask for the same album job');
+    assert.equal(jobKey(other, 'artist'), jobKey(rec, 'artist'));
+    assert.notEqual(jobKey(rec, 'artist-missing'), jobKey(rec, 'artist'), 'two different jobs');
+    assert.notEqual(jobKey(normalizeRecommendation({ artist: 'Nova', title: 'x', album: 'Solo' }), 'album'), jobKey(rec, 'album'));
+    assert.equal(jobKey(normalizeRecommendation({ artist: 'nova ', title: 'x', album: 'NIGHT FERRY' }), 'album'), jobKey(rec, 'album'), 'normalised like the song key');
+  });
+
+  test('what a scope needs, and every key a recommendation may sit under', () => {
+    assert.equal(scopeMissing(rec, 'album'), null);
+    assert.equal(scopeMissing(rec, 'song'), null);
+    assert.equal(scopeMissing(normalizeRecommendation({ artist: 'Nova', title: 'x' }), 'album'), 'album');
+    assert.equal(scopeMissing(normalizeRecommendation({ title: 'x', album: 'y' }), 'artist'), 'artist');
+    assert.equal(scopeMissing(normalizeRecommendation({ title: 'x' }), 'artist-missing'), 'artist');
+    assert.deepEqual(Object.keys(jobKeysFor(rec)), ['song', 'album', 'artist', 'artist-missing']);
+    assert.deepEqual(Object.keys(jobKeysFor(normalizeRecommendation({ artist: 'Nova', title: 'x' }))), ['song', 'artist', 'artist-missing']);
+    assert.deepEqual(Object.keys(jobKeysFor(normalizeRecommendation({ title: 'x' }))), ['song']);
+    assert.equal(jobKeysFor(rec).song, recommendationKey(rec));
+    assert.equal(jobKeysFor(rec).album, jobKey(rec, 'album'));
   });
 });

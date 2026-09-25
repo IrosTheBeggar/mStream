@@ -264,6 +264,10 @@ components:
           type: array
           items: { type: string, enum: [links, preview, play, acquire, handoff, lookup] }
         scope: { type: string, enum: [server, user] }
+        scopes:
+          type: array
+          description: "The job scopes a runnable plug-in acts on: `song` always; `album`, `artist` and `artist-missing` where it copies more than one song at a time."
+          items: { type: string, enum: [song, album, artist, artist-missing] }
         enabled: { type: boolean }
         available: { type: boolean, description: "False when the plug-in is on but its availability probe failed." }
         reason: { type: string, nullable: true, example: "yt-dlp not found (yt-dlp)" }
@@ -312,7 +316,7 @@ components:
         userId: { type: integer, nullable: true, description: "Who asked; null in public mode or after the user was deleted." }
         key: { type: string, description: "The recommendation's persistence key (mbid:… or text:…)." }
         recommendation: { type: object, description: The normalised recommendation the job was started with. }
-        params: { type: object, nullable: true, description: "What the job was started with beyond the recommendation: `{ choice: { url } }` when the caller picked an upload from the plug-in's lookup; null otherwise." }
+        params: { type: object, nullable: true, description: "What the job was started with beyond the recommendation: `scope` (`album`, `artist` or `artist-missing` — absent for a song job) and `choice: { url }` when the caller picked an upload from the plug-in's lookup; null when neither." }
         state: { type: string, enum: [queued, running, done, failed, cancelled] }
         progress: { type: number, nullable: true, minimum: 0, maximum: 1 }
         statusText: { type: string, nullable: true, description: "The plug-in's own progress line." }
@@ -2689,6 +2693,10 @@ paths:
               required: [recommendation]
               properties:
                 recommendation: { type: object, description: "Same shape as the resolve body." }
+                scope:
+                  type: string
+                  enum: [song, album, artist, artist-missing]
+                  description: "What the job acts on: the song (default), the song's whole album, every album of its artist, or only the artist's albums this library lacks. Only a scope the plug-in declares (`scopes` in the listing) is accepted, and an album job needs the recommendation's `album`, the artist jobs its `artist`. A wider scope is kept in the job's `params.scope` and keys the job on the album / artist rather than the song, so a song copy and an album copy of the same recommendation are two live jobs, and two songs of one album ask for the same album job."
                 choice:
                   type: object
                   required: [url]
@@ -2706,7 +2714,7 @@ paths:
                   created: { type: boolean, example: true }
                   job: { $ref: "#/components/schemas/DiscoveryPluginJob" }
         "200": { description: "A live job for this recommendation already exists; `created: false` and that job." }
-        "400": { description: "Malformed body, the plug-in does not run jobs (use resolve), or a `choice` for a plug-in without a lookup / a link it does not accept." }
+        "400": { description: "Malformed body, the plug-in does not run jobs (use resolve), a `scope` the plug-in does not run or the recommendation cannot fill, or a `choice` for a plug-in without a lookup / a link it does not accept." }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "The acquisition gate is in whitelist mode and the caller is not allowed." }
         "404": { description: "Unknown or disabled plug-in." }
@@ -2718,12 +2726,15 @@ paths:
       summary: The caller's jobs for one recommendation
       description: |
         What the caller has already done with a recommendation: their newest
-        job per plug-in, so a client can draw each acquire / hand-off row in
-        its real state (running, done and where the file landed, failed…)
-        when the recommendation is opened again. The server computes
-        the recommendation key (MBID first, else a normalised text digest), so
-        a client never has to mirror it. Not gated: it reads only the
-        caller's own rows.
+        job per plug-in AND scope — the song, its album, its artist — so a
+        client can draw each acquire / hand-off row in its real state
+        (running, done and where the file landed, failed…) when the
+        recommendation is opened again. The server computes the keys (the
+        song's: MBID first, else a normalised text digest; the album's and
+        the artist's over their names), so a client never has to mirror
+        them; `keys` names the ones the recommendation's fields allow and
+        each job's `params.scope` says which row it belongs to. Not gated:
+        it reads only the caller's own rows.
       requestBody:
         required: true
         content:
@@ -2735,13 +2746,18 @@ paths:
                 recommendation: { type: object, description: "Same shape as the resolve body." }
       responses:
         "200":
-          description: At most one job per plug-in, newest first; empty when the caller never acted on it.
+          description: At most one job per plug-in and scope, newest first; empty when the caller never acted on it.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  key: { type: string, example: "text:3f9a…", description: The recommendation key the jobs were matched on. }
+                  key: { type: string, example: "text:3f9a…", description: The song's key (as before). }
+                  keys:
+                    type: object
+                    description: "Every scope's key for this recommendation: `song` always; `album` when it names an album; `artist` and `artist-missing` when it names an artist."
+                    additionalProperties: { type: string }
+                    example: { song: "text:3f9a…", album: "album:7c1d…", artist: "artist:e0b2…", artist-missing: "artist-missing:e0b2…" }
                   jobs:
                     type: array
                     items: { $ref: "#/components/schemas/DiscoveryPluginJob" }
@@ -2825,6 +2841,9 @@ paths:
       description: |
         A queued job is cancelled at once; a running one is flagged and the
         plug-in stops at its next step, after which the job reads `cancelled`.
+        Whatever the plug-in handed back on its way out stays as the job's
+        `result` (an album copy's finished songs are in the library either
+        way); null when it had nothing to say.
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       responses:

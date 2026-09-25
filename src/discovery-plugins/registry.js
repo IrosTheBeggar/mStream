@@ -28,7 +28,9 @@
 //   play     resolve() returns { play: { url, kind, … } | null } — a
 //            full-length stream THIS server can serve for the recommendation
 //            (a paired peer's track through the federation proxy)
-//   acquire  starts a job that lands a file in the user's collection
+//   acquire  starts a job that lands a file in the user's collection;
+//            `scopes` (JOB_SCOPES, default ['song']) says what one job may
+//            act on — a song, its album, its artist's albums
 //   lookup   resolve() returns { lookup: { query, minScore, candidates, owned } }
 //            — what an acquire plug-in WOULD fetch, before anything is:
 //            the uploads it found for the recommendation, scored, best
@@ -43,6 +45,7 @@
 // live. Tests pass their own config object instead of touching program.
 
 import * as config from '../state/config.js';
+import { JOB_SCOPES } from './recommendation.js';
 
 export const CAPABILITIES = Object.freeze({
   LINKS: 'links',
@@ -90,6 +93,12 @@ export function registerPlugin(def) {
   if (def.concurrency !== undefined && !(Number.isInteger(def.concurrency) && def.concurrency > 0)) {
     throw new Error(`registerPlugin: ${def.name} concurrency must be a positive integer`);
   }
+  // The job scopes a runnable plug-in acts on (JOB_SCOPES): ['song'] unless
+  // it says otherwise. The job start route refuses a scope it did not declare.
+  if (def.scopes !== undefined && (!Array.isArray(def.scopes) || def.scopes.length === 0
+    || !def.scopes.every((s) => Object.values(JOB_SCOPES).includes(s)))) {
+    throw new Error(`registerPlugin: ${def.name} declares unknown job scopes ${JSON.stringify(def.scopes)}`);
+  }
   // Per-user settings (user_settings, namespace discovery-plugin:<name>):
   //   userSettings: { <key>: { schema: Joi, secret?: bool } }   what may be stored
   //   validateSetting(key, value, { user })                     semantic checks; throws
@@ -123,6 +132,7 @@ export function registerPlugin(def) {
   const frozen = Object.freeze({
     description: '', ...def,
     capabilities: Object.freeze([...def.capabilities]),
+    scopes: Object.freeze([...(def.scopes || [JOB_SCOPES.SONG])]),
     adminSettings: Object.freeze([...(def.adminSettings || [])]),
   });
   plugins.set(frozen.name, frozen);
@@ -237,6 +247,9 @@ export function listPlugins({ includeDisabled = false, config: cfg } = {}) {
     const row = {
       name: p.name, title: p.title, description: p.description,
       capabilities: [...p.capabilities], scope: p.scope, enabled,
+      // The job scopes a runnable plug-in acts on (JOB_SCOPES): the rows a
+      // client may offer beyond the song.
+      scopes: [...p.scopes],
       // The keys a client may read and write through the settings routes.
       settings: p.userSettings ? Object.keys(p.userSettings) : [],
       // false only when the plug-in's probe failed (admin listing only —

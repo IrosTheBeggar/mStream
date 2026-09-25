@@ -231,6 +231,28 @@ describe('history and the retention pass', () => {
     assert.equal(jobsDb.getJob(job.id), null);
   });
 
+  test('latestForKeys: the newest job per (plug-in, key) across several keys; a cancel keeps what the plug-in handed back', () => {
+    const ins = manager.getDB().prepare('INSERT INTO users (username, password, salt) VALUES (?, ?, ?)');
+    const me = Number(ins.run('scope-owner', 'h', 's').lastInsertRowid);
+    const song = jobsDb.createJob({ plugin: 'unit-scope', userId: me, key: 'text:scoped', recommendation: rec('Scoped') }).job;
+    const album = jobsDb.createJob({ plugin: 'unit-scope', userId: me, key: 'album:scoped', recommendation: rec('Scoped'), params: { scope: 'album' } }).job;
+    assert.notEqual(album.id, song.id, 'a song job and an album job of one recommendation are both live');
+    const found = jobsDb.latestForKeys({ userId: me, keys: ['text:scoped', 'album:scoped', 'artist:nothing'] });
+    assert.deepEqual(found.map((j) => j.id).sort(), [song.id, album.id].sort());
+    assert.deepEqual(jobsDb.latestForKeys({ userId: me, keys: [] }), []);
+    assert.deepEqual(jobsDb.latestForKey({ userId: me, key: 'album:scoped' }).map((j) => j.id), [album.id], 'the one-key form still answers');
+    // A cancel with the partial result the plug-in returned on its way out.
+    assert.equal(jobsDb.claimNextQueued('unit-scope').id, song.id);
+    jobsDb.cancelJob(song.id, { songs: { copied: ['one'] }, stopped: 'cancelled' });
+    const cancelled = jobsDb.getJob(song.id);
+    assert.equal(cancelled.state, 'cancelled');
+    assert.deepEqual(cancelled.result, { songs: { copied: ['one'] }, stopped: 'cancelled' });
+    assert.equal(jobsDb.claimNextQueued('unit-scope').id, album.id);
+    jobsDb.cancelJob(album.id);
+    assert.equal(jobsDb.getJob(album.id).state, 'cancelled');
+    assert.equal(jobsDb.getJob(album.id).result, null, 'nothing to keep');
+  });
+
   test('latestForKey: the newest job per plug-in for one owner; clearFinished drops every finished row and keeps live jobs', async () => {
     const ins = manager.getDB().prepare('INSERT INTO users (username, password, salt) VALUES (?, ?, ?)');
     const me = Number(ins.run('tray-owner', 'h', 's').lastInsertRowid);

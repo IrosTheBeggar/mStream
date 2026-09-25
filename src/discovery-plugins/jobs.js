@@ -112,7 +112,9 @@ async function runJob(plugin, job) {
   try {
     const result = await plugin.run(ctx);
     if (jobsDb.isCancelRequested(job.id)) {
-      jobsDb.cancelJob(job.id);
+      // What the plug-in returned on its way out stays with the row — an
+      // album copy's finished songs are in the library either way.
+      jobsDb.cancelJob(job.id, result === undefined ? null : result);
     } else {
       jobsDb.finishJob(job.id, result === undefined ? null : result);
     }
