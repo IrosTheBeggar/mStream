@@ -2659,7 +2659,18 @@ paths:
         `{ skipped: exists, filepath }` when a file already sits at the target
         path — nothing is ever overwritten. It fails (state `failed`, `error`)
         when uploads are off for the account, the peer is unreachable, or the
-        peer answers 429 for its transfer limit.
+        peer answers 429 for its transfer limit. With `scope: album` it asks the
+        peer for the album's songs (`album`, narrowed by `artist` and `year`
+        when the recommendation names them) and copies them one by one under
+        the same rules; its `result` is then `{ scope: album, album: { name,
+        artist, year }, songs: { total, copied: [{ from, vpath, filepath,
+        trackId, bytes, title, artist, album, downloadId }], skipped: [{ from,
+        why: owned | exists, at }], failed: [{ from, error }] }, bytes,
+        stopped: null | cancelled | quota | peer, missingVars, peer,
+        destination }` — one song's own failure does not stop the album, the
+        peer's transfer limit, the peer going away or a cancel does, and the
+        finished songs stay (a cancelled job keeps the partial result).
+        Re-running an album copies only the gaps.
 
         `youtube` ("Get it" from YouTube; off by default, needs yt-dlp and
         ffmpeg) searches YouTube for the recommendation, scores the uploads

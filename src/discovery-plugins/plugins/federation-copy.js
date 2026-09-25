@@ -22,6 +22,15 @@
 //      the song plays at once.
 // Cancel is polled between chunks; the .part file is removed.
 //
+// The album scope (a job started with scope: 'album'): the peer's own
+// album-songs listing, then that copy song by song — the same owned skip,
+// never-overwrite and per-song layout for each, in disc / track order — with
+// the account of what happened to every song as the result. One song's own
+// failure does not stop the album; the peer's transfer limit (a 429) or the
+// peer going away does, and so does a cancel, whose finished songs stay
+// (the runner keeps the partial result). Re-running an album copies only
+// the gaps, since every song the library has is skipped.
+//
 // Access: the account must be allowed to upload (config.noUpload and the
 // user's allow_upload — a copy is an upload by another road) and to start
 // jobs (the jobs route's gate). The webapp hides the rows and the
@@ -37,7 +46,7 @@ import * as destinations from '../destination.js';
 import * as downloadsDb from '../../db/plugin-downloads.js';
 import { ownedTrack } from '../owned.js';
 import { CAPABILITIES, SCOPES } from '../registry.js';
-import { RECOMMENDATION_SOURCES } from '../recommendation.js';
+import { JOB_SCOPES, RECOMMENDATION_SOURCES } from '../recommendation.js';
 
 export const NAME = 'federation-copy';
 
@@ -46,11 +55,63 @@ export const NAME = 'federation-copy';
 const HEADER_DEADLINE_MS = 15_000;
 const PROGRESS_EVERY_MS = 400;
 
+// `peerLimit` / `peerDown` mark the failures that end an album copy: the
+// rest of the songs would fail the same way.
 function peerStatusError(status, peerName) {
-  if (status === 429) { return new Error(`${peerName} has reached its transfer limit for this server — try again later`); }
+  if (status === 429) { return Object.assign(new Error(`${peerName} has reached its transfer limit for this server — try again later`), { peerLimit: true }); }
   if (status === 404) { return new Error(`${peerName} no longer has this file`); }
-  if (status === 401 || status === 403) { return new Error(`${peerName} refused this server's key`); }
+  if (status === 401 || status === 403) { return Object.assign(new Error(`${peerName} refused this server's key`), { peerDown: true }); }
   return new Error(`${peerName} answered http ${status}`);
+}
+
+function peerUnreachable(peerName, err) {
+  return Object.assign(new Error(`${peerName} is unreachable (${err.message})`), { peerDown: true, cause: err });
+}
+
+// ── The album loop's accounting (pure; unit-tested with a scripted copyOne) ──
+// Runs `songs` one by one through `copyOne(song, { progress })`, which
+// answers { copied, missingVars } | { skipped: 'owned', existing } |
+// { skipped: 'exists', filepath } | null (cancelled mid-song), or throws.
+// Keeps going past one song's own failure; stops for a cancel, for the
+// peer's transfer limit (`peerLimit`) and for the peer going away
+// (`peerDown`). Progress reads "4 of 11 songs · 38.2 MB".
+export async function copySongs(songs, { copyOne, isCancelled = () => false, progress = () => {} }) {
+  const list = Array.isArray(songs) ? songs : [];
+  const out = { total: list.length, copied: [], skipped: [], failed: [] };
+  const missing = new Set();
+  let bytes = 0;
+  let stopped = null;
+  const mb = (n) => (n / (1024 * 1024)).toFixed(1);
+  const done = () => out.copied.length + out.skipped.length + out.failed.length;
+  const line = (extra) => `${done()} of ${out.total} songs · ${mb(bytes)} MB${extra ? ` · ${extra}` : ''}`;
+  const fraction = (f) => Math.min(0.97, (done() + Math.max(0, Math.min(1, f))) / Math.max(1, out.total));
+  for (const song of list) {
+    if (isCancelled()) { stopped = 'cancelled'; break; }
+    progress(fraction(0), line());
+    let r;
+    try {
+      r = await copyOne(song, { progress: (f, text) => progress(fraction(Number.isFinite(f) ? f : 0), line(text)) });
+    } catch (err) {
+      out.failed.push({ from: song.filepath, error: err && err.message ? err.message : String(err) });
+      if (err && err.peerLimit) { stopped = 'quota'; break; }
+      if (err && err.peerDown) { stopped = 'peer'; break; }
+      continue;
+    }
+    if (r === null) { stopped = 'cancelled'; break; }   // cancelled mid-song; its .part is gone
+    if (r.copied) {
+      out.copied.push({ from: song.filepath, ...r.copied });
+      bytes += Number(r.copied.bytes) || 0;
+      for (const v of (r.missingVars || [])) { missing.add(v); }
+    } else if (r.skipped === 'owned') {
+      out.skipped.push({ from: song.filepath, why: 'owned', at: (r.existing && r.existing.filepath) || null });
+    } else if (r.skipped === 'exists') {
+      out.skipped.push({ from: song.filepath, why: 'exists', at: r.filepath || null });
+    } else {
+      out.failed.push({ from: song.filepath, error: 'the copy answered nothing' });
+    }
+  }
+  progress(Math.min(0.99, done() / Math.max(1, out.total)), line());
+  return { songs: out, bytes, stopped, missingVars: [...missing] };
 }
 
 async function copyBody(res, tmpPath, ctx, total) {
@@ -78,8 +139,12 @@ async function copyBody(res, tmpPath, ctx, total) {
 
 async function run(ctx) {
   const rec = ctx.recommendation || {};
-  if (rec.source !== RECOMMENDATION_SOURCES.FEDERATION || typeof rec.filepath !== 'string' || !rec.filepath.trim()
-    || !rec.peer || rec.peer.id == null) {
+  const scope = (ctx.params && ctx.params.scope) || JOB_SCOPES.SONG;
+  if (scope !== JOB_SCOPES.SONG && scope !== JOB_SCOPES.ALBUM) { throw new Error(`federation-copy has no "${scope}" scope`); }
+  const hasPath = typeof rec.filepath === 'string' && rec.filepath.trim().length > 0;
+  const hasAlbum = typeof rec.album === 'string' && rec.album.trim().length > 0;
+  if (rec.source !== RECOMMENDATION_SOURCES.FEDERATION || !rec.peer || rec.peer.id == null
+    || (scope === JOB_SCOPES.SONG && !hasPath) || (scope === JOB_SCOPES.ALBUM && !hasAlbum)) {
     throw new Error('only a paired peer\'s recommendation can be copied');
   }
   if (!(config.program && config.program.federation && config.program.federation.enabled === true)) {
@@ -94,37 +159,102 @@ async function run(ctx) {
   const destination = destinations.getDestination(user);
   if (!destination) { throw new Error('no library to copy into'); }
 
-  // 1. The peer's word on the file: its hash, for the pre-copy owned check.
-  ctx.progress(0, `asking ${peer.name} about the file`);
   const { fedFetchWithDeadline } = await import('../../api/discovery-federation.js');
   const fedClient = await import('../../state/federation-client.js');
+  const env = { peer, user, destination, fedFetchWithDeadline, fedClient };
+
+  if (scope === JOB_SCOPES.ALBUM) { return copyAlbum(ctx, env, rec); }
+
+  const r = await copyOne(ctx, env, { filepath: rec.filepath, title: rec.title, artist: rec.artist, album: rec.album });
+  if (r === null) { return null; }   // the runner records the cancel
+  if (r.skipped) { return { ...r, destination }; }
+  return { copied: r.copied, missingVars: r.missingVars, peer: { id: peer.id, name: peer.name }, destination };
+}
+
+// The album: the peer's own listing of its songs, then copyOne for each
+// (copySongs keeps the account). `rec` names the album (and the artist,
+// which narrows the listing the way the modal's album view narrows it).
+async function copyAlbum(ctx, env, rec) {
+  const { peer, destination } = env;
+  ctx.progress(0, `asking ${peer.name} for “${rec.album}”`);
+  let listing;
+  try {
+    const r = await env.fedFetchWithDeadline(env.fedClient, peer, '/api/v1/db/album-songs', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ album: rec.album, artist: rec.artist || null, year: rec.year || null }),
+    }, HEADER_DEADLINE_MS);
+    if (!r.ok) { throw peerStatusError(r.status, peer.name); }
+    listing = await r.json();
+  } catch (err) {
+    throw (err && (err.peerLimit || err.peerDown)) ? err : peerUnreachable(peer.name, err);
+  }
+  const songs = (Array.isArray(listing) ? listing : [])
+    .filter((s) => s && typeof s.filepath === 'string' && s.filepath.trim())
+    .map((s) => {
+      const md = (s.metadata && typeof s.metadata === 'object') ? s.metadata : {};
+      return { filepath: s.filepath, title: md.title || null, artist: md.artist || rec.artist || null, album: md.album || rec.album };
+    });
+  if (songs.length === 0) { throw new Error(`${peer.name} has no songs for “${rec.album}”`); }
+
+  const outcome = await copySongs(songs, {
+    isCancelled: ctx.isCancelled,
+    progress: ctx.progress,
+    copyOne: (song, { progress }) => copyOne({ job: ctx.job, userId: ctx.userId, isCancelled: ctx.isCancelled, progress }, env, song),
+  });
+  const { copied, skipped, failed } = outcome.songs;
+  winston.info(`federation-copy: album “${rec.album}” from peer '${peer.name}': ${copied.length} copied, ${skipped.length} skipped, ${failed.length} failed${outcome.stopped ? ` — stopped: ${outcome.stopped}` : ''}`);
+  return {
+    scope: JOB_SCOPES.ALBUM,
+    album: { name: rec.album, artist: rec.artist || null, year: rec.year || null },
+    songs: outcome.songs,
+    bytes: outcome.bytes,
+    stopped: outcome.stopped,
+    missingVars: outcome.missingVars,
+    peer: { id: peer.id, name: peer.name },
+    destination,
+  };
+}
+
+// One song, start to finish: the peer's word on it (its hash, for the
+// pre-copy owned check), the bytes into a .part file, the layout from the
+// file's own tags, the second owned check, never over an existing file, the
+// row. `ctx` is the job's (or, inside an album, a per-song view of it with
+// the progress mapped). Answers { copied, missingVars } |
+// { skipped: 'owned', existing } | { skipped: 'exists', filepath } | null
+// (cancelled — the .part is gone); throws with `peerLimit` / `peerDown` for
+// the failures that end an album.
+async function copyOne(ctx, env, song) {
+  const { peer, user, destination, fedFetchWithDeadline, fedClient } = env;
+
+  // 1. The peer's word on the file: its hash, for the pre-copy owned check.
+  ctx.progress(0, `asking ${peer.name} about the file`);
   let peerMeta = null;
   try {
     const r = await fedFetchWithDeadline(fedClient, peer, '/api/v1/db/metadata', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filepath: rec.filepath }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filepath: song.filepath }),
     }, HEADER_DEADLINE_MS);
     if (r.ok) { peerMeta = ((await r.json()) || {}).metadata || null; }
   } catch (err) {
-    throw new Error(`${peer.name} is unreachable (${err.message})`, { cause: err });
+    throw peerUnreachable(peer.name, err);
   }
   const owned = ownedTrack({
     hash: peerMeta && peerMeta.hash,
-    artist: rec.artist || (peerMeta && peerMeta.artist), title: rec.title || (peerMeta && peerMeta.title),
-    album: rec.album || (peerMeta && peerMeta.album),
+    artist: song.artist || (peerMeta && peerMeta.artist), title: song.title || (peerMeta && peerMeta.title),
+    album: song.album || (peerMeta && peerMeta.album),
   });
-  if (owned) { return { skipped: 'owned', existing: owned, destination }; }
+  if (owned) { return { skipped: 'owned', existing: owned }; }
 
   // 2. The bytes, into a .part file inside the destination library.
   const baseInfo = vpathUtil.getVPathInfo(destination.base ? `${destination.vpath}/${destination.base}` : destination.vpath, user);
   await fs.mkdir(baseInfo.fullPath, { recursive: true });
   const tmpPath = path.join(baseInfo.fullPath, `.mstream-copy-${ctx.job.id}.part`);
-  const remotePath = rec.filepath.split('/').filter((s) => s && s !== '.' && s !== '..').map(encodeURIComponent).join('/');
+  const remotePath = song.filepath.split('/').filter((s) => s && s !== '.' && s !== '..').map(encodeURIComponent).join('/');
   const abort = new AbortController();
   let res;
   try {
     res = await fedFetchWithDeadline(fedClient, peer, `/media/${remotePath}`, { signal: abort.signal }, HEADER_DEADLINE_MS);
   } catch (err) {
-    throw new Error(`${peer.name} is unreachable (${err.message})`, { cause: err });
+    throw peerUnreachable(peer.name, err);
   }
   if (!res.ok || !res.body) { throw peerStatusError(res.status, peer.name); }
   const total = Number(res.headers.get('content-length')) || null;
@@ -134,7 +264,7 @@ async function run(ctx) {
   } catch (err) {
     abort.abort();
     await fs.unlink(tmpPath).catch(() => {});
-    if (err.cancelled) { return null; }   // the runner records the cancel
+    if (err.cancelled) { return null; }
     throw new Error(`copy from ${peer.name} failed: ${err.message}`, { cause: err });
   }
 
@@ -145,8 +275,8 @@ async function run(ctx) {
     try { common = (await parseFile(tmpPath, { skipCovers: true })).common || {}; } catch (err) {
       winston.warn(`federation-copy: could not read tags from the copied file (${err.message}); using the recommendation's`);
     }
-    const tags = destinations.tagsForLayout(common, rec);
-    const fileName = destinations.safeFileName(rec.filepath);
+    const tags = destinations.tagsForLayout(common, song);
+    const fileName = destinations.safeFileName(song.filepath);
     const target = destinations.renderTarget({ destination, tags, peerName: peer.name, fileName });
     const targetInfo = vpathUtil.getVPathInfo(`${destination.vpath}/${target.relPath}`, user);
 
@@ -155,11 +285,11 @@ async function run(ctx) {
     const ownedNow = ownedTrack({ hash: hashes.fileHash, audioHash: hashes.audioHash });
     if (ownedNow) {
       await fs.unlink(tmpPath);
-      return { skipped: 'owned', existing: ownedNow, destination };
+      return { skipped: 'owned', existing: ownedNow };
     }
     if (await fs.stat(targetInfo.fullPath).then(() => true, () => false)) {
       await fs.unlink(tmpPath);
-      return { skipped: 'exists', filepath: `${destination.vpath}/${target.relPath}`, destination };
+      return { skipped: 'exists', filepath: `${destination.vpath}/${target.relPath}` };
     }
     await fs.mkdir(path.dirname(targetInfo.fullPath), { recursive: true });
     await fs.rename(tmpPath, targetInfo.fullPath);
@@ -176,7 +306,7 @@ async function run(ctx) {
       plugin: NAME, userId: ctx.userId, jobId: ctx.job.id, vpath: destination.vpath, relativePath: inserted.relativePath,
       fileHash: inserted.hash, origin: peer.name, title: inserted.title, artist: inserted.artist, album: inserted.album, bytes,
     });
-    winston.info(`federation-copy: copied '${rec.filepath}' from peer '${peer.name}' (id=${peer.id}) to ${destination.vpath}/${inserted.relativePath} (${bytes} bytes)`);
+    winston.info(`federation-copy: copied '${song.filepath}' from peer '${peer.name}' (id=${peer.id}) to ${destination.vpath}/${inserted.relativePath} (${bytes} bytes)`);
     return {
       copied: {
         vpath: destination.vpath, filepath: `${destination.vpath}/${inserted.relativePath}`,
@@ -184,8 +314,6 @@ async function run(ctx) {
         downloadId: recorded ? recorded.id : null,
       },
       missingVars: target.missingVars,
-      peer: { id: peer.id, name: peer.name },
-      destination,
     };
   } catch (err) {
     await fs.unlink(tmpPath).catch(() => {});
@@ -199,6 +327,8 @@ export default Object.freeze({
   description: 'Copies a paired server\'s song into the user\'s own library folder (their collection destination) and adds it to the library at once. Needs upload rights; never overwrites; skips songs they already have.',
   capabilities: [CAPABILITIES.ACQUIRE],
   scope: SCOPES.USER,
+  // A song, or its whole album (song by song, the same rules for each).
+  scopes: [JOB_SCOPES.SONG, JOB_SCOPES.ALBUM],
   concurrency: 1,
   run,
 });
