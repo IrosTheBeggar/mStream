@@ -994,7 +994,6 @@
                 <div v-if="discover.fed.available && !discover.fed.disabled" class="discover-network discover-peers">
                   <div class="discover-artists-label discover-network-header">
                     <span data-i18n="discover.peers.label">From your peers</span>
-                    <span v-if="discover.fed.onlyPeer" class="discover-network-toggle discover-network-toggle-on pointer" v-on:click="clearDiscoverPeerFilter">{{ tt('discover.modal.onlyPeer', { name: discover.fed.onlyPeer.name }) }} &times;</span>
                     <span v-if="!discover.p2p.available || discover.p2p.disabled" class="discover-network-toggle pointer" v-bind:class="{ 'discover-network-toggle-on': discover.p2p.newArtistsOnly }"
                           v-on:click="toggleDiscoverNewArtists" data-i18n="discover.network.newArtistsOnly"
                           title="Only show artists your library doesn't have">new artists only</span>
@@ -1114,87 +1113,57 @@
                    whose rows use it: under "Get it" and under "Add to your
                    collection". -->
 
-              <!-- Federation view: a paired server's song, album and artist -->
+              <!-- Federation view: a paired server's song, album and artist —
+                   two zones. LISTEN: one play line for the song, then the
+                   album and the artist as a line of facts and links each.
+                   KEEP A COPY: one card for the federation-copy plug-in's
+                   jobs — a choice of scope (song · album · artist), where
+                   the copy lands, one Add; the card is the job. -->
               <template v-if="discover.modal.source === 'federation' && discover.modal.view === 'federation'">
                 <section class="dmodal-section">
-                  <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.song') }}</span><span class="dmodal-hint">{{ tt('discover.modal.songHint') }}</span></div>
-                  <div class="dm-opt dm-opt-wrap">
-                    <div class="dm-opt-ic dm-opt-ic-on"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg></div>
-                    <div class="dm-opt-body">
-                      <div class="dm-opt-title">{{ discover.modal.track.title || '(untitled)' }}<span class="dm-tag dm-tag-src">{{ tt('discover.modal.fullTrack') }}</span></div>
-                      <div class="dm-opt-sub">{{ tt('discover.modal.statsNote') }}<template v-if="discover.modal.file && discover.modal.file.format"> &middot; {{ discover.modal.file.format }}</template><template v-if="discover.modal.track.duration"> &middot; {{ dmDuration(discover.modal.track.duration) }}</template></div>
+                  <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.listen') }}</span><span class="dmodal-hint">{{ tt('discover.modal.songHint') }}</span></div>
+                  <div class="dm-play">
+                    <a class="dm-play-btn" href="javascript:void(0)" v-on:click="dmPlayNow" :title="tt('discover.modal.playNow')"><dm-icon name="play" :size="22"></dm-icon></a>
+                    <div class="dm-play-body">
+                      <div class="dm-play-title">{{ tt('discover.modal.playNow') }}</div>
+                      <div class="dm-play-sub">{{ tt('discover.modal.playNowSub') }}</div>
                     </div>
-                    <div class="dm-opt-act">
-                      <a class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="dmPlayNow">&#9654; {{ tt('discover.modal.playNow') }}</a>
+                    <div class="dm-play-act">
                       <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmQueueNext">{{ tt('discover.modal.queueNext') }}</a>
-                      <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmAddToQueue">+ {{ tt('discover.modal.addToQueue') }}</a>
+                      <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmAddToQueue"><dm-icon name="plus" :size="14"></dm-icon>{{ tt('discover.modal.addToQueue') }}</a>
                     </div>
                   </div>
-                  <!-- Add to your collection: the federation-copy plug-in's
-                       job row, with where the copy lands under it -->
-                  <dm-job-row v-for="cr in dmCopyRows()" :key="cr.plugin.name" :row="cr.row"
-                              :title="tt('discover.modal.addToCollection')" :idle-sub="tt('discover.modal.addToCollectionSub', { peer: discover.modal.track.peer.name || 'peer' })"
-                              :start-label="tt('discover.modal.add')" start-icon="folder"
-                              :busy="discover.modal.jobBusy[cr.plugin.name] === true"
-                              v-on:start="dmJobStart(cr.plugin)" v-on:cancel="dmJobCancel(cr.plugin)" v-on:play="dmJobPlay(cr.plugin)" v-on:queue="dmJobQueue(cr.plugin)"></dm-job-row>
-                  <dm-dest v-if="dmCopyRows().length"></dm-dest>
+                  <div v-if="discover.modal.track.album || discover.modal.track.artist" class="dm-links">
+                    <div v-if="discover.modal.track.album">
+                      <b>{{ tt('discover.modal.album') }}</b><span>{{ discover.modal.track.album }}</span><small v-if="dmAlbumFacts()">{{ dmAlbumFacts() }}</small>
+                      <a href="javascript:void(0)" v-on:click="dmQueueAlbum(true)" :title="tt('discover.modal.playAlbum')">{{ tt('discover.modal.play') }}</a>
+                      <a href="javascript:void(0)" v-on:click="dmQueueAlbum(false)" :title="tt('discover.modal.queueAlbum')">{{ tt('discover.modal.queue') }}</a>
+                      <a href="javascript:void(0)" v-on:click="dmViewAlbum" :title="tt('discover.modal.viewAlbum')">{{ tt('discover.modal.view') }}</a>
+                    </div>
+                    <div v-if="discover.modal.track.artist">
+                      <b>{{ tt('discover.modal.artist') }}</b><span>{{ discover.modal.track.artist }}</span><small v-if="dmArtistFacts()">{{ dmArtistFacts() }}</small>
+                      <a href="javascript:void(0)" v-on:click="dmViewArtist" :title="tt('discover.modal.viewArtist')">{{ tt('discover.modal.view') }}</a>
+                    </div>
+                  </div>
                 </section>
-                <section v-if="discover.modal.track.album" class="dmodal-section">
-                  <div class="dmodal-section-h">
-                    <span class="dmodal-label">{{ tt('discover.modal.album') }}</span>
-                    <span v-if="discover.modal.album" class="dmodal-hint">{{ discover.modal.album.owned ? tt('discover.modal.inLibrary') : tt('discover.modal.noneInLibrary') }}</span>
-                  </div>
-                  <div class="dm-opt dm-opt-wrap">
-                    <div class="dm-opt-ic"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg></div>
-                    <div class="dm-opt-body">
-                      <div class="dm-opt-title">{{ discover.modal.track.album }}</div>
-                      <div class="dm-opt-sub"><template v-if="discover.modal.track.year">{{ discover.modal.track.year }} &middot; </template><template v-if="discover.modal.album && discover.modal.album.count !== null">{{ tt('discover.modal.songCount', { count: discover.modal.album.count }) }} &middot; {{ dmDuration(discover.modal.album.seconds) }} &middot; </template>{{ tt('discover.modal.onPeer', { peer: discover.modal.track.peer.name || 'peer' }) }}</div>
+                <section v-if="dmKeepChoices().length" class="dmodal-section">
+                  <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.keep') }}</span><span class="dmodal-hint">{{ tt('discover.modal.keepHint', { peer: discover.modal.track.peer.name || 'peer' }) }}</span></div>
+                  <div class="dm-keep">
+                    <div v-if="dmKeepChoices().length > 1" class="dm-choice" role="tablist">
+                      <a v-for="c in dmKeepChoices()" :key="c.scope" href="javascript:void(0)" role="tab" :aria-selected="dmKeepChosen() === c.scope ? 'true' : 'false'" v-bind:class="{ 'dm-on': dmKeepChosen() === c.scope }" v-on:click="dmKeepChoose(c.scope)">{{ c.label }}<small>{{ c.sub || '&nbsp;' }}</small></a>
                     </div>
-                    <div class="dm-opt-act">
-                      <a class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="dmViewAlbum">{{ tt('discover.modal.viewAlbum') }}</a>
-                      <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmQueueAlbum(true)">&#9654; {{ tt('discover.modal.playAlbum') }}</a>
-                      <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmQueueAlbum(false)">+ {{ tt('discover.modal.queueAlbum') }}</a>
-                    </div>
-                  </div>
-                  <!-- Add album to your collection: the copy plug-in's album job -->
-                  <dm-job-row v-for="ar in dmScopeRows('album')" :key="ar.slot" :row="ar.row"
-                              :title="tt('discover.modal.addAlbum')" :idle-sub="dmAlbumIdleSub()"
-                              :start-label="tt('discover.modal.addAlbumStart')" start-icon="folder"
-                              :busy="discover.modal.jobBusy[ar.slot] === true"
-                              v-on:start="dmJobStart(ar.plugin, null, 'album')" v-on:cancel="dmJobCancel(ar.plugin, 'album')"></dm-job-row>
-                </section>
-                <section v-if="discover.modal.track.artist" class="dmodal-section">
-                  <div class="dmodal-section-h">
-                    <span class="dmodal-label">{{ tt('discover.modal.artist') }}</span>
-                    <span v-if="discover.modal.artist && discover.modal.artist.albums !== null" class="dmodal-hint">{{ tt('discover.modal.albumCount', { count: discover.modal.artist.albums }) }} {{ tt('discover.modal.onPeer', { peer: discover.modal.track.peer.name || 'peer' }) }} &middot; {{ tt('discover.modal.youHave', { count: discover.modal.artist.owned }) }}</span>
-                  </div>
-                  <div class="dm-opt">
-                    <div class="dm-opt-ic"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 19c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM20 3H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zM7 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg></div>
-                    <div class="dm-opt-body">
-                      <div class="dm-opt-title">{{ discover.modal.track.artist }}</div>
-                      <div v-if="discover.modal.artist && discover.modal.artist.albums !== null" class="dm-opt-sub">{{ tt('discover.modal.albumCount', { count: discover.modal.artist.albums }) }} &middot; {{ tt('discover.modal.songCount', { count: discover.modal.artist.songs }) }}<template v-if="discover.modal.artist.yearMin"> &middot; {{ discover.modal.artist.yearMin }}<template v-if="discover.modal.artist.yearMax && discover.modal.artist.yearMax !== discover.modal.artist.yearMin"> &ndash; {{ discover.modal.artist.yearMax }}</template></template></div>
-                    </div>
-                    <div class="dm-opt-act"><a class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="dmViewArtist">{{ tt('discover.modal.viewArtist') }}</a></div>
-                  </div>
-                  <!-- Add artist to your collection / Add what you're missing:
-                       the copy plug-in's artist jobs, album by album -->
-                  <dm-job-row v-for="ar in dmScopeRows('artist')" :key="ar.slot" :row="ar.row"
-                              :title="tt('discover.modal.addArtist')" :idle-sub="dmArtistIdleSub('artist')"
-                              :start-label="tt('discover.modal.addArtistStart')" start-icon="folder"
-                              :busy="discover.modal.jobBusy[ar.slot] === true"
-                              v-on:start="dmJobStart(ar.plugin, null, 'artist')" v-on:cancel="dmJobCancel(ar.plugin, 'artist')"></dm-job-row>
-                  <dm-job-row v-for="ar in dmMissingRows()" :key="ar.slot" :row="ar.row"
-                              :title="tt('discover.modal.addMissing')" :idle-sub="dmArtistIdleSub('artist-missing')"
-                              :start-label="tt('discover.modal.addMissingStart')" start-icon="folder"
-                              :busy="discover.modal.jobBusy[ar.slot] === true"
-                              v-on:start="dmJobStart(ar.plugin, null, 'artist-missing')" v-on:cancel="dmJobCancel(ar.plugin, 'artist-missing')"></dm-job-row>
-                </section>
-                <section class="dmodal-section">
-                  <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.more', { peer: discover.modal.track.peer.name || 'peer' }) }}</span></div>
-                  <div class="dm-opt">
-                    <div class="dm-opt-ic"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10 10-4.49 10-10S17.51 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm3-13-6.5 3.5L5 17l6.5-3.5L15 7zm-3 6.25c-.69 0-1.25-.56-1.25-1.25s.56-1.25 1.25-1.25 1.25.56 1.25 1.25-.56 1.25-1.25 1.25z" transform="rotate(45 12 12)"/></svg></div>
-                    <div class="dm-opt-body"><div class="dm-opt-title">{{ tt('discover.modal.moreLikeThis', { peer: discover.modal.track.peer.name || 'peer' }) }}</div><div class="dm-opt-sub">{{ tt('discover.modal.moreLikeThisSub') }}</div></div>
-                    <div class="dm-opt-act"><a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmMoreLikeThisOnPeer">{{ tt('discover.modal.show') }}</a></div>
+                    <label v-if="dmKeepMissingChoice()" class="dm-check"><input type="checkbox" class="browser-default" v-model="discover.modal.keep.onlyMissing"><i><dm-icon name="check" :size="10"></dm-icon></i>{{ tt('discover.modal.onlyMissing', { count: dmKeepMissingCount() }) }}</label>
+                    <!-- Idle: where the copy lands, and the one button. Once
+                         pressed (or when the start failed) the job row takes
+                         the line: queued, copying, done, stopped. -->
+                    <dm-dest v-if="dmKeepIdle()">
+                      <a slot="act" class="dm-btn dm-btn-sm dm-btn-primary" :class="{ 'is-disabled': discover.modal.jobBusy[dmKeepRow().slot] === true }" href="javascript:void(0)" v-on:click="dmKeepStart"><dm-icon name="folder" :size="14"></dm-icon>{{ dmKeepStartLabel() }}</a>
+                    </dm-dest>
+                    <dm-job-row v-else-if="dmKeepRow()" :row="dmKeepRow().row"
+                                :title="dmKeepTitle()" :idle-sub="dmKeepIdleSub()"
+                                :start-label="dmKeepStartLabel()" start-icon="folder"
+                                :busy="discover.modal.jobBusy[dmKeepRow().slot] === true"
+                                v-on:start="dmKeepStart" v-on:cancel="dmJobCancel(dmKeepRow().plugin, dmKeepRow().scope)" v-on:play="dmJobPlay(dmKeepRow().plugin)" v-on:queue="dmJobQueue(dmKeepRow().plugin)"></dm-job-row>
                   </div>
                 </section>
               </template>
