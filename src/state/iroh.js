@@ -38,10 +38,10 @@ import winston from 'winston';
 import {
   loadIroh,
   asBuffer,
-  delay,
   bridgeStreamToBackend,
   buildEnvelope,
   parseEnvelope, describeAddr, handshakeTrace, ticketAddr } from './iroh-common.js';
+import { withTimeout, settleWithin } from '../util/async.js';
 
 // Shared plumbing re-exported for existing consumers.
 export {
@@ -203,7 +203,7 @@ export async function start({ targetPort, targetHost = '127.0.0.1', secretKey, c
 
   if (awaitOnline) {
     const t0 = Date.now();
-    const online = await Promise.race([ep.online().then(() => true).catch(() => false), delay(8000).then(() => false)]);
+    const online = await settleWithin(ep.online().then(() => true).catch(() => false), 8000, false);
     winston.info(`[iroh] endpoint ${online ? 'online' : 'NOT online'} after ${Date.now() - t0}ms: ${describeAddr(ep)}`);
   }
   // stop() ran while we waited for the relay (a soft reboot lands here when
@@ -266,14 +266,12 @@ export async function connectTunnel(compositeTicket, { awaitOnline = true } = {}
   // Cross-network: establish our own home relay BEFORE dialing, else the first
   // stream can reset on a not-ready path.
   if (awaitOnline) {
-    await Promise.race([client.online().catch(() => {}), delay(8000)]);
+    await settleWithin(client.online().catch(() => {}), 8000);
   }
 
   const addr = EndpointTicket.fromString(ticket).endpointAddr();
-  const conn = await Promise.race([
-    client.connect(addr, TUNNEL_ALPN),
-    new Promise((_r, rej) => setTimeout(() => rej(new Error('connect timed out after 25s')), 25000)),
-  ]);
+  const conn = await withTimeout(
+    client.connect(addr, TUNNEL_ALPN), 25000, 'connect timed out after 25s');
 
   // Secret handshake on the first bi-stream.
   const authBi = await conn.openBi();
