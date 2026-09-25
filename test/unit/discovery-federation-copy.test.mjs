@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import Joi from 'joi';
 import * as pathTemplate from '../../src/torrent/path-template.js';
 import { registerPlugin, unregisterPluginForTests, listPlugins } from '../../src/discovery-plugins/registry.js';
-import plugin from '../../src/discovery-plugins/plugins/federation-copy.js';
+import plugin, { copySongs } from '../../src/discovery-plugins/plugins/federation-copy.js';
 import {
   NAMESPACE, KEY, DEFAULT_LAYOUT, LAYOUT_VARS, destinationSchema, uploadsAllowed, writableLibraries,
   destinationFor, validateLayout, normalizeBase, safeFileName, tagsForLayout, renderTarget,
@@ -29,6 +29,7 @@ describe('federation-copy · plug-in shape', () => {
   test('an acquire plug-in with run(), one at a time, and no settings of its own', () => {
     assert.equal(plugin.name, 'federation-copy');
     assert.deepEqual([...plugin.capabilities], ['acquire']);
+    assert.deepEqual([...plugin.scopes], ['song', 'album'], 'a song, or its album');
     assert.equal(plugin.scope, 'user');
     assert.equal(plugin.concurrency, 1);
     assert.equal(typeof plugin.run, 'function');
@@ -213,5 +214,57 @@ describe('collection destination · file name and target', () => {
     assert.equal(comp.relDir, 'Various Artists/Low Tide Sessions');
     const plain = renderTarget({ destination, peerName: 'Sam', fileName: 'x.mp3', tags: { artist: 'Ondine', album: 'Glass Hours' } });
     assert.equal(plain.relDir, 'Ondine/Glass Hours');
+  });
+});
+
+describe('federation-copy · the album loop (copySongs with a scripted copyOne)', () => {
+  const song = (n) => ({ filepath: `shared/${n}.mp3`, title: n, artist: 'Nova', album: 'Night Ferry' });
+  const copied = (n, bytes, missingVars = []) => ({ copied: { vpath: 'collection', filepath: `collection/Nova/Night Ferry/${n}.mp3`, bytes, title: n }, missingVars });
+
+  test('every song accounted for: copied with its bytes, skipped with why and where, a failure of its own does not stop the rest', async () => {
+    const answers = { a: copied('a', 1024 * 1024, ['YEAR']), b: { skipped: 'owned', existing: { filepath: 'collection/x/b.mp3', by: 'hash' } }, c: { skipped: 'exists', filepath: 'collection/Nova/Night Ferry/c.mp3' }, d: new Error('the peer no longer has this file'), e: copied('e', 2 * 1024 * 1024, ['YEAR', 'GENRE']) };
+    const lines = [];
+    const out = await copySongs(['a', 'b', 'c', 'd', 'e'].map(song), {
+      copyOne: async (s, { progress }) => { progress(0.5, 'half'); const r = answers[s.title]; if (r instanceof Error) { throw r; } return r; },
+      progress: (f, text) => lines.push([Math.round(f * 100), text]),
+    });
+    assert.equal(out.songs.total, 5);
+    assert.deepEqual(out.songs.copied.map((c) => [c.from, c.filepath, c.bytes]), [['shared/a.mp3', 'collection/Nova/Night Ferry/a.mp3', 1048576], ['shared/e.mp3', 'collection/Nova/Night Ferry/e.mp3', 2097152]]);
+    assert.deepEqual(out.songs.skipped, [{ from: 'shared/b.mp3', why: 'owned', at: 'collection/x/b.mp3' }, { from: 'shared/c.mp3', why: 'exists', at: 'collection/Nova/Night Ferry/c.mp3' }]);
+    assert.deepEqual(out.songs.failed, [{ from: 'shared/d.mp3', error: 'the peer no longer has this file' }]);
+    assert.equal(out.bytes, 3 * 1024 * 1024);
+    assert.equal(out.stopped, null);
+    assert.deepEqual(out.missingVars, ['YEAR', 'GENRE']);
+    assert.deepEqual(lines[0], [0, '0 of 5 songs · 0.0 MB']);
+    assert.deepEqual(lines[1], [10, '0 of 5 songs · 0.0 MB · half'], 'a song\'s own progress maps into the album\'s');
+    assert.deepEqual(lines[lines.length - 1], [99, '5 of 5 songs · 3.0 MB']);
+    assert.ok(lines.every(([f]) => f <= 99));
+  });
+
+  test('a cancel between songs, or one answered mid-song, stops the loop and keeps what finished', async () => {
+    let calls = 0;
+    const between = await copySongs(['a', 'b', 'c'].map(song), {
+      copyOne: async () => { calls += 1; return copied('a', 10); },
+      isCancelled: () => calls >= 1,
+    });
+    assert.equal(calls, 1);
+    assert.equal(between.songs.copied.length, 1);
+    assert.equal(between.stopped, 'cancelled');
+    const mid = await copySongs(['a', 'b', 'c'].map(song), { copyOne: async (s) => (s.title === 'a' ? copied('a', 10) : null) });
+    assert.deepEqual([mid.songs.copied.length, mid.songs.failed.length, mid.stopped], [1, 0, 'cancelled']);
+  });
+
+  test('the peer\'s transfer limit or the peer going away ends the album; the rest are not tried', async () => {
+    let tried = 0;
+    const limit = await copySongs(['a', 'b', 'c'].map(song), {
+      copyOne: async (s) => { tried += 1; if (s.title === 'b') { throw Object.assign(new Error('copier has reached its transfer limit'), { peerLimit: true }); } return copied(s.title, 10); },
+    });
+    assert.equal(tried, 2);
+    assert.equal(limit.stopped, 'quota');
+    assert.deepEqual(limit.songs.failed, [{ from: 'shared/b.mp3', error: 'copier has reached its transfer limit' }]);
+    assert.equal(limit.songs.copied.length, 1);
+    const down = await copySongs(['a', 'b'].map(song), { copyOne: async () => { throw Object.assign(new Error('copier is unreachable (dial)'), { peerDown: true }); } });
+    assert.deepEqual([down.stopped, down.songs.failed.length, down.songs.copied.length], ['peer', 1, 0]);
+    assert.deepEqual(await copySongs([], { copyOne: async () => copied('x', 1) }), { songs: { total: 0, copied: [], skipped: [], failed: [] }, bytes: 0, stopped: null, missingVars: [] });
   });
 });

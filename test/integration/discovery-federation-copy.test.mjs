@@ -146,6 +146,7 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     const p = r.body.plugins.find((x) => x.name === PLUGIN);
     assert.ok(p, 'federation-copy is on by default');
     assert.deepEqual(p.capabilities, ['acquire']);
+    assert.deepEqual(p.scopes, ['song', 'album']);
     assert.deepEqual(p.settings, []);
     assert.equal((await api(srvB, 'GET', `/api/v1/discovery/plugins/${PLUGIN}/settings`)).status, 400, 'no plug-in settings of its own');
   });
@@ -249,6 +250,55 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     assert.equal(job.result.filepath, 'collection/From peers/copier/Nova/Night Ferry/Second_Song.mp3');
     assert.equal(fs.readFileSync(target, 'utf8'), 'not audio', 'untouched');
     assert.equal(bRow('SELECT id FROM tracks WHERE filepath = ?', 'From peers/copier/Nova/Night Ferry/Second_Song.mp3'), undefined, 'no row for the placeholder');
+  });
+
+  test('an album copy takes every song the library lacks, skips the ones it has, and files them under the destination', async () => {
+    assert.equal((await api(srvB, 'PUT', DEST, { destination: { vpath: 'collection', base: 'Albums', layout: '{{ARTIST}}/{{ALBUM}}' } })).status, 200);
+    // Asked for through one of its songs; the job is the album's.
+    const started = await api(srvB, 'POST', JOBS, { recommendation: rec('Second_Song.mp3'), scope: 'album' });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    assert.deepEqual(started.body.job.params, { scope: 'album' });
+    assert.match(started.body.job.key, /^album:/);
+    const job = await untilFinished(started.body.job.id);
+    assert.equal(job.state, 'done', `job error: ${job.error}`);
+    const { result } = job;
+    assert.equal(result.scope, 'album');
+    assert.deepEqual(result.album, { name: 'Night Ferry', artist: 'Nova', year: null });
+    assert.equal(result.songs.total, 2);
+    assert.equal(result.stopped, null);
+    assert.deepEqual(result.songs.failed, []);
+    // Remote Hit is in the library from the earlier copy: skipped by hash. Second Song lands.
+    assert.deepEqual(result.songs.skipped, [{ from: 'shared/Remote_Hit.mp3', why: 'owned', at: 'collection/From peers/copier/Nova/Night Ferry/Remote_Hit.mp3' }]);
+    assert.equal(result.songs.copied.length, 1);
+    const [second] = result.songs.copied;
+    assert.equal(second.from, 'shared/Second_Song.mp3');
+    assert.equal(second.filepath, 'collection/Albums/Nova/Night Ferry/Second_Song.mp3');
+    assert.deepEqual([second.title, second.artist, second.album], ['Second Song', 'Nova', 'Night Ferry']);
+    assert.ok(second.trackId > 0 && second.bytes > 1000);
+    assert.equal(result.bytes, second.bytes);
+    assert.deepEqual(result.missingVars, []);
+    assert.deepEqual(result.peer, { id: peerId, name: 'copier' });
+    assert.ok(fs.existsSync(path.join(collectionDir, 'Albums', 'Nova', 'Night Ferry', 'Second_Song.mp3')));
+    assert.ok(!fs.readdirSync(path.join(collectionDir, 'Albums')).some((f) => f.endsWith('.part')), 'no .part left behind');
+    assert.equal(bRow('SELECT source FROM tracks WHERE filepath = ?', 'Albums/Nova/Night Ferry/Second_Song.mp3').source, PLUGIN);
+    assert.equal(bRow('SELECT COUNT(*) AS n FROM plugin_downloads WHERE job_id = ?', job.id).n, 1, 'one provenance row per song the album copied');
+    // The same album again: nothing left to copy, nothing failed.
+    const again = await api(srvB, 'POST', JOBS, { recommendation: rec('Remote_Hit.mp3'), scope: 'album' });
+    assert.equal(again.status, 202, 'the earlier album job is finished, so this is a new one');
+    const rerun = await untilFinished(again.body.job.id);
+    assert.equal(rerun.state, 'done', `job error: ${rerun.error}`);
+    assert.deepEqual([rerun.result.songs.copied.length, rerun.result.songs.skipped.length, rerun.result.songs.failed.length], [0, 2, 0]);
+    assert.ok(rerun.result.songs.skipped.every((s) => s.why === 'owned'));
+    // A song copy of the same recommendation is its own job, and the lookup shows both.
+    const look = await api(srvB, 'POST', '/api/v1/discovery/plugin-jobs/lookup', { recommendation: rec('Remote_Hit.mp3') });
+    assert.equal(look.status, 200);
+    assert.equal(look.body.keys.album, again.body.job.key);
+    assert.ok(look.body.jobs.some((j) => j.id === again.body.job.id), 'the album job is in the lookup');
+    // An album the peer does not have fails with the reason.
+    const none = await api(srvB, 'POST', JOBS, { recommendation: rec('Remote_Hit.mp3', { album: 'Ghost Album' }), scope: 'album' });
+    const failed = await untilFinished(none.body.job.id);
+    assert.equal(failed.state, 'failed');
+    assert.match(failed.error, /no songs for/);
   });
 
   test('a network (p2p) recommendation cannot be copied', async () => {
