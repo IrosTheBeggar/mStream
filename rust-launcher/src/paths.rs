@@ -323,6 +323,62 @@ pub fn version_label(v: [u64; 3]) -> String {
     format!("{}.{}.{}", v[0], v[1], v[2])
 }
 
+/// The first player release whose `gui` and `tui` faces take
+/// `--instance-lock` (the player repo's instance module). Planned for the
+/// same release as the GUI; if the flag ships later, only this constant
+/// moves. Below it the launcher opens the player without a lock — and
+/// cannot tell an open player from a closed one.
+pub const INSTANCE_LOCK_MIN_PLAYER_VERSION: [u64; 3] = [0, 8, 0];
+
+/// Whether a player of this version takes `--instance-lock`.
+pub fn player_has_instance_lock(version: [u64; 3]) -> bool {
+    version >= INSTANCE_LOCK_MIN_PLAYER_VERSION
+}
+
+/// The desktop player's instance lock: one per data home — one per server
+/// install — next to launcher.lock. The launcher hands the path to the
+/// player, which holds an exclusive lock on it for its lifetime, and tries
+/// the same lock before every open (tray_app::desktop_player_running).
+pub fn desktop_player_lock(data_home: &Path) -> PathBuf {
+    data_home.join("desktop-player.lock")
+}
+
+/// What the player writes beside its lock while it holds it (the player
+/// repo's instance.rs: the lock path with a .json extension). Read only
+/// behind a lock check — a crash leaves the file behind with the lock
+/// released — and only for what the focus step needs. DATA from another
+/// process: the pid is a number, the host a bounded token, and nothing
+/// else in the file is trusted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerSidecar {
+    pub pid: u32,
+    /// `ghostty`, `apple-terminal`, `windows-terminal`, `conhost`, … — or
+    /// `unknown` for anything unreadable.
+    pub host: String,
+}
+
+pub fn read_player_sidecar(lock: &Path) -> Option<PlayerSidecar> {
+    let doc = std::fs::read_to_string(lock.with_extension("json")).ok()?;
+    parse_player_sidecar(&doc)
+}
+
+/// The parsing half, split out so tests can feed it documents directly.
+pub(crate) fn parse_player_sidecar(doc: &str) -> Option<PlayerSidecar> {
+    let v = serde_json::from_str::<serde_json::Value>(doc).ok()?;
+    let pid = v.get("pid")?.as_u64().and_then(|n| u32::try_from(n).ok())?;
+    let host = v
+        .get("host")
+        .and_then(|h| h.as_str())
+        .filter(|h| {
+            !h.is_empty()
+                && h.len() <= 32
+                && h.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.' | '_'))
+        })
+        .unwrap_or("unknown")
+        .to_string();
+    Some(PlayerSidecar { pid, host })
+}
+
 /// What the macOS "Set up mStream" launch needs to prefer the bundled
 /// Ghostty console over Terminal.app. Constructed on every platform (the
 /// resolver just never finds one off-mac), read only by the macOS spawn.
@@ -676,6 +732,42 @@ mod tests {
             assert_eq!(player_version(&dir.join("no-such-binary")), None);
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    #[test]
+    fn the_instance_lock_lives_in_the_data_home_and_gates_on_the_player() {
+        assert_eq!(desktop_player_lock(Path::new("/data/home")), PathBuf::from("/data/home/desktop-player.lock"));
+        assert!(!player_has_instance_lock([0, 7, 0]));
+        assert!(player_has_instance_lock(INSTANCE_LOCK_MIN_PLAYER_VERSION));
+        assert!(player_has_instance_lock([1, 0, 0]));
+    }
+
+    #[test]
+    fn player_sidecars_are_read_tolerantly_and_untrusted() {
+        let ok = parse_player_sidecar(r#"{"schema":1,"pid":4242,"face":"gui","host":"ghostty","startedAt":1727500000}"#).unwrap();
+        assert_eq!(ok, PlayerSidecar { pid: 4242, host: "ghostty".into() });
+        // A later schema's extra fields are ignored; the pid is the one thing
+        // the file must carry.
+        assert_eq!(
+            parse_player_sidecar(r#"{"schema":9,"pid":7,"host":"apple-terminal","port":3333}"#).unwrap().host,
+            "apple-terminal"
+        );
+        assert_eq!(parse_player_sidecar(r#"{"host":"ghostty"}"#), None, "no pid, no sidecar");
+        assert_eq!(parse_player_sidecar("not json"), None);
+        // A host that is not a plain token reads as unknown — never as text
+        // the log would repeat.
+        let long = format!(r#"{{"pid":1,"host":"{}"}}"#, "x".repeat(40));
+        for odd in [r#"{"pid":1,"host":"Ghostty; rm -rf /"}"#, r#"{"pid":1,"host":""}"#, r#"{"pid":1}"#, long.as_str()] {
+            assert_eq!(parse_player_sidecar(odd).unwrap().host, "unknown", "{odd}");
+        }
+        // The file beside a lock: written by the player, read by us.
+        let dir = env::temp_dir().join(format!("mstream-launcher-sidecar-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join("desktop-player.lock");
+        assert_eq!(read_player_sidecar(&lock), None);
+        std::fs::write(dir.join("desktop-player.json"), r#"{"schema":1,"pid":99,"host":"windows-terminal"}"#).unwrap();
+        assert_eq!(read_player_sidecar(&lock), Some(PlayerSidecar { pid: 99, host: "windows-terminal".into() }));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

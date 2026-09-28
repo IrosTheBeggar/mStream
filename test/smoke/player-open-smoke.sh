@@ -76,8 +76,10 @@ ROOT=$(cd "$ROOT" && pwd -P)
 # EXIT traps — see update-watchdog-smoke.sh). Everything spawned carries a
 # path under ROOT in its argv: the launcher, the python server (its
 # --directory), the terminal (the stub's path in its sh -c program).
+HOLDER=""
 cleanup() {
     status=$?
+    if [ -n "$HOLDER" ]; then kill "$HOLDER" 2>/dev/null || true; fi
     pkill -f "$ROOT/" 2>/dev/null || true
     sleep 1
     pkill -9 -f "$ROOT/" 2>/dev/null || true
@@ -87,19 +89,21 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 129' INT TERM
 
-# mk_bundle <player-version> <port>: sets B to the bundle dir.
+# mk_bundle <leg> <player-version> <port>: a bundle of its own per leg (two
+# legs must never share a bundle: the argv file, the console link and the
+# stub are per bundle); sets B to the bundle dir.
 mk_bundle() {
-    B="$ROOT/v$1/mStream-0.0.1-$KEY"
+    B="$ROOT/$1/mStream-0.0.1-$KEY"
     mkdir -p "$B/$SERVER_DIR_REL/bin/mstream-player" "$B/serve"
     cp "$LAUNCHER" "$B/$FACE_REL"
     : > "$B/serve/mStream-marker.txt"   # the directory listing carries the identity
     printf '#!/bin/sh\nif [ "${1:-}" = -V ]; then echo 0.0.1; exit 0; fi\nexec python3 -m http.server %s --bind 127.0.0.1 --directory '\''%s/serve'\''\n' \
-        "$2" "$B" > "$B/$SERVER_REL"
+        "$3" "$B" > "$B/$SERVER_REL"
     chmod +x "$B/$SERVER_REL"
     stub="$B/$SERVER_DIR_REL/bin/mstream-player/$PLAYER_KEY"
     cat > "$stub" <<STUB
 #!/bin/sh
-if [ "\${1:-}" = --version ]; then echo "mstream-player $1"; exit 0; fi
+if [ "\${1:-}" = --version ]; then echo "mstream-player $2"; exit 0; fi
 printf '%s\n' "\$*" > "\$(dirname "\$0")/../../player-argv.txt"
 sleep 20
 STUB
@@ -110,23 +114,30 @@ STUB
     fi
 }
 
-# run_leg <player-version> <port>: boots a launcher with --player --no-open
-# against its own HOME; sets B, DATA, LOG, ARGV, LPID.
-run_leg() {
-    mk_bundle "$1" "$2"
-    home="$SMOKE/home-v$1"
-    DATA="$home/$DATA_REL"
+# prepare_leg <leg> <player-version> <port>: the bundle and a HOME of its
+# own (its own data home, lock and log), set up already (on a fresh install
+# --player defers to the wizard); sets B, HOME_DIR, DATA, LOG, ARGV.
+prepare_leg() {
+    mk_bundle "$1" "$2" "$3"
+    HOME_DIR="$SMOKE/home-$1"
+    DATA="$HOME_DIR/$DATA_REL"
     LOG="$DATA/logs/launcher.log"
     ARGV="$B/$SERVER_DIR_REL/player-argv.txt"
     mkdir -p "$DATA/conf"
-    # Set up already: on a fresh install --player defers to the wizard.
-    echo '{"port":'"$2"',"setupComplete":true}' > "$DATA/conf/default.json"
-    HOME="$home" \
-    XDG_DATA_HOME="$home/.local/share" \
+    echo '{"port":'"$3"',"setupComplete":true}' > "$DATA/conf/default.json"
+}
+
+# launch_leg: boots the prepared leg's launcher with --player --no-open;
+# sets LPID.
+launch_leg() {
+    HOME="$HOME_DIR" \
+    XDG_DATA_HOME="$HOME_DIR/.local/share" \
     MSTREAM_LAUNCHER_SKIP_AUTOSTART=1 \
     "$B/$FACE_REL" --player --no-open &
     LPID=$!
 }
+
+run_leg() { prepare_leg "$1" "$2" "$3"; launch_leg; }
 
 wait_for_log() { # <pattern> <seconds>
     i=0
@@ -147,10 +158,10 @@ stop_leg() {
 fail=0
 
 echo "== leg 1: player 9.9.9 has the GUI - the desktop player opens =="
-run_leg 9.9.9 3874
+run_leg gui 9.9.9 3874
 wait_for_log "server is up" 45 || { echo "FAIL leg 1: server never came up"; tail -20 "$LOG" 2>/dev/null; exit 1; }
 i=0; while [ $i -lt 30 ] && [ ! -s "$ARGV" ]; do i=$((i + 1)); sleep 1; done
-if [ -s "$ARGV" ] && [ "$(cat "$ARGV")" = "gui --bundled-server http://localhost:3874" ]; then
+if [ -s "$ARGV" ] && [ "$(cat "$ARGV")" = "gui --instance-lock $DATA/desktop-player.lock --bundled-server http://localhost:3874" ]; then
     echo "PASS the player was started as: $(cat "$ARGV")"
 else
     echo "FAIL player argv: '$(cat "$ARGV" 2>/dev/null)'"; tail -20 "$LOG" 2>/dev/null; fail=1
@@ -166,7 +177,7 @@ fi
 stop_leg
 
 echo "== leg 2: player 0.7.0 predates the GUI - the web player is the fallback, --no-open keeps it shut =="
-run_leg 0.7.0 3875
+run_leg old 0.7.0 3875
 wait_for_log "server is up" 45 || { echo "FAIL leg 2: server never came up"; tail -20 "$LOG" 2>/dev/null; exit 1; }
 if wait_for_log "web player fallback suppressed (--no-open)" 15; then
     echo "PASS the fallback ran and stayed out of the browser"
@@ -184,6 +195,39 @@ if [ -e "$ARGV" ]; then
 else
     echo "PASS no player process was started"
 fi
+stop_leg
+
+echo "== leg 3: a player already holds its instance lock - the ask brings it forward and opens nothing =="
+prepare_leg held 9.9.9 3876
+mkdir -p "$DATA"
+# Stand in for the open player: hold the lock the launcher will try (flock —
+# what the player's fslock takes on unix) and write the sidecar beside it.
+python3 - "$DATA/desktop-player.lock" <<'PY' &
+import fcntl, json, os, sys, time
+lock = sys.argv[1]
+f = open(lock, "w")
+fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+with open(lock[:-5] + ".json", "w") as side:
+    json.dump({"schema": 1, "pid": os.getpid(), "face": "gui", "host": "smoke-stub", "startedAt": int(time.time())}, side)
+time.sleep(60)
+PY
+HOLDER=$!
+sleep 1
+launch_leg
+wait_for_log "server is up" 45 || { echo "FAIL leg 3: server never came up"; tail -20 "$LOG" 2>/dev/null; exit 1; }
+if wait_for_log "player already open (pid $HOLDER, under smoke-stub)" 15; then
+    echo "PASS the launcher saw the open player: $(grep "player already open" "$LOG" | tail -1 | sed 's/^\[[0-9]*\] //')"
+else
+    echo "FAIL no 'player already open' line for pid $HOLDER"; tail -20 "$LOG" 2>/dev/null; fail=1
+fi
+sleep 2
+if [ -e "$ARGV" ] || grep -q "player opened via" "$LOG"; then
+    echo "FAIL a second player was opened beside the held lock"; fail=1
+else
+    echo "PASS nothing was opened beside it"
+fi
+kill "$HOLDER" 2>/dev/null || true
+HOLDER=""
 stop_leg
 
 [ "$fail" -eq 0 ] && echo "player-open smoke: all assertions passed" || echo "player-open smoke: FAILED"
