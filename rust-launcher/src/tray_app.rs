@@ -93,6 +93,27 @@ pub fn run(args: LauncherArgs) -> ! {
     // once, like the server binary: an install doesn't gain or lose its
     // bundled player mid-session.
     let player_bin = paths::find_player_bin(&bin, &data_home);
+    // The desktop player behind "Open mStream Player": the same binary,
+    // admitted only from the release that grew its `gui` face — one
+    // `--version` probe, at boot, for the same reason. A bundle ships the
+    // pinned player, so this only ever refuses a mismatched layout
+    // (--server-bin against an older tree, a stale managed copy in the
+    // data home); those get the web player, and the log says why once.
+    let player_gui = player_bin.as_deref().and_then(|p| match paths::player_version(p) {
+        Some(v) if paths::player_has_gui(v) => Some(p.to_path_buf()),
+        Some(v) => {
+            log.line(&format!(
+                "player {} predates the GUI (needs {}) - the player item opens the web player",
+                paths::version_label(v),
+                paths::version_label(paths::GUI_MIN_PLAYER_VERSION)
+            ));
+            None
+        }
+        None => {
+            log.line("player binary did not answer --version - the player item opens the web player");
+            None
+        }
+    });
     // The bundled Ghostty console (macOS bundles stage it at console/ beside
     // mStream.app; other platforms simply never find one). Its Dock icon is
     // mStream's own icns out of the .app — cosmetic, so absence is fine.
@@ -133,7 +154,22 @@ pub fn run(args: LauncherArgs) -> ! {
     }
     if !locked {
         log.line("another launcher instance holds the lock - focusing it and exiting");
-        if !args.autostarted && !args.no_open && !args.takeover {
+        if args.player {
+            // `--player` from a shortcut or a second launch: the running
+            // launcher's server is the one to show, and the player is its
+            // own process either way — nothing to ask the other instance.
+            // (Until the player holds an instance lock of its own, this
+            // can open a second window beside one already open.)
+            let fallback = (!args.no_open).then(|| paths::browse_target(&config, &ep));
+            open_desktop_player(
+                player_gui.as_deref(),
+                &paths::server_url(&ep),
+                &data_home,
+                console.as_ref(),
+                fallback.as_deref(),
+                &log,
+            );
+        } else if !args.autostarted && !args.no_open && !args.takeover {
             let _ = open::that_detached(paths::browse_target(&config, &ep));
         }
         std::process::exit(0);
@@ -301,6 +337,10 @@ pub fn run(args: LauncherArgs) -> ! {
     // watchdog decides whether a staged update gets rolled back.
     let mut boot_failures: u32 = 0;
     let mut opened = false;
+    // `--player`: an explicit ask for the desktop player, served once the
+    // server answers (the GUI dials it at once) and once per session — a
+    // restart's ServerUp must not pop a second window.
+    let mut player_requested = args.player;
     // Update-awareness: the server's checker writes update-status.json in
     // the shared data home; the tray re-reads it on every minute tick.
     let mut update_item: Option<MenuItem> = None;
@@ -366,6 +406,12 @@ pub fn run(args: LauncherArgs) -> ! {
                 }
                 let _ = manage.append(&PredefinedMenuItem::separator());
                 let _ = manage.append(&MenuItem::with_id("open", "Open Admin Panel in browser", true, None));
+                // "Open mStream Player": the bundled player's desktop face
+                // in a window of its own — the web player in the browser
+                // when this install's player predates the GUI or no
+                // terminal opens (open_desktop_player). Always present, so
+                // the menu keeps one shape across installs.
+                let player_item = MenuItem::with_id("player", "Open mStream Player", true, None);
                 let qc_item = MenuItem::with_id("quick-connect", "Quick Connect", true, None);
                 let auto_item =
                     CheckMenuItem::with_id("autostart", "Start at login", true, autostart::is_enabled(), None);
@@ -375,6 +421,7 @@ pub fn run(args: LauncherArgs) -> ! {
                 let _ = menu.append(&status);
                 let _ = menu.append(&update);
                 let _ = menu.append(&PredefinedMenuItem::separator());
+                let _ = menu.append(&player_item);
                 let _ = menu.append(&manage);
                 let _ = menu.append(&qc_item);
                 let _ = menu.append(&PredefinedMenuItem::separator());
@@ -514,6 +561,20 @@ pub fn run(args: LauncherArgs) -> ! {
                         // the apps/players. (The post-boot browser announce
                         // keeps its own routing: paths::browse_target.)
                         let _ = open::that_detached(format!("{url}/admin"));
+                    }
+                    "player" => {
+                        // A human clicked: the browser fallback is always
+                        // on the table (like the rooms' panel fallback).
+                        log.line("menu: open player");
+                        let fallback = paths::browse_target(&config_loop, &ep);
+                        open_desktop_player(
+                            player_gui.as_deref(),
+                            &url,
+                            &data_home,
+                            console.as_ref(),
+                            Some(&fallback),
+                            &log,
+                        );
                     }
                     room_id if room_from_menu_id(room_id).is_some() => {
                         // One of the player's admin rooms in a real terminal
@@ -705,6 +766,27 @@ pub fn run(args: LauncherArgs) -> ! {
                         let target = paths::browse_target(&config_loop, &ep);
                         if target.ends_with("/admin") {
                             log.line("no music folders configured yet - browser target is the admin panel");
+                        }
+                        if player_requested {
+                            player_requested = false;
+                            if target.ends_with("/admin") {
+                                // A fresh install: the wizard (below) is the
+                                // useful window; the player would show a
+                                // server with no music. The ask stands down —
+                                // the tray item is one click away after setup.
+                                log.line("--player: not set up yet - the setup wizard comes first");
+                            } else {
+                                opened = true;
+                                let fallback = (!args.no_open).then_some(target.as_str());
+                                open_desktop_player(
+                                    player_gui.as_deref(),
+                                    &url,
+                                    &data_home,
+                                    console.as_ref(),
+                                    fallback,
+                                    &log,
+                                );
+                            }
                         }
                         if announce && !opened {
                             opened = true;
@@ -911,6 +993,40 @@ fn room_webapp_url(server_url: &str, room: platform::AdminRoom) -> String {
         Torrents => "torrent-view",
     };
     format!("{server_url}/admin#{view}")
+}
+
+/// Open the desktop player — the bundled player's GUI face in a terminal
+/// window of its own, at its size, with this server as its bundled server
+/// — or, when this install has no GUI-capable player or no terminal
+/// opened, the web player in the browser (`fallback`: None where the
+/// browser must stay shut, i.e. under --no-open; a menu click always
+/// passes one). Shared by the tray item, the --player flag and the
+/// second-instance path, so every gesture logs and degrades the same way.
+fn open_desktop_player(
+    player_gui: Option<&Path>,
+    server_url: &str,
+    data_home: &Path,
+    console: Option<&paths::ConsoleLaunch>,
+    fallback: Option<&str>,
+    log: &Logger,
+) {
+    if let Some(player) = player_gui {
+        match platform::open_player_terminal(player, server_url, data_home, console, platform::PlayerPage::Player) {
+            Ok(via) => {
+                log.line(&format!("player opened via {via}"));
+                return;
+            }
+            Err(e) => log.line(&format!("player terminal failed: {e} - falling back to the web player")),
+        }
+    } else {
+        log.line("player: no GUI-capable player binary in this install - falling back to the web player");
+    }
+    match fallback {
+        Some(target) => {
+            let _ = open::that_detached(target);
+        }
+        None => log.line("player: web player fallback suppressed (--no-open)"),
+    }
 }
 
 /// Spawn a server generation plus its two helper threads.
@@ -1504,7 +1620,7 @@ mod tests {
         }
         // Every other menu id — and a room name without the prefix — is
         // somebody else's arm, never a room.
-        for other in ["open", "quick-connect", "manage", "libraries", "admin-", "admin-setup", ""] {
+        for other in ["open", "player", "quick-connect", "manage", "libraries", "admin-", "admin-setup", ""] {
             assert_eq!(room_from_menu_id(other), None, "{other}");
         }
         // Five rooms, five labels, five panel sections.

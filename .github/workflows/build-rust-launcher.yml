@@ -60,6 +60,7 @@ on:
       - 'test/smoke/update-watchdog-smoke.sh'
       - 'test/smoke/update-watchdog-smoke.ps1'
       - 'test/smoke/update-apply-smoke.sh'
+      - 'test/smoke/player-open-smoke.sh'
 
 # One run at a time per ref: two master pushes touching the crate write the
 # SAME four binary paths, and binaries can't be content-merged, so runs must
@@ -130,13 +131,21 @@ jobs:
       #     fresh launcher does NOT re-apply off the stale arm
       #     (test/smoke/update-apply-smoke.sh; ~2.5min — the launcher's
       #     60s update poll twice)
+      #   player: `--player` opens the bundled player's GUI face in a real
+      #     terminal once the server is up, and the version gate degrades
+      #     an older player to the web player — Linux only, where xterm
+      #     under xvfb is an emulator the launcher's chain knows (macOS
+      #     would pop Terminal.app on the runner)
+      #     (test/smoke/player-open-smoke.sh)
       # Linux needs a display (the desktop face refuses headless) and the
       # gtk runtime already pulled in by the build deps; the tray itself may
       # degrade ("tray unavailable") — the smokes assert on processes and
       # files, never the tray.
-      - name: Install xvfb (linux smokes)
+      # xterm is the emulator the player smoke's terminal chain lands on;
+      # xfonts-base guarantees its core "fixed" font under a bare Xvfb.
+      - name: Install xvfb + xterm (linux smokes)
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y xvfb
+        run: sudo apt-get install -y xvfb xterm xfonts-base
 
       - name: Update watchdog smoke
         if: runner.os != 'Windows'
@@ -157,6 +166,11 @@ jobs:
           else
             sh test/smoke/update-apply-smoke.sh
           fi
+
+      - name: Desktop player smoke
+        if: runner.os == 'Linux'
+        shell: bash
+        run: xvfb-run -a sh test/smoke/player-open-smoke.sh
 
       # Windows: the watchdog smoke (rustc-compiled stubs; the runner has
       # the toolchain). It exercises the junction re-point + DETACHED_PROCESS

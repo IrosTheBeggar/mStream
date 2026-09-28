@@ -10,6 +10,7 @@ use std::env;
 use std::ffi::OsString;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 /// Env lookup that mirrors how the JS side reads paths from the
 /// environment: `env.X || fallback` — an exported-but-EMPTY variable is
@@ -259,6 +260,67 @@ pub fn find_player_bin(server_bin: &Path, data_home: &Path) -> Option<PathBuf> {
     }
     let managed = data_home.join("bin").join("mstream-player").join(&key);
     managed.exists().then_some(managed)
+}
+
+/// The first player release whose binary has the `gui` subcommand — the
+/// desktop player (player PR #18, unreleased at v0.7.0). Below it the
+/// tray's player item opens the web player instead. A bundle always ships
+/// the pinned player, so this gate only ever refuses a mismatched layout:
+/// --server-bin against an older tree, or a stale managed copy the
+/// server's fetch installed in the data home.
+pub const GUI_MIN_PLAYER_VERSION: [u64; 3] = [0, 8, 0];
+
+/// Ask the player binary its version. `--version` is clap's one-shot —
+/// prints "mstream-player X.Y.Z" and exits, no audio device, no sockets,
+/// no config — the same probe the server's fetch path runs before it
+/// installs a build. None when the binary cannot run here at all (the
+/// linux build dies at load without libasound) or answers something else;
+/// the caller treats that as "no GUI player".
+pub fn player_version(bin: &Path) -> Option<[u64; 3]> {
+    let mut cmd = Command::new(bin);
+    cmd.arg("--version").stdin(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // A console-subsystem child of this GUI launcher would otherwise
+        // flash a console window for the probe (same as server::spawn).
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_player_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// "mstream-player 0.8.0" → [0, 8, 0]. Only the first line counts, only
+/// the leading dotted triple is read (a pre-release or build tag after it
+/// is ignored — "0.8.0-beta.1" is a build that has the GUI), and anything
+/// else is None.
+pub(crate) fn parse_player_version(stdout: &str) -> Option<[u64; 3]> {
+    let line = stdout.lines().next()?.trim();
+    let rest = line.strip_prefix("mstream-player ")?;
+    let core = rest.split(|c: char| c == '-' || c == '+' || c.is_whitespace()).next()?;
+    let mut parts = core.split('.');
+    let mut v = [0u64; 3];
+    for slot in &mut v {
+        *slot = parts.next()?.parse().ok()?;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(v)
+}
+
+/// Whether a player of this version has the `gui` face.
+pub fn player_has_gui(version: [u64; 3]) -> bool {
+    version >= GUI_MIN_PLAYER_VERSION
+}
+
+/// "0.8.0" — for log lines.
+pub fn version_label(v: [u64; 3]) -> String {
+    format!("{}.{}.{}", v[0], v[1], v[2])
 }
 
 /// What the macOS "Set up mStream" launch needs to prefer the bundled
@@ -565,6 +627,55 @@ mod tests {
         std::fs::write(&bundled, b"x").unwrap();
         assert_eq!(find_player_bin(&server, &home), Some(bundled), "bundled copy wins");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn player_versions_parse_and_gate_the_gui() {
+        // clap's --version line, exactly as the pinned builds print it.
+        assert_eq!(parse_player_version("mstream-player 0.7.0\n"), Some([0, 7, 0]));
+        assert_eq!(parse_player_version("mstream-player 0.8.0"), Some([0, 8, 0]));
+        assert_eq!(parse_player_version("mstream-player 10.20.30\ntrailing noise"), Some([10, 20, 30]));
+        // A pre-release or build tag is a build of that version.
+        assert_eq!(parse_player_version("mstream-player 0.8.0-beta.1"), Some([0, 8, 0]));
+        assert_eq!(parse_player_version("mstream-player 1.0.0+abc123"), Some([1, 0, 0]));
+        // Anything else — a foreign binary, a loader error, a truncated
+        // number — is not a version, never a guess.
+        for junk in ["", "0.8.0", "mstream-server 6.30.0", "mstream-player 0.8", "mstream-player 0.8.0.1", "mstream-player x.y.z", "mstream-player"] {
+            assert_eq!(parse_player_version(junk), None, "{junk:?}");
+        }
+        // The gate: the release that grew `gui` and everything after it.
+        assert!(!player_has_gui([0, 7, 0]));
+        assert!(!player_has_gui([0, 7, 99]), "a 0.7.x patch release has no GUI");
+        assert!(player_has_gui(GUI_MIN_PLAYER_VERSION));
+        assert!(player_has_gui([0, 9, 0]));
+        assert!(player_has_gui([1, 0, 0]));
+        assert_eq!(version_label(GUI_MIN_PLAYER_VERSION), "0.8.0");
+    }
+
+    #[test]
+    fn player_version_probe_reads_a_real_process() {
+        // A stand-in binary that answers --version the way the player does;
+        // the probe runs it for real (spawn, capture, parse). Unix only for
+        // the shell-script stand-in; the parse itself is pinned above.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = env::temp_dir().join(format!("mstream-launcher-pver-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let stub = dir.join("mstream-player");
+            std::fs::write(&stub, "#!/bin/sh\n[ \"$1\" = --version ] && echo 'mstream-player 0.8.0' && exit 0\nexit 2\n").unwrap();
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(player_version(&stub), Some([0, 8, 0]));
+            // A binary that cannot run (the linux loader failure shape: a
+            // non-zero exit and nothing useful on stdout) is None.
+            let dead = dir.join("dead-player");
+            std::fs::write(&dead, "#!/bin/sh\necho 'error while loading shared libraries' >&2\nexit 127\n").unwrap();
+            std::fs::set_permissions(&dead, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(player_version(&dead), None);
+            assert_eq!(player_version(&dir.join("no-such-binary")), None);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]
