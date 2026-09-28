@@ -86,6 +86,11 @@ export function buildFeatures() {
     // row has actions to offer (GET /api/v1/discovery/plugins lists them).
     // The flag, never the list, lives here: the list is per-plug-in state.
     discoveryPlugins: discoveryPlugins.anyPluginEnabled(),
+    // This server answers POST /api/v1/discovery/owned — "which of these
+    // songs, albums and artists does my library have", a list at a time —
+    // the marks the peer browse draws. A version fact, like `sync`: a
+    // client gates on the key, never on the version string.
+    discoveryOwned: true,
     // false, or the server's transcode defaults.
     transcode: transcodeInfo,
     // Per-format booleans from config.

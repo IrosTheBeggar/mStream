@@ -135,3 +135,51 @@ describe('ownedAlbumKeys', () => {
     assert.deepEqual([...owned.ownedAlbumKeys('Nova')].sort(), ['night ferry', 'second wind']);
   });
 });
+
+describe('ownedTrack · the tag arm finds the artist by its identity key', () => {
+  test('a spelling that folds to the same artist resolves; the album and title compare as before; all three are needed', () => {
+    const rec = { title: 'Remote Hit', album: 'Night Ferry' };
+    assert.ok(owned.ownedTrack({ ...rec, artist: 'Nova' }));
+    assert.ok(owned.ownedTrack({ ...rec, artist: 'nova' }), 'case folds');
+    assert.ok(owned.ownedTrack({ ...rec, artist: '  Nova  ' }), 'whitespace folds');
+    assert.ok(owned.ownedTrack({ ...rec, artist: 'Nova', album: 'night ferry', title: 'REMOTE HIT' }), 'album and title are compared case-blind, as ever');
+    assert.equal(owned.ownedTrack({ ...rec, artist: 'Novak' }), null);
+    assert.equal(owned.ownedTrack({ artist: 'Nova', title: 'Remote Hit' }), null, 'the tag arm needs all three');
+  });
+});
+
+describe('ownedAlbum and ownedArtist (the batched lookup\'s arms)', () => {
+  test('an album with a credit is the artist scopes\' comparison; without one, any album of that name', () => {
+    assert.equal(owned.ownedAlbum({ album: 'Night Ferry', albumArtist: 'Nova' }), true);
+    assert.equal(owned.ownedAlbum({ album: 'night ferry ', artist: 'nova' }), true, 'normalised on both sides');
+    assert.equal(owned.ownedAlbum({ album: 'Night Ferry', albumArtist: 'Vosto' }), false, 'not that artist\'s album');
+    assert.equal(owned.ownedAlbum({ album: 'Night Ferry' }), true, 'by name alone');
+    assert.equal(owned.ownedAlbum({ album: 'NIGHT FERRY' }), true);
+    assert.equal(owned.ownedAlbum({ album: 'Ghost Album' }), false);
+    assert.equal(owned.ownedAlbum({ album: '' }), false);
+    assert.equal(owned.ownedAlbum({ album: 'Night Ferry' }, null), false, 'no database, nothing owned');
+  });
+
+  test('an artist is owned by a track or an album credit; have and missing are about the names the asker sent', () => {
+    assert.deepEqual(owned.ownedArtist('Nova'), { owned: true, have: 0, missing: [] });
+    assert.deepEqual(owned.ownedArtist('nova', { albums: ['Night Ferry', 'second wind', 'Lost Tapes'] }), { owned: true, have: 2, missing: ['Lost Tapes'] });
+    assert.deepEqual(owned.ownedArtist('Nobody', { albums: ['Anything'] }), { owned: false, have: 0, missing: ['Anything'] });
+    assert.deepEqual(owned.ownedArtist('', { albums: ['x'] }), { owned: false, have: 0, missing: ['x'] });
+    assert.deepEqual(owned.ownedArtist('Nova', { albums: ['', null, 'Night Ferry'] }), { owned: true, have: 1, missing: [] }, 'blank names are not albums');
+    assert.deepEqual(owned.ownedArtist('Nova', null), { owned: false, have: 0, missing: [] }, 'no database, nothing owned');
+  });
+
+  test('both scope to the libraries the user may see', () => {
+    const publicId = manager.getLibraryByName(VPATH).id;
+    const privateId = manager.getLibraryByName('owned-private').id;
+    assert.equal(owned.ownedAlbum({ album: 'Album', albumArtist: 'Secret' }), true);
+    assert.equal(owned.ownedAlbum({ album: 'Album', albumArtist: 'Secret' }, { libraryIds: [publicId] }), false);
+    assert.equal(owned.ownedAlbum({ album: 'Album' }, { libraryIds: [publicId] }), false);
+    assert.equal(owned.ownedAlbum({ album: 'Album' }, { libraryIds: [privateId] }), true);
+    assert.equal(owned.ownedAlbum({ album: 'Album' }, { libraryIds: [] }), false);
+    assert.deepEqual(owned.ownedArtist('Secret', { albums: ['Album'] }), { owned: true, have: 1, missing: [] });
+    assert.deepEqual(owned.ownedArtist('Secret', { albums: ['Album'], libraryIds: [publicId] }), { owned: false, have: 0, missing: ['Album'] });
+    assert.deepEqual(owned.ownedArtist('Secret', { albums: ['Album'], libraryIds: [privateId] }), { owned: true, have: 1, missing: [] });
+    assert.deepEqual(owned.ownedArtist('Secret', { albums: ['Album'], libraryIds: [] }), { owned: false, have: 0, missing: ['Album'] });
+  });
+});

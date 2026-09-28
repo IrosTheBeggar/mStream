@@ -24,7 +24,7 @@ import { libraryFilter, renderMetadataByIds, toLiteMetadata } from './db.js';
 // route through these — envelope parity is structural, not just covered
 // by tests. The shapers expect these column names on the row:
 //   - shapeArtistRow: { name, album_art_file }
-//   - shapeAlbumRow:  { name, album_art_file }
+//   - shapeAlbumRow:  { name, album_art_file, album_artist, year }
 //   - shapeTitleRow:  { id, title, album_art_file, artist_name, library_name, filepath }
 //   - shapeFileRow:   { id, library_name, filepath, album_art_file }
 //   - shapeLyricsRow: { id, title, album_art_file, artist_name, library_name, filepath, snippet }
@@ -52,10 +52,15 @@ export function shapeArtistRow(r) {
   };
 }
 
+// An album hit also names the album's own credit and year (the album row's
+// artist and year — null for an untagged one): what a client needs to open
+// the exact album, or to ask a paired server for the same one.
 export function shapeAlbumRow(r) {
   return {
     name: r.name,
     album_art_file: r.album_art_file || null,
+    album_artist: r.album_artist || null,
+    year: Number.isFinite(Number(r.year)) && r.year !== null && r.year !== '' ? Number(r.year) : null,
     filepath: false,
   };
 }
@@ -154,8 +159,9 @@ function likeArtistsRows(d, filter, search) {
 
 function likeAlbumsRows(d, filter, search) {
   return d.prepare(`
-    SELECT DISTINCT al.name, al.album_art_file
+    SELECT DISTINCT al.name, al.album_art_file, al.year, pa.name AS album_artist
     FROM albums al JOIN tracks t ON t.album_id = al.id
+    LEFT JOIN artists pa ON pa.id = al.artist_id
     WHERE al.name LIKE ? AND ${filter.clause}
     ORDER BY al.name COLLATE NOCASE LIMIT 30
   `).all(`%${search}%`, ...filter.params);
@@ -296,9 +302,10 @@ function ftsAlbumsRows(d, filter, parsed) {
   });
   if (expr === null) return null;
   return d.prepare(`
-    SELECT al.name, al.album_art_file
+    SELECT al.name, al.album_art_file, al.year, pa.name AS album_artist
     FROM fts_albums fa
     JOIN albums al ON al.id = fa.rowid
+    LEFT JOIN artists pa ON pa.id = al.artist_id
     WHERE fa.fts_albums MATCH ?
       AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})
     ORDER BY rank LIMIT 30

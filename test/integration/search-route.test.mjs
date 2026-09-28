@@ -361,7 +361,9 @@ describe('/api/v1/db/search algorithm dispatch', () => {
     ));
     const TOP = ['albums', 'artists', 'files', 'lyrics', 'title'];
     // artists/albums are name aggregations — no per-track metadata object.
+    // An album hit also names the album's own credit and year.
     const ITEM_GROUP = ['album_art_file', 'filepath', 'name'];
+    const ITEM_ALBUM = ['album_art_file', 'album_artist', 'filepath', 'name', 'year'];
     // title/files are track-level and carry the full canonical metadata object
     // alongside the legacy fields (additive, non-breaking).
     const ITEM_TRACK = ['album_art_file', 'filepath', 'metadata', 'name'];
@@ -371,6 +373,7 @@ describe('/api/v1/db/search algorithm dispatch', () => {
     const expectedKeys = (cat) =>
       cat === 'lyrics' ? ITEM_LYRICS :
       (cat === 'title' || cat === 'files') ? ITEM_TRACK :
+      cat === 'albums' ? ITEM_ALBUM :
       ITEM_GROUP;
 
     for (const { body } of results) {
@@ -381,6 +384,18 @@ describe('/api/v1/db/search algorithm dispatch', () => {
             `per-item keys mismatch in ${cat} category`);
         }
       }
+    }
+  });
+
+  test('an album hit names the album\'s own credit and year, on every algorithm', async () => {
+    for (const algorithm of ['basic', 'combo', 'fts5']) {
+      const r = await searchReq(server.baseUrl, { search: 'wall', algorithm });
+      assert.equal(r.status, 200);
+      const wall = r.body.albums.find((a) => a.name === 'The Wall');
+      assert.ok(wall, `The Wall is an album hit for "wall" (${algorithm})`);
+      assert.equal(wall.album_artist, 'Pink Floyd');
+      assert.equal(wall.year, 1979);
+      assert.equal(wall.filepath, false);
     }
   });
 

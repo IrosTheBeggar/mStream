@@ -35,6 +35,7 @@ import * as ytDlpBootstrap from './util/yt-dlp-bootstrap.js';
 import * as discoveryRetention from './discovery-plugins/retention.js';
 import * as discoveryCollectionApi from './api/discovery-collection.js';
 import * as discoveryDownloadsApi from './api/discovery-downloads.js';
+import * as discoveryOwnedApi from './api/discovery-owned.js';
 import * as remoteApi from './api/remote.js';
 import * as sharedApi from './api/shared.js';
 import * as scrobblerApi from './api/scrobbler.js';
@@ -583,6 +584,7 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   discoveryPluginJobsApi.setup(mstream);
   discoveryCollectionApi.setup(mstream);
   discoveryDownloadsApi.setup(mstream);
+  discoveryOwnedApi.setup(mstream);
   dbApi.setup(mstream);
   syncApi.setup(mstream);
   statsApi.setup(mstream);
