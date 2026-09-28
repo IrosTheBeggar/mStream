@@ -317,9 +317,25 @@ impl AdminRoom {
     }
 }
 
+/// Columns × rows the wizard pages (setup, Quick Connect, the admin rooms)
+/// ask for, where a terminal takes a size: the VTE family opens 80×24 by
+/// default, which cannot hold the pairing QR drawn in half-blocks (77×39
+/// cells), and the XTWINOPS resize the macOS .command script sends is
+/// ignored by VTE, kitty and stock xterm alike. The same window the mac
+/// Ghostty config asks for.
+pub const WIZARD_SIZE: (u16, u16) = (120, 42);
+
+/// Columns × rows the desktop player asks for: the GUI's design size (its
+/// cell-exact 100×30 mockups). Its floor is 100×24 — below that it draws
+/// "please make the terminal a little larger" instead of a layout — and no
+/// terminal we launch through (Ghostty, Terminal.app, Windows Terminal, the
+/// Linux chain) can be told a MINIMUM size, only an initial one. So the
+/// initial size is the whole lever, and it must clear the floor.
+pub const PLAYER_SIZE: (u16, u16) = (100, 30);
+
 /// Which player page a terminal launch opens. Each carries its own argv,
-/// window title, and scratch script name, so no two tray items ever clobber
-/// each other's launch files.
+/// window title, window size and scratch file names, so no two tray items
+/// ever clobber each other's launch files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlayerPage {
     /// The full first-run wizard (`mstream-player setup`).
@@ -332,16 +348,48 @@ pub enum PlayerPage {
     /// folder pickers may open the OS dialog and treat what it picks as the
     /// server's paths — exactly what `--same-machine` declares.
     Admin(AdminRoom),
+    /// The desktop player (`mstream-player gui --bundled-server <url>`):
+    /// the bundled player's mouse-first GUI face (player PR #18; the first
+    /// release carrying it is paths::GUI_MIN_PLAYER_VERSION). The URL
+    /// rides as `--bundled-server`, never `--server`: an explicit --server
+    /// would re-pin the player to this server on every launch, overriding
+    /// a default the user chose among their saved servers, where the
+    /// bundled flag only seeds this server on first boot, makes it the
+    /// default then, and marks it unremovable (the player's multi-server
+    /// contract, clauses 50–51). `--same-machine` is not passed: the gui
+    /// subcommand does not take it yet.
+    Player,
 }
 
 impl PlayerPage {
-    /// The player's argv for this page, before the `--server <url>` every
-    /// launch appends. Static words only: nothing here ever needs quoting.
+    /// The player's argv for this page, before the `<server_flag> <url>`
+    /// every launch appends. Static words only: nothing here ever needs
+    /// quoting.
     fn args(self) -> Vec<&'static str> {
         match self {
             PlayerPage::Setup => vec!["setup"],
             PlayerPage::QuickConnect => vec!["qr"],
             PlayerPage::Admin(room) => vec!["admin", room.subcommand(), "--same-machine"],
+            PlayerPage::Player => vec!["gui"],
+        }
+    }
+    /// The flag this launcher's server URL rides on — see the Player
+    /// variant for why the desktop player is the one page that must not
+    /// be told `--server`.
+    fn server_flag(self) -> &'static str {
+        match self {
+            PlayerPage::Player => "--bundled-server",
+            _ => "--server",
+        }
+    }
+    /// Columns × rows to open the page's window at, where the terminal
+    /// takes a size (Ghostty's config, Terminal.app's XTWINOPS resize,
+    /// wt.exe --size, the sized dialects of the Linux chain); the rest
+    /// open at their default and the pages reflow or ask for room.
+    fn size(self) -> (u16, u16) {
+        match self {
+            PlayerPage::Player => PLAYER_SIZE,
+            _ => WIZARD_SIZE,
         }
     }
     // Only the mac ghostty config (and this file's tests) call this; allow,
@@ -352,6 +400,7 @@ impl PlayerPage {
             PlayerPage::Setup => "mStream Setup".into(),
             PlayerPage::QuickConnect => "mStream Quick Connect".into(),
             PlayerPage::Admin(room) => format!("mStream {}", capitalized(room.subcommand())),
+            PlayerPage::Player => "mStream Player".into(),
         }
     }
     #[cfg(target_os = "macos")]
@@ -360,6 +409,19 @@ impl PlayerPage {
             PlayerPage::Setup => "setup-mstream.command".into(),
             PlayerPage::QuickConnect => "quickconnect-mstream.command".into(),
             PlayerPage::Admin(room) => format!("admin-{}-mstream.command", room.subcommand()),
+            PlayerPage::Player => "player-mstream.command".into(),
+        }
+    }
+    /// The bundled console's config home under the scratch dir. The
+    /// short-lived pages share one — regenerated on every click, read once
+    /// at the console's start. The player gets its own: its window lives
+    /// for hours, and a config reload or a new window inside it must never
+    /// pick up the admin room a later click wrote into the shared file.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn console_config_dir(self) -> &'static str {
+        match self {
+            PlayerPage::Player => "console-config-player",
+            _ => "console-config",
         }
     }
 }
@@ -374,12 +436,13 @@ fn capitalized(word: &str) -> String {
 }
 
 /// Run one of the terminal player's pages — the setup wizard, Quick
-/// Connect, or an admin room — in a fresh terminal window, pointed at this
-/// launcher's server. Same per-OS "what is a terminal" seams as
-/// open_logs_terminal; the caller logs a failure — a missing terminal
-/// emulator must never take the tray down. Ok carries WHICH surface opened
-/// (support surface: "it opened in Terminal, not the mStream console —
-/// why?" should be one log line away).
+/// Connect, an admin room, or the desktop player — in a fresh terminal
+/// window, pointed at this launcher's server and opened at the page's own
+/// size wherever the terminal takes one. Same per-OS "what is a terminal"
+/// seams as open_logs_terminal; the caller logs a failure — a missing
+/// terminal emulator must never take the tray down. Ok carries WHICH
+/// surface opened (support surface: "it opened in Terminal, not the
+/// mStream console — why?" should be one log line away).
 ///
 /// `console`: the bundled Ghostty (macOS bundles only, resolved by
 /// paths::find_console_app) — preferred over Terminal.app because Apple's
@@ -406,12 +469,14 @@ pub fn open_player_terminal(
         }
         // Terminal.app opens an executable .command file as a document — no
         // AppleEvents automation consent (see open_logs_terminal). The CSI 8
-        // resize asks for the window the wizard's two-column pages were
-        // designed around; Terminal.app honors it, and a terminal that
-        // doesn't just keeps its size (the wizard reflows).
+        // resize asks for the page's window (the wizard's two-column pages
+        // were designed around theirs; the player's floor needs its own);
+        // Terminal.app honors it, and a terminal that doesn't just keeps
+        // its size (the pages reflow, the player asks for room).
         let script = scratch_dir.join(page.script_name());
+        let (cols, rows) = page.size();
         let body = format!(
-            "#!/bin/sh\n# Written by mStream's tray - safe to delete.\nprintf '\\033[8;42;120t'\nclear\nexec {}\n",
+            "#!/bin/sh\n# Written by mStream's tray - safe to delete.\nprintf '\\033[8;{rows};{cols}t'\nclear\nexec {}\n",
             player_shell_words(page, player_bin, server_url),
         );
         std::fs::write(&script, body).map_err(|e| format!("write {}: {e}", script.display()))?;
@@ -427,14 +492,14 @@ pub fn open_player_terminal(
         use std::os::windows::process::CommandExt;
         let _ = scratch_dir; // no script file on this path
         // Windows Terminal first (App Execution Alias on PATH, preinstalled
-        // on Win11): it draws the wizard's pixel art via sixel. Without it,
-        // a fresh conhost window still runs the wizard — crossterm enables
-        // VT there and the art degrades to half-blocks.
+        // on Win11): it draws the wizard's pixel art via sixel, and its CLI
+        // takes the page's window size (wt_invocation). Without it, a fresh
+        // conhost window still runs the page — crossterm enables VT there
+        // and the art degrades to half-blocks; conhost's stock 120×30
+        // clears the player's floor, and the wizard reflows.
         let _ = console;
         if std::process::Command::new("wt.exe")
-            .arg(player_bin)
-            .args(page.args())
-            .args(["--server", server_url])
+            .args(wt_invocation(page, player_bin, server_url))
             .spawn()
             .is_ok()
         {
@@ -443,7 +508,7 @@ pub fn open_player_terminal(
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
         std::process::Command::new(player_bin)
             .args(page.args())
-            .args(["--server", server_url])
+            .args([page.server_flag(), server_url])
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
             .map(|_| "conhost fallback".into())
@@ -460,10 +525,28 @@ pub fn open_player_terminal(
             "{}; s=$?; if [ \"$s\" -ne 0 ]; then printf '\\nmstream-player exited with status %s - press Enter to close this window\\n' \"$s\"; read dummy; fi",
             player_shell_words(page, player_bin, server_url),
         );
-        let candidates =
-            linux_terminal::candidates(&cmd, Some(linux_terminal::WIZARD_SIZE), linux_terminal::on_wayland());
+        let candidates = linux_terminal::candidates(&cmd, Some(page.size()), linux_terminal::on_wayland());
         linux_terminal::spawn_first_alive(&candidates)
     }
+}
+
+/// The wt.exe command line for a page: a NEW window (`-w new` — under a
+/// `windowingBehavior` of "use existing", a bare wt would hand the page to
+/// a tab in whatever Windows Terminal window the user has open; a page
+/// wants a window of its own, and `--size` only applies to a new window),
+/// the page's size in cells, then the player's command line as separate
+/// argv elements, which wt passes through to the new tab's process. Pure,
+/// so the Windows argv is pinned by a test on every host.
+#[cfg(any(windows, test))]
+fn wt_invocation(page: PlayerPage, player_bin: &std::path::Path, server_url: &str) -> Vec<std::ffi::OsString> {
+    let (cols, rows) = page.size();
+    let mut argv: Vec<std::ffi::OsString> =
+        vec!["-w".into(), "new".into(), "--size".into(), format!("{cols},{rows}").into()];
+    argv.push(player_bin.as_os_str().to_owned());
+    argv.extend(page.args().into_iter().map(std::ffi::OsString::from));
+    argv.push(page.server_flag().into());
+    argv.push(server_url.into());
+    argv
 }
 
 /// Write the config and launch the bundled Ghostty console running the
@@ -485,7 +568,7 @@ fn spawn_ghostty_page(
     if !bin.exists() {
         return Err(format!("no ghostty binary at {}", bin.display()));
     }
-    let cfg_home = scratch_dir.join("console-config");
+    let cfg_home = scratch_dir.join(page.console_config_dir());
     let cfg_dir = cfg_home.join("ghostty");
     std::fs::create_dir_all(&cfg_dir).map_err(|e| format!("mkdir {}: {e}", cfg_dir.display()))?;
     let cfg = cfg_dir.join("config");
@@ -504,7 +587,11 @@ fn spawn_ghostty_page(
 /// "Application Support" spaces every managed install has.
 /// `quit-after-last-window-closed` keeps the console from lingering in the
 /// Dock as a windowless app after the wizard exits; `macos-icon = custom`
-/// puts the mStream mark on that Dock tile while it lives.
+/// puts the mStream mark on that Dock tile while it lives. The window
+/// opens at the page's size, and `window-save-state = never` keeps it that
+/// way: macOS state restoration would otherwise bring a Cmd+Q'd window
+/// back at whatever size it was dragged to — for the player, possibly
+/// under its floor.
 #[cfg(target_os = "macos")]
 fn ghostty_page_config(
     console: &crate::paths::ConsoleLaunch,
@@ -512,12 +599,14 @@ fn ghostty_page_config(
     server_url: &str,
     page: PlayerPage,
 ) ->String {
+    let (cols, rows) = page.size();
     let mut body = format!(
         "# Written by mStream's tray - safe to delete.\n\
          auto-update = off\n\
          title = {title}\n\
-         window-width = 120\n\
-         window-height = 42\n\
+         window-width = {cols}\n\
+         window-height = {rows}\n\
+         window-save-state = never\n\
          confirm-close-surface = false\n\
          quit-after-last-window-closed = true\n",
         title = page.title(),
@@ -677,14 +766,6 @@ mod linux_terminal {
     use std::process::{Command, Stdio};
     use std::time::Duration;
 
-    /// Columns × rows the wizard pages ask for, where an emulator's CLI can
-    /// take a size: the VTE family opens 80×24 by default, which cannot
-    /// hold the pairing QR drawn in half-blocks (77×39 cells), and the
-    /// XTWINOPS resize the macOS .command script sends is ignored by VTE,
-    /// kitty and stock xterm alike. The same window the mac Ghostty config
-    /// asks for.
-    pub const WIZARD_SIZE: (u16, u16) = (120, 42);
-
     /// How long a spawned emulator gets to fail. A spawn that succeeds and
     /// then exits non-zero at once opened nothing — a Wayland-only terminal
     /// on X11, a GPU terminal without GL, a D-Bus factory that refused —
@@ -708,9 +789,10 @@ mod linux_terminal {
     ///     Console, GNOME Terminal, Konsole, the Xfce and MATE terminals,
     ///     Alacritty — and xterm last.
     ///
-    /// `size` rides only where the CLI takes one (the rest open at their
-    /// default and the pages reflow); `wayland` admits foot, which cannot
-    /// run without a Wayland socket.
+    /// `size` (the page's — WIZARD_SIZE or PLAYER_SIZE) rides only where
+    /// the CLI takes one (the rest open at their default and the pages
+    /// reflow); `wayland` admits foot, which cannot run without a Wayland
+    /// socket.
     pub fn candidates(cmd: &str, size: Option<(u16, u16)>, wayland: bool) -> Vec<(&'static str, Vec<String>)> {
         // Every dialect ends in the program itself as three argv elements —
         // `sh -c <cmd>` — so no emulator re-parses the command text.
@@ -851,7 +933,8 @@ mod linux_terminal {
 
 #[cfg(all(test, unix, not(target_os = "macos")))]
 mod linux_tests {
-    use super::linux_terminal::{candidates, spawn_first_alive, WIZARD_SIZE};
+    use super::linux_terminal::{candidates, spawn_first_alive};
+    use super::{PLAYER_SIZE, WIZARD_SIZE};
 
     const CMD: &str = "'/opt/m stream/bin/mstream-player' setup --server 'http://x:1'";
 
@@ -884,6 +967,14 @@ mod linux_tests {
         assert!(args_of("ghostty").contains(&"--window-height=42".to_string()));
         assert!(args_of("wezterm").contains(&"initial_rows=42".to_string()));
         assert!(args_of("alacritty").contains(&"window.dimensions.lines=42".to_string()));
+        // The player's size rides the same seats.
+        let player = candidates(CMD, Some(PLAYER_SIZE), true);
+        let p_args = |bin: &str| -> Vec<String> {
+            player.iter().find(|(b, _)| *b == bin).map(|(_, a)| a.clone()).unwrap_or_else(|| panic!("{bin} missing"))
+        };
+        assert!(p_args("xterm").windows(2).any(|w| w[0] == "-geometry" && w[1] == "100x30"));
+        assert!(p_args("ghostty").contains(&"--window-width=100".to_string()));
+        assert!(p_args("kitty").contains(&"initial_window_height=30c".to_string()));
         // These CLIs take no size: the pages reflow into the default window.
         for bin in ["xdg-terminal-exec", "x-terminal-emulator", "ptyxis", "kgx", "konsole"] {
             let a = args_of(bin);
@@ -956,24 +1047,24 @@ fn sh_quote_str(s: &str) -> String {
 }
 
 /// The one `sh -c` program every unix launch of a player page runs —
-/// `'<player>' <page args…> --server '<url>'` — shared by the macOS
+/// `'<player>' <page args…> <server flag> '<url>'` — shared by the macOS
 /// .command script, the bundled-console config and the Linux chain, so all
 /// three agree on the argv and its quoting.
 #[cfg(unix)]
 fn player_shell_words(page: PlayerPage, player_bin: &std::path::Path, server_url: &str) -> String {
     let mut words = vec![sh_quote(player_bin)];
     words.extend(page.args().into_iter().map(String::from));
-    words.push("--server".into());
+    words.push(page.server_flag().into());
     words.push(sh_quote_str(server_url));
     words.join(" ")
 }
 
 #[cfg(test)]
 mod page_tests {
-    use super::{AdminRoom, PlayerPage};
+    use super::{AdminRoom, PlayerPage, PLAYER_SIZE, WIZARD_SIZE};
 
     fn every_page() -> Vec<PlayerPage> {
-        let mut pages = vec![PlayerPage::Setup, PlayerPage::QuickConnect];
+        let mut pages = vec![PlayerPage::Setup, PlayerPage::QuickConnect, PlayerPage::Player];
         pages.extend(AdminRoom::ALL.into_iter().map(PlayerPage::Admin));
         pages
     }
@@ -982,6 +1073,8 @@ mod page_tests {
     fn each_page_maps_to_its_own_argv_and_title() {
         assert_eq!(PlayerPage::Setup.args(), ["setup"]);
         assert_eq!(PlayerPage::QuickConnect.args(), ["qr"]);
+        assert_eq!(PlayerPage::Player.args(), ["gui"]);
+        assert_eq!(PlayerPage::Player.title(), "mStream Player");
         // A room always declares --same-machine: the launcher IS the
         // server's machine, so the room's folder picker may use the OS
         // dialog and hand the server the paths it picks.
@@ -993,7 +1086,7 @@ mod page_tests {
         assert_eq!(PlayerPage::Setup.title(), "mStream Setup");
         assert_eq!(PlayerPage::QuickConnect.title(), "mStream Quick Connect");
         assert_eq!(PlayerPage::Admin(AdminRoom::Discovery).title(), "mStream Discovery");
-        // Seven pages, seven argvs, seven titles: no two tray items may
+        // Eight pages, eight argvs, eight titles: no two tray items may
         // open the same thing or the same-named window.
         let pages = every_page();
         for (i, a) in pages.iter().enumerate() {
@@ -1002,6 +1095,50 @@ mod page_tests {
                 assert_ne!(a.title(), b.title(), "{a:?} vs {b:?}");
             }
         }
+    }
+
+    #[test]
+    fn the_player_page_seeds_the_bundled_server_and_opens_at_its_own_size() {
+        // The desktop player is the one page told --bundled-server: an
+        // explicit --server would re-pin it to this server on every launch,
+        // over a default the user chose among their saved servers.
+        assert_eq!(PlayerPage::Player.server_flag(), "--bundled-server");
+        assert_eq!(PlayerPage::Player.size(), PLAYER_SIZE);
+        assert_eq!(PlayerPage::Player.console_config_dir(), "console-config-player");
+        for page in every_page().into_iter().filter(|p| *p != PlayerPage::Player) {
+            assert_eq!(page.server_flag(), "--server", "{page:?}");
+            assert_eq!(page.size(), WIZARD_SIZE, "{page:?}");
+            assert_eq!(page.console_config_dir(), "console-config", "{page:?}");
+        }
+        // The GUI's floor is 100×24 (src/gui/mod.rs MIN_W/MIN_H in the
+        // player repo): under it the player draws a "make the terminal
+        // larger" line instead of a layout, and no terminal we open can be
+        // told a minimum — the initial size is the only lever we hold.
+        assert!(PLAYER_SIZE.0 >= 100 && PLAYER_SIZE.1 >= 24, "{PLAYER_SIZE:?} is under the GUI's floor");
+    }
+
+    #[test]
+    fn wt_invocation_opens_a_sized_new_window() {
+        let words = |page: PlayerPage| -> Vec<String> {
+            super::wt_invocation(page, std::path::Path::new(r"C:\mStream\bin\mstream-player.exe"), "http://localhost:3000")
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        // A new window (never a tab in the user's own Windows Terminal),
+        // the page's size, then the player's own command line verbatim.
+        assert_eq!(
+            words(PlayerPage::Player),
+            ["-w", "new", "--size", "100,30", r"C:\mStream\bin\mstream-player.exe", "gui", "--bundled-server", "http://localhost:3000"]
+        );
+        assert_eq!(
+            words(PlayerPage::Setup),
+            ["-w", "new", "--size", "120,42", r"C:\mStream\bin\mstream-player.exe", "setup", "--server", "http://localhost:3000"]
+        );
+        assert_eq!(
+            words(PlayerPage::Admin(AdminRoom::Libraries))[4..],
+            [r"C:\mStream\bin\mstream-player.exe", "admin", "libraries", "--same-machine", "--server", "http://localhost:3000"]
+        );
     }
 
     #[test]
@@ -1026,6 +1163,11 @@ mod page_tests {
             super::player_shell_words(PlayerPage::Admin(AdminRoom::Backups), player, "http://x:1"),
             "'/Application Support/bin/mstream-player' admin backups --same-machine --server 'http://x:1'"
         );
+        // The desktop player names the server as its bundled one.
+        assert_eq!(
+            super::player_shell_words(PlayerPage::Player, player, "http://localhost:3000"),
+            "'/Application Support/bin/mstream-player' gui --bundled-server 'http://localhost:3000'"
+        );
         // A quote inside a path survives as the POSIX '\'' dance.
         let odd = std::path::Path::new("/it's/player");
         let words = super::player_shell_words(PlayerPage::QuickConnect, odd, "http://x:1");
@@ -1037,9 +1179,10 @@ mod page_tests {
     fn manual_open_player_terminal() {
         // MSTREAM_DEMO_PLAYER = a real player binary; MSTREAM_DEMO_SERVER =
         // the URL to point it at; MSTREAM_DEMO_PAGE = setup (default), qr,
-        // or a room name (libraries, discovery, federation, backups,
-        // torrents); on macOS MSTREAM_DEMO_CONSOLE = optionally a Ghostty.app
-        // to prefer (with MSTREAM_DEMO_ICNS for the Dock icon).
+        // gui (the desktop player), or a room name (libraries, discovery,
+        // federation, backups, torrents); on macOS MSTREAM_DEMO_CONSOLE =
+        // optionally a Ghostty.app to prefer (with MSTREAM_DEMO_ICNS for the
+        // Dock icon).
         let player = std::path::PathBuf::from(std::env::var("MSTREAM_DEMO_PLAYER").expect("set MSTREAM_DEMO_PLAYER"));
         let url = std::env::var("MSTREAM_DEMO_SERVER").unwrap_or_else(|_| "http://localhost:3000".into());
         let console = std::env::var("MSTREAM_DEMO_CONSOLE").ok().map(|app| crate::paths::ConsoleLaunch {
@@ -1050,6 +1193,7 @@ mod page_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let page = match std::env::var("MSTREAM_DEMO_PAGE").as_deref() {
             Ok("qr") => PlayerPage::QuickConnect,
+            Ok("gui") => PlayerPage::Player,
             Ok(name) => AdminRoom::from_subcommand(name).map(PlayerPage::Admin).unwrap_or(PlayerPage::Setup),
             Err(_) => PlayerPage::Setup,
         };
@@ -1100,13 +1244,24 @@ mod tests {
         let fed = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", room);
         assert!(fed.contains("command = shell:'/p' admin federation --same-machine --server 'http://x:1'"), "{fed}");
         assert!(fed.contains("title = mStream Federation\n"), "{fed}");
+        // The wizard pages open at their window, never restored from a
+        // saved state at some other size.
+        assert!(cfg.contains("window-width = 120\nwindow-height = 42\n"), "{cfg}");
+        assert!(cfg.contains("window-save-state = never\n"), "{cfg}");
+
+        // The desktop player: its own size, title and server flag.
+        let player = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", super::PlayerPage::Player);
+        assert!(player.contains("command = shell:'/p' gui --bundled-server 'http://x:1'"), "{player}");
+        assert!(player.contains("title = mStream Player\n"), "{player}");
+        assert!(player.contains("window-width = 100\nwindow-height = 30\n"), "{player}");
+        assert!(player.contains("window-save-state = never\n"), "{player}");
     }
 
     #[test]
     fn each_page_writes_its_own_command_script() {
         // Distinct script files: no two tray items may clobber each
         // other's .command while both windows are open.
-        let mut pages = vec![super::PlayerPage::Setup, super::PlayerPage::QuickConnect];
+        let mut pages = vec![super::PlayerPage::Setup, super::PlayerPage::QuickConnect, super::PlayerPage::Player];
         pages.extend(super::AdminRoom::ALL.into_iter().map(super::PlayerPage::Admin));
         let names: Vec<String> = pages.iter().map(|p| p.script_name()).collect();
         for (i, a) in names.iter().enumerate() {
@@ -1116,6 +1271,7 @@ mod tests {
             }
         }
         assert_eq!(super::PlayerPage::Admin(super::AdminRoom::Libraries).script_name(), "admin-libraries-mstream.command");
+        assert_eq!(super::PlayerPage::Player.script_name(), "player-mstream.command");
     }
 
     #[test]

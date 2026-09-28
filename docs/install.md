@@ -139,9 +139,9 @@ directly, with `manifest.json` holding their sha256s:
 Windows, `mStream.app` on macOS, `mstream-desktop` on Linux — starts the
 server in the background, puts an mStream icon in your tray / menu bar
 (a status line — "Running · up 3h 12m", or Starting… / Stopped — then
-Manage server ▸ (Libraries · Discovery · Federation · Backups · Torrents ·
-Open Admin Panel in browser) · Quick Connect · Start at login · View logs ·
-Restart server · Quit). Boots are quiet once set up — re-click the app icon
+Open mStream Player · Manage server ▸ (Libraries · Discovery · Federation ·
+Backups · Torrents · Open Admin Panel in browser) · Quick Connect · Start at
+login · View logs · Restart server · Quit). Boots are quiet once set up — re-click the app icon
 (or launch it again) whenever you want the player in your browser. Start-at-login
 is on by default; one click in the tray menu turns it off. On a **first
 install** the tray opens the guided setup wizard by itself (the bundled
@@ -178,6 +178,21 @@ and keeps that session for next time. When an install has no player
 binary, or no terminal could be opened, a room item opens the matching
 section of the browser admin panel instead; **Open Admin Panel in
 browser**, the submenu's last item, always does exactly that.
+
+**Open mStream Player** opens the bundled player's desktop face —
+`mstream-player gui`, the mouse-first player — in the same kind of window
+as the wizard, sized for it (100×30 cells; dragged under its 100×24 floor
+the player asks for more room, since no terminal can be told a minimum
+size) and pointed at this server as its *bundled* server: the player seeds
+it as the default on first run and never offers to remove it, and other
+servers can be added beside it as usual. `mStream.exe --player`
+(`mstream-desktop --player`; `open -a mStream --args --player` on macOS)
+does the same from a shortcut or a second launch — at once when the tray
+already runs, otherwise as soon as the server is up. An install whose
+player predates the GUI (player releases before 0.8.0), or where no
+terminal could be opened, gets the web player in the browser instead, and
+the launcher log says why. Until the player takes an instance lock of its
+own, a second click opens a second window.
 
 **Terminal users lose nothing.** The same desktop binary run from a terminal
 behaves exactly like the server itself (same flags, output, and exit codes) —

@@ -36,6 +36,13 @@ pub struct LauncherArgs {
     /// and is exiting — retry its single-instance lock briefly instead of
     /// yielding, and skip first-run behavior (no browser announce).
     pub takeover: bool,
+    /// Open the desktop player (`--player`): the tray's "Open mStream
+    /// Player" item, scriptable — for an installer shortcut, a smoke, or a
+    /// second launch while the tray already runs (which opens it at once
+    /// against the running server and exits). In the tray itself it is
+    /// served once the server answers. An explicit ask, so `--no-open`
+    /// only silences its browser fallback.
+    pub player: bool,
     /// Server binary override (`--server-bin <p>` / MSTREAM_SERVER_BIN).
     pub server_bin: Option<PathBuf>,
     /// Everything not launcher-specific, forwarded to the server verbatim
@@ -56,6 +63,7 @@ fn parse_cli(argv: impl Iterator<Item = String>) -> (LauncherArgs, Option<String
         autostarted: false,
         no_open: false,
         takeover: false,
+        player: false,
         server_bin: std::env::var_os("MSTREAM_SERVER_BIN").map(PathBuf::from),
         server_args: Vec::new(),
     };
@@ -71,6 +79,7 @@ fn parse_cli(argv: impl Iterator<Item = String>) -> (LauncherArgs, Option<String
             // would forward --takeover to mstream-server, which exits on
             // unknown options — the relaunched update would die at boot.
             "--takeover" => args.takeover = true,
+            "--player" => args.player = true,
             "--server-bin" => {
                 if let Some(p) = it.next() {
                     args.server_bin = Some(PathBuf::from(p));
@@ -169,5 +178,19 @@ mod tests {
         let (args, _) = parse(&["-j", "--takeover"]);
         assert!(!args.takeover);
         assert_eq!(args.server_args, vec!["-j", "--takeover"]);
+    }
+
+    #[test]
+    fn player_is_ours_and_never_reaches_the_server() {
+        // The server exits on unknown options, so a leaked --player would
+        // kill the boot it was meant to follow.
+        let (args, _) = parse(&["--player", "--no-open"]);
+        assert!(args.player && args.no_open);
+        assert!(args.server_args.is_empty(), "--player must not leak into server argv");
+        let (args, _) = parse(&["-j", "--player"]);
+        assert!(!args.player, "a -j value spelling --player is the server's config path");
+        assert_eq!(args.server_args, vec!["-j", "--player"]);
+        let (args, _) = parse(&[]);
+        assert!(!args.player);
     }
 }
