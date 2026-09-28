@@ -266,8 +266,8 @@ components:
         scope: { type: string, enum: [server, user] }
         scopes:
           type: array
-          description: "The job scopes a runnable plug-in acts on: `song` always; `album`, `artist` and `artist-missing` where it copies more than one song at a time."
-          items: { type: string, enum: [song, album, artist, artist-missing] }
+          description: "The job scopes a runnable plug-in acts on: `song` always; `album`, `artist`, `artist-missing` and `folder` where it copies more than one song at a time."
+          items: { type: string, enum: [song, album, artist, artist-missing, folder] }
         enabled: { type: boolean }
         available: { type: boolean, description: "False when the plug-in is on but its availability probe failed." }
         reason: { type: string, nullable: true, example: "yt-dlp not found (yt-dlp)" }
@@ -316,7 +316,7 @@ components:
         userId: { type: integer, nullable: true, description: "Who asked; null in public mode or after the user was deleted." }
         key: { type: string, description: "The recommendation's persistence key (mbid:… or text:…)." }
         recommendation: { type: object, description: The normalised recommendation the job was started with. }
-        params: { type: object, nullable: true, description: "What the job was started with beyond the recommendation: `scope` (`album`, `artist` or `artist-missing` — absent for a song job) and `choice: { url }` when the caller picked an upload from the plug-in's lookup; null when neither." }
+        params: { type: object, nullable: true, description: "What the job was started with beyond the recommendation: `scope` (`album`, `artist`, `artist-missing` or `folder` — absent for a song job), `choice: { url }` when the caller picked an upload from the plug-in's lookup, and `landing` (`{ vpath, path }` or `{ tags: true }`) when a folder job was given a place of its own; null when none." }
         state: { type: string, enum: [queued, running, done, failed, cancelled] }
         progress: { type: number, nullable: true, minimum: 0, maximum: 1 }
         statusText: { type: string, nullable: true, description: "The plug-in's own progress line." }
@@ -2686,7 +2686,27 @@ paths:
         [{ name, year, trackCount, why }], songs: { total, copied, skipped,
         failed } (every album's, each song with its `album`), bytes,
         stopped, missingVars, peer, destination }`. One job, album by
-        album: a cancel keeps the finished albums and songs.
+        album: a cancel keeps the finished albums and songs. With
+        `scope: folder` the recommendation's `filepath` is a folder on the
+        peer: the job takes the peer's recursive listing of it (every audio
+        file under it, in path order; recycle bins, dot entries, entries
+        outside the folder and files this server does not play are listed
+        under `skippedFiles` with `why: ignored | outside | unsupported`),
+        refuses a folder holding more songs than the admin's
+        `discoveryJobs.maxFolderSongs`, and copies song by song under the
+        same rules. Where it lands: as it is on the peer — the folder's path
+        inside the peer's library, the library's own name dropped, under the
+        destination's base folder (`layout: mirror`) — unless the job was
+        given a `landing`: a library and folder of the caller's choosing
+        (`layout: folder`; the pressed folder's files go there, its
+        subfolders beneath) or `tags: true` (`layout: tags`; every song by
+        the collection layout like any other copy). The result is
+        `{ scope: folder, folder: { path, name, landed }, layout, songs,
+        counts, skippedFiles, bytes, stopped, missingVars, peer,
+        destination }`. Every many-song result (album, artist, folder) also
+        carries `counts: { total, copied, skipped, failed }`; its per-song
+        lists stop at 500 entries (`truncated: true` then) so a result stays
+        small on the wire.
 
         `youtube` ("Get it" from YouTube; off by default, needs yt-dlp and
         ffmpeg) searches YouTube for the recommendation, scores the uploads
@@ -2722,8 +2742,15 @@ paths:
                 recommendation: { type: object, description: "Same shape as the resolve body." }
                 scope:
                   type: string
-                  enum: [song, album, artist, artist-missing]
-                  description: "What the job acts on: the song (default), the song's whole album, every album of its artist, or only the artist's albums this library lacks. Only a scope the plug-in declares (`scopes` in the listing) is accepted, and an album job needs the recommendation's `album`, the artist jobs its `artist`. A wider scope is kept in the job's `params.scope` and keys the job on the album / artist rather than the song, so a song copy and an album copy of the same recommendation are two live jobs, and two songs of one album ask for the same album job."
+                  enum: [song, album, artist, artist-missing, folder]
+                  description: "What the job acts on: the song (default), the song's whole album, every album of its artist, only the artist's albums this library lacks, or a folder on the peer (`filepath` is then the folder's path there). Only a scope the plug-in declares (`scopes` in the listing) is accepted, and an album job needs the recommendation's `album`, the artist jobs its `artist`, a folder job its `filepath` and `peer`. A wider scope is kept in the job's `params.scope` and keys the job on the album / artist / peer + folder path rather than the song, so a song copy and an album copy of the same recommendation are two live jobs, and two songs of one album ask for the same album job."
+                landing:
+                  type: object
+                  description: "Folder jobs only: where the folder lands. `{ vpath?, path }` puts the pressed folder's files into that folder of that library (the destination's library when `vpath` is absent; `path` is relative to the library root and may be empty), its subfolders beneath; `{ tags: true }` files every song by the collection layout instead. Absent: the folder as it is on the peer, under the destination's base folder. A library the caller cannot write to, a path that climbs out, or a landing on a non-folder job is a 400."
+                  properties:
+                    vpath: { type: string }
+                    path: { type: string }
+                    tags: { type: boolean }
                 choice:
                   type: object
                   required: [url]
@@ -2783,9 +2810,9 @@ paths:
                   key: { type: string, example: "text:3f9a…", description: The song's key (as before). }
                   keys:
                     type: object
-                    description: "Every scope's key for this recommendation: `song` always; `album` when it names an album; `artist` and `artist-missing` when it names an artist."
+                    description: "Every scope's key for this recommendation: `song` always; `album` when it names an album; `artist` and `artist-missing` when it names an artist; `folder` when it carries a `filepath` and a `peer` (the key is the peer's plus that path)."
                     additionalProperties: { type: string }
-                    example: { song: "text:3f9a…", album: "album:7c1d…", artist: "artist:e0b2…", artist-missing: "artist-missing:e0b2…" }
+                    example: { song: "text:3f9a…", album: "album:7c1d…", artist: "artist:e0b2…", artist-missing: "artist-missing:e0b2…", folder: "folder:91ac…" }
                   jobs:
                     type: array
                     items: { $ref: "#/components/schemas/DiscoveryPluginJob" }

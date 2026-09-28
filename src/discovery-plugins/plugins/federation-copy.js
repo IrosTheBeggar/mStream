@@ -63,7 +63,9 @@ import * as downloadsDb from '../../db/plugin-downloads.js';
 import { ownedTrack, ownedAlbumKeys, libraryIdsFor } from '../owned.js';
 import { nameKey } from '../../db/name-key.js';
 import { CAPABILITIES, SCOPES } from '../registry.js';
-import { JOB_SCOPES, RECOMMENDATION_SOURCES } from '../recommendation.js';
+import { JOB_SCOPES, RECOMMENDATION_SOURCES, normalizePeerPath } from '../recommendation.js';
+import * as pathTemplate from '../../torrent/path-template.js';
+import { isIgnoredRelPath } from '../../db/scan-ignore.js';
 
 export const NAME = 'federation-copy';
 
@@ -262,7 +264,8 @@ async function run(ctx) {
   const has = (v) => typeof v === 'string' && v.trim().length > 0;
   const artistScope = scope === JOB_SCOPES.ARTIST || scope === JOB_SCOPES.ARTIST_MISSING;
   if (rec.source !== RECOMMENDATION_SOURCES.FEDERATION || !rec.peer || rec.peer.id == null
-    || (scope === JOB_SCOPES.SONG && !has(rec.filepath)) || (scope === JOB_SCOPES.ALBUM && !has(rec.album)) || (artistScope && !has(rec.artist))) {
+    || ((scope === JOB_SCOPES.SONG || scope === JOB_SCOPES.FOLDER) && !has(rec.filepath))
+    || (scope === JOB_SCOPES.ALBUM && !has(rec.album)) || (artistScope && !has(rec.artist))) {
     throw new Error('only a paired peer\'s recommendation can be copied');
   }
   if (!(config.program && config.program.federation && config.program.federation.enabled === true)) {
@@ -285,6 +288,7 @@ async function run(ctx) {
   try {
     if (scope === JOB_SCOPES.ALBUM) { return await copyAlbum(ctx, env, rec); }
     if (artistScope) { return await copyArtist(ctx, env, rec, { onlyMissing: scope === JOB_SCOPES.ARTIST_MISSING }); }
+    if (scope === JOB_SCOPES.FOLDER) { return await copyFolder(ctx, env, rec); }
 
     const r = await copyOne(ctx, env, { filepath: rec.filepath, title: rec.title, artist: rec.artist, album: rec.album });
     if (r === null) { return null; }   // the runner records the cancel
@@ -333,7 +337,13 @@ async function listAlbumSongs(env, { album, artist = null, albumArtist = null, y
 async function copyAlbum(ctx, env, rec) {
   const { peer, destination } = env;
   ctx.progress(0, `asking ${peer.name} for “${rec.album}”`);
-  const songs = await listAlbumSongs(env, { album: rec.album, artist: rec.artist || null, year: rec.year || null, fallbackArtist: rec.artist || null });
+  // The album's own credit narrows the listing when the client sent one
+  // (an album card): a compilation is then copied as itself, not looked
+  // for under a track artist it has none of.
+  const songs = await listAlbumSongs(env, {
+    album: rec.album, artist: rec.artist || null, albumArtist: rec.albumArtist || null, year: rec.year || null,
+    fallbackArtist: rec.artist || rec.albumArtist || null,
+  });
   if (songs.length === 0) { throw new Error(`${peer.name} has no songs for “${rec.album}”`); }
 
   const outcome = await copySongs(songs, {
@@ -346,7 +356,7 @@ async function copyAlbum(ctx, env, rec) {
   return {
     scope: JOB_SCOPES.ALBUM,
     album: { name: rec.album, artist: rec.artist || null, year: rec.year || null },
-    songs: outcome.songs,
+    ...accountFor(outcome.songs),
     bytes: outcome.bytes,
     stopped: outcome.stopped,
     missingVars: outcome.missingVars,
@@ -455,7 +465,133 @@ async function copyArtist(ctx, env, rec, { onlyMissing }) {
     artist: { name: rec.artist },
     albums: outcome.albums,
     skippedAlbums: skipped,
-    songs: outcome.songs,
+    ...accountFor(outcome.songs),
+    bytes: outcome.bytes,
+    stopped: outcome.stopped,
+    missingVars: outcome.missingVars,
+    peer: { id: peer.id, name: peer.name },
+    destination,
+  };
+}
+
+// ── The account a many-song result carries ───────────────────────────────
+// A result rides on every poll of the jobs list, so its per-song lists stop
+// at RESULT_LIST_CAP entries (`truncated: true` says so) and `counts` holds
+// the whole numbers whatever the lists show.
+export const RESULT_LIST_CAP = 500;
+export function accountFor(songs) {
+  const cap = (list) => (list.length > RESULT_LIST_CAP ? list.slice(0, RESULT_LIST_CAP) : list);
+  const truncated = ['copied', 'skipped', 'failed'].some((k) => songs[k].length > RESULT_LIST_CAP);
+  return {
+    songs: { total: songs.total, copied: cap(songs.copied), skipped: cap(songs.skipped), failed: cap(songs.failed) },
+    counts: { total: songs.total, copied: songs.copied.length, skipped: songs.skipped.length, failed: songs.failed.length },
+    ...(truncated ? { truncated: true } : {}),
+  };
+}
+
+// ── The folder (pure parts unit-tested) ──────────────────────────────────
+// What a folder job copies: every audio file the peer's recursive listing
+// names under the folder, in path order, each with the folder it sits in
+// relative to the pressed folder (`relDir`, its segments made safe for a
+// path here — a peer's names may carry what this file system cannot).
+// Listed but left out, with why: an entry outside the folder or with a
+// '..' in it ('outside' — the listing is the peer's word, not ours), one
+// the scanner's own ignore rules would drop, recycle bins and dot entries
+// ('ignored'), and a file this server does not play ('unsupported' — the
+// peer's idea of audio may be wider than ours). One entry per path.
+export function planFolder(listing, folderPath, { isSupported = destinations.isSupportedAudioFile } = {}) {
+  const folder = normalizePeerPath(folderPath);
+  const prefix = folder ? `${folder}/` : '';
+  const songs = [];
+  const skipped = [];
+  const seen = new Set();
+  for (const raw of (Array.isArray(listing) ? listing : [])) {
+    if (typeof raw !== 'string') { continue; }
+    const p = normalizePeerPath(raw);
+    if (!p || seen.has(p)) { continue; }
+    seen.add(p);
+    if (prefix && !p.startsWith(prefix)) { skipped.push({ from: raw, why: 'outside' }); continue; }
+    const rel = prefix ? p.slice(prefix.length) : p;
+    const segs = rel.split('/');
+    if (segs.some((s) => s === '..')) { skipped.push({ from: raw, why: 'outside' }); continue; }
+    if (isIgnoredRelPath(rel)) { skipped.push({ from: raw, why: 'ignored' }); continue; }
+    const fileName = segs[segs.length - 1];
+    if (!isSupported(fileName)) { skipped.push({ from: raw, why: 'unsupported' }); continue; }
+    const relDir = segs.slice(0, -1).map((s) => pathTemplate.sanitizeSegment(s)).filter(Boolean).join('/');
+    songs.push({ filepath: p, relDir });
+  }
+  songs.sort((a, b) => a.filepath.localeCompare(b.filepath, undefined, { numeric: true, sensitivity: 'base' }));
+  return { songs, skipped };
+}
+
+// Where the folder lands (pure). `landing` is the job's own choice (the
+// route's validateLanding, kept in params.landing): a library and a folder
+// inside it — the pressed folder's files go there, its subfolders beneath
+// (`mode: 'folder'`) — or `tags: true`, every song by the layout like any
+// other copy (`mode: 'tags'`, no folder of its own). No choice means the
+// folder as it is on the peer: its path inside the peer's library, the
+// library's own name dropped, under the destination's base folder
+// (`mode: 'mirror'`). A chosen folder is used as chosen (it was checked
+// when the job was asked for); a mirrored path is the peer's word, so its
+// segments are made safe here.
+export function landingFor({ folder, landing, destination, writable = [] }) {
+  if (landing && landing.tags === true) { return { mode: 'tags', vpath: destination.vpath, dir: null }; }
+  if (landing && typeof landing.path === 'string') {
+    if (landing.vpath && !writable.some((l) => l.vpath === landing.vpath)) {
+      throw new Error(`the account may not put files into library '${landing.vpath}'`);
+    }
+    return { mode: 'folder', vpath: landing.vpath || destination.vpath, dir: normalizePeerPath(landing.path) };
+  }
+  const inside = normalizePeerPath(folder).split('/').slice(1).map((s) => pathTemplate.sanitizeSegment(s)).filter(Boolean).join('/');
+  return { mode: 'mirror', vpath: destination.vpath, dir: [destination.base, inside].filter(Boolean).join('/') };
+}
+
+// discoveryJobs.maxFolderSongs (the admin's setting): the most songs one
+// folder job may take.
+function folderSongCap() {
+  const n = Number(config.program && config.program.discoveryJobs && config.program.discoveryJobs.maxFolderSongs);
+  return Number.isFinite(n) && n > 0 ? n : 1000;
+}
+
+// The folder: the peer's recursive listing of it (a read the federation
+// allowlist already carries), the plan, where it lands, then copyOne for
+// each song with the folder's own place handed in (copySongs keeps the
+// account). One job, song by song, so a cancel keeps what landed and a
+// rerun copies only the gaps.
+async function copyFolder(ctx, env, rec) {
+  const { peer, destination, user } = env;
+  const folder = normalizePeerPath(rec.filepath);
+  const name = folder.split('/').pop() || folder;
+  ctx.progress(0, `asking ${peer.name} for “${name}”`);
+  const listing = await peerJson(env, '/api/v1/file-explorer/recursive', { directory: folder });
+  const { songs, skipped } = planFolder(listing, folder);
+  if (songs.length === 0) { throw new Error(`${peer.name} has no songs under “${name}”`); }
+  const cap = folderSongCap();
+  if (songs.length > cap) {
+    throw new Error(`“${name}” on ${peer.name} holds ${songs.length} songs — add its folders one at a time (the limit is ${cap}; an admin can raise it under Discovery › Jobs)`);
+  }
+  const landing = landingFor({ folder, landing: ctx.params && ctx.params.landing, destination, writable: destinations.writableLibraries(user) });
+  if (landing.dir) {
+    const check = pathTemplate.validateResolvedPath(landing.dir);
+    if (!check.valid) { throw new Error(`the folder cannot be placed: ${check.message}`); }
+  }
+
+  const outcome = await copySongs(songs, {
+    isCancelled: ctx.isCancelled,
+    progress: ctx.progress,
+    copyOne: (song, { progress }) => copyOne(
+      { job: ctx.job, userId: ctx.userId, isCancelled: ctx.isCancelled, progress }, env, song,
+      landing.mode === 'tags' ? null : { vpath: landing.vpath, relDir: [landing.dir, song.relDir].filter(Boolean).join('/') },
+    ),
+  });
+  const { copied, skipped: skippedSongs, failed } = outcome.songs;
+  winston.info(`federation-copy: folder “${folder}” from peer '${peer.name}': ${copied.length} copied, ${skippedSongs.length} skipped, ${failed.length} failed; ${skipped.length} entries left out${outcome.stopped ? ` — stopped: ${outcome.stopped}` : ''}`);
+  return {
+    scope: JOB_SCOPES.FOLDER,
+    folder: { path: folder, name, landed: landing.mode === 'tags' ? null : [landing.vpath, landing.dir].filter(Boolean).join('/') },
+    layout: landing.mode,
+    ...accountFor(outcome.songs),
+    skippedFiles: skipped.slice(0, RESULT_LIST_CAP),
     bytes: outcome.bytes,
     stopped: outcome.stopped,
     missingVars: outcome.missingVars,
@@ -466,13 +602,14 @@ async function copyArtist(ctx, env, rec, { onlyMissing }) {
 
 // One song, start to finish: the peer's word on it (its hash, for the
 // pre-copy owned check), the bytes into a .part file, the layout from the
-// file's own tags, the second owned check, never over an existing file, the
-// row. `ctx` is the job's (or, inside an album, a per-song view of it with
-// the progress mapped). Answers { copied, missingVars } |
-// { skipped: 'owned', existing } | { skipped: 'exists', filepath } | null
-// (cancelled — the .part is gone); throws with `peerLimit` / `peerDown` for
-// the failures that end an album.
-export async function copyOne(ctx, env, song) {
+// file's own tags — or, for a folder copy, the place handed in as `target`
+// ({ vpath, relDir }) — the second owned check, never over an existing
+// file, the row. `ctx` is the job's (or, inside an album or a folder, a
+// per-song view of it with the progress mapped). Answers
+// { copied, missingVars } | { skipped: 'owned', existing } |
+// { skipped: 'exists', filepath } | null (cancelled — the .part is gone);
+// throws with `peerLimit` / `peerDown` for the failures that end an album.
+export async function copyOne(ctx, env, song, target = null) {
   const { peer, user, destination, fedFetchWithDeadline, fedClient } = env;
 
   // 1. The peer's word on the file: its hash, for the pre-copy owned check.
@@ -504,14 +641,22 @@ export async function copyOne(ctx, env, song) {
   if (!destinations.isSupportedAudioFile(fileName)) {
     throw new Error(`${peer.name} lists '${fileName}' as a song, but it is not an audio file this server plays`);
   }
-  // Where it would go, from what the listing says of it — so a layout that
-  // cannot place this song fails now, not after the bytes were transferred
-  // and counted against the peer's quota. (The file's own tags decide the
-  // final folder, below.)
-  try {
-    destinations.renderTarget({ destination, tags: destinations.tagsForLayout({}, song), peerName: peer.name, fileName });
-  } catch (err) {
-    throw new Error(`the collection layout cannot place this song: ${err.message}`, { cause: err });
+  // Where it would go — so a place that cannot take this song fails now,
+  // not after the bytes were transferred and counted against the peer's
+  // quota. A folder copy hands the place in (`target`: the library and the
+  // folder, mirrored from the peer or chosen); otherwise the layout renders
+  // it from what the listing says, and the file's own tags decide the
+  // final folder, below.
+  const into = target && target.vpath ? target.vpath : destination.vpath;
+  if (target) {
+    const check = target.relDir ? pathTemplate.validateResolvedPath(target.relDir) : { valid: true };
+    if (!check.valid) { throw new Error(`the folder cannot be placed: ${check.message}`); }
+  } else {
+    try {
+      destinations.renderTarget({ destination, tags: destinations.tagsForLayout({}, song), peerName: peer.name, fileName });
+    } catch (err) {
+      throw new Error(`the collection layout cannot place this song: ${err.message}`, { cause: err });
+    }
   }
   // The account that asked may be gone by now (an album takes a while).
   if (!destinations.userForJob(ctx.userId)) { throw new Error('the account that asked for this copy no longer exists'); }
@@ -551,8 +696,10 @@ export async function copyOne(ctx, env, song) {
       winston.warn(`federation-copy: could not read tags from the copied file (${err.message}); using the recommendation's`);
     }
     const tags = destinations.tagsForLayout(common, song);
-    const target = destinations.renderTarget({ destination, tags, peerName: peer.name, fileName });
-    const targetInfo = vpathUtil.getVPathInfo(`${destination.vpath}/${target.relPath}`, user);
+    const placed = target
+      ? { relDir: target.relDir || '', relPath: target.relDir ? `${target.relDir}/${fileName}` : fileName, missingVars: [] }
+      : destinations.renderTarget({ destination, tags, peerName: peer.name, fileName });
+    const targetInfo = vpathUtil.getVPathInfo(`${into}/${placed.relPath}`, user);
 
     const audioHashLib = await import('../../db/audio-hash.js');
     const hashes = await audioHashLib.computeHashes(tmpPath);
@@ -563,7 +710,7 @@ export async function copyOne(ctx, env, song) {
     }
     if (await fs.stat(targetInfo.fullPath).then(() => true, () => false)) {
       await fs.unlink(tmpPath);
-      return { skipped: 'exists', filepath: `${destination.vpath}/${target.relPath}` };
+      return { skipped: 'exists', filepath: `${into}/${placed.relPath}` };
     }
     await staging.moveIntoPlace(tmpPath, targetInfo.fullPath);
 
@@ -571,22 +718,22 @@ export async function copyOne(ctx, env, song) {
     ctx.progress(0.97, 'adding to your library');
     const { insertDownloadedTrack } = await import('../../db/insert-downloaded-track.js');
     const inserted = await insertDownloadedTrack({
-      filePath: targetInfo.fullPath, vpath: destination.vpath, basePath: targetInfo.basePath,
+      filePath: targetInfo.fullPath, vpath: into, basePath: targetInfo.basePath,
       source: NAME, log: 'federation-copy',
     });
     // The record of what this plug-in brought in (src/db/plugin-downloads.js).
     const recorded = downloadsDb.recordQuietly({
-      plugin: NAME, userId: ctx.userId, jobId: ctx.job.id, vpath: destination.vpath, relativePath: inserted.relativePath,
+      plugin: NAME, userId: ctx.userId, jobId: ctx.job.id, vpath: into, relativePath: inserted.relativePath,
       fileHash: inserted.hash, origin: peer.name, title: inserted.title, artist: inserted.artist, album: inserted.album, bytes,
     });
-    winston.info(`federation-copy: copied '${song.filepath}' from peer '${peer.name}' (id=${peer.id}) to ${destination.vpath}/${inserted.relativePath} (${bytes} bytes)`);
+    winston.info(`federation-copy: copied '${song.filepath}' from peer '${peer.name}' (id=${peer.id}) to ${into}/${inserted.relativePath} (${bytes} bytes)`);
     return {
       copied: {
-        vpath: destination.vpath, filepath: `${destination.vpath}/${inserted.relativePath}`,
+        vpath: into, filepath: `${into}/${inserted.relativePath}`,
         trackId: inserted.trackId, bytes, title: inserted.title, artist: inserted.artist, album: inserted.album,
         downloadId: recorded ? recorded.id : null,
       },
-      missingVars: target.missingVars,
+      missingVars: placed.missingVars,
     };
   } catch (err) {
     await fs.unlink(tmpPath).catch(() => {});
@@ -597,12 +744,13 @@ export async function copyOne(ctx, env, song) {
 export default Object.freeze({
   name: NAME,
   title: 'Add to your collection',
-  description: 'Copies a paired server\'s song into the user\'s own library folder (their collection destination) and adds it to the library at once. Needs upload rights; never overwrites; skips songs they already have.',
+  description: 'Copies a paired server\'s song, album, artist or folder into the user\'s own library folder (their collection destination) and adds it to the library at once. Needs upload rights; never overwrites; skips songs they already have.',
   capabilities: [CAPABILITIES.ACQUIRE],
   scope: SCOPES.USER,
-  // A song, its whole album, every album of its artist, or only the artist's
-  // albums this library lacks (song by song, the same rules for each).
-  scopes: [JOB_SCOPES.SONG, JOB_SCOPES.ALBUM, JOB_SCOPES.ARTIST, JOB_SCOPES.ARTIST_MISSING],
+  // A song, its whole album, every album of its artist, only the artist's
+  // albums this library lacks, or a folder on the peer with everything under
+  // it (song by song, the same rules for each).
+  scopes: [JOB_SCOPES.SONG, JOB_SCOPES.ALBUM, JOB_SCOPES.ARTIST, JOB_SCOPES.ARTIST_MISSING, JOB_SCOPES.FOLDER],
   concurrency: 1,
   run,
 });

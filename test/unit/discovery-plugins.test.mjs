@@ -172,7 +172,7 @@ describe('job scopes: what a job acts on, and the key it dedupes on', () => {
   const rec = normalizeRecommendation({ artist: 'Nova', title: 'Remote Hit', album: 'Night Ferry' });
 
   test('a song job keys as the recommendation; an album job on artist + album; the artist scopes on the artist', () => {
-    assert.deepEqual(Object.values(JOB_SCOPES), ['song', 'album', 'artist', 'artist-missing']);
+    assert.deepEqual(Object.values(JOB_SCOPES), ['song', 'album', 'artist', 'artist-missing', 'folder']);
     assert.equal(jobKey(rec), recommendationKey(rec));
     assert.equal(jobKey(rec, 'song'), recommendationKey(rec));
     assert.match(jobKey(rec, 'album'), /^album:[0-9a-f]{32}$/);
@@ -197,5 +197,48 @@ describe('job scopes: what a job acts on, and the key it dedupes on', () => {
     assert.deepEqual(Object.keys(jobKeysFor(normalizeRecommendation({ title: 'x' }))), ['song']);
     assert.equal(jobKeysFor(rec).song, recommendationKey(rec));
     assert.equal(jobKeysFor(rec).album, jobKey(rec, 'album'));
+  });
+
+  test('a folder job keys on the peer and the folder\'s path, case kept, whatever spelling the client held', () => {
+    const peer = { id: 3, name: 'Sam' };
+    const folder = normalizeRecommendation({ source: 'federation', peer, filepath: 'shared/Vosto/Underpass Remixes', title: 'Underpass Remixes' });
+    assert.equal(scopeMissing(folder, 'folder'), null);
+    assert.equal(scopeMissing(normalizeRecommendation({ source: 'federation', peer }), 'folder'), 'filepath');
+    assert.equal(scopeMissing(normalizeRecommendation({ source: 'federation', filepath: 'shared/x' }), 'folder'), 'peer');
+    assert.match(jobKey(folder, 'folder'), /^folder:[0-9a-f]{32}$/);
+    const same = (fp) => jobKey(normalizeRecommendation({ source: 'federation', peer, filepath: fp }), 'folder');
+    assert.equal(same('/shared/Vosto/Underpass Remixes/'), jobKey(folder, 'folder'), 'slashes at the ends do not count');
+    assert.equal(same('shared//Vosto/./Underpass Remixes'), jobKey(folder, 'folder'), 'nor doubled ones or dot segments');
+    assert.equal(same('shared\\Vosto\\Underpass Remixes'), jobKey(folder, 'folder'), 'a backslash spelling is the same folder');
+    assert.notEqual(same('shared/Vosto/underpass remixes'), jobKey(folder, 'folder'), 'case is kept: a peer may tell the two apart');
+    assert.notEqual(same('shared/VostoUnderpass Remixes'), jobKey(folder, 'folder'), 'never the text key, which drops spaces');
+    assert.notEqual(jobKey(normalizeRecommendation({ source: 'federation', peer: { id: 4 }, filepath: 'shared/Vosto/Underpass Remixes' }), 'folder'), jobKey(folder, 'folder'), 'another peer, another folder');
+    assert.equal(jobKeysFor(folder).folder, jobKey(folder, 'folder'));
+    assert.deepEqual(Object.keys(jobKeysFor(folder)), ['song', 'folder'], 'no artist or album: only the song and folder keys');
+  });
+
+  test('a file the peer never tagged keys on its path there, not on the empty text every such file shares', () => {
+    const peer = { id: 3 };
+    const a = normalizeRecommendation({ source: 'federation', peer, filepath: 'shared/bootleg_03.mp3' });
+    const b = normalizeRecommendation({ source: 'federation', peer, filepath: 'shared/bootleg_04.mp3' });
+    assert.match(recommendationKey(a), /^file:[0-9a-f]{32}$/);
+    assert.notEqual(recommendationKey(a), recommendationKey(b));
+    assert.equal(recommendationKey(a), recommendationKey(normalizeRecommendation({ source: 'federation', peer, filepath: '/shared/bootleg_03.mp3' })));
+    assert.notEqual(recommendationKey(a), recommendationKey(normalizeRecommendation({ source: 'federation', peer: { id: 9 }, filepath: 'shared/bootleg_03.mp3' })));
+    // A tagged file keys on its tags as ever, whatever its path.
+    const tagged = normalizeRecommendation({ artist: 'Nova', title: 'Remote Hit', album: 'Night Ferry', filepath: 'shared/x.mp3' });
+    assert.equal(recommendationKey(tagged), recommendationKey(normalizeRecommendation({ artist: 'Nova', title: 'Remote Hit', album: 'Night Ferry' })));
+    assert.match(recommendationKey(tagged), /^text:/);
+    // Nothing at all still has a key of its own kind.
+    assert.match(recommendationKey(normalizeRecommendation({})), /^text:/);
+  });
+
+  test('an album job keys on the album\'s own credit when that is all the client sent', () => {
+    const song = normalizeRecommendation({ artist: 'Various Artists', title: 'x', album: 'Various Hits' });
+    const card = normalizeRecommendation({ albumArtist: 'Various Artists', album: 'Various Hits' });
+    assert.equal(card.albumArtist, 'Various Artists', 'albumArtist is part of the contract');
+    assert.equal(scopeMissing(card, 'album'), null);
+    assert.equal(jobKey(card, 'album'), jobKey(song, 'album'));
+    assert.notEqual(jobKey(normalizeRecommendation({ artist: 'Nova', albumArtist: 'Various Artists', album: 'Various Hits' }), 'album'), jobKey(card, 'album'), 'the track artist wins when both are known, as before');
   });
 });

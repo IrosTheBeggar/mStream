@@ -53,6 +53,15 @@ const REMOTE = [
   // The artist scopes: a second Nova album, and a compilation Nova merely appears on.
   ['Fourth_Song.mp3', 'Fourth Song', 'Nova', 'Second Wind', '2021'],
   ['Comp_Track.mp3', 'Comp Track', 'Nova', 'Various Hits', '2020', 'Various Artists'],
+  // The folder scope: a small tree with a recycle bin and a dot folder in
+  // it, and two more folders for the landing choices. Their own artist, so
+  // the artist cases above keep their counts.
+  ['Tree/T1.mp3', 'Tree One', 'Treeband', 'Live Tapes', '2015'],
+  ['Tree/Disc 1/T2.mp3', 'Tree Two', 'Treeband', 'Live Tapes', '2015'],
+  ['Tree/#recycle/Old.mp3', 'Old Take', 'Treeband', 'Live Tapes', '2015'],
+  ['Tree/.hidden/Hid.mp3', 'Hidden Take', 'Treeband', 'Live Tapes', '2015'],
+  ['Tree2/U1.mp3', 'Tree2 One', 'Treeband', 'Live Tapes', '2015'],
+  ['Tree3/V1.mp3', 'Tree3 One', 'Treeband', 'Live Tapes', '2015'],
 ];
 
 let srvA, srvB, sharedDir, collectionDir, peerId;
@@ -102,6 +111,7 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-fedcopy-'));
     let freq = 400;
     for (const [file, title, artist, album, year, albumArtist] of REMOTE) {
+      fs.mkdirSync(path.dirname(path.join(sharedDir, file)), { recursive: true });
       const meta = ['-metadata', `artist=${artist}`, '-metadata', `title=${title}`, '-metadata', `album=${album}`];
       if (year) { meta.push('-metadata', `date=${year}`); }
       if (albumArtist) { meta.push('-metadata', `album_artist=${albumArtist}`); }
@@ -150,7 +160,7 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     const p = r.body.plugins.find((x) => x.name === PLUGIN);
     assert.ok(p, 'federation-copy is on by default');
     assert.deepEqual(p.capabilities, ['acquire']);
-    assert.deepEqual(p.scopes, ['song', 'album', 'artist', 'artist-missing']);
+    assert.deepEqual(p.scopes, ['song', 'album', 'artist', 'artist-missing', 'folder']);
     assert.deepEqual(p.settings, []);
     assert.equal((await api(srvB, 'GET', `/api/v1/discovery/plugins/${PLUGIN}/settings`)).status, 400, 'no plug-in settings of its own');
   });
@@ -350,6 +360,91 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     const failed = await untilFinished(none.body.job.id);
     assert.equal(failed.state, 'failed');
     assert.match(failed.error, /lists no albums/);
+  });
+
+  test('a folder copy: the peer\'s tree lands as it is there, under the base; recycle bins and dot entries stay out; a rerun skips it all', async () => {
+    assert.equal((await api(srvB, 'PUT', DEST, { destination: { vpath: 'collection', base: 'Mirror', layout: '{{ARTIST}}/{{ALBUM}}' } })).status, 200);
+    const folder = { source: 'federation', peer: { id: peerId, name: 'copier' }, filepath: '/shared/Tree/', title: 'Tree' };
+    const started = await api(srvB, 'POST', JOBS, { recommendation: folder, scope: 'folder' });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    assert.match(started.body.job.key, /^folder:/);
+    assert.deepEqual(started.body.job.params, { scope: 'folder' });
+    assert.equal(started.body.job.recommendation.filepath, '/shared/Tree/', 'kept as sent; the key and the copy read it the same');
+    const job = await untilFinished(started.body.job.id);
+    assert.equal(job.state, 'done', `job error: ${job.error}`);
+    const { result } = job;
+    assert.equal(result.scope, 'folder');
+    assert.deepEqual(result.folder, { path: 'shared/Tree', name: 'Tree', landed: 'collection/Mirror/Tree' });
+    assert.equal(result.layout, 'mirror');
+    assert.deepEqual(result.counts, { total: 2, copied: 2, skipped: 0, failed: 0 });
+    assert.equal(result.stopped, null);
+    assert.deepEqual(result.songs.copied.map((s) => [s.from, s.filepath]), [
+      ['shared/Tree/Disc 1/T2.mp3', 'collection/Mirror/Tree/Disc 1/T2.mp3'],
+      ['shared/Tree/T1.mp3', 'collection/Mirror/Tree/T1.mp3'],
+    ], 'the peer\'s library name dropped, the folder\'s own layout kept under the base');
+    assert.deepEqual(result.skippedFiles.map((s) => [s.from, s.why]).sort(), [
+      ['shared/Tree/#recycle/Old.mp3', 'ignored'],
+      ['shared/Tree/.hidden/Hid.mp3', 'ignored'],
+    ], 'the scanner\'s ignore rules apply to the peer\'s listing too');
+    assert.deepEqual(result.missingVars, []);
+    assert.deepEqual(result.peer, { id: peerId, name: 'copier' });
+    assert.ok(fs.existsSync(path.join(collectionDir, 'Mirror', 'Tree', 'Disc 1', 'T2.mp3')));
+    assert.ok(fs.existsSync(path.join(collectionDir, 'Mirror', 'Tree', 'T1.mp3')));
+    assert.ok(!fs.existsSync(path.join(collectionDir, 'Mirror', 'Tree', '#recycle')), 'the recycle bin was not mirrored');
+    assert.equal(bRow('SELECT source FROM tracks WHERE filepath = ?', 'Mirror/Tree/Disc 1/T2.mp3').source, PLUGIN);
+    assert.equal(bRow('SELECT COUNT(*) AS n FROM plugin_downloads WHERE job_id = ?', job.id).n, 2, 'one provenance row per song');
+    // Again: everything owned, nothing copied; the lookup names the folder's key whatever the spelling.
+    const again = await api(srvB, 'POST', JOBS, { recommendation: { ...folder, filepath: 'shared/Tree' }, scope: 'folder' });
+    assert.equal(again.status, 202, JSON.stringify(again.body));
+    const rerun = await untilFinished(again.body.job.id);
+    assert.equal(rerun.state, 'done', `job error: ${rerun.error}`);
+    assert.deepEqual(rerun.result.counts, { total: 2, copied: 0, skipped: 2, failed: 0 });
+    assert.ok(rerun.result.songs.skipped.every((s) => s.why === 'owned'));
+    const look = await api(srvB, 'POST', '/api/v1/discovery/plugin-jobs/lookup', { recommendation: folder });
+    assert.equal(look.status, 200);
+    assert.equal(look.body.keys.folder, again.body.job.key, 'the slashed spelling is the same folder');
+    assert.ok(look.body.jobs.some((j) => j.id === again.body.job.id), 'the folder job is in the lookup');
+  });
+
+  test('a folder copy can be given a place — a chosen folder, or the layout like any other copy — and is refused for what it cannot take', async () => {
+    const peer = { id: peerId, name: 'copier' };
+    // A chosen folder: the pressed folder's own files go there.
+    const chosen = await api(srvB, 'POST', JOBS, { recommendation: { source: 'federation', peer, filepath: 'shared/Tree2', title: 'Tree2' }, scope: 'folder', landing: { path: 'Chosen/Place/' } });
+    assert.equal(chosen.status, 202, JSON.stringify(chosen.body));
+    assert.deepEqual(chosen.body.job.params, { scope: 'folder', landing: { vpath: null, path: 'Chosen/Place' } });
+    const c = await untilFinished(chosen.body.job.id);
+    assert.equal(c.state, 'done', `job error: ${c.error}`);
+    assert.equal(c.result.layout, 'folder');
+    assert.deepEqual(c.result.folder, { path: 'shared/Tree2', name: 'Tree2', landed: 'collection/Chosen/Place' });
+    assert.deepEqual(c.result.songs.copied.map((s) => s.filepath), ['collection/Chosen/Place/U1.mp3']);
+    assert.ok(fs.existsSync(path.join(collectionDir, 'Chosen', 'Place', 'U1.mp3')));
+    // By tags: filed by the destination's layout, no folder of its own.
+    const byTags = await api(srvB, 'POST', JOBS, { recommendation: { source: 'federation', peer, filepath: 'shared/Tree3', title: 'Tree3' }, scope: 'folder', landing: { tags: true } });
+    assert.equal(byTags.status, 202, JSON.stringify(byTags.body));
+    assert.deepEqual(byTags.body.job.params, { scope: 'folder', landing: { tags: true } });
+    const t = await untilFinished(byTags.body.job.id);
+    assert.equal(t.state, 'done', `job error: ${t.error}`);
+    assert.equal(t.result.layout, 'tags');
+    assert.equal(t.result.folder.landed, null);
+    assert.deepEqual(t.result.songs.copied.map((s) => s.filepath), ['collection/Mirror/Treeband/Live Tapes/V1.mp3']);
+    // Refused at the door: a landing on a song job, a library the caller cannot write to, a path that climbs out, a folder job without its folder.
+    const ask = (body) => api(srvB, 'POST', JOBS, body);
+    assert.equal((await ask({ recommendation: rec('Third_Song.mp3'), landing: { path: 'x' } })).status, 400, 'a landing applies to a folder job only');
+    assert.equal((await ask({ recommendation: { source: 'federation', peer, filepath: 'shared/Tree2' }, scope: 'folder', landing: { vpath: 'nope', path: '' } })).status, 400);
+    assert.equal((await ask({ recommendation: { source: 'federation', peer, filepath: 'shared/Tree2' }, scope: 'folder', landing: { path: '../out' } })).status, 400);
+    const noFolder = await ask({ recommendation: { source: 'federation', peer }, scope: 'folder' });
+    assert.equal(noFolder.status, 400);
+    assert.match(noFolder.body.error, /needs the recommendation's filepath/);
+    // A folder the peer does not have fails with the reason.
+    const ghost = await untilFinished((await ask({ recommendation: { source: 'federation', peer, filepath: 'shared/Ghost' }, scope: 'folder' })).body.job.id);
+    assert.equal(ghost.state, 'failed');
+    assert.match(ghost.error, /no longer has this file|no songs under|answered http/);
+    // The admin's cap: a folder with more songs than allowed is refused with the count.
+    assert.equal((await api(srvB, 'POST', '/api/v1/admin/config/discovery-jobs', { maxFolderSongs: 1 })).status, 200);
+    const capped = await untilFinished((await ask({ recommendation: { source: 'federation', peer, filepath: 'shared/Tree' }, scope: 'folder' })).body.job.id);
+    assert.equal(capped.state, 'failed');
+    assert.match(capped.error, /holds 2 songs — add its folders one at a time \(the limit is 1;/);
+    assert.equal((await api(srvB, 'POST', '/api/v1/admin/config/discovery-jobs', { maxFolderSongs: 1000 })).status, 200);
   });
 
   test('a network (p2p) recommendation cannot be copied', async () => {

@@ -43,6 +43,10 @@ export const recommendationSchema = Joi.object({
   artist: text(512),
   title: text(512),
   album: text(512),
+  // The album's own credit, when the client knows it apart from the track's
+  // artist (an album card's album_artist): an album job narrows the peer's
+  // listing by it, so a compilation ("Various Artists") copies as itself.
+  albumArtist: text(512),
   year: Joi.number().integer().min(1000).max(9999).allow(null).default(null),
   isrc: Joi.string().trim().uppercase().pattern(/^[A-Z0-9]{12}$/).allow(null, '').empty('').default(null),
   releaseGroupMbid: text(64),
@@ -50,7 +54,8 @@ export const recommendationSchema = Joi.object({
   duration: Joi.number().min(0).allow(null).default(null),
   exportId: text(256),
   // The PEER's vpath-form path (federation rows) — the handle a stream
-  // proxy or a "play from peer" plug-in needs. Never a local path.
+  // proxy or a "play from peer" plug-in needs. Never a local path. For a
+  // folder job it is the folder's path on the peer.
   filepath: text(2048),
   source: Joi.string().valid(...Object.values(RECOMMENDATION_SOURCES)).default(RECOMMENDATION_SOURCES.P2P),
   peer: peerSchema,
@@ -77,12 +82,29 @@ function textKey(...parts) {
   return parts.map((p) => String(p || '').trim().toLowerCase()).join('|');
 }
 
+const hasText = (v) => typeof v === 'string' && v.trim().length > 0;
+const sha = (s) => crypto.createHash('sha1').update(s).digest('hex').slice(0, 32);
+
+// A path on a peer, as one string whatever spelling the client held:
+// forward slashes, no leading or trailing slash, no doubled slashes, no
+// '.' segments — and the CASE KEPT, because a peer's file system may tell
+// "Live" from "live". ('..' is left in place: the copy refuses it.)
+export function normalizePeerPath(p) {
+  return String(p == null ? '' : p).replace(/\\/g, '/').split('/').map((s) => s.trim()).filter((s) => s && s !== '.').join('/');
+}
+
+const peerIdOf = (rec) => (rec && rec.peer && rec.peer.id != null ? String(rec.peer.id) : '');
+
 export function recommendationKey(rec) {
   if (rec.recordingMbid) { return `mbid:${String(rec.recordingMbid).toLowerCase()}`; }
-  const digest = crypto.createHash('sha1')
-    .update(textKey(rec.artist, rec.title, rec.album))
-    .digest('hex');
-  return `text:${digest.slice(0, 32)}`;
+  // A file the peer never tagged — no artist, title or album — is its path
+  // on that peer. Keyed on the text it would share one key with every
+  // other tagless file, and a second Add would land on the first one's
+  // live job.
+  if (!hasText(rec.artist) && !hasText(rec.title) && !hasText(rec.album) && hasText(rec.filepath)) {
+    return `file:${sha(`${peerIdOf(rec)}|${normalizePeerPath(rec.filepath)}`)}`;
+  }
+  return `text:${sha(textKey(rec.artist, rec.title, rec.album))}`;
 }
 
 // "Artist Title" as a search phrase — the lowest common denominator every
@@ -93,7 +115,8 @@ export function searchPhrase(rec) {
 
 // ── Job scopes ───────────────────────────────────────────────────────────
 // What a job acts on: the one song (the default), the song's whole album,
-// every album of its artist, or only the artist's albums the library lacks.
+// every album of its artist, only the artist's albums the library lacks, or
+// a folder on the peer with everything under it.
 // A plug-in declares the scopes it runs (registry `scopes`, ['song'] unless
 // it says otherwise); the job start route keeps a wider scope in the job's
 // `params` and hands it to run() as ctx.params.scope.
@@ -102,27 +125,37 @@ export const JOB_SCOPES = Object.freeze({
   ALBUM: 'album',
   ARTIST: 'artist',
   ARTIST_MISSING: 'artist-missing',
+  FOLDER: 'folder',
 });
 
 // What a scope needs from the recommendation: an album job the album's
-// name, the artist jobs the artist's. The missing field's name, or null
-// when the scope can run on this recommendation.
+// name, the artist jobs the artist's, a folder job the folder's path on
+// the peer (`filepath`) and the peer itself — a path means nothing without
+// the server it is on. The missing field's name, or null when the scope
+// can run on this recommendation.
 export function scopeMissing(rec, scope) {
-  const has = (v) => typeof v === 'string' && v.trim().length > 0;
-  if (scope === JOB_SCOPES.ALBUM) { return has(rec && rec.album) ? null : 'album'; }
-  if (scope === JOB_SCOPES.ARTIST || scope === JOB_SCOPES.ARTIST_MISSING) { return has(rec && rec.artist) ? null : 'artist'; }
+  if (scope === JOB_SCOPES.ALBUM) { return hasText(rec && rec.album) ? null : 'album'; }
+  if (scope === JOB_SCOPES.ARTIST || scope === JOB_SCOPES.ARTIST_MISSING) { return hasText(rec && rec.artist) ? null : 'artist'; }
+  if (scope === JOB_SCOPES.FOLDER) {
+    if (!hasText(rec && rec.filepath)) { return 'filepath'; }
+    return peerIdOf(rec) ? null : 'peer';
+  }
   return null;
 }
 
 // The identity a job dedupes on, per scope. A song job keys as the
-// recommendation does; an album job on artist + album, so two songs of one
-// album ask for the same album job; the artist scopes on the artist. The
+// recommendation does; an album job on artist + album (the album's own
+// credit when that is all the client knows), so two songs of one album
+// ask for the same album job; the artist scopes on the artist. A folder
+// job keys on the peer AND the folder's path, case kept: a path is a name
+// on one server, not a recording that two servers may both hold. The
 // scope names the key's prefix, so a song copy and an album copy of the
 // same song are two live jobs, never one deduped against the other.
 export function jobKey(rec, scope = JOB_SCOPES.SONG) {
   if (!scope || scope === JOB_SCOPES.SONG) { return recommendationKey(rec); }
-  const digest = (parts) => crypto.createHash('sha1').update(textKey(...parts)).digest('hex').slice(0, 32);
-  if (scope === JOB_SCOPES.ALBUM) { return `album:${digest([rec.artist, rec.album])}`; }
+  const digest = (parts) => sha(textKey(...parts));
+  if (scope === JOB_SCOPES.ALBUM) { return `album:${digest([hasText(rec.artist) ? rec.artist : rec.albumArtist, rec.album])}`; }
+  if (scope === JOB_SCOPES.FOLDER) { return `folder:${sha(`${peerIdOf(rec)}|${normalizePeerPath(rec.filepath)}`)}`; }
   return `${scope}:${digest([rec.artist])}`;
 }
 

@@ -126,7 +126,7 @@ describe('discovery plug-ins · admin API', { skip: hasFfmpeg ? false : 'bundled
     assert.equal(pluginOf(r.body, 'noop-acquire').connectedUsers, 0);
     assert.equal(pluginOf(r.body, 'links').connectedUsers, undefined);
 
-    assert.deepEqual(r.body.jobs, { enabledFor: 'all', maxConcurrent: 2, retentionDays: 30, running: 0, queued: 0 });
+    assert.deepEqual(r.body.jobs, { enabledFor: 'all', maxConcurrent: 2, maxQueuedPerUser: 20, maxFolderSongs: 1000, retentionDays: 30, running: 0, queued: 0 });
     assert.deepEqual(r.body.downloads, [], 'nothing brought in yet: no plug-in to count');
 
     assert.equal((await api(userToken, 'GET', STATUS)).status, 403, 'admins only');
@@ -219,6 +219,15 @@ describe('discovery plug-ins · admin API', { skip: hasFfmpeg ? false : 'bundled
     assert.equal((await api(adminToken, 'POST', JOBS_CFG, { downloadsMaxSizeMb: 1 })).status, 400, 'the scratch cap is gone');
     assert.equal((await api(adminToken, 'POST', JOBS_CFG, { downloadsRetentionDays: 1 })).status, 400, 'and so is its clock');
     await api(adminToken, 'POST', JOBS_CFG, { retentionDays: 30 });
+    // The folder cap and the per-account share: live, read back by the status, bounded.
+    const folderCap = await api(adminToken, 'POST', JOBS_CFG, { maxFolderSongs: 5, maxQueuedPerUser: 3 });
+    assert.equal(folderCap.status, 200, JSON.stringify(folderCap.body));
+    assert.equal(folderCap.body.discoveryJobs.maxFolderSongs, 5);
+    const status = (await api(adminToken, 'GET', STATUS)).body.jobs;
+    assert.deepEqual([status.maxFolderSongs, status.maxQueuedPerUser], [5, 3]);
+    assert.equal((await api(adminToken, 'POST', JOBS_CFG, { maxFolderSongs: 0 })).status, 400);
+    assert.equal((await api(adminToken, 'POST', JOBS_CFG, { maxFolderSongs: 100001 })).status, 400);
+    await api(adminToken, 'POST', JOBS_CFG, { maxFolderSongs: 1000, maxQueuedPerUser: 20 });
 
     // Sweep now: nothing is old enough.
     const sweep = await api(adminToken, 'POST', '/api/v1/admin/discovery-jobs/sweep');

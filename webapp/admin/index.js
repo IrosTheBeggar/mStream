@@ -8343,6 +8343,8 @@ const discoveryPluginsView = Vue.component('discovery-plugins-view', {
                     <table class="dp-rows" style="margin-top:18px">
                       <tbody>
                         <tr><td><b>{{ t('admin.dplugins.jobs.atOnce') }}</b> {{ dp.status.jobs.maxConcurrent }}<span class="dp-note">{{ t('admin.dplugins.jobs.atOnceNote') }}</span></td><td>[<a v-on:click="editNumber('maxConcurrent')">{{ t('admin.settings.edit') }}</a>]</td></tr>
+                        <tr v-if="dp.status.jobs.maxQueuedPerUser != null"><td><b>{{ t('admin.dplugins.jobs.perUser') }}</b> {{ dp.status.jobs.maxQueuedPerUser }}<span class="dp-note">{{ t('admin.dplugins.jobs.perUserNote') }}</span></td><td>[<a v-on:click="editNumber('maxQueuedPerUser')">{{ t('admin.settings.edit') }}</a>]</td></tr>
+                        <tr v-if="dp.status.jobs.maxFolderSongs != null"><td><b>{{ t('admin.dplugins.jobs.folderMax') }}</b> {{ t('admin.dplugins.songs', { count: dp.status.jobs.maxFolderSongs }) }}<span class="dp-note">{{ t('admin.dplugins.jobs.folderMaxNote') }}</span></td><td>[<a v-on:click="editNumber('maxFolderSongs')">{{ t('admin.settings.edit') }}</a>]</td></tr>
                         <tr><td><b>{{ t('admin.dplugins.jobs.history') }}</b> {{ t('admin.dplugins.days', { count: dp.status.jobs.retentionDays }) }}<span class="dp-note">{{ t('admin.dplugins.jobs.historyNote') }}</span></td><td>[<a v-on:click="editNumber('retentionDays')">{{ t('admin.settings.edit') }}</a>]</td></tr>
                       </tbody>
                     </table>
@@ -11749,6 +11751,8 @@ const dpPluginSettingsModal = Vue.component('dp-plugin-settings-modal', {
 // The two numbers on the Jobs tab share one modal.
 const DP_NUMBERS = {
   maxConcurrent: { min: 1, max: 16, step: 1, value: (s) => s.jobs.maxConcurrent },
+  maxQueuedPerUser: { min: 1, max: 500, step: 1, value: (s) => s.jobs.maxQueuedPerUser },
+  maxFolderSongs: { min: 1, max: 100000, step: 1, unit: 'songs', value: (s) => s.jobs.maxFolderSongs },
   retentionDays: { min: 1, max: 3650, step: 1, unit: 'days', value: (s) => s.jobs.retentionDays },
 };
 
