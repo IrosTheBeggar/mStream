@@ -1060,6 +1060,11 @@
     "other": "{{count}} days"
   },
   "admin.dplugins.unit.days": "days",
+  "admin.dplugins.songs": {
+    "one": "{{count}} song",
+    "other": "{{count}} songs"
+  },
+  "admin.dplugins.unit.songs": "songs",
   "admin.dplugins.header.on": "{{on}} of {{total}} plug-ins on",
   "admin.dplugins.header.cannotRun": "{{count}} cannot run",
   "admin.dplugins.header.jobsAll": "jobs open to all users",
@@ -1113,6 +1118,10 @@
   "admin.dplugins.jobs.noUploadNote": "{{users}} may start jobs but cannot upload, so a download or a copy fails for them with that reason until the account may upload. Being an admin does not skip the list.",
   "admin.dplugins.jobs.atOnce": "Jobs at once:",
   "admin.dplugins.jobs.atOnceNote": "Across every plug-in. Each plug-in also limits itself (one copy, one download at a time).",
+  "admin.dplugins.jobs.perUser": "Jobs per account:",
+  "admin.dplugins.jobs.perUserNote": "Queued or running at once. Past it a new job is refused until some finish; the runner takes turns between accounts anyway.",
+  "admin.dplugins.jobs.folderMax": "Largest folder to add:",
+  "admin.dplugins.jobs.folderMaxNote": "A folder copied from a paired server with more songs than this is refused, and the user adds its folders one at a time.",
   "admin.dplugins.jobs.history": "Finished jobs kept for:",
   "admin.dplugins.jobs.historyNote": "Done, failed and cancelled rows older than this leave the Activity tab. Files are not touched.",
   "admin.dplugins.jobs.sweep": "Sweep now",
@@ -1221,5 +1230,11 @@
   "admin.dplugins.num.maxConcurrent.help": "1 – 16. Downloads and copies are disk and network work; a small number keeps playback smooth. Takes effect on the next job, no restart.",
   "admin.dplugins.num.retentionDays.title": "Finished jobs kept for",
   "admin.dplugins.num.retentionDays.label": "Days a finished job stays on the Activity tab",
-  "admin.dplugins.num.retentionDays.help": "1 – 3650. Only the rows go; files are not touched."
+  "admin.dplugins.num.retentionDays.help": "1 – 3650. Only the rows go; files are not touched.",
+  "admin.dplugins.num.maxQueuedPerUser.title": "Jobs per account",
+  "admin.dplugins.num.maxQueuedPerUser.label": "Jobs one account may have queued or running at once",
+  "admin.dplugins.num.maxQueuedPerUser.help": "1 – 500. Past it a new job is refused until some finish. The runner takes turns between accounts besides, so one long queue never holds the others. Takes effect at once.",
+  "admin.dplugins.num.maxFolderSongs.title": "Largest folder to add",
+  "admin.dplugins.num.maxFolderSongs.label": "Songs one folder copied from a paired server may hold",
+  "admin.dplugins.num.maxFolderSongs.help": "1 – 100000. A folder with more songs is refused with the count, and the user adds its folders one at a time. One folder job holds the copy slot for as long as it runs. Takes effect on the next job."
 }

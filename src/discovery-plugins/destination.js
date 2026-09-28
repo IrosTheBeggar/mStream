@@ -114,6 +114,25 @@ export function validateDestination(value, user) {
   return { vpath: value.vpath, base: base.base, layout: value.layout, source: 'request' };
 }
 
+// Where a FOLDER job lands, as the caller chose it (the job route's
+// `landing`, kept in the job's params): a library the caller may write to
+// (absent = the destination's, read when the job runs) and a folder inside
+// it under the base folder's rules, or `tags: true` for the layout like any
+// other copy. Null when the choice is empty — the folder then lands as it
+// is on the peer (plugins/federation-copy.js landingFor). Throws a 400.
+export function validateLanding(value, user) {
+  if (!value || typeof value !== 'object') { return null; }
+  if (value.tags === true) { return { tags: true }; }
+  if (typeof value.path !== 'string' && !value.vpath) { return null; }
+  const vpath = value.vpath || null;
+  if (vpath && !writableLibraries(user).some((l) => l.vpath === vpath)) {
+    throw new WebError(`landing: you cannot put files into library '${vpath}'`, 400);
+  }
+  const dir = normalizeBase(value.path);
+  if (!dir.valid) { throw new WebError(`landing folder: ${dir.message}`, 400); }
+  return { vpath, path: dir.base };
+}
+
 function ownerId(user) {
   return user && Number.isInteger(user.id) && user.id > 0 ? user.id : null;
 }

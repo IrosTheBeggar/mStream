@@ -739,6 +739,12 @@ const discoveryJobsOptions = Joi.object({
   // songs it holds, so this is about how many asks, not how much work. The
   // runner also takes turns between accounts (src/discovery-plugins/jobs.js).
   maxQueuedPerUser: Joi.number().integer().min(1).max(500).default(20),
+  // The most songs one folder copy from a paired server may take (the
+  // federation-copy plug-in's folder scope): a folder holding more fails
+  // at once with the count, and the user adds its folders one at a time.
+  // One folder job holds the copy slot for as long as it runs, so this is
+  // how long one press may keep the others waiting.
+  maxFolderSongs: Joi.number().integer().min(1).max(100000).default(1000),
   // Finished rows (done / failed / cancelled) older than this are pruned.
   retentionDays: Joi.number().integer().min(1).max(3650).default(30),
   // Where a download is assembled before it enters a library

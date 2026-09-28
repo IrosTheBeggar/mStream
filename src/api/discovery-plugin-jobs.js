@@ -123,8 +123,19 @@ export function setup(mstream) {
       // fetches that one instead of searching. Only a plug-in with a
       // lookup takes one, and it checks the link itself (validateChoice).
       choice: Joi.object({ url: Joi.string().uri({ scheme: ['http', 'https'] }).max(2048).required() }).optional(),
+      // Where a folder job lands (the folder scope only): a library and a
+      // folder inside it the caller chose (`path` is where the pressed
+      // folder's own files go, its subfolders beneath), or `tags: true` to
+      // file the songs by the collection layout like any other copy.
+      // Absent = the folder as it is on the peer, under the destination's
+      // base folder (destination.js validateLanding).
+      landing: Joi.object({
+        vpath: Joi.string().min(1).max(200).optional(),
+        path: Joi.string().allow('').max(500).optional(),
+        tags: Joi.boolean().optional(),
+      }).optional(),
     });
-    const { value: { recommendation, scope: askedScope, choice } } = joiValidate(schema, req.body);
+    const { value: { recommendation, scope: askedScope, choice, landing: askedLanding } } = joiValidate(schema, req.body);
     const scope = askedScope || plugins.JOB_SCOPES.SONG;
     if (!plugin.scopes.includes(scope)) {
       throw new WebError(`plug-in ${name} has no "${scope}" scope (it has: ${plugin.scopes.join(', ')})`, 400);
@@ -139,9 +150,15 @@ export function setup(mstream) {
         try { plugin.validateChoice(choice); } catch (err) { throw new WebError(err.message, 400); }
       }
     }
+    let landing = null;
+    if (askedLanding) {
+      if (scope !== plugins.JOB_SCOPES.FOLDER) { throw new WebError('a landing folder applies to a folder job only', 400); }
+      landing = destinations.validateLanding(askedLanding, req.user);
+    }
     const params = {};
     if (scope !== plugins.JOB_SCOPES.SONG) { params.scope = scope; }
     if (choice) { params.choice = choice; }
+    if (landing) { params.landing = landing; }
     const { job, created } = jobsDb.createJob({
       plugin: name,
       userId: req.user ? req.user.id : null,

@@ -14,7 +14,9 @@ import path from 'node:path';
 import Joi from 'joi';
 import * as pathTemplate from '../../src/torrent/path-template.js';
 import { registerPlugin, unregisterPluginForTests, listPlugins } from '../../src/discovery-plugins/registry.js';
-import plugin, { copySongs, copyAlbums, planArtistAlbums, copyBody, MAX_COPY_BYTES, fetchMedia } from '../../src/discovery-plugins/plugins/federation-copy.js';
+import plugin, {
+  copySongs, copyAlbums, planArtistAlbums, copyBody, MAX_COPY_BYTES, fetchMedia, planFolder, landingFor, accountFor, RESULT_LIST_CAP,
+} from '../../src/discovery-plugins/plugins/federation-copy.js';
 import {
   NAMESPACE, KEY, DEFAULT_LAYOUT, LAYOUT_VARS, destinationSchema, uploadsAllowed, writableLibraries,
   destinationFor, validateLayout, normalizeBase, safeFileName, tagsForLayout, renderTarget, isSupportedAudioFile,
@@ -163,11 +165,81 @@ describe('federation-copy · the peer\'s two 429s', () => {
   });
 });
 
+describe('federation-copy · the folder (planFolder, landingFor, accountFor)', () => {
+  const isSupported = (name) => /\.(mp3|flac)$/i.test(name);
+
+  test('planFolder: every audio file under the folder, in path order, with where it sits relative to the folder; the rest listed with why', () => {
+    const listing = [
+      'shared/Vosto/Underpass Remixes/02 Night Drive.flac',
+      'shared/Vosto/Underpass Remixes/01 Sodium.flac',
+      'shared/Vosto/Underpass Remixes/Disc 2/03 Late Frost.mp3',
+      'shared/Vosto/Underpass Remixes/notes.txt',
+      'shared/Vosto/Underpass Remixes/#recycle/old.mp3',
+      'shared/Vosto/Underpass Remixes/.hidden/x.mp3',
+      'shared/Vosto/Underpass Remixes/.DS_Store.mp3',
+      'shared/Vosto/Night Drive/01 Sodium.flac',
+      'shared/Vosto/Underpass Remixes/../Night Drive/02.flac',
+      'shared/Vosto/Underpass Remixes/01 Sodium.flac',
+      42,
+    ];
+    const { songs, skipped } = planFolder(listing, '/shared/Vosto/Underpass Remixes/', { isSupported });
+    assert.deepEqual(songs, [
+      { filepath: 'shared/Vosto/Underpass Remixes/01 Sodium.flac', relDir: '' },
+      { filepath: 'shared/Vosto/Underpass Remixes/02 Night Drive.flac', relDir: '' },
+      { filepath: 'shared/Vosto/Underpass Remixes/Disc 2/03 Late Frost.mp3', relDir: 'Disc 2' },
+    ], 'sorted, one entry per path, the folder above dropped from relDir');
+    assert.deepEqual(skipped, [
+      { from: 'shared/Vosto/Underpass Remixes/notes.txt', why: 'unsupported' },
+      { from: 'shared/Vosto/Underpass Remixes/#recycle/old.mp3', why: 'ignored' },
+      { from: 'shared/Vosto/Underpass Remixes/.hidden/x.mp3', why: 'ignored' },
+      { from: 'shared/Vosto/Underpass Remixes/.DS_Store.mp3', why: 'ignored' },
+      { from: 'shared/Vosto/Night Drive/01 Sodium.flac', why: 'outside' },
+      { from: 'shared/Vosto/Underpass Remixes/../Night Drive/02.flac', why: 'outside' },
+    ], 'the peer\'s listing is its word: a stray or climbing entry is left out, so are the scanner\'s ignored names');
+  });
+
+  test('planFolder: a peer\'s folder names are made safe for a path here; a library root pressed keeps every path; nothing is nothing', () => {
+    const { songs } = planFolder(['lib/Live: 2015/a.mp3', 'lib/b.mp3'], 'lib', { isSupported });
+    assert.deepEqual(songs, [{ filepath: 'lib/b.mp3', relDir: '' }, { filepath: 'lib/Live: 2015/a.mp3', relDir: 'Live- 2015' }]);
+    assert.deepEqual(planFolder([], 'lib', { isSupported }), { songs: [], skipped: [] });
+    assert.deepEqual(planFolder(null, 'lib', { isSupported }), { songs: [], skipped: [] });
+  });
+
+  test('landingFor: the folder as it is on the peer under the base by default; a chosen library and folder; or by tags', () => {
+    const destination = { vpath: 'music', base: 'From peers', layout: '{{ARTIST}}/{{ALBUM}}' };
+    const writable = [{ vpath: 'music' }, { vpath: 'other' }];
+    assert.deepEqual(landingFor({ folder: 'shared/Vosto/Underpass Remixes', landing: null, destination, writable }),
+      { mode: 'mirror', vpath: 'music', dir: 'From peers/Vosto/Underpass Remixes' }, 'the peer\'s library name dropped, the base kept');
+    assert.deepEqual(landingFor({ folder: '/shared/', landing: undefined, destination: { ...destination, base: '' }, writable }),
+      { mode: 'mirror', vpath: 'music', dir: '' }, 'a library root pressed: its subtree lands right under the base');
+    assert.deepEqual(landingFor({ folder: 'shared/Live: 2015', landing: null, destination: { ...destination, base: '' }, writable }),
+      { mode: 'mirror', vpath: 'music', dir: 'Live- 2015' }, 'the peer\'s names made safe');
+    assert.deepEqual(landingFor({ folder: 'shared/Vosto', landing: { vpath: null, path: 'Chosen/Place' }, destination, writable }),
+      { mode: 'folder', vpath: 'music', dir: 'Chosen/Place' }, 'a chosen folder in the destination\'s library');
+    assert.deepEqual(landingFor({ folder: 'shared/Vosto', landing: { vpath: 'other', path: '' }, destination, writable }),
+      { mode: 'folder', vpath: 'other', dir: '' }, 'another library\'s root');
+    assert.throws(() => landingFor({ folder: 'shared/Vosto', landing: { vpath: 'private', path: 'x' }, destination, writable }), /may not put files into library 'private'/);
+    assert.deepEqual(landingFor({ folder: 'shared/Vosto', landing: { tags: true }, destination, writable }), { mode: 'tags', vpath: 'music', dir: null });
+  });
+
+  test('accountFor: the whole numbers beside lists that stop at the cap', () => {
+    const many = (n, why) => Array.from({ length: n }, (_, i) => ({ from: `f${i}`, ...(why ? { why } : {}) }));
+    const small = { total: 3, copied: many(2), skipped: many(1, 'owned'), failed: [] };
+    assert.deepEqual(accountFor(small), { songs: small, counts: { total: 3, copied: 2, skipped: 1, failed: 0 } });
+    const big = { total: RESULT_LIST_CAP + 7, copied: many(RESULT_LIST_CAP + 7), skipped: [], failed: [] };
+    const r = accountFor(big);
+    assert.equal(r.songs.copied.length, RESULT_LIST_CAP);
+    assert.equal(r.songs.total, RESULT_LIST_CAP + 7);
+    assert.deepEqual(r.counts, { total: RESULT_LIST_CAP + 7, copied: RESULT_LIST_CAP + 7, skipped: 0, failed: 0 });
+    assert.equal(r.truncated, true);
+  });
+});
+
 describe('federation-copy · plug-in shape', () => {
   test('an acquire plug-in with run(), one at a time, and no settings of its own', () => {
     assert.equal(plugin.name, 'federation-copy');
     assert.deepEqual([...plugin.capabilities], ['acquire']);
-    assert.deepEqual([...plugin.scopes], ['song', 'album', 'artist', 'artist-missing'], 'a song, its album, or its artist\'s albums');
+    assert.deepEqual([...plugin.scopes], ['song', 'album', 'artist', 'artist-missing', 'folder'], 'a song, its album, its artist\'s albums, or a folder');
     assert.equal(plugin.scope, 'user');
     assert.equal(plugin.concurrency, 1);
     assert.equal(typeof plugin.run, 'function');
