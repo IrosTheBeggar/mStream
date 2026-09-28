@@ -69,15 +69,21 @@ export function ownedTrack({ hash, audioHash, artist, title, album, track, disk,
   if (Array.isArray(libraryIds) && libraryIds.length === 0) { return null; }
   const scope = scopeClause(libraryIds);
   const found = (row) => (row ? { vpath: row.vpath, filepath: `${row.vpath}/${row.filepath}`, by: row.by } : null);
+  // Both hash arms are pinned to their index: with the library scope in the
+  // WHERE and no ANALYZE stats, the planner serves the lookup from
+  // idx_tracks_library instead — a whole-library scan per song, ~1 ms each
+  // on a 36k-track index against 0.05 ms pinned (the same trap api/db.js
+  // documents for the stat rows). INDEXED BY errors loudly should a
+  // migration ever drop the index, rather than regressing to the scan.
   if (hash) {
     const row = prep(database, `
-      SELECT t.filepath, l.name AS vpath, 'hash' AS by FROM tracks t JOIN libraries l ON l.id = t.library_id
+      SELECT t.filepath, l.name AS vpath, 'hash' AS by FROM tracks t INDEXED BY idx_tracks_hash JOIN libraries l ON l.id = t.library_id
        WHERE t.file_hash = ?${scope.sql} LIMIT 1`).get(hash, ...scope.params);
     if (row) { return found(row); }
   }
   if (audioHash) {
     const row = prep(database, `
-      SELECT t.filepath, l.name AS vpath, 'audio-hash' AS by FROM tracks t JOIN libraries l ON l.id = t.library_id
+      SELECT t.filepath, l.name AS vpath, 'audio-hash' AS by FROM tracks t INDEXED BY idx_tracks_audio_hash JOIN libraries l ON l.id = t.library_id
        WHERE t.audio_hash = ?${scope.sql} LIMIT 1`).get(audioHash, ...scope.params);
     if (row) { return found(row); }
   }
