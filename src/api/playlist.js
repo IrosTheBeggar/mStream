@@ -30,6 +30,9 @@ export function setup(mstream) {
       discoveryP2p: features.discoveryP2p,
       // Whether recommendation rows have plug-in actions (same flag on /api/).
       discoveryPlugins: features.discoveryPlugins,
+      // The batched owned lookup (POST /api/v1/discovery/owned) — same
+      // flag on /api/; the peer browse gates its marks on it.
+      discoveryOwned: features.discoveryOwned,
       // Stats API v2 version — the same fact /api/ carries under features.
       stats: features.stats,
       // Library sync manifest route — same fact, same place on /api/.
