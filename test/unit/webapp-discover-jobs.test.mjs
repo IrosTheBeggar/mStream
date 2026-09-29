@@ -328,7 +328,7 @@ describe('album and artist jobs as rows', () => {
   const copyJob = (over) => job({ plugin: 'federation-copy', ...over });
 
   test('scope, slot and the index by slot', () => {
-    assert.deepEqual(J.JOB_SCOPES, ['song', 'album', 'artist', 'artist-missing']);
+    assert.deepEqual(J.JOB_SCOPES, ['song', 'album', 'artist', 'artist-missing', 'folder']);
     assert.equal(J.jobScope(job({})), 'song');
     assert.equal(J.jobScope(job({ params: { scope: 'album' } })), 'album');
     assert.equal(J.jobSlot('federation-copy', 'song'), 'federation-copy');
@@ -375,7 +375,15 @@ describe('album and artist jobs as rows', () => {
     assert.equal(J.jobTitle(job({ recommendation: rec, params: { scope: 'album' } })), 'Night Ferry — Marlowe Vale');
     assert.equal(J.jobTitle(job({ recommendation: rec, params: { scope: 'artist' } })), 'Marlowe Vale');
     assert.equal(J.jobTitle(job({ recommendation: rec, params: { scope: 'artist-missing' } })), 'Marlowe Vale');
-    assert.deepEqual([J.jobKind(job({})), J.jobKind(job({ params: { scope: 'album' } })), J.jobKind(job({ params: { scope: 'artist' } })), J.jobKind(job({ params: { scope: 'artist-missing' } }))],
-      [null, 'discover.tray.kindAlbum', 'discover.tray.kindArtist', 'discover.tray.kindMissing']);
+    assert.deepEqual([J.jobKind(job({})), J.jobKind(job({ params: { scope: 'album' } })), J.jobKind(job({ params: { scope: 'artist' } })), J.jobKind(job({ params: { scope: 'artist-missing' } })), J.jobKind(job({ params: { scope: 'folder' } }))],
+      [null, 'discover.tray.kindAlbum', 'discover.tray.kindArtist', 'discover.tray.kindMissing', 'discover.tray.kindFolder']);
+    // A folder job: its name, from the recommendation's title or the path's last segment; an album card's own credit.
+    assert.equal(J.jobTitle(job({ recommendation: { source: 'federation', filepath: 'shared/Vosto/Underpass Remixes', title: 'Underpass Remixes' }, params: { scope: 'folder' } })), 'Underpass Remixes');
+    assert.equal(J.jobTitle(job({ recommendation: { source: 'federation', filepath: '/shared/Vosto/Live 2015/' }, params: { scope: 'folder' } })), 'Live 2015');
+    assert.equal(J.jobTitle(job({ recommendation: { album: 'Various Hits', albumArtist: 'Various Artists' }, params: { scope: 'album' } })), 'Various Hits — Various Artists');
+    // The whole numbers ride in `counts` when the per-song lists were capped.
+    const capped = { scope: 'folder', songs: { total: 900, copied: [{ from: 'a' }], skipped: [], failed: [] }, counts: { total: 900, copied: 700, skipped: 200, failed: 0 }, truncated: true, bytes: 1, stopped: null, peer: { id: 1, name: 'p' } };
+    assert.deepEqual(J.jobRowState(job({ plugin: 'federation-copy', state: 'done', result: capped })).sub.parts.map((p) => [p.key, p.params.count]),
+      [['discover.job.copiedCount', 700], ['discover.job.ownedCount', 200]]);
   });
 });

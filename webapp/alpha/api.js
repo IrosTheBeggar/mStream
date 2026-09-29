@@ -170,11 +170,15 @@ const MSTREAMAPI = (() => {
   // already getting this", "a file already exists at …" — not a shrug.
   const jobsRoute = (tail) => mstreamModule.currentServer.host + 'api/v1/discovery/plugin-jobs' + (tail || '');
   // `choice` = { url }: an upload picked from the plug-in's lookup. `scope`
-  // = album | artist | artist-missing for a job that acts on more than the song.
-  mstreamModule.discoveryJobStart = (name, recommendation, choice, scope) => {
+  // = album | artist | artist-missing | folder for a job that acts on more
+  // than the song. `landing` (a folder job's): { vpath?, path } for a folder
+  // of the user's choosing, { tags: true } for the layout; absent = the
+  // folder as it is on the peer, under the destination's base.
+  mstreamModule.discoveryJobStart = (name, recommendation, choice, scope, landing) => {
     const body = { recommendation };
     if (choice) { body.choice = choice; }
     if (scope && scope !== 'song') { body.scope = scope; }
+    if (landing && scope === 'folder') { body.landing = landing; }
     return req('POST', mstreamModule.currentServer.host + 'api/v1/discovery/plugins/' + encodeURIComponent(name) + '/jobs', body);
   };
   mstreamModule.discoveryJobs = () => req('GET', jobsRoute());

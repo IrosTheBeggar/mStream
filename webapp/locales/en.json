@@ -270,6 +270,7 @@
   "discover.tray.kindAlbum": "album",
   "discover.tray.kindArtist": "every album",
   "discover.tray.kindMissing": "what you’re missing",
+  "discover.tray.kindFolder": "folder",
   "discover.lookup.find": "Look it up",
   "discover.lookup.idleSub": "Finds the closest upload for “{{query}}” · nothing is downloaded yet",
   "discover.lookup.searching": "searching",
@@ -899,9 +900,40 @@
   "peers.searchHeader": "On {{name}}",
   "peers.noPlaylist": "Peer tracks can't be added to playlists",
   "peers.noDownload": "Peer folders can't be downloaded",
+  "peers.noUpload": "Files can't be uploaded to a peer",
+  "peers.sync.landIn": "Copies land in",
+  "peers.sync.foldersLandIn": "Folders land in",
+  "peers.sync.add.song": "Add",
+  "peers.sync.add.album": "Add album",
+  "peers.sync.add.artist": "Add artist",
+  "peers.sync.add.folder": "Add folder",
+  "peers.sync.addMissing": {
+    "one": "Add the 1 you don't have",
+    "other": "Add the {{count}} you don't have"
+  },
+  "peers.sync.addMissingSome": "Add what you're missing",
+  "peers.sync.addRest": "Add the rest",
+  "peers.sync.yours": "yours",
+  "peers.sync.allYours": "all in your collection",
+  "peers.sync.inCollection": "in your collection",
+  "peers.sync.albumCount": {
+    "one": "{{count}} album",
+    "other": "{{count}} albums"
+  },
+  "peers.sync.songCount": {
+    "one": "{{count}} song",
+    "other": "{{count}} songs"
+  },
+  "peers.sync.youHave": {
+    "one": "you have 1",
+    "other": "you have {{count}}"
+  },
+  "peers.sync.loadingAlbums": "loading {{name}}’s album list…",
   "search.noResults": "No Results Found",
   "server.thisServer": "This server",
   "server.readOnlyNote": "Browsing {{name}} — read-only. You can play and queue its music, but not change anything.",
+  "server.readOnlyNoteAdd": "Browsing {{name}} — read-only. You can play, queue and add its music to your collection.",
+  "server.readOnlyNoteCannotAdd": "Browsing {{name}} — read-only. You can play and queue its music. Your account can't add to the library, so nothing here can be kept.",
   "server.backToThisServer": "← Back to this server",
   "search.federated": "Search federated servers",
   "search.onThisServer": "On this server",

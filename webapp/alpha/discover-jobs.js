@@ -261,11 +261,14 @@
   // left out; "nothing to copy" when nothing happened at all.
   function manyParts(many) {
     const s = many.songs;
+    // The whole numbers ride in `counts` (the lists stop at the server's cap).
+    const c = (many.counts && typeof many.counts === 'object') ? many.counts : {};
+    const n = (k) => (Number.isFinite(c[k]) ? c[k] : s[k].length);
     const parts = [];
     if (Array.isArray(many.albums) && many.albums.length) { parts.push({ key: 'discover.job.albumsCount', params: { count: many.albums.length } }); }
-    if (s.copied.length) { parts.push({ key: 'discover.job.copiedCount', params: { count: s.copied.length } }); }
-    if (s.skipped.length) { parts.push({ key: 'discover.job.ownedCount', params: { count: s.skipped.length } }); }
-    if (s.failed.length) { parts.push({ key: 'discover.job.failedCount', params: { count: s.failed.length } }); }
+    if (n('copied')) { parts.push({ key: 'discover.job.copiedCount', params: { count: n('copied') } }); }
+    if (n('skipped')) { parts.push({ key: 'discover.job.ownedCount', params: { count: n('skipped') } }); }
+    if (n('failed')) { parts.push({ key: 'discover.job.failedCount', params: { count: n('failed') } }); }
     if (Array.isArray(many.skippedAlbums) && many.skippedAlbums.length) { parts.push({ key: 'discover.job.albumsLeftOut', params: { count: many.skippedAlbums.length } }); }
     if (parts.length === 0) { parts.push({ key: 'discover.job.nothingToCopy' }); }
     return parts;
@@ -276,7 +279,7 @@
   // artist's albums, or only the ones the library lacks. The window keeps
   // one job per plug-in AND scope, under a slot: the plug-in's name for a
   // song job (as it always was), "<plugin>@<scope>" for the others.
-  const JOB_SCOPES = ['song', 'album', 'artist', 'artist-missing'];
+  const JOB_SCOPES = ['song', 'album', 'artist', 'artist-missing', 'folder'];
 
   function jobScope(job) {
     return (job && job.params && job.params.scope) || 'song';
@@ -303,6 +306,7 @@
     if (scope === 'album') { return 'discover.tray.kindAlbum'; }
     if (scope === 'artist') { return 'discover.tray.kindArtist'; }
     if (scope === 'artist-missing') { return 'discover.tray.kindMissing'; }
+    if (scope === 'folder') { return 'discover.tray.kindFolder'; }
     return null;
   }
 
@@ -371,8 +375,11 @@
   function jobTitle(job) {
     const rec = (job && job.recommendation) || {};
     const scope = jobScope(job);
-    if (scope === 'album') { return [rec.album, rec.artist].filter(Boolean).join(' — ') || ''; }
+    if (scope === 'album') { return [rec.album, rec.albumArtist || rec.artist].filter(Boolean).join(' — ') || ''; }
     if (scope === 'artist' || scope === 'artist-missing') { return rec.artist || ''; }
+    // A folder: its name (the recommendation's title, else the path's last
+    // segment) — the peer's path is the job's identity, not its label.
+    if (scope === 'folder') { return rec.title || String(rec.filepath || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''; }
     return [rec.title, rec.artist].filter(Boolean).join(' — ') || '';
   }
 

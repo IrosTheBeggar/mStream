@@ -2665,6 +2665,42 @@ body.on-federated-server .side-nav-note {
   display: block;
 }
 
+/* ── Peer sync: a peer's rows can Add (docs/designs/peer-sync, cards 02–03) ──
+   The browse column on a federated server: the destination bar above the
+   list (dm-dest, mounted there by vp.js), the facts beside it, and the side
+   slot every row gets — a tick, one Add on hover (always on touch), or the
+   row's job. Amber is the peer, as the recommendation window paints it. */
+body.on-federated-server #browser { --src: #d9a441; --src-2: #e6b85c; }
+.peer-sync-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 6px 10px 8px; font-size: 12px; color: #b8bcc6; }
+.peer-sync-bar .peer-sync-dest { flex: 1 1 320px; min-width: 0; }
+.peer-sync-bar .dm-dest { background: #1a1e25; }
+.peer-sync-facts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: #8a919e; white-space: nowrap; }
+.peer-sync-facts:empty { display: none; }
+.peer-sync-facts b { color: #dfe3ea; font-weight: 600; }
+.sync-slot { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+.sync-act {
+  display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 4px;
+  border: 1px solid var(--src, #d9a441); color: var(--src, #d9a441); font-size: 11px; font-weight: 600; white-space: nowrap;
+  opacity: 0; transition: opacity .12s, background .12s, color .12s;
+}
+.sync-act:hover { background: var(--src, #d9a441); color: #0f1216; }
+.collection-item:hover .sync-act, .album-grid-card:hover .sync-act, .sync-act.sync-show { opacity: 1; }
+@media (hover: none) { .sync-act { opacity: 1; } }
+.sync-tick { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #4fc27a; white-space: nowrap; }
+.sync-job { display: inline-flex; align-items: center; gap: 8px; font-size: 11.5px; color: #b8bcc6; min-width: 0; }
+.sync-job-muted { color: #8a919e; }
+.sync-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 9.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #8a919e; white-space: nowrap; }
+.sync-tag-ok { color: #4fc27a; }
+.sync-tag-src { color: var(--src, #d9a441); }
+.sync-tag-err { color: #e0616a; }
+.sync-sub { color: #8a919e; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 360px; }
+.sync-sub-err { color: #e0616a; }
+.sync-progress { display: inline-block; width: 70px; height: 4px; background: #1a1e25; border-radius: 2px; overflow: hidden; vertical-align: middle; }
+.sync-progress i { display: block; height: 100%; width: 0; background: var(--src, #d9a441); border-radius: 2px; transition: width .4s ease; }
+.sync-progress-indet i { width: 35%; animation: dm-indet 1.4s ease-in-out infinite; }
+.sync-link { color: #657ee4; font-weight: 600; white-space: nowrap; font-size: 11.5px; }
+.sync-danger { color: #e0616a; }
+
 /* The escape hatch back to this server, shown inside the read-only note. It
    lives in the side-nav so it survives top-bar-hidden (which hides the top-bar
    switcher), the one state where a federated search hit could otherwise strand

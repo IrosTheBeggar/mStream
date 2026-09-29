@@ -430,9 +430,14 @@ const VUEPLAYERCORE = (() => {
   // dm* methods); this only puts them where the rows are. The parent shows
   // it only when a row could put a file somewhere — never locked.
   Vue.component('dm-dest', {
+    // `line`: what the bar's path shows — 'sample' (the window: this song's
+    // path, resolved) or 'layout' (the browse column's bar: the layout
+    // itself, Music › {{ARTIST}} › {{ALBUM}}, since no one song is in hand).
+    props: { line: { type: String, default: 'sample' } },
     computed: {
       picker: function () { return this.$root.discover.modal.picker; },
       dest: function () { const v = this.$root.discover.dest.view; return (v && v.destination) || null; },
+      crumbs: function () { return this.line === 'layout' ? this.$root.dmDestLayoutCrumbs() : this.$root.dmDestCrumbs(); },
       preview: function () { return this.$root.dmPickerPreview(); },
       naming: function () { const k = this.picker; return !!(k && k.browse && k.browse.naming); },
     },
@@ -513,7 +518,7 @@ const VUEPLAYERCORE = (() => {
       </div>
       <div v-else-if="dest" class="dm-dest">
         <dm-icon name="folder" :size="14"></dm-icon>
-        <span class="dm-dest-path" :title="[dest.vpath].concat($root.dmDestCrumbs()).join(' / ')">{{ tt('discover.modal.dest.goTo') }} <b>{{ dest.vpath }}</b><template v-for="c in $root.dmDestCrumbs()"><i>&rsaquo;</i>{{ c }}</template></span>
+        <span class="dm-dest-path" :title="[dest.vpath].concat(crumbs).join(' / ')">{{ tt(line === 'layout' ? 'peers.sync.landIn' : 'discover.modal.dest.goTo') }} <b>{{ dest.vpath }}</b><template v-for="c in crumbs"><i>&rsaquo;</i>{{ c }}</template></span>
         <span class="dm-tag" :class="{ 'dm-tag-src': dest.source === 'user' }">{{ tt(dest.source === 'user' ? 'discover.modal.dest.yours' : 'discover.modal.dest.default') }}</span>
         <div class="dm-opt-act">
           <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="$root.dmOpenPicker()">{{ tt('discover.modal.dest.change') }}</a>
@@ -1472,6 +1477,13 @@ const VUEPLAYERCORE = (() => {
         const p = DISCOVERJOBS.previewTarget({ vpath: d.vpath, base: d.base, layout: d.layout, tags: this.dmLayoutTags(), peerName: this.dmLayoutPeer(), fileName: this.dmLayoutFile() });
         return DISCOVERJOBS.pathCrumbs(p.valid ? p.relDir : d.base);
       },
+      // The browse column's bar shows the layout itself — Music › From peers
+      // › {{ARTIST}} › {{ALBUM}} — there is no one song to resolve it for.
+      dmDestLayoutCrumbs: function () {
+        const d = this.discover.dest.view && this.discover.dest.view.destination;
+        if (!d) { return []; }
+        return DISCOVERJOBS.pathCrumbs([d.base, d.layout].filter(Boolean).join('/'));
+      },
       dmOpenPicker: function () {
         const d = this.discover.dest.view && this.discover.dest.view.destination;
         if (!d) { return; }
@@ -1613,7 +1625,6 @@ const VUEPLAYERCORE = (() => {
       dmPickerSubmit: async function () {
         const m = this.discover.modal;
         const k = m.picker;
-        const gen = m.gen;
         const preview = this.dmPickerPreview();
         if (!k || k.saving || !preview || !preview.valid) { return; }
         const destination = { vpath: k.vpath, base: preview.base, layout: k.layout };
@@ -1622,9 +1633,12 @@ const VUEPLAYERCORE = (() => {
         try {
           this.discover.dest.view = await MSTREAMAPI.discoverySaveDestination(destination);
           this.discover.dest.loaded = true;
-          if (this.dmLive(gen)) { this.discover.modal.picker = null; }
+          // The picker also opens from the browse column's destination bar,
+          // where no window is open: what ends it is that this picker is
+          // still the one showing, not the window's liveness.
+          if (this.discover.modal.picker === k) { this.discover.modal.picker = null; }
         } catch (err) {
-          if (this.dmLive(gen) && this.discover.modal.picker === k) {
+          if (this.discover.modal.picker === k) {
             k.saving = false;
             k.error = this.dmErrorText(err);
           }
@@ -1717,7 +1731,10 @@ const VUEPLAYERCORE = (() => {
           });
         }
         if (document.hidden) { return; }   // the listener picks it up when the tab is back
-        const beat = this.dmAnyJobLive() ? 1500 : ((this.discover.tray.collapsed || this.discover.collapsed) ? 10000 : 4000);
+        // Fast with a live row in the open window — or a copying row on a
+        // browse panel (peer-sync.js knows which rows are on screen).
+        const hurry = this.dmAnyJobLive() || (typeof PEERSYNC !== 'undefined' && PEERSYNC.hasLiveVisible());
+        const beat = hurry ? 1500 : ((this.discover.tray.collapsed || this.discover.collapsed) ? 10000 : 4000);
         const delay = Math.min(60000, beat * Math.pow(2, Math.min(discoverJobsFailures, 6)));
         discoverJobsTimer = setTimeout(() => { discoverJobsTimer = null; this.refreshDiscoverJobs(); }, delay);
       },
@@ -2915,6 +2932,71 @@ const VUEPLAYERCORE = (() => {
   mstreamModule.setAdmin = (admin) => {
     discoverState.admin = admin === true;
   };
+
+  // ── Peer sync (webapp/alpha/peer-sync.js + m.js): a peer's rows can Add ──
+  // What the browse panels need from here: whether a row may offer Add and
+  // with which scopes, the job list as it changes, a way to start and cancel
+  // a copy job, the destination bar in the browse column (a second Vue root
+  // that reuses dm-dest and the picker methods on the playlist Vue — the
+  // same picker, the same saved destination), and the plug-in list plus the
+  // destination loaded up front when a paired server exists, since the rows
+  // draw on both before any window opens.
+  let peerSyncDestVue = null;
+  const PEER_SYNC_DELEGATED = [
+    'tt', 'dmLive', 'dmErrorText', 'dmLayoutTags', 'dmLayoutPeer', 'dmLayoutFile',
+    'dmDestCrumbs', 'dmDestLayoutCrumbs', 'dmOpenPicker', 'dmClosePicker', 'dmResetDestination',
+    'dmPickerLibraries', 'dmPickerVars', 'dmPickerPreview', 'dmPickerProblem', 'dmVarToken', 'dmInsertVar', 'dmUseLibraryTemplate',
+    'dmPickerLibraryChanged', 'dmBrowseToggle', 'dmBrowseLoad', 'dmBrowseCrumbs', 'dmBrowseInto', 'dmBrowseUp', 'dmBrowseNewFolder', 'dmPickerSubmit',
+  ];
+  mstreamModule.mountPeerSyncDest = () => {
+    if (peerSyncDestVue) { return peerSyncDestVue; }
+    const el = document.getElementById('peer-sync-dest');
+    if (!el) { return null; }
+    const methods = {};
+    for (const name of PEER_SYNC_DELEGATED) {
+      methods[name] = function (...args) { return playlistVue[name](...args); };
+    }
+    peerSyncDestVue = new Vue({
+      el,
+      data: { discover: discoverState },
+      methods,
+      template: '<div class="peer-sync-dest"><dm-dest v-if="discover.dest.view && discover.dest.view.destination" line="layout"></dm-dest></div>',
+    });
+    return peerSyncDestVue;
+  };
+  mstreamModule.preloadPeerSync = () => {
+    if (!discoverState.plugins.available) { return Promise.resolve(); }
+    const dest = discoverState.dest.loaded
+      ? Promise.resolve(null)
+      : MSTREAMAPI.discoveryDestination().then((v) => { discoverState.dest.view = v; discoverState.dest.loaded = true; }, () => null);
+    return Promise.all([playlistVue.ensureDiscoverPlugins(), dest]).then(() => undefined);
+  };
+  // Whether a row may offer Add at all, and with which scopes: the copy
+  // plug-in on and answering, this account allowed to start jobs, somewhere
+  // to land. `loaded` says the answer is final (both lists arrived).
+  mstreamModule.peerSyncCapability = () => {
+    const p = discoverState.plugins;
+    const plugin = (p.list || []).find((x) => x.name === DISCOVERJOBS.COPY_PLUGIN && x.enabled !== false && x.available !== false) || null;
+    const destination = (discoverState.dest.view && discoverState.dest.view.destination) || null;
+    return {
+      available: !!(p.available && p.jobsAllowed && plugin && destination),
+      plugin, scopes: plugin ? (plugin.scopes || ['song']) : [], destination,
+      jobsAllowed: !!p.jobsAllowed, loaded: !!p.list && !!discoverState.dest.loaded,
+    };
+  };
+  mstreamModule.discoverJobsSnapshot = () => discoverState.tray.jobs.slice();
+  // `cb(jobs)` on every change of the job list (and once now).
+  mstreamModule.onDiscoverJobs = (cb) => playlistVue.$watch('discover.tray.jobs', (jobs) => cb(jobs), { immediate: true });
+  // A copy job from a browse row: the recommendation the row built, the
+  // scope its kind asks for, and — a folder's — where it lands. Throws with
+  // the server's own reason (err.body.error): the row shows it.
+  mstreamModule.startDiscoverJob = async (recommendation, scope, landing) => {
+    const res = await MSTREAMAPI.discoveryJobStart(DISCOVERJOBS.COPY_PLUGIN, recommendation, undefined, scope, landing);
+    if (res && res.job) { playlistVue.noteDiscoverJob(res.job); }
+    playlistVue.scheduleDiscoverJobsPoll();
+    return res && res.job;
+  };
+  mstreamModule.cancelDiscoverJob = (job) => playlistVue.cancelDiscoverJob(job);
 
   return mstreamModule;
 })()

@@ -843,6 +843,12 @@
           <span id="ytdl_download_text" style="flex:1;" data-i18n="fileExplorer.downloading">Downloading...</span>
           <a href="/downloads" style="color:#4CAF50; white-space:nowrap;" data-i18n="label.viewDownloads">view downloads</a>
         </div>
+        <!-- Peer sync: on a paired server's panels, where copies land (the
+             destination bar, a Vue root vp.js mounts) and the panel's facts. -->
+        <div id="peer-sync-bar" class="peer-sync-bar super-hide">
+          <div id="peer-sync-dest"></div>
+          <div id="peer-sync-facts" class="peer-sync-facts"></div>
+        </div>
         <div id="filelist">
           <h4 data-i18n="label.welcomeToMStream">Welcome To mStream!</h4>
         </div>
@@ -1331,6 +1337,8 @@
 
   <!-- The Discover job rows' pure half (window.DISCOVERJOBS) — vp.js reads it. -->
   <script src="alpha/discover-jobs.js"></script>
+  <!-- Peer sync's pure half (window.PEERSYNC): a peer's rows and their jobs — m.js and vp.js read it. -->
+  <script src="alpha/peer-sync.js"></script>
   <script src="alpha/vp.js"></script>
   <script src="alpha/scan-progress.js"></script>
 </body>

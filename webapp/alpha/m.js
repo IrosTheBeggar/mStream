@@ -14,6 +14,16 @@ myDropzone.on("addedfile", (file) => {
       timeout: 3500
     });
     myDropzone.removeFile(file);
+  } else if (peerContext) {
+    // A peer's folder is on screen, but the upload route is this server's:
+    // the file would land HERE, at the peer's path. Refuse, like the
+    // upload button (which a peer view hides).
+    iziToast.error({
+      title: t('peers.noUpload'),
+      position: 'topCenter',
+      timeout: 3500
+    });
+    myDropzone.removeFile(file);
   } else if (fileExplorerArray.length < 1) {
     iziToast.error({
       title: t('toast.cannotUploadHere'),
@@ -414,6 +424,10 @@ function setBrowserRootPanel(panelName, showBar) {
     el.innerHTML = label;
   });
 
+  // The peer-sync bar above the list follows the panel: shown on a peer
+  // when a row could offer Add, its facts cleared for the next panel.
+  if (typeof peerSyncBarRefresh === 'function') { peerSyncBarRefresh(); }
+
   currentBrowsingList = [];
 }
 
@@ -760,7 +774,17 @@ async function init() {
     // Federation: is there another server to point this app at? The flag
     // means "federation is on AND at least one peer is paired" — no probing.
     MSTREAMAPI.currentServer.federationBrowse = response.federationBrowse === true;
-    if (MSTREAMAPI.currentServer.federationBrowse) { loadServerSwitcher(); }
+    if (MSTREAMAPI.currentServer.federationBrowse) {
+      loadServerSwitcher();
+      // A peer's rows may offer Add (peer sync): load the plug-in list and
+      // the destination now, so the rows and the note know before any
+      // window opens, and follow the job list from then on.
+      VUEPLAYERCORE.preloadPeerSync().then(() => {
+        peerSyncBarRefresh();
+        if (peerContext) { applyServerContext(); }
+        VUEPLAYERCORE.onDiscoverJobs((jobs) => { PEERSYNC.applyJobs(jobs); peerSyncPatchRows(); });
+      });
+    }
 
     if (response.transcode) {
       MSTREAMPLAYER.transcodeOptions.serverEnabled = true;
@@ -5853,13 +5877,59 @@ function applyServerContext() {
     // Built as DOM nodes, never innerHTML — peerContext.name is peer-controlled.
     // The "back" link is the only way home when the top bar (and its switcher)
     // is hidden, since this note stays visible in the always-shown side-nav.
-    note.textContent = t('server.readOnlyNote', { name: peerContext.name });
+    // What the note promises follows what the rows can do: play and queue
+    // always; "add to your collection" when a row may offer Add; the reason
+    // when the copy plug-in is on but this account may not add.
+    const cap = (typeof VUEPLAYERCORE.peerSyncCapability === 'function') ? VUEPLAYERCORE.peerSyncCapability() : { available: false, plugin: null };
+    const noteKey = cap.available ? 'server.readOnlyNoteAdd' : (cap.plugin ? 'server.readOnlyNoteCannotAdd' : 'server.readOnlyNote');
+    note.textContent = t(noteKey, { name: peerContext.name });
     const back = document.createElement('a');
     back.className = 'nav-note-back';
     back.textContent = t('server.backToThisServer');
     back.onclick = () => switchServer(null);
     note.appendChild(document.createElement('br'));
     note.appendChild(back);
+  }
+  if (typeof peerSyncBarRefresh === 'function') { peerSyncBarRefresh(); }
+}
+
+///////////////// Peer sync (webapp/alpha/peer-sync.js): a peer's rows can Add
+// The destination bar above a peer panel's list — where copies land, with
+// Change… (the same picker the recommendation window uses, mounted here as
+// a second Vue root by vp.js) — and the panel's own facts beside it, which
+// each panel fills in. Shown only on a peer, only when a row could offer
+// Add (VUEPLAYERCORE.peerSyncCapability: the copy plug-in on, this account
+// allowed to start jobs, somewhere to land).
+function peerSyncBarRefresh() {
+  const bar = document.getElementById('peer-sync-bar');
+  if (!bar) { return; }
+  const cap = (typeof VUEPLAYERCORE.peerSyncCapability === 'function') ? VUEPLAYERCORE.peerSyncCapability() : { available: false };
+  const show = !!peerContext && cap.available === true;
+  bar.classList.toggle('super-hide', !show);
+  if (show && typeof VUEPLAYERCORE.mountPeerSyncDest === 'function') { VUEPLAYERCORE.mountPeerSyncDest(); }
+  const facts = document.getElementById('peer-sync-facts');
+  if (facts) { facts.innerHTML = ''; }
+}
+
+// The rows on screen that can show a job: key → { kind, facts, filepath },
+// kept by the panels as they render. The job list arrives from vp.js
+// (VUEPLAYERCORE.onDiscoverJobs) and only the rows' slots are patched —
+// the lists are innerHTML strings, rebuilt whole on navigation and on the
+// local filter, so a renderer draws the slot from the same registry.
+const peerSyncRows = new Map();
+function peerSyncPatchRows() {
+  if (typeof PEERSYNC === 'undefined') { return; }
+  const list = document.getElementById('filelist');
+  if (!list || typeof list.querySelectorAll !== 'function') { return; }
+  const slots = list.querySelectorAll('[data-sync]');
+  PEERSYNC.setVisible([...slots].map((el) => el.getAttribute('data-sync')));
+  for (const el of slots) {
+    const key = el.getAttribute('data-sync');
+    const row = peerSyncRows.get(key);
+    if (!row) { continue; }
+    const job = PEERSYNC.jobFor(key);
+    const html = PEERSYNC.slotHtml({ kind: row.kind, facts: row.facts, row: job ? DISCOVERJOBS.jobRowState(job) : null, t, filepath: row.filepath });
+    if (el.innerHTML !== html) { el.innerHTML = html; }
   }
 }
 
