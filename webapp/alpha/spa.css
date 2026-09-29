@@ -2665,6 +2665,43 @@ body.on-federated-server .side-nav-note {
   display: block;
 }
 
+/* The folder landing sheet (dm-landing, peer sync card 03 ⑤): where a
+   pressed peer folder lands — its layout as on the peer, a folder of the
+   user's choosing, or by tags — asked in the destination bar's place, in the
+   picker form's look. The radios are drawn like .dm-check's box: Materialize
+   hides native ones and draws its own from a sibling span. */
+.dm-landing { gap: 4px; }
+.dm-landing-title { margin-bottom: 4px; font-size: 12.5px; font-weight: 600; color: #f0f2f5; overflow-wrap: anywhere; }
+.dm-landing-opt {
+  position: relative; display: flex; align-items: flex-start; gap: 9px; margin: 0; padding: 6px 8px; border-radius: 4px;
+  font-size: 12px; line-height: 1.35; color: #b8bcc6; cursor: pointer;
+}
+.dm-landing-opt:hover { background: #2c323c; color: #f0f2f5; }
+.dm-landing-on { color: #f0f2f5; }
+.dm-landing-opt > input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
+.dm-landing-opt > i {
+  width: 13px; height: 13px; margin-top: 2px; box-sizing: border-box; border: 1px solid #444c56; border-radius: 50%;
+  background: #1a1e25; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.dm-landing-opt > i::after { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--src); transform: scale(0); transition: transform .12s; }
+.dm-landing-opt > input:checked + i { border-color: var(--src); }
+.dm-landing-opt > input:checked + i::after { transform: scale(1); }
+.dm-landing-opt > input:focus-visible + i { box-shadow: 0 0 0 2px rgba(255, 255, 255, .25); }
+.dm-landing-words { flex: 1; min-width: 0; }
+.dm-landing-path { display: block; margin-top: 2px; font-size: 11px; color: #8a919e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-landing-path b { color: #b8bcc6; font-weight: 600; }
+.dm-landing-path i { font-style: normal; color: #6f7683; margin: 0 4px; }
+.dm-landing-note { font-size: 11px; color: #6f7683; }
+.dm-landing-path .dm-landing-note { margin-left: 6px; }
+.dm-dest > .dm-landing-note { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-landing-more { display: grid; gap: 6px; padding: 0 8px 4px 30px; }
+.dm-landing-more > .dm-tree { grid-column: 1; }
+.dm-landing .dm-dest-act { margin-top: 5px; }
+@media (max-width: 600px) {
+  .dm-landing-path { white-space: normal; }
+  .dm-landing-more { padding-left: 8px; }
+}
+
 /* ── Peer sync: a peer's rows can Add (docs/designs/peer-sync, cards 02–03) ──
    The browse column on a federated server: the destination bar above the
    list (dm-dest, mounted there by vp.js), the facts beside it, and the side
@@ -2708,6 +2745,11 @@ body.on-federated-server #browser { --src: #d9a441; --src-2: #e6b85c; }
 .sync-side { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 10px; padding: 0 12px 0 4px; min-width: 0; }
 .sync-side:empty { display: none; }
 .sync-side-bar { padding: 0 0 0 8px; }
+/* Song and folder rows keep their button box (absolute, top right): the
+   slot stops short of it — the Play-now icon on a song row (the playlist
+   icon is gone on a peer), the queue and download icons on a folder row. */
+.sync-side-song { padding-right: 56px; }
+.sync-side-dir { padding-right: 92px; }
 /* An album card: the badge on its art, the slot under the year. */
 .sync-badge { position: absolute; top: 6px; left: 6px; z-index: 2; }
 .sync-badge:empty { display: none; }

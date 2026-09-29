@@ -238,6 +238,8 @@ describe('a download record as a row', () => {
     assert.deepEqual(r.crumbs, ['music', 'Neon Harbor', 'Low Tide', 'Salt #1.mp3']);
     assert.deepEqual([r.present, r.removed, r.size, r.bytes, r.at, r.removedAt, r.username], [true, false, '9.6 MB', 10066329, NOW - DAY, null, null]);
     assert.deepEqual(r.actions, ['play', 'queue', 'show', 'remove']);
+    assert.equal(r.origin, 'https://youtu.be/x', 'where it came from, as recorded');
+    assert.equal(J.downloadRow({ ...record, origin: null }).origin, null);
     assert.equal(J.downloadRow({ ...record, username: 'dana' }).username, 'dana', "the admin's list names the owner");
   });
 

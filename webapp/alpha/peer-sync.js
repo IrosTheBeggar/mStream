@@ -45,6 +45,55 @@
     return String(p == null ? '' : p).replace(/\\/g, '/').split('/').map((s) => s.trim()).filter((s) => s && s !== '.').join('/');
   }
 
+  // src/torrent/path-template.js sanitizeSegment, byte for byte: what one
+  // segment of a mirrored folder path becomes on this server (parity-tested).
+  const MAX_SEGMENT = 200;
+  function sanitizeSegment(raw) {
+    if (raw == null) { return ''; }
+    let s = String(raw);
+    // eslint-disable-next-line no-control-regex
+    s = s.replace(/[/\\:*?<>|"\x00-\x1f]+/g, '-');
+    s = s.replace(/\$\{HOME\}|\$HOME\b|~/g, '-');
+    s = s.replace(/\s+/g, ' ');
+    s = s.replace(/^[.\s]+|[.\s]+$/g, '');
+    if (s.length > MAX_SEGMENT) { s = s.slice(0, MAX_SEGMENT); }
+    return s;
+  }
+
+  // Where a peer folder lands by default (the copy plug-in's landingFor in
+  // mirror mode): its path inside the peer's library, the vpath dropped and
+  // each segment sanitised, under the destination's base. A vpath root
+  // lands directly under the base.
+  function mirrorSegments(folder) {
+    return normalizePath(folder).split('/').slice(1).map(sanitizeSegment).filter(Boolean);
+  }
+
+  // A length as the player writes one: m:ss, h:mm:ss past the hour.
+  function duration(seconds) {
+    const s = Math.round(Number(seconds) || 0);
+    if (!s) { return ''; }
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = String(s % 60).padStart(2, '0');
+    return h ? h + ':' + String(m).padStart(2, '0') + ':' + sec : m + ':' + sec;
+  }
+
+  // The facts line under a File Explorer file row on a peer, from the
+  // listing's metadata (the route's pullMetadata): "Sodium · Vosto · 3:41";
+  // "no tags · 4:12 · would land by its name" when the peer's scanner read
+  // no tags (a song job files by tags, so this one lands by its file name);
+  // nothing when the file is not in the peer's database at all.
+  function songFacts(meta, t) {
+    const tt = typeof t === 'function' ? t : ((k) => k);
+    if (!meta || typeof meta !== 'object') { return ''; }
+    const tagged = !!(meta.title || meta.artist);
+    const parts = tagged ? [meta.title, meta.artist].filter(Boolean) : [tt('peers.sync.noTags')];
+    const len = duration(meta.duration);
+    if (len) { parts.push(len); }
+    if (!tagged) { parts.push(tt('peers.sync.landsByName')); }
+    return parts.join(' · ');
+  }
+
   // A row's identity — the same for the row and for the job that acts on
   // it. `ident`: a song's or folder's path; an album { album, albumArtist |
   // artist }; an artist's name. The artist scopes (artist, artist-missing)
@@ -150,9 +199,11 @@
   // `row` is DISCOVERJOBS.jobRowState(job) for the row's newest job, or
   // null; `facts` what the owned lookup said ({ owned: 'all' | 'part' |
   // 'none', missing, have, total } or null when nothing is known yet).
-  // `t` translates. The markup carries no handlers: m.js delegates clicks
-  // on `[data-sync-act]` and reads the row's own data-* attributes.
-  function slotHtml({ kind, facts, row, t, filepath }) {
+  // `t` translates; `label` replaces the idle Add's word (the explorer
+  // bar's "Add this folder"), never the partial case's count. The markup
+  // carries no handlers: m.js delegates clicks on `[data-sync-act]` and
+  // reads the row's own data-* attributes.
+  function slotHtml({ kind, facts, row, t, filepath, label }) {
     const tt = typeof t === 'function' ? t : ((k) => k);
     if (row && row.state !== 'idle') {
       const tagCls = row.tagCls ? ' sync-tag-' + row.tagCls : '';
@@ -170,6 +221,8 @@
       if (actions.indexOf('play') !== -1 && (row.filepath || filepath)) {
         html += '<a href="javascript:void(0)" class="sync-link" data-sync-act="play" data-sync-file="' + esc(row.filepath || filepath) + '">' + esc(tt('discover.modal.play')) + '</a>';
       }
+      // A folder that landed: open it in this server's File Explorer.
+      if (row.landed) { html += '<a href="javascript:void(0)" class="sync-link" data-sync-act="open" data-sync-file="' + esc(row.landed) + '">' + esc(tt('peers.sync.open')) + '</a>'; }
       if (actions.indexOf('cancel') !== -1) { html += '<a href="javascript:void(0)" class="sync-link sync-danger" data-sync-act="cancel">' + esc(tt('discover.modal.cancel')) + '</a>'; }
       if (actions.indexOf('retry') !== -1) { html += '<a href="javascript:void(0)" class="sync-link" data-sync-act="retry">' + esc(tt('discover.job.retry')) + '</a>'; }
       if (actions.indexOf('start') !== -1 && row.state === 'cancelled') { html += '<a href="javascript:void(0)" class="sync-link" data-sync-act="add">' + esc(tt('peers.sync.addRest')) + '</a>'; }
@@ -180,7 +233,8 @@
       return '<span class="sync-tick">' + ICONS.check + esc(tt(kind === 'song' ? 'peers.sync.yours' : 'peers.sync.allYours')) + '</span>';
     }
     const part = !!(facts && facts.owned === 'part');
-    return '<a href="javascript:void(0)" class="sync-act' + (part ? ' sync-show' : '') + '" data-sync-act="add">' + ICONS.add + esc(addLabel(kind, facts, tt)) + '</a>';
+    const word = (!part && typeof label === 'string' && label) ? label : addLabel(kind, facts, tt);
+    return '<a href="javascript:void(0)" class="sync-act' + (part ? ' sync-show' : '') + '" data-sync-act="add">' + ICONS.add + esc(word) + '</a>';
   }
 
   // The badge an album card wears when the library has the whole album
@@ -268,7 +322,7 @@
 
   return {
     COPY_PLUGIN, SCOPES, KINDS,
-    nameKey, normalizePath, syncKey, jobScope, jobKeyOf, isLive, matchJobs, artistIndex,
+    nameKey, normalizePath, sanitizeSegment, mirrorSegments, duration, songFacts, syncKey, jobScope, jobKeyOf, isLive, matchJobs, artistIndex,
     esc, addLabel, subText, slotHtml, badgeHtml, artistFacts, artistOwnership, buildRecommendation, scopeFor,
     setVisible, applyJobs, jobFor, hasLiveVisible,
   };

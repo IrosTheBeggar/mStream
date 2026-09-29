@@ -14,6 +14,7 @@ import { createRequire } from 'node:module';
 import { nameKey as serverNameKey } from '../../src/db/name-key.js';
 import { normalizePeerPath } from '../../src/discovery-plugins/recommendation.js';
 import { recommendationSchema } from '../../src/discovery-plugins/recommendation.js';
+import { sanitizeSegment as serverSanitizeSegment } from '../../src/torrent/path-template.js';
 
 const require = createRequire(import.meta.url);
 const P = require('../../webapp/alpha/peer-sync.js');
@@ -35,6 +36,16 @@ describe('peer-sync · keys', () => {
     }
     assert.equal(P.normalizePath('/shared/Vosto/Night Drive/'), 'shared/Vosto/Night Drive');
     assert.notEqual(P.normalizePath('shared/vosto'), P.normalizePath('shared/Vosto'));
+  });
+
+  test('sanitizeSegment is the server\'s, byte for byte; mirrorSegments is where a folder lands by default', () => {
+    for (const raw of [null, undefined, '', 'AC/DC', ' . dots . ', 'a:b*c?d<e>f|g"h', 'multi   space', 'x'.repeat(300), 42, 'new\nline', '~temp mixes', '$HOME/x', 'ok']) {
+      assert.equal(P.sanitizeSegment(raw), serverSanitizeSegment(raw), `sanitize ${JSON.stringify(raw)}`);
+    }
+    assert.deepEqual(P.mirrorSegments('/shared/Vosto/Underpass Remixes/'), ['Vosto', 'Underpass Remixes'], 'the vpath dropped, the rest kept');
+    assert.deepEqual(P.mirrorSegments('shared/Bootlegs/Wren & Wire/~temp mixes'), ['Bootlegs', 'Wren & Wire', '-temp mixes'], 'each segment as the server would write it');
+    assert.deepEqual(P.mirrorSegments('shared'), [], 'a vpath root lands directly under the base');
+    assert.deepEqual(P.mirrorSegments(''), []);
   });
 
   test('a row\'s key and the job\'s key are the same thing', () => {
@@ -127,6 +138,25 @@ describe('peer-sync · the slot', () => {
     const badge = clean(P.badgeHtml(t));
     assert.match(badge, /^<span class="sync-badge-tick"><svg .*<\/svg>peers\.sync\.yours<\/span>$/);
     assert.ok(!/data-sync-act/.test(badge), 'nothing to press on it');
+    // The explorer bar's word for the folder being shown; the partial case keeps its count.
+    assert.match(clean(P.slotHtml({ kind: 'folder', facts: null, row: null, t, label: 'Add this folder' })), /data-sync-act="add">.*Add this folder</);
+    assert.match(clean(P.slotHtml({ kind: 'folder', facts: { owned: 'part', missing: 5 }, row: null, t, label: 'Add this folder' })), /peers\.sync\.addMissing#5</);
+    assert.match(clean(P.slotHtml({ kind: 'folder', facts: null, row: null, t, label: '' })), /peers\.sync\.add\.folder</, 'an empty label is no label');
+  });
+
+  test('a folder that landed can be opened where it landed', () => {
+    const many = { scope: 'folder', folder: { path: 'shared/Vosto/Demos 2015', name: 'Demos 2015', landed: 'music/From peers/Vosto/Demos 2015' }, layout: 'mirror',
+      songs: { total: 8, copied: [{ from: 'a' }], skipped: [{ from: 'c', why: 'owned' }], failed: [] }, counts: { total: 8, copied: 6, skipped: 2, failed: 0 }, bytes: 10, stopped: null, peer };
+    const row = J.jobRowState(job({ result: many, params: { scope: 'folder' } }));
+    assert.equal(row.landed, 'music/From peers/Vosto/Demos 2015');
+    const html = clean(P.slotHtml({ kind: 'folder', facts: null, row, t }));
+    assert.match(html, /discover\.job\.copiedCount#6 · discover\.job\.ownedCount#2 · music \/ From peers \/ Vosto \/ Demos 2015</, 'the row ends with where it landed');
+    assert.match(html, /data-sync-act="open" data-sync-file="music\/From peers\/Vosto\/Demos 2015">peers\.sync\.open</);
+    const tags = J.jobRowState(job({ result: { ...many, folder: { ...many.folder, landed: null }, layout: 'tags' }, params: { scope: 'folder' } }));
+    assert.equal(tags.landed, null, 'filed by tags: nowhere single to open');
+    assert.ok(!/data-sync-act="open"/.test(clean(P.slotHtml({ kind: 'folder', facts: null, row: tags, t }))));
+    const stopped = J.jobRowState(job({ result: { ...many, stopped: 'quota' }, params: { scope: 'folder' } }));
+    assert.equal(stopped.landed, 'music/From peers/Vosto/Demos 2015', 'what landed is kept, and can be opened');
   });
 
   test('a job: the row\'s state engine\'s tag, sub-line, progress and actions, escaped', () => {
@@ -156,6 +186,19 @@ describe('peer-sync · the slot', () => {
     assert.equal(P.subText({ parts: [{ key: 'a' }, { text: 'b' }, null] }, t), 'a · b');
     assert.equal(P.subText({ key: 'k', params: { count: 2 } }, t), 'k#2');
     assert.equal(P.subText(null, t), '');
+  });
+});
+
+describe('peer-sync · a file row\'s facts', () => {
+  test('the tags the listing brought, a length as the player writes one, and the untagged case', () => {
+    assert.equal(P.songFacts({ title: 'Sodium', artist: 'Vosto', duration: 221.4 }, t), 'Sodium · Vosto · 3:41');
+    assert.equal(P.songFacts({ title: 'Sodium', artist: null, duration: 0 }, t), 'Sodium');
+    assert.equal(P.songFacts({ title: null, artist: null, duration: 252 }, t), 'peers.sync.noTags · 4:12 · peers.sync.landsByName');
+    assert.equal(P.songFacts({ title: '', artist: '' }, t), 'peers.sync.noTags · peers.sync.landsByName');
+    assert.equal(P.songFacts(null, t), '', 'not in the peer\'s database: nothing known');
+    assert.equal(P.duration(3725), '1:02:05');
+    assert.equal(P.duration('59.6'), '1:00');
+    assert.equal(P.duration(null), '');
   });
 });
 

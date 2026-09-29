@@ -929,6 +929,16 @@
     "other": "you have {{count}}"
   },
   "peers.sync.loadingAlbums": "loading {{name}}’s album list…",
+  "peers.sync.thisFolder": "this folder",
+  "peers.sync.addThisFolder": "Add this folder",
+  "peers.sync.folderCount": {
+    "one": "{{count}} folder",
+    "other": "{{count}} folders"
+  },
+  "peers.sync.countingSongs": "counting its songs…",
+  "peers.sync.noTags": "no tags",
+  "peers.sync.landsByName": "would land by its name",
+  "peers.sync.open": "Open",
   "peers.sync.artistCount": {
     "one": "{{count}} artist",
     "other": "{{count}} artists"
@@ -937,6 +947,13 @@
     "one": "you have some of 1",
     "other": "you have some of {{count}}"
   },
+  "peers.sync.laidOutAs": "laid out as on {{name}}",
+  "peers.sync.landing.title": "Add “{{name}}” from {{peer}}",
+  "peers.sync.landing.mirror": "Keep its layout",
+  "peers.sync.landing.asOn": "as on {{peer}}",
+  "peers.sync.landing.folder": "Into a folder I choose",
+  "peers.sync.landing.tags": "File by tags, like every other copy",
+  "peers.sync.landing.go": "Add folder",
   "search.noResults": "No Results Found",
   "server.thisServer": "This server",
   "server.readOnlyNote": "Browsing {{name}} — read-only. You can play and queue its music, but not change anything.",
