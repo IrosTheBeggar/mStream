@@ -183,6 +183,13 @@
     return '<a href="javascript:void(0)" class="sync-act' + (part ? ' sync-show' : '') + '" data-sync-act="add">' + ICONS.add + esc(addLabel(kind, facts, tt)) + '</a>';
   }
 
+  // The badge an album card wears when the library has the whole album
+  // (top-left of its art; the card's slot then says nothing more).
+  function badgeHtml(t) {
+    const tt = typeof t === 'function' ? t : ((k) => k);
+    return '<span class="sync-badge-tick">' + ICONS.check + esc(tt('peers.sync.yours')) + '</span>';
+  }
+
   // The facts line under an artist row, from the peer's album index and
   // what the owned lookup said: "2 albums · 17 songs", "2 albums · you have
   // 1", or nothing until the album list has landed.
@@ -262,7 +269,7 @@
   return {
     COPY_PLUGIN, SCOPES, KINDS,
     nameKey, normalizePath, syncKey, jobScope, jobKeyOf, isLive, matchJobs, artistIndex,
-    esc, addLabel, subText, slotHtml, artistFacts, artistOwnership, buildRecommendation, scopeFor,
+    esc, addLabel, subText, slotHtml, badgeHtml, artistFacts, artistOwnership, buildRecommendation, scopeFor,
     setVisible, applyJobs, jobFor, hasLiveVisible,
   };
 }));

@@ -123,6 +123,10 @@ describe('peer-sync · the slot', () => {
     assert.match(all, /class="sync-tick">.*peers\.sync\.allYours</);
     assert.ok(!/data-sync-act/.test(all), 'nothing to press');
     assert.match(clean(P.slotHtml({ kind: 'song', facts: { owned: 'all' }, row: null, t })), /peers\.sync\.yours</);
+    // The badge an album card wears instead of a slot when the whole album is here.
+    const badge = clean(P.badgeHtml(t));
+    assert.match(badge, /^<span class="sync-badge-tick"><svg .*<\/svg>peers\.sync\.yours<\/span>$/);
+    assert.ok(!/data-sync-act/.test(badge), 'nothing to press on it');
   });
 
   test('a job: the row\'s state engine\'s tag, sub-line, progress and actions, escaped', () => {

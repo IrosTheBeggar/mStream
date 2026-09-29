@@ -2997,6 +2997,9 @@ const VUEPLAYERCORE = (() => {
     return res && res.job;
   };
   mstreamModule.cancelDiscoverJob = (job) => playlistVue.cancelDiscoverJob(job);
+  // A copied song from a row's job: play it, or queue it (the local path).
+  mstreamModule.playDiscoverFile = (filepath) => playlistVue.playDiscoverFile(filepath);
+  mstreamModule.queueDiscoverFile = (filepath) => playlistVue.queueDiscoverFile(filepath);
 
   return mstreamModule;
 })()

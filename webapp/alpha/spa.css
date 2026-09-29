@@ -2700,6 +2700,41 @@ body.on-federated-server #browser { --src: #d9a441; --src-2: #e6b85c; }
 .sync-progress-indet i { width: 35%; animation: dm-indet 1.4s ease-in-out infinite; }
 .sync-link { color: #657ee4; font-weight: 600; white-space: nowrap; font-size: 11.5px; }
 .sync-danger { color: #e0616a; }
+/* An artist row: the facts line under the name, the slot beside the row
+   (a flex sibling of the name's div, which is width:100% and gives way). */
+.sync-facts { display: block; font-size: 11.5px; color: #8a919e; margin-top: 3px; font-weight: 400; }
+.sync-facts:empty { display: none; }
+.sync-facts em { font-style: normal; color: #b8bcc6; }
+.sync-side { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 10px; padding: 0 12px 0 4px; min-width: 0; }
+.sync-side:empty { display: none; }
+.sync-side-bar { padding: 0 0 0 8px; }
+/* An album card: the badge on its art, the slot under the year. */
+.sync-badge { position: absolute; top: 6px; left: 6px; z-index: 2; }
+.sync-badge:empty { display: none; }
+.sync-badge-tick { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 10px; background: rgba(15,18,22,.85); color: #4fc27a; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.sync-card { font-size: 10.5px; margin-top: 4px; min-width: 0; overflow: hidden; }
+.sync-card:empty { display: none; }
+.sync-card .sync-act { font-size: 10.5px; padding: 2px 7px; }
+.sync-card .sync-sub { max-width: 100%; }
+/* The album page's header on a peer (#album-head, above the song list). */
+.album-head { display: flex; gap: 16px; align-items: flex-start; padding: 12px 14px 10px; border-bottom: 1px solid #444c56; background: #22272e; }
+.album-head-art { width: 96px; height: 96px; object-fit: cover; border-radius: 6px; background: #1a1e25; flex: 0 0 auto; }
+.album-head-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.album-head-title { margin: 0; font-size: 18px; font-weight: 600; line-height: 1.2; color: #eee; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.album-head-credit { font-size: 13px; color: #b8bcc6; }
+.album-head-credit a { color: #b8bcc6; cursor: pointer; }
+.album-head-credit a:hover { color: #fff; text-decoration: underline; }
+.album-head-facts { font-size: 12px; color: #8a919e; }
+.album-head-facts b { color: #dfe3ea; font-weight: 600; }
+.album-head-facts .sync-facts { display: inline; margin: 0; font-size: 12px; }
+.album-head-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
+.album-head-btn { display: inline-flex; align-items: center; padding: 5px 12px; border-radius: 4px; background: rgba(255,255,255,.08); color: #eee; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.album-head-btn:hover { background: rgba(255,255,255,.14); color: #fff; }
+.album-head .sync-act { opacity: 1; }
+@media (max-width: 600px) {
+  .album-head-art { width: 64px; height: 64px; }
+  .album-head-title { font-size: 16px; }
+}
 
 /* The escape hatch back to this server, shown inside the read-only note. It
    lives in the side-nav so it survives top-bar-hidden (which hides the top-bar

@@ -929,6 +929,14 @@
     "other": "you have {{count}}"
   },
   "peers.sync.loadingAlbums": "loading {{name}}’s album list…",
+  "peers.sync.artistCount": {
+    "one": "{{count}} artist",
+    "other": "{{count}} artists"
+  },
+  "peers.sync.youHaveSomeOf": {
+    "one": "you have some of 1",
+    "other": "you have some of {{count}}"
+  },
   "search.noResults": "No Results Found",
   "server.thisServer": "This server",
   "server.readOnlyNote": "Browsing {{name}} — read-only. You can play and queue its music, but not change anything.",

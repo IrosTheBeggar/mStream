@@ -206,6 +206,11 @@ const MSTREAMAPI = (() => {
   mstreamModule.discoverySaveDestination = (destination) => {
     return req('PUT', mstreamModule.currentServer.host + 'api/v1/discovery/collection/destination', { destination });
   };
+  // What THIS library has of a list — songs (by hash or tags), albums (by
+  // name and credit), artists (with which of their albums) — one ask per
+  // list, at most 500 per arm; the marks a peer's rows show. Throws like
+  // the job calls: a row with no answer stays a row without a mark.
+  mstreamModule.discoveryOwned = (body) => req('POST', mstreamModule.currentServer.host + 'api/v1/discovery/owned', body);
 
   // POST /api/v1/db/genres → { genres: [{ name, track_count }] }.
   // Used by the Auto-DJ panel's genre filter dropdown. POST (not GET)
