@@ -133,6 +133,13 @@ before(async () => {
   const app = express();
   dlna.setup(app, { checkMode: false });
   server = http.createServer(app);
+  // No idle timeout on the test server. The Windows runners hit "fetch
+  // failed / read ECONNRESET" on the first request after a test that blocks
+  // the event loop for longer than Node's 5 s keep-alive idle timeout: the
+  // overdue timer fires in the same loop turn as the next fetch, which
+  // reuses the pooled socket the server is tearing down. With no timeout a
+  // kept-alive connection is never closed under a request.
+  server.keepAliveTimeout = 0;
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -395,7 +402,12 @@ describe('smart containers', () => {
     const uid = d.prepare("SELECT id FROM users WHERE username='prh-user'").get().id;
     const insUm = d.prepare(`INSERT INTO user_metadata (user_id, track_hash, rating, play_count, last_played)
                              VALUES (?, ?, 5, 3, 1700000000)`);
+    // One transaction, as the fixture build above: 260 autocommit inserts are
+    // 260 fsyncs, the ~6 s stall on a slow runner disk that exposed the
+    // keep-alive race the server setup guards against.
+    d.exec('BEGIN');
     for (let i = 0; i < RATED_TRACKS; i++) { insUm.run(uid, `ah-${i}`); }
+    d.exec('COMMIT');
     dlna.invalidateBrowseCaches();
   });
 });
