@@ -1290,6 +1290,13 @@ paths:
                           recommendation rows have actions to offer —
                           `GET /api/v1/discovery/plugins` lists them. A flag,
                           never a probe.
+                      discoveryOwned:
+                        type: boolean
+                        description: >
+                          This server answers `POST /api/v1/discovery/owned`
+                          (which of these songs, albums and artists the
+                          caller's library has, a list at a time). A version
+                          fact like `sync`: gate on the key, never probe.
                       sync:
                         type: boolean
                         description: >
@@ -1369,6 +1376,7 @@ paths:
                   discovery: true
                   discoveryP2p: false
                   discoveryPlugins: true
+                  discoveryOwned: true
                   sync: true
                   transcode: false
                   supportedAudioFiles: { mp3: true, flac: true }
@@ -2490,6 +2498,108 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "The caller has no user account to keep settings under." }
         "404": { description: "Unknown or disabled plug-in." }
+
+  /api/v1/discovery/owned:
+    post:
+      tags: [Discovery]
+      summary: Which of these songs, albums and artists does my library have?
+      description: |
+        The batched owned lookup behind the peer browse's marks — a list at
+        a time, by the server's own rules (the copy plug-in's), scoped to
+        the libraries the caller may see, so a mark on a row and a skip in
+        a job never disagree. A song answers by hash when one is sent (a
+        peer's full metadata carries it), else by tags — artist, title and
+        album all three, a same-titled track told apart by track, disc and
+        length within 5 s. An album with a credit (`albumArtist`, or
+        `artist` standing in) is compared as the artist scopes compare — the
+        artist by its identity key, the album by normalised name; one
+        without a credit, by name alone. An artist is owned when a track of
+        theirs, or an album credited to them, sits in the caller's
+        libraries; `have` and `missing` are about the album names sent with
+        it (a peer's list of that artist's albums). Each arm takes at most
+        500 entries, at least one arm must be present, unknown keys on an
+        entry are ignored, and answers come back in the order asked.
+        Advertised by `features.discoveryOwned` on `GET /api/`. A jukebox
+        session is refused; a paired server's key never reaches it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                songs:
+                  type: array
+                  maxItems: 500
+                  items:
+                    type: object
+                    properties:
+                      filepath: { type: string, nullable: true }
+                      hash: { type: string, nullable: true }
+                      audioHash: { type: string, nullable: true }
+                      artist: { type: string, nullable: true }
+                      title: { type: string, nullable: true }
+                      album: { type: string, nullable: true }
+                      track: { type: string, nullable: true, description: "A number or its string, as a listing carries it." }
+                      disk: { type: string, nullable: true }
+                      duration: { type: string, nullable: true, description: "Seconds." }
+                albums:
+                  type: array
+                  maxItems: 500
+                  items:
+                    type: object
+                    required: [album]
+                    properties:
+                      album: { type: string }
+                      artist: { type: string, nullable: true }
+                      albumArtist: { type: string, nullable: true }
+                artists:
+                  type: array
+                  maxItems: 500
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name: { type: string }
+                      albums: { type: array, items: { type: string } }
+            example:
+              songs: [{ artist: "Nova", title: "Remote Hit", album: "Night Ferry", track: 1, duration: 212 }]
+              albums: [{ album: "Night Ferry", albumArtist: "Nova" }]
+              artists: [{ name: "Nova", albums: ["Night Ferry", "Second Wind", "Lost Tapes"] }]
+      responses:
+        "200":
+          description: One answer per entry asked, in order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songs:
+                    type: array
+                    items:
+                      type: object
+                      nullable: true
+                      properties:
+                        vpath: { type: string }
+                        filepath: { type: string, description: "Where the song is in this library, vpath-form." }
+                        by: { type: string, enum: [hash, audio-hash, tags] }
+                  albums:
+                    type: array
+                    items: { type: boolean }
+                  artists:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        owned: { type: boolean }
+                        have: { type: integer }
+                        missing: { type: array, items: { type: string } }
+              example:
+                songs: [{ vpath: "music", filepath: "music/Nova/Night Ferry/01 Remote Hit.mp3", by: "tags" }]
+                albums: [true]
+                artists: [{ owned: true, have: 2, missing: ["Lost Tapes"] }]
+        "400": { description: "Malformed body: no arm, an entry without its name, or more than 500 entries in one arm." }
+        "403": { description: "A jukebox session." }
 
   /api/v1/discovery/collection/destination:
     get:
