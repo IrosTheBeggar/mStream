@@ -2777,6 +2777,30 @@ body.on-federated-server #browser { --src: #d9a441; --src-2: #e6b85c; }
   .album-head-art { width: 64px; height: 64px; }
   .album-head-title { font-size: 16px; }
 }
+/* Phones (card 07): no hover, so the Add is always there — the amber icon
+   alone, its words only for the partial case; the bar's destination line
+   shortens to the path; the picker and the landing sheet open as a sheet
+   at the foot of the screen; a line under the list counts the live jobs,
+   the strip being in the Now Playing column, off-screen here. */
+.peer-sync-jobs { display: none; }
+@media (max-width: 600px) {
+  .sync-act { opacity: 1; padding: 4px 6px; }
+  .sync-act:not(.sync-show) .sync-act-w { display: none; }
+  .sync-act:not(.sync-show) svg { width: 15px; height: 15px; }
+  .sync-side-song { padding-right: 52px; }
+  .sync-side-dir { padding-right: 88px; }
+  .peer-sync-bar .dm-dest-label, .peer-sync-bar .dm-landing-note { display: none; }
+  .peer-sync-bar .dm-dest-form {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 1200; max-height: 85vh; overflow-y: auto;
+    border-radius: 10px 10px 0 0; box-shadow: 0 -8px 30px rgba(0, 0, 0, .6); padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  .peer-sync-jobs:not(:empty) {
+    display: flex; align-items: center; gap: 6px; flex-shrink: 0; padding: 7px 12px; border-top: 1px solid #444c56;
+    background: #22272e; font-size: 12px; color: #b8bcc6; cursor: pointer; white-space: nowrap; overflow: hidden;
+  }
+  .peer-sync-jobs b { color: #dfe3ea; font-weight: 600; }
+  .peer-sync-jobs-go { margin-left: auto; color: #657ee4; font-weight: 600; padding-left: 8px; }
+}
 
 /* The escape hatch back to this server, shown inside the read-only note. It
    lives in the side-nav so it survives top-bar-hidden (which hides the top-bar

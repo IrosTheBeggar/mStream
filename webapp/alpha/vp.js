@@ -556,7 +556,7 @@ const VUEPLAYERCORE = (() => {
       </div>
       <div v-else-if="dest" class="dm-dest">
         <dm-icon name="folder" :size="14"></dm-icon>
-        <span class="dm-dest-path" :title="[dest.vpath].concat(crumbs).join(' / ')">{{ tt(lead) }} <b>{{ dest.vpath }}</b><template v-for="c in crumbs"><i>&rsaquo;</i>{{ c }}</template></span>
+        <span class="dm-dest-path" :title="[dest.vpath].concat(crumbs).join(' / ')"><span class="dm-dest-label">{{ tt(lead) }} </span><b>{{ dest.vpath }}</b><template v-for="c in crumbs"><i>&rsaquo;</i>{{ c }}</template></span>
         <span class="dm-tag" :class="{ 'dm-tag-src': dest.source === 'user' }">{{ tt(dest.source === 'user' ? 'discover.modal.dest.yours' : 'discover.modal.dest.default') }}</span>
         <span v-if="line === 'folders'" class="dm-landing-note">{{ tt('peers.sync.laidOutAs', { name: $root.discover.peerSync.peerName || 'peer' }) }}</span>
         <div class="dm-opt-act">

@@ -810,7 +810,7 @@ async function init() {
         peerSyncListen();
         peerSyncBarRefresh();
         if (peerContext) { applyServerContext(); }
-        VUEPLAYERCORE.onDiscoverJobs((jobs) => { PEERSYNC.applyJobs(jobs); peerSyncPatchRows(); });
+        VUEPLAYERCORE.onDiscoverJobs((jobs) => { PEERSYNC.applyJobs(jobs); peerSyncPatchRows(); peerSyncJobsLine(jobs); });
       });
     }
 
@@ -6638,6 +6638,26 @@ function peerSyncQueueAlbum() {
   const peer = peerContext;
   entry.songs.forEach((song) => { queueRow(peer, song.filepath, song.metadata || {}); });
   iziToast.success({ title: t('toast.albumQueued'), message: t('toast.albumQueuedMessage', { count: entry.songs.length }), position: 'topCenter', timeout: 2500 });
+}
+
+// ── Phones ───────────────────────────────────────────────────────────
+// A line under the list counts the live jobs and names the first two —
+// "2 jobs · Neon Harbor copying · Ondine queued" — and opens Downloads.
+// Only on a phone (spa.css): the strip that says the same lives in the
+// Now Playing column, off-screen there. Empty when nothing runs.
+function peerSyncJobsLine(jobs) {
+  const el = document.getElementById('peer-sync-jobs');
+  if (!el || typeof DISCOVERJOBS === 'undefined') { return; }
+  const live = DISCOVERJOBS.trayRows(jobs).filter((j) => DISCOVERJOBS.isLive(j));
+  if (!live.length) { if (el.innerHTML !== '') { el.innerHTML = ''; } return; }
+  const parts = live.slice(0, 2).map((j) => `<b>${escapeHtml(DISCOVERJOBS.jobTitle(j))}</b> ${escapeHtml(t(DISCOVERJOBS.jobRowState(j).tag))}`);
+  const html = `${escapeHtml(t('peers.sync.jobCount', { count: live.length }))} · ${parts.join(' · ')}<span class="peer-sync-jobs-go">${escapeHtml(t('panel.downloads'))}</span>`;
+  if (el.innerHTML !== html) { el.innerHTML = html; }
+}
+
+function peerSyncOpenDownloads() {
+  const nav = document.getElementById('nav-discover-downloads');
+  if (nav && typeof changeView === 'function') { changeView(discoverDownloadsPanel, nav); } else { discoverDownloadsPanel(); }
 }
 
 // ── What a press does ────────────────────────────────────────────────

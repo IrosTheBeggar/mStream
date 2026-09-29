@@ -234,7 +234,9 @@
     }
     const part = !!(facts && facts.owned === 'part');
     const word = (!part && typeof label === 'string' && label) ? label : addLabel(kind, facts, tt);
-    return '<a href="javascript:void(0)" class="sync-act' + (part ? ' sync-show' : '') + '" data-sync-act="add">' + ICONS.add + esc(word) + '</a>';
+    // The words in their own span: a phone shows the icon alone, the words
+    // only for the partial case (card 07).
+    return '<a href="javascript:void(0)" class="sync-act' + (part ? ' sync-show' : '') + '" data-sync-act="add">' + ICONS.add + '<span class="sync-act-w">' + esc(word) + '</span></a>';
   }
 
   // The badge an album card wears when the library has the whole album

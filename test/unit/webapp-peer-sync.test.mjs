@@ -142,6 +142,8 @@ describe('peer-sync · the slot', () => {
     assert.match(clean(P.slotHtml({ kind: 'folder', facts: null, row: null, t, label: 'Add this folder' })), /data-sync-act="add">.*Add this folder</);
     assert.match(clean(P.slotHtml({ kind: 'folder', facts: { owned: 'part', missing: 5 }, row: null, t, label: 'Add this folder' })), /peers\.sync\.addMissing#5</);
     assert.match(clean(P.slotHtml({ kind: 'folder', facts: null, row: null, t, label: '' })), /peers\.sync\.add\.folder</, 'an empty label is no label');
+    // The words sit in their own span, so a phone can show the icon alone.
+    assert.match(clean(P.slotHtml({ kind: 'song', facts: null, row: null, t })), /<\/svg><span class="sync-act-w">peers\.sync\.add\.song<\/span><\/a>$/);
   });
 
   test('a folder that landed can be opened where it landed', () => {

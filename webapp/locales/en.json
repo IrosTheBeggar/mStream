@@ -939,6 +939,10 @@
   "peers.sync.noTags": "no tags",
   "peers.sync.landsByName": "would land by its name",
   "peers.sync.open": "Open",
+  "peers.sync.jobCount": {
+    "one": "{{count}} job",
+    "other": "{{count}} jobs"
+  },
   "peers.sync.artistCount": {
     "one": "{{count}} artist",
     "other": "{{count}} artists"
