@@ -336,7 +336,7 @@ pub const PLAYER_SIZE: (u16, u16) = (100, 30);
 /// Which player page a terminal launch opens. Each carries its own argv,
 /// window title, window size and scratch file names, so no two tray items
 /// ever clobber each other's launch files.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlayerPage {
     /// The full first-run wizard (`mstream-player setup`).
     Setup,
@@ -357,59 +357,71 @@ pub enum PlayerPage {
     /// bundled flag only seeds this server on first boot, makes it the
     /// default then, and marks it unremovable (the player's multi-server
     /// contract, clauses 50–51). `--same-machine` is not passed: the gui
-    /// subcommand does not take it yet.
-    Player,
+    /// subcommand does not take it yet. `instance_lock` is the launcher's
+    /// one-player rule (paths::desktop_player_lock): the player holds an
+    /// exclusive lock on that file for its lifetime, so the launcher can
+    /// tell an open player from a closed one before it opens another —
+    /// None for a player release without the flag.
+    Player { instance_lock: Option<std::path::PathBuf> },
 }
 
 impl PlayerPage {
     /// The player's argv for this page, before the `<server_flag> <url>`
     /// every launch appends. Static words only: nothing here ever needs
-    /// quoting.
-    fn args(self) -> Vec<&'static str> {
+    /// quoting (the instance lock's path rides separately: instance_lock).
+    fn args(&self) -> Vec<&'static str> {
         match self {
             PlayerPage::Setup => vec!["setup"],
             PlayerPage::QuickConnect => vec!["qr"],
             PlayerPage::Admin(room) => vec!["admin", room.subcommand(), "--same-machine"],
-            PlayerPage::Player => vec!["gui"],
+            PlayerPage::Player { .. } => vec!["gui"],
         }
     }
     /// The flag this launcher's server URL rides on — see the Player
     /// variant for why the desktop player is the one page that must not
     /// be told `--server`.
-    fn server_flag(self) -> &'static str {
+    fn server_flag(&self) -> &'static str {
         match self {
-            PlayerPage::Player => "--bundled-server",
+            PlayerPage::Player { .. } => "--bundled-server",
             _ => "--server",
+        }
+    }
+    /// The path a `--instance-lock <path>` pair carries, when this launch
+    /// has one (the Player variant of a player that takes it).
+    fn instance_lock(&self) -> Option<&std::path::Path> {
+        match self {
+            PlayerPage::Player { instance_lock } => instance_lock.as_deref(),
+            _ => None,
         }
     }
     /// Columns × rows to open the page's window at, where the terminal
     /// takes a size (Ghostty's config, Terminal.app's XTWINOPS resize,
     /// wt.exe --size, the sized dialects of the Linux chain); the rest
     /// open at their default and the pages reflow or ask for room.
-    fn size(self) -> (u16, u16) {
+    fn size(&self) -> (u16, u16) {
         match self {
-            PlayerPage::Player => PLAYER_SIZE,
+            PlayerPage::Player { .. } => PLAYER_SIZE,
             _ => WIZARD_SIZE,
         }
     }
     // Only the mac ghostty config (and this file's tests) call this; allow,
     // not cfg, keeps the enum's surface uniform across platforms.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    fn title(self) -> String {
+    fn title(&self) -> String {
         match self {
             PlayerPage::Setup => "mStream Setup".into(),
             PlayerPage::QuickConnect => "mStream Quick Connect".into(),
             PlayerPage::Admin(room) => format!("mStream {}", capitalized(room.subcommand())),
-            PlayerPage::Player => "mStream Player".into(),
+            PlayerPage::Player { .. } => "mStream Player".into(),
         }
     }
     #[cfg(target_os = "macos")]
-    fn script_name(self) -> String {
+    fn script_name(&self) -> String {
         match self {
             PlayerPage::Setup => "setup-mstream.command".into(),
             PlayerPage::QuickConnect => "quickconnect-mstream.command".into(),
             PlayerPage::Admin(room) => format!("admin-{}-mstream.command", room.subcommand()),
-            PlayerPage::Player => "player-mstream.command".into(),
+            PlayerPage::Player { .. } => "player-mstream.command".into(),
         }
     }
     /// The bundled console's config home under the scratch dir. The
@@ -418,9 +430,9 @@ impl PlayerPage {
     /// for hours, and a config reload or a new window inside it must never
     /// pick up the admin room a later click wrote into the shared file.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    fn console_config_dir(self) -> &'static str {
+    fn console_config_dir(&self) -> &'static str {
         match self {
-            PlayerPage::Player => "console-config-player",
+            PlayerPage::Player { .. } => "console-config-player",
             _ => "console-config",
         }
     }
@@ -460,7 +472,7 @@ pub fn open_player_terminal(
         use std::os::unix::fs::PermissionsExt;
         let mut console_note = String::new();
         if let Some(c) = console {
-            match spawn_ghostty_page(c, player_bin, server_url, scratch_dir, page) {
+            match spawn_ghostty_page(c, player_bin, server_url, scratch_dir, &page) {
                 Ok(()) => return Ok("bundled Ghostty console".into()),
                 // A broken bundled console must degrade to Terminal.app, not
                 // dead-end the button — but the reason rides along.
@@ -477,7 +489,7 @@ pub fn open_player_terminal(
         let (cols, rows) = page.size();
         let body = format!(
             "#!/bin/sh\n# Written by mStream's tray - safe to delete.\nprintf '\\033[8;{rows};{cols}t'\nclear\nexec {}\n",
-            player_shell_words(page, player_bin, server_url),
+            player_shell_words(&page, player_bin, server_url),
         );
         std::fs::write(&script, body).map_err(|e| format!("write {}: {e}", script.display()))?;
         let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
@@ -499,16 +511,19 @@ pub fn open_player_terminal(
         // clears the player's floor, and the wizard reflows.
         let _ = console;
         if std::process::Command::new("wt.exe")
-            .args(wt_invocation(page, player_bin, server_url))
+            .args(wt_invocation(&page, player_bin, server_url))
             .spawn()
             .is_ok()
         {
             return Ok("wt.exe".into());
         }
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        std::process::Command::new(player_bin)
-            .args(page.args())
-            .args([page.server_flag(), server_url])
+        let mut cmd = std::process::Command::new(player_bin);
+        cmd.args(page.args());
+        if let Some(lock) = page.instance_lock() {
+            cmd.arg("--instance-lock").arg(lock);
+        }
+        cmd.args([page.server_flag(), server_url])
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
             .map(|_| "conhost fallback".into())
@@ -523,7 +538,7 @@ pub fn open_player_terminal(
         // and vanished — the support surface for "nothing happened".
         let cmd = format!(
             "{}; s=$?; if [ \"$s\" -ne 0 ]; then printf '\\nmstream-player exited with status %s - press Enter to close this window\\n' \"$s\"; read dummy; fi",
-            player_shell_words(page, player_bin, server_url),
+            player_shell_words(&page, player_bin, server_url),
         );
         let candidates = linux_terminal::candidates(&cmd, Some(page.size()), linux_terminal::on_wayland());
         linux_terminal::spawn_first_alive(&candidates)
@@ -538,15 +553,148 @@ pub fn open_player_terminal(
 /// argv elements, which wt passes through to the new tab's process. Pure,
 /// so the Windows argv is pinned by a test on every host.
 #[cfg(any(windows, test))]
-fn wt_invocation(page: PlayerPage, player_bin: &std::path::Path, server_url: &str) -> Vec<std::ffi::OsString> {
+fn wt_invocation(page: &PlayerPage, player_bin: &std::path::Path, server_url: &str) -> Vec<std::ffi::OsString> {
     let (cols, rows) = page.size();
     let mut argv: Vec<std::ffi::OsString> =
         vec!["-w".into(), "new".into(), "--size".into(), format!("{cols},{rows}").into()];
     argv.push(player_bin.as_os_str().to_owned());
     argv.extend(page.args().into_iter().map(std::ffi::OsString::from));
+    if let Some(lock) = page.instance_lock() {
+        argv.push("--instance-lock".into());
+        argv.push(lock.as_os_str().to_owned());
+    }
     argv.push(page.server_flag().into());
     argv.push(server_url.into());
     argv
+}
+
+/// Bring the open desktop player's window forward — the answer to "Open
+/// mStream Player" (or --player, a re-click, a second launch) while the
+/// player's instance lock is held. `who` is the player's sidecar
+/// (paths::read_player_sidecar), read behind the lock check; its `host`
+/// picks the way. Ok carries what was activated, Err why nothing could be
+/// — a focus that fails is a log line, never a second player.
+///
+/// macOS activates the app hosting the player: the bundled console when
+/// the player runs in Ghostty AND our console is what is running (an
+/// `open -a` on a console that is not running would LAUNCH a plain Ghostty
+/// with the user's own config), Terminal.app for an Apple Terminal host
+/// (all its windows come forward; close enough). Windows finds the window
+/// by the title the player sets and raises it — in Windows Terminal that
+/// is the window whose active tab is the player's. Linux asks `wmctrl` or
+/// `xdotool` when one is installed. `console` is the bundled console, macOS
+/// only.
+pub fn focus_player(
+    who: Option<&crate::paths::PlayerSidecar>,
+    console: Option<&crate::paths::ConsoleLaunch>,
+) -> Result<String, String> {
+    let host = who.map(|w| w.host.as_str()).unwrap_or("unknown");
+    #[cfg(target_os = "macos")]
+    {
+        let ours_running = console.is_some_and(console_running);
+        match mac_focus_plan(host, ours_running) {
+            MacFocus::Console => {
+                let app = &console.expect("the plan names the console only when one exists").ghostty_app;
+                open_app(app.as_os_str())?;
+                Ok("the bundled Ghostty console".into())
+            }
+            MacFocus::Terminal => {
+                open_app(std::ffi::OsStr::new("Terminal"))?;
+                Ok("Terminal.app".into())
+            }
+            MacFocus::Nothing(why) => Err(why),
+        }
+    }
+    #[cfg(windows)]
+    {
+        let _ = console;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            FindWindowW, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE,
+        };
+        let title: Vec<u16> = "mStream Player".encode_utf16().chain(std::iter::once(0)).collect();
+        let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+        if hwnd.is_null() {
+            return Err(format!(
+                "no window titled 'mStream Player' to raise (the player runs under {host}; in Windows Terminal its tab must be the active one)"
+            ));
+        }
+        unsafe {
+            if IsIconic(hwnd) != 0 {
+                ShowWindow(hwnd, SW_RESTORE);
+            }
+            SetForegroundWindow(hwnd);
+        }
+        Ok("the 'mStream Player' window".into())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = console;
+        use std::process::{Command, Stdio};
+        let mut tried = Vec::new();
+        let tools: [(&str, &[&str]); 2] = [
+            ("wmctrl", &["-a", "mStream Player"]),
+            ("xdotool", &["search", "--name", "^mStream Player$", "windowactivate"]),
+        ];
+        for (bin, args) in tools {
+            match Command::new(bin).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status() {
+                Ok(st) if st.success() => return Ok(format!("the 'mStream Player' window via {bin}")),
+                Ok(_) => tried.push(format!("{bin}: no window named 'mStream Player'")),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => tried.push(format!("{bin}: not installed")),
+                Err(e) => tried.push(format!("{bin}: {e}")),
+            }
+        }
+        Err(format!("could not raise the player's window ({}); it runs under {host}", tried.join("; ")))
+    }
+}
+
+/// The macOS focus decision, pure so the matrix is unit-tested on every
+/// host: what to activate for the host the sidecar names, given whether
+/// OUR bundled console is the Ghostty that is running.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum MacFocus {
+    Console,
+    Terminal,
+    Nothing(String),
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn mac_focus_plan(host: &str, console_running: bool) -> MacFocus {
+    match host {
+        "ghostty" if console_running => MacFocus::Console,
+        "ghostty" => MacFocus::Nothing(
+            "the player runs in a Ghostty that is not the bundled console (activating one that is not running would launch a plain Ghostty)".into(),
+        ),
+        "apple-terminal" => MacFocus::Terminal,
+        other => MacFocus::Nothing(format!("the player runs under {}; nothing to activate", if other.is_empty() { "an unknown terminal" } else { other })),
+    }
+}
+
+/// Whether the bundled console's own binary is running — the guard before
+/// `open -a` on it (see focus_player). pgrep -f against the full path,
+/// anchored, with the path's metacharacters escaped.
+#[cfg(target_os = "macos")]
+fn console_running(console: &crate::paths::ConsoleLaunch) -> bool {
+    let bin = console.ghostty_app.join("Contents").join("MacOS").join("ghostty");
+    let pat = format!("^{}", crate::paths::escape_ere(&bin.display().to_string()));
+    std::process::Command::new("/usr/bin/pgrep")
+        .arg("-f")
+        .arg(&pat)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|st| st.success())
+}
+
+/// `open -a <app>`: activate a running app (or launch it — which is why
+/// focus_player only calls this for something it knows is running). Waits
+/// for `open`'s own exit: a nonzero status is LaunchServices refusing.
+#[cfg(target_os = "macos")]
+fn open_app(app: &std::ffi::OsStr) -> Result<(), String> {
+    match std::process::Command::new("/usr/bin/open").arg("-a").arg(app).status() {
+        Ok(st) if st.success() => Ok(()),
+        Ok(st) => Err(format!("open -a {}: {st}", app.to_string_lossy())),
+        Err(e) => Err(format!("open -a {}: {e}", app.to_string_lossy())),
+    }
 }
 
 /// Write the config and launch the bundled Ghostty console running the
@@ -562,7 +710,7 @@ fn spawn_ghostty_page(
     player_bin: &std::path::Path,
     server_url: &str,
     scratch_dir: &std::path::Path,
-    page: PlayerPage,
+    page: &PlayerPage,
 ) ->Result<(), String> {
     let bin = console.ghostty_app.join("Contents").join("MacOS").join("ghostty");
     if !bin.exists() {
@@ -597,7 +745,7 @@ fn ghostty_page_config(
     console: &crate::paths::ConsoleLaunch,
     player_bin: &std::path::Path,
     server_url: &str,
-    page: PlayerPage,
+    page: &PlayerPage,
 ) ->String {
     let (cols, rows) = page.size();
     let mut body = format!(
@@ -1051,9 +1199,13 @@ fn sh_quote_str(s: &str) -> String {
 /// .command script, the bundled-console config and the Linux chain, so all
 /// three agree on the argv and its quoting.
 #[cfg(unix)]
-fn player_shell_words(page: PlayerPage, player_bin: &std::path::Path, server_url: &str) -> String {
+fn player_shell_words(page: &PlayerPage, player_bin: &std::path::Path, server_url: &str) -> String {
     let mut words = vec![sh_quote(player_bin)];
     words.extend(page.args().into_iter().map(String::from));
+    if let Some(lock) = page.instance_lock() {
+        words.push("--instance-lock".into());
+        words.push(sh_quote(lock));
+    }
     words.push(page.server_flag().into());
     words.push(sh_quote_str(server_url));
     words.join(" ")
@@ -1063,8 +1215,13 @@ fn player_shell_words(page: PlayerPage, player_bin: &std::path::Path, server_url
 mod page_tests {
     use super::{AdminRoom, PlayerPage, PLAYER_SIZE, WIZARD_SIZE};
 
+    /// The desktop player page of a player without the lock flag.
+    fn player() -> PlayerPage {
+        PlayerPage::Player { instance_lock: None }
+    }
+
     fn every_page() -> Vec<PlayerPage> {
-        let mut pages = vec![PlayerPage::Setup, PlayerPage::QuickConnect, PlayerPage::Player];
+        let mut pages = vec![PlayerPage::Setup, PlayerPage::QuickConnect, player()];
         pages.extend(AdminRoom::ALL.into_iter().map(PlayerPage::Admin));
         pages
     }
@@ -1073,8 +1230,8 @@ mod page_tests {
     fn each_page_maps_to_its_own_argv_and_title() {
         assert_eq!(PlayerPage::Setup.args(), ["setup"]);
         assert_eq!(PlayerPage::QuickConnect.args(), ["qr"]);
-        assert_eq!(PlayerPage::Player.args(), ["gui"]);
-        assert_eq!(PlayerPage::Player.title(), "mStream Player");
+        assert_eq!(player().args(), ["gui"]);
+        assert_eq!(player().title(), "mStream Player");
         // A room always declares --same-machine: the launcher IS the
         // server's machine, so the room's folder picker may use the OS
         // dialog and hand the server the paths it picks.
@@ -1102,10 +1259,10 @@ mod page_tests {
         // The desktop player is the one page told --bundled-server: an
         // explicit --server would re-pin it to this server on every launch,
         // over a default the user chose among their saved servers.
-        assert_eq!(PlayerPage::Player.server_flag(), "--bundled-server");
-        assert_eq!(PlayerPage::Player.size(), PLAYER_SIZE);
-        assert_eq!(PlayerPage::Player.console_config_dir(), "console-config-player");
-        for page in every_page().into_iter().filter(|p| *p != PlayerPage::Player) {
+        assert_eq!(player().server_flag(), "--bundled-server");
+        assert_eq!(player().size(), PLAYER_SIZE);
+        assert_eq!(player().console_config_dir(), "console-config-player");
+        for page in every_page().into_iter().filter(|p| !matches!(p, PlayerPage::Player { .. })) {
             assert_eq!(page.server_flag(), "--server", "{page:?}");
             assert_eq!(page.size(), WIZARD_SIZE, "{page:?}");
             assert_eq!(page.console_config_dir(), "console-config", "{page:?}");
@@ -1120,7 +1277,7 @@ mod page_tests {
     #[test]
     fn wt_invocation_opens_a_sized_new_window() {
         let words = |page: PlayerPage| -> Vec<String> {
-            super::wt_invocation(page, std::path::Path::new(r"C:\mStream\bin\mstream-player.exe"), "http://localhost:3000")
+            super::wt_invocation(&page, std::path::Path::new(r"C:\mStream\bin\mstream-player.exe"), "http://localhost:3000")
                 .iter()
                 .map(|a| a.to_string_lossy().into_owned())
                 .collect()
@@ -1128,7 +1285,7 @@ mod page_tests {
         // A new window (never a tab in the user's own Windows Terminal),
         // the page's size, then the player's own command line verbatim.
         assert_eq!(
-            words(PlayerPage::Player),
+            words(player()),
             ["-w", "new", "--size", "100,30", r"C:\mStream\bin\mstream-player.exe", "gui", "--bundled-server", "http://localhost:3000"]
         );
         assert_eq!(
@@ -1139,6 +1296,52 @@ mod page_tests {
             words(PlayerPage::Admin(AdminRoom::Libraries))[4..],
             [r"C:\mStream\bin\mstream-player.exe", "admin", "libraries", "--same-machine", "--server", "http://localhost:3000"]
         );
+    }
+
+    #[test]
+    fn the_player_page_carries_the_launchers_instance_lock() {
+        let locked = PlayerPage::Player { instance_lock: Some("/Application Support/mStream/desktop-player.lock".into()) };
+        assert_eq!(
+            locked.instance_lock().map(|p| p.to_string_lossy().into_owned()).as_deref(),
+            Some("/Application Support/mStream/desktop-player.lock")
+        );
+        assert_eq!(player().instance_lock(), None);
+        for page in [PlayerPage::Setup, PlayerPage::QuickConnect, PlayerPage::Admin(AdminRoom::Torrents)] {
+            assert_eq!(page.instance_lock(), None, "{page:?}");
+        }
+        // The pair rides between the page's own words and the server flag,
+        // quoted like every other path on the sh line…
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                super::player_shell_words(&locked, std::path::Path::new("/p"), "http://x:1"),
+                "'/p' gui --instance-lock '/Application Support/mStream/desktop-player.lock' --bundled-server 'http://x:1'"
+            );
+        }
+        // …and as its own argv elements for wt.exe.
+        let page = PlayerPage::Player { instance_lock: Some(r"C:\Users\me\AppData\Local\mStream\desktop-player.lock".into()) };
+        let wt: Vec<String> = super::wt_invocation(&page, std::path::Path::new(r"C:\m\p.exe"), "http://x:1")
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            wt[4..],
+            [r"C:\m\p.exe", "gui", "--instance-lock", r"C:\Users\me\AppData\Local\mStream\desktop-player.lock", "--bundled-server", "http://x:1"]
+        );
+    }
+
+    #[test]
+    fn the_mac_focus_plan_activates_only_what_is_ours() {
+        use super::MacFocus;
+        assert_eq!(super::mac_focus_plan("ghostty", true), MacFocus::Console);
+        // A Ghostty host while our console is NOT running is somebody
+        // else's Ghostty: `open -a` on ours would launch a plain one.
+        assert!(matches!(super::mac_focus_plan("ghostty", false), MacFocus::Nothing(_)));
+        assert_eq!(super::mac_focus_plan("apple-terminal", false), MacFocus::Terminal);
+        assert_eq!(super::mac_focus_plan("apple-terminal", true), MacFocus::Terminal);
+        for other in ["iterm", "windows-terminal", "conhost", "unknown", ""] {
+            assert!(matches!(super::mac_focus_plan(other, true), MacFocus::Nothing(_)), "{other}");
+        }
     }
 
     #[test]
@@ -1156,21 +1359,21 @@ mod page_tests {
     fn unix_launches_share_one_quoted_command_line() {
         let player = std::path::Path::new("/Application Support/bin/mstream-player");
         assert_eq!(
-            super::player_shell_words(PlayerPage::Setup, player, "http://localhost:3000"),
+            super::player_shell_words(&PlayerPage::Setup, player, "http://localhost:3000"),
             "'/Application Support/bin/mstream-player' setup --server 'http://localhost:3000'"
         );
         assert_eq!(
-            super::player_shell_words(PlayerPage::Admin(AdminRoom::Backups), player, "http://x:1"),
+            super::player_shell_words(&PlayerPage::Admin(AdminRoom::Backups), player, "http://x:1"),
             "'/Application Support/bin/mstream-player' admin backups --same-machine --server 'http://x:1'"
         );
         // The desktop player names the server as its bundled one.
         assert_eq!(
-            super::player_shell_words(PlayerPage::Player, player, "http://localhost:3000"),
+            super::player_shell_words(&PlayerPage::Player { instance_lock: None }, player, "http://localhost:3000"),
             "'/Application Support/bin/mstream-player' gui --bundled-server 'http://localhost:3000'"
         );
         // A quote inside a path survives as the POSIX '\'' dance.
         let odd = std::path::Path::new("/it's/player");
-        let words = super::player_shell_words(PlayerPage::QuickConnect, odd, "http://x:1");
+        let words = super::player_shell_words(&PlayerPage::QuickConnect, odd, "http://x:1");
         assert!(words.starts_with("'/it'\\''s/player' qr "), "{words}");
     }
 
@@ -1193,12 +1396,13 @@ mod page_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let page = match std::env::var("MSTREAM_DEMO_PAGE").as_deref() {
             Ok("qr") => PlayerPage::QuickConnect,
-            Ok("gui") => PlayerPage::Player,
+            Ok("gui") => PlayerPage::Player { instance_lock: None },
             Ok(name) => AdminRoom::from_subcommand(name).map(PlayerPage::Admin).unwrap_or(PlayerPage::Setup),
             Err(_) => PlayerPage::Setup,
         };
+        let label = format!("{page:?}");
         let via = super::open_player_terminal(&player, &url, &dir, console.as_ref(), page).unwrap();
-        eprintln!("opened {page:?} via {via}");
+        eprintln!("opened {label} via {via}");
     }
 }
 
@@ -1214,7 +1418,7 @@ mod tests {
             &c,
             std::path::Path::new("/Application Support/bin/mstream-player"),
             "http://localhost:3000",
-            super::PlayerPage::Setup,
+            &super::PlayerPage::Setup,
         );
         // shell: + sh-quoting is what survives "Application Support" spaces;
         // the command must live in the CONFIG, never a -e argument (consent
@@ -1230,18 +1434,18 @@ mod tests {
         assert!(cfg.contains("quit-after-last-window-closed = true\n"), "{cfg}");
 
         let plain = crate::paths::ConsoleLaunch { ghostty_app: "/t/G.app".into(), icon_icns: None };
-        let cfg2 = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", super::PlayerPage::Setup);
+        let cfg2 = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", &super::PlayerPage::Setup);
         assert!(!cfg2.contains("macos-icon"), "no icns means Ghostty keeps its own icon: {cfg2}");
 
         // The Quick Connect page: same machinery, its own subcommand + title.
-        let qc = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", super::PlayerPage::QuickConnect);
+        let qc = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", &super::PlayerPage::QuickConnect);
         assert!(qc.contains("command = shell:'/p' qr --server 'http://x:1'"), "{qc}");
         assert!(qc.contains("title = mStream Quick Connect\n"), "{qc}");
 
         // An admin room: the same window, its own argv (with --same-machine)
         // and title.
         let room = super::PlayerPage::Admin(super::AdminRoom::Federation);
-        let fed = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", room);
+        let fed = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", &room);
         assert!(fed.contains("command = shell:'/p' admin federation --same-machine --server 'http://x:1'"), "{fed}");
         assert!(fed.contains("title = mStream Federation\n"), "{fed}");
         // The wizard pages open at their window, never restored from a
@@ -1249,9 +1453,16 @@ mod tests {
         assert!(cfg.contains("window-width = 120\nwindow-height = 42\n"), "{cfg}");
         assert!(cfg.contains("window-save-state = never\n"), "{cfg}");
 
-        // The desktop player: its own size, title and server flag.
-        let player = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", super::PlayerPage::Player);
+        // The desktop player: its own size, title and server flag — and
+        // the launcher's lock on the command line when the player takes it.
+        let player = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", &super::PlayerPage::Player { instance_lock: None });
         assert!(player.contains("command = shell:'/p' gui --bundled-server 'http://x:1'"), "{player}");
+        let locked = super::PlayerPage::Player { instance_lock: Some("/Application Support/mStream/desktop-player.lock".into()) };
+        let with_lock = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", &locked);
+        assert!(
+            with_lock.contains("command = shell:'/p' gui --instance-lock '/Application Support/mStream/desktop-player.lock' --bundled-server 'http://x:1'"),
+            "{with_lock}"
+        );
         assert!(player.contains("title = mStream Player\n"), "{player}");
         assert!(player.contains("window-width = 100\nwindow-height = 30\n"), "{player}");
         assert!(player.contains("window-save-state = never\n"), "{player}");
@@ -1261,7 +1472,7 @@ mod tests {
     fn each_page_writes_its_own_command_script() {
         // Distinct script files: no two tray items may clobber each
         // other's .command while both windows are open.
-        let mut pages = vec![super::PlayerPage::Setup, super::PlayerPage::QuickConnect, super::PlayerPage::Player];
+        let mut pages = vec![super::PlayerPage::Setup, super::PlayerPage::QuickConnect, super::PlayerPage::Player { instance_lock: None }];
         pages.extend(super::AdminRoom::ALL.into_iter().map(super::PlayerPage::Admin));
         let names: Vec<String> = pages.iter().map(|p| p.script_name()).collect();
         for (i, a) in names.iter().enumerate() {
@@ -1271,7 +1482,7 @@ mod tests {
             }
         }
         assert_eq!(super::PlayerPage::Admin(super::AdminRoom::Libraries).script_name(), "admin-libraries-mstream.command");
-        assert_eq!(super::PlayerPage::Player.script_name(), "player-mstream.command");
+        assert_eq!(super::PlayerPage::Player { instance_lock: None }.script_name(), "player-mstream.command");
     }
 
     #[test]

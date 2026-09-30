@@ -142,7 +142,9 @@ server in the background, puts an mStream icon in your tray / menu bar
 Open mStream Player · Manage server ▸ (Libraries · Discovery · Federation ·
 Backups · Torrents · Open Admin Panel in browser) · Quick Connect · Start at
 login · View logs · Restart server · Quit). Boots are quiet once set up — re-click the app icon
-(or launch it again) whenever you want the player in your browser. Start-at-login
+(or launch it again) to open the desktop player, or to bring it forward
+when it is already open; an install without one gets the web player in
+your browser instead. Start-at-login
 is on by default; one click in the tray menu turns it off. On a **first
 install** the tray opens the guided setup wizard by itself (the bundled
 `mstream-player setup` — music folders, admin account, extras) in a real
@@ -191,8 +193,12 @@ does the same from a shortcut or a second launch — at once when the tray
 already runs, otherwise as soon as the server is up. An install whose
 player predates the GUI (player releases before 0.8.0), or where no
 terminal could be opened, gets the web player in the browser instead, and
-the launcher log says why. Until the player takes an instance lock of its
-own, a second click opens a second window.
+the launcher log says why. The player holds an instance lock the launcher
+hands it (player 0.8.0 and later), so a second click, a re-click of the app
+icon, or a second launch brings the open player forward instead of opening
+another: on macOS the bundled console (or Terminal.app) is activated, on
+Windows the window is raised by its title, and on Linux `wmctrl` or
+`xdotool` does it when one is installed.
 
 **Terminal users lose nothing.** The same desktop binary run from a terminal
 behaves exactly like the server itself (same flags, output, and exit codes) —

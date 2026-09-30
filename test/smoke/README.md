@@ -38,9 +38,10 @@ documented at:
 - **Desktop player open:** the header comment of
   [player-open-smoke.sh](player-open-smoke.sh) — `--player` against a fake
   bundle with a stub player: a GUI-capable player is opened in a real
-  terminal as `gui --bundled-server <url>`, and one that predates the GUI
-  degrades to the web player (kept shut by `--no-open`), with the launcher
-  log naming both decisions.
+  terminal as `gui --instance-lock <path> --bundled-server <url>`, one that
+  predates the GUI degrades to the web player (kept shut by `--no-open`),
+  and a player already holding its instance lock is brought forward instead
+  of doubled — with the launcher log naming each decision.
 - **API error codes:** the header comment of
   [api-error-codes-smoke.mjs](api-error-codes-smoke.mjs) — the one harness
   here that needs no external system. It boots a throwaway server with an

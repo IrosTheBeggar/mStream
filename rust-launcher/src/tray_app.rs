@@ -99,8 +99,13 @@ pub fn run(args: LauncherArgs) -> ! {
     // pinned player, so this only ever refuses a mismatched layout
     // (--server-bin against an older tree, a stale managed copy in the
     // data home); those get the web player, and the log says why once.
-    let player_gui = player_bin.as_deref().and_then(|p| match paths::player_version(p) {
-        Some(v) if paths::player_has_gui(v) => Some(p.to_path_buf()),
+    // The same probe decides whether the player takes the instance lock
+    // that keeps it to one window (paths::desktop_player_lock).
+    let desktop_player = player_bin.as_deref().and_then(|p| match paths::player_version(p) {
+        Some(v) if paths::player_has_gui(v) => Some(DesktopPlayer {
+            bin: p.to_path_buf(),
+            instance_lock: paths::player_has_instance_lock(v).then(|| paths::desktop_player_lock(&data_home)),
+        }),
         Some(v) => {
             log.line(&format!(
                 "player {} predates the GUI (needs {}) - the player item opens the web player",
@@ -158,11 +163,10 @@ pub fn run(args: LauncherArgs) -> ! {
             // `--player` from a shortcut or a second launch: the running
             // launcher's server is the one to show, and the player is its
             // own process either way — nothing to ask the other instance.
-            // (Until the player holds an instance lock of its own, this
-            // can open a second window beside one already open.)
+            // An open player is brought forward, not doubled (its lock).
             let fallback = (!args.no_open).then(|| paths::browse_target(&config, &ep));
             open_desktop_player(
-                player_gui.as_deref(),
+                desktop_player.as_ref(),
                 &paths::server_url(&ep),
                 &data_home,
                 console.as_ref(),
@@ -170,7 +174,21 @@ pub fn run(args: LauncherArgs) -> ! {
                 &log,
             );
         } else if !args.autostarted && !args.no_open && !args.takeover {
-            let _ = open::that_detached(paths::browse_target(&config, &ep));
+            // A plain second launch — the app icon clicked again on Windows
+            // or Linux, where that starts a second process (macOS hands the
+            // running app a reopen event instead: Event::Reopen) — means
+            // "take me to mStream": the desktop player, brought forward
+            // when it is already open, the web player where there is none.
+            log.line("second launch - opening the desktop player");
+            let fallback = paths::browse_target(&config, &ep);
+            open_desktop_player(
+                desktop_player.as_ref(),
+                &paths::server_url(&ep),
+                &data_home,
+                console.as_ref(),
+                Some(&fallback),
+                &log,
+            );
         }
         std::process::exit(0);
     }
@@ -568,7 +586,7 @@ pub fn run(args: LauncherArgs) -> ! {
                         log.line("menu: open player");
                         let fallback = paths::browse_target(&config_loop, &ep);
                         open_desktop_player(
-                            player_gui.as_deref(),
+                            desktop_player.as_ref(),
                             &url,
                             &data_home,
                             console.as_ref(),
@@ -779,7 +797,7 @@ pub fn run(args: LauncherArgs) -> ! {
                                 opened = true;
                                 let fallback = (!args.no_open).then_some(target.as_str());
                                 open_desktop_player(
-                                    player_gui.as_deref(),
+                                    desktop_player.as_ref(),
                                     &url,
                                     &data_home,
                                     console.as_ref(),
@@ -939,12 +957,15 @@ pub fn run(args: LauncherArgs) -> ! {
             // AppleEvent (applicationShouldHandleReopen), never as a second
             // process — the single-instance lock never sees it, and the
             // menu-bar icon is easy to miss. Treat a re-click as "take me to
-            // mStream". (Other platforms never emit this event.)
+            // mStream": the desktop player, brought forward when it is
+            // already open, with the web player where this install has none
+            // (--no-open keeps the browser shut). (Other platforms never
+            // emit this event; their second launch does the same above.)
             Event::Reopen { .. } => {
-                log.line("reopen event - opening browser");
-                if !args.no_open {
-                    let _ = open::that_detached(paths::browse_target(&config_loop, &ep));
-                }
+                log.line("reopen event - opening the desktop player");
+                let target = paths::browse_target(&config_loop, &ep);
+                let fallback = (!args.no_open).then_some(target.as_str());
+                open_desktop_player(desktop_player.as_ref(), &url, &data_home, console.as_ref(), fallback, &log);
             }
             Event::LoopDestroyed => {
                 // Belt to Quit's suspenders: whatever ends the loop, never
@@ -995,23 +1016,54 @@ fn room_webapp_url(server_url: &str, room: platform::AdminRoom) -> String {
     format!("{server_url}/admin#{view}")
 }
 
+/// The desktop player this install can open: the GUI-capable binary and,
+/// when its release takes the instance lock, the lock path in the data
+/// home (paths::desktop_player_lock) — handed to the player on every open
+/// and tried before one (desktop_player_running).
+struct DesktopPlayer {
+    bin: PathBuf,
+    instance_lock: Option<PathBuf>,
+}
+
 /// Open the desktop player — the bundled player's GUI face in a terminal
 /// window of its own, at its size, with this server as its bundled server
-/// — or, when this install has no GUI-capable player or no terminal
-/// opened, the web player in the browser (`fallback`: None where the
-/// browser must stay shut, i.e. under --no-open; a menu click always
-/// passes one). Shared by the tray item, the --player flag and the
-/// second-instance path, so every gesture logs and degrades the same way.
+/// — or bring it forward when it is already open (its instance lock is
+/// held: focus, never a second window) — or, when this install has no
+/// GUI-capable player or no terminal opened, the web player in the browser
+/// (`fallback`: None where the browser must stay shut, i.e. under
+/// --no-open; a menu click always passes one). Shared by the tray item, the
+/// --player flag, the macOS re-click and the second-launch path, so every
+/// gesture logs and degrades the same way.
 fn open_desktop_player(
-    player_gui: Option<&Path>,
+    player: Option<&DesktopPlayer>,
     server_url: &str,
     data_home: &Path,
     console: Option<&paths::ConsoleLaunch>,
     fallback: Option<&str>,
     log: &Logger,
 ) {
-    if let Some(player) = player_gui {
-        match platform::open_player_terminal(player, server_url, data_home, console, platform::PlayerPage::Player) {
+    if let Some(player) = player {
+        if let Some(lock) = &player.instance_lock {
+            match desktop_player_running(lock) {
+                Ok(true) => {
+                    // Already open: the sidecar (read behind the lock) says
+                    // where it lives, and the focus step does what it can.
+                    // No fallback here — a browser beside an open player is
+                    // exactly the double this guards against.
+                    let who = paths::read_player_sidecar(lock);
+                    let desc = who.as_ref().map(|w| format!(" (pid {}, under {})", w.pid, w.host)).unwrap_or_default();
+                    match platform::focus_player(who.as_ref(), console) {
+                        Ok(what) => log.line(&format!("player already open{desc} - activated {what}")),
+                        Err(e) => log.line(&format!("player already open{desc} - could not bring it forward: {e}")),
+                    }
+                    return;
+                }
+                Ok(false) => {}
+                Err(e) => log.line(&format!("instance lock check failed ({e}) - opening the player anyway")),
+            }
+        }
+        let page = platform::PlayerPage::Player { instance_lock: player.instance_lock.clone() };
+        match platform::open_player_terminal(&player.bin, server_url, data_home, console, page) {
             Ok(via) => {
                 log.line(&format!("player opened via {via}"));
                 return;
@@ -1027,6 +1079,20 @@ fn open_desktop_player(
         }
         None => log.line("player: web player fallback suppressed (--no-open)"),
     }
+}
+
+/// Is a desktop player holding its instance lock? The lock is tried and,
+/// when won, released at once: the player takes it for real within its
+/// first moments, and an open sneaking into that gap is answered by the
+/// player's own refusal (it prints one line and leaves). Err is the lock
+/// file itself being unusable — the caller opens the player regardless.
+fn desktop_player_running(lock: &Path) -> Result<bool, String> {
+    let mut file = fslock::LockFile::open(lock.as_os_str()).map_err(|e| format!("{}: {e}", lock.display()))?;
+    let won = file.try_lock().map_err(|e| format!("{}: {e}", lock.display()))?;
+    if won {
+        let _ = file.unlock();
+    }
+    Ok(!won)
 }
 
 /// Spawn a server generation plus its two helper threads.
