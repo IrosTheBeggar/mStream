@@ -65,7 +65,7 @@ describe('server-audio admin surface', () => {
 
   test('info has no detected-players list, and the detect endpoint is gone with the CLI backends', async () => {
     const { body } = await getJson('/api/v1/admin/server-audio/info');
-    assert.deepEqual(Object.keys(body).sort(), ['backend', 'binaryFetchable', 'player']);
+    assert.deepEqual(Object.keys(body).sort(), ['backend', 'binaryFetchable', 'engine', 'player']);
 
     const detect = await postJson('/api/v1/admin/server-audio/detect');
     assert.equal(detect.status, 404);

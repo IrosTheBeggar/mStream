@@ -100,12 +100,25 @@ pub fn run(args: LauncherArgs) -> ! {
     // (--server-bin against an older tree, a stale managed copy in the
     // data home); those get the web player, and the log says why once.
     // The same probe decides whether the player takes the instance lock
-    // that keeps it to one window (paths::desktop_player_lock).
+    // that keeps it to one window (paths::desktop_player_lock), and whether
+    // its GUI hosts the control face the server adopts as its server-audio
+    // engine — on the server's configured player port, always
+    // (paths::rust_player_port).
     let desktop_player = player_bin.as_deref().and_then(|p| match paths::player_version(p) {
-        Some(v) if paths::player_has_gui(v) => Some(DesktopPlayer {
-            bin: p.to_path_buf(),
-            instance_lock: paths::player_has_instance_lock(v).then(|| paths::desktop_player_lock(&data_home)),
-        }),
+        Some(v) if paths::player_has_gui(v) => {
+            if !paths::player_has_control_face(v) {
+                log.line(&format!(
+                    "player {} has no control face (needs {}) - server audio keeps its headless engine while the player is open",
+                    paths::version_label(v),
+                    paths::version_label(paths::CONTROL_FACE_MIN_PLAYER_VERSION)
+                ));
+            }
+            Some(DesktopPlayer {
+                bin: p.to_path_buf(),
+                instance_lock: paths::player_has_instance_lock(v).then(|| paths::desktop_player_lock(&data_home)),
+                serve_port: paths::player_has_control_face(v).then(|| paths::rust_player_port(&config)),
+            })
+        }
         Some(v) => {
             log.line(&format!(
                 "player {} predates the GUI (needs {}) - the player item opens the web player",
@@ -1019,10 +1032,14 @@ fn room_webapp_url(server_url: &str, room: platform::AdminRoom) -> String {
 /// The desktop player this install can open: the GUI-capable binary and,
 /// when its release takes the instance lock, the lock path in the data
 /// home (paths::desktop_player_lock) — handed to the player on every open
-/// and tried before one (desktop_player_running).
+/// and tried before one (desktop_player_running) — and, when its GUI hosts
+/// the control face, the port to host it on (paths::rust_player_port):
+/// the server's player port, so the server can adopt the open player as
+/// its server-audio engine.
 struct DesktopPlayer {
     bin: PathBuf,
     instance_lock: Option<PathBuf>,
+    serve_port: Option<u16>,
 }
 
 /// Open the desktop player — the bundled player's GUI face in a terminal
@@ -1062,7 +1079,7 @@ fn open_desktop_player(
                 Err(e) => log.line(&format!("instance lock check failed ({e}) - opening the player anyway")),
             }
         }
-        let page = platform::PlayerPage::Player { instance_lock: player.instance_lock.clone() };
+        let page = platform::PlayerPage::Player { instance_lock: player.instance_lock.clone(), serve_port: player.serve_port };
         match platform::open_player_terminal(&player.bin, server_url, data_home, console, page) {
             Ok(via) => {
                 log.line(&format!("player opened via {via}"));

@@ -5179,9 +5179,13 @@ paths:
       description: >-
         The active backend's own status object (playing, paused, position,
         duration, volume, queue_index, queue_length, shuffle, loop_mode, ...)
-        with two fields added by the proxy that say which backend answered.
-        `file`, the current track, is translated to a library path like the
-        queue's entries; it is an empty string while nothing is loaded.
+        with three fields added by the proxy that say which backend answered
+        (`backend`, `player`) and which engine (`engine`: `headless` for the
+        one the server spawned, `desktop` for the open desktop player it
+        adopted). `file`, the current track, is a library path like the
+        queue's entries — translated from the headless engine's absolute
+        path, passed through from the desktop player; it is an empty string
+        while nothing is loaded.
       responses:
         "200":
           description: Proxied status.
@@ -6736,6 +6740,15 @@ paths:
                     type: string
                     nullable: true
                     description: "`mstream-player` while the engine is running, null otherwise."
+                  engine:
+                    type: string
+                    nullable: true
+                    enum: [headless, desktop, null]
+                    description: >-
+                      Which face answers: `headless` for the engine this server
+                      spawned, `desktop` for the open desktop player it adopted
+                      (the tray launcher's "Open mStream Player" on this machine,
+                      while autoBootServerAudio is on), null while none is up.
                   binaryFetchable:
                     type: boolean
                     description: >-

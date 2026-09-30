@@ -2,6 +2,15 @@
 // /server-remote page. The backend itself — which process is running, how it
 // is found, spawned, watched and stopped — lives in src/state/server-audio.js;
 // this module only translates paths, gates access and proxies.
+//
+// Which engine answers decides the translation. The headless engine the
+// lifecycle spawns plays files off this machine's disks: it takes absolute
+// paths and answers with them, so every path is translated both ways here
+// (and no absolute path ever reaches a client). The desktop player the
+// lifecycle adopts streams from this server: it takes the library paths the
+// client sent and answers with the same, so for it they pass through
+// untranslated — after the caller's access to them was checked exactly as
+// before (pathForEngine).
 
 import fsPromises from 'fs/promises';
 import path from 'path';
@@ -29,6 +38,14 @@ function resolveFilePath(filePath, user) {
     winston.warn(`[server-audio] vpath rejected for user '${user?.username}': '${filePath}' (${err.message})`);
     throw err;
   }
+}
+
+// The path the engine gets for a library path the caller sent: the headless
+// engine takes the absolute path, the desktop player the library path as it
+// came. The caller's access was checked either way — resolveFilePath ran
+// first and threw for a library they lack. Pure, exported for the unit tests.
+export function pathForEngine(libraryPath, absolute, active) {
+  return active?.engine === 'desktop' ? libraryPath : absolute;
 }
 
 // Is `child` the same path as `root`, or inside it? A plain startsWith isn't
@@ -60,38 +77,47 @@ function absoluteToVpath(absolutePath) {
 const oneFileSchema = Joi.object({ file: Joi.string().required() });
 const manyFilesSchema = Joi.object({ files: Joi.array().items(Joi.string()).required() });
 
-// { file: vpath } → { file: absolute path }. A malformed body is a 400 from
-// the schema; a library the caller lacks is resolveFilePath's 404.
+// { file: vpath } → { file: the engine's path } (pathForEngine). A malformed
+// body is a 400 from the schema; a library the caller lacks is
+// resolveFilePath's 404 — for either engine.
 function oneFile(req) {
   const { value } = joiValidate(oneFileSchema, req.body || {});
-  return { file: resolveFilePath(value.file, req.user) };
+  const active = serverAudio.getActiveBackend();
+  return { file: pathForEngine(value.file, resolveFilePath(value.file, req.user), active) };
 }
 
 function manyFiles(req) {
   const { value } = joiValidate(manyFilesSchema, req.body || {});
-  return { files: value.files.map((f) => resolveFilePath(f, req.user)) };
+  const active = serverAudio.getActiveBackend();
+  return { files: value.files.map((f) => pathForEngine(f, resolveFilePath(f, req.user), active)) };
 }
 
 // ── Response bodies ─────────────────────────────────────────────────────────
 //
-// The engine speaks absolute paths — that is what it was handed — and no
-// absolute path may reach a client: it tells every user with server-audio
-// access how the host's disks are laid out. /queue always translated; /status
-// handed `file` through untouched until this was caught. Pure and exported so
-// the unit tests need no database (`toVpath` is injectable).
+// The headless engine speaks absolute paths — that is what it was handed —
+// and no absolute path may reach a client: it tells every user with
+// server-audio access how the host's disks are laid out. /queue always
+// translated; /status handed `file` through untouched until this was caught.
+// The desktop player speaks library paths already, and its answers pass
+// through. Pure and exported so the unit tests need no database (`toVpath`
+// is injectable, `active` says which engine answered).
 
-// GET /status: the current track as a library path, plus which backend
-// answered. Anything that is not a status object passes through untouched.
+// GET /status: the current track as a library path, plus which backend and
+// engine answered. Anything that is not a status object passes through
+// untouched.
 export function statusForClient(data, active, toVpath = absoluteToVpath) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) { return data; }
-  const out = { ...data, backend: active.backend, player: active.player };
-  if (typeof data.file === 'string' && data.file !== '') { out.file = toVpath(data.file); }
+  const out = { ...data, backend: active.backend, player: active.player, engine: active.engine ?? null };
+  if (typeof data.file === 'string' && data.file !== '') {
+    out.file = active.engine === 'desktop' ? data.file : toVpath(data.file);
+  }
   return out;
 }
 
 // GET /queue: every entry as a library path.
-export function queueForClient(data, toVpath = absoluteToVpath) {
+export function queueForClient(data, toVpath = absoluteToVpath, active = null) {
   if (!data || !Array.isArray(data.queue)) { return data; }
+  if (active?.engine === 'desktop') { return { ...data, queue: [...data.queue] }; }
   return { ...data, queue: data.queue.map(toVpath) };
 }
 
@@ -233,7 +259,7 @@ export function setup(mstream) {
     ['post', '/volume'],           // { volume: 0..1 }
     ['post', '/shuffle'],          // { value: boolean }
     ['get',  '/status',           { mapResult: (data) => statusForClient(data, serverAudio.getActiveBackend()) }],
-    ['get',  '/queue',            { mapResult: (data) => queueForClient(data) }],
+    ['get',  '/queue',            { mapResult: (data) => queueForClient(data, absoluteToVpath, serverAudio.getActiveBackend()) }],
     ['post', '/play',             { mapBody: oneFile }],     // clear queue, add file, play
     ['post', '/queue/add',        { mapBody: oneFile }],
     ['post', '/queue/add-many',   { mapBody: manyFiles }],

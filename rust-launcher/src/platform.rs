@@ -361,8 +361,12 @@ pub enum PlayerPage {
     /// one-player rule (paths::desktop_player_lock): the player holds an
     /// exclusive lock on that file for its lifetime, so the launcher can
     /// tell an open player from a closed one before it opens another —
-    /// None for a player release without the flag.
-    Player { instance_lock: Option<std::path::PathBuf> },
+    /// None for a player release without the flag. `serve_port` is the
+    /// control face's port (paths::rust_player_port): the GUI hosts the
+    /// server-audio control API there, always, and the server takes it up
+    /// while autoBootServerAudio is on, so the machine has one player —
+    /// None for a release without the face.
+    Player { instance_lock: Option<std::path::PathBuf>, serve_port: Option<u16> },
 }
 
 impl PlayerPage {
@@ -390,7 +394,16 @@ impl PlayerPage {
     /// has one (the Player variant of a player that takes it).
     fn instance_lock(&self) -> Option<&std::path::Path> {
         match self {
-            PlayerPage::Player { instance_lock } => instance_lock.as_deref(),
+            PlayerPage::Player { instance_lock, .. } => instance_lock.as_deref(),
+            _ => None,
+        }
+    }
+    /// The port a `--serve-port <port>` pair carries, when this launch has
+    /// one (the Player variant of a player whose GUI hosts the control
+    /// face). Rides after the lock pair, before the server flag.
+    fn serve_port(&self) -> Option<u16> {
+        match self {
+            PlayerPage::Player { serve_port, .. } => *serve_port,
             _ => None,
         }
     }
@@ -523,6 +536,9 @@ pub fn open_player_terminal(
         if let Some(lock) = page.instance_lock() {
             cmd.arg("--instance-lock").arg(lock);
         }
+        if let Some(port) = page.serve_port() {
+            cmd.arg("--serve-port").arg(port.to_string());
+        }
         cmd.args([page.server_flag(), server_url])
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
@@ -562,6 +578,10 @@ fn wt_invocation(page: &PlayerPage, player_bin: &std::path::Path, server_url: &s
     if let Some(lock) = page.instance_lock() {
         argv.push("--instance-lock".into());
         argv.push(lock.as_os_str().to_owned());
+    }
+    if let Some(port) = page.serve_port() {
+        argv.push("--serve-port".into());
+        argv.push(port.to_string().into());
     }
     argv.push(page.server_flag().into());
     argv.push(server_url.into());
@@ -1206,6 +1226,10 @@ fn player_shell_words(page: &PlayerPage, player_bin: &std::path::Path, server_ur
         words.push("--instance-lock".into());
         words.push(sh_quote(lock));
     }
+    if let Some(port) = page.serve_port() {
+        words.push("--serve-port".into());
+        words.push(port.to_string());
+    }
     words.push(page.server_flag().into());
     words.push(sh_quote_str(server_url));
     words.join(" ")
@@ -1217,7 +1241,7 @@ mod page_tests {
 
     /// The desktop player page of a player without the lock flag.
     fn player() -> PlayerPage {
-        PlayerPage::Player { instance_lock: None }
+        PlayerPage::Player { instance_lock: None, serve_port: None }
     }
 
     fn every_page() -> Vec<PlayerPage> {
@@ -1300,7 +1324,7 @@ mod page_tests {
 
     #[test]
     fn the_player_page_carries_the_launchers_instance_lock() {
-        let locked = PlayerPage::Player { instance_lock: Some("/Application Support/mStream/desktop-player.lock".into()) };
+        let locked = PlayerPage::Player { instance_lock: Some("/Application Support/mStream/desktop-player.lock".into()), serve_port: None };
         assert_eq!(
             locked.instance_lock().map(|p| p.to_string_lossy().into_owned()).as_deref(),
             Some("/Application Support/mStream/desktop-player.lock")
@@ -1319,7 +1343,7 @@ mod page_tests {
             );
         }
         // …and as its own argv elements for wt.exe.
-        let page = PlayerPage::Player { instance_lock: Some(r"C:\Users\me\AppData\Local\mStream\desktop-player.lock".into()) };
+        let page = PlayerPage::Player { instance_lock: Some(r"C:\Users\me\AppData\Local\mStream\desktop-player.lock".into()), serve_port: None };
         let wt: Vec<String> = super::wt_invocation(&page, std::path::Path::new(r"C:\m\p.exe"), "http://x:1")
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -1328,6 +1352,31 @@ mod page_tests {
             wt[4..],
             [r"C:\m\p.exe", "gui", "--instance-lock", r"C:\Users\me\AppData\Local\mStream\desktop-player.lock", "--bundled-server", "http://x:1"]
         );
+    }
+
+    #[test]
+    fn the_player_page_carries_the_control_faces_port() {
+        let faced = PlayerPage::Player { instance_lock: Some("/d/desktop-player.lock".into()), serve_port: Some(3333) };
+        assert_eq!(faced.serve_port(), Some(3333));
+        assert_eq!(player().serve_port(), None);
+        for page in [PlayerPage::Setup, PlayerPage::QuickConnect, PlayerPage::Admin(AdminRoom::Torrents)] {
+            assert_eq!(page.serve_port(), None, "{page:?}");
+        }
+        // After the lock pair, before the server flag — on the sh line…
+        #[cfg(unix)]
+        assert_eq!(
+            super::player_shell_words(&faced, std::path::Path::new("/p"), "http://x:1"),
+            "'/p' gui --instance-lock '/d/desktop-player.lock' --serve-port 3333 --bundled-server 'http://x:1'"
+        );
+        // …and as argv elements for wt.exe. The two pairs are independent
+        // (no release has one without the other, but the page does not
+        // know that).
+        let faced_only = PlayerPage::Player { instance_lock: None, serve_port: Some(4444) };
+        let wt: Vec<String> = super::wt_invocation(&faced_only, std::path::Path::new(r"C:\m\p.exe"), "http://x:1")
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(wt[4..], [r"C:\m\p.exe", "gui", "--serve-port", "4444", "--bundled-server", "http://x:1"]);
     }
 
     #[test]
@@ -1368,7 +1417,7 @@ mod page_tests {
         );
         // The desktop player names the server as its bundled one.
         assert_eq!(
-            super::player_shell_words(&PlayerPage::Player { instance_lock: None }, player, "http://localhost:3000"),
+            super::player_shell_words(&PlayerPage::Player { instance_lock: None, serve_port: None }, player, "http://localhost:3000"),
             "'/Application Support/bin/mstream-player' gui --bundled-server 'http://localhost:3000'"
         );
         // A quote inside a path survives as the POSIX '\'' dance.
@@ -1396,7 +1445,7 @@ mod page_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let page = match std::env::var("MSTREAM_DEMO_PAGE").as_deref() {
             Ok("qr") => PlayerPage::QuickConnect,
-            Ok("gui") => PlayerPage::Player { instance_lock: None },
+            Ok("gui") => PlayerPage::Player { instance_lock: None, serve_port: None },
             Ok(name) => AdminRoom::from_subcommand(name).map(PlayerPage::Admin).unwrap_or(PlayerPage::Setup),
             Err(_) => PlayerPage::Setup,
         };
@@ -1455,13 +1504,19 @@ mod tests {
 
         // The desktop player: its own size, title and server flag — and
         // the launcher's lock on the command line when the player takes it.
-        let player = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", &super::PlayerPage::Player { instance_lock: None });
+        let player = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", &super::PlayerPage::Player { instance_lock: None, serve_port: None });
         assert!(player.contains("command = shell:'/p' gui --bundled-server 'http://x:1'"), "{player}");
-        let locked = super::PlayerPage::Player { instance_lock: Some("/Application Support/mStream/desktop-player.lock".into()) };
+        let locked = super::PlayerPage::Player { instance_lock: Some("/Application Support/mStream/desktop-player.lock".into()), serve_port: None };
         let with_lock = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", &locked);
         assert!(
             with_lock.contains("command = shell:'/p' gui --instance-lock '/Application Support/mStream/desktop-player.lock' --bundled-server 'http://x:1'"),
             "{with_lock}"
+        );
+        let faced = super::PlayerPage::Player { instance_lock: Some("/d/desktop-player.lock".into()), serve_port: Some(3333) };
+        let with_face = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", &faced);
+        assert!(
+            with_face.contains("command = shell:'/p' gui --instance-lock '/d/desktop-player.lock' --serve-port 3333 --bundled-server 'http://x:1'"),
+            "{with_face}"
         );
         assert!(player.contains("title = mStream Player\n"), "{player}");
         assert!(player.contains("window-width = 100\nwindow-height = 30\n"), "{player}");
@@ -1472,7 +1527,7 @@ mod tests {
     fn each_page_writes_its_own_command_script() {
         // Distinct script files: no two tray items may clobber each
         // other's .command while both windows are open.
-        let mut pages = vec![super::PlayerPage::Setup, super::PlayerPage::QuickConnect, super::PlayerPage::Player { instance_lock: None }];
+        let mut pages = vec![super::PlayerPage::Setup, super::PlayerPage::QuickConnect, super::PlayerPage::Player { instance_lock: None, serve_port: None }];
         pages.extend(super::AdminRoom::ALL.into_iter().map(super::PlayerPage::Admin));
         let names: Vec<String> = pages.iter().map(|p| p.script_name()).collect();
         for (i, a) in names.iter().enumerate() {
@@ -1482,7 +1537,7 @@ mod tests {
             }
         }
         assert_eq!(super::PlayerPage::Admin(super::AdminRoom::Libraries).script_name(), "admin-libraries-mstream.command");
-        assert_eq!(super::PlayerPage::Player { instance_lock: None }.script_name(), "player-mstream.command");
+        assert_eq!(super::PlayerPage::Player { instance_lock: None, serve_port: None }.script_name(), "player-mstream.command");
     }
 
     #[test]

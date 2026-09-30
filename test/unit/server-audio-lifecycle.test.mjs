@@ -19,16 +19,27 @@
  *     boot never spawns
  *   - every way the proxy fails is one typed 503, and the real socket error
  *     is logged once per outage, not once per polled request
+ *   - THE DESKTOP PLAYER IS THE ENGINE WHILE IT IS OPEN (the second describe):
+ *     a live claim in the data home — the sidecar the player writes beside
+ *     the launcher's instance lock, naming a living pid and the port of its
+ *     control face — is taken up in place of the headless engine, with the
+ *     token on every proxied request; the headless engine it stops is a stop
+ *     we asked for; the player going away brings the headless engine back;
+ *     a claim whose port never answers as the gui face is refused once and
+ *     left alone; stop() lets go without killing the person's player; and
+ *     off still means off — the claim is not even looked at
  */
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import winston from 'winston';
 
-import { createController } from '../../src/state/server-audio.js';
+import { createController, parseClaim } from '../../src/state/server-audio.js';
 import WebError from '../../src/util/web-error.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -78,6 +89,10 @@ function makeDeps(overrides = {}) {
     autoBoot: () => true,
     port: () => 0,
     stopWaitMs: 150,
+    // No desktop player's claim unless a test plants one: a data home that
+    // does not exist (never the real one — a player open on the developer's
+    // machine would be adopted by the unit suite).
+    dataHome: () => path.join(os.tmpdir(), 'mstream-no-claim-here', String(process.pid)),
     ...overrides,
   };
   delete deps.child;
@@ -94,8 +109,9 @@ async function withLogs(fn) {
   return lines;
 }
 
-const NONE = { backend: null, player: null };
-const ENGINE = { backend: 'rust', player: 'mstream-player' };
+const NONE = { backend: null, player: null, engine: null };
+const ENGINE = { backend: 'rust', player: 'mstream-player', engine: 'headless' };
+const DESKTOP = { backend: 'rust', player: 'mstream-player', engine: 'desktop' };
 const is503 = (err) => err instanceof WebError && err.status === 503;
 
 describe('server-audio lifecycle', () => {
@@ -494,5 +510,337 @@ describe('server-audio lifecycle', () => {
     present.add(devBuild);
     assert.equal(c.findRustBinary(), devBuild);
     assert.equal(chmodded.length, 3, 'a failing chmod never hides a found binary');
+  });
+});
+
+// ── The desktop player as the engine ────────────────────────────────────────
+
+// A stand-in for the desktop player's control face: a loopback server that
+// answers GET /version as the face it is told to be, and every other route
+// with what it received — the token header included — so a test can see the
+// proxy reach it. Its port is what the claim names.
+async function fakeFace({ face = 'gui' } = {}) {
+  const seen = [];
+  const state = { face };
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (req.url === '/version') {
+        res.end(JSON.stringify({ name: 'mstream-player', version: '0.9.0', apiVersion: 1, face: state.face }));
+        return;
+      }
+      seen.push({ method: req.method, path: req.url, token: req.headers['x-auth-token'] ?? null, body });
+      res.end(JSON.stringify({ ok: true, via: 'gui' }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const close = async () => {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  };
+  return { port: server.address().port, seen, state, close };
+}
+
+// A data home of its own, and the sidecar the player would write there.
+function claimHome() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-claim-'));
+  const file = path.join(dir, 'desktop-player.json');
+  const write = (fields) => fs.writeFileSync(file, JSON.stringify({
+    schema: 1, pid: process.pid, face: 'gui', host: 'ghostty', startedAt: 1_760_000_000, ...fields,
+  }));
+  const remove = () => { try { fs.unlinkSync(file); } catch (_err) { /* already gone */ } };
+  const cleanup = () => fs.rmSync(dir, { recursive: true, force: true });
+  return { dir, file, write, remove, cleanup };
+}
+
+// Deps for the desktop tests: the data home above, quick ticks, a short
+// adoption wait.
+function makeDesktopDeps(home, overrides = {}) {
+  return makeDeps({
+    dataHome: () => home.dir,
+    claimPollMs: 15,
+    adoptRetryMs: 10,
+    adoptWaitMs: 120,
+    ...overrides,
+  });
+}
+
+async function until(cond, ms = 3000) {
+  const t0 = Date.now();
+  while (!cond()) {
+    if (Date.now() - t0 > ms) { throw new Error('the condition never held'); }
+    await sleep(5);
+  }
+}
+
+const TOKEN = 'tok-'.repeat(8);
+
+describe('the desktop player as the engine', () => {
+  test('parseClaim(): the sidecar shape, strictly where it matters', () => {
+    const good = JSON.stringify({ schema: 1, pid: 4242, face: 'gui', host: 'ghostty', startedAt: 1_760_000_000, port: 3333, token: 'a'.repeat(32) });
+    assert.deepEqual(parseClaim(good), { pid: 4242, port: 3333, token: 'a'.repeat(32), host: 'ghostty', startedAt: 1_760_000_000 });
+    // Unknown fields and a missing host or start time are tolerated; a host
+    // that is not a plain token is not repeated into the log.
+    assert.deepEqual(
+      parseClaim(JSON.stringify({ schema: 1, pid: 1, face: 'gui', port: 1, token: 'x'.repeat(16), host: 'Bad Host!', extra: true })),
+      { pid: 1, port: 1, token: 'x'.repeat(16), host: 'unknown', startedAt: 0 },
+    );
+    // Not a claim: a player without the face (no port, no token), the tui
+    // face, another schema, and every malformed field.
+    const base = { schema: 1, pid: 4242, face: 'gui', port: 3333, token: 'a'.repeat(32) };
+    for (const [why, bad] of [
+      ['no port or token', { schema: 1, pid: 4242, face: 'gui', host: 'ghostty' }],
+      ['tui face', { ...base, face: 'tui' }],
+      ['schema 2', { ...base, schema: 2 }],
+      ['pid 0', { ...base, pid: 0 }],
+      ['pid as text', { ...base, pid: '4242' }],
+      ['port 0', { ...base, port: 0 }],
+      ['port 70000', { ...base, port: 70000 }],
+      ['short token', { ...base, token: 'short' }],
+      ['token with a space', { ...base, token: 'a'.repeat(16) + ' b' }],
+      ['an array', [base]],
+    ]) {
+      assert.equal(parseClaim(JSON.stringify(bad)), null, why);
+    }
+    assert.equal(parseClaim('not json'), null);
+    assert.equal(parseClaim(''), null);
+  });
+
+  test('a claim already there when server audio boots is adopted: nothing is spawned, the proxy carries the token', async () => {
+    const face = await fakeFace();
+    const home = claimHome();
+    try {
+      home.write({ port: face.port, token: TOKEN });
+      const { deps, spawned } = makeDesktopDeps(home);
+      const c = createController(deps);
+
+      const logs = await withLogs(() => c.boot());
+
+      assert.equal(spawned.length, 0, 'the desktop player is the engine: no headless one');
+      assert.deepEqual(c.getActiveBackend(), DESKTOP);
+      assert.deepEqual(logs.warn, []);
+      assert.ok(logs.info.some((l) => /is open \(pid \d+, in ghostty\) — adopting it as the engine on port \d+$/.test(l)), JSON.stringify(logs.info));
+      assert.ok(logs.info.some((l) => /now plays through the desktop player/.test(l)), JSON.stringify(logs.info));
+
+      const answer = await c.proxy('POST', '/play', { file: 'lib/song.mp3' });
+      assert.deepEqual(answer, { status: 200, data: { ok: true, via: 'gui' } });
+      assert.deepEqual(face.seen, [{ method: 'POST', path: '/play', token: TOKEN, body: '{"file":"lib/song.mp3"}' }]);
+
+      await c.stop();
+    } finally {
+      await face.close();
+      home.cleanup();
+    }
+  });
+
+  test('a claim appearing while the headless engine runs: the engine is stopped for it, quietly, and the player adopted', async () => {
+    const face = await fakeFace();
+    const home = claimHome();
+    try {
+      const { deps, spawned } = makeDesktopDeps(home);
+      const c = createController(deps);
+      await c.boot();
+      assert.equal(spawned.length, 1);
+      assert.deepEqual(c.getActiveBackend(), ENGINE);
+
+      const logs = await withLogs(async () => {
+        home.write({ port: face.port, token: TOKEN });
+        await until(() => c.getActiveBackend().engine === 'desktop');
+      });
+
+      assert.equal(spawned[0].child.killed, true, 'the headless engine let go of the port');
+      assert.equal(spawned.length, 1, 'and nothing replaced it');
+      assert.deepEqual(logs.warn, [], 'a stop we asked for is not an outage');
+      assert.ok(logs.info.includes('mstream-player exited with code null'), JSON.stringify(logs.info));
+      await c.stop();
+    } finally {
+      await face.close();
+      home.cleanup();
+    }
+  });
+
+  test('the player going away brings the headless engine back — and a fresh claim takes over again', async () => {
+    const face = await fakeFace();
+    const home = claimHome();
+    try {
+      home.write({ port: face.port, token: TOKEN });
+      const { deps, spawned } = makeDesktopDeps(home);
+      const c = createController(deps);
+      await c.boot();
+      assert.deepEqual(c.getActiveBackend(), DESKTOP);
+
+      const logs = await withLogs(async () => {
+        home.remove();   // the player quit: its sidecar went with it
+        await until(() => c.getActiveBackend().engine === 'headless');
+      });
+      assert.equal(spawned.length, 1, 'the headless engine was spawned in its place');
+      assert.ok(logs.info.some((l) => /the desktop player \(pid \d+\) is gone — the headless engine takes over/.test(l)), JSON.stringify(logs.info));
+
+      // Opened again: a fresh run of the player (a new startedAt) is a fresh
+      // claim, and the headless engine steps aside once more.
+      home.write({ port: face.port, token: TOKEN, startedAt: 1_760_000_001 });
+      await until(() => c.getActiveBackend().engine === 'desktop');
+      assert.equal(spawned[0].child.killed, true);
+      assert.equal(spawned.length, 1);
+      await c.stop();
+    } finally {
+      await face.close();
+      home.cleanup();
+    }
+  });
+
+  test('a claim whose port never answers as the gui face is refused once; the headless engine returns and the claim is left alone', async () => {
+    // The headless engine answers `serve` from that port until it lets go;
+    // something else entirely answers nothing. Neither is the desktop player.
+    const face = await fakeFace({ face: 'serve' });
+    const home = claimHome();
+    try {
+      home.write({ port: face.port, token: TOKEN });
+      const { deps, spawned } = makeDesktopDeps(home);
+      const c = createController(deps);
+
+      const logs = await withLogs(async () => {
+        await c.boot();
+        await sleep(200);   // several ticks' worth
+      });
+
+      assert.deepEqual(c.getActiveBackend(), ENGINE, 'the headless engine took over as if there were no claim');
+      assert.equal(spawned.length, 1);
+      assert.equal(spawned[0].child.killed, false);
+      const refusals = logs.warn.filter((l) => /nothing answered there as the gui face/.test(l));
+      assert.equal(refusals.length, 1, JSON.stringify(logs.warn));
+      assert.equal(logs.info.filter((l) => /adopting it as the engine/.test(l)).length, 1, 'tried once, not every tick');
+
+      // The face comes up after all — but the claim is unchanged, so it stays
+      // refused until the player is opened again or the switch is toggled:
+      // restart() forgets refusals.
+      face.state.face = 'gui';
+      await sleep(80);
+      assert.deepEqual(c.getActiveBackend(), ENGINE);
+      await c.restart();
+      await until(() => c.getActiveBackend().engine === 'desktop');
+      await c.stop();
+    } finally {
+      await face.close();
+      home.cleanup();
+    }
+  });
+
+  test('a refused claim going away is the headless engine’s way back after it died of the held port', async () => {
+    // The port is held by something that is not the gui face (the serve
+    // face here), so the claim is refused and the headless engine spawned —
+    // which then dies of the very same held port (a bind failure, code 1).
+    // Nothing is retried while the claim stands; once it goes, the port is
+    // presumed free and the engine is started again.
+    const face = await fakeFace({ face: 'serve' });
+    const home = claimHome();
+    try {
+      home.write({ port: face.port, token: TOKEN });
+      const { deps, spawned } = makeDesktopDeps(home);
+      const c = createController(deps);
+
+      await withLogs(async () => {
+        await c.boot();
+        assert.equal(spawned.length, 1, 'refused, then the headless engine');
+        spawned[0].child.emit('close', 1);
+        await sleep(30);
+        assert.deepEqual(c.getActiveBackend(), NONE, 'and it died on its own');
+        await sleep(100);
+        assert.equal(spawned.length, 1, 'ticks pass, the refused claim stands: nothing is retried');
+        home.remove();
+        await until(() => spawned.length === 2);
+      });
+
+      assert.deepEqual(c.getActiveBackend(), ENGINE, 'the headless engine is back');
+      await c.stop();
+    } finally {
+      await face.close();
+      home.cleanup();
+    }
+  });
+
+  test('stop() lets go of the desktop player without touching it; restart() takes it up again; off means off', async () => {
+    const face = await fakeFace();
+    const home = claimHome();
+    try {
+      home.write({ port: face.port, token: TOKEN });
+      let on = true;
+      let reads = 0;
+      const { deps, spawned } = makeDesktopDeps(home, {
+        autoBoot: () => on,
+        readClaimFile: (p) => { reads += 1; return fs.readFileSync(p, 'utf8'); },
+      });
+      const c = createController(deps);
+      await c.boot();
+      assert.deepEqual(c.getActiveBackend(), DESKTOP);
+
+      const logs = await withLogs(() => c.stop());
+      assert.deepEqual(c.getActiveBackend(), NONE);
+      assert.ok(logs.info.some((l) => /letting go of the desktop player/.test(l)), JSON.stringify(logs.info));
+      assert.equal((await fetch(`http://127.0.0.1:${face.port}/version`)).status, 200, 'the player was not killed: it is the person’s');
+      await assert.rejects(() => c.proxy('GET', '/status'), is503);
+      const readsAfterStop = reads;
+      await sleep(60);
+      assert.equal(reads, readsAfterStop, 'nothing watches the claim while server audio is stopped');
+
+      await c.restart();
+      assert.deepEqual(c.getActiveBackend(), DESKTOP);
+      assert.equal(spawned.length, 0);
+
+      on = false;
+      await c.restart();
+      assert.deepEqual(c.getActiveBackend(), NONE);
+      const readsOff = reads;
+      await sleep(60);
+      assert.equal(reads, readsOff, 'off: the claim is not even looked at');
+    } finally {
+      await face.close();
+      home.cleanup();
+    }
+  });
+
+  test('a stale sidecar — its pid is gone — is no claim: the headless engine boots as usual', async () => {
+    const home = claimHome();
+    try {
+      home.write({ port: 3333, token: TOKEN });
+      const { deps, spawned } = makeDesktopDeps(home, { pidAlive: () => false });
+      const c = createController(deps);
+      const logs = await withLogs(() => c.boot());
+      assert.equal(spawned.length, 1);
+      assert.deepEqual(c.getActiveBackend(), ENGINE);
+      assert.deepEqual(logs.warn, []);
+      assert.ok(!logs.info.some((l) => /adopting/.test(l)));
+      await c.stop();
+    } finally {
+      home.cleanup();
+    }
+  });
+
+  test('a claim landing while a boot is still acquiring the binary is taken up right after: one headless spawn, then the player', async () => {
+    const face = await fakeFace();
+    const home = claimHome();
+    try {
+      let releaseFetch;
+      const acquiring = new Promise((resolve) => { releaseFetch = resolve; });
+      const { deps, spawned } = makeDesktopDeps(home, { exists: () => false, canAutoFetch: () => true, ensurePlayer: () => acquiring });
+      const c = createController(deps);
+
+      const flight = c.boot();          // parks inside ensurePlayer
+      await sleep(40);                  // ticks pass; the watcher stands aside for a boot in flight
+      home.write({ port: face.port, token: TOKEN });
+      await sleep(40);
+      releaseFetch('/data/bin/mstream-player/mstream-player-linux-x64');
+      await flight;
+      assert.equal(spawned.length, 1, 'the chain spawned what it set out to');
+
+      await until(() => c.getActiveBackend().engine === 'desktop');
+      assert.equal(spawned[0].child.killed, true, 'and the next look handed the port to the player');
+      await c.stop();
+    } finally {
+      await face.close();
+      home.cleanup();
+    }
   });
 });

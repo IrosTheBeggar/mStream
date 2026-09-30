@@ -21,6 +21,22 @@
 // chain ever matter, that is a feature to design on purpose — the engine
 // already has --host and --auth-token — not a fallback to keep alive.
 //
+// THE DESKTOP PLAYER IS THE ENGINE WHILE IT IS OPEN. The same binary's GUI
+// face — opened on this machine by the tray launcher ("Open mStream Player")
+// — hosts the identical control API on loopback (`gui --serve-port`, the
+// configured player port) and claims it in a sidecar beside the launcher's
+// own files in userDataHome: desktop-player.json, naming its pid, port and a
+// token. While that claim is live (the file names a living pid, and the port
+// answers GET /version as the `gui` face) the GUI is the engine: the headless
+// one is stopped so the machine has one player, the proxy talks to the GUI
+// with the token in x-auth-token, and library paths ride through untranslated
+// (the GUI streams from this server — server-playback.js). When the claim
+// dies — the player closed, or was killed — the headless engine comes back,
+// with an empty queue. autoBootServerAudio stays the one switch: off, nothing
+// is watched, adopted or spawned. The GUI hosts its face whether or not this
+// server wants it (the launcher always passes the port); the claim is an
+// offer, and the switch decides whether it is taken up.
+//
 // SHAPE: mirrors discovery-p2p.js — module-level state, one in-flight boot
 // shared by concurrent callers, a stop generation that aborts a boot still
 // acquiring its binary, and per-spawn bookkeeping so a stale child's exit can
@@ -40,7 +56,7 @@ import child_process from 'node:child_process';
 import winston from 'winston';
 import * as config from './config.js';
 import * as killQueue from './kill-list.js';
-import { appRoot } from '../util/esm-helpers.js';
+import { appRoot, userDataHome } from '../util/esm-helpers.js';
 import WebError from '../util/web-error.js';
 import { playerKey, managedPlayerPath, ensurePlayer, canAutoFetch } from '../util/mstream-player-bootstrap.js';
 
@@ -59,6 +75,54 @@ function unavailable(message) {
 export const STOP_WAIT_MS = 3000;
 export const RUST_REQUEST_TIMEOUT_MS = 5000;
 
+// The desktop player's claim: the sidecar the player writes beside the
+// instance lock the launcher hands it (mstream-terminal-player
+// src/instance.rs), in userDataHome next to launcher.lock, and removes when
+// it exits cleanly.
+export const CLAIM_FILE = 'desktop-player.json';
+// How often the claim is looked at while server audio is on. One small file
+// read — cheap enough to be prompt, and prompt matters: once the headless
+// engine lets go of the port the GUI keeps trying to bind it for only so
+// long (fifteen seconds in the player).
+export const CLAIM_POLL_MS = 2000;
+// How long an adoption waits for the claimed port to answer as the gui face:
+// the headless engine's stop wait plus the GUI's own bind retry, with room.
+export const ADOPT_WAIT_MS = 20000;
+export const ADOPT_RETRY_MS = 500;
+const PROBE_TIMEOUT_MS = 1500;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Is this pid alive? Signal 0 asks without sending anything (Windows too);
+// EPERM is "alive, and not ours to signal" — alive.
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+}
+
+/**
+ * The desktop player's claim, as its sidecar states it: schema 1 with a
+ * `gui` face, a pid, and the port and token of the control face it hosts.
+ * Tolerant of what it does not use (extra fields, a missing host or start
+ * time), strict about what it does: a player without a control face writes
+ * no port and no token and is not a claim at all, the `tui` face never is,
+ * and a malformed field is no claim rather than a guess. The host is
+ * repeated into log lines, so only a plain token of one is. Pure, exported
+ * for the unit tests. Null when the text is not a claim.
+ */
+export function parseClaim(text) {
+  let v;
+  try { v = JSON.parse(text); } catch (_err) { return null; }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) { return null; }
+  if (v.schema !== 1 || v.face !== 'gui') { return null; }
+  const { pid, port, token } = v;
+  if (!Number.isInteger(pid) || pid <= 0) { return null; }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) { return null; }
+  if (typeof token !== 'string' || !/^[\x21-\x7e]{16,256}$/.test(token)) { return null; }
+  const host = typeof v.host === 'string' && /^[a-z0-9._-]{1,32}$/.test(v.host) ? v.host : 'unknown';
+  const startedAt = Number.isInteger(v.startedAt) && v.startedAt >= 0 ? v.startedAt : 0;
+  return { pid, port, token, host, startedAt };
+}
+
 const defaultDeps = {
   spawn: (bin, args, opts) => child_process.spawn(bin, args, opts),
   exists: (p) => fs.existsSync(p),
@@ -72,6 +136,14 @@ const defaultDeps = {
   autoBoot: () => !!config.program.autoBootServerAudio,
   port: () => config.program.rustPlayerPort || 3333,
   stopWaitMs: STOP_WAIT_MS,
+  // The desktop player's claim: where it is, how it is read, and how a
+  // living pid is told from a dead one.
+  dataHome: () => userDataHome(),
+  readClaimFile: (p) => fs.readFileSync(p, 'utf8'),
+  pidAlive,
+  claimPollMs: CLAIM_POLL_MS,
+  adoptWaitMs: ADOPT_WAIT_MS,
+  adoptRetryMs: ADOPT_RETRY_MS,
 };
 
 export function createController(overrides = {}) {
@@ -101,6 +173,21 @@ export function createController(overrides = {}) {
   // instead of on every request: the remote page polls /status twice a second,
   // and the callers only ever see the generic 503.
   let engineAnswering = true;
+  // The desktop player adopted as the engine, or null: the claim it was
+  // adopted under — pid plus startedAt name one run of the player, a pid
+  // alone can be reused — with the port and token the proxy uses.
+  let desktop = null;
+  // The claim watcher: a timer while server audio is on, looking for a claim
+  // to adopt and for the adopted player's death. Unref'd: it must never hold
+  // the process open.
+  let watcher = null;
+  // The adoption in flight, so a tick never starts a second one beside it.
+  let adopting = null;
+  // A claim that was tried and never answered as the gui face — a stale
+  // sidecar over a port something else holds, a GUI whose own bind failed —
+  // remembered so it is not tried again every tick. Forgotten by stop() (a
+  // toggle is a fresh try) and superseded by any change to the file.
+  let refused = null;
 
   // ── Binary resolution ─────────────────────────────────────────────────────
 
@@ -136,10 +223,144 @@ export function createController(overrides = {}) {
 
   // The API's name for what is running. `backend` keeps its historical value
   // — 'rust' — because /server-playback/status and the admin info endpoint
-  // have always reported it that way.
+  // have always reported it that way; `engine` says which face answers:
+  // 'headless' for the engine spawned here, 'desktop' for the adopted player
+  // (the routes translate paths by it), null when nothing is up.
   function getActiveBackend() {
-    if (engine) { return { backend: 'rust', player: 'mstream-player' }; }
-    return { backend: null, player: null };
+    if (desktop) { return { backend: 'rust', player: 'mstream-player', engine: 'desktop' }; }
+    if (engine) { return { backend: 'rust', player: 'mstream-player', engine: 'headless' }; }
+    return { backend: null, player: null, engine: null };
+  }
+
+  // Whatever answers requests right now — the adopted player or the live
+  // headless generation — for the "still answering" bookkeeping.
+  const current = () => desktop || engine;
+
+  // ── The desktop player's claim ────────────────────────────────────────────
+
+  function claimPath() {
+    return path.join(deps.dataHome(), CLAIM_FILE);
+  }
+
+  // The claim on disk, if a living player made it. Null — not an error — for
+  // no file at all: no launcher ever opened a desktop player here.
+  function liveClaim() {
+    let text;
+    try { text = deps.readClaimFile(claimPath()); } catch (_err) { return null; }
+    const claim = parseClaim(text);
+    if (!claim || !deps.pidAlive(claim.pid)) { return null; }
+    return claim;
+  }
+
+  const sameRun = (a, b) => !!a && !!b && a.pid === b.pid && a.startedAt === b.startedAt;
+
+  // GET /version on the claimed port, unauthenticated (the one route the
+  // face spares): which face is listening there. Only `gui` is adoptable —
+  // the headless engine just stopped answers `serve` from the same port
+  // until it lets go, and anything else answers nothing of the kind.
+  function probeFace(port) {
+    return new Promise((resolve) => {
+      const req = http.get({ hostname: '127.0.0.1', port, path: '/version', timeout: PROBE_TIMEOUT_MS }, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          try { resolve(res.statusCode === 200 ? (JSON.parse(data).face ?? null) : null); } catch (_err) { resolve(null); }
+        });
+      });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+    });
+  }
+
+  // Take a claim up: stop the headless engine if one is up (the GUI is
+  // waiting to bind that very port), then wait for the port to answer as
+  // the gui face. True once the desktop player is the engine. A stop()
+  // landing meanwhile abandons the attempt at its next generation check; a
+  // claim that never answers is refused, once, with a line.
+  async function adopt(claim) {
+    const gen = stopGen;
+    winston.info(`[server-audio] the desktop player is open (pid ${claim.pid}, in ${claim.host}) — adopting it as the engine on port ${claim.port}`);
+    if (engine) {
+      // A stop we asked for, so its exit is not an outage.
+      killEngine();
+      if (pendingExit) { await pendingExit; }
+      if (gen !== stopGen) { return false; }
+    }
+    const deadline = Date.now() + deps.adoptWaitMs;
+    for (;;) {
+      const face = await probeFace(claim.port);
+      if (gen !== stopGen) { return false; }
+      if (face === 'gui') {
+        desktop = { ...claim };
+        engineAnswering = true;
+        refused = null;
+        winston.info(`[server-audio] server audio now plays through the desktop player (pid ${claim.pid}, port ${claim.port})`);
+        return true;
+      }
+      if (Date.now() >= deadline) { break; }
+      await sleep(deps.adoptRetryMs);
+      if (gen !== stopGen) { return false; }
+    }
+    refused = claim;
+    winston.warn(`[server-audio] the desktop player (pid ${claim.pid}) claims port ${claim.port}, but nothing answered there as the gui face within ${deps.adoptWaitMs} ms — leaving it alone until its claim changes`);
+    return false;
+  }
+
+  // One adoption at a time: a boot and a tick that both see the claim share
+  // the attempt.
+  function runAdoption(claim) {
+    if (adopting) { return adopting; }
+    const attempt = adopt(claim).finally(() => { if (adopting === attempt) { adopting = null; } });
+    adopting = attempt;
+    return attempt;
+  }
+
+  // One look, every claimPollMs while server audio is on: a claim that
+  // appeared is taken up, an adopted player that is gone is replaced. Stands
+  // aside for a boot in flight (that chain looks for itself) and for an
+  // adoption in flight.
+  function tick() {
+    if (adopting || bootInFlight) { return; }
+    if (!deps.autoBoot()) { stopWatching(); return; }
+    const claim = liveClaim();
+    if (desktop) {
+      if (!sameRun(claim, desktop)) {
+        winston.info(`[server-audio] the desktop player (pid ${desktop.pid}) is gone — the headless engine takes over`);
+        desktop = null;
+        engineAnswering = true;
+        boot().catch(() => {});
+      }
+      return;
+    }
+    if (refused && !sameRun(claim, refused)) {
+      // The refused claim is gone, or is a new one. Forget it — and when
+      // the headless engine died meanwhile (of the port that claimant was
+      // sitting on, most likely: a bind failure), this is its way back.
+      refused = null;
+      if (!engine) {
+        boot().catch(() => {});
+        return;
+      }
+    }
+    if (!claim || sameRun(claim, refused)) { return; }
+    const gen = stopGen;
+    runAdoption(claim).then((ok) => {
+      // Refused: the headless engine the attempt stopped comes back — and
+      // finds its port free, or dies of the same conflict with a line of
+      // its own.
+      if (!ok && gen === stopGen) { return boot(); }
+      return undefined;
+    }).catch(() => {});
+  }
+
+  function startWatching() {
+    if (watcher) { return; }
+    watcher = setInterval(tick, deps.claimPollMs);
+    watcher.unref?.();
+  }
+
+  function stopWatching() {
+    if (watcher) { clearInterval(watcher); watcher = null; }
   }
 
   // ── Engine ────────────────────────────────────────────────────────────────
@@ -203,10 +424,21 @@ export function createController(overrides = {}) {
 
   async function doBoot() {
     const gen = stopGen;
-    if (engine) { return; }
+    if (engine || desktop) { return; }
 
-    // Off means off: nothing is probed, fetched or spawned.
+    // Off means off: nothing is probed, fetched, spawned — or watched.
     if (!deps.autoBoot()) { return; }
+
+    // On: the desktop player's claim is looked at from now on, and one that
+    // is already there is taken up before anything is spawned — a server
+    // starting beside an open player never spawns a headless engine only to
+    // stop it a moment later.
+    startWatching();
+    const claim = liveClaim();
+    if (claim && !sameRun(claim, refused)) {
+      if (await runAdoption(claim)) { return; }
+      if (gen !== stopGen) { return; }
+    }
 
     let bin = findRustBinary();
     if (!bin && deps.canAutoFetch()) {
@@ -241,14 +473,16 @@ export function createController(overrides = {}) {
 
   /**
    * Boot the engine if autoBootServerAudio asks for it (see the module
-   * header). Idempotent and single-flight: while a boot is in progress every
-   * caller awaits the same chain, and once an engine is up further calls
-   * return at once. Resolves when the engine has been spawned (not when it is
-   * ready to answer) or when there is nothing to start. Never rejects for an
-   * engine that merely failed to start; that is logged.
+   * header) — taking the desktop player up on its claim when one is open,
+   * spawning the headless engine otherwise. Idempotent and single-flight:
+   * while a boot is in progress every caller awaits the same chain, and once
+   * an engine is up further calls return at once. Resolves when the engine
+   * has been spawned (not when it is ready to answer) or adopted, or when
+   * there is nothing to start. Never rejects for an engine that merely
+   * failed to start; that is logged.
    */
   function boot() {
-    if (engine) { return Promise.resolve(); }
+    if (engine || desktop) { return Promise.resolve(); }
     if (bootInFlight) { return bootInFlight; }
     const flight = doBoot().finally(() => {
       // Only OUR slot: stop() may already have detached this chain so a
@@ -260,11 +494,27 @@ export function createController(overrides = {}) {
   }
 
   // The synchronous half of stopping: bump the generation, detach the boot in
-  // flight, send the kill. Split out so the process-exit hook can run it
-  // without awaiting anything (trackExit=false: see below).
+  // flight, stop watching the claim, let go of the desktop player, send the
+  // kill. Split out so the process-exit hook can run it without awaiting
+  // anything (trackExit=false: see below).
   function beginStop(trackExit = true) {
     stopGen += 1;
     bootInFlight = null;
+    stopWatching();
+    refused = null;
+    if (desktop) {
+      // Not ours to kill: the person is using it. The server merely stops
+      // driving it.
+      winston.info(`[server-audio] letting go of the desktop player (pid ${desktop.pid}) — it plays on by itself`);
+      desktop = null;
+    }
+    killEngine(trackExit);
+  }
+
+  // Kill the headless engine's live generation and, unless told not to
+  // wait, track its exit in pendingExit (see there). Only the process:
+  // stopGen, the boot in flight and the desktop player are beginStop's.
+  function killEngine(trackExit = true) {
     const gen = engine;
     engine = null;
     if (gen && !gen.ended) {
@@ -282,10 +532,11 @@ export function createController(overrides = {}) {
   }
 
   /**
-   * Stop the engine. Resolves once it has exited (or STOP_WAIT_MS has passed
-   * with the kill still sent) — including an engine that an EARLIER stop()
-   * killed and that is still on its way out — so a restart() that follows
-   * spawns into a free port. Never rejects.
+   * Stop the engine — the headless one is killed, the desktop player merely
+   * let go of. Resolves once a killed engine has exited (or STOP_WAIT_MS has
+   * passed with the kill still sent) — including an engine that an EARLIER
+   * stop() killed and that is still on its way out — so a restart() that
+   * follows spawns into a free port. Never rejects.
    */
   async function stop() {
     beginStop();
@@ -305,8 +556,11 @@ export function createController(overrides = {}) {
 
   // ── Proxy ─────────────────────────────────────────────────────────────────
 
-  // Proxy one request to the engine's loopback HTTP API.
-  function proxyToRust(method, rustPath, body) {
+  // Proxy one request to an engine's loopback HTTP API. `target` names the
+  // port, the token (the desktop player's face wants it on every route but
+  // GET /version; the headless engine, spawned without one, wants none), the
+  // record whose silence counts, and what to call it in the log.
+  function proxyToRust(target, method, rustPath, body) {
     return new Promise((resolve, reject) => {
       const postData = body ? JSON.stringify(body) : '';
       const headers = { 'Content-Type': 'application/json' };
@@ -318,9 +572,10 @@ export function createController(overrides = {}) {
       // play, pause, queue, volume — had been bouncing since the pin moved to
       // the external engine, while the GETs kept working.
       if (postData) { headers['Content-Length'] = Buffer.byteLength(postData); }
+      if (target.token) { headers['x-auth-token'] = target.token; }
       const options = {
         hostname: '127.0.0.1',
-        port: deps.port(),
+        port: target.port,
         path: rustPath,
         method: method,
         headers,
@@ -330,15 +585,15 @@ export function createController(overrides = {}) {
       // The caller gets a generic 503; the real reason (ECONNREFUSED, a reset,
       // a timeout) is logged here, once per outage. A timeout destroys the
       // request, which then also emits 'error' — by then the flag is down, so
-      // the pair logs a single line. Only the LIVE generation's silence is
-      // news: a poll that was in flight when stop() took its engine down fails
-      // too, and that is a restart, not an outage — nor may a stale request
-      // touch the flag of the engine that replaced it.
-      const gen = engine;
+      // the pair logs a single line. Only the LIVE engine's silence is news: a
+      // poll that was in flight when stop() took its engine down fails too,
+      // and that is a restart, not an outage — nor may a stale request touch
+      // the flag of the engine that replaced it.
+      const who = target.who;
       const failed = (why, message) => {
-        if (engine === gen) {
+        if (current() === who) {
           if (engineAnswering) {
-            winston.warn(`[server-audio] mstream-player stopped answering on port ${options.port}: ${why}`);
+            winston.warn(`[server-audio] ${target.label} stopped answering on port ${options.port}: ${why}`);
           }
           engineAnswering = false;
         }
@@ -346,7 +601,7 @@ export function createController(overrides = {}) {
       };
 
       const req = http.request(options, (res) => {
-        if (engine === gen) { engineAnswering = true; }
+        if (current() === who) { engineAnswering = true; }
         let data = '';
         res.on('data', (chunk) => { data += chunk; });
         res.on('end', () => {
@@ -371,10 +626,16 @@ export function createController(overrides = {}) {
     });
   }
 
-  // Proxy to the engine, or reject with a 503 WebError when none is up — see
-  // unavailable() at the top of this file.
+  // Proxy to whichever engine is up — the desktop player first, since while
+  // it is adopted no headless engine runs — or reject with a 503 WebError
+  // when none is; see unavailable() at the top of this file.
   function proxy(method, rustPath, body) {
-    if (engine) { return proxyToRust(method, rustPath, body); }
+    if (desktop) {
+      return proxyToRust({ who: desktop, port: desktop.port, token: desktop.token, label: 'the desktop player' }, method, rustPath, body);
+    }
+    if (engine) {
+      return proxyToRust({ who: engine, port: deps.port(), token: null, label: 'mstream-player' }, method, rustPath, body);
+    }
     return Promise.reject(unavailable('Server audio player is not running'));
   }
 
