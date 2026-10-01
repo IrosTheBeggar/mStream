@@ -38,7 +38,7 @@ documented at:
 - **Desktop player open:** the header comment of
   [player-open-smoke.sh](player-open-smoke.sh) — `--player` against a fake
   bundle with a stub player: a GUI-capable player is opened in a real
-  terminal as `gui --instance-lock <path> --bundled-server <url>`, one that
+  terminal as `gui --instance-lock <path> --serve-port <port> --bundled-server <url>`, one that
   predates the GUI degrades to the web player (kept shut by `--no-open`),
   and a player already holding its instance lock is brought forward instead
   of doubled — with the launcher log naming each decision.

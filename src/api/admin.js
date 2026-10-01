@@ -1886,6 +1886,9 @@ export function setup(mstream) {
     res.json({
       backend: active.backend,
       player: active.player,
+      // Which face answers: 'headless' for the engine this server spawned,
+      // 'desktop' for the open desktop player it adopted, null when none.
+      engine: active.engine,
       // Whether a missing player binary could be fetched for this platform
       // (npm/source installs download it on first autoBoot; musl hosts
       // have no build and report false).

@@ -17,8 +17,11 @@
 # Two legs, each with its own HOME (= its own data home, lock and log) and
 # port:
 #   1. player 9.9.9 (has the GUI): the recorded argv is exactly
-#      `gui --bundled-server http://localhost:<port>`, and launcher.log
-#      says which terminal opened it.
+#      `gui --instance-lock <data home>/desktop-player.lock --serve-port 3333
+#      --bundled-server http://localhost:<port>` (the lock the launcher
+#      hands it; the server's player port, on which its GUI hosts the
+#      control face the server adopts), and launcher.log says which
+#      terminal opened it.
 #   2. player 0.7.0 (predates it): no argv file; the log names the version
 #      gate at boot and the suppressed browser fallback at ServerUp.
 #
@@ -161,7 +164,7 @@ echo "== leg 1: player 9.9.9 has the GUI - the desktop player opens =="
 run_leg gui 9.9.9 3874
 wait_for_log "server is up" 45 || { echo "FAIL leg 1: server never came up"; tail -20 "$LOG" 2>/dev/null; exit 1; }
 i=0; while [ $i -lt 30 ] && [ ! -s "$ARGV" ]; do i=$((i + 1)); sleep 1; done
-if [ -s "$ARGV" ] && [ "$(cat "$ARGV")" = "gui --instance-lock $DATA/desktop-player.lock --bundled-server http://localhost:3874" ]; then
+if [ -s "$ARGV" ] && [ "$(cat "$ARGV")" = "gui --instance-lock $DATA/desktop-player.lock --serve-port 3333 --bundled-server http://localhost:3874" ]; then
     echo "PASS the player was started as: $(cat "$ARGV")"
 else
     echo "FAIL player argv: '$(cat "$ARGV" 2>/dev/null)'"; tail -20 "$LOG" 2>/dev/null; fail=1

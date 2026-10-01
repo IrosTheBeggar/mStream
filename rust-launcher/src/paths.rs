@@ -335,6 +335,50 @@ pub fn player_has_instance_lock(version: [u64; 3]) -> bool {
     version >= INSTANCE_LOCK_MIN_PLAYER_VERSION
 }
 
+/// The first player release whose `gui` face hosts the control API
+/// (`gui --serve-port <port>`, the player repo's gui/control module): the
+/// face mStream's server adopts as its server-audio engine while the
+/// desktop player is open (src/state/server-audio.js), so the machine has
+/// one player. Planned as the release after 0.8.1; if it ships under
+/// another number, only this constant moves — with the pin bump that
+/// adopts that release. Below it the launcher passes no port: the flag
+/// would be an unknown argument to an older player, and the GUI would not
+/// open at all.
+pub const CONTROL_FACE_MIN_PLAYER_VERSION: [u64; 3] = [0, 9, 0];
+
+/// Whether a player of this version hosts the control face under `gui`.
+pub fn player_has_control_face(version: [u64; 3]) -> bool {
+    version >= CONTROL_FACE_MIN_PLAYER_VERSION
+}
+
+/// The server-audio engine's port when the config does not say
+/// (src/state/config.js: `rustPlayerPort`, default 3333).
+pub const DEFAULT_PLAYER_PORT: u16 = 3333;
+
+/// The port the desktop player hosts its control face on: the server's
+/// configured player port, `rustPlayerPort`. Always — whether or not
+/// autoBootServerAudio is on. That port is mStream's player port by
+/// configuration whichever engine holds it, so the GUI needs no port of its
+/// own, and the switch decides only whether the server takes the desktop
+/// player up on its offer. Read the way read_endpoint reads `port` (the
+/// same file, BOM and all); a value the server's schema would refuse — it
+/// wants an integer 1..=65535 — falls back to the default the server itself
+/// falls back to. Read once at boot with the rest of the player's facts; an
+/// admin's port change reaches the next launcher session, and the server
+/// adopts by the port the player's sidecar names regardless.
+pub fn rust_player_port(config: &Path) -> u16 {
+    std::fs::read_to_string(config)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s.trim_start_matches('\u{feff}')).ok())
+        .as_ref()
+        .and_then(|v| v.get("rustPlayerPort"))
+        .and_then(joi_port)
+        // joi_port admits 0 (the listen port's schema does); this one's
+        // schema starts at 1.
+        .filter(|port| *port >= 1)
+        .unwrap_or(DEFAULT_PLAYER_PORT)
+}
+
 /// The desktop player's instance lock: one per data home — one per server
 /// install — next to launcher.lock. The launcher hands the path to the
 /// player, which holds an exclusive lock on it for its lifetime, and tries
@@ -740,6 +784,28 @@ mod tests {
         assert!(!player_has_instance_lock([0, 7, 0]));
         assert!(player_has_instance_lock(INSTANCE_LOCK_MIN_PLAYER_VERSION));
         assert!(player_has_instance_lock([1, 0, 0]));
+    }
+
+    #[test]
+    fn the_control_face_gates_on_the_player_and_its_port_is_the_servers() {
+        assert!(!player_has_control_face([0, 8, 1]), "0.8.1 has the GUI and the lock, not the face");
+        assert!(player_has_control_face(CONTROL_FACE_MIN_PLAYER_VERSION));
+        assert!(player_has_control_face([1, 0, 0]));
+
+        let dir = std::env::temp_dir().join(format!("mstream-launcher-player-port-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("default.json");
+        // No file, no key, and values the server's schema refuses all mean
+        // the default — the port the server itself would then use.
+        assert_eq!(rust_player_port(&p), DEFAULT_PLAYER_PORT, "no config yet");
+        for text in ["{}", r#"{"rustPlayerPort": 0}"#, r#"{"rustPlayerPort": 70000}"#, r#"{"rustPlayerPort": "lots"}"#, "not json"] {
+            std::fs::write(&p, text).unwrap();
+            assert_eq!(rust_player_port(&p), DEFAULT_PLAYER_PORT, "{text}");
+        }
+        std::fs::write(&p, "\u{feff}{ \"rustPlayerPort\": 4444, \"port\": 3000 }").unwrap();
+        assert_eq!(rust_player_port(&p), 4444, "read like the server reads it, BOM and all");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

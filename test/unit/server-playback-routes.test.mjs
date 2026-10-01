@@ -16,6 +16,9 @@
  *     and the response mapper only runs on a success
  *   - no absolute filesystem path reaches a client: /status's `file` is
  *     translated like /queue always was
+ *   - the desktop player, adopted as the engine, speaks library paths on both
+ *     sides: the caller's paths go to it untranslated (once their access was
+ *     checked) and its answers come back untranslated (the second describe)
  *
  * No server, no database, no backend: the proxy is a fake and `toVpath` is
  * injected.
@@ -24,7 +27,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { proxyRoute, statusForClient, queueForClient, UNAVAILABLE_PAGE } from '../../src/api/server-playback.js';
+import { proxyRoute, statusForClient, queueForClient, pathForEngine, UNAVAILABLE_PAGE } from '../../src/api/server-playback.js';
 import WebError from '../../src/util/web-error.js';
 
 // Just enough of an Express response to record what a handler answered.
@@ -142,11 +145,11 @@ describe('proxyRoute', () => {
 });
 
 describe('statusForClient', () => {
-  const active = { backend: 'rust', player: 'mstream-player' };
+  const active = { backend: 'rust', player: 'mstream-player', engine: 'headless' };
 
   test('translates the current track and names the backend', () => {
     const out = statusForClient({ playing: true, file: 'C:\\Music\\Artist\\song.mp3', queue_index: 2 }, active, toVpath);
-    assert.deepEqual(out, { playing: true, file: 'lib/song.mp3', queue_index: 2, backend: 'rust', player: 'mstream-player' });
+    assert.deepEqual(out, { playing: true, file: 'lib/song.mp3', queue_index: 2, backend: 'rust', player: 'mstream-player', engine: 'headless' });
   });
 
   test('no absolute path survives, on either platform’s shape', () => {
@@ -197,5 +200,32 @@ describe('the unavailable page', () => {
     // The engine is the only backend: installing a player is no longer a way out.
     assert.ok(!/\b(mpv|MPD|VLC|MPlayer)\b/.test(UNAVAILABLE_PAGE));
     assert.match(UNAVAILABLE_PAGE, /href="\/server-remote">Retry</);
+  });
+});
+
+// ── The desktop player as the engine: library paths pass through ────────────
+
+describe('the desktop player as the engine', () => {
+  const desktop = { backend: 'rust', player: 'mstream-player', engine: 'desktop' };
+  const headless = { backend: 'rust', player: 'mstream-player', engine: 'headless' };
+  const nothing = { backend: null, player: null, engine: null };
+
+  test('pathForEngine(): the headless engine gets the absolute path, the desktop player the library path as it came', () => {
+    assert.equal(pathForEngine('lib/song.mp3', '/music/song.mp3', headless), '/music/song.mp3');
+    assert.equal(pathForEngine('lib/song.mp3', '/music/song.mp3', desktop), 'lib/song.mp3');
+    assert.equal(pathForEngine('lib/song.mp3', '/music/song.mp3', nothing), '/music/song.mp3', 'no engine up: the headless shape, for the 503 that follows');
+  });
+
+  test('statusForClient() and queueForClient() leave the desktop player’s library paths alone and say which engine answered', () => {
+    const status = { playing: true, file: 'lib/song.mp3', queue_index: 0 };
+    assert.deepEqual(statusForClient(status, desktop, toVpath), { ...status, backend: 'rust', player: 'mstream-player', engine: 'desktop' });
+    assert.deepEqual(
+      statusForClient({ ...status, file: '/music/song.mp3' }, headless, toVpath),
+      { ...status, file: 'lib/song.mp3', backend: 'rust', player: 'mstream-player', engine: 'headless' },
+      'the headless engine’s absolute path is translated as ever',
+    );
+    assert.deepEqual(queueForClient({ queue: ['lib/a.mp3', 'lib/b.mp3'] }, toVpath, desktop), { queue: ['lib/a.mp3', 'lib/b.mp3'] });
+    assert.deepEqual(queueForClient({ queue: ['/music/a.mp3'] }, toVpath, headless), { queue: ['lib/a.mp3'] });
+    assert.deepEqual(queueForClient({ queue: ['/music/a.mp3'] }, toVpath), { queue: ['lib/a.mp3'] }, 'no engine named: translated, as always');
   });
 });

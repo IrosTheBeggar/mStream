@@ -198,7 +198,15 @@ hands it (player 0.8.0 and later), so a second click, a re-click of the app
 icon, or a second launch brings the open player forward instead of opening
 another: on macOS the bundled console (or Terminal.app) is activated, on
 Windows the window is raised by its title, and on Linux `wmctrl` or
-`xdotool` does it when one is installed.
+`xdotool` does it when one is installed. With server audio on
+(`autoBootServerAudio`), the open desktop player is also the server-audio
+engine — one player per server: the launcher hands the player the server's
+player port (`rustPlayerPort`, default 3333; player 0.9.0 and later host
+their control API there whenever they run), the server stops its headless
+engine and drives the desktop player instead while it is open, and starts
+the headless engine again when it closes. The switch decides only whether
+the server takes the desktop player up on it; the server remote's queue
+starts empty on either hand-over.
 
 **Terminal users lose nothing.** The same desktop binary run from a terminal
 behaves exactly like the server itself (same flags, output, and exit codes) —
