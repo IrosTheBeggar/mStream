@@ -531,15 +531,8 @@ pub fn open_player_terminal(
             return Ok("wt.exe".into());
         }
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        let mut cmd = std::process::Command::new(player_bin);
-        cmd.args(page.args());
-        if let Some(lock) = page.instance_lock() {
-            cmd.arg("--instance-lock").arg(lock);
-        }
-        if let Some(port) = page.serve_port() {
-            cmd.arg("--serve-port").arg(port.to_string());
-        }
-        cmd.args([page.server_flag(), server_url])
+        std::process::Command::new(player_bin)
+            .args(player_argv(&page, server_url, false))
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
             .map(|_| "conhost fallback".into())
@@ -574,18 +567,97 @@ fn wt_invocation(page: &PlayerPage, player_bin: &std::path::Path, server_url: &s
     let mut argv: Vec<std::ffi::OsString> =
         vec!["-w".into(), "new".into(), "--size".into(), format!("{cols},{rows}").into()];
     argv.push(player_bin.as_os_str().to_owned());
-    argv.extend(page.args().into_iter().map(std::ffi::OsString::from));
-    if let Some(lock) = page.instance_lock() {
-        argv.push("--instance-lock".into());
-        argv.push(lock.as_os_str().to_owned());
-    }
-    if let Some(port) = page.serve_port() {
-        argv.push("--serve-port".into());
-        argv.push(port.to_string().into());
-    }
-    argv.push(page.server_flag().into());
-    argv.push(server_url.into());
+    argv.extend(player_argv(page, server_url, false));
     argv
+}
+
+/// Whether this session can show a window at all — the window route's
+/// precondition beside the probe's flavour. macOS and Windows always can
+/// (a launcher with a tray has a desktop); Linux only with an X11 or
+/// Wayland display to draw on — a headless or SSH session without one goes
+/// the terminal way, as before.
+pub fn window_display_available() -> bool {
+    display_available_on(std::env::consts::OS, |name| std::env::var_os(name))
+}
+
+/// The pure half: `os` is std::env::consts::OS, `var` the environment. An
+/// exported-but-empty variable is no display (the same "empty means unset"
+/// rule paths::env_dir applies).
+pub(crate) fn display_available_on(os: &str, var: impl Fn(&str) -> Option<std::ffi::OsString>) -> bool {
+    match os {
+        "macos" | "windows" => true,
+        _ => ["DISPLAY", "WAYLAND_DISPLAY"].into_iter().any(|name| var(name).is_some_and(|v| !v.is_empty())),
+    }
+}
+
+/// Windows: no console window for the child (the desktop exe is
+/// console-subsystem, and a GUI launcher's console child would otherwise
+/// flash one up for its lifetime) — the exe still GETS a console, hidden,
+/// which its CLI half expects to hold (DETACHED_PROCESS would leave it
+/// none at all, so it is never used here).
+#[cfg(any(windows, test))]
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+/// Windows: the child leads a process group of its own, so a console
+/// Ctrl+C/Ctrl+Break aimed at the launcher's group never reaches it.
+#[cfg(any(windows, test))]
+pub(crate) const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+/// Windows: never this (see CREATE_NO_WINDOW); named so a test can say so.
+#[cfg(test)]
+pub(crate) const DETACHED_PROCESS: u32 = 0x0000_0008;
+/// The window route's creation flags on Windows.
+#[cfg(any(windows, test))]
+pub(crate) const WINDOW_CREATION_FLAGS: u32 = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
+/// Unix: the process group the window route's child joins — 0 is a NEW
+/// group, led by the child itself, so a signal to the launcher's group (a
+/// Ctrl+C in the terminal that ran it, a smoke's group kill) never takes
+/// the player's window with it.
+#[cfg(any(unix, test))]
+pub(crate) const WINDOW_PROCESS_GROUP: i32 = 0;
+
+/// The window route: start the DESKTOP player straight into its own window
+/// (`gui --window …`, the same values the terminal route passes — see
+/// player_words), detached from the launcher: stdin null, stdout and stderr
+/// to `log_file` (truncated here: one window's session per file — the
+/// caller rotates the previous one aside), its own process group, and on
+/// Windows no console window. Ok hands back the child for the caller's
+/// watcher, which decides what an early exit means (exit 3: no window could
+/// open; exit 0: refused by the instance lock); the launcher itself never
+/// waits on it.
+pub fn spawn_player_window(
+    player_bin: &std::path::Path,
+    server_url: &str,
+    page: &PlayerPage,
+    log_file: &std::path::Path,
+) -> Result<std::process::Child, String> {
+    use std::process::{Command, Stdio};
+    let out = std::fs::File::options()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(log_file)
+        .map_err(|e| format!("open {}: {e}", log_file.display()))?;
+    let err = out.try_clone().map_err(|e| format!("dup {}: {e}", log_file.display()))?;
+    let mut cmd = Command::new(player_bin);
+    cmd.args(player_argv(page, server_url, true))
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(out))
+        .stderr(Stdio::from(err));
+    // The player is an app of its own (io.mstream.player, its own Dock
+    // icon), not part of the mStream.app bundle the launcher runs as: drop
+    // the bundle marker LaunchServices stamped into our env (server::spawn
+    // does the same for the server).
+    cmd.env_remove("__CFBundleIdentifier");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(WINDOW_PROCESS_GROUP);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(WINDOW_CREATION_FLAGS);
+    }
+    cmd.spawn().map_err(|e| format!("spawn {}: {e}", player_bin.display()))
 }
 
 /// Bring the open desktop player's window forward — the answer to "Open
@@ -595,15 +667,18 @@ fn wt_invocation(page: &PlayerPage, player_bin: &std::path::Path, server_url: &s
 /// picks the way. Ok carries what was activated, Err why nothing could be
 /// — a focus that fails is a log line, never a second player.
 ///
-/// macOS activates the app hosting the player: the bundled console when
-/// the player runs in Ghostty AND our console is what is running (an
-/// `open -a` on a console that is not running would LAUNCH a plain Ghostty
-/// with the user's own config), Terminal.app for an Apple Terminal host
-/// (all its windows come forward; close enough). Windows finds the window
-/// by the title the player sets and raises it — in Windows Terminal that
-/// is the window whose active tab is the player's. Linux asks `wmctrl` or
-/// `xdotool` when one is installed. `console` is the bundled console, macOS
-/// only.
+/// macOS activates the app hosting the player: the player itself when it
+/// draws in its own window (host `window`: the desktop build, activated
+/// by its pid), the bundled console when the player runs in Ghostty AND
+/// our console is what is running (an `open -a` on a console that is not
+/// running would LAUNCH a plain Ghostty with the user's own config),
+/// Terminal.app for an Apple Terminal host (all its windows come forward;
+/// close enough). Windows raises the top-level window the sidecar's pid
+/// owns when there is one (the desktop build's own window), else finds the
+/// window by the title the player sets — in Windows Terminal that is the
+/// window whose active tab is the player's. Linux asks `wmctrl` or
+/// `xdotool` when one is installed (by title, which the desktop build's
+/// window carries too). `console` is the bundled console, macOS only.
 pub fn focus_player(
     who: Option<&crate::paths::PlayerSidecar>,
     console: Option<&crate::paths::ConsoleLaunch>,
@@ -613,6 +688,11 @@ pub fn focus_player(
     {
         let ours_running = console.is_some_and(console_running);
         match mac_focus_plan(host, ours_running) {
+            MacFocus::Window => {
+                let pid = who.expect("the plan names the window only from a sidecar").pid;
+                activate_pid(pid)?;
+                Ok(format!("the player's own window (pid {pid})"))
+            }
             MacFocus::Console => {
                 let app = &console.expect("the plan names the console only when one exists").ghostty_app;
                 open_app(app.as_os_str())?;
@@ -631,20 +711,31 @@ pub fn focus_player(
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             FindWindowW, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE,
         };
-        let title: Vec<u16> = "mStream Player".encode_utf16().chain(std::iter::once(0)).collect();
-        let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
-        if hwnd.is_null() {
-            return Err(format!(
-                "no window titled 'mStream Player' to raise (the player runs under {host}; in Windows Terminal its tab must be the active one)"
-            ));
-        }
+        // The pid first: the desktop build's window belongs to the player's
+        // own process, so the sidecar's pid names it exactly (a terminal-
+        // hosted player's window belongs to its terminal, so the search
+        // comes back empty there and the title has it, as before).
+        let by_pid = who.and_then(|w| top_level_window_of(w.pid));
+        let (hwnd, what) = match by_pid {
+            Some(hwnd) => (hwnd, format!("the player's own window (pid {})", who.map(|w| w.pid).unwrap_or(0))),
+            None => {
+                let title: Vec<u16> = "mStream Player".encode_utf16().chain(std::iter::once(0)).collect();
+                let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+                if hwnd.is_null() {
+                    return Err(format!(
+                        "no window titled 'mStream Player' to raise (the player runs under {host}; in Windows Terminal its tab must be the active one)"
+                    ));
+                }
+                (hwnd, "the 'mStream Player' window".to_string())
+            }
+        };
         unsafe {
             if IsIconic(hwnd) != 0 {
                 ShowWindow(hwnd, SW_RESTORE);
             }
             SetForegroundWindow(hwnd);
         }
-        Ok("the 'mStream Player' window".into())
+        Ok(what)
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -673,6 +764,8 @@ pub fn focus_player(
 #[cfg(any(target_os = "macos", test))]
 #[derive(Debug, PartialEq, Eq)]
 enum MacFocus {
+    /// The player's own window (host `window`): activate its pid.
+    Window,
     Console,
     Terminal,
     Nothing(String),
@@ -681,6 +774,7 @@ enum MacFocus {
 #[cfg(any(target_os = "macos", test))]
 fn mac_focus_plan(host: &str, console_running: bool) -> MacFocus {
     match host {
+        "window" => MacFocus::Window,
         "ghostty" if console_running => MacFocus::Console,
         "ghostty" => MacFocus::Nothing(
             "the player runs in a Ghostty that is not the bundled console (activating one that is not running would launch a plain Ghostty)".into(),
@@ -688,6 +782,91 @@ fn mac_focus_plan(host: &str, console_running: bool) -> MacFocus {
         "apple-terminal" => MacFocus::Terminal,
         other => MacFocus::Nothing(format!("the player runs under {}; nothing to activate", if other.is_empty() { "an unknown terminal" } else { other })),
     }
+}
+
+/// Bring the process `pid` to the front by its NSRunningApplication — the
+/// desktop player draws in a window of its own, so the app to activate is
+/// the player itself. No AppleEvents (System Events would ask the user for
+/// automation consent first), no `open -a` (the player is not a bundle the
+/// way LaunchServices names apps). The same steps the player's own second
+/// launch takes (its src/desktop.rs focus_window_holder): on macOS 14 and
+/// later activation is cooperative — an app may be activated only by one
+/// that yields to it, and a plain `activateWithOptions:` from outside
+/// answers YES and moves nothing — so the launcher (an NSApplication
+/// already, tao's) yields to the holder and asks for it from itself. Off
+/// the main thread (the window watcher) the yield is skipped; the request
+/// still goes out.
+#[cfg(target_os = "macos")]
+fn activate_pid(pid: u32) -> Result<(), String> {
+    use objc2::runtime::NSObjectProtocol;
+    use objc2::{sel, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSApplicationActivationOptions, NSRunningApplication};
+
+    let pid_t = i32::try_from(pid).map_err(|_| format!("pid {pid} out of range"))?;
+    if pid == std::process::id() {
+        return Err(format!("pid {pid} is the launcher itself"));
+    }
+    let holder = NSRunningApplication::runningApplicationWithProcessIdentifier(pid_t)
+        .ok_or_else(|| format!("no running application with pid {pid}"))?;
+    if holder.isTerminated() {
+        return Err(format!("pid {pid} has terminated"));
+    }
+    let this = NSRunningApplication::currentApplication();
+    let asked = if this.respondsToSelector(sel!(activateFromApplication:options:)) {
+        if let Some(main) = MainThreadMarker::new() {
+            NSApplication::sharedApplication(main).yieldActivationToApplication(&holder);
+        }
+        holder.activateFromApplication_options(&this, NSApplicationActivationOptions::ActivateAllWindows)
+    } else {
+        // Before macOS 14 a request that ignores the frontmost app is
+        // honoured (the flag is deprecated, and inert, from 14 on).
+        #[allow(deprecated)]
+        let options = NSApplicationActivationOptions::ActivateAllWindows
+            | NSApplicationActivationOptions::ActivateIgnoringOtherApps;
+        holder.activateWithOptions(options)
+    };
+    if asked {
+        Ok(())
+    } else {
+        Err(format!("AppKit refused to activate pid {pid}"))
+    }
+}
+
+/// The first visible, unowned top-level window `pid` owns — the desktop
+/// player's own window (winit's hidden helper windows are not visible; a
+/// dialog is owned). None when the pid owns none, which is every
+/// terminal-hosted player (its window is its terminal's).
+#[cfg(windows)]
+fn top_level_window_of(pid: u32) -> Option<windows_sys::Win32::Foundation::HWND> {
+    use windows_sys::core::BOOL;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindow, GetWindowThreadProcessId, IsWindowVisible, GW_OWNER,
+    };
+    struct Search {
+        pid: u32,
+        found: HWND,
+    }
+    unsafe extern "system" fn visit(hwnd: HWND, search: LPARAM) -> BOOL {
+        // SAFETY: `search` is the `&mut Search` EnumWindows was handed,
+        // alive for the whole enumeration; the calls take any HWND.
+        unsafe {
+            let search = &mut *(search as *mut Search);
+            let mut owner = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut owner);
+            if owner == search.pid && IsWindowVisible(hwnd) != 0 && GetWindow(hwnd, GW_OWNER).is_null() {
+                search.found = hwnd;
+                return 0;
+            }
+        }
+        1
+    }
+    if pid == 0 {
+        return None;
+    }
+    let mut search = Search { pid, found: std::ptr::null_mut() };
+    unsafe { EnumWindows(Some(visit), &mut search as *mut Search as LPARAM) };
+    (!search.found.is_null()).then_some(search.found)
 }
 
 /// Whether the bundled console's own binary is running — the guard before
@@ -1221,18 +1400,56 @@ fn sh_quote_str(s: &str) -> String {
 #[cfg(unix)]
 fn player_shell_words(page: &PlayerPage, player_bin: &std::path::Path, server_url: &str) -> String {
     let mut words = vec![sh_quote(player_bin)];
-    words.extend(page.args().into_iter().map(String::from));
+    words.extend(player_words(page, server_url, false).into_iter().map(|w| {
+        if w.data {
+            sh_quote_str(&w.text.to_string_lossy())
+        } else {
+            w.text.to_string_lossy().into_owned()
+        }
+    }));
+    words.join(" ")
+}
+
+/// One word of a player launch's argv after the binary. `data` marks the
+/// words that come from outside this code — the lock's path, the server's
+/// URL — which the sh line single-quotes; the rest are the page's static
+/// words, flags and port numbers, which never need it.
+struct PlayerWord {
+    text: std::ffi::OsString,
+    // Read by the sh line only; Windows hosts take argv elements.
+    #[cfg_attr(windows, allow(dead_code))]
+    data: bool,
+}
+
+/// THE argv of a player launch, after the binary — shared by every route
+/// so they cannot drift: the sh line (macOS .command, bundled console,
+/// Linux chain), wt.exe, the conhost fallback, and the window route.
+/// `<page words> [--window] [--instance-lock <path>] [--serve-port <port>]
+/// <server flag> <url>`. `window` adds the one word the window route
+/// differs by, right after the page's own (`gui --window`); every value
+/// is the terminal route's.
+fn player_words(page: &PlayerPage, server_url: &str, window: bool) -> Vec<PlayerWord> {
+    let flag = |s: &str| PlayerWord { text: s.into(), data: false };
+    let mut words: Vec<PlayerWord> = page.args().into_iter().map(flag).collect();
+    if window {
+        words.push(flag("--window"));
+    }
     if let Some(lock) = page.instance_lock() {
-        words.push("--instance-lock".into());
-        words.push(sh_quote(lock));
+        words.push(flag("--instance-lock"));
+        words.push(PlayerWord { text: lock.as_os_str().to_owned(), data: true });
     }
     if let Some(port) = page.serve_port() {
-        words.push("--serve-port".into());
-        words.push(port.to_string());
+        words.push(flag("--serve-port"));
+        words.push(flag(&port.to_string()));
     }
-    words.push(page.server_flag().into());
-    words.push(sh_quote_str(server_url));
-    words.join(" ")
+    words.push(flag(page.server_flag()));
+    words.push(PlayerWord { text: server_url.into(), data: true });
+    words
+}
+
+/// player_words as plain argv elements (Command::args, wt.exe's tail).
+fn player_argv(page: &PlayerPage, server_url: &str, window: bool) -> Vec<std::ffi::OsString> {
+    player_words(page, server_url, window).into_iter().map(|w| w.text).collect()
 }
 
 #[cfg(test)]
@@ -1388,9 +1605,111 @@ mod page_tests {
         assert!(matches!(super::mac_focus_plan("ghostty", false), MacFocus::Nothing(_)));
         assert_eq!(super::mac_focus_plan("apple-terminal", false), MacFocus::Terminal);
         assert_eq!(super::mac_focus_plan("apple-terminal", true), MacFocus::Terminal);
-        for other in ["iterm", "windows-terminal", "conhost", "unknown", ""] {
+        // The desktop build in its own window: the player itself, by pid —
+        // whether or not our console runs.
+        assert_eq!(super::mac_focus_plan("window", false), MacFocus::Window);
+        assert_eq!(super::mac_focus_plan("window", true), MacFocus::Window);
+        for other in ["iterm", "windows-terminal", "conhost", "unknown", "", "windows", "window-terminal"] {
             assert!(matches!(super::mac_focus_plan(other, true), MacFocus::Nothing(_)), "{other}");
         }
+    }
+
+    #[test]
+    fn the_window_route_passes_the_terminal_routes_values_plus_window() {
+        let page = PlayerPage::Player { instance_lock: Some("/Application Support/mStream/desktop-player.lock".into()), serve_port: Some(3333) };
+        let argv = |window: bool| -> Vec<String> {
+            super::player_argv(&page, "http://localhost:3000", window).iter().map(|a| a.to_string_lossy().into_owned()).collect()
+        };
+        // The terminal route's argv, the one every terminal host runs.
+        assert_eq!(
+            argv(false),
+            ["gui", "--instance-lock", "/Application Support/mStream/desktop-player.lock", "--serve-port", "3333", "--bundled-server", "http://localhost:3000"]
+        );
+        // The window route: the same values, `--window` right after `gui`.
+        assert_eq!(
+            argv(true),
+            ["gui", "--window", "--instance-lock", "/Application Support/mStream/desktop-player.lock", "--serve-port", "3333", "--bundled-server", "http://localhost:3000"]
+        );
+        let mut without: Vec<String> = argv(true);
+        without.retain(|w| w != "--window");
+        assert_eq!(without, argv(false), "--window is the only difference");
+        // A player without the lock or the face: still just --window more.
+        let bare = PlayerPage::Player { instance_lock: None, serve_port: None };
+        let words: Vec<String> = super::player_argv(&bare, "http://x:1", true).iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(words, ["gui", "--window", "--bundled-server", "http://x:1"]);
+        // The sh line still quotes exactly the data words (the lock, the
+        // URL) and is built from the same list.
+        #[cfg(unix)]
+        assert_eq!(
+            super::player_shell_words(&page, std::path::Path::new("/p"), "http://localhost:3000"),
+            "'/p' gui --instance-lock '/Application Support/mStream/desktop-player.lock' --serve-port 3333 --bundled-server 'http://localhost:3000'"
+        );
+    }
+
+    #[test]
+    fn the_window_route_needs_a_display_only_on_linux() {
+        use std::ffi::OsString;
+        let none = |_: &str| -> Option<OsString> { None };
+        assert!(super::display_available_on("macos", none));
+        assert!(super::display_available_on("windows", none));
+        assert!(!super::display_available_on("linux", none), "a headless Linux session goes the terminal way");
+        let only = |key: &'static str, val: &'static str| move |name: &str| (name == key).then(|| OsString::from(val));
+        assert!(super::display_available_on("linux", only("DISPLAY", ":0")));
+        assert!(super::display_available_on("linux", only("WAYLAND_DISPLAY", "wayland-0")));
+        assert!(!super::display_available_on("linux", only("DISPLAY", "")), "empty means unset");
+        assert!(!super::display_available_on("freebsd", only("XDG_SESSION_TYPE", "x11")));
+    }
+
+    #[test]
+    fn the_window_routes_spawn_flags() {
+        // Windows: no console window, a process group of its own — and
+        // never DETACHED_PROCESS: the desktop exe is console-subsystem and
+        // its CLI half expects a console handle.
+        assert_eq!(super::CREATE_NO_WINDOW, 0x0800_0000);
+        assert_eq!(super::CREATE_NEW_PROCESS_GROUP, 0x0000_0200);
+        assert_eq!(super::WINDOW_CREATION_FLAGS, 0x0800_0200);
+        assert_eq!(super::WINDOW_CREATION_FLAGS & super::DETACHED_PROCESS, 0);
+        // Unix: process_group(0) — a new group led by the child.
+        assert_eq!(super::WINDOW_PROCESS_GROUP, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_window_route_spawns_detached_into_its_log() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mstream-launcher-window-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A stand-in that reports its argv, its stdin and its process group
+        // on stdout and stderr, then exits 3 (no window).
+        let stub = dir.join("mstream-player");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\necho \"argv: $*\"\nif read line; then echo \"stdin: $line\"; else echo 'stdin: eof'; fi\necho \"pgid: $(ps -o pgid= -p $$ | tr -d ' ')\" >&2\nexit 3\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let log = dir.join("desktop-player.log");
+        std::fs::write(&log, "a previous session's output\n").unwrap();
+        let page = PlayerPage::Player { instance_lock: Some(dir.join("desktop-player.lock")), serve_port: Some(3333) };
+        let mut child = super::spawn_player_window(&stub, "http://localhost:3000", &page, &log).unwrap();
+        let pid = child.id();
+        let status = child.wait().unwrap();
+        assert_eq!(status.code(), Some(3));
+        let out = std::fs::read_to_string(&log).unwrap();
+        assert!(!out.contains("previous session"), "the file is truncated per open: {out}");
+        assert!(
+            out.contains(&format!(
+                "argv: gui --window --instance-lock {} --serve-port 3333 --bundled-server http://localhost:3000",
+                dir.join("desktop-player.lock").display()
+            )),
+            "{out}"
+        );
+        assert!(out.contains("stdin: eof"), "stdin is null: {out}");
+        assert!(out.contains(&format!("pgid: {pid}")), "the child leads a process group of its own: {out}");
+        // A binary that cannot be spawned is an Err, never a panic.
+        assert!(super::spawn_player_window(&dir.join("missing"), "http://x:1", &page, &log).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

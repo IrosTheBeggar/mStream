@@ -104,8 +104,18 @@ pub fn run(args: LauncherArgs) -> ! {
     // its GUI hosts the control face the server adopts as its server-audio
     // engine — on the server's configured player port, always
     // (paths::rust_player_port).
-    let desktop_player = player_bin.as_deref().and_then(|p| match paths::player_version(p) {
-        Some(v) if paths::player_has_gui(v) => {
+    // The same run's second line says which build it is (paths::PlayerProbe):
+    // a desktop build opens straight into a window of its own where this
+    // session can show one, a terminal build in a terminal as before.
+    let desktop_player = player_bin.as_deref().and_then(|p| match paths::player_probe(p) {
+        Some(paths::PlayerProbe { version: v, desktop }) if paths::player_has_gui(v) => {
+            if desktop {
+                log.line(&format!(
+                    "player {} is a desktop build - the player item opens it in its own window{}",
+                    paths::version_label(v),
+                    if platform::window_display_available() { "" } else { " once there is a display (none in this session: the terminal route)" }
+                ));
+            }
             if !paths::player_has_control_face(v) {
                 log.line(&format!(
                     "player {} has no control face (needs {}) - server audio keeps its headless engine while the player is open",
@@ -117,9 +127,10 @@ pub fn run(args: LauncherArgs) -> ! {
                 bin: p.to_path_buf(),
                 instance_lock: paths::player_has_instance_lock(v).then(|| paths::desktop_player_lock(&data_home)),
                 serve_port: paths::player_has_control_face(v).then(|| paths::rust_player_port(&config)),
+                desktop,
             })
         }
-        Some(v) => {
+        Some(paths::PlayerProbe { version: v, .. }) => {
             log.line(&format!(
                 "player {} predates the GUI (needs {}) - the player item opens the web player",
                 paths::version_label(v),
@@ -178,14 +189,19 @@ pub fn run(args: LauncherArgs) -> ! {
             // own process either way — nothing to ask the other instance.
             // An open player is brought forward, not doubled (its lock).
             let fallback = (!args.no_open).then(|| paths::browse_target(&config, &ep));
-            open_desktop_player(
+            // This process exits next: a window route's watch must settle
+            // first, or its fallback (exit 3: the terminal route) and its
+            // focus (exit 0) would die with us.
+            if let Some(watch) = open_desktop_player(
                 desktop_player.as_ref(),
                 &paths::server_url(&ep),
                 &data_home,
                 console.as_ref(),
                 fallback.as_deref(),
                 &log,
-            );
+            ) {
+                watch.settle();
+            }
         } else if !args.autostarted && !args.no_open && !args.takeover {
             // A plain second launch — the app icon clicked again on Windows
             // or Linux, where that starts a second process (macOS hands the
@@ -194,14 +210,16 @@ pub fn run(args: LauncherArgs) -> ! {
             // when it is already open, the web player where there is none.
             log.line("second launch - opening the desktop player");
             let fallback = paths::browse_target(&config, &ep);
-            open_desktop_player(
+            if let Some(watch) = open_desktop_player(
                 desktop_player.as_ref(),
                 &paths::server_url(&ep),
                 &data_home,
                 console.as_ref(),
                 Some(&fallback),
                 &log,
-            );
+            ) {
+                watch.settle();
+            }
         }
         std::process::exit(0);
     }
@@ -1035,22 +1053,47 @@ fn room_webapp_url(server_url: &str, room: platform::AdminRoom) -> String {
 /// and tried before one (desktop_player_running) — and, when its GUI hosts
 /// the control face, the port to host it on (paths::rust_player_port):
 /// the server's player port, so the server can adopt the open player as
-/// its server-audio engine.
+/// its server-audio engine. `desktop`: the probe named a desktop build
+/// (paths::PlayerProbe), which opens in a window of its own (the window
+/// route) wherever this session can show one.
+#[derive(Clone)]
 struct DesktopPlayer {
     bin: PathBuf,
     instance_lock: Option<PathBuf>,
     serve_port: Option<u16>,
+    desktop: bool,
 }
 
-/// Open the desktop player — the bundled player's GUI face in a terminal
-/// window of its own, at its size, with this server as its bundled server
-/// — or bring it forward when it is already open (its instance lock is
-/// held: focus, never a second window) — or, when this install has no
-/// GUI-capable player or no terminal opened, the web player in the browser
-/// (`fallback`: None where the browser must stay shut, i.e. under
-/// --no-open; a menu click always passes one). Shared by the tray item, the
-/// --player flag, the macOS re-click and the second-launch path, so every
-/// gesture logs and degrades the same way.
+impl DesktopPlayer {
+    /// The player page every route opens — the window route adds only
+    /// `--window` to it (platform::player_words).
+    fn page(&self) -> platform::PlayerPage {
+        platform::PlayerPage::Player { instance_lock: self.instance_lock.clone(), serve_port: self.serve_port }
+    }
+}
+
+/// Where the window route's player writes its stdout and stderr: one file
+/// in the launcher's logs dir, rotated to `.1` before every open (each
+/// window's session gets the file to itself, the previous one is kept for
+/// diagnosis, and nothing grows past one session).
+fn player_window_log(data_home: &Path) -> PathBuf {
+    data_home.join("logs").join("desktop-player.log")
+}
+
+/// Open the desktop player — a DESKTOP build straight into a window of its
+/// own (the window route: spawned detached, watched for its first
+/// WINDOW_WATCH by a thread of its own), a terminal build (or a desktop
+/// build in a session with no display, or one whose window could not open)
+/// as the GUI face in a terminal window of its own, at its size, with this
+/// server as its bundled server — or bring it forward when it is already
+/// open (its instance lock is held: focus, never a second window) — or,
+/// when this install has no GUI-capable player or no terminal opened, the
+/// web player in the browser (`fallback`: None where the browser must stay
+/// shut, i.e. under --no-open; a menu click always passes one). Shared by
+/// the tray item, the --player flag, the macOS re-click and the
+/// second-launch path, so every gesture logs and degrades the same way.
+/// Some when a window route's watch is under way: a caller about to exit
+/// settles it first (WindowWatch::settle); the tray loop lets it run.
 fn open_desktop_player(
     player: Option<&DesktopPlayer>,
     server_url: &str,
@@ -1058,43 +1101,259 @@ fn open_desktop_player(
     console: Option<&paths::ConsoleLaunch>,
     fallback: Option<&str>,
     log: &Logger,
-) {
-    if let Some(player) = player {
-        if let Some(lock) = &player.instance_lock {
-            match desktop_player_running(lock) {
-                Ok(true) => {
-                    // Already open: the sidecar (read behind the lock) says
-                    // where it lives, and the focus step does what it can.
-                    // No fallback here — a browser beside an open player is
-                    // exactly the double this guards against.
-                    let who = paths::read_player_sidecar(lock);
-                    let desc = who.as_ref().map(|w| format!(" (pid {}, under {})", w.pid, w.host)).unwrap_or_default();
-                    match platform::focus_player(who.as_ref(), console) {
-                        Ok(what) => log.line(&format!("player already open{desc} - activated {what}")),
-                        Err(e) => log.line(&format!("player already open{desc} - could not bring it forward: {e}")),
-                    }
-                    return;
-                }
-                Ok(false) => {}
-                Err(e) => log.line(&format!("instance lock check failed ({e}) - opening the player anyway")),
-            }
-        }
-        let page = platform::PlayerPage::Player { instance_lock: player.instance_lock.clone(), serve_port: player.serve_port };
-        match platform::open_player_terminal(&player.bin, server_url, data_home, console, page) {
-            Ok(via) => {
-                log.line(&format!("player opened via {via}"));
-                return;
-            }
-            Err(e) => log.line(&format!("player terminal failed: {e} - falling back to the web player")),
-        }
-    } else {
+) -> Option<WindowWatch> {
+    let Some(player) = player else {
         log.line("player: no GUI-capable player binary in this install - falling back to the web player");
+        web_player_fallback(fallback, log);
+        return None;
+    };
+    if let Some(lock) = &player.instance_lock {
+        match desktop_player_running(lock) {
+            Ok(true) => {
+                // Already open: the sidecar (read behind the lock) says
+                // where it lives, and the focus step does what it can.
+                // No fallback here — a browser beside an open player is
+                // exactly the double this guards against.
+                focus_open_player(lock, console, log);
+                return None;
+            }
+            Ok(false) => {}
+            Err(e) => log.line(&format!("instance lock check failed ({e}) - opening the player anyway")),
+        }
     }
+    if player.desktop {
+        if platform::window_display_available() {
+            let out = player_window_log(data_home);
+            rotate_log(&out, None);
+            match platform::spawn_player_window(&player.bin, server_url, &player.page(), &out) {
+                Ok(child) => {
+                    // "player opened via" like every route: support and the
+                    // smokes read one phrase whichever way it opened.
+                    log.line(&format!("player opened via its own window (pid {}; output in {})", child.id(), out.display()));
+                    return Some(watch_player_window(
+                        child,
+                        WindowFallback {
+                            player: player.clone(),
+                            server_url: server_url.to_string(),
+                            data_home: data_home.to_path_buf(),
+                            console: console.cloned(),
+                            fallback: fallback.map(str::to_string),
+                            log: log.clone(),
+                            output: out,
+                        },
+                    ));
+                }
+                Err(e) => log.line(&format!("player window could not start: {e} - opening it in a terminal instead")),
+            }
+        } else {
+            log.line("player: a desktop build, but this session has no display (DISPLAY/WAYLAND_DISPLAY unset) - opening it in a terminal");
+        }
+    }
+    open_player_in_terminal(player, server_url, data_home, console, fallback, log);
+    None
+}
+
+/// The terminal route — the GUI face in a terminal window — then the web
+/// player when no terminal opened.
+fn open_player_in_terminal(
+    player: &DesktopPlayer,
+    server_url: &str,
+    data_home: &Path,
+    console: Option<&paths::ConsoleLaunch>,
+    fallback: Option<&str>,
+    log: &Logger,
+) {
+    match platform::open_player_terminal(&player.bin, server_url, data_home, console, player.page()) {
+        Ok(via) => {
+            log.line(&format!("player opened via {via}"));
+            return;
+        }
+        Err(e) => log.line(&format!("player terminal failed: {e} - falling back to the web player")),
+    }
+    web_player_fallback(fallback, log);
+}
+
+fn web_player_fallback(fallback: Option<&str>, log: &Logger) {
     match fallback {
         Some(target) => {
             let _ = open::that_detached(target);
         }
         None => log.line("player: web player fallback suppressed (--no-open)"),
+    }
+}
+
+/// The open player is brought forward through whatever hosts it — the
+/// sidecar beside its lock says what that is (read behind the lock check).
+fn focus_open_player(lock: &Path, console: Option<&paths::ConsoleLaunch>, log: &Logger) {
+    let who = paths::read_player_sidecar(lock);
+    let desc = who.as_ref().map(|w| format!(" (pid {}, under {})", w.pid, w.host)).unwrap_or_default();
+    match platform::focus_player(who.as_ref(), console) {
+        Ok(what) => log.line(&format!("player already open{desc} - activated {what}")),
+        Err(e) => log.line(&format!("player already open{desc} - could not bring it forward: {e}")),
+    }
+}
+
+/// How long the window route's watcher waits on the fresh player before it
+/// calls the window up. A desktop build that cannot open a window says so
+/// with exit 3 well inside it (its probe of the display and the GPU runs
+/// before the first frame — measured locally: under a second), and one the
+/// instance lock refuses leaves at once with 0.
+const WINDOW_WATCH: Duration = Duration::from_secs(5);
+const WINDOW_POLL: Duration = Duration::from_millis(100);
+/// The desktop build's "no window could open at all" exit: no display, no
+/// GPU backend, missing libxkbcommon-x11 on X11 (the player's
+/// gui::window::NO_WINDOW).
+const PLAYER_NO_WINDOW: i32 = 3;
+
+/// What the watcher sees of the window route's child at one poll.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChildState {
+    Running,
+    /// Exited, with its code (None: killed by a signal).
+    Exited(Option<i32>),
+}
+
+/// What the watcher does about what it saw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowVerdict {
+    /// Inside the watch and still running: look again.
+    Watching,
+    /// Still running when the watch ends: the window is up; done.
+    Up,
+    /// Exit 0 inside the watch: the player's instance lock refused it (an
+    /// open player won the race since our lock check) — focus the holder.
+    Refused,
+    /// Exit 3 inside the watch: no window could open here — the terminal
+    /// route.
+    NoWindow,
+    /// Any other exit inside the watch — the terminal route too, the code
+    /// in the log.
+    Failed(Option<i32>),
+    /// An exit seen only past the watch (the poll's last beat): the window
+    /// was up and has closed; nothing to do. Exit 3 is the exception: it
+    /// means no window ever opened, however late it is reported.
+    Closed(Option<i32>),
+}
+
+/// THE window route decision, pure: one place maps (exit status, time
+/// since the spawn) to what the watcher does.
+fn window_verdict(state: ChildState, elapsed: Duration) -> WindowVerdict {
+    let inside = elapsed < WINDOW_WATCH;
+    match state {
+        ChildState::Running if inside => WindowVerdict::Watching,
+        ChildState::Running => WindowVerdict::Up,
+        // Before the time check: a slow GPU can take the player past the
+        // watch and still fail to open anything, and that is never a window
+        // that was up.
+        ChildState::Exited(Some(PLAYER_NO_WINDOW)) => WindowVerdict::NoWindow,
+        ChildState::Exited(code) if !inside => WindowVerdict::Closed(code),
+        ChildState::Exited(Some(0)) => WindowVerdict::Refused,
+        ChildState::Exited(code) => WindowVerdict::Failed(code),
+    }
+}
+
+/// Everything the watcher needs to take the fallback on its own thread.
+struct WindowFallback {
+    player: DesktopPlayer,
+    server_url: String,
+    data_home: PathBuf,
+    console: Option<paths::ConsoleLaunch>,
+    fallback: Option<String>,
+    log: Logger,
+    /// The child's output file — its last line rides into a failure's log.
+    output: PathBuf,
+}
+
+/// A window route's watch under way: settle() waits (bounded) until the
+/// watcher has decided and acted.
+struct WindowWatch(std::sync::mpsc::Receiver<()>);
+
+impl WindowWatch {
+    fn settle(self) {
+        // The watch itself plus room for a terminal fallback's own spawn
+        // (the Linux chain's per-emulator grace, macOS `open`).
+        let _ = self.0.recv_timeout(WINDOW_WATCH + Duration::from_secs(10));
+    }
+}
+
+/// The window route's watcher: a thread of its own polls the child for
+/// WINDOW_WATCH and acts on window_verdict — the launcher itself never
+/// waits. Once the window is up it stays to reap the child (no zombie for
+/// the tray's lifetime) and logs its exit.
+fn watch_player_window(mut child: std::process::Child, ctx: WindowFallback) -> WindowWatch {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let pid = child.id();
+        let start = Instant::now();
+        let verdict = loop {
+            let state = match child.try_wait() {
+                Ok(Some(st)) => ChildState::Exited(st.code()),
+                Ok(None) => ChildState::Running,
+                Err(e) => {
+                    ctx.log.line(&format!("player window (pid {pid}): cannot watch it ({e}) - leaving it be"));
+                    let _ = tx.send(());
+                    return;
+                }
+            };
+            match window_verdict(state, start.elapsed()) {
+                WindowVerdict::Watching => std::thread::sleep(WINDOW_POLL),
+                v => break v,
+            }
+        };
+        let ms = start.elapsed().as_millis();
+        let console = ctx.console.as_ref();
+        let to_terminal = |why: String, ms: u128| {
+            ctx.log.line(&format!("player window (pid {pid}) {why} after {ms} ms - falling back to the terminal route"));
+            open_player_in_terminal(&ctx.player, &ctx.server_url, &ctx.data_home, console, ctx.fallback.as_deref(), &ctx.log);
+        };
+        match verdict {
+            WindowVerdict::Watching => unreachable!("the loop only breaks on a decision"),
+            WindowVerdict::Up => ctx.log.line(&format!("player window (pid {pid}) is up")),
+            WindowVerdict::Closed(code) => ctx.log.line(&format!("player window (pid {pid}) closed after {ms} ms ({})", exit_words(code))),
+            WindowVerdict::NoWindow => to_terminal(format!("could not open a window (exit {PLAYER_NO_WINDOW}{})", last_words(&ctx.output)), ms),
+            WindowVerdict::Failed(code) => to_terminal(format!("failed ({}{})", exit_words(code), last_words(&ctx.output)), ms),
+            WindowVerdict::Refused => {
+                let held = ctx.player.instance_lock.as_deref().map(desktop_player_running);
+                match (ctx.player.instance_lock.as_deref(), held) {
+                    (Some(lock), Some(Ok(true))) => {
+                        ctx.log.line(&format!("player window (pid {pid}) refused by the instance lock after {ms} ms - another player is open"));
+                        focus_open_player(lock, console, &ctx.log);
+                    }
+                    _ => ctx.log.line(&format!("player window (pid {pid}) exited 0 after {ms} ms and no player holds the lock - closed at once; nothing to do")),
+                }
+            }
+        }
+        let _ = tx.send(());
+        if verdict == WindowVerdict::Up {
+            match child.wait() {
+                // Up only meant "still running at the watch's end": a GPU that
+                // took longer than that and then gave up reports here.
+                Ok(st) if st.code() == Some(PLAYER_NO_WINDOW) => to_terminal(
+                    format!("could not open a window (exit {PLAYER_NO_WINDOW}{})", last_words(&ctx.output)),
+                    start.elapsed().as_millis(),
+                ),
+                Ok(st) => ctx.log.line(&format!("player window (pid {pid}) closed ({})", exit_words(st.code()))),
+                Err(e) => ctx.log.line(&format!("player window (pid {pid}): wait failed: {e}")),
+            }
+        }
+    });
+    WindowWatch(rx)
+}
+
+fn exit_words(code: Option<i32>) -> String {
+    match code {
+        Some(c) => format!("exit {c}"),
+        None => "killed by a signal".into(),
+    }
+}
+
+/// `: <the child's last output line>` for a failure's log line — bounded,
+/// and empty when it said nothing.
+fn last_words(output: &Path) -> String {
+    let text = std::fs::read(output).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+    match text.lines().rev().map(str::trim).find(|l| !l.is_empty()) {
+        Some(line) => format!(": {}", line.chars().take(200).collect::<String>()),
+        None => String::new(),
     }
 }
 
@@ -1613,6 +1872,7 @@ fn load_icon() -> Icon {
     })
 }
 
+#[derive(Clone)]
 struct Logger(std::path::PathBuf);
 
 impl Logger {
@@ -1634,6 +1894,52 @@ mod tests {
     const MIN: u64 = 60;
     const HOUR: u64 = 60 * MIN;
     const DAY: u64 = 24 * HOUR;
+
+    #[test]
+    fn the_window_watch_decides_from_the_exit_and_the_clock() {
+        let ms = Duration::from_millis;
+        let early = ms(300);
+        let late = WINDOW_WATCH + ms(50);
+        // Still running: keep looking inside the watch, done after it.
+        assert_eq!(window_verdict(ChildState::Running, ms(0)), WindowVerdict::Watching);
+        assert_eq!(window_verdict(ChildState::Running, WINDOW_WATCH - ms(1)), WindowVerdict::Watching);
+        assert_eq!(window_verdict(ChildState::Running, WINDOW_WATCH), WindowVerdict::Up);
+        assert_eq!(window_verdict(ChildState::Running, late), WindowVerdict::Up);
+        // Exit 3 inside the watch: no window could open - the terminal route.
+        assert_eq!(window_verdict(ChildState::Exited(Some(3)), early), WindowVerdict::NoWindow);
+        assert_eq!(PLAYER_NO_WINDOW, 3, "the player's gui::window::NO_WINDOW");
+        // Exit 0 inside the watch: the instance lock refused it - focus.
+        assert_eq!(window_verdict(ChildState::Exited(Some(0)), early), WindowVerdict::Refused);
+        // Anything else inside the watch: the terminal route, with the code.
+        assert_eq!(window_verdict(ChildState::Exited(Some(1)), early), WindowVerdict::Failed(Some(1)));
+        assert_eq!(window_verdict(ChildState::Exited(Some(101)), early), WindowVerdict::Failed(Some(101)));
+        assert_eq!(window_verdict(ChildState::Exited(None), early), WindowVerdict::Failed(None), "a signal");
+        // An exit seen only past the watch is a window that was up and
+        // closed - never a fallback, whatever the code, except 3: no window
+        // ever opened, so the terminal route is still owed.
+        for code in [Some(0), Some(1), None] {
+            assert_eq!(window_verdict(ChildState::Exited(code), late), WindowVerdict::Closed(code), "{code:?}");
+        }
+        assert_eq!(window_verdict(ChildState::Exited(Some(3)), late), WindowVerdict::NoWindow, "a late exit 3");
+        assert!(WINDOW_WATCH >= Duration::from_secs(3) && WINDOW_WATCH <= Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_failures_log_line_carries_the_childs_last_words() {
+        let dir = std::env::temp_dir().join(format!("mstream-launcher-lastwords-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let f = dir.join("out.log");
+        std::fs::write(&f, "starting\nerror: no GPU adapter\n\n").unwrap();
+        assert_eq!(last_words(&f), ": error: no GPU adapter");
+        std::fs::write(&f, "").unwrap();
+        assert_eq!(last_words(&f), "");
+        assert_eq!(last_words(&dir.join("missing")), "");
+        std::fs::write(&f, "x".repeat(1000)).unwrap();
+        assert_eq!(last_words(&f).len(), 2 + 200, "bounded");
+        assert_eq!(exit_words(Some(2)), "exit 2");
+        assert_eq!(exit_words(None), "killed by a signal");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn uptime_shows_the_two_most_significant_units() {

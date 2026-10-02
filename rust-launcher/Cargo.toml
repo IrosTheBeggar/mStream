@@ -61,6 +61,22 @@ windows-sys = { version = "0.61", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Bringing the desktop player's own window forward (platform::activate_pid:
+# NSRunningApplication by pid, with macOS 14's cooperative-activation
+# yield) — no AppleEvents, so no automation-consent prompt. tao already
+# links both crates at these versions with these features (its own
+# NSApplication / NSRunningApplication use), so the lock gains no package;
+# `libc` (already linked) is for the pid lookup's pid_t.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+  "std",
+  "libc",
+  "NSApplication",
+  "NSResponder",
+  "NSRunningApplication",
+] }
+
 [build-dependencies]
 # Exe icon + VersionInfo (see build.rs). winresource is the maintained fork
 # of winres; serde_json reads the repo package.json so the version string

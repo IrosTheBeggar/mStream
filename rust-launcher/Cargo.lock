@@ -990,6 +990,8 @@ dependencies = [
  "auto-launch",
  "fslock",
  "libc",
+ "objc2",
+ "objc2-app-kit",
  "open",
  "png",
  "serde_json",
@@ -1099,6 +1101,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
 dependencies = [
  "bitflags",
+ "libc",
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",
