@@ -5,7 +5,7 @@
  *
  *   - the pin regex takes the bare binaries of BOTH families — terminal
  *     mstream-player-<plat>-<arch>[.exe] and desktop
- *     mstream-player-desktop-<plat>-<arch>[.exe] — and nothing else: not the
+ *     mstream-player-desktop-<plat>-<arch>-raw[.exe] — and nothing else: not the
  *     Windows launcher stub, not the deb/rpm/web/zip/tar.gz packages
  *   - a pre-release (a '-' in the tag, or GitHub's prerelease: true) is
  *     refused with one line and a non-zero exit unless --allow-prerelease
@@ -44,11 +44,11 @@ const TERMINAL = [
   'mstream-player-linux-arm64', 'mstream-player-linux-arm', 'mstream-player-win32-x64.exe',
 ];
 const DESKTOP = [
-  'mstream-player-desktop-darwin-arm64', 'mstream-player-desktop-darwin-x64',
-  'mstream-player-desktop-linux-x64', 'mstream-player-desktop-win32-x64.exe',
+  'mstream-player-desktop-darwin-arm64-raw', 'mstream-player-desktop-darwin-x64-raw',
+  'mstream-player-desktop-linux-x64-raw', 'mstream-player-desktop-win32-x64-raw.exe',
 ];
 const NOT_BINARIES = [
-  'mstream-player-desktop-launch-win32-x64.exe',
+  'mstream-player-desktop-launch-win32-x64-raw.exe',
   'mstream-player-desktop-darwin-arm64.app.zip',
   'mstream-player-desktop-darwin-x64.app.zip',
   'mstream-player-desktop-win32-x64.zip',
@@ -113,22 +113,22 @@ describe('choosePlayerAsset', () => {
   const win = { plat: 'win32', arch: 'x64', ext: '.exe' };
 
   test('both pinned: the desktop entry, staged under the terminal name', () => {
-    const m = manifestOf('mstream-player-win32-x64.exe', 'mstream-player-desktop-win32-x64.exe');
+    const m = manifestOf('mstream-player-win32-x64.exe', 'mstream-player-desktop-win32-x64-raw.exe');
     const got = choosePlayerAsset(m, { ...win, prefer: 'desktop' });
-    assert.equal(got.key, 'mstream-player-desktop-win32-x64.exe');
+    assert.equal(got.key, 'mstream-player-desktop-win32-x64-raw.exe');
     assert.equal(got.family, 'desktop');
     assert.equal(got.stagedName, 'mstream-player-win32-x64.exe');
-    assert.deepEqual(got.entry, m.assets['mstream-player-desktop-win32-x64.exe']);
-    assert.equal(got.note, 'desktop family (mstream-player-desktop-win32-x64.exe)');
+    assert.deepEqual(got.entry, m.assets['mstream-player-desktop-win32-x64-raw.exe']);
+    assert.equal(got.note, 'desktop family (mstream-player-desktop-win32-x64-raw.exe)');
   });
 
   test('desktop is the default preference', () => {
-    const m = manifestOf('mstream-player-darwin-arm64', 'mstream-player-desktop-darwin-arm64');
+    const m = manifestOf('mstream-player-darwin-arm64', 'mstream-player-desktop-darwin-arm64-raw');
     assert.equal(choosePlayerAsset(m, { plat: 'darwin', arch: 'arm64' }).family, 'desktop');
   });
 
   test('terminal only (arm Linux, or a pre-desktop pin): the terminal entry, with a note saying why', () => {
-    const m = manifestOf('mstream-player-linux-arm64', 'mstream-player-desktop-linux-x64');
+    const m = manifestOf('mstream-player-linux-arm64', 'mstream-player-desktop-linux-x64-raw');
     const got = choosePlayerAsset(m, { plat: 'linux', arch: 'arm64', prefer: 'desktop' });
     assert.equal(got.key, 'mstream-player-linux-arm64');
     assert.equal(got.family, 'terminal');
@@ -137,9 +137,9 @@ describe('choosePlayerAsset', () => {
   });
 
   test('desktop only: the desktop entry, still staged under the terminal name', () => {
-    const m = manifestOf('mstream-player-desktop-linux-x64');
+    const m = manifestOf('mstream-player-desktop-linux-x64-raw');
     const got = choosePlayerAsset(m, { plat: 'linux', arch: 'x64', prefer: 'desktop' });
-    assert.equal(got.key, 'mstream-player-desktop-linux-x64');
+    assert.equal(got.key, 'mstream-player-desktop-linux-x64-raw');
     assert.equal(got.stagedName, 'mstream-player-linux-x64');
   });
 
@@ -151,23 +151,23 @@ describe('choosePlayerAsset', () => {
   });
 
   test("prefer: 'terminal' takes the terminal entry when both are pinned, the desktop one only as a fallback", () => {
-    const both = manifestOf('mstream-player-win32-x64.exe', 'mstream-player-desktop-win32-x64.exe');
+    const both = manifestOf('mstream-player-win32-x64.exe', 'mstream-player-desktop-win32-x64-raw.exe');
     assert.equal(choosePlayerAsset(both, { ...win, prefer: 'terminal' }).key, 'mstream-player-win32-x64.exe');
-    const desk = manifestOf('mstream-player-desktop-win32-x64.exe');
+    const desk = manifestOf('mstream-player-desktop-win32-x64-raw.exe');
     const got = choosePlayerAsset(desk, { ...win, prefer: 'terminal' });
     assert.equal(got.family, 'desktop');
     assert.match(got.note, /no terminal pin/);
   });
 
   test('inherited keys are not pins, and a bad preference throws', () => {
-    const m = { assets: Object.create({ 'mstream-player-desktop-win32-x64.exe': pin('x') }) };
+    const m = { assets: Object.create({ 'mstream-player-desktop-win32-x64-raw.exe': pin('x') }) };
     assert.equal(choosePlayerAsset(m, { ...win }), null);
     assert.throws(() => choosePlayerAsset({ assets: {} }, { ...win, prefer: 'gui' }), /prefer must be/);
   });
 
   test('playerAssetNames', () => {
     assert.deepEqual(playerAssetNames({ plat: 'linux', arch: 'arm' }), {
-      terminal: 'mstream-player-linux-arm', desktop: 'mstream-player-desktop-linux-arm',
+      terminal: 'mstream-player-linux-arm', desktop: 'mstream-player-desktop-linux-arm-raw',
     });
   });
 });
@@ -180,8 +180,8 @@ describe('the bundler-side strings', () => {
 
   test('the staged line names the family, the source asset and the staged name', () => {
     assert.equal(
-      stagedLine({ family: 'desktop', key: 'mstream-player-desktop-win32-x64.exe', tag: 'v0.10.0', stagedName: 'mstream-player-win32-x64.exe', size: 50 * 1048576 }),
-      'staged mstream-player v0.10.0 (desktop family): mstream-player-desktop-win32-x64.exe as mstream-player-win32-x64.exe -> bin/mstream-player/mstream-player-win32-x64.exe (50.0 MB, sha verified)',
+      stagedLine({ family: 'desktop', key: 'mstream-player-desktop-win32-x64-raw.exe', tag: 'v0.10.0', stagedName: 'mstream-player-win32-x64.exe', size: 50 * 1048576 }),
+      'staged mstream-player v0.10.0 (desktop family): mstream-player-desktop-win32-x64-raw.exe as mstream-player-win32-x64.exe -> bin/mstream-player/mstream-player-win32-x64.exe (50.0 MB, sha verified)',
     );
     assert.equal(
       stagedLine({ family: 'terminal', key: 'mstream-player-linux-arm64', tag: 'v0.10.0', stagedName: 'mstream-player-linux-arm64', size: 1048576 }),
@@ -204,12 +204,12 @@ describe('the runtime fetch reads the terminal key only', () => {
   };
 
   test('both pinned: the terminal entry', () => {
-    const d = write('both', ['mstream-player-linux-x64', 'mstream-player-desktop-linux-x64']);
+    const d = write('both', ['mstream-player-linux-x64', 'mstream-player-desktop-linux-x64-raw']);
     assert.equal(manifestEntry({ manifestDir: d, key: 'mstream-player-linux-x64' }).file, 'mstream-player-linux-x64');
   });
 
   test('desktop only: nothing to fetch', () => {
-    const d = write('desk', ['mstream-player-desktop-linux-x64']);
+    const d = write('desk', ['mstream-player-desktop-linux-x64-raw']);
     assert.equal(manifestEntry({ manifestDir: d, key: 'mstream-player-linux-x64' }), null);
   });
 });

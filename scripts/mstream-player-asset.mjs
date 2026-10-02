@@ -5,7 +5,8 @@
 //
 // One player tag publishes both families side by side:
 //   - TERMINAL  mstream-player-<plat>-<arch>[.exe]          (every platform)
-//   - DESKTOP   mstream-player-desktop-<plat>-<arch>[.exe]  (no arm Linux)
+//   - DESKTOP   mstream-player-desktop-<plat>-<arch>-raw[.exe]  (no arm Linux; the
+//               -raw suffix keeps the bare file from being taken for a package)
 // The desktop binary is a strict CLI superset of the terminal one (every
 // explicit argv means the same; `--port N` is still the server-audio
 // engine) that additionally opens the GUI in its own window on an empty
@@ -21,9 +22,10 @@
 // Every bare platform binary of either family. Deliberately excludes the
 // release's packages (deb/rpm, the web tarball, the desktop .app.zip /
 // .zip / .tar.gz) and the Windows launcher stub
-// (mstream-player-desktop-launch-win32-x64.exe): mStream neither stages nor
+// (mstream-player-desktop-launch-win32-x64-raw.exe): mStream neither stages nor
 // fetches those.
-export const BINARY_RE = /^mstream-player-(?:desktop-)?(darwin|linux|win32)-[a-z0-9]+(\.exe)?$/;
+export const BINARY_RE =
+  /^mstream-player-(?:desktop-(?:darwin|linux|win32)-[a-z0-9]+-raw|(?:darwin|linux|win32)-[a-z0-9]+)(\.exe)?$/;
 
 // 'desktop' | 'terminal' for a bare binary name, null for anything else.
 export function assetFamily(name) {
@@ -36,7 +38,7 @@ export function assetFamily(name) {
 export function playerAssetNames({ plat, arch, ext = '' }) {
   return {
     terminal: `mstream-player-${plat}-${arch}${ext}`,
-    desktop: `mstream-player-desktop-${plat}-${arch}${ext}`,
+    desktop: `mstream-player-desktop-${plat}-${arch}-raw${ext}`,
   };
 }
 

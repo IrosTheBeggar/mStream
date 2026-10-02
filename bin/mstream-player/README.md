@@ -44,7 +44,7 @@ bare binaries per platform, and the manifest pins both, each under its own
 file name (the committed pin lists only what its release had):
 
 - **terminal** — `mstream-player-{platform}-{arch}[.exe]`, every platform.
-- **desktop** — `mstream-player-desktop-{platform}-{arch}[.exe]` (macOS,
+- **desktop** — `mstream-player-desktop-{platform}-{arch}-raw[.exe]` (macOS,
   x64 Linux, Windows; no arm Linux). A strict CLI superset of the terminal
   binary — every explicit argument means the same, `--port N` is still the
   server-audio engine — that also opens the player in its own window when
