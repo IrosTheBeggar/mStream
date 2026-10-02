@@ -65,6 +65,11 @@ const player = createPinnedBinary({
 
 // The manifest is keyed by the full binary filename, so there is zero mapping
 // logic to drift between this module and the resolver in server-audio.js.
+// It is always the TERMINAL name (mstream-player-<plat>-<arch>[.exe]): the
+// manifest also pins the desktop family (mstream-player-desktop-*), which
+// only the binary bundles stage (scripts/build-bun.mjs); this fetch looks
+// up its one key and never iterates the assets, so desktop keys are inert
+// here and npm/source/Docker installs keep the terminal binary.
 export const playerKey = player.key;
 
 // Where the committed manifest lives — next to where the binaries land.

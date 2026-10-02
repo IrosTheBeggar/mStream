@@ -67,7 +67,11 @@ $known = @(
   @{ path = 'bin\rust-parser\rust-parser-win32-x64.exe';            lenient = $false; optional = $false }
   # optional: fetched from the pinned mstream-terminal-player release at
   # bundle time — a local/offline build legitimately ships without it (the
-  # bundler is already fatal in CI when the fetch fails).
+  # bundler is already fatal in CI when the fetch fails). The file is the
+  # DESKTOP family's binary when the pin has one (else the terminal one),
+  # staged under this terminal name; its FileDescription is 'mStream Player'
+  # or 'mStream Server Audio' accordingly - asserted non-empty like every
+  # other file, so either family passes.
   @{ path = 'bin\mstream-player\mstream-player-win32-x64.exe'; lenient = $false; optional = $true }
   # Fetched from the pinned release assets at bundle time and stamped like
   # the other sidecars (build-bun.mjs). optional: a local/offline build
