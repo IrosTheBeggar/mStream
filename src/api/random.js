@@ -356,23 +356,42 @@ export function buildArtistFilter(opts) {
     const ph = opts.ignoreArtists.map(() => '?').join(',');
     // De Morgan applied: a row is excluded if ANY of its credits is in
     // the cooldown set. Equivalently, KEEP a row only when NONE of
-    // them match — which is what we encode below. NULL artist_id /
-    // album_id rows pass through the NOT IN check by SQL semantics
-    // (NOT IN with a non-empty subquery returns NULL on NULL → falsy
-    // in WHERE), but the V18 fallback chain ensures most tracks have
-    // at least one credit set anyway.
+    // them match — which is what we encode below.
+    //
+    // Encoded as ONE non-correlated set: the ids of every track one of
+    // the three legs credits to a cooled artist, built once per
+    // statement (each branch is an index seek from the cooled artists'
+    // ids) and probed once per scanned track. The M2M legs used to be
+    // correlated NOT EXISTS probes (`ta.track_id = t.id`,
+    // `aa.album_id = t.album_id`), re-run for every scanned row — and a
+    // pick walks the whole visible library (ORDER BY RANDOM()), so at
+    // 25k tracks a 15-artist cooldown (the webapp's steady state) cost
+    // ~110 ms of a ~125 ms pick. One rowid probe also beats three
+    // per-leg NOT IN probes (~25%, measured).
+    //
+    // Same rows as the per-leg form, by construction (pinned row-for-row
+    // by test/db/autodj-cooldown.test.mjs). NULL is the trap in
+    // `x NOT IN (subquery)`: a NULL on either side makes it NULL and
+    // WHERE drops the row. Here the left side is t.id (the rowid) and
+    // every branch yields a rowid or track_artists.track_id (NOT NULL,
+    // schema V18), so no NULL can reach the comparison. A track with a
+    // NULL artist_id / album_id simply never enters those branches —
+    // KEPT, exactly as `COALESCE(t.artist_id, -1)` and
+    // `aa.album_id = t.album_id` (never true for NULL) kept it.
     clauses.push(`
-      COALESCE(t.artist_id, -1) NOT IN (SELECT id FROM artists WHERE name_key IN (${ph}))
-      AND NOT EXISTS (
-        SELECT 1 FROM track_artists ta
-         WHERE ta.track_id = t.id
-           AND ta.role IN (${PERFORMER_ROLES_SQL})
-           AND ta.artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
-      )
-      AND NOT EXISTS (
-        SELECT 1 FROM album_artists aa
-         WHERE aa.album_id = t.album_id
-           AND aa.artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
+      t.id NOT IN (
+        SELECT tr.id FROM tracks tr
+         WHERE tr.artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
+        UNION ALL
+        SELECT track_id FROM track_artists
+         WHERE role IN (${PERFORMER_ROLES_SQL})
+           AND artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
+        UNION ALL
+        SELECT tr.id FROM tracks tr
+         WHERE tr.album_id IN (
+           SELECT album_id FROM album_artists
+            WHERE artist_id IN (SELECT id FROM artists WHERE name_key IN (${ph}))
+         )
       )
     `);
     const ignoreKeys = opts.ignoreArtists.map(nameKey);
@@ -752,18 +771,54 @@ export function runRandomSongs(req, body) {
     ? buildSonicPool(req, body)
     : null;
 
-  const filter = libraryFilter(req.user, body.ignoreVPaths);
-  const baseConditions = [filter.clause];
-  const baseParams = [...(req.user?.id ? [req.user.id] : []), ...filter.params];
-
   // Ratings are per-user. A caller with no user id — a federation key, whose
-  // synthetic user carries none — has no stars to filter on: trackQuery
-  // joins user_metadata on NULL for it, so this clause could only ever
-  // empty the pool. Skip it rather than starve a federated Auto DJ pick
-  // (the webapp never sends it to a peer; a stray one is harmless now).
-  if (body.minRating && Number(body.minRating) > 0 && req.user?.id) {
-    baseConditions.push('um.rating >= ?');
-    baseParams.push(Number(body.minRating));
+  // synthetic user carries none — has no stars to filter on: a user_metadata
+  // join on NULL could only ever empty the pool. Skip it rather than starve
+  // a federated Auto DJ pick (the webapp never sends it to a peer; a stray
+  // one is harmless now).
+  const minRating = (body.minRating && Number(body.minRating) > 0 && req.user?.id)
+    ? Number(body.minRating)
+    : null;
+
+  // A caller who sees every library gets no library clause at all — it is a
+  // no-op for them (see libraryFilter), and as a WHERE term it is worse than
+  // useless here: the planner serves it from idx_tracks_library, i.e. one
+  // index probe plus a table seek per track, where a candidate query (which
+  // visits every in-scope row anyway) wants a straight table scan. It also
+  // hoists any term the index alone can answer — the artist cooldown's
+  // `t.id NOT IN (...)` — ahead of the BPM/key terms that would have
+  // rejected most rows first. Measured at 100k tracks (candidate query
+  // alone): a selective BPM+key step under a 15-artist cooldown 32 ms →
+  // 9 ms, the same cooldown without BPM/key 40 ms → 27 ms. A partial scope
+  // keeps the clause (and the index): with a small visible library the
+  // seek is the win.
+  //
+  // The user_metadata join is the only one the candidate query can need
+  // (see its narrow select below), and only for minRating. Its user id
+  // binds ahead of every WHERE param.
+  const filter = libraryFilter(req.user, body.ignoreVPaths);
+  const scoped = !filter.coversAllLibraries;
+  const baseConditions = scoped ? [filter.clause] : [];
+  const baseParams = [
+    ...(minRating !== null ? [req.user.id] : []),
+    ...(scoped ? filter.params : []),
+  ];
+  const ratingJoin = minRating !== null
+    ? '\n    LEFT JOIN user_metadata um ON COALESCE(t.audio_hash, t.file_hash) = um.track_hash AND um.user_id = ?'
+    : '';
+
+  // An unrated track (no user_metadata row, or a NULL rating) counts as 0
+  // stars, which never passes a minRating > 0 — the same rows a bare
+  // `um.rating >= ?` keeps. The COALESCE is a PLAN guard, not a semantic
+  // one: the bare form rejects NULL, so SQLite turns the LEFT JOIN into
+  // an inner join and, with only `tracks t` beside it, drives from
+  // idx_user_metadata_user_rating — then re-walks the in-scope tracks for
+  // every rated row, because nothing indexes COALESCE(audio_hash,
+  // file_hash). Measured 11.6 s per query at 25k tracks (vs 12.6 ms);
+  // the plan is pinned by test/db/autodj-cooldown.test.mjs.
+  if (minRating !== null) {
+    baseConditions.push('COALESCE(um.rating, 0) >= ?');
+    baseParams.push(minRating);
   }
 
   // Genre filter is an ALWAYS-ON base condition (never relaxed by the
@@ -814,15 +869,17 @@ export function runRandomSongs(req, body) {
     baseParams.push(sonic.json);
   }
 
-  // Skip the trackQuery `tg_agg` aggregation for the candidate-set
-  // query — only the picked rows' genres survive to the response, and
-  // SQLite MATERIALIZEs the aggregation over the full tracks table
-  // before applying the WHERE clause. finalisePick enriches each
-  // chosen row via fetchGenresForTrack so `metadata.genres` is still
-  // populated on the wire. Measured ~80% SQL speedup on the smoke DB
-  // (52 rows) and extrapolates to ~460ms saved per request at 100k
-  // tracks.
-  const baseSql = `${trackQuery(req.user?.id, { includeGenres: false })} WHERE ${baseConditions.join(' AND ')}`;
+  // The candidate queries select only what picking reads: `id` (the
+  // id cooldown, mergeRows, the step loop's id-fresh rule) and `bpm` /
+  // `musical_key` (rankByTier). Every bounded query ends in
+  // `ORDER BY [tier,] RANDOM() LIMIT n`, which visits EVERY row passing
+  // WHERE and carries each one's selected columns through the sorter —
+  // so the old full trackQuery row (t.* plus the artists / albums /
+  // libraries / user_metadata joins) was paid per in-scope track, per
+  // step. finalisePick hydrates just the winners through trackQuery
+  // (still without its whole-table `tg_agg` genre aggregation — see
+  // trackQuery's note), so the wire shape is unchanged.
+  const baseSql = `SELECT t.id, t.bpm, t.musical_key FROM tracks t${ratingJoin} WHERE ${baseConditions.join(' AND ')}`;
 
   // Decide which waterfall steps fire.
   const hasBpm = (Array.isArray(body.bpmRanges) && body.bpmRanges.length > 0)
@@ -865,7 +922,7 @@ export function runRandomSongs(req, body) {
         ? 'No songs within the similarity range match criteria'
         : 'No songs that match criteria', 400);
     }
-    return finalisePick(rows, body, sonic);
+    return finalisePick(req, rows, body, sonic);
   }
 
   // Helper: build the constraint object passed to runWaterfallQuery.
@@ -1058,7 +1115,7 @@ export function runRandomSongs(req, body) {
   // Ranked against the ORIGINAL request constraints inside finalisePick,
   // so that even after the chain drops the SQL filter, in-range rows are
   // served first.
-  return finalisePick(rows, body, sonic, {
+  return finalisePick(req, rows, body, sonic, {
     bpmRanges: body.bpmRanges,
     musicalKeys: body.musicalKeys,
   });
@@ -1079,7 +1136,7 @@ export function runRandomSongs(req, body) {
 // `tierOpts` so its relaxed steps still serve in-range rows first. Every
 // query behind `rows` ends in RANDOM(), so the front of the ordering is a
 // uniform sample and a single pick is as random as it ever was.
-function finalisePick(rows, body, sonic, tierOpts = null) {
+function finalisePick(req, rows, body, sonic, tierOpts = null) {
   const limit = pickLimitFrom(body);
   const sent = ignoreIdsFrom(body);
   const ignoreSet = new Set(sent);
@@ -1099,20 +1156,34 @@ function finalisePick(rows, body, sonic, tierOpts = null) {
   nextIgnore.push(...pickedIds);
   while (nextIgnore.length > IGNORE_COOLDOWN_MAX) { nextIgnore.shift(); }
 
-  // Enrich each picked row with `genres_concat` so renderMetadataObj
-  // emits a populated `metadata.genres` field. The candidate-set
-  // query above skipped the LEFT JOIN aggregation for speed; these
-  // targeted SELECTs cost ~10µs apiece and keep the wire shape
-  // contractually identical.
+  // Hydrate the winners: the candidate queries carried only id / bpm /
+  // musical_key, so the full trackQuery row (the shape the candidate
+  // query itself used to select) is read back for just these ids, in
+  // pick order. A winner deleted since its candidate query simply drops
+  // out of `songs` (its id still ages out of the ignoreList like any
+  // stale entry).
   const d = db.getDB();
-  for (const row of picked) {
+  const full = new Map();
+  if (pickedIds.length > 0) {
+    const hydrated = d.prepare(
+      `${trackQuery(req.user?.id, { includeGenres: false })} WHERE t.id IN (${pickedIds.map(() => '?').join(',')})`
+    ).all(...(req.user?.id ? [req.user.id] : []), ...pickedIds);
+    for (const row of hydrated) { full.set(row.id, row); }
+  }
+  const songRows = pickedIds.map((id) => full.get(id)).filter(Boolean);
+
+  // Enrich each picked row with `genres_concat` so renderMetadataObj
+  // emits a populated `metadata.genres` field. trackQuery above skips
+  // its whole-table genre aggregation; these targeted SELECTs cost
+  // ~10µs apiece and keep the wire shape contractually identical.
+  for (const row of songRows) {
     row.genres_concat = fetchGenresForTrack(d, row.id).genres_concat;
     // V73: performer / composer credits for `metadata.artists` / `composer`.
     Object.assign(row, fetchCreditsForTrack(d, row.id));
   }
 
   const out = {
-    songs: picked.map((row) => renderMetadataObj(row)),
+    songs: songRows.map((row) => renderMetadataObj(row)),
     ignoreList: nextIgnore,
   };
 
@@ -1122,7 +1193,7 @@ function finalisePick(rows, body, sonic, tierOpts = null) {
   // `similarities` is aligned with `songs`; `similarity` stays the first
   // song's value so single-pick callers keep reading one number.
   if (sonic) {
-    const similarities = picked.map((row) => {
+    const similarities = songRows.map((row) => {
       const s = sim.similarityToHash(sonic.index, sonic.seedVec, row.audio_hash || row.file_hash);
       return s === null ? null : Math.round(s * 10000) / 10000;
     });

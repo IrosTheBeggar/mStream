@@ -381,6 +381,37 @@ describe('smart containers', () => {
     assert.equal(numberReturned(text), 0);
   });
 
+  test('Shuffle samples SMART_LIMIT distinct tracks, hydrated and in random order', async () => {
+    // getShuffleTracks samples bare ids first and hydrates the winners in a
+    // second statement. Pins what that split must not change: distinct
+    // tracks, every column joined to the right track, and the sample's
+    // random order kept (an `IN (...)` hydration hands rows back in id order).
+    const items = (text) => [...text.matchAll(
+      /&lt;item id=&quot;track-(\d+)&quot;[\s\S]*?&lt;dc:title&gt;Track (\d+)&lt;\/dc:title&gt;[\s\S]*?&lt;upnp:artist&gt;([^&]*)&lt;\/upnp:artist&gt;\s*&lt;upnp:album&gt;([^&]*)&lt;/g,
+    )].map((m) => ({ id: Number(m[1]), i: Number(m[2]), artist: m[3], album: m[4] }));
+
+    const { text } = await browse('shuffle');
+    assert.equal(numberReturned(text), SMART_LIMIT);
+    const first = items(text);
+    assert.equal(first.length, SMART_LIMIT, 'every item carries its title, artist and album');
+    assert.equal(new Set(first.map((x) => x.id)).size, SMART_LIMIT, 'no track twice');
+    const truth = new Map(manager.getDB().prepare(`
+      SELECT t.id, t.title, a.name AS artist, al.name AS album FROM tracks t
+      LEFT JOIN artists a ON a.id = t.artist_id LEFT JOIN albums al ON al.id = t.album_id
+    `).all().map((r) => [r.id, r]));
+    for (const x of first) {
+      const want = truth.get(x.id);
+      assert.equal(`Track ${x.i}`, want.title, `track-${x.id} hydrated with the wrong title`);
+      assert.equal(x.artist, want.artist, `track-${x.id} hydrated with the wrong artist`);
+      assert.equal(x.album, want.album, `track-${x.id} hydrated with the wrong album`);
+    }
+    const ids = first.map((x) => x.id);
+    assert.notDeepEqual(ids, [...ids].sort((a, b) => a - b), 'the listing must keep the random order');
+
+    const second = items((await browse('shuffle')).text).map((x) => x.id);
+    assert.notDeepEqual(second, ids, 'each browse re-rolls the sample');
+  });
+
   test('the root listing still reports every container', async () => {
     const { text } = await browse('music');
     for (const title of ['Recently Added', 'Recently Played', 'Most Played',
