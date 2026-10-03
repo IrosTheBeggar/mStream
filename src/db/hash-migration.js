@@ -16,6 +16,14 @@
  * hash_migration_tests module there — which share their fixture rows.
  */
 
+// Whether audio_analysis_lookups carries the V78 value columns. The live
+// schema always does; the check keeps a DB (or a fixture) from before V78
+// working, since the merge below is the only reader of the columns here.
+function hasAnalysisValues(db) {
+  return db.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('audio_analysis_lookups')
+                      WHERE name IN ('bpm', 'musical_key')`).get().n === 2;
+}
+
 /**
  * Migrate all user_* rows referring to oldHash over to newHash.
  *
@@ -118,12 +126,23 @@ export function migrateHashReferences(db, oldHash, newHash, { schemeRekey = fals
   //     scheme re-key (same bytes, new hash scheme) but must be LEFT
   //     BEHIND on a content change, or genuinely-new audio inherits a
   //     cooldown for attempts that never ran against it — the backfills'
-  //     orphan sweeps then clear the stranded rows.
+  //     orphan sweeps then clear the stranded rows. Since V78
+  //     audio_analysis_lookups also holds the measured bpm / key; staying
+  //     behind on a content change is still right (they describe the old
+  //     audio). On a scheme re-key both rows measured the SAME bytes, so a
+  //     value the canonical row lacks is taken from the old one before the
+  //     old row goes — the canonical row's own values still win.
   const canonTables = schemeRekey
     ? ['lyrics_cache', 'acoustid_lookups', 'audio_analysis_lookups']
     : ['lyrics_cache'];
   for (const table of canonTables) {
     if (db.prepare(`SELECT 1 FROM ${table} WHERE audio_hash = ?`).get(newHash)) {
+      if (table === 'audio_analysis_lookups' && hasAnalysisValues(db)) {
+        db.prepare(`UPDATE audio_analysis_lookups
+                       SET bpm = COALESCE(bpm, (SELECT o.bpm FROM audio_analysis_lookups o WHERE o.audio_hash = ?)),
+                           musical_key = COALESCE(musical_key, (SELECT o.musical_key FROM audio_analysis_lookups o WHERE o.audio_hash = ?))
+                     WHERE audio_hash = ?`).run(oldHash, oldHash, newHash);
+      }
       db.prepare(`DELETE FROM ${table} WHERE audio_hash = ?`).run(oldHash);
     } else {
       db.prepare(`UPDATE ${table} SET audio_hash = ? WHERE audio_hash = ?`)

@@ -3777,6 +3777,20 @@ fn commit_track(
     // this every force-rescan (e.g. a future rescanRequired migration)
     // would wipe its work and the next pass would re-download everything.
     // Local art appearing later still wins: excluded non-NULL replaces.
+    //
+    // Enrichment preserve (bpm / musical_key / bpm_source, and the AcoustID
+    // mbz_recording_id / mbz_id_source): a value a post-scan pass derived from
+    // the AUDIO survives a re-parse that reads none from the file, while the
+    // audio is the same: same canonical hash, or a hashing-scheme re-key
+    // (hash_v behind — the rule hash-migration.js applies to the ledgers). A
+    // value the file does supply always wins and turns provenance to 'tag';
+    // replaced audio drops the old estimate. Only a row whose provenance IS the
+    // enricher qualifies, and bpm_source covers both values, so a mixed row (a
+    // tag BPM, an analysed key) still loses its analysed half here: the
+    // essentia pass copies it back from audio_analysis_lookups (V78) before it
+    // selects work. "tracks." reads the pre-image, so the audio_hash / hash_v
+    // assignments above do not affect these conditions. Same text in both
+    // scanners (scanner-schema-guard.test.mjs compares the statements).
     let track_id: i64 = conn.prepare_cached(
         "INSERT INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
          disc_number, year, duration, format, file_hash, audio_hash, album_art_file, album_art_source,
@@ -3805,10 +3819,14 @@ fn commit_track(
            lyrics_source=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_source ELSE excluded.lyrics_source END,
            lyrics_search_text=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_search_text ELSE excluded.lyrics_search_text END,
            lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
-           bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
+           bpm=CASE WHEN excluded.bpm IS NULL AND tracks.bpm_source = 'essentia' AND (COALESCE(tracks.audio_hash, tracks.file_hash) IS COALESCE(excluded.audio_hash, excluded.file_hash) OR tracks.hash_v < excluded.hash_v) THEN tracks.bpm ELSE excluded.bpm END,
+           musical_key=CASE WHEN excluded.musical_key IS NULL AND tracks.bpm_source = 'essentia' AND (COALESCE(tracks.audio_hash, tracks.file_hash) IS COALESCE(excluded.audio_hash, excluded.file_hash) OR tracks.hash_v < excluded.hash_v) THEN tracks.musical_key ELSE excluded.musical_key END,
+           bpm_source=CASE WHEN excluded.bpm_source IS NULL AND tracks.bpm_source = 'essentia' AND (COALESCE(tracks.audio_hash, tracks.file_hash) IS COALESCE(excluded.audio_hash, excluded.file_hash) OR tracks.hash_v < excluded.hash_v) THEN tracks.bpm_source ELSE excluded.bpm_source END,
            modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source,
-           mbz_recording_id=excluded.mbz_recording_id, mbz_release_track_id=excluded.mbz_release_track_id,
-           isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source,
+           mbz_recording_id=CASE WHEN excluded.mbz_recording_id IS NULL AND tracks.mbz_id_source = 'acoustid' AND (COALESCE(tracks.audio_hash, tracks.file_hash) IS COALESCE(excluded.audio_hash, excluded.file_hash) OR tracks.hash_v < excluded.hash_v) THEN tracks.mbz_recording_id ELSE excluded.mbz_recording_id END,
+           mbz_release_track_id=excluded.mbz_release_track_id,
+           isrc=excluded.isrc,
+           mbz_id_source=CASE WHEN excluded.mbz_recording_id IS NULL AND tracks.mbz_id_source = 'acoustid' AND (COALESCE(tracks.audio_hash, tracks.file_hash) IS COALESCE(excluded.audio_hash, excluded.file_hash) OR tracks.hash_v < excluded.hash_v) THEN tracks.mbz_id_source ELSE excluded.mbz_id_source END,
            hash_v=excluded.hash_v,
            tag_album=excluded.tag_album, tag_album_artist=excluded.tag_album_artist, tag_compilation=excluded.tag_compilation,
            artist_display=excluded.artist_display
@@ -4244,7 +4262,11 @@ fn migrate_hash_references(
     // audio_analysis_lookups (V54) failure-cooldown ledgers are derived
     // from the BYTES and follow only a scheme re-key — carried across a
     // content change they would suppress fingerprinting/analysis of
-    // audio never attempted. Mirrors hash-migration.js.
+    // audio never attempted. Since V78 audio_analysis_lookups also holds
+    // the measured bpm / key: on a scheme re-key both rows measured the
+    // SAME bytes, so a value the canonical row lacks is taken from the old
+    // one before the old row goes (the canonical row's own values still
+    // win). Mirrors hash-migration.js.
     let canon_tables: &[&str] = if scheme_rekey {
         &["lyrics_cache", "acoustid_lookups", "audio_analysis_lookups"]
     } else {
@@ -4256,6 +4278,22 @@ fn migrate_hash_references(
             .query_row([new_hash], |r| r.get(0))
             .optional()?;
         if target.is_some() {
+            // The value columns exist from V78 on; an older server can drive
+            // this binary (see the hash_v check at open), so look first.
+            if *table == "audio_analysis_lookups" {
+                let has_values: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('audio_analysis_lookups')
+                      WHERE name IN ('bpm', 'musical_key')",
+                    [], |r| r.get(0))?;
+                if has_values == 2 {
+                    conn.execute(
+                        "UPDATE audio_analysis_lookups
+                            SET bpm = COALESCE(bpm, (SELECT o.bpm FROM audio_analysis_lookups o WHERE o.audio_hash = ?1)),
+                                musical_key = COALESCE(musical_key, (SELECT o.musical_key FROM audio_analysis_lookups o WHERE o.audio_hash = ?1))
+                          WHERE audio_hash = ?2",
+                        rusqlite::params![old_hash, new_hash])?;
+                }
+            }
             conn.execute(&format!("DELETE FROM {} WHERE audio_hash = ?", table), [old_hash])?;
         } else {
             conn.execute(
@@ -8007,9 +8045,75 @@ mod hash_migration_tests {
              CREATE TABLE acoustid_lookups (
                audio_hash TEXT PRIMARY KEY, last_attempt_at INTEGER NOT NULL, outcome TEXT NOT NULL);
              CREATE TABLE audio_analysis_lookups (
-               audio_hash TEXT PRIMARY KEY, last_attempt_at INTEGER NOT NULL, outcome TEXT NOT NULL);",
+               audio_hash TEXT PRIMARY KEY, last_attempt_at INTEGER NOT NULL, outcome TEXT NOT NULL,
+               bpm INTEGER, musical_key TEXT);",
         ).unwrap();
         conn
+    }
+
+    // (bpm, musical_key) of the audio_analysis_lookups row at `hash`.
+    type Measured = (Option<i64>, Option<String>);
+    fn measured(conn: &Connection, hash: &str) -> Option<Measured> {
+        conn.query_row(
+            "SELECT bpm, musical_key FROM audio_analysis_lookups WHERE audio_hash = ?",
+            [hash], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional().unwrap()
+    }
+
+    // Same rows as the V78 cases in test/db/hash-migration.test.mjs.
+    #[test]
+    fn the_analysis_ledger_values_follow_a_scheme_re_key() {
+        let conn = mk_db();
+        conn.execute_batch(
+            "INSERT INTO audio_analysis_lookups VALUES ('oldhash', 100, 'analyzed', 93, 'E major');
+             INSERT INTO audio_analysis_lookups VALUES ('h1', 100, 'analyzed', 126, 'C minor');
+             INSERT INTO audio_analysis_lookups VALUES ('h2', 200, 'lowconf', NULL, NULL);
+             INSERT INTO audio_analysis_lookups VALUES ('h3', 100, 'analyzed', 90, 'A minor');
+             INSERT INTO audio_analysis_lookups VALUES ('h4', 200, 'analyzed', 91, NULL);",
+        ).unwrap();
+
+        migrate_hash_references(&conn, "oldhash", "newhash", true).unwrap();
+        assert_eq!(measured(&conn, "newhash"), Some((Some(93), Some("E major".into()))), "a lone row re-keys with its values");
+        assert!(measured(&conn, "oldhash").is_none());
+
+        migrate_hash_references(&conn, "h1", "h2", true).unwrap();
+        assert_eq!(measured(&conn, "h2"), Some((Some(126), Some("C minor".into()))),
+                   "a value-less canonical row takes the old row's values");
+        assert!(measured(&conn, "h1").is_none(), "the old row is still dropped");
+
+        migrate_hash_references(&conn, "h3", "h4", true).unwrap();
+        assert_eq!(measured(&conn, "h4"), Some((Some(91), Some("A minor".into()))),
+                   "the canonical row's own value wins; only its gap is filled");
+    }
+
+    #[test]
+    fn the_analysis_ledger_values_stay_behind_on_a_content_change() {
+        let conn = mk_db();
+        conn.execute(
+            "INSERT INTO audio_analysis_lookups VALUES ('oldhash', 100, 'analyzed', 93, 'E major')", [],
+        ).unwrap();
+        migrate_hash_references(&conn, "oldhash", "newhash", false).unwrap();
+        assert_eq!(measured(&conn, "oldhash"), Some((Some(93), Some("E major".into()))));
+        assert!(measured(&conn, "newhash").is_none(), "new audio inherits no measurement");
+    }
+
+    #[test]
+    fn a_pre_v78_ledger_still_re_keys() {
+        // An older server can drive this binary against a ledger without the
+        // value columns: the collision path must not reference them.
+        let conn = mk_db();
+        conn.execute_batch(
+            "DROP TABLE audio_analysis_lookups;
+             CREATE TABLE audio_analysis_lookups (
+               audio_hash TEXT PRIMARY KEY, last_attempt_at INTEGER NOT NULL, outcome TEXT NOT NULL);
+             INSERT INTO audio_analysis_lookups VALUES ('h1', 100, 'error');
+             INSERT INTO audio_analysis_lookups VALUES ('h2', 200, 'analyzed');",
+        ).unwrap();
+        migrate_hash_references(&conn, "h1", "h2", true).unwrap();
+        let outcomes: Vec<String> = conn
+            .prepare("SELECT outcome FROM audio_analysis_lookups ORDER BY audio_hash").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+        assert_eq!(outcomes, vec!["analyzed".to_string()]);
     }
 
     fn insert(

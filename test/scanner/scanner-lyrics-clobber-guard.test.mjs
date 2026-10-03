@@ -5,9 +5,9 @@
  * and letting newly-found local lyrics win.
  *
  * The exact UPSERT SQL is extracted from src/db/scanner.mjs at runtime so this
- * test can't drift from the scanner. The Rust scanner carries a byte-identical
- * CASE (asserted in CI by the SQL-parity check + the shared schema), so
- * exercising the SQL here covers both scanners.
+ * test can't drift from the scanner. The Rust scanner runs the same statement
+ * text, whitespace aside — scanner-schema-guard.test.mjs compares the two
+ * statements — so exercising the SQL here covers both scanners.
  */
 
 import { test } from 'node:test';

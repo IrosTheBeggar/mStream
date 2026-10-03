@@ -1819,10 +1819,14 @@ function runAudioAnalysisTask(taskObj) {
         if (evt.event === 'audioAnalysisComplete') {
           observers.hitCap = !!evt.hitCap;
           observers.completeEvt = evt;
-          if (evt.attempted > 0) {
+          // refilled: tracks whose recorded measurements were copied back
+          // (a re-parse or a move had cleared them) — no decode involved,
+          // so a pass can do only that and still be worth a line.
+          if (evt.attempted > 0 || evt.refilled > 0) {
             const pace = evt.avgMsPerTrack > 0 ? `, ~${evt.avgMsPerTrack} ms/track` : '';
             winston.info(`Audio-analysis pass complete: ${evt.analyzed} analysed, `
-              + `${evt.lowconf} low-confidence, ${evt.errors} error(s) (${evt.attempted} attempted${pace})`);
+              + `${evt.lowconf} low-confidence, ${evt.errors} error(s) (${evt.attempted} attempted${pace})`
+              + `, ${evt.refilled ?? 0} restored from earlier analysis`);
           }
           return;
         }

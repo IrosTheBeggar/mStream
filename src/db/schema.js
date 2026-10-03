@@ -95,7 +95,10 @@ import { mergeAlbumInto, backfillAlbumAggregates } from './album-merge.js';
 // the recommendation. See SCHEMA_V76.
 // V77 adds federation_keys.allow_copies, the per-key switch for copies by
 // the other server's discovery plug-in. See SCHEMA_V77.
-export const SCHEMA_VERSION = 77;
+// V78 adds audio_analysis_lookups.bpm / musical_key, what the essentia pass
+// measured, so a re-parse that clears them never costs a re-decode. See
+// SCHEMA_V78.
+export const SCHEMA_VERSION = 78;
 
 // The schema version at which the SCANNER'S WRITE CONTRACT last changed —
 // the columns / identity rules a rust-parser binary must know to write rows
@@ -2119,7 +2122,8 @@ export const SCHEMA_V53 = `
 //
 //   outcome = 'analyzed' — got a usable bpm and/or key; the column(s) are
 //                          populated and the row records provenance + attempt
-//                          count. NOTE: when essentia resolves only ONE of
+//                          count (since V78, the values too). NOTE: when
+//                          essentia resolves only ONE of
 //                          bpm/key (e.g. ambient/free-tempo material), the
 //                          other column stays NULL, so the NULL gate keeps the
 //                          track eligible; the long cooldown (analyzedCooldownSec)
@@ -2131,7 +2135,7 @@ export const SCHEMA_V53 = `
 //                          transient blip retries soon
 //
 // Starts empty; NOT rescanRequired (the pass discovers its own work from
-// the bpm/musical_key NULL gate).
+// the bpm/musical_key NULL gate). V78 adds the measured values: see there.
 export const SCHEMA_V54 = `
   CREATE TABLE IF NOT EXISTS audio_analysis_lookups (
     audio_hash      TEXT PRIMARY KEY,
@@ -3291,6 +3295,48 @@ export const SCHEMA_V77 = `
   ALTER TABLE federation_keys ADD COLUMN allow_copies INTEGER NOT NULL DEFAULT 1;
 `;
 
+// V78: audio_analysis_lookups keeps what essentia MEASURED for the audio
+// (bpm, musical_key: the usable values of the last 'analyzed' attempt; a
+// value an attempt could not resolve keeps an earlier one). Never a tag value.
+//
+// Why: the scanners write the file's tags over the track row on every
+// re-parse (tag edit, touch, force rescan, every rescanRequired epoch).
+// Their UPSERT keeps a row whose values are all essentia's (bpm_source =
+// 'essentia', same audio), but one provenance column covers two values, so
+// on a mixed row (a tag BPM, an analysed key) and on a moved file's new row
+// the analysed half comes back NULL, and the 'analyzed' row's 90-day
+// cooldown then hid the track from the pass that could repair it. The
+// worker now copies ledger values back onto NULL tracks at the start of
+// every pass (no decode), and an 'analyzed' row WITHOUT values (a pre-V78
+// row this seed could not fill) no longer holds its track off the work list
+// (src/db/audio-analysis-lib.js). The ledger still stays behind on a
+// content change (hash-migration.js): values measured on other audio must
+// not follow a path.
+//
+// The seed copies values only from tracks that provably carry essentia's:
+// bpm_source = 'essentia' is set only when the file had neither tag, and the
+// UPSERT gives 'essentia' up as soon as the file supplies one. A 'tag' row is
+// never a source: a tag value in the ledger would come back after the user
+// removed the tag. Every outcome is seeded, since a 'lowconf' / 'error'
+// retry of a half-analysed track still describes the values of the earlier
+// attempt. Rows the seed cannot fill stay value-less (the legacy rule).
+//
+// NOT rescanRequired, and no scanner contract bump: the scanners never read
+// or write these columns (the hash re-key moves the whole row).
+export const SCHEMA_V78 = `
+  ALTER TABLE audio_analysis_lookups ADD COLUMN bpm INTEGER;
+  ALTER TABLE audio_analysis_lookups ADD COLUMN musical_key TEXT;
+  UPDATE audio_analysis_lookups
+     SET bpm = (SELECT MAX(t.bpm) FROM tracks t
+                 WHERE t.bpm_source = 'essentia'
+                   AND (t.audio_hash = audio_analysis_lookups.audio_hash
+                        OR (t.audio_hash IS NULL AND t.file_hash = audio_analysis_lookups.audio_hash))),
+         musical_key = (SELECT MAX(t.musical_key) FROM tracks t
+                 WHERE t.bpm_source = 'essentia'
+                   AND (t.audio_hash = audio_analysis_lookups.audio_hash
+                        OR (t.audio_hash IS NULL AND t.file_hash = audio_analysis_lookups.audio_hash)));
+`;
+
 export const MIGRATIONS = [
   { version: 1,  sql: SCHEMA_V1  },
   { version: 2,  sql: SCHEMA_V2  },
@@ -3588,4 +3634,8 @@ export const MIGRATIONS = [
   { version: 76, sql: SCHEMA_V76 },
   // V77 — a switch on the key row. See SCHEMA_V77.
   { version: 77, sql: SCHEMA_V77 },
+  // V78 — the essentia ledger keeps the measured bpm / key, seeded from
+  // analysis-sourced tracks. Not rescanRequired; the scanner contract is
+  // unchanged. See SCHEMA_V78.
+  { version: 78, sql: SCHEMA_V78 },
 ];

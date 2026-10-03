@@ -20,7 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { SCHEMA_VERSION } from '../../src/db/schema.js';
+import { SCHEMA_VERSION, SCANNER_SCHEMA_CONTRACT } from '../../src/db/schema.js';
 import { applyAllMigrations } from '../helpers/apply-migrations.mjs';
 import {
   writeScannerPidfile, clearScannerPidfile, reapOrphanedScanner,
@@ -647,6 +647,8 @@ describe('tracks UPSERT column parity (JS + Rust)', () => {
         `${label}: columns inserted but never refreshed on conflict: ${missing.join(', ')}`);
       const stray = u.setColumns.filter(c => !u.columns.includes(c));
       assert.deepEqual(stray, [], `${label}: SET columns not in the insert list`);
+      const twice = u.setColumns.filter((c, i) => u.setColumns.indexOf(c) !== i);
+      assert.deepEqual(twice, [], `${label}: SET columns matched more than once`);
       assert.equal(u.placeholders.length, u.columns.length,
         `${label}: ${u.columns.length} columns but ${u.placeholders.length} placeholders`);
       assert.ok(!u.columns.includes('created_at'),
@@ -657,5 +659,23 @@ describe('tracks UPSERT column parity (JS + Rust)', () => {
   test('scanner.mjs and main.rs insert the same columns in the same order', () => {
     assert.deepEqual(js.columns, rust.columns);
     assert.deepEqual(js.setColumns, rust.setColumns);
+  });
+
+  // The column lists above say nothing about the preserve CASEs' conditions
+  // (lyrics, art, analysed BPM/key, AcoustID MBIDs) — a Rust CASE with a
+  // different WHEN would pass them. The clobber-guard tests exercise one
+  // statement's semantics; this keeps the other byte-for-byte the same,
+  // modulo indentation.
+  test('scanner.mjs and main.rs run the same UPSERT text (whitespace aside)', () => {
+    const stmt = (file) => fs.readFileSync(path.resolve(__dirname, '../..', file), 'utf8')
+      .match(/INSERT INTO tracks \(filepath[\s\S]*?RETURNING id/)[0].replace(/\s+/g, ' ');
+    assert.equal(stmt('rust-parser/src/main.rs'), stmt('src/db/scanner.mjs'));
+  });
+
+  test('schema.js and main.rs agree on SCANNER_SCHEMA_CONTRACT', () => {
+    const rustContract = Number(fs.readFileSync(
+      path.resolve(__dirname, '../../rust-parser/src/main.rs'), 'utf8')
+      .match(/const SCANNER_SCHEMA_CONTRACT: i64 = (\d+);/)[1]);
+    assert.equal(rustContract, SCANNER_SCHEMA_CONTRACT);
   });
 });

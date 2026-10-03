@@ -279,6 +279,20 @@ const stmts = {
   // work on exactly the albums that have nothing local. Local art
   // appearing later still wins (excluded non-NULL replaces). Mirror of
   // the rust UPSERT.
+  //
+  // Enrichment preserve (bpm / musical_key / bpm_source, and the AcoustID
+  // mbz_recording_id / mbz_id_source): a value a post-scan pass derived from
+  // the AUDIO survives a re-parse that reads none from the file, while the
+  // audio is the same: same canonical hash, or a hashing-scheme re-key
+  // (hash_v behind — the rule hash-migration.js applies to the ledgers). A
+  // value the file does supply always wins and turns provenance to 'tag';
+  // replaced audio drops the old estimate. Only a row whose provenance IS the
+  // enricher qualifies, and bpm_source covers both values, so a mixed row (a
+  // tag BPM, an analysed key) still loses its analysed half here: the
+  // essentia pass copies it back from audio_analysis_lookups (V78) before it
+  // selects work. "tracks." reads the pre-image, so the audio_hash / hash_v
+  // assignments above do not affect these conditions. Same text in both
+  // scanners (scanner-schema-guard.test.mjs compares the statements).
   insertTrack: db.prepare(
     `INSERT INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
      disc_number, year, duration, format, file_hash, audio_hash, album_art_file, album_art_source,
@@ -307,10 +321,14 @@ const stmts = {
        lyrics_source=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_source ELSE excluded.lyrics_source END,
        lyrics_search_text=CASE WHEN excluded.lyrics_embedded IS NULL AND excluded.lyrics_synced_lrc IS NULL AND tracks.lyrics_source NOT IN ('embedded', 'sidecar') THEN tracks.lyrics_search_text ELSE excluded.lyrics_search_text END,
        lyrics_sidecar_mtime=excluded.lyrics_sidecar_mtime,
-       bpm=excluded.bpm, musical_key=excluded.musical_key, bpm_source=excluded.bpm_source,
+       bpm=CASE WHEN excluded.bpm IS NULL AND tracks.bpm_source = 'essentia' AND (COALESCE(tracks.audio_hash, tracks.file_hash) IS COALESCE(excluded.audio_hash, excluded.file_hash) OR tracks.hash_v < excluded.hash_v) THEN tracks.bpm ELSE excluded.bpm END,
+       musical_key=CASE WHEN excluded.musical_key IS NULL AND tracks.bpm_source = 'essentia' AND (COALESCE(tracks.audio_hash, tracks.file_hash) IS COALESCE(excluded.audio_hash, excluded.file_hash) OR tracks.hash_v < excluded.hash_v) THEN tracks.musical_key ELSE excluded.musical_key END,
+       bpm_source=CASE WHEN excluded.bpm_source IS NULL AND tracks.bpm_source = 'essentia' AND (COALESCE(tracks.audio_hash, tracks.file_hash) IS COALESCE(excluded.audio_hash, excluded.file_hash) OR tracks.hash_v < excluded.hash_v) THEN tracks.bpm_source ELSE excluded.bpm_source END,
        modified=excluded.modified, scan_id=excluded.scan_id, source=excluded.source,
-       mbz_recording_id=excluded.mbz_recording_id, mbz_release_track_id=excluded.mbz_release_track_id,
-       isrc=excluded.isrc, mbz_id_source=excluded.mbz_id_source,
+       mbz_recording_id=CASE WHEN excluded.mbz_recording_id IS NULL AND tracks.mbz_id_source = 'acoustid' AND (COALESCE(tracks.audio_hash, tracks.file_hash) IS COALESCE(excluded.audio_hash, excluded.file_hash) OR tracks.hash_v < excluded.hash_v) THEN tracks.mbz_recording_id ELSE excluded.mbz_recording_id END,
+       mbz_release_track_id=excluded.mbz_release_track_id,
+       isrc=excluded.isrc,
+       mbz_id_source=CASE WHEN excluded.mbz_recording_id IS NULL AND tracks.mbz_id_source = 'acoustid' AND (COALESCE(tracks.audio_hash, tracks.file_hash) IS COALESCE(excluded.audio_hash, excluded.file_hash) OR tracks.hash_v < excluded.hash_v) THEN tracks.mbz_id_source ELSE excluded.mbz_id_source END,
        hash_v=excluded.hash_v,
        tag_album=excluded.tag_album, tag_album_artist=excluded.tag_album_artist, tag_compilation=excluded.tag_compilation,
        artist_display=excluded.artist_display
