@@ -555,11 +555,15 @@ export function inPlaceholders(arr) {
   return '(' + arr.map(() => '?').join(',') + ')';
 }
 
-// Server-side twin of the scanners' find-or-create (the ytdl download path
-// is the only caller). V72: artists are keyed by name_key (src/db/name-key.js),
+// Server-side twin of the scanners' find-or-create (insertDownloadedTrack —
+// ytdl, the discovery and federation-copy plug-ins — is the only caller).
+// V72: artists are keyed by name_key (src/db/name-key.js),
 // so "beatles" finds the row shown as "Beatles"; the display name of a
 // new row is provisional until the artist aggregate refresh (which ytdl
 // runs inline) picks the majority spelling of its credits.
+// Call it inside transaction() together with the INSERT that references
+// the id: outside the write lock, the scanner's orphan sweep (another
+// process) can delete the row it found before that INSERT lands.
 export function findOrCreateArtist(name) {
   if (!name) { return null; }
   const key = nameKey(name);
@@ -623,11 +627,12 @@ export function resolveArtistNamesForDJ(names) {
   return [...result];
 }
 
-// Server-side twin of the scanners' find-or-create (the ytdl download path
-// is the only caller). V71: albums are keyed by album_key — name + album
+// Server-side twin of the scanners' find-or-create (insertDownloadedTrack is
+// the only caller). V71: albums are keyed by album_key — name + album
 // artist, no year (see src/db/album-key.js). The row's year/count columns
 // are provisional until the caller's track insert fires the tracks_*_agg
 // trigger and refreshDirtyAlbums() recomputes them (ytdl does that inline).
+// Inside transaction(), like findOrCreateArtist above, and for the same reason.
 export function findOrCreateAlbum(name, artistId, year) {
   if (!name) { return null; }
   const key = albumKey({ name, artistId });

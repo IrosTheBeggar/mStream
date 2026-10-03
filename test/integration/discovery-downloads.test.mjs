@@ -122,6 +122,12 @@ describe('discovery downloads · the record and its removal', { skip: hasFfmpeg 
       extraConfig: {
         discoveryPlugins: { youtube: { enabled: true } },
         discoveryJobs: { stagingDir: path.join(workDir, 'staging') },
+        // No boot scan: the one scan this suite wants is its own rescan().
+        // With waitForScan off, the boot scan could land mid-suite on a
+        // slow runner — sweeping orphans under a download (CI run
+        // 37146091164), or writing rows under the tests' row assertions (a
+        // removed file's row coming back, a planted file getting one).
+        scanOptions: { bootScanDelay: 9999, scanInterval: 0 },
       },
       // dana's only library is the per-run collection, so it is her default
       // destination; eli sees it too but never downloaded anything.
