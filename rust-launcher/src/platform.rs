@@ -408,6 +408,13 @@ impl PlayerPage {
 /// surface opened (support surface: "it opened in Terminal, not the
 /// mStream console — why?" should be one log line away).
 ///
+/// This is the terminal route, and since the window route it is also the
+/// fallback route: the desktop player's when its window cannot open
+/// (spawn_player_window), and the setup wizard's and Quick Connect's the
+/// same way once a desktop build hosts them in a window of its own
+/// (`window-pages`, paths::PlayerProbe) — and their only route on every
+/// build without that word.
+///
 /// `console`: the bundled Ghostty (macOS bundles only, resolved by
 /// paths::find_console_app) — preferred over Terminal.app because Apple's
 /// terminal has no pixel protocol at all, so the wizard's wordmark and QR
@@ -560,8 +567,10 @@ pub(crate) const WINDOW_PROCESS_GROUP: i32 = 0;
 /// caller rotates the previous one aside), its own process group, and on
 /// Windows no console window. Ok hands back the child for the caller's
 /// watcher, which decides what an early exit means (exit 3: no window could
-/// open; exit 0: refused by the instance lock); the launcher itself never
-/// waits on it.
+/// open; exit 0: refused by the instance lock for the player, a normal
+/// close for the lock-free wizard and Quick Connect pages, whose window
+/// route is `setup --window` / `qr --window` with no lock or port); the
+/// launcher itself never waits on it.
 pub fn spawn_player_window(
     player_bin: &std::path::Path,
     server_url: &str,
@@ -1622,6 +1631,25 @@ mod page_tests {
             super::player_shell_words(&page, std::path::Path::new("/p"), "http://localhost:3000"),
             "'/p' gui --instance-lock '/Application Support/mStream/desktop-player.lock' --serve-port 3333 --bundled-server 'http://localhost:3000'"
         );
+        // The wizard and Quick Connect take the same route once the player
+        // says `window-pages`: `--window` after the page's own word, the
+        // terminal route's `--server <url>`, and never a lock or a port —
+        // a page holds no instance lock and hosts no control face.
+        let url = "http://localhost:3000";
+        let page_argv = |page: &PlayerPage, window: bool| -> Vec<String> {
+            super::player_argv(page, url, window).iter().map(|a| a.to_string_lossy().into_owned()).collect()
+        };
+        assert_eq!(page_argv(&PlayerPage::Setup, true), ["setup", "--window", "--server", url]);
+        assert_eq!(page_argv(&PlayerPage::QuickConnect, true), ["qr", "--window", "--server", url]);
+        assert_eq!(page_argv(&PlayerPage::Setup, false), ["setup", "--server", url], "the terminal route's argv");
+        assert_eq!(page_argv(&PlayerPage::QuickConnect, false), ["qr", "--server", url], "the terminal route's argv");
+        for page in [PlayerPage::Setup, PlayerPage::QuickConnect] {
+            let words = page_argv(&page, true);
+            assert!(!words.iter().any(|w| w == "--instance-lock" || w == "--serve-port" || w == "--bundled-server"), "{page:?}: {words:?}");
+            let mut without = words.clone();
+            without.retain(|w| w != "--window");
+            assert_eq!(without, page_argv(&page, false), "{page:?}: --window is the only difference");
+        }
     }
 
     #[test]

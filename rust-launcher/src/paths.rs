@@ -275,21 +275,45 @@ pub const GUI_MIN_PLAYER_VERSION: [u64; 3] = [0, 8, 0];
 /// and the desktop build, whose `gui --window` draws in a window of its
 /// own. The bundles stage the desktop build under the terminal build's file
 /// name, so the name says nothing — the probe is the only way to tell.
+///
+/// The flavour's capabilities are WORDS on the probe's second line, never
+/// a version floor: the line is the binary's own account of what it was
+/// built with, so a locally built player stays honest about itself and a
+/// release that drops a capability says so. The contract with the player
+/// (its `const VERSION`, src/main.rs): the terminal build prints one line;
+/// the desktop build prints a second, `features: ` and its words
+/// (parse_player_features) — `features: window` through v0.11.0, and
+/// `features: window window-pages` from the release that hosts the pages.
+/// A word never changes meaning — a new capability is a new word on the
+/// same line, and a reader ignores words it does not know.
+/// - `window`: `gui --window` opens the player in a window of its own.
+/// - `window-pages`: `setup --window` and `qr --window` open the wizard and
+///   the Quick Connect page in one, exiting 3 when no window can open, 0 on
+///   every way out (finished, Esc, Ctrl+C, the close button) and 1 on a
+///   frame error. 4 is reserved for a page left before it finished, which
+///   the launcher reads as a close: no player sends it yet, and one that
+///   later tells an abandoned wizard from a finished one needs no launcher
+///   change to do so.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlayerProbe {
     pub version: [u64; 3],
-    /// A desktop build (`features: window` on the probe's second line):
-    /// "Open mStream Player" may start it straight into its own window.
+    /// A desktop build (`window`): "Open mStream Player" may start it
+    /// straight into its own window.
     pub desktop: bool,
+    /// The build also hosts the wizard and Quick Connect in a window of its
+    /// own (`window-pages`): the tray's Setup and Quick Connect take the
+    /// window route too, where they otherwise open in a terminal. Read on
+    /// its own; the tray routes a page to a window only beside `desktop`.
+    pub pages: bool,
 }
 
 /// Ask the player binary its version. `--version` is clap's one-shot —
 /// prints "mstream-player X.Y.Z" (and, from a desktop build, a second line
-/// "features: window") and exits, no audio device, no sockets, no config —
-/// the same probe the server's fetch path runs before it installs a build.
-/// None when the binary cannot run here at all (the linux build dies at
-/// load without libasound) or answers something else; the caller treats
-/// that as "no GUI player".
+/// "features: …", whose words PlayerProbe documents) and exits, no audio
+/// device, no sockets, no config — the same probe the server's fetch path
+/// runs before it installs a build. None when the binary cannot run here
+/// at all (the linux build dies at load without libasound) or answers
+/// something else; the caller treats that as "no GUI player".
 pub fn player_probe(bin: &Path) -> Option<PlayerProbe> {
     let mut cmd = Command::new(bin);
     cmd.arg("--version").stdin(Stdio::null()).stderr(Stdio::null());
@@ -307,7 +331,7 @@ pub fn player_probe(bin: &Path) -> Option<PlayerProbe> {
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     let version = parse_player_version(&stdout)?;
-    Some(PlayerProbe { version, desktop: parse_player_desktop(&stdout) })
+    Some(PlayerProbe { version, desktop: parse_player_desktop(&stdout), pages: parse_player_pages(&stdout) })
 }
 
 /// "mstream-player 0.8.0" → [0, 8, 0]. Only the first line counts, only
@@ -329,18 +353,34 @@ pub(crate) fn parse_player_version(stdout: &str) -> Option<[u64; 3]> {
     Some(v)
 }
 
-/// Whether the probe's output names a desktop build: its SECOND line is
-/// `features: <list>` and the list holds the word `window` (comma- or
-/// space-separated, so a later build may name more features). The first
-/// line stays parse_player_version's alone; a missing, blank or foreign
-/// second line — every terminal build, every release before Phase 14 — is
-/// a terminal build. Nothing past the second line is read.
-pub(crate) fn parse_player_desktop(stdout: &str) -> bool {
+/// The words on the probe's features line: its SECOND line, when it reads
+/// `features: <list>`, split on commas and whitespace (so a later build may
+/// name more). The first line stays parse_player_version's alone; a
+/// missing, blank or foreign second line — every terminal build, every
+/// release before Phase 14 — has no words. Nothing past the second line is
+/// read.
+pub(crate) fn parse_player_features(stdout: &str) -> impl Iterator<Item = &str> {
     stdout
         .lines()
         .nth(1)
         .and_then(|line| line.trim().strip_prefix("features:"))
-        .is_some_and(|list| list.split(|c: char| c == ',' || c.is_whitespace()).any(|word| word == "window"))
+        .into_iter()
+        .flat_map(|list| list.split(|c: char| c == ',' || c.is_whitespace()))
+        .filter(|word| !word.is_empty())
+}
+
+/// Whether the probe's output names a desktop build: its features line
+/// holds the word `window`.
+pub(crate) fn parse_player_desktop(stdout: &str) -> bool {
+    parse_player_features(stdout).any(|word| word == "window")
+}
+
+/// Whether the probe's output says the build hosts the wizard and Quick
+/// Connect in a window of its own: its features line holds the word
+/// `window-pages` (PlayerProbe has the contract). The whole word — a near
+/// miss is a build without it, never a guess.
+pub(crate) fn parse_player_pages(stdout: &str) -> bool {
+    parse_player_features(stdout).any(|word| word == "window-pages")
 }
 
 /// Whether a player of this version has the `gui` face.
@@ -897,6 +937,40 @@ mod tests {
     }
 
     #[test]
+    fn the_features_line_names_the_window_pages_by_the_whole_word() {
+        let probe = |line: &str| {
+            let out = format!("mstream-player 0.12.0\n{line}\n");
+            (parse_player_desktop(&out), parse_player_pages(&out))
+        };
+        // Exactly as the desktop build that hosts the pages prints it: the
+        // existing reader still sees a desktop build, and the pages too.
+        assert_eq!(probe("features: window window-pages"), (true, true));
+        assert_eq!(probe("features: window, window-pages"), (true, true));
+        assert_eq!(probe("features: window-pages window"), (true, true), "order is not the contract");
+        // Today's desktop build (v0.11.0's probe): the player's window,
+        // never the pages — every page route stays the terminal's.
+        assert_eq!(probe("features: window"), (true, false));
+        // The word on its own is read on its own; the tray asks for both.
+        assert_eq!(probe("features: window-pages"), (false, true));
+        // Near misses are builds without it, never a guess.
+        for line in ["features: window window-page", "features: window pages", "features: window window-pages-v2", "features: window windowpages", "Features: window-pages"] {
+            assert!(!probe(line).1, "{line:?}");
+        }
+        // No second line — every terminal build — has neither.
+        for out in ["mstream-player 0.12.0", "mstream-player 0.12.0\n", "mstream-player 0.12.0\n\n"] {
+            assert!(!parse_player_desktop(out) && !parse_player_pages(out), "{out:?}");
+            assert_eq!(parse_player_features(out).count(), 0, "{out:?}");
+        }
+        // The words themselves: separators never become words, and the
+        // first line is never read as one.
+        assert_eq!(
+            parse_player_features("mstream-player 0.12.0\r\nfeatures:  window ,window-pages\t gpu\r\n").collect::<Vec<_>>(),
+            ["window", "window-pages", "gpu"]
+        );
+        assert_eq!(parse_player_features("features: window\nmstream-player 0.12.0\n").count(), 0, "only the second line counts");
+    }
+
+    #[test]
     fn player_version_probe_reads_a_real_process() {
         // A stand-in binary that answers --version the way the player does;
         // the probe runs it for real (spawn, capture, parse). Unix only for
@@ -910,12 +984,17 @@ mod tests {
             let stub = dir.join("mstream-player");
             std::fs::write(&stub, "#!/bin/sh\n[ \"$1\" = --version ] && echo 'mstream-player 0.8.0' && exit 0\nexit 2\n").unwrap();
             std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-            assert_eq!(player_probe(&stub), Some(PlayerProbe { version: [0, 8, 0], desktop: false }));
+            assert_eq!(player_probe(&stub), Some(PlayerProbe { version: [0, 8, 0], desktop: false, pages: false }));
             // A desktop build answers a second line; the same run reads it.
             let desk = dir.join("desktop-player");
             std::fs::write(&desk, "#!/bin/sh\n[ \"$1\" = --version ] && printf 'mstream-player 0.9.0\\nfeatures: window\\n' && exit 0\nexit 2\n").unwrap();
             std::fs::set_permissions(&desk, std::fs::Permissions::from_mode(0o755)).unwrap();
-            assert_eq!(player_probe(&desk), Some(PlayerProbe { version: [0, 9, 0], desktop: true }));
+            assert_eq!(player_probe(&desk), Some(PlayerProbe { version: [0, 9, 0], desktop: true, pages: false }));
+            // One that hosts the pages names the second word on that line.
+            let pages = dir.join("pages-player");
+            std::fs::write(&pages, "#!/bin/sh\n[ \"$1\" = --version ] && printf 'mstream-player 0.12.0\\nfeatures: window window-pages\\n' && exit 0\nexit 2\n").unwrap();
+            std::fs::set_permissions(&pages, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(player_probe(&pages), Some(PlayerProbe { version: [0, 12, 0], desktop: true, pages: true }));
             // A binary that cannot run (the linux loader failure shape: a
             // non-zero exit and nothing useful on stdout) is None.
             let dead = dir.join("dead-player");

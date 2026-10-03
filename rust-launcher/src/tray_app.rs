@@ -132,13 +132,16 @@ pub fn run(args: LauncherArgs) -> ! {
     // (paths::rust_player_port).
     // The same run's second line says which build it is (paths::PlayerProbe):
     // a desktop build opens straight into a window of its own where this
-    // session can show one, a terminal build in a terminal as before.
+    // session can show one, a terminal build in a terminal as before — and
+    // a desktop build that names `window-pages` hosts the wizard and Quick
+    // Connect in a window of its own too (open_player_page).
     let desktop_player = player_bin.as_deref().and_then(|p| match paths::player_probe(p) {
-        Some(paths::PlayerProbe { version: v, desktop }) if paths::player_has_gui(v) => {
+        Some(paths::PlayerProbe { version: v, desktop, pages }) if paths::player_has_gui(v) => {
             if desktop {
                 log.line(&format!(
-                    "player {} is a desktop build - the player item opens it in its own window{}",
+                    "player {} is a desktop build - the player item opens it in its own window{}{}",
                     paths::version_label(v),
+                    if pages { ", as do Setup and Quick Connect (window-pages)" } else { "" },
                     if platform::window_display_available() { "" } else { " once there is a display (none in this session: the terminal route)" }
                 ));
             }
@@ -154,6 +157,7 @@ pub fn run(args: LauncherArgs) -> ! {
                 instance_lock: paths::player_has_instance_lock(v).then(|| paths::desktop_player_lock(&data_home)),
                 serve_port: paths::player_has_control_face(v).then(|| paths::rust_player_port(&config)),
                 desktop,
+                pages,
             })
         }
         Some(paths::PlayerProbe { version: v, .. }) => {
@@ -712,26 +716,26 @@ pub fn run(args: LauncherArgs) -> ! {
                         let _ = open::that_detached(&url);
                     }
                     "quick-connect" => {
-                        // The wizard's Quick Connect page (pixel pairing QR)
-                        // in a real terminal on every desktop platform; the
-                        // webapp's modal hash (webapp/assets/js/quick-connect.js)
-                        // is the fallback when this install has no player
-                        // binary or no terminal opened (a Linux desktop
-                        // without an emulator the chain knows).
+                        // The wizard's Quick Connect page (pairing QR) in
+                        // the player's own window when the desktop build
+                        // says it hosts the pages, else in a real terminal
+                        // on every desktop platform; the webapp's modal
+                        // hash (webapp/assets/js/quick-connect.js) is the
+                        // fallback when this install has no player binary,
+                        // the page failed in its window, or no terminal
+                        // opened (a Linux desktop without an emulator the
+                        // chain knows). open_player_page owns the route.
                         log.line("menu: quick connect");
-                        let mut opened = false;
-                        if let Some(player) = player_bin.as_deref() {
-                            match platform::open_player_terminal(player, &url, &data_home, console.as_ref(), platform::PlayerPage::QuickConnect) {
-                                Ok(via) => {
-                                    log.line(&format!("quick connect opened via {via}"));
-                                    opened = true;
-                                }
-                                Err(e) => log.line(&format!("quick connect terminal failed: {e} - falling back to the webapp")),
-                            }
-                        }
-                        if !opened {
-                            let _ = open::that_detached(format!("{url}/#quick-connect"));
-                        }
+                        open_player_page(
+                            desktop_player.as_ref(),
+                            player_bin.as_deref(),
+                            TrayPage::QuickConnect,
+                            &url,
+                            &data_home,
+                            console.as_ref(),
+                            &format!("{url}/#quick-connect"),
+                            &log,
+                        );
                     }
                     "autostart" => {
                         // muda toggles the checkbox before we hear about it,
@@ -922,11 +926,14 @@ pub fn run(args: LauncherArgs) -> ! {
                         }
                         if announce && !opened {
                             opened = true;
-                            // First install: open the guided terminal wizard
-                            // (browser admin panel as the fallback when no
-                            // player binary exists or no terminal opened —
-                            // on Linux, a desktop without an emulator the
-                            // platform chain knows). CONFIGURED
+                            // First install: open the guided wizard — in the
+                            // player's own window when the desktop build says
+                            // it hosts the pages, else in a terminal (browser
+                            // admin panel as the fallback when no player
+                            // binary exists, the wizard failed in its window,
+                            // or no terminal opened — on Linux, a desktop
+                            // without an emulator the platform chain knows;
+                            // open_player_page owns the route). CONFIGURED
                             // installs boot QUIETLY — the wizard quick-start
                             // superseded the old open-the-player-on-every-
                             // boot announce (operator decision, pre-6.24):
@@ -939,19 +946,16 @@ pub fn run(args: LauncherArgs) -> ! {
                             // pop — an update relaunch must never pop a
                             // terminal.
                             if target.ends_with("/admin") {
-                                let mut wizard_opened = false;
-                                if let Some(player) = player_bin.as_deref() {
-                                    match platform::open_player_terminal(player, &url, &data_home, console.as_ref(), platform::PlayerPage::Setup) {
-                                        Ok(via) => {
-                                            log.line(&format!("first-run announce: setup wizard opened via {via}"));
-                                            wizard_opened = true;
-                                        }
-                                        Err(e) => log.line(&format!("first-run announce: wizard failed ({e}) - opening the admin panel")),
-                                    }
-                                }
-                                if !wizard_opened {
-                                    let _ = open::that_detached(target);
-                                }
+                                open_player_page(
+                                    desktop_player.as_ref(),
+                                    player_bin.as_deref(),
+                                    TrayPage::Setup,
+                                    &url,
+                                    &data_home,
+                                    console.as_ref(),
+                                    &target,
+                                    &log,
+                                );
                             } else {
                                 log.line("boot announce: quiet (already set up)");
                             }
@@ -1170,13 +1174,16 @@ fn open_player_from_tray(
 /// the server's player port, so the server can adopt the open player as
 /// its server-audio engine. `desktop`: the probe named a desktop build
 /// (paths::PlayerProbe), which opens in a window of its own (the window
-/// route) wherever this session can show one.
+/// route) wherever this session can show one. `pages`: the probe named
+/// `window-pages` too, so Setup and Quick Connect take a window route of
+/// their own (open_player_page).
 #[derive(Clone)]
 struct DesktopPlayer {
     bin: PathBuf,
     instance_lock: Option<PathBuf>,
     serve_port: Option<u16>,
     desktop: bool,
+    pages: bool,
 }
 
 impl DesktopPlayer {
@@ -1193,6 +1200,70 @@ impl DesktopPlayer {
 /// diagnosis, and nothing grows past one session).
 fn player_window_log(data_home: &Path) -> PathBuf {
     data_home.join("logs").join("desktop-player.log")
+}
+
+/// The two pages the tray opens besides the player: the first-run
+/// announce's setup wizard and the menu's Quick Connect. A page holds no
+/// instance lock (a second click opens a second one), so it shares neither
+/// the player's lock check nor its window verdicts (page_verdict).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrayPage {
+    Setup,
+    QuickConnect,
+}
+
+impl TrayPage {
+    /// The player page it opens — one argv on every route
+    /// (platform::player_words: `setup` / `qr`, `--window` on the window
+    /// route, then `--server <url>`; never a lock or a port).
+    fn player_page(self) -> platform::PlayerPage {
+        match self {
+            TrayPage::Setup => platform::PlayerPage::Setup,
+            TrayPage::QuickConnect => platform::PlayerPage::QuickConnect,
+        }
+    }
+    /// The subject of the page's "opened via …" line — one phrase whichever
+    /// route opened it, so support and the smokes read one line.
+    fn opener(self) -> &'static str {
+        match self {
+            TrayPage::Setup => "first-run announce: setup wizard",
+            TrayPage::QuickConnect => "quick connect",
+        }
+    }
+    /// The page's window in the watcher's lines.
+    fn window_name(self) -> &'static str {
+        match self {
+            TrayPage::Setup => "setup wizard window",
+            TrayPage::QuickConnect => "quick connect window",
+        }
+    }
+    /// The terminal route's failure line; it names the browser fallback
+    /// that follows it.
+    fn terminal_failed(self, e: &str) -> String {
+        match self {
+            TrayPage::Setup => format!("first-run announce: wizard failed ({e}) - {}", self.browser_words()),
+            TrayPage::QuickConnect => format!("quick connect terminal failed: {e} - {}", self.browser_words()),
+        }
+    }
+    /// What the browser fallback opens, as a log line says it.
+    fn browser_words(self) -> &'static str {
+        match self {
+            TrayPage::Setup => "opening the admin panel",
+            TrayPage::QuickConnect => "falling back to the webapp",
+        }
+    }
+}
+
+/// Where a page's window writes its stdout and stderr: a file of its own
+/// per page beside the player's, rotated to `.1` before every open like
+/// desktop-player.log, so a page's window and the player's window never
+/// truncate each other's file.
+fn player_page_log(data_home: &Path, page: TrayPage) -> PathBuf {
+    let name = match page {
+        TrayPage::Setup => "desktop-setup.log",
+        TrayPage::QuickConnect => "desktop-quick-connect.log",
+    };
+    data_home.join("logs").join(name)
 }
 
 /// Open the desktop player — a DESKTOP build straight into a window of its
@@ -1297,6 +1368,89 @@ fn web_player_fallback(fallback: Option<&str>, log: &Logger) {
     }
 }
 
+/// Open one of the tray's pages. A desktop build that names `window-pages`
+/// (DesktopPlayer.pages) opens it straight into a window of its own where
+/// this session can show one — spawned detached and watched for its first
+/// WINDOW_WATCH by a thread of its own (watch_player_page), which owns the
+/// fallbacks from there. Every other install takes the terminal route as
+/// before (open_page_in_terminal): a terminal build, a desktop build
+/// without the word (every player through v0.11.0), a session with no
+/// display, a window that could not start. `player_bin` is the terminal
+/// route's binary — any player this install has, admitted by the GUI gate
+/// or not, as the pages have always run — and `fallback` the browser's
+/// target when no terminal opens: the admin panel for Setup, the webapp's
+/// Quick Connect modal (webapp/assets/js/quick-connect.js) for Quick
+/// Connect. The tray loop never waits on any of it.
+#[allow(clippy::too_many_arguments)]
+fn open_player_page(
+    player: Option<&DesktopPlayer>,
+    player_bin: Option<&Path>,
+    page: TrayPage,
+    server_url: &str,
+    data_home: &Path,
+    console: Option<&paths::ConsoleLaunch>,
+    fallback: &str,
+    log: &Logger,
+) {
+    if let Some(player) = player.filter(|p| p.desktop && p.pages) {
+        if platform::window_display_available() {
+            let out = player_page_log(data_home, page);
+            rotate_log(&out, None);
+            match platform::spawn_player_window(&player.bin, server_url, &page.player_page(), &out) {
+                Ok(child) => {
+                    log.line(&format!("{} opened via its own window (pid {}) - output in {}", page.opener(), child.id(), out.display()));
+                    watch_player_page(
+                        child,
+                        PageFallback {
+                            page,
+                            player_bin: player.bin.clone(),
+                            server_url: server_url.to_string(),
+                            data_home: data_home.to_path_buf(),
+                            console: console.cloned(),
+                            fallback: fallback.to_string(),
+                            log: log.clone(),
+                            output: out,
+                        },
+                    );
+                    return;
+                }
+                Err(e) => log.line(&format!("{} window could not start: {e} - opening it in a terminal instead", page.opener())),
+            }
+        } else {
+            log.line(&format!(
+                "{}: a desktop build, but this session has no display (DISPLAY/WAYLAND_DISPLAY unset) - opening it in a terminal",
+                page.opener()
+            ));
+        }
+    }
+    open_page_in_terminal(player_bin, page, server_url, data_home, console, fallback, log);
+}
+
+/// A page's terminal route — the pages' route before window-pages, and its
+/// fallback after: the page in a terminal window of its own
+/// (platform::open_player_terminal), then the browser when this install
+/// has no player binary or no terminal opened.
+fn open_page_in_terminal(
+    player_bin: Option<&Path>,
+    page: TrayPage,
+    server_url: &str,
+    data_home: &Path,
+    console: Option<&paths::ConsoleLaunch>,
+    fallback: &str,
+    log: &Logger,
+) {
+    if let Some(bin) = player_bin {
+        match platform::open_player_terminal(bin, server_url, data_home, console, page.player_page()) {
+            Ok(via) => {
+                log.line(&format!("{} opened via {via}", page.opener()));
+                return;
+            }
+            Err(e) => log.line(&page.terminal_failed(&e)),
+        }
+    }
+    let _ = open::that_detached(fallback);
+}
+
 /// The open player is brought forward through whatever hosts it — the
 /// sidecar beside its lock says what that is (read behind the lock check).
 fn focus_open_player(lock: &Path, console: Option<&paths::ConsoleLaunch>, log: &Logger) {
@@ -1364,6 +1518,72 @@ fn window_verdict(state: ChildState, elapsed: Duration) -> WindowVerdict {
         ChildState::Exited(code) if !inside => WindowVerdict::Closed(code),
         ChildState::Exited(Some(0)) => WindowVerdict::Refused,
         ChildState::Exited(code) => WindowVerdict::Failed(code),
+    }
+}
+
+/// What a page's watcher makes of what it saw — the window verdicts without
+/// Refused: a page holds no instance lock, so nothing ever refuses it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PageVerdict {
+    /// Inside the watch and still running: look again.
+    Watching,
+    /// Still running when the watch ends: the page's window is up.
+    Up,
+    /// Exit 3, at any time: no window could open here.
+    NoWindow,
+    /// Any other exit inside the watch, a signal's too: the page failed in
+    /// its window, the code in the log.
+    Failed(Option<i32>),
+    /// Exit 0 at any time — the page's every way out (finished, Esc,
+    /// Ctrl+C, the close button) — the reserved PAGE_ABANDONED at any time,
+    /// or any other exit past the watch: the window was there and has
+    /// closed.
+    Closed(Option<i32>),
+}
+
+/// THE page route decision, pure: (exit status, time since the spawn) to a
+/// verdict, with the window route's clock and exit 3. Exit 0 is a close at
+/// any time — a quick one is a user who was done (Esc on the Done page),
+/// never a refusal and never a reason to bring anything forward.
+fn page_verdict(state: ChildState, elapsed: Duration) -> PageVerdict {
+    let inside = elapsed < WINDOW_WATCH;
+    match state {
+        ChildState::Running if inside => PageVerdict::Watching,
+        ChildState::Running => PageVerdict::Up,
+        ChildState::Exited(Some(PLAYER_NO_WINDOW)) => PageVerdict::NoWindow,
+        ChildState::Exited(Some(0)) => PageVerdict::Closed(Some(0)),
+        ChildState::Exited(Some(PAGE_ABANDONED)) => PageVerdict::Closed(Some(PAGE_ABANDONED)),
+        ChildState::Exited(code) if inside => PageVerdict::Failed(code),
+        ChildState::Exited(code) => PageVerdict::Closed(code),
+    }
+}
+
+/// The exit the launcher reserves for a page "left before it finished" (the
+/// wizard abandoned rather than completed), written into the `window-pages`
+/// contract beside PlayerProbe. No player sends it yet — every way out is 0
+/// today — and its row in page_verdict is here so the player can start
+/// sending it without a launcher change: it is a close at every layer, never
+/// a failure, so no fallback and no focus follow it.
+const PAGE_ABANDONED: i32 = 4;
+
+/// What the page's watcher does about a verdict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PageAction {
+    /// Log it; the page is up, or was and has closed.
+    Nothing,
+    /// The page in a terminal window instead (no window could open here).
+    Terminal,
+    /// The page's browser fallback: a page that failed in its window would
+    /// fail the same way in a terminal.
+    Browser,
+}
+
+/// The page route's fallback table, pure.
+fn page_outcome(verdict: PageVerdict) -> PageAction {
+    match verdict {
+        PageVerdict::NoWindow => PageAction::Terminal,
+        PageVerdict::Failed(_) => PageAction::Browser,
+        PageVerdict::Watching | PageVerdict::Up | PageVerdict::Closed(_) => PageAction::Nothing,
     }
 }
 
@@ -1453,6 +1673,87 @@ fn watch_player_window(mut child: std::process::Child, ctx: WindowFallback) -> W
         }
     });
     WindowWatch(rx)
+}
+
+/// Everything a page's watcher needs to take the fallbacks on its own
+/// thread.
+struct PageFallback {
+    page: TrayPage,
+    player_bin: PathBuf,
+    server_url: String,
+    data_home: PathBuf,
+    console: Option<paths::ConsoleLaunch>,
+    /// The browser's target (open_player_page).
+    fallback: String,
+    log: Logger,
+    /// The child's output file — its last line rides into a failure's log.
+    output: PathBuf,
+}
+
+/// A page's watcher: a thread of its own polls the child for WINDOW_WATCH
+/// and acts on page_outcome(page_verdict(..)) — the terminal route for no
+/// window, the browser for a failure, a log line for the rest. Once the
+/// window is up it stays to reap the child and logs its close; a late exit
+/// 3 still means no window ever opened, and takes the terminal route as
+/// the player's watcher does. Nothing waits on it: the tray loop runs on,
+/// and the pages never ride an exiting launcher.
+fn watch_player_page(mut child: std::process::Child, ctx: PageFallback) {
+    std::thread::spawn(move || {
+        let pid = child.id();
+        let name = ctx.page.window_name();
+        let start = Instant::now();
+        let act = |verdict: PageVerdict| {
+            let ms = start.elapsed().as_millis();
+            match (page_outcome(verdict), verdict) {
+                (PageAction::Terminal, _) => {
+                    ctx.log.line(&format!(
+                        "{name} (pid {pid}) could not open a window (exit {PLAYER_NO_WINDOW}{}) after {ms} ms - falling back to the terminal route",
+                        last_words(&ctx.output)
+                    ));
+                    let console = ctx.console.as_ref();
+                    open_page_in_terminal(Some(&ctx.player_bin), ctx.page, &ctx.server_url, &ctx.data_home, console, &ctx.fallback, &ctx.log);
+                }
+                (PageAction::Browser, PageVerdict::Failed(code)) => {
+                    ctx.log.line(&format!(
+                        "{name} (pid {pid}) failed ({}{}) after {ms} ms - {}",
+                        exit_words(code),
+                        last_words(&ctx.output),
+                        ctx.page.browser_words()
+                    ));
+                    let _ = open::that_detached(&ctx.fallback);
+                }
+                (_, PageVerdict::Up) => ctx.log.line(&format!("{name} (pid {pid}) is up")),
+                (_, PageVerdict::Failed(code) | PageVerdict::Closed(code)) => {
+                    ctx.log.line(&format!("{name} (pid {pid}) closed after {ms} ms ({})", exit_words(code)))
+                }
+                (_, PageVerdict::Watching | PageVerdict::NoWindow) => unreachable!("the loop only breaks on a decision; no window is the terminal's"),
+            }
+        };
+        let verdict = loop {
+            let state = match child.try_wait() {
+                Ok(Some(st)) => ChildState::Exited(st.code()),
+                Ok(None) => ChildState::Running,
+                Err(e) => {
+                    ctx.log.line(&format!("{name} (pid {pid}): cannot watch it ({e}) - leaving it be"));
+                    return;
+                }
+            };
+            match page_verdict(state, start.elapsed()) {
+                PageVerdict::Watching => std::thread::sleep(WINDOW_POLL),
+                v => break v,
+            }
+        };
+        act(verdict);
+        if verdict == PageVerdict::Up {
+            // Up only meant "still running at the watch's end": its close
+            // reads through the same table, past the watch — exit 3 is the
+            // terminal route still, anything else a close.
+            match child.wait() {
+                Ok(st) => act(page_verdict(ChildState::Exited(st.code()), start.elapsed())),
+                Err(e) => ctx.log.line(&format!("{name} (pid {pid}): wait failed: {e}")),
+            }
+        }
+    });
 }
 
 fn exit_words(code: Option<i32>) -> String {
@@ -2192,6 +2493,78 @@ mod tests {
         }
         assert_eq!(window_verdict(ChildState::Exited(Some(3)), late), WindowVerdict::NoWindow, "a late exit 3");
         assert!(WINDOW_WATCH >= Duration::from_secs(3) && WINDOW_WATCH <= Duration::from_secs(10));
+    }
+
+    #[test]
+    fn the_page_watch_never_refuses_and_takes_exit_3_at_any_time() {
+        let ms = Duration::from_millis;
+        let early = ms(300);
+        let late = WINDOW_WATCH + ms(50);
+        // The window route's clock: look again inside the watch, up after it.
+        assert_eq!(page_verdict(ChildState::Running, ms(0)), PageVerdict::Watching);
+        assert_eq!(page_verdict(ChildState::Running, WINDOW_WATCH - ms(1)), PageVerdict::Watching);
+        assert_eq!(page_verdict(ChildState::Running, WINDOW_WATCH), PageVerdict::Up);
+        assert_eq!(page_verdict(ChildState::Running, late), PageVerdict::Up);
+        // Exit 0 is a close at any time — Esc on the Done page a moment in
+        // is a user who was done, never a refusal (a page holds no lock).
+        assert_eq!(page_verdict(ChildState::Exited(Some(0)), early), PageVerdict::Closed(Some(0)));
+        assert_eq!(page_verdict(ChildState::Exited(Some(0)), ms(0)), PageVerdict::Closed(Some(0)));
+        assert_eq!(page_verdict(ChildState::Exited(Some(0)), late), PageVerdict::Closed(Some(0)));
+        // Exit 3 at any time: no window ever opened.
+        assert_eq!(page_verdict(ChildState::Exited(Some(PLAYER_NO_WINDOW)), early), PageVerdict::NoWindow);
+        assert_eq!(page_verdict(ChildState::Exited(Some(PLAYER_NO_WINDOW)), late), PageVerdict::NoWindow, "a late exit 3");
+        // Any other exit inside the watch failed in the window, with its code.
+        assert_eq!(page_verdict(ChildState::Exited(Some(1)), early), PageVerdict::Failed(Some(1)), "a frame error");
+        assert_eq!(page_verdict(ChildState::Exited(Some(2)), early), PageVerdict::Failed(Some(2)), "clap refused the argv");
+        assert_eq!(page_verdict(ChildState::Exited(None), early), PageVerdict::Failed(None), "a signal");
+        // Past the watch, the window was up and has closed, whatever the code.
+        for code in [Some(1), Some(101), None] {
+            assert_eq!(page_verdict(ChildState::Exited(code), late), PageVerdict::Closed(code), "{code:?}");
+        }
+    }
+
+    #[test]
+    fn a_pages_outcome_is_a_terminal_for_no_window_and_the_browser_for_a_failure() {
+        assert_eq!(page_outcome(PageVerdict::NoWindow), PageAction::Terminal);
+        assert_eq!(page_outcome(PageVerdict::Failed(Some(1))), PageAction::Browser);
+        assert_eq!(page_outcome(PageVerdict::Failed(Some(101))), PageAction::Browser);
+        assert_eq!(page_outcome(PageVerdict::Failed(None)), PageAction::Browser, "a signal");
+        for quiet in [PageVerdict::Watching, PageVerdict::Up, PageVerdict::Closed(Some(0)), PageVerdict::Closed(Some(1)), PageVerdict::Closed(None)] {
+            assert_eq!(page_outcome(quiet), PageAction::Nothing, "{quiet:?}");
+        }
+        // The reserved "abandoned" exit is a close at every layer and at any
+        // time: the verdict says Closed, and the table takes no fallback.
+        for at in [Duration::from_millis(300), WINDOW_WATCH] {
+            let verdict = page_verdict(ChildState::Exited(Some(PAGE_ABANDONED)), at);
+            assert_eq!(verdict, PageVerdict::Closed(Some(PAGE_ABANDONED)), "{at:?}");
+            assert_eq!(page_outcome(verdict), PageAction::Nothing, "{at:?}");
+        }
+        assert!(![0, 1, PLAYER_NO_WINDOW].contains(&PAGE_ABANDONED), "the reserved code stays apart from the codes a page sends today: 0, 1 and 3");
+        // The whole table end to end, as the watcher reads it.
+        assert_eq!(page_outcome(page_verdict(ChildState::Exited(Some(0)), Duration::ZERO)), PageAction::Nothing);
+        assert_eq!(page_outcome(page_verdict(ChildState::Exited(Some(3)), WINDOW_WATCH * 2)), PageAction::Terminal);
+    }
+
+    #[test]
+    fn each_page_writes_a_log_of_its_own() {
+        let home = Path::new("/data/home");
+        let setup = player_page_log(home, TrayPage::Setup);
+        let qc = player_page_log(home, TrayPage::QuickConnect);
+        assert_eq!(setup, PathBuf::from("/data/home/logs/desktop-setup.log"));
+        assert_eq!(qc, PathBuf::from("/data/home/logs/desktop-quick-connect.log"));
+        assert_ne!(setup, qc);
+        for page in [&setup, &qc] {
+            assert_ne!(page, &player_window_log(home), "a page never truncates the player's log");
+            assert_eq!(page.parent(), player_window_log(home).parent(), "beside it, in the logs dir");
+        }
+        // One argv per page on every route, never the player's.
+        assert_eq!(TrayPage::Setup.player_page(), platform::PlayerPage::Setup);
+        assert_eq!(TrayPage::QuickConnect.player_page(), platform::PlayerPage::QuickConnect);
+        // The phrases support and the smokes read.
+        assert_eq!(TrayPage::Setup.opener(), "first-run announce: setup wizard");
+        assert_eq!(TrayPage::QuickConnect.opener(), "quick connect");
+        assert!(TrayPage::Setup.terminal_failed("x").ends_with("opening the admin panel"));
+        assert!(TrayPage::QuickConnect.terminal_failed("x").ends_with("falling back to the webapp"));
     }
 
     #[test]
