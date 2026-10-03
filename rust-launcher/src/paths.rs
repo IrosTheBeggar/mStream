@@ -211,13 +211,12 @@ pub fn setup_complete(config: &Path) -> bool {
 }
 
 /// Where a launcher-initiated browser open should land (the announce after
-/// boot, a second instance yielding, a macOS reopen): the player once setup
-/// has happened, the ADMIN PANEL before it — a fresh install's player is a
-/// dead end. (The post-boot announce goes further and opens the setup
-/// wizard itself on fresh installs; this is its browser fallback and every
-/// other gesture's routing.) The tray's explicit "Open Admin Panel in
-/// browser" item (under Manage server) does NOT route through this — it
-/// always opens /admin, literally what it says.
+/// boot, a second instance yielding, a macOS reopen, the tray's player
+/// item and left click when no desktop player opens): the player once
+/// setup has happened, the ADMIN PANEL before it — a fresh install's
+/// player is a dead end. (The post-boot announce goes further and opens
+/// the setup wizard itself on fresh installs; this is its browser fallback
+/// and every other gesture's routing.)
 pub fn browse_target(config: &Path, ep: &Endpoint) -> String {
     if setup_complete(config) {
         server_url(ep)
@@ -247,11 +246,11 @@ pub fn player_key() -> String {
     format!("mstream-player-{plat}-{arch}{ext}")
 }
 
-/// The terminal player behind the wizard, Quick Connect and the Manage
-/// server rooms: the copy build-bun stages next to the server binary in
+/// The bundled player behind the setup wizard, Quick Connect and "Open
+/// mStream Player": the copy build-bun stages next to the server binary in
 /// every desktop bundle, else one the server's runtime fetch installed in
-/// the shared data home. None sends those items to their browser fallbacks
-/// (the webapp's Quick Connect modal, the admin panel's sections).
+/// the shared data home. None sends each of them to its browser fallback
+/// (the admin panel, the webapp's Quick Connect modal, the web player).
 pub fn find_player_bin(server_bin: &Path, data_home: &Path) -> Option<PathBuf> {
     let key = player_key();
     let bundled = server_bin.parent()?.join("bin").join("mstream-player").join(&key);
@@ -555,6 +554,25 @@ pub struct UpdateStatus {
     /// inno/pkg: the verified installer the server downloaded. Validated
     /// (location + name shape) before the launcher will touch it.
     pub installer_path: Option<PathBuf>,
+    /// `latest` is the version the operator skipped (updates.skipVersion).
+    pub skipped: bool,
+    /// `latest` failed to boot after an earlier update and the boot
+    /// watchdog holds it back (update-hold.json).
+    pub held: bool,
+    /// The release feed speaks an update format newer than this server's:
+    /// `latest` is announced, and the way to it is re-running the install.
+    pub notify_only: bool,
+}
+
+impl UpdateStatus {
+    /// Whether the server has ruled `latest` out of everything but a
+    /// mention: update-check.js neither downloads nor applies a skipped,
+    /// held or notify-only release (backgroundStageWanted, stageNow), and
+    /// the admin panel offers no button for one, so the tray must not hand
+    /// the same release over by another road.
+    pub fn latest_withheld(&self) -> bool {
+        self.skipped || self.held || self.notify_only
+    }
 }
 
 /// A display-safe version: bare digits-and-dots triple, bounded length —
@@ -606,6 +624,9 @@ pub fn parse_update_status(doc: &str) -> Option<UpdateStatus> {
             .filter(|t| t.len() <= 40 && t.chars().all(|c| c.is_ascii_graphic()))
             .map(str::to_string),
         installer_path: v.get("installerPath").and_then(|x| x.as_str()).map(PathBuf::from),
+        skipped: flag("skipped"),
+        held: flag("held"),
+        notify_only: flag("notifyOnly"),
     })
 }
 
@@ -1165,6 +1186,19 @@ mod tests {
         // A method with unexpected characters is dropped, not displayed.
         let odd = parse_update_status(r#"{"method": "Managed; rm -rf /"}"#).unwrap();
         assert_eq!(odd.method, None);
+        // The server's reasons to leave `latest` alone, each on its own and
+        // read as booleans only.
+        assert!(!s.skipped && !s.held && !s.notify_only && !s.latest_withheld());
+        for (key, pick) in [
+            ("skipped", (|s: &UpdateStatus| s.skipped) as fn(&UpdateStatus) -> bool),
+            ("held", |s| s.held),
+            ("notifyOnly", |s| s.notify_only),
+        ] {
+            let on = parse_update_status(&format!(r#"{{"{key}": true}}"#)).unwrap();
+            assert!(pick(&on) && on.latest_withheld(), "{key}");
+            let off = parse_update_status(&format!(r#"{{"{key}": "true"}}"#)).unwrap();
+            assert!(!pick(&off) && !off.latest_withheld(), "{key}: a non-bool is false");
+        }
     }
 
     #[test]

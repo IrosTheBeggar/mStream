@@ -52,10 +52,20 @@ the script manages, it restarts itself into the new version within a
 minute (the script only asks; the tray performs its usual graceful stop
 and takeover — set `MSTREAM_NO_RELAUNCH=1` to leave it on the old version
 until you restart it yourself). The macOS `.pkg` and Windows `setup.exe`
-do the equivalent themselves. What is never touched: a headless
-`mstream-server` you started (any installer only ever tells you about it),
-and a copy you extracted by hand somewhere else (or run with `--portable`)
-— the script only manages its own folder.
+do the equivalent themselves, and the `.pkg` also starts mStream when it
+wasn't running: an upgrade over an app you quit comes back quietly in the
+menu bar, and the app's very first start (for a user who has never run
+it, even one whose data folder `install.sh` or a bare `mstream-server`
+already made) turns the login item on and, while nothing is set up yet,
+opens the setup wizard. It starts it for the user signed in at the screen, so an
+install with nobody signed in (an MDM push, or `sudo installer` over SSH
+at the login window) leaves it for the login item or your next open. What
+is never touched: a headless `mstream-server` you started (any installer
+only ever tells you about it, and the `.pkg` won't start the app while
+something already listens on the port the app's server would take; a
+server on its own config and port doesn't hold it back), and a copy you
+extracted by hand somewhere else (or run with `--portable`) — the script
+only manages its own folder.
 
 ## Automatic updates
 
@@ -66,8 +76,9 @@ their own once the server is genuinely idle — nothing streaming, no scan
 running, and a quiet stretch (about ten minutes) since the last request,
 so a restart never lands under someone actively browsing. Under the tray
 app the restart is seamless; a `.pkg` install downloads the verified
-installer and waits for your click (Installer.app needs a human). The
-admin panel's About page shows the state and holds the controls:
+installer and waits for your click (Installer.app needs a human): the
+tray's update item and the admin panel open it. The admin panel's About
+page shows the state and holds the controls:
 
 - `updates.mode` — `auto` (the default, described above), `stage`
   (download and stage only; applying takes a restart or a click — the
@@ -96,13 +107,14 @@ The check and the downloads honor `MSTREAM_RELEASE_BASE` for mirrors, verify
 every download against the release's `manifest.json` sha256s, and only ever
 stage into layouts the installer owns: package-manager installs (deb/rpm,
 the macOS `.pkg`), Docker, npm, and hand-extracted copies are told about
-updates but never touched. Before switching an install to a freshly
-extracted version, the installers probe it twice: `-V` (does the binary
-run here at all) and `--boot-probe` (would it actually *boot* — the new
-build loads its module graph, runs your existing config through its
-schema, and opens the database read-only, all without writing anything).
-A version that fails either probe never takes over a working install: the
-stage fails loudly and the next release retries.
+updates but never touched (a `.pkg` install gets the verified installer
+downloaded beside your data; only Installer.app installs it). Before
+switching an install to a freshly extracted version, the installers probe it
+twice: `-V` (does the binary run here at all) and `--boot-probe` (would it
+actually *boot* — the new build loads its module graph, runs your existing
+config through its schema, and opens the database read-only, all without
+writing anything). A version that fails either probe never takes over a
+working install: the stage fails loudly and the next release retries.
 
 If an applied update crashes before it ever serves, the desktop launcher's
 **boot watchdog** rolls it back on its own: after a failed retry it
@@ -138,13 +150,16 @@ directly, with `manifest.json` holding their sha256s:
 **Just double-click it.** The desktop face of the bundle — `mStream.exe` on
 Windows, `mStream.app` on macOS, `mstream-desktop` on Linux — starts the
 server in the background, puts an mStream icon in your tray / menu bar
-(a status line — "Running · up 3h 12m", or Starting… / Stopped — then
-Open mStream Player · Manage server ▸ (Libraries · Discovery · Federation ·
-Backups · Torrents · Open Admin Panel in browser) · Quick Connect · Start at
-login · View logs · Restart server · Quit). Boots are quiet once set up — re-click the app icon
-(or launch it again) to open the desktop player, or to bring it forward
-when it is already open; an install without one gets the web player in
-your browser instead. Start-at-login
+(a status line — "Running · up 3h 12m", or Starting… / Stopped — and the
+update line under it, then Open mStream Player · Quick Connect · Start at
+login · View logs · Restart server · Quit). Boots are quiet once set up. A
+left click on the tray / menu-bar icon opens the desktop player on macOS
+and Windows (or brings it forward when it is already open), and a right
+click (a two-finger click on a trackpad) shows the menu; on Linux, where
+the desktop's tray host owns the clicks, the menu's Open mStream Player
+item does it. Re-clicking the app icon (or launching it again) does the
+same, and an install without a desktop player gets the web player in your
+browser instead. Start-at-login
 is on by default; one click in the tray menu turns it off. On a **first
 install** the tray opens the guided setup wizard by itself (the bundled
 `mstream-player setup` — music folders, admin account, extras) in a real
@@ -167,19 +182,9 @@ the web player's Quick Connect modal instead. Headless installs get the
 setup invitation as a boot log line whenever the server has no folders and
 no accounts yet.
 
-**Manage server** holds the server's management screens as terminal pages
-— the bundled player's admin rooms (`mstream-player admin <room>
---same-machine`), opened in the same kind of window as the wizard:
-**Libraries** (the music folders; the picker is the OS folder dialog, since
-the terminal runs on the server's own machine), **Discovery** (the P2P
-discovery network), **Federation**, **Backups** and **Torrents**. The rooms
-use the admin session the setup wizard saved when it created your account.
-An install whose admin account was made elsewhere — in the browser, or
-before the wizard existed — gets a one-time sign-in page inside the room
-and keeps that session for next time. When an install has no player
-binary, or no terminal could be opened, a room item opens the matching
-section of the browser admin panel instead; **Open Admin Panel in
-browser**, the submenu's last item, always does exactly that.
+The server's management screens live in the desktop player's **Admin**
+tab (player v0.11.0 and later), and the browser admin panel is always at
+`<server>/admin`.
 
 **Open mStream Player** opens the bundled player's desktop face —
 `mstream-player gui`, the mouse-first player — in the same kind of window
