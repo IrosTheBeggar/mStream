@@ -14,9 +14,10 @@
 # the server binary and lingers long enough for the terminal chain to count
 # the window as opened.
 #
-# Two legs, each with its own HOME (= its own data home, lock and log) and
+# Five legs, each with its own HOME (= its own data home, lock and log) and
 # port:
-#   1. player 9.9.9 (has the GUI): the recorded argv is exactly
+#   1. player 9.9.9 (has the GUI), a TERMINAL build (its --version answers
+#      one line): the recorded argv is exactly
 #      `gui --instance-lock <data home>/desktop-player.lock --serve-port 3333
 #      --bundled-server http://localhost:<port>` (the lock the launcher
 #      hands it; the server's player port, on which its GUI hosts the
@@ -24,6 +25,16 @@
 #      terminal opened it.
 #   2. player 0.7.0 (predates it): no argv file; the log names the version
 #      gate at boot and the suppressed browser fallback at ServerUp.
+#   3. a player already holds the instance lock: focus, nothing opened.
+#   4. player 9.9.9, a DESKTOP build (`features: window` on its --version
+#      second line — the bundles stage it under the terminal build's file
+#      name, so only the probe can tell): the launcher starts it straight
+#      into its own window, no terminal — the recorded argv is the leg-1
+#      argv plus `--window` after `gui` — and its watcher calls the window
+#      up once the stub outlives the watch.
+#   5. the same desktop build, but its window cannot open (`gui --window`
+#      exits 3, the player's NO_WINDOW): the watcher logs it and takes the
+#      terminal route — leg 1's argv, no --window.
 #
 # Needs: a built launcher (or MSTREAM_LAUNCHER_BIN), python3, and on Linux a
 # display plus a terminal emulator the launcher's chain knows (xterm is
@@ -92,10 +103,20 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 129' INT TERM
 
-# mk_bundle <leg> <player-version> <port>: a bundle of its own per leg (two
-# legs must never share a bundle: the argv file, the console link and the
-# stub are per bundle); sets B to the bundle dir.
+# mk_bundle <leg> <player-version> <port> [terminal|desktop|desktop-nowindow]:
+# a bundle of its own per leg (two legs must never share a bundle: the argv
+# files, the console link and the stub are per bundle); sets B to the
+# bundle dir. A desktop stub answers --version with the second line and
+# records a `--window` launch in window-argv.txt (the nowindow one then
+# exits 3); any other launch lands in player-argv.txt, as before.
 mk_bundle() {
+    flavour="${4:-terminal}"
+    features=""
+    window_exit=""
+    case "$flavour" in
+        desktop) features='echo "features: window"' ;;
+        desktop-nowindow) features='echo "features: window"'; window_exit='echo "stub: no window" >&2; exit 3' ;;
+    esac
     B="$ROOT/$1/mStream-0.0.1-$KEY"
     mkdir -p "$B/$SERVER_DIR_REL/bin/mstream-player" "$B/serve"
     cp "$LAUNCHER" "$B/$FACE_REL"
@@ -106,7 +127,13 @@ mk_bundle() {
     stub="$B/$SERVER_DIR_REL/bin/mstream-player/$PLAYER_KEY"
     cat > "$stub" <<STUB
 #!/bin/sh
-if [ "\${1:-}" = --version ]; then echo "mstream-player $2"; exit 0; fi
+if [ "\${1:-}" = --version ]; then echo "mstream-player $2"; $features
+exit 0; fi
+case " \$* " in *" --window "*)
+    printf '%s\n' "\$*" > "\$(dirname "\$0")/../../window-argv.txt"
+    $window_exit
+    sleep 20; exit 0 ;;
+esac
 printf '%s\n' "\$*" > "\$(dirname "\$0")/../../player-argv.txt"
 sleep 20
 STUB
@@ -117,15 +144,17 @@ STUB
     fi
 }
 
-# prepare_leg <leg> <player-version> <port>: the bundle and a HOME of its
-# own (its own data home, lock and log), set up already (on a fresh install
-# --player defers to the wizard); sets B, HOME_DIR, DATA, LOG, ARGV.
+# prepare_leg <leg> <player-version> <port> [flavour]: the bundle and a
+# HOME of its own (its own data home, lock and log), set up already (on a
+# fresh install --player defers to the wizard); sets B, HOME_DIR, DATA,
+# LOG, ARGV, WARGV.
 prepare_leg() {
-    mk_bundle "$1" "$2" "$3"
+    mk_bundle "$1" "$2" "$3" "${4:-terminal}"
     HOME_DIR="$SMOKE/home-$1"
     DATA="$HOME_DIR/$DATA_REL"
     LOG="$DATA/logs/launcher.log"
     ARGV="$B/$SERVER_DIR_REL/player-argv.txt"
+    WARGV="$B/$SERVER_DIR_REL/window-argv.txt"
     mkdir -p "$DATA/conf"
     echo '{"port":'"$3"',"setupComplete":true}' > "$DATA/conf/default.json"
 }
@@ -140,7 +169,7 @@ launch_leg() {
     LPID=$!
 }
 
-run_leg() { prepare_leg "$1" "$2" "$3"; launch_leg; }
+run_leg() { prepare_leg "$1" "$2" "$3" "${4:-terminal}"; launch_leg; }
 
 wait_for_log() { # <pattern> <seconds>
     i=0
@@ -231,6 +260,53 @@ else
 fi
 kill "$HOLDER" 2>/dev/null || true
 HOLDER=""
+stop_leg
+
+echo "== leg 4: a desktop build opens in its own window, no terminal =="
+run_leg window 9.9.9 3877 desktop
+wait_for_log "server is up" 45 || { echo "FAIL leg 4: server never came up"; tail -20 "$LOG" 2>/dev/null; exit 1; }
+if grep -q "player 9.9.9 is a desktop build" "$LOG"; then
+    echo "PASS the probe read the flavour: $(grep "is a desktop build" "$LOG" | tail -1 | sed 's/^\[[0-9]*\] //')"
+else
+    echo "FAIL the probe never named a desktop build"; tail -20 "$LOG"; fail=1
+fi
+i=0; while [ $i -lt 30 ] && [ ! -s "$WARGV" ]; do i=$((i + 1)); sleep 1; done
+if [ -s "$WARGV" ] && [ "$(cat "$WARGV")" = "gui --window --instance-lock $DATA/desktop-player.lock --serve-port 3333 --bundled-server http://localhost:3877" ]; then
+    echo "PASS the player was started as: $(cat "$WARGV")"
+else
+    echo "FAIL window argv: '$(cat "$WARGV" 2>/dev/null)'"; tail -20 "$LOG" 2>/dev/null; fail=1
+fi
+if grep -q "player opened via its own window" "$LOG"; then
+    echo "PASS $(grep "player opened via its own window" "$LOG" | tail -1 | sed 's/^\[[0-9]*\] //')"
+else
+    echo "FAIL launcher.log never reported the window route"; tail -20 "$LOG"; fail=1
+fi
+if wait_for_log "player window (pid [0-9]*) is up" 15; then
+    echo "PASS the watcher called the window up"
+else
+    echo "FAIL the watcher never called the window up"; tail -20 "$LOG"; fail=1
+fi
+if [ -e "$ARGV" ]; then
+    echo "FAIL a terminal was opened too: $(cat "$ARGV")"; fail=1
+else
+    echo "PASS no terminal route beside the window"
+fi
+stop_leg
+
+echo "== leg 5: the desktop build's window cannot open (exit 3) - the terminal route takes over =="
+run_leg nowindow 9.9.9 3878 desktop-nowindow
+wait_for_log "server is up" 45 || { echo "FAIL leg 5: server never came up"; tail -20 "$LOG" 2>/dev/null; exit 1; }
+if wait_for_log "could not open a window (exit 3" 20; then
+    echo "PASS $(grep "could not open a window" "$LOG" | tail -1 | sed 's/^\[[0-9]*\] //')"
+else
+    echo "FAIL no exit-3 fallback line"; tail -20 "$LOG"; fail=1
+fi
+i=0; while [ $i -lt 30 ] && [ ! -s "$ARGV" ]; do i=$((i + 1)); sleep 1; done
+if [ -s "$ARGV" ] && [ "$(cat "$ARGV")" = "gui --instance-lock $DATA/desktop-player.lock --serve-port 3333 --bundled-server http://localhost:3878" ]; then
+    echo "PASS the terminal route ran: $(cat "$ARGV")"
+else
+    echo "FAIL terminal argv after the fallback: '$(cat "$ARGV" 2>/dev/null)'"; tail -20 "$LOG" 2>/dev/null; fail=1
+fi
 stop_leg
 
 [ "$fail" -eq 0 ] && echo "player-open smoke: all assertions passed" || echo "player-open smoke: FAILED"

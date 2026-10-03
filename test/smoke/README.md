@@ -41,7 +41,10 @@ documented at:
   terminal as `gui --instance-lock <path> --serve-port <port> --bundled-server <url>`, one that
   predates the GUI degrades to the web player (kept shut by `--no-open`),
   and a player already holding its instance lock is brought forward instead
-  of doubled — with the launcher log naming each decision.
+  of doubled; a DESKTOP build (its `--version` names `features: window`)
+  opens straight into its own window as `gui --window …` with no terminal,
+  and one whose window cannot open (exit 3) falls back to the terminal
+  route — with the launcher log naming each decision.
 - **API error codes:** the header comment of
   [api-error-codes-smoke.mjs](api-error-codes-smoke.mjs) — the one harness
   here that needs no external system. It boots a throwaway server with an

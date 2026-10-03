@@ -132,7 +132,9 @@ jobs:
       #     (test/smoke/update-apply-smoke.sh; ~2.5min — the launcher's
       #     60s update poll twice)
       #   player: `--player` opens the bundled player's GUI face in a real
-      #     terminal once the server is up, and the version gate degrades
+      #     terminal once the server is up (a desktop build: in its own
+      #     window, and back to the terminal when that window cannot open),
+      #     and the version gate degrades
       #     an older player to the web player — Linux only, where xterm
       #     under xvfb is an emulator the launcher's chain knows (macOS
       #     would pop Terminal.app on the runner)

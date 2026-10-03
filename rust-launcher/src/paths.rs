@@ -270,13 +270,28 @@ pub fn find_player_bin(server_bin: &Path, data_home: &Path) -> Option<PathBuf> {
 /// server's fetch installed in the data home.
 pub const GUI_MIN_PLAYER_VERSION: [u64; 3] = [0, 8, 0];
 
+/// What one `--version` run says about a player binary: its version (the
+/// gates above and below read it) and its FLAVOUR. The player crate builds
+/// two products (the player repo's PLAN.md Phase 14): the terminal build,
+/// and the desktop build, whose `gui --window` draws in a window of its
+/// own. The bundles stage the desktop build under the terminal build's file
+/// name, so the name says nothing — the probe is the only way to tell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerProbe {
+    pub version: [u64; 3],
+    /// A desktop build (`features: window` on the probe's second line):
+    /// "Open mStream Player" may start it straight into its own window.
+    pub desktop: bool,
+}
+
 /// Ask the player binary its version. `--version` is clap's one-shot —
-/// prints "mstream-player X.Y.Z" and exits, no audio device, no sockets,
-/// no config — the same probe the server's fetch path runs before it
-/// installs a build. None when the binary cannot run here at all (the
-/// linux build dies at load without libasound) or answers something else;
-/// the caller treats that as "no GUI player".
-pub fn player_version(bin: &Path) -> Option<[u64; 3]> {
+/// prints "mstream-player X.Y.Z" (and, from a desktop build, a second line
+/// "features: window") and exits, no audio device, no sockets, no config —
+/// the same probe the server's fetch path runs before it installs a build.
+/// None when the binary cannot run here at all (the linux build dies at
+/// load without libasound) or answers something else; the caller treats
+/// that as "no GUI player".
+pub fn player_probe(bin: &Path) -> Option<PlayerProbe> {
     let mut cmd = Command::new(bin);
     cmd.arg("--version").stdin(Stdio::null()).stderr(Stdio::null());
     #[cfg(windows)]
@@ -291,7 +306,9 @@ pub fn player_version(bin: &Path) -> Option<[u64; 3]> {
     if !out.status.success() {
         return None;
     }
-    parse_player_version(&String::from_utf8_lossy(&out.stdout))
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let version = parse_player_version(&stdout)?;
+    Some(PlayerProbe { version, desktop: parse_player_desktop(&stdout) })
 }
 
 /// "mstream-player 0.8.0" → [0, 8, 0]. Only the first line counts, only
@@ -311,6 +328,20 @@ pub(crate) fn parse_player_version(stdout: &str) -> Option<[u64; 3]> {
         return None;
     }
     Some(v)
+}
+
+/// Whether the probe's output names a desktop build: its SECOND line is
+/// `features: <list>` and the list holds the word `window` (comma- or
+/// space-separated, so a later build may name more features). The first
+/// line stays parse_player_version's alone; a missing, blank or foreign
+/// second line — every terminal build, every release before Phase 14 — is
+/// a terminal build. Nothing past the second line is read.
+pub(crate) fn parse_player_desktop(stdout: &str) -> bool {
+    stdout
+        .lines()
+        .nth(1)
+        .and_then(|line| line.trim().strip_prefix("features:"))
+        .is_some_and(|list| list.split(|c: char| c == ',' || c.is_whitespace()).any(|word| word == "window"))
 }
 
 /// Whether a player of this version has the `gui` face.
@@ -427,6 +458,7 @@ pub(crate) fn parse_player_sidecar(doc: &str) -> Option<PlayerSidecar> {
 /// Ghostty console over Terminal.app. Constructed on every platform (the
 /// resolver just never finds one off-mac), read only by the macOS spawn.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Clone)]
 pub struct ConsoleLaunch {
     /// console/Ghostty.app (the whole bundle; the launch execs its inner
     /// binary directly — no LaunchServices, no Gatekeeper prompt).
@@ -753,6 +785,32 @@ mod tests {
     }
 
     #[test]
+    fn the_probes_second_line_names_the_flavour() {
+        // One line: every terminal build, and every release before the
+        // desktop flavour existed.
+        assert!(!parse_player_desktop("mstream-player 0.9.0"));
+        assert!(!parse_player_desktop("mstream-player 0.9.0\n"));
+        // Two lines, exactly as the desktop build prints them — with and
+        // without the trailing newline, and with Windows line ends.
+        assert!(parse_player_desktop("mstream-player 0.9.0\nfeatures: window"));
+        assert!(parse_player_desktop("mstream-player 0.9.0\nfeatures: window\n"));
+        assert!(parse_player_desktop("mstream-player 0.9.0\r\nfeatures: window\r\n"));
+        // A later build may list more; the word is what counts.
+        assert!(parse_player_desktop("mstream-player 1.0.0\nfeatures: gpu, window\n"));
+        assert!(parse_player_desktop("mstream-player 1.0.0\nfeatures: window tray\n"));
+        // Garbage after the second line is never read.
+        assert!(parse_player_desktop("mstream-player 0.9.0\nfeatures: window\nfeatures: nothing\n\u{0}junk"));
+        assert!(!parse_player_desktop("mstream-player 0.9.0\nnot features\nfeatures: window\n"), "only the second line counts");
+        // Near misses are terminal builds, never a guess.
+        for line in ["features: windows", "features: no-window", "features:", "features window", "Features: window", "window", ""] {
+            assert!(!parse_player_desktop(&format!("mstream-player 0.9.0\n{line}\n")), "{line:?}");
+        }
+        // The first line is the version parser's alone: a desktop build's
+        // probe still reads as its version.
+        assert_eq!(parse_player_version("mstream-player 0.9.0\nfeatures: window\n"), Some([0, 9, 0]));
+    }
+
+    #[test]
     fn player_version_probe_reads_a_real_process() {
         // A stand-in binary that answers --version the way the player does;
         // the probe runs it for real (spawn, capture, parse). Unix only for
@@ -766,14 +824,19 @@ mod tests {
             let stub = dir.join("mstream-player");
             std::fs::write(&stub, "#!/bin/sh\n[ \"$1\" = --version ] && echo 'mstream-player 0.8.0' && exit 0\nexit 2\n").unwrap();
             std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-            assert_eq!(player_version(&stub), Some([0, 8, 0]));
+            assert_eq!(player_probe(&stub), Some(PlayerProbe { version: [0, 8, 0], desktop: false }));
+            // A desktop build answers a second line; the same run reads it.
+            let desk = dir.join("desktop-player");
+            std::fs::write(&desk, "#!/bin/sh\n[ \"$1\" = --version ] && printf 'mstream-player 0.9.0\\nfeatures: window\\n' && exit 0\nexit 2\n").unwrap();
+            std::fs::set_permissions(&desk, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(player_probe(&desk), Some(PlayerProbe { version: [0, 9, 0], desktop: true }));
             // A binary that cannot run (the linux loader failure shape: a
             // non-zero exit and nothing useful on stdout) is None.
             let dead = dir.join("dead-player");
             std::fs::write(&dead, "#!/bin/sh\necho 'error while loading shared libraries' >&2\nexit 127\n").unwrap();
             std::fs::set_permissions(&dead, std::fs::Permissions::from_mode(0o755)).unwrap();
-            assert_eq!(player_version(&dead), None);
-            assert_eq!(player_version(&dir.join("no-such-binary")), None);
+            assert_eq!(player_probe(&dead), None);
+            assert_eq!(player_probe(&dir.join("no-such-binary")), None);
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
