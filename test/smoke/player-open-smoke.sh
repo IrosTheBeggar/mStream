@@ -14,7 +14,7 @@
 # the server binary and lingers long enough for the terminal chain to count
 # the window as opened.
 #
-# Five legs, each with its own HOME (= its own data home, lock and log) and
+# Eight legs, each with its own HOME (= its own data home, lock and log) and
 # port:
 #   1. player 9.9.9 (has the GUI), a TERMINAL build (its --version answers
 #      one line): the recorded argv is exactly
@@ -35,12 +35,28 @@
 #   5. the same desktop build, but its window cannot open (`gui --window`
 #      exits 3, the player's NO_WINDOW): the watcher logs it and takes the
 #      terminal route — leg 1's argv, no --window.
+# Legs 6-8 open the setup wizard instead of the player: a FRESH data home
+# (no setupComplete), launched with neither --player nor --no-open, so the
+# first-run announce opens the wizard (launch_page_leg).
+#   6. a desktop build that names `window-pages` (`features: window
+#      window-pages`): the wizard opens straight into its own window as
+#      `setup --window --server <url>`, the page watcher calls it up, and
+#      no terminal or browser fallback runs.
+#   7. the same build, but the wizard's window cannot open (`setup
+#      --window` exits 3): the page watcher logs it and takes the terminal
+#      route — `setup --server <url>` — never the browser.
+#   8. the gate: a desktop build WITHOUT the word (`features: window`, the
+#      v0.11.0 probe) keeps the wizard in a terminal — `setup --server
+#      <url>` and no window launch at all.
 #
 # Needs: a built launcher (or MSTREAM_LAUNCHER_BIN), python3, and on Linux a
 # display plus a terminal emulator the launcher's chain knows (xterm is
 # enough) — CI runs it under xvfb-run with xterm installed; with no emulator
 # on PATH it skips. macOS opens Terminal.app through a .command file, which
-# pops a real window, so run it there by hand only. MSTREAM_SMOKE_CONSOLE=
+# pops a real window (legs 1, 5, 7 and 8), so run it there by hand only.
+# Legs 6-8 run without --no-open, so a browser fallback would really open
+# one; each asserts the ABSENCE of the fallback's log line instead of
+# relying on a browser being there. MSTREAM_SMOKE_CONSOLE=
 # <path to a Ghostty.app> stages that console beside the fake bundle so a
 # hand run on macOS exercises the bundled-console path instead.
 set -eu
@@ -103,12 +119,15 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 129' INT TERM
 
-# mk_bundle <leg> <player-version> <port> [terminal|desktop|desktop-nowindow]:
-# a bundle of its own per leg (two legs must never share a bundle: the argv
-# files, the console link and the stub are per bundle); sets B to the
-# bundle dir. A desktop stub answers --version with the second line and
-# records a `--window` launch in window-argv.txt (the nowindow one then
-# exits 3); any other launch lands in player-argv.txt, as before.
+# mk_bundle <leg> <player-version> <port> [terminal|desktop|desktop-nowindow|
+# desktop-pages|desktop-pages-nowindow]: a bundle of its own per leg (two
+# legs must never share a bundle: the argv files, the console link and the
+# stub are per bundle); sets B to the bundle dir. A desktop stub answers
+# --version with the second line — `features: window`, and the pages
+# flavours `features: window window-pages` — and records a `--window`
+# launch (the player's or a page's) in window-argv.txt, where it lingers
+# past the watch (the nowindow ones exit 3 instead); any other launch lands
+# in player-argv.txt, as before.
 mk_bundle() {
     flavour="${4:-terminal}"
     features=""
@@ -116,6 +135,8 @@ mk_bundle() {
     case "$flavour" in
         desktop) features='echo "features: window"' ;;
         desktop-nowindow) features='echo "features: window"'; window_exit='echo "stub: no window" >&2; exit 3' ;;
+        desktop-pages) features='echo "features: window window-pages"' ;;
+        desktop-pages-nowindow) features='echo "features: window window-pages"'; window_exit='echo "stub: no window" >&2; exit 3' ;;
     esac
     B="$ROOT/$1/mStream-0.0.1-$KEY"
     mkdir -p "$B/$SERVER_DIR_REL/bin/mstream-player" "$B/serve"
@@ -146,10 +167,11 @@ STUB
 
 # prepare_leg <leg> <player-version> <port> [flavour]: the bundle and a
 # HOME of its own (its own data home, lock and log), set up already (on a
-# fresh install --player defers to the wizard); sets B, HOME_DIR, DATA,
-# LOG, ARGV, WARGV.
+# fresh install --player defers to the wizard); sets B, PORT, HOME_DIR,
+# DATA, LOG, ARGV, WARGV.
 prepare_leg() {
     mk_bundle "$1" "$2" "$3" "${4:-terminal}"
+    PORT="$3"
     HOME_DIR="$SMOKE/home-$1"
     DATA="$HOME_DIR/$DATA_REL"
     LOG="$DATA/logs/launcher.log"
@@ -169,7 +191,27 @@ launch_leg() {
     LPID=$!
 }
 
+# launch_page_leg: boots the prepared leg's launcher as a FRESH install —
+# its config rewritten without setupComplete, so the first-run announce's
+# target is the wizard — with neither --player nor --no-open: the announce
+# runs only when the launch is not --autostarted, --no-open or --takeover
+# (tray_app.rs), and there is no launcher flag that opens Setup; sets LPID.
+launch_page_leg() {
+    echo '{"port":'"$PORT"'}' > "$DATA/conf/default.json"
+    HOME="$HOME_DIR" \
+    XDG_DATA_HOME="$HOME_DIR/.local/share" \
+    MSTREAM_LAUNCHER_SKIP_AUTOSTART=1 \
+    "$B/$FACE_REL" &
+    LPID=$!
+}
+
 run_leg() { prepare_leg "$1" "$2" "$3" "${4:-terminal}"; launch_leg; }
+run_page_leg() { prepare_leg "$1" "$2" "$3" "${4:-terminal}"; launch_page_leg; }
+
+# The page route's browser fallback, as the launcher logs it for Setup: the
+# terminal route's failure ("wizard failed") and the window's ("failed …
+# - opening the admin panel") both end in the same words.
+PAGE_BROWSER="opening the admin panel"
 
 wait_for_log() { # <pattern> <seconds>
     i=0
@@ -306,6 +348,92 @@ if [ -s "$ARGV" ] && [ "$(cat "$ARGV")" = "gui --instance-lock $DATA/desktop-pla
     echo "PASS the terminal route ran: $(cat "$ARGV")"
 else
     echo "FAIL terminal argv after the fallback: '$(cat "$ARGV" 2>/dev/null)'"; tail -20 "$LOG" 2>/dev/null; fail=1
+fi
+stop_leg
+
+echo "== leg 6: a desktop build that names window-pages opens the setup wizard in its own window =="
+run_page_leg pages 9.9.9 3879 desktop-pages
+wait_for_log "server is up" 45 || { echo "FAIL leg 6: server never came up"; tail -20 "$LOG" 2>/dev/null; exit 1; }
+if grep -q "player 9.9.9 is a desktop build .*as do Setup and Quick Connect (window-pages)" "$LOG"; then
+    echo "PASS the probe read the second word: $(grep "is a desktop build" "$LOG" | tail -1 | sed 's/^\[[0-9]*\] //')"
+else
+    echo "FAIL the probe never named window-pages"; tail -20 "$LOG"; fail=1
+fi
+i=0; while [ $i -lt 30 ] && [ ! -s "$WARGV" ]; do i=$((i + 1)); sleep 1; done
+if [ -s "$WARGV" ] && [ "$(cat "$WARGV")" = "setup --window --server http://localhost:$PORT" ]; then
+    echo "PASS the wizard was started as: $(cat "$WARGV")"
+else
+    echo "FAIL wizard window argv: '$(cat "$WARGV" 2>/dev/null)'"; tail -20 "$LOG" 2>/dev/null; fail=1
+fi
+if grep -q "first-run announce: setup wizard opened via its own window (pid [0-9]*)" "$LOG"; then
+    echo "PASS $(grep "setup wizard opened via its own window" "$LOG" | tail -1 | sed 's/^\[[0-9]*\] //')"
+else
+    echo "FAIL launcher.log never reported the wizard's window route"; tail -20 "$LOG"; fail=1
+fi
+if wait_for_log "setup wizard window (pid [0-9]*) is up" 15; then
+    echo "PASS the page watcher called the wizard's window up"
+else
+    echo "FAIL the page watcher never called the wizard's window up"; tail -20 "$LOG"; fail=1
+fi
+if [ -e "$ARGV" ]; then
+    echo "FAIL a terminal was opened too: $(cat "$ARGV")"; fail=1
+elif grep -Eq "$PAGE_BROWSER|falling back to the terminal route" "$LOG"; then
+    echo "FAIL a fallback ran beside the window: $(grep -E "$PAGE_BROWSER|falling back to the terminal route" "$LOG" | tail -1)"; fail=1
+else
+    echo "PASS no terminal and no browser beside the window"
+fi
+stop_leg
+
+echo "== leg 7: the wizard's window cannot open (exit 3) - the terminal route takes over, never the browser =="
+run_page_leg pages-nowindow 9.9.9 3880 desktop-pages-nowindow
+wait_for_log "server is up" 45 || { echo "FAIL leg 7: server never came up"; tail -20 "$LOG" 2>/dev/null; exit 1; }
+if wait_for_log "setup wizard window (pid [0-9]*) could not open a window (exit 3" 20; then
+    echo "PASS $(grep "setup wizard window .*could not open a window" "$LOG" | tail -1 | sed 's/^\[[0-9]*\] //')"
+else
+    echo "FAIL no exit-3 fallback line for the setup page"; tail -20 "$LOG"; fail=1
+fi
+if [ "$(cat "$WARGV" 2>/dev/null)" = "setup --window --server http://localhost:$PORT" ]; then
+    echo "PASS the window was tried first: $(cat "$WARGV")"
+else
+    echo "FAIL wizard window argv: '$(cat "$WARGV" 2>/dev/null)'"; fail=1
+fi
+i=0; while [ $i -lt 30 ] && [ ! -s "$ARGV" ]; do i=$((i + 1)); sleep 1; done
+if [ -s "$ARGV" ] && [ "$(cat "$ARGV")" = "setup --server http://localhost:$PORT" ]; then
+    echo "PASS the terminal route ran: $(cat "$ARGV")"
+else
+    echo "FAIL terminal argv after the fallback: '$(cat "$ARGV" 2>/dev/null)'"; tail -20 "$LOG" 2>/dev/null; fail=1
+fi
+if grep -q "$PAGE_BROWSER" "$LOG"; then
+    echo "FAIL the browser fallback ran: $(grep "$PAGE_BROWSER" "$LOG" | tail -1)"; fail=1
+else
+    echo "PASS no browser fallback"
+fi
+stop_leg
+
+echo "== leg 8: a desktop build without window-pages keeps the wizard in a terminal (the gate) =="
+run_page_leg pages-gate 9.9.9 3881 desktop
+wait_for_log "server is up" 45 || { echo "FAIL leg 8: server never came up"; tail -20 "$LOG" 2>/dev/null; exit 1; }
+i=0; while [ $i -lt 30 ] && [ ! -s "$ARGV" ]; do i=$((i + 1)); sleep 1; done
+if [ -s "$ARGV" ] && [ "$(cat "$ARGV")" = "setup --server http://localhost:$PORT" ]; then
+    echo "PASS the wizard opened in a terminal as: $(cat "$ARGV")"
+else
+    echo "FAIL wizard terminal argv: '$(cat "$ARGV" 2>/dev/null)'"; tail -20 "$LOG" 2>/dev/null; fail=1
+fi
+if grep -q "first-run announce: setup wizard opened via" "$LOG" && ! grep -q "setup wizard opened via its own window" "$LOG"; then
+    echo "PASS $(grep "first-run announce: setup wizard opened via" "$LOG" | tail -1 | sed 's/^\[[0-9]*\] //')"
+else
+    echo "FAIL the wizard's route line is missing or names the window"; tail -20 "$LOG"; fail=1
+fi
+sleep 2
+if [ -e "$WARGV" ]; then
+    echo "FAIL a window launch without window-pages: $(cat "$WARGV")"; fail=1
+else
+    echo "PASS no window launch without the word"
+fi
+if grep -q "$PAGE_BROWSER" "$LOG"; then
+    echo "FAIL the browser fallback ran: $(grep "$PAGE_BROWSER" "$LOG" | tail -1)"; fail=1
+else
+    echo "PASS no browser fallback"
 fi
 stop_leg
 

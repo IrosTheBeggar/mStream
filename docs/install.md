@@ -163,23 +163,29 @@ same, and an install without a desktop player gets the web player in your
 browser instead. Start-at-login
 is on by default; one click in the tray menu turns it off. On a **first
 install** the tray opens the guided setup wizard by itself (the bundled
-`mstream-player setup` — music folders, admin account, extras) in a real
-terminal: the bundled mStream console (Ghostty, with the mStream Dock icon)
-on macOS, which draws the wizard's artwork and Quick Connect QR as real
-pixels; Terminal.app without the console; Windows Terminal on Windows (a
-plain console window without it); and on Linux whichever terminal emulator
-the desktop has — the one `xdg-terminal-exec` declares when that is
-installed, else a pixel-capable one (kitty, Ghostty, WezTerm, foot) so the
-artwork stays pixels, else the distro's own (Ptyxis, GNOME Console, GNOME
-Terminal, Konsole, the Xfce and MATE terminals, Alacritty, xterm). A Linux
-desktop with none of those opens the browser admin panel instead, and the
-launcher log says why. The wizard is one-time onboarding — the server
-records `setupComplete` in its config the moment the first folder or
-account lands, and everything after that lives in the admin panel.
+`mstream-player setup` — music folders, admin account, extras). On a
+desktop build whose bundled player hosts its pages in a window (its
+`mstream-player --version` names `window-pages`) the wizard opens in the
+player's own window, like the player itself. Otherwise — and whenever no
+window can open there — it opens in a real terminal: the bundled mStream
+console (Ghostty, with the mStream Dock icon) on macOS, which draws the
+wizard's artwork and Quick Connect QR as real pixels; Terminal.app without
+the console; Windows Terminal on Windows (a plain console window without
+it); and on Linux whichever terminal emulator the desktop has — the one
+`xdg-terminal-exec` declares when that is installed, else a pixel-capable
+one (kitty, Ghostty, WezTerm, foot) so the artwork stays pixels, else the
+distro's own (Ptyxis, GNOME Console, GNOME Terminal, Konsole, the Xfce and
+MATE terminals, Alacritty, xterm). The browser admin panel comes last: a
+wizard that failed in its window, or a Linux desktop with none of those
+terminals, opens it instead, and the launcher log says why. The wizard is
+one-time onboarding — the server records `setupComplete` in its config the
+moment the first folder or account lands, and everything after that lives
+in the admin panel.
 **Quick Connect** opens the same way on all three — the wizard's pairing
-page (a scannable pixel QR plus the app links) in a terminal window; when
-an install has no player binary, or no terminal could be opened, it opens
-the web player's Quick Connect modal instead. Headless installs get the
+page (a scannable QR plus the app links) in the player's own window on such
+a desktop build, else in a terminal window; when an install has no player
+binary, the page failed in its window, or no terminal could be opened, it
+opens the web player's Quick Connect modal instead. Headless installs get the
 setup invitation as a boot log line whenever the server has no folders and
 no accounts yet.
 
@@ -189,23 +195,27 @@ screens live in the desktop player's **Admin** tab (player v0.11.0 and
 later), and the browser admin panel is always at `<server>/admin`.
 
 **Open mStream Player** opens the bundled player's desktop face —
-`mstream-player gui`, the mouse-first player — in the same kind of window
-as the wizard, sized for it (100×30 cells; dragged under its 100×24 floor
-the player asks for more room, since no terminal can be told a minimum
-size) and pointed at this server as its *bundled* server: the player seeds
-it as the default on first run and never offers to remove it, and other
-servers can be added beside it as usual. `mStream.exe --player`
+`mstream-player gui`, the mouse-first player — pointed at this server as
+its *bundled* server: the player seeds it as the default on first run and
+never offers to remove it, and other servers can be added beside it as
+usual. A desktop build (its `mstream-player --version` names `window`)
+opens it in the player's own window. Otherwise — and whenever no window can
+open there, or the window fails as it opens — it opens in a terminal
+window, the same kind as the wizard's, sized for it (100×30 cells; dragged
+under its 100×24 floor the player asks for more room, since no terminal can
+be told a minimum size). `mStream.exe --player`
 (`mstream-desktop --player`; `open -a mStream --args --player` on macOS)
 does the same from a shortcut or a second launch — at once when the tray
-already runs, otherwise as soon as the server is up. An install whose
-player predates the GUI (player releases before 0.8.0), or where no
-terminal could be opened, gets the web player in the browser instead, and
-the launcher log says why. The player holds an instance lock the launcher
-hands it (player 0.8.0 and later), so a second click, a re-click of the app
-icon, or a second launch brings the open player forward instead of opening
-another: on macOS the bundled console (or Terminal.app) is activated, on
-Windows the window is raised by its title, and on Linux `wmctrl` or
-`xdotool` does it when one is installed. With server audio on
+already runs, otherwise as soon as the server is up. The web player in the
+browser comes last: an install whose player predates the GUI (player
+releases before 0.8.0), or where no terminal could be opened, gets it
+instead, and the launcher log says why. The player holds an instance lock
+the launcher hands it (player 0.8.0 and later), so a second click, a
+re-click of the app icon, or a second launch brings the open player forward
+instead of opening another: on macOS the player's own window, else the
+bundled console (or Terminal.app), is activated; on Windows the player's
+own window is raised, else the window with the player's title; and on Linux
+`wmctrl` or `xdotool` does it when one is installed. With server audio on
 (`autoBootServerAudio`), the open desktop player is also the server-audio
 engine — one player per server: the launcher hands the player the server's
 player port (`rustPlayerPort`, default 3333; player 0.9.0 and later host

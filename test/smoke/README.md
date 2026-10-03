@@ -44,7 +44,16 @@ documented at:
   of doubled; a DESKTOP build (its `--version` names `features: window`)
   opens straight into its own window as `gui --window …` with no terminal,
   and one whose window cannot open (exit 3) falls back to the terminal
-  route — with the launcher log naming each decision.
+  route — with the launcher log naming each decision. Legs 6-8 boot a
+  fresh install without `--player` or `--no-open`, so the first-run
+  announce opens the setup wizard: a desktop build that names
+  `features: window window-pages` opens it in its own window as
+  `setup --window --server <url>` (no terminal, no browser), one whose
+  wizard window cannot open (exit 3) falls back to `setup --server <url>`
+  in a terminal and never the browser, and a desktop build without the
+  word — today's pin — keeps the wizard in a terminal with no window
+  launch and no browser at all (the gate that keeps the route inert until
+  the player carries the word).
 - **API error codes:** the header comment of
   [api-error-codes-smoke.mjs](api-error-codes-smoke.mjs) — the one harness
   here that needs no external system. It boots a throwaway server with an
