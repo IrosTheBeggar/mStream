@@ -31,13 +31,15 @@ const MAX_BOOT_ATTEMPTS: u32 = 2;
 const TAKEOVER_LOCK_PATIENCE: Duration = Duration::from_secs(12);
 /// Where a click on a non-actionable "update available" lands. Hardcoded on
 /// purpose: the status file is another process's data and never supplies a
-/// URL the launcher would open.
+/// URL the launcher would open. Its downloadUrl is compared with the URL
+/// the launcher builds, never opened (UpdateAction::DownloadInstaller).
 const RELEASES_URL: &str = "https://github.com/IrosTheBeggar/mStream/releases/latest";
 /// Where the browser fetches a release's own .pkg when the server has not
-/// downloaded it (UpdateAction::DownloadInstaller): the tag-pinned asset
-/// path update-check.js's assetUrl downloads from. Hardcoded for the same
-/// reason as RELEASES_URL; pkg_download_url fills in only a sanitized
-/// version and this build's CPU.
+/// downloaded it (UpdateAction::DownloadInstaller) and no mirror is set:
+/// the tag-pinned asset path update-check.js's assetUrl downloads from.
+/// Hardcoded for the same reason as RELEASES_URL; pkg_download_url fills
+/// in only a sanitized version and this build's CPU, and swaps this base
+/// for the operator's own mirror when one is set, as assetUrl does.
 const RELEASE_DOWNLOAD_BASE: &str = "https://github.com/IrosTheBeggar/mStream/releases/download";
 /// The CPU half of this build's macOS asset names (darwin-arm64 /
 /// darwin-x64), fixed at compile time like the bundle version: the .pkg a
@@ -489,6 +491,7 @@ pub fn run(args: LauncherArgs) -> ! {
                     &updates_dir(),
                     relaunch_target_exists(exe_real.as_deref()),
                     THIS_INSTALLER_HOST,
+                    paths::release_mirror().as_deref(),
                 );
                 let update = MenuItem::with_id("update", utext.clone(), uaction != UpdateAction::None, None);
                 upd_text = utext;
@@ -1605,10 +1608,14 @@ enum UpdateAction {
     OpenInstaller(PathBuf),
     /// macOS .pkg install with no verified installer on disk yet (notify
     /// mode, a background download that failed or has not started): the
-    /// browser downloads the release's .pkg from its tag-pinned URL
-    /// (pkg_download_url), and the human opens it from there. Nothing
-    /// stops and nothing exits, as with OpenInstaller. Never offered for a
-    /// release the server withholds (paths::UpdateStatus::latest_withheld).
+    /// browser downloads the release's .pkg, and the human opens it from
+    /// there. The URL is always the one built here (pkg_download_url:
+    /// GitHub's tag-pinned asset, or the operator's mirror's copy), never
+    /// the status file's: the file's downloadUrl only confirms it, by
+    /// naming the same string. Nothing stops and nothing exits, as with
+    /// OpenInstaller. Never offered for a release the server withholds
+    /// (paths::UpdateStatus::latest_withheld), nor when the server names a
+    /// download other than the one built here, a URL or not.
     DownloadInstaller(String),
 }
 
@@ -1696,14 +1703,33 @@ fn installer_name_ok(name: &str, host: InstallerHost) -> bool {
     })
 }
 
-/// The direct download of release `version`'s .pkg for a `cpu` Mac
-/// (`arm64` or `x64`), or None when the version is not a plain X.Y.Z
-/// (paths::sanitize_version: the status file's `latest` has passed it
-/// already, and the URL does not rely on that) or the CPU is one no
-/// release builds for.
-fn pkg_download_url(version: &str, cpu: &str) -> Option<String> {
+/// The name of release `version`'s .pkg for a `cpu` Mac (`arm64` or
+/// `x64`), installerAssetName in update-check.js, or None when the version
+/// is not a plain X.Y.Z (paths::sanitize_version: the status file's
+/// `latest` has passed it already, and the name does not rely on that) or
+/// the CPU is one no release builds for.
+fn pkg_asset_name(version: &str, cpu: &str) -> Option<String> {
     let v = paths::sanitize_version(version)?;
-    matches!(cpu, "arm64" | "x64").then(|| format!("{RELEASE_DOWNLOAD_BASE}/v{v}/mStream-{v}-darwin-{cpu}.pkg"))
+    matches!(cpu, "arm64" | "x64").then(|| format!("mStream-{v}-darwin-{cpu}.pkg"))
+}
+
+/// The direct download of release `version`'s .pkg for a `cpu` Mac, built
+/// as update-check.js's assetUrl builds it in the server: the tag-pinned
+/// GitHub asset, or the file of that name in the flat directory a mirror
+/// serves (`mirror`, paths::release_mirror). None where pkg_asset_name has
+/// no name, and for a mirror that would not make an http(s) URL of
+/// paths::download_url_shaped's shape: the server fetches over nothing
+/// else (isAcceptedUrl in ffmpeg-bootstrap.js), and the browser's opener
+/// is handed nothing else.
+fn pkg_download_url(version: &str, cpu: &str, mirror: Option<&str>) -> Option<String> {
+    let name = pkg_asset_name(version, cpu)?;
+    let Some(base) = mirror else {
+        // A name exists only for a plain X.Y.Z, so `version` is one here.
+        return Some(format!("{RELEASE_DOWNLOAD_BASE}/v{version}/{name}"));
+    };
+    let url = format!("{}/{name}", base.trim_end_matches('/'));
+    let http = url.starts_with("https://") || url.starts_with("http://");
+    (http && paths::download_url_shaped(&url)).then_some(url)
 }
 
 /// The update line's text + action for a given status-file state. Pure so
@@ -1713,14 +1739,16 @@ fn pkg_download_url(version: &str, cpu: &str) -> Option<String> {
 /// `host` whose installers this launcher hands off to (THIS_INSTALLER_HOST
 /// outside the tests). A downloaded installer the host cannot use, or one
 /// that fails valid_installer, falls through to the availability line: on
-/// a Mac's .pkg install the release's own .pkg ("Download update"),
-/// elsewhere, and for a release the server withholds, the releases page
-/// ("Update available").
+/// a Mac's .pkg install the release's own .pkg ("Download update"), from
+/// `mirror` when one is set (paths::release_mirror outside the tests); the
+/// releases page ("Update available") elsewhere, for a release the server
+/// withholds, and when the server names a download other than that one.
 fn update_item_view(
     s: Option<&paths::UpdateStatus>,
     updates_dir: &Path,
     relaunch_ok: bool,
     host: InstallerHost,
+    mirror: Option<&str>,
 ) -> (String, UpdateAction) {
     let Some(s) = s else {
         return (
@@ -1769,7 +1797,26 @@ fn update_item_view(
             // server cannot read): the server refuses to fetch it, so the
             // tray keeps to the line and the page it always showed.
             if host == InstallerHost::MacOs && s.method.as_deref() == Some("pkg") && !s.latest_withheld() {
-                if let Some(url) = pkg_download_url(v, THIS_PKG_CPU) {
+                // The URL is built here, from the mirror the server fetches
+                // from too (it is this launcher's child). What the server
+                // knows and the launcher does not is whether the release
+                // carries this install's .pkg at all (downloadUrlFor: the
+                // asset's URL when the manifest lists it, the releases page
+                // when not), so its downloadUrl is read as that answer and
+                // nothing more: the same string as the one built here is
+                // yes. Anything else it names keeps the page: the releases
+                // page (the URL built here would 404), another file or host
+                // (the file's URLs are never opened), a value the status
+                // parse refused, a file left by a run that saw another
+                // mirror. Only a status file that names no download at all
+                // gets the built URL unconfirmed.
+                let built = pkg_download_url(v, THIS_PKG_CPU, mirror);
+                let url = match &s.download_url {
+                    paths::DownloadUrl::Absent => built,
+                    paths::DownloadUrl::Named(named) => built.filter(|b| b == named),
+                    paths::DownloadUrl::Unusable => None,
+                };
+                if let Some(url) = url {
                     return (format!("Download update {v}"), UpdateAction::DownloadInstaller(url));
                 }
             }
@@ -1794,7 +1841,8 @@ fn render_update_item(
     relaunch_ok: bool,
     last_text: &mut String,
 ) -> UpdateAction {
-    let (text, action) = update_item_view(s, updates_dir, relaunch_ok, THIS_INSTALLER_HOST);
+    let (text, action) =
+        update_item_view(s, updates_dir, relaunch_ok, THIS_INSTALLER_HOST, paths::release_mirror().as_deref());
     if let Some(i) = item {
         if text != *last_text {
             i.set_text(text.clone());
@@ -2298,7 +2346,8 @@ mod tests {
         let ud = std::path::Path::new("/data/updates");
         // Nothing here involves an installer, so every host renders it alike.
         for host in [InstallerHost::Windows, InstallerHost::MacOs, InstallerHost::Other] {
-            let view = |s: Option<&crate::paths::UpdateStatus>, relaunch_ok: bool| update_item_view(s, ud, relaunch_ok, host);
+            let view = |s: Option<&crate::paths::UpdateStatus>, relaunch_ok: bool| update_item_view(s, ud, relaunch_ok, host, None);
+            let view_m = |s: Option<&crate::paths::UpdateStatus>, mirror: Option<&str>| update_item_view(s, ud, true, host, mirror);
             // No file at all: bundle-version fallback, inert.
             let (t, a) = view(None, true);
             assert_eq!(t, format!("Up to date ({})", env!("MSTREAM_BUNDLE_VERSION")));
@@ -2346,6 +2395,7 @@ mod tests {
             // a failed or not-yet-started background download): a Mac
             // downloads the release's own .pkg, never a page; any other
             // host (a status file that cannot be its own) the releases page.
+            // With no downloadUrl in the file, the URL built here, unconfirmed.
             let s = status(r#"{"current":"6.21.2","available":true,"latest":"6.22.0","method":"pkg"}"#);
             let (t, a) = view(s.as_ref(), true);
             if host == InstallerHost::MacOs {
@@ -2361,19 +2411,78 @@ mod tests {
                 assert_eq!(t, "Update available (6.22.0)", "{host:?}");
                 assert_eq!(a, UpdateAction::OpenReleases, "{host:?}");
             }
+            // The server names the download (downloadUrl): the same string as
+            // the URL built here confirms it, and the Mac opens the URL built
+            // here. With no mirror that is GitHub's tag-pinned asset; with
+            // one (the server's own MSTREAM_RELEASE_BASE: it is this
+            // launcher's child) the mirror's copy, over http or https. No
+            // downloadUrl, or a null one, names none: the URL built here,
+            // unconfirmed.
+            let pkg_status_raw = |download_url: &str| {
+                status(&format!(
+                    r#"{{"current":"6.21.2","available":true,"latest":"6.22.0","method":"pkg","downloadUrl":{download_url}}}"#
+                ))
+            };
+            let pkg_status = |url: &str| pkg_status_raw(&format!(r#""{url}""#));
+            let page = ("Update available (6.22.0)".to_string(), UpdateAction::OpenReleases);
+            let name = format!("mStream-6.22.0-darwin-{THIS_PKG_CPU}.pkg");
+            let github = format!("https://github.com/IrosTheBeggar/mStream/releases/download/v6.22.0/{name}");
+            let mirror_http = "http://mirror.local/mstream";
+            let mirror_https = "https://files.corp.example:8443/a/b/c/";
+            let at_mirror_http = format!("{mirror_http}/{name}");
+            let at_mirror_https = format!("{mirror_https}{name}");
+            for (mirror, url) in [(None, &github), (Some(mirror_http), &at_mirror_http), (Some(mirror_https), &at_mirror_https)] {
+                let download = ("Download update 6.22.0".to_string(), UpdateAction::DownloadInstaller(url.clone()));
+                let want = if host == InstallerHost::MacOs { &download } else { &page };
+                for (s, how) in [(pkg_status(url), "named"), (pkg_status_raw("null"), "null"), (status(r#"{"current":"6.21.2","available":true,"latest":"6.22.0","method":"pkg"}"#), "absent")] {
+                    assert_eq!(&view_m(s.as_ref(), mirror), want, "{how} {url} with {mirror:?} on {host:?}");
+                }
+            }
+            // Anything else the server names keeps the page on every host,
+            // mirror or none: the releases page itself (the release carries
+            // no .pkg for this install, so the URL built here would 404),
+            // the very asset on a host the operator never configured (the
+            // file's URL is never opened), GitHub's asset while a mirror is
+            // set or the mirror's without one (a file left by a run under
+            // another environment), another CPU's, and what the status
+            // parse refuses: a path with a space, one past 512 bytes, a
+            // value that is not a string. The server named a download each
+            // time, so none of them reads as naming none.
+            let other_cpu = if THIS_PKG_CPU == "arm64" { "x64" } else { "arm64" };
+            let deep = "a".repeat(600);
+            let releases_page = r#""https://github.com/IrosTheBeggar/mStream/releases/latest""#.to_string();
+            for (mirror, raw) in [
+                (None, releases_page.clone()),
+                (Some(mirror_https), releases_page),
+                (None, format!(r#""https://evil.example/{name}""#)),
+                (None, format!(r#""https://github.com/evil/mStream/releases/download/v6.22.0/{name}""#)),
+                (Some(mirror_http), format!(r#""https://evil.example/mstream/{name}""#)),
+                (Some(mirror_https), format!(r#""{github}""#)),
+                (None, format!(r#""{at_mirror_https}""#)),
+                (None, format!(r#""{}""#, github.replace(THIS_PKG_CPU, other_cpu))),
+                (None, format!(r#""https://nas.local/mStream releases/{name}""#)),
+                (None, format!(r#""https://mirror.local/{deep}/{name}""#)),
+                (None, "42".to_string()),
+                (None, r#"{"href":"x"}"#.to_string()),
+            ] {
+                assert_eq!(view_m(pkg_status_raw(&raw).as_ref(), mirror), page, "{raw} with {mirror:?} on {host:?}");
+            }
             // A release the server withholds: skipped by the operator, held
             // by the boot watchdog, or from a feed this server cannot read.
-            // The server fetches none of them, so no host downloads one —
+            // The server fetches none of them, so no host downloads one,
+            // not even when the server's URL confirms the one built here:
             // the line and the page the tray always showed for them.
             for reason in ["skipped", "held", "notifyOnly"] {
-                let s = status(&format!(
-                    r#"{{"current":"6.21.2","available":true,"latest":"6.22.0","method":"pkg","{reason}":true}}"#
-                ));
-                assert_eq!(
-                    view(s.as_ref(), true),
-                    ("Update available (6.22.0)".to_string(), UpdateAction::OpenReleases),
-                    "{reason} on {host:?}"
-                );
+                for (mirror, named) in [
+                    (None, String::new()),
+                    (None, format!(r#","downloadUrl":"{github}""#)),
+                    (Some(mirror_http), format!(r#","downloadUrl":"{at_mirror_http}""#)),
+                ] {
+                    let s = status(&format!(
+                        r#"{{"current":"6.21.2","available":true,"latest":"6.22.0","method":"pkg","{reason}":true{named}}}"#
+                    ));
+                    assert_eq!(view_m(s.as_ref(), mirror), page, "{reason}{named} with {mirror:?} on {host:?}");
+                }
             }
             // Up to date on a pkg install: nothing to download.
             let s = status(r#"{"current":"6.22.0","available":false,"latest":"6.22.0","method":"pkg"}"#);
@@ -2382,25 +2491,125 @@ mod tests {
     }
 
     #[test]
-    fn a_macs_update_download_url_is_built_not_read() {
-        // Tag-pinned, exactly the asset update-check.js downloads
-        // (assetUrl + installerAssetName) for each CPU a release builds.
+    fn a_macs_download_url_is_built_as_the_server_builds_it() {
+        // "Download update" opens this URL and no other, never the status
+        // file's (whose downloadUrl only confirms it): exactly the asset
+        // update-check.js downloads (assetUrl + installerAssetName), for
+        // each CPU a release builds. Without a mirror, the tag-pinned
+        // GitHub asset.
         assert_eq!(
-            pkg_download_url("6.22.0", "arm64").as_deref(),
+            pkg_download_url("6.22.0", "arm64", None).as_deref(),
             Some("https://github.com/IrosTheBeggar/mStream/releases/download/v6.22.0/mStream-6.22.0-darwin-arm64.pkg")
         );
         assert_eq!(
-            pkg_download_url("10.0.1", "x64").as_deref(),
+            pkg_download_url("10.0.1", "x64", None).as_deref(),
             Some("https://github.com/IrosTheBeggar/mStream/releases/download/v10.0.1/mStream-10.0.1-darwin-x64.pkg")
         );
-        // This build names one of them.
-        assert!(pkg_download_url("6.22.0", THIS_PKG_CPU).is_some());
-        // Nothing but a plain X.Y.Z reaches the URL, and no other CPU.
-        for v in ["", "6.22", "v6.22.0", "6.22.0-rc.1", "6.22.0/../../evil", "6.22.0?x=1", "6.22.0#", "1.2.3 "] {
-            assert_eq!(pkg_download_url(v, "arm64"), None, "{v:?}");
+        // With one, the file of that name in the mirror's flat directory,
+        // its trailing slashes trimmed as assetUrl trims them: http or
+        // https, on a port, under a deep path, on loopback as CI's is.
+        for (mirror, url) in [
+            ("http://mirror.local/mstream", "http://mirror.local/mstream/mStream-6.22.0-darwin-arm64.pkg"),
+            ("https://mirror.local/mstream///", "https://mirror.local/mstream/mStream-6.22.0-darwin-arm64.pkg"),
+            (
+                "https://files.corp.example:8443/a/b/c",
+                "https://files.corp.example:8443/a/b/c/mStream-6.22.0-darwin-arm64.pkg",
+            ),
+            ("http://127.0.0.1:8765", "http://127.0.0.1:8765/mStream-6.22.0-darwin-arm64.pkg"),
+        ] {
+            assert_eq!(pkg_download_url("6.22.0", "arm64", Some(mirror)).as_deref(), Some(url), "{mirror}");
         }
-        for cpu in ["", "aarch64", "x86_64", "universal", "arm64/../x"] {
-            assert_eq!(pkg_download_url("6.22.0", cpu), None, "{cpu:?}");
+        // A mirror the server cannot fetch from, or one that would hand
+        // the browser's opener anything but one http(s) token, builds
+        // nothing (the releases page instead): another scheme or an
+        // uppercase one, none at all, an option-shaped value, whitespace,
+        // a control character, non-ASCII (a value that was not UTF-8
+        // included), past 512 bytes.
+        let long = format!("https://mirror.local/{}", "a".repeat(512));
+        for mirror in [
+            "file:///Volumes/releases",
+            "javascript:alert(1)//",
+            "ftp://mirror.local",
+            "HTTPS://mirror.local",
+            "mirror.local/mstream",
+            "-aCalculator",
+            " ",
+            "https://nas.local/mStream releases",
+            "https://mirror.local/\n",
+            "https://mirr\u{f6}r.local",
+            "https://mirror.local/\u{fffd}",
+            long.as_str(),
+        ] {
+            assert_eq!(pkg_download_url("6.22.0", "arm64", Some(mirror)), None, "{mirror:?}");
+        }
+        // This build names one of them.
+        assert!(pkg_download_url("6.22.0", THIS_PKG_CPU, None).is_some());
+        // Nothing but a plain X.Y.Z reaches the URL, and no other CPU,
+        // mirror or none.
+        for mirror in [None, Some("https://mirror.local/mstream")] {
+            for v in ["", "6.22", "v6.22.0", "6.22.0-rc.1", "6.22.0/../../evil", "6.22.0?x=1", "6.22.0#", "1.2.3 "] {
+                assert_eq!(pkg_download_url(v, "arm64", mirror), None, "{v:?} with {mirror:?}");
+            }
+            for cpu in ["", "aarch64", "x86_64", "universal", "arm64/../x"] {
+                assert_eq!(pkg_download_url("6.22.0", cpu, mirror), None, "{cpu:?} with {mirror:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_servers_download_url_only_confirms_the_url_built_here() {
+        // A Mac's pkg status that names `named` as its download.
+        let ud = std::path::Path::new("/data/updates");
+        let view = |named: &str, mirror: Option<&str>| {
+            let s = status(&format!(
+                r#"{{"current":"6.21.2","available":true,"latest":"6.22.0","method":"pkg","downloadUrl":{}}}"#,
+                serde_json::json!(named)
+            ));
+            update_item_view(s.as_ref(), ud, true, InstallerHost::MacOs, mirror)
+        };
+        let page = ("Update available (6.22.0)".to_string(), UpdateAction::OpenReleases);
+        let other_cpu = if THIS_PKG_CPU == "arm64" { "x64" } else { "arm64" };
+        for mirror in [None, Some("https://mirror.local/mstream"), Some("http://mirror.local/mstream")] {
+            let built = pkg_download_url("6.22.0", THIS_PKG_CPU, mirror).unwrap();
+            // The very string: the URL built here, opened as built.
+            assert_eq!(
+                view(&built, mirror),
+                ("Download update 6.22.0".to_string(), UpdateAction::DownloadInstaller(built.clone())),
+                "{mirror:?}"
+            );
+            // Every near miss of it keeps the page, whatever a browser
+            // would make of it: there is no URL parser to get wrong.
+            let (scheme, rest) = built.split_once("://").unwrap();
+            let (host, path) = rest.split_once('/').unwrap();
+            let name = path.rsplit('/').next().unwrap();
+            for near in [
+                // The releases page: the release carries no .pkg for this
+                // install.
+                RELEASES_URL.to_string(),
+                // The other CPU's, another version's.
+                built.replace(THIS_PKG_CPU, other_cpu),
+                built.replace("6.22.0", "6.23.0"),
+                // A query, a fragment, a trailing slash, the name as the
+                // prefix of another.
+                format!("{built}?x=1"),
+                format!("{built}#x"),
+                format!("{built}/"),
+                format!("{built}.exe"),
+                // Userinfo, an empty host, another host.
+                format!("{scheme}://evil@{host}/{path}"),
+                format!("{scheme}:///{path}"),
+                format!("{scheme}://evil.example/{path}"),
+                // Another scheme, an uppercase one.
+                format!("javascript:alert(1)//{name}"),
+                format!("file:///Users/x/Downloads/{name}"),
+                format!("{}://{rest}", scheme.to_uppercase()),
+                // A `..` segment, whitespace inside, nothing at all.
+                format!("{scheme}://{host}/x/../{path}"),
+                format!("{scheme}://{host}/my mirror/{name}"),
+                String::new(),
+            ] {
+                assert_eq!(view(&near, mirror), page, "{near:?} with {mirror:?}");
+            }
         }
     }
 
@@ -2422,7 +2631,7 @@ mod tests {
         let available = ("Update available (6.22.0)".to_string(), UpdateAction::OpenReleases);
         let download = (
             "Download update 6.22.0".to_string(),
-            UpdateAction::DownloadInstaller(pkg_download_url("6.22.0", THIS_PKG_CPU).unwrap()),
+            UpdateAction::DownloadInstaller(pkg_download_url("6.22.0", THIS_PKG_CPU, None).unwrap()),
         );
         // macOS: the downloaded .pkg is one click from Installer.app, for
         // either architecture — and it is no handoff: never applied
@@ -2431,13 +2640,13 @@ mod tests {
             let pkg = ud.join(format!("mStream-6.22.0-darwin-{arch}.pkg"));
             std::fs::write(&pkg, "x").unwrap();
             let s = staged_installer("pkg", &pkg);
-            let (t, a) = update_item_view(s.as_ref(), &ud, true, mac);
+            let (t, a) = update_item_view(s.as_ref(), &ud, true, mac, None);
             assert_eq!(t, "Install update 6.22.0");
             assert_eq!(a, UpdateAction::OpenInstaller(pkg.clone()));
             assert!(!a.is_handoff());
             // The same file means nothing to a host that cannot open it.
-            assert_eq!(update_item_view(s.as_ref(), &ud, true, win), available);
-            assert_eq!(update_item_view(s.as_ref(), &ud, true, other), available);
+            assert_eq!(update_item_view(s.as_ref(), &ud, true, win, None), available);
+            assert_eq!(update_item_view(s.as_ref(), &ud, true, other, None), available);
         }
         // A pkg status whose installer is gone, sits outside the updates
         // dir, or is not a pkg: the release's own .pkg, fetched by the
@@ -2448,21 +2657,21 @@ mod tests {
         let exe = ud.join("mStream-6.22.0-win-x64-setup.exe");
         std::fs::write(&exe, "x").unwrap();
         for p in [&gone, &outside, &exe] {
-            assert_eq!(update_item_view(staged_installer("pkg", p).as_ref(), &ud, true, mac), download, "{}", p.display());
+            assert_eq!(update_item_view(staged_installer("pkg", p).as_ref(), &ud, true, mac, None), download, "{}", p.display());
         }
         // Windows: the verified setup.exe runs silently — a handoff, as
         // before — and only there, only for an Inno install.
         let s = staged_installer("inno", &exe);
-        let (t, a) = update_item_view(s.as_ref(), &ud, true, win);
+        let (t, a) = update_item_view(s.as_ref(), &ud, true, win, None);
         assert_eq!(t, "Install update 6.22.0");
         assert_eq!(a, UpdateAction::RunInstaller(exe.clone()));
         assert!(a.is_handoff());
-        assert_eq!(update_item_view(s.as_ref(), &ud, true, mac), available);
+        assert_eq!(update_item_view(s.as_ref(), &ud, true, mac, None), available);
         // Method and host must agree: an Inno status naming a .pkg on a
         // Mac, or a pkg status naming the setup.exe on Windows, runs nothing.
         let pkg = ud.join("mStream-6.22.0-darwin-arm64.pkg");
-        assert_eq!(update_item_view(staged_installer("inno", &pkg).as_ref(), &ud, true, mac), available);
-        assert_eq!(update_item_view(staged_installer("pkg", &exe).as_ref(), &ud, true, win), available);
+        assert_eq!(update_item_view(staged_installer("inno", &pkg).as_ref(), &ud, true, mac, None), available);
+        assert_eq!(update_item_view(staged_installer("pkg", &exe).as_ref(), &ud, true, win, None), available);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2479,7 +2688,7 @@ mod tests {
         let log = Logger(std::env::temp_dir().join(format!("mstream-open-installer-test-{}.log", std::process::id())));
         for action in [
             UpdateAction::OpenInstaller(PathBuf::from("/data/updates/mStream-6.22.0-darwin-arm64.pkg")),
-            UpdateAction::DownloadInstaller(pkg_download_url("6.22.0", "arm64").unwrap()),
+            UpdateAction::DownloadInstaller(pkg_download_url("6.22.0", "arm64", None).unwrap()),
             UpdateAction::OpenReleases,
             UpdateAction::None,
         ] {
@@ -2596,13 +2805,13 @@ mod tests {
         assert_eq!(valid_installer(Some(&rc), &ud, mac), Some(rc.clone()));
         // An inno status pointing outside the updates dir renders inert —
         // and so does a pkg one.
-        let (t, a) = update_item_view(staged_installer("inno", &outside).as_ref(), &ud, true, win);
+        let (t, a) = update_item_view(staged_installer("inno", &outside).as_ref(), &ud, true, win, None);
         assert_eq!(a, UpdateAction::OpenReleases, "falls back to availability, never runs the file");
         assert_eq!(t, "Update available (6.22.0)");
-        let (t, a) = update_item_view(staged_installer("pkg", &outside_pkg).as_ref(), &ud, true, mac);
+        let (t, a) = update_item_view(staged_installer("pkg", &outside_pkg).as_ref(), &ud, true, mac, None);
         assert_eq!(
             a,
-            UpdateAction::DownloadInstaller(pkg_download_url("6.22.0", THIS_PKG_CPU).unwrap()),
+            UpdateAction::DownloadInstaller(pkg_download_url("6.22.0", THIS_PKG_CPU, None).unwrap()),
             "falls back to the release's own download, never opens the file"
         );
         assert_eq!(t, "Download update 6.22.0");
