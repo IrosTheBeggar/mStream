@@ -1,12 +1,12 @@
 // Release-asset download for the bundler (build-bun.mjs), with a short retry
 // for what is plausibly transient.
 //
-// The bundle stages three sha256-pinned assets per target (p2p-sidecar,
-// mstream-player, the ghostty console), and each used to get exactly ONE
-// fetch. GitHub's release CDN answers the odd request with a 5xx; on
-// 2026-09-20 a single HTTP 500 for mstream-player-darwin-arm64 failed the whole
-// darwin-arm64 bundle job of an unrelated PR while the seven other targets in
-// the same run fetched theirs fine, and a plain re-run fixed it.
+// The bundle stages two sha256-pinned assets per target (p2p-sidecar,
+// mstream-player), and each used to get exactly ONE fetch. GitHub's release
+// CDN answers the odd request with a 5xx; on 2026-09-20 a single HTTP 500
+// for mstream-player-darwin-arm64 failed the whole darwin-arm64 bundle job
+// of an unrelated PR while the seven other targets in the same run fetched
+// theirs fine, and a plain re-run fixed it.
 //
 // What is retried, and what is not:
 //   - network errors (fetch rejects) and a body that dies mid-read — the

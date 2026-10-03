@@ -173,14 +173,6 @@ pub fn run(args: LauncherArgs) -> ! {
             None
         }
     });
-    // The bundled Ghostty console (macOS bundles stage it at console/ beside
-    // mStream.app; other platforms simply never find one). Its Dock icon is
-    // mStream's own icns out of the .app — cosmetic, so absence is fine.
-    let console = paths::find_console_app(&bin).map(|ghostty_app| {
-        let icns = server_dir.join("..").join("Resources").join("mStream.icns");
-        paths::ConsoleLaunch { ghostty_app, icon_icns: icns.exists().then_some(icns) }
-    });
-
     // ── Single instance: the lock lives in the data home, so two launchers
     // managing the same data/port exclude each other (two --portable
     // launchers in different folders are genuinely different servers and
@@ -226,7 +218,6 @@ pub fn run(args: LauncherArgs) -> ! {
                 desktop_player.as_ref(),
                 &paths::server_url(&ep),
                 &data_home,
-                console.as_ref(),
                 fallback.as_deref(),
                 &log,
             ) {
@@ -244,7 +235,6 @@ pub fn run(args: LauncherArgs) -> ! {
                 desktop_player.as_ref(),
                 &paths::server_url(&ep),
                 &data_home,
-                console.as_ref(),
                 Some(&fallback),
                 &log,
             ) {
@@ -703,13 +693,13 @@ pub fn run(args: LauncherArgs) -> ! {
                     if tray_click_acts(last_tray_click, now) {
                         last_tray_click = Some(now);
                         log.line("tray: left click - open player");
-                        open_player_from_tray(desktop_player.as_ref(), &url, &data_home, console.as_ref(), &config_loop, &ep, &log);
+                        open_player_from_tray(desktop_player.as_ref(), &url, &data_home, &config_loop, &ep, &log);
                     }
                 }
                 AppEvent::Menu(id) => match id.as_str() {
                     "player" => {
                         log.line("menu: open player");
-                        open_player_from_tray(desktop_player.as_ref(), &url, &data_home, console.as_ref(), &config_loop, &ep, &log);
+                        open_player_from_tray(desktop_player.as_ref(), &url, &data_home, &config_loop, &ep, &log);
                     }
                     "webapp" => {
                         log.line("menu: open web app");
@@ -732,7 +722,6 @@ pub fn run(args: LauncherArgs) -> ! {
                             TrayPage::QuickConnect,
                             &url,
                             &data_home,
-                            console.as_ref(),
                             &format!("{url}/#quick-connect"),
                             &log,
                         );
@@ -918,7 +907,6 @@ pub fn run(args: LauncherArgs) -> ! {
                                     desktop_player.as_ref(),
                                     &url,
                                     &data_home,
-                                    console.as_ref(),
                                     fallback,
                                     &log,
                                 );
@@ -952,7 +940,6 @@ pub fn run(args: LauncherArgs) -> ! {
                                     TrayPage::Setup,
                                     &url,
                                     &data_home,
-                                    console.as_ref(),
                                     &target,
                                     &log,
                                 );
@@ -1084,7 +1071,7 @@ pub fn run(args: LauncherArgs) -> ! {
                 log.line("reopen event - opening the desktop player");
                 let target = paths::browse_target(&config_loop, &ep);
                 let fallback = (!args.no_open).then_some(target.as_str());
-                open_desktop_player(desktop_player.as_ref(), &url, &data_home, console.as_ref(), fallback, &log);
+                open_desktop_player(desktop_player.as_ref(), &url, &data_home, fallback, &log);
             }
             Event::LoopDestroyed => {
                 // Belt to Quit's suspenders: whatever ends the loop, never
@@ -1151,7 +1138,6 @@ fn open_player_from_tray(
     player: Option<&DesktopPlayer>,
     server_url: &str,
     data_home: &Path,
-    console: Option<&paths::ConsoleLaunch>,
     config: &Path,
     ep: &paths::Endpoint,
     log: &Logger,
@@ -1163,7 +1149,7 @@ fn open_player_from_tray(
         log.line("player: no foreground right to pass on - a new window may open behind the active one");
     }
     let fallback = paths::browse_target(config, ep);
-    open_desktop_player(player, server_url, data_home, console, Some(&fallback), log);
+    open_desktop_player(player, server_url, data_home, Some(&fallback), log);
 }
 
 /// The desktop player this install can open: the GUI-capable binary and,
@@ -1284,7 +1270,6 @@ fn open_desktop_player(
     player: Option<&DesktopPlayer>,
     server_url: &str,
     data_home: &Path,
-    console: Option<&paths::ConsoleLaunch>,
     fallback: Option<&str>,
     log: &Logger,
 ) -> Option<WindowWatch> {
@@ -1300,7 +1285,7 @@ fn open_desktop_player(
                 // where it lives, and the focus step does what it can.
                 // No fallback here — a browser beside an open player is
                 // exactly the double this guards against.
-                focus_open_player(lock, console, log);
+                focus_open_player(lock, log);
                 return None;
             }
             Ok(false) => {}
@@ -1322,7 +1307,6 @@ fn open_desktop_player(
                             player: player.clone(),
                             server_url: server_url.to_string(),
                             data_home: data_home.to_path_buf(),
-                            console: console.cloned(),
                             fallback: fallback.map(str::to_string),
                             log: log.clone(),
                             output: out,
@@ -1335,7 +1319,7 @@ fn open_desktop_player(
             log.line("player: a desktop build, but this session has no display (DISPLAY/WAYLAND_DISPLAY unset) - opening it in a terminal");
         }
     }
-    open_player_in_terminal(player, server_url, data_home, console, fallback, log);
+    open_player_in_terminal(player, server_url, data_home, fallback, log);
     None
 }
 
@@ -1345,11 +1329,10 @@ fn open_player_in_terminal(
     player: &DesktopPlayer,
     server_url: &str,
     data_home: &Path,
-    console: Option<&paths::ConsoleLaunch>,
     fallback: Option<&str>,
     log: &Logger,
 ) {
-    match platform::open_player_terminal(&player.bin, server_url, data_home, console, player.page()) {
+    match platform::open_player_terminal(&player.bin, server_url, data_home, player.page()) {
         Ok(via) => {
             log.line(&format!("player opened via {via}"));
             return;
@@ -1381,14 +1364,12 @@ fn web_player_fallback(fallback: Option<&str>, log: &Logger) {
 /// target when no terminal opens: the admin panel for Setup, the webapp's
 /// Quick Connect modal (webapp/assets/js/quick-connect.js) for Quick
 /// Connect. The tray loop never waits on any of it.
-#[allow(clippy::too_many_arguments)]
 fn open_player_page(
     player: Option<&DesktopPlayer>,
     player_bin: Option<&Path>,
     page: TrayPage,
     server_url: &str,
     data_home: &Path,
-    console: Option<&paths::ConsoleLaunch>,
     fallback: &str,
     log: &Logger,
 ) {
@@ -1406,7 +1387,6 @@ fn open_player_page(
                             player_bin: player.bin.clone(),
                             server_url: server_url.to_string(),
                             data_home: data_home.to_path_buf(),
-                            console: console.cloned(),
                             fallback: fallback.to_string(),
                             log: log.clone(),
                             output: out,
@@ -1423,7 +1403,7 @@ fn open_player_page(
             ));
         }
     }
-    open_page_in_terminal(player_bin, page, server_url, data_home, console, fallback, log);
+    open_page_in_terminal(player_bin, page, server_url, data_home, fallback, log);
 }
 
 /// A page's terminal route — the pages' route before window-pages, and its
@@ -1435,12 +1415,11 @@ fn open_page_in_terminal(
     page: TrayPage,
     server_url: &str,
     data_home: &Path,
-    console: Option<&paths::ConsoleLaunch>,
     fallback: &str,
     log: &Logger,
 ) {
     if let Some(bin) = player_bin {
-        match platform::open_player_terminal(bin, server_url, data_home, console, page.player_page()) {
+        match platform::open_player_terminal(bin, server_url, data_home, page.player_page()) {
             Ok(via) => {
                 log.line(&format!("{} opened via {via}", page.opener()));
                 return;
@@ -1453,10 +1432,10 @@ fn open_page_in_terminal(
 
 /// The open player is brought forward through whatever hosts it — the
 /// sidecar beside its lock says what that is (read behind the lock check).
-fn focus_open_player(lock: &Path, console: Option<&paths::ConsoleLaunch>, log: &Logger) {
+fn focus_open_player(lock: &Path, log: &Logger) {
     let who = paths::read_player_sidecar(lock);
     let desc = who.as_ref().map(|w| format!(" (pid {}, under {})", w.pid, w.host)).unwrap_or_default();
-    match platform::focus_player(who.as_ref(), console) {
+    match platform::focus_player(who.as_ref()) {
         Ok(what) => log.line(&format!("player already open{desc} - activated {what}")),
         Err(e) => log.line(&format!("player already open{desc} - could not bring it forward: {e}")),
     }
@@ -1592,7 +1571,6 @@ struct WindowFallback {
     player: DesktopPlayer,
     server_url: String,
     data_home: PathBuf,
-    console: Option<paths::ConsoleLaunch>,
     fallback: Option<String>,
     log: Logger,
     /// The child's output file — its last line rides into a failure's log.
@@ -1636,10 +1614,9 @@ fn watch_player_window(mut child: std::process::Child, ctx: WindowFallback) -> W
             }
         };
         let ms = start.elapsed().as_millis();
-        let console = ctx.console.as_ref();
         let to_terminal = |why: String, ms: u128| {
             ctx.log.line(&format!("player window (pid {pid}) {why} after {ms} ms - falling back to the terminal route"));
-            open_player_in_terminal(&ctx.player, &ctx.server_url, &ctx.data_home, console, ctx.fallback.as_deref(), &ctx.log);
+            open_player_in_terminal(&ctx.player, &ctx.server_url, &ctx.data_home, ctx.fallback.as_deref(), &ctx.log);
         };
         match verdict {
             WindowVerdict::Watching => unreachable!("the loop only breaks on a decision"),
@@ -1652,7 +1629,7 @@ fn watch_player_window(mut child: std::process::Child, ctx: WindowFallback) -> W
                 match (ctx.player.instance_lock.as_deref(), held) {
                     (Some(lock), Some(Ok(true))) => {
                         ctx.log.line(&format!("player window (pid {pid}) refused by the instance lock after {ms} ms - another player is open"));
-                        focus_open_player(lock, console, &ctx.log);
+                        focus_open_player(lock, &ctx.log);
                     }
                     _ => ctx.log.line(&format!("player window (pid {pid}) exited 0 after {ms} ms and no player holds the lock - closed at once; nothing to do")),
                 }
@@ -1682,7 +1659,6 @@ struct PageFallback {
     player_bin: PathBuf,
     server_url: String,
     data_home: PathBuf,
-    console: Option<paths::ConsoleLaunch>,
     /// The browser's target (open_player_page).
     fallback: String,
     log: Logger,
@@ -1710,8 +1686,7 @@ fn watch_player_page(mut child: std::process::Child, ctx: PageFallback) {
                         "{name} (pid {pid}) could not open a window (exit {PLAYER_NO_WINDOW}{}) after {ms} ms - falling back to the terminal route",
                         last_words(&ctx.output)
                     ));
-                    let console = ctx.console.as_ref();
-                    open_page_in_terminal(Some(&ctx.player_bin), ctx.page, &ctx.server_url, &ctx.data_home, console, &ctx.fallback, &ctx.log);
+                    open_page_in_terminal(Some(&ctx.player_bin), ctx.page, &ctx.server_url, &ctx.data_home, &ctx.fallback, &ctx.log);
                 }
                 (PageAction::Browser, PageVerdict::Failed(code)) => {
                     ctx.log.line(&format!(
