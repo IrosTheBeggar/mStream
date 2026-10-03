@@ -575,8 +575,9 @@ function onFileClick(el) {
 }
 
 // Metadata for the current DB-search results, keyed by (peer, raw filepath).
-// The search API returns the full canonical metadata object inline on track
-// hits, so the search-result handlers below enqueue with it directly and skip
+// The search API returns the lite metadata subset inline on track hits
+// (toLiteMetadata: no composer / hash / stats), so the search-result handlers
+// below enqueue with it directly and skip
 // the per-click /api/v1/db/metadata round-trip that the shared
 // onFileClick/playNow (used by the file browser, which has no inline
 // metadata) still perform. Rebuilt on every search in submitSearchForm().
@@ -653,9 +654,38 @@ async function addFilePlaylist(el) {
   }
 }
 
+// filepath -> metadata for the file rows the open panel drew from a DB
+// response: a playlist, genre, album, starred, recently played / added and
+// most played all arrive with the same full metadata object
+// /api/v1/db/metadata answers with, so Add All can queue them as they are
+// instead of looking every row up again — a 5,000-track playlist was 5,000
+// round-trips. Rows drawn without it (the file explorer, Downloads, a
+// playlist entry whose file is gone) are left out and keep their lookup. So
+// is DB search: it never fills currentBrowsingList, and its hits carry only
+// the lite subset (no composer), which a lookup still completes.
+// Keyed by path alone: each panel that fills currentBrowsingList shows a
+// single server's library, so one path can't name two different tracks.
+// Playlist entries keep the path under `filepath`, every other panel `path`.
+function browsingListMetadata() {
+  const byPath = new Map();
+  currentBrowsingList.forEach(x => {
+    const fp = x.path || x.filepath;
+    if (x.type === 'file' && fp && x.metadata && Object.keys(x.metadata).length > 0) {
+      byPath.set(fp, x.metadata);
+    }
+  });
+  return byPath;
+}
+
 function addAll() {
+  const known = browsingListMetadata();
   ([...document.getElementsByClassName('filez')]).forEach(el => {
-    queueRow(peerOf(el), el.getAttribute("data-file_location"));
+    const fp = el.getAttribute("data-file_location");
+    const meta = known.get(fp);
+    // A copy per row, like the fresh object each lookup used to bring back:
+    // the queue edits its entries' metadata in place (ratings), and that
+    // must not reach back into the panel's list.
+    queueRow(peerOf(el), fp, meta && { ...meta });
   });
 }
 
@@ -3284,7 +3314,7 @@ async function getGenreSongs(genre) {
       const title = song.metadata.title ? song.metadata.title : song.filepath.split('/').pop();
       const subtitle = song.metadata.artist ? song.metadata.artist : undefined;
 
-      currentBrowsingList.push({ type: 'file', name: title, path: song.filepath, title, subtitle });
+      currentBrowsingList.push({ type: 'file', name: title, path: song.filepath, metadata: song.metadata, title, subtitle });
       songs += createMusicFileHtml(song.filepath, title, undefined, undefined, subtitle);
     });
     songs += '</ul>';
@@ -3366,7 +3396,7 @@ async function getAlbumSongs(album, artist, year, albumArtist) {
       const title = song.metadata.title ? song.metadata.title : song.metadata.filename;
       const subtitle = song.metadata.artist ? song.metadata.artist : undefined;
 
-      currentBrowsingList.push({ type: 'file', name: title, path: song.filepath, title, subtitle });
+      currentBrowsingList.push({ type: 'file', name: title, path: song.filepath, metadata: song.metadata, title, subtitle });
       files += createMusicFileHtml(song.filepath, title, undefined, undefined, subtitle);
     });
     files += '</ul>';
@@ -3454,6 +3484,7 @@ async function redoRecentlyPlayed() {
       currentBrowsingList.push({
         type: 'file',
         name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop(),
+        metadata: el.metadata,
         path: el.filepath,
         title, aa, subtitle
       });
@@ -3508,6 +3539,7 @@ async function redoMostPlayed() {
       currentBrowsingList.push({
         type: 'file',
         name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop(),
+        metadata: el.metadata,
         path: el.filepath,
         title, aa, subtitle
       });
@@ -3561,6 +3593,7 @@ async function redoRecentlyAdded() {
       currentBrowsingList.push({
         type: 'file',
         name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop(),
+        metadata: el.metadata,
         path: el.filepath,
         title, aa, subtitle
       });
@@ -5601,7 +5634,7 @@ function renderSearchResults(res, peer) {
     // build has no renderer for. Skip it rather than throw away the rest.
     if (!searchMap[key]) { return; }
     (res[key] || []).forEach((value) => {
-      // Track-level hits (title/files/lyrics) carry the full metadata object
+      // Track-level hits (title/files/lyrics) carry the lite metadata object
       // inline — stash it so searchFileClick/searchPlayNow can enqueue
       // without a second metadata round-trip.
       if (value.filepath && value.metadata) {
