@@ -199,6 +199,10 @@ const VUEPLAYERCORE = (() => {
       loaded: false,
       view: null,
     },
+    // Peer sync (m.js): the peer folder the File Explorer shows (the bar's
+    // "Folders land in" line follows it) and the landing sheet open for a
+    // pressed folder, if any.
+    peerSync: { folder: null, folderName: null, peerName: null, landing: null },
     // The downloads strip under the panel: the caller's plug-in jobs that
     // still want them (live, failed). Shows only while there are any; what
     // landed is listed by the Downloads panel (m.js).
@@ -279,6 +283,12 @@ const VUEPLAYERCORE = (() => {
     if (picker && picker.browse) { picker.browse = null; return; }
     if (picker) { discoverState.modal.picker = null; return; }
     playlistVue.closeDiscoverModal();
+  }
+  // The folder landing sheet (peer sync): Esc cancels it, installed only
+  // while one is open. A recommendation window open over it closes first.
+  function onPeerSyncLandingKey(e) {
+    if (e.key !== 'Escape' || discoverState.modal.open) { return; }
+    playlistVue.psLandingResolve(null);
   }
   // Plug-in jobs: the one in-flight fetch of the plug-in list (the window's
   // sections and the strip all wait on the same answer), the poll timer, and
@@ -422,6 +432,46 @@ const VUEPLAYERCORE = (() => {
       </div>`,
   });
 
+  // The folder tree under the picker's "Browse…" and under the landing
+  // sheet's "Into a folder I choose": this server's folders, one level at a
+  // time. `k` is the picker-like object it moves ({ vpath, base, browse });
+  // the listing and the moves are the playlist Vue's dmBrowse* methods,
+  // handed `k` so the picker and the sheet each keep their own place.
+  Vue.component('dm-tree', {
+    props: { k: Object },
+    computed: {
+      crumbs: function () { return this.$root.dmBrowseCrumbs(this.k); },
+      naming: function () { const k = this.k; return !!(k && k.browse && k.browse.naming); },
+    },
+    watch: {
+      // "New folder…" turns into a name field: put the caret in it.
+      naming: function (on) {
+        if (!on) { return; }
+        this.$nextTick(() => { const el = this.$refs.newFolder; if (el && el.focus) { el.focus(); } });
+      },
+    },
+    methods: {
+      tt: function (key, params) { return (typeof t === 'function') ? t(key, params) : key; },
+    },
+    template: `
+      <div v-if="k && k.browse" class="dm-tree">
+        <div class="dm-tree-crumb"><template v-for="(c, i) in crumbs"><span v-if="i > 0">&rsaquo;</span><b>{{ c }}</b></template></div>
+        <div v-if="crumbs.length > 1" class="dm-tree-row" v-on:click="$root.dmBrowseUp(k)"><dm-icon name="up" :size="12"></dm-icon>{{ tt('discover.modal.dest.up', { name: crumbs[crumbs.length - 2] }) }}</div>
+        <div v-if="k.browse.loading" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.lookingUp') }}</div>
+        <template v-else>
+          <div v-if="k.browse.missing" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.dest.willCreate') }}</div>
+          <div v-else-if="k.browse.dirs.length === 0" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.dest.noFolders') }}</div>
+          <div v-for="d in k.browse.dirs" :key="d" class="dm-tree-row" v-on:click="$root.dmBrowseInto(d, false, k)"><dm-icon name="folder" :size="12"></dm-icon>{{ d }}</div>
+        </template>
+        <div v-if="!k.browse.naming" class="dm-tree-row" v-on:click="$root.dmBrowseNewFolder(k)"><dm-icon name="plus" :size="12"></dm-icon>{{ tt('discover.modal.dest.newFolder') }}</div>
+        <div v-else class="dm-tree-row dm-tree-new">
+          <dm-icon name="plus" :size="12"></dm-icon>
+          <input class="dm-input browser-default" type="text" maxlength="200" ref="newFolder" v-model="k.browse.newName" v-on:keydown.enter.prevent="$root.dmBrowseNewFolder(k)" :placeholder="tt('discover.modal.dest.newFolderName')">
+          <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="$root.dmBrowseNewFolder(k)">{{ tt('discover.modal.dest.newFolderAdd') }}</a>
+        </div>
+      </div>`,
+  });
+
   // The collection destination — where "Get it" downloads and "Add to your
   // collection" copies land — rendered in the section whose rows use it, in
   // either view: the bar (the path resolved for THIS song · yours / default
@@ -430,22 +480,30 @@ const VUEPLAYERCORE = (() => {
   // dm* methods); this only puts them where the rows are. The parent shows
   // it only when a row could put a file somewhere — never locked.
   Vue.component('dm-dest', {
+    // `line`: what the bar's path shows — 'sample' (the window: this song's
+    // path, resolved), 'layout' (the browse column's bar: the layout
+    // itself, Music › {{ARTIST}} › {{ALBUM}}, since no one song is in hand)
+    // or 'folders' (the bar over a peer's File Explorer: where the folder
+    // it shows lands, laid out as on the peer).
+    props: { line: { type: String, default: 'sample' } },
     computed: {
       picker: function () { return this.$root.discover.modal.picker; },
       dest: function () { const v = this.$root.discover.dest.view; return (v && v.destination) || null; },
+      crumbs: function () {
+        if (this.line === 'folders') { return this.$root.dmDestFolderCrumbs(); }
+        return this.line === 'layout' ? this.$root.dmDestLayoutCrumbs() : this.$root.dmDestCrumbs();
+      },
+      lead: function () {
+        if (this.line === 'folders') { return 'peers.sync.foldersLandIn'; }
+        return this.line === 'layout' ? 'peers.sync.landIn' : 'discover.modal.dest.goTo';
+      },
       preview: function () { return this.$root.dmPickerPreview(); },
-      naming: function () { const k = this.picker; return !!(k && k.browse && k.browse.naming); },
     },
     watch: {
       // The form opens in the bar's place; make sure it is in view.
       picker: function (k) {
         if (!k) { return; }
         this.$nextTick(() => { const el = this.$refs.form; if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'nearest' }); } });
-      },
-      // "New folder…" turns into a name field: put the caret in it.
-      naming: function (on) {
-        if (!on) { return; }
-        this.$nextTick(() => { const el = this.$refs.newFolder; if (el && el.focus) { el.focus(); } });
       },
     },
     methods: {
@@ -469,22 +527,7 @@ const VUEPLAYERCORE = (() => {
             <input class="dm-input browser-default" type="text" maxlength="500" v-model="picker.base" v-on:change="$root.dmPickerLibraryChanged()" :placeholder="tt('discover.modal.dest.root')" :class="{ 'is-err': preview.field === 'base' }">
             <a class="dm-btn dm-btn-sm" :class="{ 'dm-btn-ghost': picker.browse }" href="javascript:void(0)" v-on:click="$root.dmBrowseToggle()"><dm-icon name="folder" :size="14"></dm-icon>{{ tt(picker.browse ? 'discover.modal.close' : 'discover.modal.dest.browse') }}</a>
           </div>
-          <div v-if="picker.browse" class="dm-tree">
-            <div class="dm-tree-crumb"><template v-for="(c, i) in $root.dmBrowseCrumbs()"><span v-if="i > 0">&rsaquo;</span><b>{{ c }}</b></template></div>
-            <div v-if="$root.dmBrowseCrumbs().length > 1" class="dm-tree-row" v-on:click="$root.dmBrowseUp()"><dm-icon name="up" :size="12"></dm-icon>{{ tt('discover.modal.dest.up', { name: $root.dmBrowseCrumbs()[$root.dmBrowseCrumbs().length - 2] }) }}</div>
-            <div v-if="picker.browse.loading" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.lookingUp') }}</div>
-            <template v-else>
-              <div v-if="picker.browse.missing" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.dest.willCreate') }}</div>
-              <div v-else-if="picker.browse.dirs.length === 0" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.dest.noFolders') }}</div>
-              <div v-for="d in picker.browse.dirs" :key="d" class="dm-tree-row" v-on:click="$root.dmBrowseInto(d)"><dm-icon name="folder" :size="12"></dm-icon>{{ d }}</div>
-            </template>
-            <div v-if="!picker.browse.naming" class="dm-tree-row" v-on:click="$root.dmBrowseNewFolder()"><dm-icon name="plus" :size="12"></dm-icon>{{ tt('discover.modal.dest.newFolder') }}</div>
-            <div v-else class="dm-tree-row dm-tree-new">
-              <dm-icon name="plus" :size="12"></dm-icon>
-              <input class="dm-input browser-default" type="text" maxlength="200" ref="newFolder" v-model="picker.browse.newName" v-on:keydown.enter.prevent="$root.dmBrowseNewFolder()" :placeholder="tt('discover.modal.dest.newFolderName')">
-              <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="$root.dmBrowseNewFolder()">{{ tt('discover.modal.dest.newFolderAdd') }}</a>
-            </div>
-          </div>
+          <dm-tree :k="picker"></dm-tree>
           <div v-if="preview.field === 'base'" class="dm-field-err">{{ $root.dmPickerProblem(preview) }}</div>
           <div v-else class="dm-field-hint">{{ tt('discover.modal.dest.baseHint', { library: picker.vpath }) }}</div>
         </div>
@@ -513,12 +556,88 @@ const VUEPLAYERCORE = (() => {
       </div>
       <div v-else-if="dest" class="dm-dest">
         <dm-icon name="folder" :size="14"></dm-icon>
-        <span class="dm-dest-path" :title="[dest.vpath].concat($root.dmDestCrumbs()).join(' / ')">{{ tt('discover.modal.dest.goTo') }} <b>{{ dest.vpath }}</b><template v-for="c in $root.dmDestCrumbs()"><i>&rsaquo;</i>{{ c }}</template></span>
+        <span class="dm-dest-path" :title="[dest.vpath].concat(crumbs).join(' / ')"><span class="dm-dest-label">{{ tt(lead) }} </span><b>{{ dest.vpath }}</b><template v-for="c in crumbs"><i>&rsaquo;</i>{{ c }}</template></span>
         <span class="dm-tag" :class="{ 'dm-tag-src': dest.source === 'user' }">{{ tt(dest.source === 'user' ? 'discover.modal.dest.yours' : 'discover.modal.dest.default') }}</span>
+        <span v-if="line === 'folders'" class="dm-landing-note">{{ tt('peers.sync.laidOutAs', { name: $root.discover.peerSync.peerName || 'peer' }) }}</span>
         <div class="dm-opt-act">
           <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="$root.dmOpenPicker()">{{ tt('discover.modal.dest.change') }}</a>
           <a v-if="dest.source === 'user'" class="dm-btn dm-btn-sm dm-btn-ghost dm-btn-icon" href="javascript:void(0)" v-on:click="$root.dmResetDestination()" :title="tt('discover.modal.dest.reset')"><dm-icon name="retry" :size="14"></dm-icon></a>
           <slot name="act"></slot>
+        </div>
+      </div>`,
+  });
+
+  // The folder landing sheet (peer sync, card 03 ⑤): "Add folder" on a
+  // peer's folder asks where it lands — its layout as on the peer (the
+  // default: a pressed folder is that folder), a folder of the user's
+  // choosing, or by tags like every other copy. It opens in the bar's place
+  // (the second root, mountPeerSyncDest); state and behaviour stay on the
+  // playlist Vue (discover.peerSync.landing, the ps* and dmBrowse*
+  // methods), and closing it answers openPeerSyncLanding's promise.
+  Vue.component('dm-landing', {
+    computed: {
+      landing: function () { return this.$root.discover.peerSync.landing; },
+      destVpath: function () { const v = this.$root.discover.dest.view; return (v && v.destination && v.destination.vpath) || ''; },
+      folderName: function () { const k = this.landing; return (k && (k.name || DISCOVERJOBS.pathCrumbs(k.folder).pop())) || ''; },
+      peer: function () { return (this.landing && this.landing.peerName) || 'peer'; },
+      mirrorCrumbs: function () { return this.$root.psLandingMirrorCrumbs(); },
+      folderCrumbs: function () { return this.$root.psLandingBaseCrumbs(); },
+      tagCrumbs: function () { return this.$root.dmDestLayoutCrumbs(); },
+      libraries: function () { return this.$root.dmPickerLibraries(); },
+      // What is chosen, as one value to watch.
+      choice: function () { const k = this.landing; return k ? [k.mode, k.vpath, k.base].join('\n') : ''; },
+    },
+    watch: {
+      // The sheet opens in the bar's place; make sure it is in view.
+      landing: {
+        immediate: true,
+        handler: function (k) {
+          if (!k) { return; }
+          this.$nextTick(() => { const el = this.$refs.form; if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'nearest' }); } });
+        },
+      },
+      // A changed choice clears the last refusal; the folder choice opens
+      // on its tree, where that folder is picked.
+      choice: function () {
+        const k = this.landing;
+        if (!k) { return; }
+        k.error = '';
+        if (k.mode === 'folder' && !k.browse) { this.$root.dmBrowseToggle(k); }
+      },
+    },
+    methods: {
+      tt: function (key, params) { return (typeof t === 'function') ? t(key, params) : key; },
+    },
+    template: `
+      <div v-if="landing" class="dm-dest-form dm-landing" ref="form">
+        <div class="dm-landing-title">{{ tt('peers.sync.landing.title', { name: folderName, peer: peer }) }}</div>
+        <label class="dm-landing-opt" :class="{ 'dm-landing-on': landing.mode === 'mirror' }">
+          <input type="radio" class="browser-default" name="dm-landing-mode" value="mirror" v-model="landing.mode"><i></i>
+          <span class="dm-landing-words">{{ tt('peers.sync.landing.mirror') }}<span class="dm-landing-path" :title="[destVpath].concat(mirrorCrumbs).join(' / ')"><b>{{ destVpath }}</b><template v-for="c in mirrorCrumbs"><i>&rsaquo;</i>{{ c }}</template><span class="dm-landing-note">{{ tt('peers.sync.landing.asOn', { peer: peer }) }}</span></span></span>
+        </label>
+        <label class="dm-landing-opt" :class="{ 'dm-landing-on': landing.mode === 'folder' }">
+          <input type="radio" class="browser-default" name="dm-landing-mode" value="folder" v-model="landing.mode"><i></i>
+          <span class="dm-landing-words">{{ tt('peers.sync.landing.folder') }}<span class="dm-landing-path" :title="[landing.vpath].concat(folderCrumbs).join(' / ')"><b>{{ landing.vpath }}</b><template v-for="c in folderCrumbs"><i>&rsaquo;</i>{{ c }}</template><span v-if="!folderCrumbs.length" class="dm-landing-note">{{ tt('discover.modal.dest.root') }}</span></span></span>
+        </label>
+        <div v-if="landing.mode === 'folder'" class="dm-landing-more">
+          <div v-if="libraries.length > 1" class="dm-field">
+            <label>{{ tt('discover.modal.dest.library') }}</label>
+            <div class="dm-field-body">
+              <select class="dm-select browser-default" v-model="landing.vpath" v-on:change="$root.dmPickerLibraryChanged(landing)">
+                <option v-for="lib in libraries" :key="lib.vpath" :value="lib.vpath">{{ lib.vpath }}</option>
+              </select>
+            </div>
+          </div>
+          <dm-tree :k="landing"></dm-tree>
+        </div>
+        <label class="dm-landing-opt" :class="{ 'dm-landing-on': landing.mode === 'tags' }">
+          <input type="radio" class="browser-default" name="dm-landing-mode" value="tags" v-model="landing.mode"><i></i>
+          <span class="dm-landing-words">{{ tt('peers.sync.landing.tags') }}<span class="dm-landing-path" :title="[destVpath].concat(tagCrumbs).join(' / ')"><b>{{ destVpath }}</b><template v-for="c in tagCrumbs"><i>&rsaquo;</i>{{ c }}</template></span></span>
+        </label>
+        <div v-if="landing.error" class="dm-field-err dm-field-err-wide">{{ landing.error }}</div>
+        <div class="dm-dest-act">
+          <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="$root.psLandingResolve(null)">{{ tt('discover.modal.cancel') }}</a>
+          <a class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="$root.psLandingSubmit()"><dm-icon name="folder" :size="14"></dm-icon>{{ tt('peers.sync.landing.go') }}</a>
         </div>
       </div>`,
   });
@@ -1472,6 +1591,23 @@ const VUEPLAYERCORE = (() => {
         const p = DISCOVERJOBS.previewTarget({ vpath: d.vpath, base: d.base, layout: d.layout, tags: this.dmLayoutTags(), peerName: this.dmLayoutPeer(), fileName: this.dmLayoutFile() });
         return DISCOVERJOBS.pathCrumbs(p.valid ? p.relDir : d.base);
       },
+      // The browse column's bar shows the layout itself — Music › From peers
+      // › {{ARTIST}} › {{ALBUM}} — there is no one song to resolve it for.
+      dmDestLayoutCrumbs: function () {
+        const d = this.discover.dest.view && this.discover.dest.view.destination;
+        if (!d) { return []; }
+        return DISCOVERJOBS.pathCrumbs([d.base, d.layout].filter(Boolean).join('/'));
+      },
+      // A peer folder, laid out as on the peer: Music › From peers › the
+      // folder's own path inside the peer's library. `folder` defaults to
+      // the one the File Explorer shows (setPeerSyncFolder).
+      dmDestFolderCrumbs: function (folder) {
+        const d = this.discover.dest.view && this.discover.dest.view.destination;
+        if (!d) { return []; }
+        const f = folder === undefined ? this.discover.peerSync.folder : folder;
+        const mirror = (typeof PEERSYNC !== 'undefined' && typeof PEERSYNC.mirrorSegments === 'function') ? PEERSYNC.mirrorSegments(f) : [];
+        return DISCOVERJOBS.pathCrumbs(d.base).concat(mirror);
+      },
       dmOpenPicker: function () {
         const d = this.discover.dest.view && this.discover.dest.view.destination;
         if (!d) { return; }
@@ -1539,22 +1675,28 @@ const VUEPLAYERCORE = (() => {
         const v = this.discover.dest.view;
         k.layout = (lib && lib.template) || (v && v.defaultLayout) || DISCOVERJOBS.DEFAULT_LAYOUT;
       },
-      dmPickerLibraryChanged: function () {
-        const k = this.discover.modal.picker;
-        if (k && k.browse) { this.dmBrowseLoad(); }
+      // The browse methods move the picker's tree unless handed another
+      // picker-like object ({ vpath, base, browse }: the landing sheet's) as
+      // their last argument.
+      dmBrowseTarget: function (k) {
+        return (k && typeof k === 'object' && 'browse' in k) ? k : this.discover.modal.picker;
+      },
+      dmPickerLibraryChanged: function (picked) {
+        const k = this.dmBrowseTarget(picked);
+        if (k && k.browse) { this.dmBrowseLoad(k); }
       },
       // Browse…: the file explorer's own listing, folders only, one level at
       // a time. A folder that does not exist yet is fine — the first copy
       // creates it.
-      dmBrowseToggle: function () {
-        const k = this.discover.modal.picker;
+      dmBrowseToggle: function (picked) {
+        const k = this.dmBrowseTarget(picked);
         if (!k) { return; }
         if (k.browse) { k.browse = null; return; }
         k.browse = { loading: false, dirs: [], missing: false, naming: false, newName: '' };
-        this.dmBrowseLoad();
+        this.dmBrowseLoad(k);
       },
-      dmBrowseLoad: async function () {
-        const k = this.discover.modal.picker;
+      dmBrowseLoad: async function (picked) {
+        const k = this.dmBrowseTarget(picked);
         if (!k || !k.browse) { return; }
         const norm = DISCOVERJOBS.normalizeBase(k.base);
         const base = norm.valid ? norm.base : '';
@@ -1566,54 +1708,53 @@ const VUEPLAYERCORE = (() => {
           const res = await MSTREAMAPI.dirparser('/' + k.vpath + (base ? '/' + base : ''));
           dirs = ((res && res.directories) || []).map((d) => d.name).filter(Boolean);
         } catch (_) { missing = true; }
-        const now = this.discover.modal.picker;
-        if (now !== k || !k.browse) { return; }
+        // Still the form showing: the picker, or the landing sheet.
+        if ((k !== this.discover.modal.picker && k !== this.discover.peerSync.landing) || !k.browse) { return; }
         const current = DISCOVERJOBS.normalizeBase(k.base);
         if (k.vpath + '/' + (current.valid ? current.base : '') !== asked) { return; }   // moved on meanwhile
         k.browse.loading = false;
         k.browse.dirs = dirs;
         k.browse.missing = missing;
       },
-      dmBrowseCrumbs: function () {
-        const k = this.discover.modal.picker;
+      dmBrowseCrumbs: function (picked) {
+        const k = this.dmBrowseTarget(picked);
         if (!k) { return []; }
         const norm = DISCOVERJOBS.normalizeBase(k.base);
         return [k.vpath].concat(DISCOVERJOBS.pathCrumbs(norm.valid ? norm.base : ''));
       },
-      dmBrowseInto: function (name, fresh) {
-        const k = this.discover.modal.picker;
+      dmBrowseInto: function (name, fresh, picked) {
+        const k = this.dmBrowseTarget(picked);
         if (!k) { return; }
         const norm = DISCOVERJOBS.normalizeBase(k.base);
         k.base = [norm.valid ? norm.base : '', DISCOVERJOBS.sanitizeSegment(name)].filter(Boolean).join('/');
         if (k.browse) { k.browse.naming = false; k.browse.newName = ''; }
         // A folder the user just named is known not to exist: nothing to list.
         if (fresh && k.browse) { k.browse.loading = false; k.browse.dirs = []; k.browse.missing = true; return; }
-        this.dmBrowseLoad();
+        this.dmBrowseLoad(k);
       },
-      dmBrowseUp: function () {
-        const k = this.discover.modal.picker;
+      dmBrowseUp: function (picked) {
+        const k = this.dmBrowseTarget(picked);
         if (!k) { return; }
-        const parts = this.dmBrowseCrumbs().slice(1);
+        const parts = this.dmBrowseCrumbs(k).slice(1);
         parts.pop();
         k.base = parts.join('/');
-        this.dmBrowseLoad();
+        this.dmBrowseLoad(k);
       },
-      dmBrowseNewFolder: function () {
-        const k = this.discover.modal.picker;
+      dmBrowseNewFolder: function (picked) {
+        const k = this.dmBrowseTarget(picked);
         if (!k || !k.browse) { return; }
         if (!k.browse.naming) {
-          k.browse.naming = true;   // dm-dest puts the caret in the name field
+          k.browse.naming = true;   // dm-tree puts the caret in the name field
           return;
         }
         const name = DISCOVERJOBS.sanitizeSegment(k.browse.newName);
-        if (name) { this.dmBrowseInto(name, k.browse.dirs.indexOf(name) === -1); }
+        if (name) { this.dmBrowseInto(name, k.browse.dirs.indexOf(name) === -1, k); }
       },
       // Use this folder: saved for the account, so every copy and download
       // from now on lands under it.
       dmPickerSubmit: async function () {
         const m = this.discover.modal;
         const k = m.picker;
-        const gen = m.gen;
         const preview = this.dmPickerPreview();
         if (!k || k.saving || !preview || !preview.valid) { return; }
         const destination = { vpath: k.vpath, base: preview.base, layout: k.layout };
@@ -1622,9 +1763,12 @@ const VUEPLAYERCORE = (() => {
         try {
           this.discover.dest.view = await MSTREAMAPI.discoverySaveDestination(destination);
           this.discover.dest.loaded = true;
-          if (this.dmLive(gen)) { this.discover.modal.picker = null; }
+          // The picker also opens from the browse column's destination bar,
+          // where no window is open: what ends it is that this picker is
+          // still the one showing, not the window's liveness.
+          if (this.discover.modal.picker === k) { this.discover.modal.picker = null; }
         } catch (err) {
-          if (this.dmLive(gen) && this.discover.modal.picker === k) {
+          if (this.discover.modal.picker === k) {
             k.saving = false;
             k.error = this.dmErrorText(err);
           }
@@ -1636,6 +1780,44 @@ const VUEPLAYERCORE = (() => {
         } catch (err) {
           iziToast.error({ title: this.dmErrorText(err), position: 'topCenter', timeout: 3500 });
         }
+      },
+
+      // ── Peer sync: the folder landing sheet (dm-landing) ───────────────
+      // Its paths: where the pressed folder lands as on the peer, and the
+      // folder the user is choosing (shown as picked, even one the rules
+      // refuse — "Add folder" says why).
+      psLandingMirrorCrumbs: function () {
+        const k = this.discover.peerSync.landing;
+        return k ? this.dmDestFolderCrumbs(k.folder) : [];
+      },
+      psLandingBaseCrumbs: function () {
+        const k = this.discover.peerSync.landing;
+        if (!k) { return []; }
+        const norm = DISCOVERJOBS.normalizeBase(k.base);
+        return DISCOVERJOBS.pathCrumbs(norm.valid ? norm.base : k.base);
+      },
+      // Closing the sheet answers openPeerSyncLanding: undefined (keep its
+      // layout), { vpath, path }, { tags: true }, or null (cancelled).
+      psLandingResolve: function (value) {
+        const k = this.discover.peerSync.landing;
+        if (!k) { return; }
+        this.discover.peerSync.landing = null;
+        document.removeEventListener('keydown', onPeerSyncLandingKey);
+        k.resolve(value);
+      },
+      // "Add folder": the choice as the job's landing. A folder of the
+      // user's choosing goes by the base folder's rules, as the picker's.
+      psLandingSubmit: function () {
+        const k = this.discover.peerSync.landing;
+        if (!k) { return; }
+        if (k.mode === 'tags') { this.psLandingResolve({ tags: true }); return; }
+        if (k.mode === 'folder') {
+          const norm = DISCOVERJOBS.normalizeBase(k.base);
+          if (!norm.valid) { k.error = this.dmPickerProblem({ valid: false, error: norm.error, field: 'base' }); return; }
+          this.psLandingResolve({ vpath: k.vpath, path: norm.base });
+          return;
+        }
+        this.psLandingResolve(undefined);
       },
 
       // ── The downloads strip ────────────────────────────────────────────
@@ -1717,7 +1899,10 @@ const VUEPLAYERCORE = (() => {
           });
         }
         if (document.hidden) { return; }   // the listener picks it up when the tab is back
-        const beat = this.dmAnyJobLive() ? 1500 : ((this.discover.tray.collapsed || this.discover.collapsed) ? 10000 : 4000);
+        // Fast with a live row in the open window — or a copying row on a
+        // browse panel (peer-sync.js knows which rows are on screen).
+        const hurry = this.dmAnyJobLive() || (typeof PEERSYNC !== 'undefined' && PEERSYNC.hasLiveVisible());
+        const beat = hurry ? 1500 : ((this.discover.tray.collapsed || this.discover.collapsed) ? 10000 : 4000);
         const delay = Math.min(60000, beat * Math.pow(2, Math.min(discoverJobsFailures, 6)));
         discoverJobsTimer = setTimeout(() => { discoverJobsTimer = null; this.refreshDiscoverJobs(); }, delay);
       },
@@ -1767,9 +1952,37 @@ const VUEPLAYERCORE = (() => {
         try { await MSTREAMAPI.discoveryJobsClear(); } catch (_) { /* the refresh shows what is left */ }
         await this.refreshDiscoverJobs();
       },
-      // A strip row opens the window its job came from.
+      // A strip row opens what its job came from. A peer copy of an album,
+      // an artist or a folder opens that on the peer's panels, the way View
+      // album / View artist do (the window is song-shaped and would read
+      // "(untitled)"); a song, or any other plug-in's job, opens the window.
       openDiscoverModalForJob: async function (job) {
         const rec = job.recommendation || {};
+        const peerId = rec.peer ? rec.peer.id : null;
+        if (job.plugin === DISCOVERJOBS.COPY_PLUGIN && peerId != null) {
+          const scope = DISCOVERJOBS.jobScope(job);
+          if (scope === 'album' && rec.album && typeof getAlbumsOnClick === 'function') {
+            const el = document.createElement('DIV');
+            el.setAttribute('data-album', rec.album);
+            if (rec.albumArtist) { el.setAttribute('data-album-artist', rec.albumArtist); }
+            if (rec.artist) { el.setAttribute('data-artist', rec.artist); }
+            if (rec.year) { el.setAttribute('data-year', String(rec.year)); }
+            el.setAttribute('data-peer', String(peerId));
+            getAlbumsOnClick(el);
+            return;
+          }
+          if ((scope === 'artist' || scope === 'artist-missing') && rec.artist && typeof getArtistz === 'function') {
+            const el = document.createElement('DIV');
+            el.setAttribute('data-artist', rec.artist);
+            el.setAttribute('data-peer', String(peerId));
+            getArtistz(el);
+            return;
+          }
+          if (scope === 'folder' && rec.filepath && typeof openPeerFolder === 'function') {
+            openPeerFolder(peerId, rec.filepath);
+            return;
+          }
+        }
         const source = rec.source === 'federation' ? 'federation' : 'p2p';
         await this.openDiscoverModal(Object.assign({}, rec, { peer: rec.peer || {} }), source);
         const m = this.discover.modal;
@@ -2915,6 +3128,103 @@ const VUEPLAYERCORE = (() => {
   mstreamModule.setAdmin = (admin) => {
     discoverState.admin = admin === true;
   };
+
+  // ── Peer sync (webapp/alpha/peer-sync.js + m.js): a peer's rows can Add ──
+  // What the browse panels need from here: whether a row may offer Add and
+  // with which scopes, the job list as it changes, a way to start and cancel
+  // a copy job, the destination bar in the browse column (a second Vue root
+  // that reuses dm-dest and the picker methods on the playlist Vue — the
+  // same picker, the same saved destination), and the plug-in list plus the
+  // destination loaded up front when a paired server exists, since the rows
+  // draw on both before any window opens. The same root shows the folder
+  // landing sheet (dm-landing) in the bar's place while one is open.
+  let peerSyncDestVue = null;
+  const PEER_SYNC_DELEGATED = [
+    'tt', 'dmLive', 'dmErrorText', 'dmLayoutTags', 'dmLayoutPeer', 'dmLayoutFile',
+    'dmDestCrumbs', 'dmDestLayoutCrumbs', 'dmDestFolderCrumbs', 'dmOpenPicker', 'dmClosePicker', 'dmResetDestination',
+    'dmPickerLibraries', 'dmPickerVars', 'dmPickerPreview', 'dmPickerProblem', 'dmVarToken', 'dmInsertVar', 'dmUseLibraryTemplate',
+    'dmPickerLibraryChanged', 'dmBrowseToggle', 'dmBrowseLoad', 'dmBrowseCrumbs', 'dmBrowseInto', 'dmBrowseUp', 'dmBrowseNewFolder', 'dmPickerSubmit',
+    'psLandingMirrorCrumbs', 'psLandingBaseCrumbs', 'psLandingResolve', 'psLandingSubmit',
+  ];
+  mstreamModule.mountPeerSyncDest = () => {
+    if (peerSyncDestVue) { return peerSyncDestVue; }
+    const el = document.getElementById('peer-sync-dest');
+    if (!el) { return null; }
+    const methods = {};
+    for (const name of PEER_SYNC_DELEGATED) {
+      methods[name] = function (...args) { return playlistVue[name](...args); };
+    }
+    peerSyncDestVue = new Vue({
+      el,
+      data: { discover: discoverState },
+      methods,
+      template: `<div class="peer-sync-dest"><dm-landing v-if="discover.peerSync.landing"></dm-landing><dm-dest v-else-if="discover.dest.view && discover.dest.view.destination" :line="discover.peerSync.folder ? 'folders' : 'layout'"></dm-dest></div>`,
+    });
+    return peerSyncDestVue;
+  };
+  // The File Explorer on a peer names the folder it shows (the path inside
+  // the peer, its name, the peer's name): while one is set the bar reads
+  // "Folders land in …" for it, laid out as on the peer. nulls clear it.
+  mstreamModule.setPeerSyncFolder = (folder, folderName, peerName) => {
+    discoverState.peerSync.folder = folder || null;
+    discoverState.peerSync.folderName = folderName || null;
+    discoverState.peerSync.peerName = peerName || null;
+  };
+  // "Add folder" asks where the folder lands: the sheet opens in the bar's
+  // place and the promise answers with the job's landing — undefined (keep
+  // its layout, the default), { vpath, path } (a folder of the user's
+  // choosing), { tags: true } (by tags), or null (cancelled; also at once
+  // when there is no destination or no bar to ask in). One sheet at a time:
+  // an earlier one still open ends with null.
+  mstreamModule.openPeerSyncLanding = (opts) => {
+    const { folder, name, peerName } = opts || {};
+    if (discoverState.peerSync.landing) { playlistVue.psLandingResolve(null); }
+    const dest = (discoverState.dest.view && discoverState.dest.view.destination) || null;
+    if (!dest || !mstreamModule.mountPeerSyncDest()) { return Promise.resolve(null); }
+    return new Promise((resolve) => {
+      discoverState.peerSync.landing = {
+        folder: folder || '', name: name || null, peerName: peerName || null,
+        mode: 'mirror', vpath: dest.vpath, base: dest.base || '', browse: null, error: '', resolve,
+      };
+      document.addEventListener('keydown', onPeerSyncLandingKey);
+    });
+  };
+  mstreamModule.preloadPeerSync = () => {
+    if (!discoverState.plugins.available) { return Promise.resolve(); }
+    const dest = discoverState.dest.loaded
+      ? Promise.resolve(null)
+      : MSTREAMAPI.discoveryDestination().then((v) => { discoverState.dest.view = v; discoverState.dest.loaded = true; }, () => null);
+    return Promise.all([playlistVue.ensureDiscoverPlugins(), dest]).then(() => undefined);
+  };
+  // Whether a row may offer Add at all, and with which scopes: the copy
+  // plug-in on and answering, this account allowed to start jobs, somewhere
+  // to land. `loaded` says the answer is final (both lists arrived).
+  mstreamModule.peerSyncCapability = () => {
+    const p = discoverState.plugins;
+    const plugin = (p.list || []).find((x) => x.name === DISCOVERJOBS.COPY_PLUGIN && x.enabled !== false && x.available !== false) || null;
+    const destination = (discoverState.dest.view && discoverState.dest.view.destination) || null;
+    return {
+      available: !!(p.available && p.jobsAllowed && plugin && destination),
+      plugin, scopes: plugin ? (plugin.scopes || ['song']) : [], destination,
+      jobsAllowed: !!p.jobsAllowed, loaded: !!p.list && !!discoverState.dest.loaded,
+    };
+  };
+  mstreamModule.discoverJobsSnapshot = () => discoverState.tray.jobs.slice();
+  // `cb(jobs)` on every change of the job list (and once now).
+  mstreamModule.onDiscoverJobs = (cb) => playlistVue.$watch('discover.tray.jobs', (jobs) => cb(jobs), { immediate: true });
+  // A copy job from a browse row: the recommendation the row built, the
+  // scope its kind asks for, and — a folder's — where it lands. Throws with
+  // the server's own reason (err.body.error): the row shows it.
+  mstreamModule.startDiscoverJob = async (recommendation, scope, landing) => {
+    const res = await MSTREAMAPI.discoveryJobStart(DISCOVERJOBS.COPY_PLUGIN, recommendation, undefined, scope, landing);
+    if (res && res.job) { playlistVue.noteDiscoverJob(res.job); }
+    playlistVue.scheduleDiscoverJobsPoll();
+    return res && res.job;
+  };
+  mstreamModule.cancelDiscoverJob = (job) => playlistVue.cancelDiscoverJob(job);
+  // A copied song from a row's job: play it, or queue it (the local path).
+  mstreamModule.playDiscoverFile = (filepath) => playlistVue.playDiscoverFile(filepath);
+  mstreamModule.queueDiscoverFile = (filepath) => playlistVue.queueDiscoverFile(filepath);
 
   return mstreamModule;
 })()

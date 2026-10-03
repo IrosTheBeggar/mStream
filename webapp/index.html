@@ -843,9 +843,21 @@
           <span id="ytdl_download_text" style="flex:1;" data-i18n="fileExplorer.downloading">Downloading...</span>
           <a href="/downloads" style="color:#4CAF50; white-space:nowrap;" data-i18n="label.viewDownloads">view downloads</a>
         </div>
+        <!-- Peer sync: on a paired server's panels, where copies land (the
+             destination bar, a Vue root vp.js mounts) and the panel's facts. -->
+        <div id="peer-sync-bar" class="peer-sync-bar super-hide">
+          <div id="peer-sync-dest"></div>
+          <div id="peer-sync-facts" class="peer-sync-facts"></div>
+        </div>
+        <!-- The album page's header on a peer (art, facts, queue, Add); outside
+             #filelist so the local filter's re-render leaves it alone. -->
+        <div id="album-head" class="super-hide"></div>
         <div id="filelist">
           <h4 data-i18n="label.welcomeToMStream">Welcome To mStream!</h4>
         </div>
+        <!-- Phones: the live copy jobs in one line under the list (the strip
+             sits in the Now Playing column, off-screen there); opens Downloads. -->
+        <div id="peer-sync-jobs" class="peer-sync-jobs" onclick="peerSyncOpenDownloads();"></div>
         <div style="visibility:hidden; position: absolute;" class="pop-f" id="pop-f" role="tooltip">
           <div class="pop-f pop-playlist">Add To Playlist:</div>
         </div>
@@ -1331,6 +1343,8 @@
 
   <!-- The Discover job rows' pure half (window.DISCOVERJOBS) — vp.js reads it. -->
   <script src="alpha/discover-jobs.js"></script>
+  <!-- Peer sync's pure half (window.PEERSYNC): a peer's rows and their jobs — m.js and vp.js read it. -->
+  <script src="alpha/peer-sync.js"></script>
   <script src="alpha/vp.js"></script>
   <script src="alpha/scan-progress.js"></script>
 </body>

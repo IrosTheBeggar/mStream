@@ -14,6 +14,16 @@ myDropzone.on("addedfile", (file) => {
       timeout: 3500
     });
     myDropzone.removeFile(file);
+  } else if (peerContext) {
+    // A peer's folder is on screen, but the upload route is this server's:
+    // the file would land HERE, at the peer's path. Refuse, like the
+    // upload button (which a peer view hides).
+    iziToast.error({
+      title: t('peers.noUpload'),
+      position: 'topCenter',
+      timeout: 3500
+    });
+    myDropzone.removeFile(file);
   } else if (fileExplorerArray.length < 1) {
     iziToast.error({
       title: t('toast.cannotUploadHere'),
@@ -276,12 +286,16 @@ function albumCredit(value) {
 // pre-series card.
 function renderAlbum(id, artist, name, albumArtFile, year, albumArtist, artistLine) {
   const artSrc = artUrl(albumArtFile, VUEPLAYERCORE.altLayout.compressArt ? 'l' : undefined);
+  // On a peer the card also says whether this library has the album and
+  // offers Add (peer sync): a badge on the art and a slot under the year,
+  // both drawn from the registry so the local filter's re-render keeps them.
+  const sync = (typeof peerSyncAlbumCard === 'function') ? peerSyncAlbumCard(id, albumArtist, year) : { badge: '', card: '' };
 
   return `<div class="album-grid-card"${peerAttr()} ${year ? `data-year="${escapeHtml(year)}"` : ''} ${artist ? `data-artist="${escapeHtml(artist)}"` : ''} ${albumArtist ? `data-album-artist="${escapeHtml(albumArtist)}"` : ''} ${id ? `data-album="${escapeHtml(id)}"` : ''} onclick="getAlbumsOnClick(this);">
     <div class="album-grid-art">
       ${artSrc
         ? `<img loading="lazy" src="${artSrc}">`
-        : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#555"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>`}
+        : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#555"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>`}${sync.badge}
       <button class="album-grid-play" onclick="event.stopPropagation(); queueAlbum(this.closest('.album-grid-card'));" title="Add album to queue">
         <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
@@ -289,14 +303,18 @@ function renderAlbum(id, artist, name, albumArtFile, year, albumArtist, artistLi
     <div class="album-grid-info">
       <div class="album-grid-name">${escapeHtml(name)}</div>
       ${artistLine ? `<div class="album-grid-artist">${escapeHtml(artistLine)}</div>` : ''}
-      ${year ? `<div class="album-grid-year">${escapeHtml(year)}</div>` : ''}
+      ${year ? `<div class="album-grid-year">${escapeHtml(year)}</div>` : ''}${sync.card}
     </div>
   </div>`;
 }
 
 function renderArtist(artist) {
+  // On a peer the row also says what this library has of the artist and
+  // offers Add (peer sync); both are drawn from the registry, so the local
+  // filter's re-render reproduces them. At home the row is as it was.
+  const sync = (typeof peerSyncArtistRow === 'function') ? peerSyncArtistRow(artist) : { facts: '', side: '' };
   return `<li class="collection-item">
-      <div data-artist="${escapeHtml(artist)}"${peerAttr()} class="artistz" onclick="getArtistz(this)">${escapeHtml(artist)}</div>
+      <div data-artist="${escapeHtml(artist)}"${peerAttr()} class="artistz" onclick="getArtistz(this)">${escapeHtml(artist)}${sync.facts}</div>${sync.side}
     </li>`;
 }
 
@@ -327,6 +345,11 @@ function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
 }
 
 function createMusicFileHtml(fileLocation, title, aa, rating, subtitle) {
+  // On a peer the row's slot (peer sync: a tick, Add, or the song's job)
+  // takes the playlist icon's place — that icon only refuses there; the
+  // Play-now icon stays. Drawn from the registry, so the local filter's
+  // re-render reproduces it. At home the row is as it was.
+  const sync = (typeof peerSyncSongRow === 'function') ? peerSyncSongRow(fileLocation) : null;
   return `<li class="collection-item">
     <div data-file_location="${escapeHtml(fileLocation)}"${peerAttr()} class="filez ${aa ? 'flex2' : ''}" onclick="onFileClick(this);">
       ${aa ? `<img loading="lazy" class="album-art-box" ${aa}>` : '<svg class="music-image" height="18" width="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><path d="M9 37.5c-3.584 0-6.5-2.916-6.5-6.5s2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V5.429l25-3.846V29c0 3.584-2.916 6.5-6.5 6.5s-6.5-2.916-6.5-6.5 2.916-6.5 6.5-6.5a6.43 6.43 0 012.785.634l.715.34V11.023l-19 2.931V31c0 3.584-2.916 6.5-6.5 6.5z" fill="#8bb7f0"/><path d="M37 2.166V29c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V10.441l-1.152.178-18 2.776-.848.13V31c0 3.308-2.692 6-6 6s-6-2.692-6-6 2.692-6 6-6a5.93 5.93 0 012.57.586l1.43.68V5.858l24-3.692M38 1L12 5v19.683A6.962 6.962 0 009 24a7 7 0 107 7V14.383l18-2.776v11.076A6.962 6.962 0 0031 22a7 7 0 107 7V1z" fill="#4e7ab5"/></svg>'} 
@@ -335,24 +358,27 @@ function createMusicFileHtml(fileLocation, title, aa, rating, subtitle) {
         <span class="${aa ? '' : 'item-text'}">${rating ? `[${rating}] ` : ''}${escapeHtml(title)}</span>
         ${subtitle !== undefined ? `</b><br><span style="font-size:15px;">${escapeHtml(subtitle)}</span>` : ''}
       </span>
-    </div>
+    </div>${sync ? sync.side : ''}
     <div class="song-button-box">
       <span title="Play Now" onclick="playNow(this);" data-file_location="${escapeHtml(fileLocation)}"${peerAttr()} class="songDropdown">
         <svg xmlns="http://www.w3.org/2000/svg" height="14" width="14" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
       </span>
-      <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(fileLocation)}"${peerAttr()} class="fileAddToPlaylist">
+      ${sync ? '' : `<span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(fileLocation)}"${peerAttr()} class="fileAddToPlaylist">
         <svg class="pop-f" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362"><path class="pop-f" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>
-      </span>
+      </span>`}
     </div>
   </li>`;
 }
 
 function renderDirHtml(name) {
+  // On a peer the folder row offers Add folder (peer sync) beside its
+  // icons, and a pressed folder is its job; the queue icon stays.
+  const sync = (typeof peerSyncFolderRow === 'function') ? peerSyncFolderRow(name) : null;
   return `<li class="collection-item">
     <div data-directory="${escapeHtml(name)}"${peerAttr()} class="dirz" onclick="handleDirClick(this);">
       <svg class="folder-image" viewBox="0 0 48 48" version="1.0" xmlns="http://www.w3.org/2000/svg"><path fill="#FFA000" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/><path fill="#FFCA28" d="M42.2 18H15.3c-1.9 0-3.6 1.4-3.9 3.3L8 40h31.7c1.9 0 3.6-1.4 3.9-3.3l2.5-14c.5-2.4-1.4-4.7-3.9-4.7z"/></svg>
       <span class="item-text">${escapeHtml(name)}</span>
-    </div>
+    </div>${sync ? sync.side : ''}
     <div class="song-button-box">
       <span style="padding-top:1px;" title="Add All To Queue" class="songDropdown" onclick="recursiveAddDir(this);" data-directory="${escapeHtml(name)}"${peerAttr()}>
         <svg xmlns="http://www.w3.org/2000/svg" height="10" width="10" viewBox="0 0 1280 1276"><path d="M6760 12747 c-80 -5 -440 -10 -800 -11 -701 -2 -734 -4 -943 -57 -330 -84 -569 -281 -681 -563 -103 -256 -131 -705 -92 -1466 12 -241 16 -531 16 -1232 l0 -917 -1587 -4 c-1561 -3 -1590 -3 -1703 -24 -342 -62 -530 -149 -692 -322 -158 -167 -235 -377 -244 -666 -43 -1404 -42 -1813 7 -2355 21 -235 91 -400 233 -548 275 -287 730 -389 1591 -353 1225 51 2103 53 2330 7 l60 -12 6 -1489 c6 -1559 6 -1548 49 -1780 100 -535 405 -835 933 -921 88 -14 252 -17 1162 -24 591 -4 1099 -4 1148 1 159 16 312 56 422 112 118 59 259 181 333 290 118 170 195 415 227 722 18 173 21 593 6 860 -26 444 -32 678 -34 1432 l-2 811 54 7 c30 4 781 6 1670 5 1448 -2 1625 -1 1703 14 151 28 294 87 403 168 214 159 335 367 385 666 15 85 29 393 30 627 0 105 4 242 10 305 43 533 49 1047 15 1338 -44 386 -144 644 -325 835 -131 140 -278 220 -493 270 -92 21 -98 21 -1772 24 l-1680 3 3 1608 c2 1148 0 1635 -8 1706 -49 424 -255 701 -625 841 -243 91 -633 124 -1115 92z" transform="matrix(.1 0 0 -.1 0 1276)"/></svg>
@@ -414,6 +440,10 @@ function setBrowserRootPanel(panelName, showBar) {
     el.innerHTML = label;
   });
 
+  // The peer-sync bar above the list follows the panel: shown on a peer
+  // when a row could offer Add, its facts cleared for the next panel.
+  if (typeof peerSyncBarRefresh === 'function') { peerSyncBarRefresh(); }
+
   currentBrowsingList = [];
 }
 
@@ -435,8 +465,10 @@ async function senddir(root) {
 
   const gen = browseGeneration;
   try {
+    // On a peer whose rows can Add, the listing brings each file's tags
+    // (the facts under a file row, and what its Add would copy).
     const response = peerContext
-      ? await MSTREAMAPI.peer.dirparser(peerContext.id, directoryString)
+      ? await MSTREAMAPI.peer.dirparser(peerContext.id, directoryString, (typeof peerSyncOn === 'function' && peerSyncOn()) ? { pullMetadata: true } : undefined)
       : await MSTREAMAPI.dirparser(directoryString);
     if (gen !== browseGeneration) { return; }
     document.getElementById('directoryName').innerHTML = escapeHtml(response.path);
@@ -493,11 +525,17 @@ function printdir(response) {
     if (file.type === 'm3u' && peerContext) { continue; }
     const filePath = file.path || response.path + file.name;
     const title = file.artist != null || file.title != null ? file.artist + ' - ' + file.title : file.name;
-    currentBrowsingList.push({ type: file.type, name: file.name, path: filePath, title });
+    // On a peer the listing carries each file's tags (pullMetadata, asked
+    // for by senddir): the facts line under the name — "Sodium · Vosto ·
+    // 3:41", or "no tags · 4:12" — and what the row's Add copies (peer sync).
+    const meta = (peerContext && file.metadata && typeof file.metadata === 'object') ? (file.metadata.metadata || null) : null;
+    const subtitle = (meta && typeof PEERSYNC !== 'undefined') ? (PEERSYNC.songFacts(meta, t) || undefined) : undefined;
+    if (meta && typeof peerSyncRegisterSong === 'function') { peerSyncRegisterSong(filePath, meta); }
+    currentBrowsingList.push({ type: file.type, name: file.name, path: filePath, title, subtitle });
     if (file.type === 'm3u') {
       filelist += createFileplaylistHtml(file.name);
     } else {
-      filelist += createMusicFileHtml(filePath, title);
+      filelist += createMusicFileHtml(filePath, title, undefined, undefined, subtitle);
     }
   }
 
@@ -508,6 +546,9 @@ function printdir(response) {
 
   // Post the html to the filelist div
   document.getElementById('filelist').innerHTML = filelist;
+  // On a peer: the bar's line for this folder (where folders land, its
+  // counts, its Add) and the files' ticks (peer sync).
+  if (typeof peerSyncExplorer === 'function') { peerSyncExplorer(response); }
 }
 
 function getFileExplorerPath() {
@@ -760,7 +801,18 @@ async function init() {
     // Federation: is there another server to point this app at? The flag
     // means "federation is on AND at least one peer is paired" — no probing.
     MSTREAMAPI.currentServer.federationBrowse = response.federationBrowse === true;
-    if (MSTREAMAPI.currentServer.federationBrowse) { loadServerSwitcher(); }
+    if (MSTREAMAPI.currentServer.federationBrowse) {
+      loadServerSwitcher();
+      // A peer's rows may offer Add (peer sync): load the plug-in list and
+      // the destination now, so the rows and the note know before any
+      // window opens, and follow the job list from then on.
+      VUEPLAYERCORE.preloadPeerSync().then(() => {
+        peerSyncListen();
+        peerSyncBarRefresh();
+        if (peerContext) { applyServerContext(); }
+        VUEPLAYERCORE.onDiscoverJobs((jobs) => { PEERSYNC.applyJobs(jobs); peerSyncPatchRows(); peerSyncJobsLine(jobs); });
+      });
+    }
 
     if (response.transcode) {
       MSTREAMPLAYER.transcodeOptions.serverEnabled = true;
@@ -3187,6 +3239,9 @@ async function getAllArtists() {
     artists += '</ul>';
 
     document.getElementById('filelist').innerHTML = artists;
+    // On a peer: what this library has of each artist, and the numbers
+    // once the peer's album list is in (peer sync).
+    if (typeof peerSyncArtistsPanel === 'function') { peerSyncArtistsPanel(response.artists, gen); }
   }catch(err) {
     document.getElementById('filelist').innerHTML = `<div>${t('error.serverCallFailed')}</div>`;
     boilerplateFailure(err);
@@ -3227,6 +3282,9 @@ async function getArtistsAlbums(artist) {
     albums += '</div>';
 
     document.getElementById('filelist').innerHTML = albums;
+    // On a peer: which of the artist's albums this library has, the
+    // artist's numbers and action in the bar (peer sync).
+    if (typeof peerSyncArtistPage === 'function') { peerSyncArtistPage(artist, response.albums, gen); }
   }catch(err) {
     document.getElementById('filelist').innerHTML = `<div>${t('error.serverCallFailed')}</div>`;
     boilerplateFailure(err);
@@ -3290,6 +3348,8 @@ async function getGenreSongs(genre) {
     songs += '</ul>';
 
     document.getElementById('filelist').innerHTML = songs;
+    // On a peer: which of these songs this library has (peer sync).
+    if (typeof peerSyncSongsPanel === 'function') { peerSyncSongsPanel(response, gen); }
   } catch(err) {
     document.getElementById('filelist').innerHTML = `<div>${t('error.serverCallFailed')}</div>`;
   }
@@ -3324,6 +3384,8 @@ async function getAllAlbums() {
     albums += '</div>'
 
     document.getElementById('filelist').innerHTML = albums;
+    // On a peer: which of these albums this library has (peer sync).
+    if (typeof peerSyncAlbumsPanel === 'function') { peerSyncAlbumsPanel(response.albums, gen); }
   }catch (err) {
     document.getElementById('filelist').innerHTML = `<div>${t('error.serverCallFailed')}</div>`;
     return boilerplateFailure(err);
@@ -3354,6 +3416,9 @@ async function getAlbumSongs(album, artist, year, albumArtist) {
   currentBrowsingList = [];
 
   document.getElementById('localSearchBar').value = '';
+  // On a peer the previous panel's facts would outlive it in the bar (no
+  // root panel clears them on the way here); the album header replaces them.
+  if (typeof peerSyncBarFacts === 'function') { peerSyncBarFacts(''); }
 
   const gen = browseGeneration;
   try {
@@ -3372,6 +3437,9 @@ async function getAlbumSongs(album, artist, year, albumArtist) {
     files += '</ul>';
 
     document.getElementById('filelist').innerHTML = files;
+    // On a peer: the album header (art, credit, how many of these songs
+    // this library has, the album's action) above the song list (peer sync).
+    if (typeof peerSyncAlbumPage === 'function') { peerSyncAlbumPage({ album, artist, year, albumArtist }, response, gen); }
   }catch(err) {
     document.getElementById('filelist').innerHTML = `<div>${t('error.serverCallFailed')}</div>`;
     boilerplateFailure(err);
@@ -3571,6 +3639,8 @@ async function redoRecentlyAdded() {
     filelist += '</ul>'
   
     document.getElementById('filelist').innerHTML = filelist;
+    // On a peer: which of these songs this library has (peer sync).
+    if (typeof peerSyncSongsPanel === 'function') { peerSyncSongsPanel(response, gen); }
   }catch(err) {
     document.getElementById('filelist').innerHTML = `<div>${t('error.serverCallFailed')}</div>`;
     return boilerplateFailure(err);
@@ -3676,7 +3746,11 @@ function renderDiscoverDownloads() {
 }
 
 function renderDiscoverDownloadRow(row) {
-  const facts = [discoverDownloadPluginTitle(row.plugin), row.size, discoverDownloadsAgo(row.at)];
+  // Where it came from, when that is a name (a peer's) and not a URL — a
+  // download's origin is the link it was fetched from, which the plug-in's
+  // own title already says enough about.
+  const origin = row.origin && !/^[a-z][a-z0-9+.-]*:\/\//i.test(row.origin) ? row.origin : null;
+  const facts = [discoverDownloadPluginTitle(row.plugin), origin, row.size, discoverDownloadsAgo(row.at)];
   if (row.username) { facts.push(t('downloads.by', { user: row.username })); }
   if (row.state === 'missing') { facts.push(t('downloads.missing')); }
   if (row.state === 'removed') { facts.push(t('downloads.removed', { when: discoverDownloadsAgo(row.removedAt) })); }
@@ -3729,9 +3803,33 @@ function showDiscoverDownloadInLibrary(el) {
   const parts = DISCOVERJOBS.pathCrumbs(el.getAttribute('data-file_location'));
   parts.pop();
   if (parts.length === 0) { return; }
-  document.querySelectorAll('.side-nav-item').forEach((item) => item.classList.remove('select'));
-  const nav = document.querySelector('.side-nav-item[data-panel="fileExplorer"]');
-  if (nav) { nav.classList.add('select'); }
+  openLibraryFolder(parts.join('/'));
+}
+
+// The File Explorer on THIS server, opened at a folder ("vpath/rel"),
+// with Back leading up through its parents.
+function openLibraryFolder(path) {
+  const parts = DISCOVERJOBS.pathCrumbs(path);
+  if (parts.length === 0) { return; }
+  // Home first: a folder of ours is not on the peer being browsed.
+  adoptPeer(document.createElement('DIV'));
+  highlightNavPanel('fileExplorer');
+  openExplorerAt(parts);
+}
+
+// The File Explorer on a peer, opened at one of its folders — a folder
+// job's row in the strip leads back to what it copied.
+function openPeerFolder(peerId, path) {
+  const parts = DISCOVERJOBS.pathCrumbs(path);
+  if (parts.length === 0) { return; }
+  const el = document.createElement('DIV');
+  el.setAttribute('data-peer', String(peerId));
+  adoptPeer(el);
+  highlightNavPanel('fileExplorer');
+  openExplorerAt(parts);
+}
+
+function openExplorerAt(parts) {
   setBrowserRootPanel(t('panel.fileExplorer'));
   programState = [{ state: 'fileExplorer' }];
   fileExplorerArray = [];
@@ -5582,6 +5680,9 @@ async function submitSearchForm() {
       '<div id="search-results-peers"></div>' +
       `<div id="search-results-empty" class="${localHtml ? 'super-hide' : ''}"><h5>${t('search.noResults')}</h5></div>`;
 
+    // On a peer: what you have of each hit, and its Add (peer sync).
+    if (peerContext && typeof peerSyncSearchMarks === 'function') { peerSyncSearchMarks(res, peerContext, searchGen); }
+
     // The same query, asked of every paired server. Fire-and-forget: this
     // server's results are already on screen, so a slow or dead peer costs
     // nothing but its own block.
@@ -5616,17 +5717,21 @@ function renderSearchResults(res, peer) {
 function renderSearchRow(key, value, peer) {
   const attr = peerAttr(peer || null);
   const isTrack = key === 'files' || key === 'title' || key === 'lyrics';
+  // A hit on a peer says what you have of it and offers its kind's Add
+  // (peer sync): the facts after the name, the slot beside the row, the
+  // hit's own peer on both. A hit from this server is yours already.
+  const sync = (peer && typeof peerSyncSearchRow === 'function') ? peerSyncSearchRow(key, value, peer) : null;
   return `<li class="collection-item">
     <div onclick="${searchMap[key].func}(this);" data-${searchMap[key].data}="${escapeHtml(value.filepath ? value.filepath : value.name)}"${attr} class="${searchMap[key].class} left">
-      <b>${searchMap[key].name}:</b> ${escapeHtml(value.name)}${key === 'lyrics' && value.snippet ? `<br><small class="grey-text">${escapeHtml(value.snippet)}</small>` : ''}
-    </div>
+      <b>${searchMap[key].name}:</b> ${escapeHtml(value.name)}${key === 'lyrics' && value.snippet ? `<br><small class="grey-text">${escapeHtml(value.snippet)}</small>` : ''}${sync ? sync.facts : ''}
+    </div>${sync ? sync.side : ''}
     ${isTrack ? `<div class="song-button-box">
       <span title="Play Now" onclick="searchPlayNow(this);" data-file_location="${escapeHtml(value.filepath)}"${attr} class="songDropdown">
         <svg xmlns="http://www.w3.org/2000/svg" height="12" width="12" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
       </span>
-      <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(value.filepath)}"${attr} class="fileAddToPlaylist">
+      ${sync ? '' : `<span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(value.filepath)}"${attr} class="fileAddToPlaylist">
         <svg class="pop-f" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362"><path class="pop-f" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>
-      </span>
+      </span>`}
     </div>` : ''}
   </li>`;
 }
@@ -5698,6 +5803,8 @@ async function searchPeers(postObject, searchGen) {
     const empty = document.getElementById('search-results-empty');
     if (empty) { empty.classList.add('super-hide'); }
     slot.insertAdjacentHTML('beforeend', peerSearchHeader(peer) + html);
+    // What you have of this peer's hits, and their Add (peer sync).
+    if (typeof peerSyncSearchMarks === 'function') { peerSyncSearchMarks(res, peer, searchGen); }
   }));
 }
 
@@ -5853,7 +5960,12 @@ function applyServerContext() {
     // Built as DOM nodes, never innerHTML — peerContext.name is peer-controlled.
     // The "back" link is the only way home when the top bar (and its switcher)
     // is hidden, since this note stays visible in the always-shown side-nav.
-    note.textContent = t('server.readOnlyNote', { name: peerContext.name });
+    // What the note promises follows what the rows can do: play and queue
+    // always; "add to your collection" when a row may offer Add; the reason
+    // when the copy plug-in is on but this account may not add.
+    const cap = (typeof VUEPLAYERCORE.peerSyncCapability === 'function') ? VUEPLAYERCORE.peerSyncCapability() : { available: false, plugin: null };
+    const noteKey = cap.available ? 'server.readOnlyNoteAdd' : (cap.plugin ? 'server.readOnlyNoteCannotAdd' : 'server.readOnlyNote');
+    note.textContent = t(noteKey, { name: peerContext.name });
     const back = document.createElement('a');
     back.className = 'nav-note-back';
     back.textContent = t('server.backToThisServer');
@@ -5861,6 +5973,770 @@ function applyServerContext() {
     note.appendChild(document.createElement('br'));
     note.appendChild(back);
   }
+  if (typeof peerSyncBarRefresh === 'function') { peerSyncBarRefresh(); }
+}
+
+///////////////// Peer sync (webapp/alpha/peer-sync.js): a peer's rows can Add
+// The destination bar above a peer panel's list — where copies land, with
+// Change… (the same picker the recommendation window uses, mounted here as
+// a second Vue root by vp.js) — and the panel's own facts beside it, which
+// each panel fills in. Shown only on a peer, only when a row could offer
+// Add (VUEPLAYERCORE.peerSyncCapability: the copy plug-in on, this account
+// allowed to start jobs, somewhere to land). The album page's header goes
+// with it: every root panel and every change of server passes through
+// here, so neither outlives the panel it was drawn for.
+function peerSyncBarRefresh() {
+  const bar = document.getElementById('peer-sync-bar');
+  if (!bar) { return; }
+  const show = !!peerContext && peerSyncOn();
+  bar.classList.toggle('super-hide', !show);
+  if (show && typeof VUEPLAYERCORE.mountPeerSyncDest === 'function') { VUEPLAYERCORE.mountPeerSyncDest(); }
+  peerSyncBarFacts('');
+  const head = document.getElementById('album-head');
+  if (head) { head.innerHTML = ''; head.classList.add('super-hide'); }
+  peerSyncAlbumKey = null;
+  // The bar's "Folders land in" line belongs to the File Explorer's
+  // listing (peerSyncExplorer sets it again when one is drawn).
+  if (typeof VUEPLAYERCORE.setPeerSyncFolder === 'function') { VUEPLAYERCORE.setPeerSyncFolder(null, null, null); }
+}
+
+// Whether a peer's rows may offer Add at all.
+function peerSyncOn() {
+  if (typeof PEERSYNC === 'undefined' || typeof VUEPLAYERCORE.peerSyncCapability !== 'function') { return false; }
+  return VUEPLAYERCORE.peerSyncCapability().available === true;
+}
+
+// The panel's facts beside the destination ("212 artists · you have some
+// of 40"): markup the panels below build, every peer string escaped.
+function peerSyncBarFacts(html) {
+  const facts = document.getElementById('peer-sync-facts');
+  if (facts) { facts.innerHTML = html || ''; }
+}
+
+// A translated line with its count in bold (the first run of that number),
+// the rest escaped.
+function peerSyncBold(text, n) {
+  const line = String(text);
+  const digits = String(n);
+  const at = line.indexOf(digits);
+  if (at === -1) { return escapeHtml(line); }
+  return escapeHtml(line.slice(0, at)) + '<b>' + escapeHtml(digits) + '</b>' + escapeHtml(line.slice(at + digits.length));
+}
+
+// A length as the player writes one: m:ss, h:mm:ss past the hour.
+function peerSyncDuration(seconds) {
+  const s = Math.round(Number(seconds) || 0);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+}
+
+// A row's key on the peer being browsed (PEERSYNC.syncKey — the job that
+// acts on the row sits under the same key).
+function peerSyncKey(kind, ident) {
+  return PEERSYNC.syncKey(kind, peerContext ? peerContext.id : null, ident);
+}
+
+// The rows that can show facts and a job: key → { kind, data (what its
+// recommendation is built from), facts (what the owned lookup said: { owned:
+// 'all' | 'part' | 'none', have, missing, total } or null), factsHtml (the
+// line under an artist row, an album page's "you have N"), filepath, error
+// (the last request's reason), pending (a request in flight), landing (a
+// folder's, PR 5), songs / songsOwned (an album page's). Filled by the
+// panels as they render and as their lookups answer. The lists are
+// innerHTML strings, rebuilt whole on navigation and on the local filter,
+// so a renderer draws a row's facts and slot from here and the filter's
+// re-render reproduces them; the job list (VUEPLAYERCORE.onDiscoverJobs)
+// and the lookups patch only the elements that changed.
+const peerSyncRows = new Map();
+function peerSyncEntry(key, kind, data) {
+  let entry = peerSyncRows.get(key);
+  if (!entry) {
+    entry = { kind, data, facts: null, factsHtml: '', filepath: null, error: null, pending: false, landing: null };
+    peerSyncRows.set(key, entry);
+  } else if (data) {
+    entry.data = data;
+  }
+  return entry;
+}
+
+// Facts just looked up for a row: remember its newest job if that job had
+// already finished, so the slot prefers the facts to the job's old line
+// from now on. The row is its job while the job is news (queued, copying,
+// just done); a later panel load speaks for the library as it is — the
+// tick, or an Add for what a peer has added since. Without this a row
+// copied once could never offer Add again, the job list being kept.
+function peerSyncSettle(entry, key) {
+  const job = PEERSYNC.jobFor(key);
+  entry.factsAfterJob = (job && !PEERSYNC.isLive(job)) ? job.id : null;
+}
+
+// The slot's markup for a row now: its newest job's state, the last
+// request's failure, the request in flight, or the idle Add / tick. Null
+// for a key nothing registered. An album card whose album is all here
+// wears the badge on its art, so its slot (`onCard`) says nothing more.
+function peerSyncSlotHtml(key, onCard) {
+  const entry = peerSyncRows.get(key);
+  if (!entry) { return null; }
+  const job = PEERSYNC.jobFor(key);
+  const settled = !!job && !PEERSYNC.isLive(job) && entry.factsAfterJob === job.id;
+  let row = null;
+  if (job && !settled) {
+    row = DISCOVERJOBS.jobRowState(job);
+  } else if (entry.error) {
+    row = { state: 'failed', tag: 'discover.job.failed', tagCls: 'err', icon: 'warn', sub: { text: entry.error }, actions: ['retry'], errored: true, progress: null };
+  } else if (entry.pending) {
+    row = { state: 'queued', tag: 'discover.job.queued', icon: 'clock', sub: { key: 'discover.job.queuedSub' }, actions: [], progress: null };
+  }
+  if (!row && onCard && entry.facts && entry.facts.owned === 'all') { return ''; }
+  return PEERSYNC.slotHtml({ kind: entry.kind, facts: entry.facts, row, t, filepath: entry.filepath, label: entry.label || undefined });
+}
+
+// Patch what is on screen from the registry and the job list: every slot
+// ([data-sync]), facts line ([data-sync-facts]) and card badge
+// ([data-sync-badge]) in the list, the album header and the bar. Only an
+// element whose markup changed is touched, so a row mid-hover keeps its
+// state and a progress bar animates instead of jumping.
+function peerSyncPatchRows() {
+  if (typeof PEERSYNC === 'undefined') { return; }
+  const roots = ['filelist', 'album-head', 'peer-sync-bar']
+    .map((id) => document.getElementById(id))
+    .filter((el) => el && typeof el.querySelectorAll === 'function');
+  const slots = roots.flatMap((root) => [...root.querySelectorAll('[data-sync]')]);
+  PEERSYNC.setVisible(slots.map((el) => el.getAttribute('data-sync')));
+  const patch = (el, html) => { if (html !== null && el.innerHTML !== html) { el.innerHTML = html; } };
+  for (const el of slots) { patch(el, peerSyncSlotHtml(el.getAttribute('data-sync'), el.classList.contains('sync-card'))); }
+  for (const root of roots) {
+    for (const el of root.querySelectorAll('[data-sync-facts]')) {
+      const entry = peerSyncRows.get(el.getAttribute('data-sync-facts'));
+      patch(el, entry ? entry.factsHtml : '');
+    }
+    for (const el of root.querySelectorAll('[data-sync-badge]')) {
+      const entry = peerSyncRows.get(el.getAttribute('data-sync-badge'));
+      patch(el, entry && entry.facts && entry.facts.owned === 'all' ? PEERSYNC.badgeHtml(t) : '');
+    }
+  }
+}
+
+// ── What the renderers draw ──────────────────────────────────────────
+// An artist row's facts line (inside the name's div, so the row stays one
+// click) and its slot beside the row. Nothing at home.
+function peerSyncArtistRow(artist) {
+  if (!peerContext || !peerSyncOn()) { return { facts: '', side: '' }; }
+  const key = peerSyncKey('artist', artist);
+  const entry = peerSyncEntry(key, 'artist', { name: artist });
+  const k = escapeHtml(key);
+  return {
+    facts: `<span class="sync-facts" data-sync-facts="${k}">${entry.factsHtml}</span>`,
+    side: `<div class="sync-side" data-sync="${k}">${peerSyncSlotHtml(key) || ''}</div>`,
+  };
+}
+
+// An album card's badge (on its art, once the library has the album) and
+// its slot under the year. A card's identity is the album's own credit,
+// never the page's artist, so the artist page's card, the Albums panel's
+// card, the album page and the job the card starts all meet under one key.
+function peerSyncAlbumCard(name, albumArtist, year) {
+  if (!peerContext || !name || !peerSyncOn()) { return { badge: '', card: '' }; }
+  const key = peerSyncKey('album', { album: name, albumArtist: albumArtist || '' });
+  const entry = peerSyncEntry(key, 'album', { album: name, albumArtist: albumArtist || null, year: year || null });
+  const k = escapeHtml(key);
+  return {
+    badge: `<span class="sync-badge" data-sync-badge="${k}">${entry.facts && entry.facts.owned === 'all' ? PEERSYNC.badgeHtml(t) : ''}</span>`,
+    card: `<div class="sync-card" data-sync="${k}">${peerSyncSlotHtml(key, true) || ''}</div>`,
+  };
+}
+
+// ── What the panels learn ────────────────────────────────────────────
+// The owned lookup (POST /api/v1/discovery/owned), a list at a time (the
+// route's cap); the answers in the asked order, null where none came.
+async function peerSyncOwned(arm, items) {
+  const out = [];
+  for (let i = 0; i < items.length; i += 500) {
+    const body = {};
+    body[arm] = items.slice(i, i + 500);
+    const res = await MSTREAMAPI.discoveryOwned(body);
+    const part = res && Array.isArray(res[arm]) ? res[arm] : [];
+    for (let n = 0; n < body[arm].length; n++) { out.push(part[n] === undefined ? null : part[n]); }
+  }
+  return out;
+}
+
+// A panel's answer still belongs on screen: the same server (the
+// generation the loader captured) and its state still on top.
+function peerSyncLive(gen, state) {
+  if (gen !== browseGeneration || !peerContext) { return false; }
+  const top = programState[programState.length - 1];
+  return !!top && top.state === state;
+}
+
+// A peer's album list once per session (POST /db/albums — what its Albums
+// panel draws), as an artist index: the numbers an artist row can say.
+const peerAlbumIndexes = new Map();
+function peerSyncAlbumIndex(peer) {
+  const id = Number(peer.id);
+  if (!peerAlbumIndexes.has(id)) {
+    const p = MSTREAMAPI.peer.albums(id, {}).then((res) => PEERSYNC.artistIndex(res && res.albums));
+    p.catch(() => { peerAlbumIndexes.delete(id); });   // ask again next time
+    peerAlbumIndexes.set(id, p);
+  }
+  return peerAlbumIndexes.get(id);
+}
+
+// The album cards a panel drew, marked from one owned call with each
+// album's own credit; how many the library has.
+async function peerSyncMarkAlbums(albums) {
+  const cards = (Array.isArray(albums) ? albums : [])
+    .filter((a) => a && a.name)
+    .map((a) => ({ name: a.name, albumArtist: albumCredit(a).albumArtist, year: a.year || null }));
+  if (!cards.length) { return { total: 0, have: 0 }; }
+  const owned = await peerSyncOwned('albums', cards.map((c) => ({ album: c.name, albumArtist: c.albumArtist || undefined })));
+  let have = 0;
+  cards.forEach((c, i) => {
+    const key = peerSyncKey('album', { album: c.name, albumArtist: c.albumArtist || '' });
+    const entry = peerSyncEntry(key, 'album', { album: c.name, albumArtist: c.albumArtist, year: c.year });
+    entry.facts = { owned: owned[i] ? 'all' : 'none' };
+    peerSyncSettle(entry, key);
+    if (owned[i]) { have += 1; }
+  });
+  return { total: cards.length, have };
+}
+
+// Artists panel: first what the library has of each name (one owned call
+// — "in your collection", Add what you're missing), then, once the peer's
+// album list is in, the numbers: "2 albums · you have 1", the count in
+// the Add, and the bar's totals.
+async function peerSyncArtistsPanel(names, gen) {
+  if (!peerContext || !peerSyncOn()) { return; }
+  const peer = peerContext;
+  const list = (Array.isArray(names) ? names : []).filter((n) => typeof n === 'string' && n);
+  if (!list.length) { return; }
+  const live = () => peerSyncLive(gen, 'allArtists');
+  if (live()) { peerSyncBarFacts(escapeHtml(t('peers.sync.loadingAlbums', { name: peer.name }))); }
+
+  let owned;
+  try {
+    owned = await peerSyncOwned('artists', list.map((name) => ({ name })));
+  } catch (err) {
+    console.warn('peer sync: the owned lookup failed', err);
+    if (live()) { peerSyncBarFacts(''); }
+    return;
+  }
+  if (gen !== browseGeneration) { return; }
+  list.forEach((name, i) => {
+    const key = peerSyncKey('artist', name);
+    const entry = peerSyncEntry(key, 'artist', { name });
+    entry.facts = PEERSYNC.artistOwnership(null, owned[i]);
+    entry.factsHtml = PEERSYNC.artistFacts(null, owned[i], t);
+    peerSyncSettle(entry, key);
+  });
+  peerSyncPatchRows();
+
+  let index;
+  try {
+    index = await peerSyncAlbumIndex(peer);
+  } catch (err) {
+    console.warn('peer sync: the peer\'s album list did not come', err);
+    if (live()) { peerSyncBarFacts(''); }
+    return;
+  }
+  if (gen !== browseGeneration) { return; }
+
+  // For the artists the library has something of: which of the peer's
+  // albums of theirs it holds (the count in "Add the 2 you don't have").
+  const ask = [];
+  list.forEach((name, i) => {
+    const indexed = index.get(PEERSYNC.nameKey(name));
+    if (owned[i] && owned[i].owned && indexed && indexed.names.length) { ask.push({ i, name, albums: indexed.names }); }
+  });
+  let refined = [];
+  try {
+    refined = ask.length ? await peerSyncOwned('artists', ask.map((a) => ({ name: a.name, albums: a.albums }))) : [];
+  } catch (err) {
+    console.warn('peer sync: the owned lookup failed', err);
+  }
+  if (gen !== browseGeneration) { return; }
+  const exact = owned.slice();
+  ask.forEach((a, n) => { exact[a.i] = refined[n] || null; });
+
+  let have = 0;
+  list.forEach((name, i) => {
+    const indexed = index.get(PEERSYNC.nameKey(name)) || null;
+    const key = peerSyncKey('artist', name);
+    const entry = peerSyncEntry(key, 'artist', { name });
+    peerSyncSettle(entry, key);
+    if (exact[i]) {
+      entry.facts = PEERSYNC.artistOwnership(indexed, exact[i]);
+      entry.factsHtml = PEERSYNC.artistFacts(indexed, exact[i], t);
+    } else {
+      // The refined answer did not come: the names-only facts, with the
+      // list's numbers when it has them.
+      entry.facts = PEERSYNC.artistOwnership(null, owned[i]);
+      entry.factsHtml = indexed ? PEERSYNC.artistFacts(indexed, null, t) : PEERSYNC.artistFacts(null, owned[i], t);
+    }
+    if (entry.facts && entry.facts.owned !== 'none') { have += 1; }
+  });
+  peerSyncPatchRows();
+  if (live()) {
+    const parts = [peerSyncBold(t('peers.sync.artistCount', { count: list.length }), list.length)];
+    if (have > 0) { parts.push(peerSyncBold(t('peers.sync.youHaveSomeOf', { count: have }), have)); }
+    peerSyncBarFacts(parts.join(' · '));
+  }
+}
+
+// Artist page: which of the artist's albums this library has (the cards'
+// badges), the artist's numbers in the bar and its Add — every album, or
+// the ones missing.
+async function peerSyncArtistPage(artist, albums, gen) {
+  if (!peerContext || !peerSyncOn()) { return; }
+  let marked;
+  try {
+    marked = await peerSyncMarkAlbums(albums);
+  } catch (err) {
+    console.warn('peer sync: the owned lookup failed', err);
+    return;
+  }
+  if (gen !== browseGeneration) { return; }
+  const { total, have } = marked;
+  const key = peerSyncKey('artist', artist);
+  const entry = peerSyncEntry(key, 'artist', { name: artist });
+  entry.facts = { owned: total > 0 && have === total ? 'all' : (have > 0 ? 'part' : 'none'), have, missing: total - have, total };
+  peerSyncSettle(entry, key);
+  if (peerSyncLive(gen, 'artist')) {
+    peerSyncBarFacts(`<b>${escapeHtml(artist)}</b> · ${peerSyncBold(t('peers.sync.albumCount', { count: total }), total)} · ${peerSyncBold(t('peers.sync.youHave', { count: have }), have)}`
+      + `<span class="sync-side sync-side-bar" data-sync="${escapeHtml(key)}"></span>`);
+  }
+  peerSyncPatchRows();
+}
+
+// Albums panel: which of these albums this library has, and the totals.
+async function peerSyncAlbumsPanel(albums, gen) {
+  if (!peerContext || !peerSyncOn()) { return; }
+  let marked;
+  try {
+    marked = await peerSyncMarkAlbums(albums);
+  } catch (err) {
+    console.warn('peer sync: the owned lookup failed', err);
+    return;
+  }
+  if (gen !== browseGeneration || !marked.total) { return; }
+  if (peerSyncLive(gen, 'allAlbums')) {
+    peerSyncBarFacts(`${peerSyncBold(t('peers.sync.albumCount', { count: marked.total }), marked.total)} · ${peerSyncBold(t('peers.sync.youHave', { count: marked.have }), marked.have)}`);
+  }
+  peerSyncPatchRows();
+}
+
+// Album page: the header above the list — art, title, credit, "year · N
+// songs · length · format · you have N" (one owned call over the songs, by
+// hash then by tags), Add to queue, and the album's Add. Nothing for the
+// singles bucket: there is no album to copy.
+let peerSyncAlbumKey = null;
+async function peerSyncAlbumPage(meta, songs, gen) {
+  const head = document.getElementById('album-head');
+  if (!head) { return; }
+  head.innerHTML = '';
+  head.classList.add('super-hide');
+  peerSyncAlbumKey = null;
+  if (!peerContext || !peerSyncOn() || !meta || !meta.album) { return; }
+
+  const list = (Array.isArray(songs) ? songs : []).filter((s) => s && s.filepath);
+  const key = peerSyncKey('album', { album: meta.album, albumArtist: meta.albumArtist || '' });
+  const entry = peerSyncEntry(key, 'album', { album: meta.album, albumArtist: meta.albumArtist || null, year: meta.year || null });
+  entry.songs = list;
+  entry.songsOwned = null;
+  entry.factsHtml = '';
+  peerSyncAlbumKey = key;
+
+  const first = (list[0] && list[0].metadata) || {};
+  const credit = meta.albumArtist || first.artist || meta.artist || '';
+  const seconds = list.reduce((sum, s) => sum + (Number(s.metadata && s.metadata.duration) || 0), 0);
+  const formats = [...new Set(list.map((s) => { const m = /\.([a-z0-9]{1,5})$/i.exec(s.filepath); return m ? m[1].toUpperCase() : ''; }).filter(Boolean))];
+  const facts = [];
+  if (meta.year) { facts.push(escapeHtml(meta.year)); }
+  facts.push(peerSyncBold(t('peers.sync.songCount', { count: list.length }), list.length));
+  if (seconds > 0) { facts.push(escapeHtml(peerSyncDuration(seconds))); }
+  if (formats.length) { facts.push(escapeHtml(formats.join(' / '))); }
+  facts.push(`<span class="sync-facts" data-sync-facts="${escapeHtml(key)}"></span>`);
+  head.innerHTML = `<div class="album-head">
+    <img class="album-head-art" loading="lazy" ${artImgAttr(first['album-art'], 'l')}>
+    <div class="album-head-body">
+      <h2 class="album-head-title">${escapeHtml(meta.album)}</h2>
+      ${credit ? `<div class="album-head-credit"><a href="javascript:void(0)" data-artist="${escapeHtml(credit)}"${peerAttr()} onclick="getArtistz(this)">${escapeHtml(credit)}</a></div>` : ''}
+      <div class="album-head-facts">${facts.join(' · ')}</div>
+      <div class="album-head-actions">
+        <a href="javascript:void(0)" class="album-head-btn" onclick="peerSyncQueueAlbum()">${escapeHtml(t('discover.modal.addToQueue'))}</a>
+        <span class="sync-side sync-side-bar" data-sync="${escapeHtml(key)}">${peerSyncSlotHtml(key) || ''}</span>
+      </div>
+    </div>
+  </div>`;
+  head.classList.remove('super-hide');
+  if (!list.length) { return; }
+
+  // The songs' own ticks and Adds, and from them the album's "you have N".
+  let marked;
+  try {
+    marked = await peerSyncMarkSongs(list, gen);
+  } catch (err) {
+    console.warn('peer sync: the owned lookup failed', err);
+    return;
+  }
+  if (!marked || gen !== browseGeneration || peerSyncAlbumKey !== key) { return; }
+  const { have, total } = marked;
+  entry.songsOwned = marked.owned;
+  entry.facts = { owned: have === total ? 'all' : (have > 0 ? 'part' : 'none'), have, missing: total - have, total };
+  entry.factsHtml = peerSyncBold(t('peers.sync.youHave', { count: have }), have);
+  peerSyncSettle(entry, key);
+  peerSyncPatchRows();
+}
+
+// ── Song rows, folder rows, search hits ──────────────────────────────
+// A song row's slot on a peer (album songs, a genre, Recent Added, the
+// File Explorer's files): the tick, Add, or the song's job. The entry
+// stays bare — a path — until the panel registers the song's tags.
+function peerSyncSongRow(filepath, peer) {
+  const p = peer || peerContext;
+  if (!p || !peerSyncOn()) { return null; }
+  const key = PEERSYNC.syncKey('song', p.id, filepath);
+  const entry = peerSyncEntry(key, 'song', null);
+  if (!entry.data) { entry.data = { filepath: PEERSYNC.normalizePath(filepath) }; }
+  return { side: `<div class="sync-side sync-side-song" data-sync="${escapeHtml(key)}"${peerAttr(p)}>${peerSyncSlotHtml(key) || ''}</div>` };
+}
+
+// A song's tags from a listing that carried them (album songs, a genre,
+// Recent Added, the explorer's pullMetadata, a search hit): what its Add
+// copies — the recommendation — and what the owned lookup asks with.
+function peerSyncRegisterSong(filepath, meta, peer) {
+  const p = peer || peerContext;
+  if (!p || !peerSyncOn()) { return null; }
+  const m = (meta && typeof meta === 'object') ? meta : {};
+  const key = PEERSYNC.syncKey('song', p.id, filepath);
+  const entry = peerSyncEntry(key, 'song', {
+    filepath: PEERSYNC.normalizePath(filepath), title: m.title || null, artist: m.artist || null, album: m.album || null,
+    albumArtist: m['album-artist'] || m.albumArtist || null, year: m.year || null, duration: m.duration || null,
+  });
+  entry.meta = (meta && typeof meta === 'object') ? meta : null;
+  return entry;
+}
+
+// One owned call over a list of songs ({ filepath, metadata }) drawn on a
+// peer: each registered with its tags and marked yours or not (by hash
+// when the tags carry one, else by tags). Returns { total, have, owned }
+// — the answers in order — or null when the panel moved on.
+async function peerSyncMarkSongs(list, gen, peer) {
+  const p = peer || peerContext;
+  const songs = (Array.isArray(list) ? list : []).filter((s) => s && s.filepath);
+  if (!p || !peerSyncOn() || !songs.length) { return { total: 0, have: 0, owned: [] }; }
+  const entries = songs.map((s) => peerSyncRegisterSong(s.filepath, s.metadata || null, p));
+  const owned = await peerSyncOwned('songs', songs.map((s) => {
+    const m = s.metadata || {};
+    return { hash: m.hash || undefined, audioHash: m['audio-hash'] || undefined, artist: m.artist || undefined, title: m.title || undefined,
+      album: m.album || undefined, track: m.track || undefined, disk: m.disk || undefined, duration: m.duration || undefined };
+  }));
+  if (gen !== browseGeneration) { return null; }
+  let have = 0;
+  entries.forEach((entry, i) => {
+    if (!entry) { return; }
+    entry.facts = { owned: owned[i] ? 'all' : 'none' };
+    peerSyncSettle(entry, PEERSYNC.syncKey('song', p.id, songs[i].filepath));
+    if (owned[i]) { have += 1; }
+  });
+  peerSyncPatchRows();
+  return { total: songs.length, have, owned };
+}
+
+// A panel of songs on a peer (a genre, Recent Added): the rows' ticks and
+// the bar's "N songs · you have M".
+async function peerSyncSongsPanel(songs, gen) {
+  if (!peerContext || !peerSyncOn()) { return; }
+  const top = programState[programState.length - 1];
+  const state = top ? top.state : null;
+  let marked;
+  try {
+    marked = await peerSyncMarkSongs(songs, gen);
+  } catch (err) {
+    console.warn('peer sync: the owned lookup failed', err);
+    return;
+  }
+  if (!marked || !marked.total) { return; }
+  if (peerSyncLive(gen, state)) {
+    peerSyncBarFacts(`${peerSyncBold(t('peers.sync.songCount', { count: marked.total }), marked.total)} · ${peerSyncBold(t('peers.sync.youHave', { count: marked.have }), marked.have)}`);
+  }
+}
+
+// A folder row's slot on a peer: Add folder, or the folder's job. The
+// folder is the row's name under the one being shown (the explorer's
+// path), so the row and the bar's "this folder" one level down share a
+// key — and a job.
+function peerSyncFolderRow(name) {
+  if (!peerContext || !peerSyncOn()) { return null; }
+  const folder = PEERSYNC.normalizePath(getFileExplorerPath() + name);
+  const key = peerSyncKey('folder', folder);
+  peerSyncEntry(key, 'folder', { filepath: folder, title: name });
+  return { side: `<div class="sync-side sync-side-dir" data-sync="${escapeHtml(key)}"${peerAttr()}>${peerSyncSlotHtml(key) || ''}</div>` };
+}
+
+// The File Explorer on a peer, once a listing is drawn: the bar follows
+// the folder (vp.js draws "Folders land in …" for it) and carries this
+// folder's counts with its Add — "this folder · 3 folders · 40 songs" from
+// one recursive listing (never for a vpath root: that is the peer's whole
+// library), or, for a folder of songs, "8 songs · you have 3" and the
+// gap as the Add; the files' ticks come from one owned call.
+async function peerSyncExplorer(response) {
+  const on = !!peerContext && peerSyncOn();
+  const folder = on ? PEERSYNC.normalizePath(response && response.path) : '';
+  const name = folder.split('/').pop() || '';
+  if (typeof VUEPLAYERCORE.setPeerSyncFolder === 'function') { VUEPLAYERCORE.setPeerSyncFolder(folder || null, name || null, on ? peerContext.name : null); }
+  if (!on) { return; }
+  peerSyncBarFacts('');
+  if (!folder) { return; }   // the root lists the vpaths: nothing to add whole
+
+  const gen = browseGeneration;
+  const peer = peerContext;
+  const files = ((response && response.files) || []).filter((f) => f && f.type !== 'm3u');
+  const dirs = (response && response.directories) || [];
+  const key = peerSyncKey('folder', folder);
+  const entry = peerSyncEntry(key, 'folder', { filepath: folder, title: name });
+  entry.label = t('peers.sync.addThisFolder');
+  entry.facts = null;
+  // Still this folder on this server: the state, and the explorer's path.
+  const live = () => peerSyncLive(gen, 'fileExplorer') && PEERSYNC.normalizePath(getFileExplorerPath()) === folder;
+  const songCount = (n) => peerSyncBold(t('peers.sync.songCount', { count: n }), n);
+  const folderCount = dirs.length ? peerSyncBold(t('peers.sync.folderCount', { count: dirs.length }), dirs.length) : '';
+  const bar = (parts) => {
+    if (!live()) { return; }
+    peerSyncBarFacts(`<b>${escapeHtml(t('peers.sync.thisFolder'))}</b> · ${parts.filter(Boolean).join(' · ')}<span class="sync-side sync-side-bar" data-sync="${escapeHtml(key)}"></span>`);
+    peerSyncPatchRows();
+  };
+  bar([folderCount, dirs.length ? escapeHtml(t('peers.sync.countingSongs')) : songCount(files.length)]);
+  // A folder row is its job while the job is news: a fresh listing starts
+  // the rows over, there being no facts per folder to settle against (the
+  // copy is idempotent, so Add folder again is always safe).
+  for (const d of dirs) {
+    if (!d || !d.name) { continue; }
+    const k = peerSyncKey('folder', PEERSYNC.normalizePath(folder + '/' + d.name));
+    const e = peerSyncRows.get(k);
+    if (e) { peerSyncSettle(e, k); }
+  }
+  peerSyncPatchRows();
+
+  // The files here: yours or not — and, when the folder is all songs, the
+  // gap this folder's Add would take.
+  const list = files.map((f) => ({ filepath: f.path || response.path + f.name, metadata: (f.metadata && typeof f.metadata === 'object' && f.metadata.metadata) || null }));
+  let marked = null;
+  try {
+    marked = await peerSyncMarkSongs(list, gen);
+  } catch (err) {
+    console.warn('peer sync: the owned lookup failed', err);
+  }
+  if (gen !== browseGeneration) { return; }
+  if (!dirs.length) {
+    const total = files.length;
+    const have = marked ? marked.have : 0;
+    if (marked && total) { entry.facts = { owned: have === total ? 'all' : (have > 0 ? 'part' : 'none'), have, missing: total - have, total }; }
+    peerSyncSettle(entry, key);
+    bar([songCount(total), marked && total ? peerSyncBold(t('peers.sync.youHave', { count: have }), have) : '']);
+    return;
+  }
+  peerSyncSettle(entry, key);
+  if (folder.indexOf('/') === -1) {   // a vpath root: no count of the whole library
+    bar([folderCount, files.length ? songCount(files.length) : '']);
+    return;
+  }
+  let all = null;
+  try {
+    all = await MSTREAMAPI.peer.recursiveScan(peer.id, '/' + folder);
+  } catch (err) {
+    console.warn('peer sync: the folder\'s song count did not come', err);
+  }
+  if (gen !== browseGeneration) { return; }
+  const total = Array.isArray(all) ? all.length : null;
+  bar([folderCount, total === null ? (files.length ? songCount(files.length) : '') : songCount(total)]);
+}
+
+// A search hit's registry entry and its markup (facts after the name, the
+// slot beside the row): an artist hit adds the artist, an album hit its
+// album with the credit the hit carries, a track hit its song. `peer` is
+// the hit's own — a fan-out block's rows belong to their peer, whatever
+// the app points at.
+function peerSyncSearchRow(key, value, peer) {
+  if (!peer || !value || !peerSyncOn()) { return null; }
+  let k = null;
+  let facts = '';
+  if (key === 'artists') {
+    if (!value.name) { return null; }
+    k = PEERSYNC.syncKey('artist', peer.id, value.name);
+    peerSyncEntry(k, 'artist', { name: value.name });
+  } else if (key === 'albums') {
+    if (!value.name) { return null; }
+    const credit = (typeof value.album_artist === 'string' && value.album_artist) ? value.album_artist : null;
+    k = PEERSYNC.syncKey('album', peer.id, { album: value.name, albumArtist: credit || '' });
+    peerSyncEntry(k, 'album', { album: value.name, albumArtist: credit, year: value.year || null });
+    facts = [credit, value.year].filter(Boolean).join(' · ');
+  } else if (value.filepath) {
+    const m = value.metadata || {};
+    peerSyncRegisterSong(value.filepath, value.metadata || null, peer);
+    k = PEERSYNC.syncKey('song', peer.id, value.filepath);
+    facts = [m.artist, m.album].filter(Boolean).join(' · ');
+  }
+  if (!k) { return null; }
+  const song = key !== 'artists' && key !== 'albums';
+  return {
+    facts: facts ? `<span class="sync-facts">${escapeHtml(facts)}</span>` : '',
+    side: `<div class="sync-side${song ? ' sync-side-song' : ''}" data-sync="${escapeHtml(k)}"${peerAttr(peer)}>${peerSyncSlotHtml(k) || ''}</div>`,
+  };
+}
+
+// A search answer once its rows are on screen: what you have of its hits
+// — artists by name, albums by name and credit, tracks by tags (a hit
+// carries no hash) — three owned arms at most, then the rows patched.
+async function peerSyncSearchMarks(res, peer, searchGen) {
+  if (!peer || !res || !peerSyncOn()) { return; }
+  const gen = browseGeneration;
+  const artists = (res.artists || []).map((v) => v && v.name).filter((n) => typeof n === 'string' && n);
+  const albums = (res.albums || []).filter((v) => v && v.name).map((v) => ({ name: v.name, albumArtist: (typeof v.album_artist === 'string' && v.album_artist) ? v.album_artist : null }));
+  const tracks = [];
+  const seen = new Set();
+  for (const kind of ['title', 'files', 'lyrics']) {
+    for (const v of (res[kind] || [])) {
+      if (v && v.filepath && !seen.has(v.filepath)) { seen.add(v.filepath); tracks.push({ filepath: v.filepath, metadata: v.metadata || null }); }
+    }
+  }
+  let ownedArtists;
+  let ownedAlbums;
+  try {
+    [ownedArtists, ownedAlbums] = await Promise.all([
+      artists.length ? peerSyncOwned('artists', artists.map((name) => ({ name }))) : [],
+      albums.length ? peerSyncOwned('albums', albums.map((a) => ({ album: a.name, albumArtist: a.albumArtist || undefined }))) : [],
+      tracks.length ? peerSyncMarkSongs(tracks, gen, peer) : null,
+    ]);
+  } catch (err) {
+    console.warn('peer sync: the owned lookup failed', err);
+    return;
+  }
+  if (gen !== browseGeneration || searchGen !== searchGeneration) { return; }
+  artists.forEach((name, i) => {
+    const k = PEERSYNC.syncKey('artist', peer.id, name);
+    const entry = peerSyncEntry(k, 'artist', { name });
+    entry.facts = PEERSYNC.artistOwnership(null, ownedArtists[i]);
+    peerSyncSettle(entry, k);
+  });
+  albums.forEach((a, i) => {
+    const k = PEERSYNC.syncKey('album', peer.id, { album: a.name, albumArtist: a.albumArtist || '' });
+    const entry = peerSyncEntry(k, 'album', null);
+    if (!entry.data) { entry.data = { album: a.name, albumArtist: a.albumArtist, year: null }; }
+    entry.facts = { owned: ownedAlbums[i] ? 'all' : 'none' };
+    peerSyncSettle(entry, k);
+  });
+  peerSyncPatchRows();
+}
+
+// The album page's Add to queue: its songs, as queueAlbum() queues a card.
+function peerSyncQueueAlbum() {
+  const entry = peerSyncAlbumKey ? peerSyncRows.get(peerSyncAlbumKey) : null;
+  if (!entry || !Array.isArray(entry.songs) || !entry.songs.length) { return; }
+  const peer = peerContext;
+  entry.songs.forEach((song) => { queueRow(peer, song.filepath, song.metadata || {}); });
+  iziToast.success({ title: t('toast.albumQueued'), message: t('toast.albumQueuedMessage', { count: entry.songs.length }), position: 'topCenter', timeout: 2500 });
+}
+
+// ── Phones ───────────────────────────────────────────────────────────
+// A line under the list counts the live jobs and names the first two —
+// "2 jobs · Neon Harbor copying · Ondine queued" — and opens Downloads.
+// Only on a phone (spa.css): the strip that says the same lives in the
+// Now Playing column, off-screen there. Empty when nothing runs.
+function peerSyncJobsLine(jobs) {
+  const el = document.getElementById('peer-sync-jobs');
+  if (!el || typeof DISCOVERJOBS === 'undefined') { return; }
+  const live = DISCOVERJOBS.trayRows(jobs).filter((j) => DISCOVERJOBS.isLive(j));
+  if (!live.length) { if (el.innerHTML !== '') { el.innerHTML = ''; } return; }
+  const parts = live.slice(0, 2).map((j) => `<b>${escapeHtml(DISCOVERJOBS.jobTitle(j))}</b> ${escapeHtml(t(DISCOVERJOBS.jobRowState(j).tag))}`);
+  const html = `${escapeHtml(t('peers.sync.jobCount', { count: live.length }))} · ${parts.join(' · ')}<span class="peer-sync-jobs-go">${escapeHtml(t('panel.downloads'))}</span>`;
+  if (el.innerHTML !== html) { el.innerHTML = html; }
+}
+
+function peerSyncOpenDownloads() {
+  const nav = document.getElementById('nav-discover-downloads');
+  if (nav && typeof changeView === 'function') { changeView(discoverDownloadsPanel, nav); } else { discoverDownloadsPanel(); }
+}
+
+// ── What a press does ────────────────────────────────────────────────
+// One capture-phase listener per root: a press on a slot's action never
+// reaches the row's own handler (an artist row opens, a card opens), and
+// the markup carries no handlers of its own.
+let peerSyncListening = false;
+function peerSyncListen() {
+  if (peerSyncListening) { return; }
+  peerSyncListening = true;
+  ['filelist', 'album-head', 'peer-sync-bar'].forEach((id) => {
+    const root = document.getElementById(id);
+    if (!root) { return; }
+    root.addEventListener('click', (ev) => {
+      const act = ev.target && typeof ev.target.closest === 'function' ? ev.target.closest('[data-sync-act]') : null;
+      if (!act || !root.contains(act)) { return; }
+      ev.preventDefault();
+      ev.stopPropagation();
+      peerSyncAct(act);
+    }, true);
+  });
+}
+
+// Add / Retry start a copy job from the row (its recommendation, the scope
+// its kind and facts ask for — Retry keeps the failed job's); Cancel stops
+// the row's job; Play / Queue take the copied file. The slot shows the
+// request in flight and then the job, or the server's own reason.
+async function peerSyncAct(actEl) {
+  const action = actEl.getAttribute('data-sync-act');
+  if (action === 'play' || action === 'queue' || action === 'open') {
+    const file = actEl.getAttribute('data-sync-file');
+    if (!file) { return; }
+    if (action === 'play') { VUEPLAYERCORE.playDiscoverFile(file); }
+    else if (action === 'queue') { VUEPLAYERCORE.queueDiscoverFile(file); }
+    else { openLibraryFolder(file); }   // a folder that landed: our explorer, there
+    return;
+  }
+  const host = actEl.closest('[data-sync]');
+  const key = host ? host.getAttribute('data-sync') : null;
+  const entry = key ? peerSyncRows.get(key) : null;
+  if (!entry) { return; }
+  const job = PEERSYNC.jobFor(key);
+  if (action === 'cancel') {
+    if (job) { VUEPLAYERCORE.cancelDiscoverJob(job); }
+    return;
+  }
+  if ((action !== 'add' && action !== 'retry') || entry.pending) { return; }
+  // The row's own peer (a hit in a mixed search list) or the one being browsed.
+  const rowEl = host.closest('[data-peer]');
+  const peer = (rowEl && peerOf(rowEl)) || peerContext;
+  if (!peer) { return; }
+  const rec = PEERSYNC.buildRecommendation(entry.kind, entry.data, peer);
+  const scope = (action === 'retry' && job) ? PEERSYNC.jobScope(job) : PEERSYNC.scopeFor(entry.kind, entry.facts);
+  // Where a folder lands: the sheet asks (mirror by default, a folder of
+  // the user's choosing, or by tags) — unless this continues a job, which
+  // keeps its own answer. Other scopes always file by tags.
+  let landing;
+  if (entry.kind === 'folder') {
+    if (job && (action === 'retry' || job.state === 'cancelled')) {
+      landing = (job.params && job.params.landing) || undefined;
+    } else if (typeof VUEPLAYERCORE.openPeerSyncLanding === 'function') {
+      const choice = await VUEPLAYERCORE.openPeerSyncLanding({ folder: entry.data.filepath, name: entry.data.title, peerName: peer.name });
+      if (choice === null || entry.pending) { return; }
+      landing = choice || undefined;
+    }
+    entry.landing = landing || null;
+  }
+  entry.error = null;
+  entry.pending = true;
+  peerSyncPatchRows();
+  try {
+    await VUEPLAYERCORE.startDiscoverJob(rec, scope, landing);
+    PEERSYNC.applyJobs(VUEPLAYERCORE.discoverJobsSnapshot());
+  } catch (err) {
+    console.warn('peer sync: the job could not be started', err);
+    entry.error = (err && err.body && typeof err.body.error === 'string' && err.body.error) ? err.body.error : t('discover.job.requestFailed');
+  }
+  entry.pending = false;
+  peerSyncPatchRows();
 }
 
 ///////////////// Config
