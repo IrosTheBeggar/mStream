@@ -6,6 +6,8 @@ import {
   parseBundleName,
   detectInstallMethod,
   detectSupervisor,
+  backgroundStageWanted,
+  autoAppliesUnasked,
 } from '../../src/util/update-check.js';
 
 // ── compareVersions ──────────────────────────────────────────────────────────
@@ -257,6 +259,46 @@ test('a hand-extracted bundle with no current anywhere is portable', () => {
     fsx: fakeFs([]),
   });
   assert.equal(r.method, 'portable');
+});
+
+// ── backgroundStageWanted / autoAppliesUnasked ──────────────────────────────
+// What the daily check downloads on its own, and what auto mode may then
+// apply unasked. The macOS .pkg sits on the download side only: its verified
+// installer must already be on disk when the tray offers it (opening a
+// releases page instead was the owner's 2026-10-03 report), but Installer.app
+// needs a human, so it never auto-applies.
+
+const AVAILABLE = { mode: 'auto', notifyOnly: false, skipped: false, held: false, staged: false, stagedVersion: null };
+
+test('the daily check downloads every method with something to fetch, the pkg included', () => {
+  for (const method of ['managed', 'inno', 'pkg']) {
+    assert.equal(backgroundStageWanted({ ...AVAILABLE, method }, '6.22.0'), true, method);
+  }
+  for (const method of ['deb-rpm', 'docker', 'npm-source', 'portable', null]) {
+    assert.equal(backgroundStageWanted({ ...AVAILABLE, method }, '6.22.0'), false, String(method));
+  }
+});
+
+test('a pkg obeys exactly the gates inno does', () => {
+  for (const method of ['inno', 'pkg']) {
+    const want = (over) => backgroundStageWanted({ ...AVAILABLE, method, ...over }, '6.22.0');
+    assert.equal(want({ mode: 'stage' }), true, `${method}: stage downloads`);
+    assert.equal(want({ mode: 'notify' }), false, `${method}: notify downloads nothing`);
+    assert.equal(want({ notifyOnly: true }), false, `${method}: a manifest from the future`);
+    assert.equal(want({ skipped: true }), false, `${method}: skipVersion`);
+    assert.equal(want({ held: true }), false, `${method}: a boot-failure hold`);
+    assert.equal(want({ staged: true, stagedVersion: '6.22.0' }), false, `${method}: already staged`);
+    assert.equal(want({ staged: true, stagedVersion: '6.21.9' }), true, `${method}: an older staged copy is replaced`);
+  }
+});
+
+test('auto mode applies managed and inno on its own, never a pkg', () => {
+  assert.equal(autoAppliesUnasked('managed'), true);
+  assert.equal(autoAppliesUnasked('inno'), true);
+  assert.equal(autoAppliesUnasked('pkg'), false);
+  for (const method of ['deb-rpm', 'docker', 'npm-source', 'portable', null]) {
+    assert.equal(autoAppliesUnasked(method), false, String(method));
+  }
 });
 
 // ── detectSupervisor ─────────────────────────────────────────────────────────

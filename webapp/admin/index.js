@@ -3603,7 +3603,9 @@ const infoView = Vue.component('info-view', {
         return 'downloaded and staged; it takes over on the next restart';
       }
       if (stagedIsLatest && s.method === 'inno') { return 'installer downloaded and verified'; }
-      if (stagedIsLatest && s.method === 'pkg') { return 'installer downloaded; the running app keeps playing until you restart it after installing'; }
+      // The pkg's postinstall restarts the running app into what it just
+      // installed (build/pkg-postinstall.sh), so nothing is left to restart.
+      if (stagedIsLatest && s.method === 'pkg') { return 'installer downloaded and verified - open it to install; mStream restarts into the new version when the install finishes'; }
       if (s.method === 'managed' || s.method === 'inno') { return 'not downloaded yet'; }
       if (s.method === 'pkg') { return 'download the installer, then run it'; }
       if (s.method === 'deb-rpm') { return 'installed from a deb/rpm package; update it with your package manager'; }

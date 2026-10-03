@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 const STOP_GRACE: Duration = Duration::from_secs(8);
 const BOOT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -31,12 +31,38 @@ const MAX_BOOT_ATTEMPTS: u32 = 2;
 const TAKEOVER_LOCK_PATIENCE: Duration = Duration::from_secs(12);
 /// Where a click on a non-actionable "update available" lands. Hardcoded on
 /// purpose: the status file is another process's data and never supplies a
-/// URL the launcher would open.
+/// URL the launcher would open. Its downloadUrl is compared with the URL
+/// the launcher builds, never opened (UpdateAction::DownloadInstaller).
 const RELEASES_URL: &str = "https://github.com/IrosTheBeggar/mStream/releases/latest";
+/// Where the browser fetches a release's own .pkg when the server has not
+/// downloaded it (UpdateAction::DownloadInstaller) and no mirror is set:
+/// the tag-pinned asset path update-check.js's assetUrl downloads from.
+/// Hardcoded for the same reason as RELEASES_URL; pkg_download_url fills
+/// in only a sanitized version and this build's CPU, and swaps this base
+/// for the operator's own mirror when one is set, as assetUrl does.
+const RELEASE_DOWNLOAD_BASE: &str = "https://github.com/IrosTheBeggar/mStream/releases/download";
+/// The CPU half of this build's macOS asset names (darwin-arm64 /
+/// darwin-x64), fixed at compile time like the bundle version: the .pkg a
+/// Mac downloads is the one for the launcher already running there.
+const THIS_PKG_CPU: &str = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
+/// A left click on the tray icon this soon after the last one the launcher
+/// acted on is ignored. A double click arrives as two clicks (on Windows:
+/// down, up, dblclk, up), and the second would open the player again: a
+/// player that takes the instance lock refuses it and the launcher
+/// refocuses the first (harmless, but a second spawn and its log lines for
+/// one gesture), and one that predates the lock would open a second
+/// window. 500 ms is Windows' default double-click time, the longest gap
+/// the system itself still counts as one gesture.
+const TRAY_CLICK_DEBOUNCE: Duration = Duration::from_millis(500);
 
 #[derive(Debug)]
 enum AppEvent {
     Menu(String),
+    /// A left click on the tray icon itself, reported on the button's
+    /// release (macOS and Windows; Linux's appindicator reports no clicks —
+    /// see the builder in StartCause::Init), with what it asks for
+    /// (icon_click_of).
+    TrayClick(IconClick),
     ServerUp(u64),
     /// The identity probe gave up (BOOT_TIMEOUT) while the child is still
     /// alive: a serving-but-unverifiable server (an SSL-terminated config,
@@ -312,6 +338,22 @@ pub fn run(args: LauncherArgs) -> ! {
             let _ = proxy.send_event(AppEvent::Menu(event.id().0.clone()));
         }));
     }
+    // Clicks on the icon itself: only the left button's release wakes the
+    // loop, judged by the press before it (icon_click_of). tray-icon calls
+    // this handler synchronously from the click's own mouse-down/up on the
+    // main thread, so the Control key read at the press is the one the
+    // click was made with. Installing a handler also matters on its own:
+    // without one, tray-icon queues every icon event, hover traffic
+    // included, into an unbounded channel that nothing here reads.
+    {
+        let proxy = proxy.clone();
+        let pressed_with_control = AtomicBool::new(false);
+        TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+            if let Some(click) = icon_click_of(&event, platform::control_key_held, &pressed_with_control) {
+                let _ = proxy.send_event(AppEvent::TrayClick(click));
+            }
+        }));
+    }
 
     // The update-surface poll: ONE always-running thread for the whole
     // session, deliberately not tied to a server generation (see
@@ -386,6 +428,9 @@ pub fn run(args: LauncherArgs) -> ! {
     // watchdog decides whether a staged update gets rolled back.
     let mut boot_failures: u32 = 0;
     let mut opened = false;
+    // When a left click on the icon last opened the player (the debounce:
+    // TRAY_CLICK_DEBOUNCE).
+    let mut last_tray_click: Option<Instant> = None;
     // `--player`: an explicit ask for the desktop player, served once the
     // server answers (the GUI dials it at once) and once per session — a
     // restart's ServerUp must not pop a second window.
@@ -441,27 +486,33 @@ pub fn run(args: LauncherArgs) -> ! {
                 // of its life, an enabled action ("Restart to update to X")
                 // when the server has one staged. Text/enabled track the
                 // status file via refresh below.
-                let (utext, uaction) =
-                    update_item_view(upd.as_ref(), &updates_dir(), relaunch_target_exists(exe_real.as_deref()));
+                let (utext, uaction) = update_item_view(
+                    upd.as_ref(),
+                    &updates_dir(),
+                    relaunch_target_exists(exe_real.as_deref()),
+                    THIS_INSTALLER_HOST,
+                    paths::release_mirror().as_deref(),
+                );
                 let update = MenuItem::with_id("update", utext.clone(), uaction != UpdateAction::None, None);
                 upd_text = utext;
-                // "Manage server": the terminal player's admin rooms, one
-                // item each, then the browser admin panel as the last
-                // resort that always exists (a room item falls back to
-                // the panel's matching section when no terminal opens).
-                let manage = Submenu::with_id("manage", "Manage server", true);
-                for room in platform::AdminRoom::ALL {
-                    let _ = manage.append(&MenuItem::with_id(room_menu_id(room), room_label(room), true, None));
-                }
-                let _ = manage.append(&PredefinedMenuItem::separator());
-                let _ = manage.append(&MenuItem::with_id("open", "Open Admin Panel in browser", true, None));
                 // "Open mStream Player": the bundled player's desktop face
                 // in a window of its own — the web player in the browser
                 // when this install's player predates the GUI or no
                 // terminal opens (open_desktop_player). Always present, so
-                // the menu keeps one shape across installs.
+                // the menu keeps one shape across installs; a left click on
+                // the icon does the same (AppEvent::TrayClick). There is no
+                // server-management section: since player v0.11.0 the
+                // desktop player hosts the admin rooms in its own Admin tab,
+                // and the browser panel stays one URL away at /admin.
                 let player_item = MenuItem::with_id("player", "Open mStream Player", true, None);
                 let qc_item = MenuItem::with_id("quick-connect", "Quick Connect", true, None);
+                // "Open Web App": the server's web app in the browser — the
+                // web player, with the admin panel behind its own menu. A
+                // human asked for it by name, so it opens the server's root
+                // as it is, with none of browse_target's routing (that is
+                // for opens the launcher initiates, which must land
+                // somewhere useful before setup).
+                let webapp_item = MenuItem::with_id("webapp", "Open Web App", true, None);
                 let auto_item =
                     CheckMenuItem::with_id("autostart", "Start at login", true, autostart::is_enabled(), None);
                 let logs_item = MenuItem::with_id("logs", "View logs", true, None);
@@ -471,8 +522,8 @@ pub fn run(args: LauncherArgs) -> ! {
                 let _ = menu.append(&update);
                 let _ = menu.append(&PredefinedMenuItem::separator());
                 let _ = menu.append(&player_item);
-                let _ = menu.append(&manage);
                 let _ = menu.append(&qc_item);
+                let _ = menu.append(&webapp_item);
                 let _ = menu.append(&PredefinedMenuItem::separator());
                 let _ = menu.append(&auto_item);
                 let _ = menu.append(&PredefinedMenuItem::separator());
@@ -491,11 +542,36 @@ pub fn run(args: LauncherArgs) -> ! {
                 // package), which would take down the whole launcher here.
                 // Both fold into the same degrade: server keeps serving.
                 let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    TrayIconBuilder::new()
+                    let builder = TrayIconBuilder::new()
                         .with_tooltip("mStream Server")
                         .with_menu(Box::new(menu))
-                        .with_icon(load_icon())
-                        .build()
+                        .with_icon(load_icon());
+                    // A left click opens the player and the right click
+                    // keeps the menu. What tray-icon 0.24.2 does with the
+                    // flag off, read from its sources: on macOS its view
+                    // over the status item's button sends Click{Left, Down}
+                    // on mouseDown and only highlights the button (the
+                    // menu pops from mouseDown solely while the flag is
+                    // on), then Click{Left, Up} on mouseUp; rightMouseDown
+                    // still pops the menu. It reads no modifier flags and
+                    // its view carries no menu of its own, so a
+                    // Control-click (the Mac's secondary click on a mouse
+                    // or trackpad without one) reaches it as a plain left
+                    // click; the handler above reads Control at the press
+                    // and that click shows the menu instead
+                    // (IconClick::ShowMenu, TrayIcon::show_menu), so the
+                    // menu stays reachable without a right button. On
+                    // Windows every WM_LBUTTONDOWN/UP becomes a Click with
+                    // that state, a WM_LBUTTONDBLCLK a DoubleClick on top,
+                    // and the menu pops on WM_RBUTTONUP, and on
+                    // WM_LBUTTONUP only while the flag is on. Linux keeps
+                    // the default: the appindicator backend emits no click
+                    // events and ignores the flag (the StatusNotifier host
+                    // owns the clicks and shows the menu), so there the
+                    // player stays one menu item away.
+                    #[cfg(any(target_os = "macos", windows))]
+                    let builder = builder.with_menu_on_left_click(false);
+                    builder.build()
                 }));
                 match built {
                     Ok(Ok(t)) => tray = Some(t),
@@ -572,7 +648,9 @@ pub fn run(args: LauncherArgs) -> ! {
                         // an update.
                         && staged_ver.as_deref() != Some(env!("MSTREAM_BUNDLE_VERSION"))
                         && !auto_apply_capped(&apply_failures, staged_ver.as_deref())
-                        && !matches!(action, UpdateAction::None | UpdateAction::OpenReleases)
+                        // Only a handoff: the launcher never pops Installer.app
+                        // (OpenInstaller) or a browser unasked.
+                        && action.is_handoff()
                     {
                         auto_apply_attempted = token;
                         log.line("update: the server requested apply - restarting into the staged version");
@@ -603,55 +681,35 @@ pub fn run(args: LauncherArgs) -> ! {
                         show_status(status_item.as_ref(), tray.as_ref(), &phase, &url, &version_label(upd.as_ref()));
                     }
                 }
+                AppEvent::TrayClick(IconClick::ShowMenu) => {
+                    // A Control-click on macOS: the menu a right click
+                    // shows, popped from the status item's button, and the
+                    // item picked arrives as AppEvent::Menu like any other.
+                    // No debounce: a menu is modal, so a second cannot
+                    // stack on the first.
+                    log.line("tray: control-click - show menu");
+                    if let Some(t) = tray.as_ref() {
+                        t.show_menu();
+                    }
+                }
+                AppEvent::TrayClick(IconClick::OpenPlayer) => {
+                    // A Windows double click is two of these; the second
+                    // inside TRAY_CLICK_DEBOUNCE is dropped without a word.
+                    let now = Instant::now();
+                    if tray_click_acts(last_tray_click, now) {
+                        last_tray_click = Some(now);
+                        log.line("tray: left click - open player");
+                        open_player_from_tray(desktop_player.as_ref(), &url, &data_home, console.as_ref(), &config_loop, &ep, &log);
+                    }
+                }
                 AppEvent::Menu(id) => match id.as_str() {
-                    "open" => {
-                        // The browser admin panel, explicitly — the tray is
-                        // the operator's surface, and listening happens in
-                        // the apps/players. (The post-boot browser announce
-                        // keeps its own routing: paths::browse_target.)
-                        let _ = open::that_detached(format!("{url}/admin"));
-                    }
                     "player" => {
-                        // A human clicked: the browser fallback is always
-                        // on the table (like the rooms' panel fallback).
                         log.line("menu: open player");
-                        let fallback = paths::browse_target(&config_loop, &ep);
-                        open_desktop_player(
-                            desktop_player.as_ref(),
-                            &url,
-                            &data_home,
-                            console.as_ref(),
-                            Some(&fallback),
-                            &log,
-                        );
+                        open_player_from_tray(desktop_player.as_ref(), &url, &data_home, console.as_ref(), &config_loop, &ep, &log);
                     }
-                    room_id if room_from_menu_id(room_id).is_some() => {
-                        // One of the player's admin rooms in a real terminal
-                        // — the same spawn as the wizard pages, so the same
-                        // per-OS terminal choice and the same log surface.
-                        // The room reuses the admin session the wizard saved
-                        // (or asks once, in-room, and keeps what it gets);
-                        // the browser panel's matching section is the
-                        // fallback when this install has no player binary
-                        // or no terminal opened.
-                        let room = room_from_menu_id(room_id).expect("guarded by the match arm");
-                        let name = room.subcommand();
-                        log.line(&format!("menu: manage {name}"));
-                        let mut opened = false;
-                        if let Some(player) = player_bin.as_deref() {
-                            match platform::open_player_terminal(player, &url, &data_home, console.as_ref(), platform::PlayerPage::Admin(room)) {
-                                Ok(via) => {
-                                    log.line(&format!("{name} room opened via {via}"));
-                                    opened = true;
-                                }
-                                Err(e) => log.line(&format!("{name} room terminal failed: {e} - falling back to the admin panel")),
-                            }
-                        } else {
-                            log.line(&format!("{name} room: no player binary in this install - falling back to the admin panel"));
-                        }
-                        if !opened {
-                            let _ = open::that_detached(room_webapp_url(&url, room));
-                        }
+                    "webapp" => {
+                        log.line("menu: open web app");
+                        let _ = open::that_detached(&url);
                     }
                     "quick-connect" => {
                         // The wizard's Quick Connect page (pixel pairing QR)
@@ -736,8 +794,33 @@ pub fn run(args: LauncherArgs) -> ! {
                             UpdateAction::OpenReleases => {
                                 let _ = open::that_detached(RELEASES_URL);
                             }
+                            UpdateAction::OpenInstaller(pkg) => {
+                                // Installer.app takes the package from here,
+                                // and nothing here stops or exits: its human
+                                // may cancel, and once the install really
+                                // happens the pkg's postinstall restarts this
+                                // launcher into the new version (--takeover).
+                                // A failure to open is a log line, never an
+                                // apply failure: the server never stopped.
+                                let name = pkg.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                                log.line(&format!("menu: open installer {name}"));
+                                if let Err(e) = open::that_detached(&pkg) {
+                                    log.line(&format!("open installer failed: {e}"));
+                                }
+                            }
+                            UpdateAction::DownloadInstaller(pkg_url) => {
+                                // The browser downloads the release's .pkg
+                                // (an attachment, not a page); the human
+                                // opens it from there and the pkg's
+                                // postinstall restarts this launcher, as
+                                // with OpenInstaller. Nothing stops here.
+                                log.line(&format!("menu: download installer {pkg_url}"));
+                                if let Err(e) = open::that_detached(&pkg_url) {
+                                    log.line(&format!("download installer failed: {e}"));
+                                }
+                            }
                             UpdateAction::None => {}
-                            _ => {
+                            UpdateAction::Relaunch | UpdateAction::RunInstaller(_) => {
                                 log.line("menu: apply update");
                                 // The click consumes any pending server-side
                                 // request too: a failed MANUAL apply must not
@@ -848,12 +931,13 @@ pub fn run(args: LauncherArgs) -> ! {
                             // superseded the old open-the-player-on-every-
                             // boot announce (operator decision, pre-6.24):
                             // the player stays one deliberate gesture away
-                            // (re-click the app / second launch) and the
-                            // tray menu holds the admin panel. The announce
-                            // gates (--takeover, --autostarted, --no-open)
-                            // suppress the first-run open exactly like the
-                            // old browser pop — an update relaunch must
-                            // never pop a terminal.
+                            // (re-click the app / second launch / a click on
+                            // the tray icon) and its Admin tab holds the
+                            // admin rooms. The announce gates (--takeover,
+                            // --autostarted, --no-open) suppress the
+                            // first-run open exactly like the old browser
+                            // pop — an update relaunch must never pop a
+                            // terminal.
                             if target.ends_with("/admin") {
                                 let mut wizard_opened = false;
                                 if let Some(player) = player_bin.as_deref() {
@@ -1008,43 +1092,74 @@ pub fn run(args: LauncherArgs) -> ! {
     })
 }
 
-/// The "Manage server" submenu: one menu id per admin room, derived from the
-/// room's CLI name so the id and the argv can never drift apart.
-fn room_menu_id(room: platform::AdminRoom) -> String {
-    format!("admin-{}", room.subcommand())
+/// What a left click on the tray icon asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IconClick {
+    /// A plain click: the player, exactly as "Open mStream Player" opens it.
+    OpenPlayer,
+    /// A Control-click, macOS's own secondary click: the menu, exactly as
+    /// a right click shows it.
+    ShowMenu,
 }
 
-fn room_from_menu_id(id: &str) -> Option<platform::AdminRoom> {
-    id.strip_prefix("admin-").and_then(platform::AdminRoom::from_subcommand)
-}
-
-/// The menu text — the rooms' own titles, which are also the browser admin
-/// panel's section names (Directories aside: the player and the wizard
-/// call the music folders libraries).
-fn room_label(room: platform::AdminRoom) -> &'static str {
-    use platform::AdminRoom::*;
-    match room {
-        Libraries => "Libraries",
-        Discovery => "Discovery",
-        Federation => "Federation",
-        Backups => "Backups",
-        Torrents => "Torrents",
+/// What a tray-icon event asks of the event loop: the left button's
+/// release, and nothing else. Whether Control was held is read at the press
+/// (`control_held`, called only then) and carried to the release in
+/// `pressed_with_control`, because AppKit judges a Control-click by the
+/// mouse-down too: letting go of Control before the button still makes a
+/// menu click, and pressing it mid-click does not. The press itself, a
+/// Windows DoubleClick (sent on top of the clicks it is made of), the other
+/// buttons (the right one pops the menu on its own) and the hover traffic
+/// (Enter/Move/Leave, one Move per pixel) all stay off the event loop.
+fn icon_click_of(
+    event: &TrayIconEvent,
+    control_held: impl FnOnce() -> bool,
+    pressed_with_control: &AtomicBool,
+) -> Option<IconClick> {
+    match event {
+        TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Down, .. } => {
+            pressed_with_control.store(control_held(), Ordering::Relaxed);
+            None
+        }
+        TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } => {
+            Some(if pressed_with_control.swap(false, Ordering::Relaxed) {
+                IconClick::ShowMenu
+            } else {
+                IconClick::OpenPlayer
+            })
+        }
+        _ => None,
     }
 }
 
-/// The browser admin panel opened on the room's section — its URL-hash
-/// deep link (webapp/admin/index.js `_initialViewFromHash`) — the
-/// fallback when the terminal room could not open.
-fn room_webapp_url(server_url: &str, room: platform::AdminRoom) -> String {
-    use platform::AdminRoom::*;
-    let view = match room {
-        Libraries => "folders-view",
-        Discovery => "discovery-view",
-        Federation => "federation-view",
-        Backups => "backup-view",
-        Torrents => "torrent-view",
-    };
-    format!("{server_url}/admin#{view}")
+/// Whether a left click on the icon at `now` acts, given when the last one
+/// that acted did: not within TRAY_CLICK_DEBOUNCE of it.
+fn tray_click_acts(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|t| now.saturating_duration_since(t) >= TRAY_CLICK_DEBOUNCE)
+}
+
+/// "Open mStream Player" from the tray: the menu item and a left click on
+/// the icon both come here, so the two gestures cannot drift apart. A human
+/// asked, so the browser fallback is always on the table when no desktop
+/// player opens, routed like every launcher-initiated open
+/// (paths::browse_target: the player once set up, the admin panel before).
+fn open_player_from_tray(
+    player: Option<&DesktopPlayer>,
+    server_url: &str,
+    data_home: &Path,
+    console: Option<&paths::ConsoleLaunch>,
+    config: &Path,
+    ep: &paths::Endpoint,
+    log: &Logger,
+) {
+    // On Windows a left click leaves the taskbar in the foreground where a
+    // menu pick leaves the launcher, so the right to come to the front is
+    // handed on first, for either gesture, before anything opens.
+    if !platform::allow_foreground_handoff() {
+        log.line("player: no foreground right to pass on - a new window may open behind the active one");
+    }
+    let fallback = paths::browse_target(config, ep);
+    open_desktop_player(player, server_url, data_home, console, Some(&fallback), log);
 }
 
 /// The desktop player this install can open: the GUI-capable binary and,
@@ -1492,9 +1607,63 @@ enum UpdateAction {
     /// Managed layout with a staged version: quit-path teardown, then spawn
     /// the launcher behind `current` with --takeover.
     Relaunch,
-    /// Windows Inno install with a verified downloaded installer.
+    /// Windows Inno install with a verified downloaded installer: the
+    /// server stops, the silent installer runs, and its [Run] entry
+    /// relaunches the tray afterwards.
     RunInstaller(PathBuf),
+    /// macOS .pkg install with a verified downloaded installer: opened in
+    /// Installer.app, and nothing else. Installer.app needs a human, who may
+    /// cancel it, so the server keeps serving and the tray keeps running;
+    /// the pkg's postinstall (build/pkg-postinstall.sh) is what restarts
+    /// the running launcher into the new version, with --takeover, once the
+    /// install has really happened.
+    OpenInstaller(PathBuf),
+    /// macOS .pkg install with no verified installer on disk yet (notify
+    /// mode, a background download that failed or has not started): the
+    /// browser downloads the release's .pkg, and the human opens it from
+    /// there. The URL is always the one built here (pkg_download_url:
+    /// GitHub's tag-pinned asset, or the operator's mirror's copy), never
+    /// the status file's: the file's downloadUrl only confirms it, by
+    /// naming the same string. Nothing stops and nothing exits, as with
+    /// OpenInstaller. Never offered for a release the server withholds
+    /// (paths::UpdateStatus::latest_withheld), nor when the server names a
+    /// download other than the one built here, a URL or not.
+    DownloadInstaller(String),
 }
+
+impl UpdateAction {
+    /// Whether this action hands the install to a new process and ends this
+    /// launcher (perform_apply) — the only kind the server's apply request
+    /// may trigger unasked. OpenInstaller and DownloadInstaller are not:
+    /// both wait on a human, so only a click starts either.
+    fn is_handoff(&self) -> bool {
+        matches!(self, UpdateAction::Relaunch | UpdateAction::RunInstaller(_))
+    }
+}
+
+/// The native-installer family of the host the launcher runs on — a
+/// parameter of the update view rather than a cfg inside it, so the tests
+/// pin every platform's rule on every host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InstallerHost {
+    /// The Inno setup.exe, run silently (UpdateAction::RunInstaller).
+    Windows,
+    /// The .pkg, opened in Installer.app once the server downloaded it
+    /// (UpdateAction::OpenInstaller), downloaded by the browser before then
+    /// (UpdateAction::DownloadInstaller).
+    MacOs,
+    /// No installer the launcher hands off to: Linux installs update
+    /// through their packages or the managed layout.
+    Other,
+}
+
+const THIS_INSTALLER_HOST: InstallerHost = if cfg!(windows) {
+    InstallerHost::Windows
+} else if cfg!(target_os = "macos") {
+    InstallerHost::MacOs
+} else {
+    InstallerHost::Other
+};
 
 /// Where the server's updater downloads native installers (validated
 /// against, never trusted from the status file alone).
@@ -1510,28 +1679,88 @@ fn version_label(s: Option<&paths::UpdateStatus>) -> String {
         .unwrap_or_else(|| env!("MSTREAM_BUNDLE_VERSION").to_string())
 }
 
-/// The installer path the launcher will actually run: must live in OUR
-/// updates dir with the expected asset name and exist. Everything else in
-/// the status file's installerPath is ignored — the file is another
-/// process's data, not an instruction stream.
-fn valid_installer(p: Option<&Path>, updates_dir: &Path) -> Option<PathBuf> {
+/// The installer path the launcher will actually run or open: must sit
+/// directly in OUR updates dir (where the server's stageInstaller writes
+/// it), carry this host's asset name and exist. Everything else in the
+/// status file's installerPath is ignored — the file is another process's
+/// data, not an instruction stream.
+fn valid_installer(p: Option<&Path>, updates_dir: &Path, host: InstallerHost) -> Option<PathBuf> {
     let p = p?;
-    if !p.starts_with(updates_dir) {
+    // The parent itself, not starts_with: a `..` component would pass a
+    // prefix test and still point elsewhere.
+    if p.parent() != Some(updates_dir) {
         return None;
     }
     let name = p.file_name()?.to_str()?;
-    (name.starts_with("mStream-") && name.ends_with("-win-x64-setup.exe") && p.exists())
-        .then(|| p.to_path_buf())
+    (installer_name_ok(name, host) && p.exists()).then(|| p.to_path_buf())
+}
+
+/// The release asset names the server downloads (installerAssetName in
+/// src/util/update-check.js): `mStream-<version>-win-x64-setup.exe` on
+/// Windows, `mStream-<version>-darwin-<arm64|x64>.pkg` on macOS, nothing
+/// elsewhere. The version must be made of a version's characters, so the
+/// name cannot smuggle anything else between the fixed parts.
+fn installer_name_ok(name: &str, host: InstallerHost) -> bool {
+    let suffixes: &[&str] = match host {
+        InstallerHost::Windows => &["-win-x64-setup.exe"],
+        InstallerHost::MacOs => &["-darwin-arm64.pkg", "-darwin-x64.pkg"],
+        InstallerHost::Other => &[],
+    };
+    let Some(rest) = name.strip_prefix("mStream-") else { return false };
+    suffixes.iter().any(|suffix| {
+        rest.strip_suffix(suffix).is_some_and(|v| {
+            v.starts_with(|c: char| c.is_ascii_digit())
+                && v.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+        })
+    })
+}
+
+/// The name of release `version`'s .pkg for a `cpu` Mac (`arm64` or
+/// `x64`), installerAssetName in update-check.js, or None when the version
+/// is not a plain X.Y.Z (paths::sanitize_version: the status file's
+/// `latest` has passed it already, and the name does not rely on that) or
+/// the CPU is one no release builds for.
+fn pkg_asset_name(version: &str, cpu: &str) -> Option<String> {
+    let v = paths::sanitize_version(version)?;
+    matches!(cpu, "arm64" | "x64").then(|| format!("mStream-{v}-darwin-{cpu}.pkg"))
+}
+
+/// The direct download of release `version`'s .pkg for a `cpu` Mac, built
+/// as update-check.js's assetUrl builds it in the server: the tag-pinned
+/// GitHub asset, or the file of that name in the flat directory a mirror
+/// serves (`mirror`, paths::release_mirror). None where pkg_asset_name has
+/// no name, and for a mirror that would not make an http(s) URL of
+/// paths::download_url_shaped's shape: the server fetches over nothing
+/// else (isAcceptedUrl in ffmpeg-bootstrap.js), and the browser's opener
+/// is handed nothing else.
+fn pkg_download_url(version: &str, cpu: &str, mirror: Option<&str>) -> Option<String> {
+    let name = pkg_asset_name(version, cpu)?;
+    let Some(base) = mirror else {
+        // A name exists only for a plain X.Y.Z, so `version` is one here.
+        return Some(format!("{RELEASE_DOWNLOAD_BASE}/v{version}/{name}"));
+    };
+    let url = format!("{}/{name}", base.trim_end_matches('/'));
+    let http = url.starts_with("https://") || url.starts_with("http://");
+    (http && paths::download_url_shaped(&url)).then_some(url)
 }
 
 /// The update line's text + action for a given status-file state. Pure so
 /// the matrix is unit-testable; `relaunch_ok` is whether
 /// derive_relaunch_target currently resolves (a staged update on a layout
-/// we can't relaunch from renders informational, not clickable).
+/// we can't relaunch from renders informational, not clickable), and
+/// `host` whose installers this launcher hands off to (THIS_INSTALLER_HOST
+/// outside the tests). A downloaded installer the host cannot use, or one
+/// that fails valid_installer, falls through to the availability line: on
+/// a Mac's .pkg install the release's own .pkg ("Download update"), from
+/// `mirror` when one is set (paths::release_mirror outside the tests); the
+/// releases page ("Update available") elsewhere, for a release the server
+/// withholds, and when the server names a download other than that one.
 fn update_item_view(
     s: Option<&paths::UpdateStatus>,
     updates_dir: &Path,
     relaunch_ok: bool,
+    host: InstallerHost,
+    mirror: Option<&str>,
 ) -> (String, UpdateAction) {
     let Some(s) = s else {
         return (
@@ -1556,9 +1785,14 @@ fn update_item_view(
                             UpdateAction::None,
                         );
                     }
-                    Some("inno") => {
-                        if let Some(p) = valid_installer(s.installer_path.as_deref(), updates_dir) {
+                    Some("inno") if host == InstallerHost::Windows => {
+                        if let Some(p) = valid_installer(s.installer_path.as_deref(), updates_dir, host) {
                             return (format!("Install update {v}"), UpdateAction::RunInstaller(p));
+                        }
+                    }
+                    Some("pkg") if host == InstallerHost::MacOs => {
+                        if let Some(p) = valid_installer(s.installer_path.as_deref(), updates_dir, host) {
+                            return (format!("Install update {v}"), UpdateAction::OpenInstaller(p));
                         }
                     }
                     _ => {}
@@ -1568,6 +1802,36 @@ fn update_item_view(
     }
     if s.available {
         if let Some(v) = &s.latest {
+            // A .pkg install's click fetches the installer itself, not the
+            // page that lists it: the Mac is one double-click from the
+            // update even when the server downloaded nothing. Not for a
+            // release the server withholds (skipped, held, or a feed this
+            // server cannot read): the server refuses to fetch it, so the
+            // tray keeps to the line and the page it always showed.
+            if host == InstallerHost::MacOs && s.method.as_deref() == Some("pkg") && !s.latest_withheld() {
+                // The URL is built here, from the mirror the server fetches
+                // from too (it is this launcher's child). What the server
+                // knows and the launcher does not is whether the release
+                // carries this install's .pkg at all (downloadUrlFor: the
+                // asset's URL when the manifest lists it, the releases page
+                // when not), so its downloadUrl is read as that answer and
+                // nothing more: the same string as the one built here is
+                // yes. Anything else it names keeps the page: the releases
+                // page (the URL built here would 404), another file or host
+                // (the file's URLs are never opened), a value the status
+                // parse refused, a file left by a run that saw another
+                // mirror. Only a status file that names no download at all
+                // gets the built URL unconfirmed.
+                let built = pkg_download_url(v, THIS_PKG_CPU, mirror);
+                let url = match &s.download_url {
+                    paths::DownloadUrl::Absent => built,
+                    paths::DownloadUrl::Named(named) => built.filter(|b| b == named),
+                    paths::DownloadUrl::Unusable => None,
+                };
+                if let Some(url) = url {
+                    return (format!("Download update {v}"), UpdateAction::DownloadInstaller(url));
+                }
+            }
             return (format!("Update available ({v})"), UpdateAction::OpenReleases);
         }
     }
@@ -1589,7 +1853,8 @@ fn render_update_item(
     relaunch_ok: bool,
     last_text: &mut String,
 ) -> UpdateAction {
-    let (text, action) = update_item_view(s, updates_dir, relaunch_ok);
+    let (text, action) =
+        update_item_view(s, updates_dir, relaunch_ok, THIS_INSTALLER_HOST, paths::release_mirror().as_deref());
     if let Some(i) = item {
         if text != *last_text {
             i.set_text(text.clone());
@@ -1686,7 +1951,9 @@ fn relaunch_target_exists(exe: Option<&Path>) -> bool {
 /// Stop the child, then hand off to the update: spawn the new launcher
 /// (managed) or the verified installer (inno). Ok = a handoff process is
 /// running and the caller must exit the loop NOW; Err = nothing was spawned
-/// and the caller must recover — the server is already stopped.
+/// and the caller must recover — the server is already stopped. An action
+/// that is no handoff (UpdateAction::is_handoff) is refused before
+/// anything stops.
 fn perform_apply(
     shared: &Arc<Shared>,
     action: &UpdateAction,
@@ -1694,6 +1961,9 @@ fn perform_apply(
     server_args: &[String],
     log: &Logger,
 ) -> Result<(), String> {
+    if !action.is_handoff() {
+        return Err("not an applicable update action".to_string());
+    }
     shared.quitting.store(true, Ordering::SeqCst);
     stop_current(shared);
     match action {
@@ -1999,27 +2269,84 @@ mod tests {
         assert!(!Phase::Stopped.ticks());
     }
 
+    fn click(button: MouseButton, button_state: MouseButtonState) -> TrayIconEvent {
+        TrayIconEvent::Click {
+            id: tray_icon::TrayIconId::new("t"),
+            position: tray_icon::dpi::PhysicalPosition::new(0.0, 0.0),
+            rect: tray_icon::Rect::default(),
+            button,
+            button_state,
+        }
+    }
+
     #[test]
-    fn manage_server_items_round_trip_and_fall_back_to_their_panel_section() {
-        use crate::platform::AdminRoom;
-        for room in AdminRoom::ALL {
-            let id = room_menu_id(room);
-            assert_eq!(room_from_menu_id(&id), Some(room), "{id}");
-            assert!(!room_label(room).is_empty());
+    fn only_a_left_release_on_the_icon_opens_the_player() {
+        let pressed = AtomicBool::new(false);
+        let plain = || false;
+        let never_read = || -> bool { panic!("the modifiers are read at the left press only") };
+        // The press says nothing yet; its release opens one player.
+        assert_eq!(icon_click_of(&click(MouseButton::Left, MouseButtonState::Down), plain, &pressed), None);
+        assert_eq!(
+            icon_click_of(&click(MouseButton::Left, MouseButtonState::Up), never_read, &pressed),
+            Some(IconClick::OpenPlayer)
+        );
+        // The right button pops the menu on its own; the middle one is
+        // nobody's gesture.
+        for state in [MouseButtonState::Down, MouseButtonState::Up] {
+            assert_eq!(icon_click_of(&click(MouseButton::Right, state), never_read, &pressed), None, "{state:?}");
+            assert_eq!(icon_click_of(&click(MouseButton::Middle, state), never_read, &pressed), None, "{state:?}");
         }
-        // Every other menu id — and a room name without the prefix — is
-        // somebody else's arm, never a room.
-        for other in ["open", "player", "quick-connect", "manage", "libraries", "admin-", "admin-setup", ""] {
-            assert_eq!(room_from_menu_id(other), None, "{other}");
+        // Windows' DoubleClick rides on top of the two clicks it is made of,
+        // and the hover traffic never opens anything.
+        let id = || tray_icon::TrayIconId::new("t");
+        let position = tray_icon::dpi::PhysicalPosition::new(0.0, 0.0);
+        let rect = tray_icon::Rect::default();
+        for event in [
+            TrayIconEvent::DoubleClick { id: id(), position, rect, button: MouseButton::Left },
+            TrayIconEvent::Enter { id: id(), position, rect },
+            TrayIconEvent::Move { id: id(), position, rect },
+            TrayIconEvent::Leave { id: id(), position, rect },
+        ] {
+            assert_eq!(icon_click_of(&event, never_read, &pressed), None, "{event:?}");
         }
-        // Five rooms, five labels, five panel sections.
-        let labels: std::collections::BTreeSet<&str> = AdminRoom::ALL.into_iter().map(room_label).collect();
-        assert_eq!(labels.len(), AdminRoom::ALL.len());
-        let urls: std::collections::BTreeSet<String> =
-            AdminRoom::ALL.into_iter().map(|r| room_webapp_url("http://localhost:3000", r)).collect();
-        assert_eq!(urls.len(), AdminRoom::ALL.len());
-        assert_eq!(room_webapp_url("http://localhost:3000", AdminRoom::Libraries), "http://localhost:3000/admin#folders-view");
-        assert_eq!(room_webapp_url("http://[::1]:3000", AdminRoom::Backups), "http://[::1]:3000/admin#backup-view");
+    }
+
+    #[test]
+    fn a_control_click_on_the_icon_shows_the_menu() {
+        let pressed = AtomicBool::new(false);
+        let down = click(MouseButton::Left, MouseButtonState::Down);
+        let up = click(MouseButton::Left, MouseButtonState::Up);
+        // Control held at the press: the menu, whatever Control does before
+        // the release (AppKit judges a Control-click at mouse-down).
+        assert_eq!(icon_click_of(&down, || true, &pressed), None);
+        assert_eq!(icon_click_of(&up, || false, &pressed), Some(IconClick::ShowMenu));
+        // The press's Control is spent on its own release, and Control
+        // pressed only after the press makes no menu click: a plain click
+        // opens the player again.
+        assert_eq!(icon_click_of(&down, || false, &pressed), None);
+        assert_eq!(icon_click_of(&up, || true, &pressed), Some(IconClick::OpenPlayer));
+        // A right click, Control or not, leaves the next left click alone.
+        assert_eq!(icon_click_of(&click(MouseButton::Right, MouseButtonState::Down), || true, &pressed), None);
+        assert_eq!(icon_click_of(&click(MouseButton::Right, MouseButtonState::Up), || true, &pressed), None);
+        assert_eq!(icon_click_of(&down, || false, &pressed), None);
+        assert_eq!(icon_click_of(&up, || false, &pressed), Some(IconClick::OpenPlayer));
+    }
+
+    #[test]
+    fn a_second_left_click_inside_the_debounce_is_ignored() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        assert!(tray_click_acts(None, t0), "the session's first click acts");
+        assert!(!tray_click_acts(Some(t0), t0 + ms(1)));
+        assert!(!tray_click_acts(Some(t0), t0 + TRAY_CLICK_DEBOUNCE - ms(1)), "a double click's second half");
+        assert!(tray_click_acts(Some(t0), t0 + TRAY_CLICK_DEBOUNCE));
+        assert!(tray_click_acts(Some(t0), t0 + ms(3000)), "a deliberate second click, later");
+        // A clock that reads before the last click (Instant is monotonic;
+        // never expected) is ignored, not a panic.
+        assert!(!tray_click_acts(Some(t0 + ms(10)), t0));
+        // Long enough to swallow a double click at Windows' default speed,
+        // short enough that no deliberate second click lands inside it.
+        assert!(TRAY_CLICK_DEBOUNCE >= ms(300) && TRAY_CLICK_DEBOUNCE <= ms(1000));
     }
 
     fn status(json: &str) -> Option<crate::paths::UpdateStatus> {
@@ -2029,45 +2356,362 @@ mod tests {
     #[test]
     fn update_view_matrix() {
         let ud = std::path::Path::new("/data/updates");
-        // No file at all: bundle-version fallback, inert.
-        let (t, a) = update_item_view(None, ud, true);
-        assert_eq!(t, format!("Up to date ({})", env!("MSTREAM_BUNDLE_VERSION")));
-        assert_eq!(a, UpdateAction::None);
-        // Up to date per the server.
-        let s = status(r#"{"current":"6.21.2","available":false}"#);
-        let (t, a) = update_item_view(s.as_ref(), ud, true);
-        assert_eq!(t, "Up to date (6.21.2)");
-        assert_eq!(a, UpdateAction::None);
-        // Downloading.
-        let s = status(r#"{"current":"6.21.2","available":true,"latest":"6.22.0","downloading":true}"#);
-        let (t, a) = update_item_view(s.as_ref(), ud, true);
-        assert_eq!(t, "Downloading update…");
-        assert_eq!(a, UpdateAction::None);
-        // Staged on a managed layout with a resolvable relaunch target.
-        let s = status(
-            r#"{"current":"6.21.2","available":true,"latest":"6.22.0","method":"managed",
-                "staged":true,"stagedVersion":"6.22.0"}"#,
+        // Nothing here involves an installer, so every host renders it alike.
+        for host in [InstallerHost::Windows, InstallerHost::MacOs, InstallerHost::Other] {
+            let view = |s: Option<&crate::paths::UpdateStatus>, relaunch_ok: bool| update_item_view(s, ud, relaunch_ok, host, None);
+            let view_m = |s: Option<&crate::paths::UpdateStatus>, mirror: Option<&str>| update_item_view(s, ud, true, host, mirror);
+            // No file at all: bundle-version fallback, inert.
+            let (t, a) = view(None, true);
+            assert_eq!(t, format!("Up to date ({})", env!("MSTREAM_BUNDLE_VERSION")));
+            assert_eq!(a, UpdateAction::None);
+            // Up to date per the server.
+            let s = status(r#"{"current":"6.21.2","available":false}"#);
+            let (t, a) = view(s.as_ref(), true);
+            assert_eq!(t, "Up to date (6.21.2)");
+            assert_eq!(a, UpdateAction::None);
+            // Downloading — the installer families included: a .pkg is ~150 MB.
+            for method in ["managed", "inno", "pkg"] {
+                let s = status(&format!(
+                    r#"{{"current":"6.21.2","available":true,"latest":"6.22.0","method":"{method}","downloading":true}}"#
+                ));
+                let (t, a) = view(s.as_ref(), true);
+                assert_eq!(t, "Downloading update…", "{method} on {host:?}");
+                assert_eq!(a, UpdateAction::None, "{method} on {host:?}");
+            }
+            // Staged on a managed layout with a resolvable relaunch target.
+            let s = status(
+                r#"{"current":"6.21.2","available":true,"latest":"6.22.0","method":"managed",
+                    "staged":true,"stagedVersion":"6.22.0"}"#,
+            );
+            let (t, a) = view(s.as_ref(), true);
+            assert_eq!(t, "Restart to update to 6.22.0");
+            assert_eq!(a, UpdateAction::Relaunch);
+            // Same, but the layout can't be relaunched from: informational only.
+            let (t, a) = view(s.as_ref(), false);
+            assert_eq!(t, "Update 6.22.0 staged - restart mStream to finish");
+            assert_eq!(a, UpdateAction::None);
+            // Staged version already running (post-apply file lag): up to date.
+            let s = status(
+                r#"{"current":"6.22.0","available":false,"method":"managed",
+                    "staged":true,"stagedVersion":"6.22.0"}"#,
+            );
+            let (t, a) = view(s.as_ref(), true);
+            assert_eq!(t, "Up to date (6.22.0)");
+            assert_eq!(a, UpdateAction::None);
+            // Non-managed with an update: availability + the releases page.
+            let s = status(r#"{"current":"6.21.2","available":true,"latest":"6.22.0","method":"docker"}"#);
+            let (t, a) = view(s.as_ref(), true);
+            assert_eq!(t, "Update available (6.22.0)");
+            assert_eq!(a, UpdateAction::OpenReleases);
+            // A pkg install the server has not downloaded for (notify mode,
+            // a failed or not-yet-started background download): a Mac
+            // downloads the release's own .pkg, never a page; any other
+            // host (a status file that cannot be its own) the releases page.
+            // With no downloadUrl in the file, the URL built here, unconfirmed.
+            let s = status(r#"{"current":"6.21.2","available":true,"latest":"6.22.0","method":"pkg"}"#);
+            let (t, a) = view(s.as_ref(), true);
+            if host == InstallerHost::MacOs {
+                assert_eq!(t, "Download update 6.22.0");
+                assert_eq!(
+                    a,
+                    UpdateAction::DownloadInstaller(format!(
+                        "https://github.com/IrosTheBeggar/mStream/releases/download/v6.22.0/mStream-6.22.0-darwin-{THIS_PKG_CPU}.pkg"
+                    ))
+                );
+                assert!(!a.is_handoff());
+            } else {
+                assert_eq!(t, "Update available (6.22.0)", "{host:?}");
+                assert_eq!(a, UpdateAction::OpenReleases, "{host:?}");
+            }
+            // The server names the download (downloadUrl): the same string as
+            // the URL built here confirms it, and the Mac opens the URL built
+            // here. With no mirror that is GitHub's tag-pinned asset; with
+            // one (the server's own MSTREAM_RELEASE_BASE: it is this
+            // launcher's child) the mirror's copy, over http or https. No
+            // downloadUrl, or a null one, names none: the URL built here,
+            // unconfirmed.
+            let pkg_status_raw = |download_url: &str| {
+                status(&format!(
+                    r#"{{"current":"6.21.2","available":true,"latest":"6.22.0","method":"pkg","downloadUrl":{download_url}}}"#
+                ))
+            };
+            let pkg_status = |url: &str| pkg_status_raw(&format!(r#""{url}""#));
+            let page = ("Update available (6.22.0)".to_string(), UpdateAction::OpenReleases);
+            let name = format!("mStream-6.22.0-darwin-{THIS_PKG_CPU}.pkg");
+            let github = format!("https://github.com/IrosTheBeggar/mStream/releases/download/v6.22.0/{name}");
+            let mirror_http = "http://mirror.local/mstream";
+            let mirror_https = "https://files.corp.example:8443/a/b/c/";
+            let at_mirror_http = format!("{mirror_http}/{name}");
+            let at_mirror_https = format!("{mirror_https}{name}");
+            for (mirror, url) in [(None, &github), (Some(mirror_http), &at_mirror_http), (Some(mirror_https), &at_mirror_https)] {
+                let download = ("Download update 6.22.0".to_string(), UpdateAction::DownloadInstaller(url.clone()));
+                let want = if host == InstallerHost::MacOs { &download } else { &page };
+                for (s, how) in [(pkg_status(url), "named"), (pkg_status_raw("null"), "null"), (status(r#"{"current":"6.21.2","available":true,"latest":"6.22.0","method":"pkg"}"#), "absent")] {
+                    assert_eq!(&view_m(s.as_ref(), mirror), want, "{how} {url} with {mirror:?} on {host:?}");
+                }
+            }
+            // Anything else the server names keeps the page on every host,
+            // mirror or none: the releases page itself (the release carries
+            // no .pkg for this install, so the URL built here would 404),
+            // the very asset on a host the operator never configured (the
+            // file's URL is never opened), GitHub's asset while a mirror is
+            // set or the mirror's without one (a file left by a run under
+            // another environment), another CPU's, and what the status
+            // parse refuses: a path with a space, one past 512 bytes, a
+            // value that is not a string. The server named a download each
+            // time, so none of them reads as naming none.
+            let other_cpu = if THIS_PKG_CPU == "arm64" { "x64" } else { "arm64" };
+            let deep = "a".repeat(600);
+            let releases_page = r#""https://github.com/IrosTheBeggar/mStream/releases/latest""#.to_string();
+            for (mirror, raw) in [
+                (None, releases_page.clone()),
+                (Some(mirror_https), releases_page),
+                (None, format!(r#""https://evil.example/{name}""#)),
+                (None, format!(r#""https://github.com/evil/mStream/releases/download/v6.22.0/{name}""#)),
+                (Some(mirror_http), format!(r#""https://evil.example/mstream/{name}""#)),
+                (Some(mirror_https), format!(r#""{github}""#)),
+                (None, format!(r#""{at_mirror_https}""#)),
+                (None, format!(r#""{}""#, github.replace(THIS_PKG_CPU, other_cpu))),
+                (None, format!(r#""https://nas.local/mStream releases/{name}""#)),
+                (None, format!(r#""https://mirror.local/{deep}/{name}""#)),
+                (None, "42".to_string()),
+                (None, r#"{"href":"x"}"#.to_string()),
+            ] {
+                assert_eq!(view_m(pkg_status_raw(&raw).as_ref(), mirror), page, "{raw} with {mirror:?} on {host:?}");
+            }
+            // A release the server withholds: skipped by the operator, held
+            // by the boot watchdog, or from a feed this server cannot read.
+            // The server fetches none of them, so no host downloads one,
+            // not even when the server's URL confirms the one built here:
+            // the line and the page the tray always showed for them.
+            for reason in ["skipped", "held", "notifyOnly"] {
+                for (mirror, named) in [
+                    (None, String::new()),
+                    (None, format!(r#","downloadUrl":"{github}""#)),
+                    (Some(mirror_http), format!(r#","downloadUrl":"{at_mirror_http}""#)),
+                ] {
+                    let s = status(&format!(
+                        r#"{{"current":"6.21.2","available":true,"latest":"6.22.0","method":"pkg","{reason}":true{named}}}"#
+                    ));
+                    assert_eq!(view_m(s.as_ref(), mirror), page, "{reason}{named} with {mirror:?} on {host:?}");
+                }
+            }
+            // Up to date on a pkg install: nothing to download.
+            let s = status(r#"{"current":"6.22.0","available":false,"latest":"6.22.0","method":"pkg"}"#);
+            assert_eq!(view(s.as_ref(), true), ("Up to date (6.22.0)".to_string(), UpdateAction::None), "{host:?}");
+        }
+    }
+
+    #[test]
+    fn a_macs_download_url_is_built_as_the_server_builds_it() {
+        // "Download update" opens this URL and no other, never the status
+        // file's (whose downloadUrl only confirms it): exactly the asset
+        // update-check.js downloads (assetUrl + installerAssetName), for
+        // each CPU a release builds. Without a mirror, the tag-pinned
+        // GitHub asset.
+        assert_eq!(
+            pkg_download_url("6.22.0", "arm64", None).as_deref(),
+            Some("https://github.com/IrosTheBeggar/mStream/releases/download/v6.22.0/mStream-6.22.0-darwin-arm64.pkg")
         );
-        let (t, a) = update_item_view(s.as_ref(), ud, true);
-        assert_eq!(t, "Restart to update to 6.22.0");
-        assert_eq!(a, UpdateAction::Relaunch);
-        // Same, but the layout can't be relaunched from: informational only.
-        let (t, a) = update_item_view(s.as_ref(), ud, false);
-        assert_eq!(t, "Update 6.22.0 staged - restart mStream to finish");
-        assert_eq!(a, UpdateAction::None);
-        // Staged version already running (post-apply file lag): up to date.
-        let s = status(
-            r#"{"current":"6.22.0","available":false,"method":"managed",
-                "staged":true,"stagedVersion":"6.22.0"}"#,
+        assert_eq!(
+            pkg_download_url("10.0.1", "x64", None).as_deref(),
+            Some("https://github.com/IrosTheBeggar/mStream/releases/download/v10.0.1/mStream-10.0.1-darwin-x64.pkg")
         );
-        let (t, a) = update_item_view(s.as_ref(), ud, true);
-        assert_eq!(t, "Up to date (6.22.0)");
-        assert_eq!(a, UpdateAction::None);
-        // Non-managed with an update: availability + the releases page.
-        let s = status(r#"{"current":"6.21.2","available":true,"latest":"6.22.0","method":"docker"}"#);
-        let (t, a) = update_item_view(s.as_ref(), ud, true);
-        assert_eq!(t, "Update available (6.22.0)");
-        assert_eq!(a, UpdateAction::OpenReleases);
+        // With one, the file of that name in the mirror's flat directory,
+        // its trailing slashes trimmed as assetUrl trims them: http or
+        // https, on a port, under a deep path, on loopback as CI's is.
+        for (mirror, url) in [
+            ("http://mirror.local/mstream", "http://mirror.local/mstream/mStream-6.22.0-darwin-arm64.pkg"),
+            ("https://mirror.local/mstream///", "https://mirror.local/mstream/mStream-6.22.0-darwin-arm64.pkg"),
+            (
+                "https://files.corp.example:8443/a/b/c",
+                "https://files.corp.example:8443/a/b/c/mStream-6.22.0-darwin-arm64.pkg",
+            ),
+            ("http://127.0.0.1:8765", "http://127.0.0.1:8765/mStream-6.22.0-darwin-arm64.pkg"),
+        ] {
+            assert_eq!(pkg_download_url("6.22.0", "arm64", Some(mirror)).as_deref(), Some(url), "{mirror}");
+        }
+        // A mirror the server cannot fetch from, or one that would hand
+        // the browser's opener anything but one http(s) token, builds
+        // nothing (the releases page instead): another scheme or an
+        // uppercase one, none at all, an option-shaped value, whitespace,
+        // a control character, non-ASCII (a value that was not UTF-8
+        // included), past 512 bytes.
+        let long = format!("https://mirror.local/{}", "a".repeat(512));
+        for mirror in [
+            "file:///Volumes/releases",
+            "javascript:alert(1)//",
+            "ftp://mirror.local",
+            "HTTPS://mirror.local",
+            "mirror.local/mstream",
+            "-aCalculator",
+            " ",
+            "https://nas.local/mStream releases",
+            "https://mirror.local/\n",
+            "https://mirr\u{f6}r.local",
+            "https://mirror.local/\u{fffd}",
+            long.as_str(),
+        ] {
+            assert_eq!(pkg_download_url("6.22.0", "arm64", Some(mirror)), None, "{mirror:?}");
+        }
+        // This build names one of them.
+        assert!(pkg_download_url("6.22.0", THIS_PKG_CPU, None).is_some());
+        // Nothing but a plain X.Y.Z reaches the URL, and no other CPU,
+        // mirror or none.
+        for mirror in [None, Some("https://mirror.local/mstream")] {
+            for v in ["", "6.22", "v6.22.0", "6.22.0-rc.1", "6.22.0/../../evil", "6.22.0?x=1", "6.22.0#", "1.2.3 "] {
+                assert_eq!(pkg_download_url(v, "arm64", mirror), None, "{v:?} with {mirror:?}");
+            }
+            for cpu in ["", "aarch64", "x86_64", "universal", "arm64/../x"] {
+                assert_eq!(pkg_download_url("6.22.0", cpu, mirror), None, "{cpu:?} with {mirror:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_servers_download_url_only_confirms_the_url_built_here() {
+        // A Mac's pkg status that names `named` as its download.
+        let ud = std::path::Path::new("/data/updates");
+        let view = |named: &str, mirror: Option<&str>| {
+            let s = status(&format!(
+                r#"{{"current":"6.21.2","available":true,"latest":"6.22.0","method":"pkg","downloadUrl":{}}}"#,
+                serde_json::json!(named)
+            ));
+            update_item_view(s.as_ref(), ud, true, InstallerHost::MacOs, mirror)
+        };
+        let page = ("Update available (6.22.0)".to_string(), UpdateAction::OpenReleases);
+        let other_cpu = if THIS_PKG_CPU == "arm64" { "x64" } else { "arm64" };
+        for mirror in [None, Some("https://mirror.local/mstream"), Some("http://mirror.local/mstream")] {
+            let built = pkg_download_url("6.22.0", THIS_PKG_CPU, mirror).unwrap();
+            // The very string: the URL built here, opened as built.
+            assert_eq!(
+                view(&built, mirror),
+                ("Download update 6.22.0".to_string(), UpdateAction::DownloadInstaller(built.clone())),
+                "{mirror:?}"
+            );
+            // Every near miss of it keeps the page, whatever a browser
+            // would make of it: there is no URL parser to get wrong.
+            let (scheme, rest) = built.split_once("://").unwrap();
+            let (host, path) = rest.split_once('/').unwrap();
+            let name = path.rsplit('/').next().unwrap();
+            for near in [
+                // The releases page: the release carries no .pkg for this
+                // install.
+                RELEASES_URL.to_string(),
+                // The other CPU's, another version's.
+                built.replace(THIS_PKG_CPU, other_cpu),
+                built.replace("6.22.0", "6.23.0"),
+                // A query, a fragment, a trailing slash, the name as the
+                // prefix of another.
+                format!("{built}?x=1"),
+                format!("{built}#x"),
+                format!("{built}/"),
+                format!("{built}.exe"),
+                // Userinfo, an empty host, another host.
+                format!("{scheme}://evil@{host}/{path}"),
+                format!("{scheme}:///{path}"),
+                format!("{scheme}://evil.example/{path}"),
+                // Another scheme, an uppercase one.
+                format!("javascript:alert(1)//{name}"),
+                format!("file:///Users/x/Downloads/{name}"),
+                format!("{}://{rest}", scheme.to_uppercase()),
+                // A `..` segment, whitespace inside, nothing at all.
+                format!("{scheme}://{host}/x/../{path}"),
+                format!("{scheme}://{host}/my mirror/{name}"),
+                String::new(),
+            ] {
+                assert_eq!(view(&near, mirror), page, "{near:?} with {mirror:?}");
+            }
+        }
+    }
+
+    /// A status file whose server staged `installer` under `method`.
+    fn staged_installer(method: &str, installer: &std::path::Path) -> Option<crate::paths::UpdateStatus> {
+        status(&format!(
+            r#"{{"current":"6.21.2","available":true,"latest":"6.22.0","method":"{method}",
+                "staged":true,"stagedVersion":"6.22.0","installerPath":{}}}"#,
+            serde_json::json!(installer.to_string_lossy())
+        ))
+    }
+
+    #[test]
+    fn a_downloaded_installer_is_offered_only_on_its_own_host() {
+        let dir = std::env::temp_dir().join(format!("mstream-upd-view-{}", std::process::id()));
+        let ud = dir.join("updates");
+        std::fs::create_dir_all(&ud).unwrap();
+        let (win, mac, other) = (InstallerHost::Windows, InstallerHost::MacOs, InstallerHost::Other);
+        let available = ("Update available (6.22.0)".to_string(), UpdateAction::OpenReleases);
+        let download = (
+            "Download update 6.22.0".to_string(),
+            UpdateAction::DownloadInstaller(pkg_download_url("6.22.0", THIS_PKG_CPU, None).unwrap()),
+        );
+        // macOS: the downloaded .pkg is one click from Installer.app, for
+        // either architecture — and it is no handoff: never applied
+        // unasked, never a stopped server.
+        for arch in ["arm64", "x64"] {
+            let pkg = ud.join(format!("mStream-6.22.0-darwin-{arch}.pkg"));
+            std::fs::write(&pkg, "x").unwrap();
+            let s = staged_installer("pkg", &pkg);
+            let (t, a) = update_item_view(s.as_ref(), &ud, true, mac, None);
+            assert_eq!(t, "Install update 6.22.0");
+            assert_eq!(a, UpdateAction::OpenInstaller(pkg.clone()));
+            assert!(!a.is_handoff());
+            // The same file means nothing to a host that cannot open it.
+            assert_eq!(update_item_view(s.as_ref(), &ud, true, win, None), available);
+            assert_eq!(update_item_view(s.as_ref(), &ud, true, other, None), available);
+        }
+        // A pkg status whose installer is gone, sits outside the updates
+        // dir, or is not a pkg: the release's own .pkg, fetched by the
+        // browser, never the file the status names.
+        let gone = ud.join("mStream-9.9.9-darwin-arm64.pkg");
+        let outside = dir.join("mStream-6.22.0-darwin-arm64.pkg");
+        std::fs::write(&outside, "x").unwrap();
+        let exe = ud.join("mStream-6.22.0-win-x64-setup.exe");
+        std::fs::write(&exe, "x").unwrap();
+        for p in [&gone, &outside, &exe] {
+            assert_eq!(update_item_view(staged_installer("pkg", p).as_ref(), &ud, true, mac, None), download, "{}", p.display());
+        }
+        // Windows: the verified setup.exe runs silently — a handoff, as
+        // before — and only there, only for an Inno install.
+        let s = staged_installer("inno", &exe);
+        let (t, a) = update_item_view(s.as_ref(), &ud, true, win, None);
+        assert_eq!(t, "Install update 6.22.0");
+        assert_eq!(a, UpdateAction::RunInstaller(exe.clone()));
+        assert!(a.is_handoff());
+        assert_eq!(update_item_view(s.as_ref(), &ud, true, mac, None), available);
+        // Method and host must agree: an Inno status naming a .pkg on a
+        // Mac, or a pkg status naming the setup.exe on Windows, runs nothing.
+        let pkg = ud.join("mStream-6.22.0-darwin-arm64.pkg");
+        assert_eq!(update_item_view(staged_installer("inno", &pkg).as_ref(), &ud, true, mac, None), available);
+        assert_eq!(update_item_view(staged_installer("pkg", &exe).as_ref(), &ud, true, win, None), available);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opening_the_installer_is_never_an_apply() {
+        // perform_apply refuses whatever is no handoff before it touches
+        // the server: an Installer.app click leaves the server serving and
+        // this launcher running.
+        let shared = Arc::new(Shared {
+            proc: Mutex::new(None),
+            generation: AtomicU64::new(7),
+            quitting: AtomicBool::new(false),
+        });
+        let log = Logger(std::env::temp_dir().join(format!("mstream-open-installer-test-{}.log", std::process::id())));
+        for action in [
+            UpdateAction::OpenInstaller(PathBuf::from("/data/updates/mStream-6.22.0-darwin-arm64.pkg")),
+            UpdateAction::DownloadInstaller(pkg_download_url("6.22.0", "arm64", None).unwrap()),
+            UpdateAction::OpenReleases,
+            UpdateAction::None,
+        ] {
+            assert!(!action.is_handoff(), "{action:?}");
+            assert!(perform_apply(&shared, &action, None, &[], &log).is_err(), "{action:?}");
+            assert!(!shared.quitting.load(Ordering::SeqCst), "{action:?} started the quit path");
+            assert_eq!(shared.generation.load(Ordering::SeqCst), 7, "{action:?} stopped the server");
+        }
+        assert!(UpdateAction::Relaunch.is_handoff());
+        assert!(UpdateAction::RunInstaller(PathBuf::from("setup.exe")).is_handoff());
+        let _ = std::fs::remove_file(&log.0);
     }
 
     #[test]
@@ -2112,29 +2756,77 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mstream-upd-{}", std::process::id()));
         let ud = dir.join("updates");
         std::fs::create_dir_all(&ud).unwrap();
+        let (win, mac, other) = (InstallerHost::Windows, InstallerHost::MacOs, InstallerHost::Other);
         let good = ud.join("mStream-6.22.0-win-x64-setup.exe");
         std::fs::write(&good, "x").unwrap();
-        assert_eq!(valid_installer(Some(&good), &ud), Some(good.clone()));
-        // Wrong directory: refused even with a plausible name.
+        assert_eq!(valid_installer(Some(&good), &ud, win), Some(good.clone()));
+        // Each host takes its own asset only: the setup.exe is nothing to a
+        // Mac or to Linux.
+        assert_eq!(valid_installer(Some(&good), &ud, mac), None);
+        assert_eq!(valid_installer(Some(&good), &ud, other), None);
+        // macOS: either architecture's package, and only on macOS.
+        for arch in ["arm64", "x64"] {
+            let pkg = ud.join(format!("mStream-6.22.0-darwin-{arch}.pkg"));
+            std::fs::write(&pkg, "x").unwrap();
+            assert_eq!(valid_installer(Some(&pkg), &ud, mac), Some(pkg.clone()), "{arch}");
+            assert_eq!(valid_installer(Some(&pkg), &ud, win), None, "{arch}");
+            assert_eq!(valid_installer(Some(&pkg), &ud, other), None, "{arch}");
+        }
+        // Wrong directory: refused even with a plausible name — beside the
+        // updates dir, below it, or reached through a `..` that leads out.
         let outside = dir.join("mStream-6.22.0-win-x64-setup.exe");
         std::fs::write(&outside, "x").unwrap();
-        assert_eq!(valid_installer(Some(&outside), &ud), None);
-        // Wrong name shape inside the right dir: refused.
-        let odd = ud.join("evil.exe");
-        std::fs::write(&odd, "x").unwrap();
-        assert_eq!(valid_installer(Some(&odd), &ud), None);
+        assert_eq!(valid_installer(Some(&outside), &ud, win), None);
+        let outside_pkg = dir.join("mStream-6.22.0-darwin-arm64.pkg");
+        std::fs::write(&outside_pkg, "x").unwrap();
+        assert_eq!(valid_installer(Some(&outside_pkg), &ud, mac), None);
+        let nested = ud.join("sub");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("mStream-6.22.0-darwin-x64.pkg"), "x").unwrap();
+        assert_eq!(valid_installer(Some(&nested.join("mStream-6.22.0-darwin-x64.pkg")), &ud, mac), None);
+        let dotdot = ud.join("..").join("mStream-6.22.0-win-x64-setup.exe");
+        assert!(dotdot.exists(), "the escape names a real file");
+        assert_eq!(valid_installer(Some(&dotdot), &ud, win), None);
+        // Wrong name shape inside the right dir: refused on every host.
+        for odd in [
+            "evil.exe",
+            "evil.pkg",
+            "mStream-win-x64-setup.exe",
+            "mStream--darwin-x64.pkg",
+            "mStream-v6.22.0-darwin-x64.pkg",
+            "mStream-6.22.0 x-darwin-arm64.pkg",
+            "mStream-6.22.0-darwin-universal.pkg",
+            "mStream-6.22.0-darwin-arm64.pkg.command",
+            "mStream-6.22.0-linux-x64.pkg",
+            "mstream-6.22.0-darwin-arm64.pkg",
+        ] {
+            let p = ud.join(odd);
+            std::fs::write(&p, "x").unwrap();
+            for host in [win, mac, other] {
+                assert_eq!(valid_installer(Some(&p), &ud, host), None, "{odd} on {host:?}");
+            }
+        }
         // Missing file: refused.
-        assert_eq!(valid_installer(Some(&ud.join("mStream-9.9.9-win-x64-setup.exe")), &ud), None);
-        assert_eq!(valid_installer(None, &ud), None);
-        // An inno status pointing outside the updates dir renders inert.
-        let s = status(&format!(
-            r#"{{"current":"6.21.2","available":true,"latest":"6.22.0","method":"inno",
-                "staged":true,"stagedVersion":"6.22.0","installerPath":{}}}"#,
-            serde_json::json!(outside.to_string_lossy())
-        ));
-        let (t, a) = update_item_view(s.as_ref(), &ud, true);
+        assert_eq!(valid_installer(Some(&ud.join("mStream-9.9.9-win-x64-setup.exe")), &ud, win), None);
+        assert_eq!(valid_installer(Some(&ud.join("mStream-9.9.9-darwin-arm64.pkg")), &ud, mac), None);
+        assert_eq!(valid_installer(None, &ud, win), None);
+        assert_eq!(valid_installer(None, &ud, mac), None);
+        // A pre-release version's characters pass.
+        let rc = ud.join("mStream-6.23.0-rc.1-darwin-arm64.pkg");
+        std::fs::write(&rc, "x").unwrap();
+        assert_eq!(valid_installer(Some(&rc), &ud, mac), Some(rc.clone()));
+        // An inno status pointing outside the updates dir renders inert —
+        // and so does a pkg one.
+        let (t, a) = update_item_view(staged_installer("inno", &outside).as_ref(), &ud, true, win, None);
         assert_eq!(a, UpdateAction::OpenReleases, "falls back to availability, never runs the file");
         assert_eq!(t, "Update available (6.22.0)");
+        let (t, a) = update_item_view(staged_installer("pkg", &outside_pkg).as_ref(), &ud, true, mac, None);
+        assert_eq!(
+            a,
+            UpdateAction::DownloadInstaller(pkg_download_url("6.22.0", THIS_PKG_CPU, None).unwrap()),
+            "falls back to the release's own download, never opens the file"
+        );
+        assert_eq!(t, "Download update 6.22.0");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

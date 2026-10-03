@@ -211,13 +211,12 @@ pub fn setup_complete(config: &Path) -> bool {
 }
 
 /// Where a launcher-initiated browser open should land (the announce after
-/// boot, a second instance yielding, a macOS reopen): the player once setup
-/// has happened, the ADMIN PANEL before it — a fresh install's player is a
-/// dead end. (The post-boot announce goes further and opens the setup
-/// wizard itself on fresh installs; this is its browser fallback and every
-/// other gesture's routing.) The tray's explicit "Open Admin Panel in
-/// browser" item (under Manage server) does NOT route through this — it
-/// always opens /admin, literally what it says.
+/// boot, a second instance yielding, a macOS reopen, the tray's player
+/// item and left click when no desktop player opens): the player once
+/// setup has happened, the ADMIN PANEL before it — a fresh install's
+/// player is a dead end. (The post-boot announce goes further and opens
+/// the setup wizard itself on fresh installs; this is its browser fallback
+/// and every other gesture's routing.)
 pub fn browse_target(config: &Path, ep: &Endpoint) -> String {
     if setup_complete(config) {
         server_url(ep)
@@ -247,11 +246,11 @@ pub fn player_key() -> String {
     format!("mstream-player-{plat}-{arch}{ext}")
 }
 
-/// The terminal player behind the wizard, Quick Connect and the Manage
-/// server rooms: the copy build-bun stages next to the server binary in
+/// The bundled player behind the setup wizard, Quick Connect and "Open
+/// mStream Player": the copy build-bun stages next to the server binary in
 /// every desktop bundle, else one the server's runtime fetch installed in
-/// the shared data home. None sends those items to their browser fallbacks
-/// (the webapp's Quick Connect modal, the admin panel's sections).
+/// the shared data home. None sends each of them to its browser fallback
+/// (the admin panel, the webapp's Quick Connect modal, the web player).
 pub fn find_player_bin(server_bin: &Path, data_home: &Path) -> Option<PathBuf> {
     let key = player_key();
     let bundled = server_bin.parent()?.join("bin").join("mstream-player").join(&key);
@@ -531,10 +530,26 @@ pub fn update_status_file() -> PathBuf {
     data_home().join("update-status.json")
 }
 
+/// The release mirror the server's update checker fetches from:
+/// MSTREAM_RELEASE_BASE, as releaseBase and assetUrl in
+/// src/util/update-check.js read it (empty is unset there too). Only a
+/// --supervised server writes the status file (supervisedByLauncher), and
+/// that server is this launcher's own child, spawned with this environment
+/// (server::spawn drops only __CFBundleIdentifier), so this is the mirror
+/// behind the URLs the file names. A file written under another
+/// environment (an earlier run's, a hand-started --supervised server's)
+/// names that environment's mirror, and the tray's comparison turns it
+/// away. Decoded lossily: a value that is not UTF-8 keeps its
+/// replacement characters and so builds no URL (download_url_shaped).
+pub fn release_mirror() -> Option<String> {
+    env_dir("MSTREAM_RELEASE_BASE").map(|v| v.to_string_lossy().into_owned())
+}
+
 /// What the tray needs from update-status.json. Everything here is DATA from
 /// a file another process writes: versions are shape-checked before display,
-/// paths are validated against expectations before use, and nothing else is
-/// trusted at all (no URLs, no commands).
+/// paths are validated against expectations before use, the one URL is
+/// only ever compared with the URL the launcher builds itself, and nothing
+/// else is trusted at all (no URLs, no commands).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UpdateStatus {
     /// The running server's own version, as it reported it at boot.
@@ -555,6 +570,67 @@ pub struct UpdateStatus {
     /// inno/pkg: the verified installer the server downloaded. Validated
     /// (location + name shape) before the launcher will touch it.
     pub installer_path: Option<PathBuf>,
+    /// Where the server says a human gets `latest` (downloadUrlFor in
+    /// update-check.js): the release's own installer when the release
+    /// carries this install's (assetUrl: GitHub's tag-pinned asset, or the
+    /// file of that name under MSTREAM_RELEASE_BASE), the releases page
+    /// when it does not. Where the asset is hosted the launcher knows as
+    /// well as the server does (release_mirror), and it builds the same URL
+    /// itself; whether the release carries it only the server knows, from
+    /// the manifest's asset list. DATA, read as that answer and never
+    /// opened: a Mac's "Download update" opens the URL the launcher built
+    /// when this names the same string (tray_app::update_item_view).
+    pub download_url: DownloadUrl,
+    /// `latest` is the version the operator skipped (updates.skipVersion).
+    pub skipped: bool,
+    /// `latest` failed to boot after an earlier update and the boot
+    /// watchdog holds it back (update-hold.json).
+    pub held: bool,
+    /// The release feed speaks an update format newer than this server's:
+    /// `latest` is announced, and the way to it is re-running the install.
+    pub notify_only: bool,
+}
+
+/// The status file's downloadUrl, in the three states the tray tells
+/// apart (tray_app::update_item_view). A file that names no download gets
+/// the URL the launcher builds; one that names a usable string confirms
+/// that URL by naming the same one; one that names something this gate
+/// refuses gets the releases page, as a string naming anything else does.
+/// The server did name a download there, and the launcher cannot read
+/// which, so taking it as "names none" could send the Mac to a .pkg the
+/// release does not carry.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum DownloadUrl {
+    /// No downloadUrl key, or JSON null (what update-check.js writes when
+    /// nothing is available).
+    #[default]
+    Absent,
+    /// A string of download_url_shaped's shape. Only that is checked here;
+    /// the tray compares it with the URL it builds.
+    Named(String),
+    /// Anything else the server wrote: not a string, too long, or with a
+    /// character outside printable ASCII.
+    Unusable,
+}
+
+/// The shape a download URL must have for the tray to handle it at all,
+/// read from the status file or built on the mirror: at most 512 bytes of
+/// printable ASCII (no whitespace, no control characters), so it is one
+/// token wherever it lands, a log line and the browser opener's argument
+/// included.
+pub fn download_url_shaped(u: &str) -> bool {
+    u.len() <= 512 && u.chars().all(|c| c.is_ascii_graphic())
+}
+
+impl UpdateStatus {
+    /// Whether the server has ruled `latest` out of everything but a
+    /// mention: update-check.js neither downloads nor applies a skipped,
+    /// held or notify-only release (backgroundStageWanted, stageNow), and
+    /// the admin panel offers no button for one, so the tray must not hand
+    /// the same release over by another road.
+    pub fn latest_withheld(&self) -> bool {
+        self.skipped || self.held || self.notify_only
+    }
 }
 
 /// A display-safe version: bare digits-and-dots triple, bounded length —
@@ -606,6 +682,16 @@ pub fn parse_update_status(doc: &str) -> Option<UpdateStatus> {
             .filter(|t| t.len() <= 40 && t.chars().all(|c| c.is_ascii_graphic()))
             .map(str::to_string),
         installer_path: v.get("installerPath").and_then(|x| x.as_str()).map(PathBuf::from),
+        download_url: match v.get("downloadUrl") {
+            None | Some(serde_json::Value::Null) => DownloadUrl::Absent,
+            Some(x) => x
+                .as_str()
+                .filter(|u| download_url_shaped(u))
+                .map_or(DownloadUrl::Unusable, |u| DownloadUrl::Named(u.to_string())),
+        },
+        skipped: flag("skipped"),
+        held: flag("held"),
+        notify_only: flag("notifyOnly"),
     })
 }
 
@@ -1165,6 +1251,49 @@ mod tests {
         // A method with unexpected characters is dropped, not displayed.
         let odd = parse_update_status(r#"{"method": "Managed; rm -rf /"}"#).unwrap();
         assert_eq!(odd.method, None);
+        // The server's reasons to leave `latest` alone, each on its own and
+        // read as booleans only.
+        assert!(!s.skipped && !s.held && !s.notify_only && !s.latest_withheld());
+        for (key, pick) in [
+            ("skipped", (|s: &UpdateStatus| s.skipped) as fn(&UpdateStatus) -> bool),
+            ("held", |s| s.held),
+            ("notifyOnly", |s| s.notify_only),
+        ] {
+            let on = parse_update_status(&format!(r#"{{"{key}": true}}"#)).unwrap();
+            assert!(pick(&on) && on.latest_withheld(), "{key}");
+            let off = parse_update_status(&format!(r#"{{"{key}": "true"}}"#)).unwrap();
+            assert!(!pick(&off) && !off.latest_withheld(), "{key}: a non-bool is false");
+        }
+        // The server's download URL: absent or null (it names none), a
+        // printable ASCII string of bounded length (named: the tray compares
+        // it with the URL it builds, tray_app::update_item_view), or
+        // anything else it wrote (unusable, never read as naming none).
+        assert_eq!(s.download_url, DownloadUrl::Absent, "absent");
+        let named = |doc: &str| parse_update_status(doc).unwrap().download_url;
+        assert_eq!(named(r#"{"downloadUrl": null}"#), DownloadUrl::Absent, "null");
+        let asset = "https://github.com/IrosTheBeggar/mStream/releases/download/v6.22.0/mStream-6.22.0-darwin-arm64.pkg";
+        assert_eq!(named(&format!(r#"{{"downloadUrl": "{asset}"}}"#)), DownloadUrl::Named(asset.to_string()));
+        // A page passes too: the shape is all this checks.
+        let page = "https://github.com/IrosTheBeggar/mStream/releases/latest";
+        assert_eq!(named(&format!(r#"{{"downloadUrl": "{page}"}}"#)), DownloadUrl::Named(page.to_string()));
+        let longest = format!("https://m/{}", "a".repeat(502));
+        assert_eq!(longest.len(), 512);
+        assert_eq!(named(&format!(r#"{{"downloadUrl": "{longest}"}}"#)), DownloadUrl::Named(longest.clone()));
+        assert_eq!(named(&format!(r#"{{"downloadUrl": "{longest}a"}}"#)), DownloadUrl::Unusable, "length-capped");
+        for odd in [
+            "42",
+            "true",
+            r#"["https://x/y.pkg"]"#,
+            r#"{"href": "https://x/y.pkg"}"#,
+            r#""https://x/a b.pkg""#,
+            r#""https://x/y.pkg\n""#,
+            r#""https://x/y.pkg\u0000""#,
+            r#""https://x/y.pkg\u001b[31m""#,
+            r#""https://x/y\u00e9.pkg""#,
+            r#""\thttps://x/y.pkg""#,
+        ] {
+            assert_eq!(named(&format!(r#"{{"downloadUrl": {odd}}}"#)), DownloadUrl::Unusable, "{odd}");
+        }
     }
 
     #[test]
