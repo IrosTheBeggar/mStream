@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { canonicalFields, stampWindowsVersionInfo } from './win-versioninfo.mjs';
 import { fetchBytesWithRetry } from './fetch-retry.mjs';
+import { choosePlayerAsset, playerFileDescription, stagedLine } from './mstream-player-asset.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
@@ -443,6 +444,15 @@ for (const m of [
 // — the runtime fetch is the fallback. MSTREAM_PLAYER_BASE mirrors apply
 // (pins still hold); MSTREAM_ALLOW_MISSING_PLAYER is the deliberate
 // escape hatch.
+//
+// Which family: the release pins two (scripts/mstream-player-asset.mjs).
+// Bundles take the DESKTOP binary (a strict CLI superset of the terminal
+// one that also opens the GUI in its own window on an empty argv) when the
+// manifest pins one for this target, else the terminal one (arm Linux has
+// no desktop build) — and stage it under the TERMINAL file name either way,
+// so the launcher's lookup (rust-launcher/src/paths.rs), the server's
+// resolver and the CI checks see one name. npm/source/Docker installs keep
+// the terminal binary (the runtime fetch reads the terminal key only).
 if (!t.musl) {
   const plName = `mstream-player-${t.plat}-${t.arch}${t.ext}`;
   const plManifest = join(root, 'bin', 'mstream-player', 'manifest.json');
@@ -454,22 +464,25 @@ if (!t.musl) {
     console.warn(`  mstream-player not staged (${why}) — bundle falls back to runtime fetch`);
   };
   let entry = null;
+  let pick = null;
   try {
     const m = JSON.parse(readFileSync(plManifest, 'utf8'));
-    entry = m.assets?.[plName] ? { ...m.assets[plName], repo: m.repo, tag: m.tag } : null;
+    pick = choosePlayerAsset(m, { plat: t.plat, arch: t.arch, ext: t.ext, prefer: 'desktop' });
+    entry = pick ? { ...pick.entry, repo: m.repo, tag: m.tag } : null;
   } catch (_err) {
     // unreadable/absent manifest = the same no-entry skip below
   }
   if (!entry) {
-    skip(`no manifest entry for ${plName}`);
+    skip(`no manifest entry for ${plName} (nor its desktop twin)`);
   } else {
+    console.log(`  mstream-player: ${pick.note}`);
     // Same URL shape the runtime fetch uses — one derivation, no drift.
     const { deriveAssetUrl } = await import('../src/util/mstream-player-bootstrap.js');
     const base = (process.env.MSTREAM_PLAYER_BASE || '').replace(/\/+$/, '');
     const url = base ? `${base}/${entry.file}` : deriveAssetUrl(entry);
     const cacheDir = join(root, 'dist', 'player-cache');
     mkdirSync(cacheDir, { recursive: true });
-    const cached = join(cacheDir, `${entry.sha256.slice(0, 12)}-${plName}`);
+    const cached = join(cacheDir, `${entry.sha256.slice(0, 12)}-${pick.key}`);
     let bytes = null;
     if (existsSync(cached)) {
       bytes = readFileSync(cached);
@@ -489,7 +502,7 @@ if (!t.musl) {
       if (gotSha !== entry.sha256 || bytes.length !== entry.size) {
         // A hash mismatch is NEVER skippable — wrong bytes must not ship,
         // and must not poison the cache.
-        console.error(`  FATAL: mstream-player ${plName} failed verification (sha ${gotSha.slice(0, 12)}… vs pinned ${entry.sha256.slice(0, 12)}…, ${bytes.length} vs ${entry.size} bytes)`);
+        console.error(`  FATAL: mstream-player ${pick.key} failed verification (sha ${gotSha.slice(0, 12)}… vs pinned ${entry.sha256.slice(0, 12)}…, ${bytes.length} vs ${entry.size} bytes)`);
         process.exit(1);
       }
       writeFileSync(cached, bytes);
@@ -497,11 +510,15 @@ if (!t.musl) {
       const dest = join(contentRoot, 'bin', 'mstream-player', plName);
       writeFileSync(dest, bytes);
       if (t.plat !== 'win32') { chmodSync(dest, 0o755); }
-      console.log(`  staged mstream-player ${entry.tag}: bin/mstream-player/${plName} (${(entry.size / 1048576).toFixed(1)} MB, sha verified)`);
+      console.log(`  ${stagedLine({ family: pick.family, key: pick.key, tag: entry.tag, stagedName: plName, size: entry.size })}`);
       if (t.plat === 'win32') {
+        // FileDescription = what Task Manager (and, for the desktop family,
+        // its own window) shows; check-win-versioninfo.ps1 asserts it
+        // non-empty only, so either family passes.
         try {
-          await stampWindowsVersionInfo(dest, { ...winMeta, fileDescription: 'mStream Server Audio' });
-          console.log(`  stamped VersionInfo: bin/mstream-player/${plName} (${winMeta.productName} ${winMeta.version})`);
+          const fileDescription = playerFileDescription(pick.family);
+          await stampWindowsVersionInfo(dest, { ...winMeta, fileDescription });
+          console.log(`  stamped VersionInfo: bin/mstream-player/${plName} (${winMeta.productName} ${winMeta.version}, FileDescription '${fileDescription}')`);
         } catch (err) {
           const msg = `VersionInfo stamp failed for bin/mstream-player/${plName}: ${err.message}`;
           if (process.env.CI) { console.error(`  FATAL: ${msg}`); process.exit(1); }
