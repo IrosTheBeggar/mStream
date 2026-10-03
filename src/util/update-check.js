@@ -26,8 +26,10 @@
 // Modes (config: updates.mode, live-read so admin toggles need no reboot):
 //   notify - check only; every download/install is user-initiated
 //   stage  - background-stage for managed installs and background-download
-//            the Windows installer; applying still takes a restart / a click
-//   auto   - (default) additionally apply when idle: under the launcher, by
+//            the Windows installer and the macOS .pkg; applying still takes
+//            a restart / a click
+//   auto   - (default) additionally apply when idle (never a .pkg, which
+//            waits for a human in Installer.app): under the launcher, by
 //            flagging applyRequested in the status file (the launcher
 //            restarts into the staged version); headless, by exiting 0 so
 //            the supervisor's restart lands on the new version via the
@@ -195,6 +197,29 @@ export function detectInstallMethod({
 
   // A hand-extracted bundle, --portable, or anything else we don't own.
   return { method: 'portable' };
+}
+
+// The daily check's background-download gate, pure so the decision table is
+// unit-testable. Every method with something to fetch is fetched ahead of
+// the human: a managed bundle stages behind `current`, and the Windows
+// setup.exe and the macOS .pkg land verified in <data home>/updates, so the
+// tray's update item and the admin panel's button open bytes already on
+// disk instead of a releases page. notify mode, a manifest from the future,
+// a skipped or held version, and a staged copy of this very version all
+// leave it alone.
+export function backgroundStageWanted({ method, mode, notifyOnly, skipped, held, staged, stagedVersion }, version) {
+  if (mode === 'notify' || notifyOnly || skipped || held) { return false; }
+  if (method !== 'managed' && method !== 'inno' && method !== 'pkg') { return false; }
+  return !staged || stagedVersion !== version;
+}
+
+// Downloading is not applying. Auto mode applies a managed restart or a
+// silent Inno install on its own, but never a .pkg: only Installer.app can
+// install one and it needs a human, so nothing pops it unasked. The tray's
+// update item and requestApply (the admin panel's button) open it, each on
+// an explicit click.
+export function autoAppliesUnasked(method) {
+  return method === 'managed' || method === 'inno';
 }
 
 // ── Module state ────────────────────────────────────────────────────────────
@@ -546,10 +571,17 @@ async function doCheck(force) {
       const m = detectInstall();
       state.downloadUrl = downloadUrlFor(m.method, manifest);
       winston.info(`[update] mStream ${manifest.version} is available (running ${state.current}, install: ${m.method}${state.skipped ? ', SKIPPED by updates.skipVersion' : ''}${state.held ? ', HELD after a failed start' : ''})`);
-      const mode = updatesConfig().mode;
-      if (mode !== 'notify' && !state.notifyOnly && !state.skipped && !state.held
-          && (m.method === 'managed' || m.method === 'inno')
-          && (!state.staged || state.stagedVersion !== manifest.version)) {
+      // pkg downloads here too, but autoAppliesUnasked() keeps it out of
+      // maybeAutoApply: the verified .pkg waits for a click.
+      if (backgroundStageWanted({
+        method: m.method,
+        mode: updatesConfig().mode,
+        notifyOnly: state.notifyOnly,
+        skipped: state.skipped,
+        held: state.held,
+        staged: state.staged,
+        stagedVersion: state.stagedVersion,
+      }, manifest.version)) {
         stageNow(manifest); // async, single-flight; errors land in state
       }
     }
@@ -886,7 +918,7 @@ function maybeAutoApply() {
   if (updatesConfig().mode !== 'auto' || !state.staged || state.applyRequested) { return; }
   if (isSkipped(state.stagedVersion) || isHeld(state.stagedVersion)) { return; }
   const m = detectInstall();
-  if (m.method !== 'managed' && m.method !== 'inno') { return; }
+  if (!autoAppliesUnasked(m.method)) { return; }
   if (!idle()) { return; }
   if (m.method === 'managed' && !supervisedByLauncher()) {
     // Headless apply = exit(0), which is only an APPLY when something

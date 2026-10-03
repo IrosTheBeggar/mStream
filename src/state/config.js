@@ -371,9 +371,12 @@ const updatesOptions = Joi.object({
   check: Joi.boolean().default(true),
   // notify: report only, download nothing until a human clicks.
   // stage: background-download the new version - managed installs stage it
-  //   behind $ROOT/current, Windows setup.exe installs download the
-  //   verified installer - but applying still takes a restart or a click.
+  //   behind $ROOT/current, Windows setup.exe and macOS .pkg installs
+  //   download the verified installer - but applying still takes a restart
+  //   or a click.
   // auto (default): additionally apply once the server is genuinely idle
+  //   (never a .pkg: Installer.app needs a human, so that one waits for the
+  //   click however idle the server is)
   //   (no busy connections, no scan, and a quiet window since the last user
   //   request): under the tray launcher by asking it to restart into the
   //   staged version; headless by exiting 0 - but only when a supervisor

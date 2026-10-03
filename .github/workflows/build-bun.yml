@@ -1179,12 +1179,17 @@ jobs:
           # plist); ditto preserves the signed bundle bit-exactly.
           rm -rf pkgwork/root && mkdir -p pkgwork/root
           ditto "$APP" pkgwork/root/mStream.app
-          # postinstall (build/pkg-postinstall.sh): restart a RUNNING
-          # mStream into the freshly installed copy — terminate the
+          # postinstall (build/pkg-postinstall.sh): every install ends with
+          # mStream running as the console user. A RUNNING mStream is
+          # restarted into the freshly installed copy — terminate the
           # launcher by exact path (the supervision pipe stops its server
-          # gracefully), relaunch as the console user with --takeover.
-          # Without it the pkg is a pure payload swap and the old version
-          # keeps serving until a manual Quit + reopen.
+          # gracefully), relaunch with --takeover — because without it the
+          # pkg is a pure payload swap and the old version keeps serving
+          # until a manual Quit + reopen. One that was not running is
+          # started: --autostarted (tray only) when the user's data home
+          # holds the launcher's launcher.json, a plain first-run launch
+          # when not; never while something already listens on the app
+          # server's port, nor for a user with no GUI session.
           mkdir -p pkgwork/scripts
           install -m 755 build/pkg-postinstall.sh pkgwork/scripts/postinstall
           pkgbuild --analyze --root pkgwork/root pkgwork/component.plist
@@ -1323,8 +1328,9 @@ jobs:
           PKG="dist/installer/mStream-$VER-darwin-arm64.pkg"
           # Seed a RUNNING "old version" at the exact path the payload
           # replaces, so the postinstall's restart path (terminate old,
-          # relaunch new as the console user) is proven here — not just its
-          # nothing-running no-op. A COMPILED stub, never a copied system
+          # relaunch new as the console user) is proven here; its
+          # nothing-running launch is proven by a second install further
+          # down. A COMPILED stub, never a copied system
           # binary: AMFI SIGKILLs a platform-signed binary run from inside a
           # foreign .app (measured — a copied /bin/sleep dies at exec with
           # 137, which would make this whole seed silently vacuous).
@@ -1355,8 +1361,59 @@ jobs:
           done
           [ "$NEW" = "1" ] || { echo "::error::postinstall did not relaunch mStream"; exit 1; }
           echo "postinstall restarted the running instance into the new app"
-          # Quiet the relaunched app before the deterministic half below
-          # (its server would otherwise boot on the runner's default port).
+          # Quiet the relaunched app before the next install (its server
+          # would otherwise boot on the runner's default port).
+          pkill -f "^/Applications/mStream.app/Contents/MacOS/" 2>/dev/null || true
+          sleep 2
+          pkill -9 -f "^/Applications/mStream.app/Contents/MacOS/" 2>/dev/null || true
+          # The nothing-running path: installing again with nothing up must
+          # START mStream (the owner's 2026-10-03 report — an upgrade over a
+          # quit app left nothing running). CI's console user is the runner
+          # user, so the postinstall's launch lands in this very GUI session,
+          # which is why it is observable here at all: the runner logs in
+          # automatically, so its gui/<uid> domain exists and the
+          # postinstall's no-GUI-session guard lets the launch through. The
+          # launcher's own marker is pinned first so the arm under test is
+          # the quit-upgrade one (--autostarted, which keeps the first-run
+          # setup wizard off the runner's screen). The postinstall reads that
+          # arm from launcher.json, never from the data home folder alone;
+          # the relaunch above normally wrote it already (a run that is not
+          # --autostarted records the login-item default there), but one
+          # killed before that line would not have.
+          SUPPORT="$HOME/Library/Application Support/mStream"
+          mkdir -p "$SUPPORT"
+          [ -f "$SUPPORT/launcher.json" ] || echo '{}' > "$SUPPORT/launcher.json"
+          for i in $(seq 1 5); do
+            pgrep -f "^/Applications/mStream.app/Contents/MacOS/" >/dev/null 2>&1 \
+              || sudo lsof -nP -t -iTCP:3000 -sTCP:LISTEN >/dev/null 2>&1 || break
+            sleep 1
+          done
+          if pgrep -f "^/Applications/mStream.app/Contents/MacOS/" >/dev/null 2>&1; then
+            echo "::error::mStream is still running before the nothing-running install - it would take the restart path and prove nothing"; exit 1
+          fi
+          # The postinstall also stands down while anything listens on the
+          # port the app's server would take (3000 here: nothing on the
+          # runner configures another), so that port must be free for this
+          # launch to be expected. sudo, because the postinstall runs as
+          # root and sees every user's sockets.
+          if sudo lsof -nP -iTCP:3000 -sTCP:LISTEN; then
+            echo "::error::something listens on :3000 before the nothing-running install - the postinstall would rightly start nothing"
+            exit 1
+          fi
+          sudo installer -pkg "$PKG" -target /
+          NEW=0
+          for i in $(seq 1 15); do
+            pgrep -f "^/Applications/mStream.app/Contents/MacOS/mStream" >/dev/null 2>&1 && { NEW=1; break; }
+            sleep 1
+          done
+          [ "$NEW" = "1" ] || { echo "::error::postinstall did not start mStream when nothing was running"; exit 1; }
+          if ! pgrep -f "^/Applications/mStream.app/Contents/MacOS/mStream .*--autostarted" >/dev/null 2>&1; then
+            echo "::error::the quit-upgrade launch did not carry --autostarted"
+            pgrep -lf "^/Applications/mStream.app/Contents/MacOS/" || true
+            exit 1
+          fi
+          echo "postinstall started mStream (--autostarted) with nothing running"
+          # Quiet it the same way before the deterministic half below.
           pkill -f "^/Applications/mStream.app/Contents/MacOS/" 2>/dev/null || true
           sleep 2
           pkill -9 -f "^/Applications/mStream.app/Contents/MacOS/" 2>/dev/null || true
