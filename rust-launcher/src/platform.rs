@@ -273,56 +273,12 @@ pub fn open_logs_terminal(logs_dir: &std::path::Path) -> Result<(), String> {
     }
 }
 
-/// One of the terminal player's admin rooms — `mstream-player admin <room>`,
-/// the server's management screens drawn in a terminal (player PR #21;
-/// pin v0.7.0 is the first with all five plus the in-room sign-in).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AdminRoom {
-    /// The server's music folders.
-    Libraries,
-    /// The discovery network (P2P): the mesh, follows, invites, settings.
-    Discovery,
-    /// Federation: requests, minted tickets, readable peers.
-    Federation,
-    /// Backups: each library's copies elsewhere, schedules, runs.
-    Backups,
-    /// Torrents: the client, its list, per-library paths, seeding.
-    Torrents,
-}
-
-impl AdminRoom {
-    /// Menu order — the player's own `admin` help order.
-    pub const ALL: [AdminRoom; 5] = [
-        AdminRoom::Libraries,
-        AdminRoom::Discovery,
-        AdminRoom::Federation,
-        AdminRoom::Backups,
-        AdminRoom::Torrents,
-    ];
-
-    /// The room's name in the player's CLI (`mstream-player admin <this>`).
-    pub fn subcommand(self) -> &'static str {
-        match self {
-            AdminRoom::Libraries => "libraries",
-            AdminRoom::Discovery => "discovery",
-            AdminRoom::Federation => "federation",
-            AdminRoom::Backups => "backups",
-            AdminRoom::Torrents => "torrents",
-        }
-    }
-
-    /// The inverse of [`AdminRoom::subcommand`].
-    pub fn from_subcommand(name: &str) -> Option<AdminRoom> {
-        AdminRoom::ALL.into_iter().find(|r| r.subcommand() == name)
-    }
-}
-
-/// Columns × rows the wizard pages (setup, Quick Connect, the admin rooms)
-/// ask for, where a terminal takes a size: the VTE family opens 80×24 by
-/// default, which cannot hold the pairing QR drawn in half-blocks (77×39
-/// cells), and the XTWINOPS resize the macOS .command script sends is
-/// ignored by VTE, kitty and stock xterm alike. The same window the mac
-/// Ghostty config asks for.
+/// Columns × rows the wizard pages (setup, Quick Connect) ask for, where a
+/// terminal takes a size: the VTE family opens 80×24 by default, which
+/// cannot hold the pairing QR drawn in half-blocks (77×39 cells), and the
+/// XTWINOPS resize the macOS .command script sends is ignored by VTE,
+/// kitty and stock xterm alike. The same window the mac Ghostty config
+/// asks for.
 pub const WIZARD_SIZE: (u16, u16) = (120, 42);
 
 /// Columns × rows the desktop player asks for: the GUI's design size (its
@@ -343,11 +299,6 @@ pub enum PlayerPage {
     /// The standalone Quick Connect page (`mstream-player qr`) — the
     /// wizard's Done screen: pairing QR plus the app buttons.
     QuickConnect,
-    /// One admin room (`mstream-player admin <room> --same-machine`). The
-    /// launcher only ever runs on the server's own machine, so the rooms'
-    /// folder pickers may open the OS dialog and treat what it picks as the
-    /// server's paths — exactly what `--same-machine` declares.
-    Admin(AdminRoom),
     /// The desktop player (`mstream-player gui --bundled-server <url>`):
     /// the bundled player's mouse-first GUI face (player PR #18; the first
     /// release carrying it is paths::GUI_MIN_PLAYER_VERSION). The URL
@@ -377,7 +328,6 @@ impl PlayerPage {
         match self {
             PlayerPage::Setup => vec!["setup"],
             PlayerPage::QuickConnect => vec!["qr"],
-            PlayerPage::Admin(room) => vec!["admin", room.subcommand(), "--same-machine"],
             PlayerPage::Player { .. } => vec!["gui"],
         }
     }
@@ -424,7 +374,6 @@ impl PlayerPage {
         match self {
             PlayerPage::Setup => "mStream Setup".into(),
             PlayerPage::QuickConnect => "mStream Quick Connect".into(),
-            PlayerPage::Admin(room) => format!("mStream {}", capitalized(room.subcommand())),
             PlayerPage::Player { .. } => "mStream Player".into(),
         }
     }
@@ -433,7 +382,6 @@ impl PlayerPage {
         match self {
             PlayerPage::Setup => "setup-mstream.command".into(),
             PlayerPage::QuickConnect => "quickconnect-mstream.command".into(),
-            PlayerPage::Admin(room) => format!("admin-{}-mstream.command", room.subcommand()),
             PlayerPage::Player { .. } => "player-mstream.command".into(),
         }
     }
@@ -441,7 +389,7 @@ impl PlayerPage {
     /// short-lived pages share one — regenerated on every click, read once
     /// at the console's start. The player gets its own: its window lives
     /// for hours, and a config reload or a new window inside it must never
-    /// pick up the admin room a later click wrote into the shared file.
+    /// pick up the wizard page a later click wrote into the shared file.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     fn console_config_dir(&self) -> &'static str {
         match self {
@@ -451,21 +399,12 @@ impl PlayerPage {
     }
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn capitalized(word: &str) -> String {
-    let mut c = word.chars();
-    match c.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
-        None => String::new(),
-    }
-}
-
 /// Run one of the terminal player's pages — the setup wizard, Quick
-/// Connect, an admin room, or the desktop player — in a fresh terminal
-/// window, pointed at this launcher's server and opened at the page's own
-/// size wherever the terminal takes one. Same per-OS "what is a terminal"
-/// seams as open_logs_terminal; the caller logs a failure — a missing
-/// terminal emulator must never take the tray down. Ok carries WHICH
+/// Connect, or the desktop player — in a fresh terminal window, pointed at
+/// this launcher's server and opened at the page's own size wherever the
+/// terminal takes one. Same per-OS "what is a terminal" seams as
+/// open_logs_terminal; the caller logs a failure — a missing terminal
+/// emulator must never take the tray down. Ok carries WHICH
 /// surface opened (support surface: "it opened in Terminal, not the
 /// mStream console — why?" should be one log line away).
 ///
@@ -829,6 +768,56 @@ fn activate_pid(pid: u32) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("AppKit refused to activate pid {pid}"))
+    }
+}
+
+/// Whether the Control key is down right now. On macOS a Control-click is
+/// the system's secondary click, the one a mouse or trackpad without a
+/// right button makes, so the tray reads this at a left press on its icon
+/// (tray_app's icon_click_of) and shows the menu instead of opening the
+/// player. `+[NSEvent modifierFlags]` reports the keyboard's modifier state
+/// at the moment of the call; it is sent by name because this crate does
+/// not enable objc2-app-kit's NSEvent binding for one class method.
+/// Elsewhere Control means nothing to a tray click: always false.
+pub fn control_key_held() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // NSEventModifierFlagControl.
+        const CONTROL: usize = 1 << 18;
+        // SAFETY: a class method taking no arguments and returning an
+        // NSUInteger (NSEventModifierFlags), on a class AppKit always has.
+        let flags: usize = unsafe { objc2::msg_send![objc2::class!(NSEvent), modifierFlags] };
+        flags & CONTROL != 0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// Pass this process's right to take the foreground on to whatever it opens
+/// next. On Windows a window comes to the front only when its process may
+/// put it there. The taskbar grants that right to the process whose
+/// notification icon was just clicked, but a freshly spawned player (or
+/// terminal, or browser) is another process, and it inherits the right only
+/// when its parent IS the foreground process. That holds after a menu pick,
+/// because tray-icon makes the launcher's hidden window the foreground
+/// before it pops the menu (show_tray_menu), and not after a left click,
+/// which tray-icon only reports. AllowSetForegroundWindow(ASFW_ANY) hands
+/// the right on, so a left click brings a new player window to the front as
+/// the menu item does. False when this process had no right to pass on (the
+/// call then changes nothing); always true elsewhere, where no such rule
+/// keeps a new window back.
+pub fn allow_foreground_handoff() -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, ASFW_ANY};
+        // SAFETY: takes a process id (or ASFW_ANY) by value and nothing else.
+        unsafe { AllowSetForegroundWindow(ASFW_ANY) != 0 }
+    }
+    #[cfg(not(windows))]
+    {
+        true
     }
 }
 
@@ -1454,7 +1443,7 @@ fn player_argv(page: &PlayerPage, server_url: &str, window: bool) -> Vec<std::ff
 
 #[cfg(test)]
 mod page_tests {
-    use super::{AdminRoom, PlayerPage, PLAYER_SIZE, WIZARD_SIZE};
+    use super::{PlayerPage, PLAYER_SIZE, WIZARD_SIZE};
 
     /// The desktop player page of a player without the lock flag.
     fn player() -> PlayerPage {
@@ -1462,9 +1451,7 @@ mod page_tests {
     }
 
     fn every_page() -> Vec<PlayerPage> {
-        let mut pages = vec![PlayerPage::Setup, PlayerPage::QuickConnect, player()];
-        pages.extend(AdminRoom::ALL.into_iter().map(PlayerPage::Admin));
-        pages
+        vec![PlayerPage::Setup, PlayerPage::QuickConnect, player()]
     }
 
     #[test]
@@ -1473,18 +1460,9 @@ mod page_tests {
         assert_eq!(PlayerPage::QuickConnect.args(), ["qr"]);
         assert_eq!(player().args(), ["gui"]);
         assert_eq!(player().title(), "mStream Player");
-        // A room always declares --same-machine: the launcher IS the
-        // server's machine, so the room's folder picker may use the OS
-        // dialog and hand the server the paths it picks.
-        assert_eq!(
-            PlayerPage::Admin(AdminRoom::Libraries).args(),
-            ["admin", "libraries", "--same-machine"]
-        );
-        assert_eq!(PlayerPage::Admin(AdminRoom::Torrents).args(), ["admin", "torrents", "--same-machine"]);
         assert_eq!(PlayerPage::Setup.title(), "mStream Setup");
         assert_eq!(PlayerPage::QuickConnect.title(), "mStream Quick Connect");
-        assert_eq!(PlayerPage::Admin(AdminRoom::Discovery).title(), "mStream Discovery");
-        // Eight pages, eight argvs, eight titles: no two tray items may
+        // Three pages, three argvs, three titles: no two tray items may
         // open the same thing or the same-named window.
         let pages = every_page();
         for (i, a) in pages.iter().enumerate() {
@@ -1534,8 +1512,8 @@ mod page_tests {
             ["-w", "new", "--size", "120,42", r"C:\mStream\bin\mstream-player.exe", "setup", "--server", "http://localhost:3000"]
         );
         assert_eq!(
-            words(PlayerPage::Admin(AdminRoom::Libraries))[4..],
-            [r"C:\mStream\bin\mstream-player.exe", "admin", "libraries", "--same-machine", "--server", "http://localhost:3000"]
+            words(PlayerPage::QuickConnect)[4..],
+            [r"C:\mStream\bin\mstream-player.exe", "qr", "--server", "http://localhost:3000"]
         );
     }
 
@@ -1547,7 +1525,7 @@ mod page_tests {
             Some("/Application Support/mStream/desktop-player.lock")
         );
         assert_eq!(player().instance_lock(), None);
-        for page in [PlayerPage::Setup, PlayerPage::QuickConnect, PlayerPage::Admin(AdminRoom::Torrents)] {
+        for page in [PlayerPage::Setup, PlayerPage::QuickConnect] {
             assert_eq!(page.instance_lock(), None, "{page:?}");
         }
         // The pair rides between the page's own words and the server flag,
@@ -1576,7 +1554,7 @@ mod page_tests {
         let faced = PlayerPage::Player { instance_lock: Some("/d/desktop-player.lock".into()), serve_port: Some(3333) };
         assert_eq!(faced.serve_port(), Some(3333));
         assert_eq!(player().serve_port(), None);
-        for page in [PlayerPage::Setup, PlayerPage::QuickConnect, PlayerPage::Admin(AdminRoom::Torrents)] {
+        for page in [PlayerPage::Setup, PlayerPage::QuickConnect] {
             assert_eq!(page.serve_port(), None, "{page:?}");
         }
         // After the lock pair, before the server flag — on the sh line…
@@ -1712,16 +1690,6 @@ mod page_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn rooms_round_trip_through_their_cli_names() {
-        for room in AdminRoom::ALL {
-            assert_eq!(AdminRoom::from_subcommand(room.subcommand()), Some(room));
-        }
-        assert_eq!(AdminRoom::from_subcommand("setup"), None);
-        assert_eq!(AdminRoom::from_subcommand("Libraries"), None, "the CLI names are lowercase");
-        assert_eq!(AdminRoom::from_subcommand(""), None);
-    }
-
     #[cfg(unix)]
     #[test]
     fn unix_launches_share_one_quoted_command_line() {
@@ -1731,8 +1699,8 @@ mod page_tests {
             "'/Application Support/bin/mstream-player' setup --server 'http://localhost:3000'"
         );
         assert_eq!(
-            super::player_shell_words(&PlayerPage::Admin(AdminRoom::Backups), player, "http://x:1"),
-            "'/Application Support/bin/mstream-player' admin backups --same-machine --server 'http://x:1'"
+            super::player_shell_words(&PlayerPage::QuickConnect, player, "http://x:1"),
+            "'/Application Support/bin/mstream-player' qr --server 'http://x:1'"
         );
         // The desktop player names the server as its bundled one.
         assert_eq!(
@@ -1749,9 +1717,8 @@ mod page_tests {
     #[ignore = "spawns a real terminal window - run manually with --ignored"]
     fn manual_open_player_terminal() {
         // MSTREAM_DEMO_PLAYER = a real player binary; MSTREAM_DEMO_SERVER =
-        // the URL to point it at; MSTREAM_DEMO_PAGE = setup (default), qr,
-        // gui (the desktop player), or a room name (libraries, discovery,
-        // federation, backups, torrents); on macOS MSTREAM_DEMO_CONSOLE =
+        // the URL to point it at; MSTREAM_DEMO_PAGE = setup (default), qr or
+        // gui (the desktop player); on macOS MSTREAM_DEMO_CONSOLE =
         // optionally a Ghostty.app to prefer (with MSTREAM_DEMO_ICNS for the
         // Dock icon).
         let player = std::path::PathBuf::from(std::env::var("MSTREAM_DEMO_PLAYER").expect("set MSTREAM_DEMO_PLAYER"));
@@ -1765,8 +1732,7 @@ mod page_tests {
         let page = match std::env::var("MSTREAM_DEMO_PAGE").as_deref() {
             Ok("qr") => PlayerPage::QuickConnect,
             Ok("gui") => PlayerPage::Player { instance_lock: None, serve_port: None },
-            Ok(name) => AdminRoom::from_subcommand(name).map(PlayerPage::Admin).unwrap_or(PlayerPage::Setup),
-            Err(_) => PlayerPage::Setup,
+            _ => PlayerPage::Setup,
         };
         let label = format!("{page:?}");
         let via = super::open_player_terminal(&player, &url, &dir, console.as_ref(), page).unwrap();
@@ -1776,6 +1742,15 @@ mod page_tests {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    #[test]
+    fn the_control_key_is_read_without_a_click() {
+        // The message is sent by name, so the call itself is what this
+        // pins: a wrong class, selector or return type panics here in a
+        // debug build (objc2 checks the encoding), not at a user's click.
+        // The value is whatever the keyboard says, so it is not asserted.
+        let _ = super::control_key_held();
+    }
+
     #[test]
     fn ghostty_config_quotes_spaced_paths_and_never_uses_dash_e() {
         let c = crate::paths::ConsoleLaunch {
@@ -1810,12 +1785,6 @@ mod tests {
         assert!(qc.contains("command = shell:'/p' qr --server 'http://x:1'"), "{qc}");
         assert!(qc.contains("title = mStream Quick Connect\n"), "{qc}");
 
-        // An admin room: the same window, its own argv (with --same-machine)
-        // and title.
-        let room = super::PlayerPage::Admin(super::AdminRoom::Federation);
-        let fed = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", &room);
-        assert!(fed.contains("command = shell:'/p' admin federation --same-machine --server 'http://x:1'"), "{fed}");
-        assert!(fed.contains("title = mStream Federation\n"), "{fed}");
         // The wizard pages open at their window, never restored from a
         // saved state at some other size.
         assert!(cfg.contains("window-width = 120\nwindow-height = 42\n"), "{cfg}");
@@ -1846,8 +1815,7 @@ mod tests {
     fn each_page_writes_its_own_command_script() {
         // Distinct script files: no two tray items may clobber each
         // other's .command while both windows are open.
-        let mut pages = vec![super::PlayerPage::Setup, super::PlayerPage::QuickConnect, super::PlayerPage::Player { instance_lock: None, serve_port: None }];
-        pages.extend(super::AdminRoom::ALL.into_iter().map(super::PlayerPage::Admin));
+        let pages = [super::PlayerPage::Setup, super::PlayerPage::QuickConnect, super::PlayerPage::Player { instance_lock: None, serve_port: None }];
         let names: Vec<String> = pages.iter().map(|p| p.script_name()).collect();
         for (i, a) in names.iter().enumerate() {
             assert!(a.ends_with(".command"), "{a}");
@@ -1855,7 +1823,7 @@ mod tests {
                 assert_ne!(a, b);
             }
         }
-        assert_eq!(super::PlayerPage::Admin(super::AdminRoom::Libraries).script_name(), "admin-libraries-mstream.command");
+        assert_eq!(super::PlayerPage::QuickConnect.script_name(), "quickconnect-mstream.command");
         assert_eq!(super::PlayerPage::Player { instance_lock: None, serve_port: None }.script_name(), "player-mstream.command");
     }
 
