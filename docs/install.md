@@ -151,8 +151,9 @@ directly, with `manifest.json` holding their sha256s:
 Windows, `mStream.app` on macOS, `mstream-desktop` on Linux — starts the
 server in the background, puts an mStream icon in your tray / menu bar
 (a status line — "Running · up 3h 12m", or Starting… / Stopped — and the
-update line under it, then Open mStream Player · Quick Connect · Start at
-login · View logs · Restart server · Quit). Boots are quiet once set up. A
+update line under it, then Open mStream Player · Quick Connect · Open Web
+App · Start at login · View logs · Restart server · Quit). Boots are quiet
+once set up. A
 left click on the tray / menu-bar icon opens the desktop player on macOS
 and Windows (or brings it forward when it is already open), and a right
 click (a two-finger click on a trackpad) shows the menu; on Linux, where
@@ -182,9 +183,10 @@ the web player's Quick Connect modal instead. Headless installs get the
 setup invitation as a boot log line whenever the server has no folders and
 no accounts yet.
 
-The server's management screens live in the desktop player's **Admin**
-tab (player v0.11.0 and later), and the browser admin panel is always at
-`<server>/admin`.
+**Open Web App** opens the server's web app — the web player, with the
+admin panel behind its menu — in your browser. The server's management
+screens live in the desktop player's **Admin** tab (player v0.11.0 and
+later), and the browser admin panel is always at `<server>/admin`.
 
 **Open mStream Player** opens the bundled player's desktop face —
 `mstream-player gui`, the mouse-first player — in the same kind of window

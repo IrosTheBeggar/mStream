@@ -506,6 +506,13 @@ pub fn run(args: LauncherArgs) -> ! {
                 // and the browser panel stays one URL away at /admin.
                 let player_item = MenuItem::with_id("player", "Open mStream Player", true, None);
                 let qc_item = MenuItem::with_id("quick-connect", "Quick Connect", true, None);
+                // "Open Web App": the server's web app in the browser — the
+                // web player, with the admin panel behind its own menu. A
+                // human asked for it by name, so it opens the server's root
+                // as it is, with none of browse_target's routing (that is
+                // for opens the launcher initiates, which must land
+                // somewhere useful before setup).
+                let webapp_item = MenuItem::with_id("webapp", "Open Web App", true, None);
                 let auto_item =
                     CheckMenuItem::with_id("autostart", "Start at login", true, autostart::is_enabled(), None);
                 let logs_item = MenuItem::with_id("logs", "View logs", true, None);
@@ -516,6 +523,7 @@ pub fn run(args: LauncherArgs) -> ! {
                 let _ = menu.append(&PredefinedMenuItem::separator());
                 let _ = menu.append(&player_item);
                 let _ = menu.append(&qc_item);
+                let _ = menu.append(&webapp_item);
                 let _ = menu.append(&PredefinedMenuItem::separator());
                 let _ = menu.append(&auto_item);
                 let _ = menu.append(&PredefinedMenuItem::separator());
@@ -698,6 +706,10 @@ pub fn run(args: LauncherArgs) -> ! {
                     "player" => {
                         log.line("menu: open player");
                         open_player_from_tray(desktop_player.as_ref(), &url, &data_home, console.as_ref(), &config_loop, &ep, &log);
+                    }
+                    "webapp" => {
+                        log.line("menu: open web app");
+                        let _ = open::that_detached(&url);
                     }
                     "quick-connect" => {
                         // The wizard's Quick Connect page (pixel pairing QR)
