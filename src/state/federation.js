@@ -28,10 +28,10 @@ import winston from 'winston';
 import {
   loadIroh,
   asBuffer,
-  delay,
   bridgeStreamToBackend,
   buildEnvelope,
   parseEnvelope, describeAddr, handshakeTrace, ticketAddr } from './iroh-common.js';
+import { withTimeout, settleWithin } from '../util/async.js';
 import * as fedDb from '../db/federation.js';
 import { verifyGuestToken } from './federation-guest.js';
 
@@ -388,7 +388,7 @@ export async function start({ targetPort, targetHost = '127.0.0.1', secretKey, a
 
   if (awaitOnline) {
     const t0 = Date.now();
-    const online = await Promise.race([ep.online().then(() => true).catch(() => false), delay(8000).then(() => false)]);
+    const online = await settleWithin(ep.online().then(() => true).catch(() => false), 8000, false);
     winston.info(`[federation] endpoint ${online ? 'online' : 'NOT online'} after ${Date.now() - t0}ms: ${describeAddr(ep)}`);
   }
   // stop() ran while we waited for the relay (see state/iroh.js): ep is
@@ -459,10 +459,9 @@ export async function stop() {
 export async function connectToPeer(endpointTicketStr, apiKey) {
   if (!endpoint) { throw new Error('federation endpoint is not running (enable federation first)'); }
   const addr = irohMod.EndpointTicket.fromString(endpointTicketStr).endpointAddr();
-  const conn = await Promise.race([
-    endpoint.connect(addr, FEDERATION_ALPN),
-    new Promise((_r, rej) => setTimeout(() => rej(new Error(`connect timed out after ${CONNECT_TIMEOUT_MS / 1000}s`)), CONNECT_TIMEOUT_MS)),
-  ]);
+  const conn = await withTimeout(
+    endpoint.connect(addr, FEDERATION_ALPN), CONNECT_TIMEOUT_MS,
+    `connect timed out after ${CONNECT_TIMEOUT_MS / 1000}s`);
 
   // Key handshake on the first bi-stream. The server rejects by CLOSING with
   // reason "unauthorized"/"backoff", which can surface as a thrown transport
