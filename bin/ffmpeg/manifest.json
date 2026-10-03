@@ -3,39 +3,39 @@
   "schema": 1,
   "btbn": {
     "repo": "BtbN/FFmpeg-Builds",
-    "tag": "autobuild-2026-08-31-13-27"
+    "tag": "autobuild-2026-09-30-13-08"
   },
   "assets": {
     "linux-x64": {
       "source": "btbn",
-      "file": "ffmpeg-N-126342-gf88b741dbf-linux64-gpl.tar.xz",
-      "sha256": "d1cf19f669510448f18a4cffcdbd8fa9592ee7c15c92feb5b96ad7e9ccc30114",
-      "size": 128065756
+      "file": "ffmpeg-N-127021-ge0c94b2d1c-linux64-gpl.tar.xz",
+      "sha256": "3a2a94e704752287833604501a79505c2319ad1d8b2f5577c63f2b1b7a6f2b66",
+      "size": 154317776
     },
     "linux-arm64": {
       "source": "btbn",
-      "file": "ffmpeg-N-126342-gf88b741dbf-linuxarm64-gpl.tar.xz",
-      "sha256": "b65dfcc901e081ea76f8fd25c8fe2f3318f458f1d52d7d6c5423aef95b693da6",
-      "size": 109726420
+      "file": "ffmpeg-N-127021-ge0c94b2d1c-linuxarm64-gpl.tar.xz",
+      "sha256": "b1944308d6306839f6ce22095920de7e6f31f9ec901834fe1257e013d9fc3aa7",
+      "size": 129813452
     },
     "win32-x64": {
       "source": "btbn",
-      "file": "ffmpeg-N-126342-gf88b741dbf-win64-gpl.zip",
-      "sha256": "b4da332540eaebc6939181b59e267f163dd57407ef6596f7f3452845921d1d91",
-      "size": 170732198
+      "file": "ffmpeg-N-127021-ge0c94b2d1c-win64-gpl.zip",
+      "sha256": "85c4a4636b93d681a07588ffa6f1d8f5c064d9c3fb0622066662906b6fd718a1",
+      "size": 198589424
     },
     "darwin-x64": {
       "source": "martinriedl",
       "files": {
         "ffmpeg": {
-          "path": "download/macos/amd64/1787081194_9.0.1/ffmpeg.zip",
-          "sha256": "5bdead62ff504ab9b447cc72b212c4fb481e3f7de5877d427a51bee8136dda40",
-          "size": 33847553
+          "path": "download/macos/amd64/1789931006_9.0.2/ffmpeg.zip",
+          "sha256": "7c6b4125b191cbf773832dc51f424cf2b6bb7da43007d1e066f95909e47cacd4",
+          "size": 33816391
         },
         "ffprobe": {
-          "path": "download/macos/amd64/1787081194_9.0.1/ffprobe.zip",
-          "sha256": "34511bbcf1988ad2886023bf5ace4f44cf62e6defeb3d194d6f7619e5b061f7f",
-          "size": 33750750
+          "path": "download/macos/amd64/1789931006_9.0.2/ffprobe.zip",
+          "sha256": "2322438ed2f6319a691291b247d09c69dcaa3a982460d1f269a7e1af335cfdfd",
+          "size": 33719233
         }
       }
     },
@@ -43,14 +43,14 @@
       "source": "martinriedl",
       "files": {
         "ffmpeg": {
-          "path": "download/macos/arm64/1787073674_9.0.1/ffmpeg.zip",
-          "sha256": "8287a1b2229e05eb41859f073e18e6c52c60a778f2f5e6881070fe51b79407fe",
-          "size": 28447413
+          "path": "download/macos/arm64/1789931890_9.0.2/ffmpeg.zip",
+          "sha256": "c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924",
+          "size": 28395699
         },
         "ffprobe": {
-          "path": "download/macos/arm64/1787073674_9.0.1/ffprobe.zip",
-          "sha256": "102a26b8940a053298d9929bfaae71e4b6ef65ba5f19a99a88c433108560741a",
-          "size": 28370930
+          "path": "download/macos/arm64/1789931890_9.0.2/ffprobe.zip",
+          "sha256": "fcbe839537485eaee7a7a8bc5cbc0f90d53617e80943e8a5b2e31cb851197ea6",
+          "size": 28317701
         }
       }
     }
