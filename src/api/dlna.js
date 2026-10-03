@@ -1031,16 +1031,29 @@ function getShuffleCount() {
 // random N tracks". Clients that browse page 2 get a different random slice;
 // DLNA renderers typically ask for all at once with RequestedCount=0 so this
 // works out in practice.
+//
+// Ids first, then the columns for just those ids: ORDER BY RANDOM() visits
+// every track and carries each one's selected columns through the sorter,
+// so sampling the bare rowids (a covering index scan) and hydrating ≤
+// SMART_LIMIT winners skips the joins, the per-row genre subquery and the
+// wide sort for every other row. Same candidate set as the one-shot query
+// (every track), same random order (kept from the id sample).
 function getShuffleTracks(count) {
   const limit = Math.min(count > 0 ? count : SMART_LIMIT, SMART_LIMIT);
-  return db.getDB().prepare(`
+  const d = db.getDB();
+  const ids = d.prepare('SELECT t.id FROM tracks t ORDER BY RANDOM() LIMIT ?')
+    .all(limit).map(r => r.id);
+  if (ids.length === 0) return [];
+  const rows = d.prepare(`
     SELECT ${SMART_TRACK_COLS}
     FROM tracks t
     LEFT JOIN artists a  ON t.artist_id = a.id
     LEFT JOIN albums  al ON t.album_id  = al.id
-    ORDER BY RANDOM()
-    LIMIT ?
-  `).all(limit);
+    WHERE t.id IN (${ids.map(() => '?').join(',')})
+  `).all(...ids);
+  const byId = new Map(rows.map(r => [r.id, r]));
+  // A track deleted between the two statements just drops out.
+  return ids.map(id => byId.get(id)).filter(Boolean);
 }
 
 function getYears() {
