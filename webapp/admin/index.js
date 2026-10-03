@@ -3154,7 +3154,7 @@ const dbView = Vue.component('db-view', {
     countsSummary: function(counts) {
       const labels = {
         generated: 'generated', updated: 'fetched', deduped: 'already had',
-        analyzed: 'analysed', embedded: 'embedded', matched: 'identified',
+        analyzed: 'analysed', refilled: 'restored', embedded: 'embedded', matched: 'identified',
         found: 'found', hit: 'found',
         notFound: 'not found', notfound: 'not found', nomatch: 'no match',
         lowconf: 'low-confidence', undecodable: 'undecodable',

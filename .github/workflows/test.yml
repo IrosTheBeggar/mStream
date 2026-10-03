@@ -252,6 +252,18 @@ jobs:
         working-directory: rust-parser
         run: cargo build --release --locked
 
+      # The scanner's own unit tests (main.rs #[cfg(test)] modules: the ID3
+      # normaliser, and migrate_hash_references' counter / analysis-ledger
+      # merges, which no node suite drives through a real scheme re-key
+      # collision). Same condition as the build — an unchanged rust-parser/
+      # tree cannot change their result — and one shard per OS is enough. They
+      # are in-memory and finish in well under a second; the cost is compiling
+      # the test harness on top of the release build.
+      - name: Unit-test rust-parser
+        if: steps.rustparser.outputs.build == 'true' && matrix.shard == 1
+        working-directory: rust-parser
+        run: cargo test --release --locked
+
       # Whichever path ran, a usable scanner must be on disk — otherwise the
       # capability-probed suites would skip their Rust halves and the matrix
       # would go green having never exercised the scanner. ensure-prereqs only

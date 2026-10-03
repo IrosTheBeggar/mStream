@@ -22,6 +22,12 @@
 // byte-identical copies are analysed once and the result fans out to every
 // copy.
 //
+// The lookup row also keeps the values essentia measured (V78). Each pass
+// starts by copying them back onto tracks a re-parse or a file move left NULL
+// — one UPDATE, no decode, no essentia load — and only then selects work. A
+// pre-V78 'analyzed' row stored no values, so it does not hold its track off
+// the work list. SQL: audio-analysis-lib.js.
+//
 // LICENSE NOTE: pulls in essentia.js (AGPL-3.0) via audio-analysis-lib.js — a
 // deliberate project-owner decision (mStream is GPL-3.0). Gated by
 // scanOptions.analyzeBpm; when off this worker is never forked.
@@ -36,7 +42,7 @@
 //
 // stdout protocol — line-buffered single-line JSON events:
 //   { event: 'audioAnalysisProgress', attempted, total }
-//   { event: 'audioAnalysisComplete', attempted, analyzed, lowconf, errors, hitCap, avgMsPerTrack }
+//   { event: 'audioAnalysisComplete', refilled, attempted, analyzed, lowconf, errors, hitCap, avgMsPerTrack }
 //   { event: 'error', message }     ← always followed by exit 1
 //
 // Exit codes: 0 completed (per-track failures recorded, not fatal);
@@ -45,7 +51,10 @@
 import path from 'node:path';
 import { DatabaseSync } from './sqlite-driver.js';
 import Joi from 'joi';
-import { decodePcmF32, analyzeSignal, getEssentia, ANALYSIS_SAMPLE_RATE } from './audio-analysis-lib.js';
+import {
+  decodePcmF32, analyzeSignal, getEssentia, ANALYSIS_SAMPLE_RATE,
+  FILL_ANALYSIS_SQL, RECORD_ANALYZED_SQL, RECORD_ATTEMPT_SQL, REFILL_FROM_LEDGER_SQL, selectEligibleSql,
+} from './audio-analysis-lib.js';
 
 const SCHEMA_GUARD_EXIT = 3;
 
@@ -157,80 +166,33 @@ function pruneOrphans() {
   } catch (_e) { /* best-effort housekeeping */ }
 }
 
-// Tracks needing analysis: NULL bpm OR NULL key, in the duration window, not an
-// excluded genre, off cooldown. One representative row per canonical hash
-// (MIN(id) — SQLite takes the other bare columns from that same row), so
-// duplicate files are decoded once. 'error' rows come off cooldown sooner.
+// Tracks needing analysis — see selectEligibleSql in audio-analysis-lib.js.
 function selectEligibleTracks(nowSec) {
   const longCutoff = nowSec - Math.max(cfg.analyzedCooldownSec, cfg.lowconfCooldownSec);
   const errorCutoff = nowSec - cfg.errorCooldownSec;
-  // Build the genre-exclusion IN list (lower-cased) from skipGenres.
+  // The genre-exclusion IN list (lower-cased) from skipGenres.
   const genres = cfg.skipGenres.map((g) => g.toLowerCase());
-  const genrePlaceholders = genres.length ? genres.map(() => '?').join(',') : null;
-  const genreClause = genrePlaceholders
-    ? `AND NOT EXISTS (
-         SELECT 1 FROM track_genres tg JOIN genres g ON g.id = tg.genre_id
-          WHERE tg.track_id = t.id AND LOWER(g.name) IN (${genrePlaceholders})
-       )`
-    : '';
-  const sql = `
-    SELECT MIN(t.id) AS track_id,
-           COALESCE(t.audio_hash, t.file_hash) AS canon_hash,
-           t.filepath AS filepath,
-           t.duration AS duration,
-           lib.root_path AS root
-      FROM tracks t
-      JOIN libraries lib ON lib.id = t.library_id
-      LEFT JOIN audio_analysis_lookups la
-             ON la.audio_hash = COALESCE(t.audio_hash, t.file_hash)
-     WHERE (t.bpm IS NULL OR t.musical_key IS NULL)
-       AND t.duration IS NOT NULL
-       AND t.duration >= ? AND t.duration <= ?
-       AND COALESCE(t.audio_hash, t.file_hash) IS NOT NULL
-       ${genreClause}
-       AND (
-            la.audio_hash IS NULL
-         OR la.last_attempt_at < (CASE WHEN la.outcome = 'error' THEN ? ELSE ? END)
-       )
-     GROUP BY COALESCE(t.audio_hash, t.file_hash)
-     ORDER BY track_id
-     LIMIT ?
-  `;
   const params = [cfg.minDurationSec, cfg.maxDurationSec, ...genres, errorCutoff, longCutoff, cfg.maxPerRun];
-  return db.prepare(sql).all(...params);
+  return db.prepare(selectEligibleSql(genres.length)).all(...params);
 }
 
 // ── Prepared statements ──────────────────────────────────────────────────────
 
-const recordLookup = db.prepare(`
-  INSERT INTO audio_analysis_lookups (audio_hash, last_attempt_at, outcome, attempts)
-  VALUES (?, ?, ?, 1)
-  ON CONFLICT(audio_hash) DO UPDATE SET
-    last_attempt_at = excluded.last_attempt_at,
-    outcome         = excluded.outcome,
-    attempts        = audio_analysis_lookups.attempts + 1
-`);
-
-// Fill NULLs only — never clobber a tag-sourced bpm/key — across every copy
-// sharing the canonical hash. bpm_source becomes 'essentia' only when it was
-// NULL (a tag-sourced row keeps its 'tag' provenance even if we add the key).
-const fillAnalysis = db.prepare(`
-  UPDATE tracks
-     SET bpm         = COALESCE(bpm, ?),
-         musical_key = COALESCE(musical_key, ?),
-         bpm_source  = CASE WHEN bpm_source IS NULL THEN 'essentia' ELSE bpm_source END
-   WHERE COALESCE(audio_hash, file_hash) = ?
-     AND (bpm IS NULL OR musical_key IS NULL)
-`);
+// 'lowconf' / 'error' attempts; leaves the recorded values alone.
+const recordLookup = db.prepare(RECORD_ATTEMPT_SQL);
+// 'analyzed' attempts, with the values measured.
+const recordAnalyzed = db.prepare(RECORD_ANALYZED_SQL);
+const fillAnalysis = db.prepare(FILL_ANALYSIS_SQL);
+const refillFromLedger = db.prepare(REFILL_FROM_LEDGER_SQL);
 
 // Persist an 'analyzed' result + its lookup row atomically, so a concurrent
 // reader never sees the lookup recorded but the track not updated (or vice
-// versa).
+// versa). bpm / musicalKey are the usable values (at least one is non-null).
 function commitAnalyzed(canonHash, bpm, musicalKey, attemptSec) {
   db.exec('BEGIN IMMEDIATE');
   try {
     fillAnalysis.run(bpm, musicalKey, canonHash);
-    recordLookup.run(canonHash, attemptSec, 'analyzed');
+    recordAnalyzed.run(canonHash, attemptSec, bpm, musicalKey);
     db.exec('COMMIT');
   } catch (err) {
     try { db.exec('ROLLBACK'); } catch (_) { /* already rolled back */ }
@@ -240,14 +202,31 @@ function commitAnalyzed(canonHash, bpm, musicalKey, attemptSec) {
 
 // ── Run ──────────────────────────────────────────────────────────────────────
 
+// Copy the recorded measurements back onto tracks left NULL by a re-parse
+// or a move. Returns the number of track rows filled.
+function refill() {
+  checkSchemaGuard('before refill');
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const n = Number(refillFromLedger.run().changes);
+    db.exec('COMMIT');
+    return n;
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch (_) { /* already rolled back */ }
+    throw err;
+  }
+}
+
 async function run() {
   pruneOrphans();
+  // Before selecting: a refilled track has its values back and is not work.
+  const refilled = refill();
 
   const nowSec = Math.floor(Date.now() / 1000);
   const tracks = selectEligibleTracks(nowSec);
 
   if (tracks.length === 0) {
-    emit({ event: 'audioAnalysisComplete', attempted: 0, analyzed: 0, lowconf: 0, errors: 0, hitCap: false, avgMsPerTrack: 0 });
+    emit({ event: 'audioAnalysisComplete', refilled, attempted: 0, analyzed: 0, lowconf: 0, errors: 0, hitCap: false, avgMsPerTrack: 0 });
     return;
   }
 
@@ -338,6 +317,7 @@ async function run() {
 
   emit({
     event: 'audioAnalysisComplete',
+    refilled,
     attempted,
     analyzed,
     lowconf,

@@ -229,3 +229,122 @@ export async function analyzeFile(audioPath, ffmpegBin, opts = {}) {
   const signal = await decodePcmF32(audioPath, ffmpegBin, opts);
   return analyzeSignal(signal, await getEssentia(), { bpmMethod: opts.bpmMethod });
 }
+
+// ── Worker SQL ───────────────────────────────────────────────────────────────
+//
+// The analysis worker's statements, here rather than inline in
+// audio-analysis-backfill.mjs so tests can run the exact text (the worker
+// parses argv and exits at import; this module loads essentia lazily).
+//
+// audio_analysis_lookups (V54, values since V78) is keyed on the canonical
+// hash COALESCE(audio_hash, file_hash) and holds what essentia MEASURED for
+// that audio — never a tag value. A re-parse writes the file's tags over the
+// track row (the scanner UPSERT keeps a pure-essentia row's values, but a
+// mixed tag+essentia row and a moved file's new row come back NULL), so each
+// pass first copies the measured values back from the ledger: no decode, no
+// cooldown. INVARIANT: an 'analyzed' commit always carries at least one
+// value (the worker only commits when bpm or key is usable), so an
+// 'analyzed' row with both values NULL is a pre-V78 row that recorded none.
+
+// Fill NULLs only — never clobber a tag-sourced bpm/key — across every copy
+// sharing the canonical hash. bpm_source becomes 'essentia' only when it was
+// NULL (a tag-sourced row keeps its 'tag' provenance even if we add the key).
+// Params: bpm, musical_key, canonical hash.
+export const FILL_ANALYSIS_SQL = `
+  UPDATE tracks
+     SET bpm         = COALESCE(bpm, ?),
+         musical_key = COALESCE(musical_key, ?),
+         bpm_source  = CASE WHEN bpm_source IS NULL THEN 'essentia' ELSE bpm_source END
+   WHERE COALESCE(audio_hash, file_hash) = ?
+     AND (bpm IS NULL OR musical_key IS NULL)
+`;
+
+// An 'analyzed' result and the values essentia measured — the usable ones,
+// including a bpm measured for a row whose bpm is a tag's, so removing that
+// tag later falls back to the measurement. A value this attempt could not
+// resolve keeps the one an earlier attempt recorded.
+// Params: canonical hash, attempt time (s), bpm, musical_key.
+export const RECORD_ANALYZED_SQL = `
+  INSERT INTO audio_analysis_lookups (audio_hash, last_attempt_at, outcome, attempts, bpm, musical_key)
+  VALUES (?, ?, 'analyzed', 1, ?, ?)
+  ON CONFLICT(audio_hash) DO UPDATE SET
+    last_attempt_at = excluded.last_attempt_at,
+    outcome         = excluded.outcome,
+    attempts        = audio_analysis_lookups.attempts + 1,
+    bpm             = COALESCE(excluded.bpm, audio_analysis_lookups.bpm),
+    musical_key     = COALESCE(excluded.musical_key, audio_analysis_lookups.musical_key)
+`;
+
+// A 'lowconf' / 'error' attempt. Leaves the recorded values alone: a retry
+// that measured nothing usable says nothing against an earlier measurement.
+// Params: canonical hash, attempt time (s), outcome.
+export const RECORD_ATTEMPT_SQL = `
+  INSERT INTO audio_analysis_lookups (audio_hash, last_attempt_at, outcome, attempts)
+  VALUES (?, ?, ?, 1)
+  ON CONFLICT(audio_hash) DO UPDATE SET
+    last_attempt_at = excluded.last_attempt_at,
+    outcome         = excluded.outcome,
+    attempts        = audio_analysis_lookups.attempts + 1
+`;
+
+// Copy measured values back onto tracks whose bpm/key is NULL, from the
+// ledger row of the same audio (any outcome — a lowconf retry keeps the
+// values of an earlier 'analyzed' attempt). Fill-NULL only, so a tag value
+// always stands; provenance as in FILL_ANALYSIS_SQL. No duration / genre
+// filter: this restores what was already measured, it starts nothing new.
+// No params.
+export const REFILL_FROM_LEDGER_SQL = `
+  UPDATE tracks
+     SET bpm = COALESCE(bpm, (SELECT la.bpm FROM audio_analysis_lookups la
+                               WHERE la.audio_hash = COALESCE(tracks.audio_hash, tracks.file_hash))),
+         musical_key = COALESCE(musical_key, (SELECT la.musical_key FROM audio_analysis_lookups la
+                               WHERE la.audio_hash = COALESCE(tracks.audio_hash, tracks.file_hash))),
+         bpm_source = CASE WHEN bpm_source IS NULL THEN 'essentia' ELSE bpm_source END
+   WHERE (bpm IS NULL OR musical_key IS NULL)
+     AND EXISTS (SELECT 1 FROM audio_analysis_lookups la
+                  WHERE la.audio_hash = COALESCE(tracks.audio_hash, tracks.file_hash)
+                    AND ((tracks.bpm IS NULL AND la.bpm IS NOT NULL)
+                      OR (tracks.musical_key IS NULL AND la.musical_key IS NOT NULL)))
+`;
+
+// Tracks needing analysis: NULL bpm OR NULL key, in the duration window, not
+// an excluded genre, off cooldown. One representative row per canonical hash
+// (MIN(id) — SQLite takes the other bare columns from that same row), so
+// duplicate files are decoded once. 'error' rows come off cooldown sooner.
+// An 'analyzed' row with no recorded values (pre-V78) is not done: it never
+// stored what it measured, so its cooldown would otherwise hide a track whose
+// values a re-parse cleared.
+// Params: minDurationSec, maxDurationSec, ...genres (lower-cased, genreCount
+// of them), errorCutoff, longCutoff, limit.
+export function selectEligibleSql(genreCount) {
+  const genreClause = genreCount > 0
+    ? `AND NOT EXISTS (
+         SELECT 1 FROM track_genres tg JOIN genres g ON g.id = tg.genre_id
+          WHERE tg.track_id = t.id AND LOWER(g.name) IN (${new Array(genreCount).fill('?').join(',')})
+       )`
+    : '';
+  return `
+    SELECT MIN(t.id) AS track_id,
+           COALESCE(t.audio_hash, t.file_hash) AS canon_hash,
+           t.filepath AS filepath,
+           t.duration AS duration,
+           lib.root_path AS root
+      FROM tracks t
+      JOIN libraries lib ON lib.id = t.library_id
+      LEFT JOIN audio_analysis_lookups la
+             ON la.audio_hash = COALESCE(t.audio_hash, t.file_hash)
+     WHERE (t.bpm IS NULL OR t.musical_key IS NULL)
+       AND t.duration IS NOT NULL
+       AND t.duration >= ? AND t.duration <= ?
+       AND COALESCE(t.audio_hash, t.file_hash) IS NOT NULL
+       ${genreClause}
+       AND (
+            la.audio_hash IS NULL
+         OR (la.outcome = 'analyzed' AND la.bpm IS NULL AND la.musical_key IS NULL)
+         OR la.last_attempt_at < (CASE WHEN la.outcome = 'error' THEN ? ELSE ? END)
+       )
+     GROUP BY COALESCE(t.audio_hash, t.file_hash)
+     ORDER BY track_id
+     LIMIT ?
+  `;
+}

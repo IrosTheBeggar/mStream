@@ -182,7 +182,8 @@ describe('V54 schema', () => {
     db.exec('PRAGMA foreign_keys = ON');
     applyAllMigrations(db);
     const cols = db.prepare('PRAGMA table_info(audio_analysis_lookups)').all().map((c) => c.name).sort();
-    assert.deepEqual(cols, ['attempts', 'audio_hash', 'last_attempt_at', 'outcome']);
+    // bpm / musical_key: the measured values, since V78.
+    assert.deepEqual(cols, ['attempts', 'audio_hash', 'bpm', 'last_attempt_at', 'musical_key', 'outcome']);
     db.close();
   });
 });
@@ -211,8 +212,9 @@ describe('analysis worker (real ffmpeg + essentia)', () => {
       assert.ok(row.bpm == null || (row.bpm >= 20 && row.bpm <= 300), `implausible bpm ${row.bpm}`);
       assert.ok(row.bpm != null || row.musical_key != null, 'at least one of bpm/key must be filled');
       assert.equal(row.bpm_source, 'essentia');
-      const lookup = db.prepare('SELECT outcome, attempts FROM audio_analysis_lookups').get();
-      assert.deepEqual({ ...lookup }, { outcome: 'analyzed', attempts: 1 });
+      const lookup = db.prepare('SELECT outcome, attempts, bpm, musical_key FROM audio_analysis_lookups').get();
+      // The ledger keeps exactly what was written (V78), for the refill.
+      assert.deepEqual({ ...lookup }, { outcome: 'analyzed', attempts: 1, bpm: row.bpm, musical_key: row.musical_key });
     } finally { db.close(); }
   });
 
@@ -232,6 +234,12 @@ describe('analysis worker (real ffmpeg + essentia)', () => {
       assert.equal(row.bpm, 123, 'tag bpm must NOT be overwritten');
       assert.equal(row.bpm_source, 'tag', 'tag provenance preserved');
       assert.ok(row.musical_key != null, 'NULL key should have been filled');
+      // The ledger records what essentia measured, not the tag: removing the
+      // tag later falls back to the measurement, never to the old tag value.
+      const lookup = db.prepare('SELECT bpm, musical_key FROM audio_analysis_lookups').get();
+      assert.equal(lookup.musical_key, row.musical_key);
+      assert.ok(lookup.bpm == null || (lookup.bpm >= 20 && lookup.bpm <= 300 && lookup.bpm !== 123),
+        `ledger bpm is the measurement (got ${lookup.bpm})`);
     } finally { db.close(); }
   });
 
@@ -441,5 +449,110 @@ describe('windowed decode + bpm method', () => {
       'degara confidence is always 0 — proves the method string reached essentia');
     assert.ok(degara.bpm != null && Math.abs(degara.bpm - multi.bpm) <= Math.max(3, multi.bpm * 0.1),
       `methods roughly agree (multifeature=${multi.bpm}, degara=${degara.bpm})`);
+  });
+});
+
+// ── V78: the ledger keeps the measurements; refill + legacy rows ─────────────
+//
+// A re-parse can write NULL over analysed values (a mixed tag+essentia row, a
+// moved file's new row) while the 'analyzed' ledger row stays on cooldown.
+// The worker copies the recorded values back before it selects work, and an
+// 'analyzed' row from before V78 (no values) does not hold a track back.
+
+const nowSec = () => Math.floor(Date.now() / 1000);
+function withEnvDb(env, fn) {
+  const db = new DatabaseSync(env.dbPath);
+  try { return fn(db); } finally { db.close(); }
+}
+function seedLedger(env, hash, { outcome = 'analyzed', at = nowSec(), bpm = null, key = null, attempts = 1 } = {}) {
+  withEnvDb(env, (db) => db.prepare(`
+    INSERT INTO audio_analysis_lookups (audio_hash, last_attempt_at, outcome, attempts, bpm, musical_key)
+    VALUES (?, ?, ?, ?, ?, ?)`).run(hash, at, outcome, attempts, bpm, key));
+}
+const trackRow = (env, id) => withEnvDb(env, (db) => ({
+  ...db.prepare('SELECT bpm, musical_key, bpm_source FROM tracks WHERE id = ?').get(id) }));
+const ledgerRow = (env, hash) => withEnvDb(env, (db) => ({
+  ...db.prepare('SELECT outcome, attempts, bpm, musical_key FROM audio_analysis_lookups WHERE audio_hash = ?').get(hash) }));
+
+describe('V78 measured values: refill + legacy rows', () => {
+  test('refill-only pass: cleared values come back from the ledger with no analysis', async () => {
+    // hash-1: cleared by a re-parse; hash-2: a mixed row that lost its key;
+    // hash-3 has two copies (a moved file + a late duplicate), both NULL.
+    // Files are missing on purpose: any decode attempt would show up as an
+    // error, and the in-cooldown ledger rows mean none may be selected.
+    const env = makeDb([
+      {}, { bpm: 128, source: 'tag' }, { hash: 'hash-3' }, { hash: 'hash-3' },
+    ]);
+    seedLedger(env, 'hash-1', { bpm: 93, key: 'E major' });
+    seedLedger(env, 'hash-2', { bpm: 126, key: 'C minor' });
+    seedLedger(env, 'hash-3', { bpm: 90, key: 'F minor', outcome: 'lowconf' });
+
+    const r = await runWorker(baseConfig(env));
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(
+      { refilled: r.complete.refilled, attempted: r.complete.attempted, errors: r.complete.errors },
+      { refilled: 4, attempted: 0, errors: 0 });
+    assert.deepEqual(trackRow(env, env.ids[0]), { bpm: 93, musical_key: 'E major', bpm_source: 'essentia' });
+    assert.deepEqual(trackRow(env, env.ids[1]), { bpm: 128, musical_key: 'C minor', bpm_source: 'tag' },
+      'the tag BPM stands; only the NULL key is restored');
+    assert.deepEqual(trackRow(env, env.ids[2]), { bpm: 90, musical_key: 'F minor', bpm_source: 'essentia' });
+    assert.deepEqual(trackRow(env, env.ids[3]), { bpm: 90, musical_key: 'F minor', bpm_source: 'essentia' });
+    assert.equal(ledgerRow(env, 'hash-1').attempts, 1, 'a refill is not an attempt');
+
+    const r2 = await runWorker(baseConfig(env));
+    assert.deepEqual({ refilled: r2.complete.refilled, attempted: r2.complete.attempted },
+      { refilled: 0, attempted: 0 }, 'idempotent');
+  });
+
+  test('a pre-V78 analyzed row with no values does not hold a NULL track back', async () => {
+    const env = makeDb([{}]);   // missing file → a fast error outcome, no decode
+    seedLedger(env, 'hash-1', { at: nowSec() - 60 });   // well inside the 90-day cooldown
+    const r = await runWorker(baseConfig(env));
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual({ refilled: r.complete.refilled, attempted: r.complete.attempted },
+      { refilled: 0, attempted: 1 }, 'selected despite the cooldown');
+    assert.deepEqual(ledgerRow(env, 'hash-1'), { outcome: 'error', attempts: 2, bpm: null, musical_key: null });
+  });
+
+  test('a ledger row with values keeps its cooldown for the half it could not measure', async () => {
+    const env = makeDb([{ bpm: 93, source: 'essentia' }]);   // key NULL (was low-confidence)
+    seedLedger(env, 'hash-1', { bpm: 93, at: nowSec() - 60 });
+    const r = await runWorker(baseConfig(env));
+    assert.deepEqual({ refilled: r.complete.refilled, attempted: r.complete.attempted },
+      { refilled: 0, attempted: 0 });
+  });
+
+  test('an error / lowconf retry keeps the recorded values', async () => {
+    const env = makeDb([{ bpm: 93, source: 'essentia' }]);   // missing file → error
+    seedLedger(env, 'hash-1', { bpm: 93, at: nowSec() - 100 * 24 * 60 * 60 });   // cooldown over
+    const r = await runWorker(baseConfig(env));
+    assert.equal(r.complete.errors, 1, r.stderr);
+    assert.deepEqual(ledgerRow(env, 'hash-1'), { outcome: 'error', attempts: 2, bpm: 93, musical_key: null });
+  });
+
+  test('legacy rows stop after one pass: analyzed with a value, or lowconf', async () => {
+    // a: degara + an impossible key floor → 'analyzed' with a BPM only.
+    // b: impossible floors → 'lowconf'. Both legacy rows, both NULL tracks.
+    const envA = makeDb([{ file: 'a.flac' }]);
+    placeFixture(envA, fxCmajor, 'a.flac');
+    seedLedger(envA, 'hash-1', { at: nowSec() - 60 });
+    const cfgA = { bpmMethod: 'degara', minKeyStrength: 0.999 };
+    const a1 = await runWorker(baseConfig(envA, cfgA));
+    assert.equal(a1.complete.analyzed, 1, a1.stderr);
+    const ledA = ledgerRow(envA, 'hash-1');
+    assert.equal(ledA.outcome, 'analyzed');
+    assert.ok(ledA.bpm != null && ledA.musical_key == null, `bpm recorded, key not: ${JSON.stringify(ledA)}`);
+    assert.equal(trackRow(envA, envA.ids[0]).musical_key, null);
+    const a2 = await runWorker(baseConfig(envA, cfgA));
+    assert.equal(a2.complete.attempted, 0, 'the row now has a value: the cooldown applies');
+
+    const envB = makeDb([{ file: 'b.flac' }]);
+    placeFixture(envB, fxCmajor, 'b.flac');
+    seedLedger(envB, 'hash-1', { at: nowSec() - 60 });
+    const cfgB = { minBpmConfidence: 999, minKeyStrength: 0.999 };
+    const b1 = await runWorker(baseConfig(envB, cfgB));
+    assert.equal(b1.complete.lowconf, 1, b1.stderr);
+    const b2 = await runWorker(baseConfig(envB, cfgB));
+    assert.equal(b2.complete.attempted, 0, 'lowconf cooldown');
   });
 });

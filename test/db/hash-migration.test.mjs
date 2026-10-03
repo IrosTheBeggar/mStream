@@ -69,7 +69,9 @@ function mkDb() {
       audio_hash      TEXT PRIMARY KEY,
       last_attempt_at INTEGER NOT NULL,
       outcome         TEXT NOT NULL,
-      attempts        INTEGER NOT NULL DEFAULT 1
+      attempts        INTEGER NOT NULL DEFAULT 1,
+      bpm             INTEGER,
+      musical_key     TEXT
     );
     CREATE UNIQUE INDEX um_unique ON user_metadata(user_id, track_hash);
     CREATE TABLE play_events (
@@ -410,5 +412,55 @@ describe('hash migration helper', () => {
       `${table}: content-derived cooldown stays at the old identity — new audio ` +
       'must not inherit a failure for attempts that never ran against it');
     }
+  });
+
+  // V78: the analysis ledger holds the measured bpm / key. Same rows as
+  // hash_migration_tests in rust-parser/src/main.rs.
+  describe('V78 analysis values', () => {
+    const measured = (db, hash) => {
+      const r = db.prepare('SELECT bpm, musical_key FROM audio_analysis_lookups WHERE audio_hash = ?').get(hash);
+      return r ? [r.bpm, r.musical_key] : null;
+    };
+
+    test('scheme re-key: values follow; a value-less canonical row takes the old values; its own win', () => {
+      const db = mkDb();
+      db.exec(`
+        INSERT INTO audio_analysis_lookups (audio_hash, last_attempt_at, outcome, bpm, musical_key) VALUES
+          ('oldhash', 100, 'analyzed', 93, 'E major'),
+          ('h1', 100, 'analyzed', 126, 'C minor'),
+          ('h2', 200, 'lowconf', NULL, NULL),
+          ('h3', 100, 'analyzed', 90, 'A minor'),
+          ('h4', 200, 'analyzed', 91, NULL);
+      `);
+      migrateHashReferences(db, 'oldhash', 'newhash', { schemeRekey: true });
+      assert.deepEqual(measured(db, 'newhash'), [93, 'E major'], 'a lone row re-keys with its values');
+      assert.equal(measured(db, 'oldhash'), null);
+      migrateHashReferences(db, 'h1', 'h2', { schemeRekey: true });
+      assert.deepEqual(measured(db, 'h2'), [126, 'C minor'], 'same bytes: the old measurement fills the gap');
+      assert.equal(measured(db, 'h1'), null, 'the old row is still dropped');
+      migrateHashReferences(db, 'h3', 'h4', { schemeRekey: true });
+      assert.deepEqual(measured(db, 'h4'), [91, 'A minor'], 'the canonical row keeps its own value');
+    });
+
+    test('content change: the measurement stays with the old audio', () => {
+      const db = mkDb();
+      db.exec(`INSERT INTO audio_analysis_lookups (audio_hash, last_attempt_at, outcome, bpm, musical_key)
+               VALUES ('oldhash', 100, 'analyzed', 93, 'E major')`);
+      migrateHashReferences(db, 'oldhash', 'newhash');
+      assert.deepEqual(measured(db, 'oldhash'), [93, 'E major']);
+      assert.equal(measured(db, 'newhash'), null, 'new audio inherits no measurement');
+    });
+
+    test('a pre-V78 ledger (no value columns) still re-keys on a collision', () => {
+      const db = mkDb();
+      db.exec(`DROP TABLE audio_analysis_lookups;
+               CREATE TABLE audio_analysis_lookups (audio_hash TEXT PRIMARY KEY,
+                 last_attempt_at INTEGER NOT NULL, outcome TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 1);
+               INSERT INTO audio_analysis_lookups (audio_hash, last_attempt_at, outcome) VALUES
+                 ('h1', 100, 'error'), ('h2', 200, 'analyzed');`);
+      migrateHashReferences(db, 'h1', 'h2', { schemeRekey: true });
+      assert.deepEqual(db.prepare('SELECT audio_hash, outcome FROM audio_analysis_lookups').all().map((r) => ({ ...r })),
+        [{ audio_hash: 'h2', outcome: 'analyzed' }]);
+    });
   });
 });
