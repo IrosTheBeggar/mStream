@@ -2430,10 +2430,11 @@ const VUEPLAYERCORE = (() => {
     }
 
     // Perform a metadata lookup ONLY when we weren't handed usable metadata
-    // already. Callers that pass a real metadata object — search results
-    // (the search API returns full metadata inline), album queue, playlist
-    // load — skip this redundant /api/v1/db/metadata round-trip. The file
-    // browser passes {} (it has no inline metadata) and still gets a lookup.
+    // already. Callers that pass a real metadata object — a single search
+    // hit (the search API returns lite metadata inline), album queue,
+    // playlist load, Add All on a DB panel — skip this redundant
+    // /api/v1/db/metadata round-trip. The file browser passes {} (it has no
+    // inline metadata) and still gets a lookup.
     const hasMetadata = metadata && typeof metadata === 'object' && Object.keys(metadata).length > 0;
     if (lookupMetadata === true && !hasMetadata) {
       const response = await MSTREAMAPI.lookupMetadata(rawFilepath);
