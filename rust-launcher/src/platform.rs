@@ -618,7 +618,12 @@ pub fn focus_player(who: Option<&crate::paths::PlayerSidecar>) -> Result<String,
         // The pid first: the desktop build's window belongs to the player's
         // own process, so the sidecar's pid names it exactly (a terminal-
         // hosted player's window belongs to its terminal, so the search
-        // comes back empty there and the title has it, as before).
+        // comes back empty there and the title has it, as before). The
+        // title search does not share the pid search's helper-window trap
+        // (top_level_window_of): winit creates its helper with no title, so
+        // only a window titled exactly "mStream Player" answers — the
+        // terminal whose active tab is the player, conhost's own window, or
+        // the desktop build's window should the pid search miss it.
         let by_pid = who.and_then(|w| top_level_window_of(w.pid));
         let (hwnd, what) = match by_pid {
             Some(hwnd) => (hwnd, format!("the player's own window (pid {})", who.map(|w| w.pid).unwrap_or(0))),
@@ -780,16 +785,28 @@ pub fn allow_foreground_handoff() -> bool {
     }
 }
 
-/// The first visible, unowned top-level window `pid` owns — the desktop
-/// player's own window (winit's hidden helper windows are not visible; a
-/// dialog is owned). None when the pid owns none, which is every
+/// The desktop player's own window: the first top-level window `pid` owns
+/// that is_app_window admits. None when the pid owns none, which is every
 /// terminal-hosted player (its window is its terminal's).
+///
+/// "Visible" alone does not find it. winit (the player's windowing) gives
+/// its event loop a helper window, class "Winit Thread Event Target", and
+/// makes it WS_VISIBLE on purpose (only a visible window is sent WM_PAINT,
+/// which winit uses to deliver events during a resize); it stays out of
+/// sight by being tiny, at 0,0, layered and transparent, a tool window and
+/// no-activate. It is unowned, so a visible-and-unowned search can return
+/// it — and does whenever the real window is minimised, because a
+/// minimised window sinks to the bottom of the z-order EnumWindows walks.
+/// Measured on Windows 10 with player v0.12.0 minimised: focus_player found
+/// the helper, IsIconic(helper) was false so the real window was never
+/// restored, SetForegroundWindow went to the invisible helper, and the log
+/// still said the player's window was activated.
 #[cfg(windows)]
 fn top_level_window_of(pid: u32) -> Option<windows_sys::Win32::Foundation::HWND> {
     use windows_sys::core::BOOL;
     use windows_sys::Win32::Foundation::{HWND, LPARAM};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindow, GetWindowThreadProcessId, IsWindowVisible, GW_OWNER,
+        EnumWindows, GetWindow, GetWindowLongW, GetWindowThreadProcessId, IsWindowVisible, GWL_EXSTYLE, GW_OWNER,
     };
     struct Search {
         pid: u32,
@@ -802,7 +819,15 @@ fn top_level_window_of(pid: u32) -> Option<windows_sys::Win32::Foundation::HWND>
             let search = &mut *(search as *mut Search);
             let mut owner = 0u32;
             GetWindowThreadProcessId(hwnd, &mut owner);
-            if owner == search.pid && IsWindowVisible(hwnd) != 0 && GetWindow(hwnd, GW_OWNER).is_null() {
+            if owner != search.pid {
+                return 1;
+            }
+            let visible = IsWindowVisible(hwnd) != 0;
+            let owned = !GetWindow(hwnd, GW_OWNER).is_null();
+            // The extended styles are a DWORD; GetWindowLongW hands them
+            // back as its i32 (GetWindowLongPtrW's isize adds nothing here).
+            let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            if is_app_window(visible, owned, ex_style) {
                 search.found = hwnd;
                 return 0;
             }
@@ -815,6 +840,33 @@ fn top_level_window_of(pid: u32) -> Option<windows_sys::Win32::Foundation::HWND>
     let mut search = Search { pid, found: std::ptr::null_mut() };
     unsafe { EnumWindows(Some(visit), &mut search as *mut Search as LPARAM) };
     (!search.found.is_null()).then_some(search.found)
+}
+
+/// WS_EX_TOOLWINDOW and WS_EX_NOACTIVATE, spelled out so is_app_window and
+/// its tests build on every host; a Windows-only test pins them to
+/// windows-sys's values.
+#[cfg(any(windows, test))]
+const EX_TOOLWINDOW: u32 = 0x0000_0080;
+#[cfg(any(windows, test))]
+const EX_NOACTIVATE: u32 = 0x0800_0000;
+
+/// Is a top-level window one a user would call the app's window — the one
+/// focus_player may restore and bring forward? Visible (a minimised window
+/// still is), unowned (a dialog is owned by the window it belongs to), and
+/// neither a tool window nor a no-activate one. Those two extended styles
+/// are how a program tells Windows a window is not for the user to switch
+/// to: a WS_EX_TOOLWINDOW window gets no taskbar button and no Alt+Tab
+/// entry (the shell's own rule for "an app window" is visible, unowned and
+/// not a tool window), and a WS_EX_NOACTIVATE window never becomes the
+/// foreground when clicked — so neither is a window the user minimised or
+/// expects to see come forward, and activating one shows nothing. winit's
+/// thread helper carries both (top_level_window_of); the player's real
+/// window carries neither. The player's own second-launch focus applies the
+/// same rule to the same windows; keep the two in step. Pure, so the rule
+/// is unit-tested on every host.
+#[cfg(any(windows, test))]
+fn is_app_window(visible: bool, owned: bool, ex_style: u32) -> bool {
+    visible && !owned && ex_style & (EX_TOOLWINDOW | EX_NOACTIVATE) == 0
 }
 
 /// `open -a <app>`: activate a running app (or launch it — which is why
@@ -1440,6 +1492,37 @@ mod page_tests {
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         assert_eq!(wt[4..], [r"C:\m\p.exe", "gui", "--serve-port", "4444", "--bundled-server", "http://x:1"]);
+    }
+
+    #[test]
+    fn the_focus_search_skips_tool_and_no_activate_windows() {
+        use super::{is_app_window, EX_NOACTIVATE, EX_TOOLWINDOW};
+        const WINDOWEDGE: u32 = 0x0000_0100;
+        const ACCEPTFILES: u32 = 0x0000_0010;
+        const APPWINDOW: u32 = 0x0004_0000;
+        const TRANSPARENT: u32 = 0x0000_0020;
+        const LAYERED: u32 = 0x0008_0000;
+        // An ordinary app window (the player's own, minimised or not:
+        // IsWindowVisible stays true for a minimised window).
+        assert!(is_app_window(true, false, 0));
+        assert!(is_app_window(true, false, WINDOWEDGE | ACCEPTFILES | APPWINDOW), "the player's own window");
+        // winit's "Winit Thread Event Target": visible, unowned, and both.
+        let helper = EX_NOACTIVATE | TRANSPARENT | LAYERED | EX_TOOLWINDOW;
+        assert!(!is_app_window(true, false, helper), "winit's thread helper");
+        assert!(!is_app_window(true, false, EX_TOOLWINDOW), "a tool window alone");
+        assert!(!is_app_window(true, false, EX_NOACTIVATE), "a no-activate window alone");
+        // APPWINDOW does not rescue a tool window (nor does the shell).
+        assert!(!is_app_window(true, false, EX_TOOLWINDOW | APPWINDOW));
+        assert!(!is_app_window(false, false, 0), "a hidden window");
+        assert!(!is_app_window(true, true, 0), "an owned window: a dialog");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_spelled_out_styles_are_windows_sys_values() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW};
+        assert_eq!(super::EX_TOOLWINDOW, WS_EX_TOOLWINDOW);
+        assert_eq!(super::EX_NOACTIVATE, WS_EX_NOACTIVATE);
     }
 
     #[test]

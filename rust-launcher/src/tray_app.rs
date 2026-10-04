@@ -1475,7 +1475,10 @@ enum WindowVerdict {
     /// route.
     NoWindow,
     /// Any other exit inside the watch — the terminal route too, the code
-    /// in the log.
+    /// in the log (exit_words: a crash's NTSTATUS in hex). A crash is the
+    /// case that matters most here: a GPU driver that kills the window
+    /// before its first frame leaves the terminal face, which draws nothing
+    /// with the GPU, untouched (crashed).
     Failed(Option<i32>),
     /// An exit seen only past the watch (the poll's last beat): the window
     /// was up and has closed; nothing to do. Exit 3 is the exception: it
@@ -1510,8 +1513,15 @@ enum PageVerdict {
     Up,
     /// Exit 3, at any time: no window could open here.
     NoWindow,
-    /// Any other exit inside the watch, a signal's too: the page failed in
-    /// its window, the code in the log.
+    /// A crash inside the watch (crashed: an NTSTATUS on Windows, a signal
+    /// on Unix): the page's process died under it, the status in the log.
+    /// The window is the likely culprit — measured: an NVIDIA driver's
+    /// fast-fail (0xC0000409) before the first frame — and the terminal
+    /// page draws nothing with the GPU, so it is the terminal route's.
+    Crashed(Option<i32>),
+    /// Any other exit inside the watch: the page failed in its window by an
+    /// error of its own (a frame error, clap refusing the argv), the code in
+    /// the log.
     Failed(Option<i32>),
     /// Exit 0 at any time — the page's every way out (finished, Esc,
     /// Ctrl+C, the close button) — the reserved PAGE_ABANDONED at any time,
@@ -1532,6 +1542,7 @@ fn page_verdict(state: ChildState, elapsed: Duration) -> PageVerdict {
         ChildState::Exited(Some(PLAYER_NO_WINDOW)) => PageVerdict::NoWindow,
         ChildState::Exited(Some(0)) => PageVerdict::Closed(Some(0)),
         ChildState::Exited(Some(PAGE_ABANDONED)) => PageVerdict::Closed(Some(PAGE_ABANDONED)),
+        ChildState::Exited(code) if inside && crashed(code) => PageVerdict::Crashed(code),
         ChildState::Exited(code) if inside => PageVerdict::Failed(code),
         ChildState::Exited(code) => PageVerdict::Closed(code),
     }
@@ -1550,17 +1561,19 @@ const PAGE_ABANDONED: i32 = 4;
 enum PageAction {
     /// Log it; the page is up, or was and has closed.
     Nothing,
-    /// The page in a terminal window instead (no window could open here).
+    /// The page in a terminal window instead: no window could open here, or
+    /// the window's process crashed (the terminal page shares the page's
+    /// code but not its window or its GPU).
     Terminal,
-    /// The page's browser fallback: a page that failed in its window would
-    /// fail the same way in a terminal.
+    /// The page's browser fallback: a page that left its window by an error
+    /// exit of its own would leave a terminal the same way.
     Browser,
 }
 
 /// The page route's fallback table, pure.
 fn page_outcome(verdict: PageVerdict) -> PageAction {
     match verdict {
-        PageVerdict::NoWindow => PageAction::Terminal,
+        PageVerdict::NoWindow | PageVerdict::Crashed(_) => PageAction::Terminal,
         PageVerdict::Failed(_) => PageAction::Browser,
         PageVerdict::Watching | PageVerdict::Up | PageVerdict::Closed(_) => PageAction::Nothing,
     }
@@ -1668,11 +1681,12 @@ struct PageFallback {
 
 /// A page's watcher: a thread of its own polls the child for WINDOW_WATCH
 /// and acts on page_outcome(page_verdict(..)) — the terminal route for no
-/// window, the browser for a failure, a log line for the rest. Once the
-/// window is up it stays to reap the child and logs its close; a late exit
-/// 3 still means no window ever opened, and takes the terminal route as
-/// the player's watcher does. Nothing waits on it: the tray loop runs on,
-/// and the pages never ride an exiting launcher.
+/// window or a crash, the browser for an error exit, a log line for the
+/// rest. Once the window is up it stays to reap the child and logs its
+/// close; a late exit 3 still means no window ever opened, and takes the
+/// terminal route as the player's watcher does (a late crash does not:
+/// the window it took down had outlived the watch). Nothing waits on it:
+/// the tray loop runs on, and the pages never ride an exiting launcher.
 fn watch_player_page(mut child: std::process::Child, ctx: PageFallback) {
     std::thread::spawn(move || {
         let pid = child.id();
@@ -1682,10 +1696,11 @@ fn watch_player_page(mut child: std::process::Child, ctx: PageFallback) {
             let ms = start.elapsed().as_millis();
             match (page_outcome(verdict), verdict) {
                 (PageAction::Terminal, _) => {
-                    ctx.log.line(&format!(
-                        "{name} (pid {pid}) could not open a window (exit {PLAYER_NO_WINDOW}{}) after {ms} ms - falling back to the terminal route",
-                        last_words(&ctx.output)
-                    ));
+                    let why = match verdict {
+                        PageVerdict::Crashed(code) => format!("crashed ({}{})", exit_words(code), last_words(&ctx.output)),
+                        _ => format!("could not open a window (exit {PLAYER_NO_WINDOW}{})", last_words(&ctx.output)),
+                    };
+                    ctx.log.line(&format!("{name} (pid {pid}) {why} after {ms} ms - falling back to the terminal route"));
                     open_page_in_terminal(Some(&ctx.player_bin), ctx.page, &ctx.server_url, &ctx.data_home, &ctx.fallback, &ctx.log);
                 }
                 (PageAction::Browser, PageVerdict::Failed(code)) => {
@@ -1701,7 +1716,9 @@ fn watch_player_page(mut child: std::process::Child, ctx: PageFallback) {
                 (_, PageVerdict::Failed(code) | PageVerdict::Closed(code)) => {
                     ctx.log.line(&format!("{name} (pid {pid}) closed after {ms} ms ({})", exit_words(code)))
                 }
-                (_, PageVerdict::Watching | PageVerdict::NoWindow) => unreachable!("the loop only breaks on a decision; no window is the terminal's"),
+                (_, PageVerdict::Watching | PageVerdict::NoWindow | PageVerdict::Crashed(_)) => {
+                    unreachable!("the loop only breaks on a decision; no window and a crash are the terminal's")
+                }
             }
         };
         let verdict = loop {
@@ -1731,12 +1748,73 @@ fn watch_player_page(mut child: std::process::Child, ctx: PageFallback) {
     });
 }
 
+/// An exit status as the watchers' log lines say it. A Windows crash is
+/// printed as the NTSTATUS it is, in hex and named where it is a common one
+/// ("exit 0xC0000409, a fail-fast crash"), never as the negative i32 it
+/// arrives as (-1073740791 means nothing to anyone reading a log).
 fn exit_words(code: Option<i32>) -> String {
     match code {
+        Some(c) if crashed(code) => {
+            let status = c as u32;
+            let what = match status {
+                0xC000_0005 => "an access violation",
+                // __fastfail: a stack-buffer-overrun check, abort() and a
+                // panic under panic=abort all end this way, and so did the
+                // NVIDIA driver measured killing the player's window.
+                0xC000_0409 => "a fail-fast crash",
+                0xC000_00FD => "a stack overflow",
+                0xC000_001D => "an illegal instruction",
+                0xC000_0374 => "heap corruption",
+                STATUS_BREAKPOINT => "an unhandled breakpoint",
+                _ => "a crash",
+            };
+            format!("exit 0x{status:08X}, {what}")
+        }
         Some(c) => format!("exit {c}"),
         None => "killed by a signal".into(),
     }
 }
+
+/// Did the child die of a crash, rather than leave by an exit of its own?
+/// The page watcher sends a crash to the terminal route (PageVerdict::
+/// Crashed); every watcher prints one readably (exit_words).
+///
+/// Unix: death by a signal, which ExitStatus::code() — so ChildState —
+/// reports as None (code() is never None on Windows). That counts every
+/// signal, a SIGKILL from outside too; the window's process group is its
+/// own (platform::spawn_player_window), so a Ctrl+C at the launcher's
+/// terminal never reaches it, and a page killed from outside inside its
+/// first seconds is rare enough to reopen in a terminal.
+///
+/// Windows: an NTSTATUS of error severity — the exit code as u32 with its
+/// top two bits set, 0xC0000000 and up — which is what the system leaves
+/// when an unhandled exception or a fail-fast ends a process (no program
+/// picks such a code to exit with). Plus STATUS_BREAKPOINT, which is
+/// warning-severity but is what an unhandled breakpoint (a driver's debug
+/// assert) ends a process with. Not 0xFFFFFFFF: it is `exit(-1)`, a
+/// program's own error exit, and what tools that end a process with
+/// TerminateProcess(h, -1) leave — a deliberate end either way, nothing a
+/// terminal would avoid — so -1 stays an error exit (the browser's, for a
+/// page) and prints as "exit -1". The loader's statuses (a missing DLL,
+/// 0xC0000135) are in the range and would fail the terminal page as well,
+/// but a binary that cannot load never got this far: the boot probe
+/// (`--version`) runs the same binary and admits the window route only on
+/// its answer.
+///
+/// Unix exit codes are 0-255, so the Windows range never matches there and
+/// the one rule is pure and host-independent (unit-tested everywhere).
+fn crashed(code: Option<i32>) -> bool {
+    match code {
+        None => true,
+        Some(c) => {
+            let status = c as u32;
+            (0xC000_0000..0xFFFF_FFFF).contains(&status) || status == STATUS_BREAKPOINT
+        }
+    }
+}
+
+/// The NTSTATUS an unhandled breakpoint exception ends a process with.
+const STATUS_BREAKPOINT: u32 = 0x8000_0003;
 
 /// `: <the child's last output line>` for a failure's log line — bounded,
 /// and empty when it said nothing.
@@ -2441,6 +2519,47 @@ mod tests {
     const HOUR: u64 = 60 * MIN;
     const DAY: u64 = 24 * HOUR;
 
+    /// STATUS_STACK_BUFFER_OVERRUN, __fastfail's exit — what the NVIDIA
+    /// driver left when it killed the player's window before its first
+    /// frame — as ExitStatus::code() hands it over: -1073740791.
+    const FAST_FAIL: i32 = 0xC000_0409_u32 as i32;
+    /// STATUS_ACCESS_VIOLATION as code() hands it over.
+    const ACCESS_VIOLATION: i32 = 0xC000_0005_u32 as i32;
+
+    #[test]
+    fn a_crash_is_a_signal_or_an_ntstatus_error_and_never_an_exit_of_its_own() {
+        assert_eq!(FAST_FAIL, -1_073_740_791, "the code the Windows smoke measured");
+        // Unix: death by a signal (code() is None).
+        assert!(crashed(None));
+        // Windows: error-severity NTSTATUS, 0xC0000000 and up.
+        for status in [0xC000_0000_u32, 0xC000_0005, 0xC000_0409, 0xC000_00FD, 0xC000_0374, 0xFFFF_FFFE] {
+            assert!(crashed(Some(status as i32)), "{status:#X}");
+        }
+        assert!(crashed(Some(0x8000_0003_u32 as i32)), "an unhandled breakpoint");
+        // Exits of the program's own: 0-255 (all Unix can report), clap's 2,
+        // a panic's 101, exit(-1) / TerminateProcess(h, -1), and the
+        // NTSTATUS ranges below error severity (a success or an
+        // informational status is no crash).
+        for code in [0, 1, 2, 3, 4, 101, 255, -1] {
+            assert!(!crashed(Some(code)), "{code}");
+        }
+        for status in [0x4000_0000_u32, 0x8000_0001, 0x8000_0005, 0xBFFF_FFFF] {
+            assert!(!crashed(Some(status as i32)), "{status:#X}");
+        }
+    }
+
+    #[test]
+    fn a_crash_logs_its_ntstatus_in_hex() {
+        assert_eq!(exit_words(Some(FAST_FAIL)), "exit 0xC0000409, a fail-fast crash");
+        assert_eq!(exit_words(Some(ACCESS_VIOLATION)), "exit 0xC0000005, an access violation");
+        assert_eq!(exit_words(Some(0x8000_0003_u32 as i32)), "exit 0x80000003, an unhandled breakpoint");
+        assert_eq!(exit_words(Some(0xC000_0096_u32 as i32)), "exit 0xC0000096, a crash");
+        // Exits of the program's own stay decimal, -1 included.
+        assert_eq!(exit_words(Some(-1)), "exit -1");
+        assert_eq!(exit_words(Some(3)), "exit 3");
+        assert_eq!(exit_words(None), "killed by a signal");
+    }
+
     #[test]
     fn the_window_watch_decides_from_the_exit_and_the_clock() {
         let ms = Duration::from_millis;
@@ -2460,10 +2579,15 @@ mod tests {
         assert_eq!(window_verdict(ChildState::Exited(Some(1)), early), WindowVerdict::Failed(Some(1)));
         assert_eq!(window_verdict(ChildState::Exited(Some(101)), early), WindowVerdict::Failed(Some(101)));
         assert_eq!(window_verdict(ChildState::Exited(None), early), WindowVerdict::Failed(None), "a signal");
+        // A Windows crash too (the measured NVIDIA fast-fail before the
+        // first frame): the terminal face draws nothing with the GPU.
+        for code in [Some(FAST_FAIL), Some(ACCESS_VIOLATION), Some(-1)] {
+            assert_eq!(window_verdict(ChildState::Exited(code), early), WindowVerdict::Failed(code), "{code:?}");
+        }
         // An exit seen only past the watch is a window that was up and
         // closed - never a fallback, whatever the code, except 3: no window
         // ever opened, so the terminal route is still owed.
-        for code in [Some(0), Some(1), None] {
+        for code in [Some(0), Some(1), None, Some(FAST_FAIL)] {
             assert_eq!(window_verdict(ChildState::Exited(code), late), WindowVerdict::Closed(code), "{code:?}");
         }
         assert_eq!(window_verdict(ChildState::Exited(Some(3)), late), WindowVerdict::NoWindow, "a late exit 3");
@@ -2491,19 +2615,31 @@ mod tests {
         // Any other exit inside the watch failed in the window, with its code.
         assert_eq!(page_verdict(ChildState::Exited(Some(1)), early), PageVerdict::Failed(Some(1)), "a frame error");
         assert_eq!(page_verdict(ChildState::Exited(Some(2)), early), PageVerdict::Failed(Some(2)), "clap refused the argv");
-        assert_eq!(page_verdict(ChildState::Exited(None), early), PageVerdict::Failed(None), "a signal");
-        // Past the watch, the window was up and has closed, whatever the code.
-        for code in [Some(1), Some(101), None] {
+        assert_eq!(page_verdict(ChildState::Exited(Some(-1)), early), PageVerdict::Failed(Some(-1)), "exit(-1) is an error exit, not a crash");
+        // A crash inside the watch is its own verdict: a signal (Unix), an
+        // NTSTATUS (Windows: the measured NVIDIA fast-fail, an access
+        // violation, an unhandled breakpoint).
+        for code in [None, Some(FAST_FAIL), Some(ACCESS_VIOLATION), Some(0x8000_0003_u32 as i32)] {
+            assert_eq!(page_verdict(ChildState::Exited(code), early), PageVerdict::Crashed(code), "{code:?}");
+        }
+        // Past the watch, the window was up and has closed, whatever the
+        // code — a crash's too: the window it took down had outlived
+        // the watch.
+        for code in [Some(1), Some(101), None, Some(FAST_FAIL)] {
             assert_eq!(page_verdict(ChildState::Exited(code), late), PageVerdict::Closed(code), "{code:?}");
         }
     }
 
     #[test]
-    fn a_pages_outcome_is_a_terminal_for_no_window_and_the_browser_for_a_failure() {
+    fn a_pages_outcome_is_a_terminal_for_no_window_or_a_crash_and_the_browser_for_an_error_exit() {
         assert_eq!(page_outcome(PageVerdict::NoWindow), PageAction::Terminal);
         assert_eq!(page_outcome(PageVerdict::Failed(Some(1))), PageAction::Browser);
         assert_eq!(page_outcome(PageVerdict::Failed(Some(101))), PageAction::Browser);
-        assert_eq!(page_outcome(PageVerdict::Failed(None)), PageAction::Browser, "a signal");
+        assert_eq!(page_outcome(PageVerdict::Failed(Some(-1))), PageAction::Browser, "exit(-1)");
+        // A crash takes the terminal like no window: the GPU fault that
+        // killed the window does not touch the terminal page.
+        assert_eq!(page_outcome(PageVerdict::Crashed(Some(FAST_FAIL))), PageAction::Terminal);
+        assert_eq!(page_outcome(PageVerdict::Crashed(None)), PageAction::Terminal, "a signal");
         for quiet in [PageVerdict::Watching, PageVerdict::Up, PageVerdict::Closed(Some(0)), PageVerdict::Closed(Some(1)), PageVerdict::Closed(None)] {
             assert_eq!(page_outcome(quiet), PageAction::Nothing, "{quiet:?}");
         }

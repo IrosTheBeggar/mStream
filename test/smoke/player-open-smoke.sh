@@ -14,7 +14,7 @@
 # the server binary and lingers long enough for the terminal chain to count
 # the window as opened.
 #
-# Eight legs, each with its own HOME (= its own data home, lock and log) and
+# Nine legs, each with its own HOME (= its own data home, lock and log) and
 # port:
 #   1. player 9.9.9 (has the GUI), a TERMINAL build (its --version answers
 #      one line): the recorded argv is exactly
@@ -35,7 +35,7 @@
 #   5. the same desktop build, but its window cannot open (`gui --window`
 #      exits 3, the player's NO_WINDOW): the watcher logs it and takes the
 #      terminal route — leg 1's argv, no --window.
-# Legs 6-8 open the setup wizard instead of the player: a FRESH data home
+# Legs 6-9 open the setup wizard instead of the player: a FRESH data home
 # (no setupComplete), launched with neither --player nor --no-open, so the
 # first-run announce opens the wizard (launch_page_leg).
 #   6. a desktop build that names `window-pages` (`features: window
@@ -48,13 +48,17 @@
 #   8. the gate: a desktop build WITHOUT the word (`features: window`, the
 #      v0.11.0 probe) keeps the wizard in a terminal — `setup --server
 #      <url>` and no window launch at all.
+#   9. the window-pages build again, but the wizard's window process dies
+#      by a signal (SIGSEGV — a GPU driver's crash, as Unix reports one):
+#      a crash takes the terminal route like exit 3 — `setup --server
+#      <url>` — never the browser (an error exit of the page's own would).
 #
 # Needs: a built launcher (or MSTREAM_LAUNCHER_BIN), python3, and on Linux a
 # display plus a terminal emulator the launcher's chain knows (xterm is
 # enough) — CI runs it under xvfb-run with xterm installed; with no emulator
 # on PATH it skips. macOS opens Terminal.app through a .command file, which
-# pops a real window (legs 1, 5, 7 and 8), so run it there by hand only.
-# Legs 6-8 run without --no-open, so a browser fallback would really open
+# pops a real window (legs 1, 5, 7, 8 and 9), so run it there by hand only.
+# Legs 6-9 run without --no-open, so a browser fallback would really open
 # one; each asserts the ABSENCE of the fallback's log line instead of
 # relying on a browser being there.
 set -eu
@@ -118,14 +122,15 @@ trap cleanup EXIT
 trap 'exit 129' INT TERM
 
 # mk_bundle <leg> <player-version> <port> [terminal|desktop|desktop-nowindow|
-# desktop-pages|desktop-pages-nowindow]: a bundle of its own per leg (two
-# legs must never share a bundle: the argv files and the stub are per
-# bundle); sets B to the bundle dir. A desktop stub answers
+# desktop-pages|desktop-pages-nowindow|desktop-pages-crash]: a bundle of its
+# own per leg (two legs must never share a bundle: the argv files and the
+# stub are per bundle); sets B to the bundle dir. A desktop stub answers
 # --version with the second line — `features: window`, and the pages
 # flavours `features: window window-pages` — and records a `--window`
 # launch (the player's or a page's) in window-argv.txt, where it lingers
-# past the watch (the nowindow ones exit 3 instead); any other launch lands
-# in player-argv.txt, as before.
+# past the watch (the nowindow ones exit 3 instead, the crash one kills
+# itself with SIGSEGV); any other launch lands in player-argv.txt, as
+# before.
 mk_bundle() {
     flavour="${4:-terminal}"
     features=""
@@ -135,6 +140,10 @@ mk_bundle() {
         desktop-nowindow) features='echo "features: window"'; window_exit='echo "stub: no window" >&2; exit 3' ;;
         desktop-pages) features='echo "features: window window-pages"' ;;
         desktop-pages-nowindow) features='echo "features: window window-pages"'; window_exit='echo "stub: no window" >&2; exit 3' ;;
+        # The window's process dies by a signal (a GPU driver's crash, as
+        # Unix reports one); `$$` stays literal here and is the stub's own pid,
+        # and `ulimit -c 0` keeps the runner free of a core file.
+        desktop-pages-crash) features='echo "features: window window-pages"'; window_exit='echo "stub: crashing" >&2; ulimit -c 0; kill -s SEGV $$' ;;
     esac
     B="$ROOT/$1/mStream-0.0.1-$KEY"
     mkdir -p "$B/$SERVER_DIR_REL/bin/mstream-player" "$B/serve"
@@ -423,6 +432,32 @@ if [ -e "$WARGV" ]; then
     echo "FAIL a window launch without window-pages: $(cat "$WARGV")"; fail=1
 else
     echo "PASS no window launch without the word"
+fi
+if grep -q "$PAGE_BROWSER" "$LOG"; then
+    echo "FAIL the browser fallback ran: $(grep "$PAGE_BROWSER" "$LOG" | tail -1)"; fail=1
+else
+    echo "PASS no browser fallback"
+fi
+stop_leg
+
+echo "== leg 9: the wizard's window crashes (a signal) - the terminal route takes over, never the browser =="
+run_page_leg pages-crash 9.9.9 3882 desktop-pages-crash
+wait_for_log "server is up" 45 || { echo "FAIL leg 9: server never came up"; tail -20 "$LOG" 2>/dev/null; exit 1; }
+if wait_for_log "setup wizard window (pid [0-9]*) crashed (killed by a signal" 20; then
+    echo "PASS $(grep "setup wizard window .*crashed" "$LOG" | tail -1 | sed 's/^\[[0-9]*\] //')"
+else
+    echo "FAIL no crash fallback line for the setup page"; tail -20 "$LOG"; fail=1
+fi
+if [ "$(cat "$WARGV" 2>/dev/null)" = "setup --window --server http://localhost:$PORT" ]; then
+    echo "PASS the window was tried first: $(cat "$WARGV")"
+else
+    echo "FAIL wizard window argv: '$(cat "$WARGV" 2>/dev/null)'"; fail=1
+fi
+i=0; while [ $i -lt 30 ] && [ ! -s "$ARGV" ]; do i=$((i + 1)); sleep 1; done
+if [ -s "$ARGV" ] && [ "$(cat "$ARGV")" = "setup --server http://localhost:$PORT" ]; then
+    echo "PASS the terminal route ran: $(cat "$ARGV")"
+else
+    echo "FAIL terminal argv after the crash: '$(cat "$ARGV" 2>/dev/null)'"; tail -20 "$LOG" 2>/dev/null; fail=1
 fi
 if grep -q "$PAGE_BROWSER" "$LOG"; then
     echo "FAIL the browser fallback ran: $(grep "$PAGE_BROWSER" "$LOG" | tail -1)"; fail=1
