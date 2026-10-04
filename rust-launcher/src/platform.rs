@@ -613,7 +613,8 @@ pub fn focus_player(who: Option<&crate::paths::PlayerSidecar>) -> Result<String,
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            FindWindowW, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE,
+            FindWindowW, FlashWindowEx, IsHungAppWindow, IsIconic, SetForegroundWindow, ShowWindowAsync, FLASHWINFO,
+            FLASHW_TIMERNOFG, FLASHW_TRAY, SW_RESTORE,
         };
         // The pid first: the desktop build's window belongs to the player's
         // own process, so the sidecar's pid names it exactly (a terminal-
@@ -638,11 +639,43 @@ pub fn focus_player(who: Option<&crate::paths::PlayerSidecar>) -> Result<String,
                 (hwnd, "the 'mStream Player' window".to_string())
             }
         };
+        // The window belongs to another process — the player's, or the
+        // terminal hosting it — and this runs on the tray's event-loop thread
+        // (a tray click, --player) or a watcher's, so nothing here may wait
+        // on that process: a player whose UI thread has stopped pumping (a
+        // GPU stall, a device lost) would freeze the tray, its menu and Quit
+        // with it. Hence ShowWindowAsync, not ShowWindow, which waits for the
+        // window's thread to process the show; SetForegroundWindow only
+        // posts its activation. A window Windows already counts as hung (its
+        // thread has taken no message for 5 s) gets nothing at all, and the
+        // flash is the taskbar button's only (the caption flash can send the
+        // window's thread a synchronous activation message). The same steps,
+        // for the same reasons, as the player's own second-launch focus
+        // (its src/desktop.rs focus). Ok only when Windows took the
+        // foreground change, so the log says what actually happened: a
+        // refusal (this process held no foreground right to pass on — the
+        // watcher's focus after the handoff, say) is an Err, the window's
+        // taskbar button flashing instead.
+        // SAFETY: a window handle EnumWindows or FindWindowW gave; a window
+        // that closed since makes each call fail, which is harmless.
         unsafe {
-            if IsIconic(hwnd) != 0 {
-                ShowWindow(hwnd, SW_RESTORE);
+            if IsHungAppWindow(hwnd) != 0 {
+                return Err(format!("{what} is not responding (Windows counts it as hung); left alone"));
             }
-            SetForegroundWindow(hwnd);
+            if IsIconic(hwnd) != 0 {
+                ShowWindowAsync(hwnd, SW_RESTORE);
+            }
+            if SetForegroundWindow(hwnd) == 0 {
+                let flash = FLASHWINFO {
+                    cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
+                    hwnd,
+                    dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG,
+                    uCount: 0,
+                    dwTimeout: 0,
+                };
+                FlashWindowEx(&flash);
+                return Err(format!("Windows refused to bring {what} to the front; its taskbar button flashes instead"));
+            }
         }
         Ok(what)
     }
@@ -800,7 +833,9 @@ pub fn allow_foreground_handoff() -> bool {
 /// Measured on Windows 10 with player v0.12.0 minimised: focus_player found
 /// the helper, IsIconic(helper) was false so the real window was never
 /// restored, SetForegroundWindow went to the invisible helper, and the log
-/// still said the player's window was activated.
+/// still said the player's window was activated. (Skipping the helper made
+/// focus_player's restore reachable for the desktop player for the first
+/// time, which is why that restore never waits on the player's thread.)
 #[cfg(windows)]
 fn top_level_window_of(pid: u32) -> Option<windows_sys::Win32::Foundation::HWND> {
     use windows_sys::core::BOOL;
@@ -861,9 +896,13 @@ const EX_NOACTIVATE: u32 = 0x0800_0000;
 /// foreground when clicked — so neither is a window the user minimised or
 /// expects to see come forward, and activating one shows nothing. winit's
 /// thread helper carries both (top_level_window_of); the player's real
-/// window carries neither. The player's own second-launch focus applies the
-/// same rule to the same windows; keep the two in step. Pure, so the rule
-/// is unit-tested on every host.
+/// window carries neither. The player's own second-launch focus (its
+/// src/desktop.rs focus, which finds the holder's window the same way)
+/// needs the same rule, and through v0.12.0 it lacks it: it still takes
+/// the first visible, unowned window, so a second launch of a minimised
+/// player activates the helper too until a player with the matching
+/// filter ships. When it does, keep the two in step. Pure, so the rule is
+/// unit-tested on every host.
 #[cfg(any(windows, test))]
 fn is_app_window(visible: bool, owned: bool, ex_style: u32) -> bool {
     visible && !owned && ex_style & (EX_TOOLWINDOW | EX_NOACTIVATE) == 0
