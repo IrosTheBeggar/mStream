@@ -164,7 +164,8 @@ desktop build whose bundled player hosts its pages in a window (its
 `mstream-player --version` names `window-pages`; player 0.12.0 and later)
 the wizard opens in the player's own window, like the player itself, with
 its artwork and the Quick Connect QR drawn as real pixels. Otherwise — and
-whenever no window can open there — it opens in a real terminal:
+whenever no window can open there, or the window's process crashes (a
+graphics-driver fault, say) — it opens in a real terminal:
 Terminal.app on macOS (which draws the artwork as character art, having no
 pixel protocol); Windows Terminal on Windows (a plain console window without
 it); and on Linux whichever terminal emulator the desktop has — the one
