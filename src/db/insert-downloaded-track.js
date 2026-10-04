@@ -147,46 +147,63 @@ export async function insertDownloadedTrack({ filePath, vpath, basePath, source,
   const lib = db.getLibraryByName(data.vpath);
   let trackId = null;
   if (d && lib) {
-    const artistId = db.findOrCreateArtist(data.artist);
-    const albumId = db.findOrCreateAlbum(data.album, artistId, data.year);
-    // V71: tag_album / tag_compilation are the album consensus inputs the
-    // scanners stamp per track; stamping them here means this row votes on
-    // its album like any scanned row (no ALBUMARTIST input here, so that
-    // one stays NULL).
-    d.prepare(
-      `INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
-       disc_number, year, duration, format, file_hash, audio_hash, album_art_file, replaygain_track_db,
-       modified, scan_id, source, hash_v, tag_album, tag_compilation, artist_display)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
-    ).run(
-      data.filepath, lib.id, data.title || null, artistId, albumId,
-      data.track, data.disk, data.year, duration, data.format, data.hash, data.audioHash || null,
-      data.aaFile, data.replaygainTrackDb, data.modified, data.sID, source, hashV,
-      data.album || null,
-      // V73: the display string is the artist as given.
-      String(data.artist || '').trim() || null
-    );
-    // V72: the primary-artist credit row, with the raw spelling that votes
-    // on the artist's display name (the scanners write the same row from
-    // the split ARTIST tag).
-    if (artistId) {
-      // Trimmed, like the scanners' split credits — a " Foo" vote would
-      // win a 1:1 tie on BINARY order and rename the artist.
-      const credit = String(data.artist).trim() || null;
+    // ONE write transaction from the artist / album lookup to the credit
+    // row. The scanner is another process, and its end-of-scan orphan
+    // sweep (orphan-cleanup.js, and the Rust copy) deletes every album /
+    // artist no track references: as separate autocommit statements, a
+    // sweep committing between the find-or-create SELECT and the track
+    // INSERT took the parent away under it — "FOREIGN KEY constraint
+    // failed" for a download whose artist or album had just lost its last
+    // track. The mirror image too: a scan creating the same artist between
+    // our SELECT miss and our INSERT — "UNIQUE constraint failed:
+    // artists.name_key". transaction() is BEGIN IMMEDIATE, so the write lock
+    // is held BEFORE the lookups: the other writer waits on busy_timeout and
+    // then sees this track (or we see its row). Synchronous by design —
+    // nothing may await in here.
+    trackId = db.transaction(() => {
+      const artistId = db.findOrCreateArtist(data.artist);
+      const albumId = db.findOrCreateAlbum(data.album, artistId, data.year);
+      // V71: tag_album / tag_compilation are the album consensus inputs the
+      // scanners stamp per track; stamping them here means this row votes on
+      // its album like any scanned row (no ALBUMARTIST input here, so that
+      // one stays NULL).
       d.prepare(
-        `INSERT OR IGNORE INTO track_artists (track_id, artist_id, role, position, tag_name)
-         VALUES ((SELECT id FROM tracks WHERE filepath = ? AND library_id = ?), ?, 'main', 0, ?)`
-      ).run(data.filepath, lib.id, artistId, credit);
-    }
+        `INSERT OR REPLACE INTO tracks (filepath, library_id, title, artist_id, album_id, track_number,
+         disc_number, year, duration, format, file_hash, audio_hash, album_art_file, replaygain_track_db,
+         modified, scan_id, source, hash_v, tag_album, tag_compilation, artist_display)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
+      ).run(
+        data.filepath, lib.id, data.title || null, artistId, albumId,
+        data.track, data.disk, data.year, duration, data.format, data.hash, data.audioHash || null,
+        data.aaFile, data.replaygainTrackDb, data.modified, data.sID, source, hashV,
+        data.album || null,
+        // V73: the display string is the artist as given.
+        String(data.artist || '').trim() || null
+      );
+      // V72: the primary-artist credit row, with the raw spelling that votes
+      // on the artist's display name (the scanners write the same row from
+      // the split ARTIST tag).
+      if (artistId) {
+        // Trimmed, like the scanners' split credits — a " Foo" vote would
+        // win a 1:1 tie on BINARY order and rename the artist.
+        const credit = String(data.artist).trim() || null;
+        d.prepare(
+          `INSERT OR IGNORE INTO track_artists (track_id, artist_id, role, position, tag_name)
+           VALUES ((SELECT id FROM tracks WHERE filepath = ? AND library_id = ?), ?, 'main', 0, ?)`
+        ).run(data.filepath, lib.id, artistId, credit);
+      }
+      const row = d.prepare('SELECT id FROM tracks WHERE filepath = ? AND library_id = ?').get(data.filepath, lib.id);
+      return row ? row.id : null;
+    });
     // The insert (and the REPLACE of any earlier row at this path) flagged
     // the affected album(s) / artist(s) through the *_agg triggers;
     // recompute them now so the album's year range / count and the
     // artist's counts reflect this track before any scan runs — the
-    // album-songs API matches `year` against that range.
+    // album-songs API matches `year` against that range. After the COMMIT:
+    // both refreshes open their own BEGIN IMMEDIATE (SQLite does not nest),
+    // and the committed track already keeps its parents out of any sweep.
     refreshDirtyAlbums(d);
     refreshDirtyArtists(d);
-    const row = d.prepare('SELECT id FROM tracks WHERE filepath = ? AND library_id = ?').get(data.filepath, lib.id);
-    trackId = row ? row.id : null;
   }
   winston.info(`${log}: added ${relativePath} to database`);
   // `hash` = the file hash the row carries, for the plugin_downloads record
