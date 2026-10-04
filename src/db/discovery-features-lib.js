@@ -293,10 +293,13 @@ async function createEffnetEmbedder(spec, { modelCacheDir, runtime = 'auto', thr
   // Loading the runtime AND building the session are one step so that a
   // native install that imports but can't create a session still ends on
   // the wasm build (auto mode). Failure of every candidate rejects with
-  // dependencyMissing — the worker's exit-4 contract.
+  // dependencyMissing — the worker's exit-4 contract. The model file on
+  // disk feeds the out-of-process probe of the native addon, so the probe
+  // exercises the same session build this process is about to attempt.
   const loaded = await loadEmbeddingRuntime({
     setting: runtime,
     threads,
+    probeModelPath: modelPath,
     createSession: (ort, sessionOptions) => ort.InferenceSession.create(modelBytes, sessionOptions),
   });
   const { ort, session } = loaded;

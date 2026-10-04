@@ -293,12 +293,24 @@ enabling Quick Connect yourself later always sticks, flag or no flag.
   on every bundle, musl and Intel Mac included: bundles run the embedding model
   on the WebAssembly build of ONNX Runtime shipped in `bin/onnxruntime-web`,
   which needs no native library. It is a few times slower per track than the
-  native runtime a source or Docker install uses, so the first backfill of a
+  native addon a source install uses where it loads, so the first backfill of a
   large library on a Raspberry Pi takes hours rather than one; it runs in the
   background and resumes across restarts. `scanOptions.embeddingThreads` caps
   the worker's threads (default two, one on machines with 2 GB or less), and
   `scanOptions.embeddingRuntime` (`auto` / `native` / `wasm`) forces a runtime
   when diagnosing. The server log names the runtime each pass used.
+* **Native vs WebAssembly on source and Docker installs** — `auto` (the
+  default) tries the native `onnxruntime-node` addon first and falls back to
+  the same WebAssembly build when the addon is missing, cannot load, or
+  crashes while loading. The crash case is real: an addon paired with an
+  older `libonnxruntime` than it was built against (the linuxserver Docker
+  image replaces the addon's bundled library with Alpine's package, which
+  lags npm) segfaults instead of throwing, so the worker test-loads the addon
+  in a throwaway process each pass and skips it when that process dies. The
+  log line `Discovery-embedding runtime: wasm …; skipped native (…)` says
+  which runtime ran and why the other was passed over; set
+  `scanOptions.embeddingRuntime` to `wasm` to skip the attempt on an install
+  known to lack a working addon.
 * The fast Rust library scanner needs glibc ≥ 2.34 on glibc systems; on older
   glibc it automatically falls back to a portable static build, so scanning stays
   fast. ffmpeg (transcoding/waveforms) is auto-downloaded on first use, or

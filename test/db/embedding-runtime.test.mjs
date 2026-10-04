@@ -5,12 +5,15 @@
 // needs the native addon or the 18 MB model. The last test loads the real
 // onnxruntime-web package (a regular dependency) to prove the API shape.
 
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   planRuntimes, threadPolicy, wasmRuntimeDir, loadEmbeddingRuntime, EMBEDDING_RUNTIMES,
+  probeNativeRuntime, nativeModuleUrl, NATIVE_PROBE_TIMEOUT_MS,
 } from '../../src/db/embedding-runtime.js';
 
 const GB = 1024 ** 3;
@@ -160,4 +163,219 @@ test('loadEmbeddingRuntime: the real onnxruntime-web package loads with the sess
   assert.equal(typeof loaded.ort.InferenceSession.create, 'function');
   assert.equal(typeof loaded.ort.Tensor, 'function');
   assert.equal(loaded.ort.env.wasm.numThreads, 1);
+});
+
+// ── The out-of-process probe of the native addon ────────────────────────────
+//
+// The addon can segfault inside its import (an older libonnxruntime under a
+// newer binding — the linuxserver Docker image's shape), which no in-process
+// fallback survives. Auto mode therefore probes it in a child first. The
+// loader's half is tested with an injected probe; probeNativeRuntime itself
+// against real child processes running throwaway stand-in modules.
+
+const CRASH_VERDICT = {
+  safe: false, ok: false,
+  reason: 'the addon crashed while loading (SIGSEGV): The requested API version [29] is not available',
+};
+
+test('loadEmbeddingRuntime: auto probes the native addon out of process first; a crash verdict skips it and lands on wasm', async () => {
+  const probes = [];
+  const importers = {
+    native: () => { throw new Error('must not be imported in-process after a crash verdict'); },
+    wasm: () => fakeOrt('wasm'),
+  };
+  const loaded = await loadEmbeddingRuntime({
+    setting: 'auto', threads: 2, importers, standalone: false, wasmDir: null,
+    probeModelPath: path.join('/models', 'effnet.onnx'),
+    resolveNative: () => 'file:///fake/node_modules/onnxruntime-node/dist/index.js',
+    probe: (opts) => { probes.push(opts); return CRASH_VERDICT; },
+    createSession: (ort, opts) => ort.InferenceSession.create(null, opts),
+  });
+  assert.equal(loaded.runtime, 'wasm');
+  assert.deepEqual(loaded.skipped, [{ runtime: 'native', reason: CRASH_VERDICT.reason }]);
+  // The probe exercises what the worker is about to do: the resolved entry
+  // file, the real model, the same thread option, the default timeout.
+  assert.equal(probes.length, 1);
+  assert.deepEqual(probes[0], {
+    moduleUrl: 'file:///fake/node_modules/onnxruntime-node/dist/index.js',
+    modelPath: path.join('/models', 'effnet.onnx'),
+    threads: 2,
+    timeoutMs: NATIVE_PROBE_TIMEOUT_MS,
+  });
+});
+
+test('loadEmbeddingRuntime: a safe verdict leaves the in-process import in charge, whichever way it goes', async () => {
+  // ok: native loads in-process and wins.
+  let loaded = await loadEmbeddingRuntime({
+    setting: 'auto', importers: { native: () => fakeOrt('native'), wasm: () => { throw new Error('unused'); } },
+    standalone: false, wasmDir: null, resolveNative: () => 'file:///fake/index.js',
+    probe: () => ({ safe: true, ok: true }),
+    createSession: (ort, opts) => ort.InferenceSession.create(null, opts),
+  });
+  assert.equal(loaded.runtime, 'native');
+  assert.deepEqual(loaded.skipped, []);
+
+  // An ordinary error in the probe is not acted on: the in-process import
+  // reproduces it and the usual diagnosis names it.
+  loaded = await loadEmbeddingRuntime({
+    setting: 'auto',
+    importers: {
+      native: () => { const e = new Error("Cannot find package 'onnxruntime-node'"); e.code = 'ERR_MODULE_NOT_FOUND'; throw e; },
+      wasm: () => fakeOrt('wasm'),
+    },
+    standalone: false, wasmDir: null, resolveNative: () => 'file:///fake/index.js',
+    probe: () => ({ safe: true, ok: false, error: "Cannot find package 'onnxruntime-node'" }),
+  });
+  assert.equal(loaded.runtime, 'wasm');
+  assert.match(loaded.skipped[0].reason, /not installed or has no binary/);
+});
+
+test('loadEmbeddingRuntime: no probe when native is forced, inside a bundle, with the addon absent, or when disabled', async () => {
+  let probes = 0;
+  const probe = () => { probes++; return CRASH_VERDICT; };
+  const nativeOk = { native: () => fakeOrt('native'), wasm: () => fakeOrt('wasm') };
+  const resolveNative = () => 'file:///fake/index.js';
+
+  // Forced native: a crash is meant to be loud, so it is not probed around.
+  let loaded = await loadEmbeddingRuntime({ setting: 'native', importers: nativeOk, standalone: false, wasmDir: null, probe, resolveNative });
+  assert.equal(loaded.runtime, 'native');
+  // A bundle plans wasm only — nothing native to probe.
+  loaded = await loadEmbeddingRuntime({ setting: 'auto', importers: nativeOk, standalone: true, wasmDir: null, probe, resolveNative });
+  assert.equal(loaded.runtime, 'wasm');
+  // Not installed: resolution throws, and the in-process import says why.
+  loaded = await loadEmbeddingRuntime({
+    setting: 'auto', standalone: false, wasmDir: null, probe,
+    resolveNative: () => { throw new Error("Cannot find module 'onnxruntime-node'"); },
+    importers: {
+      native: () => { const e = new Error("Cannot find package 'onnxruntime-node'"); e.code = 'ERR_MODULE_NOT_FOUND'; throw e; },
+      wasm: () => fakeOrt('wasm'),
+    },
+  });
+  assert.equal(loaded.runtime, 'wasm');
+  assert.match(loaded.skipped[0].reason, /not installed or has no binary/);
+  // Disabled outright.
+  loaded = await loadEmbeddingRuntime({ setting: 'auto', importers: nativeOk, standalone: false, wasmDir: null, probe: false, resolveNative });
+  assert.equal(loaded.runtime, 'native');
+
+  assert.equal(probes, 0);
+});
+
+// Stand-in "addons" for the real-process probe tests: throwaway ES modules
+// written to a temp dir and imported by the probe child through their
+// file:// URL, exactly as the resolved onnxruntime-node entry would be.
+const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-ort-probe-'));
+after(() => fs.rmSync(fixtureDir, { recursive: true, force: true }));
+function fixture(name, source) {
+  const file = path.join(fixtureDir, name);
+  fs.writeFileSync(file, source);
+  return pathToFileURL(file).href;
+}
+// Die the way a native crash does: by signal where there are signals, by an
+// NTSTATUS exit code on Windows (0xC0000005 = access violation). kill() is
+// asynchronous, so the module parks itself until the signal lands.
+const DIE = `
+  if (process.platform === 'win32') { process.exit(0xC0000005); }
+  process.kill(process.pid, 'SIGSEGV');
+  await new Promise(() => {});
+`;
+const ORT_SKEW_LINE = 'The requested API version [29] is not available, only API versions [1, 24] are supported in this build. Current ORT Version is: 1.24.4';
+
+test('probeNativeRuntime: a module that kills its process on import is reported as a crash, with its stderr and the version-skew hint', async () => {
+  const moduleUrl = fixture('crash-on-import.mjs', `
+    import fs from 'node:fs';
+    fs.writeSync(2, ${JSON.stringify(`${ORT_SKEW_LINE}\n`)});
+    ${DIE}
+  `);
+  const verdict = await probeNativeRuntime({ moduleUrl, modelPath: null, threads: 1 });
+  assert.equal(verdict.safe, false);
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.reason, /^the addon crashed while loading \((SIGSEGV|exit code \d+)\): /);
+  assert.ok(verdict.reason.includes(ORT_SKEW_LINE), `stderr tail carried through: ${verdict.reason}`);
+  assert.match(verdict.reason, /newer than the ONNX Runtime library it loaded at run time/);
+});
+
+test('probeNativeRuntime: a crash while building the session is caught too, and the model + threads reach the stand-in', async () => {
+  const moduleUrl = fixture('crash-on-create.mjs', `
+    import fs from 'node:fs';
+    export const InferenceSession = {
+      create(modelPath, opts) {
+        fs.writeSync(2, 'create(' + modelPath + ', ' + JSON.stringify(opts) + ') went down\\n');
+        ${DIE.replace('await new Promise(() => {});', 'return new Promise(() => {});')}
+      },
+    };
+  `);
+  const verdict = await probeNativeRuntime({ moduleUrl, modelPath: 'effnet.onnx', threads: 3 });
+  assert.equal(verdict.safe, false);
+  assert.match(verdict.reason, /crashed while loading/);
+  assert.ok(verdict.reason.includes('create(effnet.onnx, {"intraOpNumThreads":3}) went down'), verdict.reason);
+  assert.doesNotMatch(verdict.reason, /newer than the ONNX Runtime library/, 'no skew hint without the sentinel line');
+});
+
+test('probeNativeRuntime: a well-behaved module is safe, with the session built and released only when a model is given', async () => {
+  const moduleUrl = fixture('ok.mjs', `
+    import fs from 'node:fs';
+    export const InferenceSession = {
+      async create(modelPath, opts) {
+        if (modelPath !== 'effnet.onnx' || opts.intraOpNumThreads !== 2) {
+          throw new Error('unexpected create(' + modelPath + ', ' + JSON.stringify(opts) + ')');
+        }
+        fs.writeSync(1, 'noise on stdout that is not a verdict\\n');
+        return { release: async () => { fs.writeSync(1, '{"ok":"not a verdict either"}\\n'); } };
+      },
+    };
+  `);
+  assert.deepEqual(await probeNativeRuntime({ moduleUrl, modelPath: 'effnet.onnx', threads: 2 }), { safe: true, ok: true });
+  // Import only: create() is never reached, so its argument check cannot fire.
+  assert.deepEqual(await probeNativeRuntime({ moduleUrl, modelPath: null, threads: 7 }), { safe: true, ok: true });
+});
+
+test('probeNativeRuntime: an ordinary load error is passed back as such, not as a crash', async () => {
+  const moduleUrl = fixture('throws.mjs', `
+    throw new Error('Error relocating libonnxruntime.so.1: fcntl64: symbol not found');
+  `);
+  const verdict = await probeNativeRuntime({ moduleUrl, modelPath: null, threads: 1 });
+  assert.deepEqual(verdict, { safe: true, ok: false, error: 'Error relocating libonnxruntime.so.1: fcntl64: symbol not found' });
+});
+
+test('probeNativeRuntime: a load that hangs is killed at the timeout and counts as unsafe', async () => {
+  // A timer holds the child's event loop open the way a stuck native thread
+  // would, so only the parent's timeout can end it.
+  const moduleUrl = fixture('hangs.mjs', 'setInterval(() => {}, 1000);\nawait new Promise(() => {});\n');
+  const started = Date.now();
+  const verdict = await probeNativeRuntime({ moduleUrl, modelPath: null, threads: 1, timeoutMs: 1000 });
+  assert.equal(verdict.safe, false);
+  assert.match(verdict.reason, /did not finish loading within 1 s \(the probe was killed\)/);
+  assert.ok(Date.now() - started < 10000, 'the kill is prompt');
+});
+
+test('probeNativeRuntime: an import that never settles but lets the process drain is unsafe too, and not called a crash', async () => {
+  const moduleUrl = fixture('drains.mjs', 'await new Promise(() => {});\n');
+  const verdict = await probeNativeRuntime({ moduleUrl, modelPath: null, threads: 1 });
+  assert.deepEqual(verdict, {
+    safe: false, ok: false,
+    reason: "the addon's load never completed (the probe exited without a verdict)",
+  });
+});
+
+test('probeNativeRuntime: a probe that cannot start proves nothing and is reported as safe', async () => {
+  const verdict = await probeNativeRuntime({
+    moduleUrl: 'file:///unused.mjs',
+    fork: () => { throw new Error('spawn EACCES'); },
+  });
+  assert.deepEqual(verdict, { safe: true, ok: false, error: 'the probe could not start: spawn EACCES' });
+});
+
+test('probeNativeRuntime: the real onnxruntime-node addon never takes the probe process down here', async (t) => {
+  let moduleUrl;
+  try {
+    moduleUrl = nativeModuleUrl();
+  } catch (_err) {
+    t.skip('onnxruntime-node is not installed');
+    return;
+  }
+  assert.match(moduleUrl, /^file:\/\/.*onnxruntime-node[\\/]dist[\\/]index\.js$/);
+  const verdict = await probeNativeRuntime({ moduleUrl, modelPath: null, threads: 1 });
+  // Platforms without a binary (Intel Macs) get an ordinary error; a crash
+  // would mean this checkout's addon is broken the Docker way.
+  assert.equal(verdict.safe, true, JSON.stringify(verdict));
 });
