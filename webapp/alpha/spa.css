@@ -2665,6 +2665,143 @@ body.on-federated-server .side-nav-note {
   display: block;
 }
 
+/* The folder landing sheet (dm-landing, peer sync card 03 ⑤): where a
+   pressed peer folder lands — its layout as on the peer, a folder of the
+   user's choosing, or by tags — asked in the destination bar's place, in the
+   picker form's look. The radios are drawn like .dm-check's box: Materialize
+   hides native ones and draws its own from a sibling span. */
+.dm-landing { gap: 4px; }
+.dm-landing-title { margin-bottom: 4px; font-size: 12.5px; font-weight: 600; color: #f0f2f5; overflow-wrap: anywhere; }
+.dm-landing-opt {
+  position: relative; display: flex; align-items: flex-start; gap: 9px; margin: 0; padding: 6px 8px; border-radius: 4px;
+  font-size: 12px; line-height: 1.35; color: #b8bcc6; cursor: pointer;
+}
+.dm-landing-opt:hover { background: #2c323c; color: #f0f2f5; }
+.dm-landing-on { color: #f0f2f5; }
+.dm-landing-opt > input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
+.dm-landing-opt > i {
+  width: 13px; height: 13px; margin-top: 2px; box-sizing: border-box; border: 1px solid #444c56; border-radius: 50%;
+  background: #1a1e25; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.dm-landing-opt > i::after { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--src); transform: scale(0); transition: transform .12s; }
+.dm-landing-opt > input:checked + i { border-color: var(--src); }
+.dm-landing-opt > input:checked + i::after { transform: scale(1); }
+.dm-landing-opt > input:focus-visible + i { box-shadow: 0 0 0 2px rgba(255, 255, 255, .25); }
+.dm-landing-words { flex: 1; min-width: 0; }
+.dm-landing-path { display: block; margin-top: 2px; font-size: 11px; color: #8a919e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-landing-path b { color: #b8bcc6; font-weight: 600; }
+.dm-landing-path i { font-style: normal; color: #6f7683; margin: 0 4px; }
+.dm-landing-note { font-size: 11px; color: #6f7683; }
+.dm-landing-path .dm-landing-note { margin-left: 6px; }
+.dm-dest > .dm-landing-note { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-landing-more { display: grid; gap: 6px; padding: 0 8px 4px 30px; }
+.dm-landing-more > .dm-tree { grid-column: 1; }
+.dm-landing .dm-dest-act { margin-top: 5px; }
+@media (max-width: 600px) {
+  .dm-landing-path { white-space: normal; }
+  .dm-landing-more { padding-left: 8px; }
+}
+
+/* ── Peer sync: a peer's rows can Add (docs/designs/peer-sync, cards 02–03) ──
+   The browse column on a federated server: the destination bar above the
+   list (dm-dest, mounted there by vp.js), the facts beside it, and the side
+   slot every row gets — a tick, one Add on hover (always on touch), or the
+   row's job. Amber is the peer, as the recommendation window paints it. */
+body.on-federated-server #browser { --src: #d9a441; --src-2: #e6b85c; }
+.peer-sync-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 6px 10px 8px; font-size: 12px; color: #b8bcc6; }
+.peer-sync-bar .peer-sync-dest { flex: 1 1 320px; min-width: 0; }
+.peer-sync-bar .dm-dest { background: #1a1e25; }
+.peer-sync-facts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: #8a919e; white-space: nowrap; }
+.peer-sync-facts:empty { display: none; }
+.peer-sync-facts b { color: #dfe3ea; font-weight: 600; }
+.sync-slot { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+.sync-act {
+  display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 4px;
+  border: 1px solid var(--src, #d9a441); color: var(--src, #d9a441); font-size: 11px; font-weight: 600; white-space: nowrap;
+  opacity: 0; transition: opacity .12s, background .12s, color .12s;
+}
+.sync-act:hover { background: var(--src, #d9a441); color: #0f1216; }
+.collection-item:hover .sync-act, .album-grid-card:hover .sync-act, .sync-act.sync-show { opacity: 1; }
+@media (hover: none) { .sync-act { opacity: 1; } }
+.sync-tick { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #4fc27a; white-space: nowrap; }
+.sync-job { display: inline-flex; align-items: center; gap: 8px; font-size: 11.5px; color: #b8bcc6; min-width: 0; }
+.sync-job-muted { color: #8a919e; }
+.sync-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 9.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #8a919e; white-space: nowrap; }
+.sync-tag-ok { color: #4fc27a; }
+.sync-tag-src { color: var(--src, #d9a441); }
+.sync-tag-err { color: #e0616a; }
+.sync-sub { color: #8a919e; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 360px; }
+.sync-sub-err { color: #e0616a; }
+.sync-progress { display: inline-block; width: 70px; height: 4px; background: #1a1e25; border-radius: 2px; overflow: hidden; vertical-align: middle; }
+.sync-progress i { display: block; height: 100%; width: 0; background: var(--src, #d9a441); border-radius: 2px; transition: width .4s ease; }
+.sync-progress-indet i { width: 35%; animation: dm-indet 1.4s ease-in-out infinite; }
+.sync-link { color: #657ee4; font-weight: 600; white-space: nowrap; font-size: 11.5px; }
+.sync-danger { color: #e0616a; }
+/* An artist row: the facts line under the name, the slot beside the row
+   (a flex sibling of the name's div, which is width:100% and gives way). */
+.sync-facts { display: block; font-size: 11.5px; color: #8a919e; margin-top: 3px; font-weight: 400; }
+.sync-facts:empty { display: none; }
+.sync-facts em { font-style: normal; color: #b8bcc6; }
+.sync-side { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 10px; padding: 0 12px 0 4px; min-width: 0; }
+.sync-side:empty { display: none; }
+.sync-side-bar { padding: 0 0 0 8px; }
+/* Song and folder rows keep their button box (absolute, top right): the
+   slot stops short of it — the Play-now icon on a song row (the playlist
+   icon is gone on a peer), the queue and download icons on a folder row. */
+.sync-side-song { padding-right: 56px; }
+.sync-side-dir { padding-right: 92px; }
+/* An album card: the badge on its art, the slot under the year. */
+.sync-badge { position: absolute; top: 6px; left: 6px; z-index: 2; }
+.sync-badge:empty { display: none; }
+.sync-badge-tick { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 10px; background: rgba(15,18,22,.85); color: #4fc27a; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.sync-card { font-size: 10.5px; margin-top: 4px; min-width: 0; overflow: hidden; }
+.sync-card:empty { display: none; }
+.sync-card .sync-act { font-size: 10.5px; padding: 2px 7px; }
+.sync-card .sync-sub { max-width: 100%; }
+/* The album page's header on a peer (#album-head, above the song list). */
+.album-head { display: flex; gap: 16px; align-items: flex-start; padding: 12px 14px 10px; border-bottom: 1px solid #444c56; background: #22272e; }
+.album-head-art { width: 96px; height: 96px; object-fit: cover; border-radius: 6px; background: #1a1e25; flex: 0 0 auto; }
+.album-head-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.album-head-title { margin: 0; font-size: 18px; font-weight: 600; line-height: 1.2; color: #eee; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.album-head-credit { font-size: 13px; color: #b8bcc6; }
+.album-head-credit a { color: #b8bcc6; cursor: pointer; }
+.album-head-credit a:hover { color: #fff; text-decoration: underline; }
+.album-head-facts { font-size: 12px; color: #8a919e; }
+.album-head-facts b { color: #dfe3ea; font-weight: 600; }
+.album-head-facts .sync-facts { display: inline; margin: 0; font-size: 12px; }
+.album-head-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
+.album-head-btn { display: inline-flex; align-items: center; padding: 5px 12px; border-radius: 4px; background: rgba(255,255,255,.08); color: #eee; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.album-head-btn:hover { background: rgba(255,255,255,.14); color: #fff; }
+.album-head .sync-act { opacity: 1; }
+@media (max-width: 600px) {
+  .album-head-art { width: 64px; height: 64px; }
+  .album-head-title { font-size: 16px; }
+}
+/* Phones (card 07): no hover, so the Add is always there — the amber icon
+   alone, its words only for the partial case; the bar's destination line
+   shortens to the path; the picker and the landing sheet open as a sheet
+   at the foot of the screen; a line under the list counts the live jobs,
+   the strip being in the Now Playing column, off-screen here. */
+.peer-sync-jobs { display: none; }
+@media (max-width: 600px) {
+  .sync-act { opacity: 1; padding: 4px 6px; }
+  .sync-act:not(.sync-show) .sync-act-w { display: none; }
+  .sync-act:not(.sync-show) svg { width: 15px; height: 15px; }
+  .sync-side-song { padding-right: 52px; }
+  .sync-side-dir { padding-right: 88px; }
+  .peer-sync-bar .dm-dest-label, .peer-sync-bar .dm-landing-note { display: none; }
+  .peer-sync-bar .dm-dest-form {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 1200; max-height: 85vh; overflow-y: auto;
+    border-radius: 10px 10px 0 0; box-shadow: 0 -8px 30px rgba(0, 0, 0, .6); padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  .peer-sync-jobs:not(:empty) {
+    display: flex; align-items: center; gap: 6px; flex-shrink: 0; padding: 7px 12px; border-top: 1px solid #444c56;
+    background: #22272e; font-size: 12px; color: #b8bcc6; cursor: pointer; white-space: nowrap; overflow: hidden;
+  }
+  .peer-sync-jobs b { color: #dfe3ea; font-weight: 600; }
+  .peer-sync-jobs-go { margin-left: auto; color: #657ee4; font-weight: 600; padding-left: 8px; }
+}
+
 /* The escape hatch back to this server, shown inside the read-only note. It
    lives in the side-nav so it survives top-bar-hidden (which hides the top-bar
    switcher), the one state where a federated search hit could otherwise strand

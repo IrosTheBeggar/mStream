@@ -36,6 +36,8 @@ Please note, this is discovery only. You will have to find these songs on your o
 
 You can federate with other servers. Federated servers have read access to eachother's data. With this, your p2p discovery feature can now stream discovered music.
 
+While you browse a federated server, every row says what your own library has of it and can add what you see — a song, an album, an artist, or a whole folder — to your collection as a copy job. See [Adding from a federated server](docs/peer-sync.md).
+
 #### Public mode
 
 The demo site does not require you to sign in because mStream is publicly accessible by default.  This makes it easy to setup and gives you the option to keep it publicly available if you are just running it on a secured network. Once you add a user, the system becomes password protected.
