@@ -294,16 +294,22 @@ test('probeNativeRuntime: a module that kills its process on import is reported 
   assert.match(verdict.reason, /newer than the ONNX Runtime library it loaded at run time/);
 });
 
-test('probeNativeRuntime: a crash while building the session is caught too, and the model + threads reach the stand-in', async () => {
-  const moduleUrl = fixture('crash-on-create.mjs', `
-    import fs from 'node:fs';
-    export const InferenceSession = {
-      create(modelPath, opts) {
-        fs.writeSync(2, 'create(' + modelPath + ', ' + JSON.stringify(opts) + ') went down\\n');
-        ${DIE.replace('await new Promise(() => {});', 'return new Promise(() => {});')}
-      },
-    };
-  `);
+// The real crash point: with a mismatched library the import returns normally
+// and the FIRST session build segfaults (measured on Windows and Alpine), so
+// a probe must reach a session build to be worth anything.
+const CRASH_ON_CREATE = `
+  import fs from 'node:fs';
+  export const InferenceSession = {
+    create(model, opts) {
+      const shape = typeof model === 'string' ? model : (model instanceof Uint8Array ? 'bytes[' + model.length + ']' : typeof model);
+      fs.writeSync(2, 'create(' + shape + ', ' + JSON.stringify(opts) + ') went down\\n');
+      ${DIE.replace('await new Promise(() => {});', 'return new Promise(() => {});')}
+    },
+  };
+`;
+
+test('probeNativeRuntime: a crash while building the session is caught, and the model + threads reach the stand-in', async () => {
+  const moduleUrl = fixture('crash-on-create.mjs', CRASH_ON_CREATE);
   const verdict = await probeNativeRuntime({ moduleUrl, modelPath: 'effnet.onnx', threads: 3 });
   assert.equal(verdict.safe, false);
   assert.match(verdict.reason, /crashed while loading/);
@@ -311,22 +317,37 @@ test('probeNativeRuntime: a crash while building the session is caught too, and 
   assert.doesNotMatch(verdict.reason, /newer than the ONNX Runtime library/, 'no skew hint without the sentinel line');
 });
 
-test('probeNativeRuntime: a well-behaved module is safe, with the session built and released only when a model is given', async () => {
+test('probeNativeRuntime: with no model the probe still builds a session, on its built-in one-op model', async () => {
+  const moduleUrl = fixture('crash-on-create-no-model.mjs', CRASH_ON_CREATE);
+  const verdict = await probeNativeRuntime({ moduleUrl, modelPath: null, threads: 1 });
+  assert.equal(verdict.safe, false, 'an import-only probe would have called this pairing safe');
+  assert.ok(verdict.reason.includes('create(bytes[88], {"intraOpNumThreads":1}) went down'), verdict.reason);
+});
+
+test('probeNativeRuntime: a well-behaved module is safe, and the session is built on the given model or on the built-in bytes', async () => {
   const moduleUrl = fixture('ok.mjs', `
     import fs from 'node:fs';
     export const InferenceSession = {
-      async create(modelPath, opts) {
-        if (modelPath !== 'effnet.onnx' || opts.intraOpNumThreads !== 2) {
-          throw new Error('unexpected create(' + modelPath + ', ' + JSON.stringify(opts) + ')');
-        }
+      async create(model, opts) {
+        const expected = typeof model === 'string'
+          ? (model === 'effnet.onnx' && opts.intraOpNumThreads === 2)
+          : (model instanceof Uint8Array && model.length === 88 && opts.intraOpNumThreads === 7);
+        if (!expected) { throw new Error('unexpected create(' + String(model) + ', ' + JSON.stringify(opts) + ')'); }
         fs.writeSync(1, 'noise on stdout that is not a verdict\\n');
         return { release: async () => { fs.writeSync(1, '{"ok":"not a verdict either"}\\n'); } };
       },
     };
   `);
   assert.deepEqual(await probeNativeRuntime({ moduleUrl, modelPath: 'effnet.onnx', threads: 2 }), { safe: true, ok: true });
-  // Import only: create() is never reached, so its argument check cannot fire.
   assert.deepEqual(await probeNativeRuntime({ moduleUrl, modelPath: null, threads: 7 }), { safe: true, ok: true });
+});
+
+test('probeNativeRuntime: the built-in model is a real ONNX graph — the real WebAssembly runtime builds a session on it', async () => {
+  // onnxruntime-web is a regular dependency, so this runs everywhere the
+  // suite does; it proves the 88 bytes parse as a model, not just as JSON-free
+  // noise the stand-ins above happen to accept.
+  const verdict = await probeNativeRuntime({ moduleUrl: import.meta.resolve('onnxruntime-web'), modelPath: null, threads: 1 });
+  assert.deepEqual(verdict, { safe: true, ok: true });
 });
 
 test('probeNativeRuntime: an ordinary load error is passed back as such, not as a crash', async () => {
@@ -374,6 +395,8 @@ test('probeNativeRuntime: the real onnxruntime-node addon never takes the probe 
     return;
   }
   assert.match(moduleUrl, /^file:\/\/.*onnxruntime-node[\\/]dist[\\/]index\.js$/);
+  // No model path: the probe builds its session on the built-in model, so
+  // this exercises the exact step that kills a mismatched pairing.
   const verdict = await probeNativeRuntime({ moduleUrl, modelPath: null, threads: 1 });
   // Platforms without a binary (Intel Macs) get an ordinary error; a crash
   // would mean this checkout's addon is broken the Docker way.

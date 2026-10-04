@@ -305,8 +305,9 @@ enabling Quick Connect yourself later always sticks, flag or no flag.
   crashes while loading. The crash case is real: an addon paired with an
   older `libonnxruntime` than it was built against (the linuxserver Docker
   image replaces the addon's bundled library with Alpine's package, which
-  lags npm) segfaults instead of throwing, so the worker test-loads the addon
-  in a throwaway process each pass and skips it when that process dies. The
+  lags npm) segfaults on its first session instead of throwing, so the worker
+  loads the addon and builds a session in a throwaway process each pass and
+  skips it when that process dies. The
   log line `Discovery-embedding runtime: wasm …; skipped native (…)` says
   which runtime ran and why the other was passed over; set
   `scanOptions.embeddingRuntime` to `wasm` to skip the attempt on an install

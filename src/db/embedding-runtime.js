@@ -21,11 +21,12 @@
 //           an error: the addon paired with an OLDER libonnxruntime than it
 //           was built against — the linuxserver Docker image replaces the
 //           bundled library with Alpine's package, which lags npm — prints
-//           "The requested API version [29] is not available …" and then
-//           SEGFAULTS inside the import, killing the whole worker before any
-//           catch runs (seen on a production image 2026-09/10: every nightly
-//           pass died that way, nothing was ever embedded). Auto mode
-//           therefore probes the addon in a throwaway process first
+//           "The requested API version [29] is not available …" during the
+//           import (which returns normally) and then SEGFAULTS on the first
+//           session build, killing the whole worker before any catch runs
+//           (seen on a production image 2026-09/10: every nightly pass died
+//           that way, nothing was ever embedded). Auto mode therefore loads
+//           the addon AND builds a session in a throwaway process first
 //           (embedding-runtime-probe.mjs) and skips it when the probe dies.
 //   wasm    onnxruntime-web's WebAssembly build — no native code, so it runs
 //           wherever the JavaScript engine does: every bundle (musl and
@@ -115,16 +116,18 @@ function describeLoadFailure(runtime, err) {
 
 // ── Out-of-process probe of the native addon ────────────────────────────────
 //
-// Importing onnxruntime-node can kill the process outright (see the header),
-// and nothing in-process survives that to fall back. So auto mode first loads
-// the addon — and builds a session on the real model, with the thread option
-// the worker will use — in a throwaway child (embedding-runtime-probe.mjs)
-// and reads its verdict: a child that exits without one died, and the addon
-// is then skipped with the crash spelled out from its stderr. Ordinary load
-// errors are left to the in-process import, which reproduces them with the
-// usual diagnosis. The cost is one extra process per pass (well under a
-// second on a desktop, a few seconds on a Pi, against a pass budget of
-// minutes); standalone bundles never pay it — their plan is wasm-only.
+// Loading onnxruntime-node can kill the process outright (see the header:
+// the import survives, the first session build does not), and nothing
+// in-process survives that to fall back. So auto mode first loads the addon
+// AND builds a session — on the real model when the caller has one, else on
+// the probe's built-in one-op model — with the thread option the worker will
+// use, in a throwaway child (embedding-runtime-probe.mjs), and reads its
+// verdict: a child that exits without one died, and the addon is then
+// skipped with the crash spelled out from its stderr. Ordinary load errors
+// are left to the in-process import, which reproduces them with the usual
+// diagnosis. The cost is one extra process per pass (well under a second on
+// a desktop, a few seconds on a Pi, against a pass budget of minutes);
+// standalone bundles never pay it — their plan is wasm-only.
 
 const PROBE_SCRIPT = path.join(getDirname(import.meta.url), 'embedding-runtime-probe.mjs');
 
@@ -162,10 +165,11 @@ function describeCrash(how, stderr) {
 }
 
 /**
- * Load the native addon in a child process and report whether doing so
+ * Load the native addon in a child process, build a session (on modelPath,
+ * or on the probe's built-in model) and report whether doing the same
  * in-process is safe. Resolves (never rejects) with:
- *   { safe: true,  ok: true }                  the probe loaded (and built a
- *                                              session when modelPath was given)
+ *   { safe: true,  ok: true }                  the probe loaded and built its
+ *                                              session
  *   { safe: true,  ok: false, error }          the addon threw an ordinary
  *                                              error — not a crash
  *   { safe: false, ok: false, reason }         the child died or hung: the
@@ -257,9 +261,10 @@ function apiOf(mod) {
  * them so the log says which runtime is in use and why).
  *
  * In auto mode the native addon is probed out of process before it is
- * imported here (probeNativeRuntime above); `probeModelPath` makes that
- * probe build a session on the real model too. `probe` is injectable
- * (false disables it), as is `resolveNative`.
+ * imported here (probeNativeRuntime above). The probe always builds a
+ * session; `probeModelPath` makes it the real model rather than the probe's
+ * built-in one. `probe` is injectable (false disables it), as is
+ * `resolveNative`.
  *
  * Rejects with dependencyMissing = true when no candidate works — the
  * worker's exit-4 contract (task-queue.js latches the pass off until
