@@ -2010,7 +2010,9 @@ function runDiscoveryTask(taskObj) {
 
   const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
   addToKillQueue(killFn);
-  const observers = { hitCap: false, completeEvt: null };
+  // runtimeReported flips when the worker says which ONNX Runtime build it
+  // loaded — a death before that point is a runtime crash, not a bad track.
+  const observers = { hitCap: false, completeEvt: null, runtimeReported: false };
   activeTask = { kind: 'discovery', taskObj, child: forked, killFn, observers };
   reportEnrichment('discovery', { state: 'running' });
 
@@ -2037,6 +2039,7 @@ function runDiscoveryTask(taskObj) {
           return;
         }
         if (evt.event === 'discoveryRuntime') {
+          observers.runtimeReported = true;
           // Which ONNX Runtime build serves this run and why the others
           // were passed over — the one line that answers "why is it slow"
           // (wasm is a few times slower than native) from the log alone.
@@ -2061,6 +2064,20 @@ function runDiscoveryTask(taskObj) {
   const closeOnce = (code, signal) => {
     if (closed) { return; }
     closed = true;
+    // A death before the runtime reported in is the native ONNX addon
+    // crashing inside its own load (it can segfault instead of throwing —
+    // src/db/embedding-runtime.js). Auto mode now probes the addon out of
+    // process and sidesteps that, so this is what a forced 'native' setting
+    // looks like when the addon is broken. Windows has no signals: a crash
+    // there surfaces as an NTSTATUS exit code (0xC0000005 and friends).
+    const crashedLoading = !observers.runtimeReported
+      && (signal || (typeof code === 'number' && code >= 0xC0000000));
+    if (crashedLoading) {
+      winston.warn('Discovery-embedding pass died before its ONNX runtime reported in — the native '
+        + 'onnxruntime-node addon most likely crashed while loading. scanOptions.embeddingRuntime '
+        + "'auto' (the default) probes the addon out of process and falls back to the WebAssembly "
+        + "build; 'wasm' skips the addon entirely.");
+    }
     if (signal) {
       winston.info(`Discovery-embedding pass terminated by ${signal}`);
     } else if (code === 3) {
