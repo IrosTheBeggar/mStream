@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Repo-versioned copy of the SignPath artifact configuration
+     `windows-installer` (live copy in the SignPath UI; keep in lockstep).
+     Signs the Inno setup.exe, which is built FROM the already-signed PE set.
+     NO metadata restrictions on purpose: Inno space-pads every VersionInfo
+     string (measured on v6.21.2: ProductName = 'mStream' + 53 spaces,
+     ProductVersion 50 chars) and SignPath compares exactly, so a
+     product-name restriction made the signing request FAIL (proving run 2,
+     2026-08-20). Identity is still constrained by the file-name pattern and
+     by origin verification on the request itself. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="mStream-*-win-x64-setup.exe">
+      <authenticode-sign/>
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

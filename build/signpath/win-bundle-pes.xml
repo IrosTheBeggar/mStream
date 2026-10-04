@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Repo-versioned copy of the SignPath artifact configuration `win-bundle-pes`
+     (the live one is in the SignPath UI; keep them in lockstep). Signs the
+     win-x64 bundle's PE set. The upstream @number0/iroh .node is signed but
+     carries no metadata restrictions (no VersionInfo of its own); our five
+     PEs — including the bundle-staged p2p-sidecar, which the bundler
+     VersionInfo-stamps like the other sidecars — are restricted to the
+     shared product identity (#836 contract). Staging another PE in
+     scripts/build-bun.mjs means adding it here AND in the UI in the same
+     change (the collect step and this config must list the same files). -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" default-value="0.0.0.0" />
+  </parameters>
+  <zip-file>
+    <pe-file path="mStream.exe" product-name="mStream" product-version="${version}">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="mstream-server.exe" product-name="mStream" product-version="${version}">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="bin/rust-parser/rust-parser-win32-x64.exe" product-name="mStream" product-version="${version}">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="bin/rust-server-audio/rust-server-audio-win32-x64.exe" product-name="mStream" product-version="${version}">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="bin/p2p-sidecar/p2p-sidecar-win32-x64.exe" product-name="mStream" product-version="${version}">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="bin/iroh/iroh.win32-x64-msvc.node">
+      <authenticode-sign/>
+    </pe-file>
+  </zip-file>
+</artifact-configuration>
