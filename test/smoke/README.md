@@ -13,7 +13,7 @@ real processes. Run them by hand when working on the matching code.
 | Boot-watchdog rollback (`update-watchdog-smoke.sh`) | `npm run test:smoke:update-watchdog` | a built launcher (`cd rust-launcher && cargo build --release`); Linux headless needs `xvfb-run` |
 | Boot-watchdog rollback, Windows (`update-watchdog-smoke.ps1`) | `npm run test:smoke:update-watchdog:win` | a built launcher plus `rustc` on PATH (the stub servers are compiled on the spot) |
 | Update apply cycle (`update-apply-smoke.sh`) | `npm run test:smoke:update-apply` | a built launcher + `python3`; ~2.5 min (two 60s launcher polls); Linux headless needs `xvfb-run` |
-| Desktop player open (`player-open-smoke.sh`) | `npm run test:smoke:player-open` | a built launcher + `python3`; Linux needs a display (`xvfb-run`) and a terminal emulator (`xterm` will do); on macOS it pops a Terminal.app window — or the Ghostty.app named by `MSTREAM_SMOKE_CONSOLE` |
+| Desktop player open (`player-open-smoke.sh`) | `npm run test:smoke:player-open` | a built launcher + `python3`; Linux needs a display (`xvfb-run`) and a terminal emulator (`xterm` will do); on macOS it pops a Terminal.app window |
 | Boot-probe under PowerShell 5.1 (`boot-probe-51-smoke.ps1`) | `npm run test:smoke:boot-probe:win51` | `rustc` + git-bash + real Python; run under `powershell.exe` (Desktop 5.1) — that floor is the point |
 | API error codes (`api-error-codes-smoke.mjs`) | `npm run test:smoke:api-errors` | Node + the fixture library only (built by `npm test`'s pretest); boots a throwaway server; ~2 min |
 

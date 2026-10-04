@@ -56,9 +56,7 @@
 # pops a real window (legs 1, 5, 7 and 8), so run it there by hand only.
 # Legs 6-8 run without --no-open, so a browser fallback would really open
 # one; each asserts the ABSENCE of the fallback's log line instead of
-# relying on a browser being there. MSTREAM_SMOKE_CONSOLE=
-# <path to a Ghostty.app> stages that console beside the fake bundle so a
-# hand run on macOS exercises the bundled-console path instead.
+# relying on a browser being there.
 set -eu
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -121,8 +119,8 @@ trap 'exit 129' INT TERM
 
 # mk_bundle <leg> <player-version> <port> [terminal|desktop|desktop-nowindow|
 # desktop-pages|desktop-pages-nowindow]: a bundle of its own per leg (two
-# legs must never share a bundle: the argv files, the console link and the
-# stub are per bundle); sets B to the bundle dir. A desktop stub answers
+# legs must never share a bundle: the argv files and the stub are per
+# bundle); sets B to the bundle dir. A desktop stub answers
 # --version with the second line — `features: window`, and the pages
 # flavours `features: window window-pages` — and records a `--window`
 # launch (the player's or a page's) in window-argv.txt, where it lingers
@@ -159,10 +157,6 @@ printf '%s\n' "\$*" > "\$(dirname "\$0")/../../player-argv.txt"
 sleep 20
 STUB
     chmod +x "$stub"
-    if [ -n "${MSTREAM_SMOKE_CONSOLE:-}" ]; then
-        mkdir -p "$B/console"
-        ln -s "$MSTREAM_SMOKE_CONSOLE" "$B/console/Ghostty.app"
-    fi
 }
 
 # prepare_leg <leg> <player-version> <port> [flavour]: the bundle and a

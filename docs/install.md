@@ -8,11 +8,7 @@ runtime — no Node.js install.
 
 A bundle is a **folder**, not a single file: the desktop launcher, the server
 binary (`mstream-server`), `webapp/` (the UI), and `bin/` (sidecar binaries).
-macOS bundles also carry `console/Ghostty.app` — a pinned, untouched copy of
-the [Ghostty](https://ghostty.org) terminal (MIT; its license ships beside it)
-that the tray's setup wizard opens in, because Apple's Terminal.app can't
-draw the wizard's pixel artwork. Keep them together; the bundle itself can
-live anywhere.
+Keep them together; the bundle itself can live anywhere.
 
 ## Install with one command
 
@@ -165,12 +161,12 @@ is on by default; one click in the tray menu turns it off. On a **first
 install** the tray opens the guided setup wizard by itself (the bundled
 `mstream-player setup` — music folders, admin account, extras). On a
 desktop build whose bundled player hosts its pages in a window (its
-`mstream-player --version` names `window-pages`) the wizard opens in the
-player's own window, like the player itself. Otherwise — and whenever no
-window can open there — it opens in a real terminal: the bundled mStream
-console (Ghostty, with the mStream Dock icon) on macOS, which draws the
-wizard's artwork and Quick Connect QR as real pixels; Terminal.app without
-the console; Windows Terminal on Windows (a plain console window without
+`mstream-player --version` names `window-pages`; player 0.12.0 and later)
+the wizard opens in the player's own window, like the player itself, with
+its artwork and the Quick Connect QR drawn as real pixels. Otherwise — and
+whenever no window can open there — it opens in a real terminal:
+Terminal.app on macOS (which draws the artwork as character art, having no
+pixel protocol); Windows Terminal on Windows (a plain console window without
 it); and on Linux whichever terminal emulator the desktop has — the one
 `xdg-terminal-exec` declares when that is installed, else a pixel-capable
 one (kitty, Ghostty, WezTerm, foot) so the artwork stays pixels, else the
@@ -212,10 +208,11 @@ releases before 0.8.0), or where no terminal could be opened, gets it
 instead, and the launcher log says why. The player holds an instance lock
 the launcher hands it (player 0.8.0 and later), so a second click, a
 re-click of the app icon, or a second launch brings the open player forward
-instead of opening another: on macOS the player's own window, else the
-bundled console (or Terminal.app), is activated; on Windows the player's
-own window is raised, else the window with the player's title; and on Linux
-`wmctrl` or `xdotool` does it when one is installed. With server audio on
+instead of opening another: on macOS the player's own window is activated
+by its pid, or Terminal.app when the player fell back to it; on Windows
+the player's own window is raised, else the window with the player's title;
+and on Linux `wmctrl` or `xdotool` does it when one is installed. With
+server audio on
 (`autoBootServerAudio`), the open desktop player is also the server-audio
 engine — one player per server: the launcher hands the player the server's
 player port (`rustPlayerPort`, default 3333; player 0.9.0 and later host

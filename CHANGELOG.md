@@ -269,6 +269,13 @@ removed.
 - **busy_timeout=5000 on every SQLite connection.** Prevents
   "database is locked" errors when the scanner and HTTP
   handlers both try to write.
+- **macOS bundles no longer carry Ghostty.** The setup wizard and
+  Quick Connect open in the desktop player's own window (player
+  0.12.0 and later), with Terminal.app as the fallback when no
+  window can open, so the pinned `console/Ghostty.app` beside
+  `mStream.app` and the installer's `io.mstream.console` component
+  are gone. Upgrading through the pkg removes the copy an earlier
+  one left at `/Library/Application Support/mStream/console`.
 
 ### 🐛 Bug fixes
 

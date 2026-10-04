@@ -52,6 +52,22 @@
 # best-effort: a postinstall must never fail the install — exit 0 always.
 set -u
 
+# The pkg's second component, io.mstream.console, laid a bundled Ghostty at
+# this system path for the setup wizard and Quick Connect to draw their
+# artwork in. Since player v0.12.0 those pages open in the player's own
+# window (Terminal.app is the fallback when no window can open), so the
+# component is gone; it shipped from the pkg's first release through the one
+# before this, and an upgrade clears what it left. On every install, before
+# the launcher guard and the console-user exit below, so a copy that is not
+# running and a session that cannot hold a launch still get cleaned up. The
+# literal path the component owned, never a user's data home; the parent
+# goes only when the console was all it held; and the receipt goes with it,
+# so the installed-packages list stops naming a component the pkg no longer
+# carries. Best-effort, like everything here.
+rm -rf "/Library/Application Support/mStream/console" 2>/dev/null || true
+rmdir "/Library/Application Support/mStream" 2>/dev/null || true
+pkgutil --forget io.mstream.console >/dev/null 2>&1 || true
+
 DEST="${2:-/Applications}"
 APP="$DEST/mStream.app"
 LAUNCHER="$APP/Contents/MacOS/mStream"
@@ -113,7 +129,7 @@ if [ -z "$running_pids" ]; then
             ;;
     esac
     # An unknown home must not leave a bare "/Library/..." behind: that is
-    # the machine-wide support folder, which the console package fills.
+    # the machine-wide support folder, nobody's data home.
     support=""
     case "$home" in /*) support="$home/Library/Application Support/mStream" ;; esac
     # The config the app's server will read, in resolve_config_path's order

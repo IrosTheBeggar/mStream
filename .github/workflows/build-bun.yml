@@ -1165,6 +1165,12 @@ jobs:
           D=$(ls -d dist/stage/mStream-*-"$KEY")
           APP="$D/mStream.app"
           [ -d "$APP" ] || { echo "::error::no .app staged at $APP"; exit 1; }
+          # One component. The bundled Ghostty console that was the pkg's
+          # second (io.mstream.console) left with player v0.12.0, whose
+          # desktop build opens the wizard and Quick Connect in the player's
+          # own window; a console/ in the stage would mean the bundler grew
+          # one back.
+          test ! -e "$D/console" || { echo "::error::the staged bundle carries a console/ - nothing ships one since player v0.12.0"; exit 1; }
           mkdir -p dist/installer pkgwork
           PKG="dist/installer/mStream-$VER-$KEY.pkg"
 
@@ -1195,29 +1201,6 @@ jobs:
           pkgbuild --analyze --root pkgwork/root pkgwork/component.plist
           /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" pkgwork/component.plist
           pkgbuild --root pkgwork/root --component-plist pkgwork/component.plist --scripts pkgwork/scripts --install-location /Applications --identifier io.mstream.server --version "$VER" pkgwork/component.pkg
-          # Second component: the bundled Ghostty console (bin/ghostty/).
-          # Its payload root maps to /Library/Application Support/mStream -
-          # the fixed system path the launcher checks third
-          # (rust-launcher paths.rs find_console_app): a pkg install has no
-          # versioned bundle dir and no `current` link. The app ships
-          # byte-identical (ditto, relocatable=false, never re-signed), so
-          # Ghostty's own notarization rides along inside our pkg.
-          CONSOLE_LINE=""
-          CONSOLE_CHOICE=""
-          CONSOLE_REF=""
-          if [ -d "$D/console/Ghostty.app" ]; then
-            rm -rf pkgwork/console-root && mkdir -p pkgwork/console-root/console
-            ditto "$D/console/Ghostty.app" pkgwork/console-root/console/Ghostty.app
-            cp "$D/console/GHOSTTY-LICENSE.txt" pkgwork/console-root/console/
-            pkgbuild --analyze --root pkgwork/console-root pkgwork/console.plist
-            /usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" pkgwork/console.plist
-            pkgbuild --root pkgwork/console-root --component-plist pkgwork/console.plist --install-location "/Library/Application Support/mStream" --identifier io.mstream.console --version "$VER" pkgwork/console.pkg
-            CONSOLE_LINE='<line choice="io.mstream.console"/>'
-            CONSOLE_CHOICE='<choice id="io.mstream.console" visible="false"><pkg-ref id="io.mstream.console"/></choice>'
-            CONSOLE_REF="<pkg-ref id=\"io.mstream.console\" version=\"$VER\" onConclusion=\"none\">console.pkg</pkg-ref>"
-          else
-            echo "::warning::no console in the staged bundle - the pkg ships without io.mstream.console"
-          fi
           case "$KEY" in
             darwin-arm64) ARCHS="arm64" ;;
             *)            ARCHS="x86_64,arm64" ;;   # x64 payload runs under Rosetta
@@ -1229,10 +1212,9 @@ jobs:
             <options customize="never" require-scripts="false" hostArchitectures="$ARCHS"/>
             <volume-check><allowed-os-versions><os-version min="11.0"/></allowed-os-versions></volume-check>
             <domains enable_localSystem="true"/>
-            <choices-outline><line choice="default"><line choice="io.mstream.server"/>$CONSOLE_LINE</line></choices-outline>
+            <choices-outline><line choice="default"><line choice="io.mstream.server"/></line></choices-outline>
             <choice id="default"/>
             <choice id="io.mstream.server" visible="false"><pkg-ref id="io.mstream.server"/></choice>
-            $CONSOLE_CHOICE$CONSOLE_REF
             <pkg-ref id="io.mstream.server" version="$VER" onConclusion="none">component.pkg</pkg-ref>
           </installer-gui-script>
           EOF
@@ -1341,16 +1323,24 @@ jobs:
           OLD_PID=$!
           sleep 1
           kill -0 "$OLD_PID" 2>/dev/null || { echo "::error::the seeded old instance is not running - the restart-path test would be vacuous"; exit 1; }
+          # Seed what a pkg through the previous release left behind: its
+          # io.mstream.console component's Ghostty at the system path. The
+          # postinstall (build/pkg-postinstall.sh) removes it on every
+          # install now that the pages open in the player's own window, and
+          # the pkg itself carries no such component any more. The receipt
+          # list goes through a file: under pipefail a grep -q that closes
+          # the pipe early would hand pkgutil a SIGPIPE and the test a
+          # wrong answer.
+          CONSOLE_DIR="/Library/Application Support/mStream/console"
+          sudo mkdir -p "$CONSOLE_DIR/Ghostty.app/Contents/MacOS"
           sudo installer -pkg "$PKG" -target /
           test -d /Applications/mStream.app || { echo "::error::pkg install did not produce /Applications/mStream.app"; exit 1; }
-          CONSOLE_APP="/Library/Application Support/mStream/console/Ghostty.app"
-          test -d "$CONSOLE_APP" || { echo "::error::pkg install did not produce $CONSOLE_APP"; exit 1; }
-          codesign --verify --strict "$CONSOLE_APP" || { echo "::error::bundled console signature broken after pkg install"; exit 1; }
-          # File-first, not `--version | head -1`: this step runs under
-          # pipefail, and head closing the pipe early would fail a healthy
-          # multi-line --version with SIGPIPE.
-          "$CONSOLE_APP/Contents/MacOS/ghostty" --version > "$RUNNER_TEMP/console-version.txt" 2>&1
-          head -1 "$RUNNER_TEMP/console-version.txt"
+          test ! -e "$CONSOLE_DIR" || { echo "::error::the postinstall left the old bundled console at $CONSOLE_DIR"; exit 1; }
+          pkgutil --pkgs > "$RUNNER_TEMP/pkgs.txt"
+          if grep -q io.mstream.console "$RUNNER_TEMP/pkgs.txt"; then
+            echo "::error::the pkg still installs an io.mstream.console component"; exit 1
+          fi
+          echo "the previous release's console install is gone and the pkg carries no console component"
           if kill -0 "$OLD_PID" 2>/dev/null; then
             echo "::error::postinstall left the old running instance alive"; exit 1
           fi
@@ -1435,8 +1425,6 @@ jobs:
           echo "pkg-installed server served 200 on :3557"
           sudo rm -rf /Applications/mStream.app
           sudo pkgutil --forget io.mstream.server
-          sudo rm -rf "/Library/Application Support/mStream/console"
-          sudo pkgutil --forget io.mstream.console
           echo "PKG INSTALL SMOKE OK"
 
       # darwin-x64 is the one shipped artifact whose binaries never execute
@@ -1838,6 +1826,50 @@ jobs:
           OUT=$("$PL" --version 2>/dev/null)
           echo "$OUT" | grep -Eq '^mstream-player [0-9]+\.[0-9]+\.[0-9]+' || { echo "::error::staged mstream-player --version produced no/invalid output"; echo "$OUT"; exit 1; }
           echo "OK: staged mstream-player executes ($(basename "$PL"))"
+          # The second line is the launcher's page gate (rust-launcher
+          # paths.rs PlayerProbe): a desktop build names its window there,
+          # and from player v0.12.0 its pages too - exactly `features: window
+          # window-pages` - which is what sends Setup and Quick Connect to
+          # the player's own window instead of a terminal. The bundle stages
+          # the desktop binary under the TERMINAL file name
+          # (scripts/mstream-player-asset.mjs), so only this line can tell
+          # which one shipped, and without the word the tray would route the
+          # pages to a terminal with nothing to say so. Gated on the pin: a
+          # tag before v0.12.0 promises no pages, so the assertion waits for
+          # the pin to move and a notice says so; a leg whose manifest pins
+          # no desktop binary (arm Linux) stages the terminal one, which has
+          # no second line to hold.
+          case "${{ matrix.key }}" in
+            win-x64)      PKEY="win32-x64"; PEXT=".exe" ;;
+            linux-arm64*) PKEY="linux-arm64"; PEXT="" ;;
+            linux-x64*)   PKEY="linux-x64"; PEXT="" ;;
+            *)            PKEY="${{ matrix.key }}"; PEXT="" ;;
+          esac
+          GATE=$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { choosePlayerAsset } from "./scripts/mstream-player-asset.mjs";
+            const [manifest, pkey, ext] = process.argv.slice(1);
+            const m = JSON.parse(readFileSync(manifest, "utf8"));
+            const [plat, arch] = pkey.split("-");
+            const pick = choosePlayerAsset(m, { plat, arch, ext });
+            const have = String(m.tag).replace(/^v/, "").split(".").map((n) => Number(n) || 0);
+            let older = false;
+            for (const [i, want] of [0, 12, 0].entries()) {
+              if (have[i] !== want) { older = have[i] < want; break; }
+            }
+            if (older) console.log(`skip:the pin is ${m.tag}, before v0.12.0`);
+            else if (!pick || pick.family !== "desktop") console.log(`skip:this leg stages the terminal family (${pick ? pick.key : "no pin for " + pkey})`);
+            else console.log("assert");
+          ' "$B/mstream-player/manifest.json" "$PKEY" "$PEXT")
+          case "$GATE" in
+            assert)
+              LINE2=$(printf '%s\n' "$OUT" | sed -n 2p)
+              [ "$LINE2" = "features: window window-pages" ] || { echo "::error::staged mstream-player --version line 2 is '$LINE2', not 'features: window window-pages' - the launcher would keep Setup and Quick Connect in a terminal"; exit 1; }
+              echo "OK: staged mstream-player names window-pages"
+              ;;
+            skip:*) echo "::notice::window-pages assertion skipped - ${GATE#skip:}" ;;
+            *) echo "::error::window-pages gate produced '$GATE'"; exit 1 ;;
+          esac
 
       - name: Smoke test first-run invitation (fresh boot)
         # The first-boot wizard invitation (server.js onListening): a

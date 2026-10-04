@@ -277,15 +277,14 @@ pub fn open_logs_terminal(logs_dir: &std::path::Path) -> Result<(), String> {
 /// terminal takes a size: the VTE family opens 80×24 by default, which
 /// cannot hold the pairing QR drawn in half-blocks (77×39 cells), and the
 /// XTWINOPS resize the macOS .command script sends is ignored by VTE,
-/// kitty and stock xterm alike. The same window the mac Ghostty config
-/// asks for.
+/// kitty and stock xterm alike.
 pub const WIZARD_SIZE: (u16, u16) = (120, 42);
 
 /// Columns × rows the desktop player asks for: the GUI's design size (its
 /// cell-exact 100×30 mockups). Its floor is 100×24 — below that it draws
 /// "please make the terminal a little larger" instead of a layout — and no
-/// terminal we launch through (Ghostty, Terminal.app, Windows Terminal, the
-/// Linux chain) can be told a MINIMUM size, only an initial one. So the
+/// terminal we launch through (Terminal.app, Windows Terminal, the Linux
+/// chain) can be told a MINIMUM size, only an initial one. So the
 /// initial size is the whole lever, and it must clear the floor.
 pub const PLAYER_SIZE: (u16, u16) = (100, 30);
 
@@ -358,23 +357,13 @@ impl PlayerPage {
         }
     }
     /// Columns × rows to open the page's window at, where the terminal
-    /// takes a size (Ghostty's config, Terminal.app's XTWINOPS resize,
-    /// wt.exe --size, the sized dialects of the Linux chain); the rest
-    /// open at their default and the pages reflow or ask for room.
+    /// takes a size (Terminal.app's XTWINOPS resize, wt.exe --size, the
+    /// sized dialects of the Linux chain); the rest open at their default
+    /// and the pages reflow or ask for room.
     fn size(&self) -> (u16, u16) {
         match self {
             PlayerPage::Player { .. } => PLAYER_SIZE,
             _ => WIZARD_SIZE,
-        }
-    }
-    // Only the mac ghostty config (and this file's tests) call this; allow,
-    // not cfg, keeps the enum's surface uniform across platforms.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    fn title(&self) -> String {
-        match self {
-            PlayerPage::Setup => "mStream Setup".into(),
-            PlayerPage::QuickConnect => "mStream Quick Connect".into(),
-            PlayerPage::Player { .. } => "mStream Player".into(),
         }
     }
     #[cfg(target_os = "macos")]
@@ -385,18 +374,6 @@ impl PlayerPage {
             PlayerPage::Player { .. } => "player-mstream.command".into(),
         }
     }
-    /// The bundled console's config home under the scratch dir. The
-    /// short-lived pages share one — regenerated on every click, read once
-    /// at the console's start. The player gets its own: its window lives
-    /// for hours, and a config reload or a new window inside it must never
-    /// pick up the wizard page a later click wrote into the shared file.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    fn console_config_dir(&self) -> &'static str {
-        match self {
-            PlayerPage::Player { .. } => "console-config-player",
-            _ => "console-config",
-        }
-    }
 }
 
 /// Run one of the terminal player's pages — the setup wizard, Quick
@@ -404,9 +381,9 @@ impl PlayerPage {
 /// this launcher's server and opened at the page's own size wherever the
 /// terminal takes one. Same per-OS "what is a terminal" seams as
 /// open_logs_terminal; the caller logs a failure — a missing terminal
-/// emulator must never take the tray down. Ok carries WHICH
-/// surface opened (support surface: "it opened in Terminal, not the
-/// mStream console — why?" should be one log line away).
+/// emulator must never take the tray down. Ok carries WHICH surface
+/// opened (a support surface: which terminal took the page should be one
+/// log line away).
 ///
 /// This is the terminal route, and since the window route it is also the
 /// fallback route: the desktop player's when its window cannot open
@@ -415,29 +392,20 @@ impl PlayerPage {
 /// (`window-pages`, paths::PlayerProbe) — and their only route on every
 /// build without that word.
 ///
-/// `console`: the bundled Ghostty (macOS bundles only, resolved by
-/// paths::find_console_app) — preferred over Terminal.app because Apple's
-/// terminal has no pixel protocol at all, so the wizard's wordmark and QR
-/// degrade to character art there. Ignored on the other platforms.
+/// macOS takes Terminal.app. Apple's terminal has no pixel protocol, so
+/// the wizard's wordmark and QR degrade to character art there — the
+/// fallback's price now that the pages draw their pixels in the player's
+/// own window; the bundled Ghostty that drew them before left with player
+/// v0.12.0.
 pub fn open_player_terminal(
     player_bin: &std::path::Path,
     server_url: &str,
     scratch_dir: &std::path::Path,
-    console: Option<&crate::paths::ConsoleLaunch>,
     page: PlayerPage,
 ) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut console_note = String::new();
-        if let Some(c) = console {
-            match spawn_ghostty_page(c, player_bin, server_url, scratch_dir, &page) {
-                Ok(()) => return Ok("bundled Ghostty console".into()),
-                // A broken bundled console must degrade to Terminal.app, not
-                // dead-end the button — but the reason rides along.
-                Err(e) => console_note = format!(" (bundled console failed: {e})"),
-            }
-        }
         // Terminal.app opens an executable .command file as a document — no
         // AppleEvents automation consent (see open_logs_terminal). The CSI 8
         // resize asks for the page's window (the wizard's two-column pages
@@ -455,7 +423,7 @@ pub fn open_player_terminal(
         std::process::Command::new("/usr/bin/open")
             .arg(&script)
             .spawn()
-            .map(|_| format!("Terminal.app{console_note}"))
+            .map(|_| "Terminal.app".into())
             .map_err(|e| format!("open {}: {e}", script.display()))
     }
     #[cfg(windows)]
@@ -468,7 +436,6 @@ pub fn open_player_terminal(
         // conhost window still runs the page — crossterm enables VT there
         // and the art degrades to half-blocks; conhost's stock 120×30
         // clears the player's floor, and the wizard reflows.
-        let _ = console;
         if std::process::Command::new("wt.exe")
             .args(wt_invocation(&page, player_bin, server_url))
             .spawn()
@@ -486,7 +453,7 @@ pub fn open_player_terminal(
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let _ = (scratch_dir, console); // no script file / no bundled console here
+        let _ = scratch_dir; // no script file on this path
         // No `exec`: the shell stays the window's parent, so a page that
         // dies at once (a missing libasound, a bad binary) leaves its error
         // on screen behind a "press Enter" instead of a window that flashed
@@ -617,34 +584,24 @@ pub fn spawn_player_window(
 ///
 /// macOS activates the app hosting the player: the player itself when it
 /// draws in its own window (host `window`: the desktop build, activated
-/// by its pid), the bundled console when the player runs in Ghostty AND
-/// our console is what is running (an `open -a` on a console that is not
-/// running would LAUNCH a plain Ghostty with the user's own config),
-/// Terminal.app for an Apple Terminal host (all its windows come forward;
-/// close enough). Windows raises the top-level window the sidecar's pid
-/// owns when there is one (the desktop build's own window), else finds the
-/// window by the title the player sets — in Windows Terminal that is the
-/// window whose active tab is the player's. Linux asks `wmctrl` or
-/// `xdotool` when one is installed (by title, which the desktop build's
-/// window carries too). `console` is the bundled console, macOS only.
-pub fn focus_player(
-    who: Option<&crate::paths::PlayerSidecar>,
-    console: Option<&crate::paths::ConsoleLaunch>,
-) -> Result<String, String> {
+/// by its pid), Terminal.app for an Apple Terminal host (all its windows
+/// come forward; close enough), and nothing for any other host — a Ghostty
+/// of the user's own included, since `open -a` on an app that is not
+/// running would launch one. Windows raises the top-level window the
+/// sidecar's pid owns when there is one (the desktop build's own window),
+/// else finds the window by the title the player sets — in Windows Terminal
+/// that is the window whose active tab is the player's. Linux asks `wmctrl`
+/// or `xdotool` when one is installed (by title, which the desktop build's
+/// window carries too).
+pub fn focus_player(who: Option<&crate::paths::PlayerSidecar>) -> Result<String, String> {
     let host = who.map(|w| w.host.as_str()).unwrap_or("unknown");
     #[cfg(target_os = "macos")]
     {
-        let ours_running = console.is_some_and(console_running);
-        match mac_focus_plan(host, ours_running) {
+        match mac_focus_plan(host) {
             MacFocus::Window => {
                 let pid = who.expect("the plan names the window only from a sidecar").pid;
                 activate_pid(pid)?;
                 Ok(format!("the player's own window (pid {pid})"))
-            }
-            MacFocus::Console => {
-                let app = &console.expect("the plan names the console only when one exists").ghostty_app;
-                open_app(app.as_os_str())?;
-                Ok("the bundled Ghostty console".into())
             }
             MacFocus::Terminal => {
                 open_app(std::ffi::OsStr::new("Terminal"))?;
@@ -655,7 +612,6 @@ pub fn focus_player(
     }
     #[cfg(windows)]
     {
-        let _ = console;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             FindWindowW, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE,
         };
@@ -687,7 +643,6 @@ pub fn focus_player(
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let _ = console;
         use std::process::{Command, Stdio};
         let mut tried = Vec::new();
         let tools: [(&str, &[&str]); 2] = [
@@ -707,26 +662,21 @@ pub fn focus_player(
 }
 
 /// The macOS focus decision, pure so the matrix is unit-tested on every
-/// host: what to activate for the host the sidecar names, given whether
-/// OUR bundled console is the Ghostty that is running.
+/// host: what to activate for the host the sidecar names.
 #[cfg(any(target_os = "macos", test))]
 #[derive(Debug, PartialEq, Eq)]
 enum MacFocus {
     /// The player's own window (host `window`): activate its pid.
     Window,
-    Console,
     Terminal,
     Nothing(String),
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn mac_focus_plan(host: &str, console_running: bool) -> MacFocus {
+fn mac_focus_plan(host: &str) -> MacFocus {
     match host {
         "window" => MacFocus::Window,
-        "ghostty" if console_running => MacFocus::Console,
-        "ghostty" => MacFocus::Nothing(
-            "the player runs in a Ghostty that is not the bundled console (activating one that is not running would launch a plain Ghostty)".into(),
-        ),
+        "ghostty" => MacFocus::Nothing("the player runs in Ghostty; nothing to activate (open -a would launch one)".into()),
         "apple-terminal" => MacFocus::Terminal,
         other => MacFocus::Nothing(format!("the player runs under {}; nothing to activate", if other.is_empty() { "an unknown terminal" } else { other })),
     }
@@ -867,21 +817,6 @@ fn top_level_window_of(pid: u32) -> Option<windows_sys::Win32::Foundation::HWND>
     (!search.found.is_null()).then_some(search.found)
 }
 
-/// Whether the bundled console's own binary is running — the guard before
-/// `open -a` on it (see focus_player). pgrep -f against the full path,
-/// anchored, with the path's metacharacters escaped.
-#[cfg(target_os = "macos")]
-fn console_running(console: &crate::paths::ConsoleLaunch) -> bool {
-    let bin = console.ghostty_app.join("Contents").join("MacOS").join("ghostty");
-    let pat = format!("^{}", crate::paths::escape_ere(&bin.display().to_string()));
-    std::process::Command::new("/usr/bin/pgrep")
-        .arg("-f")
-        .arg(&pat)
-        .stdout(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|st| st.success())
-}
-
 /// `open -a <app>`: activate a running app (or launch it — which is why
 /// focus_player only calls this for something it knows is running). Waits
 /// for `open`'s own exit: a nonzero status is LaunchServices refusing.
@@ -892,76 +827,6 @@ fn open_app(app: &std::ffi::OsStr) -> Result<(), String> {
         Ok(st) => Err(format!("open -a {}: {st}", app.to_string_lossy())),
         Err(e) => Err(format!("open -a {}: {e}", app.to_string_lossy())),
     }
-}
-
-/// Write the config and launch the bundled Ghostty console running the
-/// wizard. Everything rides in the CONFIG FILE, never `-e`: Ghostty confirms
-/// argument-passed commands with an "Allow Ghostty to execute…" dialog (its
-/// anti-injection guard) but treats config-declared commands as user-trusted
-/// and prompts for nothing (probed 2026-08-24, player PLAN.md Phase 8).
-/// XDG_CONFIG_HOME is scoped to the spawn, so a user's own Ghostty install
-/// keeps its own configuration untouched.
-#[cfg(target_os = "macos")]
-fn spawn_ghostty_page(
-    console: &crate::paths::ConsoleLaunch,
-    player_bin: &std::path::Path,
-    server_url: &str,
-    scratch_dir: &std::path::Path,
-    page: &PlayerPage,
-) ->Result<(), String> {
-    let bin = console.ghostty_app.join("Contents").join("MacOS").join("ghostty");
-    if !bin.exists() {
-        return Err(format!("no ghostty binary at {}", bin.display()));
-    }
-    let cfg_home = scratch_dir.join(page.console_config_dir());
-    let cfg_dir = cfg_home.join("ghostty");
-    std::fs::create_dir_all(&cfg_dir).map_err(|e| format!("mkdir {}: {e}", cfg_dir.display()))?;
-    let cfg = cfg_dir.join("config");
-    std::fs::write(&cfg, ghostty_page_config(console, player_bin, server_url, page))
-        .map_err(|e| format!("write {}: {e}", cfg.display()))?;
-    std::process::Command::new(&bin)
-        .env("XDG_CONFIG_HOME", &cfg_home)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("spawn {}: {e}", bin.display()))
-}
-
-/// The console's config, regenerated on every click so it always reflects
-/// this build's idea of the paths. `command` uses the explicit `shell:`
-/// prefix — the value runs via `/bin/sh -c`, so the sh-quoting handles the
-/// "Application Support" spaces every managed install has.
-/// `quit-after-last-window-closed` keeps the console from lingering in the
-/// Dock as a windowless app after the wizard exits; `macos-icon = custom`
-/// puts the mStream mark on that Dock tile while it lives. The window
-/// opens at the page's size, and `window-save-state = never` keeps it that
-/// way: macOS state restoration would otherwise bring a Cmd+Q'd window
-/// back at whatever size it was dragged to — for the player, possibly
-/// under its floor.
-#[cfg(target_os = "macos")]
-fn ghostty_page_config(
-    console: &crate::paths::ConsoleLaunch,
-    player_bin: &std::path::Path,
-    server_url: &str,
-    page: &PlayerPage,
-) ->String {
-    let (cols, rows) = page.size();
-    let mut body = format!(
-        "# Written by mStream's tray - safe to delete.\n\
-         auto-update = off\n\
-         title = {title}\n\
-         window-width = {cols}\n\
-         window-height = {rows}\n\
-         window-save-state = never\n\
-         confirm-close-surface = false\n\
-         quit-after-last-window-closed = true\n",
-        title = page.title(),
-    );
-    if let Some(icns) = &console.icon_icns {
-        // Config values run to end of line — a spaced path needs no quoting.
-        body.push_str(&format!("macos-icon = custom\nmacos-custom-icon = {}\n", icns.display()));
-    }
-    body.push_str(&format!("command = shell:{}\n", player_shell_words(page, player_bin, server_url)));
-    body
 }
 
 /// Start the NEW launcher for the apply-update handoff, detached, and return
@@ -1393,8 +1258,8 @@ fn sh_quote_str(s: &str) -> String {
 
 /// The one `sh -c` program every unix launch of a player page runs —
 /// `'<player>' <page args…> <server flag> '<url>'` — shared by the macOS
-/// .command script, the bundled-console config and the Linux chain, so all
-/// three agree on the argv and its quoting.
+/// .command script and the Linux chain, so both agree on the argv and its
+/// quoting.
 #[cfg(unix)]
 fn player_shell_words(page: &PlayerPage, player_bin: &std::path::Path, server_url: &str) -> String {
     let mut words = vec![sh_quote(player_bin)];
@@ -1420,8 +1285,8 @@ struct PlayerWord {
 }
 
 /// THE argv of a player launch, after the binary — shared by every route
-/// so they cannot drift: the sh line (macOS .command, bundled console,
-/// Linux chain), wt.exe, the conhost fallback, and the window route.
+/// so they cannot drift: the sh line (macOS .command, Linux chain), wt.exe,
+/// the conhost fallback, and the window route.
 /// `<page words> [--window] [--instance-lock <path>] [--serve-port <port>]
 /// <server flag> <url>`. `window` adds the one word the window route
 /// differs by, right after the page's own (`gui --window`); every value
@@ -1464,20 +1329,16 @@ mod page_tests {
     }
 
     #[test]
-    fn each_page_maps_to_its_own_argv_and_title() {
+    fn each_page_maps_to_its_own_argv() {
         assert_eq!(PlayerPage::Setup.args(), ["setup"]);
         assert_eq!(PlayerPage::QuickConnect.args(), ["qr"]);
         assert_eq!(player().args(), ["gui"]);
-        assert_eq!(player().title(), "mStream Player");
-        assert_eq!(PlayerPage::Setup.title(), "mStream Setup");
-        assert_eq!(PlayerPage::QuickConnect.title(), "mStream Quick Connect");
-        // Three pages, three argvs, three titles: no two tray items may
-        // open the same thing or the same-named window.
+        // Three pages, three argvs: no two tray items may open the same
+        // thing.
         let pages = every_page();
         for (i, a) in pages.iter().enumerate() {
             for b in &pages[i + 1..] {
                 assert_ne!(a.args(), b.args(), "{a:?} vs {b:?}");
-                assert_ne!(a.title(), b.title(), "{a:?} vs {b:?}");
             }
         }
     }
@@ -1489,11 +1350,9 @@ mod page_tests {
         // over a default the user chose among their saved servers.
         assert_eq!(player().server_flag(), "--bundled-server");
         assert_eq!(player().size(), PLAYER_SIZE);
-        assert_eq!(player().console_config_dir(), "console-config-player");
         for page in every_page().into_iter().filter(|p| !matches!(p, PlayerPage::Player { .. })) {
             assert_eq!(page.server_flag(), "--server", "{page:?}");
             assert_eq!(page.size(), WIZARD_SIZE, "{page:?}");
-            assert_eq!(page.console_config_dir(), "console-config", "{page:?}");
         }
         // The GUI's floor is 100×24 (src/gui/mod.rs MIN_W/MIN_H in the
         // player repo): under it the player draws a "make the terminal
@@ -1586,18 +1445,15 @@ mod page_tests {
     #[test]
     fn the_mac_focus_plan_activates_only_what_is_ours() {
         use super::MacFocus;
-        assert_eq!(super::mac_focus_plan("ghostty", true), MacFocus::Console);
-        // A Ghostty host while our console is NOT running is somebody
-        // else's Ghostty: `open -a` on ours would launch a plain one.
-        assert!(matches!(super::mac_focus_plan("ghostty", false), MacFocus::Nothing(_)));
-        assert_eq!(super::mac_focus_plan("apple-terminal", false), MacFocus::Terminal);
-        assert_eq!(super::mac_focus_plan("apple-terminal", true), MacFocus::Terminal);
-        // The desktop build in its own window: the player itself, by pid —
-        // whether or not our console runs.
-        assert_eq!(super::mac_focus_plan("window", false), MacFocus::Window);
-        assert_eq!(super::mac_focus_plan("window", true), MacFocus::Window);
+        // The desktop build in its own window: the player itself, by pid.
+        assert_eq!(super::mac_focus_plan("window"), MacFocus::Window);
+        assert_eq!(super::mac_focus_plan("apple-terminal"), MacFocus::Terminal);
+        // A Ghostty host is the user's own Ghostty (the bundled one left
+        // with player v0.12.0): `open -a` on one that is not running would
+        // launch it, so nothing is activated.
+        assert!(matches!(super::mac_focus_plan("ghostty"), MacFocus::Nothing(_)));
         for other in ["iterm", "windows-terminal", "conhost", "unknown", "", "windows", "window-terminal"] {
-            assert!(matches!(super::mac_focus_plan(other, true), MacFocus::Nothing(_)), "{other}");
+            assert!(matches!(super::mac_focus_plan(other), MacFocus::Nothing(_)), "{other}");
         }
     }
 
@@ -1746,15 +1602,9 @@ mod page_tests {
     fn manual_open_player_terminal() {
         // MSTREAM_DEMO_PLAYER = a real player binary; MSTREAM_DEMO_SERVER =
         // the URL to point it at; MSTREAM_DEMO_PAGE = setup (default), qr or
-        // gui (the desktop player); on macOS MSTREAM_DEMO_CONSOLE =
-        // optionally a Ghostty.app to prefer (with MSTREAM_DEMO_ICNS for the
-        // Dock icon).
+        // gui (the desktop player).
         let player = std::path::PathBuf::from(std::env::var("MSTREAM_DEMO_PLAYER").expect("set MSTREAM_DEMO_PLAYER"));
         let url = std::env::var("MSTREAM_DEMO_SERVER").unwrap_or_else(|_| "http://localhost:3000".into());
-        let console = std::env::var("MSTREAM_DEMO_CONSOLE").ok().map(|app| crate::paths::ConsoleLaunch {
-            ghostty_app: std::path::PathBuf::from(app),
-            icon_icns: std::env::var("MSTREAM_DEMO_ICNS").ok().map(std::path::PathBuf::from),
-        });
         let dir = std::env::temp_dir().join("mstream-page-demo");
         std::fs::create_dir_all(&dir).unwrap();
         let page = match std::env::var("MSTREAM_DEMO_PAGE").as_deref() {
@@ -1763,7 +1613,7 @@ mod page_tests {
             _ => PlayerPage::Setup,
         };
         let label = format!("{page:?}");
-        let via = super::open_player_terminal(&player, &url, &dir, console.as_ref(), page).unwrap();
+        let via = super::open_player_terminal(&player, &url, &dir, page).unwrap();
         eprintln!("opened {label} via {via}");
     }
 }
@@ -1777,66 +1627,6 @@ mod tests {
         // debug build (objc2 checks the encoding), not at a user's click.
         // The value is whatever the keyboard says, so it is not asserted.
         let _ = super::control_key_held();
-    }
-
-    #[test]
-    fn ghostty_config_quotes_spaced_paths_and_never_uses_dash_e() {
-        let c = crate::paths::ConsoleLaunch {
-            ghostty_app: "/tmp/x/Ghostty.app".into(),
-            icon_icns: Some("/App Root/Resources/mStream.icns".into()),
-        };
-        let cfg = super::ghostty_page_config(
-            &c,
-            std::path::Path::new("/Application Support/bin/mstream-player"),
-            "http://localhost:3000",
-            &super::PlayerPage::Setup,
-        );
-        // shell: + sh-quoting is what survives "Application Support" spaces;
-        // the command must live in the CONFIG, never a -e argument (consent
-        // dialog).
-        assert!(
-            cfg.contains("command = shell:'/Application Support/bin/mstream-player' setup --server 'http://localhost:3000'"),
-            "{cfg}"
-        );
-        // Config values run to end of line — the spaced icns path rides raw.
-        assert!(cfg.contains("macos-custom-icon = /App Root/Resources/mStream.icns\n"), "{cfg}");
-        assert!(cfg.contains("macos-icon = custom\n"), "{cfg}");
-        assert!(cfg.contains("auto-update = off\n"), "{cfg}");
-        assert!(cfg.contains("quit-after-last-window-closed = true\n"), "{cfg}");
-
-        let plain = crate::paths::ConsoleLaunch { ghostty_app: "/t/G.app".into(), icon_icns: None };
-        let cfg2 = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", &super::PlayerPage::Setup);
-        assert!(!cfg2.contains("macos-icon"), "no icns means Ghostty keeps its own icon: {cfg2}");
-
-        // The Quick Connect page: same machinery, its own subcommand + title.
-        let qc = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", &super::PlayerPage::QuickConnect);
-        assert!(qc.contains("command = shell:'/p' qr --server 'http://x:1'"), "{qc}");
-        assert!(qc.contains("title = mStream Quick Connect\n"), "{qc}");
-
-        // The wizard pages open at their window, never restored from a
-        // saved state at some other size.
-        assert!(cfg.contains("window-width = 120\nwindow-height = 42\n"), "{cfg}");
-        assert!(cfg.contains("window-save-state = never\n"), "{cfg}");
-
-        // The desktop player: its own size, title and server flag — and
-        // the launcher's lock on the command line when the player takes it.
-        let player = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", &super::PlayerPage::Player { instance_lock: None, serve_port: None });
-        assert!(player.contains("command = shell:'/p' gui --bundled-server 'http://x:1'"), "{player}");
-        let locked = super::PlayerPage::Player { instance_lock: Some("/Application Support/mStream/desktop-player.lock".into()), serve_port: None };
-        let with_lock = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", &locked);
-        assert!(
-            with_lock.contains("command = shell:'/p' gui --instance-lock '/Application Support/mStream/desktop-player.lock' --bundled-server 'http://x:1'"),
-            "{with_lock}"
-        );
-        let faced = super::PlayerPage::Player { instance_lock: Some("/d/desktop-player.lock".into()), serve_port: Some(3333) };
-        let with_face = super::ghostty_page_config(&plain, std::path::Path::new("/p"), "http://x:1", &faced);
-        assert!(
-            with_face.contains("command = shell:'/p' gui --instance-lock '/d/desktop-player.lock' --serve-port 3333 --bundled-server 'http://x:1'"),
-            "{with_face}"
-        );
-        assert!(player.contains("title = mStream Player\n"), "{player}");
-        assert!(player.contains("window-width = 100\nwindow-height = 30\n"), "{player}");
-        assert!(player.contains("window-save-state = never\n"), "{player}");
     }
 
     #[test]
