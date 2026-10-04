@@ -48,7 +48,9 @@ export function renderMetadataObj(row) {
       rating: row.rating || null,
       'play-count': row.play_count || null,
       'last-played': row.last_played || null,
-      'replaygain-track': row.replaygain_track_db || null,
+      // `??`, not `||`: a 0 dB track gain is a real value (play as is), and
+      // the web player treats a missing one as "no ReplayGain info" (-10 dB).
+      'replaygain-track': row.replaygain_track_db ?? null,
       // V32 columns surfaced for client-side Auto-DJ. The webapp uses
       // these to display "128 BPM · A minor (8A)" pills and to drive
       // the BPM-continuity / harmonic-mixing toggles (build a request

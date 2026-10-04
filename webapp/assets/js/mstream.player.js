@@ -1317,7 +1317,8 @@ const MSTREAMPLAYER = (() => {
     mstreamModule.playerStats.metadata.title = curSong.metadata && curSong.metadata.title ? curSong.metadata.title : "";
     mstreamModule.playerStats.metadata.year = curSong.metadata && curSong.metadata.year ? curSong.metadata.year : "";
     mstreamModule.playerStats.metadata['album-art'] = curSong.metadata && curSong.metadata['album-art'] ? curSong.metadata['album-art'] : "";
-    mstreamModule.playerStats.metadata['replaygain-track-db'] = curSong.metadata && curSong.metadata['replaygain-track-db'] ? curSong.metadata['replaygain-track-db'] : "";
+    const rgainDb = replayGainDbOf(curSong.metadata);
+    mstreamModule.playerStats.metadata['replaygain-track-db'] = rgainDb !== null ? rgainDb : "";
     // V32 columns — used by the now-playing pill display + Auto-DJ
     // BPM continuity / harmonic-mixing anchor management.
     mstreamModule.playerStats.metadata.bpm = curSong.metadata && Number.isFinite(curSong.metadata.bpm) ? curSong.metadata.bpm : null;
@@ -1351,6 +1352,16 @@ const MSTREAMPLAYER = (() => {
     mstreamModule.updateReplayGainFromSong(curSong);
   }
 
+  // A song's track gain in dB, or null when it carries none. The server
+  // sends it as `replaygain-track` (renderMetadataObj); `replaygain-track-db`
+  // is the pre-SQLite spelling a peer on an old mStream may still send.
+  // 0 dB is a real gain (play as is), not a missing one.
+  function replayGainDbOf(metadata) {
+    if (!metadata) { return null; }
+    const db = metadata['replaygain-track'] ?? metadata['replaygain-track-db'];
+    return typeof db === 'number' && Number.isFinite(db) ? db : null;
+  }
+
   // Update ReplayGain state from given song, if required.
   mstreamModule.updateReplayGainFromSong = function (song) {
     console.assert(song);
@@ -1358,8 +1369,8 @@ const MSTREAMPLAYER = (() => {
 
     if (mstreamModule.playerStats.replayGain) {
       if (song.metadata) {
-        const rgainDb = song.metadata['replaygain-track-db'];
-        if (rgainDb) {
+        const rgainDb = replayGainDbOf(song.metadata);
+        if (rgainDb !== null) {
           // Note: the music-metadata package has a similar calculation in its Utils class, and that's used to
           // calculate a returned 'ratio' value. However, the calculation used there is actually calculating the power
           // ratio and not the amplitude ratio as required. As power is amplitude squared, that results in a volume
