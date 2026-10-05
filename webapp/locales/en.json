@@ -8,6 +8,7 @@
   "nav.recentAdded": "Recent Added",
   "nav.recentlyPlayed": "Recently Played",
   "nav.mostPlayed": "Most Played",
+  "nav.discover": "Discover",
   "nav.stats": "Stats",
   "nav.rated": "Rated",
   "nav.search": "Search",
@@ -83,7 +84,9 @@
   "metadata.albumArt": "Album Art:",
   "metadata.changeAlbumArt": "Change Album Art",
   "metadata.lyricsTag": "Lyrics",
-  "discover.title": "Discover",
+  "discover.title": "More like this",
+  "discover.openPage": "Discover page →",
+  "discover.seedSub": "“{{title}}”",
   "discover.notAnalyzed": "This song hasn’t been analyzed yet — similar songs appear once the discovery scan reaches it.",
   "discover.queueAll": "+ Queue all",
   "discover.similarArtists": "Similar artists",
@@ -434,6 +437,7 @@
   "panel.starred": "Starred",
   "panel.recentlyPlayed": "Recently Played",
   "panel.mostPlayed": "Most Played",
+  "panel.discover": "Discover",
   "panel.recentlyAdded": "Recently Added",
   "panel.transcode": "Transcode",
   "panel.mobileApps": "Mobile Apps",
@@ -1236,5 +1240,227 @@
   "admin.dplugins.num.maxQueuedPerUser.help": "1 – 500. Past it a new job is refused until some finish. The runner takes turns between accounts besides, so one long queue never holds the others. Takes effect at once.",
   "admin.dplugins.num.maxFolderSongs.title": "Largest folder to add",
   "admin.dplugins.num.maxFolderSongs.label": "Songs one folder copied from a paired server may hold",
-  "admin.dplugins.num.maxFolderSongs.help": "1 – 100000. A folder with more songs is refused with the count, and the user adds its folders one at a time. One folder job holds the copy slot for as long as it runs. Takes effect on the next job."
+  "admin.dplugins.num.maxFolderSongs.help": "1 – 100000. A folder with more songs is refused with the count, and the user adds its folders one at a time. One folder job holds the copy slot for as long as it runs. Takes effect on the next job.",
+  "dpage.subtitle": "matched by sound to what you finished",
+  "dpage.matchedBySound": "matched by sound",
+  "dpage.basedOnLast": "Based on the last",
+  "dpage.window.days": {
+    "one": "1 day",
+    "other": "{{count}} days"
+  },
+  "dpage.window.last": {
+    "one": "last day",
+    "other": "last {{count}} days"
+  },
+  "dpage.window.all": "all time",
+  "dpage.seeAll": "See all →",
+  "dpage.back": "Back to Discover",
+  "dpage.tab.library": "Library",
+  "dpage.tab.network": "Network",
+  "dpage.tab.peers": "Peers",
+  "dpage.seeds.title": "Based on what you finished",
+  "dpage.seeds.skipsLeftOut": "skips left out",
+  "dpage.seeds.clickToDrop": "click one to drop it",
+  "dpage.seeds.edit": "Edit seeds",
+  "dpage.seeds.showLess": "Show less",
+  "dpage.seeds.more": "+ {{count}} more",
+  "dpage.seeds.add": "+ Add a song…",
+  "dpage.seeds.addNowPlaying": "+ Now playing",
+  "dpage.seeds.drop": "Drop this seed",
+  "dpage.seeds.unpin": "Unpin",
+  "dpage.seeds.restore": "Use again",
+  "dpage.seeds.dropped": "dropped",
+  "dpage.seeds.droppedToast": "Seed dropped",
+  "dpage.seeds.chip": "{{title}} · {{artist}}",
+  "dpage.seeds.chipTitle": "{{title}}",
+  "dpage.seeds.playing": "playing",
+  "dpage.seeds.picked": "picked",
+  "dpage.seeds.randomTag": "random",
+  "dpage.seeds.notAnalyzed": "not analyzed yet",
+  "dpage.seeds.plays": {
+    "one": "played once",
+    "other": "played {{count}}×"
+  },
+  "dpage.seeds.listenedTo": "listened to",
+  "dpage.seeds.finished": {
+    "one": "based on 1 song you finished",
+    "other": "based on {{count}} songs you finished"
+  },
+  "dpage.seeds.listened": {
+    "one": "based on 1 song you finished or mostly listened to",
+    "other": "based on {{count}} songs you finished or mostly listened to"
+  },
+  "dpage.seeds.widened": {
+    "one": "nothing finished in the last {{from}} days · based on 1 song from all time",
+    "other": "nothing finished in the last {{from}} days · based on {{count}} songs from all time"
+  },
+  "dpage.seeds.counters": {
+    "one": "based on 1 song you’ve played",
+    "other": "based on {{count}} songs you’ve played"
+  },
+  "dpage.seeds.pinned": {
+    "one": "based on the song you picked",
+    "other": "based on {{count}} songs you picked"
+  },
+  "dpage.seeds.plusPicked": {
+    "one": "+ 1 you picked",
+    "other": "+ {{count}} you picked"
+  },
+  "dpage.seeds.random": "nothing finished yet · a random pick instead",
+  "dpage.seeds.none": "nothing to start from yet",
+  "dpage.seeds.pickBanner": "Click a song to add it to the seeds",
+  "dpage.because.finished": "because you finished {{title}}",
+  "dpage.because.listened": "because you listened to {{title}}",
+  "dpage.because.picked": "because you picked {{title}}",
+  "dpage.because.played": "because you played {{title}}",
+  "dpage.because.random": "close to {{title}}",
+  "dpage.match.recent": "your recent listening",
+  "dpage.library.title": "From your library",
+  "dpage.library.subFresh": "unplayed and forgotten",
+  "dpage.library.subUnplayed": "never played",
+  "dpage.library.subAll": "everything that matches",
+  "dpage.library.albums": "Albums you haven’t played",
+  "dpage.library.albumsAll": "Albums that sound like this",
+  "dpage.library.songsFresh": "Songs you haven’t heard in a while",
+  "dpage.library.songsUnplayed": "Songs you’ve never played",
+  "dpage.library.songsAll": "Songs that sound like this",
+  "dpage.library.moreUnderSeeAll": "{{count}} more under See all",
+  "dpage.library.allPlayed": "You’ve played everything that sounds like this. Try Not in {{count}} days or Everything, or widen the window.",
+  "dpage.library.allPlayedFresh": "You’ve played everything that sounds like this lately. Try Everything, or widen the window.",
+  "dpage.library.nothing": "Nothing in your library sounds like these yet.",
+  "dpage.filter.unplayed": "Never played",
+  "dpage.filter.fresh": {
+    "one": "Not in 1 day",
+    "other": "Not in {{count}} days"
+  },
+  "dpage.filter.all": "Everything",
+  "dpage.album.neverPlayed": {
+    "one": "never played · 1 song",
+    "other": "never played · {{count}} songs"
+  },
+  "dpage.album.somePlayed": "{{played}} of {{count}} played",
+  "dpage.count.albums": {
+    "one": "1 album",
+    "other": "{{count}} albums"
+  },
+  "dpage.count.songs": {
+    "one": "1 song",
+    "other": "{{count}} songs"
+  },
+  "dpage.verb.queueAll": {
+    "one": "+ Queue 1",
+    "other": "+ Queue all {{count}}"
+  },
+  "dpage.verb.shuffle": "Shuffle",
+  "dpage.verb.saveAsPlaylist": "Save as playlist",
+  "dpage.verb.playNow": "Play now",
+  "dpage.verb.queue": "Add to queue",
+  "dpage.verb.more": "More",
+  "dpage.verb.moreKeepCopy": "More (Keep a copy…)",
+  "dpage.verb.addToPlaylist": "Add to playlist",
+  "dpage.verb.openLead": "Open its window",
+  "dpage.verb.listen": "Listen",
+  "dpage.verb.refresh": "Refresh suggestions",
+  "dpage.verb.anotherPick": "Another pick",
+  "dpage.verb.chooseSong": "Choose a song…",
+  "dpage.verb.browseLibrary": "Browse the library",
+  "dpage.verb.checkAgain": "Check again",
+  "dpage.verb.tryAgain": "Try again",
+  "dpage.verb.adminEnrichment": "Admin → Enrichment",
+  "dpage.verb.undo": "Undo",
+  "dpage.ago.never": "never",
+  "dpage.ago.today": "today",
+  "dpage.ago.days": {
+    "one": "yesterday",
+    "other": "{{count}} days ago"
+  },
+  "dpage.ago.months": {
+    "one": "1 month ago",
+    "other": "{{count}} months ago"
+  },
+  "dpage.ago.years": {
+    "one": "1 year ago",
+    "other": "{{count}} years ago"
+  },
+  "dpage.ago.undated": "a while ago",
+  "dpage.when.never": "never played",
+  "dpage.when.today": "last played today",
+  "dpage.when.days": {
+    "one": "last played yesterday",
+    "other": "last played {{count}} days ago"
+  },
+  "dpage.when.months": {
+    "one": "last played 1 month ago",
+    "other": "last played {{count}} months ago"
+  },
+  "dpage.when.years": {
+    "one": "last played 1 year ago",
+    "other": "last played {{count}} years ago"
+  },
+  "dpage.when.undated": "played before",
+  "dpage.seen.never": "never seen",
+  "dpage.seen.today": "last seen today",
+  "dpage.seen.days": {
+    "one": "last seen yesterday",
+    "other": "last seen {{count}} days ago"
+  },
+  "dpage.seen.months": {
+    "one": "last seen 1 month ago",
+    "other": "last seen {{count}} months ago"
+  },
+  "dpage.seen.years": {
+    "one": "last seen 1 year ago",
+    "other": "last seen {{count}} years ago"
+  },
+  "dpage.network.title": "From the network",
+  "dpage.network.sub": "songs you don’t have",
+  "dpage.network.focusedSub": "songs your library doesn’t have · leads are metadata until you Get them",
+  "dpage.network.searched": {
+    "one": "1 server searched",
+    "other": "{{count}} servers searched"
+  },
+  "dpage.network.newArtistsOnly": "new artists only",
+  "dpage.network.newArtist": "new artist",
+  "dpage.network.onServer": "on {{name}}",
+  "dpage.network.rowOpens": "a row opens its window · leads are metadata until you Get them",
+  "dpage.network.pluginsOn": "plug-ins on this server:",
+  "dpage.network.asking": "asking the network…",
+  "dpage.network.warmingUp": "The discovery network is still warming up — it has no other servers’ catalogues yet. Leads appear once a few peers have shared theirs.",
+  "dpage.network.nothingNew": "Nothing new out there for these seeds — every match is already in your library.",
+  "dpage.plugins.preview": "Previews",
+  "dpage.plugins.getIt": "Get it",
+  "dpage.plugins.links": "Open elsewhere",
+  "dpage.peers.title": "From your peers",
+  "dpage.peers.sub": "playable through your server",
+  "dpage.peers.focusedSub": "songs on servers you federate with, that you don’t own · they stream through your server",
+  "dpage.peers.answered": {
+    "one": "{{answered}} of 1 peer answered",
+    "other": "{{answered}} of {{count}} peers answered"
+  },
+  "dpage.peers.online": "online",
+  "dpage.peers.notAnswering": "not answering",
+  "dpage.peers.mismatched": "a different analysis model",
+  "dpage.peers.playsWhenBack": "plays when the peer is back",
+  "dpage.peers.asking": "asking your peers… up to 4 s each",
+  "dpage.peers.none": "You’re not federated with anyone yet. Federation pairs you with a friend’s server so their songs can show up here.",
+  "dpage.peers.nothingNew": "Nothing new on your peers’ servers for these seeds.",
+  "dpage.peers.unreachable": "Your peers didn’t answer — they may be offline right now.",
+  "dpage.peers.allMismatched": "Your peers use a different analysis model — their songs can’t be matched against yours.",
+  "dpage.peers.footer": "Listen streams through your server and counts on your stats, not the peer’s · Keep a copy is a job — you can leave the page",
+  "dpage.state.loading": "Finding music that sounds like what you finished…",
+  "dpage.state.nothingFinished": "Finish a few songs and this page learns your taste",
+  "dpage.state.nothingFinishedBody": "Discover seeds itself from songs you play to the end. Skipped songs never count. Until there are some, here are suggestions around a random pick from your library — press refresh for another.",
+  "dpage.state.allDropped": "Every song you finished was dropped from the seeds",
+  "dpage.state.allDroppedBody": "Until you bring one back under Edit seeds, here are suggestions around a random pick from your library.",
+  "dpage.state.scanPending": "This server hasn’t analyzed any music yet",
+  "dpage.state.scanPendingBody": "Suggestions appear once the discovery scan has run over your library. It runs after a library scan; an admin can start it from Admin → Database → Enrichment.",
+  "dpage.state.seedsListedAnyway": "your seeds are listed anyway — only the sources wait",
+  "dpage.state.off": "Sonic discovery has been switched off on this server.",
+  "dpage.state.offBody": "An admin turns it on under Admin → Database → Enrichment → Discovery embeddings. Your listening history is kept; this page wakes up with the flag.",
+  "dpage.state.unavailable": "Discover isn’t available for this account.",
+  "dpage.state.unavailableBody": "The page is seeded by an account’s own play history on this server, and this one has none here (a federation key, a guest or a jukebox).",
+  "dpage.state.failed": "Couldn’t load suggestions — the server didn’t answer.",
+  "dpage.source.failed": "Couldn’t reach this source — try again.",
+  "dpage.source.waitingForScan": "waiting for the discovery scan",
+  "dpage.prefs.unknown": "Couldn’t read your Discover settings — try again."
 }

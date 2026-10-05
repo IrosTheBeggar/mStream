@@ -232,6 +232,10 @@ const VUEPLAYERCORE = (() => {
       gen: 0,
       source: null,           // 'p2p' | 'federation'
       track: null,
+      // What the match bar names (dmMatchSeed): a seed title (quoted) or a
+      // plain phrase, from the Discover page; null = the panel's own seed
+      matchSeed: null,
+      matchPlain: null,
       view: 'federation',     // 'federation' | 'plugins'
       loading: false,
       links: [],
@@ -748,6 +752,13 @@ const VUEPLAYERCORE = (() => {
       tt: function (key, params) {
         return (typeof t === 'function') ? t(key, params) : key;
       },
+      // The match bar's "to …": the seed the opener named, else the panel's
+      // own now-playing seed.
+      dmMatchSeed: function () {
+        const m = this.discover.modal;
+        if (m.matchPlain) { return m.matchPlain; }
+        return '\u201C' + (m.matchSeed || this.discover.seedTitle || '') + '\u201D';
+      },
       // The header's second line: artist · album · year · length.
       dmSubtitle: function () {
         const tr = this.discover.modal.track || {};
@@ -819,12 +830,17 @@ const VUEPLAYERCORE = (() => {
       },
       // Open the window for one row. A network row with neither plug-ins
       // nor an admin's invite row keeps the old behaviour: copy the title.
-      openDiscoverModal: async function (track, source) {
+      // opts (the Discover page's rows): { seedTitle } the seed the row was
+      // matched against, or { seedPlain } a phrase for the seeds' centroid.
+      openDiscoverModal: async function (track, source, opts) {
         if (source === 'p2p' && !this.discover.plugins.available && !this.discover.admin) { return this.copyDiscoverP2p(track); }
         this.stopDiscoverPreview();
         const gen = ++discoverModalGen;
+        const o = opts || {};
         this.discover.modal = blankDiscoverModal({
           open: true, gen, source, track,
+          matchSeed: typeof o.seedTitle === 'string' && o.seedTitle ? o.seedTitle : null,
+          matchPlain: typeof o.seedPlain === 'string' && o.seedPlain ? o.seedPlain : null,
           view: (source === 'federation' && this.discover.plugins.available) ? discoverModalView : (source === 'federation' ? 'federation' : 'plugins'),
         });
         document.addEventListener('keydown', onDiscoverModalKey);
@@ -2915,6 +2931,66 @@ const VUEPLAYERCORE = (() => {
   // modal (/api/'s `user.admin`; a server without /api/ = false).
   mstreamModule.setAdmin = (admin) => {
     discoverState.admin = admin === true;
+  };
+
+  // ── The Discover page (m.js discoveryPanel) ─────────────────────────────
+  // The page draws in #browser but reuses this panel's recommendation
+  // window, plug-in list and job poll; playlistVue is private to this file,
+  // so these thin wrappers are the page's only way in. The behaviour is the
+  // panel's own (and so are its flags: no plug-ins → a network row copies
+  // its title, as the panel's rows do).
+
+  // Open the window for one network ('p2p') or peers ('federation') row —
+  // the row exactly as the taste route returned it. opts: what its match
+  // bar names — { seedTitle } (the row's seed) or { seedPlain } (a phrase:
+  // the row was matched against the seeds' centroid).
+  mstreamModule.openDiscoverModal = (track, source, opts) => {
+    if (!track || typeof track !== 'object' || (source !== 'p2p' && source !== 'federation')) { return Promise.resolve(); }
+    return playlistVue.openDiscoverModal(track, source, opts);
+  };
+
+  // The plug-in list and whether this account may start jobs — the one
+  // fetch the panel's window shares. → { available, list, jobsAllowed };
+  // without the discoveryPlugins flag nothing is fetched.
+  mstreamModule.ensureDiscoverPlugins = () => {
+    const none = { available: false, list: [], jobsAllowed: false };
+    if (!discoverState.plugins.available) { return Promise.resolve(none); }
+    return Promise.resolve(playlistVue.ensureDiscoverPlugins())
+      .then((list) => ({ available: true, list: Array.isArray(list) ? list : [], jobsAllowed: discoverState.plugins.jobsAllowed === true }))
+      .catch(() => ({ available: true, list: [], jobsAllowed: false }));
+  };
+
+  // Queue one peers row through the federation stream proxy (the panel's
+  // own verb: lite metadata off the row, no local lookup).
+  mstreamModule.queueDiscoverFed = (ft) => {
+    if (!ft || !ft.peer || ft.peer.id == null || !ft.filepath) { return; }
+    playlistVue.queueDiscoverFed(ft);
+  };
+
+  // Re-read this account's plug-in jobs now (the strip's poll — it keeps
+  // beating by itself only while a job is live). → the fresh list.
+  mstreamModule.refreshDiscoverJobs = () => {
+    if (!discoverState.plugins.available) { return Promise.resolve([]); }
+    return Promise.resolve(playlistVue.refreshDiscoverJobs()).then(() => discoverState.tray.jobs.slice());
+  };
+
+  // The account's jobs as of the last poll, newest first — what the page
+  // merges onto its rows by recommendation key (DISCOVERYPAGE.jobBadges).
+  mstreamModule.discoverJobs = () => discoverState.tray.jobs.slice();
+
+  // The same, for one row: its keys (the batch lookup's `key` + `keys`)
+  // → { slot: job }, one per plug-in and scope (DISCOVERJOBS.jobsBySlot).
+  mstreamModule.discoverJobsBySlot = (keys) => {
+    const jobs = discoverState.tray.jobs;
+    return DISCOVERJOBS.jobsBySlot(Array.isArray(keys) ? jobs.filter((j) => keys.indexOf(j.key) !== -1) : jobs);
+  };
+
+  // Call fn(jobs) whenever the job list changes (a poll, or a job the
+  // window just started). → the unwatch function; the page calls it when
+  // it is left.
+  mstreamModule.watchDiscoverJobs = (fn) => {
+    if (typeof fn !== 'function') { return () => {}; }
+    return playlistVue.$watch(() => discoverState.tray.jobs, (jobs) => fn(jobs.slice()));
   };
 
   return mstreamModule;

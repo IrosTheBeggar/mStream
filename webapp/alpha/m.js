@@ -786,6 +786,8 @@ async function init() {
     // Downloads: what the discovery plug-ins brought in — the same flag as
     // the "Get it" rows, so the panel exists only where a download can.
     document.getElementById('nav-discover-downloads').classList.toggle('super-hide', response.discoveryPlugins !== true);
+    // The Discover page (seeded by play history): its nav entry, its flags.
+    applyDiscoveryPing(response);
 
     // Federation: is there another server to point this app at? The flag
     // means "federation is on AND at least one peer is paired" — no probing.
@@ -2816,6 +2818,9 @@ async function onBackButton() {
     await senddir();
   } else if (backState.state === 'searchPanel') {
     setupSearchPanel(backState.searchTerm, undefined);
+  } else if (backState.state === 'discovery') {
+    // An album opened from the Discover page: back to the page as it was.
+    discoveryPanel({ keep: true });
   }
 
   // Fill in Search Bar
@@ -3370,6 +3375,11 @@ function getAlbumsOnClick(el) {
 }
 
 async function getAlbumSongs(album, artist, year, albumArtist) {
+  // The Discover page draws without the bar; an album opened from its
+  // cards still needs the back button (onBackButton has its branch). Other
+  // bar-less panels keep the bar hidden: they have no way back.
+  const under = programState[programState.length - 1];
+  if (under && under.state === 'discovery') { document.getElementById('directory_bar').style.display = ''; }
   document.getElementById('directoryName').innerHTML = 'Album: ' + escapeHtml(album);
 
   programState.push({
@@ -3823,6 +3833,922 @@ function removeDiscoverDownload(el) {
   });
 }
 
+///////////////// Discover page
+// The history-seeded Discover page (docs/discovery-page-plan.md §4.1): the
+// songs this account finished lately seed three sources — the library
+// (fresh albums and songs), the network (p2p leads) and the peers
+// (federation, playable through this server). Two parallel POSTs to
+// /api/v1/discovery/taste (library+network, peers), so the library never
+// waits on a peer's deadline. Every request body, view model, label and
+// state comes from the pure half, alpha/discovery-page.js (DISCOVERYPAGE);
+// this part fetches, draws and wires. Network and peers rows open the
+// Discover panel's own recommendation window (VUEPLAYERCORE.openDiscoverModal)
+// and reuse its plug-in list and job poll for their badges.
+//
+// Row actions use data-dp attributes and ONE delegated handler per render
+// (onDiscoveryClick), indexes into discoveryView.shown — never JSON in an
+// onclick. Local-only: play history never leaves this server.
+const discoveryView = {
+  flags: { discovery: false, discoveryTaste: 0, discoveryP2p: false, federationDiscovery: false, discoveryPlugins: false },
+  prefs: null,        // DISCOVERYPAGE.mergePrefs' answer, read once per visit
+  prefsKnown: false,  // the prefs GET answered; false = it failed, and nothing
+                      // is remembered (no drop, no restore) until one does
+  off: null,          // after a 403: 'checking' (re-pinging) | 'server' | 'account'
+  pins: [],           // this visit's pins (vpath form), now playing first
+  nowPlaying: null,   // the song pinned when the page opened
+  skipped: [],        // random picks passed over with "Another pick" (this visit)
+  main: undefined,    // the library+network answer: undefined = none yet
+  peers: undefined,   // the peers answer
+  peersAsked: false,
+  pending: { main: false, peers: false },
+  pendingGen: 0,      // the browseGeneration those requests belong to
+  key: '',            // DISCOVERYPAGE.requestKey of the answer held
+  at: 0,              // when it landed (the client TTL)
+  seq: 0,             // one per request; an answer for an older one is dropped
+  visit: 0,           // one per nav click (a fresh visit)
+  focus: null,        // null = the overview; 'library' | 'network' | 'peers' = See all
+  source: null,       // the phone fold's one source
+  allSeeds: false,    // "+ n more" opened (the dropped seeds show too)
+  plugins: null,      // VUEPLAYERCORE.ensureDiscoverPlugins' answer
+  badgeRows: [],      // network + peers rows with their job badges
+  badges: new Map(),  // raw row → badge
+  unwatch: null,      // the job-list watch, while the page is up
+  shown: { chips: [], excluded: [], tracks: [], allTracks: [], network: [], peers: [] },
+};
+
+const DPAGE_ICONS = { play: '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>', add: '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z"/></svg>', refresh: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path fill="none" d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg>', note: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="currentColor" d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>', open: '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"><path fill="currentColor" d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zm5 16H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7z"/></svg>' };
+
+// The ping's Discover page flags (init()). A server with the taste route
+// says so with discoveryTaste >= 1 (an integer generation); the p2p and
+// federation sections exist only where the ping advertises them.
+function applyDiscoveryPing(response) {
+  const r = response || {};
+  MSTREAMAPI.currentServer.discoveryTaste = Number(r.discoveryTaste) || 0;
+  discoveryView.flags = {
+    discovery: r.discovery === true,
+    discoveryTaste: MSTREAMAPI.currentServer.discoveryTaste,
+    discoveryP2p: r.discoveryP2p === true,
+    federationDiscovery: r.federationDiscovery === true,
+    discoveryPlugins: r.discoveryPlugins === true,
+  };
+  discoverySetEntry(DISCOVERYPAGE.pageAvailable(discoveryView.flags));
+}
+
+// The nav entry and the now-playing panel's "Discover page →" link
+// (spa.css body.has-discover-page) come and go together.
+function discoverySetEntry(on) {
+  const nav = document.getElementById('nav-discover');
+  if (nav) { nav.classList.toggle('super-hide', !on); }
+  document.body.classList.toggle('has-discover-page', !!on);
+}
+
+// A { key, params } label from DISCOVERYPAGE, in the current language.
+function discoveryT(label) {
+  return label && label.key ? t(label.key, label.params) : '';
+}
+
+// A job row's sub-line part ({key}|{text}|{parts}), the panel's dmText rule.
+function discoveryText(part) {
+  if (!part) { return ''; }
+  if (Array.isArray(part.parts)) { return part.parts.map(discoveryText).filter(Boolean).join(' · '); }
+  return part.key ? t(part.key, part.params) : String(part.text || '');
+}
+
+// The page is up (not an album opened from it, not another panel).
+function discoveryOnScreen() {
+  return programState.length === 1 && !!programState[0] && programState[0].state === 'discovery';
+}
+
+// The now-playing song as a pin (vpath form), or null: nothing plays, or
+// it lives on a peer (its path is in the peer's namespace).
+function discoveryNowPlayingPath() {
+  const song = typeof MSTREAMPLAYER.getCurrentSong === 'function' ? MSTREAMPLAYER.getCurrentSong() : null;
+  if (!song || !song.rawFilePath || song.federation) { return null; }
+  return String(song.rawFilePath).replace(/^\/+/, '') || null;
+}
+
+// This browser's copy of the prefs plus the shared "new artists only".
+function discoveryLocalPrefs() {
+  const D = DISCOVERYPAGE;
+  let local = {};
+  try {
+    local = D.parseStoredPrefs(localStorage.getItem(D.STORAGE_KEYS.prefs));
+    local.newArtistsOnly = localStorage.getItem(D.STORAGE_KEYS.newArtistsOnly) === 'true';
+  } catch (_) { /* storage blocked: defaults */ }
+  return local;
+}
+
+function discoverySaveLocalPrefs() {
+  const D = DISCOVERYPAGE;
+  const p = discoveryView.prefs;
+  if (!p) { return; }
+  // A persisting account keeps THE drop list on the server: a local copy
+  // would only go stale (another client can bring a seed back).
+  const kept = p.persisted === true ? Object.assign({}, p, { exclude: undefined }) : p;
+  try {
+    localStorage.setItem(D.STORAGE_KEYS.prefs, D.serializePrefs(kept));
+    localStorage.setItem(D.STORAGE_KEYS.newArtistsOnly, String(p.newArtistsOnly === true));
+  } catch (_) { /* storage blocked: this visit only */ }
+}
+
+// The "Discover page →" link under the now-playing panel's library list.
+function openDiscoveryPage() {
+  const nav = document.getElementById('nav-discover');
+  if (!nav || nav.classList.contains('super-hide')) { return; }
+  changeView(discoveryPanel, nav);
+  // On a phone the page draws in the browser tab: bring it forward.
+  const tab = document.querySelector('.m-tab.panel_one_name');
+  if (tab && typeof toggleThing === 'function' && window.matchMedia && window.matchMedia('(max-width: 600px)').matches) {
+    toggleThing(tab, true);
+  }
+}
+
+// The nav click (a fresh visit: now playing is pinned, the saved prefs are
+// read again) or a return to the page ({ keep: true }: from an album opened
+// on it, from the song picker — the visit's pins and answers stay).
+function discoveryPanel(opts) {
+  const keep = !!(opts && opts.keep);
+  const v = discoveryView;
+  programState = [{ state: 'discovery' }];
+  // Local-only: home first (switchServer draws this page again).
+  if (peerContext) { switchServer(null); return; }
+  setBrowserRootPanel(t('panel.discover'), false);
+  currentBrowsingList = [];
+  sonicPathHideBanner();
+  if (VUEPLAYERCORE.songCapture && VUEPLAYERCORE.songCapture.dpage === true) { VUEPLAYERCORE.songCapture = null; }
+  if (!keep) {
+    const np = discoveryNowPlayingPath();
+    v.visit++;
+    v.prefs = null;
+    v.prefsKnown = false;
+    v.off = null;
+    v.nowPlaying = np;
+    v.pins = np ? [np] : [];
+    v.skipped = [];
+    v.focus = null;
+    v.allSeeds = false;
+    // An answer past the client TTL is not shown again, even for a moment.
+    if (Date.now() - v.at > DISCOVERYPAGE.CLIENT_TTL_MS) {
+      v.main = undefined;
+      v.peers = undefined;
+      v.key = '';
+      v.badgeRows = [];
+      v.badges = new Map();
+    }
+  }
+  try { v.source = localStorage.getItem(DISCOVERYPAGE.STORAGE_KEYS.source) || v.source; } catch (_) { /* default source */ }
+  // No answer yet: the page's own loading state (title row, skeletons).
+  renderDiscovery();
+  return redoDiscovery();
+}
+
+// The saved prefs onto the page. `saved` null = the GET failed: this
+// browser's copy stands in, unknown (prefsKnown false). A choice made this
+// visit (window, filter, new artists only) stands over a later answer.
+function discoveryAdoptPrefs(saved) {
+  const v = discoveryView;
+  const merged = DISCOVERYPAGE.mergePrefs(saved, discoveryLocalPrefs());
+  v.prefs = v.prefs
+    ? Object.assign(merged, { window: v.prefs.window, filter: v.prefs.filter, staleDays: v.prefs.staleDays, newArtistsOnly: v.prefs.newArtistsOnly })
+    : merged;
+  v.prefsKnown = !!saved;
+}
+
+// Before a drop or a restore: the prefs must be known (where the drop list
+// lives decides what is sent). Asks again when the first GET failed; still
+// unknown → a toast, and false.
+async function discoveryEnsurePrefs() {
+  const v = discoveryView;
+  if (v.prefs && v.prefsKnown) { return true; }
+  const gen = browseGeneration;
+  const visit = v.visit;
+  const saved = await MSTREAMAPI.discoveryTastePrefs().catch(() => null);
+  if (gen !== browseGeneration || visit !== v.visit) { return false; }
+  if (saved && saved.disabled === true) { discoveryOff(); return false; }
+  if (!saved) {
+    iziToast.error({ title: escapeHtml(t('dpage.prefs.unknown')), position: 'topCenter', timeout: 3000 });
+    return false;
+  }
+  discoveryAdoptPrefs(saved);
+  return true;
+}
+
+// Ask (or re-show a kept answer). opts: force (skip the client TTL),
+// exclude (hashes for this call), remember (save window / filter / drops).
+async function redoDiscovery(opts) {
+  const o = opts || {};
+  const D = DISCOVERYPAGE;
+  const v = discoveryView;
+  const gen = browseGeneration;
+  const visit = v.visit;
+  if (!D.pageAvailable(v.flags)) {
+    if (discoveryOnScreen()) { renderDiscovery(); }
+    return;
+  }
+
+  // Read once per visit; a remembering call asks again when that failed.
+  if (!v.prefs || (o.remember === true && !v.prefsKnown)) {
+    const saved = await MSTREAMAPI.discoveryTastePrefs().catch(() => null);
+    if (gen !== browseGeneration || visit !== v.visit) { return; }
+    if (saved && saved.disabled === true) { discoveryOff(); return; }
+    if (saved || !v.prefs) { discoveryAdoptPrefs(saved); }
+  }
+
+  // Remember only against known prefs (an unknown account might persist:
+  // this browser's stale drop list must not be merged into it).
+  let remember = o.remember === true && v.prefsKnown;
+  // The random picks passed over stay passed over — but are never saved,
+  // and `remember` would save every exclusion sent with it. A window or
+  // filter change that has skips to carry saves its prefs with a PUT and
+  // asks without `remember`.
+  if (remember && v.skipped.length && !(o.exclude && o.exclude.length)) {
+    remember = false;
+    if (v.prefs.persisted === true) {
+      MSTREAMAPI.discoveryTastePrefsSave({ window: v.prefs.window, filter: v.prefs.filter, staleDays: v.prefs.staleDays }).catch(() => null);
+    }
+  }
+  const reqs = D.buildRequests({
+    prefs: v.prefs,
+    pins: v.pins,
+    exclude: remember ? (o.exclude || []) : [...v.skipped, ...(o.exclude || [])],
+    remember,
+    ignoreVPaths: localIgnoreVPaths(),
+    flags: v.flags,
+  });
+  if (!reqs.main) {
+    if (discoveryOnScreen()) { renderDiscovery(); }
+    return;
+  }
+  const key = D.requestKey(reqs.main);
+  // The same question: still in flight (let it land), or answered within
+  // the client TTL (show it again).
+  const inFlight = (v.pending.main || v.pending.peers) && v.pendingGen === gen;
+  const settled = !!v.main && typeof v.main === 'object' && v.main.disabled !== true &&
+    !inFlight && (!reqs.peers || v.peers !== undefined) && Date.now() - v.at < D.CLIENT_TTL_MS;
+  if (!o.force && key === v.key && (inFlight || settled)) {
+    if (discoveryOnScreen()) {
+      // A return within the TTL: the job watch ended when the page was
+      // left — catch the badges up and listen again.
+      if (settled) { discoveryWatchJobs(); }
+      renderDiscovery();
+    }
+    return;
+  }
+
+  const seq = ++v.seq;
+  const current = () => gen === browseGeneration && seq === v.seq;
+  v.key = key;
+  v.peersAsked = !!reqs.peers;
+  v.pending = { main: true, peers: !!reqs.peers };
+  v.pendingGen = gen;
+  if (!reqs.peers) { v.peers = undefined; }
+  // The old rows stay until the new ones land; the page says it is asking.
+  if (discoveryOnScreen() && (v.main !== undefined || v.peers !== undefined)) { renderDiscovery(); }
+
+  const mainP = MSTREAMAPI.discoveryTaste(reqs.main).catch(() => null).then((res) => {
+    if (!current()) { return; }
+    v.main = res;
+    v.at = Date.now();
+    v.pending.main = false;
+    if (res && res.disabled === true) { discoveryOff(); return; }
+    if (o.remember === true && res) { discoverySaveLocalPrefs(); }
+    if (discoveryOnScreen()) { renderDiscovery(); }
+  });
+  const peersP = !reqs.peers ? Promise.resolve() : MSTREAMAPI.discoveryTaste(reqs.peers).catch(() => null).then((res) => {
+    if (!current()) { return; }
+    v.peers = res;
+    v.pending.peers = false;
+    if (discoveryOnScreen()) { renderDiscovery(); }
+  });
+  await Promise.all([mainP, peersP]);
+  if (!current()) { return; }
+  await discoveryLoadBadges(seq);
+}
+
+// A 403. The entry goes with it (the nav and the panel's link), as the
+// Sonic Path's does. The route says 403 both when discovery went off and
+// to an account with no history here (a federation key, a guest, a
+// jukebox): a fresh ping tells the two apart before the page names one.
+async function discoveryOff() {
+  const v = discoveryView;
+  v.main = { disabled: true };
+  v.pending = { main: false, peers: false };
+  discoverySetEntry(false);
+  if (v.off === 'checking') { return; }
+  v.off = 'checking';
+  if (discoveryOnScreen()) { renderDiscovery(); }
+  let still = false;
+  try {
+    const r = await MSTREAMAPI.ping();
+    still = !!r && r.discovery === true && Number(r.discoveryTaste) >= 1;
+  } catch (_) { /* no answer: say off */ }
+  v.off = still ? 'account' : 'server';
+  if (discoveryOnScreen()) { renderDiscovery(); }
+}
+
+// The two answers as one, minus the "Another pick" skips in `excluded`
+// (they are this visit's, not drops the user should see).
+function discoveryResponse() {
+  const v = discoveryView;
+  const res = DISCOVERYPAGE.mergeResponses(v.main, v.peers, v.peersAsked);
+  if (!res || typeof res !== 'object' || res.disabled === true || !v.skipped.length || !Array.isArray(res.excluded)) { return res; }
+  return Object.assign({}, res, { excluded: res.excluded.filter((e) => !e || v.skipped.indexOf(e.hash) === -1) });
+}
+
+// What the user already did with a network or peers row ("getting it ·
+// 64%"): one batch lookup per 100 rows, then the strip's job poll keeps the
+// badges current while the page is up. Only where plug-ins exist.
+async function discoveryLoadBadges(seq) {
+  const D = DISCOVERYPAGE;
+  const v = discoveryView;
+  if (v.flags.discoveryPlugins !== true || seq !== v.seq) { return; }
+  const gen = browseGeneration;
+  const live = () => gen === browseGeneration && seq === v.seq;
+  if (!v.plugins) {
+    v.plugins = await VUEPLAYERCORE.ensureDiscoverPlugins();
+    if (!live()) { return; }
+  }
+  const res = discoveryResponse();
+  const rows = [...D.networkRows(res).rows, ...D.peerRowsOf(D.peerGroups(res).groups)];
+  const results = [];
+  for (const chunk of D.lookupChunks(rows)) {
+    let got = [];
+    try {
+      const r = await MSTREAMAPI.discoveryJobLookupBatch(chunk);
+      got = r && Array.isArray(r.results) ? r.results : [];
+    } catch (_) { /* no badges for this chunk */ }
+    if (!live()) { return; }
+    for (let i = 0; i < chunk.length; i++) { results.push(got[i] || null); }
+  }
+  v.badgeRows = D.jobBadges(rows, { results }, DISCOVERJOBS);
+  v.badges = new Map(v.badgeRows.map((r) => [r.raw, r.badge]));
+  discoveryWatchJobs();
+  if (discoveryOnScreen()) { renderDiscovery(); }
+}
+
+// Keep the badges current while the page is up: merge the strip's latest
+// job list now, then on each change of it. The watch ends with the first
+// change after the page is left; a return re-attaches it. A tick redraws
+// only the badges that changed, in place — a whole-page draw on the poll's
+// beat would drop focus, the album strip's scroll and an open ⋯ popper.
+function discoveryWatchJobs() {
+  const v = discoveryView;
+  if (v.flags.discoveryPlugins !== true || !v.badgeRows.length) { return; }
+  discoveryMergeJobs(VUEPLAYERCORE.discoverJobs());
+  if (!v.unwatch) {
+    v.unwatch = VUEPLAYERCORE.watchDiscoverJobs((jobs) => {
+      if (!programState[0] || programState[0].state !== 'discovery') {
+        if (v.unwatch) { v.unwatch(); }
+        v.unwatch = null;
+        return;
+      }
+      const changed = discoveryMergeJobs(jobs);
+      if (changed.length && discoveryOnScreen()) { discoveryPatchBadges(changed); }
+    });
+  }
+  // A job still moving: wake the strip's poll so the badge moves too.
+  if (DISCOVERYPAGE.anyLiveBadge(v.badgeRows)) { VUEPLAYERCORE.refreshDiscoverJobs(); }
+}
+
+// Merge a job list onto the rows → the raw rows whose badge changed.
+function discoveryMergeJobs(jobs) {
+  const v = discoveryView;
+  const before = v.badges;
+  const sig = (b) => (b ? JSON.stringify([b.tag || '', b.tagCls || '', b.sub || null, typeof b.progress === 'number' ? b.progress : null]) : '');
+  v.badgeRows = DISCOVERYPAGE.jobBadges(v.badgeRows, { jobs }, DISCOVERJOBS);
+  v.badges = new Map(v.badgeRows.map((r) => [r.raw, r.badge]));
+  return v.badgeRows.filter((r) => sig(before.get(r.raw)) !== sig(r.badge)).map((r) => r.raw);
+}
+
+// Redraw those rows' badge and bar slots (data-bslot / data-pslot = 'n' or
+// 'p' + the row's index); a row not drawn is skipped, a slot not found
+// falls back to a whole-page draw.
+function discoveryPatchBadges(raws) {
+  const v = discoveryView;
+  const root = document.getElementById('filelist');
+  for (const raw of raws) {
+    let i = v.shown.network.findIndex((r) => r.raw === raw);
+    let id = 'n' + i;
+    let tag = i === -1 ? null : discoveryLeadTag(v.shown.network[i]);
+    if (i === -1) {
+      i = v.shown.peers.findIndex((r) => r.raw === raw);
+      id = 'p' + i;
+      tag = i === -1 ? null : discoveryPeerTag(v.shown.peers[i]);
+    }
+    if (i === -1) { continue; }
+    const slot = root.querySelector(`[data-bslot="${id}"]`);
+    const bar = root.querySelector(`[data-pslot="${id}"]`);
+    if (!slot || !bar) { renderDiscovery(); return; }
+    slot.innerHTML = tag;
+    bar.innerHTML = discoveryProgressHtml(v.badges.get(raw) || null);
+  }
+}
+
+function renderDiscovery() {
+  const D = DISCOVERYPAGE;
+  const v = discoveryView;
+  const root = document.getElementById('filelist');
+  const res = discoveryResponse();
+  const prefs = v.prefs || D.defaultPrefs();
+  const st = D.stateOf(res, v.flags, { filter: prefs.filter, staleDays: prefs.staleDays });
+  v.shown = { chips: [], excluded: [], tracks: [], allTracks: [], network: [], peers: [] };
+
+  if (st.state === 'off') {
+    // After a 403 the re-ping names the reason: the server switched it off,
+    // or this account has no history here (the ping still has the page).
+    const account = v.off === 'account' && D.pageAvailable(v.flags);
+    const body = v.off === 'checking'
+      ? escapeHtml(t('dpage.state.loading'))
+      : `<b>${escapeHtml(t(account ? 'dpage.state.unavailable' : 'dpage.state.off'))}</b><br>${escapeHtml(t(account ? 'dpage.state.unavailableBody' : 'dpage.state.offBody'))}`;
+    root.innerHTML = `<div class="dpage dpage-off"><div class="dpage-hint">${body}</div></div>`;
+    return;
+  }
+  const focus = v.focus && st.sources[v.focus] && st.sources[v.focus].status !== 'absent' ? v.focus : null;
+  const source = D.pickSource(v.source, st.tabs);
+  const busy = v.pending.main || v.pending.peers;
+  let html = `<div class="dpage dpage-show-${escapeHtml(source)}${focus ? ' dpage-focused' : ''}${busy ? ' dpage-busy' : ''}">`;
+  html += discoveryHeadHtml(prefs, focus);
+
+  if (st.state === 'failed') {
+    html += discoveryCardHtml(t('dpage.state.failed'), '', [['retry', 'dpage.verb.tryAgain', true]]);
+  } else {
+    if (st.state === 'loading') {
+      html += `<div class="dpage-hint dpage-loading">${escapeHtml(t('dpage.state.loading'))}</div>`;
+    } else if (st.state === 'nothingFinished') {
+      const dropped = st.reason && st.reason.key === 'dpage.state.allDropped';
+      html += discoveryCardHtml(discoveryT(st.reason), t(dropped ? 'dpage.state.allDroppedBody' : 'dpage.state.nothingFinishedBody'),
+        [['another', 'dpage.verb.anotherPick', true], ['pick', 'dpage.verb.chooseSong'], ['browse', 'dpage.verb.browseLibrary']]);
+    } else if (st.state === 'scanPending') {
+      const acts = [['retry', 'dpage.verb.checkAgain']];
+      if (MSTREAMAPI.currentServer.admin === true) { acts.push(['admin', 'dpage.verb.adminEnrichment']); }
+      html += discoveryCardHtml(discoveryT(st.reason), t('dpage.state.scanPendingBody'), acts, t('dpage.state.seedsListedAnyway'));
+    }
+    if (st.state !== 'loading') { html += discoverySeedsHtml(res); }
+    if (!focus && st.tabs.length > 1) { html += discoverySegHtml(st.tabs, source); }
+    for (const name of (focus ? [focus] : D.SOURCES)) {
+      const s = st.sources[name];
+      if (!s || s.status === 'absent') { continue; }
+      if (name === 'library') { html += discoveryLibraryHtml(res, s, prefs, focus); }
+      if (name === 'network') { html += discoveryNetworkHtml(res, s, prefs, focus); }
+      if (name === 'peers') { html += discoveryPeersHtml(res, s, focus); }
+    }
+  }
+  html += '</div>';
+  root.innerHTML = html;
+  const page = root.querySelector('.dpage');
+  if (page) {
+    page.addEventListener('click', onDiscoveryClick);
+    page.addEventListener('change', onDiscoveryChange);
+  }
+}
+
+// Title row: the tagline, the window and refresh (and "back" in See all).
+function discoveryHeadHtml(prefs, focus) {
+  const opts = DISCOVERYPAGE.windowOptions(prefs.window)
+    .map((o) => `<option value="${escapeHtml(o.value)}"${o.selected ? ' selected' : ''}>${escapeHtml(discoveryT(o.label))}</option>`).join('');
+  return `<div class="dpage-head">
+    ${focus ? `<a href="javascript:void(0)" class="dpage-back" data-dp="back">&larr; ${escapeHtml(t('dpage.back'))}</a>` : ''}
+    <span class="dpage-tagline">${escapeHtml(t('dpage.subtitle'))}</span>
+    <span class="grow"></span>
+    <label class="dpage-window"><span>${escapeHtml(t('dpage.basedOnLast'))}</span><select class="browser-default" data-dp-change="window">${opts}</select></label>
+    <button type="button" class="dpage-icon-btn" data-dp="refresh" title="${escapeHtml(t('dpage.verb.refresh'))}" aria-label="${escapeHtml(t('dpage.verb.refresh'))}">${DPAGE_ICONS.refresh}</button>
+  </div>`;
+}
+
+// One of the states' cards: a title, a body, its buttons ([act, key, primary]).
+function discoveryCardHtml(title, body, acts, note) {
+  const buttons = acts.map(([act, key, pri]) =>
+    `<button type="button" class="dpage-btn${pri ? ' pri' : ''}" data-dp="${escapeHtml(act)}">${escapeHtml(t(key))}</button>`).join('');
+  return `<div class="dpage-card">
+    <div class="dpage-card-t">${escapeHtml(title)}</div>
+    ${body ? `<div class="dpage-card-s">${escapeHtml(body)}</div>` : ''}
+    <div class="dpage-card-acts">${buttons}</div>
+    ${note ? `<div class="dpage-card-note">${escapeHtml(note)}</div>` : ''}
+  </div>`;
+}
+
+// "Based on what you finished": the chips (× drops a history seed for
+// good, unpins a pin), "+ n more", "+ Now playing", "+ Add a song…".
+function discoverySeedsHtml(res) {
+  const D = DISCOVERYPAGE;
+  const v = discoveryView;
+  const sc = D.seedChips(res, { nowPlaying: v.nowPlaying });
+  const chips = v.allSeeds ? [...sc.chips, ...sc.hidden] : sc.chips;
+  v.shown.chips = chips;
+  v.shown.excluded = sc.excluded;
+  const line = D.seedsLine(res);
+  const sub = line ? line.parts.map(discoveryT) : [];
+  if (chips.some((c) => c.action === 'drop')) { sub.push(t('dpage.seeds.skipsLeftOut'), t('dpage.seeds.clickToDrop')); }
+
+  const chip = (c, i) => {
+    const art = c.art ? `<img loading="lazy" ${artImgAttr(c.art, 's')} alt="">` : DPAGE_ICONS.note;
+    const title = c.action === 'drop' ? t('dpage.seeds.drop') : (c.action === 'unpin' ? t('dpage.seeds.unpin') : '');
+    return `<button type="button" class="dpage-chip${c.pinned ? ' dpage-chip-pin' : ''}${c.analyzed ? '' : ' dpage-chip-dim'}"${c.action ? ` data-dp="${c.action}" data-i="${i}"` : ''}${title ? ` title="${escapeHtml(title)}"` : ''}>
+      <span class="dpage-chip-art">${art}</span><span class="dpage-chip-label">${escapeHtml(discoveryT(c.label))}</span>${c.tags.map((tg) => `<span class="dpage-chip-tag">${escapeHtml(discoveryT(tg))}</span>`).join('')}${c.action ? '<span class="dpage-chip-x" aria-hidden="true">&times;</span>' : ''}
+    </button>`;
+  };
+  let html = `<section class="dpage-seeds">
+    <div class="dpage-seeds-h"><span class="dpage-cap">${escapeHtml(t('dpage.seeds.title'))}</span><span class="dpage-sub">${escapeHtml(sub.filter(Boolean).join(' · '))}</span></div>
+    <div class="dpage-chips">${chips.map(chip).join('')}`;
+  if (sc.overflow > 0 || sc.excluded.length) {
+    const label = v.allSeeds ? t('dpage.seeds.showLess') : (sc.overflow > 0 ? discoveryT(sc.more) : t('dpage.seeds.edit'));
+    html += `<button type="button" class="dpage-chip dpage-chip-more" data-dp="moreSeeds">${escapeHtml(label)}</button>`;
+  }
+  const np = discoveryNowPlayingPath();
+  if (np && v.pins.indexOf(np) === -1 && res && res.seedSource !== 'random') {
+    html += `<button type="button" class="dpage-chip dpage-chip-add" data-dp="addPlaying">${escapeHtml(t('dpage.seeds.addNowPlaying'))}</button>`;
+  }
+  html += `<button type="button" class="dpage-chip dpage-chip-add" data-dp="pick">${escapeHtml(t('dpage.seeds.add'))}</button></div>`;
+  if (v.allSeeds && sc.excluded.length) {
+    html += `<div class="dpage-chips dpage-dropped">${sc.excluded.map((e, i) =>
+      `<button type="button" class="dpage-chip dpage-chip-dim" data-dp="restore" data-i="${i}" title="${escapeHtml(t('dpage.seeds.restore'))}"><span class="dpage-chip-art">${DPAGE_ICONS.note}</span><span class="dpage-chip-label">${escapeHtml(discoveryT(e.label))}</span><span class="dpage-chip-tag">${escapeHtml(discoveryT(e.tag))}</span><span class="dpage-chip-x" aria-hidden="true">+</span></button>`).join('')}</div>`;
+  }
+  return html + '</section>';
+}
+
+// The phone fold: one source at a time (spa.css shows it ≤600 px only).
+function discoverySegHtml(tabs, source) {
+  return `<div class="discover-seg dpage-seg" role="tablist">${tabs.map((tb) =>
+    `<a href="javascript:void(0)" role="tab" class="discover-seg-${escapeHtml(tb.key)}${tb.key === source ? ' discover-seg-on' : ''}" aria-selected="${tb.key === source ? 'true' : 'false'}" data-dp="source" data-v="${escapeHtml(tb.key)}"><i></i>${escapeHtml(discoveryT(tb.label))}<small>${tb.status === 'loading' ? '…' : escapeHtml(tb.count)}</small></a>`).join('')}</div>`;
+}
+
+function discoverySectionHtml(name, title, count, sub, right, body) {
+  return `<section class="dpage-sec dpage-sec-${name}" data-source="${name}">
+    <div class="dpage-sec-h"><span class="dpage-dot"></span><h3>${escapeHtml(title)}</h3>${count ? `<span class="dpage-count">${escapeHtml(count)}</span>` : ''}<span class="dpage-sub">${escapeHtml(sub.filter(Boolean).join(' · '))}</span><div class="dpage-right">${right}</div></div>
+    ${body}
+  </section>`;
+}
+
+// A section's body while it has nothing to draw: skeleton rows (asking),
+// or its one dim line (empty / failed).
+function discoveryEmptyHtml(s) {
+  if (s.status === 'loading') {
+    return '<div class="dpage-skel"><i></i><i></i></div>';
+  }
+  const retry = s.status === 'failed' ? ` <a href="javascript:void(0)" data-dp="retry">${escapeHtml(t('dpage.verb.tryAgain'))}</a>` : '';
+  return `<div class="dpage-hint">${escapeHtml(discoveryT(s.reason))}${retry}</div>`;
+}
+
+function discoverySeeAll(name) {
+  return `<a href="javascript:void(0)" class="dpage-link" data-dp="focus" data-v="${name}">${escapeHtml(t('dpage.seeAll'))}</a>`;
+}
+
+function discoveryMeter(pct, cls) {
+  const h = pct == null ? 15 : Math.max(15, Math.min(100, Number(pct) || 0));
+  return `<div class="discover-match"><div class="discover-match-fill${cls ? ' ' + cls : ''}" style="height:${h}%"></div></div>`;
+}
+
+// "From your library": the album strip, then the songs, then Queue all.
+function discoveryLibraryHtml(res, s, prefs, focus) {
+  const D = DISCOVERYPAGE;
+  const v = discoveryView;
+  const lib = D.librarySections(res, { filter: prefs.filter, staleDays: prefs.staleDays });
+  const filters = D.filterOptions(lib.filter, prefs.staleDays).map((o) =>
+    `<button type="button" class="dpage-tog${o.selected ? ' on' : ''}" data-dp="filter" data-v="${escapeHtml(o.value)}">${o.selected ? '<i></i>' : ''}${escapeHtml(discoveryT(o.label))}</button>`).join('');
+  const right = `<span class="dpage-togs">${filters}</span>${focus ? '' : discoverySeeAll('library')}`;
+  const sub = [discoveryT(lib.headings.sub), t('dpage.matchedBySound')];
+  if (s.status !== 'ready') {
+    return discoverySectionHtml('library', t('dpage.library.title'), 0, sub, right, discoveryEmptyHtml(s));
+  }
+  const albums = focus ? lib.albums : lib.albums.slice(0, 8);
+  const tracks = focus ? lib.tracks : lib.tracks.slice(0, 5);
+  v.shown.tracks = tracks;
+  v.shown.allTracks = lib.tracks;
+  let body = '';
+  if (albums.length) {
+    body += `<div class="dpage-subh">${escapeHtml(discoveryT(lib.headings.albums))}</div><div class="album-grid dpage-albums${focus ? ' dpage-albums-all' : ''}">`;
+    for (const a of albums) {
+      const card = renderAlbum(a.name, undefined, a.name || '', a.albumArtFile, a.year, a.albumArtist, a.artistLine);
+      body += `<div class="dpage-album"${a.because ? ` title="${escapeHtml(discoveryT(a.because))}"` : ''}>${a.similarityPct != null ? `<span class="dpage-album-badge">${escapeHtml(a.similarityPct)}%</span>` : ''}${card}<div class="dpage-album-w">${escapeHtml(discoveryT(a.playedLabel))}</div></div>`;
+    }
+    body += '</div>';
+  }
+  if (tracks.length) {
+    body += `<div class="dpage-subh">${escapeHtml(discoveryT(lib.headings.tracks))}</div><div class="dpage-rows">`;
+    tracks.forEach((r, i) => {
+      const rest = [r.album, r.genre].filter(Boolean).join(' · ');
+      body += `<div class="discover-row dpage-row pointer" data-dp="queue" data-i="${i}"${r.because ? ` title="${escapeHtml(discoveryT(r.because))}"` : ''}>
+        ${discoveryMeter(r.similarityPct)}
+        <div class="discover-row-info"><div class="discover-row-title">${escapeHtml(r.title)}</div><div class="discover-row-sub">${escapeHtml(r.artist)}${rest ? `<span class="discover-row-tags">${r.artist ? ' · ' : ''}${escapeHtml(rest)}</span>` : ''}<span class="dpage-when-sub"> · ${escapeHtml(discoveryT(r.whenLabel))}</span></div></div>
+        <span class="dpage-when">${escapeHtml(discoveryT(r.whenLabel))}</span>
+        <span class="dpage-verbs">
+          <button type="button" class="dpage-vb" data-dp="play" data-i="${i}" title="${escapeHtml(t('dpage.verb.playNow'))}" aria-label="${escapeHtml(t('dpage.verb.playNow'))}">${DPAGE_ICONS.play}</button>
+          <button type="button" class="dpage-vb" data-dp="queue" data-i="${i}" title="${escapeHtml(t('dpage.verb.queue'))}" aria-label="${escapeHtml(t('dpage.verb.queue'))}">${DPAGE_ICONS.add}</button>
+          <button type="button" class="dpage-vb" data-dp="more" data-i="${i}" data-file_location="${escapeHtml(r.filepath)}" title="${escapeHtml(t('dpage.verb.addToPlaylist'))}" aria-label="${escapeHtml(t('dpage.verb.addToPlaylist'))}">⋯</button>
+        </span>
+      </div>`;
+    });
+    body += '</div>';
+  }
+  const more = lib.tracks.length - tracks.length;
+  if (lib.tracks.length) {
+    body += `<div class="dpage-foot">
+      <a href="javascript:void(0)" class="dpage-foot-pri" data-dp="queueAll">${escapeHtml(discoveryT(lib.footer.queueAllLabel))}</a>
+      <a href="javascript:void(0)" data-dp="shuffle">${escapeHtml(t('dpage.verb.shuffle'))}</a>
+      <a href="javascript:void(0)" data-dp="save">${escapeHtml(t('dpage.verb.saveAsPlaylist'))}</a>
+      ${more > 0 ? `<span class="dpage-foot-note">${escapeHtml(t('dpage.library.moreUnderSeeAll', { count: more }))}</span>` : ''}
+    </div>`;
+  }
+  return discoverySectionHtml('library', t('dpage.library.title'), lib.count, sub, right, body);
+}
+
+// A job badge ("getting it · 64%"), and its bar while it moves.
+function discoveryBadgeHtml(b) {
+  if (!b) { return ''; }
+  const text = [b.tag ? t(b.tag) : '', discoveryText(b.sub)].filter(Boolean).join(' · ');
+  const cls = b.tagCls === 'ok' ? 'ok' : (b.tagCls === 'err' ? 'err' : 'src');
+  return `<span class="dpage-badge dpage-badge-${cls}">${escapeHtml(text)}</span>`;
+}
+
+function discoveryProgressHtml(b) {
+  if (!b || typeof b.progress !== 'number') { return ''; }
+  return `<div class="dpage-prog"><i style="width:${Math.max(0, Math.min(100, b.progress))}%"></i></div>`;
+}
+
+// A row's tag slot: its job badge, else the network's "new artist" / an
+// offline peer's "plays when the peer is back".
+function discoveryLeadTag(r) {
+  const badge = discoveryView.badges.get(r.raw) || null;
+  if (badge) { return discoveryBadgeHtml(badge); }
+  return r.newArtistLabel ? `<span class="dpage-tag dpage-new">${escapeHtml(discoveryT(r.newArtistLabel))}</span>` : '';
+}
+function discoveryPeerTag(r) {
+  const badge = discoveryView.badges.get(r.raw) || null;
+  if (badge) { return discoveryBadgeHtml(badge); }
+  return r.playable ? '' : `<span class="dpage-tag">${escapeHtml(t('dpage.peers.playsWhenBack'))}</span>`;
+}
+
+// What the recommendation window's match bar names: the seed this row was
+// matched against (its seedHash), else the centroid of the seeds (peers).
+function discoveryMatchOpts(row) {
+  return row && row.matchSeed ? { seedTitle: row.matchSeed } : { seedPlain: t('dpage.match.recent') };
+}
+
+// "From the network": metadata-only leads; the row opens its window.
+function discoveryNetworkHtml(res, s, prefs, focus) {
+  const D = DISCOVERYPAGE;
+  const v = discoveryView;
+  const net = D.networkRows(res);
+  const toggle = `<button type="button" class="dpage-tog dpage-tog-net${prefs.newArtistsOnly ? ' on' : ''}" data-dp="newArtists"><i></i>${escapeHtml(t('dpage.network.newArtistsOnly'))}</button>`;
+  const right = toggle + (focus ? '' : discoverySeeAll('network'));
+  const sub = [t(focus ? 'dpage.network.focusedSub' : 'dpage.network.sub'), net.line ? discoveryT(net.line) : (s.status === 'loading' ? t('dpage.network.asking') : '')];
+  if (s.status !== 'ready') {
+    return discoverySectionHtml('network', t('dpage.network.title'), 0, sub, right, discoveryEmptyHtml(s));
+  }
+  const rows = focus ? net.rows : net.rows.slice(0, 5);
+  v.shown.network = rows;
+  let body = '';
+  const chips = v.plugins && v.plugins.available ? D.pluginChips(v.plugins.list, v.plugins.jobsAllowed) : [];
+  if (chips.length) {
+    body += `<div class="dpage-plugins"><span>${escapeHtml(t('dpage.network.pluginsOn'))}</span>${chips.map((c) =>
+      `<span class="dpage-plugin"><b>${escapeHtml(t(c.key, c.params))}</b> · ${escapeHtml(c.title)}</span>`).join('')}</div>`;
+  }
+  body += '<div class="dpage-rows">';
+  const open = escapeHtml(t('dpage.verb.openLead'));
+  rows.forEach((r, i) => {
+    const badge = v.badges.get(r.raw) || null;
+    const rest = [r.album, r.year == null ? '' : String(r.year), r.onLabel ? discoveryT(r.onLabel) : ''].filter(Boolean).join(' · ');
+    body += `<div class="discover-row dpage-row pointer" data-dp="lead" data-i="${i}"${r.because ? ` title="${escapeHtml(discoveryT(r.because))}"` : ''}>
+      ${discoveryMeter(r.similarityPct, 'discover-match-fill-p2p')}
+      <div class="discover-row-info"><div class="discover-row-title">${escapeHtml(r.title)}</div><div class="discover-row-sub">${escapeHtml(r.artist)}${rest ? `<span class="discover-row-tags">${r.artist ? ' · ' : ''}${escapeHtml(rest)}</span>` : ''}</div><div class="dpage-slot" data-pslot="n${i}">${discoveryProgressHtml(badge)}</div></div>
+      <span class="dpage-slot" data-bslot="n${i}">${discoveryLeadTag(r)}</span>
+      <span class="dpage-verbs"><button type="button" class="dpage-vb" data-dp="lead" data-i="${i}" title="${open}" aria-label="${open}">${DPAGE_ICONS.open}</button></span>
+    </div>`;
+  });
+  body += `</div><div class="dpage-foot"><span class="dpage-foot-note">${escapeHtml(t('dpage.network.rowOpens'))}</span></div>`;
+  return discoverySectionHtml('network', t('dpage.network.title'), net.count, sub, right, body);
+}
+
+// "From your peers": one group per paired server; Listen / queue stream
+// through this server, the row (or Keep a copy) opens the peer window.
+function discoveryPeersHtml(res, s, focus) {
+  const D = DISCOVERYPAGE;
+  const v = discoveryView;
+  const pg = D.peerGroups(res);
+  const right = focus ? '' : discoverySeeAll('peers');
+  const sub = [t(focus ? 'dpage.peers.focusedSub' : 'dpage.peers.sub'), pg.line ? discoveryT(pg.line) : (s.status === 'loading' ? t('dpage.peers.asking') : '')];
+  if (s.status !== 'ready') {
+    return discoverySectionHtml('peers', t('dpage.peers.title'), 0, sub, right, discoveryEmptyHtml(s));
+  }
+  const canKeep = !!(v.plugins && v.plugins.available && v.plugins.jobsAllowed &&
+    (v.plugins.list || []).some((p) => p && p.name === 'federation-copy'));
+  // The ⋯ opens the peer window (where Keep a copy lives, when it can).
+  const more = escapeHtml(t(canKeep ? 'dpage.verb.moreKeepCopy' : 'dpage.verb.more'));
+  const shown = [];
+  let body = '';
+  for (const g of pg.groups) {
+    const dot = g.playable ? '' : (g.mismatched ? ' mis' : ' off');
+    const facts = [discoveryT(g.countLabel), discoveryT(g.stateLabel), g.lastSeenLabel ? discoveryT(g.lastSeenLabel) : ''];
+    body += `<div class="dpage-peer${g.playable ? '' : ' dpage-peer-off'}"><i class="dpage-peer-dot${dot}"></i>${escapeHtml(g.name)} <span class="dpage-peer-m">· ${escapeHtml(facts.filter(Boolean).join(' · '))}</span></div>`;
+    const rows = focus ? g.rows : g.rows.slice(0, 3);
+    for (const r of rows) {
+      const i = shown.length;
+      shown.push(r);
+      const badge = v.badges.get(r.raw) || null;
+      const rest = [r.album, r.year == null ? '' : String(r.year)].filter(Boolean).join(' · ');
+      const verbs = r.playable
+        ? `<span class="dpage-verbs">
+            <button type="button" class="dpage-vb dpage-vb-peer" data-dp="listen" data-i="${i}">${DPAGE_ICONS.play}${escapeHtml(t('dpage.verb.listen'))}</button>
+            <button type="button" class="dpage-vb" data-dp="fedQueue" data-i="${i}" title="${escapeHtml(t('dpage.verb.queue'))}" aria-label="${escapeHtml(t('dpage.verb.queue'))}">${DPAGE_ICONS.add}</button>
+            <button type="button" class="dpage-vb" data-dp="peerMore" data-i="${i}" title="${more}" aria-label="${more}">⋯</button>
+          </span>`
+        : '';
+      body += `<div class="discover-row dpage-row${r.playable ? ' pointer' : ' dpage-row-off'}"${r.playable ? ` data-dp="peerMore" data-i="${i}"` : ''}>
+        ${discoveryMeter(r.similarityPct, 'discover-match-fill-fed')}
+        <div class="discover-row-info"><div class="discover-row-title">${escapeHtml(r.title)}</div><div class="discover-row-sub">${escapeHtml(r.artist)}${rest ? `<span class="discover-row-tags">${r.artist ? ' · ' : ''}${escapeHtml(rest)}</span>` : ''}</div><div class="dpage-slot" data-pslot="p${i}">${discoveryProgressHtml(badge)}</div></div>
+        <span class="dpage-slot" data-bslot="p${i}">${discoveryPeerTag(r)}</span>${verbs}
+      </div>`;
+    }
+  }
+  v.shown.peers = shown;
+  body += `<div class="dpage-foot"><span class="dpage-foot-note">${escapeHtml(t('dpage.peers.footer'))}</span></div>`;
+  return discoverySectionHtml('peers', t('dpage.peers.title'), pg.count, sub, right, body);
+}
+
+function onDiscoveryChange(ev) {
+  const el = ev.target;
+  if (!el || el.getAttribute('data-dp-change') !== 'window') { return; }
+  const v = discoveryView;
+  const w = Number(el.value);
+  if (!v.prefs || DISCOVERYPAGE.WINDOWS.indexOf(w) === -1) { return; }
+  v.prefs = Object.assign({}, v.prefs, { window: w });
+  redoDiscovery({ remember: true });
+}
+
+function onDiscoveryClick(ev) {
+  const el = ev.target && typeof ev.target.closest === 'function' ? ev.target.closest('[data-dp]') : null;
+  if (!el) { return; }
+  discoveryAction(el.getAttribute('data-dp'), el);
+}
+
+// One row or page action. `el` carries data-i (an index into
+// discoveryView.shown) or data-v (a value).
+function discoveryAction(act, el) {
+  const D = DISCOVERYPAGE;
+  const v = discoveryView;
+  const i = Number(el.getAttribute('data-i'));
+  const val = el.getAttribute('data-v');
+  const queued = () => iziToast.success({ title: t('discover.modal.queued'), position: 'topCenter', timeout: 1800 });
+  const track = v.shown.tracks[i];
+  const lead = v.shown.network[i];
+  const peerRow = v.shown.peers[i];
+  if (act === 'play' && track) {
+    VUEPLAYERCORE.addSongWizard(track.filepath, track.metadata || {}, false, MSTREAMPLAYER.positionCache.val + 1);
+  } else if (act === 'queue' && track) {
+    VUEPLAYERCORE.addSongWizard(track.filepath, track.metadata || {}, false, undefined, false, true);
+    queued();
+  } else if (act === 'more' && track) {
+    createPopper3(el);
+  } else if (act === 'queueAll' || act === 'shuffle') {
+    discoveryQueueAll(act === 'shuffle');
+  } else if (act === 'save') {
+    if (!v.shown.allTracks.length) { return; }
+    openSavePlaylistModal(() => v.shown.allTracks.map((r) => r.filepath));
+  } else if (act === 'lead' && lead) {
+    VUEPLAYERCORE.openDiscoverModal(lead.raw, 'p2p', discoveryMatchOpts(lead));
+  } else if (act === 'listen' && peerRow && peerRow.playable) {
+    const raw = peerRow.raw;
+    VUEPLAYERCORE.addFederationSongWizard(raw.peer, raw.filepath,
+      { title: raw.title || '', artist: raw.artist || '', duration: raw.duration || null }, false, MSTREAMPLAYER.positionCache.val + 1, true);
+  } else if (act === 'fedQueue' && peerRow && peerRow.playable) {
+    VUEPLAYERCORE.queueDiscoverFed(peerRow.raw);
+    queued();
+  } else if (act === 'peerMore' && peerRow) {
+    VUEPLAYERCORE.openDiscoverModal(peerRow.raw, 'federation', discoveryMatchOpts(peerRow));
+  } else if (act === 'filter') {
+    if (!v.prefs || D.FILTERS.indexOf(val) === -1 || v.prefs.filter === val) { return; }
+    v.prefs = Object.assign({}, v.prefs, { filter: val });
+    // Narrowed on the client at once; the re-ask replaces it.
+    renderDiscovery();
+    redoDiscovery({ remember: true });
+  } else if (act === 'newArtists') {
+    if (!v.prefs) { return; }
+    v.prefs = Object.assign({}, v.prefs, { newArtistsOnly: v.prefs.newArtistsOnly !== true });
+    discoverySaveLocalPrefs();
+    redoDiscovery();
+  } else if (act === 'refresh' || act === 'retry') {
+    redoDiscovery({ force: true });
+  } else if (act === 'drop') {
+    const chip = v.shown.chips[i];
+    if (!chip || !chip.hash || !v.prefs) { return; }
+    discoveryDropSeed(chip.hash);
+  } else if (act === 'unpin') {
+    const chip = v.shown.chips[i];
+    if (!chip) { return; }
+    const path = String(chip.filepath || '').replace(/^\/+/, '');
+    v.pins = v.pins.filter((p) => p !== path);
+    redoDiscovery();
+  } else if (act === 'restore') {
+    discoveryRestoreSeed(v.shown.excluded[i]);
+  } else if (act === 'moreSeeds') {
+    v.allSeeds = !v.allSeeds;
+    renderDiscovery();
+  } else if (act === 'addPlaying') {
+    const np = discoveryNowPlayingPath();
+    if (!np) {
+      iziToast.warning({ title: t('sonicPath.nothingPlaying'), position: 'topCenter', timeout: 2500 });
+      return;
+    }
+    if (v.pins.indexOf(np) === -1) { v.pins.unshift(np); }
+    v.nowPlaying = np;
+    redoDiscovery();
+  } else if (act === 'pick') {
+    discoveryPick();
+  } else if (act === 'another') {
+    const res = discoveryResponse();
+    const seed = res && Array.isArray(res.seeds) ? res.seeds.find((s) => s && s.hash && !s.pinned) : null;
+    if (seed && v.skipped.indexOf(seed.hash) === -1) { v.skipped.push(seed.hash); }
+    redoDiscovery({ force: true });
+  } else if (act === 'browse') {
+    changeView(loadFileExplorer, document.querySelector('.side-nav-item[data-panel="fileExplorer"]') || document.querySelector('.side-nav-item'));
+  } else if (act === 'admin') {
+    window.open('./admin', '_blank');
+  } else if (act === 'focus') {
+    if (D.SOURCES.indexOf(val) === -1) { return; }
+    v.focus = val;
+    renderDiscovery();
+    document.getElementById('filelist').scrollTop = 0;
+  } else if (act === 'back') {
+    v.focus = null;
+    renderDiscovery();
+  } else if (act === 'source') {
+    if (D.SOURCES.indexOf(val) === -1) { return; }
+    v.source = val;
+    try { localStorage.setItem(D.STORAGE_KEYS.source, val); } catch (_) { /* this visit only */ }
+    renderDiscovery();
+  }
+}
+
+// Drop a history seed for good (remembered), with an Undo on the toast —
+// the chip is one click, and the way back otherwise sits under Edit seeds.
+async function discoveryDropSeed(hash) {
+  const v = discoveryView;
+  if (!await discoveryEnsurePrefs()) { return; }
+  v.prefs = DISCOVERYPAGE.dropSeed(v.prefs, hash);
+  discoverySaveLocalPrefs();
+  redoDiscovery({ exclude: [hash], remember: true });
+  iziToast.show({
+    title: escapeHtml(t('dpage.seeds.droppedToast')),
+    position: 'topCenter',
+    timeout: 5000,
+    buttons: [[`<button>${escapeHtml(t('dpage.verb.undo'))}</button>`, (instance, toast) => {
+      instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+      discoveryRestoreSeed({ hash });
+    }, true]],
+  });
+}
+
+// Bring a dropped seed back: the PUT takes THE list, without it.
+async function discoveryRestoreSeed(item) {
+  const D = DISCOVERYPAGE;
+  const v = discoveryView;
+  if (!item || !item.hash || !v.prefs) { return; }
+  if (!await discoveryEnsurePrefs()) { return; }
+  v.prefs = D.restoreSeed(v.prefs, item.hash);
+  discoverySaveLocalPrefs();
+  if (v.prefs.persisted === true) {
+    const gen = browseGeneration;
+    const saved = await MSTREAMAPI.discoveryTastePrefsSave({ exclude: v.prefs.exclude }).catch(() => null);
+    if (gen !== browseGeneration) { return; }
+    if (!saved || saved.disabled === true) {
+      iziToast.error({ title: t('dpage.source.failed'), position: 'topCenter', timeout: 3000 });
+      return;
+    }
+  }
+  redoDiscovery({ force: true });
+}
+
+function discoveryQueueAll(shuffle) {
+  const list = discoveryView.shown.allTracks.slice();
+  if (!list.length) { return; }
+  if (shuffle) {
+    for (let i = list.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [list[i], list[j]] = [list[j], list[i]];
+    }
+  }
+  for (const r of list) {
+    VUEPLAYERCORE.addSongWizard(r.filepath, r.metadata || {}, false, undefined, false, true);
+  }
+  iziToast.success({ title: t('discover.modal.queued'), position: 'topCenter', timeout: 1800 });
+}
+
+// "+ Add a song…" / "Choose a song…": the Sonic Path's picker — the next
+// single row click anywhere becomes a pin, then the page comes back.
+function discoveryPick() {
+  const back = () => changeView(() => discoveryPanel({ keep: true }), document.getElementById('nav-discover'));
+  const capture = (song) => {
+    sonicPathHideBanner();
+    const path = String((song && song.filepath) || '').replace(/^\/+/, '');
+    if (path && discoveryView.pins.indexOf(path) === -1) { discoveryView.pins.push(path); }
+    back();
+  };
+  capture.dpage = true;
+  VUEPLAYERCORE.songCapture = capture;
+  showPickBanner(t('dpage.seeds.pickBanner'), back);
+  changeView(loadFileExplorer, document.querySelector('.side-nav-item[data-panel="fileExplorer"]') || document.querySelector('.side-nav-item'));
+}
+
 ///////////////// Transcode
 function setupTranscodePanel(){
   setBrowserRootPanel(t('panel.transcode'), false);
@@ -4136,19 +5062,25 @@ function sonicPathSongCard(side) {
 }
 
 function sonicPathBanner(side) {
+  showPickBanner(t(side === 'start' ? 'sonicPath.pickBannerStart' : 'sonicPath.pickBannerEnd'),
+    () => changeView(sonicPathPanel, document.getElementById('nav-sonic-path')));
+}
+
+// The song pickers' banner (Sonic Path, the Discover page's "+ Add a
+// song…"): the next song click is captured; Cancel drops the capture and
+// runs onCancel (back to the picker's panel).
+function showPickBanner(text, onCancel) {
   let el = document.getElementById('spath-banner');
   if (!el) {
     el = document.createElement('div');
     el.id = 'spath-banner';
     document.body.appendChild(el);
   }
-  el.innerHTML = `
-    <span>${t(side === 'start' ? 'sonicPath.pickBannerStart' : 'sonicPath.pickBannerEnd')}</span>
-    <span class="spath-banner-cancel pointer">${t('sonicPath.cancelPick')}</span>`;
+  el.innerHTML = `<span>${escapeHtml(text)}</span><span class="spath-banner-cancel pointer">${escapeHtml(t('sonicPath.cancelPick'))}</span>`;
   el.querySelector('.spath-banner-cancel').addEventListener('click', () => {
     VUEPLAYERCORE.songCapture = null;
     sonicPathHideBanner();
-    changeView(sonicPathPanel, document.getElementById('nav-sonic-path'));
+    onCancel();
   });
 }
 
@@ -4253,13 +5185,23 @@ function sonicPathPlay(replaceQueue) {
   }
 }
 
-async function sonicPathSavePlaylist() {
-  const title = document.getElementById('spath_playlist_name').value;
-  if (!title || !SONICPATH.rows.length) { return; }
+// The name-a-playlist modal (#savePlaylistModal) shared by the Sonic Path
+// and the Discover page: `getPaths` answers the songs at submit time.
+let savePlaylistModalPaths = null;
+function openSavePlaylistModal(getPaths) {
+  savePlaylistModalPaths = getPaths;
+  document.getElementById('save_playlist_name').value = '';
+  myModal.open('#savePlaylistModal');
+}
+
+async function savePlaylistFromModal() {
+  const title = document.getElementById('save_playlist_name').value;
+  const paths = typeof savePlaylistModalPaths === 'function' ? savePlaylistModalPaths() : [];
+  if (!title || !paths.length) { return; }
   try {
-    await MSTREAMAPI.savePlaylist(title, SONICPATH.rows.map((row) => row.filepath));
+    await MSTREAMAPI.savePlaylist(title, paths);
     myModal.close();
-    iziToast.success({ title: t('sonicPath.playlistSaved'), message: title, position: 'topCenter', timeout: 2500 });
+    iziToast.success({ title: t('sonicPath.playlistSaved'), message: escapeHtml(title), position: 'topCenter', timeout: 2500 });
   } catch (_err) {
     iziToast.error({ title: t('sonicPath.playlistSaveFailed'), position: 'topCenter', timeout: 3000 });
   }
@@ -4392,8 +5334,7 @@ function sonicPathPanel() {
   document.getElementById('spath-play')?.addEventListener('click', () => sonicPathPlay(true));
   document.getElementById('spath-queue')?.addEventListener('click', () => sonicPathPlay(false));
   document.getElementById('spath-save')?.addEventListener('click', () => {
-    document.getElementById('spath_playlist_name').value = '';
-    myModal.open('#spathSaveModal');
+    openSavePlaylistModal(() => SONICPATH.rows.map((row) => row.filepath));
   });
   root.querySelectorAll('[data-spath-row]').forEach((el) => {
     el.addEventListener('click', () => {
@@ -5775,6 +6716,7 @@ const PANELS_BY_STATE = {
   allRated: () => getRatedSongs(),
   searchPanel: () => setupSearchPanel(),
   discoverDownloads: () => discoverDownloadsPanel(),
+  discovery: () => discoveryPanel(),
 };
 
 // Which of those a federated server can actually answer: its library, and
