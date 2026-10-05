@@ -58,8 +58,10 @@ function prep(sql) {
 // walking them buys latency, not relevance. Results may legitimately come
 // up short for users who can see few of the ranked tracks; responses carry
 // `capped: true` when that happened so clients can tell "short because the
-// pool ran out" from "short because we stopped looking".
-const considerBudget = (limit) => Math.max(limit * 50, 2000);
+// pool ran out" from "short because we stopped looking". Exported so the
+// Discover page's library walk (api/discovery-taste.js) is bounded by the
+// same budget as the per-song routes.
+export const considerBudget = (limit) => Math.max(limit * 50, 2000);
 
 // Feature gate + index. 403 when the feature is off; 403 (generic) when the
 // store is unavailable despite the flag (boot init failed) — same status so

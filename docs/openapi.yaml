@@ -699,6 +699,323 @@ components:
           nullable: true
           description: Total seconds, same aggregate basis as `track_count`.
 
+    DiscoverySimilarTrack:
+      type: object
+      description: >
+        One local similar-track row: the standard `{filepath, metadata}`
+        envelope (queues without translation) plus the match facts.
+      properties:
+        filepath: { type: string, description: "vpath-form path in one of the caller's own libraries." }
+        similarity: { type: number, description: "Cosine vs the seed, 4 decimals." }
+        metadata: { $ref: "#/components/schemas/MetadataLite" }
+        genreTags:
+          type: array
+          nullable: true
+          items: { type: string }
+          description: >
+            The embedding model's style predictions — not the file's genre
+            tags, which ride in `metadata.genres`.
+    DiscoveryP2pLead:
+      type: object
+      description: >
+        A song on a fetched discovery-network snapshot that this library
+        does not have: metadata only — the network shares knowledge about
+        music, never the music. Send it on (with `source: p2p`) to the
+        plug-in routes as a recommendation.
+      properties:
+        artist: { type: string, nullable: true }
+        title: { type: string, nullable: true }
+        album: { type: string, nullable: true, description: "Null from snapshots that predate the catalogue columns or untagged files." }
+        year: { type: integer, nullable: true }
+        isrc: { type: string, nullable: true }
+        releaseGroupMbid: { type: string, nullable: true }
+        duration: { type: number, nullable: true }
+        similarity: { type: number, description: "Cosine vs the query vector (unrounded)." }
+        recordingMbid: { type: string, nullable: true }
+        exportId: { type: string, description: "The row's id inside the peer's snapshot." }
+        peer:
+          type: object
+          properties:
+            endpointId: { type: string }
+            name: { type: string, nullable: true }
+    DiscoveryFederationLead:
+      type: object
+      description: >
+        A song on a paired (federated) server that this library does not
+        have — streamable through
+        `GET /api/v1/federation/peers/{id}/stream/{filepath}`.
+      properties:
+        artist: { type: string, nullable: true }
+        title: { type: string, nullable: true }
+        album: { type: string, nullable: true }
+        year: { type: integer, nullable: true }
+        isrc: { type: string, nullable: true }
+        releaseGroupMbid: { type: string, nullable: true }
+        duration: { type: number, nullable: true }
+        similarity: { type: number, description: "The peer's cosine vs the query vector, 4 decimals." }
+        genreTags:
+          type: array
+          nullable: true
+          items: { type: string }
+        recordingMbid: { type: string, nullable: true }
+        filepath: { type: string, description: "The PEER's vpath-form path — what its stream proxy plays. Never a local path." }
+        peer:
+          type: object
+          properties:
+            id: { type: integer, description: "The federation_peers row id on THIS server." }
+            name: { type: string }
+    TasteRequest:
+      type: object
+      description: >
+        Every key optional. `window`, `filter` and `staleDays` deliberately
+        have no defaults in the schema: an absent key means the saved pref
+        (`GET /api/v1/discovery/taste/prefs`), then the server default.
+        Unknown keys answer 400.
+      properties:
+        window:
+          type: integer
+          enum: [7, 30, 90, 0]
+          description: "Days of history the seeds come from; 0 = all time. Saved pref, else 30."
+        pin:
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 2048 }
+          description: >
+            vpath-form paths that seed this call first (now playing first,
+            then songs the user picked). Explicit choices: they seed whatever
+            the history says and override an exclusion. Count toward
+            `limit.seeds`. Unknown and forbidden paths are dropped silently
+            and counted in `dropped`. Never persisted.
+        exclude:
+          type: array
+          maxItems: 200
+          items: { type: string, maxLength: 128 }
+          description: >
+            Seed hashes not to seed from (`seeds[].hash`). An excluded song
+            is also never recommended back in `library` (under any filter),
+            like a seed. The saved exclusions always apply; these join them
+            for this call, and are saved too when `remember` is set.
+        remember:
+          type: boolean
+          default: false
+          description: >
+            Save `window` / `filter` / `staleDays` / `exclude` as the
+            account's page prefs (merged; exclusions trimmed oldest-first at
+            200). Ignored in public-access mode — that account is shared.
+        filter:
+          type: string
+          enum: [fresh, unplayed, all]
+          description: >
+            Library songs and albums: `fresh` = never played or not in
+            `staleDays`; `unplayed` = never played; `all`. `fresh` and
+            `unplayed` also drop songs skipped and never finished and songs
+            rated 2 stars or less. Saved pref, else `fresh`.
+        staleDays:
+          type: integer
+          minimum: 1
+          maximum: 3650
+          description: "The `fresh` cutoff in days. Saved pref, else 90."
+        sources:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [library, network, peers] }
+          default: [library, network, peers]
+          description: >
+            Clients SHOULD ask for `peers` in a separate parallel call
+            (`[library, network]` + `[peers]`): the peers fan-out can take a
+            peer's whole 4 s deadline.
+        limit:
+          type: object
+          properties:
+            seeds: { type: integer, minimum: 1, maximum: 12, default: 12 }
+            tracks: { type: integer, minimum: 0, maximum: 50, default: 24 }
+            albums: { type: integer, minimum: 0, maximum: 24, default: 8 }
+            network: { type: integer, minimum: 0, maximum: 50, default: 12 }
+            peers: { type: integer, minimum: 0, maximum: 25, default: 12, description: "Per peer." }
+        newArtistsOnly:
+          type: boolean
+          default: false
+          description: Network and peers also drop artists the library already has (a client-local pref, sent per call).
+        ignoreVPaths:
+          type: array
+          maxItems: 100
+          items: { type: string, maxLength: 256 }
+          description: Libraries (by name) to leave out of seeds and library results.
+    TasteSeed:
+      type: object
+      properties:
+        hash: { type: string, description: "The song's canonical content hash — what `exclude` takes." }
+        filepath: { type: string }
+        metadata: { $ref: "#/components/schemas/MetadataLite" }
+        outcome:
+          type: string
+          nullable: true
+          enum: [completed, stopped, null]
+          description: "History seeds: `completed` (finished) or `stopped` (listened to past half). Null for pins, counter and random seeds."
+        lastPlayed: { type: string, format: date-time, nullable: true }
+        plays:
+          type: integer
+          nullable: true
+          description: "History seeds: seeding plays in the window. Counter seeds and pins: the play count. Null for a random seed."
+        pinned: { type: boolean }
+        analyzed:
+          type: boolean
+          description: False when the analysis worker has no vector for the song yet (it is listed, not used).
+    TasteLibraryTrack:
+      allOf:
+        - { $ref: "#/components/schemas/DiscoverySimilarTrack" }
+        - type: object
+          properties:
+            similarity: { type: number, description: "Cosine vs the row's own seed (`seedHash`), 4 decimals." }
+            seedHash: { type: string, nullable: true, description: "The seed this row is \"because of\" (`seeds[].hash`)." }
+            playCount: { type: integer, description: "The caller's play count; 0 = never played." }
+            lastPlayed: { type: string, format: date-time, nullable: true }
+    TasteAlbum:
+      allOf:
+        - { $ref: "#/components/schemas/Album" }
+        - type: object
+          properties:
+            similarity: { type: number, description: "Its best matched track's similarity." }
+            seedHash: { type: string, nullable: true }
+            scopedTracks: { type: integer, description: "Tracks of the card in the caller's libraries (`track_count` keeps its all-libraries meaning)." }
+            playedTracks: { type: integer, description: "Of those, the ones the caller has played." }
+            lastPlayed: { type: string, format: date-time, nullable: true }
+            tracks:
+              type: array
+              items: { type: string }
+              description: "The card's matched songs (vpath-form paths), best first — left out of `library.tracks`."
+    TastePeerGroup:
+      type: object
+      description: One paired server's outcome for this call.
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        reachable: { type: boolean, description: "The peer answered within its 4 s deadline in THIS call (a model mismatch counts as an answer)." }
+        mismatched: { type: boolean, description: "The peer's embeddings are another model's space; it answered nothing." }
+        lastSeen:
+          type: string
+          format: date-time
+          nullable: true
+          description: "When reachable, this answer's time; otherwise the stored last contact (may be stale), or null."
+        results:
+          type: array
+          items:
+            allOf:
+              - { $ref: "#/components/schemas/DiscoveryFederationLead" }
+              - type: object
+                properties:
+                  source: { type: string, enum: [federation] }
+                  seedHash: { type: string, nullable: true, description: "Always null: the fan-out asks with the centroid." }
+    TasteResponse:
+      type: object
+      properties:
+        window: { type: integer, description: "The window the seeds came from (0 after widening)." }
+        widenedFrom:
+          type: integer
+          nullable: true
+          description: "The requested window, when it held nothing and the seeds widened to all time."
+        seedSource:
+          type: string
+          enum: [history, counters, random, pinned]
+          description: >
+            `history` = play events; `counters` = per-track counters (an
+            install whose log is empty for reasons other than a history
+            reset); `pinned` = only pins seed; `random` = nothing counted at
+            all — one analyzed track from the caller's own libraries, the
+            same all (UTC) day.
+        fallback: { type: boolean, description: "True with a random seed." }
+        seeds:
+          type: array
+          items: { $ref: "#/components/schemas/TasteSeed" }
+        excluded:
+          type: array
+          description: The exclusions in force that still resolve to a track the caller can see — for the seeds sheet to re-include.
+          items:
+            type: object
+            properties:
+              hash: { type: string }
+              filepath: { type: string }
+              metadata: { $ref: "#/components/schemas/MetadataLite" }
+        dropped: { type: integer, description: "Pins that did not resolve (unknown and forbidden alike)." }
+        notAnalyzed:
+          type: boolean
+          description: "The scan is pending: no seed has a vector yet. Seeds are listed; there are no results."
+        model:
+          type: object
+          properties:
+            id: { type: string }
+            version: { type: string, nullable: true }
+        library:
+          type: object
+          nullable: true
+          description: Null when not asked for.
+          properties:
+            filter: { type: string, enum: [fresh, unplayed, all] }
+            tracks:
+              type: array
+              items: { $ref: "#/components/schemas/TasteLibraryTrack" }
+            albums:
+              type: array
+              items: { $ref: "#/components/schemas/TasteAlbum" }
+            capped: { type: boolean, description: "The walk hit its consideration budget before filling `tracks`." }
+        network:
+          type: object
+          nullable: true
+          description: >
+            Null when not asked for, when `discoveryP2p` is off, or with a
+            random seed. Asked for and empty (`results: []`) otherwise —
+            including while no seed is analyzed yet (`notAnalyzed`).
+          properties:
+            results:
+              type: array
+              items:
+                allOf:
+                  - { $ref: "#/components/schemas/DiscoveryP2pLead" }
+                  - type: object
+                    properties:
+                      source: { type: string, enum: [p2p] }
+                      seedHash: { type: string, nullable: true, description: "The seed this lead sits closest to." }
+            searched:
+              type: object
+              properties:
+                peers: { type: integer }
+                tracks: { type: integer }
+        peers:
+          type: object
+          nullable: true
+          description: >
+            Null when not asked for, when the caller's `federationDiscovery`
+            is off, or with a random seed. Asked for and empty (`peers: []`)
+            otherwise — including while no seed is analyzed yet
+            (`notAnalyzed`).
+          properties:
+            peers:
+              type: array
+              items: { $ref: "#/components/schemas/TastePeerGroup" }
+            searched:
+              type: object
+              properties:
+                peers: { type: integer, description: "Peers that answered in the query's model space." }
+                unreachable: { type: integer }
+                mismatched: { type: integer }
+    TastePrefs:
+      type: object
+      description: The account's Discover page prefs, defaults applied.
+      properties:
+        window: { type: integer, enum: [7, 30, 90, 0] }
+        filter: { type: string, enum: [fresh, unplayed, all] }
+        staleDays: { type: integer, minimum: 1, maximum: 3650 }
+        exclude:
+          type: array
+          maxItems: 200
+          items: { type: string }
+          description: >
+            Seed hashes not to seed from, oldest first. An excluded song is
+            also never recommended back in the library section.
+        persisted:
+          type: boolean
+          description: "False in public-access mode: that account is shared, so nothing is stored."
+
     Library:
       type: object
       properties:
@@ -1290,6 +1607,16 @@ paths:
                           recommendation rows have actions to offer —
                           `GET /api/v1/discovery/plugins` lists them. A flag,
                           never a probe.
+                      discoveryTaste:
+                        type: integer
+                        description: >
+                          The Discover page generation: this server answers
+                          `POST /api/v1/discovery/taste`, its prefs routes
+                          and `POST /api/v1/discovery/plugin-jobs/lookup/batch`.
+                          An integer like `stats` — a later body key ships as
+                          2. A version fact: show the page on `discovery ===
+                          true && discoveryTaste >= 1`; absent on older
+                          servers.
                       discoveryOwned:
                         type: boolean
                         description: >
@@ -1377,6 +1704,7 @@ paths:
                   discoveryP2p: false
                   discoveryPlugins: true
                   discoveryOwned: true
+                  discoveryTaste: 1
                   sync: true
                   transcode: false
                   supportedAudioFiles: { mp3: true, flac: true }
@@ -1434,6 +1762,12 @@ paths:
                   noMkdir: { type: boolean }
                   noUpload: { type: boolean }
                   noFileModify: { type: boolean }
+                  discoveryTaste:
+                    type: integer
+                    description: >
+                      The Discover page generation — the same fact as
+                      `features.discoveryTaste` on `GET /api`. Absent on
+                      older servers.
                   supportedAudioFiles:
                     type: object
                     additionalProperties: { type: boolean }
@@ -2366,6 +2700,415 @@ paths:
         "403": { description: "Discovery is disabled on this server (or nothing has been embedded yet)." }
         "404": { description: "A path does not resolve in the caller's libraries (uniform)." }
 
+  /api/v1/discovery/local/similar/tracks:
+    post:
+      tags: [Discovery]
+      summary: Songs in your library that sound like one song
+      description: |
+        Ranks the caller's own analyzed tracks by cosine similarity to the
+        seed's embedding (the in-memory index), one result per canonical
+        audio, each resolved to a file THIS caller can open. The seed itself
+        never comes back. `excludeSameArtist` / `excludeSameAlbum` /
+        `bpmRange` filter on the live library rows after ranking.
+
+        A seed that resolves but has no vector yet answers `notAnalyzed:
+        true` with no results — a transient state, not an error. The walk
+        is bounded (`max(limit × 50, 2000)` candidates); `capped: true` says
+        it stopped there short of `limit`, so a client can tell "the pool
+        ran dry" from "we stopped looking". Feature flag: `discovery`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filePath]
+              properties:
+                filePath: { type: string, description: "The seed (vpath form) in one of the caller's libraries." }
+                limit: { type: integer, minimum: 1, maximum: 100, default: 10 }
+                excludeSameArtist: { type: boolean, default: false }
+                excludeSameAlbum: { type: boolean, default: false }
+                bpmRange:
+                  type: array
+                  minItems: 2
+                  maxItems: 2
+                  items: { type: number, minimum: 0, maximum: 1000 }
+                  description: "[min, max] on the tracks' live BPM; rows without a BPM are dropped."
+      responses:
+        "200":
+          description: The ranking (or the notAnalyzed answer).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  seed:
+                    type: object
+                    properties:
+                      filepath: { type: string }
+                      metadata: { $ref: "#/components/schemas/MetadataLite" }
+                      genreTags: { type: array, nullable: true, items: { type: string } }
+                  model:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      version: { type: string, nullable: true }
+                  notAnalyzed: { type: boolean }
+                  capped: { type: boolean, description: "Absent on the notAnalyzed answer." }
+                  results:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscoverySimilarTrack" }
+        "400": { description: "Request validation failed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Discovery is disabled on this server (or its index is unavailable)." }
+        "404": { description: "The seed does not resolve in the caller's libraries (uniform: unknown and forbidden alike)." }
+
+  /api/v1/discovery/local/similar/artists:
+    post:
+      tags: [Discovery]
+      summary: Artists in your library that sound like one artist
+      description: |
+        Ranks artists by the cosine between their centroids (the mean of
+        their analyzed tracks' vectors), keyed by the artist's normalized
+        name — any spelling a client holds works. Each result carries up to
+        two `entryPoints`: that artist's visible tracks closest to the SEED
+        artist's sound, ready to queue. 404 when the caller can see no track
+        of the seed artist; `notAnalyzed: true` when none of them has a
+        vector yet. Same bounded walk and `capped` flag as the tracks route.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [artist]
+              properties:
+                artist: { type: string }
+                limit: { type: integer, minimum: 1, maximum: 100, default: 10 }
+      responses:
+        "200":
+          description: The ranking (or the notAnalyzed answer).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  seed:
+                    type: object
+                    properties:
+                      artist: { type: string, description: "The library's spelling." }
+                      trackCount: { type: integer, description: "The seed artist's tracks visible to the caller." }
+                      analyzedCount: { type: integer }
+                      genreTags: { type: array, nullable: true, items: { type: string } }
+                  model:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      version: { type: string, nullable: true }
+                  notAnalyzed: { type: boolean }
+                  capped: { type: boolean }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        artist: { type: string }
+                        similarity: { type: number, description: "Centroid cosine, 4 decimals." }
+                        analyzedCount: { type: integer }
+                        genreTags: { type: array, nullable: true, items: { type: string } }
+                        entryPoints:
+                          type: array
+                          maxItems: 2
+                          items:
+                            type: object
+                            properties:
+                              filepath: { type: string }
+                              metadata: { $ref: "#/components/schemas/MetadataLite" }
+        "400": { description: "Request validation failed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Discovery is disabled on this server." }
+        "404": { description: "No track of that artist is visible to the caller." }
+
+  /api/v1/discovery/local/path:
+    post:
+      tags: [Discovery]
+      summary: A smooth journey between two songs
+      description: |
+        `length − 2` waypoints evenly spaced along the great-circle arc
+        between the two seeds' embeddings, each snapped to the nearest track
+        the caller can see; `length` counts the TOTAL rows including both
+        seeds. May come back shorter on a small or mostly invisible library,
+        never an error. Rows carry `t` (the arc position, 0–1) and
+        `similarity` vs their own waypoint. `notAnalyzed` says which end has
+        no vector yet. Feature flag: `discoveryPath` (ping).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [startFilePath, endFilePath]
+              properties:
+                startFilePath: { type: string }
+                endFilePath: { type: string }
+                length: { type: integer, minimum: 4, maximum: 32, default: 14 }
+      responses:
+        "200":
+          description: The journey, start and end included.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  start: { type: object, description: "{ filepath, metadata (lite), genreTags }" }
+                  end: { type: object, description: "{ filepath, metadata (lite), genreTags }" }
+                  model:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      version: { type: string, nullable: true }
+                  notAnalyzed:
+                    type: object
+                    properties:
+                      start: { type: boolean }
+                      end: { type: boolean }
+                  results:
+                    type: array
+                    items:
+                      allOf:
+                        - { $ref: "#/components/schemas/DiscoverySimilarTrack" }
+                        - type: object
+                          properties:
+                            t: { type: number, description: "Arc position, 0 (start) to 1 (end), 4 decimals." }
+        "400": { description: "Request validation failed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Discovery is disabled on this server." }
+        "404": { description: "An end does not resolve in the caller's libraries (uniform)." }
+
+  /api/v1/discovery/p2p/similar:
+    post:
+      tags: [Discovery]
+      summary: Songs on the discovery network that sound like one of yours
+      description: |
+        Searches the LOCAL copies of fetched peer snapshots (the shelf) —
+        no query ever leaves this machine — for rows that sound like the
+        seed and that this library does not have: the novelty chain drops
+        near-duplicates of the seed (cosine ≥ 0.99), MBIDs and artist+title
+        pairs the library owns, and with `newArtistsOnly` every artist it
+        knows. One pass per held snapshot in the seed's model space. Rows
+        are metadata only. Feature flag: `discoveryP2p`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filePath]
+              properties:
+                filePath: { type: string, description: "The local seed (vpath form)." }
+                limit: { type: integer, minimum: 1, maximum: 100, default: 25 }
+                newArtistsOnly: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Leads, best first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  query:
+                    type: object
+                    properties:
+                      filePath: { type: string }
+                      modelId: { type: string }
+                      newArtistsOnly: { type: boolean }
+                  searched:
+                    type: object
+                    properties:
+                      peers: { type: integer, description: "Snapshots with rows in the seed's model space." }
+                      tracks: { type: integer }
+                  results:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscoveryP2pLead" }
+        "400": { description: "Request validation failed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The discovery network is disabled (`discoveryP2p.enabled`)." }
+        "404": { description: "The seed does not resolve, has no embedding yet, or discovery data was never collected." }
+
+  /api/v1/discovery/federation/similar:
+    post:
+      tags: [Discovery]
+      summary: Songs on your paired servers that sound like one of yours
+      description: |
+        Fans the seed's embedding out to every paired server with
+        `use_discovery` on (`POST /api/v1/federation/discovery/similar` over
+        the federation bridge, at most 4 s per peer, dial included), then
+        runs the same novelty chain as the p2p route on the answers and
+        dedupes across peers. Every result lives in a library the peer
+        granted, so it streams through
+        `GET /api/v1/federation/peers/{id}/stream/{filepath}`.
+
+        **Privacy**: the query VECTOR leaves this machine, to peers the
+        admin paired with — one track's embedding, never its name, path or
+        hash. An unreachable peer is counted in `searched.unreachable`,
+        never an error. Feature flag: `federationDiscovery`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filePath]
+              properties:
+                filePath: { type: string, description: "The local seed (vpath form)." }
+                limit: { type: integer, minimum: 1, maximum: 50, default: 10 }
+                newArtistsOnly: { type: boolean, default: false }
+                peerId: { type: integer, minimum: 1, description: "Ask this one paired server only." }
+      responses:
+        "200":
+          description: One ranked list across peers, capped at `limit` in total.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  query:
+                    type: object
+                    properties:
+                      filePath: { type: string }
+                      modelId: { type: string }
+                      newArtistsOnly: { type: boolean }
+                      peerId: { type: integer }
+                  searched:
+                    type: object
+                    properties:
+                      peers: { type: integer }
+                      unreachable: { type: integer }
+                      mismatched: { type: integer }
+                  results:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscoveryFederationLead" }
+        "400": { description: "Request validation failed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Federation is disabled (`federation.enabled`)." }
+        "404": { description: "The seed does not resolve or has no embedding yet; or `peerId` names no peer with discovery on." }
+
+  /api/v1/discovery/taste:
+    post:
+      tags: [Discovery]
+      summary: The Discover page — recommendations seeded by your play history
+      description: |
+        One call for the whole page. **Seeds** are the distinct songs the
+        caller finished or mostly listened to recently: counted plays of
+        this server's own tracks, `completed`, or `stopped` past half the
+        song, newest first with completed ones ahead, and never a song whose
+        latest play in the window was a skip. Pins (`pin`) seed first. When
+        the window holds nothing the seeds widen to all time
+        (`widenedFrom`), then to the per-track counters, and only with
+        nothing counted at all to one random analyzed track of the caller's
+        own libraries (`seedSource: random`, `fallback: true`). Seeds the
+        user drops are remembered per account (`exclude` + `remember`, or
+        `PUT /api/v1/discovery/taste/prefs`), so every client agrees.
+
+        Three sources, each ready to render:
+
+        * **library** — the caller's own songs and albums that sound like
+          the seeds and that they have not played (`filter`). Albums come
+          first (a card = the `/db/albums` identity), and their songs are
+          left out of `tracks`. Each row says which seed it is "because of"
+          (`seedHash`). At most 6 history seeds plus the pins are ranked.
+        * **network** — discovery-network leads (`source: p2p`), as
+          `POST /api/v1/discovery/p2p/similar` finds them.
+        * **peers** — songs on paired servers, grouped per server
+          (`source: federation`), as
+          `POST /api/v1/discovery/federation/similar` finds them; a peer
+          that answers refreshes its "last seen" (at most once per 5
+          minutes).
+
+        Network and peer rows are complete recommendations: send them
+        unchanged to the plug-in routes (unknown keys like `seedHash` are
+        stripped there). Network and peers are asked with ONE vector, the
+        centroid of the seeds.
+
+        **Privacy**: the peers fan-out sends every paired server with
+        discovery on the centroid of up to 12 of the caller's recent songs
+        (history plus pins) — one averaged vector, never names, paths or
+        hashes, but derived from what this user listens to.
+
+        The expensive part of an answer is cached for 5 minutes, section
+        by section, per (seeds, library scope, filter, limits, …); a stats
+        reset or a play delete drops the caller's entries, and a failed
+        source or an unreachable peer is never cached. Clients fetch on
+        open or on a tap and never poll. Feature flag: `discovery === true &&
+        discoveryTaste >= 1`. Refused to federation keys, guest tokens and
+        jukebox sessions; public-access mode works (and never persists).
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TasteRequest" }
+      responses:
+        "200":
+          description: Seeds and the asked-for sources.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TasteResponse" }
+        "400": { description: "Request validation failed (an unknown key, a value out of range, more than 8 pins or 200 exclusions)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "`Discovery is disabled` (collection off or the index unavailable); a federation key or guest token (`Forbidden`); a jukebox session." }
+
+  /api/v1/discovery/taste/prefs:
+    get:
+      tags: [Discovery]
+      summary: The Discover page prefs of this account
+      description: |
+        Stored in the account's `discovery:page` settings; defaults applied
+        (window 30, filter fresh, staleDays 90, no exclusions). A
+        `POST /api/v1/stats/reset` of `history` or `all` clears them.
+        `newArtistsOnly` is a client-local pref and is not stored here.
+      responses:
+        "200":
+          description: The prefs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TastePrefs" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Discovery is disabled; a federation key or guest token; a jukebox session." }
+    put:
+      tags: [Discovery]
+      summary: Save the Discover page prefs
+      description: |
+        Every key optional; a key left out keeps its stored value, `null`
+        puts it back to the default. `exclude` is THE list (re-including a
+        seed = sending the list without it); a hash that stays keeps its
+        age, and the list is trimmed oldest-first at 200. Answers the
+        merged prefs. In public-access mode nothing is stored
+        (`persisted: false`) — that account is shared by every visitor.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                window: { type: integer, enum: [7, 30, 90, 0], nullable: true }
+                filter: { type: string, enum: [fresh, unplayed, all], nullable: true }
+                staleDays: { type: integer, minimum: 1, maximum: 3650, nullable: true }
+                exclude:
+                  type: array
+                  nullable: true
+                  maxItems: 200
+                  items: { type: string, maxLength: 128 }
+      responses:
+        "200":
+          description: The merged prefs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TastePrefs" }
+        "400": { description: "Request validation failed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Discovery is disabled; a federation key or guest token; a jukebox session." }
+
   /api/v1/discovery/plugins:
     get:
       tags: [Discovery]
@@ -2928,6 +3671,59 @@ paths:
                     items: { $ref: "#/components/schemas/DiscoveryPluginJob" }
         "400": { description: "Malformed body." }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/discovery/plugin-jobs/lookup/batch:
+    post:
+      tags: [Discovery]
+      summary: The caller's jobs for up to 100 recommendations
+      description: |
+        The single lookup for a page of recommendations in one request (one
+        query): each element of `results` is exactly what
+        `POST /api/v1/discovery/plugin-jobs/lookup` answers for the
+        recommendation at the same index, in input order. Two
+        recommendations that share a key (two songs of one album) both list
+        the job under it. Reads only the caller's own rows, like the single
+        form, and is refused to a jukebox session token. Clients call it
+        only when the server advertises `discoveryTaste >= 1` and fall back
+        to one single lookup per row otherwise.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recommendations]
+              properties:
+                recommendations:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: { type: object, description: "Same shape as the resolve body's `recommendation`." }
+      responses:
+        "200":
+          description: One result per recommendation, in input order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key: { type: string, example: "text:3f9a…", description: The song's key. }
+                        keys:
+                          type: object
+                          description: "Every scope's key for this recommendation, as the single lookup's `keys`."
+                          additionalProperties: { type: string }
+                        jobs:
+                          type: array
+                          description: At most one job per plug-in and scope, newest first; empty when the caller never acted on it.
+                          items: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "400": { description: "Malformed body: `recommendations` missing, empty, longer than 100, or an element that is not a recommendation." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "A jukebox session token, or a federation key (the route is not on its allowlist)." }
 
   /api/v1/discovery/plugin-jobs/clear:
     post:

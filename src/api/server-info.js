@@ -91,6 +91,13 @@ export function buildFeatures() {
     // the marks the peer browse draws. A version fact, like `sync`: a
     // client gates on the key, never on the version string.
     discoveryOwned: true,
+    // The history-seeded Discover page (POST /api/v1/discovery/taste, its
+    // prefs routes, and POST /api/v1/discovery/plugin-jobs/lookup/batch). An
+    // integer GENERATION like `stats`, not a boolean: a later body key ships
+    // as 2 and clients gate on `>= n` with no version floors. A version
+    // fact — clients show the page on `discovery === true && discoveryTaste
+    // >= 1`; whether there is anything to seed from is the route's answer.
+    discoveryTaste: 1,
     // false, or the server's transcode defaults.
     transcode: transcodeInfo,
     // Per-format booleans from config.

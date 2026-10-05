@@ -7,6 +7,7 @@
  *   GET  /api/v1/discovery/plugin-jobs/:id
  *   POST /api/v1/discovery/plugin-jobs/:id/cancel
  *   POST /api/v1/discovery/plugin-jobs/lookup            (a recommendation's jobs)
+ *   POST /api/v1/discovery/plugin-jobs/lookup/batch      (the same for up to 100, one query)
  *   POST /api/v1/discovery/plugin-jobs/clear             ("Clear finished")
  *   POST /api/v1/admin/config/discovery-jobs            (gate + cap, live)
  *   POST /api/v1/admin/users/discovery-jobs-access      (per-user flag)
@@ -55,7 +56,9 @@ describe('discovery plug-in jobs API', () => {
     server = await startServer({
       dlnaMode: 'disabled', waitForScan: false,
       env: { MSTREAM_TEST_DISCOVERY_NOOP_PLUGIN: '1' },
-      extraConfig: { discoveryPlugins: { 'noop-acquire': { enabled: true } } },
+      // Federation on only so a minted key can be shown the door (the
+      // allowlist); nothing here pairs with a peer.
+      extraConfig: { discoveryPlugins: { 'noop-acquire': { enabled: true } }, federation: { enabled: true } },
       users: [{ ...ADMIN, admin: true, vpaths: ['testlib'] }, { ...USER, vpaths: ['testlib'] }, { ...OTHER, vpaths: ['testlib'] }],
     });
     adminToken = await login(ADMIN);
@@ -133,6 +136,100 @@ describe('discovery plug-in jobs API', () => {
     assert.deepEqual((await post(otherToken, '/api/v1/discovery/plugin-jobs/lookup', { recommendation: rec('Opening') })).body.jobs, []);
     assert.deepEqual((await post(userToken, '/api/v1/discovery/plugin-jobs/lookup', { recommendation: rec('Never asked for') })).body.jobs, []);
     assert.equal((await post(userToken, '/api/v1/discovery/plugin-jobs/lookup', {})).status, 400);
+  });
+
+  test('lookup/batch: each result is the single lookup\'s answer for its recommendation, in input order', async () => {
+    const BATCH = '/api/v1/discovery/plugin-jobs/lookup/batch';
+    const single = async (r) => (await post(userToken, '/api/v1/discovery/plugin-jobs/lookup', { recommendation: r })).body;
+    // A live job's progress moves between two calls, so rows compare by
+    // identity; settled rows compare whole.
+    const ids = (res) => ({ key: res.key, keys: res.keys, jobs: res.jobs.map((j) => j.id) });
+    const live = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('slow batch live') });
+    assert.equal(live.status, 202, JSON.stringify(live.body));
+    try {
+      const recs = [rec('Opening'), rec('slow batch live'), rec('Never asked for')];
+      const batch = await post(userToken, BATCH, { recommendations: recs });
+      assert.equal(batch.status, 200, JSON.stringify(batch.body));
+      assert.deepEqual(Object.keys(batch.body), ['results']);
+      assert.equal(batch.body.results.length, 3);
+      const [done, running, never] = batch.body.results;
+      assert.deepEqual(done, await single(recs[0]), 'a settled row is the single form\'s, field for field');
+      assert.equal(done.jobs.length, 1);
+      assert.equal(done.jobs[0].state, 'done');
+      assert.deepEqual(running.jobs.map((j) => j.id), [live.body.job.id]);
+      assert.ok(['queued', 'running'].includes(running.jobs[0].state), running.jobs[0].state);
+      assert.deepEqual(Object.keys(running.jobs[0]).sort(), Object.keys(done.jobs[0]).sort(), 'the full job row, not a summary');
+      assert.deepEqual(never.jobs, []);
+      for (let i = 0; i < recs.length; i++) {
+        assert.deepEqual(ids(batch.body.results[i]), ids(await single(recs[i])), `result ${i}`);
+      }
+      // Order follows the input, not the jobs' ages.
+      const reversed = await post(userToken, BATCH, { recommendations: [...recs].reverse() });
+      assert.deepEqual(reversed.body.results.map(ids), batch.body.results.map(ids).reverse());
+      // The same recommendation twice answers twice.
+      const twice = await post(userToken, BATCH, { recommendations: [recs[1], recs[1]] });
+      assert.deepEqual(twice.body.results.map(ids), [ids(running), ids(running)]);
+
+      // A key two recommendations share (two songs of one album) lists the
+      // job under it for both; each keeps its own song key.
+      const opener = { artist: 'Batch Artist', title: 'Batch Opener', album: 'Batch Album' };
+      const closer = { artist: 'Batch Artist', title: 'Batch Closer', album: 'Batch Album' };
+      const album = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: opener, scope: 'album' });
+      assert.equal(album.status, 202, JSON.stringify(album.body));
+      await untilState(userToken, album.body.job.id, ['done', 'failed']);
+      const shared = await post(userToken, BATCH, { recommendations: [opener, closer, rec('Opening')] });
+      assert.equal(shared.status, 200, JSON.stringify(shared.body));
+      const [a, b, c] = shared.body.results;
+      assert.equal(a.keys.album, b.keys.album);
+      assert.notEqual(a.key, b.key);
+      assert.deepEqual(a.jobs.map((j) => j.id), [album.body.job.id]);
+      assert.deepEqual(b.jobs.map((j) => j.id), [album.body.job.id]);
+      assert.deepEqual(a, await single(opener));
+      assert.deepEqual(b, await single(closer));
+      assert.ok(!c.jobs.some((j) => j.id === album.body.job.id), 'another album\'s row is not listed');
+
+      // Only the caller's rows.
+      const theirs = await post(otherToken, BATCH, { recommendations: [opener, recs[0], recs[1]] });
+      assert.equal(theirs.status, 200);
+      assert.deepEqual(theirs.body.results.map((r) => r.jobs), [[], [], []]);
+    } finally {
+      await post(userToken, `/api/v1/discovery/plugin-jobs/${live.body.job.id}/cancel`);
+      await untilState(userToken, live.body.job.id, ['cancelled', 'done']);
+    }
+  });
+
+  test('lookup/batch: 1 to 100 recommendations, each one a recommendation', async () => {
+    const BATCH = '/api/v1/discovery/plugin-jobs/lookup/batch';
+    const many = (n) => Array.from({ length: n }, (_, i) => rec(`Cap ${i}`));
+    const full = await post(userToken, BATCH, { recommendations: many(100) });
+    assert.equal(full.status, 200, JSON.stringify(full.body));
+    assert.equal(full.body.results.length, 100);
+    assert.equal(new Set(full.body.results.map((r) => r.key)).size, 100);
+    assert.equal((await post(userToken, BATCH, { recommendations: many(101) })).status, 400, 'over the cap');
+    assert.equal((await post(userToken, BATCH, { recommendations: [] })).status, 400, 'empty');
+    assert.equal((await post(userToken, BATCH, {})).status, 400, 'missing');
+    assert.equal((await post(userToken, BATCH, { recommendation: rec('Opening') })).status, 400, 'the single form\'s body');
+    assert.equal((await post(userToken, BATCH, { recommendations: [rec('Opening'), null] })).status, 400, 'a null element');
+    assert.equal((await post(userToken, BATCH, { recommendations: [{ title: 'x', year: 'soon' }] })).status, 400, 'an element the schema refuses');
+    assert.equal((await post(userToken, BATCH, { recommendations: [rec('Opening')], extra: 1 })).status, 400, 'no unknown body keys');
+    // Unknown keys INSIDE a recommendation are stripped, as in the single form.
+    const loose = await post(userToken, BATCH, { recommendations: [{ ...rec('Opening'), similarity: 0.9 }] });
+    assert.equal(loose.status, 200, JSON.stringify(loose.body));
+  });
+
+  test('lookup/batch: a federation key is not let in (off the allowlist)', async () => {
+    const mint = await post(adminToken, '/api/v1/admin/federation/keys', { name: 'batch-peer', vpaths: ['testlib'] });
+    assert.equal(mint.status, 200, JSON.stringify(mint.body));
+    for (const [route, body] of [
+      ['/api/v1/discovery/plugin-jobs/lookup/batch', { recommendations: [rec('Opening')] }],
+      ['/api/v1/discovery/plugin-jobs/lookup', { recommendation: rec('Opening') }],
+    ]) {
+      const r = await fetch(`${server.baseUrl}${route}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-federation-key': mint.body.key }, body: JSON.stringify(body),
+      });
+      assert.equal(r.status, 403, `${route} answered ${r.status}`);
+      assert.equal((await r.json()).error, 'Forbidden', 'the allowlist wall, before any route');
+    }
   });
 
   test('a live job that is another account\'s answers 409; an admin gets the job', async () => {
@@ -278,6 +375,7 @@ describe('discovery plug-in jobs API', () => {
       await refused('GET', '/api/v1/discovery/plugin-jobs');
       await refused('POST', '/api/v1/discovery/plugin-jobs/clear', {});
       await refused('POST', '/api/v1/discovery/plugin-jobs/lookup', { recommendation: rec('Guest Pick') });
+      await refused('POST', '/api/v1/discovery/plugin-jobs/lookup/batch', { recommendations: [rec('Guest Pick')] });
       await refused('GET', '/api/v1/discovery/plugins');
       await refused('POST', '/api/v1/discovery/plugins/noop-acquire/resolve', { recommendation: rec('Guest Pick') });
       await refused('GET', '/api/v1/discovery/downloads');

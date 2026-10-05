@@ -36,6 +36,7 @@ import * as discoveryRetention from './discovery-plugins/retention.js';
 import * as discoveryCollectionApi from './api/discovery-collection.js';
 import * as discoveryDownloadsApi from './api/discovery-downloads.js';
 import * as discoveryOwnedApi from './api/discovery-owned.js';
+import * as discoveryTasteApi from './api/discovery-taste.js';
 import * as remoteApi from './api/remote.js';
 import * as sharedApi from './api/shared.js';
 import * as scrobblerApi from './api/scrobbler.js';
@@ -585,6 +586,7 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   discoveryCollectionApi.setup(mstream);
   discoveryDownloadsApi.setup(mstream);
   discoveryOwnedApi.setup(mstream);
+  discoveryTasteApi.setup(mstream);
   dbApi.setup(mstream);
   syncApi.setup(mstream);
   statsApi.setup(mstream);
