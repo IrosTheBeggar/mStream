@@ -99,6 +99,7 @@ var currentBrowsingList = [];
 var programState = [];
 
 let curFileTracker;
+let popFInstance;   // the one live Popper on #pop-f (createPopper3)
 
 ///////////////////////// Federation: which server the app is pointed at
 //
@@ -865,6 +866,12 @@ function createPopper3(el) {
     iziToast.info({ title: t('peers.noPlaylist'), position: 'topCenter', timeout: 2500 });
     return;
   }
+  // One instance at a time. Every click used to stack a new Popper on the
+  // same element without destroying the last; a stale instance whose
+  // reference row had since been re-rendered away kept writing its own
+  // position, and the menu landed at the screen's edge (seen on Discover,
+  // whose rows re-render on every answer).
+  if (popFInstance) { popFInstance.destroy(); popFInstance = undefined; }
   if (curFileTracker === el.getAttribute("data-file_location")) {
     curFileTracker = undefined;
     document.getElementById("pop-f").style.visibility = "hidden";
@@ -872,7 +879,7 @@ function createPopper3(el) {
   }
 
   curFileTracker = el.getAttribute("data-file_location")
-  Popper.createPopper(el, document.getElementById('pop-f'), {
+  popFInstance = Popper.createPopper(el, document.getElementById('pop-f'), {
     placement: 'bottom-end',
     onFirstUpdate: function (data) {
       document.getElementById("pop-f").style.visibility = "visible";
