@@ -341,6 +341,40 @@
 
   function cleanPage(v) { return PAGES.indexOf(v) !== -1 ? v : 'play'; }
 
+  // "New seeds" (the bar's ⟳): start from other songs. The page keeps a
+  // rotation for the visit — hashes sent in `exclude` without `remember`,
+  // never saved, never drawn as dropped seeds. Each press adds the answer
+  // on screen's history seeds (never its pins: those are the user's own
+  // choices and stay), so the server picks the next finished songs and
+  // widens from there (window → all time → counters → random).
+  //   rotation  the list so far (oldest first)
+  //   response  the answer on screen (the library one)
+  //   room      optional: the most hashes the list may hold (default
+  //             EXCLUDE_CAP) — the page passes the cap minus the local drop
+  //             list and the "Another pick" skips sent beside it, so the
+  //             server's trim never cuts a drop to make room for a rotation
+  // → the next list: the old one plus the answer's history seeds, trimmed
+  // to `room` (newest kept — past the cap the oldest-passed, i.e. the
+  // newest finished songs, come back first: a user with more finished
+  // songs than the cap cycles within about that many). [] when the answer
+  // ended the cycle — a random pick, the pins alone, or only songs the
+  // worker has not analyzed (notAnalyzed: the analyzed ones are all passed
+  // over) — so this press starts again from the newest finished songs (a
+  // cycle, not a dead end). The list is cleared at the press after such an
+  // answer, not when it lands: "Another pick" on that answer keeps passing
+  // the same songs over. No answer (in flight, failed, 403): unchanged.
+  function nextRotation(rotation, response, room) {
+    const prev = cleanHashes(rotation) || [];
+    if (!isObj(response) || response.disabled === true) { return prev; }
+    if (response.seedSource === 'random' || response.notAnalyzed === true) { return []; }
+    const history = cleanHashes(seedsOf(response).filter((s) => s.pinned !== true).map((s) => s.hash));
+    if (!history.length) { return []; }
+    const cap = Math.max(0, Math.min(EXCLUDE_CAP, Number.isFinite(room) ? Math.floor(room) : EXCLUDE_CAP));
+    // (an answer from before the last press repeats hashes already in it)
+    const next = cleanHashes([...prev, ...history]);
+    return next.length > cap ? next.slice(next.length - cap) : next;
+  }
+
   // A stable identity for a request body (key order and `remember` aside):
   // the page re-shows a kept answer only while the next request's key is the
   // same, and drops an answer whose key is no longer the latest.
@@ -1044,9 +1078,11 @@
   //   response  mergeResponses' answer: undefined = in flight, null = failed,
   //             { disabled: true } = 403
   //   flags     { discovery, discoveryTaste, discoveryP2p, federationDiscovery }
-  //   opts      { page, filter, staleDays } — page 'play' (default) draws
-  //             library + peers (network absent); 'explore' draws network
-  //             alone; filter for the library's empty line
+  //   opts      { page, filter, staleDays, rotated } — page 'play' (default)
+  //             draws library + peers (network absent); 'explore' draws
+  //             network alone; filter for the library's empty line;
+  //             rotated = the answer was asked with a "New seeds"
+  //             rotation (the one on screen, not the next press's)
   // → { state, reason, sources: { library, network, peers } }
   //   state     'off'             the ping does not advertise the page, or
   //                               the route said 403 (re-ping before
@@ -1055,8 +1091,13 @@
   //             'failed'          the call failed (not a 403): try again
   //             'scanPending'     no seed is analyzed yet (seeds listed)
   //             'nothingFinished' a random seed stands in: nothing counted,
-  //                               or every finished song was dropped
-  //                               (reason dpage.state.allDropped)
+  //                               every finished song was dropped
+  //                               (reason dpage.state.allDropped), or
+  //                               "New seeds" went past them all
+  //                               (dpage.state.seedsCycled — also for a
+  //                               rotated notAnalyzed answer: the rest
+  //                               of the finished songs await the scan,
+  //                               and that answer has no suggestions)
   //             'ready'
   function stateOf(response, flags, opts) {
     const f = isObj(flags) ? flags : {};
@@ -1076,10 +1117,15 @@
     if (off) { state = 'off'; reason = lbl('dpage.state.off'); }
     else if (response === undefined) { state = 'loading'; }
     else if (!isObj(response)) { state = 'failed'; reason = lbl('dpage.state.failed'); }
-    else if (response.notAnalyzed === true) { state = 'scanPending'; reason = lbl('dpage.state.scanPending'); }
+    else if (response.notAnalyzed === true && o.rotated === true) {
+      // "New seeds" went past every analyzed finished song; the rest wait
+      // for the scan — the end of the cycle, not "nothing analyzed yet".
+      state = 'nothingFinished'; reason = lbl('dpage.state.seedsCycled');
+    } else if (response.notAnalyzed === true) { state = 'scanPending'; reason = lbl('dpage.state.scanPending'); }
     else if (response.seedSource === 'random') {
       state = 'nothingFinished';
-      reason = lbl(arr(response.excluded).length ? 'dpage.state.allDropped' : 'dpage.state.nothingFinished');
+      reason = lbl(o.rotated === true ? 'dpage.state.seedsCycled'
+        : (arr(response.excluded).length ? 'dpage.state.allDropped' : 'dpage.state.nothingFinished'));
     }
     return { state, reason, sources };
   }
@@ -1088,7 +1134,7 @@
     WINDOWS, FILTERS, PAGE_FILTERS, SOURCES, PAGES, DEFAULT_PREFS, STALE_DAYS_MIN, STALE_DAYS_MAX, PIN_CAP, EXCLUDE_CAP, HASH_MAX,
     LIMIT_DEFAULTS, LIMIT_CAPS, LOOKUP_BATCH_MAX, STORAGE_KEYS, CLIENT_TTL_MS, SEED_CHIPS_MAX, PAGE_SIZE, ALBUM_STRIP_MAX,
     defaultPrefs, cleanPrefs, mergePrefs, parseStoredPrefs, serializePrefs, dropSeed, restoreSeed,
-    pageAvailable, buildRequests, requestKey, mergeResponses,
+    pageAvailable, buildRequests, requestKey, nextRotation, mergeResponses,
     fmtLength,
     seedChips, windowOptions, filterFor, includesPlayed, includePlayedOption, pluginChips,
     librarySections, networkRows,

@@ -290,6 +290,79 @@ describe('buildRequests', () => {
   });
 });
 
+describe('nextRotation ("New seeds")', () => {
+  const H = HISTORY.map((s) => s.hash);
+
+  test('adds the answer\'s history seeds, never its pins; a second press adds the next set after the first', () => {
+    const first = D.nextRotation([], historyResponse());
+    assert.deepEqual(first, H, 'the pin (hp) stays a seed');
+    const next = historyResponse({ seeds: [PIN, seed('h9', 'Nine', 'Artist H'), seed('h10', 'Ten', 'Artist I')] });
+    assert.deepEqual(D.nextRotation(first, next), [...H, 'h9', 'h10']);
+  });
+
+  test('a random answer — every finished song passed over — clears it (the next press starts from the newest)', () => {
+    const random = historyResponse({ seedSource: 'random', fallback: true, seeds: [seed('r', 'R', 'A', { outcome: null })] });
+    assert.deepEqual(D.nextRotation(H, random), []);
+    assert.deepEqual(D.nextRotation([], random), [], 'nothing finished at all: nothing to pass over');
+  });
+
+  test('the pins alone (the server has no history seed left once pins seed): cleared too, so it cycles', () => {
+    const pinsOnly = historyResponse({ seedSource: 'pinned', seeds: [PIN] });
+    assert.deepEqual(D.nextRotation(H, pinsOnly), []);
+  });
+
+  test('no answer to pass over (in flight, failed, 403): unchanged; an answer from before the last press adds nothing twice', () => {
+    for (const res of [undefined, null, { disabled: true }]) { assert.deepEqual(D.nextRotation(['a', 'b'], res), ['a', 'b']); }
+    assert.deepEqual(D.nextRotation(H, historyResponse()), H);
+    assert.deepEqual(D.nextRotation(null, historyResponse()), H, 'a bad list reads empty');
+    assert.deepEqual(D.nextRotation(['a', '', 7, 'a'], historyResponse({ seeds: [seed('h1', 'One', 'B'), { hash: '' }, 'junk'] })), ['a', 'h1'], 'cleaned');
+  });
+
+  test('only songs the worker has not analyzed (notAnalyzed: the analyzed ones all passed over) ends the cycle too', () => {
+    const pending = historyResponse({ notAnalyzed: true, seeds: [seed('u1', 'U', 'A', { analyzed: false })] });
+    assert.deepEqual(D.nextRotation(H, pending), []);
+  });
+
+  test('room: a local drop list and the skips sent beside it are never trimmed out by the rotation', () => {
+    const drops = Array.from({ length: 50 }, (_, i) => `d${i}`);
+    const skips = ['s1', 's2'];
+    const room = D.EXCLUDE_CAP - drops.length - skips.length;
+    let rot = [];
+    // presses until the rotation alone would pass the cap
+    for (let p = 0; p < 40; p++) {
+      rot = D.nextRotation(rot, historyResponse({ seeds: Array.from({ length: 6 }, (_, i) => seed(`p${p}x${i}`, 'T', 'A')) }), room);
+    }
+    assert.equal(rot.length, room);
+    assert.equal(rot.at(-1), 'p39x5', 'the newest kept');
+    const local = { window: 30, filter: 'fresh', staleDays: 90, exclude: drops, persisted: false };
+    const sent = D.buildRequests({ prefs: local, flags: FLAGS, exclude: [...skips, ...rot] }).main.exclude;
+    assert.equal(sent.length, D.EXCLUDE_CAP);
+    assert.deepEqual(sent.slice(0, drops.length), drops, 'every drop still sent');
+    assert.deepEqual(D.nextRotation(['a', 'b', 'c'], historyResponse(), 2), [H.at(-2), H.at(-1)]);
+    assert.deepEqual(D.nextRotation(['a'], historyResponse(), -5), [], 'no room: nothing passed over');
+    assert.equal(D.nextRotation([], historyResponse(), 9999).length, H.length, 'never past the cap');
+  });
+
+  test('trimmed to the server\'s 200-hash cap, the newest kept', () => {
+    const old = Array.from({ length: D.EXCLUDE_CAP }, (_, i) => `o${i}`);
+    const next = D.nextRotation(old, historyResponse());
+    assert.equal(next.length, D.EXCLUDE_CAP);
+    assert.deepEqual(next.slice(-H.length), H);
+    assert.equal(next[0], `o${H.length}`, 'the oldest go first');
+  });
+
+  test('sent as this call\'s exclude with the skips — never remembered; the request key changes', () => {
+    const local = { window: 30, filter: 'fresh', staleDays: 90, exclude: ['d1'], persisted: false };
+    const plain = D.buildRequests({ prefs: local, flags: FLAGS }).main;
+    const rotated = D.buildRequests({ prefs: local, flags: FLAGS, exclude: ['s1', ...H] }).main;
+    assert.deepEqual(rotated.exclude, ['d1', 's1', ...H], 'a local drop list still goes first');
+    assert.equal(rotated.remember, undefined);
+    assert.notEqual(D.requestKey(rotated), D.requestKey(plain), 'the client TTL never re-shows the old answer');
+    const persisting = D.buildRequests({ prefs: { ...local, persisted: true }, flags: FLAGS, exclude: H }).main;
+    assert.deepEqual(persisting.exclude, H, 'a persisting server merges its own drops');
+  });
+});
+
 describe('mergeResponses', () => {
   const main = historyResponse();
   test('main in flight / failed / refused passes through', () => {
@@ -849,6 +922,18 @@ describe('stateOf', () => {
     const dropped = collect(D.stateOf(merged({ ...random, excluded: [{ hash: 'h1', filepath: 'x', metadata: {} }] }, null), FLAGS));
     assert.equal(dropped.reason.key, 'dpage.state.allDropped');
     assert.equal(dropped.sources.peers.status, 'failed');
+    // "New seeds" went past every finished song: said so, not "finish a few"
+    const cycled = collect(D.stateOf(merged(random, null), FLAGS, { rotated: true }));
+    assert.equal(cycled.state, 'nothingFinished');
+    assert.equal(cycled.reason.key, 'dpage.state.seedsCycled');
+    assert.equal(D.stateOf(merged(historyResponse(), null), FLAGS, { rotated: true }).state, 'ready', 'only a random answer');
+    // past every ANALYZED finished song, the rest awaiting the scan: the
+    // end of the cycle too — not "this server hasn't analyzed any music"
+    const pending = { ...historyResponse(), notAnalyzed: true, seeds: [seed('u1', 'U', 'A', { analyzed: false })], library: { filter: 'fresh', tracks: [], albums: [], capped: false } };
+    const rest = collect(D.stateOf(merged(pending, null), FLAGS, { rotated: true }));
+    assert.equal(rest.state, 'nothingFinished');
+    assert.equal(rest.reason.key, 'dpage.state.seedsCycled');
+    assert.equal(D.stateOf(merged(pending, null), FLAGS).state, 'scanPending', 'without a rotation: the scan is pending');
   });
 
   test('the library empty: one line, and the Include-songs button while the filter is fresh', () => {

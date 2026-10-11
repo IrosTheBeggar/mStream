@@ -3872,6 +3872,18 @@ const discoveryView = {
                       // load draws no connected-server skeleton column
   nowPlaying: null,   // the song pinned when the page opened
   skipped: [],        // random picks passed over with "Another pick" (this visit)
+  rotation: [],       // history seeds passed over with "New seeds" (the bar's
+                      // ⟳; DISCOVERYPAGE.nextRotation): sent in exclude, never
+                      // remembered, never drawn as dropped. Cleared by the
+                      // press after an answer that ended the cycle; reset on
+                      // a fresh open, a page, window or filter change, a drop
+                      // or restore, and a pin change.
+  mainAsked: { passed: [], rotated: false }, // what the answer ON SCREEN was
+                      // asked with: its skips + rotation (left out of its
+                      // `excluded`), and whether a rotation was in it. Not
+                      // the live lists — a reset empties those while the
+                      // old answer is still drawn, busy.
+  peersPassed: [],    // the same for the peers answer (a partial draw)
   main: undefined,    // the library+network answer: undefined = none yet
   peers: undefined,   // the peers answer
   peersAsked: false,
@@ -4017,13 +4029,18 @@ function discoveryPanel(opts) {
     v.nowPlaying = np;
     v.pins = np ? [np] : [];
     v.skipped = [];
+    v.rotation = [];
     v.allSeeds = false;
     v.optionsOpen = false;
     v.more = { library: DISCOVERYPAGE.PAGE_SIZE, peers: DISCOVERYPAGE.PAGE_SIZE };
     // An answer past the client TTL is not shown again, even for a moment.
+    // (A kept one keeps what it was asked with: its skips and rotation
+    // stay out of its `excluded` until the new answer lands.)
     if (Date.now() - v.at > DISCOVERYPAGE.CLIENT_TTL_MS) {
       v.main = undefined;
       v.peers = undefined;
+      v.mainAsked = { passed: [], rotated: false };
+      v.peersPassed = [];
       v.key = '';
       v.badgeRows = [];
       v.badges = new Map();
@@ -4032,6 +4049,9 @@ function discoveryPanel(opts) {
   // The other page's answer is not this one's (each asks its own sources).
   if (page !== v.page) {
     v.page = page;
+    v.rotation = [];
+    v.mainAsked = { passed: [], rotated: false };
+    v.peersPassed = [];
     v.main = undefined;
     v.peers = undefined;
     v.key = '';
@@ -4099,11 +4119,13 @@ async function redoDiscovery(opts) {
   // Remember only against known prefs (an unknown account might persist:
   // this browser's stale drop list must not be merged into it).
   let remember = o.remember === true && v.prefsKnown;
-  // The random picks passed over stay passed over — but are never saved,
-  // and `remember` would save every exclusion sent with it. A window or
-  // filter change that has skips to carry saves its prefs with a PUT and
-  // asks without `remember`.
-  if (remember && v.skipped.length && !(o.exclude && o.exclude.length)) {
+  // The random picks passed over (and the seeds "New seeds" went past) stay
+  // passed over — but are never saved, and `remember` would save every
+  // exclusion sent with it. A window or filter change that has skips to
+  // carry saves its prefs with a PUT and asks without `remember`.
+  const passed = [...v.skipped, ...v.rotation];
+  const asked = { passed, rotated: v.rotation.length > 0 };
+  if (remember && passed.length && !(o.exclude && o.exclude.length)) {
     remember = false;
     if (v.prefs.persisted === true) {
       MSTREAMAPI.discoveryTastePrefsSave({ window: v.prefs.window, filter: v.prefs.filter, staleDays: v.prefs.staleDays }).catch(() => null);
@@ -4113,7 +4135,7 @@ async function redoDiscovery(opts) {
     page: v.page,
     prefs: v.prefs,
     pins: v.pins,
-    exclude: remember ? (o.exclude || []) : [...v.skipped, ...(o.exclude || [])],
+    exclude: remember ? (o.exclude || []) : [...passed, ...(o.exclude || [])],
     remember,
     ignoreVPaths: localIgnoreVPaths(),
     // the album strip's share and three pages of songs ("Show more"); the
@@ -4155,6 +4177,7 @@ async function redoDiscovery(opts) {
   const mainP = MSTREAMAPI.discoveryTaste(reqs.main).catch(() => null).then((res) => {
     if (!current()) { return; }
     v.main = res;
+    v.mainAsked = asked;
     v.at = Date.now();
     v.pending.main = false;
     if (res && typeof res === 'object' && res.disabled !== true) { v.lastRandom = res.seedSource === 'random'; }
@@ -4165,6 +4188,7 @@ async function redoDiscovery(opts) {
   const peersP = !reqs.peers ? Promise.resolve() : MSTREAMAPI.discoveryTaste(reqs.peers).catch(() => null).then((res) => {
     if (!current()) { return; }
     v.peers = res;
+    v.peersPassed = asked.passed;
     v.pending.peers = false;
     if (discoveryOnScreen()) { renderDiscovery(); }
   });
@@ -4194,13 +4218,16 @@ async function discoveryOff() {
   if (discoveryOnScreen()) { renderDiscovery(); }
 }
 
-// The two answers as one, minus the "Another pick" skips in `excluded`
-// (they are this visit's, not drops the user should see).
+// The two answers as one, minus the "Another pick" skips and the "New
+// seeds" rotation in `excluded` (they are this visit's, not drops the user
+// should see) — the lists each answer was ASKED with: a reset empties the
+// live rotation while the old answer is still drawn.
 function discoveryResponse() {
   const v = discoveryView;
   const res = DISCOVERYPAGE.mergeResponses(v.main, v.peers, v.peersAsked);
-  if (!res || typeof res !== 'object' || res.disabled === true || !v.skipped.length || !Array.isArray(res.excluded)) { return res; }
-  return Object.assign({}, res, { excluded: res.excluded.filter((e) => !e || v.skipped.indexOf(e.hash) === -1) });
+  const passed = [...v.mainAsked.passed, ...v.peersPassed];
+  if (!res || typeof res !== 'object' || res.disabled === true || !passed.length || !Array.isArray(res.excluded)) { return res; }
+  return Object.assign({}, res, { excluded: res.excluded.filter((e) => !e || passed.indexOf(e.hash) === -1) });
 }
 
 // What the user already did with a network lead ("getting it · 64%"): one
@@ -4295,7 +4322,7 @@ function renderDiscovery() {
   const res = discoveryResponse();
   const prefs = v.prefs || D.defaultPrefs();
   const page = v.page === 'explore' ? 'explore' : 'play';
-  const st = D.stateOf(res, v.flags, { page, filter: prefs.filter, staleDays: prefs.staleDays });
+  const st = D.stateOf(res, v.flags, { page, filter: prefs.filter, staleDays: prefs.staleDays, rotated: v.mainAsked.rotated === true });
   v.shown = { chips: [], excluded: [], tracks: [], allTracks: [], network: [], peers: [], allPeers: [], peerAlbums: [] };
 
   if (st.state === 'off') {
@@ -4321,10 +4348,21 @@ function renderDiscovery() {
   } else {
     if (st.state === 'nothingFinished') {
       const dropped = st.reason && st.reason.key === 'dpage.state.allDropped';
-      const acts = [['another', 'dpage.verb.anotherPick', true], ['pick', 'dpage.verb.chooseSong'], ['browse', 'dpage.verb.browseLibrary']];
+      const cycled = st.reason && st.reason.key === 'dpage.state.seedsCycled';
+      // (past every analyzed song, the rest awaiting the scan: no random
+      // pick to replace)
+      const pending = cycled && res && res.notAnalyzed === true;
+      const acts = [['pick', 'dpage.verb.chooseSong'], ['browse', 'dpage.verb.browseLibrary']];
+      if (!pending) { acts.unshift(['another', 'dpage.verb.anotherPick', !cycled]); }
       // Every seed dropped: the way back ("Use again") sits in the picker.
       if (dropped) { acts.splice(1, 0, ['editSeeds', 'dpage.seeds.edit']); }
-      html += discoveryCardHtml(discoveryT(st.reason), t(dropped ? 'dpage.state.allDroppedBody' : 'dpage.state.nothingFinishedBody'), acts);
+      // "New seeds" went past every finished song: the next press starts
+      // again from the newest (data-v keeps the keyboard on this button,
+      // not the bar's, across the redraw).
+      if (cycled) { acts.unshift(['refresh', 'dpage.verb.newSeeds', true, 'card']); }
+      const body = pending ? 'dpage.state.seedsCycledPendingBody'
+        : (cycled ? 'dpage.state.seedsCycledBody' : (dropped ? 'dpage.state.allDroppedBody' : 'dpage.state.nothingFinishedBody'));
+      html += discoveryCardHtml(discoveryT(st.reason), t(body), acts);
     } else if (st.state === 'scanPending') {
       const acts = [['retry', 'dpage.verb.checkAgain']];
       if (MSTREAMAPI.currentServer.admin === true) { acts.push(['admin', 'dpage.verb.adminEnrichment']); }
@@ -4359,7 +4397,7 @@ function discoveryFocusedSelector() {
   return sel;
 }
 
-// The configuration bar: the window, "More options" and refresh.
+// The configuration bar: the window, "More options" and "New seeds" (⟳).
 function discoveryHeadHtml(prefs) {
   const opts = DISCOVERYPAGE.windowOptions(prefs.window)
     .map((o) => `<option value="${escapeHtml(o.value)}"${o.selected ? ' selected' : ''}>${escapeHtml(discoveryT(o.label))}</option>`).join('');
@@ -4369,7 +4407,7 @@ function discoveryHeadHtml(prefs) {
     <label class="dpage-window"><span>${escapeHtml(t('dpage.basedOnLast'))}</span><select class="browser-default" data-dp-change="window">${opts}</select></label>
     <span class="dpage-bar-r">
       <button type="button" class="dpage-bar-opt" data-dp="options" aria-expanded="${open ? 'true' : 'false'}"${open ? ' aria-controls="dpage-options"' : ''}>${escapeHtml(t(open ? 'dpage.bar.fewerOptions' : 'dpage.bar.moreOptions'))}<span class="dpage-bar-caret" aria-hidden="true">${open ? '&#9652;' : '&#9662;'}</span></button>
-      <button type="button" class="dpage-icon-btn" data-dp="refresh" title="${escapeHtml(t('dpage.verb.refresh'))}" aria-label="${escapeHtml(t('dpage.verb.refresh'))}">${DPAGE_ICONS.refresh}</button>
+      <button type="button" class="dpage-icon-btn" data-dp="refresh" title="${escapeHtml(t('dpage.verb.newSeeds'))}" aria-label="${escapeHtml(t('dpage.verb.newSeeds'))}">${DPAGE_ICONS.refresh}</button>
     </span>
   </div>`;
 }
@@ -4402,8 +4440,8 @@ function discoveryCheckHtml(act, on, label) {
 
 // One of the states' cards: a title, a body, its buttons ([act, key, primary]).
 function discoveryCardHtml(title, body, acts, note) {
-  const buttons = acts.map(([act, key, pri]) =>
-    `<button type="button" class="dpage-btn${pri ? ' pri' : ''}" data-dp="${escapeHtml(act)}">${escapeHtml(t(key))}</button>`).join('');
+  const buttons = acts.map(([act, key, pri, val]) =>
+    `<button type="button" class="dpage-btn${pri ? ' pri' : ''}" data-dp="${escapeHtml(act)}"${val ? ` data-v="${escapeHtml(val)}"` : ''}>${escapeHtml(t(key))}</button>`).join('');
   return `<div class="dpage-card">
     <div class="dpage-card-t">${escapeHtml(title)}</div>
     ${body ? `<div class="dpage-card-s">${escapeHtml(body)}</div>` : ''}
@@ -4735,6 +4773,7 @@ function onDiscoveryChange(ev) {
   const w = Number(el.value);
   if (!v.prefs || DISCOVERYPAGE.WINDOWS.indexOf(w) === -1) { return; }
   v.prefs = Object.assign({}, v.prefs, { window: w });
+  v.rotation = [];
   redoDiscovery({ remember: true });
 }
 
@@ -4814,15 +4853,25 @@ function discoveryAction(act, el) {
     const next = act === 'includePlayedOn' ? D.filterFor(true) : D.includePlayedOption(v.prefs.filter).next;
     if (v.prefs.filter === next) { return; }
     v.prefs = Object.assign({}, v.prefs, { filter: next });
+    v.rotation = [];
     // Narrowed on the client at once; the re-ask replaces it.
     renderDiscovery();
     redoDiscovery({ remember: true });
   } else if (act === 'newArtists') {
     if (!v.prefs) { return; }
     v.prefs = Object.assign({}, v.prefs, { newArtistsOnly: v.prefs.newArtistsOnly !== true });
+    v.rotation = [];
     discoverySaveLocalPrefs();
     redoDiscovery();
-  } else if (act === 'refresh' || act === 'retry') {
+  } else if (act === 'refresh') {
+    // "New seeds": pass over the history seeds on screen (pins stay) and
+    // ask again; the answer on screen stays drawn (busy) until it lands.
+    // Room is left for what is sent beside it — the skips, and a drop list
+    // kept in this browser — so the server's trim never cuts a drop.
+    const local = v.prefs && v.prefs.persisted !== true && Array.isArray(v.prefs.exclude) ? v.prefs.exclude.length : 0;
+    v.rotation = D.nextRotation(v.rotation, v.main, D.EXCLUDE_CAP - v.skipped.length - local);
+    redoDiscovery({ force: true });
+  } else if (act === 'retry') {
     redoDiscovery({ force: true });
   } else if (act === 'drop') {
     const chip = v.shown.chips[i];
@@ -4833,6 +4882,7 @@ function discoveryAction(act, el) {
     if (!chip) { return; }
     const path = String(chip.filepath || '').replace(/^\/+/, '');
     v.pins = v.pins.filter((p) => p !== path);
+    v.rotation = [];
     redoDiscovery();
   } else if (act === 'restore') {
     discoveryRestoreSeed(v.shown.excluded[i]);
@@ -4857,6 +4907,7 @@ function discoveryAction(act, el) {
     }
     if (v.pins.indexOf(np) === -1) { v.pins.unshift(np); }
     v.nowPlaying = np;
+    v.rotation = [];
     redoDiscovery();
   } else if (act === 'pick') {
     discoveryPick();
@@ -4912,7 +4963,9 @@ function discoveryFocusFallbacks(sel) {
   const m = /^\[data-dp="showMore"\]\[data-v="(library|peers)"\]$/.exec(sel);
   const from = m && discoveryView.moreFrom ? discoveryView.moreFrom[m[1]] : undefined;
   const row = m && from != null ? [`[data-dp="${m[1] === 'library' ? 'play' : 'peerPlay'}"][data-i="${from}"]`] : [];
-  return [...row, '[data-dp="includePlayed"]', '[data-dp="options"]'];
+  // the cycled card's New seeds, gone once the new seeds land: the bar's
+  const bar = sel === '[data-dp="refresh"][data-v="card"]' ? ['[data-dp="refresh"]'] : [];
+  return [...row, ...bar, '[data-dp="includePlayed"]', '[data-dp="options"]'];
 }
 
 function discoveryRefocus(...sels) {
@@ -4928,6 +4981,7 @@ async function discoveryDropSeed(hash) {
   const v = discoveryView;
   if (!await discoveryEnsurePrefs()) { return; }
   v.prefs = DISCOVERYPAGE.dropSeed(v.prefs, hash);
+  v.rotation = [];
   discoverySaveLocalPrefs();
   redoDiscovery({ exclude: [hash], remember: true });
   iziToast.show({
@@ -4948,6 +5002,7 @@ async function discoveryRestoreSeed(item) {
   if (!item || !item.hash || !v.prefs) { return; }
   if (!await discoveryEnsurePrefs()) { return; }
   v.prefs = D.restoreSeed(v.prefs, item.hash);
+  v.rotation = [];
   discoverySaveLocalPrefs();
   if (v.prefs.persisted === true) {
     const gen = browseGeneration;
@@ -4983,7 +5038,10 @@ function discoveryPick() {
   const capture = (song) => {
     sonicPathHideBanner();
     const path = String((song && song.filepath) || '').replace(/^\/+/, '');
-    if (path && discoveryView.pins.indexOf(path) === -1) { discoveryView.pins.push(path); }
+    if (path && discoveryView.pins.indexOf(path) === -1) {
+      discoveryView.pins.push(path);
+      discoveryView.rotation = [];
+    }
     back();
   };
   capture.dpage = true;

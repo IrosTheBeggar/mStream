@@ -29,6 +29,15 @@
  *   - a random seed draws the "finish a few songs" card, and Another pick
  *     re-asks with that pick excluded (never remembered); dropping a seed
  *     re-asks with exclude + remember;
+ *   - the bar's ⟳ is "New seeds": each press re-asks with the history seeds
+ *     on screen added to a visit-only rotation in exclude (never
+ *     remembered, never a pin, never drawn as dropped), the old answer
+ *     drawn busy until the new one lands (a reset meanwhile never draws
+ *     the passed-over seeds as dropped); a random, pins-only or
+ *     not-analyzed answer ends the cycle and the next press starts from
+ *     the newest; a window / filter / pin change, a drop or restore, a
+ *     picked song, "new artists only", a page switch and a fresh open
+ *     reset it; the keyboard stays on the cycled card's New seeds;
  *   - discoveryPanel({ page: 'explore' }) still asks the network alone and
  *     draws its list, its "new artists only" and its job badges (a poll
  *     tick patches only the badges that changed);
@@ -1252,6 +1261,330 @@ describe('Discover page: the configuration bar', () => {
     assert.deepEqual(tasteCalls(calls).slice(before)[0].pin, ['music/Now/Playing.flac', 'music/P/Picked.flac']);
     assert.equal(S.view.optionsOpen, true);
     assert.ok(seedsSection(S.html()).includes('data-dp="pick"'), 'the picker shows the result');
+  });
+});
+
+describe('Discover page: New seeds (the bar\'s ⟳)', () => {
+  const fin = (n) => ({ hash: `f${n}`, filepath: `music/F/${n}.flac`, metadata: { title: `Fin ${n}`, artist: 'Hal' }, outcome: 'completed', lastPlayed: '2026-10-04T21:10:00.000Z', plays: 1, pinned: false, analyzed: true });
+  // The server's pick (src/api/discovery-taste.js collectSeeds): the pins,
+  // then the next two finished songs not excluded; none left → the pins
+  // alone, then (no pin) the finished songs the worker has not analyzed
+  // (notAnalyzed: no suggestions), or a random pick. Every exclusion is
+  // listed in `excluded`.
+  const server = (count, { unanalyzed = 0 } = {}) => (body) => {
+    const ex = new Set(body.exclude || []);
+    const pins = (body.pin || []).includes('music/Now/Playing.flac') ? [SEEDS[0]] : [];
+    const history = Array.from({ length: count }, (_, i) => fin(i + 1)).filter((s) => !ex.has(s.hash)).slice(0, 2);
+    const waiting = !pins.length && !history.length
+      ? Array.from({ length: unanalyzed }, (_, i) => ({ ...fin(50 + i), hash: `u${i + 1}`, analyzed: false })).filter((s) => !ex.has(s.hash)).slice(0, 2)
+      : [];
+    const random = !pins.length && !history.length && !waiting.length;
+    const res = {
+      ...MAIN, seedSource: random ? 'random' : (history.length || waiting.length ? 'history' : 'pinned'), fallback: random,
+      seeds: random ? [{ ...fin(99), hash: 'r1', outcome: null }] : [...pins, ...history, ...waiting],
+      excluded: [...ex].map((h) => ({ hash: h, filepath: `music/G/${h}.flac`, metadata: { title: `Gone ${h}` } })),
+      notAnalyzed: waiting.length > 0,
+      library: waiting.length ? { ...MAIN.library, albums: [], tracks: [] } : MAIN.library,
+      network: random ? null : MAIN.network,
+    };
+    return body.sources.includes('peers') ? { ...PEERS, ...res, library: null, network: null, peers: random ? null : PEERS.peers } : res;
+  };
+  // Holds the server's answers while `hold()` is on (the page in flight).
+  const gated = (base) => {
+    let gate = null;
+    let open = () => {};
+    return {
+      taste: (b) => (gate ? gate.then(() => base(b)) : base(b)),
+      hold: () => { gate = new Promise((r) => { open = r; }); },
+      release: () => { const o = open; gate = null; o(); },
+    };
+  };
+  const settle = async () => { await flush(); await flush(); await flush(); };
+  const mains = (calls) => tasteCalls(calls).filter((b) => b.sources.includes('library'));
+  const press = async (click) => { click({ 'data-dp': 'refresh' }); await flush(); await flush(); };
+
+  test('the bar\'s button says what it does: "New seeds" (title and aria-label)', async () => {
+    const { S } = makeSandbox({ taste: server(6) });
+    await S.discoveryPanel();
+    const btn = findDrawn(S.html(), { 'data-dp': 'refresh' });
+    assert.equal(btn.attrs.title, 'dpage.verb.newSeeds');
+    assert.equal(btn.attrs['aria-label'], 'dpage.verb.newSeeds');
+  });
+
+  test('a press re-asks without the history seeds on screen (never remembered, pins kept); a second press leaves out both sets', async () => {
+    const { S, calls, click } = makeSandbox({ taste: server(6), playing: PLAYING });
+    await S.discoveryPanel();
+    assert.equal(mains(calls)[0].exclude, undefined);
+    let before = tasteCalls(calls).length;
+    await press(click);
+    let next = tasteCalls(calls).slice(before);
+    assert.equal(next.length, 2, 'the library and the connected servers, as at open');
+    for (const b of next) {
+      assert.deepEqual(b.exclude, ['f1', 'f2']);
+      assert.equal(b.remember, undefined, 'a rotation is never saved');
+      assert.deepEqual(b.pin, ['music/Now/Playing.flac'], 'the pin stays a seed');
+    }
+    before = tasteCalls(calls).length;
+    await press(click);
+    next = tasteCalls(calls).slice(before);
+    assert.deepEqual(next.map((b) => b.exclude), [['f1', 'f2', 'f3', 'f4'], ['f1', 'f2', 'f3', 'f4']]);
+    assert.ok(!next.some((b) => b.exclude.includes('h-np')), 'a pin is never excluded');
+    assert.equal(calls.filter((c) => c.name === 'prefsSave').length, 0, 'no PUT either');
+  });
+
+  test('the picker shows the new seeds — and no "dropped" chips for the ones passed over', async () => {
+    const { S, click } = makeSandbox({ taste: server(6), playing: PLAYING });
+    await S.discoveryPanel();
+    openOptions(click);
+    assert.match(seedsSection(S.html()), /Fin 1[\s\S]*Fin 2/);
+    await press(click);
+    const seeds = seedsSection(S.html());
+    assert.match(seeds, /Now Song[\s\S]*Fin 3[\s\S]*Fin 4/, 'the pin, then the next finished songs');
+    assert.ok(!/Fin [12]\b/.test(seeds), 'the passed-over seeds are gone from the strip');
+    assert.ok(!S.html().includes('Gone '), 'never drawn as dropped');
+    assert.ok(!S.html().includes('data-dp="moreSeeds"'), 'no Edit seeds for them');
+    assert.ok(!S.html().includes('dpage-dropped'));
+  });
+
+  test('past every finished song: the random pick says so, and the next press starts again from the newest', async () => {
+    const { S, calls, click } = makeSandbox({ taste: server(3) });
+    await S.discoveryPanel();
+    await press(click);
+    assert.deepEqual(mains(calls).at(-1).exclude, ['f1', 'f2']);
+    await press(click);
+    assert.deepEqual(mains(calls).at(-1).exclude, ['f1', 'f2', 'f3']);
+    // the server widened all the way to a random pick
+    const html = S.html();
+    assert.match(html, /dpage-card[\s\S]*dpage\.state\.seedsCycled[\s\S]*dpage\.state\.seedsCycledBody/);
+    assert.ok(!html.includes('dpage.state.nothingFinished'), 'not "finish a few songs": they did');
+    assert.ok(!html.includes('dpage.state.allDropped'), 'nor "every one dropped"');
+    assert.match(html, /class="dpage-btn pri" data-dp="refresh" data-v="card">dpage\.verb\.newSeeds/, 'the card offers New seeds first');
+    assert.match(html, /data-dp="another">dpage\.verb\.anotherPick/);
+    // a cycle, not a dead end
+    await press(click);
+    assert.equal(mains(calls).at(-1).exclude, undefined);
+    assert.deepEqual(S.view.rotation, []);
+    assert.deepEqual(S.view.main.seeds.map((x) => x.hash), ['f1', 'f2'], 'the newest finished songs again');
+    assert.ok(!S.html().includes('dpage-card'), 'the card is gone');
+    await press(click);
+    assert.deepEqual(mains(calls).at(-1).exclude, ['f1', 'f2'], 'and round again');
+  });
+
+  test('with a pin: past every finished song the pins alone seed — and the next press starts over too', async () => {
+    const { S, calls, click } = makeSandbox({ taste: server(2), playing: PLAYING });
+    await S.discoveryPanel();
+    await press(click);
+    assert.deepEqual(mains(calls).at(-1).exclude, ['f1', 'f2']);
+    assert.equal(S.view.main.seedSource, 'pinned');
+    await press(click);
+    assert.equal(mains(calls).at(-1).exclude, undefined);
+  });
+
+  test('Another pick on the cycled card keeps the rotation (and adds its skip); still never remembered', async () => {
+    const { S, calls, click } = makeSandbox({ taste: server(2) });
+    await S.discoveryPanel();
+    await press(click);
+    click({ 'data-dp': 'another' });
+    await flush(); await flush();
+    const last = mains(calls).at(-1);
+    assert.deepEqual(last.exclude, ['r1', 'f1', 'f2']);
+    assert.equal(last.remember, undefined);
+  });
+
+  test('a window change, the checkbox, a pin change, a drop and a fresh open each start from the newest again', async () => {
+    const { S, calls, click, change } = makeSandbox({ taste: server(6), playing: PLAYING });
+    await S.discoveryPanel();
+    await press(click);
+    change({ 'data-dp-change': 'window' }, '90');
+    await flush(); await flush();
+    let last = mains(calls).at(-1);
+    assert.equal(last.window, 90);
+    assert.equal(last.exclude, undefined, 'the rotation is gone');
+    assert.equal(last.remember, true, 'the window is still remembered');
+
+    await press(click);
+    openOptions(click);
+    click({ 'data-dp': 'includePlayed' });
+    await flush(); await flush();
+    last = mains(calls).at(-1);
+    assert.equal(last.filter, 'all');
+    assert.equal(last.exclude, undefined);
+
+    await press(click);
+    click({ 'data-dp': 'unpin', 'data-i': 0 });
+    await flush(); await flush();
+    last = mains(calls).at(-1);
+    assert.equal(last.pin, undefined);
+    assert.equal(last.exclude, undefined);
+
+    await press(click);
+    click({ 'data-dp': 'drop', 'data-i': 0 });
+    await flush(); await flush();
+    last = mains(calls).at(-1);
+    assert.deepEqual(last.exclude, ['f3'], 'the drop alone, as before');
+    assert.equal(last.remember, true);
+    assert.deepEqual(S.view.rotation, []);
+
+    await press(click);
+    assert.ok(S.view.rotation.length > 0);
+    await S.discoveryPanel();
+    assert.deepEqual(S.view.rotation, []);
+    assert.equal(mains(calls).at(-1).exclude, undefined);
+  });
+
+  test('the answer on screen stays drawn (busy, not loading) until the new one lands', async () => {
+    let release;
+    const late = new Promise((r) => { release = r; });
+    let n = 0;
+    const base = server(6);
+    const { S, click } = makeSandbox({
+      taste: (b) => {
+        if (!b.exclude) { return base(b); }
+        n++;
+        return late.then(() => {
+          const res = base(b);
+          return res.library ? { ...res, library: { ...MAIN.library, tracks: [{ ...MAIN.library.tracks[0], metadata: { title: 'Fresh Pick', artist: 'New' } }] } } : res;
+        });
+      },
+      playing: PLAYING,
+    });
+    await S.discoveryPanel();
+    assert.match(S.html(), /Title Seven/);
+    click({ 'data-dp': 'refresh' });
+    await flush();
+    assert.equal(n, 2, 'asked');
+    let html = S.html();
+    assert.match(html, /<div class="dpage dpage-page-play dpage-busy">/, 'busy');
+    assert.ok(!PAGE_BUSY.test(html), 'not the loading state');
+    assert.match(html, /Title Seven/, 'the old rows stay');
+    assert.ok(!/dpage-skel/.test(html), 'no skeletons');
+    release();
+    await flush(); await flush(); await flush();
+    html = S.html();
+    assert.match(html, /Fresh Pick/);
+    assert.ok(!html.includes('dpage-busy'));
+  });
+
+  test('a reset while the old answer is drawn: its passed-over seeds never show as dropped (the cycled card, a window change)', async () => {
+    const g = gated(server(3));
+    const { S, click, change } = makeSandbox({ taste: g.taste });
+    await S.discoveryPanel();
+    await press(click);
+    await press(click);
+    assert.match(S.html(), /dpage\.state\.seedsCycled/);
+    // New seeds from the cycled card: the rotation starts over at once, the
+    // random answer stays drawn — as the cycled card, not "all dropped"
+    g.hold();
+    click({ 'data-dp': 'refresh', 'data-v': 'card' });
+    await flush();
+    assert.deepEqual(S.view.rotation, []);
+    let html = S.html();
+    assert.ok(html.includes('dpage-busy'), 'in flight');
+    assert.match(html, /dpage\.state\.seedsCycled/);
+    assert.ok(!html.includes('dpage.state.allDropped'), 'never "every song was dropped"');
+    assert.ok(!html.includes('data-dp="editSeeds"'));
+    g.release();
+    await settle();
+    assert.ok(!S.html().includes('dpage-card'), 'the newest finished songs again');
+
+    // rotate once, then change the window: the busy picker lists no drops
+    await press(click);
+    openOptions(click);
+    g.hold();
+    change({ 'data-dp-change': 'window' }, '90');
+    await flush();
+    html = S.html();
+    assert.ok(html.includes('dpage-busy'));
+    assert.ok(!html.includes('data-dp="moreSeeds"'), 'no Edit seeds for the passed-over songs');
+    assert.ok(!html.includes('Gone '), 'nor a Use again chip');
+    g.release();
+    await settle();
+    assert.ok(!S.html().includes('Gone '));
+  });
+
+  test('songs the worker has not analyzed end the cycle: said so (no "nothing analyzed yet"), then the newest again', async () => {
+    const { S, calls, click } = makeSandbox({ taste: server(2, { unanalyzed: 5 }) });
+    await S.discoveryPanel();
+    await press(click);
+    assert.deepEqual(mains(calls).at(-1).exclude, ['f1', 'f2']);
+    const html = S.html();
+    assert.match(html, /dpage-card[\s\S]*dpage\.state\.seedsCycled[\s\S]*dpage\.state\.seedsCycledPendingBody/);
+    assert.ok(!html.includes('dpage.state.scanPending'), 'not "this server hasn\'t analyzed any music"');
+    assert.ok(!html.includes('data-dp="admin"') && !html.includes('dpage.verb.checkAgain'));
+    assert.ok(!html.includes('data-dp="another"'), 'no random pick to replace');
+    assert.match(html, /class="dpage-btn pri" data-dp="refresh" data-v="card">dpage\.verb\.newSeeds/);
+    await press(click);
+    assert.equal(mains(calls).at(-1).exclude, undefined, 'a cycle: the unanalyzed songs are never stepped through');
+    assert.deepEqual(S.view.main.seeds.map((x) => x.hash), ['f1', 'f2']);
+    // without a rotation the same answer is the real scan-pending state
+    const fresh = makeSandbox({ taste: () => server(0, { unanalyzed: 2 })({ sources: ['library'] }) });
+    await fresh.S.discoveryPanel();
+    assert.match(fresh.S.html(), /dpage\.state\.scanPending/);
+  });
+
+  test('the keyboard on the cycled card\'s New seeds stays on it while in flight, then lands on the bar\'s', async () => {
+    const g = gated(server(2));
+    const { S, click, keyClick, activeAttrs } = makeSandbox({ taste: g.taste });
+    await S.discoveryPanel();
+    await press(click);
+    g.hold();
+    keyClick({ 'data-dp': 'refresh', 'data-v': 'card' });
+    await flush();
+    assert.equal(activeAttrs()['data-v'], 'card', 'the card is still drawn (busy): its button keeps the focus');
+    g.release();
+    await settle();
+    assert.equal(activeAttrs()['data-dp'], 'refresh');
+    assert.equal(activeAttrs()['data-v'], undefined, 'the card is gone: the bar\'s ⟳');
+  });
+
+  test('a restore, + Now playing, a picked song, a page switch and "new artists only" start from the newest again', async () => {
+    const base = server(6);
+    const { S, calls, click, views, vpc } = makeSandbox({
+      // one remembered drop to restore (the server lists it in excluded)
+      taste: (b) => { const r = base(b); return { ...r, excluded: [{ hash: 'gone', filepath: 'music/G/Gone.flac', metadata: { title: 'Kept Out' } }, ...r.excluded] }; },
+      playing: PLAYING,
+      prefs: { window: 30, filter: 'fresh', staleDays: 90, exclude: ['gone'], persisted: true },
+    });
+    await S.discoveryPanel();
+    const reset = (what) => {
+      assert.deepEqual(S.view.rotation, [], what);
+      assert.equal(tasteCalls(calls).at(-1).exclude, undefined, what);
+    };
+    await press(click);
+    openOptions(click);
+    click({ 'data-dp': 'moreSeeds' });
+    assert.ok(!S.html().includes('Gone '), 'only the real drop is listed');
+    click({ 'data-dp': 'restore', 'data-i': 0 });
+    await settle();
+    reset('restore');
+
+    await press(click);
+    click({ 'data-dp': 'unpin', 'data-i': 0 });
+    await settle();
+    await press(click);
+    assert.ok(S.view.rotation.length > 0);
+    click({ 'data-dp': 'addPlaying' });
+    await settle();
+    reset('+ Now playing');
+
+    await press(click);
+    click({ 'data-dp': 'pick' });
+    S.setState([{ state: 'fileExplorer' }]);
+    vpc.songCapture({ filepath: '/music/P/Picked.flac' });
+    await views[views.length - 1]();
+    await settle();
+    reset('a picked song');
+
+    await press(click);
+    await S.discoveryPanel({ page: 'explore', keep: true });
+    await settle();
+    reset('the other page');
+    await press(click);
+    assert.ok(S.view.rotation.length > 0);
+    if (!S.view.optionsOpen) { openOptions(click); }
+    click({ 'data-dp': 'newArtists' });
+    await settle();
+    reset('new artists only');
   });
 });
 
