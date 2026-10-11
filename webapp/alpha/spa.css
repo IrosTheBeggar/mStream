@@ -2732,7 +2732,7 @@ body.on-federated-server .side-nav-note {
    window, "More options" → the one filter and the seed chips under it).
    Discover (play now): small labels with their source's dot — library
    #657ee4, connected servers #d9a441 — over album strips, then the songs
-   in two columns where the page's content box is ≥ 900 px (the @container
+   in two columns where the page's content box is ≥ 560 px (a 1440 window with the Now Playing panel open) (the @container
    rule below, so the sidenav and the queue panel count), stacked under
    it. With no connected server the library's songs flow column-major over
    both columns. Explore (the network, #4fb8a8) keeps its section look. */
@@ -2845,10 +2845,22 @@ body.on-federated-server .side-nav-note {
 .dpage-more { display: inline-block; margin: 6px 0 0 16px; padding: 4px 0; background: transparent; border: 0; color: #8ea0f0; font-size: 12px; cursor: pointer; }
 .dpage-more:hover { color: #dfe3ea; }
 .dpage-more:focus { background-color: transparent; outline: none; }
-@container dpage (min-width: 900px) {
+@container dpage (min-width: 560px) {
   .dpage-songs:not(.dpage-songs-solo) { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   /* no connected server: rows 1–8 left, 9–16 right (m.js columnBlocks) */
   .dpage-flow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: repeat(var(--dpage-per, 8), auto); grid-auto-flow: column; column-gap: 32px; }
+}
+/* In the two-column range on a pointer device the hidden verbs would
+   otherwise reserve their width inside a ~300 px column and clip every
+   title: they float over the row's right end on hover instead (the row
+   and the verbs share the hover ground). Touch keeps them inline and
+   always visible (the hover: none rule below). */
+@container dpage (min-width: 560px) and (max-width: 899px) {
+  @media (hover: hover) {
+    .dpage-row { position: relative; }
+    .dpage-verbs { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); padding-left: 10px; background: #1e222a; pointer-events: none; }
+    .dpage-row:hover .dpage-verbs, .dpage-row:focus-within .dpage-verbs { pointer-events: auto; }
+  }
 }
 
 /* rows' hover verbs */

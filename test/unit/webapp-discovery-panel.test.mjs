@@ -1463,8 +1463,8 @@ describe('Discover page: wiring', () => {
   test('spa.css: the columns follow the page\'s own width (a container query), the no-federation flow is column-major, the phone tabs are gone', () => {
     const page = css.slice(css.indexOf('/* ── The Discover page'));
     assert.match(page, /\.dpage \{[^}]*container-type: inline-size;[^}]*container-name: dpage;/);
-    const wide = page.slice(page.indexOf('@container dpage (min-width: 900px)'));
-    assert.ok(page.includes('@container dpage (min-width: 900px)'));
+    const wide = page.slice(page.indexOf('@container dpage (min-width: 560px)'));
+    assert.ok(page.includes('@container dpage (min-width: 560px)'));
     assert.match(wide, /\.dpage-songs:not\(\.dpage-songs-solo\) \{ grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\); \}/);
     assert.match(wide, /\.dpage-flow \{[^}]*grid-template-rows: repeat\(var\(--dpage-per, 8\), auto\);[^}]*grid-auto-flow: column;/);
     for (const gone of ['.dpage-seg', '.dpage-album-badge', '.dpage-album-w', '.dpage-when', '.dpage-count', '.dpage-peer-dot', '.dpage-tagline', '.dpage-back', '.dpage-vb-peer']) {
