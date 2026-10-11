@@ -1244,6 +1244,9 @@
   "dpage.subtitle": "matched by sound to what you finished",
   "dpage.matchedBySound": "matched by sound",
   "dpage.basedOnLast": "Based on the last",
+  "dpage.bar.moreOptions": "More options",
+  "dpage.bar.fewerOptions": "Fewer options",
+  "dpage.bar.seedsWait": "The seeds show here once the server answers.",
   "dpage.window.days": {
     "one": "1 day",
     "other": "{{count}} days"
@@ -1451,10 +1454,10 @@
   "dpage.state.nothingFinished": "Finish a few songs and this page learns your taste",
   "dpage.state.nothingFinishedBody": "Discover seeds itself from songs you play to the end. Skipped songs never count. Until there are some, here are suggestions around a random pick from your library — press refresh for another.",
   "dpage.state.allDropped": "Every song you finished was dropped from the seeds",
-  "dpage.state.allDroppedBody": "Until you bring one back under Edit seeds, here are suggestions around a random pick from your library.",
+  "dpage.state.allDroppedBody": "Until you bring one back with Edit seeds (also under More options), here are suggestions around a random pick from your library.",
   "dpage.state.scanPending": "This server hasn’t analyzed any music yet",
   "dpage.state.scanPendingBody": "Suggestions appear once the discovery scan has run over your library. It runs after a library scan; an admin can start it from Admin → Database → Enrichment.",
-  "dpage.state.seedsListedAnyway": "your seeds are listed anyway — only the sources wait",
+  "dpage.state.seedsListedAnyway": "your seeds are under More options anyway — only the sources wait",
   "dpage.state.off": "Sonic discovery has been switched off on this server.",
   "dpage.state.offBody": "An admin turns it on under Admin → Database → Enrichment → Discovery embeddings. Your listening history is kept; this page wakes up with the flag.",
   "dpage.state.unavailable": "Discover isn’t available for this account.",

@@ -8,6 +8,10 @@
  *     saved prefs once, and draws the seed chips, the three sections, the
  *     library's album cards and song rows, the network leads and the peer
  *     groups — every value escaped;
+ *   - the seed chips sit behind the gray bar's "More options" (the seed
+ *     picker), never in the body: the toggle flips its label and
+ *     aria-expanded, stays as left across re-renders within a visit, and
+ *     starts closed on a fresh open;
  *   - a random seed draws the "finish a few songs" card, and Another pick
  *     re-asks with that pick excluded (never remembered);
  *   - dropping a seed re-asks with exclude + remember; a filter chip
@@ -74,11 +78,11 @@ const FNS = ['escapeHtml', 'peerAttr', 'artUrl', 'artImgAttr', 'renderAlbum', 's
   'discoveryWatchJobs', 'discoveryMergeJobs', 'discoveryPatchBadges', 'discoveryLeadTag', 'discoveryPeerTag',
   'discoveryMatchOpts', 'discoveryDropSeed', 'discoveryT', 'discoveryText', 'discoveryOnScreen', 'discoveryNowPlayingPath',
   'discoveryLocalPrefs', 'discoverySaveLocalPrefs', 'discoveryPanel', 'redoDiscovery', 'discoveryOff',
-  'discoveryResponse', 'discoveryLoadBadges', 'renderDiscovery', 'discoveryHeadHtml', 'discoveryCardHtml',
+  'discoveryResponse', 'discoveryLoadBadges', 'renderDiscovery', 'discoveryHeadHtml', 'discoveryOptionsHtml', 'discoveryCardHtml',
   'discoverySeedsHtml', 'discoverySegHtml', 'discoverySectionHtml', 'discoveryEmptyHtml', 'discoverySeeAll',
   'discoveryMeter', 'discoveryLibraryHtml', 'discoveryBadgeHtml', 'discoveryProgressHtml',
   'discoveryNetworkHtml', 'discoveryPeersHtml', 'onDiscoveryChange', 'onDiscoveryClick', 'discoveryAction',
-  'discoveryRestoreSeed', 'discoveryQueueAll'];
+  'discoveryRestoreSeed', 'discoveryQueueAll', 'discoveryPick', 'discoveryRefocus'];
 
 const KNOWN_IDS = ['filelist', 'localSearchBar', 'directoryName', 'directory_bar',
   'local_search_btn', 'upload_btn', 'mkdir_btn', 'nav-discover'];
@@ -151,12 +155,19 @@ function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 
   const opened = [];
   const fedQueued = [];
   const toasts = [];
+  const views = [];
+  // focus() calls on a drawn data-dp control after a re-render, in order
+  const focused = [];
   const globals = {
     document: {
       body: { classList: bodyClasses },
       getElementById: (id) => els.get(id) ?? null,
       getElementsByClassName: () => [],
-      querySelector: () => null,
+      querySelector: (sel) => {
+        const m = sel.match(/^#filelist \.dpage \[data-dp="([^"]+)"\]$/);
+        if (!m || !els.get('filelist').innerHTML.includes(`data-dp="${m[1]}"`)) { return null; }
+        return { focus: () => { focused.push(m[1]); } };
+      },
     },
     window: {},
     localStorage: {
@@ -195,7 +206,8 @@ function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 
     getLoadingSvg: () => 'LOADING',
     sonicPathHideBanner: () => {},
     switchServer: () => { throw new Error('switchServer should not run on the local server'); },
-    changeView: () => {},
+    changeView: (fn) => { views.push(fn); },
+    showPickBanner: () => {},
     createPopper3: () => {},
     myModal: { open() {}, close() {} },
     openSavePlaylistModal: () => {},
@@ -239,8 +251,13 @@ function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 
   // A poll of the strip's job list: every live watch hears it.
   const tick = (list) => { currentJobs = list; for (const w of watchers.slice()) { if (w.live) { w.fn(list.slice()); } } };
   const liveWatches = () => watchers.filter((w) => w.live).length;
-  return { S, calls, storage, queued, opened, fedQueued, toasts, els, click, change, tick, liveWatches, watchers, patches, renders: () => renders, bodyClasses };
+  return { S, views, focused, vpc: globals.VUEPLAYERCORE, calls, storage, queued, opened, fedQueued, toasts, els, click, change, tick, liveWatches, watchers, patches, renders: () => renders, bodyClasses };
 }
+
+// The seed picker: open it from the bar ("More options").
+const openOptions = (click) => click({ 'data-dp': 'options' });
+// The markup of one drawn region (its opening tag up to the next region).
+const seedsSection = (html) => { const i = html.indexOf('<section class="dpage-seeds"'); return i === -1 ? '' : html.slice(i, html.indexOf('</section>', i)); };
 
 const tasteCalls = (calls) => calls.filter((c) => c.name === 'taste').map((c) => c.body);
 const flush = () => new Promise((r) => setImmediate(r));
@@ -314,9 +331,11 @@ describe('Discover page: opening it', () => {
     assert.equal(tasteCalls(calls)[0].pin, undefined);
   });
 
-  test('draws the seed chips, the three sections, album cards, song rows, leads and peer groups', async () => {
-    const { S } = makeSandbox({ taste: answer, playing: PLAYING });
+  test('draws the seed chips (behind More options), the three sections, album cards, song rows, leads and peer groups', async () => {
+    const { S, click } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
+    assert.ok(!S.html().includes('dpage-seeds'), 'no seed strip until More options');
+    openOptions(click);
     const html = S.html();
     // seeds: the pin reads "playing" and has an unpin ×; history seeds drop
     assert.match(html, /data-dp="unpin" data-i="0"/);
@@ -449,7 +468,7 @@ describe('Discover page: opening it', () => {
     const gate = new Promise((r) => { release = r; });
     const { S } = makeSandbox({ taste: (b) => gate.then(() => answer(b)) });
     const run = S.discoveryPanel();
-    assert.match(S.html(), /dpage-head[\s\S]*dpage-loading/);
+    assert.match(S.html(), /dpage-bar[\s\S]*dpage-loading/);
     assert.ok(!S.html().includes('LOADING'));
     release();
     await run;
@@ -465,6 +484,8 @@ describe('Discover page: states', () => {
   test('nothing finished: the card, a random chip with no ×, and Another pick re-asks without that pick', async () => {
     const { S, calls, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? { ...RANDOM, library: null } : RANDOM) });
     await S.discoveryPanel();
+    assert.ok(!S.html().includes('dpage-seeds'), 'the card, no seed strip');
+    openOptions(click);
     const html = S.html();
     assert.match(html, /dpage-card[\s\S]*dpage\.state\.nothingFinished/);
     assert.match(html, /data-dp="another"/);
@@ -503,14 +524,17 @@ describe('Discover page: states', () => {
     assert.equal(main.remember, undefined);
   });
 
-  test('scan pending: the card with Check again, the seeds still listed', async () => {
+  test('scan pending: the card with Check again, the seeds under More options', async () => {
     const pending = { ...MAIN, notAnalyzed: true, library: { filter: 'fresh', albums: [], tracks: [] }, network: { results: [], searched: { peers: 0 } } };
-    const { S } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? { ...pending, peers: { peers: [], searched: {} } } : pending) });
+    const { S, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? { ...pending, peers: { peers: [], searched: {} } } : pending) });
     await S.discoveryPanel();
+    assert.ok(!S.html().includes('dpage-seeds'), 'the card, no seed strip');
+    openOptions(click);
     const html = S.html();
     assert.match(html, /dpage\.state\.scanPending/);
+    assert.match(html, /dpage\.state\.seedsListedAnyway/);
     assert.match(html, /data-dp="retry"/);
-    assert.ok(html.includes('Seed &lt;One&gt;'), 'seeds are listed anyway');
+    assert.ok(seedsSection(html).includes('Seed &lt;One&gt;'), 'seeds are listed anyway, in the picker');
     assert.match(html, /dpage\.source\.waitingForScan/);
   });
 
@@ -519,12 +543,41 @@ describe('Discover page: states', () => {
     await S.discoveryPanel();
     assert.match(S.html(), /dpage\.state\.failed[\s\S]*data-dp="retry"/);
   });
+
+  test('every seed dropped: the card says so and its Edit seeds opens the picker on the dropped ones', async () => {
+    const ALL_DROPPED = { ...RANDOM, excluded: [{ hash: 'gone', filepath: 'music/G/Gone.flac', metadata: { title: 'Gone Song' } }] };
+    const { S, click, focused } = makeSandbox({
+      taste: (b) => (b.sources.includes('peers') ? { ...ALL_DROPPED, library: null } : ALL_DROPPED),
+      prefs: { window: 30, filter: 'fresh', staleDays: 90, exclude: ['gone'], persisted: true },
+    });
+    await S.discoveryPanel();
+    let html = S.html();
+    assert.match(html, /dpage-card[\s\S]*dpage\.state\.allDropped[\s\S]*dpage\.state\.allDroppedBody/);
+    assert.ok(!html.includes('dpage-seeds'), 'the picker starts closed');
+    assert.match(html, /data-dp="editSeeds">dpage\.seeds\.edit/);
+    for (const act of ['another', 'pick', 'browse']) { assert.ok(html.includes(`data-dp="${act}"`), act); }
+    click({ 'data-dp': 'editSeeds' });
+    html = S.html();
+    assert.equal(S.view.optionsOpen, true);
+    assert.equal(findDrawn(html, { 'data-dp': 'options' }).attrs['aria-expanded'], 'true');
+    assert.ok(seedsSection(html).includes('dpage-dropped'), 'the dropped seeds, with Use again');
+    assert.ok(findDrawn(seedsSection(html), { 'data-dp': 'restore', 'data-i': 0 }));
+    assert.deepEqual(focused, ['restore'], 'the keyboard lands on the first Use again');
+  });
+
+  test('a song still finished keeps the plain card (no Edit seeds button)', async () => {
+    const { S } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? { ...RANDOM, library: null } : RANDOM) });
+    await S.discoveryPanel();
+    assert.match(S.html(), /dpage\.state\.nothingFinishedBody/);
+    assert.ok(!S.html().includes('data-dp="editSeeds"'));
+  });
 });
 
 describe('Discover page: changes re-ask', () => {
   test('dropping a seed re-asks with exclude + remember, with an Undo', async () => {
     const { S, calls, click, toasts } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
+    openOptions(click);
     const before = tasteCalls(calls).length;
     click({ 'data-dp': 'drop', 'data-i': 1 });
     await flush(); await flush();
@@ -542,6 +595,7 @@ describe('Discover page: changes re-ask', () => {
   test('a persisting account never keeps the drop list in localStorage', async () => {
     const { S, click, storage } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
+    openOptions(click);
     click({ 'data-dp': 'drop', 'data-i': 1 });
     await flush(); await flush();
     const stored = JSON.parse(storage.get(DISCOVERYPAGE.STORAGE_KEYS.prefs));
@@ -554,6 +608,7 @@ describe('Discover page: changes re-ask', () => {
     const { S, calls, click, toasts } = makeSandbox({ taste: answer, playing: PLAYING, prefs: () => answers.shift() });
     await S.discoveryPanel();
     assert.equal(S.view.prefsKnown, false);
+    openOptions(click);
     let before = tasteCalls(calls).length;
     click({ 'data-dp': 'drop', 'data-i': 1 });
     await flush(); await flush();
@@ -584,6 +639,7 @@ describe('Discover page: changes re-ask', () => {
     const many = { ...MAIN, seeds: [...SEEDS, ...Array.from({ length: 8 }, (_, i) => ({ hash: `m${i}`, filepath: `music/M/${i}.flac`, metadata: { title: `More ${i}` }, outcome: 'completed', plays: 1, pinned: false, analyzed: true }))] };
     const { S, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : many) });
     await S.discoveryPanel();
+    openOptions(click);
     assert.match(S.html(), /data-dp="moreSeeds">dpage\.seeds\.more/);
     click({ 'data-dp': 'moreSeeds' });
     assert.match(S.html(), /data-dp="moreSeeds">dpage\.seeds\.showLess/);
@@ -603,9 +659,13 @@ describe('Discover page: changes re-ask', () => {
     assert.equal(main.remember, true);
   });
 
-  test('the window select re-asks with the window', async () => {
+  test('the window select lives in the bar (only) and re-asks with the window', async () => {
     const { S, calls, change } = makeSandbox({ taste: answer });
     await S.discoveryPanel();
+    const html = S.html();
+    const bar = html.slice(html.indexOf('<div class="dpage-bar">'), html.indexOf('</div>', html.indexOf('<div class="dpage-bar">')));
+    assert.match(bar, /dpage\.basedOnLast[\s\S]*data-dp-change="window"/);
+    assert.equal(html.split('data-dp-change="window"').length, 2, 'one window form');
     const before = tasteCalls(calls).length;
     change({ 'data-dp-change': 'window' }, '90');
     await flush(); await flush();
@@ -635,6 +695,190 @@ describe('Discover page: changes re-ask', () => {
     assert.match(S.html(), /data-dp="back"/);
     click({ 'data-dp': 'back' });
     assert.ok(S.html().includes('dpage-sec-network'));
+  });
+});
+
+describe('Discover page: the configuration bar', () => {
+  test('the bar: tagline, the window form, More options, then refresh — no seed strip in the body', async () => {
+    const { S } = makeSandbox({ taste: answer, playing: PLAYING });
+    await S.discoveryPanel();
+    const html = S.html();
+    const at = (s) => html.indexOf(s);
+    assert.ok(at('class="dpage-bar"') > 0);
+    assert.ok(at('dpage-tagline') > at('class="dpage-bar"'));
+    assert.ok(at('data-dp-change="window"') > at('dpage-tagline'));
+    assert.ok(at('data-dp="options"') > at('data-dp-change="window"'));
+    assert.ok(at('data-dp="refresh"') > at('data-dp="options"'), 'refresh at the far right');
+    const toggle = findDrawn(html, { 'data-dp': 'options' });
+    assert.equal(toggle.tag, 'button');
+    assert.equal(toggle.attrs['aria-expanded'], 'false');
+    assert.match(html, /data-dp="options"[^>]*>dpage\.bar\.moreOptions/);
+    assert.equal(toggle.attrs['aria-controls'], undefined, 'nothing to point at while closed');
+    for (const absent of ['dpage-seeds', 'dpage-options', 'dpage.seeds.title', 'data-dp="drop"', 'data-dp="unpin"', 'data-dp="moreSeeds"']) {
+      assert.ok(!html.includes(absent), absent);
+    }
+  });
+
+  test('no seed strip in the body in any state while closed', async () => {
+    const RANDOM = { ...MAIN, seedSource: 'random', fallback: true, network: null, peers: null, seeds: [{ hash: 'r1', filepath: 'music/R/Rand.flac', metadata: { title: 'Rand' }, outcome: null, plays: 0, pinned: false, analyzed: true }] };
+    const pending = { ...MAIN, notAnalyzed: true, library: { filter: 'fresh', albums: [], tracks: [] }, network: { results: [], searched: { peers: 0 } } };
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const loading = makeSandbox({ taste: (b) => gate.then(() => answer(b)) });
+    const run = loading.S.discoveryPanel();
+    assert.match(loading.S.html(), /dpage-loading/);
+    assert.ok(!loading.S.html().includes('dpage-seeds'), 'loading');
+    release();
+    await run;
+    // each case proves it reached its state before checking the absence
+    const reached = {
+      nothingFinished: /dpage-card[\s\S]*dpage\.state\.nothingFinished/,
+      scanPending: /dpage-card[\s\S]*dpage\.state\.scanPending/,
+      ready: /dpage-sec-library[\s\S]*data-dp="filter"/,
+      failed: /dpage-card[\s\S]*dpage\.state\.failed/,
+    };
+    for (const [name, taste] of [['nothingFinished', () => RANDOM], ['scanPending', () => pending], ['ready', answer], ['failed', () => null]]) {
+      const { S } = makeSandbox({ taste });
+      await S.discoveryPanel();
+      assert.match(S.html(), reached[name], `${name}: drawn`);
+      assert.ok(!S.html().includes('dpage-loading'), `${name}: not still loading`);
+      if (name === 'ready') { assert.ok(!S.html().includes('dpage-card'), 'ready: no state card'); }
+      assert.ok(!S.html().includes('dpage-seeds'), name);
+      assert.ok(S.html().includes('data-dp="options"'), `${name}: the bar is there`);
+    }
+  });
+
+  test('More options opens the seed picker under the bar; the toggle reads Fewer options, then closes it', async () => {
+    const { S, click } = makeSandbox({ taste: answer, playing: PLAYING });
+    await S.discoveryPanel();
+    openOptions(click);
+    let html = S.html();
+    const toggle = findDrawn(html, { 'data-dp': 'options' });
+    assert.equal(toggle.attrs['aria-expanded'], 'true');
+    assert.equal(toggle.attrs['aria-controls'], 'dpage-options');
+    assert.match(html, /data-dp="options"[^>]*>dpage\.bar\.fewerOptions/);
+    const bar = html.indexOf('class="dpage-bar"');
+    const panel = html.indexOf('class="dpage-options" id="dpage-options"');
+    const seeds = html.indexOf('class="dpage-seeds"');
+    const lib = html.indexOf('dpage-sec-library');
+    assert.ok(bar > 0 && panel > bar && seeds > panel && lib > seeds, 'bar, then the picker, then the sections');
+    assert.match(seedsSection(html), /dpage\.seeds\.title/);
+    assert.match(seedsSection(html), /data-dp="pick"/);
+    // the per-section toggles stay in their sections
+    assert.ok(!seedsSection(html).includes('data-dp="filter"'));
+    assert.ok(html.indexOf('data-dp="filter"') > lib);
+    openOptions(click);
+    html = S.html();
+    assert.equal(findDrawn(html, { 'data-dp': 'options' }).attrs['aria-expanded'], 'false');
+    assert.ok(!html.includes('dpage-seeds'));
+  });
+
+  test('while the answer is still coming, the open picker says so', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const { S, click } = makeSandbox({ taste: (b) => gate.then(() => answer(b)) });
+    const run = S.discoveryPanel();
+    openOptions(click);
+    assert.match(S.html(), /class="dpage-options"[^>]*><div class="dpage-hint">dpage\.bar\.seedsWait/);
+    assert.equal(S.html().split('dpage.state.loading').length - 1, 1, 'the loading line once, in the body');
+    release();
+    await run;
+    assert.ok(S.html().includes('class="dpage-seeds"'), 'the chips arrive in the open picker');
+  });
+
+  test('a failed call with the picker open: its own waiting line, the failed text once', async () => {
+    const { S, click } = makeSandbox({ taste: () => null });
+    await S.discoveryPanel();
+    openOptions(click);
+    const html = S.html();
+    assert.match(html, /class="dpage-options"[^>]*><div class="dpage-hint">dpage\.bar\.seedsWait/);
+    assert.equal(html.split('dpage.state.failed').length - 1, 1, 'the failed card only');
+    assert.match(html, /dpage-card[\s\S]*data-dp="retry"/);
+  });
+
+  test('the keyboard stays on the toggle (and on more/less) across the re-render', async () => {
+    const many = { ...MAIN, seeds: [...SEEDS, ...Array.from({ length: 8 }, (_, i) => ({ hash: `m${i}`, filepath: `music/M/${i}.flac`, metadata: { title: `More ${i}` }, outcome: 'completed', plays: 1, pinned: false, analyzed: true }))] };
+    const { S, click, focused } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : many) });
+    await S.discoveryPanel();
+    openOptions(click);
+    assert.deepEqual(focused, ['options']);
+    click({ 'data-dp': 'moreSeeds' });
+    assert.deepEqual(focused, ['options', 'moreSeeds']);
+    openOptions(click);
+    assert.deepEqual(focused, ['options', 'moreSeeds', 'options']);
+  });
+
+  test('the picker stays open across a drop, an Undo and a filter change, and starts closed on a fresh open', async () => {
+    const { S, click, toasts } = makeSandbox({ taste: answer, playing: PLAYING });
+    await S.discoveryPanel();
+    openOptions(click);
+    click({ 'data-dp': 'drop', 'data-i': 1 });
+    await flush(); await flush();
+    assert.ok(S.html().includes('class="dpage-seeds"'), 'still open after the drop');
+    toasts.find((o) => o.buttons).buttons[0][1]({ hide() {} }, {});
+    await flush(); await flush();
+    assert.ok(S.html().includes('class="dpage-seeds"'), 'still open after the Undo');
+    click({ 'data-dp': 'filter', 'data-v': 'unplayed' });
+    await flush(); await flush();
+    assert.ok(S.html().includes('class="dpage-seeds"'), 'still open after a re-render');
+    // a return to the page (an album opened from it, the song picker)
+    await S.discoveryPanel({ keep: true });
+    assert.ok(S.html().includes('class="dpage-seeds"'), 'a return keeps it');
+    // a nav click: a fresh visit
+    await S.discoveryPanel();
+    assert.equal(S.view.optionsOpen, false);
+    assert.ok(!S.html().includes('dpage-seeds'));
+    assert.match(S.html(), /data-dp="options"[^>]*>dpage\.bar\.moreOptions/);
+  });
+
+  test('inside the picker: + Now playing pins, × unpins, Edit seeds shows the dropped ones and Use again restores', async () => {
+    const dropped = { ...MAIN, excluded: [{ hash: 'gone', filepath: 'music/G/Gone.flac', metadata: { title: 'Gone Song' } }] };
+    const { S, calls, click } = makeSandbox({
+      // the now-playing seed comes back only while it is pinned
+      taste: (b) => (b.sources.includes('peers') ? PEERS : { ...dropped, seeds: b.pin ? SEEDS : SEEDS.slice(1) }),
+      playing: PLAYING,
+      prefs: { window: 30, filter: 'fresh', staleDays: 90, exclude: ['gone'], persisted: true },
+    });
+    await S.discoveryPanel();
+    // the pin was made at open: unpin it from inside the picker
+    openOptions(click);
+    assert.ok(!S.html().includes('data-dp="addPlaying"'), 'pinned already');
+    let before = tasteCalls(calls).length;
+    click({ 'data-dp': 'unpin', 'data-i': 0 });
+    await flush(); await flush();
+    assert.equal(tasteCalls(calls).slice(before)[0].pin, undefined);
+    before = tasteCalls(calls).length;
+    click({ 'data-dp': 'addPlaying' });
+    await flush(); await flush();
+    assert.deepEqual(tasteCalls(calls).slice(before)[0].pin, ['music/Now/Playing.flac']);
+    assert.ok(S.html().includes('class="dpage-seeds"'), 'still open');
+    // Edit seeds → the dropped list → Use again
+    click({ 'data-dp': 'moreSeeds' });
+    assert.ok(S.html().includes('dpage-dropped'));
+    before = tasteCalls(calls).length;
+    click({ 'data-dp': 'restore', 'data-i': 0 });
+    await flush(); await flush();
+    assert.deepEqual(calls.filter((c) => c.name === 'prefsSave').map((c) => c.body), [{ exclude: [] }]);
+    assert.ok(tasteCalls(calls).length > before, 're-asked');
+    assert.ok(S.html().includes('class="dpage-seeds"'), 'still open');
+  });
+
+  test('inside the picker: + Add a song… pins the picked song, and the page comes back with the picker open', async () => {
+    const { S, calls, click, views, vpc } = makeSandbox({ taste: answer, playing: PLAYING });
+    await S.discoveryPanel();
+    openOptions(click);
+    assert.ok(findDrawn(seedsSection(S.html()), { 'data-dp': 'pick' }), '+ Add a song… is in the picker');
+    click({ 'data-dp': 'pick' });
+    S.setState([{ state: 'fileExplorer' }]);
+    // the next row click anywhere is the capture; its way back is the page
+    assert.equal(typeof vpc.songCapture, 'function');
+    const before = tasteCalls(calls).length;
+    vpc.songCapture({ filepath: '/music/P/Picked.flac' });
+    await views[views.length - 1]();
+    await flush(); await flush();
+    assert.deepEqual(tasteCalls(calls).slice(before)[0].pin, ['music/Now/Playing.flac', 'music/P/Picked.flac']);
+    assert.equal(S.view.optionsOpen, true);
+    assert.ok(seedsSection(S.html()).includes('data-dp="pick"'), 'the picker shows the result');
   });
 });
 

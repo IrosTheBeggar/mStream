@@ -2728,19 +2728,31 @@ body.on-federated-server .side-nav-note {
 }
 
 /* ── The Discover page (m.js discoveryPanel) ─────────────────────────────
-   The history-seeded page in #browser: a title row, the seed chips, then
-   one section per source with its colour dot — library #657ee4, network
+   The history-seeded page in #browser: a gray configuration bar (the
+   window, "More options" → the seed chips under it), then one section
+   per source with its colour dot — library #657ee4, network
    #4fb8a8, peers #d9a441 — rows reusing the panel's .discover-row /
    .discover-match. ≤600 px: one source at a time behind .dpage-seg. */
 .dpage { padding: 0 0 16px 0; color: #dfe3ea; font-size: 13px; line-height: 1.4; }
 .dpage .grow { flex-grow: 1; }
 .dpage-busy .dpage-sec, .dpage-busy .dpage-seeds { opacity: .6; transition: opacity .15s; }
-.dpage-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 10px 14px 4px 14px; }
+/* the configuration bar: one quiet gray row (the sidenav's surface) */
+.dpage-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 6px 10px 6px 14px; background: #262a33; border-bottom: 1px solid #2c313a; font-size: 12px; }
+/* On a narrow bar the refresh icon wraps alone: it still keeps to the right. */
+.dpage-bar .dpage-icon-btn { margin-left: auto; }
+.dpage-bar-opt { height: 28px; padding: 0 4px; display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 0; border-radius: 4px; color: #8ea0f0; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.dpage-bar-opt:hover { color: #dfe3ea; }
+.dpage-bar-opt[aria-expanded="true"] { color: #dfe3ea; }
+.dpage-bar-caret { font-size: 10px; }
+/* the seed picker, opened from the bar */
+.dpage-options { background: #23282f; border-bottom: 1px solid #2c313a; }
+.dpage-options > .dpage-hint { padding-left: 14px; }
 .dpage-tagline { font-size: 12px; font-style: italic; color: #6f7683; }
 .dpage-back { font-size: 12px; color: #8ea0f0; white-space: nowrap; }
 .dpage-back:hover { color: #dfe3ea; }
 .dpage-window { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: #8a919e; }
-.dpage-window select.browser-default { height: 28px; padding: 0 8px; background: #262a33; border: 1px solid #444c56; border-radius: 4px; color: #F5F7FA; font-size: 13px; width: auto; }
+/* Its fill is the global select rule's (#2d333b, !important): a step up from the bar. */
+.dpage-window select.browser-default { height: 28px; padding: 0 8px; border: 1px solid #444c56; border-radius: 4px; color: #F5F7FA; font-size: 13px; width: auto; }
 .dpage-icon-btn { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 0; border-radius: 4px; color: #dfe3ea; cursor: pointer; }
 .dpage-icon-btn:hover { background: rgba(255, 255, 255, .08); }
 .dpage-hint { padding: 6px 14px 10px 26px; font-size: 12px; font-style: italic; color: #6f7683; }
@@ -2750,7 +2762,7 @@ body.on-federated-server .side-nav-note {
 .dpage-loading { padding-top: 14px; }
 
 /* seeds */
-.dpage-seeds { padding: 6px 14px 10px 14px; border-bottom: 1px solid #2c313a; }
+.dpage-seeds { padding: 10px 14px; }
 .dpage-seeds-h { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin-bottom: 8px; }
 .dpage-cap { font-size: 11px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; color: #8a919e; }
 .dpage-sub { font-size: 11.5px; font-style: italic; color: #6f7683; min-width: 0; }
@@ -2783,7 +2795,7 @@ body.on-federated-server .side-nav-note {
 
 /* sections */
 .dpage-sec { border-top: 1px solid #2c313a; }
-.dpage-seeds + .dpage-sec, .dpage-seg + .dpage-sec { border-top: 0; }
+.dpage-bar + .dpage-sec, .dpage-options + .dpage-sec, .dpage-seg + .dpage-sec { border-top: 0; }
 .dpage-sec-h { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 14px 14px 8px 14px; }
 .dpage-sec-h h3 { margin: 0; font-size: 11px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; color: #dfe3ea; line-height: 1.4; }
 .dpage-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: #657ee4; }
@@ -2829,9 +2841,16 @@ body.on-federated-server .side-nav-note {
 .dpage-vb-peer { border-color: #d9a441; color: #d9a441; }
 /* keyboard focus: the house outline (a mouse click draws none) */
 .dpage-tog:focus, .dpage-chip:focus, .dpage-btn:focus, .dpage-vb:focus, .dpage-icon-btn:focus,
-.dpage a:focus { outline: none; }
+.dpage-bar-opt:focus, .dpage a:focus { outline: none; }
+/* materialize paints every focused button teal (button:focus); a control
+   that was re-focused after a re-render, or tabbed to, keeps its own face. */
+.dpage-tog:focus, .dpage-icon-btn:focus, .dpage-bar-opt:focus { background-color: transparent; }
+.dpage-icon-btn:focus:hover { background-color: rgba(255, 255, 255, .08); }
+.dpage-chip:focus { background-color: #262b33; }
+.dpage-btn:not(.pri):focus { background-color: #1a1e25; }
+.dpage-vb:focus { background-color: #1a1e25; }
 .dpage-tog:focus-visible, .dpage-chip:focus-visible, .dpage-btn:focus-visible, .dpage-vb:focus-visible,
-.dpage-icon-btn:focus-visible, .dpage a:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
+.dpage-icon-btn:focus-visible, .dpage-bar-opt:focus-visible, .dpage a:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
 .dpage-badge { font-size: 11px; white-space: nowrap; flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
 .dpage-badge-src { color: #4fb8a8; }
 .dpage-sec-peers .dpage-badge-src { color: #d9a441; }
@@ -2883,7 +2902,9 @@ body.on-federated-server .discover-page-footer { display: none; }
   .dpage:not(.dpage-focused).dpage-show-network .dpage-sec:not(.dpage-sec-network),
   .dpage:not(.dpage-focused).dpage-show-peers .dpage-sec:not(.dpage-sec-peers) { display: none; }
   .dpage-sec { border-top: 0; }
-  .dpage-head, .dpage-seeds { padding-left: 12px; padding-right: 12px; }
+  .dpage-bar { padding-left: 12px; padding-right: 6px; }
+  .dpage-seeds { padding-left: 12px; padding-right: 12px; }
+  .dpage-options > .dpage-hint { padding-left: 12px; }
   .dpage-chip { height: 30px; font-size: 12px; }
   .dpage-chip-art { width: 22px; height: 22px; }
   .dpage-right { margin-left: 0; width: 100%; }

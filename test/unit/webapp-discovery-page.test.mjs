@@ -478,7 +478,7 @@ describe('agoLabel', () => {
     assert.equal(at(3, 'dpage.when').key, 'dpage.when.days');
     assert.equal(at(3, 'dpage.seen').key, 'dpage.seen.days');
     assert.equal(D.agoLabel(null, NOW, 'dpage.seen').key, 'dpage.seen.never');
-    assert.equal(D.agoLabel(ago(0), undefined).key, 'dpage.ago.today', 'now defaults to the clock');
+    assert.equal(D.agoLabel(new Date().toISOString(), undefined).key, 'dpage.ago.today', 'now defaults to the clock (the real one: the fixed NOW would age)');
   });
 });
 

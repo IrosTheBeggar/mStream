@@ -3869,6 +3869,7 @@ const discoveryView = {
   focus: null,        // null = the overview; 'library' | 'network' | 'peers' = See all
   source: null,       // the phone fold's one source
   allSeeds: false,    // "+ n more" opened (the dropped seeds show too)
+  optionsOpen: false, // the bar's "More options" opened (the seed picker shows)
   plugins: null,      // VUEPLAYERCORE.ensureDiscoverPlugins' answer
   badgeRows: [],      // network + peers rows with their job badges
   badges: new Map(),  // raw row → badge
@@ -3987,6 +3988,7 @@ function discoveryPanel(opts) {
     v.skipped = [];
     v.focus = null;
     v.allSeeds = false;
+    v.optionsOpen = false;
     // An answer past the client TTL is not shown again, even for a moment.
     if (Date.now() - v.at > DISCOVERYPAGE.CLIENT_TTL_MS) {
       v.main = undefined;
@@ -4268,6 +4270,9 @@ function renderDiscovery() {
   const busy = v.pending.main || v.pending.peers;
   let html = `<div class="dpage dpage-show-${escapeHtml(source)}${focus ? ' dpage-focused' : ''}${busy ? ' dpage-busy' : ''}">`;
   html += discoveryHeadHtml(prefs, focus);
+  // The seed picker sits behind the bar's "More options": a first-time
+  // user took the seed chips for songs to play.
+  if (v.optionsOpen) { html += discoveryOptionsHtml(st, res); }
 
   if (st.state === 'failed') {
     html += discoveryCardHtml(t('dpage.state.failed'), '', [['retry', 'dpage.verb.tryAgain', true]]);
@@ -4276,14 +4281,15 @@ function renderDiscovery() {
       html += `<div class="dpage-hint dpage-loading">${escapeHtml(t('dpage.state.loading'))}</div>`;
     } else if (st.state === 'nothingFinished') {
       const dropped = st.reason && st.reason.key === 'dpage.state.allDropped';
-      html += discoveryCardHtml(discoveryT(st.reason), t(dropped ? 'dpage.state.allDroppedBody' : 'dpage.state.nothingFinishedBody'),
-        [['another', 'dpage.verb.anotherPick', true], ['pick', 'dpage.verb.chooseSong'], ['browse', 'dpage.verb.browseLibrary']]);
+      const acts = [['another', 'dpage.verb.anotherPick', true], ['pick', 'dpage.verb.chooseSong'], ['browse', 'dpage.verb.browseLibrary']];
+      // Every seed dropped: the way back ("Use again") sits in the picker.
+      if (dropped) { acts.splice(1, 0, ['editSeeds', 'dpage.seeds.edit']); }
+      html += discoveryCardHtml(discoveryT(st.reason), t(dropped ? 'dpage.state.allDroppedBody' : 'dpage.state.nothingFinishedBody'), acts);
     } else if (st.state === 'scanPending') {
       const acts = [['retry', 'dpage.verb.checkAgain']];
       if (MSTREAMAPI.currentServer.admin === true) { acts.push(['admin', 'dpage.verb.adminEnrichment']); }
       html += discoveryCardHtml(discoveryT(st.reason), t('dpage.state.scanPendingBody'), acts, t('dpage.state.seedsListedAnyway'));
     }
-    if (st.state !== 'loading') { html += discoverySeedsHtml(res); }
     if (!focus && st.tabs.length > 1) { html += discoverySegHtml(st.tabs, source); }
     for (const name of (focus ? [focus] : D.SOURCES)) {
       const s = st.sources[name];
@@ -4302,17 +4308,31 @@ function renderDiscovery() {
   }
 }
 
-// Title row: the tagline, the window and refresh (and "back" in See all).
+// The configuration bar: the tagline ("back" in See all), the window,
+// "More options" (the seed picker) and refresh.
 function discoveryHeadHtml(prefs, focus) {
   const opts = DISCOVERYPAGE.windowOptions(prefs.window)
     .map((o) => `<option value="${escapeHtml(o.value)}"${o.selected ? ' selected' : ''}>${escapeHtml(discoveryT(o.label))}</option>`).join('');
-  return `<div class="dpage-head">
+  const open = discoveryView.optionsOpen === true;
+  return `<div class="dpage-bar">
     ${focus ? `<a href="javascript:void(0)" class="dpage-back" data-dp="back">&larr; ${escapeHtml(t('dpage.back'))}</a>` : ''}
     <span class="dpage-tagline">${escapeHtml(t('dpage.subtitle'))}</span>
     <span class="grow"></span>
     <label class="dpage-window"><span>${escapeHtml(t('dpage.basedOnLast'))}</span><select class="browser-default" data-dp-change="window">${opts}</select></label>
+    <button type="button" class="dpage-bar-opt" data-dp="options" aria-expanded="${open ? 'true' : 'false'}"${open ? ' aria-controls="dpage-options"' : ''}>${escapeHtml(t(open ? 'dpage.bar.fewerOptions' : 'dpage.bar.moreOptions'))}<span class="dpage-bar-caret" aria-hidden="true">${open ? '&#9652;' : '&#9662;'}</span></button>
     <button type="button" class="dpage-icon-btn" data-dp="refresh" title="${escapeHtml(t('dpage.verb.refresh'))}" aria-label="${escapeHtml(t('dpage.verb.refresh'))}">${DPAGE_ICONS.refresh}</button>
   </div>`;
+}
+
+// Under the bar while "More options" is open: the seed picker, or one dim
+// line while there is no answer to pick from.
+function discoveryOptionsHtml(st, res) {
+  // The body already says why (loading / failed): this line says only
+  // what the picker is waiting for.
+  const inner = st.state === 'loading' || st.state === 'failed'
+    ? `<div class="dpage-hint">${escapeHtml(t('dpage.bar.seedsWait'))}</div>`
+    : discoverySeedsHtml(res);
+  return `<div class="dpage-options" id="dpage-options">${inner}</div>`;
 }
 
 // One of the states' cards: a title, a body, its buttons ([act, key, primary]).
@@ -4640,9 +4660,19 @@ function discoveryAction(act, el) {
     redoDiscovery();
   } else if (act === 'restore') {
     discoveryRestoreSeed(v.shown.excluded[i]);
+  } else if (act === 'options') {
+    v.optionsOpen = !v.optionsOpen;
+    renderDiscovery();
+    discoveryRefocus('[data-dp="options"]');
+  } else if (act === 'editSeeds') {
+    v.optionsOpen = true;
+    v.allSeeds = true;
+    renderDiscovery();
+    discoveryRefocus('[data-dp="restore"]', '[data-dp="moreSeeds"]');
   } else if (act === 'moreSeeds') {
     v.allSeeds = !v.allSeeds;
     renderDiscovery();
+    discoveryRefocus('[data-dp="moreSeeds"]');
   } else if (act === 'addPlaying') {
     const np = discoveryNowPlayingPath();
     if (!np) {
@@ -4676,6 +4706,15 @@ function discoveryAction(act, el) {
     v.source = val;
     try { localStorage.setItem(D.STORAGE_KEYS.source, val); } catch (_) { /* this visit only */ }
     renderDiscovery();
+  }
+}
+
+// A re-render replaces the page's markup: put the keyboard back on the
+// control that asked for it (a disclosure toggle, the seeds' more/less).
+function discoveryRefocus(...sels) {
+  for (const sel of sels) {
+    const el = document.querySelector(`#filelist .dpage ${sel}`);
+    if (el && typeof el.focus === 'function') { el.focus(); return; }
   }
 }
 
