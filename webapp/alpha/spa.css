@@ -2729,37 +2729,38 @@ body.on-federated-server .side-nav-note {
 
 /* ── The Discover page (m.js discoveryPanel) ─────────────────────────────
    The history-seeded page in #browser: a gray configuration bar (the
-   window, "More options" → the seed chips under it), then one section
-   per source with its colour dot — library #657ee4, network
-   #4fb8a8, peers #d9a441 — rows reusing the panel's .discover-row /
-   .discover-match. ≤600 px: one source at a time behind .dpage-seg. */
-.dpage { padding: 0 0 16px 0; color: #dfe3ea; font-size: 13px; line-height: 1.4; }
+   window, "More options" → the one filter and the seed chips under it).
+   Discover (play now): small labels with their source's dot — library
+   #657ee4, connected servers #d9a441 — over album strips, then the songs
+   in two columns where the page's content box is ≥ 900 px (the @container
+   rule below, so the sidenav and the queue panel count), stacked under
+   it. With no connected server the library's songs flow column-major over
+   both columns. Explore (the network, #4fb8a8) keeps its section look. */
+.dpage { padding: 0 0 16px 0; color: #dfe3ea; font-size: 13px; line-height: 1.4; container-type: inline-size; container-name: dpage; }
 .dpage .grow { flex-grow: 1; }
-.dpage-busy .dpage-sec, .dpage-busy .dpage-seeds { opacity: .6; transition: opacity .15s; }
+.dpage-busy .dpage-sec, .dpage-busy .dpage-seeds, .dpage-busy .dpage-strip, .dpage-busy .dpage-songs { opacity: .6; transition: opacity .15s; }
 /* the configuration bar: one quiet gray row (the sidenav's surface) */
 .dpage-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 6px 10px 6px 14px; background: #262a33; border-bottom: 1px solid #2c313a; font-size: 12px; }
-/* On a narrow bar the refresh icon wraps alone: it still keeps to the right. */
-.dpage-bar .dpage-icon-btn { margin-left: auto; }
+.dpage-bar-r { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
 .dpage-bar-opt { height: 28px; padding: 0 4px; display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 0; border-radius: 4px; color: #8ea0f0; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .dpage-bar-opt:hover { color: #dfe3ea; }
 .dpage-bar-opt[aria-expanded="true"] { color: #dfe3ea; }
 .dpage-bar-caret { font-size: 10px; }
-/* the seed picker, opened from the bar */
+/* the drawer under the bar: the page's one checkbox, then the seed picker */
 .dpage-options { background: #23282f; border-bottom: 1px solid #2c313a; }
 .dpage-options > .dpage-hint { padding-left: 14px; }
-.dpage-tagline { font-size: 12px; font-style: italic; color: #6f7683; }
-.dpage-back { font-size: 12px; color: #8ea0f0; white-space: nowrap; }
-.dpage-back:hover { color: #dfe3ea; }
+.dpage-opt-row { padding: 10px 14px 0 14px; }
 .dpage-window { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: #8a919e; }
 /* Its fill is the global select rule's (#2d333b, !important): a step up from the bar. */
 .dpage-window select.browser-default { height: 28px; padding: 0 8px; border: 1px solid #444c56; border-radius: 4px; color: #F5F7FA; font-size: 13px; width: auto; }
 .dpage-icon-btn { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 0; border-radius: 4px; color: #dfe3ea; cursor: pointer; }
 .dpage-icon-btn:hover { background: rgba(255, 255, 255, .08); }
-.dpage-hint { padding: 6px 14px 10px 26px; font-size: 12px; font-style: italic; color: #6f7683; }
+/* dim, but AA on the page (a column's only line in some states) */
+.dpage-hint { padding: 6px 16px 10px 16px; font-size: 12px; font-style: italic; color: #8a919e; }
 .dpage-hint b { color: #dfe3ea; font-style: normal; }
 .dpage-hint a { color: #8ea0f0; font-style: normal; }
+.dpage-hint-btn { margin-left: 8px; font-style: normal; vertical-align: middle; }
 .dpage-off .dpage-hint { padding: 18px 14px; font-size: 13px; }
-.dpage-loading { padding-top: 14px; }
 
 /* seeds */
 .dpage-seeds { padding: 10px 14px; }
@@ -2793,52 +2794,72 @@ body.on-federated-server .side-nav-note {
 .dpage-btn.pri { background: #657ee4; border-color: #657ee4; color: #0f1216; font-weight: 600; }
 .dpage-btn.pri:hover { background: #8ea0f0; border-color: #8ea0f0; }
 
-/* sections */
-.dpage-sec { border-top: 1px solid #2c313a; }
-.dpage-bar + .dpage-sec, .dpage-options + .dpage-sec, .dpage-seg + .dpage-sec { border-top: 0; }
-.dpage-sec-h { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 14px 14px 8px 14px; }
-.dpage-sec-h h3 { margin: 0; font-size: 11px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; color: #dfe3ea; line-height: 1.4; }
+/* the one checkbox ("Include songs I've played lately" / "new artists
+   only"): a button with role=checkbox, its box drawn here */
+.dpage-tog { height: 28px; padding: 0 2px; border: 0; border-radius: 4px; background: transparent; color: #dfe3ea; font-size: 12.5px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.dpage-check i { width: 14px; height: 14px; border: 1px solid #444c56; border-radius: 3px; background: #1a1e25; flex-shrink: 0; position: relative; }
+.dpage-check.on i { background: #657ee4; border-color: #657ee4; }
+.dpage-check.on i::after { content: ''; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px; border: solid #0f1216; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.dpage-page-explore .dpage-check.on i { background: #4fb8a8; border-color: #4fb8a8; }
+
+/* the play page's labels: small letter-spaced caps after the source dot */
+.dpage-label { display: flex; align-items: center; gap: 10px; margin: 0; padding: 16px 16px 10px 16px; font-size: 12px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; color: #8a919e; line-height: 1.4; }
 .dpage-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: #657ee4; }
+.dpage-src-peers .dpage-dot { background: #d9a441; }
 .dpage-sec-network .dpage-dot { background: #4fb8a8; }
-.dpage-sec-peers .dpage-dot { background: #d9a441; }
-.dpage-count { font-size: 11px; color: #8a919e; background: #262b33; border-radius: 9px; padding: 1px 7px; }
-.dpage-right { margin-left: auto; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; font-size: 12px; }
-.dpage-link { font-size: 12px; color: #8ea0f0; white-space: nowrap; }
-.dpage-sec-network .dpage-link { color: #4fb8a8; }
-.dpage-sec-peers .dpage-link { color: #d9a441; }
-.dpage-link:hover { text-decoration: underline; }
-.dpage-togs { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-.dpage-tog { height: 24px; padding: 0 10px; border-radius: 12px; border: 1px solid #444c56; background: transparent; color: #8a919e; font-size: 11.5px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.dpage-tog i { width: 7px; height: 7px; border-radius: 50%; background: #657ee4; }
-.dpage-tog.on { border-color: #657ee4; color: #dfe3ea; }
-.dpage-tog:hover { color: #dfe3ea; }
-.dpage-tog-net i { background: #444c56; }
-.dpage-tog-net.on { border-color: #4fb8a8; }
-.dpage-tog-net.on i { background: #4fb8a8; }
-.dpage-subh { padding: 4px 14px 6px 26px; font-size: 11px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: #6f7683; }
 
-/* album strip: the grid's cards, one row that scrolls sideways (See all
-   wraps them as the Albums panel does) */
-.album-grid.dpage-albums { display: grid; grid-auto-flow: column; grid-auto-columns: 150px; grid-template-columns: none; overflow-x: auto; gap: 14px; padding: 0 14px 12px 26px; }
-.album-grid.dpage-albums.dpage-albums-all { grid-auto-flow: row; grid-auto-columns: auto; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); overflow-x: visible; }
-.dpage-album { position: relative; min-width: 0; }
-.dpage-album-badge { position: absolute; left: 8px; top: 8px; z-index: 1; font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 4px; background: #0f1216; color: #8ea0f0; pointer-events: none; }
-.dpage-album-w { padding: 2px 6px 0 6px; font-size: 11px; font-style: italic; color: #6f7683; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* album strips: the grid's cards, one row that scrolls sideways */
+.album-grid.dpage-albums { display: grid; grid-auto-flow: column; grid-auto-columns: 150px; grid-template-columns: none; overflow-x: auto; gap: 16px; padding: 0 16px 6px 16px; scroll-snap-type: x mandatory; scroll-padding-inline: 16px; }
+.dpage-album { position: relative; min-width: 0; scroll-snap-align: start; }
+/* the strips' play button: the source's accent; shown on hover, on keyboard
+   focus inside the card, and always where there is no hover */
+.dpage-src-library .album-grid-play { background: #657ee4; }
+.dpage-src-library .album-grid-play:hover, .dpage-src-library .album-grid-play:focus { background: #8ea0f0; }
+.dpage-src-peers .album-grid-play { background: #d9a441; }
+.dpage-src-peers .album-grid-play:hover, .dpage-src-peers .album-grid-play:focus { background: #e6b85c; }
+.dpage .album-grid-play svg { fill: #0f1216; }
+.dpage .album-grid-card:focus-within .album-grid-play { opacity: 1; transform: translateY(0); }
+.dpage .album-grid-play:focus { outline: none; }
+.dpage .album-grid-play:focus-visible, .dpage-peer-card:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
+.dpage-peer-card:focus { outline: none; }
+.dpage-peer-card:focus-visible { border-radius: 8px; }
+.dpage-skel-card i { display: block; aspect-ratio: 1; border-radius: 8px; background: #262b33; }
+.dpage-skel-card b { display: block; height: 10px; width: 70%; margin-top: 8px; border-radius: 3px; background: #262b33; }
+.dpage-skel-card b + b { width: 45%; }
 
-/* rows: the panel's .discover-row, with a when-column and hover verbs */
-.dpage-row { min-height: 36px; }
-.dpage-row-off { opacity: .55; }
-.dpage-when, .dpage-tag { font-size: 11px; color: #6f7683; white-space: nowrap; flex-shrink: 0; }
+/* the songs: library | connected servers */
+.dpage-songs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 32px; padding-top: 4px; }
+.dpage-col { min-width: 0; }
+.dpage-rows { padding: 0 8px; }
+.dpage-row { min-height: 52px; gap: 12px; padding: 6px 6px 6px 8px; border-radius: 4px; }
+.dpage-songs .discover-row-title { font-size: 13px; color: #F5F7FA; }
+.dpage-songs .discover-row-sub { font-size: 12px; }
+.dpage-art { width: 40px; height: 40px; border-radius: 3px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #2d333b; }
+.dpage-art img { width: 100%; height: 100%; object-fit: cover; }
+.dpage-art-ph { background: #262a33; border: 1px solid #444c56; box-sizing: border-box; color: #8a919e; }
+.dpage-skel-row { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 6px 8px; }
+.dpage-skel-row i { width: 40px; height: 40px; border-radius: 3px; background: #262b33; flex-shrink: 0; }
+.dpage-skel-row span { flex-grow: 1; }
+.dpage-skel-row b { display: block; height: 10px; width: 46%; margin: 4px 0; border-radius: 3px; background: #262b33; }
+.dpage-skel-row b + b { width: 30%; }
+.dpage-more { display: inline-block; margin: 6px 0 0 16px; padding: 4px 0; background: transparent; border: 0; color: #8ea0f0; font-size: 12px; cursor: pointer; }
+.dpage-more:hover { color: #dfe3ea; }
+.dpage-more:focus { background-color: transparent; outline: none; }
+@container dpage (min-width: 900px) {
+  .dpage-songs:not(.dpage-songs-solo) { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  /* no connected server: rows 1–8 left, 9–16 right (m.js columnBlocks) */
+  .dpage-flow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: repeat(var(--dpage-per, 8), auto); grid-auto-flow: column; column-gap: 32px; }
+}
+
+/* rows' hover verbs */
+.dpage-tag { font-size: 11px; color: #6f7683; white-space: nowrap; flex-shrink: 0; }
 .dpage-new { color: #4fb8a8; }
-/* the library's when-label in the sub-line: phones only (the column folds) */
-.dpage-when-sub { display: none; }
 /* a row's badge and bar slots (patched in place on a job poll): no box */
 .dpage-slot { display: contents; }
 .dpage-verbs { display: flex; align-items: center; gap: 6px; flex-shrink: 0; opacity: 0; transition: opacity .12s; }
 .dpage-row:hover .dpage-verbs, .dpage-row:focus-within .dpage-verbs { opacity: 1; }
 .dpage-vb { height: 26px; min-width: 26px; padding: 0 8px; border-radius: 4px; border: 1px solid #444c56; background: #1a1e25; color: #dfe3ea; font-size: 11.5px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; cursor: pointer; white-space: nowrap; }
 .dpage-vb:hover { border-color: #8ea0f0; color: #f0f2f5; }
-.dpage-vb-peer { border-color: #d9a441; color: #d9a441; }
 /* keyboard focus: the house outline (a mouse click draws none) */
 .dpage-tog:focus, .dpage-chip:focus, .dpage-btn:focus, .dpage-vb:focus, .dpage-icon-btn:focus,
 .dpage-bar-opt:focus, .dpage a:focus { outline: none; }
@@ -2850,39 +2871,30 @@ body.on-federated-server .side-nav-note {
 .dpage-btn:not(.pri):focus { background-color: #1a1e25; }
 .dpage-vb:focus { background-color: #1a1e25; }
 .dpage-tog:focus-visible, .dpage-chip:focus-visible, .dpage-btn:focus-visible, .dpage-vb:focus-visible,
-.dpage-icon-btn:focus-visible, .dpage-bar-opt:focus-visible, .dpage a:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
+.dpage-icon-btn:focus-visible, .dpage-bar-opt:focus-visible, .dpage-more:focus-visible, .dpage a:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
 .dpage-badge { font-size: 11px; white-space: nowrap; flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
 .dpage-badge-src { color: #4fb8a8; }
-.dpage-sec-peers .dpage-badge-src { color: #d9a441; }
 .dpage-badge-ok { color: #4fc27a; }
 .dpage-badge-err { color: #e0616a; }
 .dpage-prog { height: 3px; background: #262b33; border-radius: 2px; margin-top: 4px; overflow: hidden; }
 .dpage-prog i { display: block; height: 100%; background: #4fb8a8; border-radius: 2px; }
-.dpage-sec-peers .dpage-prog i { background: #d9a441; }
-.dpage-skel { padding: 4px 14px 10px 26px; }
-.dpage-skel i { display: block; height: 10px; width: 46%; margin: 8px 0; border-radius: 3px; background: #262b33; }
-.dpage-skel i + i { width: 30%; }
-.dpage-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 18px; padding: 6px 14px 10px 26px; font-size: 11.5px; font-weight: 600; }
+/* the columns' footers: dim links */
+.dpage-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 6px 16px 4px 16px; font-size: 12px; }
 .dpage-foot a { color: #8a919e; }
 .dpage-foot a:hover { color: #dfe3ea; }
 .dpage-foot a.dpage-foot-pri { color: #657ee4; }
 .dpage-foot a.dpage-foot-pri:hover { color: #8ea0f0; }
+.dpage-src-peers .dpage-foot a.dpage-foot-pri { color: #d9a441; }
+.dpage-sep { color: #6f7683; }
 .dpage-foot-note { margin-left: auto; font-weight: 400; font-style: italic; color: #6f7683; }
-.dpage-plugins { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0 14px 6px 26px; font-size: 11px; color: #6f7683; }
+
+/* Explore: the network section */
+.dpage-sec { border-top: 1px solid #2c313a; }
+.dpage-bar + .dpage-sec, .dpage-options + .dpage-sec { border-top: 0; }
+.dpage-sec-h { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 14px 14px 8px 14px; }
+.dpage-sec-h h3 { margin: 0; font-size: 11px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; color: #dfe3ea; line-height: 1.4; }
+.dpage-plugins { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0 16px 6px 16px; font-size: 11px; color: #6f7683; }
 .dpage-plugin b { color: #b8bcc6; font-weight: 600; }
-
-/* peers: one line per paired server */
-.dpage-peer { display: flex; align-items: center; gap: 8px; padding: 10px 14px 2px 26px; font-size: 11.5px; color: #b8bcc6; }
-.dpage-peer-dot { width: 6px; height: 6px; border-radius: 50%; background: #4fc27a; flex-shrink: 0; }
-.dpage-peer-dot.off { background: #e0616a; }
-.dpage-peer-dot.mis { background: #6f7683; }
-.dpage-peer-off { opacity: .7; }
-.dpage-peer-m { color: #6f7683; font-style: italic; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* the phone fold's switch: the panel's .discover-seg, hidden on wider
-   screens */
-.discover-seg.dpage-seg { display: none; margin: 8px 12px; }
-.discover-seg.dpage-seg > a { padding: 6px; font-size: 12px; }
 
 /* the now-playing panel's "Discover page →": where the ping has the page */
 .discover-page-footer { display: none; }
@@ -2891,28 +2903,28 @@ body.on-federated-server .discover-page-footer { display: none; }
 .discover-page-link { font-size: 11.5px; font-weight: 600; color: #8ea0f0; }
 .discover-page-link:hover { color: #dfe3ea; }
 
-/* no hover (a touch screen, any width): the verbs stay */
+/* no hover (a touch screen, any width): the verbs stay, with room to tap */
 @media (hover: none) {
   .dpage-verbs { opacity: 1; }
+  .dpage .album-grid-play { opacity: 1; transform: translateY(0); }
+  .dpage-vb { min-width: 40px; height: 40px; }
 }
 
 @media (max-width: 600px) {
-  .discover-seg.dpage-seg { display: flex; }
-  .dpage:not(.dpage-focused).dpage-show-library .dpage-sec:not(.dpage-sec-library),
-  .dpage:not(.dpage-focused).dpage-show-network .dpage-sec:not(.dpage-sec-network),
-  .dpage:not(.dpage-focused).dpage-show-peers .dpage-sec:not(.dpage-sec-peers) { display: none; }
-  .dpage-sec { border-top: 0; }
-  .dpage-bar { padding-left: 12px; padding-right: 6px; }
-  .dpage-seeds { padding-left: 12px; padding-right: 12px; }
-  .dpage-options > .dpage-hint { padding-left: 12px; }
+  .dpage-bar { padding: 6px 16px; }
+  .dpage-bar .grow { display: none; }
+  .dpage-bar-r { flex: 1 0 100%; justify-content: flex-end; }
+  .dpage-seeds, .dpage-opt-row { padding-left: 16px; padding-right: 16px; }
+  .dpage-options > .dpage-hint { padding-left: 16px; }
   .dpage-chip { height: 30px; font-size: 12px; }
   .dpage-chip-art { width: 22px; height: 22px; }
-  .dpage-right { margin-left: 0; width: 100%; }
-  .dpage-hint, .dpage-subh, .dpage-foot, .dpage-peer, .dpage-skel, .dpage-plugins { padding-left: 14px; }
-  .album-grid.dpage-albums { grid-auto-columns: 120px; padding-left: 14px; }
   /* no hover on a phone: the verbs stay; the row's own tap queues */
   .dpage-verbs { opacity: 1; }
-  .dpage-when { display: none; }
-  .dpage-when-sub { display: inline; }
   .dpage-foot-note { margin-left: 0; width: 100%; }
+}
+/* a narrow content box (a phone, or the sidenav and queue open on a tablet):
+   smaller cards and art */
+@container dpage (max-width: 600px) {
+  .album-grid.dpage-albums { grid-auto-columns: 120px; gap: 12px; }
+  .dpage-art, .dpage-skel-row i { width: 36px; height: 36px; }
 }

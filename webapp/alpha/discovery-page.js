@@ -1,9 +1,15 @@
 // The Discover page's pure half (docs/discovery-page-plan.md §4.1): the two
 // request bodies the page sends to POST /api/v1/discovery/taste, and what
-// the answer looks like on screen — the seed chips and the "based on …"
-// line, the library's album cards and song rows, the network rows, the
-// per-peer groups, the job badges on those rows, and which state the page
-// (and each source) is in. No DOM, no Vue, no fetch, no storage — m.js
+// the answer looks like on screen — the seed chips, the library's album
+// cards and song rows, the connected servers' (federation) album cards and
+// song rows, the column slicing behind "Show more", the network rows and
+// the job badges on them, and which state the page (and each source) is in.
+//
+// Two pages share it (2026-10-11): 'play' (Discover — songs you can play
+// now, from your library and your connected servers) and 'explore' (the
+// p2p network's leads, songs you don't have). They share the prefs and the
+// seeds; each asks only for its own sources (buildRequests' `page`).
+// No DOM, no Vue, no fetch, no storage — m.js
 // (discoveryPanel) wires it to the app; the unit test
 // (test/unit/webapp-discovery-page.test.mjs) drives it on node and holds the
 // contract constants to the server's (src/discovery/taste-queries.js). Same
@@ -34,6 +40,13 @@
   const WINDOWS = Object.freeze([7, 30, 90, 0]);   // days; 0 = all time
   const FILTERS = Object.freeze(['fresh', 'unplayed', 'all']);
   const SOURCES = Object.freeze(['library', 'network', 'peers']);
+  // The page's own filter: ONE checkbox, "Include songs I've played lately"
+  // — unticked = 'fresh' (unplayed, or not played in staleDays), ticked =
+  // 'all'. The server still takes 'unplayed', but the page never sends it:
+  // a saved 'unplayed' (and the old client spelling 'never') reads 'fresh'.
+  const PAGE_FILTERS = Object.freeze(['fresh', 'all']);
+  // 'play' = Discover (library + connected servers); 'explore' = the network.
+  const PAGES = Object.freeze(['play', 'explore']);
   const DEFAULT_PREFS = Object.freeze({ window: 30, filter: 'fresh', staleDays: 90 });
   const STALE_DAYS_MIN = 1;
   const STALE_DAYS_MAX = 3650;
@@ -48,22 +61,24 @@
   const LIMIT_MINS = Object.freeze({ seeds: 1, tracks: 0, albums: 0, network: 0, peers: 0 });
   // POST /api/v1/discovery/plugin-jobs/lookup/batch takes 1–100.
   const LOOKUP_BATCH_MAX = 100;
+  // A song column's first rows and each "Show more" step; an album strip's
+  // cards (one horizontal scroll row).
+  const PAGE_SIZE = 16;
+  const ALBUM_STRIP_MAX = 12;
 
   // What the page keeps in localStorage (names only — the panel reads and
   // writes them, in try/catch). `newArtistsOnly` is the Discover panel's own
   // key: one semantic, one knob, shared (plan §3.2). `prefs` mirrors the
   // window / filter / staleDays (and, where the server cannot persist —
-  // public-access mode — the dropped seeds) for the next visit; `source` is
-  // the one-source-at-a-time choice of the focused view and the phone fold.
+  // public-access mode — the dropped seeds) for the next visit.
   const STORAGE_KEYS = Object.freeze({
     prefs: 'discoverPagePrefs',
     newArtistsOnly: 'discoverNewArtistsOnly',
-    source: 'discoverPageSource',
   });
   // How long an answer may be shown again without asking (a revisit within
   // the server's own 5-minute section cache). Clients never poll.
   const CLIENT_TTL_MS = 5 * 60 * 1000;
-  // Seed chips drawn before "+ n more" (the canvas: now playing + 6).
+  // Seed chips drawn before "Show all" (the canvas: now playing + 6).
   const SEED_CHIPS_MAX = 7;
 
   const DAY_MS = 24 * 60 * 60 * 1000;
@@ -131,7 +146,12 @@
   // ── prefs ──────────────────────────────────────────────────────────────
 
   function cleanWindow(v) { const n = toInt(v); return n !== undefined && WINDOWS.indexOf(n) !== -1 ? n : undefined; }
-  function cleanFilter(v) { return FILTERS.indexOf(v) !== -1 ? v : undefined; }
+  // The page's filter from anything stored or answered: 'all' stays, 'fresh'
+  // / 'unplayed' / 'never' read 'fresh', anything else is unknown.
+  function pageFilter(v) {
+    if (v === 'all') { return 'all'; }
+    return v === 'fresh' || v === 'unplayed' || v === 'never' ? 'fresh' : undefined;
+  }
   function cleanStaleDays(v) { const n = toInt(v); return n !== undefined && n >= STALE_DAYS_MIN && n <= STALE_DAYS_MAX ? n : undefined; }
   const isHash = (h) => typeof h === 'string' && h.length > 0 && h.length <= HASH_MAX;
 
@@ -151,7 +171,7 @@
     const out = {};
     if (!isObj(p)) { return out; }
     const w = cleanWindow(p.window); if (w !== undefined) { out.window = w; }
-    const f = cleanFilter(p.filter); if (f !== undefined) { out.filter = f; }
+    const f = pageFilter(p.filter); if (f !== undefined) { out.filter = f; }
     const s = cleanStaleDays(p.staleDays); if (s !== undefined) { out.staleDays = s; }
     const e = cleanHashes(p.exclude); if (e !== undefined) { out.exclude = trimExclude(e); }
     if (typeof p.newArtistsOnly === 'boolean') { out.newArtistsOnly = p.newArtistsOnly; }
@@ -242,15 +262,21 @@
     return Object.keys(out).length ? out : null;
   }
 
-  // The page's two parallel calls (plan §3.1): library + network in one, so
-  // the library renders without waiting on a peer's 4 s deadline, peers in
-  // the other. Both carry the SAME seeds-shaping keys (window, pins,
-  // exclusions, scope, limits) so they agree on the seeds and share the
-  // server's section cache; only `sources` differs, and `remember` rides on
-  // the first alone (one write).
+  // The page's calls (plan §3.1). Every body carries the SAME seeds-shaping
+  // keys (window, pins, exclusions, scope, limits) so the two pages and the
+  // two calls agree on the seeds and share the server's section cache; only
+  // `sources` differs, and `remember` rides on `main` alone (one write).
+  //   page 'play'    (the default) main = { sources: ['library'] }, plus the
+  //                  separate peers call where federationDiscovery is on —
+  //                  so the library renders without waiting on a connected
+  //                  server's 4 s deadline
+  //   page 'explore' main = { sources: ['network'] } where discoveryP2p is
+  //                  on (both null where it is not: nothing to explore);
+  //                  never a peers call
   //   prefs          mergePrefs' answer (window / filter / staleDays / exclude /
   //                  newArtistsOnly / persisted)
   //   window, filter, staleDays, newArtistsOnly   this call's choice, over prefs
+  //                  (a filter of 'unplayed' / 'never' is sent as 'fresh')
   //   pinPath        now playing (string; a leading '/' is stripped)
   //   pins           songs the user picked (paths), after pinPath; ≤ 8 in all
   //   exclude        hashes dropped in THIS call (a persisting server merges
@@ -259,12 +285,14 @@
   //   ignoreVPaths   m.js localIgnoreVPaths()
   //   limits         { seeds, tracks, albums, network, peers }, clamped to the caps
   //   flags          { discovery, discoveryTaste, discoveryP2p, federationDiscovery }
-  // → { main, peers }: main = { sources: ['library'(, 'network')], … }, peers
-  // = { sources: ['peers'], … } or null; both null where the page is off.
+  // → { main, peers }: peers = { sources: ['peers'], … } or null; both null
+  // where the page is off.
   function buildRequests(opts) {
     const o = opts || {};
     const flags = o.flags || {};
+    const page = cleanPage(o.page);
     if (!pageAvailable(flags)) { return { main: null, peers: null }; }
+    if (page === 'explore' && flags.discoveryP2p !== true) { return { main: null, peers: null }; }
     const prefs = isObj(o.prefs) ? o.prefs : {};
     const p = cleanPrefs(prefs);
     const either = (a, b) => (a !== undefined ? a : b);
@@ -272,7 +300,7 @@
     const body = {};
     const w = either(cleanWindow(o.window), p.window);
     if (w !== undefined) { body.window = w; }
-    const f = either(cleanFilter(o.filter), p.filter);
+    const f = either(pageFilter(o.filter), p.filter);
     if (f !== undefined) { body.filter = f; }
     const s = either(cleanStaleDays(o.staleDays), p.staleDays);
     if (s !== undefined) { body.staleDays = s; }
@@ -292,7 +320,10 @@
     const ex = trimExclude(merged);
     if (ex.length) { body.exclude = ex; }
 
-    body.newArtistsOnly = typeof o.newArtistsOnly === 'boolean' ? o.newArtistsOnly : p.newArtistsOnly === true;
+    // The saved 'new artists only' is the Explore page's toggle (and the
+    // now-playing panel's): the play page draws no control for it, so it
+    // never thins that page's connected-server rows unseen.
+    body.newArtistsOnly = typeof o.newArtistsOnly === 'boolean' ? o.newArtistsOnly : (page === 'explore' && p.newArtistsOnly === true);
 
     if (Array.isArray(o.ignoreVPaths)) {
       body.ignoreVPaths = o.ignoreVPaths
@@ -302,11 +333,13 @@
     const limit = cleanLimits(o.limits);
     if (limit) { body.limit = limit; }
 
-    const main = Object.assign({ sources: flags.discoveryP2p === true ? ['library', 'network'] : ['library'] }, body);
+    const main = Object.assign({ sources: page === 'explore' ? ['network'] : ['library'] }, body);
     if (o.remember === true) { main.remember = true; }
-    const peers = flags.federationDiscovery === true ? Object.assign({ sources: ['peers'] }, body) : null;
+    const peers = page === 'play' && flags.federationDiscovery === true ? Object.assign({ sources: ['peers'] }, body) : null;
     return { main, peers };
   }
+
+  function cleanPage(v) { return PAGES.indexOf(v) !== -1 ? v : 'play'; }
 
   // A stable identity for a request body (key order and `remember` aside):
   // the page re-shows a kept answer only while the next request's key is the
@@ -324,7 +357,7 @@
   }
 
   // The two answers as one response for the views below.
-  //   main       the library+network answer: undefined = in flight, null =
+  //   main       the library (or, on explore, network) answer: undefined = in flight, null =
   //              failed, { disabled: true } = 403
   //   peersRes   the peers answer, same conventions
   //   peersAsked whether the peers call was made (buildRequests' `peers`)
@@ -348,37 +381,6 @@
     return out;
   }
 
-  // ── relative time ──────────────────────────────────────────────────────
-
-  // { key, params } for "when": never · today · n days · n months · n years
-  // ago. Families share the suffixes, so one rule draws every column:
-  //   dpage.ago.*   the LAST PLAYED column and the seeds sheet ("8 months ago")
-  //   dpage.when.*  a row's sub-line ("last played 8 months ago", "never played")
-  //   dpage.seen.*  a peer that is not answering ("last seen 2 days ago")
-  // Elapsed whole days, not calendar days: under 24 h is today; 1–29 days;
-  // then months of 30 days, never "12 months" (330–364 days read 11); then
-  // years of 365. A future time (clock skew) reads today.
-  function agoLabel(iso, now, family) {
-    const fam = family || 'dpage.ago';
-    const t = toMs(iso);
-    if (iso == null || iso === '' || !Number.isFinite(t)) { return lbl(fam + '.never'); }
-    const days = Math.floor(Math.max(0, nowMs(now) - t) / DAY_MS);
-    if (days < 1) { return lbl(fam + '.today'); }
-    if (days < 30) { return lbl(fam + '.days', { count: days }); }
-    if (days < 365) { return lbl(fam + '.months', { count: Math.min(11, Math.floor(days / 30)) }); }
-    return lbl(fam + '.years', { count: Math.floor(days / 365) });
-  }
-
-  // A library row's play facts: never played, else when — and a play the
-  // server holds no date for (a legacy counter) is "played before", never
-  // "never".
-  function playedWhen(playCount, lastPlayed, now, family) {
-    const fam = family || 'dpage.when';
-    if (!(Number(playCount) > 0)) { return lbl(fam + '.never'); }
-    if (!Number.isFinite(toMs(lastPlayed))) { return lbl(fam + '.undated'); }
-    return agoLabel(lastPlayed, now, fam);
-  }
-
   // ── seeds ──────────────────────────────────────────────────────────────
 
   function seedsOf(response) { return isObj(response) ? arr(response.seeds).filter(isObj) : []; }
@@ -397,17 +399,14 @@
     return str(md['artist-display']) || str(md.artist);
   }
 
-  // "because you finished X" for a row whose seedHash names a seed; null
-  // when the row is because of no single seed (peers rows: the centroid).
+  // "Because you finished X" (a tooltip, never visible text) for a row whose
+  // seedHash names a history seed; null when the row is because of no single
+  // seed (peers rows: the centroid), or of a seed nobody finished — a pin
+  // (now playing, a picked song) or the random stand-in.
   function becauseOf(seedHash, seeds, random) {
     const s = seedHash ? seeds.get(seedHash) : null;
-    if (!s) { return null; }
-    const params = { title: seedTitle(s) };
-    if (s.pinned) { return lbl('dpage.because.picked', params); }
-    if (random) { return lbl('dpage.because.random', params); }
-    if (s.outcome === 'completed') { return lbl('dpage.because.finished', params); }
-    if (s.outcome === 'stopped') { return lbl('dpage.because.listened', params); }
-    return lbl('dpage.because.played', params);
+    if (!s || s.pinned || random) { return null; }
+    return lbl('dpage.because', { title: seedTitle(s) });
   }
 
   // The title of the seed a row was matched against, or null (no seedHash —
@@ -429,11 +428,6 @@
       tags.push(lbl('dpage.seeds.randomTag'));
     }
     if (s.analyzed === false) { tags.push(lbl('dpage.seeds.notAnalyzed')); }
-    // The seeds sheet's line: "today · played 3×", "yesterday · listened to".
-    const detail = [];
-    if (s.lastPlayed) { detail.push(agoLabel(s.lastPlayed, ctx.now, 'dpage.ago')); }
-    if (!s.pinned && Number(s.plays) > 1) { detail.push(lbl('dpage.seeds.plays', { count: Number(s.plays) })); }
-    if (s.outcome === 'stopped') { detail.push(lbl('dpage.seeds.listenedTo')); }
     return {
       hash: s.hash || null,
       filepath: str(s.filepath),
@@ -449,14 +443,13 @@
       label: artist ? lbl('dpage.seeds.chip', { title, artist }) : lbl('dpage.seeds.chipTitle', { title }),
       tag: tags[0] || null,
       tags,
-      detail,
       metadata: md,
     };
   }
 
   // The "Based on what you finished" strip: the first `max` chips and the
-  // rest behind "+ n more"; `excluded` = the dropped seeds the server still
-  // resolves, for the seeds sheet to bring back.
+  // rest behind "Show all" (`more`; no count is drawn); `excluded` = the
+  // dropped seeds the server still resolves, for the picker to bring back.
   //   opts.nowPlaying  the now-playing path (its pin reads "playing")
   //   opts.max         chips drawn before the overflow (default 7)
   function seedChips(response, opts) {
@@ -465,7 +458,6 @@
     const ctx = {
       random: isObj(response) && response.seedSource === 'random',
       nowPlaying: o.nowPlaying ? stripSlash(o.nowPlaying) : null,
-      now: o.now,
     };
     const all = seedsOf(response).map((s) => seedChip(s, ctx));
     const overflow = Math.max(0, all.length - max);
@@ -483,66 +475,13 @@
       chips: all.slice(0, max),
       hidden: all.slice(max),
       overflow,
-      more: overflow ? lbl('dpage.seeds.more', { count: overflow }) : null,
+      more: overflow ? lbl('dpage.seeds.showAll') : null,
       total: all.length,
       excluded,
     };
   }
 
-  // The window as words: "last 30 days" / "all time".
-  function windowLabel(window) {
-    const w = cleanWindow(window);
-    if (w === undefined) { return null; }
-    return w === 0 ? lbl('dpage.window.all') : lbl('dpage.window.last', { count: w });
-  }
-
-  // The line under the page title ("based on 12 songs you finished · last
-  // 30 days"). → { key, params } of the main phrase, plus `parts` = every
-  // phrase of the line in order (the caller translates each and joins them
-  // with ' · '). Null before there is an answer.
-  //   history   dpage.seeds.finished (every history seed completed) or
-  //             dpage.seeds.listened (some only mostly listened to), with
-  //             the window; dpage.seeds.widened { count, from } when the
-  //             window held nothing and the seeds come from all time
-  //   counters  dpage.seeds.counters (play counts, not the log)
-  //   pinned    dpage.seeds.pinned (only songs the user picked)
-  //   random    dpage.seeds.random
-  //   none      dpage.seeds.none (nothing at all to start from)
-  // Pins next to history or counters add "+ n you picked".
-  function seedsLine(response) {
-    if (!isObj(response) || response.disabled === true) { return null; }
-    const seeds = seedsOf(response);
-    const pinned = seeds.filter((s) => s.pinned);
-    const rest = seeds.filter((s) => !s.pinned);
-    const src = response.seedSource;
-    let main;
-    let windowPart = null;
-    if (src === 'random') {
-      main = seeds.length ? lbl('dpage.seeds.random') : lbl('dpage.seeds.none');
-    } else if (src === 'history' && rest.length) {
-      const widened = cleanWindow(response.widenedFrom);
-      if (widened !== undefined && widened !== 0) {
-        main = lbl('dpage.seeds.widened', { count: rest.length, from: widened });
-      } else {
-        main = lbl(rest.some((s) => s.outcome === 'stopped') ? 'dpage.seeds.listened' : 'dpage.seeds.finished', { count: rest.length });
-        windowPart = windowLabel(response.window);
-      }
-    } else if (src === 'counters' && rest.length) {
-      main = lbl('dpage.seeds.counters', { count: rest.length });
-    } else if (pinned.length) {
-      main = lbl('dpage.seeds.pinned', { count: pinned.length });
-    } else {
-      main = lbl('dpage.seeds.none');
-    }
-    const parts = [main];
-    if (pinned.length && main.key !== 'dpage.seeds.pinned' && src !== 'random') {
-      parts.push(lbl('dpage.seeds.plusPicked', { count: pinned.length }));
-    }
-    if (windowPart) { parts.push(windowPart); }
-    return { key: main.key, params: main.params, parts };
-  }
-
-  // ── option lists (the header dropdown, the filter chips, the plug-ins) ─
+  // ── option lists (the bar's window, the filter checkbox, the plug-ins) ─
 
   function windowOptions(current) {
     const cur = cleanWindow(current);
@@ -553,15 +492,15 @@
     }));
   }
 
-  // The canvas order: Never played · Not in 90 days · Everything.
-  function filterOptions(current, staleDays) {
-    const cur = cleanFilter(current);
-    const days = cleanStaleDays(staleDays) || DEFAULT_PREFS.staleDays;
-    return [
-      { value: 'unplayed', label: lbl('dpage.filter.unplayed'), selected: cur === 'unplayed' },
-      { value: 'fresh', label: lbl('dpage.filter.fresh', { count: days }), selected: cur === 'fresh' },
-      { value: 'all', label: lbl('dpage.filter.all'), selected: cur === 'all' },
-    ];
+  // The library filter as the one checkbox under More options:
+  // "Include songs I've played lately". Ticked = 'all'; unticked = 'fresh'.
+  function filterFor(includePlayed) { return includePlayed === true ? 'all' : 'fresh'; }
+  function includesPlayed(filter) { return pageFilter(filter) === 'all'; }
+  // → { checked, label, filter, next }: `filter` = the one on screen, `next`
+  // = the one a click asks for (the library-empty button sends 'all').
+  function includePlayedOption(current) {
+    const checked = includesPlayed(current);
+    return { checked, label: lbl('dpage.opt.includePlayed'), filter: filterFor(checked), next: filterFor(!checked) };
   }
 
   // "plug-ins on this server: Previews · Deezer  Get it · YouTube  Open
@@ -584,8 +523,8 @@
   // ── library ────────────────────────────────────────────────────────────
 
   // How strict a filter is: a stricter one can be applied to a looser
-  // answer on the client (all → fresh → unplayed) while the re-ask runs.
-  const STRICTNESS = { all: 0, fresh: 1, unplayed: 2 };
+  // answer on the client (all → fresh) while the re-ask runs.
+  const STRICTNESS = { all: 0, fresh: 1 };
 
   function isStale(lastPlayed, now, staleDays) {
     const t = toMs(lastPlayed);
@@ -623,6 +562,8 @@
       name: a.name == null ? null : String(a.name),
       artistLine: credit.line,
       albumArtist: credit.albumArtist,
+      // Data only: the card draws art, title and artist — no year, no
+      // percentage, no play counts.
       year: a.year == null ? null : a.year,
       albumArtFile: a.album_art_file || null,
       similarityPct: pct(a.similarity),
@@ -631,11 +572,6 @@
       scopedTracks: scoped,
       playedTracks: played,
       lastPlayed: a.lastPlayed || null,
-      // "never played · 11 songs" / "2 of 12 played"
-      playedLabel: played === 0
-        ? lbl('dpage.album.neverPlayed', { count: scoped })
-        : lbl('dpage.album.somePlayed', { played, count: scoped }),
-      lastPlayedLabel: played === 0 ? null : playedWhen(played, a.lastPlayed, ctx.now, 'dpage.when'),
       // The card's matched songs, best first — what "queue album" from the
       // page could queue without another request (the card's own click
       // opens the whole album as everywhere else).
@@ -656,50 +592,40 @@
       artist,
       album,
       genre,
-      subtitle: joinParts([artist, album, genre]),
+      // line two of the row: "Artist · Album" (no genre, year or when)
+      subtitle: joinParts([artist, album]),
       similarityPct: pct(t.similarity),
       seedHash: t.seedHash || null,
       because: becauseOf(t.seedHash, ctx.seeds, ctx.random),
       playCount,
       lastPlayed: t.lastPlayed || null,
-      // "never played" / "last played 8 months ago" (the row) and "never" /
-      // "8 months ago" (the LAST PLAYED column)
-      whenLabel: playedWhen(playCount, t.lastPlayed, ctx.now, 'dpage.when'),
-      agoLabel: playedWhen(playCount, t.lastPlayed, ctx.now, 'dpage.ago'),
       length: fmtLength(md.duration),
       art: md['album-art'] || null,
       metadata: md,
     };
   }
 
-  // The headings follow the filter the rows were chosen by.
-  function libraryHeadings(filter) {
-    return {
-      sub: lbl(filter === 'all' ? 'dpage.library.subAll' : (filter === 'unplayed' ? 'dpage.library.subUnplayed' : 'dpage.library.subFresh')),
-      albums: lbl(filter === 'all' ? 'dpage.library.albumsAll' : 'dpage.library.albums'),
-      tracks: lbl(filter === 'all' ? 'dpage.library.songsAll' : (filter === 'unplayed' ? 'dpage.library.songsUnplayed' : 'dpage.library.songsFresh')),
-    };
-  }
-
-  // "From your library": album cards first, then the songs (plan §2.6).
-  //   opts.filter     the filter on screen; when it is stricter than the one
-  //                   the answer was chosen by (a chip just tapped, the re-ask
-  //                   in flight) the rows are narrowed here and `provisional`
-  //                   is set; a looser one keeps the rows, also provisional
+  // "Albums from your library" and "Songs from your library" (plan §2.6).
+  //   opts.filter     the filter on screen ('fresh' | 'all'); when it is
+  //                   stricter than the one the answer was chosen by (the
+  //                   checkbox just unticked, the re-ask in flight) the rows
+  //                   are narrowed here and `provisional` is set; a looser one
+  //                   keeps the rows, also provisional
   //   opts.staleDays  the `fresh` cutoff for that narrowing (default 90)
-  //   opts.maxAlbums / opts.maxTracks   the overview's share; the rest are
-  //                   counted in footer.more ("13 more under See all")
-  //   opts.now        for the relative times
-  // → { filter, provisional, headings, albums, tracks, count, footer }
-  //   footer.queueAll  the songs "+ Queue all n" queues (every song row, the
-  //                    ones past maxTracks included); paths = theirs
+  //   opts.now        "now" for that cutoff
+  //   opts.maxAlbums / opts.maxTracks   caps (default: all); the song column
+  //                   pages itself with pageSlice
+  // → { filter, provisional, albums, tracks, count, capped, footer }
+  //   footer.paths  what "Queue all · Shuffle · Save as playlist" act on
+  //                 (every song row, the ones past maxTracks included);
+  //                 footer.queueAllLabel = 'Queue all' (no count)
   function librarySections(response, opts) {
     const o = opts || {};
     const lib = isObj(response) && isObj(response.library) ? response.library : null;
-    const answered = lib ? cleanFilter(lib.filter) : undefined;
-    const filter = cleanFilter(o.filter) || answered || DEFAULT_PREFS.filter;
+    const answered = lib ? pageFilter(lib.filter) : undefined;
+    const filter = pageFilter(o.filter) || answered || DEFAULT_PREFS.filter;
     const staleDays = cleanStaleDays(o.staleDays) || DEFAULT_PREFS.staleDays;
-    const ctx = { seeds: seedIndex(response), random: isObj(response) && response.seedSource === 'random', now: o.now };
+    const ctx = { seeds: seedIndex(response), random: isObj(response) && response.seedSource === 'random' };
 
     let albums = lib ? arr(lib.albums).filter(isObj).map((a) => albumCard(a, ctx)) : [];
     let tracks = lib ? arr(lib.tracks).filter((t) => isObj(t) && t.filepath).map((t) => trackRow(t, ctx)) : [];
@@ -711,24 +637,16 @@
 
     const maxA = Number.isInteger(o.maxAlbums) && o.maxAlbums >= 0 ? o.maxAlbums : albums.length;
     const maxT = Number.isInteger(o.maxTracks) && o.maxTracks >= 0 ? o.maxTracks : tracks.length;
-    const shownTracks = tracks.slice(0, maxT);
-    const more = tracks.length - shownTracks.length;
     return {
       filter,
       provisional,
-      headings: libraryHeadings(filter),
       albums: albums.slice(0, maxA),
-      tracks: shownTracks,
+      tracks: tracks.slice(0, maxT),
       count: albums.length + tracks.length,
       capped: !!(lib && lib.capped === true),
       footer: {
-        queueAll: tracks.length,
-        queueAllLabel: lbl('dpage.verb.queueAll', { count: tracks.length }),
+        queueAllLabel: lbl('dpage.verb.queueAll'),
         paths: tracks.map((t) => t.filepath),
-        more,
-        moreLabel: more > 0 ? lbl('dpage.library.moreUnderSeeAll', { count: more }) : null,
-        // "6 albums · 18 songs"
-        summary: [lbl('dpage.count.albums', { count: albums.length }), lbl('dpage.count.songs', { count: tracks.length })],
       },
     };
   }
@@ -781,19 +699,33 @@
     return { rows, count: rows.length, searched, line: lbl('dpage.network.searched', { count: n }) };
   }
 
-  // ── peers ──────────────────────────────────────────────────────────────
+  // ── peers (connected servers) ──────────────────────────────────────────
 
-  // "From your peers", one group per paired server, answering ones first
-  // (then a model mismatch, then the ones that did not answer; otherwise the
-  // server's order). A row keeps the federation lead RAW (`raw` →
+  // A federation row's album art file, when the row carries one (read
+  // through MSTREAMAPI.peerArtUrl(peerId, art, 's') — the
+  // /api/v1/federation/peers/:id/art/ proxy); null = the note tile. The
+  // taste route's rows carry none today; a responder that adds one is
+  // picked up here without a client change.
+  function peerArtOf(raw) {
+    for (const k of ['art', 'albumArt', 'album-art', 'album_art_file']) {
+      const v = raw[k];
+      if (typeof v === 'string' && v && v.length <= PIN_PATH_MAX) { return v; }
+    }
+    return null;
+  }
+
+  // One group per paired server, answering ones first (then a model
+  // mismatch, then the ones that did not answer; otherwise the server's
+  // order). A row keeps the federation lead RAW (`raw` →
   // VUEPLAYERCORE.queueDiscoverFed(raw) / openDiscoverModal(raw,
-  // 'federation')); `playable` = its peer answered in this call.
-  // → { groups, count, searched, line }; line = "2 of 3 peers answered"
-  function peerGroups(response, opts) {
-    const o = opts || {};
+  // 'federation')); `playable` = its peer answered in this call (the page
+  // draws only playable rows: peerSongRows / peerAlbums).
+  // → { groups, count, searched }
+  function peerGroups(response) {
     const sec = isObj(response) && isObj(response.peers) ? response.peers : null;
-    if (!sec) { return { groups: [], count: 0, searched: null, line: null }; }
+    if (!sec) { return { groups: [], count: 0, searched: null }; }
     const rank = (g) => (g.playable ? 0 : (g.mismatched ? 1 : 2));
+    const ctx = { seeds: seedIndex(response), random: response.seedSource === 'random' };
     const groups = arr(sec.peers).filter(isObj).map((g, order) => {
       const reachable = g.reachable === true;
       const mismatched = g.mismatched === true;
@@ -801,13 +733,21 @@
       const name = str(g.name);
       const rows = arr(g.results).filter(isObj).map((raw) => {
         const peer = isObj(raw.peer) ? raw.peer : {};
-        return Object.assign({ raw, source: 'federation' }, leadFields(raw), {
+        const lead = leadFields(raw);
+        const sim = Number(raw.similarity);
+        return Object.assign({ raw, source: 'federation' }, lead, {
+          // line two of the row: "Artist · Album" (no year, no server)
+          subtitle: joinParts([lead.artist, lead.album]),
+          similarity: raw.similarity == null || !Number.isFinite(sim) ? null : sim,
           peerId: peer.id != null ? peer.id : (g.id != null ? g.id : null),
           peerName: str(peer.name) || name,
           filepath: str(raw.filepath),
+          art: peerArtOf(raw),
           playable,
-          // matched against the seeds' centroid, not one seed
+          // matched against the seeds' centroid, not one seed — unless a
+          // responder names the seed (seedHash): then the tooltip says so
           matchSeed: null,
+          because: becauseOf(raw.seedHash, ctx.seeds, ctx.random),
           recKey: null, recKeys: [], jobs: {}, badge: null,
         });
       });
@@ -818,30 +758,135 @@
         mismatched,
         playable,
         lastSeen: g.lastSeen || null,
-        stateLabel: lbl(mismatched ? 'dpage.peers.mismatched' : (reachable ? 'dpage.peers.online' : 'dpage.peers.notAnswering')),
-        lastSeenLabel: reachable ? null : agoLabel(g.lastSeen, o.now, 'dpage.seen'),
-        countLabel: lbl('dpage.count.songs', { count: rows.length }),
         rows,
         order,
       };
     }).sort((a, b) => (rank(a) - rank(b)) || (a.order - b.order));
     const s = isObj(sec.searched) ? sec.searched : {};
-    const answered = toInt(s.peers) || 0;
-    const unreachable = toInt(s.unreachable) || 0;
-    const mismatched = toInt(s.mismatched) || 0;
-    const total = answered + unreachable + mismatched;
     return {
       groups,
       count: groups.reduce((n, g) => n + g.rows.length, 0),
-      searched: { peers: answered, unreachable, mismatched },
-      line: lbl('dpage.peers.answered', { answered, count: total }),
+      searched: { peers: toInt(s.peers) || 0, unreachable: toInt(s.unreachable) || 0, mismatched: toInt(s.mismatched) || 0 },
     };
   }
 
-  // Every row of the peers section, in group order ("Listen to all 5").
+  // peerGroups' answer or its `groups` — the helpers below take either.
+  const groupsOf = (x) => (isObj(x) && Array.isArray(x.groups) ? x.groups : arr(x)).filter(isObj);
+
+  // Every row of the peers section, in group order (playable or not).
   function peerRowsOf(groups) {
     const out = [];
-    for (const g of arr(groups)) { for (const r of arr(g.rows)) { out.push(r); } }
+    for (const g of groupsOf(groups)) { for (const r of arr(g.rows)) { out.push(r); } }
+    return out;
+  }
+
+  // Best match first; the server's order (group, then row) on a tie and for
+  // a row without a similarity.
+  function byMatch(list) {
+    return list
+      .map((r, i) => ({ r, i, s: r.similarity == null ? -Infinity : r.similarity }))
+      .sort((a, b) => (b.s - a.s) || (a.i - b.i))
+      .map((x) => x.r);
+  }
+
+  // "Songs from …": ONE flat list of the playable rows (a peer that did not
+  // answer, or answered with another analysis model, adds nothing), best
+  // match first across the servers.
+  function peerSongRows(groups) {
+    return byMatch(peerRowsOf(groupsOf(groups).filter((g) => g.playable)).filter((r) => r.playable));
+  }
+
+  // "Albums from …": the playable rows grouped by peer + album + artist
+  // (rows without an album tag are left out), best match first — an album
+  // ranks by its best row — capped at opts.max (default ALBUM_STRIP_MAX).
+  // → [{ key, peerId, peerName, album, artist, art, similarity, paths, raws }]
+  //   paths / raws  the album's matched rows, best first: the card's play
+  //                 button queues the raws through the federation stream
+  //                 (VUEPLAYERCORE.queueDiscoverFed), paths = their
+  //                 peer-side filepaths
+  //   art           the first row's art that has one, else null (note tile)
+  //   peerName      the card's tooltip
+  function peerAlbums(groups, opts) {
+    const o = opts || {};
+    const max = Number.isInteger(o.max) && o.max >= 0 ? o.max : ALBUM_STRIP_MAX;
+    const fold = (v) => str(v).trim().toLowerCase();
+    const byKey = new Map();
+    for (const r of peerSongRows(groups)) {
+      const album = str(r.album).trim();
+      if (!album) { continue; }
+      const key = JSON.stringify([r.peerId, fold(album), fold(r.artist)]);
+      let card = byKey.get(key);
+      if (!card) {
+        card = { key, peerId: r.peerId, peerName: r.peerName, album, artist: str(r.artist), art: null, similarity: r.similarity, paths: [], raws: [] };
+        byKey.set(key, card);
+      }
+      if (!card.art && r.art) { card.art = r.art; }
+      if (r.filepath) { card.paths.push(r.filepath); }
+      card.raws.push(r.raw);
+    }
+    return [...byKey.values()].slice(0, max);
+  }
+
+  // The section labels, from who answered:
+  //   library      'Albums from your library' / 'Songs from your library'
+  //   peers        'Albums from {{name}}' / 'Songs from {{name}}' when ONE
+  //                connected server answered (or, when none answered, when
+  //                only one is paired), else '… from connected servers';
+  //                null when there are no connected servers at all (the
+  //                page draws no peers label, strip or column)
+  // → { libraryAlbums, librarySongs, peerAlbums, peerSongs, peerName }
+  function pageLabels(groups) {
+    const all = groupsOf(groups);
+    const out = {
+      libraryAlbums: lbl('dpage.albums.library'),
+      librarySongs: lbl('dpage.songs.library'),
+      peerAlbums: null,
+      peerSongs: null,
+      peerName: null,
+    };
+    if (!all.length) { return out; }
+    const answered = all.filter((g) => g.playable === true);
+    const named = answered.length ? answered : all;
+    const one = named.length === 1 && str(named[0].name) ? str(named[0].name) : null;
+    out.peerName = one;
+    out.peerAlbums = one ? lbl('dpage.albums.peerOne', { name: one }) : lbl('dpage.albums.peerMany');
+    out.peerSongs = one ? lbl('dpage.songs.peerOne', { name: one }) : lbl('dpage.songs.peerMany');
+    return out;
+  }
+
+  // ── Show more ──────────────────────────────────────────────────────────
+
+  // A song column's visible rows: the first `shown` (default PAGE_SIZE),
+  // and what "Show more" does next.
+  // → { rows, shown, total, more, next }
+  //   more  whether "Show more" is drawn (rows remain)
+  //   next  the `shown` a click asks for (shown + size, at most total)
+  function pageSlice(list, shown, size) {
+    const all = arr(list);
+    const step = Number.isInteger(size) && size > 0 ? size : PAGE_SIZE;
+    const want = Number.isInteger(shown) && shown >= 0 ? shown : step;
+    const n = Math.min(all.length, want);
+    return { rows: all.slice(0, n), shown: n, total: all.length, more: all.length > n, next: Math.min(all.length, n + step) };
+  }
+
+  // The no-connected-servers layout: "Songs from your library" fills BOTH
+  // columns on a wide screen. The visible rows go in blocks of `size`
+  // (default PAGE_SIZE); each block is two columns filled column-major —
+  // rows 1–8 left, 9–16 right — and a short last block splits evenly
+  // (10 rows → 5 + 5). Each entry keeps its index in `rows` (`i`, the
+  // panel's data-i). `perColumn` = the block's grid-template-rows count
+  // for a grid-auto-flow: column grid; left / right = the same split as
+  // two lists.
+  // → [{ start, perColumn, rows: [{ row, i }], left, right }]
+  function columnBlocks(rows, size) {
+    const all = arr(rows);
+    const step = Number.isInteger(size) && size > 1 ? size : PAGE_SIZE;
+    const out = [];
+    for (let start = 0; start < all.length; start += step) {
+      const block = all.slice(start, start + step).map((row, k) => ({ row, i: start + k }));
+      const perColumn = Math.ceil(block.length / 2);
+      out.push({ start, perColumn, rows: block, left: block.slice(0, perColumn), right: block.slice(perColumn) });
+    }
     return out;
   }
 
@@ -942,22 +987,29 @@
 
   // ── states ─────────────────────────────────────────────────────────────
 
-  function libraryEmptyReason(filter, staleDays) {
-    if (filter === 'unplayed') { return lbl('dpage.library.allPlayed', { count: staleDays }); }
-    if (filter === 'fresh') { return lbl('dpage.library.allPlayedFresh'); }
-    return lbl('dpage.library.nothing');
-  }
-
-  // One source's state: absent (not drawn at all — the flag is off, or the
-  // server answered null: not available here / a random seed), loading,
-  // failed, empty (with the one dim line that explains it), ready.
+  // One source's state: absent (not drawn at all — the flag is off, another
+  // page's source, the server answered null: not available here / a random
+  // seed, or — peers — no connected servers at all), loading, failed, empty
+  // (with the one dim line that explains it), ready.
+  //   library empty   'Nothing new in your library sounds like these
+  //                   songs.'; `includePlayed: true` when the answer was
+  //                   chosen by 'fresh' — the page offers the button that
+  //                   ticks "Include songs I've played lately" and re-asks
+  //   peers empty     'Nothing from your connected servers right now.' —
+  //                   servers are paired but no playable row came back (all
+  //                   offline, all on another model, or nothing new)
+  //   count           rows the source would draw (peers: playable rows only)
   function sourceState(name, response, flags, opts) {
     const absent = { status: 'absent', reason: null, count: 0 };
-    if (name === 'network' && flags.discoveryP2p !== true) { return absent; }
+    if (name === 'network' && (flags.discoveryP2p !== true || opts.page !== 'explore')) { return absent; }
+    if (name !== 'network' && opts.page === 'explore') { return absent; }
     if (name === 'peers' && flags.federationDiscovery !== true) { return absent; }
     if (response === undefined) { return { status: 'loading', reason: null, count: 0 }; }
     if (!isObj(response)) { return { status: 'failed', reason: lbl('dpage.source.failed'), count: 0 }; }
     if (name === 'peers' && response.peersFailed === true) { return { status: 'failed', reason: lbl('dpage.source.failed'), count: 0 }; }
+    // A random seed (nothing finished): the server asks no connected server,
+    // so the page draws no column for them while that call is still out.
+    if (name === 'peers' && response.seedSource === 'random' && response.partial !== true) { return absent; }
     const sec = response[name];
     if (sec === undefined) { return { status: 'loading', reason: null, count: 0 }; }
     if (!isObj(sec)) { return absent; }
@@ -966,7 +1018,9 @@
     if (name === 'library') {
       const count = arr(sec.albums).length + arr(sec.tracks).length;
       if (count) { return { status: 'ready', reason: null, count }; }
-      return { status: 'empty', count: 0, reason: waiting ? lbl('dpage.source.waitingForScan') : libraryEmptyReason(cleanFilter(sec.filter) || opts.filter, opts.staleDays) };
+      if (waiting) { return { status: 'empty', count: 0, reason: lbl('dpage.source.waitingForScan') }; }
+      const filter = pageFilter(sec.filter) || opts.filter;
+      return { status: 'empty', count: 0, reason: lbl('dpage.library.nothing'), includePlayed: filter !== 'all' };
     }
     if (name === 'network') {
       const count = arr(sec.results).length;
@@ -978,24 +1032,22 @@
       };
     }
     const groups = arr(sec.peers).filter(isObj);
-    const count = groups.reduce((n, g) => n + arr(g.results).length, 0);
+    if (groups.length === 0) { return absent; }
+    const count = groups
+      .filter((g) => g.reachable === true && g.mismatched !== true)
+      .reduce((n, g) => n + arr(g.results).filter(isObj).length, 0);
     if (count) { return { status: 'ready', reason: null, count }; }
-    if (waiting) { return { status: 'empty', count: 0, reason: lbl('dpage.source.waitingForScan') }; }
-    if (groups.length === 0) { return { status: 'empty', count: 0, reason: lbl('dpage.peers.none') }; }
-    const answered = groups.filter((g) => g.reachable === true && g.mismatched !== true).length;
-    const mismatched = groups.filter((g) => g.mismatched === true).length;
-    let reason = 'dpage.peers.nothingNew';
-    if (answered === 0 && mismatched === 0) { reason = 'dpage.peers.unreachable'; }
-    else if (answered === 0) { reason = 'dpage.peers.allMismatched'; }
-    return { status: 'empty', count: 0, reason: lbl(reason) };
+    return { status: 'empty', count: 0, reason: lbl(waiting ? 'dpage.source.waitingForScan' : 'dpage.peers.quiet') };
   }
 
   // Which page to draw, and each source's state.
   //   response  mergeResponses' answer: undefined = in flight, null = failed,
   //             { disabled: true } = 403
   //   flags     { discovery, discoveryTaste, discoveryP2p, federationDiscovery }
-  //   opts      { filter, staleDays } — for the library's empty line
-  // → { state, reason, sources: { library, network, peers }, tabs }
+  //   opts      { page, filter, staleDays } — page 'play' (default) draws
+  //             library + peers (network absent); 'explore' draws network
+  //             alone; filter for the library's empty line
+  // → { state, reason, sources: { library, network, peers } }
   //   state     'off'             the ping does not advertise the page, or
   //                               the route said 403 (re-ping before
   //                               naming a reason)
@@ -1006,13 +1058,10 @@
   //                               or every finished song was dropped
   //                               (reason dpage.state.allDropped)
   //             'ready'
-  //   tabs      the sources drawn, in order, with counts — the segmented
-  //             switch of the focused view and the phone fold
   function stateOf(response, flags, opts) {
     const f = isObj(flags) ? flags : {};
     const o = Object.assign({ filter: DEFAULT_PREFS.filter, staleDays: DEFAULT_PREFS.staleDays }, opts || {});
-    const staleDays = cleanStaleDays(o.staleDays) || DEFAULT_PREFS.staleDays;
-    const so = { filter: cleanFilter(o.filter) || DEFAULT_PREFS.filter, staleDays };
+    const so = { page: cleanPage(o.page), filter: pageFilter(o.filter) || DEFAULT_PREFS.filter };
     const absent = { status: 'absent', reason: null, count: 0 };
     const off = !pageAvailable(f) || (isObj(response) && response.disabled === true);
     const sources = off
@@ -1032,28 +1081,19 @@
       state = 'nothingFinished';
       reason = lbl(arr(response.excluded).length ? 'dpage.state.allDropped' : 'dpage.state.nothingFinished');
     }
-    const tabs = SOURCES
-      .filter((k) => sources[k].status !== 'absent')
-      .map((k) => ({ key: k, label: lbl('dpage.tab.' + k), count: sources[k].count, status: sources[k].status }));
-    return { state, reason, sources, tabs };
-  }
-
-  // The remembered focused source, when it is still drawn; else the first tab.
-  function pickSource(remembered, tabs) {
-    const list = arr(tabs);
-    if (list.some((t) => t.key === remembered)) { return remembered; }
-    return list.length ? list[0].key : 'library';
+    return { state, reason, sources };
   }
 
   return {
-    WINDOWS, FILTERS, SOURCES, DEFAULT_PREFS, STALE_DAYS_MIN, STALE_DAYS_MAX, PIN_CAP, EXCLUDE_CAP, HASH_MAX,
-    LIMIT_DEFAULTS, LIMIT_CAPS, LOOKUP_BATCH_MAX, STORAGE_KEYS, CLIENT_TTL_MS, SEED_CHIPS_MAX,
+    WINDOWS, FILTERS, PAGE_FILTERS, SOURCES, PAGES, DEFAULT_PREFS, STALE_DAYS_MIN, STALE_DAYS_MAX, PIN_CAP, EXCLUDE_CAP, HASH_MAX,
+    LIMIT_DEFAULTS, LIMIT_CAPS, LOOKUP_BATCH_MAX, STORAGE_KEYS, CLIENT_TTL_MS, SEED_CHIPS_MAX, PAGE_SIZE, ALBUM_STRIP_MAX,
     defaultPrefs, cleanPrefs, mergePrefs, parseStoredPrefs, serializePrefs, dropSeed, restoreSeed,
     pageAvailable, buildRequests, requestKey, mergeResponses,
-    agoLabel, playedWhen, fmtLength,
-    seedChips, seedsLine, windowLabel, windowOptions, filterOptions, pluginChips,
-    librarySections, networkRows, peerGroups, peerRowsOf,
+    fmtLength,
+    seedChips, windowOptions, filterFor, includesPlayed, includePlayedOption, pluginChips,
+    librarySections, networkRows,
+    peerGroups, peerRowsOf, peerSongRows, peerAlbums, pageLabels, pageSlice, columnBlocks,
     lookupChunks, jobBadges, anyLiveBadge,
-    stateOf, pickSource,
+    stateOf,
   };
 }));

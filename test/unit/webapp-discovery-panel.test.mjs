@@ -2,28 +2,42 @@
  * The Discover page's m.js half (docs/discovery-page-plan.md §4.1): the
  * panel that wires alpha/discovery-page.js (DISCOVERYPAGE) to the app.
  *
- * What is pinned:
+ * What is pinned (the play-now page, discoveryView.page 'play'):
  *   - opening the page fires the two parallel taste calls the plan names
- *     (library+network, peers) with the now-playing song pinned, reads the
- *     saved prefs once, and draws the seed chips, the three sections, the
- *     library's album cards and song rows, the network leads and the peer
- *     groups — every value escaped;
- *   - the seed chips sit behind the gray bar's "More options" (the seed
- *     picker), never in the body: the toggle flips its label and
- *     aria-expanded, stays as left across re-renders within a visit, and
- *     starts closed on a fresh open;
+ *     (library, peers) with the now-playing song pinned and the same limits,
+ *     reads the saved prefs once, and draws "Albums from your library",
+ *     "Albums from {server}", "Songs from your library" and "Songs from
+ *     {server}" in that order — plain album cards, songs as art tile,
+ *     title and "Artist · Album" — every value escaped;
+ *   - none of the old busy-ness comes back in any state: no "matched by
+ *     sound", no "never played", no count, no percentage, no meter, no
+ *     when-label, no filter toggles, no phone tabs, no See all, no per-peer
+ *     headers, no network section (assertTrimmed);
+ *   - a connected server's row queues on click, as a library row does; its
+ *     verbs are Play now / Add to queue / ⋯ (the peer window); its album
+ *     card opens in the peer-browse view and its play button queues the
+ *     album through the federation stream;
+ *   - with no connected server there is no peers label, strip or column,
+ *     and the library's songs flow column-major over both columns;
+ *     federation on with nothing playable keeps the column and one line;
+ *   - "Show more" appends 16 per column; the one filter is the "Include
+ *     songs I've played lately" checkbox under More options ('fresh' ⇄
+ *     'all', remembered), and the library-empty line's button ticks it;
+ *   - the seed chips sit behind the gray bar's "More options" under that
+ *     checkbox: the toggle flips its label and aria-expanded, stays as left
+ *     across re-renders within a visit, and starts closed on a fresh open;
  *   - a random seed draws the "finish a few songs" card, and Another pick
- *     re-asks with that pick excluded (never remembered);
- *   - dropping a seed re-asks with exclude + remember; a filter chip
- *     re-asks with the new filter;
+ *     re-asks with that pick excluded (never remembered); dropping a seed
+ *     re-asks with exclude + remember;
+ *   - discoveryPanel({ page: 'explore' }) still asks the network alone and
+ *     draws its list, its "new artists only" and its job badges (a poll
+ *     tick patches only the badges that changed);
  *   - an answer that lands after the app moved on (browseGeneration bumped)
- *     is dropped;
- *   - job badges come from the batch lookup, a poll tick patches only the
- *     badges that changed, and a return within the TTL listens again;
- *   - a 403 re-pings before naming a reason, and takes the panel's link too;
- *   - a prefs GET that failed is asked again before a drop;
- *   - index.html carries the nav entry and the script, en.json carries
- *     every dpage.* key the module and the panel use (and no other).
+ *     is dropped; a 403 re-pings before naming a reason; a prefs GET that
+ *     failed is asked again before a drop;
+ *   - index.html carries the nav entry and the script, spa.css the
+ *     container-query columns in the house palette, en.json every dpage.*
+ *     key the module and the panel use (and no other).
  *
  * Clicks resolve against the DRAWN markup: click({ 'data-dp': 'lead' })
  * fails when no such element is on the page (a focusable one — button or
@@ -75,14 +89,18 @@ function sliceConst(name) {
 
 const FNS = ['escapeHtml', 'peerAttr', 'artUrl', 'artImgAttr', 'renderAlbum', 'setBrowserRootPanel',
   'localIgnoreVPaths', 'applyDiscoveryPing', 'discoverySetEntry', 'discoveryAdoptPrefs', 'discoveryEnsurePrefs',
-  'discoveryWatchJobs', 'discoveryMergeJobs', 'discoveryPatchBadges', 'discoveryLeadTag', 'discoveryPeerTag',
+  'discoveryWatchJobs', 'discoveryMergeJobs', 'discoveryPatchBadges', 'discoveryLeadTag',
   'discoveryMatchOpts', 'discoveryDropSeed', 'discoveryT', 'discoveryText', 'discoveryOnScreen', 'discoveryNowPlayingPath',
   'discoveryLocalPrefs', 'discoverySaveLocalPrefs', 'discoveryPanel', 'redoDiscovery', 'discoveryOff',
-  'discoveryResponse', 'discoveryLoadBadges', 'renderDiscovery', 'discoveryHeadHtml', 'discoveryOptionsHtml', 'discoveryCardHtml',
-  'discoverySeedsHtml', 'discoverySegHtml', 'discoverySectionHtml', 'discoveryEmptyHtml', 'discoverySeeAll',
-  'discoveryMeter', 'discoveryLibraryHtml', 'discoveryBadgeHtml', 'discoveryProgressHtml',
-  'discoveryNetworkHtml', 'discoveryPeersHtml', 'onDiscoveryChange', 'onDiscoveryClick', 'discoveryAction',
-  'discoveryRestoreSeed', 'discoveryQueueAll', 'discoveryPick', 'discoveryRefocus'];
+  'discoveryResponse', 'discoveryLoadBadges', 'renderDiscovery', 'discoveryFocusedSelector', 'discoveryHeadHtml',
+  'discoveryOptionsHtml', 'discoveryCheckHtml', 'discoveryCardHtml', 'discoverySeedsHtml', 'discoveryLabelHtml',
+  'discoverySkelHtml', 'discoveryPlayHtml', 'discoveryStripHtml', 'discoveryPeerAlbumHtml', 'discoveryArtHtml',
+  'discoverySongRowHtml', 'discoveryShowMoreHtml', 'discoveryColHintHtml', 'discoveryLibrarySongsHtml',
+  'discoveryPeerSongsHtml', 'discoveryExploreHtml', 'discoverySectionHtml', 'discoveryEmptyHtml',
+  'discoveryBadgeHtml', 'discoveryProgressHtml', 'discoveryNetworkHtml', 'onDiscoveryChange', 'onDiscoveryClick',
+  'discoveryAction', 'discoveryOpenPeerAlbum', 'discoveryQueuePeerAlbum',
+  'discoveryRestoreSeed', 'discoveryQueueAll', 'discoveryPick', 'discoveryRefocus', 'onDiscoveryKey',
+  'discoveryFocusFallbacks'];
 
 const KNOWN_IDS = ['filelist', 'localSearchBar', 'directoryName', 'directory_bar',
   'local_search_btn', 'upload_btn', 'mkdir_btn', 'nav-discover'];
@@ -105,11 +123,14 @@ function tagsOf(html) {
   }
   return out;
 }
-// The drawn element matching every attr — a button or link first.
-function findDrawn(html, attrs) {
+// The drawn element matching every attr — a button or link first, or the
+// one with tag `tag` (a row's own div).
+function findDrawn(html, attrs, tag) {
   const hits = tagsOf(html).filter((el) => Object.entries(attrs).every(([k, v]) => el.attrs[k] === String(v)));
+  if (tag) { return hits.find((el) => el.tag === tag) || null; }
   return hits.find((el) => el.tag === 'button' || el.tag === 'a') || hits[0] || null;
 }
+const countDrawn = (html, attrs) => tagsOf(html).filter((el) => Object.entries(attrs).every(([k, v]) => el.attrs[k] === String(v))).length;
 
 // One stubbed app around the sliced functions.
 //   taste(body)   answers MSTREAMAPI.discoveryTaste (a value or a promise)
@@ -118,11 +139,13 @@ function findDrawn(html, attrs) {
 //   playing       MSTREAMPLAYER.getCurrentSong()
 //   lookup(recs)  MSTREAMAPI.discoveryJobLookupBatch
 //   jobs          VUEPLAYERCORE.discoverJobs() (the strip's last poll)
-function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 90, exclude: [], persisted: true }, ping = null, playing = null, flags = FLAGS_ALL, lookup = null, plugins = null, jobs = [] } = {}) {
+function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 90, exclude: [], persisted: true }, ping = null, playing = null, flags = FLAGS_ALL, lookup = null, plugins = null, jobs = [], albumSongs = null } = {}) {
   const els = new Map();
   const pageHandlers = {};
   const patches = [];
   let renders = 0;
+  // document.activeElement: the drawn control's attrs while one has focus
+  const focus = { on: null };
   const classesOf = (initial) => {
     const classes = new Set(initial);
     return { add: (c) => classes.add(c), remove: (c) => classes.delete(c), contains: (c) => classes.has(c), toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)) };
@@ -143,7 +166,8 @@ function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 
         return null;
       },
     };
-    Object.defineProperty(el, 'innerHTML', { get: () => inner, set: (h) => { inner = h; if (id === 'filelist') { renders++; } } });
+    // a whole-page draw drops the keyboard's control, as the DOM does
+    Object.defineProperty(el, 'innerHTML', { get: () => inner, set: (h) => { inner = h; if (id === 'filelist') { renders++; focus.on = null; } } });
     els.set(id, el);
   }
   const bodyClasses = classesOf(['has-discover-page']);
@@ -156,6 +180,11 @@ function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 
   const fedQueued = [];
   const toasts = [];
   const views = [];
+  // the peer-browse hand-off and the album queue (m.js's own helpers)
+  const adopted = [];
+  const albumsOpened = [];
+  const rowsQueued = [];
+  const knownPeers = new Map();
   // focus() calls on a drawn data-dp control after a re-render, in order
   const focused = [];
   const globals = {
@@ -163,10 +192,18 @@ function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 
       body: { classList: bodyClasses },
       getElementById: (id) => els.get(id) ?? null,
       getElementsByClassName: () => [],
+      get activeElement() {
+        const a = focus.on;
+        return a ? { closest: () => ({}), getAttribute: (n) => (n in a ? a[n] : null) } : null;
+      },
+      // `#filelist .dpage [data-dp="x"][data-i="3"]…`: a DRAWN control
       querySelector: (sel) => {
-        const m = sel.match(/^#filelist \.dpage \[data-dp="([^"]+)"\]$/);
-        if (!m || !els.get('filelist').innerHTML.includes(`data-dp="${m[1]}"`)) { return null; }
-        return { focus: () => { focused.push(m[1]); } };
+        const m = sel.match(/^#filelist \.dpage ((?:\[[a-z-]+="[^"]*"\])+)$/);
+        if (!m) { return null; }
+        const attrs = Object.fromEntries([...m[1].matchAll(/\[([a-z-]+)="([^"]*)"\]/g)].map((x) => [x[1], x[2]]));
+        const found = findDrawn(els.get('filelist').innerHTML, attrs);
+        if (!found || !attrs['data-dp']) { return null; }
+        return { focus: () => { focused.push(attrs['data-dp']); focus.on = found.attrs; } };
       },
     },
     window: {},
@@ -181,6 +218,10 @@ function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 
       ping: () => { calls.push({ name: 'ping' }); return ping ? Promise.resolve(ping) : Promise.reject(new Error('no ping')); },
       discoveryTastePrefsSave: (patch) => { calls.push({ name: 'prefsSave', body: patch }); return Promise.resolve({ ...prefs, ...patch }); },
       discoveryJobLookupBatch: (recs) => { calls.push({ name: 'lookup', body: recs }); return lookup ? Promise.resolve(lookup(recs)) : Promise.reject(new Error('no lookup')); },
+      peerArtUrl: (id, art, compress) => `http://host/peer/${id}/art/${art}?c=${compress}`,
+      peer: {
+        albumSongs: (id, body) => { calls.push({ name: 'peerAlbumSongs', id, body }); return albumSongs ? Promise.resolve(albumSongs(id, body)) : Promise.reject(new Error('no album')); },
+      },
     },
     MSTREAMPLAYER: { ignoreVPaths: {}, positionCache: { val: 2 }, getCurrentSong: () => playing },
     VUEPLAYERCORE: {
@@ -212,6 +253,13 @@ function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 
     myModal: { open() {}, close() {} },
     openSavePlaylistModal: () => {},
     loadFileExplorer: () => {},
+    knownPeers,
+    rememberPeer: (peer) => { knownPeers.set(Number(peer.id), { id: Number(peer.id), name: peer.name || 'peer' }); return peer; },
+    adoptPeer: (el) => { adopted.push(el.getAttribute('data-peer')); },
+    getAlbumSongs: (...args) => { albumsOpened.push(args); },
+    queueRow: (...args) => { rowsQueued.push(args); },
+    applyServerContext: () => {},
+    highlightNavPanel: () => {},
   };
   const body = `
     'use strict';
@@ -219,7 +267,9 @@ function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 
     let programState = [];
     let peerContext = null;
     let browseGeneration = 0;
+    let fileExplorerArray = [];
     ${sliceConst('entityMap')}
+    ${sliceConst('DPAGE_LIMITS')}
     ${sliceConst('discoveryView')}
     ${sliceConst('DPAGE_ICONS')}
     discoveryView.flags = ${JSON.stringify(flags)};
@@ -237,12 +287,30 @@ function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 
   const S = new Function(...names, body)(...names.map((n) => (n === '__els' ? els : globals[n])));
   // Click a DRAWN data-dp element (it must be on the page): the delegated
   // handler sees a target whose closest('[data-dp]') is it.
-  const click = (attrs) => {
-    const found = findDrawn(S.html(), attrs);
+  const click = (attrs, tag) => {
+    const found = findDrawn(S.html(), attrs, tag);
     assert.ok(found, `nothing drawn with ${JSON.stringify(attrs)}`);
     const el = { tagName: found.tag.toUpperCase(), getAttribute: (n) => (n in found.attrs ? found.attrs[n] : null) };
     pageHandlers.click({ target: { closest: () => el } });
   };
+  // The keyboard on a drawn control: focus it, then click it (Enter / Space).
+  const keyClick = (attrs, tag) => {
+    const found = findDrawn(S.html(), attrs, tag);
+    assert.ok(found, `nothing drawn with ${JSON.stringify(attrs)}`);
+    focus.on = found.attrs;
+    click(attrs, tag);
+  };
+  // A keydown on a drawn element (its class list from the markup).
+  const keydown = (attrs, key) => {
+    const found = findDrawn(S.html(), attrs, 'div');
+    assert.ok(found, `nothing drawn with ${JSON.stringify(attrs)}`);
+    const cls = String(found.attrs.class || '').split(/\s+/);
+    let prevented = false;
+    pageHandlers.keydown({ key, preventDefault: () => { prevented = true; },
+      target: { classList: { contains: (c) => cls.includes(c) }, getAttribute: (n) => (n in found.attrs ? found.attrs[n] : null) } });
+    return prevented;
+  };
+  const activeAttrs = () => focus.on;
   const change = (attrs, value) => {
     const found = findDrawn(S.html(), attrs);
     assert.ok(found, `nothing drawn with ${JSON.stringify(attrs)}`);
@@ -251,7 +319,7 @@ function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 
   // A poll of the strip's job list: every live watch hears it.
   const tick = (list) => { currentJobs = list; for (const w of watchers.slice()) { if (w.live) { w.fn(list.slice()); } } };
   const liveWatches = () => watchers.filter((w) => w.live).length;
-  return { S, views, focused, vpc: globals.VUEPLAYERCORE, calls, storage, queued, opened, fedQueued, toasts, els, click, change, tick, liveWatches, watchers, patches, renders: () => renders, bodyClasses };
+  return { S, keyClick, keydown, activeAttrs, views, focused, vpc: globals.VUEPLAYERCORE, calls, storage, queued, opened, fedQueued, toasts, els, click, change, tick, liveWatches, watchers, patches, renders: () => renders, bodyClasses, adopted, albumsOpened, rowsQueued, knownPeers };
 }
 
 // The seed picker: open it from the bar ("More options").
@@ -259,6 +327,8 @@ const openOptions = (click) => click({ 'data-dp': 'options' });
 // The markup of one drawn region (its opening tag up to the next region).
 const seedsSection = (html) => { const i = html.indexOf('<section class="dpage-seeds"'); return i === -1 ? '' : html.slice(i, html.indexOf('</section>', i)); };
 
+// The page's own loading state: aria-busy on the .dpage root.
+const PAGE_BUSY = /<div class="dpage [^"]*" aria-busy="true">/;
 const tasteCalls = (calls) => calls.filter((c) => c.name === 'taste').map((c) => c.body);
 const flush = () => new Promise((r) => setImmediate(r));
 
@@ -270,6 +340,8 @@ const SEEDS = [
   { hash: 'h2', filepath: 'music/B/Two.flac', metadata: { title: 'Seed Two', artist: 'Bob' }, outcome: 'completed', lastPlayed: '2026-10-03T21:10:00.000Z', plays: 1, pinned: false, analyzed: true },
 ];
 
+const libTrack = (i, extra = {}) => ({ filepath: `music/X/${i}.flac`, similarity: 0.7, seedHash: 'h1', metadata: { title: `Many ${i}`, artist: 'Max' }, playCount: 0, lastPlayed: null, ...extra });
+
 const MAIN = {
   window: 30, widenedFrom: null, seedSource: 'history', fallback: false,
   seeds: SEEDS, excluded: [], dropped: 0, notAnalyzed: false,
@@ -280,7 +352,7 @@ const MAIN = {
       { name: 'Album <One>', year: 2019, album_art_file: 'a1.jpg', album_artist: 'Fay', artists: ['Fay'], similarity: 0.84, seedHash: 'h1', scopedTracks: 11, playedTracks: 0, lastPlayed: null, tracks: ['music/F/1.flac'] },
     ],
     tracks: [
-      { filepath: 'music/J/Seven.flac', similarity: 0.83, seedHash: 'h1', metadata: { title: 'Title Seven', artist: 'Jay', album: 'Album Seven', duration: 200 }, genreTags: ['Electronic---Synthwave'], playCount: 0, lastPlayed: null },
+      { filepath: 'music/J/Seven.flac', similarity: 0.83, seedHash: 'h1', metadata: { title: 'Title Seven', artist: 'Jay', album: 'Album Seven', duration: 200, 'album-art': 'a7.jpg' }, genreTags: ['Electronic---Synthwave'], playCount: 0, lastPlayed: null },
       { filepath: 'music/K/Eight.flac', similarity: 0.8, seedHash: 'h2', metadata: { title: 'Title Eight', artist: 'Kay' }, genreTags: [], playCount: 2, lastPlayed: '2026-02-01T00:00:00.000Z' },
     ],
     capped: false,
@@ -294,13 +366,14 @@ const MAIN = {
   peers: null,
 };
 
+const PEER_ROW = { source: 'federation', seedHash: null, peer: { id: 1, name: 'Sam\'s server' }, filepath: 'tunes/P/One.mp3', title: 'Peer Song', artist: 'Quinn', album: 'Peer Album', duration: 210, similarity: 0.85, art: 'pa.jpg' };
 const PEERS = {
   ...MAIN, library: null, network: null,
   peers: {
     peers: [
       { id: 1, name: 'Sam\'s server', reachable: true, mismatched: false, lastSeen: '2026-10-05T00:00:00.000Z',
-        results: [{ source: 'federation', seedHash: null, peer: { id: 1, name: 'Sam\'s server' }, filepath: 'tunes/P/One.mp3', title: 'Peer Song', artist: 'Quinn', album: 'Peer Album', duration: 210, similarity: 0.85 }] },
-      { id: 2, name: 'Peer <B>', reachable: false, mismatched: false, lastSeen: '2026-10-03T00:00:00.000Z', results: [] },
+        results: [PEER_ROW, { ...PEER_ROW, filepath: 'tunes/P/Two.mp3', title: 'Peer Two', album: '', art: undefined, similarity: 0.6 }] },
+      { id: 2, name: 'Peer <B>', reachable: false, mismatched: false, lastSeen: '2026-10-03T00:00:00.000Z', results: [{ ...PEER_ROW, peer: { id: 2, name: 'Peer <B>' }, title: 'Offline Song' }] },
     ],
     searched: { peers: 1, unreachable: 1, mismatched: 0 },
   },
@@ -308,18 +381,43 @@ const PEERS = {
 
 const answer = (body) => (body.sources.includes('peers') ? PEERS : MAIN);
 const PLAYING = { rawFilePath: '/music/Now/Playing.flac', metadata: { title: 'Now Song' } };
+const NO_FED = { ...FLAGS_ALL, federationDiscovery: false };
+
+// What the play page never draws again (the user found it too busy).
+const GONE = [
+  'dpage.subtitle', 'dpage.matchedBySound', 'dpage-tagline', 'dpage.album.', 'dpage-album-badge', 'dpage-album-w',
+  'dpage.when.', 'dpage.ago.', 'dpage.seen.', 'dpage-when', 'discover-match', 'dpage.count.', 'dpage-count',
+  'dpage.filter.', 'data-dp="filter"', 'dpage-seg', 'dpage.tab.', 'data-dp="source"', 'data-dp="focus"', 'dpage.seeAll',
+  'data-dp="back"', 'dpage.back', 'dpage-peer"', 'dpage-peer-dot', 'dpage.peers.answered', 'dpage.peers.footer',
+  'dpage.peers.none', 'dpage.peers.playsWhenBack', 'dpage-plugins', 'data-dp="newArtists"', 'dpage-sec-network',
+  'dpage.network.', 'data-dp="lead"', 'dpage.library.title', 'dpage.library.sub', 'dpage.library.moreUnderSeeAll',
+  'dpage.verb.listen', 'dpage.verb.moreKeepCopy', 'dpage.seeds.finished', 'dpage.seeds.skipsLeftOut', 'dpage.seeds.clickToDrop',
+  'album-grid-year', 'Offline Song', 'Electronic', '&quot;count&quot;', 'dpage.state.loading',
+];
+function assertTrimmed(page, label) {
+  // the window select's options ("Last 30 days") are a choice, not a count
+  const html = page.replace(/<select[\s\S]*?<\/select>/g, '');
+  for (const g of GONE) { assert.ok(!html.includes(g), `${label}: no ${g}`); }
+  assert.ok(!/\d\s*%/.test(html), `${label}: no percentage`);
+}
 
 describe('Discover page: opening it', () => {
-  test('two parallel taste calls — library+network and peers — with now playing pinned, prefs read once', async () => {
+  test('two parallel taste calls — the library and the connected servers — with now playing pinned, prefs read once', async () => {
     const { S, calls } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
     assert.deepEqual(S.state(), [{ state: 'discovery' }]);
+    assert.equal(S.view.page, 'play');
     assert.equal(calls.filter((c) => c.name === 'prefs').length, 1);
     const [main, peers] = tasteCalls(calls);
-    assert.deepEqual(main.sources, ['library', 'network']);
+    assert.deepEqual(main.sources, ['library'], 'the network is the Explore page\'s');
     assert.deepEqual(peers.sources, ['peers']);
     assert.deepEqual(main.pin, ['music/Now/Playing.flac'], 'the leading / is stripped');
     assert.deepEqual(peers.pin, main.pin, 'both calls agree on the seeds');
+    // peers is per server, at its cap: one server fills the first 16 rows
+    // and a "Show more" (the server's default of 12 could not)
+    assert.deepEqual(main.limit, { albums: 12, tracks: 48, peers: 25 }, 'the strip\'s share and three pages of songs');
+    assert.deepEqual(peers.limit, main.limit);
+    assert.equal(peers.newArtistsOnly, false, 'the play page sends no hidden "new artists only"');
     assert.equal(main.window, 30);
     assert.equal(main.filter, 'fresh');
     assert.equal(main.remember, undefined, 'opening the page saves nothing');
@@ -331,52 +429,59 @@ describe('Discover page: opening it', () => {
     assert.equal(tasteCalls(calls)[0].pin, undefined);
   });
 
-  test('draws the seed chips (behind More options), the three sections, album cards, song rows, leads and peer groups', async () => {
-    const { S, click } = makeSandbox({ taste: answer, playing: PLAYING });
+  test('draws the two album strips and the two song columns, labelled, in order', async () => {
+    const { S } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
-    assert.ok(!S.html().includes('dpage-seeds'), 'no seed strip until More options');
-    openOptions(click);
     const html = S.html();
-    // seeds: the pin reads "playing" and has an unpin ×; history seeds drop
-    assert.match(html, /data-dp="unpin" data-i="0"/);
-    assert.match(html, /data-dp="drop" data-i="1"/);
-    assert.match(html, /dpage\.seeds\.playing/);
-    assert.match(html, /dpage\.seeds\.finished/);
-    assert.ok(html.includes('Seed &lt;One&gt;'), 'seed titles are escaped');
-    assert.ok(!html.includes('Seed <One>'));
-    assert.match(html, /data-dp="pick"/, '+ Add a song…');
-    // three sections, in order
-    const lib = html.indexOf('dpage-sec-library');
-    const net = html.indexOf('dpage-sec-network');
-    const peers = html.indexOf('dpage-sec-peers');
-    assert.ok(lib > 0 && net > lib && peers > net, 'library, network, peers');
-    for (const k of ['dpage.library.title', 'dpage.network.title', 'dpage.peers.title']) { assert.ok(html.includes(k), k); }
-    // library: an album card (renderAlbum's own markup) and its facts
-    assert.match(html, /class="album-grid dpage-albums"/);
-    assert.match(html, /class="album-grid-card"[^>]*data-album-artist="Fay"[^>]*data-album="Album &lt;One&gt;"/);
-    assert.match(html, /<span class="dpage-album-badge">84%<\/span>/);
-    assert.match(html, /dpage\.album\.neverPlayed/);
-    // library: song rows with their when-label and verbs
+    const at = (x) => html.indexOf(x);
+    const peerName = 'Sam&#39;s server';
+    const labels = [
+      'dpage.albums.library',
+      `dpage.albums.peerOne{&quot;name&quot;:&quot;${peerName}&quot;}`,
+      'dpage.songs.library',
+      `dpage.songs.peerOne{&quot;name&quot;:&quot;${peerName}&quot;}`,
+    ];
+    for (const l of labels) { assert.ok(at(l) > 0, l); }
+    assert.ok(labels.every((l, i) => i === 0 || at(l) > at(labels[i - 1])), 'library albums, connected albums, library songs, connected songs');
+    assert.match(html, /<h3 class="dpage-label"><span class="dpage-dot" aria-hidden="true"><\/span>dpage\.albums\.library<\/h3>/);
+    assert.match(html, /class="dpage-strip dpage-src-library"[\s\S]*class="dpage-strip dpage-src-peers"/);
+    assert.match(html, /<div class="dpage-songs"><section class="dpage-col dpage-src-library"[\s\S]*<section class="dpage-col dpage-src-peers"/);
+    // the library album: renderAlbum's plain card — art, title, artist
+    assert.match(html, /class="album-grid-card"[^>]*data-year="2019"[^>]*data-album-artist="Fay"[^>]*data-album="Album &lt;One&gt;"/,
+      'the year rides on the card (the click narrows by it), not on its face');
+    assert.ok(!html.includes('album-grid-year'));
+    assert.match(html, /title="dpage\.because\{&quot;title&quot;:&quot;Seed &lt;One&gt;&quot;\}"><div class="album-grid-card"/, 'the because is a tooltip');
+    // the connected server's album: built from its playable rows
+    const card = findDrawn(html, { 'data-dp': 'peerAlbumOpen', 'data-i': 0 });
+    assert.equal(card.attrs['data-peer'], '1');
+    assert.equal(card.attrs['data-album'], 'Peer Album');
+    assert.equal(card.attrs['data-artist'], 'Quinn');
+    assert.equal(card.attrs.tabindex, '0', 'the keyboard reaches the card');
+    assert.equal(card.attrs.role, 'link');
+    assert.equal(card.attrs['aria-label'], 'Peer Album · Quinn');
+    assert.match(html, /<img loading="lazy" src="http:&#x2F;&#x2F;host&#x2F;peer&#x2F;1&#x2F;art&#x2F;pa.jpg\?c&#x3D;undefined" alt="">/);
+    assert.equal(countDrawn(html, { 'data-dp': 'peerAlbumOpen' }), 1, 'the album-less row makes no card');
+    // the songs: art tile, title, "Artist · Album"
     assert.ok(html.includes('Title Seven') && html.includes('Title Eight'));
-    assert.match(html, /dpage\.when\.never/);
-    assert.match(html, /data-dp="play" data-i="0"/);
-    assert.match(html, /data-dp="more" data-i="1" data-file_location="music&#x2F;K&#x2F;Eight.flac"/);
-    assert.match(html, /data-dp="queueAll"/);
-    // network: the lead, the server named and escaped, the searched line
-    assert.match(html, /data-dp="lead" data-i="0"/);
-    assert.ok(html.includes('Far &lt;Server&gt;'));
-    assert.match(html, /dpage\.network\.searched\{&quot;count&quot;:3\}/);
-    // peers: one group per server, answering first; the dead one dimmed
-    assert.ok(html.indexOf('Sam&#39;s server') < html.indexOf('Peer &lt;B&gt;'));
-    assert.match(html, /dpage-peer-dot off/);
-    assert.match(html, /data-dp="listen" data-i="0"/);
-    assert.match(html, /dpage\.peers\.answered/);
-    // the phone fold has a tab per source
-    assert.match(html, /data-dp="source" data-v="library"/);
-    assert.match(html, /data-dp="source" data-v="peers"/);
+    assert.match(html, /<span class="dpage-art"><img loading="lazy" src="http:\/\/host\/album-art\/a7.jpg\?compress=s&token=TOK" alt=""><\/span>/);
+    assert.match(html, /<span class="dpage-art dpage-art-ph">/, 'no art: the note tile');
+    assert.ok(html.includes('Jay · Album Seven'));
+    assert.ok(html.includes('Quinn · Peer Album'));
+    assert.match(html, /<span class="dpage-art"><img loading="lazy" src="http:&#x2F;&#x2F;host&#x2F;peer&#x2F;1&#x2F;art&#x2F;pa.jpg\?c&#x3D;s" alt=""><\/span>/);
+    // the connected column is one flat list of the playable rows
+    assert.ok(html.includes('Peer Two'));
+    assert.ok(!html.includes('Offline Song'), 'an offline server\'s rows are not shown');
+    assert.ok(!html.includes('Peer &lt;B&gt;'), 'no per-server headers');
+    assert.equal(findDrawn(html, { 'data-dp': 'fedQueue', 'data-i': 0 }, 'div').attrs.title, 'Sam\'s server', 'a centroid match: the server alone');
+    // footers
+    assert.ok(html.indexOf('data-dp="queueAll"') < html.indexOf('dpage-src-peers" data-source'), 'Queue all under the library column');
+    for (const f of ['shuffle', 'save', 'peerQueueAll']) { assert.ok(findDrawn(html, { 'data-dp': f }), f); }
+    assert.match(html, /data-dp="queueAll">dpage\.verb\.queueAll</);
+    assert.match(html, /data-dp="peerQueueAll">dpage\.verb\.queueAll</);
+    assertTrimmed(html, 'ready');
   });
 
-  test('row verbs: library queue/play, a lead opens its window, a peer row listens / queues / opens', async () => {
+  test('row verbs: library play / queue / ⋯; a connected row plays now / queues / ⋯ opens the peer window', async () => {
     const { S, click, queued, opened, fedQueued } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
     click({ 'data-dp': 'queue', 'data-i': 0 });
@@ -384,28 +489,97 @@ describe('Discover page: opening it', () => {
     click({ 'data-dp': 'play', 'data-i': 1 });
     assert.equal(queued[1][0], 'music/K/Eight.flac');
     assert.equal(queued[1][3], 3, 'play now = right after the playing song');
-    click({ 'data-dp': 'lead', 'data-i': 0 });
-    assert.equal(opened[0].source, 'p2p');
-    assert.equal(opened[0].raw, MAIN.network.results[0], 'the route\'s own row, unchanged');
-    click({ 'data-dp': 'listen', 'data-i': 0 });
+    click({ 'data-dp': 'peerPlay', 'data-i': 0 });
     assert.equal(fedQueued[0][0], 'play');
     assert.deepEqual(fedQueued[0][1], { id: 1, name: 'Sam\'s server' });
     assert.equal(fedQueued[0][2], 'tunes/P/One.mp3');
-    click({ 'data-dp': 'fedQueue', 'data-i': 0 });
-    assert.equal(fedQueued[1][1], PEERS.peers.peers[0].results[0]);
+    assert.equal(fedQueued[0][5], 3, 'right after the playing song');
+    click({ 'data-dp': 'fedQueue', 'data-i': 1 });
+    assert.deepEqual(fedQueued[1], ['queue', PEERS.peers.peers[0].results[1]], 'the route\'s own row, through the federation stream');
     click({ 'data-dp': 'peerMore', 'data-i': 0 });
-    assert.equal(opened[1].source, 'federation');
+    assert.equal(opened[0].source, 'federation');
+    assert.equal(opened[0].raw, PEER_ROW);
+    assert.deepEqual(opened[0].opts, { seedPlain: 'dpage.match.recent' }, 'a connected row was matched against the centroid');
   });
 
-  test('a section the ping does not advertise is not drawn at all', async () => {
-    const { S, calls } = makeSandbox({ taste: () => ({ ...MAIN, network: null }), flags: { ...FLAGS_ALL, discoveryP2p: false, federationDiscovery: false } });
+  test('a click on a connected server\'s row queues it, exactly as a library row does', async () => {
+    const { S, click, queued, opened, fedQueued, toasts } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
-    assert.equal(tasteCalls(calls).length, 1, 'no peers call');
-    assert.deepEqual(tasteCalls(calls)[0].sources, ['library']);
     const html = S.html();
-    assert.ok(html.includes('dpage-sec-library'));
-    assert.ok(!html.includes('dpage-sec-network') && !html.includes('dpage-sec-peers'));
-    assert.ok(!html.includes('dpage-seg"'), 'one source: no switch');
+    const libRow = findDrawn(html, { 'data-dp': 'queue', 'data-i': 0 }, 'div');
+    const peerRow = findDrawn(html, { 'data-dp': 'fedQueue', 'data-i': 0 }, 'div');
+    assert.ok(libRow && peerRow, 'both rows are click targets');
+    assert.equal(peerRow.attrs.class, libRow.attrs.class, 'the same row');
+    assert.equal(peerRow.attrs.title, 'Sam\'s server', 'the server names itself in the tooltip');
+    click({ 'data-dp': 'fedQueue', 'data-i': 0 }, 'div');
+    assert.deepEqual(fedQueued, [['queue', PEER_ROW]]);
+    assert.equal(opened.length, 0, 'the window is the ⋯\'s, not the row\'s');
+    click({ 'data-dp': 'queue', 'data-i': 0 }, 'div');
+    assert.equal(queued.length, 1);
+    assert.equal(toasts.filter((o) => o.title === 'discover.modal.queued').length, 2);
+  });
+
+  test('every row verb is a labelled button; the two columns\' verbs line up (same icons, same labels)', async () => {
+    const { S } = makeSandbox({ taste: answer, playing: PLAYING });
+    await S.discoveryPanel();
+    const html = S.html();
+    const lib = ['play', 'queue', 'more'].map((dp) => findDrawn(html, { 'data-dp': dp, 'data-i': 0 }));
+    const peer = ['peerPlay', 'fedQueue', 'peerMore'].map((dp) => findDrawn(html, { 'data-dp': dp, 'data-i': 0 }));
+    for (const el of [...lib, ...peer]) {
+      assert.equal(el.tag, 'button');
+      assert.ok(el.attrs['aria-label'] && el.attrs.title, `${el.attrs['data-dp']} is labelled`);
+    }
+    assert.deepEqual(lib.map((el) => el.attrs.title), ['dpage.verb.playNow', 'dpage.verb.queue', 'dpage.verb.addToPlaylist']);
+    assert.deepEqual(peer.map((el) => el.attrs.title), ['dpage.verb.playNow', 'dpage.verb.queue', 'dpage.verb.more']);
+    assert.equal(lib[2].attrs['data-file_location'], 'music/J/Seven.flac');
+  });
+
+  test('a connected server\'s album: the card opens it in the peer-browse view, its play button queues it', async () => {
+    const songs = [{ filepath: 'tunes/P/One.mp3', metadata: { title: 'Peer Song' } }, { filepath: 'tunes/P/Three.mp3', metadata: { title: 'Three' } }];
+    const { S, click, adopted, albumsOpened, rowsQueued, calls, knownPeers, fedQueued } = makeSandbox({ taste: answer, albumSongs: () => songs });
+    await S.discoveryPanel();
+    assert.deepEqual(knownPeers.get(1), { id: 1, name: 'Sam\'s server' }, 'the queue rows can name the server');
+    click({ 'data-dp': 'peerAlbumOpen', 'data-i': 0 });
+    assert.deepEqual(adopted, ['1'], 'the app follows the card onto that server');
+    assert.deepEqual(albumsOpened, [['Peer Album', 'Quinn', null, null]]);
+    click({ 'data-dp': 'peerAlbum', 'data-i': 0 });
+    await flush(); await flush();
+    assert.deepEqual(calls.filter((c) => c.name === 'peerAlbumSongs').map((c) => [c.id, c.body]), [[1, { album: 'Peer Album', artist: 'Quinn' }]]);
+    assert.deepEqual(rowsQueued.map((r) => [r[0].id, r[1]]), [[1, 'tunes/P/One.mp3'], [1, 'tunes/P/Three.mp3']], 'the whole album, through the federation stream');
+    assert.equal(adopted.length, 1, 'queueing leaves the app on this server');
+    assert.equal(fedQueued.length, 0);
+  });
+
+  test('a connected album card: Enter opens it (the keyboard reaches it); a card with no art draws the note tile', async () => {
+    const noArt = { ...PEER_ROW, filepath: 'tunes/P/Other.mp3', title: 'Other', album: 'Bare Album', art: undefined, similarity: 0.7 };
+    const peers = { ...PEERS, peers: { ...PEERS.peers, peers: [{ ...PEERS.peers.peers[0], results: [PEER_ROW, noArt] }] } };
+    const { S, keydown, adopted, albumsOpened } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? peers : MAIN) });
+    await S.discoveryPanel();
+    const html = S.html();
+    const strip = html.slice(html.indexOf('dpage-strip dpage-src-peers'), html.indexOf('<div class="dpage-songs'));
+    assert.equal(countDrawn(strip, { 'data-dp': 'peerAlbumOpen' }), 2);
+    const bare = strip.slice(strip.indexOf('data-album="Bare Album"'));
+    assert.match(bare, /^[^]*?<div class="album-grid-art">\s*<svg[^>]*viewBox="0 0 24 24"/, 'no art: the note tile');
+    assert.equal(keydown({ 'data-dp': 'peerAlbumOpen', 'data-i': 1 }, 'a'), false, 'another key does nothing');
+    assert.deepEqual(adopted, []);
+    assert.equal(keydown({ 'data-dp': 'peerAlbumOpen', 'data-i': 1 }, 'Enter'), true);
+    assert.deepEqual(adopted, ['1']);
+    assert.deepEqual(albumsOpened, [['Bare Album', 'Quinn', null, null]]);
+  });
+
+  test('a connected album the server cannot list: its play button queues the rows that matched', async () => {
+    const { S, click, fedQueued } = makeSandbox({ taste: answer });
+    await S.discoveryPanel();
+    click({ 'data-dp': 'peerAlbum', 'data-i': 0 });
+    await flush(); await flush();
+    assert.deepEqual(fedQueued, [['queue', PEER_ROW]]);
+  });
+
+  test('Queue all under the connected column queues every playable row', async () => {
+    const { S, click, fedQueued } = makeSandbox({ taste: answer });
+    await S.discoveryPanel();
+    click({ 'data-dp': 'peerQueueAll' });
+    assert.deepEqual(fedQueued.map((f) => f[1].filepath), ['tunes/P/One.mp3', 'tunes/P/Two.mp3'], 'best match first, the offline server\'s left out');
   });
 
   test('off: the ping has no page — one line, no request', async () => {
@@ -441,37 +615,147 @@ describe('Discover page: opening it', () => {
     assert.match(S.html(), /dpage\.state\.offBody/);
   });
 
-  test('the recommendation window names the row\'s own seed; a peers row (the centroid) a phrase', async () => {
-    const { S, click, opened } = makeSandbox({ taste: answer, playing: PLAYING });
-    await S.discoveryPanel();
-    click({ 'data-dp': 'lead', 'data-i': 0 });
-    assert.deepEqual(opened[0].opts, { seedTitle: 'Seed <One>' }, 'h1, the seed the lead was matched against (escaped by Vue)');
-    click({ 'data-dp': 'peerMore', 'data-i': 0 });
-    assert.deepEqual(opened[1].opts, { seedPlain: 'dpage.match.recent' });
-  });
-
-  test('every row verb is a focusable control: the network row has a real button', async () => {
-    const { S } = makeSandbox({ taste: answer, playing: PLAYING });
-    await S.discoveryPanel();
-    const html = S.html();
-    for (const attrs of [{ 'data-dp': 'lead', 'data-i': 0 }, { 'data-dp': 'play', 'data-i': 0 }, { 'data-dp': 'queue', 'data-i': 0 }, { 'data-dp': 'more', 'data-i': 0 }, { 'data-dp': 'listen', 'data-i': 0 }, { 'data-dp': 'fedQueue', 'data-i': 0 }, { 'data-dp': 'peerMore', 'data-i': 0 }]) {
-      const el = findDrawn(html, attrs);
-      assert.ok(el && el.tag === 'button', JSON.stringify(attrs));
-      // (Listen carries its word; the icon-only verbs need a label)
-      if (attrs['data-dp'] !== 'listen') { assert.ok(el.attrs['aria-label'] || el.attrs.title, `${attrs['data-dp']} is labelled`); }
-    }
-    assert.equal(findDrawn(html, { 'data-dp': 'more', 'data-i': 0 }).attrs.title, 'dpage.verb.addToPlaylist', 'the library ⋯ is the playlist picker');
-  });
-
-  test('first open draws the page\'s own loading state, not a spinner', async () => {
+  test('first open draws skeleton strips and rows — no spinner, no "asking" line', async () => {
     let release;
     const gate = new Promise((r) => { release = r; });
     const { S } = makeSandbox({ taste: (b) => gate.then(() => answer(b)) });
     const run = S.discoveryPanel();
-    assert.match(S.html(), /dpage-bar[\s\S]*dpage-loading/);
-    assert.ok(!S.html().includes('LOADING'));
+    const html = S.html();
+    assert.match(html, /<div class="dpage dpage-page-play[^"]*" aria-busy="true">/);
+    assert.match(html, /dpage-bar[\s\S]*dpage-skel-card/);
+    assert.equal(html.split('dpage-skel-card').length - 1, 8, 'four tiles in each strip');
+    assert.ok(html.includes('dpage-skel-row'));
+    assert.ok(!html.includes('LOADING'));
+    assertTrimmed(html, 'loading');
     release();
     await run;
+    assert.ok(!S.html().includes('dpage-skel'));
+  });
+
+  test('the library first, the connected servers when they answer: their strip and column wait as skeletons', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const { S } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? gate.then(() => PEERS) : MAIN) });
+    const run = S.discoveryPanel();
+    await flush(); await flush(); await flush();
+    let html = S.html();
+    assert.ok(html.includes('Title Seven'), 'the library drew');
+    assert.match(html, /class="dpage-strip dpage-src-peers" aria-busy="true"><div class="album-grid dpage-albums"><div class="dpage-skel-card">/, 'no label while asked');
+    assert.match(html, /<section class="dpage-col dpage-src-peers" data-source="peers"><div class="dpage-rows" aria-busy="true">/);
+    release();
+    await run;
+    html = S.html();
+    assert.ok(html.includes('Peer Song'));
+    assert.ok(!html.includes('dpage-skel'));
+  });
+});
+
+describe('Discover page: no connected servers', () => {
+  const many = (n) => ({ ...MAIN, library: { ...MAIN.library, tracks: Array.from({ length: n }, (_, i) => libTrack(i)) } });
+
+  test('federation off: one call, no connected label, strip or column — the library flows over both columns', async () => {
+    const { S, calls } = makeSandbox({ taste: () => many(20), flags: NO_FED });
+    await S.discoveryPanel();
+    assert.equal(tasteCalls(calls).length, 1, 'no peers call');
+    assert.deepEqual(tasteCalls(calls)[0].sources, ['library']);
+    const html = S.html();
+    assert.ok(!html.includes('dpage-src-peers'));
+    assert.ok(!html.includes('dpage.albums.peer') && !html.includes('dpage.songs.peer'));
+    assert.ok(!html.includes('dpage.peers.quiet'));
+    assert.match(html, /<div class="dpage-songs dpage-songs-solo"><section class="dpage-col dpage-src-library"/);
+    assert.equal(html.split('dpage.songs.library').length - 1, 1, 'ONE heading over the block');
+    // the first block: rows 1–8 left, 9–16 right (column-major, a CSS grid)
+    const blocks = [...html.matchAll(/<div class="dpage-rows dpage-flow" style="--dpage-per:(\d+)">/g)].map((m) => Number(m[1]));
+    assert.deepEqual(blocks, [8], 'one block of 16: 8 per column');
+    assert.ok(html.includes('Many 15') && !html.includes('Many 16'));
+    assert.ok(html.indexOf('Many 0') < html.indexOf('Many 8'), 'in order: the grid lays them out column-major');
+    assert.ok(html.indexOf('data-dp="showMore" data-v="library"') > html.indexOf('Many 15'));
+    assert.ok(html.indexOf('data-dp="queueAll"') > html.indexOf('data-dp="showMore"'), 'the footer under the block');
+    assertTrimmed(html, 'no federation');
+  });
+
+  test('Show more adds the next block of 16 (a short last block splits evenly), then goes', async () => {
+    const { S, click } = makeSandbox({ taste: () => many(20), flags: NO_FED });
+    await S.discoveryPanel();
+    click({ 'data-dp': 'showMore', 'data-v': 'library' });
+    const html = S.html();
+    const blocks = [...html.matchAll(/--dpage-per:(\d+)/g)].map((m) => Number(m[1]));
+    assert.deepEqual(blocks, [8, 2]);
+    assert.ok(html.includes('Many 19'));
+    assert.ok(!html.includes('data-dp="showMore"'), 'nothing left');
+    // the row indexes keep counting across blocks
+    assert.ok(findDrawn(html, { 'data-dp': 'play', 'data-i': 19 }));
+  });
+
+  test('paired servers with nothing playable: no connected album strip, the column says so in one dim line', async () => {
+    const quiet = { ...PEERS, peers: { ...PEERS.peers, peers: PEERS.peers.peers.map((g) => ({ ...g, reachable: false })) } };
+    const { S } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? quiet : MAIN) });
+    await S.discoveryPanel();
+    const html = S.html();
+    assert.ok(!html.includes('dpage-strip dpage-src-peers'));
+    assert.match(html, /<section class="dpage-col dpage-src-peers" data-source="peers"><h3 class="dpage-label">[\s\S]*dpage\.songs\.peerMany[\s\S]*<div class="dpage-hint">dpage\.peers\.quiet<\/div><\/section>/);
+    assert.ok(!html.includes('Offline Song'));
+    assert.ok(!html.includes('dpage-songs-solo'), 'two columns: federation is on');
+    assertTrimmed(html, 'quiet');
+  });
+
+  test('zero paired servers: drawn as no federation at all', async () => {
+    const none = { ...PEERS, peers: { peers: [], searched: { peers: 0 } } };
+    const { S } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? none : MAIN) });
+    await S.discoveryPanel();
+    assert.ok(!S.html().includes('dpage-src-peers'));
+    assert.ok(S.html().includes('dpage-songs-solo'));
+  });
+
+  test('a failed connected call: the column\'s one line with Try again', async () => {
+    const { S, calls, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? null : MAIN) });
+    await S.discoveryPanel();
+    assert.match(S.html(), /dpage-src-peers[\s\S]*dpage\.source\.failed[\s\S]*data-dp="retry"/);
+    const n = tasteCalls(calls).length;
+    click({ 'data-dp': 'retry' });
+    await flush(); await flush();
+    assert.equal(tasteCalls(calls).length, n + 2);
+  });
+});
+
+describe('Discover page: Show more', () => {
+  test('each column starts at 16 and appends 16 more per click, independently', async () => {
+    const lib = { ...MAIN, library: { ...MAIN.library, tracks: Array.from({ length: 40 }, (_, i) => libTrack(i)) } };
+    const rows = Array.from({ length: 20 }, (_, i) => ({ ...PEER_ROW, filepath: `tunes/Q/${i}.mp3`, title: `Peer ${i}`, similarity: 0.9 - i / 100 }));
+    const peers = { ...PEERS, peers: { ...PEERS.peers, peers: [{ ...PEERS.peers.peers[0], results: rows }] } };
+    const { S, click, keyClick, activeAttrs } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? peers : lib) });
+    await S.discoveryPanel();
+    const count = (dp) => countDrawn(S.html(), { 'data-dp': dp, class: 'discover-row dpage-row pointer' });
+    assert.equal(count('queue'), 16);
+    assert.equal(count('fedQueue'), 16);
+    assert.ok(!S.html().includes('dpage-flow'), 'two columns: the library is one list');
+    click({ 'data-dp': 'showMore', 'data-v': 'library' });
+    assert.equal(count('queue'), 32);
+    assert.equal(count('fedQueue'), 16, 'the other column stays');
+    keyClick({ 'data-dp': 'showMore', 'data-v': 'peers' });
+    assert.equal(count('fedQueue'), 20);
+    assert.ok(!findDrawn(S.html(), { 'data-dp': 'showMore', 'data-v': 'peers' }), 'gone at the end');
+    assert.deepEqual([activeAttrs()['data-dp'], activeAttrs()['data-i']], ['peerPlay', '16'], 'the keyboard goes on to the first row it added');
+    keyClick({ 'data-dp': 'showMore', 'data-v': 'library' });
+    assert.equal(count('queue'), 40);
+    assert.deepEqual([activeAttrs()['data-dp'], activeAttrs()['data-i']], ['play', '32']);
+    assert.ok(!S.html().includes('data-dp="showMore"'));
+    // a new answer starts both columns over
+    click({ 'data-dp': 'refresh' });
+    await flush(); await flush();
+    assert.equal(count('queue'), 16);
+    // and a fresh visit does too
+    click({ 'data-dp': 'showMore', 'data-v': 'library' });
+    await S.discoveryPanel();
+    assert.equal(count('queue'), 16);
+  });
+
+  test('Queue all / Shuffle / Save act on every library song, not only the ones shown', async () => {
+    const lib = { ...MAIN, library: { ...MAIN.library, tracks: Array.from({ length: 20 }, (_, i) => libTrack(i)) } };
+    const { S, click, queued } = makeSandbox({ taste: () => lib, flags: NO_FED });
+    await S.discoveryPanel();
+    click({ 'data-dp': 'queueAll' });
+    assert.equal(queued.length, 20);
   });
 });
 
@@ -485,15 +769,15 @@ describe('Discover page: states', () => {
     const { S, calls, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? { ...RANDOM, library: null } : RANDOM) });
     await S.discoveryPanel();
     assert.ok(!S.html().includes('dpage-seeds'), 'the card, no seed strip');
+    assertTrimmed(S.html(), 'nothingFinished');
     openOptions(click);
     const html = S.html();
     assert.match(html, /dpage-card[\s\S]*dpage\.state\.nothingFinished/);
     assert.match(html, /data-dp="another"/);
     assert.match(html, /data-dp="pick"/);
-    assert.match(html, /data-dp="browse"/);
+    assert.match(html, /data-dp="browse">dpage\.verb\.browseLibrary/);
     assert.match(html, /dpage\.seeds\.randomTag/);
     assert.ok(!/data-dp="drop"/.test(html), 'the random pick has no ×');
-    assert.ok(!html.includes('dpage-sec-network'), 'no fan-out for a random seed');
     const before = tasteCalls(calls).length;
     click({ 'data-dp': 'another' });
     await flush(); await flush();
@@ -503,15 +787,17 @@ describe('Discover page: states', () => {
     assert.equal(next[0].remember, undefined, 'a passed-over pick is never saved');
   });
 
-  test('after Another pick, a filter or window change keeps the skip out — and saves the prefs with a PUT, not remember', async () => {
+  test('after Another pick, the checkbox or a window change keeps the skip out — and saves the prefs with a PUT, not remember', async () => {
     const { S, calls, click, change } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? { ...RANDOM, library: null } : RANDOM) });
     await S.discoveryPanel();
     click({ 'data-dp': 'another' });
     await flush(); await flush();
+    openOptions(click);
     let before = tasteCalls(calls).length;
-    click({ 'data-dp': 'filter', 'data-v': 'all' });
+    click({ 'data-dp': 'includePlayed' });
     await flush(); await flush();
     let [main] = tasteCalls(calls).slice(before);
+    assert.equal(main.filter, 'all');
     assert.deepEqual(main.exclude, ['r1'], 'the skipped pick stays skipped');
     assert.equal(main.remember, undefined, 'nothing sent is saved with it');
     assert.deepEqual(calls.filter((c) => c.name === 'prefsSave').map((c) => c.body), [{ window: 30, filter: 'all', staleDays: 90 }]);
@@ -525,10 +811,11 @@ describe('Discover page: states', () => {
   });
 
   test('scan pending: the card with Check again, the seeds under More options', async () => {
-    const pending = { ...MAIN, notAnalyzed: true, library: { filter: 'fresh', albums: [], tracks: [] }, network: { results: [], searched: { peers: 0 } } };
+    const pending = { ...MAIN, notAnalyzed: true, library: { filter: 'fresh', albums: [], tracks: [] } };
     const { S, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? { ...pending, peers: { peers: [], searched: {} } } : pending) });
     await S.discoveryPanel();
     assert.ok(!S.html().includes('dpage-seeds'), 'the card, no seed strip');
+    assertTrimmed(S.html(), 'scanPending');
     openOptions(click);
     const html = S.html();
     assert.match(html, /dpage\.state\.scanPending/);
@@ -536,12 +823,50 @@ describe('Discover page: states', () => {
     assert.match(html, /data-dp="retry"/);
     assert.ok(seedsSection(html).includes('Seed &lt;One&gt;'), 'seeds are listed anyway, in the picker');
     assert.match(html, /dpage\.source\.waitingForScan/);
+    assert.ok(!html.includes('data-dp="includePlayedOn"'), 'nothing to widen while the scan has not run');
+  });
+
+  test('the library-empty button gone after the re-ask: the keyboard lands on More options, not <body>', async () => {
+    const empty = (filter) => ({ ...MAIN, library: { filter, albums: [], tracks: [] } });
+    const { S, keyClick, activeAttrs } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : empty(b.filter || 'fresh')) });
+    await S.discoveryPanel();
+    keyClick({ 'data-dp': 'includePlayedOn' });
+    await flush(); await flush();
+    assert.ok(!S.html().includes('data-dp="includePlayedOn"'), 'nothing left to widen');
+    assert.equal(activeAttrs()['data-dp'], 'options');
   });
 
   test('a failed call draws the failed card with Try again', async () => {
     const { S } = makeSandbox({ taste: () => null });
     await S.discoveryPanel();
     assert.match(S.html(), /dpage\.state\.failed[\s\S]*data-dp="retry"/);
+    assertTrimmed(S.html(), 'failed');
+  });
+
+  test('library empty: one dim line and "Include songs I\'ve played lately", which ticks the checkbox and re-asks', async () => {
+    const empty = { ...MAIN, library: { filter: 'fresh', albums: [], tracks: [] } };
+    const { S, calls, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : empty) });
+    await S.discoveryPanel();
+    let html = S.html();
+    assert.ok(!html.includes('dpage-strip dpage-src-library'), 'no library albums: no strip');
+    assert.match(html, /<div class="dpage-hint">dpage\.library\.nothing <button type="button" class="dpage-vb dpage-hint-btn" data-dp="includePlayedOn">dpage\.opt\.includePlayed<\/button><\/div>/);
+    assertTrimmed(html, 'library empty');
+    const before = tasteCalls(calls).length;
+    click({ 'data-dp': 'includePlayedOn' });
+    await flush(); await flush();
+    const [main] = tasteCalls(calls).slice(before);
+    assert.equal(main.filter, 'all');
+    assert.equal(main.remember, true);
+    openOptions(click);
+    html = S.html();
+    assert.equal(findDrawn(html, { 'data-dp': 'includePlayed' }).attrs['aria-checked'], 'true', 'the checkbox is ticked');
+  });
+
+  test('library empty with every played song included: the line alone', async () => {
+    const empty = { ...MAIN, library: { filter: 'all', albums: [], tracks: [] } };
+    const { S } = makeSandbox({ taste: () => empty, flags: NO_FED, prefs: { window: 30, filter: 'all', staleDays: 90, exclude: [], persisted: true } });
+    await S.discoveryPanel();
+    assert.match(S.html(), /<div class="dpage-hint">dpage\.library\.nothing<\/div>/);
   });
 
   test('every seed dropped: the card says so and its Edit seeds opens the picker on the dropped ones', async () => {
@@ -624,46 +949,76 @@ describe('Discover page: changes re-ask', () => {
     assert.equal(calls.filter((c) => c.name === 'prefs').length, 3);
   });
 
-  test('a filter change while the prefs are unknown is not remembered', async () => {
+  test('the checkbox while the prefs are unknown is not remembered', async () => {
     const { S, calls, click } = makeSandbox({ taste: answer, prefs: () => null });
     await S.discoveryPanel();
+    openOptions(click);
     const before = tasteCalls(calls).length;
-    click({ 'data-dp': 'filter', 'data-v': 'unplayed' });
+    click({ 'data-dp': 'includePlayed' });
     await flush(); await flush();
     const [main] = tasteCalls(calls).slice(before);
-    assert.equal(main.filter, 'unplayed');
+    assert.equal(main.filter, 'all');
     assert.equal(main.remember, undefined);
   });
 
-  test('"+ n more" opens the whole strip, and then reads Show less', async () => {
+  test('"Show all" opens the whole seed strip, and then reads Show less', async () => {
     const many = { ...MAIN, seeds: [...SEEDS, ...Array.from({ length: 8 }, (_, i) => ({ hash: `m${i}`, filepath: `music/M/${i}.flac`, metadata: { title: `More ${i}` }, outcome: 'completed', plays: 1, pinned: false, analyzed: true }))] };
     const { S, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : many) });
     await S.discoveryPanel();
     openOptions(click);
-    assert.match(S.html(), /data-dp="moreSeeds">dpage\.seeds\.more/);
+    assert.match(S.html(), /data-dp="moreSeeds">dpage\.seeds\.showAll</);
+    assert.ok(!seedsSection(S.html()).includes('dpage-sub'), 'no statistics line');
     click({ 'data-dp': 'moreSeeds' });
     assert.match(S.html(), /data-dp="moreSeeds">dpage\.seeds\.showLess/);
     assert.ok(S.html().includes('More 7'));
   });
 
-  test('a filter chip narrows at once and re-asks with the filter remembered', async () => {
-    const { S, calls, click } = makeSandbox({ taste: answer });
+  test('"Include songs I\'ve played lately": off by default; ticking re-asks with \'all\', unticking narrows at once and re-asks with \'fresh\'', async () => {
+    const recent = new Date(Date.now() - 5 * 86400000).toISOString();
+    const all = { ...MAIN, library: { ...MAIN.library, filter: 'all', tracks: [...MAIN.library.tracks, libTrack(9, { metadata: { title: 'Played Lately' }, playCount: 4, lastPlayed: recent })] } };
+    const { S, calls, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : (b.filter === 'all' ? all : MAIN)) });
     await S.discoveryPanel();
-    const before = tasteCalls(calls).length;
-    click({ 'data-dp': 'filter', 'data-v': 'unplayed' });
-    // provisional: the played row is gone before the answer lands
-    assert.ok(!S.html().includes('Title Eight'));
+    openOptions(click);
+    let box = findDrawn(S.html(), { 'data-dp': 'includePlayed' });
+    assert.equal(box.tag, 'button');
+    assert.equal(box.attrs.role, 'checkbox');
+    assert.equal(box.attrs['aria-checked'], 'false');
+    assert.match(S.html(), /data-dp="includePlayed"><i aria-hidden="true"><\/i>dpage\.opt\.includePlayed</);
+    let before = tasteCalls(calls).length;
+    click({ 'data-dp': 'includePlayed' });
     await flush(); await flush();
-    const [main] = tasteCalls(calls).slice(before);
-    assert.equal(main.filter, 'unplayed');
+    let [main] = tasteCalls(calls).slice(before);
+    assert.equal(main.filter, 'all');
     assert.equal(main.remember, true);
+    assert.ok(S.html().includes('Played Lately'));
+    assert.equal(findDrawn(S.html(), { 'data-dp': 'includePlayed' }).attrs['aria-checked'], 'true');
+    before = tasteCalls(calls).length;
+    click({ 'data-dp': 'includePlayed' });
+    // provisional: the recently played row is gone before the answer lands
+    assert.ok(!S.html().includes('Played Lately'));
+    await flush(); await flush();
+    [main] = tasteCalls(calls).slice(before);
+    assert.equal(main.filter, 'fresh');
+    assert.equal(main.remember, true);
+    box = findDrawn(S.html(), { 'data-dp': 'includePlayed' });
+    assert.equal(box.attrs['aria-checked'], 'false');
+  });
+
+  test('a saved "never played" filter is read as the checkbox off (\'fresh\')', async () => {
+    for (const filter of ['never', 'unplayed']) {
+      const { S, calls, click } = makeSandbox({ taste: answer, prefs: { window: 30, filter, staleDays: 90, exclude: [], persisted: true } });
+      await S.discoveryPanel();
+      assert.equal(tasteCalls(calls)[0].filter, 'fresh', filter);
+      openOptions(click);
+      assert.equal(findDrawn(S.html(), { 'data-dp': 'includePlayed' }).attrs['aria-checked'], 'false', filter);
+    }
   });
 
   test('the window select lives in the bar (only) and re-asks with the window', async () => {
     const { S, calls, change } = makeSandbox({ taste: answer });
     await S.discoveryPanel();
     const html = S.html();
-    const bar = html.slice(html.indexOf('<div class="dpage-bar">'), html.indexOf('</div>', html.indexOf('<div class="dpage-bar">')));
+    const bar = html.slice(html.indexOf('<div class="dpage-bar">'), html.indexOf('</label>', html.indexOf('<div class="dpage-bar">')));
     assert.match(bar, /dpage\.basedOnLast[\s\S]*data-dp-change="window"/);
     assert.equal(html.split('data-dp-change="window"').length, 2, 'one window form');
     const before = tasteCalls(calls).length;
@@ -682,31 +1037,16 @@ describe('Discover page: changes re-ask', () => {
     await flush(); await flush();
     assert.equal(tasteCalls(calls).length, n + 2);
   });
-
-  test('See all draws one source with every row, Back returns to the overview', async () => {
-    const many = { ...MAIN, library: { ...MAIN.library, tracks: Array.from({ length: 9 }, (_, i) => ({ filepath: `music/X/${i}.flac`, similarity: 0.7, seedHash: 'h1', metadata: { title: `Many ${i}` }, playCount: 0, lastPlayed: null })) } };
-    const { S, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : many) });
-    await S.discoveryPanel();
-    assert.ok(!S.html().includes('Many 8'), 'the overview shows five');
-    assert.match(S.html(), /dpage\.library\.moreUnderSeeAll\{&quot;count&quot;:4\}/);
-    click({ 'data-dp': 'focus', 'data-v': 'library' });
-    assert.ok(S.html().includes('Many 8'));
-    assert.ok(!S.html().includes('dpage-sec-network'));
-    assert.match(S.html(), /data-dp="back"/);
-    click({ 'data-dp': 'back' });
-    assert.ok(S.html().includes('dpage-sec-network'));
-  });
 });
 
 describe('Discover page: the configuration bar', () => {
-  test('the bar: tagline, the window form, More options, then refresh — no seed strip in the body', async () => {
+  test('the bar: the window form, More options, then refresh — no tagline, no back link, no seed strip in the body', async () => {
     const { S } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
     const html = S.html();
     const at = (s) => html.indexOf(s);
     assert.ok(at('class="dpage-bar"') > 0);
-    assert.ok(at('dpage-tagline') > at('class="dpage-bar"'));
-    assert.ok(at('data-dp-change="window"') > at('dpage-tagline'));
+    assert.ok(at('data-dp-change="window"') > at('class="dpage-bar"'));
     assert.ok(at('data-dp="options"') > at('data-dp-change="window"'));
     assert.ok(at('data-dp="refresh"') > at('data-dp="options"'), 'refresh at the far right');
     const toggle = findDrawn(html, { 'data-dp': 'options' });
@@ -714,19 +1054,48 @@ describe('Discover page: the configuration bar', () => {
     assert.equal(toggle.attrs['aria-expanded'], 'false');
     assert.match(html, /data-dp="options"[^>]*>dpage\.bar\.moreOptions/);
     assert.equal(toggle.attrs['aria-controls'], undefined, 'nothing to point at while closed');
-    for (const absent of ['dpage-seeds', 'dpage-options', 'dpage.seeds.title', 'data-dp="drop"', 'data-dp="unpin"', 'data-dp="moreSeeds"']) {
+    for (const absent of ['dpage-tagline', 'dpage.subtitle', 'data-dp="back"', 'dpage-seeds', 'dpage-options', 'dpage.seeds.title', 'data-dp="drop"', 'data-dp="unpin"', 'data-dp="moreSeeds"', 'data-dp="includePlayed"']) {
       assert.ok(!html.includes(absent), absent);
     }
   });
 
+  test('a random seed draws no connected-server column while the peers call is out, nor on the next load', async () => {
+    const RAND = { ...MAIN, seedSource: 'random', fallback: true, network: null, peers: null, seeds: [{ hash: 'r1', filepath: 'music/R/Rand.flac', metadata: { title: 'Rand' }, outcome: null, plays: 0, pinned: false, analyzed: true }] };
+    let release;
+    let gate = new Promise((r) => { release = r; });
+    let mainGate = null;
+    const { S } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? gate.then(() => ({ ...RAND, library: null })) : (mainGate ? mainGate.then(() => RAND) : RAND)) });
+    const run = S.discoveryPanel();
+    await flush(); await flush();
+    assert.match(S.html(), /dpage\.state\.nothingFinished/, 'the library answer is in');
+    assert.ok(!S.html().includes('dpage-src-peers'), 'no peers skeleton re-flowing away');
+    assert.ok(S.html().includes('dpage-songs dpage-songs-solo'));
+    release();
+    await run;
+    // a later visit, both calls out: the one-column skeleton (the last
+    // library answer had a random seed)
+    gate = new Promise((r) => { release = r; });
+    mainGate = gate;
+    S.view.main = undefined;
+    S.view.peers = undefined;
+    S.view.at = 0;
+    const again = S.discoveryPanel();
+    await flush();
+    assert.match(S.html(), PAGE_BUSY, 'loading');
+    assert.ok(!S.html().includes('dpage-src-peers'));
+    assert.ok(S.html().includes('dpage-songs dpage-songs-solo'));
+    release();
+    await again;
+  });
+
   test('no seed strip in the body in any state while closed', async () => {
     const RANDOM = { ...MAIN, seedSource: 'random', fallback: true, network: null, peers: null, seeds: [{ hash: 'r1', filepath: 'music/R/Rand.flac', metadata: { title: 'Rand' }, outcome: null, plays: 0, pinned: false, analyzed: true }] };
-    const pending = { ...MAIN, notAnalyzed: true, library: { filter: 'fresh', albums: [], tracks: [] }, network: { results: [], searched: { peers: 0 } } };
+    const pending = { ...MAIN, notAnalyzed: true, library: { filter: 'fresh', albums: [], tracks: [] } };
     let release;
     const gate = new Promise((r) => { release = r; });
     const loading = makeSandbox({ taste: (b) => gate.then(() => answer(b)) });
     const run = loading.S.discoveryPanel();
-    assert.match(loading.S.html(), /dpage-loading/);
+    assert.match(loading.S.html(), PAGE_BUSY);
     assert.ok(!loading.S.html().includes('dpage-seeds'), 'loading');
     release();
     await run;
@@ -734,21 +1103,21 @@ describe('Discover page: the configuration bar', () => {
     const reached = {
       nothingFinished: /dpage-card[\s\S]*dpage\.state\.nothingFinished/,
       scanPending: /dpage-card[\s\S]*dpage\.state\.scanPending/,
-      ready: /dpage-sec-library[\s\S]*data-dp="filter"/,
+      ready: /dpage-src-library[\s\S]*data-dp="queue"/,
       failed: /dpage-card[\s\S]*dpage\.state\.failed/,
     };
     for (const [name, taste] of [['nothingFinished', () => RANDOM], ['scanPending', () => pending], ['ready', answer], ['failed', () => null]]) {
       const { S } = makeSandbox({ taste });
       await S.discoveryPanel();
       assert.match(S.html(), reached[name], `${name}: drawn`);
-      assert.ok(!S.html().includes('dpage-loading'), `${name}: not still loading`);
+      assert.ok(!PAGE_BUSY.test(S.html()), `${name}: not still loading`);
       if (name === 'ready') { assert.ok(!S.html().includes('dpage-card'), 'ready: no state card'); }
       assert.ok(!S.html().includes('dpage-seeds'), name);
       assert.ok(S.html().includes('data-dp="options"'), `${name}: the bar is there`);
     }
   });
 
-  test('More options opens the seed picker under the bar; the toggle reads Fewer options, then closes it', async () => {
+  test('More options opens the checkbox above the seed picker; the toggle reads Fewer options, then closes it', async () => {
     const { S, click } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
     openOptions(click);
@@ -759,28 +1128,28 @@ describe('Discover page: the configuration bar', () => {
     assert.match(html, /data-dp="options"[^>]*>dpage\.bar\.fewerOptions/);
     const bar = html.indexOf('class="dpage-bar"');
     const panel = html.indexOf('class="dpage-options" id="dpage-options"');
+    const check = html.indexOf('data-dp="includePlayed"');
     const seeds = html.indexOf('class="dpage-seeds"');
-    const lib = html.indexOf('dpage-sec-library');
-    assert.ok(bar > 0 && panel > bar && seeds > panel && lib > seeds, 'bar, then the picker, then the sections');
+    const lib = html.indexOf('dpage-src-library');
+    assert.ok(bar > 0 && panel > bar && check > panel && seeds > check && lib > seeds, 'bar, the checkbox, the picker, then the page');
     assert.match(seedsSection(html), /dpage\.seeds\.title/);
     assert.match(seedsSection(html), /data-dp="pick"/);
-    // the per-section toggles stay in their sections
-    assert.ok(!seedsSection(html).includes('data-dp="filter"'));
-    assert.ok(html.indexOf('data-dp="filter"') > lib);
+    assert.equal(html.split('data-dp="includePlayed"').length, 2, 'one filter on the page');
+    assert.ok(!html.includes('data-dp="newArtists"'), 'new artists only is the Explore page\'s');
     openOptions(click);
     html = S.html();
     assert.equal(findDrawn(html, { 'data-dp': 'options' }).attrs['aria-expanded'], 'false');
     assert.ok(!html.includes('dpage-seeds'));
   });
 
-  test('while the answer is still coming, the open picker says so', async () => {
+  test('while the answer is still coming, the open drawer has the checkbox and says the seeds wait', async () => {
     let release;
     const gate = new Promise((r) => { release = r; });
     const { S, click } = makeSandbox({ taste: (b) => gate.then(() => answer(b)) });
     const run = S.discoveryPanel();
     openOptions(click);
-    assert.match(S.html(), /class="dpage-options"[^>]*><div class="dpage-hint">dpage\.bar\.seedsWait/);
-    assert.equal(S.html().split('dpage.state.loading').length - 1, 1, 'the loading line once, in the body');
+    assert.match(S.html(), /class="dpage-options"[^>]*><div class="dpage-opt-row"><button[^>]*data-dp="includePlayed"[\s\S]*?<\/div><div class="dpage-hint">dpage\.bar\.seedsWait/);
+    assert.ok(!S.html().includes('dpage.state.loading'), 'skeletons, no loading line');
     release();
     await run;
     assert.ok(S.html().includes('class="dpage-seeds"'), 'the chips arrive in the open picker');
@@ -791,24 +1160,28 @@ describe('Discover page: the configuration bar', () => {
     await S.discoveryPanel();
     openOptions(click);
     const html = S.html();
-    assert.match(html, /class="dpage-options"[^>]*><div class="dpage-hint">dpage\.bar\.seedsWait/);
+    assert.match(html, /<div class="dpage-hint">dpage\.bar\.seedsWait/);
     assert.equal(html.split('dpage.state.failed').length - 1, 1, 'the failed card only');
     assert.match(html, /dpage-card[\s\S]*data-dp="retry"/);
   });
 
   test('the keyboard stays on the toggle (and on more/less) across the re-render', async () => {
     const many = { ...MAIN, seeds: [...SEEDS, ...Array.from({ length: 8 }, (_, i) => ({ hash: `m${i}`, filepath: `music/M/${i}.flac`, metadata: { title: `More ${i}` }, outcome: 'completed', plays: 1, pinned: false, analyzed: true }))] };
-    const { S, click, focused } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : many) });
+    const { S, click, keyClick, focused, activeAttrs } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : many) });
     await S.discoveryPanel();
     openOptions(click);
     assert.deepEqual(focused, ['options']);
-    click({ 'data-dp': 'moreSeeds' });
-    assert.deepEqual(focused, ['options', 'moreSeeds']);
-    openOptions(click);
-    assert.deepEqual(focused, ['options', 'moreSeeds', 'options']);
+    assert.equal(activeAttrs()['data-dp'], 'options');
+    keyClick({ 'data-dp': 'moreSeeds' });
+    assert.equal(focused.at(-1), 'moreSeeds');
+    assert.equal(activeAttrs()['data-dp'], 'moreSeeds');
+    keyClick({ 'data-dp': 'options' });
+    assert.equal(focused.at(-1), 'options');
+    assert.equal(activeAttrs()['data-dp'], 'options');
+    assert.match(S.html(), /data-dp="options" aria-expanded="false"/);
   });
 
-  test('the picker stays open across a drop, an Undo and a filter change, and starts closed on a fresh open', async () => {
+  test('the picker stays open across a drop, an Undo and the checkbox, and starts closed on a fresh open', async () => {
     const { S, click, toasts } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
     openOptions(click);
@@ -818,7 +1191,7 @@ describe('Discover page: the configuration bar', () => {
     toasts.find((o) => o.buttons).buttons[0][1]({ hide() {} }, {});
     await flush(); await flush();
     assert.ok(S.html().includes('class="dpage-seeds"'), 'still open after the Undo');
-    click({ 'data-dp': 'filter', 'data-v': 'unplayed' });
+    click({ 'data-dp': 'includePlayed' });
     await flush(); await flush();
     assert.ok(S.html().includes('class="dpage-seeds"'), 'still open after a re-render');
     // a return to the page (an album opened from it, the song picker)
@@ -882,6 +1255,67 @@ describe('Discover page: the configuration bar', () => {
   });
 });
 
+describe('Discover page: the explore page (no nav row yet)', () => {
+  test('discoveryPanel({ page: \'explore\' }) asks the network alone and draws its list', async () => {
+    const { S, calls } = makeSandbox({ taste: answer, playing: PLAYING });
+    await S.discoveryPanel({ page: 'explore' });
+    assert.equal(S.view.page, 'explore');
+    const asked = tasteCalls(calls);
+    assert.equal(asked.length, 1, 'no peers call');
+    assert.deepEqual(asked[0].sources, ['network']);
+    const html = S.html();
+    assert.match(html, /class="dpage dpage-page-explore/);
+    assert.ok(html.includes('dpage-sec-network') && html.includes('dpage.network.title'));
+    assert.match(html, /data-dp="lead" data-i="0"/);
+    assert.ok(html.includes('Far &lt;Server&gt;'), 'escaped');
+    assert.ok(!html.includes('dpage-src-library') && !html.includes('dpage-src-peers'), 'no library, no connected servers');
+  });
+
+  test('a lead opens its window, matched against its own seed', async () => {
+    const { S, click, opened } = makeSandbox({ taste: answer, playing: PLAYING });
+    await S.discoveryPanel({ page: 'explore' });
+    const lead = findDrawn(S.html(), { 'data-dp': 'lead', 'data-i': 0 });
+    assert.equal(lead.tag, 'button');
+    assert.ok(lead.attrs['aria-label']);
+    click({ 'data-dp': 'lead', 'data-i': 0 });
+    assert.equal(opened[0].source, 'p2p');
+    assert.equal(opened[0].raw, MAIN.network.results[0], 'the route\'s own row, unchanged');
+    assert.deepEqual(opened[0].opts, { seedTitle: 'Seed <One>' }, 'h1, the seed the lead was matched against (escaped by Vue)');
+  });
+
+  test('"new artists only" sits in its More options (not the play page\'s checkbox) and re-asks', async () => {
+    const { S, calls, click } = makeSandbox({ taste: answer });
+    await S.discoveryPanel({ page: 'explore' });
+    openOptions(click);
+    const html = S.html();
+    assert.ok(!html.includes('data-dp="includePlayed"'));
+    const box = findDrawn(html, { 'data-dp': 'newArtists' });
+    assert.equal(box.attrs['aria-checked'], 'false');
+    const before = tasteCalls(calls).length;
+    click({ 'data-dp': 'newArtists' });
+    await flush(); await flush();
+    assert.equal(tasteCalls(calls).slice(before)[0].newArtistsOnly, true);
+  });
+
+  test('a return keeps the page; a nav click is Discover again', async () => {
+    const { S, calls } = makeSandbox({ taste: answer });
+    await S.discoveryPanel({ page: 'explore' });
+    await S.discoveryPanel({ keep: true });
+    assert.equal(S.view.page, 'explore');
+    await S.discoveryPanel();
+    assert.equal(S.view.page, 'play');
+    assert.deepEqual(tasteCalls(calls).at(-2).sources, ['library']);
+    assert.ok(S.html().includes('dpage-src-library'));
+    assert.ok(!S.html().includes('dpage-sec-network'), 'the network answer is not drawn on Discover');
+  });
+
+  test('a server without p2p has nothing to explore: no request', async () => {
+    const { S, calls } = makeSandbox({ taste: answer, flags: { ...FLAGS_ALL, discoveryP2p: false } });
+    await S.discoveryPanel({ page: 'explore' });
+    assert.equal(tasteCalls(calls).length, 0);
+  });
+});
+
 describe('Discover page: fencing', () => {
   test('an answer that lands after browseGeneration moved on is dropped', async () => {
     let release;
@@ -890,7 +1324,7 @@ describe('Discover page: fencing', () => {
     const run = S.discoveryPanel();
     await flush();
     const loading = S.html();
-    assert.match(loading, /dpage-loading/, 'the page\'s own loading state, at once');
+    assert.match(loading, PAGE_BUSY, 'the page\'s own loading state, at once');
     S.bump();   // a server switch / peer adoption superseded the load
     release();
     await run;
@@ -909,10 +1343,10 @@ describe('Discover page: fencing', () => {
     first = false;
     await S.discoveryPanel();
     assert.equal(tasteCalls(calls).length, 4, 'asked again');
-    assert.ok(S.html().includes('dpage-sec-library'), 'and drew');
+    assert.ok(S.html().includes('Title Seven'), 'and drew');
     release();
     await run;
-    assert.ok(S.html().includes('dpage-sec-library'), 'the dropped answer changed nothing');
+    assert.ok(S.html().includes('Title Seven'), 'the dropped answer changed nothing');
   });
 
   test('an answer that lands while another panel is up is kept but not drawn', async () => {
@@ -930,26 +1364,7 @@ describe('Discover page: fencing', () => {
   });
 });
 
-describe('Discover page: job badges', () => {
-  test('the batch lookup puts a job badge on its network row', async () => {
-    const job = { id: 7, plugin: 'youtube', state: 'running', progress: 0.64, key: 'k1', params: {} };
-    const { S, calls } = makeSandbox({
-      taste: answer,
-      flags: { ...FLAGS_ALL, discoveryPlugins: true },
-      plugins: { available: true, list: [{ name: 'youtube', title: 'YouTube', capabilities: ['acquire'] }], jobsAllowed: true },
-      lookup: (recs) => ({ results: recs.map((r, i) => (i === 0 ? { key: 'k1', keys: {}, jobs: [job] } : { key: 'k' + i, keys: {}, jobs: [] })) }),
-    });
-    await S.discoveryPanel();
-    const lookups = calls.filter((c) => c.name === 'lookup');
-    assert.equal(lookups.length, 1);
-    assert.equal(lookups[0].body.length, 2, 'the network lead and the peer row');
-    assert.equal(lookups[0].body[0], MAIN.network.results[0]);
-    const html = S.html();
-    assert.match(html, /dpage-badge-src">discover\.job\.downloading/);
-    assert.match(html, /<div class="dpage-prog"><i style="width:64%"><\/i><\/div>/);
-    assert.match(html, /dpage\.plugins\.getIt/);
-  });
-
+describe('Discover page: job badges (the explore page)', () => {
   const JOB = { id: 7, plugin: 'youtube', state: 'running', progress: 0.1, key: 'k1', params: {} };
   const badgeBox = (extra = {}) => makeSandbox({
     taste: answer,
@@ -959,9 +1374,29 @@ describe('Discover page: job badges', () => {
     ...extra,
   });
 
+  test('the batch lookup puts a job badge on its network row', async () => {
+    const job = { ...JOB, progress: 0.64 };
+    const { S, calls } = badgeBox({ lookup: (recs) => ({ results: recs.map(() => ({ key: 'k1', keys: {}, jobs: [job] })) }) });
+    await S.discoveryPanel({ page: 'explore' });
+    const lookups = calls.filter((c) => c.name === 'lookup');
+    assert.equal(lookups.length, 1);
+    assert.deepEqual(lookups[0].body, [MAIN.network.results[0]], 'the network lead alone');
+    const html = S.html();
+    assert.match(html, /dpage-badge-src">discover\.job\.downloading/);
+    assert.match(html, /<div class="dpage-prog"><i style="width:64%"><\/i><\/div>/);
+    assert.match(html, /dpage\.plugins\.getIt/);
+  });
+
+  test('the play page looks nothing up (its rows carry no badge)', async () => {
+    const { S, calls } = badgeBox();
+    await S.discoveryPanel();
+    assert.equal(calls.filter((c) => c.name === 'lookup').length, 0);
+    assert.ok(!S.html().includes('dpage-badge'));
+  });
+
   test('a poll tick redraws only a badge that changed, in place; an unchanged tick draws nothing', async () => {
     const { S, tick, patches, renders } = badgeBox();
-    await S.discoveryPanel();
+    await S.discoveryPanel({ page: 'explore' });
     const drawn = renders();
     const html = S.html();
     tick([JOB]);
@@ -972,19 +1407,18 @@ describe('Discover page: job badges', () => {
     const bar = patches.find((pt) => pt.slot === 'data-pslot' && pt.id === 'n0');
     assert.ok(bar && /width:50%/.test(bar.html), 'the lead\'s bar moved');
     assert.ok(patches.some((pt) => pt.slot === 'data-bslot' && pt.id === 'n0'));
-    assert.ok(!patches.some((pt) => pt.id === 'p0'), 'the peer row did not change');
   });
 
   test('a return within the TTL listens again and catches the badges up', async () => {
     const { S, tick, liveWatches, calls } = badgeBox();
-    await S.discoveryPanel();
+    await S.discoveryPanel({ page: 'explore' });
     assert.equal(liveWatches(), 1);
     S.setState([{ state: 'allAlbums' }]);   // the user left
     tick([{ ...JOB, progress: 0.3 }]);
     assert.equal(liveWatches(), 0, 'the watch ends once the page is left');
     tick([{ ...JOB, progress: 0.9 }]);       // moved while away (no one listening)
     const lookups = calls.filter((c) => c.name === 'lookup').length;
-    await S.discoveryPanel();                 // back via the nav, same question, within the TTL
+    await S.discoveryPanel({ page: 'explore' }); // back, same question, within the TTL
     assert.equal(calls.filter((c) => c.name === 'lookup').length, lookups, 'the kept answer: no new lookup');
     assert.equal(liveWatches(), 1, 'listening again');
     assert.match(S.html(), /width:90%/, 'the badge caught up');
@@ -994,6 +1428,7 @@ describe('Discover page: job badges', () => {
 describe('Discover page: wiring', () => {
   const html = fs.readFileSync(path.join(ROOT, 'webapp', 'index.html'), 'utf8');
   const en = JSON.parse(fs.readFileSync(path.join(ROOT, 'webapp', 'locales', 'en.json'), 'utf8'));
+  const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8');
 
   test('index.html: the nav entry in the Music group after Most Played, hidden until the ping', () => {
     const nav = html.match(/<div id="nav-discover" class="([^"]*)" onclick="changeView\(discoveryPanel, this\);" data-panel="discovery">/);
@@ -1004,6 +1439,7 @@ describe('Discover page: wiring', () => {
     const rated = html.indexOf('data-panel="allRated"');
     assert.ok(most > 0 && disc > most && rated > disc, 'right after Most Played');
     assert.ok(html.indexOf('data-i18n="nav.discover"') > disc);
+    assert.ok(!html.includes('nav-explore'), 'no Explore row yet');
   });
 
   test('index.html: discovery-page.js loads beside discover-jobs.js, before vp.js', () => {
@@ -1022,6 +1458,34 @@ describe('Discover page: wiring', () => {
     assert.ok(!peerCapable.includes('discovery'));
     const init = sliceFn('init');
     assert.ok(init.includes('applyDiscoveryPing(response);'), 'init() hands the ping to applyDiscoveryPing');
+  });
+
+  test('spa.css: the columns follow the page\'s own width (a container query), the no-federation flow is column-major, the phone tabs are gone', () => {
+    const page = css.slice(css.indexOf('/* ── The Discover page'));
+    assert.match(page, /\.dpage \{[^}]*container-type: inline-size;[^}]*container-name: dpage;/);
+    const wide = page.slice(page.indexOf('@container dpage (min-width: 900px)'));
+    assert.ok(page.includes('@container dpage (min-width: 900px)'));
+    assert.match(wide, /\.dpage-songs:not\(\.dpage-songs-solo\) \{ grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\); \}/);
+    assert.match(wide, /\.dpage-flow \{[^}]*grid-template-rows: repeat\(var\(--dpage-per, 8\), auto\);[^}]*grid-auto-flow: column;/);
+    for (const gone of ['.dpage-seg', '.dpage-album-badge', '.dpage-album-w', '.dpage-when', '.dpage-count', '.dpage-peer-dot', '.dpage-tagline', '.dpage-back', '.dpage-vb-peer']) {
+      assert.ok(!page.includes(gone), gone);
+    }
+    // narrow content box: 120 px cards, 36 px art; touch: verbs and the
+    // strips' play buttons always shown, 40 px verbs; keyboard: the same
+    const narrow = page.slice(page.indexOf('@container dpage (max-width: 600px)'));
+    assert.ok(page.includes('@container dpage (max-width: 600px)'));
+    assert.match(narrow, /\.album-grid\.dpage-albums \{ grid-auto-columns: 120px;/);
+    assert.match(narrow, /\.dpage-art, \.dpage-skel-row i \{ width: 36px; height: 36px; \}/);
+    const touch = page.slice(page.indexOf('@media (hover: none)'));
+    assert.match(touch, /^@media \(hover: none\) \{[^}]*\.dpage-verbs \{ opacity: 1; \}\s*\.dpage \.album-grid-play \{ opacity: 1;[^}]*\}\s*\.dpage-vb \{ min-width: 40px; height: 40px; \}/);
+    assert.match(page, /\.dpage-row:hover \.dpage-verbs, \.dpage-row:focus-within \.dpage-verbs \{ opacity: 1; \}/);
+    assert.match(page, /\.dpage \.album-grid-card:focus-within \.album-grid-play \{ opacity: 1;/);
+    assert.match(page, /\.dpage \.album-grid-play:focus-visible, \.dpage-peer-card:focus-visible \{ outline: 2px solid #fa832b;/);
+    assert.match(page, /@media \(max-width: 600px\) \{[^}]*\.dpage-bar \{ padding: 6px 16px; \}/, '16 px gutters on a phone');
+    assert.ok(!page.includes('.dpage-row-off'), 'no offline rows any more');
+    // the house palette only
+    const hex = new Set(css.slice(0, css.indexOf('/* ── The Discover page')).match(/#[0-9a-fA-F]{3,6}\b/g).map((h) => h.toLowerCase()));
+    for (const h of page.match(/#[0-9a-fA-F]{3,6}\b/g)) { assert.ok(hex.has(h.toLowerCase()), `${h} is a house colour`); }
   });
 
   test('applyDiscoveryPing: the flags, the nav entry and the panel\'s link follow the ping', () => {
@@ -1047,6 +1511,14 @@ describe('Discover page: wiring', () => {
     assert.ok(en['discover.openPage']);
   });
 
+  test('en.json: the play page\'s copy, exactly', () => {
+    assert.equal(en['dpage.albums.library'], 'Albums from your library');
+    assert.equal(en['dpage.songs.peerMany'], 'Songs from connected servers');
+    assert.equal(en['dpage.showMore'], 'Show more');
+    assert.equal(en['dpage.verb.queueAll'], 'Queue all');
+    assert.equal(en['dpage.peers.quiet'], 'Nothing from your connected servers right now.');
+  });
+
   test('en.json: every dpage.* key the module and the panel emit exists', () => {
     const moduleSrc = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'discovery-page.js'), 'utf8');
     const start = SRC.indexOf('///////////////// Discover page');
@@ -1057,26 +1529,12 @@ describe('Discover page: wiring', () => {
     for (const src of [moduleSrc, panelSrc]) {
       for (const m of src.matchAll(/'((?:dpage|discover)\.[A-Za-z0-9_.]+)'/g)) { keys.add(m[1]); }
     }
-    const missing = [];
-    const families = { 'dpage.ago': ['never', 'today', 'days', 'months', 'years', 'undated'], 'dpage.when': ['never', 'today', 'days', 'months', 'years', 'undated'], 'dpage.seen': ['never', 'today', 'days', 'months', 'years'] };
-    for (const k of keys) {
-      if (k.endsWith('.')) {
-        // a prefix the code completes: 'dpage.tab.' + source
-        for (const s of DISCOVERYPAGE.SOURCES) { if (!(k + s in en)) { missing.push(k + s); } }
-      } else if (families[k]) {
-        for (const s of families[k]) { if (!(`${k}.${s}` in en)) { missing.push(`${k}.${s}`); } }
-      } else if (!(k in en)) {
-        missing.push(k);
-      }
-    }
+    const missing = [...keys].filter((k) => !(k in en));
     assert.deepEqual(missing, []);
-    assert.ok(keys.size > 60, `scanned ${keys.size} keys`);
+    assert.ok(keys.size > 50, `scanned ${keys.size} keys`);
     // …and the other way: no dpage.* string that nothing emits (translators
     // would be asked for dead copy).
-    const prefixes = [...keys].filter((k) => k.endsWith('.'));
-    const famPrefixes = Object.keys(families).map((f) => f + '.');
-    const dead = Object.keys(en).filter((k) => k.startsWith('dpage.') && !keys.has(k) &&
-      !prefixes.some((pre) => k.startsWith(pre)) && !famPrefixes.some((pre) => k.startsWith(pre)));
+    const dead = Object.keys(en).filter((k) => k.startsWith('dpage.') && !keys.has(k));
     assert.deepEqual(dead, []);
   });
 
