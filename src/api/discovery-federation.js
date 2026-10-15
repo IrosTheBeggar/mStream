@@ -14,13 +14,14 @@
 // (db/discovery-novelty.js), cross-peer dedupe, sort, cap. The fan-out
 // (fanOutFederation) is shared by the per-song route below, whose query is
 // one local track's embedding, and the history-seeded Discover page
-// (api/discovery-taste.js), whose query is a centroid of recent songs.
+// (api/discovery-taste.js), whose query is a centroid of the page's seeds.
 //
 // Privacy note, stated where the code sends it: the query VECTOR leaves the
 // machine, to peers the admin explicitly paired with — that is the deal the
 // per-peer use_discovery toggle governs. It is one track's embedding from
-// the per-song route, or, from the Discover page, a centroid of up to 12 of
-// the user's recent songs (play history plus any songs they pinned): one
+// the per-song route, or, from the Discover page, a centroid of a random
+// batch of up to 12 songs the user finished in the chosen window (all time
+// with window 0) plus any songs they pinned: one
 // averaged vector, never the songs' names, paths or hashes, but still
 // derived from what this user listens to.
 // The public-network contract ("queries never leave the machine",

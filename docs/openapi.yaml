@@ -767,15 +767,14 @@ components:
     TasteRequest:
       type: object
       description: >
-        Every key optional. `window`, `filter` and `staleDays` deliberately
-        have no defaults in the schema: an absent key means the saved pref
-        (`GET /api/v1/discovery/taste/prefs`), then the server default.
-        Unknown keys answer 400.
+        Every key optional. Nothing is stored between calls: each call is
+        answered from this body alone. Unknown keys answer 400.
       properties:
         window:
           type: integer
           enum: [7, 30, 90, 0]
-          description: "Days of history the seeds come from; 0 = all time. Saved pref, else 30."
+          default: 30
+          description: "Days of history the seeds are drawn from; 0 = all time."
         pin:
           type: array
           maxItems: 8
@@ -790,31 +789,12 @@ components:
           type: array
           maxItems: 200
           items: { type: string, maxLength: 128 }
+          default: []
           description: >
-            Seed hashes not to seed from (`seeds[].hash`). An excluded song
-            is also never recommended back in `library` (under any filter),
-            like a seed. The saved exclusions always apply; these join them
-            for this call, and are saved too when `remember` is set.
-        remember:
-          type: boolean
-          default: false
-          description: >
-            Save `window` / `filter` / `staleDays` / `exclude` as the
-            account's page prefs (merged; exclusions trimmed oldest-first at
-            200). Ignored in public-access mode — that account is shared.
-        filter:
-          type: string
-          enum: [fresh, unplayed, all]
-          description: >
-            Library songs and albums: `fresh` = never played or not in
-            `staleDays`; `unplayed` = never played; `all`. `fresh` and
-            `unplayed` also drop songs skipped and never finished and songs
-            rated 2 stars or less. Saved pref, else `fresh`.
-        staleDays:
-          type: integer
-          minimum: 1
-          maximum: 3650
-          description: "The `fresh` cutoff in days. Saved pref, else 90."
+            Seed hashes (`seeds[].hash`) to leave out of THIS call — out of
+            the pool the seed batch is drawn from, and never recommended
+            back in `library`, like a seed. A pin overrides it. Never
+            stored: the next call starts from the whole pool again.
         sources:
           type: array
           uniqueItems: true
@@ -852,7 +832,7 @@ components:
           nullable: true
           enum: [completed, stopped, null]
           description: "History seeds: `completed` (finished) or `stopped` (listened to past half). Null for pins, counter and random seeds."
-        lastPlayed: { type: string, format: date-time, nullable: true }
+        lastPlayed: { type: string, format: date-time, nullable: true, description: "History seeds: the newest seeding play in the window." }
         plays:
           type: integer
           nullable: true
@@ -909,7 +889,7 @@ components:
     TasteResponse:
       type: object
       properties:
-        window: { type: integer, description: "The window the seeds came from (0 after widening)." }
+        window: { type: integer, description: "The window the seeds were drawn from (0 after widening)." }
         widenedFrom:
           type: integer
           nullable: true
@@ -918,18 +898,19 @@ components:
           type: string
           enum: [history, counters, random, pinned]
           description: >
-            `history` = play events; `counters` = per-track counters (an
-            install whose log is empty for reasons other than a history
-            reset); `pinned` = only pins seed; `random` = nothing counted at
-            all — one analyzed track from the caller's own libraries, the
-            same all (UTC) day.
+            `history` = a random batch of play events' songs; `counters` =
+            per-track counters (an install whose log is empty for reasons
+            other than a history reset); `pinned` = only pins seed; `random`
+            = nothing counted at all — one analyzed track from the caller's
+            own libraries, the same all (UTC) day.
         fallback: { type: boolean, description: "True with a random seed." }
         seeds:
           type: array
+          description: Pins first, in the order sent, then the drawn seeds in draw order (random).
           items: { $ref: "#/components/schemas/TasteSeed" }
         excluded:
           type: array
-          description: The exclusions in force that still resolve to a track the caller can see — for the seeds sheet to re-include.
+          description: The hashes this call was asked to leave out (`exclude`) that resolve to a track the caller can see — so a client can offer them back within the visit.
           items:
             type: object
             properties:
@@ -948,9 +929,12 @@ components:
         library:
           type: object
           nullable: true
-          description: Null when not asked for.
+          description: >
+            Null when not asked for. Songs and albums the caller has not
+            played lately: never played, or last played more than 90 days
+            ago — a fixed rule. Songs skipped and never finished and songs
+            rated 2 stars or less are left out too.
           properties:
-            filter: { type: string, enum: [fresh, unplayed, all] }
             tracks:
               type: array
               items: { $ref: "#/components/schemas/TasteLibraryTrack" }
@@ -998,24 +982,6 @@ components:
                 peers: { type: integer, description: "Peers that answered in the query's model space." }
                 unreachable: { type: integer }
                 mismatched: { type: integer }
-    TastePrefs:
-      type: object
-      description: The account's Discover page prefs, defaults applied.
-      properties:
-        window: { type: integer, enum: [7, 30, 90, 0] }
-        filter: { type: string, enum: [fresh, unplayed, all] }
-        staleDays: { type: integer, minimum: 1, maximum: 3650 }
-        exclude:
-          type: array
-          maxItems: 200
-          items: { type: string }
-          description: >
-            Seed hashes not to seed from, oldest first. An excluded song is
-            also never recommended back in the library section.
-        persisted:
-          type: boolean
-          description: "False in public-access mode: that account is shared, so nothing is stored."
-
     Library:
       type: object
       properties:
@@ -1611,8 +1577,8 @@ paths:
                         type: integer
                         description: >
                           The Discover page generation: this server answers
-                          `POST /api/v1/discovery/taste`, its prefs routes
-                          and `POST /api/v1/discovery/plugin-jobs/lookup/batch`.
+                          `POST /api/v1/discovery/taste` and
+                          `POST /api/v1/discovery/plugin-jobs/lookup/batch`.
                           An integer like `stats` — a later body key ships as
                           2. A version fact: show the page on `discovery ===
                           true && discoveryTaste >= 1`; absent on older
@@ -2998,22 +2964,24 @@ paths:
       tags: [Discovery]
       summary: The Discover page — recommendations seeded by your play history
       description: |
-        One call for the whole page. **Seeds** are the distinct songs the
-        caller finished or mostly listened to recently: counted plays of
-        this server's own tracks, `completed`, or `stopped` past half the
-        song, newest first with completed ones ahead, and never a song whose
-        latest play in the window was a skip. Pins (`pin`) seed first. When
-        the window holds nothing the seeds widen to all time
-        (`widenedFrom`), then to the per-track counters, and only with
-        nothing counted at all to one random analyzed track of the caller's
-        own libraries (`seedSource: random`, `fallback: true`). Seeds the
-        user drops are remembered per account (`exclude` + `remember`, or
-        `PUT /api/v1/discovery/taste/prefs`), so every client agrees.
+        One call for the whole page, and a stateless one: nothing is stored
+        between calls. **Seeds** are a RANDOM batch (up to `limit.seeds`) of
+        the distinct songs the caller finished or mostly listened to in the
+        window: counted plays of this server's own tracks, `completed`, or
+        `stopped` past half the song, and never a song whose latest play in
+        the window was a skip — drawn uniformly, so every call (every page
+        open) seeds from another set. Pins (`pin`) seed first; `exclude`
+        leaves songs out of this call's pool. When the window holds nothing
+        the seeds widen to all time (`widenedFrom`), then to the per-track
+        counters, and only with nothing counted at all to one random
+        analyzed track of the caller's own libraries (`seedSource: random`,
+        `fallback: true`).
 
         Three sources, each ready to render:
 
         * **library** — the caller's own songs and albums that sound like
-          the seeds and that they have not played (`filter`). Albums come
+          the seeds and that they have not played lately (never, or not in
+          90 days). Albums come
           first (a card = the `/db/albums` identity), and their songs are
           left out of `tracks`. Each row says which seed it is "because of"
           (`seedHash`). At most 6 history seeds plus the pins are ranked.
@@ -3031,17 +2999,15 @@ paths:
         centroid of the seeds.
 
         **Privacy**: the peers fan-out sends every paired server with
-        discovery on the centroid of up to 12 of the caller's recent songs
-        (history plus pins) — one averaged vector, never names, paths or
+        discovery on the centroid of the seeds — a random batch of up to 12
+        songs the caller finished in the chosen window (all time with
+        `window: 0`), plus pins — one averaged vector, never names, paths or
         hashes, but derived from what this user listens to.
 
-        The expensive part of an answer is cached for 5 minutes, section
-        by section, per (seeds, library scope, filter, limits, …); a stats
-        reset or a play delete drops the caller's entries, and a failed
-        source or an unreachable peer is never cached. Clients fetch on
+        Every call computes its answer (no result cache). Clients fetch on
         open or on a tap and never poll. Feature flag: `discovery === true &&
         discoveryTaste >= 1`. Refused to federation keys, guest tokens and
-        jukebox sessions; public-access mode works (and never persists).
+        jukebox sessions; public-access mode works.
       requestBody:
         required: false
         content:
@@ -3056,58 +3022,6 @@ paths:
         "400": { description: "Request validation failed (an unknown key, a value out of range, more than 8 pins or 200 exclusions)." }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "`Discovery is disabled` (collection off or the index unavailable); a federation key or guest token (`Forbidden`); a jukebox session." }
-
-  /api/v1/discovery/taste/prefs:
-    get:
-      tags: [Discovery]
-      summary: The Discover page prefs of this account
-      description: |
-        Stored in the account's `discovery:page` settings; defaults applied
-        (window 30, filter fresh, staleDays 90, no exclusions). A
-        `POST /api/v1/stats/reset` of `history` or `all` clears them.
-        `newArtistsOnly` is a client-local pref and is not stored here.
-      responses:
-        "200":
-          description: The prefs.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/TastePrefs" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { description: "Discovery is disabled; a federation key or guest token; a jukebox session." }
-    put:
-      tags: [Discovery]
-      summary: Save the Discover page prefs
-      description: |
-        Every key optional; a key left out keeps its stored value, `null`
-        puts it back to the default. `exclude` is THE list (re-including a
-        seed = sending the list without it); a hash that stays keeps its
-        age, and the list is trimmed oldest-first at 200. Answers the
-        merged prefs. In public-access mode nothing is stored
-        (`persisted: false`) — that account is shared by every visitor.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                window: { type: integer, enum: [7, 30, 90, 0], nullable: true }
-                filter: { type: string, enum: [fresh, unplayed, all], nullable: true }
-                staleDays: { type: integer, minimum: 1, maximum: 3650, nullable: true }
-                exclude:
-                  type: array
-                  nullable: true
-                  maxItems: 200
-                  items: { type: string, maxLength: 128 }
-      responses:
-        "200":
-          description: The merged prefs.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/TastePrefs" }
-        "400": { description: "Request validation failed." }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { description: "Discovery is disabled; a federation key or guest token; a jukebox session." }
 
   /api/v1/discovery/plugins:
     get:

@@ -1,13 +1,13 @@
-// Read/write queries behind the Discover page (POST /api/v1/discovery/taste,
-// GET|PUT …/taste/prefs — the routes live in src/api/discovery-taste.js).
+// Queries behind the Discover page (POST /api/v1/discovery/taste — the
+// route lives in src/api/discovery-taste.js).
 //
 // What it answers, in the order the route asks:
-//   historySeeds      the songs the user finished or mostly listened to,
-//                     from play_events (window → all time)
+//   historySeeds      a random batch of the songs the user finished or mostly
+//                     listened to, from play_events (window → all time)
 //   counterSeeds      the next fallback: user_metadata counters, newest first
 //   randomVisibleSeed the last fallback: one analyzed track the caller can see
 //   albumCards        per Album card, how much of it this user has played
-//   *TastePrefs       the per-user page prefs in user_settings `discovery:page`
+//   onStatsReset      the history-reset marker counterSeeds honours
 //
 // Every function takes the DB handle explicitly (node:sqlite, or the Bun
 // adapter — the same prepare().all()/get()/run() surface), like
@@ -33,24 +33,23 @@ import { eventScope } from '../stats/queries.js';
 import { ALBUM_ITEM_COLUMNS, ALBUM_ITEM_GROUP } from '../api/db.js';
 import { toSqlite, isoDate } from '../stats/time.js';
 
-// ── Contract constants (plan §3.1 / §3.2; S5's Joi reads these) ──────────
+// ── Contract constants (plan §3.1; the route's Joi reads these) ──────────
 
 export const WINDOWS = Object.freeze([7, 30, 90, 0]);   // days; 0 = all time
 export const DEFAULT_WINDOW = 30;
-export const FILTERS = Object.freeze(['fresh', 'unplayed', 'all']);
-export const DEFAULT_FILTER = 'fresh';
+// The library section's fixed rule: never played, or not in this many days.
 export const DEFAULT_STALE_DAYS = 90;
-export const STALE_DAYS_MIN = 1;
-export const STALE_DAYS_MAX = 3650;
-export const EXCLUDE_CAP = 200;        // remembered dropped seeds per user
+export const EXCLUDE_CAP = 200;        // seed hashes one call may leave out
 export const HASH_MAX = 128;           // Joi.string().max(128) for a seed hash
 export const PIN_CAP = 8;
 export const SEED_CAP = 12;            // limit.seeds ceiling (pins count toward it)
 export const LIBRARY_SEED_CAP = 6;     // history seeds that get a per-seed library pass
-export const SEED_OVERFETCH = 4;       // history rows read per seed wanted
+export const SEED_OVERFETCH = 4;       // counter rows read per page, per seed wanted
 export const LIMIT_DEFAULTS = Object.freeze({ seeds: 12, tracks: 24, albums: 8, network: 12, peers: 12 });
 export const LIMIT_CAPS = Object.freeze({ seeds: 12, tracks: 50, albums: 24, network: 50, peers: 25 });
-export const PREFS_NAMESPACE = 'discovery:page';
+// user_settings namespace of the history-reset marker (onStatsReset) — the
+// only thing the page stores per user.
+export const TASTE_NAMESPACE = 'discovery:page';
 
 // Hashes (or album ids) per probe: both UNION ALL branches bind the chunk,
 // so 800 variables plus the library IN-list twice — under SQLite's old
@@ -143,7 +142,7 @@ const SEED_PLAY = `pe.track_hash IS NOT NULL AND pe.peer_id IS NULL AND pe.count
 // idx_play_events_user_time, re-reading every event in the window for every
 // group: measured 12 s for an all-time pass over 20k events; pinned, an
 // all-time pass over 40k events takes ~45 ms and a 30-day window ~3 ms.
-function seedRows(d, userId, { from, libIds, exclude, limit }) {
+function seedRows(d, userId, { from, libIds, exclude }) {
   const clauses = ['pe.user_id = ?'];
   const params = [userId];
   if (from != null) { clauses.push('pe.started_at >= ?'); params.push(from); }
@@ -174,46 +173,52 @@ function seedRows(d, userId, { from, libIds, exclude, limit }) {
     HAVING (SELECT s.outcome FROM play_events s INDEXED BY idx_play_events_user_hash
              WHERE s.user_id = ? AND s.track_hash = pe.track_hash${skipWindow}
              ORDER BY s.started_at DESC, s.id DESC LIMIT 1) IS NOT 'skipped'
-     ORDER BY completed DESC, last_played DESC, hash
-     LIMIT ?`).all(...params, ...skipParams, limit);
+     ORDER BY hash`).all(...params, ...skipParams);
 }
 
-// The distinct songs that seed the page, completed ahead of stopped, then
-// newest. Returns { hashes, window, widenedFrom }:
+// A RANDOM batch of the distinct songs that seed the page (plan §2.1): every
+// candidate in the window is read (one row per song — the GROUP BY and the
+// skip check visit every group anyway, so a LIMIT saved no work), then a
+// lazy Fisher–Yates shuffle draws them one at a time until `limit` are
+// accepted — uniform over the accepted candidates, and `accept` (the route's
+// analyzed-and-visible probe) runs only on the songs drawn. A new batch on
+// every call is the point: the page shows other seeds each time it opens.
+// Returns { hashes, window, widenedFrom }:
 //   hashes       [{ hash, lastPlayed (stored SQLite text), plays (seeding
 //                plays of it in the window), outcome: 'completed'|'stopped' }]
+//                in draw order
 //   window       the window the hashes came from (0 after widening)
 //   widenedFrom  the requested window when it held nothing and the pass
 //                widened to all time (set even when all time is empty too,
 //                so the route can report it on a counters/random answer)
 //
-// Without `accept` the over-fetched candidates come back as read
-// (overfetch × limit, the route then keeps those in index.byHash AND
-// visible). With `accept(hash) → bool` the module applies that filter
-// itself, keeps at most `limit`, and widens when nothing was ACCEPTED —
-// so a window full of un-analyzed songs widens instead of going random.
-// `exclude` (Set or array of hashes: the user's dropped seeds) is applied in
-// SQL, so exclusions never eat into the over-fetch.
+// With `accept(hash) → bool` the pass widens when nothing was ACCEPTED — so
+// a window full of un-analyzed songs widens instead of going random.
+// `exclude` (Set or array of hashes this call leaves out) is applied in SQL,
+// so an excluded song is never in the pool. `random` (a () → [0, 1)
+// function, Math.random by default) is for tests.
 export function historySeeds(d, user, {
-  windowDays = DEFAULT_WINDOW, limit = SEED_CAP, ignoreVPaths, libIds, overfetch = SEED_OVERFETCH,
-  exclude = null, accept = null, now = new Date(),
+  windowDays = DEFAULT_WINDOW, limit = SEED_CAP, ignoreVPaths, libIds,
+  exclude = null, accept = null, random = Math.random, now = new Date(),
 } = {}) {
   const userId = user?.id;
   const requested = Number(windowDays) > 0 ? Number(windowDays) : 0;
   const scope = scopeOf(user, { libIds, ignoreVPaths });
   const ex = asSet(exclude);
   const want = posInt(limit, SEED_CAP);
-  const read = want * posInt(overfetch, SEED_OVERFETCH);
+  const rand = typeof random === 'function' ? random : Math.random;
 
   const pass = (days) => {
     if (userId == null || (scope && scope.size === 0)) { return []; }
     const from = days > 0 ? toSqlite(new Date(now.getTime() - days * DAY_MS)) : null;
-    const rows = seedRows(d, userId, { from, libIds: scope, exclude: ex, limit: read });
+    const rows = seedRows(d, userId, { from, libIds: scope, exclude: ex });
     const out = [];
-    for (const r of rows) {
+    for (let i = 0; i < rows.length && out.length < want; i++) {
+      const j = i + Math.min(rows.length - i - 1, Math.floor(rand() * (rows.length - i)));
+      [rows[i], rows[j]] = [rows[j], rows[i]];
+      const r = rows[i];
       if (accept && !accept(r.hash)) { continue; }
       out.push({ hash: r.hash, lastPlayed: r.last_played, plays: r.plays, outcome: r.completed ? 'completed' : 'stopped' });
-      if (accept && out.length >= want) { break; }
     }
     return out;
   };
@@ -390,7 +395,7 @@ export function albumCardRows(d, user, albumIds, { ignoreVPaths, libIds } = {}) 
 //   stale         played, and lastPlayed < staleCutoff (stored text or a
 //                 Date; false without a cutoff, and false for an undated
 //                 legacy counter — when it was played is unknown)
-// `fresh` for the route is `unplayed || stale`.
+// The route keeps a card when `unplayed || stale` (its one fixed rule).
 //
 // cardKeys: [{ name, year, albumArtFile, albumIds }] (albumCardRows rows
 // work as they are). Returns one result per card key, in input order,
@@ -450,143 +455,6 @@ export function albumCards(d, user, cardKeys, { ignoreVPaths, libIds, staleCutof
   });
 }
 
-// ── Page prefs (plan §3.2) ───────────────────────────────────────────────
-//
-// user_settings, namespace PREFS_NAMESPACE (passes user-settings.js's key
-// regex; cascades on user delete like `discovery:collection`). One key per
-// pref, so saving one field never rewrites the others:
-//   window     7 | 30 | 90 | 0
-//   filter     'fresh' | 'unplayed' | 'all'
-//   staleDays  1..3650
-//   exclude    [{ hash, at }] oldest first, `at` = epoch ms of the drop. An
-//              array of objects, not parallel arrays: a damaged row can't
-//              misalign hashes and ages, and the order IS the trim order.
-//   resetAt    NOT a pref — the stats-reset marker (onStatsReset). A PUT
-//              that sets prefs back to null never touches it, so resetting
-//              prefs never resurrects pre-reset counters as seeds.
-// The SQL mirrors setUserSetting/deleteUserSetting in src/db/user-settings.js,
-// which bind to the live manager handle and so cannot take an explicit one.
-// Unset prefs read as null — the route applies the defaults, so a saved
-// pref and a default can be told apart.
-
-const RESET_KEY = 'resetAt';
-
-function readNamespace(d, userId) {
-  const out = {};
-  if (userId == null) { return out; }
-  for (const row of d.prepare('SELECT key, value FROM user_settings WHERE user_id = ? AND namespace = ?')
-    .all(userId, PREFS_NAMESPACE)) {
-    try { out[row.key] = JSON.parse(row.value); } catch (_e) { /* unreadable: treated as unset */ }
-  }
-  return out;
-}
-
-function writeSetting(d, userId, key, value) {
-  d.prepare(`
-    INSERT INTO user_settings (user_id, namespace, key, value, secret, updated_at)
-    VALUES (?, ?, ?, ?, 0, ?)
-    ON CONFLICT(user_id, namespace, key) DO UPDATE SET
-      value = excluded.value, secret = 0, updated_at = excluded.updated_at
-  `).run(userId, PREFS_NAMESPACE, key, JSON.stringify(value), Date.now());
-}
-
-function deleteSetting(d, userId, key) {
-  return Number(d.prepare('DELETE FROM user_settings WHERE user_id = ? AND namespace = ? AND key = ?')
-    .run(userId, PREFS_NAMESPACE, key).changes);
-}
-
-// SAVEPOINT rather than BEGIN: atomic on its own, and still legal when a
-// caller already holds a transaction.
-function atomically(d, name, fn) {
-  d.exec(`SAVEPOINT ${name}`);
-  try {
-    const r = fn();
-    d.exec(`RELEASE ${name}`);
-    return r;
-  } catch (err) {
-    try { d.exec(`ROLLBACK TO ${name}`); d.exec(`RELEASE ${name}`); } catch (_) { /* already gone */ }
-    throw err;
-  }
-}
-
-const isHash = (h) => typeof h === 'string' && h.length > 0 && h.length <= HASH_MAX;
-const cleanWindow = (v) => (WINDOWS.includes(v) ? v : null);
-const cleanFilter = (v) => (FILTERS.includes(v) ? v : null);
-const cleanStaleDays = (v) => (Number.isInteger(v) && v >= STALE_DAYS_MIN && v <= STALE_DAYS_MAX ? v : null);
-
-// Stored exclusions, defensively: well-formed entries only, first copy of a
-// hash wins, never more than the cap (newest kept).
-function cleanExclude(v) {
-  if (!Array.isArray(v)) { return []; }
-  const seen = new Set();
-  const out = [];
-  for (const e of v) {
-    if (!e || !isHash(e.hash) || seen.has(e.hash)) { continue; }
-    seen.add(e.hash);
-    out.push({ hash: e.hash, at: Number.isFinite(e.at) ? e.at : 0 });
-  }
-  return out.length > EXCLUDE_CAP ? out.slice(out.length - EXCLUDE_CAP) : out;
-}
-
-// { window, filter, staleDays, exclude: [hash] } — nulls for unset prefs,
-// exclusions oldest first.
-export function getTastePrefs(d, userId) {
-  const raw = readNamespace(d, userId);
-  return {
-    window: cleanWindow(raw.window),
-    filter: cleanFilter(raw.filter),
-    staleDays: cleanStaleDays(raw.staleDays),
-    exclude: cleanExclude(raw.exclude).map((e) => e.hash),
-  };
-}
-
-// Save a partial update and return the merged prefs (getTastePrefs shape).
-// A key left undefined keeps its stored value; null deletes it (back to the
-// default). `exclude` MERGES by default — new hashes are appended with
-// at = now, hashes already excluded keep their age — which is what a taste
-// call with `remember: true` wants. `replaceExclude: true` makes the given
-// list THE list (PUT …/prefs: the seeds sheet re-including a seed sends the
-// list without it); a hash that stays keeps its original age. Either way the
-// list is trimmed oldest-first at EXCLUDE_CAP. Throws TypeError on a value
-// the contract does not allow — the route validates with Joi first, so this
-// is a backstop, not the user-facing check.
-export function setTastePrefs(d, userId, patch = {}, { replaceExclude = false, now = Date.now() } = {}) {
-  if (!Number.isInteger(userId) || userId <= 0) { throw new TypeError('userId'); }
-  const p = patch || {};
-  const checks = { window: cleanWindow, filter: cleanFilter, staleDays: cleanStaleDays };
-  for (const [key, clean] of Object.entries(checks)) {
-    if (p[key] != null && clean(p[key]) == null) { throw new TypeError(key); }
-  }
-  if (p.exclude != null && (!Array.isArray(p.exclude) || p.exclude.length > EXCLUDE_CAP || !p.exclude.every(isHash))) {
-    throw new TypeError('exclude');
-  }
-  return atomically(d, 'taste_prefs_set', () => {
-    for (const key of Object.keys(checks)) {
-      if (p[key] === undefined) { continue; }
-      if (p[key] === null) { deleteSetting(d, userId, key); } else { writeSetting(d, userId, key, p[key]); }
-    }
-    if (p.exclude === null) {
-      deleteSetting(d, userId, 'exclude');
-    } else if (p.exclude !== undefined) {
-      const stored = cleanExclude(readNamespace(d, userId).exclude);
-      const ageOf = new Map(stored.map((e) => [e.hash, e.at]));
-      let list;
-      if (replaceExclude) {
-        list = [...new Set(p.exclude)].map((hash) => ({ hash, at: ageOf.get(hash) ?? now }));
-        list.sort((x, y) => x.at - y.at); // stable: new drops keep their given order, after the old
-      } else {
-        list = stored.slice();
-        for (const hash of new Set(p.exclude)) {
-          if (!ageOf.has(hash)) { list.push({ hash, at: now }); }
-        }
-      }
-      if (list.length > EXCLUDE_CAP) { list = list.slice(list.length - EXCLUDE_CAP); }
-      if (list.length === 0) { deleteSetting(d, userId, 'exclude'); } else { writeSetting(d, userId, 'exclude', list); }
-    }
-    return getTastePrefs(d, userId);
-  });
-}
-
 // ── Stats reset hook ─────────────────────────────────────────────────────
 //
 // resetStats (src/stats/store.js) leaves no trace: after a `history` reset
@@ -596,23 +464,29 @@ export function setTastePrefs(d, userId, patch = {}, { replaceExclude = false, n
 // tell "the user asked to forget" from "the user never had a log", and the
 // page would seed from the history the user just erased. The simplest
 // correct rule is an explicit marker: the reset route calls this hook, a
-// `history`/`all` reset clears the page's namespace (plan §2.2) and stamps
-// `resetAt`, and counterSeeds ignores counters last bumped before it. A
-// `counts` reset needs nothing — the zeroed counters drop out on their own,
-// and the log (the page's primary source) is untouched.
+// `history`/`all` reset stamps `resetAt` (plan §2.2), and counterSeeds
+// ignores counters last bumped before it. A `counts` reset needs nothing —
+// the zeroed counters drop out on their own, and the log (the page's
+// primary source) is untouched. The marker is a user_settings row (it
+// cascades on user delete); the SQL mirrors setUserSetting in
+// src/db/user-settings.js, which binds to the live manager handle and so
+// cannot take an explicit one.
 //
 // The reset route (POST /api/v1/stats/reset, src/api/stats.js) calls it
 // right after resetStats and before answering:
 //   const out = resetStats(d(), uid, scope); onStatsReset(d(), uid, scope);
-// Returns { cleared (keys deleted), marked }.
+// Returns { marked }.
+const RESET_KEY = 'resetAt';
+
 export function onStatsReset(d, userId, scope, { now = new Date() } = {}) {
-  if (userId == null || (scope !== 'history' && scope !== 'all')) { return { cleared: 0, marked: false }; }
-  return atomically(d, 'taste_reset', () => {
-    const cleared = Number(d.prepare('DELETE FROM user_settings WHERE user_id = ? AND namespace = ?')
-      .run(userId, PREFS_NAMESPACE).changes);
-    writeSetting(d, userId, RESET_KEY, toSqlite(now));
-    return { cleared, marked: true };
-  });
+  if (userId == null || (scope !== 'history' && scope !== 'all')) { return { marked: false }; }
+  d.prepare(`
+    INSERT INTO user_settings (user_id, namespace, key, value, secret, updated_at)
+    VALUES (?, ?, ?, ?, 0, ?)
+    ON CONFLICT(user_id, namespace, key) DO UPDATE SET
+      value = excluded.value, secret = 0, updated_at = excluded.updated_at
+  `).run(userId, TASTE_NAMESPACE, RESET_KEY, JSON.stringify(toSqlite(now)), Date.now());
+  return { marked: true };
 }
 
 // The stored text of the last history reset, or null. Compares as TEXT
@@ -620,7 +494,7 @@ export function onStatsReset(d, userId, scope, { now = new Date() } = {}) {
 export function historyResetAt(d, userId) {
   if (userId == null) { return null; }
   const row = d.prepare('SELECT value FROM user_settings WHERE user_id = ? AND namespace = ? AND key = ?')
-    .get(userId, PREFS_NAMESPACE, RESET_KEY);
+    .get(userId, TASTE_NAMESPACE, RESET_KEY);
   if (!row) { return null; }
   try {
     const v = JSON.parse(row.value);

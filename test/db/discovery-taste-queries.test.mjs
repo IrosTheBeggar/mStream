@@ -13,13 +13,15 @@
  * Locks in:
  *  - the seed rule (plan §2.1): completed seeds; stopped at 35 s of 6 min
  *    does not, at 4 min does; a skip after a completed play removes the
- *    seed; skipped-only, uncounted and peer plays never seed; completed
- *    ranks ahead of stopped, then newest;
+ *    seed; skipped-only, uncounted and peer plays never seed;
+ *  - the batch is RANDOM: the whole pool when it fits the limit, else a
+ *    uniform subset (checked with a seeded generator, so never flaky);
+ *    exclude shrinks the pool; accept runs only on the songs drawn;
  *  - window + widening: an empty window widens to all time and says so;
  *  - counters, random and album counts never leave the caller's libraries;
  *    a history reset hides pre-reset counters;
- *  - random is deterministic per user per day;
- *  - prefs merge / replace / trim at 200 / clear, and the reset hook;
+ *  - the random fallback is deterministic per user per day;
+ *  - the reset hook stores only its marker;
  *  - the plans: hash-index probes, never idx_tracks_library, the pinned
  *    skip subquery.
  */
@@ -34,9 +36,10 @@ import { albumItems } from '../../src/api/db.js';
 import {
   historySeeds, counterSeeds, randomVisibleSeed, visibleTracksByHash,
   albumCards, albumCardRows, albumCardKey,
-  getTastePrefs, setTastePrefs, onStatsReset, historyResetAt,
-  EXCLUDE_CAP, SEED_CAP, WINDOWS, FILTERS, LIMIT_CAPS, LIMIT_DEFAULTS, PREFS_NAMESPACE,
+  onStatsReset, historyResetAt,
+  EXCLUDE_CAP, SEED_CAP, WINDOWS, DEFAULT_WINDOW, DEFAULT_STALE_DAYS, LIMIT_CAPS, LIMIT_DEFAULTS, TASTE_NAMESPACE,
 } from '../../src/discovery/taste-queries.js';
+import * as tasteQueries from '../../src/discovery/taste-queries.js';
 
 const NOW = new Date('2026-10-05T12:00:00Z');
 const DAY = 24 * 60 * 60 * 1000;
@@ -93,6 +96,20 @@ const skip = (userId, hash, libraryId, over = {}) =>
   play(userId, hash, libraryId, { outcome: 'skipped', counted: false, playedMs: 8000, ...over });
 
 const hashesOf = (r) => r.hashes.map((h) => h.hash);
+// A history batch is drawn in random order: compare it order-free.
+const sortedHashes = (r) => hashesOf(r).sort();
+const sortedRows = (r) => [...r.hashes].sort((x, y) => (x.hash < y.hash ? -1 : 1));
+// A seeded generator (mulberry32), so a test of the draw is deterministic.
+function seeded(n) {
+  let a = n >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 const onlyA = (c) => new Set([c.A]);
 const onlyB = (c) => new Set([c.B]);
 
@@ -123,7 +140,7 @@ describe('historySeeds — the seed rule', () => {
       play(c.alice, 'ha3', c.A, { outcome: 'stopped', playedMs: 240000, startedAt: ago(3) }),
     ]);
     const r = historySeeds(c.db, { id: c.alice }, { libIds: onlyA(c), now: NOW });
-    assert.deepEqual(r.hashes, [
+    assert.deepEqual(sortedRows(r), [
       { hash: 'ha1', lastPlayed: toSqlite(ago(1)), plays: 1, outcome: 'completed' },
       { hash: 'ha3', lastPlayed: toSqlite(ago(3)), plays: 1, outcome: 'stopped' },
     ]);
@@ -157,7 +174,7 @@ describe('historySeeds — the seed rule', () => {
     assert.deepEqual(hashesOf(historySeeds(c.db, { id: c.alice }, { libIds: null, windowDays: 0, now: NOW })), []);
   });
 
-  test('completed ranks ahead of stopped, then newest; plays counts seeding plays only', () => {
+  test('plays counts seeding plays only; a song finished once is completed', () => {
     const c = seed();
     recordPlayEvents(c.db, [
       play(c.alice, 'ha1', c.A, { startedAt: ago(3) }),
@@ -165,11 +182,13 @@ describe('historySeeds — the seed rule', () => {
       play(c.alice, 'ha5', c.A, { startedAt: ago(1) }),
       play(c.alice, 'ha5', c.A, { startedAt: ago(9) }),
       play(c.alice, 'ha5', c.A, { outcome: 'stopped', playedMs: 35000, startedAt: ago(4) }), // not seeding
+      play(c.alice, 'ha6', c.A, { outcome: 'stopped', playedMs: 300000, startedAt: ago(2) }),
+      play(c.alice, 'ha6', c.A, { startedAt: ago(5) }),
     ]);
     const r = historySeeds(c.db, { id: c.alice }, { libIds: onlyA(c), now: NOW });
-    assert.deepEqual(hashesOf(r), ['ha5', 'ha1', 'ha3']);
-    assert.deepEqual(r.hashes.map((h) => h.plays), [2, 1, 1]);
-    assert.deepEqual(r.hashes.map((h) => h.outcome), ['completed', 'completed', 'stopped']);
+    assert.deepEqual(sortedRows(r).map((h) => [h.hash, h.plays, h.outcome]),
+      [['ha1', 1, 'completed'], ['ha3', 1, 'stopped'], ['ha5', 2, 'completed'], ['ha6', 2, 'completed']]);
+    assert.equal(sortedRows(r)[3].lastPlayed, toSqlite(ago(2)), 'the newest seeding play');
   });
 
   test("never another user's plays, never a library the caller cannot see", () => {
@@ -180,7 +199,7 @@ describe('historySeeds — the seed rule', () => {
       play(c.bob, 'hb2', c.B, { startedAt: ago(1) }),
     ]);
     assert.deepEqual(hashesOf(historySeeds(c.db, { id: c.alice }, { libIds: onlyA(c), now: NOW })), ['ha1']);
-    assert.deepEqual(hashesOf(historySeeds(c.db, { id: c.alice }, { libIds: null, now: NOW })), ['hb1', 'ha1']);
+    assert.deepEqual(sortedHashes(historySeeds(c.db, { id: c.alice }, { libIds: null, now: NOW })), ['ha1', 'hb1']);
     assert.deepEqual(hashesOf(historySeeds(c.db, { id: c.bob }, { libIds: onlyB(c), now: NOW })), ['hb2']);
     // No visible library at all: nothing, without a malformed IN ().
     assert.deepEqual(historySeeds(c.db, { id: c.alice }, { libIds: new Set(), now: NOW }),
@@ -189,15 +208,76 @@ describe('historySeeds — the seed rule', () => {
     assert.deepEqual(hashesOf(historySeeds(c.db, { id: null }, { libIds: null, now: NOW })), []);
   });
 
-  test('over-fetch: overfetch × limit rows; exclusions never eat into it; accept caps at limit', () => {
+});
+
+describe('historySeeds — the random batch', () => {
+  const FIVE = ['ha1', 'ha2', 'ha3', 'ha4', 'ha5'];
+  const fivePlayed = () => {
     const c = seed();
-    recordPlayEvents(c.db, ['ha1', 'ha2', 'ha3', 'ha4', 'ha5'].map((h, i) => play(c.alice, h, c.A, { startedAt: ago(i + 1) })));
+    recordPlayEvents(c.db, FIVE.map((h, i) => play(c.alice, h, c.A, { startedAt: ago(i + 1) })));
+    return c;
+  };
+
+  test('the whole pool when it fits the limit; else `limit` distinct songs of it', () => {
+    const c = fivePlayed();
     const base = { libIds: onlyA(c), now: NOW };
-    assert.deepEqual(hashesOf(historySeeds(c.db, { id: c.alice }, { ...base, limit: 2, overfetch: 2 })), ['ha1', 'ha2', 'ha3', 'ha4']);
-    assert.deepEqual(hashesOf(historySeeds(c.db, { id: c.alice }, { ...base, limit: 1, overfetch: 1, exclude: ['ha1'] })), ['ha2']);
-    assert.deepEqual(hashesOf(historySeeds(c.db, { id: c.alice }, { ...base, limit: 1, overfetch: 1, exclude: new Set(['ha1', 'ha2']) })), ['ha3']);
-    const accepted = historySeeds(c.db, { id: c.alice }, { ...base, limit: 2, accept: (h) => h !== 'ha2' });
-    assert.deepEqual(hashesOf(accepted), ['ha1', 'ha3']);
+    assert.deepEqual(sortedHashes(historySeeds(c.db, { id: c.alice }, { ...base, limit: 5 })), FIVE);
+    assert.deepEqual(sortedHashes(historySeeds(c.db, { id: c.alice }, base)), FIVE, 'the default limit (12)');
+    for (let n = 0; n < 50; n++) {
+      const r = historySeeds(c.db, { id: c.alice }, { ...base, limit: 2, random: seeded(n) });
+      assert.equal(r.hashes.length, 2);
+      assert.equal(new Set(hashesOf(r)).size, 2, 'distinct');
+      for (const h of hashesOf(r)) { assert.ok(FIVE.includes(h), h); }
+      assert.equal(r.window, 30);
+      assert.equal(r.widenedFrom, null);
+    }
+  });
+
+  test('uniform over the pool, not newest first', () => {
+    const c = fivePlayed();
+    const rand = seeded(42);
+    const counts = Object.fromEntries(FIVE.map((h) => [h, 0]));
+    const draws = 2000;
+    for (let n = 0; n < draws; n++) {
+      for (const h of hashesOf(historySeeds(c.db, { id: c.alice }, { libIds: onlyA(c), now: NOW, limit: 2, random: rand }))) { counts[h]++; }
+    }
+    // Each song is in 2/5 of the batches: 800 of 2000 expected (σ ≈ 22).
+    for (const [h, k] of Object.entries(counts)) { assert.ok(k > 700 && k < 900, `${h}: ${k} of ${draws}`); }
+  });
+
+  test('Math.random by default: repeated calls draw different batches', () => {
+    const c = fivePlayed();
+    const batches = new Set();
+    // C(5,2) = 10 batches: 30 identical draws would be a (1/10)^29 fluke.
+    for (let n = 0; n < 30; n++) {
+      batches.add(sortedHashes(historySeeds(c.db, { id: c.alice }, { libIds: onlyA(c), now: NOW, limit: 2 })).join());
+    }
+    assert.ok(batches.size > 1, 'every call drew the same batch');
+  });
+
+  test('exclude shrinks the pool (array or Set)', () => {
+    const c = fivePlayed();
+    const base = { libIds: onlyA(c), now: NOW };
+    assert.deepEqual(sortedHashes(historySeeds(c.db, { id: c.alice }, { ...base, exclude: ['ha1'] })), ['ha2', 'ha3', 'ha4', 'ha5']);
+    for (let n = 0; n < 20; n++) {
+      const r = historySeeds(c.db, { id: c.alice }, { ...base, limit: 2, exclude: new Set(['ha1', 'ha2', 'ha3']), random: seeded(n) });
+      assert.deepEqual(sortedHashes(r), ['ha4', 'ha5'], 'two left, two wanted: always both');
+    }
+    // Everything in the window excluded: widen (all time has nothing else either).
+    assert.deepEqual(historySeeds(c.db, { id: c.alice }, { ...base, exclude: FIVE }), { hashes: [], window: 0, widenedFrom: 30 });
+  });
+
+  test('accept filters the draw, runs only on the songs drawn, and caps at limit', () => {
+    const c = fivePlayed();
+    const base = { libIds: onlyA(c), now: NOW };
+    for (let n = 0; n < 20; n++) {
+      const r = historySeeds(c.db, { id: c.alice }, { ...base, limit: 4, accept: (h) => h !== 'ha2', random: seeded(n) });
+      assert.deepEqual(sortedHashes(r), ['ha1', 'ha3', 'ha4', 'ha5']);
+    }
+    const asked = [];
+    const one = historySeeds(c.db, { id: c.alice }, { ...base, limit: 1, accept: (h) => { asked.push(h); return true; } });
+    assert.equal(one.hashes.length, 1);
+    assert.deepEqual(asked, hashesOf(one), 'one draw, one probe');
   });
 });
 
@@ -503,102 +583,51 @@ describe('albumCards / albumCardRows / albumCardKey', () => {
   });
 });
 
-// ── Prefs ─────────────────────────────────────────────────────────────────
+// ── Stats reset marker ────────────────────────────────────────────────────
 
-describe('taste prefs', () => {
-  const EMPTY = { window: null, filter: null, staleDays: null, exclude: [] };
-
-  test('unset reads as nulls; partial updates keep the rest; null deletes', () => {
+describe('onStatsReset', () => {
+  test('history/all stamp the marker (only the marker); counts does nothing', () => {
     const c = seed();
-    assert.deepEqual(getTastePrefs(c.db, c.alice), EMPTY);
-    assert.deepEqual(setTastePrefs(c.db, c.alice, { window: 0, filter: 'unplayed', staleDays: 30 }),
-      { window: 0, filter: 'unplayed', staleDays: 30, exclude: [] });
-    assert.deepEqual(setTastePrefs(c.db, c.alice, { window: 90 }),
-      { window: 90, filter: 'unplayed', staleDays: 30, exclude: [] });
-    assert.deepEqual(setTastePrefs(c.db, c.alice, { filter: null }),
-      { window: 90, filter: null, staleDays: 30, exclude: [] });
-    assert.deepEqual(getTastePrefs(c.db, c.bob), EMPTY, 'per user');
-    const keys = c.db.prepare('SELECT key FROM user_settings WHERE user_id = ? AND namespace = ? ORDER BY key').all(c.alice, PREFS_NAMESPACE).map((r) => r.key);
-    assert.deepEqual(keys, ['staleDays', 'window']);
-  });
-
-  test('exclusions merge (an old drop keeps its age) and trim oldest-first at the cap', () => {
-    const c = seed();
-    setTastePrefs(c.db, c.alice, { exclude: ['h1', 'h2'] }, { now: 1 });
-    assert.deepEqual(setTastePrefs(c.db, c.alice, { exclude: ['h2', 'h3', 'h3'] }, { now: 2 }).exclude, ['h1', 'h2', 'h3']);
-    const stored = JSON.parse(c.db.prepare('SELECT value FROM user_settings WHERE user_id = ? AND namespace = ? AND key = ?')
-      .get(c.alice, PREFS_NAMESPACE, 'exclude').value);
-    assert.deepEqual(stored, [{ hash: 'h1', at: 1 }, { hash: 'h2', at: 1 }, { hash: 'h3', at: 2 }]);
-
-    const first = Array.from({ length: 150 }, (_, i) => `x${i}`);
-    const second = Array.from({ length: 100 }, (_, i) => `y${i}`);
-    setTastePrefs(c.db, c.bob, { exclude: first }, { now: 10 });
-    const trimmed = setTastePrefs(c.db, c.bob, { exclude: second }, { now: 20 }).exclude;
-    assert.equal(trimmed.length, EXCLUDE_CAP);
-    assert.equal(trimmed[0], 'x50', 'the 50 oldest drops went');
-    assert.equal(trimmed.at(-1), 'y99');
-  });
-
-  test('replaceExclude makes the list THE list; kept hashes keep their age', () => {
-    const c = seed();
-    setTastePrefs(c.db, c.alice, { exclude: ['h1', 'h2'] }, { now: 1 });
-    setTastePrefs(c.db, c.alice, { exclude: ['h3'] }, { now: 2 });
-    assert.deepEqual(setTastePrefs(c.db, c.alice, { exclude: ['h3', 'h4', 'h1'] }, { replaceExclude: true, now: 3 }).exclude,
-      ['h1', 'h3', 'h4']);
-    assert.deepEqual(setTastePrefs(c.db, c.alice, { exclude: [] }, { replaceExclude: true }).exclude, []);
-    assert.equal(c.db.prepare('SELECT COUNT(*) AS n FROM user_settings WHERE user_id = ? AND key = ?').get(c.alice, 'exclude').n, 0);
-    setTastePrefs(c.db, c.alice, { exclude: ['h9'] });
-    assert.deepEqual(setTastePrefs(c.db, c.alice, { exclude: null }).exclude, []);
-  });
-
-  test('values outside the contract throw (the route validates first)', () => {
-    const c = seed();
-    for (const patch of [{ window: 14 }, { filter: 'new' }, { staleDays: 0 }, { staleDays: 3651 }, { staleDays: 1.5 },
-      { exclude: 'h1' }, { exclude: [''] }, { exclude: ['x'.repeat(129)] }, { exclude: Array.from({ length: EXCLUDE_CAP + 1 }, (_, i) => `h${i}`) }]) {
-      assert.throws(() => setTastePrefs(c.db, c.alice, patch), TypeError, JSON.stringify(patch).slice(0, 40));
-    }
-    assert.throws(() => setTastePrefs(c.db, null, { window: 7 }), TypeError);
-    assert.deepEqual(getTastePrefs(c.db, c.alice), EMPTY, 'nothing half-written');
-  });
-
-  test('damaged stored values read as unset', () => {
-    const c = seed();
-    const ins = c.db.prepare('INSERT INTO user_settings (user_id, namespace, key, value, updated_at) VALUES (?, ?, ?, ?, 0)');
-    ins.run(c.alice, PREFS_NAMESPACE, 'window', '14');
-    ins.run(c.alice, PREFS_NAMESPACE, 'filter', '{oops');
-    ins.run(c.alice, PREFS_NAMESPACE, 'exclude', JSON.stringify([{ hash: 'h1', at: 1 }, 'h2', { hash: '' }, { hash: 'h1', at: 2 }]));
-    assert.deepEqual(getTastePrefs(c.db, c.alice), { window: null, filter: null, staleDays: null, exclude: ['h1'] });
-  });
-
-  test('onStatsReset: history/all clear the namespace and mark; counts does nothing', () => {
-    const c = seed();
-    const prefs = { window: 7, filter: 'all', staleDays: 10, exclude: ['h1'] };
-    setTastePrefs(c.db, c.alice, prefs);
-    setTastePrefs(c.db, c.bob, prefs);
-    assert.deepEqual(onStatsReset(c.db, c.alice, 'counts'), { cleared: 0, marked: false });
-    assert.deepEqual(getTastePrefs(c.db, c.alice), prefs);
+    const keys = (uid) => c.db.prepare('SELECT key FROM user_settings WHERE user_id = ? AND namespace = ?').all(uid, TASTE_NAMESPACE).map((r) => r.key);
+    assert.deepEqual(onStatsReset(c.db, c.alice, 'counts'), { marked: false });
     assert.equal(historyResetAt(c.db, c.alice), null);
+    assert.deepEqual(keys(c.alice), []);
 
-    assert.deepEqual(onStatsReset(c.db, c.alice, 'history', { now: ago(0, 2) }), { cleared: 4, marked: true });
-    assert.deepEqual(getTastePrefs(c.db, c.alice), EMPTY);
+    assert.deepEqual(onStatsReset(c.db, c.alice, 'history', { now: ago(0, 2) }), { marked: true });
     assert.equal(historyResetAt(c.db, c.alice), toSqlite(ago(0, 2)));
-    assert.deepEqual(getTastePrefs(c.db, c.bob), prefs, "another user's prefs are untouched");
+    assert.deepEqual(keys(c.alice), ['resetAt'], 'nothing else is stored per user');
+    assert.equal(historyResetAt(c.db, c.bob), null, "another user's marker is untouched");
 
-    // A second reset moves the marker (the old marker is part of what it clears).
-    assert.deepEqual(onStatsReset(c.db, c.alice, 'all', { now: NOW }), { cleared: 1, marked: true });
+    // A second reset moves the marker.
+    assert.deepEqual(onStatsReset(c.db, c.alice, 'all', { now: NOW }), { marked: true });
     assert.equal(historyResetAt(c.db, c.alice), toSqlite(NOW));
-    assert.deepEqual(onStatsReset(c.db, null, 'all'), { cleared: 0, marked: false });
+    assert.deepEqual(keys(c.alice), ['resetAt']);
+    assert.deepEqual(onStatsReset(c.db, null, 'all'), { marked: false });
+  });
+
+  test('a damaged marker reads as no reset', () => {
+    const c = seed();
+    c.db.prepare('INSERT INTO user_settings (user_id, namespace, key, value, updated_at) VALUES (?, ?, ?, ?, 0)')
+      .run(c.alice, TASTE_NAMESPACE, 'resetAt', '{oops');
+    assert.equal(historyResetAt(c.db, c.alice), null);
   });
 });
 
 describe('contract constants', () => {
-  test('the caps S5 validates against', () => {
+  test('the caps the route validates against', () => {
     assert.equal(EXCLUDE_CAP, 200);
     assert.equal(SEED_CAP, 12);
     assert.deepEqual([...WINDOWS], [7, 30, 90, 0]);
-    assert.deepEqual([...FILTERS], ['fresh', 'unplayed', 'all']);
+    assert.equal(DEFAULT_WINDOW, 30);
+    assert.equal(DEFAULT_STALE_DAYS, 90, 'the fixed library rule');
     assert.deepEqual({ ...LIMIT_CAPS }, { seeds: 12, tracks: 50, albums: 24, network: 50, peers: 25 });
     for (const [k, v] of Object.entries(LIMIT_DEFAULTS)) { assert.ok(v <= LIMIT_CAPS[k], k); }
+  });
+
+  test('the saved prefs and the library filters are gone', () => {
+    for (const name of ['getTastePrefs', 'setTastePrefs', 'FILTERS', 'DEFAULT_FILTER', 'STALE_DAYS_MIN', 'STALE_DAYS_MAX', 'PREFS_NAMESPACE']) {
+      assert.ok(!(name in tasteQueries), name);
+    }
   });
 });
 

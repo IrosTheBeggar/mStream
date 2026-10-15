@@ -1,10 +1,12 @@
 // The Discover page's server half: one call that turns the user's PLAY
 // HISTORY into recommendations from three sources (docs/discovery-page-plan.md
-// §2, §3.1–3.2).
+// §2, §3.1).
 //
 //   POST /api/v1/discovery/taste        seeds + library / network / peers
-//   GET  /api/v1/discovery/taste/prefs  the saved page prefs
-//   PUT  /api/v1/discovery/taste/prefs  save them (validated like the POST)
+//
+// Nothing is remembered between calls: the seeds are a new random batch of
+// the user's finished songs every time (a feature — the page shows other
+// seeds on every open), and every call computes its answer.
 //
 // It is an aggregator over what already exists, not a new kind of query:
 //   seeds    src/discovery/taste-queries.js (history → counters → random)
@@ -23,10 +25,11 @@
 // middleware), 403 'Discovery is disabled' while collection is off.
 //
 // Privacy: the peers fan-out sends every use_discovery peer the centroid of
-// up to 12 of this user's recent songs — one averaged vector, never names,
-// paths or hashes (see the header of api/discovery-federation.js).
+// the seeds — a random batch of up to 12 songs this user finished in the
+// chosen window (all time with window 0), plus any pins: one averaged
+// vector, never names, paths or hashes (see the header of
+// api/discovery-federation.js).
 
-import crypto from 'node:crypto';
 import Joi from 'joi';
 import winston from 'winston';
 import * as config from '../state/config.js';
@@ -54,6 +57,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // p2p rows are fetched with headroom: the cross-peer recommendationKey
 // dedupe runs after the walk, and two peers often hold the same song.
 const NETWORK_HEADROOM = 2;
+// Failed visibility probes one call may spend choosing seeds (collectSeeds).
+const VISIBLE_MISS_CAP = 2 * taste.SEED_CAP * taste.SEED_OVERFETCH;
 
 // ── Gates ────────────────────────────────────────────────────────────────
 
@@ -64,17 +69,7 @@ function requireAccount(req) {
   if (!req.user?.id || req.user.federation) { throw new WebError('Forbidden', 403); }
 }
 
-// The prefs routes need no index (they read user_settings), but they belong
-// to a feature that is off — same 403 as the taste route.
-function requireDiscoveryOn() {
-  if (config.program.scanOptions.collectDiscoveryData !== true) {
-    throw new WebError('Discovery is disabled', 403);
-  }
-}
-
 // ── Validation ───────────────────────────────────────────────────────────
-
-const hashList = Joi.array().items(Joi.string().min(1).max(taste.HASH_MAX)).max(taste.EXCLUDE_CAP);
 
 const limitSchema = Joi.object({
   seeds: Joi.number().integer().min(1).max(taste.LIMIT_CAPS.seeds).default(taste.LIMIT_DEFAULTS.seeds),
@@ -85,110 +80,17 @@ const limitSchema = Joi.object({
   peers: Joi.number().integer().min(0).max(taste.LIMIT_CAPS.peers).default(taste.LIMIT_DEFAULTS.peers),
 }).default();
 
-// No Joi defaults for window / filter / staleDays: an absent key means "use
-// the saved pref", which a schema default would make indistinguishable from
-// the client choosing the default explicitly.
 const tasteSchema = Joi.object({
-  window: Joi.number().integer().valid(...taste.WINDOWS),
+  window: Joi.number().integer().valid(...taste.WINDOWS).default(taste.DEFAULT_WINDOW),
   pin: Joi.array().items(Joi.string().min(1).max(2048)).max(taste.PIN_CAP).default([]),
-  exclude: hashList.default([]),
-  remember: Joi.boolean().default(false),
-  filter: Joi.string().valid(...taste.FILTERS),
-  staleDays: Joi.number().integer().min(taste.STALE_DAYS_MIN).max(taste.STALE_DAYS_MAX),
+  // Seed hashes to leave out of THIS call (a client passing over seeds it
+  // has shown); never stored.
+  exclude: Joi.array().items(Joi.string().min(1).max(taste.HASH_MAX)).max(taste.EXCLUDE_CAP).default([]),
   sources: Joi.array().items(Joi.string().valid(...SOURCES)).unique().default([...SOURCES]),
   limit: limitSchema,
   newArtistsOnly: Joi.boolean().default(false),
   ignoreVPaths: Joi.array().items(Joi.string().max(256)).max(100),
 });
-
-// PUT …/prefs: every key optional; null puts a pref back to its default;
-// `exclude` is THE list (re-including a seed = sending the list without it).
-const prefsSchema = Joi.object({
-  window: Joi.number().integer().valid(...taste.WINDOWS).allow(null),
-  filter: Joi.string().valid(...taste.FILTERS).allow(null),
-  staleDays: Joi.number().integer().min(taste.STALE_DAYS_MIN).max(taste.STALE_DAYS_MAX).allow(null),
-  exclude: hashList.allow(null),
-});
-
-// Stored prefs with the defaults applied — what the page should render.
-function effectivePrefs(stored) {
-  return {
-    window: stored.window ?? taste.DEFAULT_WINDOW,
-    filter: stored.filter ?? taste.DEFAULT_FILTER,
-    staleDays: stored.staleDays ?? taste.DEFAULT_STALE_DAYS,
-    exclude: stored.exclude || [],
-  };
-}
-
-// ── Result cache ─────────────────────────────────────────────────────────
-//
-// The expensive half of an answer (library / network / peers) for 5
-// minutes, ONE ENTRY PER SECTION: a peer that missed its deadline must not
-// cost the library and the shelf walk their entries (the peers section is
-// then simply not stored), and the client's two parallel calls
-// (library+network, peers) share one key. Keyed first by the index OBJECT
-// (a WeakMap: an index rebuild — new embeddings, a library change — drops
-// every entry with the old index), then by everything that shapes a
-// section: the caller and their cache generation (a stats reset bumps it),
-// the resolved library scope (a revoked library grant moves no index
-// counter, so it must move the key), every seed hash — un-analyzed pins
-// included, their other files are kept out of the library — the ordered
-// library seeds and the centroid's seed set, the exclusions, filter,
-// staleDays, limits, newArtistsOnly, ignoreVPaths and the section name.
-// A section is only looked up when it is EFFECTIVELY wanted (asked AND
-// advertised right now), so a source an admin turns off is never served
-// from the cache, and one turned on is computed. The seeds themselves are
-// recomputed on every call (cheap, and they are what tells a client its
-// history moved). Clients fetch on open or on a tap and never poll, so 96
-// section entries (32 three-section answers) per index is plenty.
-const CACHE_TTL_MS = 5 * 60 * 1000;
-const CACHE_MAX = 96;
-const resultCache = new WeakMap();
-// uid → generation. Bumped by clearTasteCache; part of every key, so the
-// old entries are unreachable at once and age out of the LRU.
-const cacheGenerations = new Map();
-
-function cacheKey(parts) {
-  return crypto.createHash('sha1').update(JSON.stringify(parts)).digest('hex');
-}
-
-// Forget this user's cached Discover answers: the stats routes call it when
-// the listening data the library section was built from is reset or
-// deleted (play counts and last-played times are on every row).
-export function clearTasteCache(uid) {
-  if (uid == null) { return; }
-  cacheGenerations.set(uid, (cacheGenerations.get(uid) || 0) + 1);
-}
-
-// Which computed sections may be stored. A failed source (a p2p walk that
-// threw, a fan-out that failed) and a fan-out with an unreachable peer —
-// which may answer the next tap — are not worth pinning for 5 minutes.
-// Exported for tests: the integration servers have no flaky peers.
-export function cacheableSections(sections) {
-  const out = {};
-  for (const [name, value] of Object.entries(sections)) {
-    if (!value || value.failed) { continue; }
-    if (name === 'peers' && value.searched?.unreachable > 0) { continue; }
-    out[name] = value;
-  }
-  return out;
-}
-
-function cacheGet(index, key, now = Date.now()) {
-  const m = resultCache.get(index);
-  const hit = m?.get(key);
-  if (!hit) { return null; }
-  if (now - hit.at > CACHE_TTL_MS) { m.delete(key); return null; }
-  return hit.value;
-}
-
-function cacheSet(index, key, value, now = Date.now()) {
-  let m = resultCache.get(index);
-  if (!m) { m = new Map(); resultCache.set(index, m); }
-  m.delete(key);            // re-insert = most recent
-  m.set(key, { at: now, value });
-  while (m.size > CACHE_MAX) { m.delete(m.keys().next().value); }
-}
 
 // ── Seeds ────────────────────────────────────────────────────────────────
 
@@ -212,6 +114,8 @@ function seedOut(s) {
 // choices, so they seed whatever the history says and override an
 // exclusion — then the widening chain fills the remaining slots:
 //   history (window → all time) → counters → [nothing analyzed?] → random.
+// The history step is a random batch of the window's finished songs
+// (taste-queries historySeeds), so each call seeds from another set.
 // Every non-pin seed is ANALYZED and VISIBLE to this caller: a window full
 // of songs the worker has not reached widens instead of seeding nothing.
 // Only when the user has counted plays and NONE of them is analyzed does
@@ -248,10 +152,21 @@ function collectSeeds(req, index, body, ctx) {
   if (room <= 0) { return out; }
 
   // resolveVisible rows met while accepting, so the winners render without
-  // a second probe.
+  // a second probe. Each probe is one synchronous query, and the random
+  // draw reads every candidate in the window (no LIMIT), so the FAILED
+  // probes are capped per call: a history mostly of songs since deleted
+  // stops probing after VISIBLE_MISS_CAP misses (the bound the old
+  // newest-first pages had) instead of probing every song it ever played.
+  // A hit costs at most limit.seeds probes, so the cap bounds the call.
   const rows = new Map();
+  let misses = 0;
   const visible = (h) => {
-    if (!rows.has(h)) { rows.set(h, resolveVisible(uid, filter, h, { withGenres: false }) || null); }
+    if (!rows.has(h)) {
+      if (misses >= VISIBLE_MISS_CAP) { return false; }
+      const row = resolveVisible(uid, filter, h, { withGenres: false }) || null;
+      if (!row) { misses++; }
+      rows.set(h, row);
+    }
     return rows.get(h) !== null;
   };
   const analyzedVisible = (h) => index.byHash.has(h) && visible(h);
@@ -313,18 +228,17 @@ function collectSeeds(req, index, body, ctx) {
 
 // ── Library ──────────────────────────────────────────────────────────────
 
-// §2.5: does a library candidate pass the page's filter? `fresh` = never
-// played or not since the cutoff; `unplayed` = never. Both drop "tried and
-// bounced" (skipped, never finished) and low-rated tracks (≤ 2 stars = 4 on
-// the 0–10 scale; 0/null is unrated). An undated legacy counter is played
-// at an unknown time, so it is never stale.
-function passesFilter(row, filter, cutoff) {
-  if (filter === 'all') { return true; }
+// §2.5, the library's one fixed rule: a song you haven't played lately —
+// never played, or not since the cutoff (DEFAULT_STALE_DAYS ago). It also
+// drops "tried and bounced" (skipped, never finished) and low-rated tracks
+// (≤ 2 stars = 4 on the 0–10 scale; 0/null is unrated). An undated legacy
+// counter is played at an unknown time, so it is never stale.
+function notPlayedLately(row, cutoff) {
   const played = row.play_count > 0;
   if ((row.skip_count || 0) > 0 && !played) { return false; }
   if (row.rating > 0 && row.rating <= 4) { return false; }
   if (!played) { return true; }
-  return filter === 'fresh' && row.last_played != null && row.last_played < cutoff;
+  return row.last_played != null && row.last_played < cutoff;
 }
 
 // A seed's same-song key. An un-analyzed pin has no index entry, but its
@@ -340,11 +254,11 @@ function seedNameKey(s) {
 const ROW_CHUNK = 100;
 
 async function librarySection(req, index, ctx) {
-  const { uid, libIds, libSeeds, allSeeds, exclusions, filterName, staleDays, limit } = ctx;
-  const out = { filter: filterName, tracks: [], albums: [], capped: false };
+  const { uid, libIds, libSeeds, allSeeds, exclusions, limit } = ctx;
+  const out = { tracks: [], albums: [], capped: false };
   if (libSeeds.length === 0 || (limit.tracks === 0 && limit.albums === 0)) { return out; }
 
-  const cutoff = toSqlite(new Date(Date.now() - staleDays * DAY_MS));
+  const cutoff = toSqlite(new Date(Date.now() - taste.DEFAULT_STALE_DAYS * DAY_MS));
   const budget = considerBudget(Math.max(limit.tracks, limit.albums));
   // Seed songs never come back, by hash or by any other file of the song.
   // dedupe:false — the ranking cannot see visibility, so the best file of a
@@ -370,8 +284,8 @@ async function librarySection(req, index, ctx) {
   const seedHashOf = (i) => (i == null ? null : libSeeds[i]?.hash ?? null);
 
   // Albums before songs (§2.6): every card the pool touches, ranked by its
-  // best track, kept when this user has not played it (or, under fresh, not
-  // since the cutoff). The cards' songs leave the tracks list.
+  // best track, kept when this user has not played it, or not since the
+  // cutoff. The cards' songs leave the tracks list.
   const inAlbums = new Set();   // track ids listed under a returned album
   if (limit.albums > 0 && pool.length) {
     const bestByAlbum = new Map();
@@ -391,8 +305,7 @@ async function librarySection(req, index, ctx) {
     const keep = [];
     for (const [i, c] of scored.entries()) {
       const f = facts[i];
-      const ok = filterName === 'all' || f.unplayed || (filterName === 'fresh' && f.stale);
-      if (!ok) { continue; }
+      if (!f.unplayed && !f.stale) { continue; }
       keep.push({ ...c, facts: f });
       if (keep.length >= limit.albums) { break; }
     }
@@ -420,7 +333,7 @@ async function librarySection(req, index, ctx) {
 
   // Songs. One file per song: the first VISIBLE file met (the walk is
   // descending) claims the song's name key whether or not it passes the
-  // filter — play counts key by hash, so an alternate file of a song the
+  // rule — play counts key by hash, so an alternate file of a song the
   // user just played would otherwise read as "never played".
   const seenKeys = new Set();
   for (const p of pool) {
@@ -429,9 +342,9 @@ async function librarySection(req, index, ctx) {
     if (key) { seenKeys.add(key); }
   }
   // The pool is already visibility-probed (with track ids), so the rows the
-  // filter needs are read BY ID, a chunk at a time as the walk advances —
-  // not one resolveVisible per candidate: under `unplayed` a heavy listener
-  // rejects most near neighbours and the walk can cross the whole budget.
+  // rule needs are read BY ID, a chunk at a time as the walk advances —
+  // not one resolveVisible per candidate: a heavy listener rejects most
+  // near neighbours and the walk can cross the whole budget.
   const rowsById = new Map();
   let fetchedTo = 0;
   const fetchRows = (from) => {
@@ -456,7 +369,7 @@ async function librarySection(req, index, ctx) {
     const row = rowsById.get(p.trackId);
     if (!row) { continue; }
     if (key) { seenKeys.add(key); }
-    if (!passesFilter(row, filterName, cutoff)) { continue; }
+    if (!notPlayedLately(row, cutoff)) { continue; }
     accepted.push({ p, row });
   }
   // Ranked to the budget and still short: say so, so a client can tell
@@ -491,10 +404,9 @@ async function networkSection(index, centroid, ctx) {
       headroom: NETWORK_HEADROOM, seedVecs: seeds.map((s) => s.entry.vec),
     });
   } catch (err) {
-    // Answered as an empty section, but flagged so it is never cached: the
-    // next tap retries the walk (the flag is stripped before responding).
+    // Answered as an empty section; the next call walks again.
     winston.warn(`discovery taste: p2p shelf search failed: ${err.message}`);
-    return { results: [], searched: { peers: 0, tracks: 0 }, failed: true };
+    return { results: [], searched: { peers: 0, tracks: 0 } };
   }
   return { results: stampNetworkRows(found.results, seeds, limit.network), searched: found.searched };
 }
@@ -574,36 +486,18 @@ export function setup(mstream) {
     const { value: body } = joiValidate(tasteSchema, req.body || {});
     const index = requireIndex();
     const uid = req.user.id;
-    // The public-mode sentinel is ONE account shared by every visitor:
-    // nothing it sends is remembered, or one visitor's choices would be
-    // the next one's page.
-    const persist = !db.isPublicMode(req.user);
-
-    if (body.remember && persist) {
-      taste.setTastePrefs(d(), uid, {
-        window: body.window, filter: body.filter, staleDays: body.staleDays,
-        exclude: body.exclude.length ? body.exclude : undefined,
-      });
-    }
-    const saved = taste.getTastePrefs(d(), uid);
-    const prefs = effectivePrefs(saved);
-    const windowDays = body.window ?? prefs.window;
-    const filterName = body.filter ?? prefs.filter;
-    const staleDays = body.staleDays ?? prefs.staleDays;
-    // Saved exclusions always apply (every client of this account agrees);
-    // the request's join them for this call, and stay when `remember`.
-    const exclusions = [...new Set([...saved.exclude, ...body.exclude])];
+    const exclusions = [...new Set(body.exclude)];
 
     const filter = libraryFilter(req.user, body.ignoreVPaths);
     const libIds = taste.tasteScope(req.user, body.ignoreVPaths);
-    const picked = collectSeeds(req, index, body, { uid, filter, libIds, exclusions: new Set(exclusions), windowDays });
+    const picked = collectSeeds(req, index, body, { uid, filter, libIds, exclusions: new Set(exclusions), windowDays: body.window });
     const { seeds } = picked;
 
     // Seeds render through one batched enrichment (pins already carry it).
     enrichRows(d(), seeds.filter((s) => !s.pinned).map((s) => s.row));
 
-    // Exclusions the seeds sheet can show (and re-include): the ones that
-    // still resolve to a track this caller can see.
+    // The hashes this call left out that resolve to a track this caller can
+    // see — so a client can offer them back within the visit.
     const exVis = taste.visibleTracksByHash(d(), exclusions, libIds);
     const exRendered = renderMetadataByIds([...exVis.values()].map((t) => t.id), req.user);
     const excluded = [];
@@ -645,33 +539,15 @@ export function setup(mstream) {
     // errors — null means "not available here" (plan §3.1), and a client
     // must not hide an advertised source while a scan runs.
     if (analyzed.length === 0) {
-      if (want.has('library')) { response.library = { filter: filterName, tracks: [], albums: [], capped: false }; }
+      if (want.has('library')) { response.library = { tracks: [], albums: [], capped: false }; }
       if (wantNetwork) { response.network = { results: [], searched: { peers: 0, tracks: 0 } }; }
       if (wantPeers) { response.peers = { peers: [], searched: { peers: 0, unreachable: 0, mismatched: 0 } }; }
       return res.json(response);
     }
 
-    const baseKey = [
-      uid, cacheGenerations.get(uid) || 0, libIds == null ? null : [...libIds].sort((a, b) => a - b),
-      seeds.map((s) => s.hash).sort(), libSeeds.map((s) => s.hash), analyzed.map((s) => s.hash).sort(),
-      [...exclusions].sort(), filterName, staleDays, body.limit, body.newArtistsOnly,
-      [...(body.ignoreVPaths || [])].sort(),
-    ];
-    const keyOf = (section) => cacheKey([...baseKey, section]);
-    const wanted = { library: want.has('library'), network: wantNetwork, peers: wantPeers };
-    const sections = { library: null, network: null, peers: null };
-    const missing = new Set();
-    for (const name of Object.keys(sections)) {
-      if (!wanted[name]) { continue; }
-      sections[name] = cacheGet(index, keyOf(name));
-      if (!sections[name]) { missing.add(name); }
-    }
-    if (missing.size === 0) { return res.json({ ...response, ...sections }); }
-
-    const centroid = (missing.has('network') || missing.has('peers'))
-      ? sim.centroidOf(analyzed.map((s) => s.entry.vec)) : null;
+    const centroid = (wantNetwork || wantPeers) ? sim.centroidOf(analyzed.map((s) => s.entry.vec)) : null;
     const ctx = {
-      uid, filter, libIds, libSeeds, allSeeds: seeds, exclusions, filterName, staleDays,
+      uid, filter, libIds, libSeeds, allSeeds: seeds, exclusions,
       limit: body.limit, newArtistsOnly: body.newArtistsOnly, seeds: analyzed,
     };
 
@@ -684,7 +560,7 @@ export function setup(mstream) {
     // The noop catch only keeps an early failure from being reported as
     // unhandled before we await it.
     let fed = null;
-    if (missing.has('peers') && body.limit.peers > 0) {
+    if (wantPeers && body.limit.peers > 0) {
       await loadFederationClient();
       fed = fanOutFederation(centroid, index.modelId, {
         limit: body.limit.peers, newArtistsOnly: body.newArtistsOnly, onPeerStatus: recordPeerStatus,
@@ -693,61 +569,23 @@ export function setup(mstream) {
       await new Promise(setImmediate);
     }
 
-    const computed = {};
     try {
-      if (missing.has('library')) { computed.library = await librarySection(req, index, ctx); }
-      if (missing.has('network')) { computed.network = await networkSection(index, centroid, ctx); }
+      if (want.has('library')) { response.library = await librarySection(req, index, ctx); }
+      if (wantNetwork) { response.network = await networkSection(index, centroid, ctx); }
     } finally {
       // Settle the fan-out even when the library pass threw: its result is
       // dropped, but the bookkeeping (status writes) still happens.
       if (fed) {
         try {
-          computed.peers = peersSection(await fed);
+          response.peers = peersSection(await fed);
         } catch (err) {
           winston.warn(`discovery taste: federation fan-out failed: ${err.message}`);
-          computed.peers = { peers: [], searched: { peers: 0, unreachable: 0, mismatched: 0 }, failed: true };
+          response.peers = { peers: [], searched: { peers: 0, unreachable: 0, mismatched: 0 } };
         }
-      } else if (missing.has('peers')) {
-        computed.peers = { peers: [], searched: { peers: 0, unreachable: 0, mismatched: 0 } };
+      } else if (wantPeers) {
+        response.peers = { peers: [], searched: { peers: 0, unreachable: 0, mismatched: 0 } };
       }
     }
-
-    for (const [name, value] of Object.entries(cacheableSections(computed))) {
-      cacheSet(index, keyOf(name), value);
-    }
-    for (const [name, value] of Object.entries(computed)) {
-      // The failure flag is bookkeeping for the cache, not part of the
-      // shape (a failed section was never stored, so this mutates no entry).
-      if (value.failed) { delete value.failed; }
-      sections[name] = value;
-    }
-    res.json({ ...response, ...sections });
-  });
-
-  mstream.get('/api/v1/discovery/taste/prefs', (req, res) => {
-    requireAccount(req);
-    requireDiscoveryOn();
-    res.json({
-      ...effectivePrefs(taste.getTastePrefs(d(), req.user.id)),
-      persisted: !db.isPublicMode(req.user),
-    });
-  });
-
-  mstream.put('/api/v1/discovery/taste/prefs', (req, res) => {
-    requireAccount(req);
-    requireDiscoveryOn();
-    const { value } = joiValidate(prefsSchema, req.body || {});
-    if (db.isPublicMode(req.user)) {
-      // The shared public-mode account never persists (see the POST): the
-      // answer is what the page would use for this visit, nothing stored.
-      const stored = taste.getTastePrefs(d(), req.user.id);
-      const merged = { ...stored };
-      for (const k of ['window', 'filter', 'staleDays', 'exclude']) {
-        if (value[k] !== undefined) { merged[k] = value[k]; }
-      }
-      return res.json({ ...effectivePrefs(merged), persisted: false });
-    }
-    const merged = taste.setTastePrefs(d(), req.user.id, value, { replaceExclude: true });
-    res.json({ ...effectivePrefs(merged), persisted: true });
+    res.json(response);
   });
 }

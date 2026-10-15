@@ -1,8 +1,12 @@
 /**
- * The Discover page's server half — POST /api/v1/discovery/taste and
- * GET|PUT /api/v1/discovery/taste/prefs (src/api/discovery-taste.js, over
- * src/discovery/taste-queries.js and the shared similarity / p2p /
- * federation helpers). Contract: docs/discovery-page-plan.md §2, §3.1–3.2.
+ * The Discover page's server half — POST /api/v1/discovery/taste
+ * (src/api/discovery-taste.js, over src/discovery/taste-queries.js and the
+ * shared similarity / p2p / federation helpers). Contract:
+ * docs/discovery-page-plan.md §2, §3.1. The call is stateless: the seeds are
+ * a random batch of the user's finished songs every time, so a seed list
+ * is asserted as a SET when the window holds no more candidates than the
+ * seed limit (the batch is the whole pool), and as a subset of the right
+ * size — differing across repeated calls — when it holds more.
  *
  * Strategy (the discovery-similarity suite's): a real server with discovery
  * ON (model 'test-fake') over the fixture library plus an admin-only second
@@ -33,7 +37,7 @@ const FFMPEG = process.platform === 'win32'
   : path.join(REPO_ROOT, 'bin', 'ffmpeg', 'ffmpeg');
 
 const TASTE = '/api/v1/discovery/taste';
-const PREFS = '/api/v1/discovery/taste/prefs';
+const PREFS = '/api/v1/discovery/taste/prefs';   // removed: answers 404
 
 const P = {
   beSomebody: 'testlib/Icarus/Be Somebody/01 - Be Somebody.mp3',
@@ -68,7 +72,7 @@ const VECTORS = [
   // 'Sketch 1' deliberately has none.
 ];
 
-const USERS = ['admin', 'bob', 'carol', 'dave', 'erin', 'fay', 'gus', 'hal', 'ivy', 'nina', 'zoe'];
+const USERS = ['admin', 'bob', 'carol', 'dave', 'erin', 'fay', 'gus', 'hal', 'ivy', 'kim', 'lou', 'max', 'nina', 'zoe'];
 const VPATHS = { admin: ['testlib', 'lib2'], zoe: ['lib2'] };
 
 let server;     // discovery on, users, federation on (for the key test)
@@ -263,11 +267,26 @@ before(async () => {
   await postPlays(server, tokens.gus, [play(P.beSomebody, DAY, 'completed', 200000, 200000)]);
   // hal: one seed that a history reset will take away.
   await postPlays(server, tokens.hal, [play(P.rise, 3 * DAY, 'completed', 200000, 200000)]);
-  // ivy: one seed and a counted skip (40 s) — Rise has a play count but
-  // never seeds, so more skips change its row and not the seed set.
-  await postPlays(server, tokens.ivy, [
+  // ivy: one seed; a later counted skip takes a song out of her library.
+  await postPlays(server, tokens.ivy, [play(P.beSomebody, DAY, 'completed', 200000, 200000)]);
+  // kim: one seed, Neon finished 100 days ago (outside the 30-day window,
+  // past the 90-day library cutoff), Highway finished 10 days ago (inside
+  // the window, so a seed too).
+  await postPlays(server, tokens.kim, [
     play(P.beSomebody, DAY, 'completed', 200000, 200000),
-    play(P.rise, 2 * DAY, 'skipped', 40000, 200000),
+    play(P.neon, 100 * DAY, 'completed', 200000, 200000),
+    play(P.highway, 10 * DAY, 'completed', 200000, 200000),
+  ]);
+  // lou and max: one seed each, and Neon — the only play of the Night Drive
+  // album — finished outside the 30-day window: 100 days ago for lou (past
+  // the fixed 90-day cutoff), 60 days ago for max (inside it).
+  await postPlays(server, tokens.lou, [
+    play(P.beSomebody, DAY, 'completed', 200000, 200000),
+    play(P.neon, 100 * DAY, 'completed', 200000, 200000),
+  ]);
+  await postPlays(server, tokens.max, [
+    play(P.beSomebody, DAY, 'completed', 200000, 200000),
+    play(P.neon, 60 * DAY, 'completed', 200000, 200000),
   ]);
   // admin: one seed, to scope the library with ignoreVPaths.
   await postPlays(server, tokens.admin, [play(P.beSomebody, DAY, 'completed', 200000, 200000)]);
@@ -279,16 +298,15 @@ after(async () => {
 });
 
 const paths = (rows) => rows.map((r) => r.filepath);
+const pathSet = (rows) => new Set(paths(rows));
 
 // ── gates ────────────────────────────────────────────────────────────────
 
 describe('discovery taste: gates', () => {
-  test('403 while discovery is off (taste and prefs)', async () => {
-    for (const [method, route, body] of [['POST', TASTE, {}], ['GET', PREFS], ['PUT', PREFS, {}]]) {
-      const r = await call(offServer, method, route, body);
-      assert.equal(r.status, 403, `${method} ${route}`);
-      assert.equal(r.body.error, 'Discovery is disabled');
-    }
+  test('403 while discovery is off', async () => {
+    const r = await call(offServer, 'POST', TASTE, {});
+    assert.equal(r.status, 403);
+    assert.equal(r.body.error, 'Discovery is disabled');
   });
 
   test('401 without a token on a server with users', async () => {
@@ -296,23 +314,20 @@ describe('discovery taste: gates', () => {
   });
 
   // A federation key never reaches the route: api/federation-auth.js's
-  // allowlist wall answers 'Forbidden' before any route runs, and these
-  // paths are not on it. The route's own requireAccount is defence in
-  // depth behind that wall and cannot be reached over HTTP with a key.
+  // allowlist wall answers 'Forbidden' before any route runs, and this
+  // path is not on it. The route's own requireAccount is defence in depth
+  // behind that wall and cannot be reached over HTTP with a key.
   test('a federation key is refused (by the federation allowlist wall)', async () => {
     const mint = await call(server, 'POST', '/api/v1/admin/federation/keys', { name: 'taste-peer', vpaths: ['testlib'] }, tokens.admin);
     assert.equal(mint.status, 200, JSON.stringify(mint.body));
-    for (const [method, route, body] of [['POST', TASTE, {}], ['GET', PREFS], ['PUT', PREFS, {}]]) {
-      const r = await fetch(`${server.baseUrl}${route}`, {
-        method, headers: { 'Content-Type': 'application/json', 'x-federation-key': mint.body.key },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
-      assert.equal(r.status, 403, `${method} ${route} answered ${r.status}`);
-      assert.equal((await r.json()).error, 'Forbidden', 'the wall\'s answer');
-    }
+    const r = await fetch(`${server.baseUrl}${TASTE}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-federation-key': mint.body.key }, body: '{}',
+    });
+    assert.equal(r.status, 403, `answered ${r.status}`);
+    assert.equal((await r.json()).error, 'Forbidden', 'the wall\'s answer');
   });
 
-  test('a jukebox session token reaches none of it (POST, GET and PUT prefs)', async () => {
+  test('a jukebox session token is refused', async () => {
     const { default: WebSocket } = await import('ws');
     const juke = await new Promise((resolve, reject) => {
       const ws = new WebSocket(`${server.baseUrl.replace(/^http/, 'ws')}/?token=${tokens.bob}`);
@@ -320,24 +335,17 @@ describe('discovery taste: gates', () => {
       ws.on('error', reject);
     });
     try {
-      for (const [method, route, body] of [['POST', TASTE, {}], ['GET', PREFS], ['PUT', PREFS, { window: 7 }]]) {
-        const r = await call(server, method, route, body, juke.token);
-        assert.equal(r.status, 403, `${method} ${route} answered ${r.status}`);
-        assert.match(r.body.error, /jukebox session/);
-      }
+      const r = await call(server, 'POST', TASTE, {}, juke.token);
+      assert.equal(r.status, 403, `answered ${r.status}`);
+      assert.match(r.body.error, /jukebox session/);
     } finally {
       juke.ws.close();
     }
-    const prefs = await call(server, 'GET', PREFS, undefined, tokens.bob);
-    assert.equal(prefs.body.window, 30, 'the refused PUT wrote nothing');
   });
 
-  test('validation: caps, enums and unknown keys answer 400', async () => {
+  test('validation: caps, enums, unknown keys and the removed keys answer 400', async () => {
     const bad = [
       { window: 14 },
-      { filter: 'hot' },
-      { staleDays: 0 },
-      { staleDays: 3651 },
       { sources: ['library', 'radio'] },
       { limit: { tracks: 51 } },
       { limit: { seeds: 13 } },
@@ -348,12 +356,21 @@ describe('discovery taste: gates', () => {
       { exclude: Array.from({ length: 201 }, (_, i) => `h${i}`) },
       { exclude: ['x'.repeat(129)] },
       { surprise: true },
+      // Removed with the saved prefs: nothing is remembered, and the
+      // library rule is fixed.
+      { remember: false },
+      { filter: 'fresh' },
+      { staleDays: 90 },
     ];
     for (const body of bad) {
       assert.equal((await taste('bob', body)).status, 400, JSON.stringify(body).slice(0, 80));
     }
-    for (const body of [{ window: 14 }, { staleDays: 0 }, { exclude: 'h' }, { theme: 'dark' }]) {
-      assert.equal((await call(server, 'PUT', PREFS, body, tokens.bob)).status, 400, JSON.stringify(body));
+  });
+
+  test('the prefs routes are gone (404)', async () => {
+    for (const [method, body] of [['GET'], ['PUT', { window: 7 }]]) {
+      const r = await call(server, method, PREFS, body, tokens.bob);
+      assert.equal(r.status, 404, `${method} answered ${r.status}`);
     }
   });
 });
@@ -361,18 +378,22 @@ describe('discovery taste: gates', () => {
 // ── seeds ────────────────────────────────────────────────────────────────
 
 describe('discovery taste: seeds', () => {
-  test('completed plays seed first, then mostly-listened stops; skips and short stops never seed', async () => {
+  test('completed plays and mostly-listened stops seed; skips and short stops never do', async () => {
     const r = await taste('bob', { sources: ['library'] });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     const b = r.body;
     assert.equal(b.seedSource, 'history');
-    assert.equal(b.window, 30);
+    assert.equal(b.window, 30, 'the default window');
     assert.equal(b.widenedFrom, null);
     assert.equal(b.fallback, false);
     assert.equal(b.notAnalyzed, false);
     assert.deepEqual(b.model, { id: 'test-fake', version: '1' });
-    assert.deepEqual(paths(b.seeds), [P.beSomebody, P.stat], 'Highway (skipped last), Neon (35 s of 6 min) and Orbit (5 s skip) do not seed');
-    const [first, second] = b.seeds;
+    // Two candidates, a limit of 12: the batch is the whole pool, in a
+    // random order.
+    assert.deepEqual(pathSet(b.seeds), new Set([P.beSomebody, P.stat]),
+      'Highway (skipped last), Neon (35 s of 6 min) and Orbit (5 s skip) do not seed');
+    const first = b.seeds.find((x) => x.filepath === P.beSomebody);
+    const second = b.seeds.find((x) => x.filepath === P.stat);
     assert.equal(first.outcome, 'completed');
     assert.equal(second.outcome, 'stopped');
     assert.equal(first.hash, hashOf[P.beSomebody]);
@@ -384,6 +405,29 @@ describe('discovery taste: seeds', () => {
     assert.ok(!('hash' in first.metadata) && !('play-count' in first.metadata), 'lite, not full');
     assert.deepEqual(b.excluded, []);
     assert.equal(b.dropped, 0);
+  });
+
+  test('a random batch: the whole pool when it fits the limit, a changing subset when it does not', async () => {
+    const fay = [P.beSomebody, P.rise, P.orbit, P.ret, P.highway, P.stat, P.descent];
+    const whole = await taste('fay', { sources: ['library'] });
+    assert.equal(whole.status, 200, JSON.stringify(whole.body));
+    assert.equal(whole.body.seeds.length, 7);
+    assert.deepEqual(pathSet(whole.body.seeds), new Set(fay));
+
+    // Seven candidates, three slots: C(7,3) = 35 batches, so 20 calls all
+    // drawing the same one would be a (1/35)^19 fluke — or no randomness.
+    const batches = new Set();
+    for (let i = 0; i < 20; i++) {
+      const r = await taste('fay', { sources: [], limit: { seeds: 3 } });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.equal(r.body.seedSource, 'history');
+      const got = paths(r.body.seeds);
+      assert.equal(got.length, 3);
+      assert.equal(new Set(got).size, 3, 'distinct songs');
+      for (const p of got) { assert.ok(fay.includes(p), p); }
+      batches.add([...got].sort().join('|'));
+    }
+    assert.ok(batches.size > 1, 'every call drew the same seeds');
   });
 
   test('an empty window widens to all time and says so', async () => {
@@ -402,7 +446,8 @@ describe('discovery taste: seeds', () => {
     const r = await taste('bob', { pin: [P.rise, P.zed, 'testlib/nope.mp3', P.sketch], sources: ['library'] });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.dropped, 2, 'lib2 is not bob\'s; nope.mp3 does not exist — one count, no difference');
-    assert.deepEqual(paths(r.body.seeds), [P.rise, P.sketch, P.beSomebody, P.stat]);
+    assert.deepEqual(paths(r.body.seeds.slice(0, 2)), [P.rise, P.sketch], 'the pins, in the order sent');
+    assert.deepEqual(pathSet(r.body.seeds.slice(2)), new Set([P.beSomebody, P.stat]));
     assert.deepEqual(r.body.seeds.map((s) => s.pinned), [true, true, false, false]);
     assert.equal(r.body.seeds[1].analyzed, false, 'a pin the worker has not reached is listed, not used');
     assert.equal(r.body.seedSource, 'history');
@@ -413,46 +458,31 @@ describe('discovery taste: seeds', () => {
     assert.equal(only.body.seedSource, 'pinned');
   });
 
-  test('exclusions: remembered server-side, resolved for the seeds sheet, re-included by PUT', async () => {
+  test('exclude leaves songs out of this call only, and lists them back', async () => {
     const plain = await taste('erin', { sources: ['library'] });
-    assert.deepEqual(paths(plain.body.seeds), [P.beSomebody, P.rise]);
-    const h = plain.body.seeds[0].hash;
+    assert.deepEqual(pathSet(plain.body.seeds), new Set([P.beSomebody, P.rise]));
+    const h = hashOf[P.beSomebody];
 
-    const dropped = await taste('erin', { exclude: [h], remember: true, window: 90, sources: ['library'] });
-    assert.equal(dropped.status, 200, JSON.stringify(dropped.body));
-    assert.deepEqual(paths(dropped.body.seeds), [P.rise]);
-    assert.equal(dropped.body.window, 90);
-    assert.deepEqual(dropped.body.excluded.map((e) => [e.hash, e.filepath, e.metadata.title]), [[h, P.beSomebody, 'Be Somebody']]);
+    // lib2's song is a real track, in a library erin cannot see: its row
+    // (path, metadata) must not come back to her.
+    assert.ok(hashOf[P.zed], 'the lib2 fixture is indexed');
+    const left = await taste('erin', { exclude: [h, 'no-such-hash', hashOf[P.zed]], window: 90, sources: ['library'] });
+    assert.equal(left.status, 200, JSON.stringify(left.body));
+    assert.deepEqual(paths(left.body.seeds), [P.rise], 'the pool shrank');
+    assert.equal(left.body.window, 90);
+    assert.deepEqual(left.body.excluded.map((e) => [e.hash, e.filepath, e.metadata.title]), [[h, P.beSomebody, 'Be Somebody']],
+      'the rows of the hashes this call left out (an unknown hash and another library\'s track are not listed)');
 
-    const prefs = await call(server, 'GET', PREFS, undefined, tokens.erin);
-    assert.equal(prefs.status, 200);
-    assert.deepEqual(prefs.body, { window: 90, filter: 'fresh', staleDays: 90, exclude: [h], persisted: true });
-
-    // The next call (any client of this account) sends nothing and agrees.
+    // Nothing is remembered: the next call draws from the whole pool again.
     const again = await taste('erin', { sources: ['library'] });
-    assert.deepEqual(paths(again.body.seeds), [P.rise], 'the saved exclusion applies without being sent');
-    assert.equal(again.body.window, 90, 'the saved window applies');
-    // Under 'all', so only the exclusion can keep it out (fresh would drop
-    // it anyway: erin played it yesterday).
-    const all = await taste('erin', { sources: ['library'], filter: 'all' });
-    const recommended = [...paths(all.body.library.tracks), ...all.body.library.albums.flatMap((a) => a.tracks)];
-    assert.ok(recommended.length > 0);
-    assert.ok(!recommended.includes(P.beSomebody), 'a dropped seed is not recommended back either');
+    assert.deepEqual(pathSet(again.body.seeds), new Set([P.beSomebody, P.rise]));
+    assert.equal(again.body.window, 30, 'the default window, not the last one sent');
+    assert.deepEqual(again.body.excluded, []);
 
     // A pin is an explicit choice: it seeds even while its song is excluded.
-    const pinned = await taste('erin', { pin: [P.beSomebody], sources: ['library'] });
+    const pinned = await taste('erin', { pin: [P.beSomebody], exclude: [h], sources: ['library'] });
     assert.deepEqual(paths(pinned.body.seeds), [P.beSomebody, P.rise]);
     assert.equal(pinned.body.seeds[0].pinned, true);
-
-    const put = await call(server, 'PUT', PREFS, { exclude: [], window: null }, tokens.erin);
-    assert.equal(put.status, 200, JSON.stringify(put.body));
-    assert.deepEqual(put.body, { window: 30, filter: 'fresh', staleDays: 90, exclude: [], persisted: true });
-    const back = await taste('erin', { sources: ['library'] });
-    assert.deepEqual(paths(back.body.seeds), [P.beSomebody, P.rise]);
-
-    // Without remember, an exclusion lasts for the call only.
-    await taste('erin', { exclude: [h], sources: ['library'] });
-    assert.deepEqual((await call(server, 'GET', PREFS, undefined, tokens.erin)).body.exclude, []);
   });
 
   test('nothing counted at all: one random analyzed track from the caller\'s own libraries, the same all day', async () => {
@@ -475,6 +505,14 @@ describe('discovery taste: seeds', () => {
     const again = await taste('carol');
     assert.equal(again.body.seeds[0].hash, r.body.seeds[0].hash, 'deterministic per user per day');
 
+    // An excluded song is neither the random pick nor recommended back.
+    const ex = r.body.seeds[0].hash === hashOf[P.rise] ? P.orbit : P.rise;
+    const without = await taste('carol', { exclude: [hashOf[ex]] });
+    assert.notEqual(without.body.seeds[0].hash, hashOf[ex]);
+    const back = [...paths(without.body.library.tracks), ...without.body.library.albums.flatMap((a) => a.tracks)];
+    assert.ok(back.length > 0);
+    assert.ok(!back.includes(ex), `${ex} came back`);
+
     // zoe sees lib2 only: the one analyzed track there is the only choice.
     const zoe = await taste('zoe');
     assert.deepEqual(paths(zoe.body.seeds), [P.zed]);
@@ -493,7 +531,7 @@ describe('discovery taste: seeds', () => {
     // (the analyzed-only pass widened and found nothing).
     assert.equal(r.body.window, 30);
     assert.equal(r.body.widenedFrom, null);
-    assert.deepEqual(r.body.library, { filter: 'fresh', tracks: [], albums: [], capped: false });
+    assert.deepEqual(r.body.library, { tracks: [], albums: [], capped: false });
   });
 
   test('counters seed when the log has nothing to give (after a history reset, post-reset counters only)', async () => {
@@ -513,15 +551,15 @@ describe('discovery taste: seeds', () => {
 // ── library ──────────────────────────────────────────────────────────────
 
 describe('discovery taste: library', () => {
-  const tracksOnly = (filter, extra = {}) => taste('bob', { filter, sources: ['library'], limit: { albums: 0, tracks: 50 }, ...extra });
+  const tracksOnly = (user, extra = {}) => taste(user, { sources: ['library'], limit: { albums: 0, tracks: 50 }, ...extra });
 
-  test('filter all: every visible analyzed song but the seeds, best match first, rows per §3.1', async () => {
-    const r = await tracksOnly('all');
+  test('songs you have not played lately, best match first, rows per §3.1', async () => {
+    const r = await tracksOnly('bob');
     assert.equal(r.status, 200, JSON.stringify(r.body));
     const lib = r.body.library;
-    assert.equal(lib.filter, 'all');
-    assert.deepEqual(new Set(paths(lib.tracks)), new Set([P.rise, P.orbit, P.ret, P.descent, P.highway, P.neon]),
-      'no seeds, no lib2 (not bob\'s), no Sketch (not analyzed)');
+    assert.deepEqual(Object.keys(lib).sort(), ['albums', 'capped', 'tracks'], 'no filter field: the rule is fixed');
+    assert.deepEqual(pathSet(lib.tracks), new Set([P.rise, P.ret, P.descent]),
+      'no seeds, no lib2 (not bob\'s), no Sketch (not analyzed), no Highway / Neon (played lately), no Orbit (tried and bounced)');
     const sims = lib.tracks.map((t) => t.similarity);
     assert.deepEqual(sims, [...sims].sort((a, b) => b - a));
     const rise = lib.tracks.find((t) => t.filepath === P.rise);
@@ -533,29 +571,62 @@ describe('discovery taste: library', () => {
     assert.equal(rise.lastPlayed, null);
     const descent = lib.tracks.find((t) => t.filepath === P.descent);
     assert.equal(descent.seedHash, hashOf[P.stat], 'Descent sits closer to Static');
-    const neon = lib.tracks.find((t) => t.filepath === P.neon);
-    assert.equal(neon.playCount, 1);
-    assert.match(neon.lastPlayed, /Z$/);
     assert.equal(lib.capped, false);
     assert.deepEqual(lib.albums, []);
   });
 
-  test('filter unplayed / fresh: played and tried-and-bounced songs leave; fresh keeps the stale ones', async () => {
-    const unplayed = await tracksOnly('unplayed');
-    assert.deepEqual(new Set(paths(unplayed.body.library.tracks)), new Set([P.rise, P.ret, P.descent]),
-      'no Orbit (5 s skip, never played), no Highway / Neon (played)');
-    const fresh = await tracksOnly('fresh');
-    assert.deepEqual(new Set(paths(fresh.body.library.tracks)), new Set([P.rise, P.ret, P.descent]),
-      'default fresh = 90 days: everything bob played is recent');
-    const stale = await tracksOnly('fresh', { staleDays: 1 });
-    assert.deepEqual(new Set(paths(stale.body.library.tracks)), new Set([P.rise, P.ret, P.descent, P.neon]),
-      'Neon was last played 3 days ago; Highway 12 hours ago');
+  test('a song last played more than 90 days ago comes back', async () => {
+    const r = await tracksOnly('kim');
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(pathSet(r.body.seeds), new Set([P.beSomebody, P.highway]), 'Neon is outside the 30-day window');
+    const got = paths(r.body.library.tracks);
+    assert.ok(got.includes(P.neon), got.join());
+    const neon = r.body.library.tracks.find((t) => t.filepath === P.neon);
+    assert.equal(neon.playCount, 1);
+    assert.match(neon.lastPlayed, /Z$/);
+    // Highway is a seed here (seeds never come back); Static (never
+    // played) stays.
+    assert.ok(got.includes(P.stat));
+  });
+
+  test('the 90-day cutoff is fixed: a non-seed song played 60 days ago stays out, one played 100 days ago comes back', async () => {
+    // Neon is no seed for either (outside the 30-day window) — only the
+    // library rule decides it.
+    const recent = await tracksOnly('max');
+    assert.equal(recent.status, 200, JSON.stringify(recent.body));
+    assert.deepEqual(paths(recent.body.seeds), [P.beSomebody]);
+    const gotRecent = paths(recent.body.library.tracks);
+    assert.ok(!gotRecent.includes(P.neon), `played 60 days ago: ${gotRecent.join()}`);
+    assert.ok(gotRecent.includes(P.stat) && gotRecent.includes(P.highway), 'its never-played album mates stay');
+
+    const stale = await tracksOnly('lou');
+    assert.deepEqual(paths(stale.body.seeds), [P.beSomebody]);
+    assert.ok(paths(stale.body.library.tracks).includes(P.neon), 'played 100 days ago');
+  });
+
+  test('album cards follow the same cutoff: last played 100 days ago is a card, 60 days ago is not', async () => {
+    const lou = await taste('lou', { sources: ['library'] });
+    assert.equal(lou.status, 200, JSON.stringify(lou.body));
+    const night = lou.body.library.albums.find((a) => a.name === 'Night Drive');
+    assert.ok(night, JSON.stringify(lou.body.library.albums.map((a) => a.name)));
+    assert.equal(night.playedTracks, 1);
+    assert.equal(night.scopedTracks, 3);
+    assert.match(night.lastPlayed, /Z$/);
+    assert.ok(Date.now() - Date.parse(night.lastPlayed) > 90 * DAY, night.lastPlayed);
+    assert.ok(night.tracks.includes(P.neon));
+    assert.ok(!paths(lou.body.library.tracks).includes(P.neon), 'listed under its album, not in tracks');
+
+    const max = await taste('max', { sources: ['library'] });
+    assert.equal(max.status, 200, JSON.stringify(max.body));
+    const names = max.body.library.albums.map((a) => a.name);
+    assert.ok(!names.includes('Night Drive'), `played 60 days ago: ${names.join()}`);
+    assert.ok(names.includes('Later Works'), 'the unplayed card stays');
+    assert.ok(!paths(max.body.library.tracks).includes(P.neon));
   });
 
   test('albums before songs: unplayed cards by their best track, their songs out of the tracks list', async () => {
     const r = await taste('bob', { sources: ['library'] });
     const lib = r.body.library;
-    assert.equal(lib.filter, 'fresh', 'the default');
     assert.equal(lib.albums.length, 1, JSON.stringify(lib.albums.map((a) => a.name)));
     const [album] = lib.albums;
     assert.equal(album.name, 'Later Works');
@@ -568,78 +639,65 @@ describe('discovery taste: library', () => {
     assert.equal(album.similarity, 0.9038);
     assert.equal(album.seedHash, hashOf[P.stat]);
     assert.deepEqual(paths(lib.tracks), [P.rise], 'Return and Descent are listed under their album');
-
-    const all = await taste('bob', { filter: 'all', sources: ['library'] });
-    const names = all.body.library.albums.map((a) => a.name);
-    assert.ok(names.includes('Night Drive') && names.includes('Be Somebody'), names.join());
-    const nd = all.body.library.albums.find((a) => a.name === 'Night Drive');
-    assert.equal(nd.playedTracks, 3);
-    assert.match(nd.lastPlayed, /Z$/);
+    assert.ok(!lib.albums.some((a) => a.name === 'Night Drive'), 'played lately: not a card');
   });
 
-  test('library seed cap: only the 6 newest history seeds get a library pass', async () => {
-    const r = await taste('fay', { filter: 'all', sources: ['library'], limit: { albums: 0, tracks: 50 } });
-    assert.equal(r.status, 200, JSON.stringify(r.body));
-    assert.equal(r.body.seeds.length, 7, 'all seven are listed');
-    assert.equal(r.body.seeds[6].filepath, P.descent);
-    // Neon sits closest to Descent (a near duplicate of it, even). Descent
-    // is the 7th seed, so Neon is matched against the first six only.
-    assert.deepEqual(paths(r.body.library.tracks), [P.neon]);
-    assert.equal(r.body.library.tracks[0].seedHash, hashOf[P.ret]);
-    const firstSix = new Set(r.body.seeds.slice(0, 6).map((x) => x.hash));
-    assert.ok(firstSix.has(r.body.library.tracks[0].seedHash));
+  test('library seed cap: only the first 6 seeds of the batch get a library pass', async () => {
+    // Neon is the one song fay has not played, and a near duplicate of
+    // Descent (cos 0.993 ≥ NEAR_DUP): with Descent among the six seeds that
+    // get a library pass it is dropped as "the seed song again"; with
+    // Descent 7th (outside the cap) it comes back, matched against the
+    // other six. The batch order is random, so every answer is checked
+    // against whichever case it drew. Descent lands 7th with p = 1/7 per
+    // call; 60 calls reach that (cap-proving) branch in all but ~1e-4 of
+    // runs ((6/7)^60) — the route has no RNG hook to pin the order.
+    for (let i = 0; i < 60; i++) {
+      const r = await tracksOnly('fay');
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.equal(r.body.seeds.length, 7, 'all seven are listed');
+      const firstSix = r.body.seeds.slice(0, 6);
+      if (firstSix.some((x) => x.filepath === P.descent)) {
+        assert.deepEqual(r.body.library.tracks, [], 'Descent ranked: Neon is its near duplicate');
+      } else {
+        assert.deepEqual(paths(r.body.library.tracks), [P.neon], 'Descent is 7th: not ranked');
+        assert.ok(firstSix.some((x) => x.hash === r.body.library.tracks[0].seedHash));
+      }
+    }
   });
 
-  test('low ratings (≤ 2 stars) leave fresh / unplayed, and stay under all', async () => {
+  test('low ratings (≤ 2 stars) leave the library', async () => {
     const rate = await call(server, 'POST', '/api/v1/db/rate-song', { filepath: P.ret, rating: 4 }, tokens.gus);
     assert.equal(rate.status, 200, JSON.stringify(rate.body));
-    const body = { sources: ['library'], limit: { albums: 0, tracks: 50 } };
-    const unplayed = await taste('gus', { ...body, filter: 'unplayed' });
-    assert.ok(!paths(unplayed.body.library.tracks).includes(P.ret), 'rated 2 stars');
-    assert.ok(paths(unplayed.body.library.tracks).includes(P.descent), 'its unrated neighbour stays');
-    const all = await taste('gus', { ...body, filter: 'all' });
-    assert.ok(paths(all.body.library.tracks).includes(P.ret));
+    const r = await tracksOnly('gus');
+    assert.ok(!paths(r.body.library.tracks).includes(P.ret), 'rated 2 stars');
+    assert.ok(paths(r.body.library.tracks).includes(P.descent), 'its unrated neighbour stays');
   });
 
   test('ignoreVPaths scopes the library', async () => {
-    const body = { filter: 'all', sources: ['library'], limit: { albums: 0, tracks: 50 } };
-    const both = await taste('admin', body);
+    const both = await tracksOnly('admin');
     assert.ok(paths(both.body.library.tracks).includes(P.zed), 'lib2 is the admin\'s');
-    const one = await taste('admin', { ...body, ignoreVPaths: ['lib2'] });
+    const one = await tracksOnly('admin', { ignoreVPaths: ['lib2'] });
     assert.ok(one.body.library.tracks.length > 0);
     assert.ok(paths(one.body.library.tracks).every((p) => p.startsWith('testlib/')), paths(one.body.library.tracks).join());
   });
 
-  test('a repeat call is served from the cache; a stats reset drops it', async () => {
-    const body = { sources: ['library'], filter: 'all', limit: { albums: 0 } };
-    const riseOf = (r) => r.body.library.tracks.find((t) => t.filepath === P.rise);
-    const a = await taste('ivy', body);
-    assert.equal(riseOf(a).playCount, 1);
-    // Another counted skip: Rise's count moves, the seed set does not.
-    await postPlays(server, tokens.ivy, [play(P.rise, DAY / 4, 'skipped', 40000, 200000)]);
-    const b = await taste('ivy', body);
-    assert.deepEqual(paths(b.body.seeds), paths(a.body.seeds));
-    assert.equal(riseOf(b).playCount, 1, 'the cached answer, not a recompute (the count is 2 now)');
-    assert.deepEqual(b.body.library, a.body.library);
-    // A counts reset leaves the log (and so the seeds) alone, but the rows
-    // carry the counts it erased: the cache must not outlive it.
-    const reset = await call(server, 'POST', '/api/v1/stats/reset', { scope: 'counts' }, tokens.ivy);
-    assert.equal(reset.status, 200, JSON.stringify(reset.body));
-    const c = await taste('ivy', body);
-    assert.deepEqual(paths(c.body.seeds), paths(a.body.seeds));
-    assert.equal(riseOf(c).playCount, 0, 'recomputed after the reset');
+  test('every call computes: a song played since the last call leaves the next answer', async () => {
+    const a = await tracksOnly('ivy');
+    assert.ok(paths(a.body.library.tracks).includes(P.orbit));
+    // A counted skip: Orbit is played now (and, its latest play a skip,
+    // still not a seed).
+    await postPlays(server, tokens.ivy, [play(P.orbit, DAY / 4, 'skipped', 40000, 200000)]);
+    const b = await tracksOnly('ivy');
+    assert.deepEqual(paths(b.body.seeds), [P.beSomebody]);
+    assert.ok(!paths(b.body.library.tracks).includes(P.orbit), 'not a cached answer');
   });
 
-  test('what may be cached: never a failed section or a fan-out with an unreachable peer', async () => {
-    const { cacheableSections } = await import('../../src/api/discovery-taste.js');
-    const library = { filter: 'all', tracks: [], albums: [], capped: false };
-    const network = { results: [], searched: { peers: 1, tracks: 3 } };
-    const peers = (unreachable) => ({ peers: [], searched: { peers: 1, unreachable, mismatched: 0 } });
-    assert.deepEqual(Object.keys(cacheableSections({ library, network, peers: peers(0) })), ['library', 'network', 'peers']);
-    assert.deepEqual(Object.keys(cacheableSections({ library, network, peers: peers(1) })), ['library', 'network'],
-      'an unreachable peer costs only the peers entry');
-    assert.deepEqual(Object.keys(cacheableSections({ library, network: { ...network, failed: true } })), ['library']);
-    assert.deepEqual(Object.keys(cacheableSections({ peers: { ...peers(0), failed: true } })), []);
+  test('a history reset: the pre-reset counters stop seeding (random, not counters)', async () => {
+    const reset = await call(server, 'POST', '/api/v1/stats/reset', { scope: 'history' }, tokens.dave);
+    assert.equal(reset.status, 200, JSON.stringify(reset.body));
+    assert.equal(reset.body.scope, 'history');
+    const r = await taste('dave', { sources: ['library'] });
+    assert.equal(r.body.seedSource, 'random', 'pre-reset counters are not seeds');
   });
 });
 
@@ -679,53 +737,22 @@ describe('discovery taste: network and peers', () => {
   });
 });
 
-// ── prefs + reset ────────────────────────────────────────────────────────
-
-describe('discovery taste: prefs and the stats reset', () => {
-  test('GET answers the defaults; PUT saves, merges and validates', async () => {
-    const empty = await call(server, 'GET', PREFS, undefined, tokens.carol);
-    assert.deepEqual(empty.body, { window: 30, filter: 'fresh', staleDays: 90, exclude: [], persisted: true });
-    const put = await call(server, 'PUT', PREFS, { filter: 'all', staleDays: 30 }, tokens.carol);
-    assert.deepEqual(put.body, { window: 30, filter: 'all', staleDays: 30, exclude: [], persisted: true });
-    const put2 = await call(server, 'PUT', PREFS, { window: 7 }, tokens.carol);
-    assert.deepEqual(put2.body, { window: 7, filter: 'all', staleDays: 30, exclude: [], persisted: true }, 'other prefs kept');
-    const r = await taste('carol', { sources: ['library'] });
-    assert.equal(r.body.library.filter, 'all', 'the saved filter applies to the page');
-  });
-
-  test('a history reset clears the prefs and the counters stop seeding (random, not counters)', async () => {
-    await call(server, 'PUT', PREFS, { window: 90 }, tokens.dave);
-    const reset = await call(server, 'POST', '/api/v1/stats/reset', { scope: 'history' }, tokens.dave);
-    assert.equal(reset.status, 200, JSON.stringify(reset.body));
-    assert.equal(reset.body.scope, 'history');
-    const prefs = await call(server, 'GET', PREFS, undefined, tokens.dave);
-    assert.equal(prefs.body.window, 30, 'the discovery:page namespace went with the history');
-    const r = await taste('dave', { sources: ['library'] });
-    assert.equal(r.body.seedSource, 'random', 'pre-reset counters are not seeds');
-  });
-});
-
 // ── public mode ──────────────────────────────────────────────────────────
 
 describe('discovery taste: public mode', () => {
-  test('the shared account gets a page and never persists', async () => {
+  test('the shared account gets a page', async () => {
     const first = await call(pubServer, 'POST', TASTE, {});
     assert.equal(first.status, 200, JSON.stringify(first.body));
     assert.equal(first.body.seedSource, 'random');
-
-    await postPlays(pubServer, undefined, [play(P.rise, DAY, 'completed', 200000, 200000)]);
-    const r = await call(pubServer, 'POST', TASTE, { remember: true, window: 90, exclude: ['abc'], sources: ['library'] });
-    assert.equal(r.status, 200, JSON.stringify(r.body));
-    assert.equal(r.body.seedSource, 'history');
-    assert.deepEqual(paths(r.body.seeds), [P.rise]);
     assert.equal(first.body.network, null, 'p2p is on, but a random seed sends nothing anywhere');
 
-    const prefs = await call(pubServer, 'GET', PREFS);
-    assert.deepEqual(prefs.body, { window: 30, filter: 'fresh', staleDays: 90, exclude: [], persisted: false });
-    const put = await call(pubServer, 'PUT', PREFS, { window: 7 });
-    assert.equal(put.status, 200);
-    assert.deepEqual(put.body, { window: 7, filter: 'fresh', staleDays: 90, exclude: [], persisted: false });
-    assert.equal((await call(pubServer, 'GET', PREFS)).body.window, 30, 'nothing stored');
+    await postPlays(pubServer, undefined, [play(P.rise, DAY, 'completed', 200000, 200000)]);
+    const r = await call(pubServer, 'POST', TASTE, { window: 90, exclude: ['abc'], sources: ['library'] });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.seedSource, 'history');
+    assert.equal(r.body.window, 90);
+    assert.deepEqual(paths(r.body.seeds), [P.rise]);
+    assert.deepEqual(r.body.excluded, [], 'an exclusion that names no track is not listed');
   });
 
   test('network: shelf leads stamped as p2p recommendations, owned songs out, one row per song', async () => {
