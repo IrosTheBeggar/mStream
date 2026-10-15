@@ -352,7 +352,7 @@ describe('discovery taste: gates', () => {
       { limit: { albums: 25 } },
       { limit: { network: 51 } },
       { limit: { peers: 26 } },
-      { pin: Array.from({ length: 9 }, (_, i) => `testlib/x${i}.mp3`) },
+      { pin: Array.from({ length: 13 }, (_, i) => `testlib/x${i}.mp3`) },
       { exclude: Array.from({ length: 201 }, (_, i) => `h${i}`) },
       { exclude: ['x'.repeat(129)] },
       { surprise: true },
@@ -365,6 +365,10 @@ describe('discovery taste: gates', () => {
     for (const body of bad) {
       assert.equal((await taste('bob', body)).status, 400, JSON.stringify(body).slice(0, 80));
     }
+    // PIN_CAP = the seed cap: a client can pin a whole 12-seed batch.
+    const twelve = await taste('bob', { pin: Array.from({ length: 12 }, (_, i) => `testlib/x${i}.mp3`), sources: ['library'] });
+    assert.equal(twelve.status, 200, JSON.stringify(twelve.body));
+    assert.equal(twelve.body.dropped, 12);
   });
 
   test('the prefs routes are gone (404)', async () => {
@@ -485,7 +489,7 @@ describe('discovery taste: seeds', () => {
     assert.equal(pinned.body.seeds[0].pinned, true);
   });
 
-  test('nothing counted at all: one random analyzed track from the caller\'s own libraries, the same all day', async () => {
+  test('nothing counted at all: one random analyzed track from the caller\'s own libraries, drawn per call', async () => {
     const r = await taste('carol');
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.seedSource, 'random');
@@ -500,10 +504,39 @@ describe('discovery taste: seeds', () => {
     const recommended = [...paths(r.body.library.tracks), ...r.body.library.albums.flatMap((a) => a.tracks)];
     assert.ok(recommended.length > 0);
     for (const p of recommended) { assert.ok(p.startsWith('testlib/'), p); }
-    // Assumes no UTC date change between the two calls (the pick is salted
-    // with the UTC date; taste-queries' unit suite pins the salt itself).
-    const again = await taste('carol');
-    assert.equal(again.body.seeds[0].hash, r.body.seeds[0].hash, 'deterministic per user per day');
+    // A plain re-ask (nothing excluded) draws again on the default RNG path:
+    // within a bounded run a different song comes back. carol has at least
+    // two visible analyzed songs, so a false failure needs 39 repeats in a
+    // row (at most 2^-39).
+    const plain = new Set([r.body.seeds[0].hash]);
+    for (let i = 0; i < 40 && plain.size < 2; i++) {
+      const again = await taste('carol', { sources: ['library'] });
+      assert.equal(again.status, 200, JSON.stringify(again.body));
+      assert.equal(again.body.seedSource, 'random');
+      plain.add(again.body.seeds[0].hash);
+    }
+    assert.ok(plain.size >= 2, 'a plain re-ask gives another song (no day salt, no pinned RNG)');
+
+    // "Another pick": a re-ask with the picks shown in `exclude` gets a new
+    // song every time, until none is left — then no seed and notAnalyzed
+    // (the client clears its list and starts over). Set membership only:
+    // the order of the draws is random.
+    const shown = [r.body.seeds[0].hash];
+    let last = null;
+    for (let i = 0; i < 40; i++) {
+      last = await taste('carol', { exclude: shown, sources: ['library'] });
+      assert.equal(last.status, 200, JSON.stringify(last.body));
+      if (last.body.seeds.length === 0) { break; }
+      assert.equal(last.body.seedSource, 'random');
+      const h = last.body.seeds[0].hash;
+      assert.ok(!shown.includes(h), `${last.body.seeds[0].filepath} was shown already`);
+      assert.ok(last.body.seeds[0].filepath.startsWith('testlib/'), last.body.seeds[0].filepath);
+      shown.push(h);
+    }
+    assert.ok(shown.length >= 2, 'carol sees more than one analyzed song');
+    assert.deepEqual(last.body.seeds, [], `still picking after ${shown.length}`);
+    assert.equal(last.body.notAnalyzed, true, 'no pick left reads as nothing to show');
+    assert.equal(last.body.seedSource, 'random');
 
     // An excluded song is neither the random pick nor recommended back.
     const ex = r.body.seeds[0].hash === hashOf[P.rise] ? P.orbit : P.rise;

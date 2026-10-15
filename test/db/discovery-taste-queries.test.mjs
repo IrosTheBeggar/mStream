@@ -20,7 +20,8 @@
  *  - window + widening: an empty window widens to all time and says so;
  *  - counters, random and album counts never leave the caller's libraries;
  *    a history reset hides pre-reset counters;
- *  - the random fallback is deterministic per user per day;
+ *  - the random fallback is drawn fresh per call (a seeded generator keeps
+ *    the checks exact), stays in the caller's scope and honours exclude;
  *  - the reset hook stores only its marker;
  *  - the plans: hash-index probes, never idx_tracks_library, the pinned
  *    skip subquery.
@@ -415,64 +416,97 @@ describe('randomVisibleSeed', () => {
   const index = { entries: ['ha1', 'ha2', 'ha3', 'ha4', 'ha5', 'ha6', 'fa7', 'ghost', 'hb1', 'hb2', 'hs'].map((hash) => ({ hash })) };
   const libA = new Set(['ha1', 'ha2', 'ha3', 'ha4', 'ha5', 'ha6', 'fa7', 'hs']);
   const libB = new Set(['hb1', 'hb2', 'hs']);
-  const days = Array.from({ length: 30 }, (_, i) => toSqlite(new Date(NOW.getTime() + i * DAY)).slice(0, 10));
+  const seeds = Array.from({ length: 30 }, (_, i) => i + 1);
 
-  test("deterministic per user per day, and never outside the caller's libraries", () => {
+  test("drawn per call, and never outside the caller's libraries", () => {
     const c = seed();
     const picks = new Set();
-    for (const daySalt of days) {
-      const a = randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c), daySalt });
+    for (const n of seeds) {
+      const a = randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c), random: seeded(n) });
       assert.ok(libA.has(a.hash), `${a.hash} is not in rock`);
-      assert.deepEqual(randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c), daySalt }), a, 'same day, same pick');
       assert.equal(a.libraryId, c.A);
+      assert.deepEqual(randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c), random: seeded(n) }), a,
+        'the same draw gives the same pick (the RNG is the only input)');
       picks.add(a.hash);
-      const b = randomVisibleSeed(c.db, { id: c.bob }, index, { libIds: onlyB(c), daySalt });
+      const b = randomVisibleSeed(c.db, { id: c.bob }, index, { libIds: onlyB(c), random: seeded(n) });
       assert.ok(libB.has(b.hash), `${b.hash} is not in jazz`);
       assert.equal(b.libraryId, c.B);
     }
-    assert.ok(picks.size >= 3, `a month of days should not keep picking the same song (got ${[...picks]})`);
-    // The song both libraries hold: walk days until it is picked (a year
-    // of salts, so a fixture or salt change cannot skip the check silently).
+    assert.ok(picks.size >= 3, `thirty draws should not keep picking the same song (got ${[...picks]})`);
+    // The song both libraries hold: draw until it is picked (a bounded walk
+    // of seeds, so a fixture change cannot skip the check silently).
     let shared = null;
-    for (let i = 0; i < 366 && !shared; i++) {
-      const daySalt = toSqlite(new Date(NOW.getTime() + i * DAY)).slice(0, 10);
-      const p = randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c), daySalt });
+    for (let n = 1; n <= 366 && !shared; n++) {
+      const p = randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c), random: seeded(n) });
       if (p.hash === 'hs') { shared = p; }
     }
-    assert.ok(shared, "no day of the year picked 'hs'");
+    assert.ok(shared, "no draw picked 'hs'");
     assert.equal(shared.trackId, c.ids.sA, 'the copy inside the scope');
   });
 
-  test('a small library behind a long run of invisible entries still varies by day', () => {
-    // Libraries sit in contiguous runs of the index. A seeded offset + linear
-    // walk would land on the run's FIRST track on ~95% of days here; the
-    // seeded permutation spreads the picks across the run.
+  test('a different song can come back on the next call, and exclude keeps a song out', () => {
+    // No day salt: two calls in a row draw independently. One RNG stream
+    // across calls (as Math.random is), so a different song comes back
+    // within a few calls; with the picks already shown in `exclude` every
+    // call is a new song until the library runs out — then null.
+    const c = seed();
+    const rand = seeded(7);
+    const first = randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c), random: rand });
+    let other = null;
+    for (let i = 0; i < 20 && !other; i++) {
+      const p = randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c), random: rand });
+      assert.ok(libA.has(p.hash));
+      if (p.hash !== first.hash) { other = p; }
+    }
+    assert.ok(other, `twenty calls all picked ${first.hash}`);
+
+    const shown = [];
+    for (let i = 0; i < libA.size; i++) {
+      const p = randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c), exclude: shown });
+      assert.ok(p, `ran out after ${shown.length}`);
+      assert.ok(libA.has(p.hash));
+      assert.ok(!shown.includes(p.hash), `${p.hash} was excluded`);
+      shown.push(p.hash);
+    }
+    assert.deepEqual([...shown].sort(), [...libA].sort(), 'every visible song came back once');
+    assert.equal(randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c), exclude: shown }), null,
+      'nothing left outside exclude');
+  });
+
+  test('a small library behind a long run of invisible entries still varies per call', () => {
+    // Libraries sit in contiguous runs of the index. A random offset + linear
+    // walk would land on the run's FIRST track on ~95% of calls here; the
+    // random permutation spreads the picks across the run.
     const c = seed();
     const run = ['ha1', 'ha2', 'ha3', 'ha4', 'ha5', 'ha6', 'fa7', 'hs'];
     const skewed = { entries: [...Array.from({ length: 300 }, (_, i) => ({ hash: `ghost-${i}` })), ...run.map((hash) => ({ hash }))] };
     const picks = new Map();
-    for (const daySalt of days) {
-      const p = randomVisibleSeed(c.db, { id: c.alice }, skewed, { libIds: onlyA(c), daySalt });
+    for (const n of seeds) {
+      const p = randomVisibleSeed(c.db, { id: c.alice }, skewed, { libIds: onlyA(c), random: seeded(n) });
       picks.set(p.hash, (picks.get(p.hash) || 0) + 1);
     }
     assert.ok(picks.size >= 5, `picks cluster: ${JSON.stringify([...picks])}`);
     assert.ok(Math.max(...picks.values()) <= 12, `one song dominates: ${JSON.stringify([...picks])}`);
   });
 
-  test('the day salt defaults to the UTC date of `now`; entry and track id ride along', () => {
+  test('Math.random by default; entry and track id ride along', () => {
     const c = seed();
-    const byNow = randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c), now: NOW });
-    const bySalt = randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c), daySalt: '2026-10-05' });
-    assert.deepEqual(byNow, bySalt);
-    assert.equal(byNow.entry, index.entries.find((e) => e.hash === byNow.hash));
-    assert.equal(byNow.trackId, byNow.hash === 'hs' ? c.ids.sA : c.ids[`a${byNow.hash.slice(-1)}`]);
+    const p = randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c) });
+    assert.ok(libA.has(p.hash));
+    assert.equal(p.entry, index.entries.find((e) => e.hash === p.hash));
+    assert.equal(p.trackId, p.hash === 'hs' ? c.ids.sA : c.ids[`a${p.hash.slice(-1)}`]);
+    // An RNG at its edges stays inside the index.
+    for (const edge of [0, 0.999999999]) {
+      const q = randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c), random: () => edge });
+      assert.ok(libA.has(q.hash));
+    }
   });
 
   test('exclusions are never picked', () => {
     const c = seed();
     const all = [...libA].filter((h) => h !== 'ha3');
-    for (const daySalt of days.slice(0, 10)) {
-      const p = randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c), daySalt, exclude: all });
+    for (const n of seeds.slice(0, 10)) {
+      const p = randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: onlyA(c), random: seeded(n), exclude: all });
       assert.equal(p.hash, 'ha3');
     }
   });
@@ -480,11 +514,11 @@ describe('randomVisibleSeed', () => {
   test('null when the caller can see no analyzed track, for an empty scope, or an empty index', () => {
     const c = seed();
     const elsewhere = { entries: [{ hash: 'ghost' }, { hash: 'hb1' }] };
-    assert.equal(randomVisibleSeed(c.db, { id: c.alice }, elsewhere, { libIds: onlyA(c), daySalt: 'x' }), null);
-    assert.equal(randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: new Set(), daySalt: 'x' }), null);
-    assert.equal(randomVisibleSeed(c.db, { id: c.alice }, { entries: [] }, { libIds: null, daySalt: 'x' }), null);
-    assert.equal(randomVisibleSeed(c.db, { id: c.alice }, null, { libIds: null, daySalt: 'x' }), null);
-    const one = randomVisibleSeed(c.db, { id: c.alice }, { entries: [{ hash: 'hb2' }] }, { libIds: null, daySalt: 'x' });
+    assert.equal(randomVisibleSeed(c.db, { id: c.alice }, elsewhere, { libIds: onlyA(c) }), null);
+    assert.equal(randomVisibleSeed(c.db, { id: c.alice }, index, { libIds: new Set() }), null);
+    assert.equal(randomVisibleSeed(c.db, { id: c.alice }, { entries: [] }, { libIds: null }), null);
+    assert.equal(randomVisibleSeed(c.db, { id: c.alice }, null, { libIds: null }), null);
+    const one = randomVisibleSeed(c.db, { id: c.alice }, { entries: [{ hash: 'hb2' }] }, { libIds: null });
     assert.equal(one.hash, 'hb2');
   });
 });

@@ -777,7 +777,7 @@ components:
           description: "Days of history the seeds are drawn from; 0 = all time."
         pin:
           type: array
-          maxItems: 8
+          maxItems: 12
           items: { type: string, maxLength: 2048 }
           description: >
             vpath-form paths that seed this call first (now playing first,
@@ -793,17 +793,25 @@ components:
           description: >
             Seed hashes (`seeds[].hash`) to leave out of THIS call — out of
             the pool the seed batch is drawn from, and never recommended
-            back in `library`, like a seed. A pin overrides it. Never
-            stored: the next call starts from the whole pool again.
+            back in `library`, like a seed; with nothing counted it keeps
+            these songs from being the random pick. A pin overrides it.
+            Never stored: the next call starts from the whole pool again.
         sources:
           type: array
           uniqueItems: true
           items: { type: string, enum: [library, network, peers] }
           default: [library, network, peers]
           description: >
-            Clients SHOULD ask for `peers` in a separate parallel call
+            Clients SHOULD ask for `peers` in a separate call
             (`[library, network]` + `[peers]`): the peers fan-out can take a
-            peer's whole 4 s deadline.
+            peer's whole 4 s deadline. Each call draws its own random seed
+            batch, so a client that shows the seeds sends the peers call
+            once the first answer lands, with `pin` = every seed path of
+            that answer (at most 12, the seed cap) and `limit.seeds` =
+            their count — the peers
+            centroid is then the batch on screen. A random-seed answer
+            (`seedSource: random`) gets no peers call (the server would
+            ask no peer).
         limit:
           type: object
           properties:
@@ -902,7 +910,8 @@ components:
             per-track counters (an install whose log is empty for reasons
             other than a history reset); `pinned` = only pins seed; `random`
             = nothing counted at all — one analyzed track from the caller's
-            own libraries, the same all (UTC) day.
+            own libraries, drawn fresh on every call (a client's "another
+            pick" re-asks with the picks it showed in `exclude`).
         fallback: { type: boolean, description: "True with a random seed." }
         seeds:
           type: array
@@ -3019,7 +3028,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TasteResponse" }
-        "400": { description: "Request validation failed (an unknown key, a value out of range, more than 8 pins or 200 exclusions)." }
+        "400": { description: "Request validation failed (an unknown key, a value out of range, more than 12 pins or 200 exclusions)." }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "`Discovery is disabled` (collection off or the index unavailable); a federation key or guest token (`Forbidden`); a jukebox session." }
 

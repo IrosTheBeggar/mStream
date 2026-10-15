@@ -211,7 +211,8 @@ function collectSeeds(req, index, body, ctx) {
   }
 
   // Nothing counted at all: one analyzed track from the caller's own
-  // libraries, the same one all day (taste-queries randomVisibleSeed).
+  // libraries, drawn fresh per call (taste-queries randomVisibleSeed) — a
+  // client's "Another pick" re-asks with the picks it showed in `exclude`.
   out.seedSource = 'random';
   out.fallback = true;
   const pick = taste.randomVisibleSeed(d(), req.user, index, { libIds, exclude: exclusions });

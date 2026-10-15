@@ -5,7 +5,8 @@
 //   historySeeds      a random batch of the songs the user finished or mostly
 //                     listened to, from play_events (window → all time)
 //   counterSeeds      the next fallback: user_metadata counters, newest first
-//   randomVisibleSeed the last fallback: one analyzed track the caller can see
+//   randomVisibleSeed the last fallback: one analyzed track the caller can see,
+//                     drawn fresh per call
 //   albumCards        per Album card, how much of it this user has played
 //   onStatsReset      the history-reset marker counterSeeds honours
 //
@@ -28,10 +29,9 @@
 // `t.library_id IN (…)` from idx_tracks_library, a whole-library scan per
 // chunk. Positional parameters only (the Bun adapter refuses named ones).
 
-import { createHash } from 'node:crypto';
 import { eventScope } from '../stats/queries.js';
 import { ALBUM_ITEM_COLUMNS, ALBUM_ITEM_GROUP } from '../api/db.js';
-import { toSqlite, isoDate } from '../stats/time.js';
+import { toSqlite } from '../stats/time.js';
 
 // ── Contract constants (plan §3.1; the route's Joi reads these) ──────────
 
@@ -41,7 +41,7 @@ export const DEFAULT_WINDOW = 30;
 export const DEFAULT_STALE_DAYS = 90;
 export const EXCLUDE_CAP = 200;        // seed hashes one call may leave out
 export const HASH_MAX = 128;           // Joi.string().max(128) for a seed hash
-export const PIN_CAP = 8;
+export const PIN_CAP = 12;            // = SEED_CAP: a client can pin a whole seed batch
 export const SEED_CAP = 12;            // limit.seeds ceiling (pins count toward it)
 export const LIBRARY_SEED_CAP = 6;     // history seeds that get a per-seed library pass
 export const SEED_OVERFETCH = 4;       // counter rows read per page, per seed wanted
@@ -286,29 +286,28 @@ export function counterSeeds(d, user, {
 
 // ── Random seed (plan §2.8: nothing counted at all) ──────────────────────
 
-function digest32(text) {
-  const h = createHash('sha256').update(text).digest();
-  return [h.readUInt32BE(0), h.readUInt32BE(4)];
-}
-
 function gcd(a, b) {
   while (b) { [a, b] = [b, a % b]; }
   return a;
 }
 
-// One analyzed track (an index entry) the caller can see, the same one all
-// day: the walk order is an affine permutation of the index seeded by
-// (user id, daySalt = UTC date), and the first visible entry along it wins.
-// A permutation rather than a seeded offset + linear walk: libraries sit in
-// long contiguous runs of the index, and a linear walk from a random offset
-// would land on the FIRST track of the caller's run almost every day. The
+// One analyzed track (an index entry) the caller can see, drawn fresh on
+// every call: a client's "Another pick" is a re-ask, and a different song
+// can come back each time (with the ones already shown in `exclude`, a new
+// one is guaranteed while any is left). The walk order is an affine
+// permutation of the index (random start and step coprime to its length),
+// and the first visible, non-excluded entry along it wins. A permutation
+// rather than a random offset + linear walk: libraries sit in long
+// contiguous runs of the index, and a linear walk from a random offset would
+// land on the FIRST track of the caller's run almost every time. The
 // visibility probe is chunked (visibleTracksByHash), so a caller who sees a
-// tenth of the index pays about one chunk.
+// tenth of the index pays about one chunk. `random` (a () → [0, 1)
+// function, Math.random by default) is for tests.
 //
 // Returns { hash, entry, trackId, libraryId } or null when the caller can
-// see no analyzed track (or the index is empty).
+// see no analyzed track outside `exclude` (or the index is empty).
 export function randomVisibleSeed(d, user, index, {
-  ignoreVPaths, libIds, daySalt = null, exclude = null, now = new Date(),
+  ignoreVPaths, libIds, exclude = null, random = Math.random,
 } = {}) {
   const entries = index?.entries;
   const n = entries?.length || 0;
@@ -316,10 +315,10 @@ export function randomVisibleSeed(d, user, index, {
   const scope = scopeOf(user, { libIds, ignoreVPaths });
   if (scope && scope.size === 0) { return null; }
   const ex = asSet(exclude);
-  const salt = daySalt ?? isoDate(now);
-  const [a, b] = digest32(`${user?.id ?? 'public'}|${salt}`);
-  const start = a % n;
-  let step = n > 1 ? 1 + (b % (n - 1)) : 1;
+  const rand = typeof random === 'function' ? random : Math.random;
+  const draw = (m) => Math.min(m - 1, Math.floor(rand() * m));
+  const start = draw(n);
+  let step = n > 1 ? 1 + draw(n - 1) : 1;
   while (gcd(step, n) !== 1) { step = step % (n - 1) + 1; }
   for (let k = 0; k < n; k += PROBE_CHUNK) {
     const batch = [];
