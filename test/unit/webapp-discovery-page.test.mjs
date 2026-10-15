@@ -1,12 +1,15 @@
 /**
  * webapp/alpha/discovery-page.js — the Discover page's pure half, on node:
  * the request bodies of both pages (play: library + the peers call;
- * explore: network — flags drop sources, pins lose their leading '/', caps
- * hold), the seed chips, the library's album cards and song rows under the
- * one filter checkbox, the connected servers' song rows and album cards,
- * the labels and the "Show more" column slicing, the network rows (raw rows
- * kept for the recommendation window, jobs badged through an injected
- * DISCOVERJOBS), every page and source state, and the prefs merge.
+ * explore: network — flags drop sources, pins lose their leading '/', the
+ * visit's dropped seeds travel as exclude, caps hold), the stored window
+ * and the visit's drop list, the seed chips, the library's album cards and
+ * song rows, the connected servers' song rows and album cards, the labels
+ * and the "Show more" column slicing, the network rows (raw rows kept for
+ * the recommendation window, jobs badged through an injected
+ * DISCOVERJOBS), and every page and source state. The route is stateless
+ * (2026-10-14): nothing here keeps or reuses an answer, and no body carries
+ * remember / filter / staleDays.
  *
  * Held to the server where it can be: the contract constants against
  * src/discovery/taste-queries.js, the network / peers fixtures stamped by
@@ -92,7 +95,6 @@ function historyResponse(over) {
     seeds: LIB_SEEDS, excluded: [], dropped: 0, notAnalyzed: false,
     model: { id: 'test-fake', version: '1' },
     library: {
-      filter: 'fresh',
       tracks: [
         trackRowIn(7),
         trackRowIn(8, { playCount: 2, lastPlayed: ago(240), seedHash: 'hp' }),
@@ -128,26 +130,24 @@ const collect = (v) => { labelsIn(v, EMITTED); return v; };
 // ── contract ──────────────────────────────────────────────────────────
 
 describe('the contract constants agree with the server', () => {
-  test('windows, filters, defaults, caps', () => {
+  test('windows, the default window, caps', () => {
     assert.deepEqual([...D.WINDOWS], [...tasteQ.WINDOWS]);
-    assert.deepEqual([...D.FILTERS], [...tasteQ.FILTERS]);
-    assert.deepEqual({ ...D.DEFAULT_PREFS }, { window: tasteQ.DEFAULT_WINDOW, filter: tasteQ.DEFAULT_FILTER, staleDays: tasteQ.DEFAULT_STALE_DAYS });
-    assert.equal(D.STALE_DAYS_MIN, tasteQ.STALE_DAYS_MIN);
-    assert.equal(D.STALE_DAYS_MAX, tasteQ.STALE_DAYS_MAX);
+    assert.equal(D.DEFAULT_WINDOW, tasteQ.DEFAULT_WINDOW);
     assert.equal(D.PIN_CAP, tasteQ.PIN_CAP);
     assert.equal(D.EXCLUDE_CAP, tasteQ.EXCLUDE_CAP);
     assert.equal(D.HASH_MAX, tasteQ.HASH_MAX);
+    assert.equal(D.LIMIT_CAPS.seeds, tasteQ.SEED_CAP);
     assert.deepEqual({ ...D.LIMIT_DEFAULTS }, { ...tasteQ.LIMIT_DEFAULTS });
     assert.deepEqual({ ...D.LIMIT_CAPS }, { ...tasteQ.LIMIT_CAPS });
+    // the server dropped the library filters with the saved prefs
+    for (const gone of ['FILTERS', 'DEFAULT_FILTER', 'STALE_DAYS_MIN', 'STALE_DAYS_MAX']) { assert.equal(tasteQ[gone], undefined, gone); }
   });
 
-  test('storage key names (the panel shares newArtistsOnly)', () => {
-    assert.deepEqual({ ...D.STORAGE_KEYS }, { prefs: 'discoverPagePrefs', newArtistsOnly: 'discoverNewArtistsOnly' });
+  test('storage key names: the window, and the panel\'s shared newArtistsOnly', () => {
+    assert.deepEqual({ ...D.STORAGE_KEYS }, { window: 'discoverPageWindow', newArtistsOnly: 'discoverNewArtistsOnly' });
   });
 
-  test('the page\'s own filters and pages', () => {
-    assert.deepEqual([...D.PAGE_FILTERS], ['fresh', 'all']);
-    for (const f of D.PAGE_FILTERS) { assert.ok(tasteQ.FILTERS.includes(f), f); }
+  test('the pages and the page sizes', () => {
     assert.deepEqual([...D.PAGES], ['play', 'explore']);
     assert.equal(D.PAGE_SIZE, 16);
     assert.equal(D.ALBUM_STRIP_MAX, 12);
@@ -159,207 +159,230 @@ describe('the contract constants agree with the server', () => {
       assert.equal(D[gone], undefined, gone);
     }
   });
+
+  test('the saved prefs, the filters, the client TTL and the "New seeds" rotation are gone (2026-10-14)', () => {
+    for (const gone of ['FILTERS', 'PAGE_FILTERS', 'DEFAULT_PREFS', 'STALE_DAYS_MIN', 'STALE_DAYS_MAX', 'CLIENT_TTL_MS',
+      'defaultPrefs', 'cleanPrefs', 'mergePrefs', 'parseStoredPrefs', 'serializePrefs', 'requestKey', 'nextRotation',
+      'filterFor', 'includesPlayed', 'includePlayedOption']) {
+      assert.equal(D[gone], undefined, gone);
+    }
+    for (const word of ['persisted', 'remember', 'staleDays', 'rotation', 'TTL']) {
+      assert.ok(!SOURCE.includes(word), `no ${word} in the module`);
+    }
+  });
 });
 
 // ── requests ──────────────────────────────────────────────────────────
 
 describe('buildRequests', () => {
-  const prefs = { window: 30, filter: 'fresh', staleDays: 90, exclude: [], newArtistsOnly: false, persisted: true };
+  const strip = (b) => { const c = { ...b }; delete c.sources; return c; };
 
   test('the play page: library alone, then peers — same seeds-shaping keys', () => {
-    const { main, peers } = D.buildRequests({ prefs, pinPath: '/Music/ALM/Manor.mp3', flags: FLAGS, ignoreVPaths: ['Podcasts'] });
+    const { main, peers } = D.buildRequests({ window: 30, pinPath: '/Music/ALM/Manor.mp3', flags: FLAGS, ignoreVPaths: ['Podcasts'] });
     assert.deepEqual(main.sources, ['library'], 'the network leads are the explore page\'s');
     assert.deepEqual(peers.sources, ['peers']);
     assert.deepEqual(main.pin, ['Music/ALM/Manor.mp3']);
-    const strip = (b) => { const c = { ...b }; delete c.sources; delete c.remember; return c; };
     assert.deepEqual(strip(main), strip(peers));
-    assert.deepEqual(strip(main), { window: 30, filter: 'fresh', staleDays: 90, pin: ['Music/ALM/Manor.mp3'], newArtistsOnly: false, ignoreVPaths: ['Podcasts'] });
-    assert.deepEqual(D.buildRequests({ prefs, flags: FLAGS, page: 'play' }), D.buildRequests({ prefs, flags: FLAGS }), 'play is the default');
-    assert.deepEqual(D.buildRequests({ prefs, flags: FLAGS, page: 'nope' }), D.buildRequests({ prefs, flags: FLAGS }));
+    assert.deepEqual(strip(main), { window: 30, pin: ['Music/ALM/Manor.mp3'], newArtistsOnly: false, ignoreVPaths: ['Podcasts'] });
+    assert.deepEqual(D.buildRequests({ flags: FLAGS, page: 'play' }), D.buildRequests({ flags: FLAGS }), 'play is the default');
+    assert.deepEqual(D.buildRequests({ flags: FLAGS, page: 'nope' }), D.buildRequests({ flags: FLAGS }));
   });
 
-  test('the explore page: network alone, never a peers call — and the same seeds', () => {
-    const play = D.buildRequests({ prefs, flags: FLAGS, pinPath: 'a.mp3', remember: true });
-    const explore = D.buildRequests({ prefs, flags: FLAGS, pinPath: 'a.mp3', remember: true, page: 'explore' });
+  test('the explore page: network alone, never a peers call — and the same seeds-shaping keys', () => {
+    const play = D.buildRequests({ flags: FLAGS, window: 90, pinPath: 'a.mp3', exclude: ['h1'] });
+    const explore = D.buildRequests({ flags: FLAGS, window: 90, pinPath: 'a.mp3', exclude: ['h1'], page: 'explore' });
     assert.deepEqual(explore.main.sources, ['network']);
-    assert.equal(explore.main.remember, true);
     assert.equal(explore.peers, null);
-    const strip = (b) => { const c = { ...b }; delete c.sources; return c; };
-    assert.deepEqual(strip(explore.main), strip(play.main), 'one prefs / seed state across both pages');
-    assert.deepEqual(D.buildRequests({ prefs, flags: { ...FLAGS, discoveryP2p: false }, page: 'explore' }), { main: null, peers: null }, 'nothing to explore without p2p');
+    assert.deepEqual(strip(explore.main), strip(play.main), 'one window, pins and drop list across both pages');
+    assert.deepEqual(D.buildRequests({ flags: { ...FLAGS, discoveryP2p: false }, page: 'explore' }), { main: null, peers: null }, 'nothing to explore without p2p');
   });
 
   test('flags drop sources: no federation discovery → no peers call; p2p never reaches the play page', () => {
-    const noP2p = D.buildRequests({ prefs, flags: { ...FLAGS, discoveryP2p: false } });
+    const noP2p = D.buildRequests({ flags: { ...FLAGS, discoveryP2p: false } });
     assert.deepEqual(noP2p.main.sources, ['library']);
     assert.ok(noP2p.peers);
-    const noFed = D.buildRequests({ prefs, flags: { ...FLAGS, federationDiscovery: false } });
+    const noFed = D.buildRequests({ flags: { ...FLAGS, federationDiscovery: false } });
     assert.deepEqual(noFed.main.sources, ['library']);
     assert.equal(noFed.peers, null);
-    const neither = D.buildRequests({ prefs, flags: { discovery: true, discoveryTaste: 1 } });
+    const neither = D.buildRequests({ flags: { discovery: true, discoveryTaste: 1 } });
     assert.deepEqual(neither.main.sources, ['library']);
     assert.equal(neither.peers, null);
   });
 
-  test('the filter: never sent as unplayed', () => {
-    assert.equal(D.buildRequests({ prefs, flags: FLAGS, filter: 'unplayed' }).main.filter, 'fresh');
-    assert.equal(D.buildRequests({ prefs, flags: FLAGS, filter: 'never' }).main.filter, 'fresh');
-    assert.equal(D.buildRequests({ prefs: { ...prefs, filter: 'unplayed' }, flags: FLAGS }).main.filter, 'fresh', 'an old saved pref');
-    assert.equal(D.buildRequests({ prefs, flags: FLAGS, filter: D.filterFor(true) }).main.filter, 'all');
-    assert.equal(D.buildRequests({ prefs: { ...prefs, filter: 'all' }, flags: FLAGS, filter: D.filterFor(false) }).main.filter, 'fresh');
+  test('the window: always sent — a <select>\'s string reads, anything else is the default 30', () => {
+    assert.equal(D.buildRequests({ flags: FLAGS, window: '7' }).main.window, 7);
+    assert.equal(D.buildRequests({ flags: FLAGS, window: 0 }).main.window, 0, 'all time is a real window');
+    for (const w of [undefined, null, '', 14, 'junk', true, 30.5]) {
+      assert.equal(D.buildRequests({ flags: FLAGS, window: w }).main.window, 30, String(w));
+    }
+  });
+
+  test('no saved-prefs keys ever: no remember, filter or staleDays (the route answers 400 to them)', () => {
+    const { main, peers } = D.buildRequests({ flags: FLAGS, remember: true, filter: 'all', staleDays: 30, prefs: { window: 7, exclude: ['old'] } });
+    for (const b of [main, peers]) {
+      for (const k of ['remember', 'filter', 'staleDays', 'prefs']) { assert.equal(k in b, false, k); }
+      assert.equal(b.window, 30, 'no prefs object is read');
+      assert.equal(b.exclude, undefined);
+    }
   });
 
   test('the page off: no bodies at all', () => {
     for (const flags of [{}, { ...FLAGS, discovery: false }, { ...FLAGS, discoveryTaste: 0 }, { ...FLAGS, discoveryTaste: undefined }, { ...FLAGS, discoveryTaste: true }, null]) {
-      assert.deepEqual(D.buildRequests({ prefs, flags }), { main: null, peers: null }, JSON.stringify(flags));
+      assert.deepEqual(D.buildRequests({ flags }), { main: null, peers: null }, JSON.stringify(flags));
     }
-    assert.ok(D.buildRequests({ prefs, flags: { ...FLAGS, discoveryTaste: 2 } }).main, 'a later generation still has the page');
-    assert.ok(D.buildRequests({ prefs, flags: { ...FLAGS, discoveryTaste: '1' } }).main);
+    assert.ok(D.buildRequests({ flags: { ...FLAGS, discoveryTaste: 2 } }).main, 'a later generation still has the page');
+    assert.ok(D.buildRequests({ flags: { ...FLAGS, discoveryTaste: '1' } }).main);
   });
 
-  test('pins: leading slashes stripped, de-duplicated, now playing first, capped at 8', () => {
-    const many = Array.from({ length: 12 }, (_, i) => `/Music/p${i}.mp3`);
-    const { main } = D.buildRequests({ prefs, flags: FLAGS, pinPath: '//Music/now.mp3', pins: ['Music/now.mp3', '', null, 42, ...many] });
-    assert.equal(main.pin.length, 8);
+  test('pins: leading slashes stripped, de-duplicated, now playing first, capped at 12 (the seed cap)', () => {
+    assert.equal(D.PIN_CAP, 12);
+    assert.equal(D.PIN_CAP, D.LIMIT_CAPS.seeds, 'a whole seed batch fits');
+    const many = Array.from({ length: 14 }, (_, i) => `/Music/p${i}.mp3`);
+    const { main } = D.buildRequests({ flags: FLAGS, pinPath: '//Music/now.mp3', pins: ['Music/now.mp3', '', null, 42, ...many] });
+    assert.equal(main.pin.length, 12);
     assert.equal(main.pin[0], 'Music/now.mp3');
     assert.ok(main.pin.every((p) => !p.startsWith('/')));
-    assert.equal(new Set(main.pin).size, 8);
-    assert.equal(D.buildRequests({ prefs, flags: FLAGS, pinPath: 'x'.repeat(2049) }).main.pin, undefined);
-    assert.equal(D.buildRequests({ prefs, flags: FLAGS }).main.pin, undefined);
+    assert.equal(new Set(main.pin).size, 12);
+    assert.equal(D.buildRequests({ flags: FLAGS, pinPath: 'x'.repeat(2049) }).main.pin, undefined);
+    assert.equal(D.buildRequests({ flags: FLAGS }).main.pin, undefined);
   });
 
-  test('the saved "new artists only" is the Explore page\'s: the play page never sends it', () => {
-    const on = { ...prefs, newArtistsOnly: true };
-    const play = D.buildRequests({ prefs: on, flags: FLAGS });
+  test('"new artists only" is the Explore page\'s: the play page never sends it', () => {
+    const play = D.buildRequests({ newArtistsOnly: true, flags: FLAGS });
     assert.equal(play.main.newArtistsOnly, false);
     assert.equal(play.peers.newArtistsOnly, false, 'no hidden thinning of the connected servers\' rows');
-    assert.equal(D.buildRequests({ prefs: on, flags: FLAGS, page: 'explore' }).main.newArtistsOnly, true);
+    assert.equal(D.buildRequests({ newArtistsOnly: true, flags: FLAGS, page: 'explore' }).main.newArtistsOnly, true);
+    assert.equal(D.buildRequests({ newArtistsOnly: 'yes', flags: FLAGS, page: 'explore' }).main.newArtistsOnly, false);
   });
 
-  test('explicit choices win over prefs; unknown prefs are left out (the saved pref applies)', () => {
-    const { main } = D.buildRequests({ prefs, flags: FLAGS, window: '7', filter: 'all', staleDays: 30, newArtistsOnly: true });
-    assert.equal(main.window, 7);
-    assert.equal(main.filter, 'all');
-    assert.equal(main.staleDays, 30);
-    assert.equal(main.newArtistsOnly, true);
-    const bare = D.buildRequests({ flags: FLAGS, window: 14, filter: 'nope', staleDays: 0 }).main;
-    assert.equal('window' in bare, false);
-    assert.equal('filter' in bare, false);
-    assert.equal('staleDays' in bare, false);
-    assert.equal(D.buildRequests({ flags: FLAGS, window: 0 }).main.window, 0, 'all time is a real window');
-    assert.equal('window' in D.buildRequests({ flags: FLAGS, window: null }).main, false, 'null is not all time');
+  test('the visit\'s dropped seeds: cleaned, on both calls, the newest 200', () => {
+    const { main, peers } = D.buildRequests({ flags: FLAGS, exclude: ['h9', 'h9', '', 'y'.repeat(129), 7, 'h8'] });
+    assert.deepEqual(main.exclude, ['h9', 'h8']);
+    assert.deepEqual(peers.exclude, main.exclude, 'both calls agree on the seeds');
+    const lots = Array.from({ length: 205 }, (_, i) => `s${i}`);
+    const sent = D.buildRequests({ flags: FLAGS, exclude: lots }).main.exclude;
+    assert.equal(sent.length, D.EXCLUDE_CAP);
+    assert.equal(sent[0], 's5', 'oldest out first');
+    assert.equal(D.buildRequests({ flags: FLAGS, exclude: [] }).main.exclude, undefined);
+    assert.equal(D.buildRequests({ flags: FLAGS, exclude: 'h1' }).main.exclude, undefined);
   });
 
-  test('remember rides on the first call alone', () => {
-    const { main, peers } = D.buildRequests({ prefs, flags: FLAGS, remember: true, exclude: ['h9'] });
-    assert.equal(main.remember, true);
-    assert.equal('remember' in peers, false);
-    assert.deepEqual(peers.exclude, ['h9'], 'both calls still agree on the seeds');
-  });
-
-  test('exclusions: a persisting server merges its own list; elsewhere the local list travels, newest 200', () => {
-    const saved = Array.from({ length: 200 }, (_, i) => `s${i}`);
-    const persisted = D.buildRequests({ prefs: { ...prefs, exclude: saved }, flags: FLAGS, exclude: ['new', 'new', '', 'y'.repeat(129)] }).main;
-    assert.deepEqual(persisted.exclude, ['new']);
-    const local = D.buildRequests({ prefs: { ...prefs, exclude: saved, persisted: false }, flags: FLAGS, exclude: ['new'] }).main;
-    assert.equal(local.exclude.length, 200);
-    assert.equal(local.exclude[199], 'new');
-    assert.equal(local.exclude[0], 's1', 'oldest out first');
-    assert.equal(D.buildRequests({ prefs, flags: FLAGS }).main.exclude, undefined);
+  test('the visit\'s passed random picks travel in exclude after the drops, which keep their room', () => {
+    assert.deepEqual(D.buildRequests({ flags: FLAGS, passed: ['r1', 'r2'] }).main.exclude, ['r1', 'r2']);
+    const both = D.buildRequests({ flags: FLAGS, exclude: ['d1'], passed: ['r1', 'd1', '', 'r1', 'r2'] });
+    assert.deepEqual(both.main.exclude, ['d1', 'r1', 'r2'], 'cleaned, a drop not sent twice');
+    assert.deepEqual(both.peers.exclude, both.main.exclude);
+    const drops = Array.from({ length: 198 }, (_, i) => `d${i}`);
+    const passed = Array.from({ length: 5 }, (_, i) => `r${i}`);
+    const sent = D.buildRequests({ flags: FLAGS, exclude: drops, passed }).main.exclude;
+    assert.equal(sent.length, D.EXCLUDE_CAP);
+    assert.deepEqual(sent.slice(0, 198), drops, 'every drop kept');
+    assert.deepEqual(sent.slice(198), ['r3', 'r4'], 'the newest passed picks that fit');
+    const full = Array.from({ length: 200 }, (_, i) => `d${i}`);
+    assert.deepEqual(D.buildRequests({ flags: FLAGS, exclude: full, passed }).main.exclude, full, 'no room: no passed pick');
+    assert.equal(D.buildRequests({ flags: FLAGS, passed: 'r1' }).main.exclude, undefined);
   });
 
   test('limits clamped to the caps; ignoreVPaths cleaned', () => {
     const { main } = D.buildRequests({
-      prefs, flags: FLAGS, limits: { seeds: 0, tracks: 999, albums: 3.7, network: -4, peers: '30', bogus: 5 },
+      flags: FLAGS, limits: { seeds: 0, tracks: 999, albums: 3.7, network: -4, peers: '30', bogus: 5 },
       ignoreVPaths: ['ok', '', 7, 'x'.repeat(257), ...Array.from({ length: 120 }, (_, i) => `v${i}`)],
     });
     assert.deepEqual(main.limit, { seeds: 1, tracks: 50, albums: 3, network: 0, peers: 25 });
     assert.equal(main.ignoreVPaths.length, 100);
     assert.equal(main.ignoreVPaths[0], 'ok');
-    assert.equal(D.buildRequests({ prefs, flags: FLAGS, limits: {} }).main.limit, undefined);
-    assert.equal(D.buildRequests({ prefs, flags: FLAGS }).main.ignoreVPaths, undefined, 'a peer context sends none');
-  });
-
-  test('requestKey: key order and remember do not matter; a seed change does', () => {
-    const a = D.buildRequests({ prefs, flags: FLAGS, pinPath: 'a.mp3' }).main;
-    const b = { ...D.buildRequests({ prefs, flags: FLAGS, pinPath: 'a.mp3', remember: true }).main };
-    const reordered = Object.fromEntries(Object.entries(b).reverse());
-    assert.equal(D.requestKey(a), D.requestKey(reordered));
-    assert.notEqual(D.requestKey(a), D.requestKey(D.buildRequests({ prefs, flags: FLAGS, pinPath: 'b.mp3' }).main));
-    assert.equal(D.requestKey(null), '');
+    assert.equal(D.buildRequests({ flags: FLAGS, limits: {} }).main.limit, undefined);
+    assert.equal(D.buildRequests({ flags: FLAGS }).main.ignoreVPaths, undefined, 'a peer context sends none');
   });
 });
 
-describe('nextRotation ("New seeds")', () => {
-  const H = HISTORY.map((s) => s.hash);
+describe('peersRequest: the peers call seeds from the library answer\'s batch', () => {
+  const seed = (i, extra = {}) => ({ hash: `h${i}`, filepath: `Music/S/${i}.flac`, metadata: {}, pinned: false, analyzed: true, ...extra });
+  const peersBody = () => D.buildRequests({ flags: FLAGS, window: 90, pinPath: 'Music/S/0.flac', exclude: ['hx'], limits: { tracks: 48, peers: 25 } }).peers;
 
-  test('adds the answer\'s history seeds, never its pins; a second press adds the next set after the first', () => {
-    const first = D.nextRotation([], historyResponse());
-    assert.deepEqual(first, H, 'the pin (hp) stays a seed');
-    const next = historyResponse({ seeds: [PIN, seed('h9', 'Nine', 'Artist H'), seed('h10', 'Ten', 'Artist I')] });
-    assert.deepEqual(D.nextRotation(first, next), [...H, 'h9', 'h10']);
+  test('pins the answer\'s seeds, in order, and asks the server for no seed of its own', () => {
+    const body = peersBody();
+    const main = { seedSource: 'history', seeds: [seed(0, { pinned: true }), seed(1), seed(2)] };
+    const out = D.peersRequest(body, main);
+    assert.deepEqual(out.pin, ['Music/S/0.flac', 'Music/S/1.flac', 'Music/S/2.flac']);
+    assert.deepEqual(out.limit, { tracks: 48, peers: 25, seeds: 3 });
+    assert.deepEqual(out.sources, ['peers']);
+    assert.equal(out.window, 90);
+    assert.deepEqual(out.exclude, ['hx']);
+    assert.deepEqual(body.pin, ['Music/S/0.flac'], 'the built body is not touched');
+    assert.equal(body.limit.seeds, undefined);
   });
 
-  test('a random answer — every finished song passed over — clears it (the next press starts from the newest)', () => {
-    const random = historyResponse({ seedSource: 'random', fallback: true, seeds: [seed('r', 'R', 'A', { outcome: null })] });
-    assert.deepEqual(D.nextRotation(H, random), []);
-    assert.deepEqual(D.nextRotation([], random), [], 'nothing finished at all: nothing to pass over');
+  test('every seed of a full 12-seed batch; past PIN_CAP (a malformed answer) the first ones; bad paths skipped', () => {
+    const full = Array.from({ length: 12 }, (_, i) => seed(i, { pinned: i === 0 }));
+    const all = D.peersRequest(peersBody(), { seedSource: 'history', seeds: full });
+    assert.deepEqual(all.pin, full.map((s) => s.filepath));
+    assert.equal(all.limit.seeds, 12);
+    const seeds = [seed(0, { filepath: '/Music/S/0.flac' }), seed(9, { filepath: '' }), seed(1, { filepath: 'Music/S/0.flac' }),
+      ...Array.from({ length: 12 }, (_, i) => seed(i + 2))];
+    const out = D.peersRequest(peersBody(), { seedSource: 'history', seeds });
+    assert.equal(out.pin.length, D.PIN_CAP);
+    assert.deepEqual(out.pin.slice(0, 2), ['Music/S/0.flac', 'Music/S/2.flac'], 'the leading / stripped, a duplicate and an empty path skipped');
+    assert.equal(out.limit.seeds, D.PIN_CAP);
   });
 
-  test('the pins alone (the server has no history seed left once pins seed): cleared too, so it cycles', () => {
-    const pinsOnly = historyResponse({ seedSource: 'pinned', seeds: [PIN] });
-    assert.deepEqual(D.nextRotation(H, pinsOnly), []);
-  });
-
-  test('no answer to pass over (in flight, failed, 403): unchanged; an answer from before the last press adds nothing twice', () => {
-    for (const res of [undefined, null, { disabled: true }]) { assert.deepEqual(D.nextRotation(['a', 'b'], res), ['a', 'b']); }
-    assert.deepEqual(D.nextRotation(H, historyResponse()), H);
-    assert.deepEqual(D.nextRotation(null, historyResponse()), H, 'a bad list reads empty');
-    assert.deepEqual(D.nextRotation(['a', '', 7, 'a'], historyResponse({ seeds: [seed('h1', 'One', 'B'), { hash: '' }, 'junk'] })), ['a', 'h1'], 'cleaned');
-  });
-
-  test('only songs the worker has not analyzed (notAnalyzed: the analyzed ones all passed over) ends the cycle too', () => {
-    const pending = historyResponse({ notAnalyzed: true, seeds: [seed('u1', 'U', 'A', { analyzed: false })] });
-    assert.deepEqual(D.nextRotation(H, pending), []);
-  });
-
-  test('room: a local drop list and the skips sent beside it are never trimmed out by the rotation', () => {
-    const drops = Array.from({ length: 50 }, (_, i) => `d${i}`);
-    const skips = ['s1', 's2'];
-    const room = D.EXCLUDE_CAP - drops.length - skips.length;
-    let rot = [];
-    // presses until the rotation alone would pass the cap
-    for (let p = 0; p < 40; p++) {
-      rot = D.nextRotation(rot, historyResponse({ seeds: Array.from({ length: 6 }, (_, i) => seed(`p${p}x${i}`, 'T', 'A')) }), room);
+  test('no peers call: no body, a failed or refused answer, no seeds, or the random stand-in', () => {
+    const main = { seedSource: 'history', seeds: [seed(1)] };
+    assert.equal(D.peersRequest(null, main), null);
+    for (const bad of [undefined, null, { disabled: true }, { seedSource: 'history', seeds: [] }, { seedSource: 'random', seeds: [seed(1)] }]) {
+      assert.equal(D.peersRequest(peersBody(), bad), null, JSON.stringify(bad));
     }
-    assert.equal(rot.length, room);
-    assert.equal(rot.at(-1), 'p39x5', 'the newest kept');
-    const local = { window: 30, filter: 'fresh', staleDays: 90, exclude: drops, persisted: false };
-    const sent = D.buildRequests({ prefs: local, flags: FLAGS, exclude: [...skips, ...rot] }).main.exclude;
-    assert.equal(sent.length, D.EXCLUDE_CAP);
-    assert.deepEqual(sent.slice(0, drops.length), drops, 'every drop still sent');
-    assert.deepEqual(D.nextRotation(['a', 'b', 'c'], historyResponse(), 2), [H.at(-2), H.at(-1)]);
-    assert.deepEqual(D.nextRotation(['a'], historyResponse(), -5), [], 'no room: nothing passed over');
-    assert.equal(D.nextRotation([], historyResponse(), 9999).length, H.length, 'never past the cap');
+    const noLimit = D.buildRequests({ flags: FLAGS }).peers;
+    assert.deepEqual(D.peersRequest(noLimit, main).limit, { seeds: 1 });
+  });
+});
+
+describe('the window and the visit\'s dropped seeds', () => {
+  test('the stored window reads back, or is the default 30 — never a throw', () => {
+    for (const [raw, w] of [['7', 7], ['90', 90], ['0', 0], ['30', 30]]) { assert.equal(D.storedWindow(raw), w, raw); }
+    for (const bad of [null, undefined, '', '14', 'junk', '{', '30.5', 7.5]) { assert.equal(D.storedWindow(bad), 30, String(bad)); }
+    assert.equal(D.storedWindow(90), 90);
   });
 
-  test('trimmed to the server\'s 200-hash cap, the newest kept', () => {
-    const old = Array.from({ length: D.EXCLUDE_CAP }, (_, i) => `o${i}`);
-    const next = D.nextRotation(old, historyResponse());
-    assert.equal(next.length, D.EXCLUDE_CAP);
-    assert.deepEqual(next.slice(-H.length), H);
-    assert.equal(next[0], `o${H.length}`, 'the oldest go first');
+  test('drop and restore a seed: a new list, the newest 200, a re-drop moves to the newest end', () => {
+    const full = Array.from({ length: 200 }, (_, i) => `s${i}`);
+    const dropped = D.dropSeed(full, 'new');
+    assert.equal(dropped.length, 200);
+    assert.equal(dropped[199], 'new');
+    assert.equal(dropped[0], 's1');
+    assert.equal(full.length, 200, 'not mutated');
+    assert.deepEqual(D.dropSeed(['a', 'b'], 'a'), ['b', 'a']);
+    assert.deepEqual(D.dropSeed(null, 'h'), ['h']);
+    assert.deepEqual(D.dropSeed(['a'], ''), ['a'], 'not a hash: nothing added');
+    assert.deepEqual(D.restoreSeed(['a', 'b'], 'a'), ['b']);
+    assert.deepEqual(D.restoreSeed(['a'], 'zz'), ['a']);
+    assert.deepEqual(D.restoreSeed(undefined, 'a'), []);
   });
 
-  test('sent as this call\'s exclude with the skips — never remembered; the request key changes', () => {
-    const local = { window: 30, filter: 'fresh', staleDays: 90, exclude: ['d1'], persisted: false };
-    const plain = D.buildRequests({ prefs: local, flags: FLAGS }).main;
-    const rotated = D.buildRequests({ prefs: local, flags: FLAGS, exclude: ['s1', ...H] }).main;
-    assert.deepEqual(rotated.exclude, ['d1', 's1', ...H], 'a local drop list still goes first');
-    assert.equal(rotated.remember, undefined);
-    assert.notEqual(D.requestKey(rotated), D.requestKey(plain), 'the client TTL never re-shows the old answer');
-    const persisting = D.buildRequests({ prefs: { ...local, persisted: true }, flags: FLAGS, exclude: H }).main;
-    assert.deepEqual(persisting.exclude, H, 'a persisting server merges its own drops');
+  test('Another pick: passPick adds the pick shown (newest end, the newest 200), randomPick names it', () => {
+    assert.deepEqual(D.passPick([], 'r1'), ['r1']);
+    assert.deepEqual(D.passPick(['r1', 'r2'], 'r1'), ['r2', 'r1']);
+    assert.deepEqual(D.passPick(null, ''), []);
+    const full = Array.from({ length: 200 }, (_, i) => `r${i}`);
+    const out = D.passPick(full, 'new');
+    assert.equal(out.length, 200);
+    assert.equal(out[199], 'new');
+    const pick = { hash: 'r7', filepath: 'Music/r7.flac', pinned: false };
+    assert.equal(D.randomPick({ seedSource: 'random', seeds: [pick] }), 'r7');
+    for (const no of [undefined, null, { disabled: true }, { seedSource: 'history', seeds: [pick] },
+      { seedSource: 'random', seeds: [] }, { seedSource: 'random', seeds: [{ ...pick, pinned: true }] }]) {
+      assert.equal(D.randomPick(no), null, JSON.stringify(no));
+    }
+  });
+
+  test('noPickLeft: no seed at all on a random or scan-pending answer — never a listed seed, a failure or a 403', () => {
+    assert.equal(D.noPickLeft({ seedSource: 'random', seeds: [], notAnalyzed: true }), true);
+    assert.equal(D.noPickLeft({ seedSource: 'random', seeds: [] }), true);
+    assert.equal(D.noPickLeft({ seedSource: 'history', seeds: [], notAnalyzed: true }), true);
+    for (const no of [undefined, null, { disabled: true }, { seedSource: 'history', seeds: [] },
+      { seedSource: 'random', seeds: [{ hash: 'r1' }] }, { seedSource: 'history', notAnalyzed: true, seeds: [{ hash: 'h1', analyzed: false }] }]) {
+      assert.equal(D.noPickLeft(no), false, JSON.stringify(no));
+    }
   });
 });
 
@@ -453,9 +476,7 @@ describe('seedChips', () => {
 
 describe('librarySections', () => {
   test('albums before songs, with the card fields renderAlbum takes — and no captions', () => {
-    const out = collect(D.librarySections(historyResponse(), { now: NOW }));
-    assert.equal(out.filter, 'fresh');
-    assert.equal(out.provisional, false);
+    const out = collect(D.librarySections(historyResponse()));
     assert.equal(out.count, 6);
     const [a1, a3] = out.albums;
     assert.deepEqual(
@@ -469,7 +490,7 @@ describe('librarySections', () => {
   });
 
   test('song rows: "Artist · Album", art, the because tooltip', () => {
-    const { tracks } = collect(D.librarySections(historyResponse(), { now: NOW }));
+    const { tracks } = collect(D.librarySections(historyResponse()));
     assert.equal(tracks.length, 4);
     const [t7, t8, t9, t10] = tracks;
     assert.equal(t7.filepath, 'Music/T/7.mp3');
@@ -489,34 +510,13 @@ describe('librarySections', () => {
     assert.ok(random.tracks.every((t) => t.because === null) && random.albums.every((a) => a.because === null), 'nothing was finished');
   });
 
-  test('the filter the rows were chosen by; an old unplayed answer reads fresh', () => {
-    assert.equal(D.librarySections(historyResponse()).filter, 'fresh');
+  test('the server\'s one rule decides the rows: none narrowed or added here, no filter on the view', () => {
     const r = historyResponse();
-    r.library = { ...r.library, filter: 'all' };
-    const all = D.librarySections(r);
-    assert.equal(all.filter, 'all');
-    assert.equal(all.provisional, false);
-    r.library = { ...r.library, filter: 'unplayed' };
-    assert.equal(D.librarySections(r).filter, 'fresh');
-    assert.equal(D.librarySections(r, { filter: 'fresh' }).provisional, false);
-  });
-
-  test('the checkbox unticked while the re-ask runs narrows the looser answer', () => {
-    const r = historyResponse();
-    r.library = { ...r.library, filter: 'all' };
-    // fresh, 90 days: the 8-month-old play and the 200-day album pass; the
-    // undated play does not (the server's rule for a legacy counter).
-    const fresh = D.librarySections(r, { filter: D.filterFor(false), staleDays: 90, now: NOW });
-    assert.equal(fresh.provisional, true);
-    assert.deepEqual(fresh.tracks.map((t) => t.filepath), ['Music/T/7.mp3', 'Music/T/8.mp3', 'Music/T/9.mp3']);
-    assert.deepEqual(fresh.albums.map((a) => a.name), ['Album 1', 'Album 3']);
-    const strict = D.librarySections(r, { filter: 'fresh', staleDays: 365, now: NOW });
-    assert.deepEqual(strict.tracks.map((t) => t.filepath), ['Music/T/7.mp3', 'Music/T/9.mp3']);
-    assert.deepEqual(D.librarySections(r, { filter: 'unplayed', staleDays: 365, now: NOW }).tracks.map((t) => t.filepath), strict.tracks.map((t) => t.filepath), 'unplayed is read as fresh');
-    // Ticked (a looser filter) cannot add rows: kept as they are, provisional.
-    const looser = D.librarySections(historyResponse(), { filter: D.filterFor(true) });
-    assert.equal(looser.provisional, true);
-    assert.equal(looser.tracks.length, 4);
+    r.library = { ...r.library, filter: 'all' };   // an old server's leftover field
+    const out = D.librarySections(r, { filter: 'fresh', staleDays: 1, now: NOW });
+    assert.equal(out.tracks.length, 4, 'a played row the server sent stays');
+    assert.equal(out.albums.length, 2);
+    for (const gone of ['filter', 'provisional']) { assert.equal(gone in out, false, gone); }
   });
 
   test('caps and the footer: Queue all with no count', () => {
@@ -899,7 +899,7 @@ describe('stateOf', () => {
     const fan = { peers: [{ ...SAM, reachable: true, mismatched: false, results: [] }], searched: { peers: 1, unreachable: 0, mismatched: 0 } };
     const r = merged({
       notAnalyzed: true, seeds: HISTORY.map((x) => ({ ...x, analyzed: false })),
-      library: { filter: 'fresh', tracks: [], albums: [], capped: false }, network: { results: [], searched: { peers: 0, tracks: 0 } },
+      library: { tracks: [], albums: [], capped: false }, network: { results: [], searched: { peers: 0, tracks: 0 } },
     }, { ...peersResponse(), peers: peersSection(fan) });
     const s = collect(D.stateOf(r, FLAGS));
     assert.equal(s.state, 'scanPending');
@@ -922,28 +922,14 @@ describe('stateOf', () => {
     const dropped = collect(D.stateOf(merged({ ...random, excluded: [{ hash: 'h1', filepath: 'x', metadata: {} }] }, null), FLAGS));
     assert.equal(dropped.reason.key, 'dpage.state.allDropped');
     assert.equal(dropped.sources.peers.status, 'failed');
-    // "New seeds" went past every finished song: said so, not "finish a few"
-    const cycled = collect(D.stateOf(merged(random, null), FLAGS, { rotated: true }));
-    assert.equal(cycled.state, 'nothingFinished');
-    assert.equal(cycled.reason.key, 'dpage.state.seedsCycled');
-    assert.equal(D.stateOf(merged(historyResponse(), null), FLAGS, { rotated: true }).state, 'ready', 'only a random answer');
-    // past every ANALYZED finished song, the rest awaiting the scan: the
-    // end of the cycle too — not "this server hasn't analyzed any music"
-    const pending = { ...historyResponse(), notAnalyzed: true, seeds: [seed('u1', 'U', 'A', { analyzed: false })], library: { filter: 'fresh', tracks: [], albums: [], capped: false } };
-    const rest = collect(D.stateOf(merged(pending, null), FLAGS, { rotated: true }));
-    assert.equal(rest.state, 'nothingFinished');
-    assert.equal(rest.reason.key, 'dpage.state.seedsCycled');
-    assert.equal(D.stateOf(merged(pending, null), FLAGS).state, 'scanPending', 'without a rotation: the scan is pending');
+    // no rotation any more: an un-analyzed batch is the scan-pending state
+    const pending = { ...historyResponse(), notAnalyzed: true, seeds: [seed('u1', 'U', 'A', { analyzed: false })], library: { tracks: [], albums: [], capped: false } };
+    assert.equal(D.stateOf(merged(pending, null), FLAGS, { rotated: true }).state, 'scanPending', 'an old opt is ignored');
   });
 
-  test('the library empty: one line, and the Include-songs button while the filter is fresh', () => {
-    const emptyLib = (filter) => ({ library: { filter, tracks: [], albums: [], capped: false } });
-    const lib = (filter, opts) => collect(D.stateOf(merged(emptyLib(filter)), FLAGS, opts)).sources.library;
-    for (const f of ['fresh', 'unplayed']) {
-      assert.deepEqual(lib(f), { status: 'empty', count: 0, reason: { key: 'dpage.library.nothing', params: {} }, includePlayed: true }, f);
-    }
-    assert.deepEqual(lib('all'), { status: 'empty', count: 0, reason: { key: 'dpage.library.nothing', params: {} }, includePlayed: false }, 'already everything: no button');
-    assert.equal(lib(undefined, { filter: 'all' }).includePlayed, false, 'an answer without its filter: the one on screen');
+  test('the library empty: the one line alone (no button to widen it)', () => {
+    const lib = collect(D.stateOf(merged({ library: { tracks: [], albums: [], capped: false } }), FLAGS)).sources.library;
+    assert.deepEqual(lib, { status: 'empty', count: 0, reason: { key: 'dpage.library.nothing', params: {} } });
   });
 
   test('the network explains its emptiness (explore page)', () => {
@@ -973,62 +959,11 @@ describe('stateOf', () => {
 
 // ── prefs and option lists ────────────────────────────────────────────
 
-describe('prefs', () => {
-  test('defaults', () => {
-    assert.deepEqual(D.defaultPrefs(), { window: 30, filter: 'fresh', staleDays: 90, exclude: [], newArtistsOnly: false, persisted: false });
-    assert.deepEqual(D.mergePrefs(null, null), D.defaultPrefs());
-  });
-
-  test('a persisting server is the truth; local fills only the gaps and newArtistsOnly', () => {
-    const saved = { window: 7, filter: 'all', staleDays: 30, exclude: ['a', 'b'], persisted: true };
-    const local = { window: 90, filter: 'unplayed', staleDays: 400, exclude: ['z'], newArtistsOnly: true };
-    assert.deepEqual(D.mergePrefs(saved, local), { window: 7, filter: 'all', staleDays: 30, exclude: ['a', 'b'], newArtistsOnly: true, persisted: true });
-    assert.equal(D.mergePrefs({ ...saved, filter: 'unplayed' }, local).filter, 'fresh', 'a saved "never played" reads fresh');
-    assert.deepEqual(D.mergePrefs({ persisted: true, window: 'junk' }, { window: 0 }).window, 0, 'local fills an invalid server value');
-  });
-
-  test('public-access mode (persisted: false) or no answer: this browser wins over the defaults', () => {
-    const local = { window: 0, filter: 'all', staleDays: 400, exclude: ['z'] };
-    assert.deepEqual(D.mergePrefs({ window: 30, filter: 'fresh', staleDays: 90, exclude: [], persisted: false }, local),
-      { window: 0, filter: 'all', staleDays: 400, exclude: ['z'], newArtistsOnly: false, persisted: false });
-    assert.equal(D.mergePrefs({ filter: 'all', persisted: false }, { filter: 'unplayed' }).filter, 'fresh', 'the stored "never played" reads fresh, and still wins');
-    assert.equal(D.mergePrefs(null, { filter: 'never' }).filter, 'fresh');
-    assert.deepEqual(D.mergePrefs(null, local).window, 0);
-    assert.deepEqual(D.mergePrefs(null, { window: 14, filter: 'x', staleDays: 0, exclude: 'no' }), D.defaultPrefs(), 'invalid values fall to the defaults');
-  });
-
-  test('the stored copy round-trips and never throws', () => {
-    const p = { window: 90, filter: 'all', staleDays: 120, exclude: ['a', 'a', 'b'], newArtistsOnly: true, persisted: true };
-    const raw = D.serializePrefs(p);
-    assert.deepEqual(JSON.parse(raw), { window: 90, filter: 'all', staleDays: 120, exclude: ['a', 'b'] });
-    assert.deepEqual(D.parseStoredPrefs(raw), { window: 90, filter: 'all', staleDays: 120, exclude: ['a', 'b'] });
-    for (const bad of [null, '', '{', 'null', '[1]', '42']) { assert.deepEqual(D.parseStoredPrefs(bad), {}); }
-    assert.equal(D.parseStoredPrefs(JSON.stringify({ filter: 'unplayed' })).filter, 'fresh');
-    assert.deepEqual(D.cleanPrefs({ filter: 'bogus' }), {});
-  });
-
-  test('drop and restore a seed', () => {
-    const full = { exclude: Array.from({ length: 200 }, (_, i) => `s${i}`) };
-    const dropped = D.dropSeed(full, 'new');
-    assert.equal(dropped.exclude.length, 200);
-    assert.equal(dropped.exclude[199], 'new');
-    assert.equal(dropped.exclude[0], 's1');
-    assert.deepEqual(D.dropSeed({ exclude: ['a', 'b'] }, 'a').exclude, ['b', 'a'], 'a re-drop moves it to the newest end');
-    assert.deepEqual(D.restoreSeed({ exclude: ['a', 'b'] }, 'a').exclude, ['b']);
-    assert.deepEqual(D.dropSeed(null, 'h').exclude, ['h']);
-    assert.equal(full.exclude.length, 200, 'not mutated');
-  });
-
-  test('the window options, the one filter checkbox, the plug-in chips', () => {
+describe('option lists', () => {
+  test('the window options, the plug-in chips', () => {
     const w = collect(D.windowOptions(90));
     assert.deepEqual(w.map((o) => [o.value, o.label.key, o.selected]), [[7, 'dpage.window.days', false], [30, 'dpage.window.days', false], [90, 'dpage.window.days', true], [0, 'dpage.window.all', false]]);
-    assert.equal(D.filterFor(true), 'all');
-    assert.equal(D.filterFor(false), 'fresh');
-    assert.equal(D.filterFor(undefined), 'fresh');
-    assert.deepEqual(['all', 'fresh', 'unplayed', 'never', undefined].map(D.includesPlayed), [true, false, false, false, false]);
-    assert.deepEqual(collect(D.includePlayedOption('fresh')), { checked: false, label: { key: 'dpage.opt.includePlayed', params: {} }, filter: 'fresh', next: 'all' });
-    assert.deepEqual(D.includePlayedOption('all'), { checked: true, label: { key: 'dpage.opt.includePlayed', params: {} }, filter: 'all', next: 'fresh' });
-    assert.equal(D.includePlayedOption('unplayed').checked, false, 'unticked by default');
+    assert.equal(D.windowOptions('0')[3].selected, true, 'a stored string selects');
     const list = [
       { name: 'deezer', title: 'Deezer', capabilities: ['preview'] },
       { name: 'youtube', title: 'YouTube', capabilities: ['acquire', 'lookup'] },
@@ -1077,7 +1012,6 @@ describe('every key the page emits has an English value', () => {
       'dpage.songs.library': 'Songs from your library',
       'dpage.songs.peerOne': 'Songs from {{name}}',
       'dpage.songs.peerMany': 'Songs from connected servers',
-      'dpage.opt.includePlayed': 'Include songs I’ve played lately',
       'dpage.showMore': 'Show more',
       'dpage.library.nothing': 'Nothing new in your library sounds like these songs.',
       'dpage.peers.quiet': 'Nothing from your connected servers right now.',
@@ -1090,10 +1024,12 @@ describe('every key the page emits has an English value', () => {
 
   test('the copy the play-now page dropped is gone', () => {
     const values = Object.entries(EN).filter(([k]) => k.startsWith('dpage.')).map(([, v]) => JSON.stringify(v).toLowerCase());
-    for (const phrase of ['matched by sound', 'never played', 'unplayed and forgotten', 'see all', 'last played', 'not answering', 'plays when the peer is back', 'peers answered']) {
+    for (const phrase of ['matched by sound', 'never played', 'unplayed and forgotten', 'see all', 'last played', 'not answering', 'plays when the peer is back', 'peers answered',
+      'played lately', 'been through every song', 'discover settings']) {
       assert.ok(!values.some((v) => v.includes(phrase)), phrase);
     }
-    for (const prefix of ['dpage.filter.', 'dpage.ago.', 'dpage.when.', 'dpage.seen.', 'dpage.count.', 'dpage.album.', 'dpage.tab.', 'dpage.because.']) {
+    for (const prefix of ['dpage.filter.', 'dpage.ago.', 'dpage.when.', 'dpage.seen.', 'dpage.count.', 'dpage.album.', 'dpage.tab.', 'dpage.because.',
+      'dpage.opt.', 'dpage.prefs.', 'dpage.state.seedsCycled']) {
       assert.deepEqual(Object.keys(EN).filter((k) => k.startsWith(prefix)), [], prefix);
     }
   });

@@ -2729,7 +2729,7 @@ body.on-federated-server .side-nav-note {
 
 /* ── The Discover page (m.js discoveryPanel) ─────────────────────────────
    The history-seeded page in #browser: a gray configuration bar (the
-   window, "More options" → the one filter and the seed chips under it).
+   window, "More options" → the seed chips; on Explore its one checkbox).
    Discover (play now): small labels with their source's dot — library
    #657ee4, connected servers #d9a441 — over album strips, then the songs
    in two columns where the page's content box is ≥ 560 px (a 1440 window with the Now Playing panel open) (the @container
@@ -2746,7 +2746,7 @@ body.on-federated-server .side-nav-note {
 .dpage-bar-opt:hover { color: #dfe3ea; }
 .dpage-bar-opt[aria-expanded="true"] { color: #dfe3ea; }
 .dpage-bar-caret { font-size: 10px; }
-/* the drawer under the bar: the page's one checkbox, then the seed picker */
+/* the drawer under the bar: (Explore) its one checkbox, then the seed picker */
 .dpage-options { background: #23282f; border-bottom: 1px solid #2c313a; }
 .dpage-options > .dpage-hint { padding-left: 14px; }
 .dpage-opt-row { padding: 10px 14px 0 14px; }
@@ -2794,13 +2794,12 @@ body.on-federated-server .side-nav-note {
 .dpage-btn.pri { background: #657ee4; border-color: #657ee4; color: #0f1216; font-weight: 600; }
 .dpage-btn.pri:hover { background: #8ea0f0; border-color: #8ea0f0; }
 
-/* the one checkbox ("Include songs I've played lately" / "new artists
-   only"): a button with role=checkbox, its box drawn here */
+/* the Explore page's one checkbox ("new artists only"): a button with
+   role=checkbox, its box drawn here */
 .dpage-tog { height: 28px; padding: 0 2px; border: 0; border-radius: 4px; background: transparent; color: #dfe3ea; font-size: 12.5px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .dpage-check i { width: 14px; height: 14px; border: 1px solid #444c56; border-radius: 3px; background: #1a1e25; flex-shrink: 0; position: relative; }
-.dpage-check.on i { background: #657ee4; border-color: #657ee4; }
+.dpage-check.on i { background: #4fb8a8; border-color: #4fb8a8; }
 .dpage-check.on i::after { content: ''; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px; border: solid #0f1216; border-width: 0 2px 2px 0; transform: rotate(45deg); }
-.dpage-page-explore .dpage-check.on i { background: #4fb8a8; border-color: #4fb8a8; }
 
 /* the play page's labels: small letter-spaced caps after the source dot */
 .dpage-label { display: flex; align-items: center; gap: 10px; margin: 0; padding: 16px 16px 10px 16px; font-size: 12px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; color: #8a919e; line-height: 1.4; }

@@ -3,16 +3,21 @@
  * panel that wires alpha/discovery-page.js (DISCOVERYPAGE) to the app.
  *
  * What is pinned (the play-now page, discoveryView.page 'play'):
- *   - opening the page fires the two parallel taste calls the plan names
- *     (library, peers) with the now-playing song pinned and the same limits,
- *     reads the saved prefs once, and draws "Albums from your library",
- *     "Albums from {server}", "Songs from your library" and "Songs from
- *     {server}" in that order — plain album cards, songs as art tile,
- *     title and "Artist · Album" — every value escaped;
+ *   - opening the page fires the two taste calls the plan names (library,
+ *     then peers once the library answer lands, pinned to that answer's
+ *     seeds — each call draws its own random batch, so the connected-server
+ *     column is built from the batch the picker shows) with the now-playing
+ *     song pinned, the window from localStorage and the same limits — and
+ *     nothing else: no prefs call,
+ *     no remember / filter / staleDays (the route is stateless since
+ *     2026-10-14) — and draws "Albums from your library", "Albums from
+ *     {server}", "Songs from your library" and "Songs from {server}" in that
+ *     order — plain album cards, songs as art tile, title and "Artist ·
+ *     Album" — every value escaped;
  *   - none of the old busy-ness comes back in any state: no "matched by
  *     sound", no "never played", no count, no percentage, no meter, no
- *     when-label, no filter toggles, no phone tabs, no See all, no per-peer
- *     headers, no network section (assertTrimmed);
+ *     when-label, no filter toggles or checkbox, no phone tabs, no See all,
+ *     no per-peer headers, no network section (assertTrimmed);
  *   - a connected server's row queues on click, as a library row does; its
  *     verbs are Play now / Add to queue / ⋯ (the peer window); its album
  *     card opens in the peer-browse view and its play button queues the
@@ -20,30 +25,24 @@
  *   - with no connected server there is no peers label, strip or column,
  *     and the library's songs flow column-major over both columns;
  *     federation on with nothing playable keeps the column and one line;
- *   - "Show more" appends 16 per column; the one filter is the "Include
- *     songs I've played lately" checkbox under More options ('fresh' ⇄
- *     'all', remembered), and the library-empty line's button ticks it;
- *   - the seed chips sit behind the gray bar's "More options" under that
- *     checkbox: the toggle flips its label and aria-expanded, stays as left
- *     across re-renders within a visit, and starts closed on a fresh open;
- *   - a random seed draws the "finish a few songs" card, and Another pick
- *     re-asks with that pick excluded (never remembered); dropping a seed
- *     re-asks with exclude + remember;
- *   - the bar's ⟳ is "New seeds": each press re-asks with the history seeds
- *     on screen added to a visit-only rotation in exclude (never
- *     remembered, never a pin, never drawn as dropped), the old answer
- *     drawn busy until the new one lands (a reset meanwhile never draws
- *     the passed-over seeds as dropped); a random, pins-only or
- *     not-analyzed answer ends the cycle and the next press starts from
- *     the newest; a window / filter / pin change, a drop or restore, a
- *     picked song, "new artists only", a page switch and a fresh open
- *     reset it; the keyboard stays on the cycled card's New seeds;
+ *   - "Show more" appends 16 per column; the library-empty line stands
+ *     alone (no button to widen it);
+ *   - the seed chips sit behind the gray bar's "More options": the toggle
+ *     flips its label and aria-expanded, stays as left across re-renders
+ *     within a visit, and starts closed on a fresh open;
+ *   - every open, every return and every tap asks again (no client-side
+ *     reuse); the answer on screen stays drawn, busy, until the new one
+ *     lands; the bar's ⟳ ("New seeds") and "Another pick" are that same
+ *     question again — the server draws the new batch;
+ *   - the window lives in localStorage; pins and dropped seeds last for the
+ *     visit: a drop re-asks with exclude (never stored), Use again / Undo
+ *     re-asks without it, the dropped chips are the answer's excluded[];
+ *     a fresh open forgets both;
  *   - discoveryPanel({ page: 'explore' }) still asks the network alone and
  *     draws its list, its "new artists only" and its job badges (a poll
  *     tick patches only the badges that changed);
  *   - an answer that lands after the app moved on (browseGeneration bumped)
- *     is dropped; a 403 re-pings before naming a reason; a prefs GET that
- *     failed is asked again before a drop;
+ *     is dropped; a 403 re-pings before naming a reason;
  *   - index.html carries the nav entry and the script, spa.css the
  *     container-query columns in the house palette, en.json every dpage.*
  *     key the module and the panel use (and no other).
@@ -97,10 +96,10 @@ function sliceConst(name) {
 }
 
 const FNS = ['escapeHtml', 'peerAttr', 'artUrl', 'artImgAttr', 'renderAlbum', 'setBrowserRootPanel',
-  'localIgnoreVPaths', 'applyDiscoveryPing', 'discoverySetEntry', 'discoveryAdoptPrefs', 'discoveryEnsurePrefs',
+  'localIgnoreVPaths', 'applyDiscoveryPing', 'discoverySetEntry',
   'discoveryWatchJobs', 'discoveryMergeJobs', 'discoveryPatchBadges', 'discoveryLeadTag',
   'discoveryMatchOpts', 'discoveryDropSeed', 'discoveryT', 'discoveryText', 'discoveryOnScreen', 'discoveryNowPlayingPath',
-  'discoveryLocalPrefs', 'discoverySaveLocalPrefs', 'discoveryPanel', 'redoDiscovery', 'discoveryOff',
+  'discoveryLocalChoices', 'discoverySaveLocalChoice', 'discoveryPanel', 'redoDiscovery', 'discoveryOff',
   'discoveryResponse', 'discoveryLoadBadges', 'renderDiscovery', 'discoveryFocusedSelector', 'discoveryHeadHtml',
   'discoveryOptionsHtml', 'discoveryCheckHtml', 'discoveryCardHtml', 'discoverySeedsHtml', 'discoveryLabelHtml',
   'discoverySkelHtml', 'discoveryPlayHtml', 'discoveryStripHtml', 'discoveryPeerAlbumHtml', 'discoveryArtHtml',
@@ -143,12 +142,12 @@ const countDrawn = (html, attrs) => tagsOf(html).filter((el) => Object.entries(a
 
 // One stubbed app around the sliced functions.
 //   taste(body)   answers MSTREAMAPI.discoveryTaste (a value or a promise)
-//   prefs         GET …/taste/prefs's answer (a function: called per GET)
+//   stored        localStorage's starting entries
 //   ping          MSTREAMAPI.ping's answer (the re-ping after a 403)
 //   playing       MSTREAMPLAYER.getCurrentSong()
 //   lookup(recs)  MSTREAMAPI.discoveryJobLookupBatch
 //   jobs          VUEPLAYERCORE.discoverJobs() (the strip's last poll)
-function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 90, exclude: [], persisted: true }, ping = null, playing = null, flags = FLAGS_ALL, lookup = null, plugins = null, jobs = [], albumSongs = null } = {}) {
+function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = FLAGS_ALL, lookup = null, plugins = null, jobs = [], albumSongs = null } = {}) {
   const els = new Map();
   const pageHandlers = {};
   const patches = [];
@@ -183,7 +182,7 @@ function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 
   const watchers = [];
   let currentJobs = jobs;
   const calls = [];
-  const storage = new Map();
+  const storage = new Map(Object.entries(stored));
   const queued = [];
   const opened = [];
   const fedQueued = [];
@@ -223,9 +222,7 @@ function makeSandbox({ taste, prefs = { window: 30, filter: 'fresh', staleDays: 
     MSTREAMAPI: {
       currentServer: { host: 'http://host/', token: 'TOK', admin: false },
       discoveryTaste: (body) => { calls.push({ name: 'taste', body }); return Promise.resolve(taste(body)); },
-      discoveryTastePrefs: () => { calls.push({ name: 'prefs' }); return Promise.resolve(typeof prefs === 'function' ? prefs() : prefs); },
       ping: () => { calls.push({ name: 'ping' }); return ping ? Promise.resolve(ping) : Promise.reject(new Error('no ping')); },
-      discoveryTastePrefsSave: (patch) => { calls.push({ name: 'prefsSave', body: patch }); return Promise.resolve({ ...prefs, ...patch }); },
       discoveryJobLookupBatch: (recs) => { calls.push({ name: 'lookup', body: recs }); return lookup ? Promise.resolve(lookup(recs)) : Promise.reject(new Error('no lookup')); },
       peerArtUrl: (id, art, compress) => `http://host/peer/${id}/art/${art}?c=${compress}`,
       peer: {
@@ -356,7 +353,6 @@ const MAIN = {
   seeds: SEEDS, excluded: [], dropped: 0, notAnalyzed: false,
   model: { id: 'test-fake', version: '1' },
   library: {
-    filter: 'fresh',
     albums: [
       { name: 'Album <One>', year: 2019, album_art_file: 'a1.jpg', album_artist: 'Fay', artists: ['Fay'], similarity: 0.84, seedHash: 'h1', scopedTracks: 11, playedTracks: 0, lastPlayed: null, tracks: ['music/F/1.flac'] },
     ],
@@ -402,6 +398,7 @@ const GONE = [
   'dpage.network.', 'data-dp="lead"', 'dpage.library.title', 'dpage.library.sub', 'dpage.library.moreUnderSeeAll',
   'dpage.verb.listen', 'dpage.verb.moreKeepCopy', 'dpage.seeds.finished', 'dpage.seeds.skipsLeftOut', 'dpage.seeds.clickToDrop',
   'album-grid-year', 'Offline Song', 'Electronic', '&quot;count&quot;', 'dpage.state.loading',
+  'data-dp="includePlayed', 'dpage.opt.', 'dpage-check', 'dpage.state.seedsCycled',
 ];
 function assertTrimmed(page, label) {
   // the window select's options ("Last 30 days") are a choice, not a count
@@ -411,25 +408,27 @@ function assertTrimmed(page, label) {
 }
 
 describe('Discover page: opening it', () => {
-  test('two parallel taste calls — the library and the connected servers — with now playing pinned, prefs read once', async () => {
+  test('two taste calls — the library, then the connected servers pinned to its seeds — with now playing pinned, and nothing else asked', async () => {
     const { S, calls } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
     assert.deepEqual(S.state(), [{ state: 'discovery' }]);
     assert.equal(S.view.page, 'play');
-    assert.equal(calls.filter((c) => c.name === 'prefs').length, 1);
+    assert.deepEqual(calls.map((c) => c.name), ['taste', 'taste'], 'no prefs call: the route keeps nothing');
     const [main, peers] = tasteCalls(calls);
     assert.deepEqual(main.sources, ['library'], 'the network is the Explore page\'s');
     assert.deepEqual(peers.sources, ['peers']);
     assert.deepEqual(main.pin, ['music/Now/Playing.flac'], 'the leading / is stripped');
-    assert.deepEqual(peers.pin, main.pin, 'both calls agree on the seeds');
+    assert.deepEqual(peers.pin, SEEDS.map((x) => x.filepath), 'the peers call seeds from the library answer\'s batch');
     // peers is per server, at its cap: one server fills the first 16 rows
     // and a "Show more" (the server's default of 12 could not)
     assert.deepEqual(main.limit, { albums: 12, tracks: 48, peers: 25 }, 'the strip\'s share and three pages of songs');
-    assert.deepEqual(peers.limit, main.limit);
+    assert.deepEqual(peers.limit, { ...main.limit, seeds: SEEDS.length }, 'no seeds of the server\'s own');
+    assert.equal(peers.window, main.window);
     assert.equal(peers.newArtistsOnly, false, 'the play page sends no hidden "new artists only"');
-    assert.equal(main.window, 30);
-    assert.equal(main.filter, 'fresh');
-    assert.equal(main.remember, undefined, 'opening the page saves nothing');
+    assert.equal(main.window, 30, 'the default window');
+    for (const b of [main, peers]) {
+      for (const k of ['remember', 'filter', 'staleDays', 'exclude']) { assert.equal(k in b, false, k); }
+    }
   });
 
   test('a federated now-playing song is never pinned', async () => {
@@ -774,7 +773,7 @@ describe('Discover page: states', () => {
     seeds: [{ hash: 'r1', filepath: 'music/R/Rand.flac', metadata: { title: 'Rand', artist: 'Ray' }, outcome: null, plays: 0, pinned: false, analyzed: true }],
   };
 
-  test('nothing finished: the card, a random chip with no ×, and Another pick re-asks without that pick', async () => {
+  test('nothing finished: the card, a random chip with no ×, and Another pick passes the pick on screen over', async () => {
     const { S, calls, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? { ...RANDOM, library: null } : RANDOM) });
     await S.discoveryPanel();
     assert.ok(!S.html().includes('dpage-seeds'), 'the card, no seed strip');
@@ -782,45 +781,96 @@ describe('Discover page: states', () => {
     openOptions(click);
     const html = S.html();
     assert.match(html, /dpage-card[\s\S]*dpage\.state\.nothingFinished/);
-    assert.match(html, /data-dp="another"/);
+    assert.match(html, /class="dpage-btn pri" data-dp="another">dpage\.verb\.anotherPick/);
     assert.match(html, /data-dp="pick"/);
     assert.match(html, /data-dp="browse">dpage\.verb\.browseLibrary/);
     assert.match(html, /dpage\.seeds\.randomTag/);
     assert.ok(!/data-dp="drop"/.test(html), 'the random pick has no ×');
-    const before = tasteCalls(calls).length;
+    const first = tasteCalls(calls);
+    assert.deepEqual(first.map((b) => b.sources), [['library']], 'no connected-server call on a random seed (the server asks none)');
+    assert.ok(!html.includes('dpage.peers.') && !html.includes('dpage-src-peers'), 'no connected column');
+    assert.equal(first[0].exclude, undefined, 'nothing passed over yet');
     click({ 'data-dp': 'another' });
     await flush(); await flush();
-    const next = tasteCalls(calls).slice(before);
-    assert.ok(next.length >= 1);
-    assert.deepEqual(next[0].exclude, ['r1']);
-    assert.equal(next[0].remember, undefined, 'a passed-over pick is never saved');
+    const next = tasteCalls(calls).slice(first.length);
+    assert.deepEqual(next.map((b) => b.sources), [['library']]);
+    assert.deepEqual(next[0].exclude, ['r1'], 'the pick on screen is passed over: the server draws another song');
+    assert.deepEqual({ ...next[0], exclude: undefined }, { ...first[0], exclude: undefined }, 'otherwise the same question');
   });
 
-  test('after Another pick, the checkbox or a window change keeps the skip out — and saves the prefs with a PUT, not remember', async () => {
-    const { S, calls, click, change } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? { ...RANDOM, library: null } : RANDOM) });
+  // A server's random fallback over a three-song library: the first song
+  // not in exclude, or no seed at all (notAnalyzed) when every one is.
+  const POOL = ['r1', 'r2', 'r3'];
+  const randomServer = (b) => {
+    const ex = b.exclude || [];
+    const hash = POOL.find((h) => !ex.includes(h));
+    const base = { ...MAIN, seedSource: 'random', fallback: true, network: null, peers: null, excluded: echoExcluded(b) };
+    return hash
+      ? { ...base, seeds: [{ ...RANDOM.seeds[0], hash, filepath: `music/R/${hash}.flac`, metadata: { title: `Rand ${hash}` } }] }
+      : { ...base, seeds: [], notAnalyzed: true, library: { albums: [], tracks: [] } };
+  };
+
+  test('Another pick: each press passes one more pick over; never drawn as dropped; a fresh open forgets them', async () => {
+    const { S, calls, click } = makeSandbox({ taste: randomServer, flags: NO_FED });
+    await S.discoveryPanel();
+    assert.equal(S.view.main.seeds[0].hash, 'r1');
+    click({ 'data-dp': 'another' });
+    await flush(); await flush();
+    assert.equal(S.view.main.seeds[0].hash, 'r2');
+    click({ 'data-dp': 'another' });
+    await flush(); await flush();
+    const html = S.html();
+    assert.equal(S.view.main.seeds[0].hash, 'r3');
+    assert.deepEqual(tasteCalls(calls).map((b) => b.exclude), [undefined, ['r1'], ['r1', 'r2']]);
+    assert.deepEqual(S.view.passed, ['r1', 'r2']);
+    assert.deepEqual(S.view.excluded, [], 'passed picks are not drops');
+    assert.match(html, /dpage\.state\.nothingFinished/, 'not "every seed dropped": the passed picks are not drops');
+    openOptions(click);
+    assert.ok(!S.html().includes('dpage-dropped'), 'no dropped chips for the passed picks');
+    await S.discoveryPanel();
+    assert.deepEqual(S.view.passed, [], 'a fresh open starts over');
+    assert.equal(tasteCalls(calls).at(-1).exclude, undefined);
+  });
+
+  test('Another pick ran out: the passed list is cleared and the page asks once more — no false scan-pending card', async () => {
+    const { S, calls, click } = makeSandbox({ taste: randomServer, flags: NO_FED });
     await S.discoveryPanel();
     click({ 'data-dp': 'another' });
     await flush(); await flush();
-    openOptions(click);
-    let before = tasteCalls(calls).length;
-    click({ 'data-dp': 'includePlayed' });
+    click({ 'data-dp': 'another' });
     await flush(); await flush();
-    let [main] = tasteCalls(calls).slice(before);
-    assert.equal(main.filter, 'all');
-    assert.deepEqual(main.exclude, ['r1'], 'the skipped pick stays skipped');
-    assert.equal(main.remember, undefined, 'nothing sent is saved with it');
-    assert.deepEqual(calls.filter((c) => c.name === 'prefsSave').map((c) => c.body), [{ window: 30, filter: 'all', staleDays: 90 }]);
-    before = tasteCalls(calls).length;
-    change({ 'data-dp-change': 'window' }, '90');
+    const before = tasteCalls(calls).length;
+    click({ 'data-dp': 'another' });
+    for (let i = 0; i < 4; i++) { await flush(); }
+    const next = tasteCalls(calls).slice(before);
+    assert.deepEqual(next.map((b) => b.exclude), [['r1', 'r2', 'r3'], undefined], 'ran out, then the same ask with nothing passed over');
+    assert.deepEqual(S.view.passed, []);
+    const html = S.html();
+    assert.ok(!html.includes('dpage.state.scanPending'), 'never the scan-pending card');
+    assert.match(html, /dpage\.state\.nothingFinished/);
+    assert.equal(S.view.main.seeds[0].hash, 'r1', 'started over from the whole library');
+  });
+
+  test('a real scan-pending answer (nothing passed over) is drawn, never re-asked', async () => {
+    const none = (b) => ({ ...randomServer({ ...b, exclude: POOL }), excluded: [] });
+    const { S, calls } = makeSandbox({ taste: none, flags: NO_FED });
+    await S.discoveryPanel();
+    await flush();
+    assert.equal(tasteCalls(calls).length, 1);
+    assert.match(S.html(), /dpage\.state\.scanPending/);
+  });
+
+  test('the drops keep their room in exclude: passed picks fill what is left, never repeat a drop', async () => {
+    const { S, calls, click } = makeSandbox({ taste: randomServer, flags: NO_FED });
+    await S.discoveryPanel();
+    S.view.excluded = ['d1', 'd2'];
+    click({ 'data-dp': 'another' });
     await flush(); await flush();
-    [main] = tasteCalls(calls).slice(before);
-    assert.equal(main.window, 90);
-    assert.deepEqual(main.exclude, ['r1']);
-    assert.equal(main.remember, undefined);
+    assert.deepEqual(tasteCalls(calls).at(-1).exclude, ['d1', 'd2', 'r1'], 'drops first, then the passed picks');
   });
 
   test('scan pending: the card with Check again, the seeds under More options', async () => {
-    const pending = { ...MAIN, notAnalyzed: true, library: { filter: 'fresh', albums: [], tracks: [] } };
+    const pending = { ...MAIN, notAnalyzed: true, library: { albums: [], tracks: [] } };
     const { S, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? { ...pending, peers: { peers: [], searched: {} } } : pending) });
     await S.discoveryPanel();
     assert.ok(!S.html().includes('dpage-seeds'), 'the card, no seed strip');
@@ -832,17 +882,7 @@ describe('Discover page: states', () => {
     assert.match(html, /data-dp="retry"/);
     assert.ok(seedsSection(html).includes('Seed &lt;One&gt;'), 'seeds are listed anyway, in the picker');
     assert.match(html, /dpage\.source\.waitingForScan/);
-    assert.ok(!html.includes('data-dp="includePlayedOn"'), 'nothing to widen while the scan has not run');
-  });
-
-  test('the library-empty button gone after the re-ask: the keyboard lands on More options, not <body>', async () => {
-    const empty = (filter) => ({ ...MAIN, library: { filter, albums: [], tracks: [] } });
-    const { S, keyClick, activeAttrs } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : empty(b.filter || 'fresh')) });
-    await S.discoveryPanel();
-    keyClick({ 'data-dp': 'includePlayedOn' });
-    await flush(); await flush();
-    assert.ok(!S.html().includes('data-dp="includePlayedOn"'), 'nothing left to widen');
-    assert.equal(activeAttrs()['data-dp'], 'options');
+    assert.ok(!html.includes('dpage-hint-btn'), 'a line, no button');
   });
 
   test('a failed call draws the failed card with Try again', async () => {
@@ -852,39 +892,29 @@ describe('Discover page: states', () => {
     assertTrimmed(S.html(), 'failed');
   });
 
-  test('library empty: one dim line and "Include songs I\'ve played lately", which ticks the checkbox and re-asks', async () => {
-    const empty = { ...MAIN, library: { filter: 'fresh', albums: [], tracks: [] } };
-    const { S, calls, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : empty) });
-    await S.discoveryPanel();
-    let html = S.html();
-    assert.ok(!html.includes('dpage-strip dpage-src-library'), 'no library albums: no strip');
-    assert.match(html, /<div class="dpage-hint">dpage\.library\.nothing <button type="button" class="dpage-vb dpage-hint-btn" data-dp="includePlayedOn">dpage\.opt\.includePlayed<\/button><\/div>/);
-    assertTrimmed(html, 'library empty');
-    const before = tasteCalls(calls).length;
-    click({ 'data-dp': 'includePlayedOn' });
-    await flush(); await flush();
-    const [main] = tasteCalls(calls).slice(before);
-    assert.equal(main.filter, 'all');
-    assert.equal(main.remember, true);
-    openOptions(click);
-    html = S.html();
-    assert.equal(findDrawn(html, { 'data-dp': 'includePlayed' }).attrs['aria-checked'], 'true', 'the checkbox is ticked');
-  });
-
-  test('library empty with every played song included: the line alone', async () => {
-    const empty = { ...MAIN, library: { filter: 'all', albums: [], tracks: [] } };
-    const { S } = makeSandbox({ taste: () => empty, flags: NO_FED, prefs: { window: 30, filter: 'all', staleDays: 90, exclude: [], persisted: true } });
-    await S.discoveryPanel();
-    assert.match(S.html(), /<div class="dpage-hint">dpage\.library\.nothing<\/div>/);
+  test('library empty: one dim line, alone', async () => {
+    const empty = { ...MAIN, library: { albums: [], tracks: [] } };
+    for (const flags of [FLAGS_ALL, NO_FED]) {
+      const { S } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : empty), flags });
+      await S.discoveryPanel();
+      const html = S.html();
+      assert.ok(!html.includes('dpage-strip dpage-src-library'), 'no library albums: no strip');
+      assert.match(html, /<div class="dpage-hint">dpage\.library\.nothing<\/div>/);
+      assert.ok(!html.includes('dpage-hint-btn'), 'no button to widen it');
+      assertTrimmed(html, 'library empty');
+    }
   });
 
   test('every seed dropped: the card says so and its Edit seeds opens the picker on the dropped ones', async () => {
-    const ALL_DROPPED = { ...RANDOM, excluded: [{ hash: 'gone', filepath: 'music/G/Gone.flac', metadata: { title: 'Gone Song' } }] };
+    // the visit drops the one song finished; the server falls to a random pick
     const { S, click, focused } = makeSandbox({
-      taste: (b) => (b.sources.includes('peers') ? { ...ALL_DROPPED, library: null } : ALL_DROPPED),
-      prefs: { window: 30, filter: 'fresh', staleDays: 90, exclude: ['gone'], persisted: true },
+      taste: (b) => (b.exclude ? { ...RANDOM, excluded: echoExcluded(b) } : answer(b)),
     });
     await S.discoveryPanel();
+    openOptions(click);
+    click({ 'data-dp': 'drop', 'data-i': 1 });
+    await flush(); await flush();
+    click({ 'data-dp': 'options' });
     let html = S.html();
     assert.match(html, /dpage-card[\s\S]*dpage\.state\.allDropped[\s\S]*dpage\.state\.allDroppedBody/);
     assert.ok(!html.includes('dpage-seeds'), 'the picker starts closed');
@@ -895,8 +925,9 @@ describe('Discover page: states', () => {
     assert.equal(S.view.optionsOpen, true);
     assert.equal(findDrawn(html, { 'data-dp': 'options' }).attrs['aria-expanded'], 'true');
     assert.ok(seedsSection(html).includes('dpage-dropped'), 'the dropped seeds, with Use again');
+    assert.ok(seedsSection(html).includes('Gone h1'));
     assert.ok(findDrawn(seedsSection(html), { 'data-dp': 'restore', 'data-i': 0 }));
-    assert.deepEqual(focused, ['restore'], 'the keyboard lands on the first Use again');
+    assert.equal(focused.at(-1), 'restore', 'the keyboard lands on the first Use again');
   });
 
   test('a song still finished keeps the plain card (no Edit seeds button)', async () => {
@@ -907,8 +938,11 @@ describe('Discover page: states', () => {
   });
 });
 
+// The route's `excluded`: a row for each of THIS call's exclude hashes.
+const echoExcluded = (body) => (body.exclude || []).map((h) => ({ hash: h, filepath: `music/G/${h}.flac`, metadata: { title: `Gone ${h}` } }));
+
 describe('Discover page: changes re-ask', () => {
-  test('dropping a seed re-asks with exclude + remember, with an Undo', async () => {
+  test('dropping a seed re-asks with it in exclude (both calls, never remembered), with an Undo that re-asks without it', async () => {
     const { S, calls, click, toasts } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
     openOptions(click);
@@ -917,57 +951,40 @@ describe('Discover page: changes re-ask', () => {
     await flush(); await flush();
     const [main, peers] = tasteCalls(calls).slice(before);
     assert.deepEqual(main.exclude, ['h1']);
-    assert.equal(main.remember, true);
-    assert.equal(peers.remember, undefined, 'remember rides on one call');
+    assert.deepEqual(peers.exclude, ['h1'], 'both calls agree on the seeds');
+    for (const b of [main, peers]) { assert.equal('remember' in b, false); }
+    assert.deepEqual(main.pin, ['music/Now/Playing.flac'], 'the pin stays');
+    assert.deepEqual(S.view.excluded, ['h1']);
     const undo = toasts.find((o) => o.buttons);
     assert.ok(undo, 'the drop toast has an Undo');
+    const n = tasteCalls(calls).length;
     undo.buttons[0][1]({ hide() {} }, {});
     await flush(); await flush();
-    assert.deepEqual(calls.filter((c) => c.name === 'prefsSave').map((c) => c.body), [{ exclude: [] }], 'Undo is a restore: THE list without it');
+    assert.equal(tasteCalls(calls).length, n + 2, 'Undo asks again');
+    assert.equal(tasteCalls(calls).at(-2).exclude, undefined, 'without the drop');
+    assert.deepEqual(S.view.excluded, []);
+    assert.deepEqual([...new Set(calls.map((c) => c.name))], ['taste'], 'nothing but taste calls: no prefs PUT');
   });
 
-  test('a persisting account never keeps the drop list in localStorage', async () => {
-    const { S, click, storage } = makeSandbox({ taste: answer, playing: PLAYING });
+  test('drops last for the visit: every later ask of it keeps them; a return keeps them; a fresh open forgets them — and nothing is stored', async () => {
+    const { S, calls, click, change, storage } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
     openOptions(click);
     click({ 'data-dp': 'drop', 'data-i': 1 });
     await flush(); await flush();
-    const stored = JSON.parse(storage.get(DISCOVERYPAGE.STORAGE_KEYS.prefs));
-    assert.equal(stored.exclude, undefined);
-    assert.equal(stored.window, 30);
-  });
-
-  test('a prefs GET that failed: a drop asks again first, and does nothing (a toast) while they stay unknown', async () => {
-    const answers = [null, null, { window: 30, filter: 'fresh', staleDays: 90, exclude: ['old'], persisted: true }];
-    const { S, calls, click, toasts } = makeSandbox({ taste: answer, playing: PLAYING, prefs: () => answers.shift() });
+    change({ 'data-dp-change': 'window' }, '90');
+    await flush(); await flush();
+    assert.deepEqual(tasteCalls(calls).at(-2).exclude, ['h1'], 'a window change keeps the drop');
+    click({ 'data-dp': 'refresh' });
+    await flush(); await flush();
+    assert.deepEqual(tasteCalls(calls).at(-2).exclude, ['h1'], 'New seeds keeps the drop');
+    await S.discoveryPanel({ keep: true });
+    assert.deepEqual(tasteCalls(calls).at(-2).exclude, ['h1'], 'a return keeps the drop');
+    assert.deepEqual([...storage.keys()], [DISCOVERYPAGE.STORAGE_KEYS.window], 'the window alone (the shared toggle is not written back)');
+    assert.ok(![...storage.values()].some((v) => v.includes('h1')), 'the drop is never stored');
     await S.discoveryPanel();
-    assert.equal(S.view.prefsKnown, false);
-    openOptions(click);
-    let before = tasteCalls(calls).length;
-    click({ 'data-dp': 'drop', 'data-i': 1 });
-    await flush(); await flush();
-    assert.equal(tasteCalls(calls).length, before, 'no drop while unknown');
-    assert.ok(toasts.some((o) => o.error && o.title === 'dpage.prefs.unknown'));
-    before = tasteCalls(calls).length;
-    click({ 'data-dp': 'drop', 'data-i': 1 });
-    await flush(); await flush();
-    const [main] = tasteCalls(calls).slice(before);
-    assert.equal(S.view.prefsKnown, true);
-    assert.deepEqual(main.exclude, ['h1'], 'a persisting account: only this drop is sent');
-    assert.equal(main.remember, true);
-    assert.equal(calls.filter((c) => c.name === 'prefs').length, 3);
-  });
-
-  test('the checkbox while the prefs are unknown is not remembered', async () => {
-    const { S, calls, click } = makeSandbox({ taste: answer, prefs: () => null });
-    await S.discoveryPanel();
-    openOptions(click);
-    const before = tasteCalls(calls).length;
-    click({ 'data-dp': 'includePlayed' });
-    await flush(); await flush();
-    const [main] = tasteCalls(calls).slice(before);
-    assert.equal(main.filter, 'all');
-    assert.equal(main.remember, undefined);
+    assert.equal(tasteCalls(calls).at(-2).exclude, undefined, 'a fresh open forgets it');
+    assert.equal(tasteCalls(calls).at(-2).window, 90, 'and remembers the window');
   });
 
   test('"Show all" opens the whole seed strip, and then reads Show less', async () => {
@@ -982,69 +999,50 @@ describe('Discover page: changes re-ask', () => {
     assert.ok(S.html().includes('More 7'));
   });
 
-  test('"Include songs I\'ve played lately": off by default; ticking re-asks with \'all\', unticking narrows at once and re-asks with \'fresh\'', async () => {
-    const recent = new Date(Date.now() - 5 * 86400000).toISOString();
-    const all = { ...MAIN, library: { ...MAIN.library, filter: 'all', tracks: [...MAIN.library.tracks, libTrack(9, { metadata: { title: 'Played Lately' }, playCount: 4, lastPlayed: recent })] } };
-    const { S, calls, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : (b.filter === 'all' ? all : MAIN)) });
-    await S.discoveryPanel();
-    openOptions(click);
-    let box = findDrawn(S.html(), { 'data-dp': 'includePlayed' });
-    assert.equal(box.tag, 'button');
-    assert.equal(box.attrs.role, 'checkbox');
-    assert.equal(box.attrs['aria-checked'], 'false');
-    assert.match(S.html(), /data-dp="includePlayed"><i aria-hidden="true"><\/i>dpage\.opt\.includePlayed</);
-    let before = tasteCalls(calls).length;
-    click({ 'data-dp': 'includePlayed' });
-    await flush(); await flush();
-    let [main] = tasteCalls(calls).slice(before);
-    assert.equal(main.filter, 'all');
-    assert.equal(main.remember, true);
-    assert.ok(S.html().includes('Played Lately'));
-    assert.equal(findDrawn(S.html(), { 'data-dp': 'includePlayed' }).attrs['aria-checked'], 'true');
-    before = tasteCalls(calls).length;
-    click({ 'data-dp': 'includePlayed' });
-    // provisional: the recently played row is gone before the answer lands
-    assert.ok(!S.html().includes('Played Lately'));
-    await flush(); await flush();
-    [main] = tasteCalls(calls).slice(before);
-    assert.equal(main.filter, 'fresh');
-    assert.equal(main.remember, true);
-    box = findDrawn(S.html(), { 'data-dp': 'includePlayed' });
-    assert.equal(box.attrs['aria-checked'], 'false');
-  });
-
-  test('a saved "never played" filter is read as the checkbox off (\'fresh\')', async () => {
-    for (const filter of ['never', 'unplayed']) {
-      const { S, calls, click } = makeSandbox({ taste: answer, prefs: { window: 30, filter, staleDays: 90, exclude: [], persisted: true } });
-      await S.discoveryPanel();
-      assert.equal(tasteCalls(calls)[0].filter, 'fresh', filter);
-      openOptions(click);
-      assert.equal(findDrawn(S.html(), { 'data-dp': 'includePlayed' }).attrs['aria-checked'], 'false', filter);
-    }
-  });
-
-  test('the window select lives in the bar (only) and re-asks with the window', async () => {
-    const { S, calls, change } = makeSandbox({ taste: answer });
+  test('the window select lives in the bar (only), re-asks with the window and remembers it in localStorage', async () => {
+    const { S, calls, change, storage } = makeSandbox({ taste: answer });
     await S.discoveryPanel();
     const html = S.html();
     const bar = html.slice(html.indexOf('<div class="dpage-bar">'), html.indexOf('</label>', html.indexOf('<div class="dpage-bar">')));
     assert.match(bar, /dpage\.basedOnLast[\s\S]*data-dp-change="window"/);
     assert.equal(html.split('data-dp-change="window"').length, 2, 'one window form');
+    assert.match(bar, /<option value="30" selected>/, 'the default window');
     const before = tasteCalls(calls).length;
     change({ 'data-dp-change': 'window' }, '90');
     await flush(); await flush();
-    assert.equal(tasteCalls(calls).slice(before)[0].window, 90);
+    const next = tasteCalls(calls).slice(before);
+    assert.deepEqual(next.map((b) => b.window), [90, 90], 'both calls');
+    assert.equal(storage.get(DISCOVERYPAGE.STORAGE_KEYS.window), '90');
+    assert.match(S.html(), /<option value="90" selected>/);
+    change({ 'data-dp-change': 'window' }, '14');
+    await flush(); await flush();
+    assert.equal(tasteCalls(calls).length, before + 2, 'not a window the route takes: nothing asked');
   });
 
-  test('a revisit within the client TTL reuses the answer; refresh forces a new one', async () => {
+  test('a fresh open reads the stored window back; a bad stored value is the default 30', async () => {
+    for (const [raw, w] of [['0', 0], ['7', 7], ['junk', 30], ['', 30]]) {
+      const { S, calls } = makeSandbox({ taste: answer, stored: { discoverPageWindow: raw } });
+      await S.discoveryPanel();
+      assert.deepEqual(tasteCalls(calls).map((b) => b.window), [w, w], raw);
+      assert.match(S.html(), new RegExp(`<option value="${w}" selected>`), raw);
+    }
+  });
+
+  test('every open asks again — no reuse of an earlier answer; refresh is the same question again', async () => {
     const { S, calls, click } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
-    const n = tasteCalls(calls).length;
+    const first = tasteCalls(calls);
+    assert.equal(first.length, 2);
     await S.discoveryPanel({ keep: true });
-    assert.equal(tasteCalls(calls).length, n, 'same request, kept answer');
+    assert.deepEqual(tasteCalls(calls).slice(2), first, 'a return asks the same question again');
+    await S.discoveryPanel();
+    assert.deepEqual(tasteCalls(calls).slice(4), first, 'so does a fresh open');
     click({ 'data-dp': 'refresh' });
     await flush(); await flush();
-    assert.equal(tasteCalls(calls).length, n + 2);
+    assert.deepEqual(tasteCalls(calls).slice(6), first, 'New seeds: same window and pins — the server draws the new batch');
+    for (const gone of ['prefs', 'prefsKnown', 'rotation', 'skipped', 'mainAsked', 'peersPassed', 'key', 'at']) {
+      assert.equal(gone in S.view, false, gone);
+    }
   });
 });
 
@@ -1087,7 +1085,6 @@ describe('Discover page: the configuration bar', () => {
     mainGate = gate;
     S.view.main = undefined;
     S.view.peers = undefined;
-    S.view.at = 0;
     const again = S.discoveryPanel();
     await flush();
     assert.match(S.html(), PAGE_BUSY, 'loading');
@@ -1099,7 +1096,7 @@ describe('Discover page: the configuration bar', () => {
 
   test('no seed strip in the body in any state while closed', async () => {
     const RANDOM = { ...MAIN, seedSource: 'random', fallback: true, network: null, peers: null, seeds: [{ hash: 'r1', filepath: 'music/R/Rand.flac', metadata: { title: 'Rand' }, outcome: null, plays: 0, pinned: false, analyzed: true }] };
-    const pending = { ...MAIN, notAnalyzed: true, library: { filter: 'fresh', albums: [], tracks: [] } };
+    const pending = { ...MAIN, notAnalyzed: true, library: { albums: [], tracks: [] } };
     let release;
     const gate = new Promise((r) => { release = r; });
     const loading = makeSandbox({ taste: (b) => gate.then(() => answer(b)) });
@@ -1126,7 +1123,7 @@ describe('Discover page: the configuration bar', () => {
     }
   });
 
-  test('More options opens the checkbox above the seed picker; the toggle reads Fewer options, then closes it', async () => {
+  test('More options opens the seed picker (no checkbox on Discover); the toggle reads Fewer options, then closes it', async () => {
     const { S, click } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
     openOptions(click);
@@ -1137,27 +1134,28 @@ describe('Discover page: the configuration bar', () => {
     assert.match(html, /data-dp="options"[^>]*>dpage\.bar\.fewerOptions/);
     const bar = html.indexOf('class="dpage-bar"');
     const panel = html.indexOf('class="dpage-options" id="dpage-options"');
-    const check = html.indexOf('data-dp="includePlayed"');
     const seeds = html.indexOf('class="dpage-seeds"');
     const lib = html.indexOf('dpage-src-library');
-    assert.ok(bar > 0 && panel > bar && check > panel && seeds > check && lib > seeds, 'bar, the checkbox, the picker, then the page');
+    assert.ok(bar > 0 && panel > bar && seeds > panel && lib > seeds, 'bar, the picker, then the page');
+    assert.match(html, /<div class="dpage-options" id="dpage-options"><section class="dpage-seeds">/, 'the picker first: no checkbox row');
     assert.match(seedsSection(html), /dpage\.seeds\.title/);
     assert.match(seedsSection(html), /data-dp="pick"/);
-    assert.equal(html.split('data-dp="includePlayed"').length, 2, 'one filter on the page');
+    assert.ok(!html.includes('dpage-opt-row') && !html.includes('role="checkbox"'), 'no filter on the page');
     assert.ok(!html.includes('data-dp="newArtists"'), 'new artists only is the Explore page\'s');
+    assertTrimmed(html, 'picker open');
     openOptions(click);
     html = S.html();
     assert.equal(findDrawn(html, { 'data-dp': 'options' }).attrs['aria-expanded'], 'false');
     assert.ok(!html.includes('dpage-seeds'));
   });
 
-  test('while the answer is still coming, the open drawer has the checkbox and says the seeds wait', async () => {
+  test('while the answer is still coming, the open drawer says the seeds wait', async () => {
     let release;
     const gate = new Promise((r) => { release = r; });
     const { S, click } = makeSandbox({ taste: (b) => gate.then(() => answer(b)) });
     const run = S.discoveryPanel();
     openOptions(click);
-    assert.match(S.html(), /class="dpage-options"[^>]*><div class="dpage-opt-row"><button[^>]*data-dp="includePlayed"[\s\S]*?<\/div><div class="dpage-hint">dpage\.bar\.seedsWait/);
+    assert.match(S.html(), /class="dpage-options" id="dpage-options"><div class="dpage-hint">dpage\.bar\.seedsWait/);
     assert.ok(!S.html().includes('dpage.state.loading'), 'skeletons, no loading line');
     release();
     await run;
@@ -1190,8 +1188,8 @@ describe('Discover page: the configuration bar', () => {
     assert.match(S.html(), /data-dp="options" aria-expanded="false"/);
   });
 
-  test('the picker stays open across a drop, an Undo and the checkbox, and starts closed on a fresh open', async () => {
-    const { S, click, toasts } = makeSandbox({ taste: answer, playing: PLAYING });
+  test('the picker stays open across a drop, an Undo and a window change, and starts closed on a fresh open', async () => {
+    const { S, click, change, toasts } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
     openOptions(click);
     click({ 'data-dp': 'drop', 'data-i': 1 });
@@ -1200,7 +1198,7 @@ describe('Discover page: the configuration bar', () => {
     toasts.find((o) => o.buttons).buttons[0][1]({ hide() {} }, {});
     await flush(); await flush();
     assert.ok(S.html().includes('class="dpage-seeds"'), 'still open after the Undo');
-    click({ 'data-dp': 'includePlayed' });
+    change({ 'data-dp-change': 'window' }, '7');
     await flush(); await flush();
     assert.ok(S.html().includes('class="dpage-seeds"'), 'still open after a re-render');
     // a return to the page (an album opened from it, the song picker)
@@ -1213,13 +1211,12 @@ describe('Discover page: the configuration bar', () => {
     assert.match(S.html(), /data-dp="options"[^>]*>dpage\.bar\.moreOptions/);
   });
 
-  test('inside the picker: + Now playing pins, × unpins, Edit seeds shows the dropped ones and Use again restores', async () => {
-    const dropped = { ...MAIN, excluded: [{ hash: 'gone', filepath: 'music/G/Gone.flac', metadata: { title: 'Gone Song' } }] };
+  test('inside the picker: + Now playing pins, × unpins, × drops, Edit seeds shows the dropped ones (the answer\'s excluded) and Use again restores', async () => {
     const { S, calls, click } = makeSandbox({
-      // the now-playing seed comes back only while it is pinned
-      taste: (b) => (b.sources.includes('peers') ? PEERS : { ...dropped, seeds: b.pin ? SEEDS : SEEDS.slice(1) }),
+      // the now-playing seed comes back only while it is pinned; the route
+      // lists this call's exclusions in `excluded`
+      taste: (b) => (b.sources.includes('peers') ? PEERS : { ...MAIN, excluded: echoExcluded(b), seeds: (b.pin ? SEEDS : SEEDS.slice(1)).filter((x) => !(b.exclude || []).includes(x.hash)) }),
       playing: PLAYING,
-      prefs: { window: 30, filter: 'fresh', staleDays: 90, exclude: ['gone'], persisted: true },
     });
     await S.discoveryPanel();
     // the pin was made at open: unpin it from inside the picker
@@ -1234,15 +1231,27 @@ describe('Discover page: the configuration bar', () => {
     await flush(); await flush();
     assert.deepEqual(tasteCalls(calls).slice(before)[0].pin, ['music/Now/Playing.flac']);
     assert.ok(S.html().includes('class="dpage-seeds"'), 'still open');
-    // Edit seeds → the dropped list → Use again
+    // × on a history seed: dropped for the visit
+    assert.ok(!S.html().includes('data-dp="moreSeeds"'), 'nothing dropped yet: no Edit seeds');
+    click({ 'data-dp': 'drop', 'data-i': 1 });
+    await flush(); await flush();
+    assert.deepEqual(tasteCalls(calls).at(-2).exclude, ['h1']);
+    assert.ok(!seedsSection(S.html()).includes('Seed &lt;One&gt;'), 'gone from the batch');
+    // Edit seeds → the dropped list (the answer's excluded rows) → Use again
     click({ 'data-dp': 'moreSeeds' });
-    assert.ok(S.html().includes('dpage-dropped'));
+    let html = S.html();
+    assert.ok(html.includes('dpage-dropped'));
+    assert.match(seedsSection(html), /data-dp="restore" data-i="0"[^>]*>[\s\S]*?Gone h1[\s\S]*?dpage\.seeds\.dropped/);
     before = tasteCalls(calls).length;
     click({ 'data-dp': 'restore', 'data-i': 0 });
     await flush(); await flush();
-    assert.deepEqual(calls.filter((c) => c.name === 'prefsSave').map((c) => c.body), [{ exclude: [] }]);
-    assert.ok(tasteCalls(calls).length > before, 're-asked');
-    assert.ok(S.html().includes('class="dpage-seeds"'), 'still open');
+    const next = tasteCalls(calls).slice(before);
+    assert.equal(next.length, 2, 're-asked');
+    assert.equal(next[0].exclude, undefined, 'without it');
+    html = S.html();
+    assert.ok(!html.includes('dpage-dropped') && !html.includes('Gone h1'), 'no dropped chips left');
+    assert.ok(html.includes('class="dpage-seeds"'), 'still open');
+    assert.deepEqual([...new Set(calls.map((c) => c.name))], ['taste']);
   });
 
   test('inside the picker: + Add a song… pins the picked song, and the page comes back with the picker open', async () => {
@@ -1267,180 +1276,81 @@ describe('Discover page: the configuration bar', () => {
 describe('Discover page: New seeds (the bar\'s ⟳)', () => {
   const fin = (n) => ({ hash: `f${n}`, filepath: `music/F/${n}.flac`, metadata: { title: `Fin ${n}`, artist: 'Hal' }, outcome: 'completed', lastPlayed: '2026-10-04T21:10:00.000Z', plays: 1, pinned: false, analyzed: true });
   // The server's pick (src/api/discovery-taste.js collectSeeds): the pins,
-  // then the next two finished songs not excluded; none left → the pins
-  // alone, then (no pin) the finished songs the worker has not analyzed
-  // (notAnalyzed: no suggestions), or a random pick. Every exclusion is
-  // listed in `excluded`.
-  const server = (count, { unanalyzed = 0 } = {}) => (body) => {
-    const ex = new Set(body.exclude || []);
-    const pins = (body.pin || []).includes('music/Now/Playing.flac') ? [SEEDS[0]] : [];
-    const history = Array.from({ length: count }, (_, i) => fin(i + 1)).filter((s) => !ex.has(s.hash)).slice(0, 2);
-    const waiting = !pins.length && !history.length
-      ? Array.from({ length: unanalyzed }, (_, i) => ({ ...fin(50 + i), hash: `u${i + 1}`, analyzed: false })).filter((s) => !ex.has(s.hash)).slice(0, 2)
-      : [];
-    const random = !pins.length && !history.length && !waiting.length;
-    const res = {
-      ...MAIN, seedSource: random ? 'random' : (history.length || waiting.length ? 'history' : 'pinned'), fallback: random,
-      seeds: random ? [{ ...fin(99), hash: 'r1', outcome: null }] : [...pins, ...history, ...waiting],
-      excluded: [...ex].map((h) => ({ hash: h, filepath: `music/G/${h}.flac`, metadata: { title: `Gone ${h}` } })),
-      notAnalyzed: waiting.length > 0,
-      library: waiting.length ? { ...MAIN.library, albums: [], tracks: [] } : MAIN.library,
-      network: random ? null : MAIN.network,
-    };
-    return body.sources.includes('peers') ? { ...PEERS, ...res, library: null, network: null, peers: random ? null : PEERS.peers } : res;
-  };
-  // Holds the server's answers while `hold()` is on (the page in flight).
-  const gated = (base) => {
-    let gate = null;
-    let open = () => {};
-    return {
-      taste: (b) => (gate ? gate.then(() => base(b)) : base(b)),
-      hold: () => { gate = new Promise((r) => { open = r; }); },
-      release: () => { const o = open; gate = null; o(); },
+  // then a RANDOM batch of the finished songs not excluded — a different
+  // one on every call (here: the next two of eight, round and round, per
+  // source).
+  const server = () => {
+    const draws = { library: 0, peers: 0 };
+    const all = Array.from({ length: 8 }, (_, i) => fin(i + 1));
+    return (body) => {
+      const ex = new Set(body.exclude || []);
+      const pins = (body.pin || []).map((p) => (p === SEEDS[0].filepath ? SEEDS[0] : all.find((x) => x.filepath === p))).filter(Boolean);
+      const room = Math.min(2, ((body.limit && body.limit.seeds) || 12) - pins.length);
+      const pool = all.filter((x) => !ex.has(x.hash) && !pins.includes(x));
+      const at = (draws[body.sources[0]]++ * 2) % pool.length;
+      const res = { ...MAIN, seeds: [...pins, ...(room > 0 ? pool.slice(at, at + room) : [])], excluded: echoExcluded(body) };
+      return body.sources.includes('peers') ? { ...PEERS, ...res, library: null, network: null, peers: PEERS.peers } : res;
     };
   };
-  const settle = async () => { await flush(); await flush(); await flush(); };
-  const mains = (calls) => tasteCalls(calls).filter((b) => b.sources.includes('library'));
   const press = async (click) => { click({ 'data-dp': 'refresh' }); await flush(); await flush(); };
 
   test('the bar\'s button says what it does: "New seeds" (title and aria-label)', async () => {
-    const { S } = makeSandbox({ taste: server(6) });
+    const { S } = makeSandbox({ taste: server() });
     await S.discoveryPanel();
     const btn = findDrawn(S.html(), { 'data-dp': 'refresh' });
     assert.equal(btn.attrs.title, 'dpage.verb.newSeeds');
     assert.equal(btn.attrs['aria-label'], 'dpage.verb.newSeeds');
   });
 
-  test('a press re-asks without the history seeds on screen (never remembered, pins kept); a second press leaves out both sets', async () => {
-    const { S, calls, click } = makeSandbox({ taste: server(6), playing: PLAYING });
+  test('a press is a plain new ask with the same window, pins and drops — no exclude of its own, never remembered', async () => {
+    const { S, calls, click, change } = makeSandbox({ taste: server(), playing: PLAYING });
     await S.discoveryPanel();
-    assert.equal(mains(calls)[0].exclude, undefined);
-    let before = tasteCalls(calls).length;
-    await press(click);
-    let next = tasteCalls(calls).slice(before);
-    assert.equal(next.length, 2, 'the library and the connected servers, as at open');
-    for (const b of next) {
-      assert.deepEqual(b.exclude, ['f1', 'f2']);
-      assert.equal(b.remember, undefined, 'a rotation is never saved');
-      assert.deepEqual(b.pin, ['music/Now/Playing.flac'], 'the pin stays a seed');
+    change({ 'data-dp-change': 'window' }, '7');
+    await flush(); await flush();
+    openOptions(click);
+    const dropped = S.view.shown.chips[1].hash;
+    click({ 'data-dp': 'drop', 'data-i': 1 });
+    await flush(); await flush();
+    const asked = tasteCalls(calls).slice(-2);
+    assert.deepEqual(asked[0].exclude, [dropped]);
+    assert.equal(asked[0].window, 7);
+    for (let p = 0; p < 3; p++) {
+      const before = tasteCalls(calls).length;
+      await press(click);
+      const next = tasteCalls(calls).slice(before);
+      assert.deepEqual(next[0], asked[0], `press ${p + 1}: the same library body`);
+      // the peers body: the same question, seeded from this press's batch
+      const { pin, limit, ...rest } = next[1];
+      const { pin: _p, limit: _l, ...askedRest } = asked[1];
+      assert.deepEqual(rest, askedRest, `press ${p + 1}: the same peers body`);
+      assert.deepEqual(pin, S.view.main.seeds.map((x) => x.filepath), `press ${p + 1}: pinned to the batch drawn`);
+      assert.equal(limit.seeds, pin.length);
     }
-    before = tasteCalls(calls).length;
-    await press(click);
-    next = tasteCalls(calls).slice(before);
-    assert.deepEqual(next.map((b) => b.exclude), [['f1', 'f2', 'f3', 'f4'], ['f1', 'f2', 'f3', 'f4']]);
-    assert.ok(!next.some((b) => b.exclude.includes('h-np')), 'a pin is never excluded');
-    assert.equal(calls.filter((c) => c.name === 'prefsSave').length, 0, 'no PUT either');
+    for (const b of tasteCalls(calls)) { assert.equal('remember' in b, false); }
   });
 
-  test('the picker shows the new seeds — and no "dropped" chips for the ones passed over', async () => {
-    const { S, click } = makeSandbox({ taste: server(6), playing: PLAYING });
+  test('the picker shows the batch each answer was built from — and no "dropped" chips for the songs it replaced', async () => {
+    const { S, click } = makeSandbox({ taste: server(), playing: PLAYING });
     await S.discoveryPanel();
     openOptions(click);
-    assert.match(seedsSection(S.html()), /Fin 1[\s\S]*Fin 2/);
+    assert.match(seedsSection(S.html()), /Now Song[\s\S]*Fin 1[\s\S]*Fin 2/);
     await press(click);
     const seeds = seedsSection(S.html());
-    assert.match(seeds, /Now Song[\s\S]*Fin 3[\s\S]*Fin 4/, 'the pin, then the next finished songs');
-    assert.ok(!/Fin [12]\b/.test(seeds), 'the passed-over seeds are gone from the strip');
-    assert.ok(!S.html().includes('Gone '), 'never drawn as dropped');
+    assert.match(seeds, /Now Song[\s\S]*Fin 3[\s\S]*Fin 4/, 'the pin, then the server\'s new batch');
+    assert.ok(!/Fin [12]\b/.test(seeds), 'the last batch is gone from the strip');
+    assert.ok(!S.html().includes('Gone ') && !S.html().includes('dpage-dropped'), 'never drawn as dropped');
     assert.ok(!S.html().includes('data-dp="moreSeeds"'), 'no Edit seeds for them');
-    assert.ok(!S.html().includes('dpage-dropped'));
-  });
-
-  test('past every finished song: the random pick says so, and the next press starts again from the newest', async () => {
-    const { S, calls, click } = makeSandbox({ taste: server(3) });
-    await S.discoveryPanel();
-    await press(click);
-    assert.deepEqual(mains(calls).at(-1).exclude, ['f1', 'f2']);
-    await press(click);
-    assert.deepEqual(mains(calls).at(-1).exclude, ['f1', 'f2', 'f3']);
-    // the server widened all the way to a random pick
-    const html = S.html();
-    assert.match(html, /dpage-card[\s\S]*dpage\.state\.seedsCycled[\s\S]*dpage\.state\.seedsCycledBody/);
-    assert.ok(!html.includes('dpage.state.nothingFinished'), 'not "finish a few songs": they did');
-    assert.ok(!html.includes('dpage.state.allDropped'), 'nor "every one dropped"');
-    assert.match(html, /class="dpage-btn pri" data-dp="refresh" data-v="card">dpage\.verb\.newSeeds/, 'the card offers New seeds first');
-    assert.match(html, /data-dp="another">dpage\.verb\.anotherPick/);
-    // a cycle, not a dead end
-    await press(click);
-    assert.equal(mains(calls).at(-1).exclude, undefined);
-    assert.deepEqual(S.view.rotation, []);
-    assert.deepEqual(S.view.main.seeds.map((x) => x.hash), ['f1', 'f2'], 'the newest finished songs again');
-    assert.ok(!S.html().includes('dpage-card'), 'the card is gone');
-    await press(click);
-    assert.deepEqual(mains(calls).at(-1).exclude, ['f1', 'f2'], 'and round again');
-  });
-
-  test('with a pin: past every finished song the pins alone seed — and the next press starts over too', async () => {
-    const { S, calls, click } = makeSandbox({ taste: server(2), playing: PLAYING });
-    await S.discoveryPanel();
-    await press(click);
-    assert.deepEqual(mains(calls).at(-1).exclude, ['f1', 'f2']);
-    assert.equal(S.view.main.seedSource, 'pinned');
-    await press(click);
-    assert.equal(mains(calls).at(-1).exclude, undefined);
-  });
-
-  test('Another pick on the cycled card keeps the rotation (and adds its skip); still never remembered', async () => {
-    const { S, calls, click } = makeSandbox({ taste: server(2) });
-    await S.discoveryPanel();
-    await press(click);
-    click({ 'data-dp': 'another' });
-    await flush(); await flush();
-    const last = mains(calls).at(-1);
-    assert.deepEqual(last.exclude, ['r1', 'f1', 'f2']);
-    assert.equal(last.remember, undefined);
-  });
-
-  test('a window change, the checkbox, a pin change, a drop and a fresh open each start from the newest again', async () => {
-    const { S, calls, click, change } = makeSandbox({ taste: server(6), playing: PLAYING });
-    await S.discoveryPanel();
-    await press(click);
-    change({ 'data-dp-change': 'window' }, '90');
-    await flush(); await flush();
-    let last = mains(calls).at(-1);
-    assert.equal(last.window, 90);
-    assert.equal(last.exclude, undefined, 'the rotation is gone');
-    assert.equal(last.remember, true, 'the window is still remembered');
-
-    await press(click);
-    openOptions(click);
-    click({ 'data-dp': 'includePlayed' });
-    await flush(); await flush();
-    last = mains(calls).at(-1);
-    assert.equal(last.filter, 'all');
-    assert.equal(last.exclude, undefined);
-
-    await press(click);
-    click({ 'data-dp': 'unpin', 'data-i': 0 });
-    await flush(); await flush();
-    last = mains(calls).at(-1);
-    assert.equal(last.pin, undefined);
-    assert.equal(last.exclude, undefined);
-
-    await press(click);
-    click({ 'data-dp': 'drop', 'data-i': 0 });
-    await flush(); await flush();
-    last = mains(calls).at(-1);
-    assert.deepEqual(last.exclude, ['f3'], 'the drop alone, as before');
-    assert.equal(last.remember, true);
-    assert.deepEqual(S.view.rotation, []);
-
-    await press(click);
-    assert.ok(S.view.rotation.length > 0);
-    await S.discoveryPanel();
-    assert.deepEqual(S.view.rotation, []);
-    assert.equal(mains(calls).at(-1).exclude, undefined);
   });
 
   test('the answer on screen stays drawn (busy, not loading) until the new one lands', async () => {
     let release;
     const late = new Promise((r) => { release = r; });
     let n = 0;
-    const base = server(6);
+    const base = server();
     const { S, click } = makeSandbox({
       taste: (b) => {
-        if (!b.exclude) { return base(b); }
         n++;
+        if (n <= 2) { return base(b); }
         return late.then(() => {
           const res = base(b);
           return res.library ? { ...res, library: { ...MAIN.library, tracks: [{ ...MAIN.library.tracks[0], metadata: { title: 'Fresh Pick', artist: 'New' } }] } } : res;
@@ -1452,7 +1362,7 @@ describe('Discover page: New seeds (the bar\'s ⟳)', () => {
     assert.match(S.html(), /Title Seven/);
     click({ 'data-dp': 'refresh' });
     await flush();
-    assert.equal(n, 2, 'asked');
+    assert.equal(n, 3, 'asked (the library first; the peers call waits for its seeds)');
     let html = S.html();
     assert.match(html, /<div class="dpage dpage-page-play dpage-busy">/, 'busy');
     assert.ok(!PAGE_BUSY.test(html), 'not the loading state');
@@ -1465,126 +1375,43 @@ describe('Discover page: New seeds (the bar\'s ⟳)', () => {
     assert.ok(!html.includes('dpage-busy'));
   });
 
-  test('a reset while the old answer is drawn: its passed-over seeds never show as dropped (the cycled card, a window change)', async () => {
-    const g = gated(server(3));
-    const { S, click, change } = makeSandbox({ taste: g.taste });
+  test('a fresh open draws the last answer busy until the new one lands; a failed one is not drawn again', async () => {
+    let gate = null;
+    let fail = false;
+    const base = server();
+    const { S } = makeSandbox({ taste: (b) => (fail ? null : (gate ? gate.then(() => base(b)) : base(b))) });
     await S.discoveryPanel();
-    await press(click);
-    await press(click);
-    assert.match(S.html(), /dpage\.state\.seedsCycled/);
-    // New seeds from the cycled card: the rotation starts over at once, the
-    // random answer stays drawn — as the cycled card, not "all dropped"
-    g.hold();
-    click({ 'data-dp': 'refresh', 'data-v': 'card' });
-    await flush();
-    assert.deepEqual(S.view.rotation, []);
-    let html = S.html();
-    assert.ok(html.includes('dpage-busy'), 'in flight');
-    assert.match(html, /dpage\.state\.seedsCycled/);
-    assert.ok(!html.includes('dpage.state.allDropped'), 'never "every song was dropped"');
-    assert.ok(!html.includes('data-dp="editSeeds"'));
-    g.release();
-    await settle();
-    assert.ok(!S.html().includes('dpage-card'), 'the newest finished songs again');
-
-    // rotate once, then change the window: the busy picker lists no drops
-    await press(click);
-    openOptions(click);
-    g.hold();
-    change({ 'data-dp-change': 'window' }, '90');
-    await flush();
-    html = S.html();
-    assert.ok(html.includes('dpage-busy'));
-    assert.ok(!html.includes('data-dp="moreSeeds"'), 'no Edit seeds for the passed-over songs');
-    assert.ok(!html.includes('Gone '), 'nor a Use again chip');
-    g.release();
-    await settle();
-    assert.ok(!S.html().includes('Gone '));
+    let release;
+    gate = new Promise((r) => { release = r; });
+    const again = S.discoveryPanel();
+    assert.match(S.html(), /<div class="dpage dpage-page-play dpage-busy">/);
+    assert.match(S.html(), /Title Seven/, 'the last answer, busy');
+    release();
+    await again;
+    assert.ok(!S.html().includes('dpage-busy'));
+    gate = null;
+    fail = true;
+    await S.discoveryPanel();
+    assert.match(S.html(), /dpage\.state\.failed/);
+    fail = false;
+    gate = new Promise((r) => { release = r; });
+    const third = S.discoveryPanel();
+    assert.match(S.html(), PAGE_BUSY, 'the loading state, not the failed card');
+    assert.ok(!S.html().includes('dpage.state.failed'));
+    release();
+    await third;
   });
 
-  test('songs the worker has not analyzed end the cycle: said so (no "nothing analyzed yet"), then the newest again', async () => {
-    const { S, calls, click } = makeSandbox({ taste: server(2, { unanalyzed: 5 }) });
+  test('the old rotation and its cycled card are gone', async () => {
+    const RANDOM = { ...MAIN, seedSource: 'random', fallback: true, network: null, peers: null, seeds: [{ ...fin(99), hash: 'r1', outcome: null }] };
+    const { S, calls, click } = makeSandbox({ taste: () => RANDOM, flags: NO_FED });
     await S.discoveryPanel();
     await press(click);
-    assert.deepEqual(mains(calls).at(-1).exclude, ['f1', 'f2']);
+    await press(click);
     const html = S.html();
-    assert.match(html, /dpage-card[\s\S]*dpage\.state\.seedsCycled[\s\S]*dpage\.state\.seedsCycledPendingBody/);
-    assert.ok(!html.includes('dpage.state.scanPending'), 'not "this server hasn\'t analyzed any music"');
-    assert.ok(!html.includes('data-dp="admin"') && !html.includes('dpage.verb.checkAgain'));
-    assert.ok(!html.includes('data-dp="another"'), 'no random pick to replace');
-    assert.match(html, /class="dpage-btn pri" data-dp="refresh" data-v="card">dpage\.verb\.newSeeds/);
-    await press(click);
-    assert.equal(mains(calls).at(-1).exclude, undefined, 'a cycle: the unanalyzed songs are never stepped through');
-    assert.deepEqual(S.view.main.seeds.map((x) => x.hash), ['f1', 'f2']);
-    // without a rotation the same answer is the real scan-pending state
-    const fresh = makeSandbox({ taste: () => server(0, { unanalyzed: 2 })({ sources: ['library'] }) });
-    await fresh.S.discoveryPanel();
-    assert.match(fresh.S.html(), /dpage\.state\.scanPending/);
-  });
-
-  test('the keyboard on the cycled card\'s New seeds stays on it while in flight, then lands on the bar\'s', async () => {
-    const g = gated(server(2));
-    const { S, click, keyClick, activeAttrs } = makeSandbox({ taste: g.taste });
-    await S.discoveryPanel();
-    await press(click);
-    g.hold();
-    keyClick({ 'data-dp': 'refresh', 'data-v': 'card' });
-    await flush();
-    assert.equal(activeAttrs()['data-v'], 'card', 'the card is still drawn (busy): its button keeps the focus');
-    g.release();
-    await settle();
-    assert.equal(activeAttrs()['data-dp'], 'refresh');
-    assert.equal(activeAttrs()['data-v'], undefined, 'the card is gone: the bar\'s ⟳');
-  });
-
-  test('a restore, + Now playing, a picked song, a page switch and "new artists only" start from the newest again', async () => {
-    const base = server(6);
-    const { S, calls, click, views, vpc } = makeSandbox({
-      // one remembered drop to restore (the server lists it in excluded)
-      taste: (b) => { const r = base(b); return { ...r, excluded: [{ hash: 'gone', filepath: 'music/G/Gone.flac', metadata: { title: 'Kept Out' } }, ...r.excluded] }; },
-      playing: PLAYING,
-      prefs: { window: 30, filter: 'fresh', staleDays: 90, exclude: ['gone'], persisted: true },
-    });
-    await S.discoveryPanel();
-    const reset = (what) => {
-      assert.deepEqual(S.view.rotation, [], what);
-      assert.equal(tasteCalls(calls).at(-1).exclude, undefined, what);
-    };
-    await press(click);
-    openOptions(click);
-    click({ 'data-dp': 'moreSeeds' });
-    assert.ok(!S.html().includes('Gone '), 'only the real drop is listed');
-    click({ 'data-dp': 'restore', 'data-i': 0 });
-    await settle();
-    reset('restore');
-
-    await press(click);
-    click({ 'data-dp': 'unpin', 'data-i': 0 });
-    await settle();
-    await press(click);
-    assert.ok(S.view.rotation.length > 0);
-    click({ 'data-dp': 'addPlaying' });
-    await settle();
-    reset('+ Now playing');
-
-    await press(click);
-    click({ 'data-dp': 'pick' });
-    S.setState([{ state: 'fileExplorer' }]);
-    vpc.songCapture({ filepath: '/music/P/Picked.flac' });
-    await views[views.length - 1]();
-    await settle();
-    reset('a picked song');
-
-    await press(click);
-    await S.discoveryPanel({ page: 'explore', keep: true });
-    await settle();
-    reset('the other page');
-    await press(click);
-    assert.ok(S.view.rotation.length > 0);
-    if (!S.view.optionsOpen) { openOptions(click); }
-    click({ 'data-dp': 'newArtists' });
-    await settle();
-    reset('new artists only');
+    assert.match(html, /dpage\.state\.nothingFinished/, 'a random pick is "finish a few songs", however often New seeds is pressed');
+    assert.ok(!html.includes('seedsCycled') && !html.includes('data-v="card"'));
+    assert.ok(tasteCalls(calls).every((b) => !('exclude' in b)));
   });
 });
 
@@ -1616,18 +1443,26 @@ describe('Discover page: the explore page (no nav row yet)', () => {
     assert.deepEqual(opened[0].opts, { seedTitle: 'Seed <One>' }, 'h1, the seed the lead was matched against (escaped by Vue)');
   });
 
-  test('"new artists only" sits in its More options (not the play page\'s checkbox) and re-asks', async () => {
-    const { S, calls, click } = makeSandbox({ taste: answer });
+  test('"new artists only" sits in its More options, re-asks and is remembered in the panel\'s shared key', async () => {
+    const { S, calls, click, storage } = makeSandbox({ taste: answer });
     await S.discoveryPanel({ page: 'explore' });
     openOptions(click);
     const html = S.html();
-    assert.ok(!html.includes('data-dp="includePlayed"'));
+    assert.match(html, /<div class="dpage-options" id="dpage-options"><div class="dpage-opt-row"><button[^>]*data-dp="newArtists"/);
     const box = findDrawn(html, { 'data-dp': 'newArtists' });
     assert.equal(box.attrs['aria-checked'], 'false');
+    assert.equal(box.attrs.role, 'checkbox');
     const before = tasteCalls(calls).length;
     click({ 'data-dp': 'newArtists' });
     await flush(); await flush();
     assert.equal(tasteCalls(calls).slice(before)[0].newArtistsOnly, true);
+    assert.equal(storage.get('discoverNewArtistsOnly'), 'true');
+    assert.equal(findDrawn(S.html(), { 'data-dp': 'newArtists' }).attrs['aria-checked'], 'true');
+    // a fresh open reads it back; the play page never sends it
+    await S.discoveryPanel({ page: 'explore' });
+    assert.equal(tasteCalls(calls).at(-1).newArtistsOnly, true);
+    await S.discoveryPanel();
+    assert.ok(tasteCalls(calls).slice(-2).every((b) => b.newArtistsOnly === false));
   });
 
   test('a return keeps the page; a nav click is Discover again', async () => {
@@ -1675,7 +1510,7 @@ describe('Discover page: fencing', () => {
     S.bump();
     first = false;
     await S.discoveryPanel();
-    assert.equal(tasteCalls(calls).length, 4, 'asked again');
+    assert.equal(tasteCalls(calls).length, 3, 'asked again (the dropped load never reached its peers call)');
     assert.ok(S.html().includes('Title Seven'), 'and drew');
     release();
     await run;
@@ -1742,7 +1577,7 @@ describe('Discover page: job badges (the explore page)', () => {
     assert.ok(patches.some((pt) => pt.slot === 'data-bslot' && pt.id === 'n0'));
   });
 
-  test('a return within the TTL listens again and catches the badges up', async () => {
+  test('a return asks again, looks its rows up again, listens again and catches the badges up', async () => {
     const { S, tick, liveWatches, calls } = badgeBox();
     await S.discoveryPanel({ page: 'explore' });
     assert.equal(liveWatches(), 1);
@@ -1751,9 +1586,11 @@ describe('Discover page: job badges (the explore page)', () => {
     assert.equal(liveWatches(), 0, 'the watch ends once the page is left');
     tick([{ ...JOB, progress: 0.9 }]);       // moved while away (no one listening)
     const lookups = calls.filter((c) => c.name === 'lookup').length;
-    await S.discoveryPanel({ page: 'explore' }); // back, same question, within the TTL
-    assert.equal(calls.filter((c) => c.name === 'lookup').length, lookups, 'the kept answer: no new lookup');
-    assert.equal(liveWatches(), 1, 'listening again');
+    const asks = tasteCalls(calls).length;
+    await S.discoveryPanel({ page: 'explore' }); // back: no earlier answer is reused
+    assert.equal(tasteCalls(calls).length, asks + 1, 'asked again');
+    assert.equal(calls.filter((c) => c.name === 'lookup').length, lookups + 1, 'the new rows looked up');
+    assert.equal(liveWatches(), 1, 'listening again (one watch)');
     assert.match(S.html(), /width:90%/, 'the badge caught up');
   });
 });
@@ -1877,5 +1714,106 @@ describe('Discover page: wiring', () => {
     const I18N = new Function('window', 'document', 'localStorage', 'navigator', `${src}\nreturn I18N;`)(win, {}, { getItem: () => null }, { language: 'en' });
     assert.equal(I18N.t('because {{title}}', { title: "Money $' Talks $& $$" }), "because Money $' Talks $& $$");
     assert.equal(I18N.t('{{n}} of {{m}}', { n: 2, m: 3 }), '2 of 3');
+  });
+});
+
+describe('Discover page: one batch per ask, one visit per open', () => {
+  test('the connected-server call waits for the library answer and pins every seed of its batch (a full 12)', async () => {
+    const many = { ...MAIN, seeds: [...SEEDS, ...Array.from({ length: 9 }, (_, i) => ({ ...SEEDS[1], hash: `m${i}`, filepath: `music/M/${i}.flac` }))] };
+    assert.equal(many.seeds.length, 12, 'the server\'s largest batch');
+    assert.equal(DISCOVERYPAGE.PIN_CAP, 12, 'PIN_CAP = the seed cap');
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const { S, calls } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : gate.then(() => many)), playing: PLAYING });
+    const run = S.discoveryPanel();
+    await flush();
+    assert.deepEqual(tasteCalls(calls).map((b) => b.sources), [['library']], 'nothing asks the connected servers before the batch is known');
+    release();
+    await run;
+    const peers = tasteCalls(calls)[1];
+    assert.deepEqual(peers.pin, many.seeds.map((x) => x.filepath), 'every seed, in the batch\'s order');
+    assert.equal(peers.limit.seeds, 12);
+  });
+
+  test('when the new batch lands, the old connected column goes to its skeleton — never drawn under the new seeds', async () => {
+    let gate = null;
+    let release;
+    const { S, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') && gate ? gate.then(() => PEERS) : answer(b)), playing: PLAYING });
+    await S.discoveryPanel();
+    assert.ok(S.html().includes('Peer Song'));
+    gate = new Promise((r) => { release = r; });
+    click({ 'data-dp': 'refresh' });
+    await flush(); await flush();
+    assert.equal(S.view.pending.main, false);
+    assert.equal(S.view.pending.peers, true);
+    assert.ok(!S.html().includes('Peer Song'), 'the old column is gone');
+    assert.match(S.html(), /dpage-skel/, 'its skeleton instead');
+    release();
+    await flush(); await flush();
+    assert.ok(S.html().includes('Peer Song'));
+    assert.ok(!S.html().includes('dpage-busy'));
+  });
+
+  test('a drop toast\'s Undo after a fresh open (or off the page) asks nothing', async () => {
+    const { S, calls, click, toasts } = makeSandbox({ taste: answer, playing: PLAYING });
+    await S.discoveryPanel();
+    openOptions(click);
+    click({ 'data-dp': 'drop', 'data-i': 1 });
+    await flush(); await flush();
+    const undo = toasts.find((o) => o.buttons).buttons[0][1];
+    await S.discoveryPanel();
+    let n = tasteCalls(calls).length;
+    undo({ hide() {} }, {});
+    await flush(); await flush();
+    assert.equal(tasteCalls(calls).length, n, 'the drop is already forgotten');
+    // dropped again, then the page is left: the list changes, nothing is asked
+    openOptions(click);
+    click({ 'data-dp': 'drop', 'data-i': 1 });
+    await flush(); await flush();
+    const undo2 = toasts.filter((o) => o.buttons).at(-1).buttons[0][1];
+    S.setState([{ state: 'somewhere-else' }]);
+    n = tasteCalls(calls).length;
+    undo2({ hide() {} }, {});
+    await flush(); await flush();
+    assert.equal(tasteCalls(calls).length, n, 'no off-screen ask');
+    assert.deepEqual(S.view.excluded, []);
+  });
+
+  test('a fresh open does not offer back the last visit\'s drops while it asks', async () => {
+    let gate = null;
+    const { S, click } = makeSandbox({
+      taste: (b) => {
+        const res = b.exclude ? { ...answer(b), excluded: echoExcluded(b) } : answer(b);
+        return gate ? gate.then(() => res) : res;
+      },
+      playing: PLAYING,
+    });
+    await S.discoveryPanel();
+    openOptions(click);
+    click({ 'data-dp': 'drop', 'data-i': 1 });
+    await flush(); await flush();
+    click({ 'data-dp': 'moreSeeds' });
+    assert.ok(seedsSection(S.html()).includes('Gone h1'), 'dropped this visit');
+    let release;
+    gate = new Promise((r) => { release = r; });
+    const run = S.discoveryPanel();
+    S.view.optionsOpen = true;
+    S.view.allSeeds = true;
+    S.renderDiscovery();
+    assert.match(S.html(), /dpage-busy/, 'the held answer, busy');
+    assert.ok(!S.html().includes('Gone h1'), 'its excluded[] belongs to the last visit');
+    release();
+    await run;
+  });
+
+  test('a window change writes the window alone — the panel\'s "new artists only" stays as the panel left it', async () => {
+    const key = DISCOVERYPAGE.STORAGE_KEYS.newArtistsOnly;
+    const { S, change, storage } = makeSandbox({ taste: answer, stored: {} });
+    await S.discoveryPanel();
+    storage.set(key, 'true');   // the now-playing panel ticked it meanwhile
+    change({ 'data-dp-change': 'window' }, '7');
+    await flush(); await flush();
+    assert.equal(storage.get(key), 'true');
+    assert.equal(storage.get(DISCOVERYPAGE.STORAGE_KEYS.window), '7');
   });
 });

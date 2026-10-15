@@ -84,19 +84,16 @@ const MSTREAMAPI = (() => {
   // feature is disabled on this server ({disabled:true} → the panel hides
   // itself for the session); any other failure returns null (panel just
   // skips this refresh). Uses raw fetch instead of req() because the
-  // disabled-vs-error distinction needs the status code. POST unless told
-  // otherwise (the Discover page's prefs are a GET and a PUT); a GET sends
-  // no body.
-  async function discoveryReq(route, body, method) {
-    const verb = method || 'POST';
+  // disabled-vs-error distinction needs the status code.
+  async function discoveryReq(route, body) {
     try {
       const res = await fetch(mstreamModule.currentServer.host + route, {
-        method: verb,
+        method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'x-access-token': mstreamModule.currentServer.token
         },
-        body: verb === 'GET' ? undefined : JSON.stringify(body)
+        body: JSON.stringify(body)
       });
       if (res.status === 403) { return { disabled: true }; }
       if (!res.ok) { return null; }
@@ -149,26 +146,16 @@ const MSTREAMAPI = (() => {
     return discoveryReq('api/v1/discovery/local/embeddings', { filePaths });
   };
 
-  // The Discover page (docs/discovery-page-plan.md §3.1–3.2): seeds from
-  // this account's play history, then library / network / peers sections
-  // for them, in one call — the page sends two in parallel (library+network,
+  // The Discover page (docs/discovery-page-plan.md §3.1): a random batch of
+  // seeds from this account's play history (a new one on every call — the
+  // route keeps nothing), then library / network / peers sections for them,
+  // in one call — the page sends two in parallel (library+network,
   // peers; alpha/discovery-page.js buildRequests). Same degrade contract as
   // the calls above: {disabled:true} on 403 (discovery off, or an account
   // that has no history here: a federation key, a guest, a jukebox), null on
   // any other failure. Reveal via ping's `discovery && discoveryTaste >= 1`.
   mstreamModule.discoveryTaste = (body) => {
     return discoveryReq('api/v1/discovery/taste', body || {});
-  };
-  // The page's saved prefs { window, filter, staleDays, exclude, persisted }
-  // (defaults applied; persisted false in public-access mode).
-  mstreamModule.discoveryTastePrefs = () => {
-    return discoveryReq('api/v1/discovery/taste/prefs', null, 'GET');
-  };
-  // Save some of them: a key left out keeps its value, null resets it,
-  // `exclude` is THE list (bringing a seed back = the list without it).
-  // Answers the merged prefs.
-  mstreamModule.discoveryTastePrefsSave = (patch) => {
-    return discoveryReq('api/v1/discovery/taste/prefs', patch || {}, 'PUT');
   };
 
   // Discovery plug-ins — what this server lets a user do with a network or

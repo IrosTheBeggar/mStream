@@ -7,8 +7,17 @@
 //
 // Two pages share it (2026-10-11): 'play' (Discover — songs you can play
 // now, from your library and your connected servers) and 'explore' (the
-// p2p network's leads, songs you don't have). They share the prefs and the
-// seeds; each asks only for its own sources (buildRequests' `page`).
+// p2p network's leads, songs you don't have). They share the window and the
+// visit's pins and dropped seeds; each asks only for its own sources
+// (buildRequests' `page`).
+//
+// The route is stateless (2026-10-14): every call draws a NEW random batch
+// of the account's finished songs as seeds, so every open and every tap
+// asks again — nothing is kept between calls, by the server or here. The
+// window is this browser's choice (localStorage, STORAGE_KEYS.window); pins
+// and dropped seeds last for the visit only and travel as `pin` / `exclude`,
+// and so do the random picks "Another pick" passed over (a list of its own,
+// beside the drops — passPick / noPickLeft).
 // No DOM, no Vue, no fetch, no storage — m.js
 // (discoveryPanel) wires it to the app; the unit test
 // (test/unit/webapp-discovery-page.test.mjs) drives it on node and holds the
@@ -38,19 +47,11 @@
   // src/discovery/taste-queries.js (the route's Joi reads the same values).
   // The unit test fails when the two disagree.
   const WINDOWS = Object.freeze([7, 30, 90, 0]);   // days; 0 = all time
-  const FILTERS = Object.freeze(['fresh', 'unplayed', 'all']);
+  const DEFAULT_WINDOW = 30;
   const SOURCES = Object.freeze(['library', 'network', 'peers']);
-  // The page's own filter: ONE checkbox, "Include songs I've played lately"
-  // — unticked = 'fresh' (unplayed, or not played in staleDays), ticked =
-  // 'all'. The server still takes 'unplayed', but the page never sends it:
-  // a saved 'unplayed' (and the old client spelling 'never') reads 'fresh'.
-  const PAGE_FILTERS = Object.freeze(['fresh', 'all']);
   // 'play' = Discover (library + connected servers); 'explore' = the network.
   const PAGES = Object.freeze(['play', 'explore']);
-  const DEFAULT_PREFS = Object.freeze({ window: 30, filter: 'fresh', staleDays: 90 });
-  const STALE_DAYS_MIN = 1;
-  const STALE_DAYS_MAX = 3650;
-  const PIN_CAP = 8;
+  const PIN_CAP = 12;            // = LIMIT_CAPS.seeds: the peers call pins a whole batch
   const PIN_PATH_MAX = 2048;
   const EXCLUDE_CAP = 200;
   const HASH_MAX = 128;
@@ -67,21 +68,16 @@
   const ALBUM_STRIP_MAX = 12;
 
   // What the page keeps in localStorage (names only — the panel reads and
-  // writes them, in try/catch). `newArtistsOnly` is the Discover panel's own
-  // key: one semantic, one knob, shared (plan §3.2). `prefs` mirrors the
-  // window / filter / staleDays (and, where the server cannot persist —
-  // public-access mode — the dropped seeds) for the next visit.
+  // writes them, in try/catch): the window the bar's dropdown chose (one
+  // number; storedWindow reads it back) and "new artists only" — the
+  // Discover panel's own key: one semantic, one knob, shared (plan §3.2).
+  // Nothing else outlives a visit.
   const STORAGE_KEYS = Object.freeze({
-    prefs: 'discoverPagePrefs',
+    window: 'discoverPageWindow',
     newArtistsOnly: 'discoverNewArtistsOnly',
   });
-  // How long an answer may be shown again without asking (a revisit within
-  // the server's own 5-minute section cache). Clients never poll.
-  const CLIENT_TTL_MS = 5 * 60 * 1000;
   // Seed chips drawn before "Show all" (the canvas: now playing + 6).
   const SEED_CHIPS_MAX = 7;
-
-  const DAY_MS = 24 * 60 * 60 * 1000;
 
   // ── small helpers ──────────────────────────────────────────────────────
   const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -96,15 +92,6 @@
     if (typeof v === 'string' && v.trim() !== '' && /^-?\d+$/.test(v.trim())) { return Number(v.trim()); }
     return undefined;
   }
-
-  // Milliseconds from an ISO string, a Date or epoch ms; NaN when unknown.
-  function toMs(v) {
-    if (v instanceof Date) { return v.getTime(); }
-    if (typeof v === 'number') { return v; }
-    if (typeof v === 'string' && v) { return Date.parse(v); }
-    return NaN;
-  }
-  const nowMs = (now) => { const n = toMs(now); return Number.isFinite(n) ? n : Date.now(); };
 
   // 0.834 → 83 (0–100); null when the server sent none.
   function pct(similarity) {
@@ -143,16 +130,9 @@
     return first ? first.split('---').pop() : '';
   }
 
-  // ── prefs ──────────────────────────────────────────────────────────────
+  // ── the window and the visit's dropped seeds ──────────────────────────
 
   function cleanWindow(v) { const n = toInt(v); return n !== undefined && WINDOWS.indexOf(n) !== -1 ? n : undefined; }
-  // The page's filter from anything stored or answered: 'all' stays, 'fresh'
-  // / 'unplayed' / 'never' read 'fresh', anything else is unknown.
-  function pageFilter(v) {
-    if (v === 'all') { return 'all'; }
-    return v === 'fresh' || v === 'unplayed' || v === 'never' ? 'fresh' : undefined;
-  }
-  function cleanStaleDays(v) { const n = toInt(v); return n !== undefined && n >= STALE_DAYS_MIN && n <= STALE_DAYS_MAX ? n : undefined; }
   const isHash = (h) => typeof h === 'string' && h.length > 0 && h.length <= HASH_MAX;
 
   // Valid, de-duplicated hashes in order; undefined for a non-list.
@@ -162,81 +142,58 @@
     for (const h of list) { if (isHash(h) && out.indexOf(h) === -1) { out.push(h); } }
     return out;
   }
-  // The server's trim rule: oldest first out, so the newest EXCLUDE_CAP stay.
+  // The route takes at most EXCLUDE_CAP: the newest stay.
   const trimExclude = (list) => (list.length > EXCLUDE_CAP ? list.slice(list.length - EXCLUDE_CAP) : list);
 
-  // Only the valid keys of a prefs-ish object (a server answer, a stored
-  // copy, the page's own state); everything else is dropped.
-  function cleanPrefs(p) {
-    const out = {};
-    if (!isObj(p)) { return out; }
-    const w = cleanWindow(p.window); if (w !== undefined) { out.window = w; }
-    const f = pageFilter(p.filter); if (f !== undefined) { out.filter = f; }
-    const s = cleanStaleDays(p.staleDays); if (s !== undefined) { out.staleDays = s; }
-    const e = cleanHashes(p.exclude); if (e !== undefined) { out.exclude = trimExclude(e); }
-    if (typeof p.newArtistsOnly === 'boolean') { out.newArtistsOnly = p.newArtistsOnly; }
-    return out;
+  // The stored window (STORAGE_KEYS.window: the raw localStorage string, or
+  // null) → a window the route takes; DEFAULT_WINDOW for anything else.
+  // Never throws.
+  function storedWindow(raw) {
+    const w = cleanWindow(raw);
+    return w === undefined ? DEFAULT_WINDOW : w;
   }
 
-  function defaultPrefs() {
-    return { window: DEFAULT_PREFS.window, filter: DEFAULT_PREFS.filter, staleDays: DEFAULT_PREFS.staleDays, exclude: [], newArtistsOnly: false, persisted: false };
+  // Dropping a seed (its chip's ×) and bringing it back ("Use again", the
+  // drop toast's Undo): the visit's list of dropped hashes, sent as
+  // `exclude` on every call of the visit and never stored anywhere. A
+  // re-drop moves the hash to the newest end; past EXCLUDE_CAP the oldest
+  // drop goes. → a new list (the old one is not touched).
+  function dropSeed(list, hash) {
+    const out = (cleanHashes(list) || []).filter((h) => h !== hash);
+    if (isHash(hash)) { out.push(hash); }
+    return trimExclude(out);
+  }
+  function restoreSeed(list, hash) {
+    return (cleanHashes(list) || []).filter((h) => h !== hash);
   }
 
-  // The prefs the page renders with. `saved` = GET …/taste/prefs (defaults
-  // applied, `persisted`), or null when it failed or never ran; `local` =
-  // the stored copy plus the client-only `newArtistsOnly`.
-  //   persisted: true   the account's prefs are the truth on every client:
-  //                     the server's values win, local only fills a gap
-  //   otherwise         (public-access mode, where nothing is stored, or no
-  //                     answer) this browser's copy wins over the server's
-  //                     defaults
-  // `persisted` says whether a change should be sent with `remember: true`
-  // (and whether the dropped seeds live on the server).
-  function mergePrefs(saved, local) {
-    const s = cleanPrefs(saved);
-    const l = cleanPrefs(local);
-    const persisted = isObj(saved) && saved.persisted === true;
-    const first = persisted ? s : l;
-    const second = persisted ? l : s;
-    const pick = (k) => (first[k] !== undefined ? first[k] : (second[k] !== undefined ? second[k] : DEFAULT_PREFS[k]));
-    return {
-      window: pick('window'),
-      filter: pick('filter'),
-      staleDays: pick('staleDays'),
-      // A server that persists keeps THE list; elsewhere this browser does.
-      exclude: (persisted ? s.exclude : (l.exclude || s.exclude)) || [],
-      newArtistsOnly: l.newArtistsOnly === true,
-      persisted,
-    };
+  // "Another pick" (plan §2.8): the random fallback is drawn fresh on every
+  // call, and the page re-asks with the picks it already showed this visit
+  // in `exclude`, so the next one is a song not seen yet. The visit's list
+  // of passed picks is NOT the drops: it is never drawn as dropped chips
+  // (the page filters an answer's `excluded` to the drops) and goes on a
+  // fresh open. passPick adds one (the newest end; past EXCLUDE_CAP the
+  // oldest goes) → a new list.
+  function passPick(list, hash) {
+    return dropSeed(list, hash);
   }
 
-  // The localStorage copy (STORAGE_KEYS.prefs) ↔ prefs. Never throws.
-  function parseStoredPrefs(raw) {
-    if (typeof raw !== 'string' || !raw) { return {}; }
-    try { return cleanPrefs(JSON.parse(raw)); } catch (_) { return {}; }
-  }
-  function serializePrefs(prefs) {
-    const p = cleanPrefs(prefs);
-    const out = {};
-    for (const k of ['window', 'filter', 'staleDays', 'exclude']) { if (p[k] !== undefined) { out[k] = p[k]; } }
-    return JSON.stringify(out);
+  // The random pick of an answer (its hash), or null: not a random-seed
+  // answer, or no pick in it.
+  function randomPick(response) {
+    if (!isObj(response) || response.disabled === true || response.seedSource !== 'random') { return null; }
+    const s = seedsOf(response).find((x) => isObj(x) && x.pinned !== true && isHash(x.hash));
+    return s ? s.hash : null;
   }
 
-  // Dropping a seed (its chip's ×) and bringing it back (the seeds sheet).
-  // A drop is sent as `exclude: [hash]` with `remember: true` (the server
-  // merges and trims); a restore is a PUT of the whole list without it —
-  // `{ exclude: next.exclude }` — since the POST can only add.
-  function dropSeed(prefs, hash) {
-    const p = Object.assign({}, prefs || {});
-    const list = (cleanHashes(p.exclude) || []).filter((h) => h !== hash);
-    if (isHash(hash)) { list.push(hash); }
-    p.exclude = trimExclude(list);
-    return p;
-  }
-  function restoreSeed(prefs, hash) {
-    const p = Object.assign({}, prefs || {});
-    p.exclude = (cleanHashes(p.exclude) || []).filter((h) => h !== hash);
-    return p;
+  // An answer with no pick left: no seed at all — the random fallback found
+  // no song outside the visit's exclusions (the server says notAnalyzed,
+  // which would draw a false "scan pending" card). With passed picks in the
+  // ask, the page clears them and asks once more so it starts over.
+  function noPickLeft(response) {
+    if (!isObj(response) || response.disabled === true) { return false; }
+    if (seedsOf(response).length > 0) { return false; }
+    return response.seedSource === 'random' || response.notAnalyzed === true;
   }
 
   // ── flags and requests ─────────────────────────────────────────────────
@@ -262,10 +219,12 @@
     return Object.keys(out).length ? out : null;
   }
 
-  // The page's calls (plan §3.1). Every body carries the SAME seeds-shaping
-  // keys (window, pins, exclusions, scope, limits) so the two pages and the
-  // two calls agree on the seeds and share the server's section cache; only
-  // `sources` differs, and `remember` rides on `main` alone (one write).
+  // The page's calls (plan §3.1). Both bodies carry the SAME keys (window,
+  // pins, exclusions, scope, limits) and differ only in `sources`. The
+  // peers body is not sent as built: each call draws its own random batch
+  // (the server keeps nothing between calls), so it goes out AFTER the main
+  // answer lands, pinned to that answer's seeds (peersRequest below) — the
+  // connected-server column is built from the batch the picker shows.
   //   page 'play'    (the default) main = { sources: ['library'] }, plus the
   //                  separate peers call where federationDiscovery is on —
   //                  so the library renders without waiting on a connected
@@ -273,15 +232,17 @@
   //   page 'explore' main = { sources: ['network'] } where discoveryP2p is
   //                  on (both null where it is not: nothing to explore);
   //                  never a peers call
-  //   prefs          mergePrefs' answer (window / filter / staleDays / exclude /
-  //                  newArtistsOnly / persisted)
-  //   window, filter, staleDays, newArtistsOnly   this call's choice, over prefs
-  //                  (a filter of 'unplayed' / 'never' is sent as 'fresh')
+  //   window         7 | 30 | 90 | 0 (a <select>'s string too); anything
+  //                  else sends DEFAULT_WINDOW — the body always names one
   //   pinPath        now playing (string; a leading '/' is stripped)
-  //   pins           songs the user picked (paths), after pinPath; ≤ 8 in all
-  //   exclude        hashes dropped in THIS call (a persisting server merges
-  //                  its saved list itself; elsewhere prefs.exclude is sent too)
-  //   remember       save window / filter / staleDays / exclusions
+  //   pins           songs the user picked (paths), after pinPath; ≤ PIN_CAP
+  //                  (12) in all
+  //   exclude        the visit's dropped seeds (hashes; the newest 200)
+  //   passed         the random picks "Another pick" passed over this visit
+  //                  (hashes): sent in `exclude` after the drops, which keep
+  //                  their room — the newest that fit under EXCLUDE_CAP
+  //   newArtistsOnly the Explore page's toggle; the play page draws no
+  //                  control for it, so it never thins that page's rows
   //   ignoreVPaths   m.js localIgnoreVPaths()
   //   limits         { seeds, tracks, albums, network, peers }, clamped to the caps
   //   flags          { discovery, discoveryTaste, discoveryP2p, federationDiscovery }
@@ -293,17 +254,9 @@
     const page = cleanPage(o.page);
     if (!pageAvailable(flags)) { return { main: null, peers: null }; }
     if (page === 'explore' && flags.discoveryP2p !== true) { return { main: null, peers: null }; }
-    const prefs = isObj(o.prefs) ? o.prefs : {};
-    const p = cleanPrefs(prefs);
-    const either = (a, b) => (a !== undefined ? a : b);
 
-    const body = {};
-    const w = either(cleanWindow(o.window), p.window);
-    if (w !== undefined) { body.window = w; }
-    const f = either(pageFilter(o.filter), p.filter);
-    if (f !== undefined) { body.filter = f; }
-    const s = either(cleanStaleDays(o.staleDays), p.staleDays);
-    if (s !== undefined) { body.staleDays = s; }
+    const w = cleanWindow(o.window);
+    const body = { window: w === undefined ? DEFAULT_WINDOW : w };
 
     const pins = [];
     const pinList = [].concat(o.pinPath == null ? [] : o.pinPath, arr(o.pins));
@@ -315,15 +268,13 @@
     }
     if (pins.length) { body.pin = pins; }
 
-    const callEx = cleanHashes(o.exclude) || [];
-    const merged = prefs.persisted === true ? callEx : (cleanHashes([...(p.exclude || []), ...callEx]) || []);
-    const ex = trimExclude(merged);
+    const drops = trimExclude(cleanHashes(o.exclude) || []);
+    const passed = (cleanHashes(o.passed) || []).filter((h) => drops.indexOf(h) === -1);
+    const room = EXCLUDE_CAP - drops.length;
+    const ex = drops.concat(room > 0 ? passed.slice(Math.max(0, passed.length - room)) : []);
     if (ex.length) { body.exclude = ex; }
 
-    // The saved 'new artists only' is the Explore page's toggle (and the
-    // now-playing panel's): the play page draws no control for it, so it
-    // never thins that page's connected-server rows unseen.
-    body.newArtistsOnly = typeof o.newArtistsOnly === 'boolean' ? o.newArtistsOnly : (page === 'explore' && p.newArtistsOnly === true);
+    body.newArtistsOnly = page === 'explore' && o.newArtistsOnly === true;
 
     if (Array.isArray(o.ignoreVPaths)) {
       body.ignoreVPaths = o.ignoreVPaths
@@ -334,61 +285,37 @@
     if (limit) { body.limit = limit; }
 
     const main = Object.assign({ sources: page === 'explore' ? ['network'] : ['library'] }, body);
-    if (o.remember === true) { main.remember = true; }
     const peers = page === 'play' && flags.federationDiscovery === true ? Object.assign({ sources: ['peers'] }, body) : null;
     return { main, peers };
   }
 
+  // The peers call of one ask, built once the main answer has landed: the
+  // peers body (buildRequests' `peers`) pinned to EVERY seed of the main
+  // answer (PIN_CAP = the seed cap, so a whole batch fits), with
+  // limit.seeds = those pins, so the server adds no seeds of its own and
+  // the column's centroid is the batch the picker draws.
+  //   peersBody  buildRequests' `peers` (null: no peers call)
+  //   main       the main answer
+  // → the body to send, or null: no peers body; the main answer failed, was
+  // refused or has no seeds; or its seed is the random stand-in (the server
+  // asks no connected server on a random seed, and a pin would make it).
+  function peersRequest(peersBody, main) {
+    if (!isObj(peersBody) || !isObj(main) || main.disabled === true) { return null; }
+    if (main.seedSource === 'random') { return null; }
+    const pins = [];
+    for (const s of seedsOf(main)) {
+      if (pins.length >= PIN_CAP) { break; }
+      const path = stripSlash(s.filepath);
+      if (!path || path.length > PIN_PATH_MAX || pins.indexOf(path) !== -1) { continue; }
+      pins.push(path);
+    }
+    if (!pins.length) { return null; }
+    const body = Object.assign({}, peersBody, { pin: pins });
+    body.limit = Object.assign({}, isObj(peersBody.limit) ? peersBody.limit : {}, { seeds: pins.length });
+    return body;
+  }
+
   function cleanPage(v) { return PAGES.indexOf(v) !== -1 ? v : 'play'; }
-
-  // "New seeds" (the bar's ⟳): start from other songs. The page keeps a
-  // rotation for the visit — hashes sent in `exclude` without `remember`,
-  // never saved, never drawn as dropped seeds. Each press adds the answer
-  // on screen's history seeds (never its pins: those are the user's own
-  // choices and stay), so the server picks the next finished songs and
-  // widens from there (window → all time → counters → random).
-  //   rotation  the list so far (oldest first)
-  //   response  the answer on screen (the library one)
-  //   room      optional: the most hashes the list may hold (default
-  //             EXCLUDE_CAP) — the page passes the cap minus the local drop
-  //             list and the "Another pick" skips sent beside it, so the
-  //             server's trim never cuts a drop to make room for a rotation
-  // → the next list: the old one plus the answer's history seeds, trimmed
-  // to `room` (newest kept — past the cap the oldest-passed, i.e. the
-  // newest finished songs, come back first: a user with more finished
-  // songs than the cap cycles within about that many). [] when the answer
-  // ended the cycle — a random pick, the pins alone, or only songs the
-  // worker has not analyzed (notAnalyzed: the analyzed ones are all passed
-  // over) — so this press starts again from the newest finished songs (a
-  // cycle, not a dead end). The list is cleared at the press after such an
-  // answer, not when it lands: "Another pick" on that answer keeps passing
-  // the same songs over. No answer (in flight, failed, 403): unchanged.
-  function nextRotation(rotation, response, room) {
-    const prev = cleanHashes(rotation) || [];
-    if (!isObj(response) || response.disabled === true) { return prev; }
-    if (response.seedSource === 'random' || response.notAnalyzed === true) { return []; }
-    const history = cleanHashes(seedsOf(response).filter((s) => s.pinned !== true).map((s) => s.hash));
-    if (!history.length) { return []; }
-    const cap = Math.max(0, Math.min(EXCLUDE_CAP, Number.isFinite(room) ? Math.floor(room) : EXCLUDE_CAP));
-    // (an answer from before the last press repeats hashes already in it)
-    const next = cleanHashes([...prev, ...history]);
-    return next.length > cap ? next.slice(next.length - cap) : next;
-  }
-
-  // A stable identity for a request body (key order and `remember` aside):
-  // the page re-shows a kept answer only while the next request's key is the
-  // same, and drops an answer whose key is no longer the latest.
-  function stable(v) {
-    if (Array.isArray(v)) { return '[' + v.map(stable).join(',') + ']'; }
-    if (isObj(v)) { return '{' + Object.keys(v).sort().map((k) => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}'; }
-    return v === undefined ? 'null' : JSON.stringify(v);
-  }
-  function requestKey(body) {
-    if (!isObj(body)) { return ''; }
-    const rest = Object.assign({}, body);
-    delete rest.remember;
-    return stable(rest);
-  }
 
   // The two answers as one response for the views below.
   //   main       the library (or, on explore, network) answer: undefined = in flight, null =
@@ -399,7 +326,9 @@
   // main answer with `peers` = undefined (in flight) | null (not asked, not
   // available, refused) | the section — and `peersFailed: true` when that
   // call failed. A peers answer that lands first lends its seeds while the
-  // library is still in flight (`library` / `network` undefined, `partial`).
+  // library is still in flight (`library` / `network` undefined, `partial`)
+  // — kept for a caller that asks both at once; the page itself chains the
+  // peers call on the main answer (peersRequest), so it never sees one.
   function mergeResponses(main, peersRes, peersAsked) {
     const asked = !!peersAsked;
     if (main === undefined && asked && isObj(peersRes) && peersRes.disabled !== true) {
@@ -472,7 +401,8 @@
       outcome: s.outcome || null,
       analyzed: s.analyzed !== false,
       // What its × does: a pin leaves this visit's pins; a history seed is
-      // dropped (remembered); the random pick has no × ("Another pick").
+      // dropped for this visit (the next calls exclude it); the random pick
+      // has no × ("Another pick").
       action: s.pinned ? 'unpin' : (ctx.random ? null : 'drop'),
       label: artist ? lbl('dpage.seeds.chip', { title, artist }) : lbl('dpage.seeds.chipTitle', { title }),
       tag: tags[0] || null,
@@ -483,7 +413,8 @@
 
   // The "Based on what you finished" strip: the first `max` chips and the
   // rest behind "Show all" (`more`; no count is drawn); `excluded` = the
-  // dropped seeds the server still resolves, for the picker to bring back.
+  // answer's `excluded` rows — the visit's dropped seeds this call left out
+  // — for the picker to bring back ("Use again").
   //   opts.nowPlaying  the now-playing path (its pin reads "playing")
   //   opts.max         chips drawn before the overflow (default 7)
   function seedChips(response, opts) {
@@ -515,7 +446,7 @@
     };
   }
 
-  // ── option lists (the bar's window, the filter checkbox, the plug-ins) ─
+  // ── option lists (the bar's window, the plug-ins) ──────────────────────
 
   function windowOptions(current) {
     const cur = cleanWindow(current);
@@ -524,17 +455,6 @@
       label: w === 0 ? lbl('dpage.window.all') : lbl('dpage.window.days', { count: w }),
       selected: w === cur,
     }));
-  }
-
-  // The library filter as the one checkbox under More options:
-  // "Include songs I've played lately". Ticked = 'all'; unticked = 'fresh'.
-  function filterFor(includePlayed) { return includePlayed === true ? 'all' : 'fresh'; }
-  function includesPlayed(filter) { return pageFilter(filter) === 'all'; }
-  // → { checked, label, filter, next }: `filter` = the one on screen, `next`
-  // = the one a click asks for (the library-empty button sends 'all').
-  function includePlayedOption(current) {
-    const checked = includesPlayed(current);
-    return { checked, label: lbl('dpage.opt.includePlayed'), filter: filterFor(checked), next: filterFor(!checked) };
   }
 
   // "plug-ins on this server: Previews · Deezer  Get it · YouTube  Open
@@ -555,28 +475,6 @@
   }
 
   // ── library ────────────────────────────────────────────────────────────
-
-  // How strict a filter is: a stricter one can be applied to a looser
-  // answer on the client (all → fresh) while the re-ask runs.
-  const STRICTNESS = { all: 0, fresh: 1 };
-
-  function isStale(lastPlayed, now, staleDays) {
-    const t = toMs(lastPlayed);
-    return Number.isFinite(t) && t < nowMs(now) - staleDays * DAY_MS;
-  }
-  // The server's §2.5 rule as far as a row can tell (skip counts and
-  // ratings are not on the wire, so this only ever narrows a looser answer;
-  // the server's own answer replaces it).
-  function trackPasses(row, filter, now, staleDays) {
-    if (filter === 'all') { return true; }
-    if (!(row.playCount > 0)) { return true; }
-    return filter === 'fresh' && isStale(row.lastPlayed, now, staleDays);
-  }
-  function albumPasses(card, filter, now, staleDays) {
-    if (filter === 'all') { return true; }
-    if (!(card.playedTracks > 0)) { return true; }
-    return filter === 'fresh' && isStale(card.lastPlayed, now, staleDays);
-  }
 
   // m.js albumCredit's rule: the album-artist credit, else the artists.
   function albumCreditLine(a) {
@@ -639,41 +537,23 @@
     };
   }
 
-  // "Albums from your library" and "Songs from your library" (plan §2.6).
-  //   opts.filter     the filter on screen ('fresh' | 'all'); when it is
-  //                   stricter than the one the answer was chosen by (the
-  //                   checkbox just unticked, the re-ask in flight) the rows
-  //                   are narrowed here and `provisional` is set; a looser one
-  //                   keeps the rows, also provisional
-  //   opts.staleDays  the `fresh` cutoff for that narrowing (default 90)
-  //   opts.now        "now" for that cutoff
+  // "Albums from your library" and "Songs from your library" (plan §2.6):
+  // the server's fixed rule, songs you haven't played lately.
   //   opts.maxAlbums / opts.maxTracks   caps (default: all); the song column
   //                   pages itself with pageSlice
-  // → { filter, provisional, albums, tracks, count, capped, footer }
+  // → { albums, tracks, count, capped, footer }
   //   footer.paths  what "Queue all · Shuffle · Save as playlist" act on
   //                 (every song row, the ones past maxTracks included);
   //                 footer.queueAllLabel = 'Queue all' (no count)
   function librarySections(response, opts) {
     const o = opts || {};
     const lib = isObj(response) && isObj(response.library) ? response.library : null;
-    const answered = lib ? pageFilter(lib.filter) : undefined;
-    const filter = pageFilter(o.filter) || answered || DEFAULT_PREFS.filter;
-    const staleDays = cleanStaleDays(o.staleDays) || DEFAULT_PREFS.staleDays;
     const ctx = { seeds: seedIndex(response), random: isObj(response) && response.seedSource === 'random' };
-
-    let albums = lib ? arr(lib.albums).filter(isObj).map((a) => albumCard(a, ctx)) : [];
-    let tracks = lib ? arr(lib.tracks).filter((t) => isObj(t) && t.filepath).map((t) => trackRow(t, ctx)) : [];
-    const provisional = !!answered && filter !== answered;
-    if (provisional && STRICTNESS[filter] > STRICTNESS[answered]) {
-      albums = albums.filter((a) => albumPasses(a, filter, o.now, staleDays));
-      tracks = tracks.filter((t) => trackPasses(t, filter, o.now, staleDays));
-    }
-
+    const albums = lib ? arr(lib.albums).filter(isObj).map((a) => albumCard(a, ctx)) : [];
+    const tracks = lib ? arr(lib.tracks).filter((t) => isObj(t) && t.filepath).map((t) => trackRow(t, ctx)) : [];
     const maxA = Number.isInteger(o.maxAlbums) && o.maxAlbums >= 0 ? o.maxAlbums : albums.length;
     const maxT = Number.isInteger(o.maxTracks) && o.maxTracks >= 0 ? o.maxTracks : tracks.length;
     return {
-      filter,
-      provisional,
       albums: albums.slice(0, maxA),
       tracks: tracks.slice(0, maxT),
       count: albums.length + tracks.length,
@@ -1026,9 +906,7 @@
   // seed, or — peers — no connected servers at all), loading, failed, empty
   // (with the one dim line that explains it), ready.
   //   library empty   'Nothing new in your library sounds like these
-  //                   songs.'; `includePlayed: true` when the answer was
-  //                   chosen by 'fresh' — the page offers the button that
-  //                   ticks "Include songs I've played lately" and re-asks
+  //                   songs.' (the line alone)
   //   peers empty     'Nothing from your connected servers right now.' —
   //                   servers are paired but no playable row came back (all
   //                   offline, all on another model, or nothing new)
@@ -1052,9 +930,7 @@
     if (name === 'library') {
       const count = arr(sec.albums).length + arr(sec.tracks).length;
       if (count) { return { status: 'ready', reason: null, count }; }
-      if (waiting) { return { status: 'empty', count: 0, reason: lbl('dpage.source.waitingForScan') }; }
-      const filter = pageFilter(sec.filter) || opts.filter;
-      return { status: 'empty', count: 0, reason: lbl('dpage.library.nothing'), includePlayed: filter !== 'all' };
+      return { status: 'empty', count: 0, reason: lbl(waiting ? 'dpage.source.waitingForScan' : 'dpage.library.nothing') };
     }
     if (name === 'network') {
       const count = arr(sec.results).length;
@@ -1078,11 +954,8 @@
   //   response  mergeResponses' answer: undefined = in flight, null = failed,
   //             { disabled: true } = 403
   //   flags     { discovery, discoveryTaste, discoveryP2p, federationDiscovery }
-  //   opts      { page, filter, staleDays, rotated } — page 'play' (default)
-  //             draws library + peers (network absent); 'explore' draws
-  //             network alone; filter for the library's empty line;
-  //             rotated = the answer was asked with a "New seeds"
-  //             rotation (the one on screen, not the next press's)
+  //   opts      { page } — 'play' (default) draws library + peers (network
+  //             absent); 'explore' draws network alone
   // → { state, reason, sources: { library, network, peers } }
   //   state     'off'             the ping does not advertise the page, or
   //                               the route said 403 (re-ping before
@@ -1091,18 +964,12 @@
   //             'failed'          the call failed (not a 403): try again
   //             'scanPending'     no seed is analyzed yet (seeds listed)
   //             'nothingFinished' a random seed stands in: nothing counted,
-  //                               every finished song was dropped
-  //                               (reason dpage.state.allDropped), or
-  //                               "New seeds" went past them all
-  //                               (dpage.state.seedsCycled — also for a
-  //                               rotated notAnalyzed answer: the rest
-  //                               of the finished songs await the scan,
-  //                               and that answer has no suggestions)
+  //                               or every finished song was dropped this
+  //                               visit (reason dpage.state.allDropped)
   //             'ready'
   function stateOf(response, flags, opts) {
     const f = isObj(flags) ? flags : {};
-    const o = Object.assign({ filter: DEFAULT_PREFS.filter, staleDays: DEFAULT_PREFS.staleDays }, opts || {});
-    const so = { page: cleanPage(o.page), filter: pageFilter(o.filter) || DEFAULT_PREFS.filter };
+    const so = { page: cleanPage((opts || {}).page) };
     const absent = { status: 'absent', reason: null, count: 0 };
     const off = !pageAvailable(f) || (isObj(response) && response.disabled === true);
     const sources = off
@@ -1117,26 +984,21 @@
     if (off) { state = 'off'; reason = lbl('dpage.state.off'); }
     else if (response === undefined) { state = 'loading'; }
     else if (!isObj(response)) { state = 'failed'; reason = lbl('dpage.state.failed'); }
-    else if (response.notAnalyzed === true && o.rotated === true) {
-      // "New seeds" went past every analyzed finished song; the rest wait
-      // for the scan — the end of the cycle, not "nothing analyzed yet".
-      state = 'nothingFinished'; reason = lbl('dpage.state.seedsCycled');
-    } else if (response.notAnalyzed === true) { state = 'scanPending'; reason = lbl('dpage.state.scanPending'); }
+    else if (response.notAnalyzed === true) { state = 'scanPending'; reason = lbl('dpage.state.scanPending'); }
     else if (response.seedSource === 'random') {
       state = 'nothingFinished';
-      reason = lbl(o.rotated === true ? 'dpage.state.seedsCycled'
-        : (arr(response.excluded).length ? 'dpage.state.allDropped' : 'dpage.state.nothingFinished'));
+      reason = lbl(arr(response.excluded).length ? 'dpage.state.allDropped' : 'dpage.state.nothingFinished');
     }
     return { state, reason, sources };
   }
 
   return {
-    WINDOWS, FILTERS, PAGE_FILTERS, SOURCES, PAGES, DEFAULT_PREFS, STALE_DAYS_MIN, STALE_DAYS_MAX, PIN_CAP, EXCLUDE_CAP, HASH_MAX,
-    LIMIT_DEFAULTS, LIMIT_CAPS, LOOKUP_BATCH_MAX, STORAGE_KEYS, CLIENT_TTL_MS, SEED_CHIPS_MAX, PAGE_SIZE, ALBUM_STRIP_MAX,
-    defaultPrefs, cleanPrefs, mergePrefs, parseStoredPrefs, serializePrefs, dropSeed, restoreSeed,
-    pageAvailable, buildRequests, requestKey, nextRotation, mergeResponses,
+    WINDOWS, DEFAULT_WINDOW, SOURCES, PAGES, PIN_CAP, EXCLUDE_CAP, HASH_MAX,
+    LIMIT_DEFAULTS, LIMIT_CAPS, LOOKUP_BATCH_MAX, STORAGE_KEYS, SEED_CHIPS_MAX, PAGE_SIZE, ALBUM_STRIP_MAX,
+    storedWindow, dropSeed, restoreSeed, passPick, randomPick, noPickLeft,
+    pageAvailable, buildRequests, peersRequest, mergeResponses,
     fmtLength,
-    seedChips, windowOptions, filterFor, includesPlayed, includePlayedOption, pluginChips,
+    seedChips, windowOptions, pluginChips,
     librarySections, networkRows,
     peerGroups, peerRowsOf, peerSongRows, peerAlbums, pageLabels, pageSlice, columnBlocks,
     lookupChunks, jobBadges, anyLiveBadge,
