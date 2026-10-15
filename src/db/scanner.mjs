@@ -1246,7 +1246,9 @@ function insertTrack(song) {
     song.aaFile || null,
     song.aaSource || null,
     // V34: tracks.genre dropped — setTrackGenres (below) populates the M2M.
-    song.replaygain_track_gain?.dB || null,
+    // Keep a 0 dB gain, which `||` turned into NULL (the Rust scanner
+    // stores 0.0 too); anything non-finite is still no gain.
+    Number.isFinite(song.replaygain_track_gain?.dB) ? song.replaygain_track_gain.dB : null,
     song.sampleRate || null,
     song.channels || null,
     song.bitDepth || null,
