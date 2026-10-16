@@ -485,6 +485,10 @@ describe('Discover page: opening it', () => {
     assert.ok(html.indexOf('data-dp="queueAll"') < html.indexOf('dpage-src-peers" data-source'), 'Queue all under the library column');
     for (const f of ['shuffle', 'save', 'peerQueueAll']) { assert.ok(findDrawn(html, { 'data-dp': f }), f); }
     assert.match(html, /data-dp="queueAll">dpage\.verb\.queueAll</);
+    // the whole-list verbs sit under each column's header, ahead of its rows
+    assert.ok(html.indexOf('dpage.songs.library') < html.indexOf('data-dp="queueAll"'), 'library verbs after the header');
+    assert.ok(html.indexOf('data-dp="queueAll"') < html.indexOf('data-dp="play"'), 'library verbs before the first row');
+    assert.ok(html.indexOf('data-dp="peerQueueAll"') < html.indexOf('data-dp="peerPlay"'), 'peers verbs before the first peer row');
     assert.match(html, /data-dp="peerQueueAll">dpage\.verb\.queueAll</);
     assertTrimmed(html, 'ready');
   });
@@ -678,7 +682,7 @@ describe('Discover page: no connected servers', () => {
     assert.ok(html.includes('Many 15') && !html.includes('Many 16'));
     assert.ok(html.indexOf('Many 0') < html.indexOf('Many 8'), 'in order: the grid lays them out column-major');
     assert.ok(html.indexOf('data-dp="showMore" data-v="library"') > html.indexOf('Many 15'));
-    assert.ok(html.indexOf('data-dp="queueAll"') > html.indexOf('data-dp="showMore"'), 'the footer under the block');
+    assert.ok(html.indexOf('data-dp="queueAll"') < html.indexOf('Many 0'), 'the verbs under the header, ahead of the rows');
     assertTrimmed(html, 'no federation');
   });
 

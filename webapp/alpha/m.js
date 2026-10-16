@@ -4539,6 +4539,7 @@ function discoveryLibrarySongsHtml(s, lib, solo) {
   const D = DISCOVERYPAGE;
   const v = discoveryView;
   let body = '';
+  let acts = '';
   if (s.status === 'loading') {
     body = `<div class="dpage-rows" aria-busy="true">${discoverySkelHtml('rows', 4)}</div>`;
   } else if (s.status === 'failed') {
@@ -4556,13 +4557,14 @@ function discoveryLibrarySongsHtml(s, lib, solo) {
       body = `<div class="dpage-rows">${slice.rows.map((r, i) => discoverySongRowHtml(r, i, 'lib')).join('')}</div>`;
     }
     if (slice.more) { body += discoveryShowMoreHtml('library'); }
-    body += `<div class="dpage-foot">
-      <a href="javascript:void(0)" class="dpage-foot-pri" data-dp="queueAll">${escapeHtml(discoveryT(lib.footer.queueAllLabel))}</a><span class="dpage-sep" aria-hidden="true">·</span>
+    // The whole-list verbs sit under the header, ahead of the rows.
+    acts = `<div class="dpage-acts">
+      <a href="javascript:void(0)" class="dpage-acts-pri" data-dp="queueAll">${escapeHtml(discoveryT(lib.footer.queueAllLabel))}</a><span class="dpage-sep" aria-hidden="true">·</span>
       <a href="javascript:void(0)" data-dp="shuffle">${escapeHtml(t('dpage.verb.shuffle'))}</a><span class="dpage-sep" aria-hidden="true">·</span>
       <a href="javascript:void(0)" data-dp="save">${escapeHtml(t('dpage.verb.saveAsPlaylist'))}</a>
     </div>`;
   }
-  return `<section class="dpage-col dpage-src-library" data-source="library">${discoveryLabelHtml(t('dpage.songs.library'))}${body}</section>`;
+  return `<section class="dpage-col dpage-src-library" data-source="library">${discoveryLabelHtml(t('dpage.songs.library'))}${acts}${body}</section>`;
 }
 
 // "Songs from {name}" / "Songs from connected servers": ONE flat list of
@@ -4572,6 +4574,7 @@ function discoveryPeerSongsHtml(s, pg, labels) {
   const v = discoveryView;
   const label = labels.peerSongs ? discoveryT(labels.peerSongs) : t('dpage.songs.peerMany');
   let body = '';
+  let acts = '';
   if (s.status === 'loading') {
     return `<section class="dpage-col dpage-src-peers" data-source="peers"><div class="dpage-rows" aria-busy="true">${discoverySkelHtml('rows', 4)}</div></section>`;
   }
@@ -4588,9 +4591,9 @@ function discoveryPeerSongsHtml(s, pg, labels) {
     for (const g of pg.groups) { if (g.id != null && !knownPeers.has(Number(g.id))) { rememberPeer({ id: g.id, name: g.name }); } }
     body = `<div class="dpage-rows">${slice.rows.map((r, i) => discoverySongRowHtml(r, i, 'peer')).join('')}</div>`;
     if (slice.more) { body += discoveryShowMoreHtml('peers'); }
-    body += `<div class="dpage-foot"><a href="javascript:void(0)" class="dpage-foot-pri" data-dp="peerQueueAll">${escapeHtml(t('dpage.verb.queueAll'))}</a></div>`;
+    acts = `<div class="dpage-acts"><a href="javascript:void(0)" class="dpage-acts-pri" data-dp="peerQueueAll">${escapeHtml(t('dpage.verb.queueAll'))}</a></div>`;
   }
-  return `<section class="dpage-col dpage-src-peers" data-source="peers">${discoveryLabelHtml(label)}${body}</section>`;
+  return `<section class="dpage-col dpage-src-peers" data-source="peers">${discoveryLabelHtml(label)}${acts}${body}</section>`;
 }
 
 // ── Explore (the network): reached only through discoveryPanel({ page:

@@ -2891,6 +2891,13 @@ body.on-federated-server .side-nav-note {
 .dpage-prog i { display: block; height: 100%; background: #4fb8a8; border-radius: 2px; }
 /* the columns' footers: dim links */
 .dpage-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 6px 16px 4px 16px; font-size: 12px; }
+/* the whole-list verbs, under a column's header and ahead of its rows */
+.dpage-acts { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 0 16px 8px 16px; font-size: 12px; }
+.dpage-acts a { color: #8a919e; }
+.dpage-acts a:hover { color: #dfe3ea; }
+.dpage-acts a.dpage-acts-pri { color: #657ee4; }
+.dpage-acts a.dpage-acts-pri:hover { color: #8ea0f0; }
+.dpage-src-peers .dpage-acts a.dpage-acts-pri { color: #d9a441; }
 .dpage-foot a { color: #8a919e; }
 .dpage-foot a:hover { color: #dfe3ea; }
 .dpage-foot a.dpage-foot-pri { color: #657ee4; }
