@@ -2740,7 +2740,10 @@ body.on-federated-server .side-nav-note {
 .dpage .grow { flex-grow: 1; }
 .dpage-busy .dpage-sec, .dpage-busy .dpage-seeds, .dpage-busy .dpage-strip, .dpage-busy .dpage-songs { opacity: .6; transition: opacity .15s; }
 /* the configuration bar: one quiet gray row (the sidenav's surface) */
-.dpage-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 6px 10px 6px 14px; background: #262a33; border-bottom: 1px solid #2c313a; font-size: 12px; }
+/* The bar stays put while the page scrolls under it (#filelist is the
+   scroller and .dpage its only child, so sticky anchors to the list's top).
+   Its ground is opaque, and it sits above the strips' hover controls. */
+.dpage-bar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 6px 10px 6px 14px; background: #262a33; border-bottom: 1px solid #2c313a; font-size: 12px; }
 .dpage-bar-r { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
 .dpage-bar-opt { height: 28px; padding: 0 4px; display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 0; border-radius: 4px; color: #8ea0f0; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .dpage-bar-opt:hover { color: #dfe3ea; }

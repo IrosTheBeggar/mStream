@@ -1637,6 +1637,8 @@ describe('Discover page: wiring', () => {
   test('spa.css: the columns follow the page\'s own width (a container query), the no-federation flow is column-major, the phone tabs are gone', () => {
     const page = css.slice(css.indexOf('/* ── The Discover page'));
     assert.match(page, /\.dpage \{[^}]*container-type: inline-size;[^}]*container-name: dpage;/);
+    // the configuration bar stays put while the list scrolls under it
+    assert.match(page, /\.dpage-bar \{ position: sticky; top: 0; z-index: \d+;[^}]*background: #262a33;/);
     const wide = page.slice(page.indexOf('@container dpage (min-width: 560px)'));
     assert.ok(page.includes('@container dpage (min-width: 560px)'));
     assert.match(wide, /\.dpage-songs:not\(\.dpage-songs-solo\) \{ grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\); \}/);
