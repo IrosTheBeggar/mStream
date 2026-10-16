@@ -737,13 +737,10 @@ const VUEPLAYERCORE = (() => {
       // ── "From your peers" rows ─────────────────────────────────────
       // Playable since phase 4: the row queues through the federation
       // stream proxy. Lite metadata comes straight off the fed result so
-      // the queue + now-playing card render without any local lookup.
+      // the queue + now-playing card render without any local lookup —
+      // its cover included (DISCOVERYPAGE.fedQueueMeta).
       queueDiscoverFed: function (ft) {
-        mstreamModule.addFederationSongWizard(ft.peer, ft.filepath, {
-          title: ft.title || '',
-          artist: ft.artist || '',
-          duration: ft.duration || null,
-        }, true);
+        mstreamModule.addFederationSongWizard(ft.peer, ft.filepath, DISCOVERYPAGE.fedQueueMeta(ft), true);
       },
       // ── Recommendation modal ───────────────────────────────────────────
       // One window for a network or peer row.
@@ -772,13 +769,18 @@ const VUEPLAYERCORE = (() => {
       dmPct: function (track) {
         return Math.round(((track && track.similarity) || 0) * 100);
       },
-      // Header artwork: the peer's own art file for a peer row, else the
-      // first preview provider that answered with artwork.
+      // Header artwork: the peer's own art file for a peer row (its
+      // metadata read's, else the row's own albumArt — drawn before that
+      // read answers), else the first preview provider that answered
+      // with artwork.
       dmArt: function () {
         const m = this.discover.modal;
         if (!m.open) { return null; }
-        if (m.source === 'federation' && m.file && m.file.art && m.track.peer) {
-          return MSTREAMAPI.peerArtUrl(m.track.peer.id, m.file.art, 's');
+        const peerArt = m.source === 'federation' && m.track && m.track.peer
+          ? ((m.file && m.file.art) || DISCOVERYPAGE.fedQueueMeta(m.track)['album-art'] || null)
+          : null;
+        if (peerArt) {
+          return MSTREAMAPI.peerArtUrl(m.track.peer.id, peerArt, 's');
         }
         for (const name of Object.keys(m.previews || {})) {
           const p = m.previews[name] && m.previews[name].preview;
@@ -937,11 +939,19 @@ const VUEPLAYERCORE = (() => {
         } : null;
       },
       // ── Federation view actions ────────────────────────────────────────
+      // The song the window queues: the row's own lite metadata — its
+      // cover (albumArt) included, as dmArt draws it — under the peer
+      // metadata read's once that answers (its own cover first). Without the row's cover a Play
+      // now pressed before the read answered (or after it failed) queued
+      // the song with the default cover while the header showed the real one.
       dmSongMeta: function () {
         const m = this.discover.modal;
         const t = m.track;
         const base = { title: t.title || '', artist: t.artist || '', album: t.album || '', year: t.year || null, duration: t.duration || null };
-        return (m.file && m.file.metadata) ? { ...base, ...m.file.metadata } : base;
+        const out = (m.file && m.file.metadata) ? { ...base, ...m.file.metadata } : base;
+        const rowArt = m.source === 'federation' ? DISCOVERYPAGE.fedQueueMeta(t)['album-art'] : null;
+        if (rowArt && !out['album-art']) { out['album-art'] = rowArt; }
+        return out;
       },
       dmPlayNow: function () {
         const m = this.discover.modal;

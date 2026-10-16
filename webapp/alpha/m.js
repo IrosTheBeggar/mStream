@@ -4503,13 +4503,33 @@ function discoveryStripHtml(source, label, cards, skeleton) {
 // artist) with the server's art through the proxy. data-peer names the
 // server; the card opens the album in the peer-browse view, its play
 // button queues the album through the federation stream.
+// The note glyph an album card draws without art (renderAlbum's own).
+const DPAGE_NOTE_CARD = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#555"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>';
+
+// A connected server's cover that did not load: the proxy's 502 (the peer
+// went offline after the taste answer, before this lazy image's fetch) or
+// a 404 (the peer's cache was cleared). The note tile, as with no
+// albumArt, not an empty broken-image box. Called from the <img>'s own
+// onerror, so it is global like selectAlbumArt.
+function discoveryPeerArtFailed(img) {
+  const box = img && img.parentElement;
+  if (!box) { return; }
+  img.onerror = null;
+  if (box.classList.contains('dpage-art')) {
+    box.classList.add('dpage-art-ph');
+    box.innerHTML = DPAGE_ICONS.note;
+  } else {
+    img.outerHTML = DPAGE_NOTE_CARD;
+  }
+}
+
 function discoveryPeerAlbumHtml(a, i) {
   const src = a.art && a.peerId != null
     ? MSTREAMAPI.peerArtUrl(a.peerId, a.art, VUEPLAYERCORE.altLayout.compressArt ? 'l' : undefined)
     : null;
   return `<div class="dpage-album" title="${escapeHtml(a.peerName || '')}"><div class="album-grid-card dpage-peer-card" data-peer="${escapeHtml(a.peerId)}" data-album="${escapeHtml(a.album)}"${a.artist ? ` data-artist="${escapeHtml(a.artist)}"` : ''} data-dp="peerAlbumOpen" data-i="${i}" tabindex="0" role="link" aria-label="${escapeHtml([a.album, a.artist].filter(Boolean).join(' · '))}">
     <div class="album-grid-art">
-      ${src ? `<img loading="lazy" src="${escapeHtml(src)}" alt="">` : '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#555"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>'}
+      ${src ? `<img loading="lazy" src="${escapeHtml(src)}" alt="" onerror="discoveryPeerArtFailed(this)">` : DPAGE_NOTE_CARD}
       <button type="button" class="album-grid-play" data-dp="peerAlbum" data-i="${i}" title="${escapeHtml(t('dpage.verb.queue'))}" aria-label="${escapeHtml(t('dpage.verb.queue'))}">
         <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
@@ -4523,9 +4543,9 @@ function discoveryPeerAlbumHtml(a, i) {
 
 // A song row's 40 px art tile: the library's art, a connected server's
 // through the proxy, else the note glyph.
-function discoveryArtHtml(srcAttr) {
+function discoveryArtHtml(srcAttr, peer) {
   return srcAttr
-    ? `<span class="dpage-art"><img loading="lazy" ${srcAttr} alt=""></span>`
+    ? `<span class="dpage-art"><img loading="lazy" ${srcAttr} alt=""${peer ? ' onerror="discoveryPeerArtFailed(this)"' : ''}></span>`
     : `<span class="dpage-art dpage-art-ph">${DPAGE_ICONS.note}</span>`;
 }
 
@@ -4550,7 +4570,7 @@ function discoverySongRowHtml(r, i, kind) {
     : verb('play', 'dpage.verb.playNow', DPAGE_ICONS.play) + verb('queue', 'dpage.verb.queue', DPAGE_ICONS.add) +
       verb('more', 'dpage.verb.addToPlaylist', '⋯', ` data-file_location="${escapeHtml(r.filepath)}"`);
   return `<div class="discover-row dpage-row pointer" data-dp="${peer ? 'fedQueue' : 'queue'}" data-i="${i}"${tip ? ` title="${escapeHtml(tip)}"` : ''}>
-    ${discoveryArtHtml(src)}
+    ${discoveryArtHtml(src, peer)}
     <div class="discover-row-info"><div class="discover-row-title">${escapeHtml(r.title)}</div><div class="discover-row-sub">${escapeHtml(r.subtitle || '')}</div></div>
     <span class="dpage-verbs">${verbs}</span>
   </div>`;
@@ -4769,7 +4789,7 @@ function discoveryAction(act, el) {
     // Play now, through this server's federation stream proxy.
     const raw = peerRow.raw;
     VUEPLAYERCORE.addFederationSongWizard(raw.peer || { id: peerRow.peerId, name: peerRow.peerName }, raw.filepath,
-      { title: raw.title || '', artist: raw.artist || '', duration: raw.duration || null }, false, MSTREAMPLAYER.positionCache.val + 1, true);
+      DISCOVERYPAGE.fedQueueMeta(raw), false, MSTREAMPLAYER.positionCache.val + 1, true);
   } else if (act === 'fedQueue' && peerRow && peerRow.playable) {
     // The row itself, or its Add to queue: queued, as a library row is.
     VUEPLAYERCORE.queueDiscoverFed(peerRow.raw);

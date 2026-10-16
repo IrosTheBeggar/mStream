@@ -88,7 +88,7 @@ function sliceConst(name) {
   const lines = SRC.split(/\r?\n/);
   const start = lines.findIndex((l) => l.startsWith(`const ${name} = `));
   assert.ok(start >= 0, `m.js no longer defines const ${name} — update this test`);
-  if (lines[start].endsWith('};')) return lines[start];
+  if (lines[start].endsWith('};') || lines[start].endsWith("';")) return lines[start];
   for (let i = start; i < lines.length; i++) {
     if (lines[i] === '};') return lines.slice(start, i + 1).join('\n');
   }
@@ -102,7 +102,7 @@ const FNS = ['escapeHtml', 'peerAttr', 'artUrl', 'artImgAttr', 'renderAlbum', 's
   'discoveryLocalChoices', 'discoverySaveLocalChoice', 'discoveryPanel', 'redoDiscovery', 'discoveryOff',
   'discoveryResponse', 'discoveryLoadBadges', 'discoveryHideHead', 'renderDiscovery', 'discoveryFocusedSelector', 'discoveryHeadHtml',
   'discoveryOptionsHtml', 'discoveryCheckHtml', 'discoveryCardHtml', 'discoverySeedsHtml', 'discoveryLabelHtml',
-  'discoverySkelHtml', 'discoveryPlayHtml', 'discoveryStripHtml', 'discoveryPeerAlbumHtml', 'discoveryArtHtml',
+  'discoverySkelHtml', 'discoveryPlayHtml', 'discoveryStripHtml', 'discoveryPeerArtFailed', 'discoveryPeerAlbumHtml', 'discoveryArtHtml',
   'discoverySongRowHtml', 'discoveryShowMoreHtml', 'discoveryColHintHtml', 'discoveryLibrarySongsHtml',
   'discoveryPeerSongsHtml', 'discoveryExploreHtml', 'discoverySectionHtml', 'discoveryEmptyHtml',
   'discoveryBadgeHtml', 'discoveryProgressHtml', 'discoveryNetworkHtml', 'onDiscoveryChange', 'onDiscoveryClick',
@@ -147,7 +147,7 @@ const countDrawn = (html, attrs) => tagsOf(html).filter((el) => Object.entries(a
 //   playing       MSTREAMPLAYER.getCurrentSong()
 //   lookup(recs)  MSTREAMAPI.discoveryJobLookupBatch
 //   jobs          VUEPLAYERCORE.discoverJobs() (the strip's last poll)
-function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = FLAGS_ALL, lookup = null, plugins = null, jobs = [], albumSongs = null, noHead = false } = {}) {
+function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = FLAGS_ALL, lookup = null, plugins = null, jobs = [], albumSongs = null, noHead = false, peerArtUrl = null, compressArt = false } = {}) {
   const els = new Map();
   // the delegated handlers, by the root ('filelist' | 'dpage-head') whose
   // drawn .dpage took them: a control's events reach only its own root's
@@ -251,14 +251,14 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
       discoveryTaste: (body) => { calls.push({ name: 'taste', body }); return Promise.resolve(taste(body)); },
       ping: () => { calls.push({ name: 'ping' }); return ping ? Promise.resolve(ping) : Promise.reject(new Error('no ping')); },
       discoveryJobLookupBatch: (recs) => { calls.push({ name: 'lookup', body: recs }); return lookup ? Promise.resolve(lookup(recs)) : Promise.reject(new Error('no lookup')); },
-      peerArtUrl: (id, art, compress) => `http://host/peer/${id}/art/${art}?c=${compress}`,
+      peerArtUrl: peerArtUrl || ((id, art, compress) => `http://host/peer/${id}/art/${art}?c=${compress}`),
       peer: {
         albumSongs: (id, body) => { calls.push({ name: 'peerAlbumSongs', id, body }); return albumSongs ? Promise.resolve(albumSongs(id, body)) : Promise.reject(new Error('no album')); },
       },
     },
     MSTREAMPLAYER: { ignoreVPaths: {}, positionCache: { val: 2 }, getCurrentSong: () => playing },
     VUEPLAYERCORE: {
-      altLayout: { compressArt: false },
+      altLayout: { compressArt },
       songCapture: null,
       addSongWizard: (...args) => { queued.push(args); },
       addFederationSongWizard: (...args) => { fedQueued.push(['play', ...args]); },
@@ -305,6 +305,7 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
     ${sliceConst('DPAGE_LIMITS')}
     ${sliceConst('discoveryView')}
     ${sliceConst('DPAGE_ICONS')}
+    ${sliceConst('DPAGE_NOTE_CARD')}
     discoveryView.flags = ${JSON.stringify(flags)};
     ${FNS.map(sliceFn).join('\n\n')}
     return {
@@ -417,13 +418,13 @@ const MAIN = {
   peers: null,
 };
 
-const PEER_ROW = { source: 'federation', seedHash: null, peer: { id: 1, name: 'Sam\'s server' }, filepath: 'tunes/P/One.mp3', title: 'Peer Song', artist: 'Quinn', album: 'Peer Album', duration: 210, similarity: 0.85, art: 'pa.jpg' };
+const PEER_ROW = { source: 'federation', seedHash: null, peer: { id: 1, name: 'Sam\'s server' }, filepath: 'tunes/P/One.mp3', title: 'Peer Song', artist: 'Quinn', album: 'Peer Album', duration: 210, similarity: 0.85, albumArt: 'pa.jpg' };
 const PEERS = {
   ...MAIN, library: null, network: null,
   peers: {
     peers: [
       { id: 1, name: 'Sam\'s server', reachable: true, mismatched: false, lastSeen: '2026-10-05T00:00:00.000Z',
-        results: [PEER_ROW, { ...PEER_ROW, filepath: 'tunes/P/Two.mp3', title: 'Peer Two', album: '', art: undefined, similarity: 0.6 }] },
+        results: [PEER_ROW, { ...PEER_ROW, filepath: 'tunes/P/Two.mp3', title: 'Peer Two', album: '', albumArt: null, similarity: 0.6 }] },
       { id: 2, name: 'Peer <B>', reachable: false, mismatched: false, lastSeen: '2026-10-03T00:00:00.000Z', results: [{ ...PEER_ROW, peer: { id: 2, name: 'Peer <B>' }, title: 'Offline Song' }] },
     ],
     searched: { peers: 1, unreachable: 1, mismatched: 0 },
@@ -431,6 +432,29 @@ const PEERS = {
 };
 
 const answer = (body) => (body.sources.includes('peers') ? PEERS : MAIN);
+
+// api.js's own MSTREAMAPI.peerArtUrl (the art proxy URL), over the
+// sandbox's server — so a test sees the very URL an <img> would load.
+function realPeerArtUrl() {
+  const api = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'api.js'), 'utf8');
+  const start = api.indexOf('  mstreamModule.peerArtUrl = ');
+  assert.ok(start >= 0, 'api.js no longer defines mstreamModule.peerArtUrl — update this test');
+  const end = api.indexOf('\n  };', start);
+  const mstreamModule = { currentServer: { host: 'http://host/', token: 'TOK' } };
+  new Function('mstreamModule', api.slice(start, end + 5))(mstreamModule);
+  return mstreamModule.peerArtUrl;
+}
+
+// A connected server's answer whose rows name their covers (albumArt), and
+// one whose rows name none (a peer on an older server sends no field).
+const COVER_ROWS = [
+  { ...PEER_ROW, peer: { id: 7, name: 'Kim' }, filepath: 'k/Kite 1.mp3', title: 'Kite One', album: 'Kite', artist: 'Kim', albumArt: 'c0ffee12.jpeg', similarity: 0.9 },
+  { ...PEER_ROW, peer: { id: 7, name: 'Kim' }, filepath: 'k/Kite 2.mp3', title: 'Kite Two', album: 'Kite', artist: 'Kim', albumArt: 'c0ffee12.jpeg', similarity: 0.8 },
+  { ...PEER_ROW, peer: { id: 7, name: 'Kim' }, filepath: 'k/Lark 1.mp3', title: 'Lark One', album: 'Lark', artist: 'Kim', albumArt: 'beef 34.png', similarity: 0.7 },
+];
+const peersWith = (results) => ({ ...PEERS, peers: { peers: [{ id: 7, name: 'Kim', reachable: true, mismatched: false, lastSeen: null, results }], searched: { peers: 1, unreachable: 0, mismatched: 0 } } });
+const coverAnswer = (results) => (body) => (body.sources.includes('peers') ? peersWith(results) : { ...MAIN, library: null });
+const imgSrcs = (html) => [...html.matchAll(/<img loading="lazy" src="([^"]*)"/g)].map((m) => decode(m[1]));
 const PLAYING = { rawFilePath: '/music/Now/Playing.flac', metadata: { title: 'Now Song' } };
 const NO_FED = { ...FLAGS_ALL, federationDiscovery: false };
 
@@ -513,7 +537,7 @@ describe('Discover page: opening it', () => {
     assert.equal(card.attrs.tabindex, '0', 'the keyboard reaches the card');
     assert.equal(card.attrs.role, 'link');
     assert.equal(card.attrs['aria-label'], 'Peer Album · Quinn');
-    assert.match(html, /<img loading="lazy" src="http:&#x2F;&#x2F;host&#x2F;peer&#x2F;1&#x2F;art&#x2F;pa.jpg\?c&#x3D;undefined" alt="">/);
+    assert.match(html, /<img loading="lazy" src="http:&#x2F;&#x2F;host&#x2F;peer&#x2F;1&#x2F;art&#x2F;pa.jpg\?c&#x3D;undefined" alt="" onerror="discoveryPeerArtFailed\(this\)">/);
     assert.equal(countDrawn(html, { 'data-dp': 'peerAlbumOpen' }), 1, 'the album-less row makes no card');
     // the songs: art tile, title, "Artist · Album"
     assert.ok(html.includes('Title Seven') && html.includes('Title Eight'));
@@ -521,7 +545,7 @@ describe('Discover page: opening it', () => {
     assert.match(html, /<span class="dpage-art dpage-art-ph">/, 'no art: the note tile');
     assert.ok(html.includes('Jay · Album Seven'));
     assert.ok(html.includes('Quinn · Peer Album'));
-    assert.match(html, /<span class="dpage-art"><img loading="lazy" src="http:&#x2F;&#x2F;host&#x2F;peer&#x2F;1&#x2F;art&#x2F;pa.jpg\?c&#x3D;s" alt=""><\/span>/);
+    assert.match(html, /<span class="dpage-art"><img loading="lazy" src="http:&#x2F;&#x2F;host&#x2F;peer&#x2F;1&#x2F;art&#x2F;pa.jpg\?c&#x3D;s" alt="" onerror="discoveryPeerArtFailed\(this\)"><\/span>/);
     // the connected column is one flat list of the playable rows
     assert.ok(html.includes('Peer Two'));
     assert.ok(!html.includes('Offline Song'), 'an offline server\'s rows are not shown');
@@ -551,6 +575,8 @@ describe('Discover page: opening it', () => {
     assert.equal(fedQueued[0][0], 'play');
     assert.deepEqual(fedQueued[0][1], { id: 1, name: 'Sam\'s server' });
     assert.equal(fedQueued[0][2], 'tunes/P/One.mp3');
+    assert.deepEqual(fedQueued[0][3], { title: 'Peer Song', artist: 'Quinn', duration: 210, album: 'Peer Album', 'album-art': 'pa.jpg' },
+      'the lite metadata carries the cover: the queue row and now-playing card draw it through the proxy');
     assert.equal(fedQueued[0][5], 3, 'right after the playing song');
     click({ 'data-dp': 'fedQueue', 'data-i': 1 });
     assert.deepEqual(fedQueued[1], ['queue', PEERS.peers.peers[0].results[1]], 'the route\'s own row, through the federation stream');
@@ -608,8 +634,80 @@ describe('Discover page: opening it', () => {
     assert.equal(fedQueued.length, 0);
   });
 
+  test('connected servers\' covers: the row\'s albumArt through the art proxy, on the album card and the song row', async () => {
+    const { S } = makeSandbox({ taste: coverAnswer(COVER_ROWS), peerArtUrl: realPeerArtUrl() });
+    await S.discoveryPanel();
+    const html = S.page();
+    const strip = html.slice(html.indexOf('dpage-strip dpage-src-peers'), html.indexOf('<div class="dpage-songs'));
+    const col = html.slice(html.indexOf('dpage-col dpage-src-peers'));
+    // the album cards: one per album, the first row's cover, full size as
+    // the library's cards are (renderAlbum: no compress unless compressArt)
+    assert.deepEqual(imgSrcs(strip), [
+      'http://host/api/v1/federation/peers/7/art/c0ffee12.jpeg?token=TOK',
+      'http://host/api/v1/federation/peers/7/art/beef%2034.png?token=TOK',
+    ]);
+    // the song rows: the 40 px tile, the small thumbnail, lazy like the library's
+    assert.deepEqual(imgSrcs(col), [
+      'http://host/api/v1/federation/peers/7/art/c0ffee12.jpeg?compress=s&token=TOK',
+      'http://host/api/v1/federation/peers/7/art/c0ffee12.jpeg?compress=s&token=TOK',
+      'http://host/api/v1/federation/peers/7/art/beef%2034.png?compress=s&token=TOK',
+    ], 'the row\'s server, the row\'s file, compress=s');
+    assert.ok(!col.includes('dpage-art-ph'), 'every row has its cover');
+    assert.equal(countDrawn(strip, { 'data-dp': 'peerAlbumOpen' }), 2);
+
+    // compressed album art (the layout setting): the cards ask the proxy for 'l'
+    const small = makeSandbox({ taste: coverAnswer(COVER_ROWS), peerArtUrl: realPeerArtUrl(), compressArt: true });
+    await small.S.discoveryPanel();
+    const sHtml = small.S.page();
+    const sStrip = sHtml.slice(sHtml.indexOf('dpage-strip dpage-src-peers'), sHtml.indexOf('<div class="dpage-songs'));
+    assert.deepEqual(imgSrcs(sStrip).map((u) => new URL(u).searchParams.get('compress')), ['l', 'l']);
+  });
+
+  test('a connected server\'s cover that fails to load (the proxy\'s 502 or 404) falls back to the note tile', async () => {
+    const { S } = makeSandbox({ taste: coverAnswer(COVER_ROWS), peerArtUrl: realPeerArtUrl() });
+    await S.discoveryPanel();
+    const html = S.page();
+    const strip = html.slice(html.indexOf('dpage-strip dpage-src-peers'), html.indexOf('<div class="dpage-songs'));
+    const col = html.slice(html.indexOf('dpage-col dpage-src-peers'));
+    // every peer <img> (cards and rows) carries the fallback; the library's do not
+    const peerImgs = (h) => [...h.matchAll(/<img [^>]*>/g)].map((m) => m[0]);
+    assert.ok(peerImgs(strip).length === 2 && peerImgs(strip).every((t) => t.includes('onerror="discoveryPeerArtFailed(this)"')));
+    assert.ok(peerImgs(col).length === 3 && peerImgs(col).every((t) => t.includes('onerror="discoveryPeerArtFailed(this)"')));
+    const libCol = html.slice(html.indexOf('dpage-col dpage-src-library'), html.indexOf('dpage-col dpage-src-peers'));
+    assert.ok(peerImgs(libCol).every((t) => !t.includes('onerror')), 'the library\'s own covers are unchanged');
+    // the handler: a song row's tile becomes the placeholder tile, a card's <img> the card's note glyph
+    const fakeImg = (cls) => {
+      const box = { innerHTML: '<img>', classes: new Set(cls), classList: null };
+      box.classList = { contains: (c) => box.classes.has(c), add: (c) => box.classes.add(c) };
+      return { parentElement: box, onerror: () => {}, outerHTML: '<img>' };
+    };
+    const row = fakeImg(['dpage-art']);
+    S.discoveryPeerArtFailed(row);
+    assert.ok(row.parentElement.classes.has('dpage-art-ph'));
+    assert.match(row.parentElement.innerHTML, /^<svg[^>]*viewBox="0 0 24 24"/);
+    assert.equal(row.onerror, null, 'never fires twice');
+    const card = fakeImg(['album-grid-art']);
+    S.discoveryPeerArtFailed(card);
+    assert.match(card.outerHTML, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 24 24" fill="#555">/);
+    assert.ok(!card.parentElement.classes.has('dpage-art-ph'));
+    S.discoveryPeerArtFailed({ parentElement: null }); // detached: nothing to do, no throw
+  });
+
+  test('connected servers without albumArt (an older peer, a bare track): the note tile, no proxy request', async () => {
+    const bare = COVER_ROWS.map(({ albumArt, ...r }, i) => (i === 2 ? { ...r, albumArt: null } : r));
+    const { S } = makeSandbox({ taste: coverAnswer(bare), peerArtUrl: realPeerArtUrl() });
+    await S.discoveryPanel();
+    const html = S.page();
+    const strip = html.slice(html.indexOf('dpage-strip dpage-src-peers'), html.indexOf('<div class="dpage-songs'));
+    const col = html.slice(html.indexOf('dpage-col dpage-src-peers'));
+    assert.deepEqual(imgSrcs(html), [], 'no <img> at all');
+    assert.ok(!html.includes('/art/'), 'nothing asks the proxy');
+    assert.equal((strip.match(/<div class="album-grid-art">\s*<svg[^>]*viewBox="0 0 24 24"/g) || []).length, 2, 'both cards: the note tile');
+    assert.equal((col.match(/<span class="dpage-art dpage-art-ph">/g) || []).length, 3, 'every row: the note tile');
+  });
+
   test('a connected album card: Enter opens it (the keyboard reaches it); a card with no art draws the note tile', async () => {
-    const noArt = { ...PEER_ROW, filepath: 'tunes/P/Other.mp3', title: 'Other', album: 'Bare Album', art: undefined, similarity: 0.7 };
+    const noArt = { ...PEER_ROW, filepath: 'tunes/P/Other.mp3', title: 'Other', album: 'Bare Album', albumArt: null, similarity: 0.7 };
     const peers = { ...PEERS, peers: { ...PEERS.peers, peers: [{ ...PEERS.peers.peers[0], results: [PEER_ROW, noArt] }] } };
     const { S, keydown, adopted, albumsOpened } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? peers : MAIN) });
     await S.discoveryPanel();

@@ -615,17 +615,36 @@
 
   // ── peers (connected servers) ──────────────────────────────────────────
 
-  // A federation row's album art file, when the row carries one (read
-  // through MSTREAMAPI.peerArtUrl(peerId, art, 's') — the
-  // /api/v1/federation/peers/:id/art/ proxy); null = the note tile. The
-  // taste route's rows carry none today; a responder that adds one is
-  // picked up here without a client change.
+  // A federation row's album art file: the peer's own /album-art/<name>
+  // file, drawn through this server's art proxy
+  // (MSTREAMAPI.peerArtUrl(peerId, art, compress) →
+  // /api/v1/federation/peers/:id/art/<name>); null = the note tile. The
+  // taste route's peers rows carry it as `albumArt` (null for a track
+  // without a cover; absent from a peer on an older server). The other
+  // spellings are older guesses, read only after it and harmless.
   function peerArtOf(raw) {
-    for (const k of ['art', 'albumArt', 'album-art', 'album_art_file']) {
+    for (const k of ['albumArt', 'art', 'album-art', 'album_art_file']) {
       const v = raw[k];
       if (typeof v === 'string' && v && v.length <= PIN_PATH_MAX) { return v; }
     }
     return null;
+  }
+
+  // A federation row's lite metadata for the queue (VUEPLAYERCORE's
+  // queueDiscoverFed and the page's Play now), so the queue row and the
+  // now-playing card draw without a lookup: title, artist, album, length,
+  // and the row's cover as the song's 'album-art' — songArtUrl draws a
+  // federation song's art through the peer art proxy. No albumArt (a
+  // track without a cover, a peer on an older server) = no 'album-art',
+  // the default cover.
+  function fedQueueMeta(raw) {
+    const r = isObj(raw) ? raw : {};
+    const md = { title: str(r.title), artist: str(r.artist), duration: r.duration || null };
+    const album = str(r.album);
+    if (album) { md.album = album; }
+    const art = peerArtOf(r);
+    if (art) { md['album-art'] = art; }
+    return md;
   }
 
   // One group per paired server, answering ones first (then a model
@@ -718,7 +737,9 @@
   //                 button queues the raws through the federation stream
   //                 (VUEPLAYERCORE.queueDiscoverFed), paths = their
   //                 peer-side filepaths
-  //   art           the first row's art that has one, else null (note tile)
+  //   art           the album's cover: the first row's albumArt (best
+  //                 match first; a later row's when the first has none),
+  //                 else null (the note tile)
   //   peerName      the card's tooltip
   function peerAlbums(groups, opts) {
     const o = opts || {};
@@ -1000,7 +1021,7 @@
     fmtLength,
     seedChips, windowOptions, pluginChips,
     librarySections, networkRows,
-    peerGroups, peerRowsOf, peerSongRows, peerAlbums, pageLabels, pageSlice, columnBlocks,
+    peerGroups, peerRowsOf, peerSongRows, peerAlbums, fedQueueMeta, pageLabels, pageSlice, columnBlocks,
     lookupChunks, jobBadges, anyLiveBadge,
     stateOf,
   };

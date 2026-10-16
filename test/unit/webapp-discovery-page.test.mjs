@@ -627,7 +627,7 @@ describe('peerGroups', () => {
     assert.deepEqual([row.peerId, row.peerName, row.filepath, row.playable], [1, 'Sam’s server', 'music/q/P1.mp3', true]);
     assert.equal(row.subtitle, 'Artist Q · Album P1', 'no year, no server');
     assert.equal(row.similarity, 0.7412);
-    assert.equal(row.art, null, 'the note tile: the route sends no art today');
+    assert.equal(row.art, null, 'a row without albumArt: the note tile');
     assert.equal(row.length, '4:03');
     assert.deepEqual(D.peerRowsOf(out.groups).map((x) => x.title), ['P1', 'P2', 'P3']);
     assert.deepEqual(D.peerRowsOf(out).map((x) => x.title), ['P1', 'P2', 'P3'], 'the whole answer works too');
@@ -651,6 +651,64 @@ describe('peerGroups', () => {
     assert.deepEqual(groups[0].rows.map((x) => x.art), ['cover.jpg', 'b.png', null]);
   });
 
+  test('the route\'s albumArt is the row\'s art (read first); null or absent = the note tile', () => {
+    const fan = { peers: [{ ...SAM, reachable: true, mismatched: false, results: [
+      fedRow(SAM, 'C1', { albumArt: '0f1e2d3c.jpeg' }),
+      fedRow(SAM, 'C2', { albumArt: '0f1e2d3c.jpeg', art: 'older-guess.jpg' }),
+      fedRow(SAM, 'C3', { albumArt: null }),
+      fedRow(SAM, 'C4'),
+      fedRow(SAM, 'C5', { albumArt: '' }),
+    ] }], searched: { peers: 1 } };
+    // Through the route's own stamping, as the peers section sends them.
+    const rows = D.peerGroups({ peers: peersSection(fan) }).groups[0].rows;
+    assert.deepEqual(rows.map((x) => x.art), ['0f1e2d3c.jpeg', '0f1e2d3c.jpeg', null, null, null], 'albumArt wins over the older spellings');
+    assert.deepEqual(rows.map((x) => x.peerId), [1, 1, 1, 1, 1], 'the proxy URL names the row\'s server');
+  });
+});
+
+// vp.js's peer window: dmSongMeta (what Play now / Queue next / Add
+// queue), sliced from the component's methods and run over a stub modal.
+const VP_SRC = readFileSync(new URL('../../webapp/alpha/vp.js', import.meta.url), 'utf8');
+function vpDmSongMeta() {
+  const start = VP_SRC.indexOf('      dmSongMeta: function () {');
+  assert.ok(start >= 0, 'vp.js no longer defines dmSongMeta — update this test');
+  const end = VP_SRC.indexOf('\n      },\n', start);
+  const fnSrc = VP_SRC.slice(start + '      dmSongMeta: '.length, end + '\n      }'.length);
+  return new Function('DISCOVERYPAGE', `return (${fnSrc});`)(D);
+}
+
+describe('the peer window\'s queued metadata (vp.js dmSongMeta)', () => {
+  const meta = vpDmSongMeta();
+  const call = (modal) => meta.call({ discover: { modal } });
+  const track = fedRow(SAM, 'W1', { albumArt: 'w1art.jpeg' });
+  test('before the peer metadata read answers (or after it failed): the row\'s albumArt is the song\'s cover', () => {
+    assert.equal(call({ source: 'federation', track, file: null })['album-art'], 'w1art.jpeg');
+  });
+  test('once it answers, the read\'s own cover wins; a read with none keeps the row\'s', () => {
+    assert.equal(call({ source: 'federation', track, file: { metadata: { 'album-art': 'read.jpeg', title: 'W1' } } })['album-art'], 'read.jpeg');
+    assert.equal(call({ source: 'federation', track, file: { metadata: { 'album-art': null, title: 'W1' } } })['album-art'], 'w1art.jpeg');
+  });
+  test('a row without albumArt (an older peer) names no cover; a network row never does', () => {
+    assert.equal('album-art' in call({ source: 'federation', track: fedRow(SAM, 'W2'), file: null }), false);
+    assert.equal('album-art' in call({ source: 'network', track, file: null }), false);
+  });
+});
+
+describe('fedQueueMeta (a peers row\'s lite metadata for the queue)', () => {
+  test('title, artist, album, length and the row\'s cover as the song\'s album-art', () => {
+    const raw = fedRow(SAM, 'Q1', { albumArt: 'aa11.jpeg' });
+    assert.deepEqual(D.fedQueueMeta(raw), { title: 'Q1', artist: 'Artist Q', duration: 243, album: 'Album P1', 'album-art': 'aa11.jpeg' },
+      'songArtUrl draws a federation song\'s album-art through the peer art proxy');
+  });
+  test('no albumArt (a bare track, an older peer): no album-art, the default cover', () => {
+    const bare = D.fedQueueMeta(fedRow(SAM, 'Q2', { albumArt: null, album: null }));
+    assert.deepEqual(bare, { title: 'Q2', artist: 'Artist Q', duration: 243 });
+    assert.equal('album-art' in D.fedQueueMeta(fedRow(SAM, 'Q3')), false);
+    assert.deepEqual(D.fedQueueMeta(undefined), { title: '', artist: '', duration: null });
+  });
+});
+
+describe('peerGroups (its edges)', () => {
   test('an absent section', () => {
     assert.deepEqual(D.peerGroups(historyResponse()), { groups: [], count: 0, searched: null });
     assert.deepEqual(D.peerGroups(undefined).groups, []);
@@ -716,6 +774,26 @@ describe('peerAlbums', () => {
     const untagged = { peers: [{ ...SAM, reachable: true, mismatched: false, results: [fedRow(SAM, 'U', { album: '' })] }], searched: {} };
     assert.deepEqual(D.peerAlbums(D.peerGroups({ peers: peersSection(untagged) })), []);
     assert.deepEqual(D.peerAlbums([]), []);
+  });
+
+  test('a card\'s art is its first row\'s albumArt (best match first); none = the note tile', () => {
+    const fan = { peers: [
+      { ...SAM, reachable: true, mismatched: false, results: [
+        fedRow(SAM, 'K2', { similarity: 0.5, album: 'Kite', albumArt: 'kite-b.jpeg' }),
+        fedRow(SAM, 'K1', { similarity: 0.9, album: 'Kite', albumArt: 'kite-a.jpeg' }),
+        fedRow(SAM, 'L1', { similarity: 0.8, album: 'Lark', albumArt: null }),
+        fedRow(SAM, 'L2', { similarity: 0.7, album: 'Lark', albumArt: 'lark.jpeg' }),
+        fedRow(SAM, 'M1', { similarity: 0.6, album: 'Moth' }),
+      ] },
+      { ...TOM, reachable: true, mismatched: false, results: [fedRow(TOM, 'K9', { similarity: 0.85, album: 'Kite', albumArt: 'tom-kite.jpeg' })] },
+    ], searched: { peers: 2 } };
+    const cards = D.peerAlbums(D.peerGroups({ peers: peersSection(fan) }));
+    assert.deepEqual(cards.map((c) => [c.peerId, c.album, c.art]), [
+      [1, 'Kite', 'kite-a.jpeg'],
+      [4, 'Kite', 'tom-kite.jpeg'],
+      [1, 'Lark', 'lark.jpeg'],
+      [1, 'Moth', null],
+    ], 'the best row\'s cover; a later row\'s when the first has none; each server\'s own');
   });
 });
 
