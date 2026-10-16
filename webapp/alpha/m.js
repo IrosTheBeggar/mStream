@@ -403,6 +403,9 @@ function setBrowserRootPanel(panelName, showBar) {
     document.getElementById('directory_bar').style.display = '';
   }
 
+  // Discover's bar lives in the column's chrome: no other panel shows it.
+  discoveryHideHead();
+
   document.getElementById('localSearchBar').value = "";
   document.getElementById('directoryName').innerHTML = '';
   document.getElementById('local_search_btn').style.display = '';
@@ -3386,7 +3389,10 @@ async function getAlbumSongs(album, artist, year, albumArtist) {
   // cards still needs the back button (onBackButton has its branch). Other
   // bar-less panels keep the bar hidden: they have no way back.
   const under = programState[programState.length - 1];
-  if (under && under.state === 'discovery') { document.getElementById('directory_bar').style.display = ''; }
+  if (under && under.state === 'discovery') {
+    document.getElementById('directory_bar').style.display = '';
+    discoveryHideHead();
+  }
   document.getElementById('directoryName').innerHTML = 'Album: ' + escapeHtml(album);
 
   programState.push({
@@ -4241,10 +4247,21 @@ function discoveryPatchBadges(raws) {
   }
 }
 
+// The bar's host (#dpage-head, above the #filelist scroller): emptied and
+// hidden when the page is left (another panel, an album opened from it) or
+// draws no bar (off / unavailable).
+function discoveryHideHead() {
+  const head = document.getElementById('dpage-head');
+  if (!head) { return; }
+  head.classList.add('super-hide');
+  head.innerHTML = '';
+}
+
 function renderDiscovery() {
   const D = DISCOVERYPAGE;
   const v = discoveryView;
   const root = document.getElementById('filelist');
+  const head = document.getElementById('dpage-head');
   const res = discoveryResponse();
   const page = v.page === 'explore' ? 'explore' : 'play';
   const st = D.stateOf(res, v.flags, { page });
@@ -4257,17 +4274,23 @@ function renderDiscovery() {
     const body = v.off === 'checking'
       ? escapeHtml(t('dpage.state.loading'))
       : `<b>${escapeHtml(t(account ? 'dpage.state.unavailable' : 'dpage.state.off'))}</b><br>${escapeHtml(t(account ? 'dpage.state.unavailableBody' : 'dpage.state.offBody'))}`;
+    discoveryHideHead();
     root.innerHTML = `<div class="dpage dpage-off"><div class="dpage-hint">${body}</div></div>`;
     return;
   }
   const busy = v.pending.main || v.pending.peers;
   const refocus = discoveryFocusedSelector();
-  let html = `<div class="dpage dpage-page-${page}${busy ? ' dpage-busy' : ''}"${st.state === 'loading' ? ' aria-busy="true"' : ''}>`;
-  html += discoveryHeadHtml(v.window);
-  // The seed picker (and, on Explore, "new artists only") sit behind the
-  // bar's "More options": a first-time user took the seed chips for songs
-  // to play.
-  if (v.optionsOpen) { html += discoveryOptionsHtml(st, res, page); }
+  const cls = `dpage-page-${page}${busy ? ' dpage-busy' : ''}`;
+  // The bar sits in the column's chrome (#dpage-head), out of the scroller.
+  // The seed picker (and, on Explore, "new artists only") sit behind its
+  // "More options", in the same host: a first-time user took the seed chips
+  // for songs to play.
+  let barHtml = discoveryHeadHtml(v.window);
+  if (v.optionsOpen) { barHtml += discoveryOptionsHtml(st, res, page); }
+  let html = `<div class="dpage ${cls}"${st.state === 'loading' ? ' aria-busy="true"' : ''}>`;
+  // No host (an index.html older than this script): the bar heads the page
+  // in the scroller, as it once did, rather than vanishing.
+  if (!head) { html += barHtml; }
 
   if (st.state === 'failed') {
     html += discoveryCardHtml(t('dpage.state.failed'), '', [['retry', 'dpage.verb.tryAgain', true]]);
@@ -4287,9 +4310,20 @@ function renderDiscovery() {
     html += page === 'explore' ? discoveryExploreHtml(res, st) : discoveryPlayHtml(res, st);
   }
   html += '</div>';
+  if (head) {
+    // The open picker scrolls on its own (capped in the host) and is redrawn
+    // with the host: keep its scroll across the draw.
+    const prev = head.querySelector('.dpage-options');
+    const keep = v.optionsOpen && prev ? prev.scrollTop : 0;
+    head.innerHTML = `<div class="dpage dpage-chrome ${cls}">${barHtml}</div>`;
+    head.classList.remove('super-hide');
+    const opts = keep ? head.querySelector('.dpage-options') : null;
+    if (opts) { opts.scrollTop = keep; }
+  }
   root.innerHTML = html;
-  const el = root.querySelector('.dpage');
-  if (el) {
+  for (const host of [head, root]) {
+    const el = host && host.querySelector('.dpage');
+    if (!el) { continue; }
     el.addEventListener('click', onDiscoveryClick);
     el.addEventListener('change', onDiscoveryChange);
     el.addEventListener('keydown', onDiscoveryKey);
@@ -4302,7 +4336,7 @@ function renderDiscovery() {
 // next draw can find again — or null.
 function discoveryFocusedSelector() {
   const el = document.activeElement;
-  if (!el || typeof el.closest !== 'function' || !el.closest('#filelist .dpage')) { return null; }
+  if (!el || typeof el.closest !== 'function' || !el.closest('#dpage-head .dpage, #filelist .dpage')) { return null; }
   const act = el.getAttribute('data-dp');
   if (!act) { return null; }
   let sel = `[data-dp="${act}"]`;
@@ -4862,7 +4896,8 @@ function discoveryFocusFallbacks(sel) {
 
 function discoveryRefocus(...sels) {
   for (const sel of sels) {
-    const el = document.querySelector(`#filelist .dpage ${sel}`);
+    // the bar and the picker (#dpage-head), or the page under them
+    const el = document.querySelector(`#dpage-head .dpage ${sel}`) || document.querySelector(`#filelist .dpage ${sel}`);
     if (el && typeof el.focus === 'function') { el.focus(); return; }
   }
 }

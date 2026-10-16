@@ -2739,11 +2739,18 @@ body.on-federated-server .side-nav-note {
 .dpage { padding: 0 0 16px 0; color: #dfe3ea; font-size: 13px; line-height: 1.4; container-type: inline-size; container-name: dpage; }
 .dpage .grow { flex-grow: 1; }
 .dpage-busy .dpage-sec, .dpage-busy .dpage-seeds, .dpage-busy .dpage-strip, .dpage-busy .dpage-songs { opacity: .6; transition: opacity .15s; }
+/* The bar's host: #dpage-head, in the #browser column's chrome above the
+   #filelist scroller (as #directory_bar is for the other panels), so the bar
+   never scrolls. Its own .dpage (.dpage-chrome) carries the page's type and
+   colour without the page's bottom padding. The host carries the one line
+   under it: the last child drops its own. The open picker is capped, so a
+   long seed list never eats the scroll box. */
+#dpage-head { flex-shrink: 0; background: #262a33; border-bottom: 1px solid #2c313a; }
+#dpage-head .dpage-chrome { padding: 0; }
+#dpage-head .dpage-chrome > :last-child { border-bottom: 0; }
+#dpage-head .dpage-options { max-height: 45vh; overflow-y: auto; }
 /* the configuration bar: one quiet gray row (the sidenav's surface) */
-/* The bar stays put while the page scrolls under it (#filelist is the
-   scroller and .dpage its only child, so sticky anchors to the list's top).
-   Its ground is opaque, and it sits above the strips' hover controls. */
-.dpage-bar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 6px 10px 6px 14px; background: #262a33; border-bottom: 1px solid #2c313a; font-size: 12px; }
+.dpage-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 6px 10px 6px 14px; background: #262a33; border-bottom: 1px solid #2c313a; font-size: 12px; }
 .dpage-bar-r { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
 .dpage-bar-opt { height: 28px; padding: 0 4px; display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 0; border-radius: 4px; color: #8ea0f0; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .dpage-bar-opt:hover { color: #dfe3ea; }
@@ -2911,7 +2918,7 @@ body.on-federated-server .side-nav-note {
 
 /* Explore: the network section */
 .dpage-sec { border-top: 1px solid #2c313a; }
-.dpage-bar + .dpage-sec, .dpage-options + .dpage-sec { border-top: 0; }
+.dpage > .dpage-sec:first-child { border-top: 0; }
 .dpage-sec-h { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 14px 14px 8px 14px; }
 .dpage-sec-h h3 { margin: 0; font-size: 11px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; color: #dfe3ea; line-height: 1.4; }
 .dpage-plugins { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0 16px 6px 16px; font-size: 11px; color: #6f7683; }

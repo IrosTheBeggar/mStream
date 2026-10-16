@@ -100,7 +100,7 @@ const FNS = ['escapeHtml', 'peerAttr', 'artUrl', 'artImgAttr', 'renderAlbum', 's
   'discoveryWatchJobs', 'discoveryMergeJobs', 'discoveryPatchBadges', 'discoveryLeadTag',
   'discoveryMatchOpts', 'discoveryDropSeed', 'discoveryT', 'discoveryText', 'discoveryOnScreen', 'discoveryNowPlayingPath',
   'discoveryLocalChoices', 'discoverySaveLocalChoice', 'discoveryPanel', 'redoDiscovery', 'discoveryOff',
-  'discoveryResponse', 'discoveryLoadBadges', 'renderDiscovery', 'discoveryFocusedSelector', 'discoveryHeadHtml',
+  'discoveryResponse', 'discoveryLoadBadges', 'discoveryHideHead', 'renderDiscovery', 'discoveryFocusedSelector', 'discoveryHeadHtml',
   'discoveryOptionsHtml', 'discoveryCheckHtml', 'discoveryCardHtml', 'discoverySeedsHtml', 'discoveryLabelHtml',
   'discoverySkelHtml', 'discoveryPlayHtml', 'discoveryStripHtml', 'discoveryPeerAlbumHtml', 'discoveryArtHtml',
   'discoverySongRowHtml', 'discoveryShowMoreHtml', 'discoveryColHintHtml', 'discoveryLibrarySongsHtml',
@@ -110,7 +110,7 @@ const FNS = ['escapeHtml', 'peerAttr', 'artUrl', 'artImgAttr', 'renderAlbum', 's
   'discoveryRestoreSeed', 'discoveryQueueAll', 'discoveryPick', 'discoveryRefocus', 'onDiscoveryKey',
   'discoveryFocusFallbacks'];
 
-const KNOWN_IDS = ['filelist', 'localSearchBar', 'directoryName', 'directory_bar',
+const KNOWN_IDS = ['filelist', 'dpage-head', 'localSearchBar', 'directoryName', 'directory_bar',
   'local_search_btn', 'upload_btn', 'mkdir_btn', 'nav-discover'];
 
 // t() echoes the key, with its params when there are any — so a test can
@@ -147,26 +147,37 @@ const countDrawn = (html, attrs) => tagsOf(html).filter((el) => Object.entries(a
 //   playing       MSTREAMPLAYER.getCurrentSong()
 //   lookup(recs)  MSTREAMAPI.discoveryJobLookupBatch
 //   jobs          VUEPLAYERCORE.discoverJobs() (the strip's last poll)
-function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = FLAGS_ALL, lookup = null, plugins = null, jobs = [], albumSongs = null } = {}) {
+function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = FLAGS_ALL, lookup = null, plugins = null, jobs = [], albumSongs = null, noHead = false } = {}) {
   const els = new Map();
-  const pageHandlers = {};
+  // the delegated handlers, by the root ('filelist' | 'dpage-head') whose
+  // drawn .dpage took them: a control's events reach only its own root's
+  const pageHandlers = { filelist: {}, 'dpage-head': {} };
   const patches = [];
   let renders = 0;
-  // document.activeElement: the drawn control's attrs while one has focus
-  const focus = { on: null };
+  // document.activeElement: the drawn control's attrs while one has focus,
+  // and the root it was drawn in
+  const focus = { on: null, root: null };
   const classesOf = (initial) => {
     const classes = new Set(initial);
     return { add: (c) => classes.add(c), remove: (c) => classes.delete(c), contains: (c) => classes.has(c), toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)) };
   };
   for (const id of KNOWN_IDS) {
     let inner = '';
+    // the drawn picker (.dpage-options): a new element on every write, its
+    // own scroll starting at the top, as the DOM's does
+    let options = null;
     const el = {
       value: '', scrollTop: 0, style: {},
-      classList: classesOf(id === 'nav-discover' ? ['super-hide'] : []),
-      // .dpage takes the delegated handlers; a badge / bar slot is there
-      // when the drawn markup has it (its writes are recorded)
+      classList: classesOf(id === 'nav-discover' || id === 'dpage-head' ? ['super-hide'] : []),
+      // a drawn .dpage takes the delegated handlers (this root's); the
+      // picker, a badge / bar slot is there when the drawn markup has it
+      // (a slot's writes are recorded)
       querySelector: (sel) => {
-        if (sel === '.dpage') { return { addEventListener: (type, fn) => { pageHandlers[type] = fn; } }; }
+        if (sel === '.dpage') {
+          if (!/class="dpage[ "]/.test(inner)) { return null; }
+          return { addEventListener: (type, fn) => { (pageHandlers[id] ||= {})[type] = fn; } };
+        }
+        if (sel === '.dpage-options') { return options; }
         const m = sel.match(/^\[(data-[bp]slot)="([^"]+)"\]$/);
         if (m && inner.includes(`${m[1]}="${m[2]}"`)) {
           return { set innerHTML(h) { patches.push({ slot: m[1], id: m[2], html: h }); } };
@@ -175,9 +186,18 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
       },
     };
     // a whole-page draw drops the keyboard's control, as the DOM does
-    Object.defineProperty(el, 'innerHTML', { get: () => inner, set: (h) => { inner = h; if (id === 'filelist') { renders++; focus.on = null; } } });
+    // (the bar's host too: its controls are replaced with it)
+    Object.defineProperty(el, 'innerHTML', { get: () => inner, set: (h) => {
+      inner = h;
+      options = /class="dpage-options[ "]/.test(h) ? { scrollTop: 0 } : null;
+      if (pageHandlers[id]) { pageHandlers[id] = {}; }
+      if (id === 'filelist') { renders++; }
+      if (focus.root === id) { focus.on = null; focus.root = null; }
+    } });
     els.set(id, el);
   }
+  // an index.html older than m.js: no bar host at all
+  if (noHead) { els.delete('dpage-head'); }
   const bodyClasses = classesOf(['has-discover-page']);
   const watchers = [];
   let currentJobs = jobs;
@@ -195,6 +215,8 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
   const knownPeers = new Map();
   // focus() calls on a drawn data-dp control after a re-render, in order
   const focused = [];
+  // …and the root each was found in ('dpage-head' | 'filelist')
+  const focusedIn = [];
   const globals = {
     document: {
       body: { classList: bodyClasses },
@@ -202,16 +224,21 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
       getElementsByClassName: () => [],
       get activeElement() {
         const a = focus.on;
-        return a ? { closest: () => ({}), getAttribute: (n) => (n in a ? a[n] : null) } : null;
+        const root = focus.root;
+        // closest('#x .dpage, #y .dpage'): only a selector naming the root
+        // the control was drawn in finds an ancestor
+        const closest = (sel) => (String(sel).split(',').some((part) => part.trim() === `#${root} .dpage`) ? {} : null);
+        return a ? { closest, getAttribute: (n) => (n in a ? a[n] : null) } : null;
       },
-      // `#filelist .dpage [data-dp="x"][data-i="3"]…`: a DRAWN control
+      // `#filelist .dpage [data-dp="x"][data-i="3"]…` (or `#dpage-head
+      // .dpage …`, the bar's host): a DRAWN control in that root
       querySelector: (sel) => {
-        const m = sel.match(/^#filelist \.dpage ((?:\[[a-z-]+="[^"]*"\])+)$/);
-        if (!m) { return null; }
-        const attrs = Object.fromEntries([...m[1].matchAll(/\[([a-z-]+)="([^"]*)"\]/g)].map((x) => [x[1], x[2]]));
-        const found = findDrawn(els.get('filelist').innerHTML, attrs);
+        const m = sel.match(/^#(filelist|dpage-head) \.dpage ((?:\[[a-z-]+="[^"]*"\])+)$/);
+        if (!m || !els.has(m[1])) { return null; }
+        const attrs = Object.fromEntries([...m[2].matchAll(/\[([a-z-]+)="([^"]*)"\]/g)].map((x) => [x[1], x[2]]));
+        const found = findDrawn(els.get(m[1]).innerHTML, attrs);
         if (!found || !attrs['data-dp']) { return null; }
-        return { focus: () => { focused.push(attrs['data-dp']); focus.on = found.attrs; } };
+        return { focus: () => { focused.push(attrs['data-dp']); focusedIn.push(m[1]); focus.on = found.attrs; focus.root = m[1]; } };
       },
     },
     window: {},
@@ -284,6 +311,9 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
       ${FNS.join(', ')},
       view: discoveryView,
       html: () => __els.get('filelist').innerHTML,
+      head: () => (__els.get('dpage-head') ? __els.get('dpage-head').innerHTML : ''),
+      // what the user sees: the bar's host over the scroller
+      page: () => (__els.get('dpage-head') ? __els.get('dpage-head').innerHTML : '') + __els.get('filelist').innerHTML,
       state: () => programState,
       setState: (s) => { programState = s; },
       bump: () => { browseGeneration++; },
@@ -291,41 +321,57 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
   `;
   const names = [...Object.keys(globals), '__els'];
   const S = new Function(...names, body)(...names.map((n) => (n === '__els' ? els : globals[n])));
-  // Click a DRAWN data-dp element (it must be on the page): the delegated
-  // handler sees a target whose closest('[data-dp]') is it.
+  // A DRAWN element (it must be on the page) and the root it is drawn in:
+  // the host's controls first, as the page reads top-down (a button or link
+  // over a bare match, across both roots, as findDrawn picks).
+  const locate = (attrs, tag) => {
+    const roots = ['dpage-head', 'filelist'].filter((r) => els.has(r));
+    const hits = roots.flatMap((root) => {
+      const one = findDrawn(els.get(root).innerHTML, attrs, tag);
+      return one ? [{ found: one, root }] : [];
+    });
+    const hit = tag ? hits[0] : (hits.find((h) => h.found.tag === 'button' || h.found.tag === 'a') || hits[0]);
+    assert.ok(hit, `nothing drawn with ${JSON.stringify(attrs)}`);
+    return hit;
+  };
+  // Dispatch an event through the handler its root's drawn .dpage took.
+  const dispatch = (root, type, ev) => {
+    const fn = pageHandlers[root] && pageHandlers[root][type];
+    assert.ok(fn, `no ${type} handler on #${root}'s .dpage`);
+    fn(ev);
+  };
+  // Click a DRAWN data-dp element: its root's delegated handler sees a
+  // target whose closest('[data-dp]') is it.
   const click = (attrs, tag) => {
-    const found = findDrawn(S.html(), attrs, tag);
-    assert.ok(found, `nothing drawn with ${JSON.stringify(attrs)}`);
+    const { found, root } = locate(attrs, tag);
     const el = { tagName: found.tag.toUpperCase(), getAttribute: (n) => (n in found.attrs ? found.attrs[n] : null) };
-    pageHandlers.click({ target: { closest: () => el } });
+    dispatch(root, 'click', { target: { closest: () => el } });
   };
   // The keyboard on a drawn control: focus it, then click it (Enter / Space).
   const keyClick = (attrs, tag) => {
-    const found = findDrawn(S.html(), attrs, tag);
-    assert.ok(found, `nothing drawn with ${JSON.stringify(attrs)}`);
+    const { found, root } = locate(attrs, tag);
     focus.on = found.attrs;
+    focus.root = root;
     click(attrs, tag);
   };
   // A keydown on a drawn element (its class list from the markup).
   const keydown = (attrs, key) => {
-    const found = findDrawn(S.html(), attrs, 'div');
-    assert.ok(found, `nothing drawn with ${JSON.stringify(attrs)}`);
+    const { found, root } = locate(attrs, 'div');
     const cls = String(found.attrs.class || '').split(/\s+/);
     let prevented = false;
-    pageHandlers.keydown({ key, preventDefault: () => { prevented = true; },
+    dispatch(root, 'keydown', { key, preventDefault: () => { prevented = true; },
       target: { classList: { contains: (c) => cls.includes(c) }, getAttribute: (n) => (n in found.attrs ? found.attrs[n] : null) } });
     return prevented;
   };
   const activeAttrs = () => focus.on;
   const change = (attrs, value) => {
-    const found = findDrawn(S.html(), attrs);
-    assert.ok(found, `nothing drawn with ${JSON.stringify(attrs)}`);
-    pageHandlers.change({ target: { value, getAttribute: (n) => (n in found.attrs ? found.attrs[n] : null) } });
+    const { found, root } = locate(attrs);
+    dispatch(root, 'change', { target: { value, getAttribute: (n) => (n in found.attrs ? found.attrs[n] : null) } });
   };
   // A poll of the strip's job list: every live watch hears it.
   const tick = (list) => { currentJobs = list; for (const w of watchers.slice()) { if (w.live) { w.fn(list.slice()); } } };
   const liveWatches = () => watchers.filter((w) => w.live).length;
-  return { S, keyClick, keydown, activeAttrs, views, focused, vpc: globals.VUEPLAYERCORE, calls, storage, queued, opened, fedQueued, toasts, els, click, change, tick, liveWatches, watchers, patches, renders: () => renders, bodyClasses, adopted, albumsOpened, rowsQueued, knownPeers };
+  return { S, keyClick, keydown, activeAttrs, views, focused, focusedIn, vpc: globals.VUEPLAYERCORE, calls, storage, queued, opened, fedQueued, toasts, els, click, change, tick, liveWatches, watchers, patches, renders: () => renders, bodyClasses, adopted, albumsOpened, rowsQueued, knownPeers };
 }
 
 // The seed picker: open it from the bar ("More options").
@@ -440,7 +486,7 @@ describe('Discover page: opening it', () => {
   test('draws the two album strips and the two song columns, labelled, in order', async () => {
     const { S } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
-    const html = S.html();
+    const html = S.page();
     const at = (x) => html.indexOf(x);
     const peerName = 'Sam&#39;s server';
     const labels = [
@@ -517,7 +563,7 @@ describe('Discover page: opening it', () => {
   test('a click on a connected server\'s row queues it, exactly as a library row does', async () => {
     const { S, click, queued, opened, fedQueued, toasts } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
-    const html = S.html();
+    const html = S.page();
     const libRow = findDrawn(html, { 'data-dp': 'queue', 'data-i': 0 }, 'div');
     const peerRow = findDrawn(html, { 'data-dp': 'fedQueue', 'data-i': 0 }, 'div');
     assert.ok(libRow && peerRow, 'both rows are click targets');
@@ -534,7 +580,7 @@ describe('Discover page: opening it', () => {
   test('every row verb is a labelled button; the two columns\' verbs line up (same icons, same labels)', async () => {
     const { S } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
-    const html = S.html();
+    const html = S.page();
     const lib = ['play', 'queue', 'more'].map((dp) => findDrawn(html, { 'data-dp': dp, 'data-i': 0 }));
     const peer = ['peerPlay', 'fedQueue', 'peerMore'].map((dp) => findDrawn(html, { 'data-dp': dp, 'data-i': 0 }));
     for (const el of [...lib, ...peer]) {
@@ -567,7 +613,7 @@ describe('Discover page: opening it', () => {
     const peers = { ...PEERS, peers: { ...PEERS.peers, peers: [{ ...PEERS.peers.peers[0], results: [PEER_ROW, noArt] }] } };
     const { S, keydown, adopted, albumsOpened } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? peers : MAIN) });
     await S.discoveryPanel();
-    const html = S.html();
+    const html = S.page();
     const strip = html.slice(html.indexOf('dpage-strip dpage-src-peers'), html.indexOf('<div class="dpage-songs'));
     assert.equal(countDrawn(strip, { 'data-dp': 'peerAlbumOpen' }), 2);
     const bare = strip.slice(strip.indexOf('data-album="Bare Album"'));
@@ -598,7 +644,7 @@ describe('Discover page: opening it', () => {
     const { S, calls } = makeSandbox({ taste: answer, flags: { ...FLAGS_ALL, discoveryTaste: 0 } });
     await S.discoveryPanel();
     assert.equal(calls.length, 0);
-    assert.match(S.html(), /dpage-off[\s\S]*dpage\.state\.off/);
+    assert.match(S.page(), /dpage-off[\s\S]*dpage\.state\.off/);
   });
 
   test('a 403 retracts the nav entry and the panel\'s link, re-pings, and says off when the ping agrees', async () => {
@@ -607,7 +653,7 @@ describe('Discover page: opening it', () => {
     await S.discoveryPanel();
     await flush();
     assert.equal(calls.filter((c) => c.name === 'ping').length, 1, 'one re-ping for the two 403s');
-    assert.match(S.html(), /dpage\.state\.off/);
+    assert.match(S.page(), /dpage\.state\.off/);
     assert.ok(els.get('nav-discover').classList.contains('super-hide'));
     assert.ok(!bodyClasses.contains('has-discover-page'), '"Discover page →" goes too');
   });
@@ -616,15 +662,15 @@ describe('Discover page: opening it', () => {
     const { S } = makeSandbox({ taste: () => ({ disabled: true }), ping: { discovery: true, discoveryTaste: 1 } });
     await S.discoveryPanel();
     await flush();
-    assert.match(S.html(), /dpage\.state\.unavailable/);
-    assert.ok(!S.html().includes('dpage.state.off'));
+    assert.match(S.page(), /dpage\.state\.unavailable/);
+    assert.ok(!S.page().includes('dpage.state.off'));
   });
 
   test('a 403 with no ping answer says off', async () => {
     const { S } = makeSandbox({ taste: () => ({ disabled: true }) });
     await S.discoveryPanel();
     await flush();
-    assert.match(S.html(), /dpage\.state\.offBody/);
+    assert.match(S.page(), /dpage\.state\.offBody/);
   });
 
   test('first open draws skeleton strips and rows — no spinner, no "asking" line', async () => {
@@ -632,7 +678,7 @@ describe('Discover page: opening it', () => {
     const gate = new Promise((r) => { release = r; });
     const { S } = makeSandbox({ taste: (b) => gate.then(() => answer(b)) });
     const run = S.discoveryPanel();
-    const html = S.html();
+    const html = S.page();
     assert.match(html, /<div class="dpage dpage-page-play[^"]*" aria-busy="true">/);
     assert.match(html, /dpage-bar[\s\S]*dpage-skel-card/);
     assert.equal(html.split('dpage-skel-card').length - 1, 8, 'four tiles in each strip');
@@ -641,7 +687,7 @@ describe('Discover page: opening it', () => {
     assertTrimmed(html, 'loading');
     release();
     await run;
-    assert.ok(!S.html().includes('dpage-skel'));
+    assert.ok(!S.page().includes('dpage-skel'));
   });
 
   test('the library first, the connected servers when they answer: their strip and column wait as skeletons', async () => {
@@ -650,13 +696,13 @@ describe('Discover page: opening it', () => {
     const { S } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? gate.then(() => PEERS) : MAIN) });
     const run = S.discoveryPanel();
     await flush(); await flush(); await flush();
-    let html = S.html();
+    let html = S.page();
     assert.ok(html.includes('Title Seven'), 'the library drew');
     assert.match(html, /class="dpage-strip dpage-src-peers" aria-busy="true"><div class="album-grid dpage-albums"><div class="dpage-skel-card">/, 'no label while asked');
     assert.match(html, /<section class="dpage-col dpage-src-peers" data-source="peers"><div class="dpage-rows" aria-busy="true">/);
     release();
     await run;
-    html = S.html();
+    html = S.page();
     assert.ok(html.includes('Peer Song'));
     assert.ok(!html.includes('dpage-skel'));
   });
@@ -670,7 +716,7 @@ describe('Discover page: no connected servers', () => {
     await S.discoveryPanel();
     assert.equal(tasteCalls(calls).length, 1, 'no peers call');
     assert.deepEqual(tasteCalls(calls)[0].sources, ['library']);
-    const html = S.html();
+    const html = S.page();
     assert.ok(!html.includes('dpage-src-peers'));
     assert.ok(!html.includes('dpage.albums.peer') && !html.includes('dpage.songs.peer'));
     assert.ok(!html.includes('dpage.peers.quiet'));
@@ -690,7 +736,7 @@ describe('Discover page: no connected servers', () => {
     const { S, click } = makeSandbox({ taste: () => many(20), flags: NO_FED });
     await S.discoveryPanel();
     click({ 'data-dp': 'showMore', 'data-v': 'library' });
-    const html = S.html();
+    const html = S.page();
     const blocks = [...html.matchAll(/--dpage-per:(\d+)/g)].map((m) => Number(m[1]));
     assert.deepEqual(blocks, [8, 2]);
     assert.ok(html.includes('Many 19'));
@@ -703,7 +749,7 @@ describe('Discover page: no connected servers', () => {
     const quiet = { ...PEERS, peers: { ...PEERS.peers, peers: PEERS.peers.peers.map((g) => ({ ...g, reachable: false })) } };
     const { S } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? quiet : MAIN) });
     await S.discoveryPanel();
-    const html = S.html();
+    const html = S.page();
     assert.ok(!html.includes('dpage-strip dpage-src-peers'));
     assert.match(html, /<section class="dpage-col dpage-src-peers" data-source="peers"><h3 class="dpage-label">[\s\S]*dpage\.songs\.peerMany[\s\S]*<div class="dpage-hint">dpage\.peers\.quiet<\/div><\/section>/);
     assert.ok(!html.includes('Offline Song'));
@@ -715,14 +761,14 @@ describe('Discover page: no connected servers', () => {
     const none = { ...PEERS, peers: { peers: [], searched: { peers: 0 } } };
     const { S } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? none : MAIN) });
     await S.discoveryPanel();
-    assert.ok(!S.html().includes('dpage-src-peers'));
-    assert.ok(S.html().includes('dpage-songs-solo'));
+    assert.ok(!S.page().includes('dpage-src-peers'));
+    assert.ok(S.page().includes('dpage-songs-solo'));
   });
 
   test('a failed connected call: the column\'s one line with Try again', async () => {
     const { S, calls, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? null : MAIN) });
     await S.discoveryPanel();
-    assert.match(S.html(), /dpage-src-peers[\s\S]*dpage\.source\.failed[\s\S]*data-dp="retry"/);
+    assert.match(S.page(), /dpage-src-peers[\s\S]*dpage\.source\.failed[\s\S]*data-dp="retry"/);
     const n = tasteCalls(calls).length;
     click({ 'data-dp': 'retry' });
     await flush(); await flush();
@@ -737,21 +783,21 @@ describe('Discover page: Show more', () => {
     const peers = { ...PEERS, peers: { ...PEERS.peers, peers: [{ ...PEERS.peers.peers[0], results: rows }] } };
     const { S, click, keyClick, activeAttrs } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? peers : lib) });
     await S.discoveryPanel();
-    const count = (dp) => countDrawn(S.html(), { 'data-dp': dp, class: 'discover-row dpage-row pointer' });
+    const count = (dp) => countDrawn(S.page(), { 'data-dp': dp, class: 'discover-row dpage-row pointer' });
     assert.equal(count('queue'), 16);
     assert.equal(count('fedQueue'), 16);
-    assert.ok(!S.html().includes('dpage-flow'), 'two columns: the library is one list');
+    assert.ok(!S.page().includes('dpage-flow'), 'two columns: the library is one list');
     click({ 'data-dp': 'showMore', 'data-v': 'library' });
     assert.equal(count('queue'), 32);
     assert.equal(count('fedQueue'), 16, 'the other column stays');
     keyClick({ 'data-dp': 'showMore', 'data-v': 'peers' });
     assert.equal(count('fedQueue'), 20);
-    assert.ok(!findDrawn(S.html(), { 'data-dp': 'showMore', 'data-v': 'peers' }), 'gone at the end');
+    assert.ok(!findDrawn(S.page(), { 'data-dp': 'showMore', 'data-v': 'peers' }), 'gone at the end');
     assert.deepEqual([activeAttrs()['data-dp'], activeAttrs()['data-i']], ['peerPlay', '16'], 'the keyboard goes on to the first row it added');
     keyClick({ 'data-dp': 'showMore', 'data-v': 'library' });
     assert.equal(count('queue'), 40);
     assert.deepEqual([activeAttrs()['data-dp'], activeAttrs()['data-i']], ['play', '32']);
-    assert.ok(!S.html().includes('data-dp="showMore"'));
+    assert.ok(!S.page().includes('data-dp="showMore"'));
     // a new answer starts both columns over
     click({ 'data-dp': 'refresh' });
     await flush(); await flush();
@@ -781,9 +827,9 @@ describe('Discover page: states', () => {
     const { S, calls, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? { ...RANDOM, library: null } : RANDOM) });
     await S.discoveryPanel();
     assert.ok(!S.html().includes('dpage-seeds'), 'the card, no seed strip');
-    assertTrimmed(S.html(), 'nothingFinished');
+    assertTrimmed(S.page(), 'nothingFinished');
     openOptions(click);
-    const html = S.html();
+    const html = S.page();
     assert.match(html, /dpage-card[\s\S]*dpage\.state\.nothingFinished/);
     assert.match(html, /class="dpage-btn pri" data-dp="another">dpage\.verb\.anotherPick/);
     assert.match(html, /data-dp="pick"/);
@@ -823,14 +869,14 @@ describe('Discover page: states', () => {
     assert.equal(S.view.main.seeds[0].hash, 'r2');
     click({ 'data-dp': 'another' });
     await flush(); await flush();
-    const html = S.html();
+    const html = S.page();
     assert.equal(S.view.main.seeds[0].hash, 'r3');
     assert.deepEqual(tasteCalls(calls).map((b) => b.exclude), [undefined, ['r1'], ['r1', 'r2']]);
     assert.deepEqual(S.view.passed, ['r1', 'r2']);
     assert.deepEqual(S.view.excluded, [], 'passed picks are not drops');
     assert.match(html, /dpage\.state\.nothingFinished/, 'not "every seed dropped": the passed picks are not drops');
     openOptions(click);
-    assert.ok(!S.html().includes('dpage-dropped'), 'no dropped chips for the passed picks');
+    assert.ok(!S.page().includes('dpage-dropped'), 'no dropped chips for the passed picks');
     await S.discoveryPanel();
     assert.deepEqual(S.view.passed, [], 'a fresh open starts over');
     assert.equal(tasteCalls(calls).at(-1).exclude, undefined);
@@ -849,7 +895,7 @@ describe('Discover page: states', () => {
     const next = tasteCalls(calls).slice(before);
     assert.deepEqual(next.map((b) => b.exclude), [['r1', 'r2', 'r3'], undefined], 'ran out, then the same ask with nothing passed over');
     assert.deepEqual(S.view.passed, []);
-    const html = S.html();
+    const html = S.page();
     assert.ok(!html.includes('dpage.state.scanPending'), 'never the scan-pending card');
     assert.match(html, /dpage\.state\.nothingFinished/);
     assert.equal(S.view.main.seeds[0].hash, 'r1', 'started over from the whole library');
@@ -861,7 +907,7 @@ describe('Discover page: states', () => {
     await S.discoveryPanel();
     await flush();
     assert.equal(tasteCalls(calls).length, 1);
-    assert.match(S.html(), /dpage\.state\.scanPending/);
+    assert.match(S.page(), /dpage\.state\.scanPending/);
   });
 
   test('the drops keep their room in exclude: passed picks fill what is left, never repeat a drop', async () => {
@@ -878,9 +924,9 @@ describe('Discover page: states', () => {
     const { S, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? { ...pending, peers: { peers: [], searched: {} } } : pending) });
     await S.discoveryPanel();
     assert.ok(!S.html().includes('dpage-seeds'), 'the card, no seed strip');
-    assertTrimmed(S.html(), 'scanPending');
+    assertTrimmed(S.page(), 'scanPending');
     openOptions(click);
-    const html = S.html();
+    const html = S.page();
     assert.match(html, /dpage\.state\.scanPending/);
     assert.match(html, /dpage\.state\.seedsListedAnyway/);
     assert.match(html, /data-dp="retry"/);
@@ -892,8 +938,8 @@ describe('Discover page: states', () => {
   test('a failed call draws the failed card with Try again', async () => {
     const { S } = makeSandbox({ taste: () => null });
     await S.discoveryPanel();
-    assert.match(S.html(), /dpage\.state\.failed[\s\S]*data-dp="retry"/);
-    assertTrimmed(S.html(), 'failed');
+    assert.match(S.page(), /dpage\.state\.failed[\s\S]*data-dp="retry"/);
+    assertTrimmed(S.page(), 'failed');
   });
 
   test('library empty: one dim line, alone', async () => {
@@ -901,7 +947,7 @@ describe('Discover page: states', () => {
     for (const flags of [FLAGS_ALL, NO_FED]) {
       const { S } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : empty), flags });
       await S.discoveryPanel();
-      const html = S.html();
+      const html = S.page();
       assert.ok(!html.includes('dpage-strip dpage-src-library'), 'no library albums: no strip');
       assert.match(html, /<div class="dpage-hint">dpage\.library\.nothing<\/div>/);
       assert.ok(!html.includes('dpage-hint-btn'), 'no button to widen it');
@@ -919,13 +965,13 @@ describe('Discover page: states', () => {
     click({ 'data-dp': 'drop', 'data-i': 1 });
     await flush(); await flush();
     click({ 'data-dp': 'options' });
-    let html = S.html();
+    let html = S.page();
     assert.match(html, /dpage-card[\s\S]*dpage\.state\.allDropped[\s\S]*dpage\.state\.allDroppedBody/);
     assert.ok(!html.includes('dpage-seeds'), 'the picker starts closed');
     assert.match(html, /data-dp="editSeeds">dpage\.seeds\.edit/);
     for (const act of ['another', 'pick', 'browse']) { assert.ok(html.includes(`data-dp="${act}"`), act); }
     click({ 'data-dp': 'editSeeds' });
-    html = S.html();
+    html = S.page();
     assert.equal(S.view.optionsOpen, true);
     assert.equal(findDrawn(html, { 'data-dp': 'options' }).attrs['aria-expanded'], 'true');
     assert.ok(seedsSection(html).includes('dpage-dropped'), 'the dropped seeds, with Use again');
@@ -937,8 +983,8 @@ describe('Discover page: states', () => {
   test('a song still finished keeps the plain card (no Edit seeds button)', async () => {
     const { S } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? { ...RANDOM, library: null } : RANDOM) });
     await S.discoveryPanel();
-    assert.match(S.html(), /dpage\.state\.nothingFinishedBody/);
-    assert.ok(!S.html().includes('data-dp="editSeeds"'));
+    assert.match(S.page(), /dpage\.state\.nothingFinishedBody/);
+    assert.ok(!S.page().includes('data-dp="editSeeds"'));
   });
 });
 
@@ -996,17 +1042,17 @@ describe('Discover page: changes re-ask', () => {
     const { S, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : many) });
     await S.discoveryPanel();
     openOptions(click);
-    assert.match(S.html(), /data-dp="moreSeeds">dpage\.seeds\.showAll</);
-    assert.ok(!seedsSection(S.html()).includes('dpage-sub'), 'no statistics line');
+    assert.match(S.page(), /data-dp="moreSeeds">dpage\.seeds\.showAll</);
+    assert.ok(!seedsSection(S.page()).includes('dpage-sub'), 'no statistics line');
     click({ 'data-dp': 'moreSeeds' });
-    assert.match(S.html(), /data-dp="moreSeeds">dpage\.seeds\.showLess/);
-    assert.ok(S.html().includes('More 7'));
+    assert.match(S.page(), /data-dp="moreSeeds">dpage\.seeds\.showLess/);
+    assert.ok(S.page().includes('More 7'));
   });
 
   test('the window select lives in the bar (only), re-asks with the window and remembers it in localStorage', async () => {
     const { S, calls, change, storage } = makeSandbox({ taste: answer });
     await S.discoveryPanel();
-    const html = S.html();
+    const html = S.page();
     const bar = html.slice(html.indexOf('<div class="dpage-bar">'), html.indexOf('</label>', html.indexOf('<div class="dpage-bar">')));
     assert.match(bar, /dpage\.basedOnLast[\s\S]*data-dp-change="window"/);
     assert.equal(html.split('data-dp-change="window"').length, 2, 'one window form');
@@ -1017,7 +1063,7 @@ describe('Discover page: changes re-ask', () => {
     const next = tasteCalls(calls).slice(before);
     assert.deepEqual(next.map((b) => b.window), [90, 90], 'both calls');
     assert.equal(storage.get(DISCOVERYPAGE.STORAGE_KEYS.window), '90');
-    assert.match(S.html(), /<option value="90" selected>/);
+    assert.match(S.page(), /<option value="90" selected>/);
     change({ 'data-dp-change': 'window' }, '14');
     await flush(); await flush();
     assert.equal(tasteCalls(calls).length, before + 2, 'not a window the route takes: nothing asked');
@@ -1028,7 +1074,7 @@ describe('Discover page: changes re-ask', () => {
       const { S, calls } = makeSandbox({ taste: answer, stored: { discoverPageWindow: raw } });
       await S.discoveryPanel();
       assert.deepEqual(tasteCalls(calls).map((b) => b.window), [w, w], raw);
-      assert.match(S.html(), new RegExp(`<option value="${w}" selected>`), raw);
+      assert.match(S.page(), new RegExp(`<option value="${w}" selected>`), raw);
     }
   });
 
@@ -1054,7 +1100,7 @@ describe('Discover page: the configuration bar', () => {
   test('the bar: the window form, More options, then refresh — no tagline, no back link, no seed strip in the body', async () => {
     const { S } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
-    const html = S.html();
+    const html = S.page();
     const at = (s) => html.indexOf(s);
     assert.ok(at('class="dpage-bar"') > 0);
     assert.ok(at('data-dp-change="window"') > at('class="dpage-bar"'));
@@ -1078,9 +1124,9 @@ describe('Discover page: the configuration bar', () => {
     const { S } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? gate.then(() => ({ ...RAND, library: null })) : (mainGate ? mainGate.then(() => RAND) : RAND)) });
     const run = S.discoveryPanel();
     await flush(); await flush();
-    assert.match(S.html(), /dpage\.state\.nothingFinished/, 'the library answer is in');
-    assert.ok(!S.html().includes('dpage-src-peers'), 'no peers skeleton re-flowing away');
-    assert.ok(S.html().includes('dpage-songs dpage-songs-solo'));
+    assert.match(S.page(), /dpage\.state\.nothingFinished/, 'the library answer is in');
+    assert.ok(!S.page().includes('dpage-src-peers'), 'no peers skeleton re-flowing away');
+    assert.ok(S.page().includes('dpage-songs dpage-songs-solo'));
     release();
     await run;
     // a later visit, both calls out: the one-column skeleton (the last
@@ -1091,9 +1137,9 @@ describe('Discover page: the configuration bar', () => {
     S.view.peers = undefined;
     const again = S.discoveryPanel();
     await flush();
-    assert.match(S.html(), PAGE_BUSY, 'loading');
-    assert.ok(!S.html().includes('dpage-src-peers'));
-    assert.ok(S.html().includes('dpage-songs dpage-songs-solo'));
+    assert.match(S.page(), PAGE_BUSY, 'loading');
+    assert.ok(!S.page().includes('dpage-src-peers'));
+    assert.ok(S.page().includes('dpage-songs dpage-songs-solo'));
     release();
     await again;
   });
@@ -1105,8 +1151,8 @@ describe('Discover page: the configuration bar', () => {
     const gate = new Promise((r) => { release = r; });
     const loading = makeSandbox({ taste: (b) => gate.then(() => answer(b)) });
     const run = loading.S.discoveryPanel();
-    assert.match(loading.S.html(), PAGE_BUSY);
-    assert.ok(!loading.S.html().includes('dpage-seeds'), 'loading');
+    assert.match(loading.S.page(), PAGE_BUSY);
+    assert.ok(!loading.S.page().includes('dpage-seeds'), 'loading');
     release();
     await run;
     // each case proves it reached its state before checking the absence
@@ -1119,11 +1165,11 @@ describe('Discover page: the configuration bar', () => {
     for (const [name, taste] of [['nothingFinished', () => RANDOM], ['scanPending', () => pending], ['ready', answer], ['failed', () => null]]) {
       const { S } = makeSandbox({ taste });
       await S.discoveryPanel();
-      assert.match(S.html(), reached[name], `${name}: drawn`);
-      assert.ok(!PAGE_BUSY.test(S.html()), `${name}: not still loading`);
-      if (name === 'ready') { assert.ok(!S.html().includes('dpage-card'), 'ready: no state card'); }
-      assert.ok(!S.html().includes('dpage-seeds'), name);
-      assert.ok(S.html().includes('data-dp="options"'), `${name}: the bar is there`);
+      assert.match(S.page(), reached[name], `${name}: drawn`);
+      assert.ok(!PAGE_BUSY.test(S.page()), `${name}: not still loading`);
+      if (name === 'ready') { assert.ok(!S.page().includes('dpage-card'), 'ready: no state card'); }
+      assert.ok(!S.page().includes('dpage-seeds'), name);
+      assert.ok(S.page().includes('data-dp="options"'), `${name}: the bar is there`);
     }
   });
 
@@ -1131,7 +1177,7 @@ describe('Discover page: the configuration bar', () => {
     const { S, click } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
     openOptions(click);
-    let html = S.html();
+    let html = S.page();
     const toggle = findDrawn(html, { 'data-dp': 'options' });
     assert.equal(toggle.attrs['aria-expanded'], 'true');
     assert.equal(toggle.attrs['aria-controls'], 'dpage-options');
@@ -1148,7 +1194,7 @@ describe('Discover page: the configuration bar', () => {
     assert.ok(!html.includes('data-dp="newArtists"'), 'new artists only is the Explore page\'s');
     assertTrimmed(html, 'picker open');
     openOptions(click);
-    html = S.html();
+    html = S.page();
     assert.equal(findDrawn(html, { 'data-dp': 'options' }).attrs['aria-expanded'], 'false');
     assert.ok(!html.includes('dpage-seeds'));
   });
@@ -1159,18 +1205,18 @@ describe('Discover page: the configuration bar', () => {
     const { S, click } = makeSandbox({ taste: (b) => gate.then(() => answer(b)) });
     const run = S.discoveryPanel();
     openOptions(click);
-    assert.match(S.html(), /class="dpage-options" id="dpage-options"><div class="dpage-hint">dpage\.bar\.seedsWait/);
-    assert.ok(!S.html().includes('dpage.state.loading'), 'skeletons, no loading line');
+    assert.match(S.page(), /class="dpage-options" id="dpage-options"><div class="dpage-hint">dpage\.bar\.seedsWait/);
+    assert.ok(!S.page().includes('dpage.state.loading'), 'skeletons, no loading line');
     release();
     await run;
-    assert.ok(S.html().includes('class="dpage-seeds"'), 'the chips arrive in the open picker');
+    assert.ok(S.page().includes('class="dpage-seeds"'), 'the chips arrive in the open picker');
   });
 
   test('a failed call with the picker open: its own waiting line, the failed text once', async () => {
     const { S, click } = makeSandbox({ taste: () => null });
     await S.discoveryPanel();
     openOptions(click);
-    const html = S.html();
+    const html = S.page();
     assert.match(html, /<div class="dpage-hint">dpage\.bar\.seedsWait/);
     assert.equal(html.split('dpage.state.failed').length - 1, 1, 'the failed card only');
     assert.match(html, /dpage-card[\s\S]*data-dp="retry"/);
@@ -1189,7 +1235,7 @@ describe('Discover page: the configuration bar', () => {
     keyClick({ 'data-dp': 'options' });
     assert.equal(focused.at(-1), 'options');
     assert.equal(activeAttrs()['data-dp'], 'options');
-    assert.match(S.html(), /data-dp="options" aria-expanded="false"/);
+    assert.match(S.page(), /data-dp="options" aria-expanded="false"/);
   });
 
   test('the picker stays open across a drop, an Undo and a window change, and starts closed on a fresh open', async () => {
@@ -1198,21 +1244,21 @@ describe('Discover page: the configuration bar', () => {
     openOptions(click);
     click({ 'data-dp': 'drop', 'data-i': 1 });
     await flush(); await flush();
-    assert.ok(S.html().includes('class="dpage-seeds"'), 'still open after the drop');
+    assert.ok(S.page().includes('class="dpage-seeds"'), 'still open after the drop');
     toasts.find((o) => o.buttons).buttons[0][1]({ hide() {} }, {});
     await flush(); await flush();
-    assert.ok(S.html().includes('class="dpage-seeds"'), 'still open after the Undo');
+    assert.ok(S.page().includes('class="dpage-seeds"'), 'still open after the Undo');
     change({ 'data-dp-change': 'window' }, '7');
     await flush(); await flush();
-    assert.ok(S.html().includes('class="dpage-seeds"'), 'still open after a re-render');
+    assert.ok(S.page().includes('class="dpage-seeds"'), 'still open after a re-render');
     // a return to the page (an album opened from it, the song picker)
     await S.discoveryPanel({ keep: true });
-    assert.ok(S.html().includes('class="dpage-seeds"'), 'a return keeps it');
+    assert.ok(S.page().includes('class="dpage-seeds"'), 'a return keeps it');
     // a nav click: a fresh visit
     await S.discoveryPanel();
     assert.equal(S.view.optionsOpen, false);
-    assert.ok(!S.html().includes('dpage-seeds'));
-    assert.match(S.html(), /data-dp="options"[^>]*>dpage\.bar\.moreOptions/);
+    assert.ok(!S.page().includes('dpage-seeds'));
+    assert.match(S.page(), /data-dp="options"[^>]*>dpage\.bar\.moreOptions/);
   });
 
   test('inside the picker: + Now playing pins, × unpins, × drops, Edit seeds shows the dropped ones (the answer\'s excluded) and Use again restores', async () => {
@@ -1225,7 +1271,7 @@ describe('Discover page: the configuration bar', () => {
     await S.discoveryPanel();
     // the pin was made at open: unpin it from inside the picker
     openOptions(click);
-    assert.ok(!S.html().includes('data-dp="addPlaying"'), 'pinned already');
+    assert.ok(!S.page().includes('data-dp="addPlaying"'), 'pinned already');
     let before = tasteCalls(calls).length;
     click({ 'data-dp': 'unpin', 'data-i': 0 });
     await flush(); await flush();
@@ -1234,16 +1280,16 @@ describe('Discover page: the configuration bar', () => {
     click({ 'data-dp': 'addPlaying' });
     await flush(); await flush();
     assert.deepEqual(tasteCalls(calls).slice(before)[0].pin, ['music/Now/Playing.flac']);
-    assert.ok(S.html().includes('class="dpage-seeds"'), 'still open');
+    assert.ok(S.page().includes('class="dpage-seeds"'), 'still open');
     // × on a history seed: dropped for the visit
-    assert.ok(!S.html().includes('data-dp="moreSeeds"'), 'nothing dropped yet: no Edit seeds');
+    assert.ok(!S.page().includes('data-dp="moreSeeds"'), 'nothing dropped yet: no Edit seeds');
     click({ 'data-dp': 'drop', 'data-i': 1 });
     await flush(); await flush();
     assert.deepEqual(tasteCalls(calls).at(-2).exclude, ['h1']);
-    assert.ok(!seedsSection(S.html()).includes('Seed &lt;One&gt;'), 'gone from the batch');
+    assert.ok(!seedsSection(S.page()).includes('Seed &lt;One&gt;'), 'gone from the batch');
     // Edit seeds → the dropped list (the answer's excluded rows) → Use again
     click({ 'data-dp': 'moreSeeds' });
-    let html = S.html();
+    let html = S.page();
     assert.ok(html.includes('dpage-dropped'));
     assert.match(seedsSection(html), /data-dp="restore" data-i="0"[^>]*>[\s\S]*?Gone h1[\s\S]*?dpage\.seeds\.dropped/);
     before = tasteCalls(calls).length;
@@ -1252,7 +1298,7 @@ describe('Discover page: the configuration bar', () => {
     const next = tasteCalls(calls).slice(before);
     assert.equal(next.length, 2, 're-asked');
     assert.equal(next[0].exclude, undefined, 'without it');
-    html = S.html();
+    html = S.page();
     assert.ok(!html.includes('dpage-dropped') && !html.includes('Gone h1'), 'no dropped chips left');
     assert.ok(html.includes('class="dpage-seeds"'), 'still open');
     assert.deepEqual([...new Set(calls.map((c) => c.name))], ['taste']);
@@ -1262,7 +1308,7 @@ describe('Discover page: the configuration bar', () => {
     const { S, calls, click, views, vpc } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
     openOptions(click);
-    assert.ok(findDrawn(seedsSection(S.html()), { 'data-dp': 'pick' }), '+ Add a song… is in the picker');
+    assert.ok(findDrawn(seedsSection(S.page()), { 'data-dp': 'pick' }), '+ Add a song… is in the picker');
     click({ 'data-dp': 'pick' });
     S.setState([{ state: 'fileExplorer' }]);
     // the next row click anywhere is the capture; its way back is the page
@@ -1273,7 +1319,211 @@ describe('Discover page: the configuration bar', () => {
     await flush(); await flush();
     assert.deepEqual(tasteCalls(calls).slice(before)[0].pin, ['music/Now/Playing.flac', 'music/P/Picked.flac']);
     assert.equal(S.view.optionsOpen, true);
-    assert.ok(seedsSection(S.html()).includes('data-dp="pick"'), 'the picker shows the result');
+    assert.ok(seedsSection(S.page()).includes('data-dp="pick"'), 'the picker shows the result');
+  });
+});
+
+// The bar's host: #dpage-head sits in the #browser column's chrome, directly
+// above the #filelist scroller (as #directory_bar does for the explorer), so
+// the bar and the open picker never scroll; the sections stay in the list.
+describe('Discover page: the bar lives outside the scroll box', () => {
+  const many = { ...MAIN, seeds: [...SEEDS, ...Array.from({ length: 8 }, (_, i) => ({ hash: `m${i}`, filepath: `music/M/${i}.flac`, metadata: { title: `More ${i}` }, outcome: 'completed', plays: 1, pinned: false, analyzed: true }))] };
+
+  test('index.html: the host is in the #browser column, hidden, directly before #filelist', () => {
+    const html = fs.readFileSync(path.join(ROOT, 'webapp', 'index.html'), 'utf8');
+    const col = html.slice(html.indexOf('<div id="browser"'));
+    assert.match(col, /<div id="dpage-head" class="super-hide"><\/div>\s*<div id="filelist">/);
+    assert.ok(col.indexOf('id="directory_bar"') < col.indexOf('id="dpage-head"'), 'with the rest of the chrome');
+  });
+
+  test('the bar and the open picker draw in #dpage-head, the sections in #filelist', async () => {
+    const { S, els, click } = makeSandbox({ taste: answer, playing: PLAYING });
+    await S.discoveryPanel();
+    const head = els.get('dpage-head');
+    assert.equal(head.classList.contains('super-hide'), false, 'shown on render');
+    assert.match(S.head(), /^<div class="dpage dpage-chrome dpage-page-play">\s*<div class="dpage-bar">/);
+    for (const a of [{ 'data-dp-change': 'window' }, { 'data-dp': 'options' }, { 'data-dp': 'refresh' }]) {
+      assert.ok(findDrawn(S.head(), a), `${JSON.stringify(a)} in the host`);
+      assert.equal(findDrawn(S.html(), a), null, `${JSON.stringify(a)} not in the list`);
+    }
+    assert.ok(!S.html().includes('dpage-bar'), 'no bar in the scroll box');
+    assert.ok(S.html().includes('dpage-src-library') && S.html().includes('dpage-src-peers'), 'the sections in the list');
+    assert.ok(!S.head().includes('dpage-src-'), 'no section in the host');
+    openOptions(click);
+    assert.ok(S.head().includes('id="dpage-options"') && S.head().includes('class="dpage-seeds"'), 'the open picker in the host');
+    assert.ok(!S.html().includes('dpage-options') && !S.html().includes('dpage-seeds'), 'not in the list');
+    assert.ok(S.head().indexOf('dpage-bar') < S.head().indexOf('dpage-options'), 'under the bar');
+  });
+
+  test('busy and page classes ride on both roots; the loading flag stays on the list\'s', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const { S } = makeSandbox({ taste: (b) => gate.then(() => answer(b)) });
+    const run = S.discoveryPanel();
+    assert.match(S.html(), PAGE_BUSY);
+    assert.ok(!PAGE_BUSY.test(S.head()), 'no aria-busy on the host');
+    assert.ok(S.head().includes('data-dp="options"'), 'the bar shows while loading');
+    release();
+    await run;
+    assert.ok(!S.head().includes('dpage-busy') && !S.html().includes('dpage-busy'), 'settled');
+    // a re-ask holds the answer on screen, busy: both roots dim together
+    let again;
+    const hold = new Promise((r) => { again = r; });
+    const next = makeSandbox({ taste: (b) => (b.window === 90 ? hold.then(() => answer(b)) : answer(b)) });
+    await next.S.discoveryPanel();
+    next.change({ 'data-dp-change': 'window' }, '90');
+    await flush();
+    assert.match(next.S.head(), /class="dpage dpage-chrome dpage-page-play dpage-busy"/);
+    assert.match(next.S.html(), /class="dpage dpage-page-play dpage-busy"/);
+    again();
+    await flush(); await flush();
+  });
+
+  test('every bar and picker control works from the host', async () => {
+    const { S, calls, click, change, toasts, views, vpc } = makeSandbox({
+      taste: (b) => (b.sources.includes('peers') ? PEERS : { ...many, excluded: echoExcluded(b), seeds: (b.pin ? many.seeds : many.seeds.slice(1)).filter((x) => !(b.exclude || []).includes(x.hash)) }),
+      playing: PLAYING,
+    });
+    await S.discoveryPanel();
+    const inHead = (a) => { assert.ok(findDrawn(S.head(), a), `${JSON.stringify(a)} in the host`); assert.equal(findDrawn(S.html(), a), null, `${JSON.stringify(a)} not in the list`); };
+    let n = tasteCalls(calls).length;
+    inHead({ 'data-dp': 'refresh' });
+    click({ 'data-dp': 'refresh' });
+    await flush(); await flush();
+    assert.equal(tasteCalls(calls).length, n + 2, 'refresh re-asks');
+    n = tasteCalls(calls).length;
+    change({ 'data-dp-change': 'window' }, '90');
+    await flush(); await flush();
+    assert.equal(tasteCalls(calls).at(-1).window, 90, 'the window re-asks');
+    inHead({ 'data-dp': 'options' });
+    click({ 'data-dp': 'options' });
+    assert.equal(S.view.optionsOpen, true);
+    inHead({ 'data-dp': 'moreSeeds' });
+    click({ 'data-dp': 'moreSeeds' });
+    assert.ok(S.head().includes('More 7'), 'show all');
+    inHead({ 'data-dp': 'unpin', 'data-i': 0 });
+    click({ 'data-dp': 'unpin', 'data-i': 0 });
+    await flush(); await flush();
+    assert.equal(tasteCalls(calls).at(-2).pin, undefined, 'unpinned');
+    inHead({ 'data-dp': 'addPlaying' });
+    click({ 'data-dp': 'addPlaying' });
+    await flush(); await flush();
+    assert.deepEqual(tasteCalls(calls).at(-2).pin, ['music/Now/Playing.flac'], '+ Now playing');
+    inHead({ 'data-dp': 'drop', 'data-i': 1 });
+    click({ 'data-dp': 'drop', 'data-i': 1 });
+    await flush(); await flush();
+    assert.deepEqual(tasteCalls(calls).at(-2).exclude, ['h1'], 'dropped');
+    toasts.find((o) => o.buttons).buttons[0][1]({ hide() {} }, {});
+    await flush(); await flush();
+    assert.equal(tasteCalls(calls).at(-2).exclude, undefined, 'Undo');
+    click({ 'data-dp': 'drop', 'data-i': 1 });
+    await flush(); await flush();
+    inHead({ 'data-dp': 'restore', 'data-i': 0 });
+    click({ 'data-dp': 'restore', 'data-i': 0 });
+    await flush(); await flush();
+    assert.equal(tasteCalls(calls).at(-2).exclude, undefined, 'Use again');
+    inHead({ 'data-dp': 'pick' });
+    click({ 'data-dp': 'pick' });
+    S.setState([{ state: 'fileExplorer' }]);
+    vpc.songCapture({ filepath: '/music/P/Picked.flac' });
+    await views[views.length - 1]();
+    await flush(); await flush();
+    assert.deepEqual(tasteCalls(calls).at(-2).pin, ['music/Now/Playing.flac', 'music/P/Picked.flac'], '+ Add a song…');
+    assert.ok(S.head().includes('class="dpage-seeds"'), 'back with the picker open, in the host');
+  });
+
+  test('the keyboard comes back to the host\'s control after a re-render', async () => {
+    const { S, keyClick, focused, focusedIn, activeAttrs } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : many) });
+    await S.discoveryPanel();
+    keyClick({ 'data-dp': 'options' });
+    assert.equal(focused.at(-1), 'options');
+    assert.equal(focusedIn.at(-1), 'dpage-head');
+    keyClick({ 'data-dp': 'moreSeeds' });
+    assert.equal(focused.at(-1), 'moreSeeds');
+    assert.equal(focusedIn.at(-1), 'dpage-head');
+    assert.equal(activeAttrs()['data-dp'], 'moreSeeds');
+    keyClick({ 'data-dp': 'refresh' });
+    await flush(); await flush();
+    assert.equal(focused.at(-1), 'refresh', 'the ⟳ keeps the keyboard across the new answer');
+    assert.equal(focusedIn.at(-1), 'dpage-head');
+  });
+
+  test('the host hides (and empties) when another panel takes over, and shows again on the way back', async () => {
+    const { S, els } = makeSandbox({ taste: answer, playing: PLAYING });
+    await S.discoveryPanel();
+    const head = els.get('dpage-head');
+    assert.equal(head.classList.contains('super-hide'), false);
+    S.setState([{ state: 'allAlbums' }]);
+    S.setBrowserRootPanel('panel.albums');
+    assert.equal(head.classList.contains('super-hide'), true, 'hidden on another panel');
+    assert.equal(S.head(), '', 'and emptied');
+    await S.discoveryPanel({ keep: true });
+    assert.equal(head.classList.contains('super-hide'), false, 'back on the page');
+    assert.ok(S.head().includes('dpage-bar'));
+  });
+
+  test('an album opened from the page hides the host with the directory bar restored', () => {
+    const fn = sliceFn('getAlbumSongs');
+    const branch = fn.slice(fn.indexOf("under.state === 'discovery'"), fn.indexOf('}', fn.indexOf("under.state === 'discovery'")));
+    assert.ok(branch.includes("document.getElementById('directory_bar').style.display = ''"));
+    assert.ok(branch.includes('discoveryHideHead()'));
+    assert.ok(sliceFn('setBrowserRootPanel').includes('discoveryHideHead()'), 'every root panel hides it');
+  });
+
+  test('the capped picker keeps its own scroll across a redraw (it is redrawn with the host)', async () => {
+    const { S, els, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? PEERS : many) });
+    await S.discoveryPanel();
+    const head = els.get('dpage-head');
+    assert.equal(head.querySelector('.dpage-options'), null, 'no picker while closed');
+    openOptions(click);
+    const first = head.querySelector('.dpage-options');
+    assert.equal(first.scrollTop, 0);
+    first.scrollTop = 240;
+    click({ 'data-dp': 'moreSeeds' });
+    const second = head.querySelector('.dpage-options');
+    assert.notEqual(second, first, 'a new picker element');
+    assert.equal(second.scrollTop, 240, 'scrolled where the user left it');
+    // closed and opened again: the picker starts at its top
+    openOptions(click);
+    openOptions(click);
+    assert.equal(head.querySelector('.dpage-options').scrollTop, 0);
+  });
+
+  test('no host in the page (an older index.html): the bar heads the list instead of vanishing', async () => {
+    const { S, click, change, calls } = makeSandbox({ taste: answer, playing: PLAYING, noHead: true });
+    await S.discoveryPanel();
+    assert.ok(S.html().includes('class="dpage-bar"'), 'the bar in the list');
+    assert.ok(S.html().indexOf('dpage-bar') < S.html().indexOf('dpage-src-library'), 'above the sections');
+    openOptions(click);
+    assert.ok(S.html().includes('class="dpage-seeds"'), 'the picker opens there too');
+    const n = tasteCalls(calls).length;
+    change({ 'data-dp-change': 'window' }, '90');
+    await flush(); await flush();
+    assert.ok(tasteCalls(calls).length > n, 'its controls work');
+    S.setState([{ state: 'allAlbums' }]);
+    S.setBrowserRootPanel('panel.albums');
+  });
+
+  test('off and unavailable draw no bar: the host is hidden', async () => {
+    for (const ping of [null, { discovery: true, discoveryTaste: 1 }]) {
+      const { S, els } = makeSandbox({ taste: () => ({ disabled: true }), ping });
+      await S.discoveryPanel();
+      await flush();
+      assert.match(S.html(), /dpage-off/);
+      assert.equal(els.get('dpage-head').classList.contains('super-hide'), true);
+      assert.equal(S.head(), '');
+    }
+  });
+
+  test('Explore: its bar and "new artists only" in the host, its network list in the scroll box', async () => {
+    const { S, click } = makeSandbox({ taste: answer });
+    await S.discoveryPanel({ page: 'explore' });
+    assert.match(S.head(), /^<div class="dpage dpage-chrome dpage-page-explore/);
+    assert.ok(S.html().includes('dpage-sec-network'));
+    assert.ok(!S.head().includes('dpage-sec-network'));
+    openOptions(click);
+    assert.ok(findDrawn(S.head(), { 'data-dp': 'newArtists' }));
+    assert.equal(findDrawn(S.html(), { 'data-dp': 'newArtists' }), null);
   });
 });
 
@@ -1301,7 +1551,7 @@ describe('Discover page: New seeds (the bar\'s ⟳)', () => {
   test('the bar\'s button says what it does: "New seeds" (title and aria-label)', async () => {
     const { S } = makeSandbox({ taste: server() });
     await S.discoveryPanel();
-    const btn = findDrawn(S.html(), { 'data-dp': 'refresh' });
+    const btn = findDrawn(S.page(), { 'data-dp': 'refresh' });
     assert.equal(btn.attrs.title, 'dpage.verb.newSeeds');
     assert.equal(btn.attrs['aria-label'], 'dpage.verb.newSeeds');
   });
@@ -1337,13 +1587,13 @@ describe('Discover page: New seeds (the bar\'s ⟳)', () => {
     const { S, click } = makeSandbox({ taste: server(), playing: PLAYING });
     await S.discoveryPanel();
     openOptions(click);
-    assert.match(seedsSection(S.html()), /Now Song[\s\S]*Fin 1[\s\S]*Fin 2/);
+    assert.match(seedsSection(S.page()), /Now Song[\s\S]*Fin 1[\s\S]*Fin 2/);
     await press(click);
-    const seeds = seedsSection(S.html());
+    const seeds = seedsSection(S.page());
     assert.match(seeds, /Now Song[\s\S]*Fin 3[\s\S]*Fin 4/, 'the pin, then the server\'s new batch');
     assert.ok(!/Fin [12]\b/.test(seeds), 'the last batch is gone from the strip');
-    assert.ok(!S.html().includes('Gone ') && !S.html().includes('dpage-dropped'), 'never drawn as dropped');
-    assert.ok(!S.html().includes('data-dp="moreSeeds"'), 'no Edit seeds for them');
+    assert.ok(!S.page().includes('Gone ') && !S.page().includes('dpage-dropped'), 'never drawn as dropped');
+    assert.ok(!S.page().includes('data-dp="moreSeeds"'), 'no Edit seeds for them');
   });
 
   test('the answer on screen stays drawn (busy, not loading) until the new one lands', async () => {
@@ -1363,18 +1613,18 @@ describe('Discover page: New seeds (the bar\'s ⟳)', () => {
       playing: PLAYING,
     });
     await S.discoveryPanel();
-    assert.match(S.html(), /Title Seven/);
+    assert.match(S.page(), /Title Seven/);
     click({ 'data-dp': 'refresh' });
     await flush();
     assert.equal(n, 3, 'asked (the library first; the peers call waits for its seeds)');
-    let html = S.html();
+    let html = S.page();
     assert.match(html, /<div class="dpage dpage-page-play dpage-busy">/, 'busy');
     assert.ok(!PAGE_BUSY.test(html), 'not the loading state');
     assert.match(html, /Title Seven/, 'the old rows stay');
     assert.ok(!/dpage-skel/.test(html), 'no skeletons');
     release();
     await flush(); await flush(); await flush();
-    html = S.html();
+    html = S.page();
     assert.match(html, /Fresh Pick/);
     assert.ok(!html.includes('dpage-busy'));
   });
@@ -1388,20 +1638,20 @@ describe('Discover page: New seeds (the bar\'s ⟳)', () => {
     let release;
     gate = new Promise((r) => { release = r; });
     const again = S.discoveryPanel();
-    assert.match(S.html(), /<div class="dpage dpage-page-play dpage-busy">/);
-    assert.match(S.html(), /Title Seven/, 'the last answer, busy');
+    assert.match(S.page(), /<div class="dpage dpage-page-play dpage-busy">/);
+    assert.match(S.page(), /Title Seven/, 'the last answer, busy');
     release();
     await again;
-    assert.ok(!S.html().includes('dpage-busy'));
+    assert.ok(!S.page().includes('dpage-busy'));
     gate = null;
     fail = true;
     await S.discoveryPanel();
-    assert.match(S.html(), /dpage\.state\.failed/);
+    assert.match(S.page(), /dpage\.state\.failed/);
     fail = false;
     gate = new Promise((r) => { release = r; });
     const third = S.discoveryPanel();
-    assert.match(S.html(), PAGE_BUSY, 'the loading state, not the failed card');
-    assert.ok(!S.html().includes('dpage.state.failed'));
+    assert.match(S.page(), PAGE_BUSY, 'the loading state, not the failed card');
+    assert.ok(!S.page().includes('dpage.state.failed'));
     release();
     await third;
   });
@@ -1412,7 +1662,7 @@ describe('Discover page: New seeds (the bar\'s ⟳)', () => {
     await S.discoveryPanel();
     await press(click);
     await press(click);
-    const html = S.html();
+    const html = S.page();
     assert.match(html, /dpage\.state\.nothingFinished/, 'a random pick is "finish a few songs", however often New seeds is pressed');
     assert.ok(!html.includes('seedsCycled') && !html.includes('data-v="card"'));
     assert.ok(tasteCalls(calls).every((b) => !('exclude' in b)));
@@ -1427,7 +1677,7 @@ describe('Discover page: the explore page (no nav row yet)', () => {
     const asked = tasteCalls(calls);
     assert.equal(asked.length, 1, 'no peers call');
     assert.deepEqual(asked[0].sources, ['network']);
-    const html = S.html();
+    const html = S.page();
     assert.match(html, /class="dpage dpage-page-explore/);
     assert.ok(html.includes('dpage-sec-network') && html.includes('dpage.network.title'));
     assert.match(html, /data-dp="lead" data-i="0"/);
@@ -1438,7 +1688,7 @@ describe('Discover page: the explore page (no nav row yet)', () => {
   test('a lead opens its window, matched against its own seed', async () => {
     const { S, click, opened } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel({ page: 'explore' });
-    const lead = findDrawn(S.html(), { 'data-dp': 'lead', 'data-i': 0 });
+    const lead = findDrawn(S.page(), { 'data-dp': 'lead', 'data-i': 0 });
     assert.equal(lead.tag, 'button');
     assert.ok(lead.attrs['aria-label']);
     click({ 'data-dp': 'lead', 'data-i': 0 });
@@ -1451,7 +1701,7 @@ describe('Discover page: the explore page (no nav row yet)', () => {
     const { S, calls, click, storage } = makeSandbox({ taste: answer });
     await S.discoveryPanel({ page: 'explore' });
     openOptions(click);
-    const html = S.html();
+    const html = S.page();
     assert.match(html, /<div class="dpage-options" id="dpage-options"><div class="dpage-opt-row"><button[^>]*data-dp="newArtists"/);
     const box = findDrawn(html, { 'data-dp': 'newArtists' });
     assert.equal(box.attrs['aria-checked'], 'false');
@@ -1461,7 +1711,7 @@ describe('Discover page: the explore page (no nav row yet)', () => {
     await flush(); await flush();
     assert.equal(tasteCalls(calls).slice(before)[0].newArtistsOnly, true);
     assert.equal(storage.get('discoverNewArtistsOnly'), 'true');
-    assert.equal(findDrawn(S.html(), { 'data-dp': 'newArtists' }).attrs['aria-checked'], 'true');
+    assert.equal(findDrawn(S.page(), { 'data-dp': 'newArtists' }).attrs['aria-checked'], 'true');
     // a fresh open reads it back; the play page never sends it
     await S.discoveryPanel({ page: 'explore' });
     assert.equal(tasteCalls(calls).at(-1).newArtistsOnly, true);
@@ -1477,8 +1727,8 @@ describe('Discover page: the explore page (no nav row yet)', () => {
     await S.discoveryPanel();
     assert.equal(S.view.page, 'play');
     assert.deepEqual(tasteCalls(calls).at(-2).sources, ['library']);
-    assert.ok(S.html().includes('dpage-src-library'));
-    assert.ok(!S.html().includes('dpage-sec-network'), 'the network answer is not drawn on Discover');
+    assert.ok(S.page().includes('dpage-src-library'));
+    assert.ok(!S.page().includes('dpage-sec-network'), 'the network answer is not drawn on Discover');
   });
 
   test('a server without p2p has nothing to explore: no request', async () => {
@@ -1495,12 +1745,12 @@ describe('Discover page: fencing', () => {
     const { S } = makeSandbox({ taste: (b) => gate.then(() => answer(b)) });
     const run = S.discoveryPanel();
     await flush();
-    const loading = S.html();
+    const loading = S.page();
     assert.match(loading, PAGE_BUSY, 'the page\'s own loading state, at once');
     S.bump();   // a server switch / peer adoption superseded the load
     release();
     await run;
-    assert.equal(S.html(), loading, 'the stale answer never drew');
+    assert.equal(S.page(), loading, 'the stale answer never drew');
     assert.equal(S.view.main, undefined);
   });
 
@@ -1515,10 +1765,10 @@ describe('Discover page: fencing', () => {
     first = false;
     await S.discoveryPanel();
     assert.equal(tasteCalls(calls).length, 3, 'asked again (the dropped load never reached its peers call)');
-    assert.ok(S.html().includes('Title Seven'), 'and drew');
+    assert.ok(S.page().includes('Title Seven'), 'and drew');
     release();
     await run;
-    assert.ok(S.html().includes('Title Seven'), 'the dropped answer changed nothing');
+    assert.ok(S.page().includes('Title Seven'), 'the dropped answer changed nothing');
   });
 
   test('an answer that lands while another panel is up is kept but not drawn', async () => {
@@ -1527,11 +1777,11 @@ describe('Discover page: fencing', () => {
     const { S } = makeSandbox({ taste: (b) => gate.then(() => answer(b)) });
     const run = S.discoveryPanel();
     await flush();
-    const loading = S.html();
+    const loading = S.page();
     S.setState([{ state: 'allAlbums' }]);
     release();
     await run;
-    assert.equal(S.html(), loading);
+    assert.equal(S.page(), loading);
     assert.ok(S.view.main && S.view.main.library, 'kept for the way back');
   });
 });
@@ -1553,7 +1803,7 @@ describe('Discover page: job badges (the explore page)', () => {
     const lookups = calls.filter((c) => c.name === 'lookup');
     assert.equal(lookups.length, 1);
     assert.deepEqual(lookups[0].body, [MAIN.network.results[0]], 'the network lead alone');
-    const html = S.html();
+    const html = S.page();
     assert.match(html, /dpage-badge-src">discover\.job\.downloading/);
     assert.match(html, /<div class="dpage-prog"><i style="width:64%"><\/i><\/div>/);
     assert.match(html, /dpage\.plugins\.getIt/);
@@ -1563,19 +1813,19 @@ describe('Discover page: job badges (the explore page)', () => {
     const { S, calls } = badgeBox();
     await S.discoveryPanel();
     assert.equal(calls.filter((c) => c.name === 'lookup').length, 0);
-    assert.ok(!S.html().includes('dpage-badge'));
+    assert.ok(!S.page().includes('dpage-badge'));
   });
 
   test('a poll tick redraws only a badge that changed, in place; an unchanged tick draws nothing', async () => {
     const { S, tick, patches, renders } = badgeBox();
     await S.discoveryPanel({ page: 'explore' });
     const drawn = renders();
-    const html = S.html();
+    const html = S.page();
     tick([JOB]);
     assert.equal(patches.length, 0, 'nothing changed: nothing drawn');
     tick([{ ...JOB, progress: 0.5 }]);
     assert.equal(renders(), drawn, 'no whole-page draw on the poll');
-    assert.equal(S.html(), html);
+    assert.equal(S.page(), html);
     const bar = patches.find((pt) => pt.slot === 'data-pslot' && pt.id === 'n0');
     assert.ok(bar && /width:50%/.test(bar.html), 'the lead\'s bar moved');
     assert.ok(patches.some((pt) => pt.slot === 'data-bslot' && pt.id === 'n0'));
@@ -1595,7 +1845,7 @@ describe('Discover page: job badges (the explore page)', () => {
     assert.equal(tasteCalls(calls).length, asks + 1, 'asked again');
     assert.equal(calls.filter((c) => c.name === 'lookup').length, lookups + 1, 'the new rows looked up');
     assert.equal(liveWatches(), 1, 'listening again (one watch)');
-    assert.match(S.html(), /width:90%/, 'the badge caught up');
+    assert.match(S.page(), /width:90%/, 'the badge caught up');
   });
 });
 
@@ -1637,8 +1887,13 @@ describe('Discover page: wiring', () => {
   test('spa.css: the columns follow the page\'s own width (a container query), the no-federation flow is column-major, the phone tabs are gone', () => {
     const page = css.slice(css.indexOf('/* ── The Discover page'));
     assert.match(page, /\.dpage \{[^}]*container-type: inline-size;[^}]*container-name: dpage;/);
-    // the configuration bar stays put while the list scrolls under it
-    assert.match(page, /\.dpage-bar \{ position: sticky; top: 0; z-index: \d+;[^}]*background: #262a33;/);
+    // the configuration bar sits in the column's chrome (#dpage-head), not
+    // stuck inside the scroller; the host's open picker is height-capped
+    const barRule = page.match(/\n\.dpage-bar \{[^}]*\}/);
+    assert.ok(barRule, 'the bar\'s rule');
+    assert.ok(!/position:\s*sticky/.test(barRule[0]), 'the bar is not sticky');
+    assert.match(page, /#dpage-head \{[^}]*flex-shrink: 0;[^}]*background: #262a33;[^}]*border-bottom: 1px solid #2c313a;/);
+    assert.match(page, /#dpage-head \.dpage-options \{[^}]*max-height: 45vh;[^}]*overflow-y: auto;/);
     const wide = page.slice(page.indexOf('@container dpage (min-width: 560px)'));
     assert.ok(page.includes('@container dpage (min-width: 560px)'));
     assert.match(wide, /\.dpage-songs:not\(\.dpage-songs-solo\) \{ grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\); \}/);
@@ -1746,18 +2001,18 @@ describe('Discover page: one batch per ask, one visit per open', () => {
     let release;
     const { S, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') && gate ? gate.then(() => PEERS) : answer(b)), playing: PLAYING });
     await S.discoveryPanel();
-    assert.ok(S.html().includes('Peer Song'));
+    assert.ok(S.page().includes('Peer Song'));
     gate = new Promise((r) => { release = r; });
     click({ 'data-dp': 'refresh' });
     await flush(); await flush();
     assert.equal(S.view.pending.main, false);
     assert.equal(S.view.pending.peers, true);
-    assert.ok(!S.html().includes('Peer Song'), 'the old column is gone');
-    assert.match(S.html(), /dpage-skel/, 'its skeleton instead');
+    assert.ok(!S.page().includes('Peer Song'), 'the old column is gone');
+    assert.match(S.page(), /dpage-skel/, 'its skeleton instead');
     release();
     await flush(); await flush();
-    assert.ok(S.html().includes('Peer Song'));
-    assert.ok(!S.html().includes('dpage-busy'));
+    assert.ok(S.page().includes('Peer Song'));
+    assert.ok(!S.page().includes('dpage-busy'));
   });
 
   test('a drop toast\'s Undo after a fresh open (or off the page) asks nothing', async () => {
@@ -1799,15 +2054,15 @@ describe('Discover page: one batch per ask, one visit per open', () => {
     click({ 'data-dp': 'drop', 'data-i': 1 });
     await flush(); await flush();
     click({ 'data-dp': 'moreSeeds' });
-    assert.ok(seedsSection(S.html()).includes('Gone h1'), 'dropped this visit');
+    assert.ok(seedsSection(S.page()).includes('Gone h1'), 'dropped this visit');
     let release;
     gate = new Promise((r) => { release = r; });
     const run = S.discoveryPanel();
     S.view.optionsOpen = true;
     S.view.allSeeds = true;
     S.renderDiscovery();
-    assert.match(S.html(), /dpage-busy/, 'the held answer, busy');
-    assert.ok(!S.html().includes('Gone h1'), 'its excluded[] belongs to the last visit');
+    assert.match(S.page(), /dpage-busy/, 'the held answer, busy');
+    assert.ok(!S.page().includes('Gone h1'), 'its excluded[] belongs to the last visit');
     release();
     await run;
   });
