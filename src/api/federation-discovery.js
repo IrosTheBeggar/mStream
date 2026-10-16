@@ -85,8 +85,9 @@ export function setup(mstream) {
       if (++considered > maxConsidered) { capped = true; break; }
       const row = resolveVisible(uid, filter, entry.hash, { withGenres: false });
       if (!row) { continue; }   // no copy inside the caller's granted libraries
+      const rendered = renderMetadataObj(row);
       results.push({
-        filepath: renderMetadataObj(row).filepath,
+        filepath: rendered.filepath,
         artist: row.artist_name || null,
         title: row.title || null,
         // Catalogue fields (discovery.db V3): the library row already carries
@@ -99,6 +100,11 @@ export function setup(mstream) {
         similarity: Math.round(similarity * 10000) / 10000,
         genreTags: entry.genreTags,
         recordingMbid: mbidStmt ? (mbidStmt.get(entry.hash)?.recording_mbid || null) : null,
+        // The track's cover, named exactly as this server's browse rows
+        // carry it (metadata 'album-art') — the file /album-art/<name>
+        // serves, so a caller's art proxy (GET /api/v1/federation/peers/
+        // :id/art/<name>) fetches it as is. Null when the track has none.
+        albumArt: rendered.metadata['album-art'] || null,
       });
     }
 

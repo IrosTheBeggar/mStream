@@ -753,6 +753,19 @@ components:
         releaseGroupMbid: { type: string, nullable: true }
         duration: { type: number, nullable: true }
         similarity: { type: number, description: "The peer's cosine vs the query vector, 4 decimals." }
+        albumArt:
+          type: string
+          nullable: true
+          description: >
+            The track's cover on the PEER — the file name its own browse rows
+            carry as `metadata['album-art']` and its `/album-art/{file}` serves.
+            Fetch it through `GET /api/v1/federation/peers/{id}/art/{albumArt}`
+            with the name URL-encoded (`encodeURIComponent`) as that one path
+            segment (`?compress=s` for a thumbnail); an album of these rows
+            takes its first row's. Null when the track has no cover, the peer
+            runs an older server, or the peer sent a name its `/album-art/`
+            could not serve (only `^[a-zA-Z0-9_-]{1,100}\.[a-zA-Z0-9]{1,7}$`
+            passes).
         genreTags:
           type: array
           nullable: true
@@ -8098,6 +8111,7 @@ paths:
                           nullable: true
                           items: { type: string }
                         recordingMbid: { type: string, nullable: true }
+                        albumArt: { type: string, nullable: true, description: "The track's cover file name, as this server's browse rows carry it (metadata 'album-art') and /album-art/{file} serves it; null when the track has none. Absent from servers before 2026-10." }
         "400":
           description: Malformed vector (wrong length for the model space, non-finite values, zero vector, bad base64).
         "403":

@@ -5,7 +5,9 @@
  * Server A (remote peer): federation + discovery ON ('test-fake'), one
  * 'shared' library whose tracks carry handcrafted 4-d vectors chosen to
  * exercise every caller-side filter at once:
- *   'Remote Hit'    by Nova     cos 0.9    → the novel result
+ *   'Remote Hit'    by Nova     cos 0.9    → the novel result (the one
+ *                                            track with an embedded cover:
+ *                                            its rows name A's albumArt)
  *   'Be Somebody'   by Icarus   cos 0.8    → artist+title B owns → dropped
  *   'Brand New Cut' by Vosto    cos 0.7    → novel, but Vosto is a B artist
  *                                            → dropped under newArtistsOnly
@@ -151,7 +153,8 @@ describe('discovery federation — merging peer answers (no iroh)', () => {
           { newArtistsOnly })) { continue; }
         merged.push({
           artist: r.artist, title: r.title, album: r.album ?? null, year: r.year ?? null, isrc: r.isrc ?? null,
-          releaseGroupMbid: r.releaseGroupMbid ?? null, duration: r.duration, similarity: r.similarity,
+          // albumArt joined the row later (2026-10-16); the walk is unchanged.
+          releaseGroupMbid: r.releaseGroupMbid ?? null, albumArt: r.albumArt ?? null, duration: r.duration, similarity: r.similarity,
           genreTags: r.genreTags, recordingMbid: r.recordingMbid, filepath: r.filepath, peer: { id: peer.id, name: peer.name },
         });
       }
@@ -266,6 +269,40 @@ describe('discovery federation — merging peer answers (no iroh)', () => {
     assert.deepEqual(out.results.map((r) => r.title), ['Fine']);
     assert.deepEqual(out.searched, { peers: 3, unreachable: 1, mismatched: 0 });
   });
+
+  test('albumArt: a peer\'s cover file name passes through; absent (an older peer) or not one plain name → null', () => {
+    const out = mergePeerAnswers([peerRow(1, 'A')], [ok([
+      song('Nova', 'Covered', 0.9, { albumArt: '0f3a9c.jpg' }),
+      song('Nova', 'Older Peer', 0.8),
+      song('Nova', 'Explicit Null', 0.7, { albumArt: null }),
+      song('Iko', 'Nested', 0.6, { albumArt: 'a/b.jpg' }),
+      song('Iko', 'Dotdot', 0.5, { albumArt: '..' }),
+      song('Iko', 'Backslash', 0.45, { albumArt: 'a\\b.jpg' }),
+      song('Iko', 'Control', 0.4, { albumArt: 'a\nb.jpg' }),
+      song('Iko', 'Empty', 0.35, { albumArt: '' }),
+      song('Vosto', 'Number', 0.3, { albumArt: 42 }),
+      song('Vosto', 'Huge', 0.25, { albumArt: `${'x'.repeat(300)}.jpg` }),
+      // What /album-art/ (sanitizeFilename) could never serve, and a client
+      // splicing the name into a URL would misread: kept out entirely.
+      song('Kai', 'Encoded Dots', 0.24, { albumArt: '%2e%2e' }),
+      song('Kai', 'Encoded Name', 0.23, { albumArt: '%2e%2e.jpg' }),
+      song('Kai', 'Query', 0.22, { albumArt: 'x?y.jpg' }),
+      song('Kai', 'Fragment', 0.21, { albumArt: 'a#b.jpg' }),
+      song('Kai', 'Space', 0.2, { albumArt: 'a b.jpg' }),
+      song('Kai', 'Non-ASCII', 0.19, { albumArt: 'café.jpg' }),
+      song('Kai', 'No Extension', 0.18, { albumArt: '0f3a9c' }),
+      song('Kai', 'Long Stem', 0.17, { albumArt: `${'a'.repeat(101)}.jpg` }),
+      song('Kai', 'Real Hash', 0.16, { albumArt: 'd41d8cd98f00b204e9800998ecf8427e.jpeg' }),
+    ])], { excludeSets: none(), limit: 30 });
+    const art = Object.fromEntries(out.peers[0].results.map((r) => [r.title, r.albumArt]));
+    assert.deepEqual(art, {
+      Covered: '0f3a9c.jpg', 'Older Peer': null, 'Explicit Null': null, Nested: null, Dotdot: null,
+      Backslash: null, Control: null, Empty: null, Number: null, Huge: null,
+      'Encoded Dots': null, 'Encoded Name': null, Query: null, Fragment: null, Space: null, 'Non-ASCII': null,
+      'No Extension': null, 'Long Stem': null, 'Real Hash': 'd41d8cd98f00b204e9800998ecf8427e.jpeg',
+    });
+    assert.ok(out.results.every((r) => 'albumArt' in r), 'every row carries the key, so clients read one shape');
+  });
 });
 
 describe('discovery federation — throttled peer status writes (no iroh)', () => {
@@ -310,9 +347,17 @@ describe('discovery federation aggregate (B queries A over iroh)', { skip: avail
     sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-fedagg-'));
     let freq = 400;
     for (const [title, artist] of REMOTE) {
+      // 'Remote Hit' carries an APIC cover (attached_pic), which A's scanner
+      // caches and names on the track; the rest have none.
+      const art = title === 'Remote Hit' ? [
+        '-f', 'lavfi', '-i', 'color=color=orange:size=64x64:duration=0.1',
+        '-map', '0:a', '-map', '1:v', '-frames:v', '1', '-c:v', 'mjpeg',
+        '-disposition:v:0', 'attached_pic', '-id3v2_version', '3',
+      ] : [];
       await runFfmpeg([
         '-nostdin', '-y', '-loglevel', 'error',
         '-f', 'lavfi', '-i', `sine=frequency=${freq += 55}:duration=2`,
+        ...art,
         '-metadata', `artist=${artist}`, '-metadata', `title=${title}`, '-metadata', `album=${artist} Album`,
         '-ac', '1', path.join(sharedDir, `${title.replace(/\s/g, '_')}.mp3`),
       ]);
@@ -424,6 +469,16 @@ describe('discovery federation aggregate (B queries A over iroh)', { skip: avail
     assert.ok(hit.filepath.startsWith('shared/'), 'the peer-side vpath path rides along for the future stream proxy');
     assert.ok(peerIds.includes(hit.peer.id), 'results carry which peer answered');
     assert.ok(Math.abs(body.results[1].similarity - 0.7) < 2e-3);
+
+    // albumArt over the real wire: A's own cover file name for the covered
+    // track (what A's /album-art/ serves), null for the uncovered one.
+    assert.match(hit.albumArt, /^[a-zA-Z0-9_-]{1,100}\.[a-zA-Z0-9]{1,7}$/, 'one plain cover file name');
+    assert.ok(fs.existsSync(path.join(srvA.tmpDir, 'image-cache', hit.albumArt)), 'the file is in A\'s art cache');
+    assert.equal(body.results[1].albumArt, null, 'an uncovered track names none');
+    const art = await fetch(`${srvB.baseUrl}/api/v1/federation/peers/${hit.peer.id}/art/${encodeURIComponent(hit.albumArt)}`);
+    assert.equal(art.status, 200);
+    assert.ok(Buffer.from(await art.arrayBuffer()).equals(fs.readFileSync(path.join(srvA.tmpDir, 'image-cache', hit.albumArt))),
+      'B\'s art proxy serves A\'s cached cover');
   });
 
   test('newArtistsOnly also drops known-artist tracks', async () => {

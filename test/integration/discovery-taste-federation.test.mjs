@@ -88,6 +88,10 @@ const B_SONGS = [
   ['O1', 'Be Somebody', 'Icarus', [0.5, 0.5, 0.5, 0.5], null],
   ['O2', 'RISE!', 'icarus', [0.45, 0.55, 0.48, 0.52], null],
 ];
+// B's album covers, embedded in every song of the album (one colour per
+// album, so each album caches ONE file). Peer Wren's album and the owned
+// copies have none: their rows must say so (albumArt null).
+const COVERS = { 'Peer Xan': 'red', 'Peer Yuki': 'green', 'Peer Zia': 'blue' };
 const OWNED_TITLES = new Set(B_SONGS.filter((s) => s[4] === null).map((s) => s[1]));
 const bByTitle = new Map(B_SONGS.map((s) => [s[1], s]));
 
@@ -204,8 +208,17 @@ describe('discovery taste over federation: the peers section from a real paired 
     peerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-taste-fed-'));
     let freq = 300;
     for (const [file, title, artist] of B_SONGS) {
+      // A cover rides as an APIC picture (attached_pic), which the scanner
+      // caches under album-art/ and names on the track.
+      const cover = COVERS[artist];
+      const art = cover ? [
+        '-f', 'lavfi', '-i', `color=color=${cover}:size=64x64:duration=0.1`,
+        '-map', '0:a', '-map', '1:v', '-frames:v', '1', '-c:v', 'mjpeg',
+        '-disposition:v:0', 'attached_pic', '-id3v2_version', '3',
+      ] : [];
       await runFfmpeg([
         '-nostdin', '-y', '-loglevel', 'error', '-f', 'lavfi', '-i', `sine=frequency=${freq += 45}:duration=2`,
+        ...art,
         '-metadata', `artist=${artist}`, '-metadata', `title=${title}`, '-metadata', `album=${artist} Album`,
         '-ac', '1', path.join(peerDir, `${file}.mp3`),
       ]);
@@ -316,6 +329,51 @@ describe('discovery taste over federation: the peers section from a real paired 
       assert.equal(r.filepath, `peerlib/${bByTitle.get(r.title)[0]}.mp3`, 'the peer-side vpath path');
       assert.equal(r.artist, bByTitle.get(r.title)[2]);
       assert.ok(Math.abs(r.similarity - want[i].sim) < 1e-3, `${r.title}: ${r.similarity} vs ${want[i].sim}`);
+    }
+  });
+
+  test('rows carry B\'s cover file name, and A\'s art proxy serves it', async () => {
+    const { body } = await taste('lena', { sources: ['peers'] });
+    const rows = onlyGroup(body).results;
+    assert.ok(rows.length >= 6, `enough rows to cover covered and uncovered albums (${rows.length})`);
+    const artByArtist = new Map();
+    for (const r of rows) {
+      if (!COVERS[r.artist]) {
+        assert.equal(r.albumArt, null, `${r.title}: no embedded cover → no albumArt`);
+        continue;
+      }
+      assert.match(r.albumArt, /^[^/\\]+\.(jpe?g|png)$/, `${r.title}: one cached file name`);
+      // One cover per album: every song of it names the same file.
+      if (artByArtist.has(r.artist)) { assert.equal(r.albumArt, artByArtist.get(r.artist)); }
+      artByArtist.set(r.artist, r.albumArt);
+    }
+    assert.ok(artByArtist.size >= 2, 'covered albums are in the answer');
+    assert.equal(new Set(artByArtist.values()).size, artByArtist.size, 'distinct albums, distinct covers');
+    assert.ok(rows.some((r) => r.albumArt === null), 'an uncovered album is in the answer too');
+
+    // The name is B's own: its browse metadata for the same file says so.
+    const covered = rows.find((r) => r.albumArt);
+    const meta = await call(srvB, 'POST', '/api/v1/db/metadata', { filepath: covered.filepath }, { fedKey: probeKey });
+    assert.equal(meta.status, 200, JSON.stringify(meta.body));
+    assert.equal(meta.body.metadata['album-art'], covered.albumArt);
+
+    // Through A, as every client builds it (with and without ?compress=s),
+    // byte-for-byte against B's cache: the full answer is the original, the
+    // ?compress=s answer is B's zs- thumbnail. /album-art/ falls back to the
+    // original when a variant is missing, so only the bytes prove the
+    // thumbnail path (A forwarding `compress`, B having generated it).
+    const cache = path.join(srvB.tmpDir, 'image-cache');
+    const original = fs.readFileSync(path.join(cache, covered.albumArt));
+    const thumbPath = path.join(cache, `zs-${covered.albumArt}`);
+    assert.ok(fs.existsSync(thumbPath), 'B\'s scan wrote the small thumbnail');
+    const thumb = fs.readFileSync(thumbPath);
+    assert.ok(!thumb.equals(original), 'the thumbnail is not the original');
+    for (const [q, want, what] of [['', original, 'the original'], ['?compress=s', thumb, 'the zs- thumbnail']]) {
+      const r = await fetch(`${srvA.baseUrl}/api/v1/federation/peers/${covered.peer.id}/art/${encodeURIComponent(covered.albumArt)}${q}`,
+        { headers: { 'x-access-token': tokens.lena } });
+      assert.equal(r.status, 200, `art proxy${q}`);
+      assert.match(r.headers.get('content-type') || '', /^image\//, `art proxy${q} content type`);
+      assert.ok(Buffer.from(await r.arrayBuffer()).equals(want), `art proxy${q} answers B's ${what}`);
     }
   });
 

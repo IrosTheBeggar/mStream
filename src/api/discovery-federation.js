@@ -110,6 +110,17 @@ export function createPeerStatusRecorder(write, { intervalMs = STATUS_WRITE_INTE
 export const recordPeerStatus = createPeerStatusRecorder(
   (id) => fedDb.updateFederationPeerStatus(id, 'ok'));
 
+// A peer's album-art name, kept only when it is what the peer's
+// /album-art/:file can serve: sanitizeFilename's own pattern
+// (src/util/validation.js), which every cached cover matches (an md5 hash
+// plus its extension, album-art.js). Matched raw, with no decoding, so no
+// '%', '?', '#', dot segment, space or non-ASCII character ever reaches a
+// client. A peer is untrusted, and a client splices this into a proxy URL.
+const ART_NAME = /^[a-zA-Z0-9_-]{1,100}\.[a-zA-Z0-9]{1,7}$/;
+export function peerArtName(v) {
+  return typeof v === 'string' && ART_NAME.test(v) ? v : null;
+}
+
 /**
  * Pure merge of the peers' answers — no I/O, so it is unit-tested with
  * handcrafted answers. `answers[i]` is peers[i]'s Promise.allSettled outcome,
@@ -171,6 +182,11 @@ export function mergePeerAnswers(peers, answers, { excludeSets, newArtistsOnly =
           year: r.year ?? null,
           isrc: r.isrc ?? null,
           releaseGroupMbid: r.releaseGroupMbid ?? null,
+          // The track's cover on the PEER (its /album-art/<name> file),
+          // fetched through this server's art proxy
+          // (/api/v1/federation/peers/:id/art/<name>). Null from older
+          // peers and for anything that is not one plain file name.
+          albumArt: peerArtName(r.albumArt),
           duration: r.duration,
           similarity: r.similarity,
           genreTags: r.genreTags,

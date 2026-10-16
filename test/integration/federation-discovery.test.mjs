@@ -70,10 +70,20 @@ function runFfmpeg(args) {
   });
 }
 
-async function makeTrack(dir, file, freq, artist, title) {
+// `cover`: an lavfi colour to embed as the file's front cover (an APIC
+// picture muxed with the attached_pic disposition — the scanner caches it
+// under album-art/ and names it on the track), or none.
+async function makeTrack(dir, file, freq, artist, title, { cover } = {}) {
+  const art = cover
+    ? ['-f', 'lavfi', '-i', `color=color=${cover}:size=64x64:duration=0.1`]
+    : [];
+  const maps = cover
+    ? ['-map', '0:a', '-map', '1:v', '-frames:v', '1', '-c:v', 'mjpeg', '-disposition:v:0', 'attached_pic', '-id3v2_version', '3']
+    : [];
   await runFfmpeg([
     '-nostdin', '-y', '-loglevel', 'error',
     '-f', 'lavfi', '-i', `sine=frequency=${freq}:duration=2`,
+    ...art, ...maps,
     '-metadata', `artist=${artist}`, '-metadata', `title=${title}`, '-metadata', `album=${artist} Album`,
     '-ac', '1', path.join(dir, file),
   ]);
@@ -110,7 +120,7 @@ async function similar(srv, headers, body) {
 describe('federation discovery similar (peer side)', () => {
   before(async () => {
     sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-feddisc-'));
-    await makeTrack(sharedDir, 'alpha.mp3', 440, 'Ana', 'Alpha Song');
+    await makeTrack(sharedDir, 'alpha.mp3', 440, 'Ana', 'Alpha Song', { cover: 'red' });
     await makeTrack(sharedDir, 'beta.mp3', 880, 'Ben', 'Beta Song');
 
     [server, offServer] = await Promise.all([
@@ -215,6 +225,27 @@ describe('federation discovery similar (peer side)', () => {
       assert.equal(r.isrc, null);
       assert.equal(r.releaseGroupMbid, null);
     }
+
+    // albumArt: the cover file name this server's browse rows carry as
+    // metadata 'album-art' — Alpha has an embedded cover, Beta none.
+    assert.match(body.results[0].albumArt, /^[^/\\]+\.(jpe?g|png)$/, 'Alpha\'s cached cover file');
+    assert.equal(body.results[1].albumArt, null, 'a track without a cover names none');
+  });
+
+  test('albumArt is the file the peer\'s browse rows and /album-art/ serve', async () => {
+    const { body } = await similar(server, fedHeaders(fedKey), { embedding: b64(Q), modelId: 'test-fake' });
+    const art = body.results[0].albumArt;
+    // The same row through the key's own metadata read (a browse route).
+    const meta = await fetch(`${server.baseUrl}/api/v1/db/metadata`, {
+      method: 'POST', headers: fedHeaders(fedKey), body: JSON.stringify({ filepath: body.results[0].filepath }),
+    });
+    assert.equal(meta.status, 200);
+    assert.equal((await meta.json()).metadata['album-art'], art);
+    // And the bytes, as a caller's art proxy fetches them over the bridge.
+    const r = await fetch(`${server.baseUrl}/album-art/${encodeURIComponent(art)}`, { headers: { 'x-federation-key': fedKey } });
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get('content-type') || '', /^image\//);
+    assert.ok((await r.arrayBuffer()).byteLength > 0);
   });
 
   test('respects limit', async () => {
