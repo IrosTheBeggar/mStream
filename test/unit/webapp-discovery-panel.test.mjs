@@ -537,7 +537,7 @@ describe('Discover page: opening it', () => {
     assert.equal(card.attrs.tabindex, '0', 'the keyboard reaches the card');
     assert.equal(card.attrs.role, 'link');
     assert.equal(card.attrs['aria-label'], 'Peer Album · Quinn');
-    assert.match(html, /<img loading="lazy" src="http:&#x2F;&#x2F;host&#x2F;peer&#x2F;1&#x2F;art&#x2F;pa.jpg\?c&#x3D;undefined" alt="" onerror="discoveryPeerArtFailed\(this\)">/);
+    assert.match(html, /<img loading="lazy" src="http:&#x2F;&#x2F;host&#x2F;peer&#x2F;1&#x2F;art&#x2F;pa.jpg\?c&#x3D;l" alt="" onerror="discoveryPeerArtFailed\(this\)">/, 'the card asks for the peer\'s compressed \'l\' cover');
     assert.equal(countDrawn(html, { 'data-dp': 'peerAlbumOpen' }), 1, 'the album-less row makes no card');
     // the songs: art tile, title, "Artist · Album"
     assert.ok(html.includes('Title Seven') && html.includes('Title Eight'));
@@ -640,11 +640,12 @@ describe('Discover page: opening it', () => {
     const html = S.page();
     const strip = html.slice(html.indexOf('dpage-strip dpage-src-peers'), html.indexOf('<div class="dpage-songs'));
     const col = html.slice(html.indexOf('dpage-col dpage-src-peers'));
-    // the album cards: one per album, the first row's cover, full size as
-    // the library's cards are (renderAlbum: no compress unless compressArt)
+    // the album cards: one per album, the first row's cover, the peer's
+    // compressed 'l' variant (zl-, at most 256 px) — never the full-size
+    // original, which crosses the proxy for a 150 px card
     assert.deepEqual(imgSrcs(strip), [
-      'http://host/api/v1/federation/peers/7/art/c0ffee12.jpeg?token=TOK',
-      'http://host/api/v1/federation/peers/7/art/beef%2034.png?token=TOK',
+      'http://host/api/v1/federation/peers/7/art/c0ffee12.jpeg?compress=l&token=TOK',
+      'http://host/api/v1/federation/peers/7/art/beef%2034.png?compress=l&token=TOK',
     ]);
     // the song rows: the 40 px tile, the small thumbnail, lazy like the library's
     assert.deepEqual(imgSrcs(col), [
@@ -655,12 +656,15 @@ describe('Discover page: opening it', () => {
     assert.ok(!col.includes('dpage-art-ph'), 'every row has its cover');
     assert.equal(countDrawn(strip, { 'data-dp': 'peerAlbumOpen' }), 2);
 
-    // compressed album art (the layout setting): the cards ask the proxy for 'l'
+    // the compressed-art layout setting changes nothing here: still 'l' on
+    // the cards, 's' on the rows
     const small = makeSandbox({ taste: coverAnswer(COVER_ROWS), peerArtUrl: realPeerArtUrl(), compressArt: true });
     await small.S.discoveryPanel();
     const sHtml = small.S.page();
     const sStrip = sHtml.slice(sHtml.indexOf('dpage-strip dpage-src-peers'), sHtml.indexOf('<div class="dpage-songs'));
-    assert.deepEqual(imgSrcs(sStrip).map((u) => new URL(u).searchParams.get('compress')), ['l', 'l']);
+    const sCol = sHtml.slice(sHtml.indexOf('dpage-col dpage-src-peers'));
+    assert.deepEqual(imgSrcs(sStrip), imgSrcs(strip), 'the same card URLs with the setting on');
+    assert.deepEqual(imgSrcs(sCol).map((u) => new URL(u).searchParams.get('compress')), ['s', 's', 's']);
   });
 
   test('a connected server\'s cover that fails to load (the proxy\'s 502 or 404) falls back to the note tile', async () => {

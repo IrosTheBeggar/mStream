@@ -618,10 +618,11 @@
   // A federation row's album art file: the peer's own /album-art/<name>
   // file, drawn through this server's art proxy
   // (MSTREAMAPI.peerArtUrl(peerId, art, compress) →
-  // /api/v1/federation/peers/:id/art/<name>); null = the note tile. The
-  // taste route's peers rows carry it as `albumArt` (null for a track
-  // without a cover; absent from a peer on an older server). The other
-  // spellings are older guesses, read only after it and harmless.
+  // /api/v1/federation/peers/:id/art/<name>?compress=…: 's' on a song
+  // row, 'l' on an album card, neither asks for the full size); null = the
+  // note tile. The taste route's peers rows carry it as `albumArt` (null
+  // for a track without a cover; absent from a peer on an older server).
+  // The other spellings are older guesses, read only after it and harmless.
   function peerArtOf(raw) {
     for (const k of ['albumArt', 'art', 'album-art', 'album_art_file']) {
       const v = raw[k];

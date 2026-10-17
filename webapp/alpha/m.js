@@ -4499,10 +4499,6 @@ function discoveryStripHtml(source, label, cards, skeleton) {
   return `<section class="dpage-strip dpage-src-${source}"${skeleton ? ' aria-busy="true"' : ''}>${discoveryLabelHtml(label)}<div class="album-grid dpage-albums">${cards}</div></section>`;
 }
 
-// A connected server's album card: renderAlbum's face (art, title,
-// artist) with the server's art through the proxy. data-peer names the
-// server; the card opens the album in the peer-browse view, its play
-// button queues the album through the federation stream.
 // The note glyph an album card draws without art (renderAlbum's own).
 const DPAGE_NOTE_CARD = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#555"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>';
 
@@ -4523,9 +4519,20 @@ function discoveryPeerArtFailed(img) {
   }
 }
 
+// A connected server's album card: renderAlbum's face (art, title,
+// artist) with the server's art through the proxy. data-peer names the
+// server; the card opens the album in the peer-browse view, its play
+// button queues the album through the federation stream. The cover always
+// asks for the peer's 'l' variant (its zl- file, at most 256 px a side:
+// the size the library's cards use in compressed-art mode), whatever the
+// layout setting — it crosses the proxy from the peer, and a full-size
+// original can be megabytes for a 150 px card. A peer with no zl- file for
+// that cover (compressImage off, no ffmpeg, a cover cached before it had
+// thumbnails) sends its full-size original instead, as its /album-art/
+// does for any missing variant.
 function discoveryPeerAlbumHtml(a, i) {
   const src = a.art && a.peerId != null
-    ? MSTREAMAPI.peerArtUrl(a.peerId, a.art, VUEPLAYERCORE.altLayout.compressArt ? 'l' : undefined)
+    ? MSTREAMAPI.peerArtUrl(a.peerId, a.art, 'l')
     : null;
   return `<div class="dpage-album" title="${escapeHtml(a.peerName || '')}"><div class="album-grid-card dpage-peer-card" data-peer="${escapeHtml(a.peerId)}" data-album="${escapeHtml(a.album)}"${a.artist ? ` data-artist="${escapeHtml(a.artist)}"` : ''} data-dp="peerAlbumOpen" data-i="${i}" tabindex="0" role="link" aria-label="${escapeHtml([a.album, a.artist].filter(Boolean).join(' · '))}">
     <div class="album-grid-art">
