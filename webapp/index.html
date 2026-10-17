@@ -96,15 +96,16 @@
   <form id="downform" action="" target="frameframe" method="POST"></form>
   <iframe id="downframe" src="" width="0" height="0" tabindex="-1" title="empty" hidden name="frameframe"></iframe>
 
-  <!-- Sonic Path: save-as-playlist name modal -->
-  <div class="hystmodal" id="spathSaveModal" aria-hidden="true">
+  <!-- Save-as-playlist name modal: the Sonic Path and the Discover page
+       (m.js openSavePlaylistModal) -->
+  <div class="hystmodal" id="savePlaylistModal" aria-hidden="true">
       <div class="hystmodal__wrap">
         <div class="hystmodal__window" role="dialog" aria-modal="true">
           <a data-hystclose class="hystmodal__close" data-i18n="modal.close">Close</a>
           <div class="hystmodal__styled">
             <h5 data-i18n="sonicPath.saveAsPlaylist">Save as Playlist</h5>
-            <form action="javascript:sonicPathSavePlaylist()">
-              <input id="spath_playlist_name" autocomplete="off" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+" data-i18n="playlist.namePlaceholder" data-i18n-attr="placeholder">
+            <form action="javascript:savePlaylistFromModal()">
+              <input id="save_playlist_name" autocomplete="off" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+" data-i18n="playlist.namePlaceholder" data-i18n-attr="placeholder">
               <button type="submit" class="button2" data-i18n="modal.save">Save</button>
             </form>
           </div>
@@ -606,6 +607,12 @@
       <svg xmlns="http://www.w3.org/2000/svg" height="22px" viewBox="0 0 24 24" width="22px" fill="#FFFFFF"><path d="M0 0h24v24H0z" fill="none"/><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
       <span data-i18n="nav.mostPlayed">Most Played</span>
     </div>
+    <!-- Discover — the history-seeded page (m.js discoveryPanel). Hidden
+         until the ping advertises discovery && discoveryTaste >= 1. -->
+    <div id="nav-discover" class="local-only side-nav-item my-waves super-hide" onclick="changeView(discoveryPanel, this);" data-panel="discovery">
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#DDD" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" fill="none"/><path d="M15 9l-2 5-4 1 2-5z" fill="#DDD"/></svg>
+      <span data-i18n="nav.discover">Discover</span>
+    </div>
     <div class="local-only side-nav-item my-waves" onclick="changeView(getRatedSongs, this)" data-panel="allRated">
       <?xml version="1.0" encoding="iso-8859-1"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="-3 0 62 62" style="enable-background:new 0 0 53.867 53.867"><path style="fill:#efce4a" d="M26.934 1.318l8.322 16.864 18.611 2.705L40.4 34.013l3.179 18.536-16.645-8.751-16.646 8.751 3.179-18.536L0 20.887l18.611-2.705z"/></svg>
       <span data-i18n="nav.rated">Rated</span>
@@ -843,6 +850,10 @@
           <span id="ytdl_download_text" style="flex:1;" data-i18n="fileExplorer.downloading">Downloading...</span>
           <a href="/downloads" style="color:#4CAF50; white-space:nowrap;" data-i18n="label.viewDownloads">view downloads</a>
         </div>
+        <!-- The Discover page's configuration bar and its open options (m.js
+             renderDiscovery): part of the column's chrome, above the scroller,
+             as #directory_bar is for the other panels; hidden elsewhere. -->
+        <div id="dpage-head" class="super-hide"></div>
         <div id="filelist">
           <h4 data-i18n="label.welcomeToMStream">Welcome To mStream!</h4>
         </div>
@@ -920,8 +931,8 @@
           <div v-if="discover.available && meta.filepath" class="discover-panel noselect">
             <div class="discover-header pointer" v-on:click="toggleDiscover">
               <svg class="discover-icon" xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10 10-4.49 10-10S17.51 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm3-13l-6.5 3.5L5 17l6.5-3.5L15 7zm-3 6.25c-.69 0-1.25-.56-1.25-1.25s.56-1.25 1.25-1.25 1.25.56 1.25 1.25-.56 1.25-1.25 1.25z" transform="rotate(45 12 12)"/></svg>
-              <span class="discover-title" data-i18n="discover.title">Discover</span>
-              <span v-if="discover.seedTitle && !discover.collapsed" class="discover-sub">more like &ldquo;{{ discover.seedTitle }}&rdquo;</span>
+              <span class="discover-title">{{ tt('discover.title') }}</span>
+              <span v-if="discover.seedTitle && !discover.collapsed" class="discover-sub">{{ tt('discover.seedSub', { title: discover.seedTitle }) }}</span>
               <span class="grow"></span>
               <svg class="discover-chevron" v-bind:class="{ 'discover-chevron-open': !discover.collapsed }" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
             </div>
@@ -968,6 +979,11 @@
                     <span class="discover-queue-all pointer" v-on:click="queueAllDiscover" data-i18n="discover.queueAll">+ Queue all</span>
                     <span class="grow"></span>
                     <span class="discover-powered" data-i18n="discover.poweredBy">matched by sound</span>
+                  </div>
+                  <!-- The history-seeded page (m.js openDiscoveryPage); shown
+                       by spa.css only where the ping has it. -->
+                  <div class="discover-footer discover-page-footer">
+                    <a class="discover-page-link pointer" href="javascript:void(0)" onclick="openDiscoveryPage();">{{ tt('discover.openPage') }}</a>
                   </div>
                 </template>
                 <!-- The network: similar tracks on OTHER servers in the
@@ -1124,7 +1140,7 @@
                   <div v-if="(discover.modal.file && discover.modal.file.format) || discover.modal.track.isrc || discover.modal.track.similarity != null" class="dmodal-meta">
                     <span v-if="discover.modal.file && discover.modal.file.format">{{ discover.modal.file.format }}</span>
                     <span v-if="discover.modal.track.isrc" class="dmodal-isrc">{{ discover.modal.track.isrc }}</span>
-                    <span v-if="discover.modal.track.similarity != null" class="dmodal-matchbar"><i :style="{ '--pct': dmPct(discover.modal.track) + '%' }"></i>{{ dmPct(discover.modal.track) }}% {{ tt('discover.modal.matchTo') }} &ldquo;{{ discover.seedTitle }}&rdquo;</span>
+                    <span v-if="discover.modal.track.similarity != null" class="dmodal-matchbar"><i :style="{ '--pct': dmPct(discover.modal.track) + '%' }"></i>{{ dmPct(discover.modal.track) }}% {{ tt('discover.modal.matchTo') }} {{ dmMatchSeed() }}</span>
                   </div>
                   <div v-if="discover.modal.peer" class="dmodal-status"><i v-bind:class="{ 'dmodal-status-off': discover.modal.peer.lastStatus !== 'ok' }"></i>{{ dmPeerStatus() }}</div>
                 </div>
@@ -1331,6 +1347,9 @@
 
   <!-- The Discover job rows' pure half (window.DISCOVERJOBS) — vp.js reads it. -->
   <script src="alpha/discover-jobs.js"></script>
+  <!-- The Discover page's pure half (window.DISCOVERYPAGE) — m.js reads it
+       when the page opens (no load-time dependency). -->
+  <script src="alpha/discovery-page.js"></script>
   <script src="alpha/vp.js"></script>
   <script src="alpha/scan-progress.js"></script>
 </body>

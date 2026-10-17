@@ -56,7 +56,7 @@ function sliceConst(name) {
 
 const FNS = ['escapeHtml', 'peerAttr', 'peerOf', 'adoptPeer', 'browseApi', 'localIgnoreVPaths',
   'artUrl', 'artImgAttr', 'albumCredit', 'renderAlbum', 'renderArtist', 'createMusicFileHtml',
-  'setBrowserRootPanel', 'artistsBody', 'albumSongsBody', 'getAllArtists', 'getArtistsAlbums',
+  'setBrowserRootPanel', 'discoveryHideHead', 'artistsBody', 'albumSongsBody', 'getAllArtists', 'getArtistsAlbums',
   'getAllAlbums', 'getAlbumsOnClick', 'getAlbumSongs', 'queueAlbum', 'runLocalSearch'];
 
 const KNOWN_IDS = ['filelist', 'localSearchBar', 'directoryName', 'directory_bar',

@@ -5,6 +5,7 @@
 //   GET  /api/v1/discovery/plugin-jobs/:id       one job
 //   POST /api/v1/discovery/plugin-jobs/:id/cancel
 //   POST /api/v1/discovery/plugin-jobs/lookup     the caller's newest job per plug-in for one recommendation
+//   POST /api/v1/discovery/plugin-jobs/lookup/batch   the same for up to 100 recommendations, one query
 //   POST /api/v1/discovery/plugin-jobs/clear      drop the caller's finished rows ("Clear finished")
 //
 // Starting a job is gated three times: the plug-in must be on and runnable,
@@ -187,6 +188,35 @@ export function setup(mstream) {
     const keys = plugins.jobKeysFor(recommendation);
     const jobs = jobsDb.latestForKeys({ userId: req.user ? req.user.id : null, keys: Object.values(keys) });
     res.json({ key: keys.song, keys, jobs });
+  });
+
+  // The same for a page of recommendations at once: the Discover page draws
+  // dozens of rows, and one SELECT beats a round trip per row. Each result
+  // is exactly the single form's answer for its recommendation, in input
+  // order — one latestForKeys over every row's keys, split back by key.
+  // The split is exact because what latestForKeys keeps for a key (the
+  // newest job per plug-in under it) does not depend on the other keys
+  // asked alongside, so a key two rows share (two songs of one album)
+  // answers both with the same job, and filtering the newest-first list
+  // keeps the single form's order. A path of its own rather than a new
+  // body key on the single form: that body is strict, so a client sending
+  // the new key to a server that predates it would get a 400 (clients ask
+  // here only when ping advertises discoveryTaste). The cap bounds the IN
+  // list: 100 rows × 5 scopes + the user id stays under SQLite's oldest
+  // 999-variable limit.
+  mstream.post('/api/v1/discovery/plugin-jobs/lookup/batch', (req, res) => {
+    const schema = Joi.object({
+      recommendations: Joi.array().items(plugins.recommendationSchema).min(1).max(100).required(),
+    });
+    const { value: { recommendations } } = joiValidate(schema, req.body);
+    const keysPer = recommendations.map((recommendation) => plugins.jobKeysFor(recommendation));
+    const allKeys = [...new Set(keysPer.flatMap((keys) => Object.values(keys)))];
+    const jobs = jobsDb.latestForKeys({ userId: req.user ? req.user.id : null, keys: allKeys });
+    const results = keysPer.map((keys) => {
+      const own = new Set(Object.values(keys));
+      return { key: keys.song, keys, jobs: jobs.filter((job) => own.has(job.key)) };
+    });
+    res.json({ results });
   });
 
   mstream.post('/api/v1/discovery/plugin-jobs/clear', (req, res) => {

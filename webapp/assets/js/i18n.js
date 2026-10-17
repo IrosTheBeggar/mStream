@@ -44,7 +44,9 @@ const I18N = (() => {
     // Parameter interpolation: replace {{param}} placeholders
     if (params) {
       Object.keys(params).forEach(p => {
-        str = str.replace(new RegExp('\\{\\{' + p + '\\}\\}', 'g'), params[p]);
+        // A replacer function: a param's own `$&` / `$'` / `$$` (a song
+        // title, a peer's name) is text, never a substitution pattern.
+        str = str.replace(new RegExp('\\{\\{' + p + '\\}\\}', 'g'), () => String(params[p]));
       });
     }
 

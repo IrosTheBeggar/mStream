@@ -28,6 +28,7 @@ import winston from 'winston';
 import * as discoveryDb from './discovery-db.js';
 import * as config from '../state/config.js';
 import { nameKey } from './name-key.js';
+import { NEAR_DUP } from './discovery-novelty.js';
 import * as db from './manager.js';
 
 let cache = null;
@@ -430,6 +431,173 @@ export function rankTracks(index, seedVec, excludeHash, topK = Infinity) {
   const k = Number.isFinite(topK) ? Math.max(0, topK) : n;
   const idx = selectTopKDesc(scores, n, k, (i) => entries[i].hash !== excludeHash);
   return idx.map((i) => ({ entry: entries[i], similarity: scores[i] }));
+}
+
+/**
+ * An entry's same-song key: normalized "artist|title", or null for rows
+ * without a title (those dedupe by hash alone). The rule getIndex
+ * precomputes into entry.nameKey and pathBetween memoizes; hand-built
+ * indexes (tests, embedders) get it on first touch. Exported so a caller
+ * can build rankTracksMulti's `excludeNameKeys` from its seed entries
+ * without restating the rule.
+ */
+export function entryNameKey(e) {
+  if (e.nameKey === undefined) {
+    e.nameKey = e.title
+      ? `${(e.artist || '').trim().toLowerCase()}|${e.title.trim().toLowerCase()}`
+      : null;
+  }
+  return e.nameKey;
+}
+
+const asSet = (x) => (x == null ? null : x instanceof Set ? x : new Set(x));
+
+/**
+ * Entries ranked against SEVERAL seed vectors — the Discover page's library
+ * source, seeded by the user's play history. Resolves to
+ * [{ entry, similarity, seedIndex }], descending, at most `topK` long (the
+ * caller's consideration budget, as for rankTracks).
+ *
+ *   mode 'max'       every entry scores against its BEST seed, and
+ *                    `seedIndex` names that seed (ties → the earlier one) so
+ *                    a row can say "because you finished X". An eclectic
+ *                    history keeps each of its corners; a centroid would
+ *                    average them into a sound no seed has.
+ *   mode 'centroid'  one pass against centroidOf(seedVecs); seedIndex null.
+ *
+ * Cost. One scoresInto pass is ~24 ms at 25k × 1280-d on M-series, and 'max'
+ * pays one per seed. It cannot share a single pass the way 'centroid' does:
+ * a mean of dot products is the dot product with the mean vector (linear,
+ * the trick pathBetween's waypoints use; the centroid's renormalization only
+ * rescales it), so S seeds collapse into one query vector before the scan,
+ * but a max of dot products has no such
+ * collapse — every seed must meet every row. The one way to read the matrix
+ * once, a fused loop carrying S accumulators per row, measured slower than
+ * S plain passes (336 vs 259 ms for 12 seeds): each plain pass streams the
+ * matrix against one cache-hot seed. So the caller caps the seed count, the
+ * passes reuse one scratch buffer, and with `yieldBetween` (default true)
+ * the event loop runs between passes instead of stalling for S × 24 ms.
+ * The buffers are per call, never module-level: a yield lets another
+ * request in, and a shared buffer would be overwritten under this one.
+ *
+ * Eligibility:
+ *   - `exclude` (Set of hashes): the seeds themselves, dropped seeds.
+ *   - `excludeNameKeys` (Set of entryNameKey values): every other file of a
+ *     seed SONG. Play counts key by hash, so an alternate master or a
+ *     re-encode of a song the user just finished reads as "never played".
+ *   - `nearDup` (default NEAR_DUP, 0.99, the novelty filter's guard): an
+ *     entry this close to a seed is the same recording, an untagged
+ *     re-encode the name key cannot catch. 'max' judges it against the
+ *     entry's own best seed; 'centroid' has no per-seed scores, so it checks
+ *     every seed lazily, only for the rows the ranked walk reaches (S dots
+ *     per row: ~20 ms on top of the pass for 6 seeds × a 2000-row walk).
+ *   - `dedupe` (default true): one file per nameKey, the best-scoring. It
+ *     runs before the caller's visibility walk, so a caller that hides some
+ *     files from some users should pass false and dedupe its ACCEPTED rows
+ *     instead (first per key wins, the walk being descending): otherwise a
+ *     best file the user cannot see hides the alternate they can.
+ */
+export async function rankTracksMulti(index, seedVecs, {
+  exclude = null,
+  excludeNameKeys = null,
+  nearDup = NEAR_DUP,
+  topK = Infinity,
+  mode = 'max',
+  yieldBetween = true,
+  dedupe = true,
+} = {}) {
+  if (mode !== 'max' && mode !== 'centroid') {
+    throw new TypeError(`rankTracksMulti: unknown mode '${mode}'`);
+  }
+  const entries = index.entries;
+  const n = entries.length;
+  const k = Number.isFinite(topK) ? Math.max(0, Math.floor(topK)) : n;
+  if (!Array.isArray(seedVecs) || seedVecs.length === 0 || n === 0 || k === 0) { return []; }
+  // `null` must not slip through as `>= 0` and drop every positive match;
+  // Infinity is the explicit way to switch the guard off.
+  const dupAt = typeof nearDup === 'number' && !Number.isNaN(nearDup) ? nearDup : NEAR_DUP;
+
+  let scores;            // what the ranking sorts by
+  let bestSeed = null;   // 'max': the seed that produced scores[i]
+  if (mode === 'centroid') {
+    scores = scoresInto(new Float64Array(n), index, centroidOf(seedVecs));
+  } else {
+    // Pass 0 writes straight into the max buffer; passes 1..S-1 share one
+    // scratch buffer and merge.
+    scores = scoresInto(new Float64Array(n), index, seedVecs[0]);
+    bestSeed = new Int32Array(n);   // zero-filled = seed 0
+    const pass = seedVecs.length > 1 ? new Float64Array(n) : null;
+    for (let s = 1; s < seedVecs.length; s++) {
+      if (yieldBetween) { await new Promise((r) => setImmediate(r)); }
+      scoresInto(pass, index, seedVecs[s]);
+      for (let i = 0; i < n; i++) {
+        if (pass[i] > scores[i]) { scores[i] = pass[i]; bestSeed[i] = s; }
+      }
+    }
+  }
+
+  // Per-entry state: 0 = ineligible, 1 = eligible, 2 = eligible and cleared
+  // by the lazy near-dup check. The cheap filters run once here, not per
+  // selectTopKDesc probe (a Set lookup × 25k, twice on escalation).
+  const excludeHashes = asSet(exclude);
+  const excludeKeys = asSet(excludeNameKeys);
+  const ok = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const e = entries[i];
+    if (excludeHashes?.size && excludeHashes.has(e.hash)) { continue; }
+    if (excludeKeys?.size) {
+      const key = entryNameKey(e);
+      if (key && excludeKeys.has(key)) { continue; }
+    }
+    // 'max': scores[i] IS the similarity to the entry's own best seed.
+    if (bestSeed && scores[i] >= dupAt) { continue; }
+    ok[i] = 1;
+  }
+
+  // 'centroid': S dots per row, so only for rows the walk reaches.
+  const nearDupOfASeed = bestSeed ? null : (i) => {
+    const v = entries[i].vec;
+    for (const seed of seedVecs) { if (dot(seed, v) >= dupAt) { return true; } }
+    return false;
+  };
+
+  // The order-dependent filters run on the ranked walk, best first: the
+  // first file seen per nameKey is that song's best.
+  const walk = (order) => {
+    const out = [];
+    const seenKeys = dedupe ? new Set() : null;
+    for (const i of order) {
+      if (out.length >= k) { break; }
+      if (ok[i] === 0) { continue; }
+      if (nearDupOfASeed && ok[i] === 1) {
+        if (nearDupOfASeed(i)) { ok[i] = 0; continue; }
+        ok[i] = 2;
+      }
+      const e = entries[i];
+      if (seenKeys) {
+        const key = entryNameKey(e);
+        if (key) {
+          if (seenKeys.has(key)) { continue; }
+          seenKeys.add(key);
+        }
+      }
+      out.push({ entry: e, similarity: scores[i], seedIndex: bestSeed ? bestSeed[i] : null });
+    }
+    return out;
+  };
+
+  // Over-select so the walk's rejections rarely leave the list short; when
+  // they do and more candidates exist, escalate once to the full ordering
+  // (pathBetween's pattern): still correct, just slower, on pathological
+  // data such as a song with hundreds of files.
+  const eligible = (i) => ok[i] !== 0;
+  const want = Math.min(n, k + Math.max(64, k >> 2));
+  const head = selectTopKDesc(scores, n, want, eligible);
+  let out = walk(head);
+  if (out.length < k && want < n && head.length === want) {
+    out = walk(selectTopKDesc(scores, n, n, eligible));
+  }
+  return out;
 }
 
 /**

@@ -6,7 +6,11 @@ const MSTREAMAPI = (() => {
     host: "",
     username: "",
     token: "",
-    vpaths: []
+    vpaths: [],
+    // The ping's `discoveryTaste` generation (0 = the server has no Discover
+    // page). m.js init() sets it with the other ping flags:
+    // `Number(response.discoveryTaste) || 0`.
+    discoveryTaste: 0
   };
   
   async function req(type, url, dataObject, opts) {
@@ -142,6 +146,18 @@ const MSTREAMAPI = (() => {
     return discoveryReq('api/v1/discovery/local/embeddings', { filePaths });
   };
 
+  // The Discover page (docs/discovery-page-plan.md §3.1): a random batch of
+  // seeds from this account's play history (a new one on every call — the
+  // route keeps nothing), then library / network / peers sections for them,
+  // in one call — the page sends two in parallel (library+network,
+  // peers; alpha/discovery-page.js buildRequests). Same degrade contract as
+  // the calls above: {disabled:true} on 403 (discovery off, or an account
+  // that has no history here: a federation key, a guest, a jukebox), null on
+  // any other failure. Reveal via ping's `discovery && discoveryTaste >= 1`.
+  mstreamModule.discoveryTaste = (body) => {
+    return discoveryReq('api/v1/discovery/taste', body || {});
+  };
+
   // Discovery plug-ins — what this server lets a user do with a network or
   // peer recommendation. Reveal via the ping's discoveryPlugins flag, never
   // a probe; the list itself is fetched on the first row menu.
@@ -180,6 +196,11 @@ const MSTREAMAPI = (() => {
   mstreamModule.discoveryJobs = () => req('GET', jobsRoute());
   mstreamModule.discoveryJob = (id) => req('GET', jobsRoute('/' + encodeURIComponent(id)));
   mstreamModule.discoveryJobLookup = (recommendation) => req('POST', jobsRoute('/lookup'), { recommendation });
+  // The single lookup for a page of rows (1–100 recommendations) in one
+  // request: { results: [{ key, keys, jobs }] } in input order. Only on a
+  // server that advertises discoveryTaste >= 1 — older ones answer the
+  // per-row lookup above alone.
+  mstreamModule.discoveryJobLookupBatch = (recommendations) => req('POST', jobsRoute('/lookup/batch'), { recommendations });
   mstreamModule.discoveryJobCancel = (id) => req('POST', jobsRoute('/' + encodeURIComponent(id) + '/cancel'), {});
   mstreamModule.discoveryJobsClear = () => req('POST', jobsRoute('/clear'), {});
   // What the plug-ins brought into the library (the Downloads view). Own
