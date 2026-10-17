@@ -891,7 +891,7 @@ components:
       properties:
         id: { type: integer }
         name: { type: string }
-        reachable: { type: boolean, description: "The peer answered within its 4 s deadline in THIS call (a model mismatch counts as an answer)." }
+        reachable: { type: boolean, description: "The peer answered within its 4 s deadline in THIS call (a model mismatch counts as an answer). A peer whose dial failed twice in a row (that deadline missed, or its handshake refused) is not dialed again for 60 s, doubling up to 10 min while it keeps failing, and is false at once meanwhile; an answer, or the admin's successful test-connection, resets it. A failure while this server's own federation endpoint is not running (not yet bound at boot, or stopped for a reboot) does not count." }
         mismatched: { type: boolean, description: "The peer's embeddings are another model's space; it answered nothing." }
         lastSeen:
           type: string
@@ -2939,7 +2939,14 @@ paths:
         **Privacy**: the query VECTOR leaves this machine, to peers the
         admin paired with — one track's embedding, never its name, path or
         hash. An unreachable peer is counted in `searched.unreachable`,
-        never an error. Feature flag: `federationDiscovery`.
+        never an error. A peer whose dial failed twice in a row (its 4 s
+        deadline missed, or its handshake refused) is not dialed again for
+        60 s, doubling up to 10 min while it keeps failing, and is counted
+        unreachable at once meanwhile; an answer, or the admin's successful
+        test-connection, resets it. A failure while this server's own
+        federation endpoint is not running (not yet bound at boot, or
+        stopped for a reboot) does not count. `peerId`
+        always dials the named peer. Feature flag: `federationDiscovery`.
       requestBody:
         required: true
         content:

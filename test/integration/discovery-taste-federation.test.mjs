@@ -229,6 +229,10 @@ describe('discovery taste over federation: the peers section from a real paired 
       startServer({
         dlnaMode: 'disabled',
         extraConfig: { federation: { enabled: true }, scanOptions: discoveryOn },
+        // A peer that misses twice sits out 1.5 s (doubling), not 60 s: the
+        // readiness gate below converges while B's endpoint boots, and the
+        // last test watches the cool-down end.
+        env: { MSTREAM_TEST_PEER_RETRY_MS: '1500' },
         users: [
           { username: 'boss', password: 'pw-boss', admin: true, vpaths: ['testlib'] },
           { username: 'lena', password: 'pw-lena', admin: false, vpaths: ['testlib'] },
@@ -499,20 +503,43 @@ describe('discovery taste over federation: the peers section from a real paired 
     }
   });
 
-  // LAST — stops B for good.
-  test('B unreachable: searched.unreachable 1, its group empty, the page still answers', async () => {
+  // LAST — stops B for good. A runs with MSTREAM_TEST_PEER_RETRY_MS 1500:
+  // the first cool-down is 1.5 s, the next 3 s.
+  test('B unreachable: unreachable within the deadline, then — after two misses — skipped at once until its cool-down ends', async (t) => {
     await srvB.stop();
-    const t0 = Date.now();
-    const { status, body } = await taste('lena');
-    const elapsed = Date.now() - t0;
-    assert.equal(status, 200, JSON.stringify(body));
-    assert.deepEqual(body.peers.searched, { peers: 0, unreachable: 1, mismatched: 0 });
-    const g = onlyGroup(body);
-    assert.equal(g.id, peerId);
-    assert.equal(g.name, PEER_NAME);
-    assert.equal(g.reachable, false);
-    assert.deepEqual(g.results, []);
-    assert.ok(body.library, 'the library section is unaffected');
-    assert.ok(elapsed < 8000, `answered in ${elapsed}ms — bounded by the 4 s peer deadline`);
+    const timedTaste = async () => {
+      const t0 = Date.now();
+      const r = await taste('lena');
+      const elapsed = Date.now() - t0;
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.deepEqual(r.body.peers.searched, { peers: 0, unreachable: 1, mismatched: 0 });
+      const g = onlyGroup(r.body);
+      assert.equal(g.id, peerId);
+      assert.equal(g.name, PEER_NAME);
+      assert.equal(g.reachable, false);
+      assert.deepEqual(g.results, []);
+      assert.ok(r.body.library, 'the library section is unaffected');
+      return elapsed;
+    };
+    const elapsed = [];
+
+    // Call 1, miss 1: bounded by the 4 s peer deadline.
+    elapsed.push(await timedTaste());
+    assert.ok(elapsed[0] < 8000, `call 1 answered in ${elapsed[0]}ms — bounded by the 4 s peer deadline`);
+    // Call 2, miss 2: one miss is not proof, so B is dialed again.
+    elapsed.push(await timedTaste());
+    assert.ok(elapsed[1] >= 3000 && elapsed[1] < 8000, `call 2 dialed B and waited out the deadline (${elapsed[1]}ms)`);
+    // Call 3: B is parked — reported unreachable without a dial.
+    elapsed.push(await timedTaste());
+    assert.ok(elapsed[2] < 1000, `call 3 skipped B in its cool-down (${elapsed[2]}ms)`);
+
+    // The 1.5 s cool-down ends: call 4 dials again (miss 3 → parked 3 s).
+    await sleep(1700);
+    elapsed.push(await timedTaste());
+    assert.ok(elapsed[3] >= 3000 && elapsed[3] < 8000, `call 4 dialed B again after the cool-down (${elapsed[3]}ms)`);
+    // Call 5: parked again, for twice as long.
+    elapsed.push(await timedTaste());
+    assert.ok(elapsed[4] < 1000, `call 5 skipped B again (${elapsed[4]}ms)`);
+    t.diagnostic(`cool-down timings (ms): ${elapsed.join(', ')}`);
   });
 });

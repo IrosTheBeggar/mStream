@@ -378,6 +378,10 @@ describe('discovery federation aggregate (B queries A over iroh)', { skip: avail
           federation: { enabled: true },
           scanOptions: { collectDiscoveryData: true, discoveryModel: 'test-fake' },
         },
+        // The caller: a peer that misses twice while A's endpoint boots
+        // sits out 1.5 s (doubling), not 60 s, so the readiness gate below
+        // still converges within its ceiling.
+        env: { MSTREAM_TEST_PEER_RETRY_MS: '1500' },
       }),
     ]);
 

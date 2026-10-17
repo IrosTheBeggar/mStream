@@ -11,10 +11,18 @@
 // Flow per request: resolve the query vector, fan it out to every peer with
 // use_discovery on (POST /api/v1/federation/discovery/similar via fedFetch,
 // bounded by a per-peer deadline), then merge: caller-side novelty chain
-// (db/discovery-novelty.js), cross-peer dedupe, sort, cap. The fan-out
-// (fanOutFederation) is shared by the per-song route below, whose query is
-// one local track's embedding, and the history-seeded Discover page
-// (api/discovery-taste.js), whose query is a centroid of the page's seeds.
+// (db/discovery-novelty.js), cross-peer dedupe, sort, cap. A peer whose
+// dial failed twice in a row (deadline missed, handshake refused) is not
+// dialed again for 60 s, doubling up to 10 min while it keeps failing
+// (peerFailures), and is reported unreachable at once meanwhile; an answer,
+// or the admin's successful test-connection, resets it, and a call naming
+// one peer always dials. A failure while THIS server's own federation
+// endpoint is down (booting, rebooting, just enabled) is no miss: the peer
+// was never asked.
+// The fan-out (fanOutFederation) is shared by the per-song route below,
+// whose query is one local track's embedding, and the history-seeded
+// Discover page (api/discovery-taste.js), whose query is a centroid of the
+// page's seeds.
 //
 // Privacy note, stated where the code sends it: the query VECTOR leaves the
 // machine, to peers the admin explicitly paired with — that is the deal the
@@ -32,6 +40,9 @@ import winston from 'winston';
 import * as config from '../state/config.js';
 import * as discoveryDb from '../db/discovery-db.js';
 import * as fedDb from '../db/federation.js';
+// Already in the boot graph (api/federation-browse.js imports it); loading it
+// loads no native code — that stays in its start().
+import { getEndpointId } from '../state/federation.js';
 import { localIdentitySets, isNovel, norm } from '../db/discovery-novelty.js';
 import { resolveSeedTrack } from './discovery.js';
 import { joiValidate } from '../util/validation.js';
@@ -48,6 +59,18 @@ const PEER_LIMIT_CAP = 100;
 // A slow peer must not hold the Discover panel hostage; unreachable peers
 // surface in `searched.unreachable`, not as an error.
 const PEER_TIMEOUT_MS = 4000;
+// …and an offline peer must not cost every call that whole deadline. After
+// this many failed dials in a row (the deadline missed, or the handshake
+// refused) it sits out a cool-down. One miss is not proof: a dial made
+// while this endpoint is still finding its relay, or across a peer's
+// restart, can fail once. (A dial this server could not make at all, its
+// own endpoint down, is no miss: fanOutFederation's notAMiss.)
+export const PEER_MISSES_BEFORE_COOLDOWN = 2;
+// The first cool-down, doubling per further miss up to the cap. Test
+// override, same pattern as MSTREAM_TEST_FED_FLUSH_MS
+// (api/federation-limits.js): production installs never set it.
+export const PEER_RETRY_AFTER_MS = Number(process.env.MSTREAM_TEST_PEER_RETRY_MS) || 60 * 1000;
+export const PEER_RETRY_MAX_MS = 10 * 60 * 1000;
 // How often a peer's answer may refresh its federation_peers status row.
 // The Discover page fans out on every open; the admin UI's "last seen" only
 // needs minute-grained truth, not a write per query per peer.
@@ -109,6 +132,86 @@ export function createPeerStatusRecorder(write, { intervalMs = STATUS_WRITE_INTE
 
 export const recordPeerStatus = createPeerStatusRecorder(
   (id) => fedDb.updateFederationPeerStatus(id, 'ok'));
+
+/**
+ * In-memory record of peers that keep missing their deadline, keyed by peer
+ * id. miss() counts a transport failure; from the `missesBeforeCooldown`th
+ * miss in a row on, the peer is parked for retryAfterMs × 2^(misses −
+ * threshold), capped at maxRetryMs, and returns that duration (0 while under
+ * the threshold). Misses keep counting across cool-downs until an answer, so
+ * a dead peer costs one probe per cool-down: 60 s, 2 min, 4, 8, then
+ * every 10 min. answered() and forget() clear the entry. Nothing is written to
+ * federation_peers: see createPeerStatusRecorder for why a missed deadline
+ * is no failure status.
+ */
+export function createPeerFailureMemory({
+  retryAfterMs = PEER_RETRY_AFTER_MS,
+  maxRetryMs = PEER_RETRY_MAX_MS,
+  missesBeforeCooldown = PEER_MISSES_BEFORE_COOLDOWN,
+} = {}) {
+  const entries = new Map();   // peer id → { misses, until }
+  const clear = (peerId) => { entries.delete(peerId); };
+  return {
+    coolingDown(peerId, now = Date.now()) {
+      const e = entries.get(peerId);
+      return e !== undefined && now < e.until;
+    },
+    miss(peerId, now = Date.now()) {
+      const e = entries.get(peerId) || { misses: 0, until: 0 };
+      e.misses += 1;
+      entries.set(peerId, e);
+      if (e.misses < missesBeforeCooldown) { return 0; }
+      const ms = Math.min(retryAfterMs * 2 ** (e.misses - missesBeforeCooldown), maxRetryMs);
+      e.until = now + ms;
+      return ms;
+    },
+    answered: clear,
+    // The admin seam: a successful test-connection, or the peer's removal.
+    forget: clear,
+  };
+}
+
+export const peerFailures = createPeerFailureMemory();
+
+/**
+ * The dial step of a fan-out, without its I/O: `dial(peer)` reaches the peer
+ * (a throw is a TRANSPORT failure — deadline, dial error — and counts as a
+ * miss, unless it carries `notAMiss`: this server could not dial at all, so
+ * the memory is left as it was), `read(peer, response)` turns its answer
+ * into the outcome value (a throw — a non-OK status such as a peer's 403,
+ * bad JSON — still rejects, but the peer answered, so it clears the peer's
+ * misses). A peer in its
+ * cool-down is not dialed: its outcome rejects at once, with
+ * `reason.coolingDown` set. `forced` dials every peer regardless (a call
+ * that names one peer on purpose). A miss that parks the peer rejects with
+ * `reason.parkedMs` set. Resolves to Promise.allSettled outcomes in `peers`
+ * order — what mergePeerAnswers takes.
+ */
+export async function settlePeers(peers, { dial, read, failures = peerFailures, now = Date.now, forced = false }) {
+  const outcomes = await Promise.allSettled(peers.map(async (peer) => {
+    if (!forced && failures.coolingDown(peer.id, now())) {
+      throw Object.assign(new Error('not dialed: in its cool-down after failed dials'), { coolingDown: true });
+    }
+    let response;
+    try {
+      response = await dial(peer);
+    } catch (err) {
+      if (err?.notAMiss) { throw err; }
+      const parkedMs = failures.miss(peer.id, now());
+      if (parkedMs === 0) { throw err; }
+      // A fresh error, not the dial's: a dial in progress is shared by
+      // concurrent fan-outs (federation-client getPeerBridge), and so is
+      // its rejection.
+      throw Object.assign(new Error(err?.message ?? String(err), { cause: err }), { parkedMs });
+    }
+    try {
+      return await read(peer, response);
+    } finally {
+      failures.answered(peer.id);
+    }
+  }));
+  return outcomes;
+}
 
 // A peer's album-art name, kept only when it is what the peer's
 // /album-art/:file can serve: sanitizeFilename's own pattern
@@ -246,14 +349,18 @@ export async function loadFederationClient() {
  *   onPeerStatus    optional (peer row, { reachable, mismatched }) callback,
  *                   once per peer after the fan-out settles; pass
  *                   recordPeerStatus to refresh last_seen (throttled)
+ *   failures, now   the miss memory and clock (tests inject; default the
+ *                   module's peerFailures and Date.now)
  *
  * Resolves to { peers: [{ id, name, lastSeen, reachable, mismatched,
  * results }], searched: { peers, unreachable, mismatched }, results } — see
- * mergePeerAnswers. Each peer costs at most PEER_TIMEOUT_MS, dial included;
- * an unreachable peer is an outcome, never an error.
+ * mergePeerAnswers. Each peer costs at most PEER_TIMEOUT_MS, dial included,
+ * and nothing while in its cool-down (settlePeers; with peerId it is dialed
+ * anyway); an unreachable peer is an outcome, never an error.
  */
 export async function fanOutFederation(vec, modelId, {
   peerId, limit = DEFAULT_LIMIT, newArtistsOnly = false, headroom = HEADROOM, onPeerStatus,
+  failures = peerFailures, now = Date.now,
 } = {}) {
   let peers = fedDb.getFederationPeers().filter((p) => p.use_discovery === 1);
   if (peerId !== undefined) {
@@ -278,24 +385,51 @@ export async function fanOutFederation(vec, modelId, {
   // synchronous library pass precisely so the peer requests are already
   // on their way (it awaits them last).
   const fedClient = fedClientModule || await loadFederationClient();
-  const answers = await Promise.allSettled(peers.map(async (peer) => {
-    const r = await fedFetchWithDeadline(fedClient, peer, '/api/v1/federation/discovery/similar', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: payload,
-      // Still useful: bounds the response-body read once headers arrive.
-      signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
-    }, PEER_TIMEOUT_MS);
-    if (!r.ok) { throw new Error(`http ${r.status}`); }
-    const body = await r.json();
-    return { body, at: Date.now() };
-  }));
+  const answers = await settlePeers(peers, {
+    dial: async (peer) => {
+      try {
+        return await fedFetchWithDeadline(fedClient, peer, '/api/v1/federation/discovery/similar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+          // Still useful: bounds the response-body read once headers arrive.
+          signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
+        }, PEER_TIMEOUT_MS);
+      } catch (err) {
+        // THIS server's endpoint is down: at boot it binds after the
+        // remote-access tunnel's start (an online wait of up to 8 s, with
+        // HTTP already serving), a reboot stops it, and enabling federation
+        // starts it after the flag flips. connectToPeer then throws at once
+        // and the peer was never asked — counting that would park every
+        // peer on the first two opens. A fresh error: a shared in-flight
+        // dial's rejection is not ours to tag.
+        if (getEndpointId() === null) {
+          throw Object.assign(new Error(err?.message ?? String(err), { cause: err }), { notAMiss: true });
+        }
+        throw err;
+      }
+    },
+    read: async (_peer, r) => {
+      if (!r.ok) { throw new Error(`http ${r.status}`); }
+      return { body: await r.json(), at: Date.now() };
+    },
+    failures,
+    now,
+    // "More like this on <peer>" names that peer on purpose: always dialed.
+    forced: peerId !== undefined,
+  });
 
   for (const [i, outcome] of answers.entries()) {
-    if (outcome.status === 'rejected') {
-      const peer = peers[i];
-      winston.warn(`discovery federation similar: peer '${peer.name}' (id=${peer.id}) failed: ${outcome.reason?.message}`);
+    if (outcome.status !== 'rejected') { continue; }
+    const peer = peers[i];
+    const why = outcome.reason;
+    // One dead peer must not warn on every open: only its probes do.
+    if (why?.coolingDown) {
+      winston.debug(`discovery federation similar: peer '${peer.name}' (id=${peer.id}) skipped: ${why.message}`);
+      continue;
     }
+    const parked = why?.parkedMs > 0 ? `, not asked again for ${Math.round(why.parkedMs / 1000)} s` : '';
+    winston.warn(`discovery federation similar: peer '${peer.name}' (id=${peer.id}) failed: ${why?.message}${parked}`);
   }
 
   const out = mergePeerAnswers(peers, answers, {
