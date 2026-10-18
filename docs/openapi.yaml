@@ -7672,6 +7672,13 @@ paths:
         server. The PEER's auth wall and key grants decide whether the
         path is readable — it lives in the peer's vpath namespace, not
         this server's.
+
+        Forwarded to the peer: `Range`, `If-Range`, `If-None-Match`,
+        `If-Modified-Since`, `Accept` and `X-mStream-Purpose`. Copied
+        back: `Content-Type`, `Content-Length`, `Content-Range`,
+        `Accept-Ranges`, `ETag`, `Last-Modified` and `Retry-After`, with
+        the peer's status. Nothing else crosses either way — this server's
+        cookies and tokens never reach the peer.
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer }, description: Peer row id }
         - name: path
@@ -7684,15 +7691,36 @@ paths:
           required: false
           schema: { type: string }
           description: "Forwarded to the peer verbatim — seeking works end-to-end"
+        - name: X-mStream-Purpose
+          in: header
+          required: false
+          schema: { type: string, enum: [copy] }
+          description: >
+            Forwarded to the peer verbatim. A client that is copying files
+            (keeping them, not playing them) says `copy`, as it would on the
+            direct path; a peer whose key for this server has copies switched
+            off then answers 403. Older servers do not forward it.
       responses:
         "200":
           description: Full-body audio stream from the peer.
         "206":
           description: "Partial content for a range request; content-range is copied from the peer."
         "403":
-          description: Federation is disabled on this server.
+          description: >
+            Federation is disabled on this server — or the peer refused: a
+            copy (`X-mStream-Purpose: copy`) on a key with copies switched
+            off ("copies are not allowed with this key").
         "404":
           description: "Unknown peer id, or the peer answered 404 (unknown or ungranted path there)."
+        "429":
+          description: >
+            The peer's caps for this server's key: "Too many concurrent
+            streams" (`Retry-After: 5`) or "Daily transfer quota exceeded"
+            (`Retry-After` = seconds to the peer's UTC midnight). The peer's
+            JSON body and its `Retry-After` are passed through; older
+            servers dropped the header.
+          headers:
+            Retry-After: { schema: { type: integer } }
         "502":
           description: "Peer unreachable — the dial + response-header deadline (15s) was exceeded."
 
