@@ -53,9 +53,15 @@ export async function relayPeerMedia(req, res, { remotePath, fetchMedia, peerLab
     if (req.headers[h]) { headers[h] = req.headers[h]; }
   }
 
+  // Express answers HEAD with this GET handler. Asked with a GET, the peer
+  // would send the whole file — across its link, onto the key's daily quota
+  // and through one of its stream slots — only for Node to discard the body
+  // here. A HEAD asks the peer for a HEAD: its /media answers one with the
+  // same headers, and meters it as light (federation-limits.js isHeavy).
+  const head = req.method === 'HEAD';
   let upstream;
   try {
-    upstream = await fetchMedia(`/media/${remotePath}`, { headers });
+    upstream = await fetchMedia(`/media/${remotePath}`, { method: head ? 'HEAD' : 'GET', headers });
   } catch (err) {
     winston.warn(`[federation] stream proxy: ${peerLabel} unreachable for '${remotePath}': ${err.message}`);
     throw new WebError('Peer unreachable', 502);
@@ -66,7 +72,7 @@ export async function relayPeerMedia(req, res, { remotePath, fetchMedia, peerLab
     const v = upstream.headers.get(h);
     if (v) { res.setHeader(h, v); }
   }
-  if (!upstream.body) { return res.end(); }
+  if (head || !upstream.body) { return res.end(); }
 
   const body = Readable.fromWeb(upstream.body);
   // A dropped player connection (seek, skip, tab close) must tear down

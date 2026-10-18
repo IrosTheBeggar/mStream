@@ -9,7 +9,8 @@
  *  - the peer's 429s come back with their Retry-After — the stream cap's
  *    5 s and the daily quota's seconds to midnight — so a client can tell
  *    how long to wait;
- *  - range requests still seek (206 + Content-Range);
+ *  - range requests still seek (206 + Content-Range), and a HEAD asks the
+ *    peer for a HEAD instead of pulling the whole file to throw it away;
  *  - nothing else crosses: our cookies and tokens never reach the peer, and
  *    the peer's cookies and server identity never reach our client;
  *  - a peer that cannot be dialed is a 502.
@@ -41,11 +42,13 @@ const close = (server) => new Promise((resolve) => server.close(resolve));
 describe('federation stream proxy: the headers that cross it', () => {
   let peer, proxy;
   const seen = []; // request headers the peer received, in order
+  const methods = []; // and the methods
 
   before(async () => {
     // The peer's /media, reduced to the answers federation-limits.js gives.
     peer = await listen((req, res) => {
       seen.push(req.headers);
+      methods.push(req.method);
       const json = (status, body, extra = {}) => {
         res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...extra });
         res.end(JSON.stringify(body));
@@ -145,6 +148,20 @@ describe('federation stream proxy: the headers that cross it', () => {
     assert.equal(r.headers.get('set-cookie'), null, 'the peer\'s cookies stay behind');
     assert.notEqual(r.headers.get('server'), 'peer-box');
     assert.equal(r.headers.get('x-powered-by'), 'Express', 'our own header, not the peer\'s');
+  });
+
+  test('a HEAD asks the peer for a HEAD — the file never crosses the link', async () => {
+    const r = await fetch(`${base(proxy)}/stream/shared/track.bin`, { method: 'HEAD' });
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('content-length'), String(FILE.length), 'the size, as the peer reports it');
+    assert.equal(r.headers.get('accept-ranges'), 'bytes');
+    assert.equal((await r.arrayBuffer()).byteLength, 0);
+    // Asked with a GET, the peer would send (and meter) the whole file for
+    // this server to discard.
+    assert.equal(methods.at(-1), 'HEAD');
+    // A GET is still a GET.
+    await (await get('shared/track.bin')).arrayBuffer();
+    assert.equal(methods.at(-1), 'GET');
   });
 
   test('a peer that cannot be dialed is a 502', async () => {

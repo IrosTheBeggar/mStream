@@ -7679,6 +7679,11 @@ paths:
         `Accept-Ranges`, `ETag`, `Last-Modified` and `Retry-After`, with
         the peer's status. Nothing else crosses either way — this server's
         cookies and tokens never reach the peer.
+
+        A `HEAD` is passed on as a `HEAD`: the peer answers with the file's
+        headers only, so a probe costs neither the file's bytes nor one of
+        the key's stream slots. (Older servers fetched the whole file from
+        the peer and discarded it.)
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer }, description: Peer row id }
         - name: path
