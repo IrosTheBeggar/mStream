@@ -3492,7 +3492,7 @@ paths:
                       playedMs: { type: integer, minimum: 0 }
                       durationMs: { type: integer, minimum: 0, description: "Defaults to the library's duration for a local track." }
                       outcome: { type: string, enum: [completed, skipped, stopped] }
-                      source: { type: string, enum: [manual, shuffle, autodj, playlist, smart-playlist, auto, carplay, cast, other], description: "How the play was queued. `legacy` is reserved for the server's own scrobble-by-filepath route and is never accepted here." }
+                      source: { type: string, enum: [manual, shuffle, autodj, playlist, smart-playlist, auto, carplay, cast, device, other], description: "How the play was queued. `device`: played on a portable player away from any mStream client (a card filled from this library, played offline, its log posted later by the software that syncs it) — a queueing mode the device knew, such as `shuffle` or `autodj`, is sent as itself instead; older servers refuse `device` with a 400, so send `other` to them. `legacy` is reserved for the server's own scrobble-by-filepath route and is never accepted here." }
                       sessionId: { type: string, maxLength: 128 }
                       pauseCount: { type: integer, minimum: 0, default: 0 }
                       track:

@@ -16,8 +16,12 @@
 import { toSqlite, fromSqlite, hourKey, retentionFloor } from './time.js';
 
 export const OUTCOMES = new Set(['completed', 'skipped', 'stopped']);
+// `device`: played on a portable player away from any mStream client — a
+// card filled from this library and played offline, its log posted later
+// by the software that syncs the card. A queueing mode the device knew
+// (shuffle, autodj) is sent as itself instead; `device` is for the rest.
 export const SOURCES = new Set(['manual', 'shuffle', 'autodj', 'playlist',
-  'smart-playlist', 'auto', 'carplay', 'cast', 'legacy', 'other']);
+  'smart-playlist', 'auto', 'carplay', 'cast', 'device', 'legacy', 'other']);
 // `enrichedAt` (epoch ms) marks a federated play's snapshot as completed from
 // the peer's own metadata (stats/enrich.js) — set even when the peer had
 // nothing to add, so a row is asked about once.
