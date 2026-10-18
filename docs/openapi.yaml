@@ -7791,10 +7791,15 @@ paths:
         the peer's status. Nothing else crosses either way — this server's
         cookies and tokens never reach the peer.
 
-        A `HEAD` is passed on as a `HEAD`: the peer answers with the file's
-        headers only, so a probe costs neither the file's bytes nor one of
-        the key's stream slots. (Older servers fetched the whole file from
-        the peer and discarded it.)
+        A `HEAD` asks the peer for the file's first byte (`Range: bytes=0-0`;
+        a federation key may not `HEAD` a peer's `/media`) and answers `200`
+        with the whole file's `Content-Length` — `0` for an empty file —
+        and its `Content-Type`, `Accept-Ranges`, `ETag` and
+        `Last-Modified`. The probe costs the key one byte and holds one of
+        its stream slots for an instant, so it can still meet the peer's
+        `429`. A `Range` on the `HEAD` itself is ignored; the conditionals
+        are forwarded. Works against every peer, old or new. (Older servers
+        fetched the whole file from the peer and discarded it.)
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer }, description: Peer row id }
         - name: path

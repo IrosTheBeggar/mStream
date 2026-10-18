@@ -42,6 +42,33 @@ export const FORWARD_RES = ['content-type', 'content-length', 'content-range', '
 // BODY has no deadline — tracks stream for minutes.
 const HEADER_DEADLINE_MS = 15 * 1000;
 
+// A HEAD's answer, from the peer's answer to `Range: bytes=0-0`: the
+// whole file's headers, as a GET would have them. The 206's Content-Range
+// carries the file's size (`bytes 0-0/<size>`). An empty file has no first
+// byte: its answer is an error carrying `Content-Range: bytes */0` (a 416
+// from express.static, which mStream's error handler turns into a 500 —
+// the header stays). Either becomes a 200 with that Content-Length and no
+// Content-Range. Anything else — a 200 from a peer that ignored the range,
+// a 304, the peer's 403s, 404s and 429s with their Retry-After — comes
+// back as the peer said it.
+function headAnswerFromProbe(upstream) {
+  const range = upstream.headers.get('content-range') || '';
+  const partial = upstream.status === 206 && /^bytes \d+-\d+\/(\d+)$/.exec(range);
+  const unsatisfied = !partial && /^bytes \*\/(\d+)$/.exec(range);
+  const size = partial || unsatisfied;
+  const headers = {};
+  for (const h of FORWARD_RES) {
+    if (size && (h === 'content-length' || h === 'content-range')) { continue; }
+    // The error's type is its JSON body's, not the empty file's.
+    if (unsatisfied && h === 'content-type') { continue; }
+    const v = upstream.headers.get(h);
+    if (v) { headers[h] = v; }
+  }
+  if (!size) { return { status: upstream.status, headers }; }
+  headers['content-length'] = size[1];
+  return { status: 200, headers };
+}
+
 // The byte pipe, with the dial injected (`fetchMedia(path, opts)` resolves
 // to a fetch Response from the peer): forward the request headers, copy the
 // safe response headers back — status included, so the peer's 403s and
@@ -53,18 +80,35 @@ export async function relayPeerMedia(req, res, { remotePath, fetchMedia, peerLab
     if (req.headers[h]) { headers[h] = req.headers[h]; }
   }
 
-  // Express answers HEAD with this GET handler. Asked with a GET, the peer
-  // would send the whole file — across its link, onto the key's daily quota
-  // and through one of its stream slots — only for Node to discard the body
-  // here. A HEAD asks the peer for a HEAD: its /media answers one with the
-  // same headers, and meters it as light (federation-limits.js isHeavy).
+  // Express answers HEAD with this GET handler. Passed on as a plain GET, a
+  // HEAD would pull the whole file — across the peer's link, onto the key's
+  // daily quota and through one of its stream slots — for Node to discard
+  // here. Passed on as a HEAD it is refused: a federation key may only GET
+  // a peer's /media (federation-auth.js), so every peer answers 403. So a
+  // HEAD asks the peer for the first byte (headAnswerFromProbe above).
+  // Range has no meaning on a HEAD (RFC 9110 §14.2), so the client's own
+  // range goes; its conditionals stay, and a 304 is still a 304.
   const head = req.method === 'HEAD';
+  if (head) {
+    delete headers['if-range'];
+    headers.range = 'bytes=0-0';
+  }
   let upstream;
   try {
-    upstream = await fetchMedia(`/media/${remotePath}`, { method: head ? 'HEAD' : 'GET', headers });
+    upstream = await fetchMedia(`/media/${remotePath}`, { headers });
   } catch (err) {
     winston.warn(`[federation] stream proxy: ${peerLabel} unreachable for '${remotePath}': ${err.message}`);
     throw new WebError('Peer unreachable', 502);
+  }
+
+  if (head) {
+    // One byte, or (a peer that ignored the range) the start of the file:
+    // cancelling stops whichever it is here.
+    upstream.body?.cancel().catch(() => {});
+    const answer = headAnswerFromProbe(upstream);
+    res.status(answer.status);
+    for (const [h, v] of Object.entries(answer.headers)) { res.setHeader(h, v); }
+    return res.end();
   }
 
   res.status(upstream.status);
@@ -72,7 +116,7 @@ export async function relayPeerMedia(req, res, { remotePath, fetchMedia, peerLab
     const v = upstream.headers.get(h);
     if (v) { res.setHeader(h, v); }
   }
-  if (head || !upstream.body) { return res.end(); }
+  if (!upstream.body) { return res.end(); }
 
   const body = Readable.fromWeb(upstream.body);
   // A dropped player connection (seek, skip, tab close) must tear down
