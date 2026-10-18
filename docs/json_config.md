@@ -62,7 +62,8 @@ A heavily edited config would look like:
     "ffmpegDirectory": "/path/to/ffmpeg-dir",
     "defaultCodec": "opus",
     "defaultBitrate": "128k",
-    "autoUpdate": true
+    "autoUpdate": true,
+    "bulkConcurrency": 2
   },
   "updates": {
     "check": true,
@@ -167,18 +168,27 @@ boot) and is configured with the following
     "ffmpegDirectory": "/path/to/ffmpeg-dir",
     "defaultCodec": "opus",
     "defaultBitrate": "128k",
-    "autoUpdate": true
+    "autoUpdate": true,
+    "bulkConcurrency": 2
   },
 ```
 
 The `defaultCodec` accepts the values `aac`, `mp3`, `opus`.
 
-The `defaultBitrate` accepts the values, `192k` `128k`, `96k`, `64k`
+The `defaultBitrate` accepts the values, `192k` `128k`, `96k`, `64k`. (A
+client may still ask for `256k` or `320k` MP3 per request; the default
+applies to every codec, so it stays within what they all take.)
 
 `ffmpegDirectory` is where mStream downloads and manages its ffmpeg/ffprobe
 binaries (weekly auto-update; set `autoUpdate` to `false` to pin the current
 build). If you place your own binaries in a custom `ffmpegDirectory`, mStream
 uses them as-is and never auto-updates them.
+
+`bulkConcurrency` (default `2`, 1-64) is how many transcodes flagged as bulk
+work (`?bulk=1`: one file of a long job, such as a library converted onto a
+portable player's card) run at once, server-wide. More wait in a queue, and
+bulk output never fills the transcode cache. Listeners' streams are never
+counted against it or held back by it.
 
 Note: older configs may contain `"enabled": true` here — that key is ignored;
 transcoding no longer has an on/off switch.

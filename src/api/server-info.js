@@ -88,6 +88,10 @@ export function buildFeatures() {
       // 320k) and the output sample rates `?sampleRate=` takes. Absent on
       // older servers, which take only 64k-192k and no sample rate.
       codecs: transcode.getTransCodecOptions(),
+      // This server takes `?bulk=1` (one file of a long job: kept out of
+      // the cache, queued behind a server-wide cap) and runs this many such
+      // transcodes at once — a bulk client need not open more.
+      bulk: { concurrency: transcode.bulkConcurrency() },
     };
   }
 

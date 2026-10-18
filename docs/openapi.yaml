@@ -1376,6 +1376,17 @@ paths:
                                       type: array
                                       items: { type: integer }
                                       example: [32000, 44100, 48000]
+                              bulk:
+                                type: object
+                                description: >
+                                  `/transcode` takes `?bulk=1` (one file of a
+                                  long job: kept out of the cache, queued
+                                  behind a server-wide cap), and runs this
+                                  many such transcodes at once — a bulk client
+                                  gains nothing by opening more. Absent on
+                                  older servers.
+                                properties:
+                                  concurrency: { type: integer, example: 2 }
                       supportedAudioFiles:
                         type: object
                         description: Per-format booleans from config.
@@ -4782,6 +4793,24 @@ paths:
           in: query
           description: Start this many seconds in (a re-encode from there, never cached).
           schema: { type: number }
+        - name: bulk
+          in: query
+          description: >
+            `1` (or `true`) marks one file of a long job — a library
+            converted onto a portable player's card, an export — rather
+            than a listener. Its output never enters the transcode cache
+            (so a job cannot push listeners' entries out; a cached copy is
+            still served to it), and it runs in one of a few server-wide
+            slots (`features.transcode.bulk.concurrency` in `GET /api`,
+            config `transcode.bulkConcurrency`, default 2). Over the cap it
+            waits, first come first served, for up to a minute before any
+            byte is sent; then, or at once when the queue is full, it gets
+            a 503 with `Retry-After`. A slot is held while its ffmpeg runs,
+            so a client should read what it asked for. Requests without the
+            flag are never queued or capped. Older servers ignore it.
+          schema:
+            type: string
+            enum: ["1", "true"]
       responses:
         "200":
           description: Transcoded audio stream.
@@ -4798,8 +4827,17 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "500":
+          description: ffmpeg not available (`transcoding disabled`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "503":
-          description: ffmpeg not available.
+          description: >
+            A `bulk=1` request only: no bulk slot came free within the wait,
+            or the bulk queue is full. Carries `Retry-After` (seconds).
+          headers:
+            Retry-After: { schema: { type: integer } }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -6902,6 +6940,7 @@ paths:
                 properties:
                   defaultCodec: { type: string }
                   defaultBitrate: { type: string }
+                  bulkConcurrency: { type: integer, description: "How many `?bulk=1` transcodes run at once (config `transcode.bulkConcurrency`, default 2)." }
                   downloaded: { type: boolean, description: "Whether ffmpeg has been downloaded." }
         "405": { $ref: "#/components/responses/AdminLocked" }
 

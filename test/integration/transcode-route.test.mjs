@@ -14,13 +14,22 @@
  *   - MP3 at 256k and 320k, and ?sampleRate= — read back from the encoded
  *     frames, strict per codec, part of the cache key, and advertised per
  *     codec in /api/
+ *   - bulk jobs (?bulk=1), on a second server capped at one: a held slot
+ *     queues the next bulk request (503 + Retry-After when the wait runs
+ *     out or the queue is full; a client that hangs up leaves the queue)
+ *     while listeners and probes go straight through; a freed slot goes
+ *     to the oldest waiter; bulk output never enters the cache, though a
+ *     cached copy is served to it
  */
 
 import { describe, before, after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { startServer } from '../helpers/server.mjs';
+import { BUNDLED_FFMPEG, runFfmpeg } from '../helpers/ffmpeg.mjs';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -221,5 +230,149 @@ describe('GET /transcode/{*filepath}', () => {
     // The flat ping payload carries the same object.
     const ping = await (await fetch(`${server.baseUrl}/api/v1/ping`)).json();
     assert.deepEqual(ping.transcode.codecs, codecs);
+  });
+});
+
+describe('GET /transcode — bulk jobs (?bulk=1)', () => {
+  // One bulk slot, a queue of one, a 3 s wait: small enough to fill on
+  // purpose. Listeners are never counted.
+  const WAIT_MS = 3000;
+  let srv, longDir;
+  const LONG_REL = 'long/long.flac';
+
+  const url = (rel, query) => {
+    const encoded = rel.split('/').map(encodeURIComponent).join('/');
+    return `${srv.baseUrl}/transcode/${encoded}?${query}`;
+  };
+  // A bulk transcode whose client stops reading: ten minutes at 320k is far
+  // more than the socket buffers hold, so ffmpeg blocks — and keeps the
+  // slot — until the request is dropped.
+  const holdSlot = () => new Promise((resolve, reject) => {
+    const req = http.get(url(LONG_REL, 'codec=mp3&bitrate=320k&bulk=1'), (res) => {
+      res.pause();
+      resolve({ status: res.statusCode, drop: () => req.destroy() });
+    });
+    req.on('error', (err) => { if (err.code !== 'ECONNRESET') { reject(err); } });
+  });
+
+  before(async () => {
+    longDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-bulk-'));
+    await runFfmpeg(BUNDLED_FFMPEG, ['-nostdin', '-y', '-loglevel', 'error', '-f', 'lavfi',
+      '-i', 'sine=frequency=440:sample_rate=44100:duration=600', '-ac', '1', path.join(longDir, 'long.flac')]);
+    srv = await startServer({
+      dlnaMode: 'disabled',
+      extraFolders: { long: longDir },
+      extraConfig: { transcode: { bulkConcurrency: 1 } },
+      env: { MSTREAM_TEST_TRANSCODE_BULK_WAIT_MS: String(WAIT_MS), MSTREAM_TEST_TRANSCODE_BULK_QUEUE_MAX: '1' },
+    });
+    const deadline = Date.now() + 15_000;
+    for (;;) {
+      const r = await fetch(url(SONG_REL, 'codec=mp3&bitrate=64k'));
+      await r.arrayBuffer();
+      if (r.status !== 500) { break; }
+      if (Date.now() > deadline) { throw new Error('transcode route never became ready'); }
+      await sleep(250);
+    }
+  });
+
+  after(async () => {
+    await srv?.stop();
+    if (longDir) { await fs.rm(longDir, { recursive: true, force: true }).catch(() => {}); }
+  });
+
+  test('/api/ says the server takes the flag, and how many run at once', async () => {
+    const info = await (await fetch(`${srv.baseUrl}/api/`)).json();
+    assert.deepEqual(info.features.transcode.bulk, { concurrency: 1 });
+  });
+
+  test('a held slot queues the next bulk request; listeners and probes go straight through; the wait ends in a 503', async () => {
+    const held = await holdSlot();
+    assert.equal(held.status, 200);
+    try {
+      // A listener is never queued behind bulk work...
+      const listener = await fetch(url(SONG_REL, 'codec=mp3&bitrate=64k'));
+      assert.equal(listener.status, 200);
+      assert.ok((await listener.arrayBuffer()).byteLength > 1000);
+      // ...nor is a probe, flag or not.
+      const probe = await fetch(url(SONG_REL, 'codec=mp3&bitrate=64k&bulk=1'), { method: 'HEAD' });
+      assert.equal(probe.status, 200);
+
+      // (128k: nothing cached at that rate — a cache hit needs no slot.)
+      const started = Date.now();
+      const queued = await fetch(url(SONG_REL, 'codec=mp3&bitrate=128k&bulk=1'));
+      const waited = Date.now() - started;
+      assert.equal(queued.status, 503);
+      assert.equal(queued.headers.get('retry-after'), '10');
+      assert.match((await queued.json()).error, /no bulk transcode slot came free in time/);
+      assert.ok(waited >= WAIT_MS - 500, `answered after ${waited}ms; it should have waited about ${WAIT_MS}ms`);
+    } finally {
+      held.drop();
+    }
+  });
+
+  test('a freed slot goes to the waiter; a full queue is refused at once; a client that hangs up leaves the queue', async () => {
+    // The previous test's slot may still be on its way back.
+    let held;
+    for (let i = 0; i < 20; i++) {
+      held = await holdSlot();
+      if (held.status === 200) { break; }
+      held.drop();
+      await sleep(200);
+    }
+    assert.equal(held.status, 200, 'the slot came back');
+    try {
+      // A waiter that hangs up frees its place in the queue...
+      const quitter = new AbortController();
+      const gone = fetch(url(SONG_REL, 'codec=mp3&bitrate=96k&bulk=1'), { signal: quitter.signal }).catch(() => null);
+      await sleep(300);
+      quitter.abort();
+      await gone;
+      await sleep(300);
+      // ...so the next one queues, and the one after it finds the queue full.
+      const waiter = fetch(url(SONG_REL, 'codec=mp3&bitrate=96k&bulk=1'));
+      await sleep(300);
+      const full = await fetch(url(SONG_REL, 'codec=mp3&bitrate=96k&bulk=1'));
+      assert.equal(full.status, 503);
+      assert.equal(full.headers.get('retry-after'), '10');
+      assert.match((await full.json()).error, /too many bulk transcodes queued/);
+
+      // Dropping the held transcode hands its slot to the waiter, well
+      // inside the waiter's 3 s.
+      held.drop();
+      held = null;
+      const served = await waiter;
+      assert.equal(served.status, 200);
+      assert.match(served.headers.get('content-type') || '', /audio\/mpeg/);
+      assert.ok(firstMp3Frame(Buffer.from(await served.arrayBuffer()))?.layer3, 'a real transcode');
+    } finally {
+      held?.drop();
+    }
+  });
+
+  test('bulk output never enters the cache, though a cached copy is served to it', async () => {
+    const q = 'codec=mp3&bitrate=192k';
+    for (let i = 0; i < 2; i++) {
+      const r = await fetch(url(SONG_REL, `${q}&bulk=1`));
+      assert.equal(r.status, 200);
+      await r.arrayBuffer();
+      assert.equal(r.headers.get('content-length'), null, `bulk pull ${i + 1} is a fresh transcode`);
+      await sleep(300); // a cache insert lands on ffmpeg's close, a beat after the body
+    }
+    // Nor did they fill it for a listener: the first plain request is live too...
+    const plain = await fetch(url(SONG_REL, q));
+    await plain.arrayBuffer();
+    assert.equal(plain.headers.get('content-length'), null, 'bulk work left nothing in the cache');
+    // ...and once a listener's copy is cached, a bulk request may read it.
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      const r = await fetch(url(SONG_REL, `${q}&bulk=1`));
+      const body = await r.arrayBuffer();
+      if (r.headers.get('content-length') !== null) {
+        assert.equal(Number(r.headers.get('content-length')), body.byteLength);
+        break;
+      }
+      assert.ok(Date.now() < deadline, 'a bulk request was never served the cached copy');
+      await sleep(250);
+    }
   });
 });

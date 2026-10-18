@@ -163,11 +163,13 @@ let cacheBytes = 0;
 // unbounded per-client catch-up buffer.
 const inFlight = new Set();
 
-function cacheGet(key) {
+function cacheGet(key, { touch = true } = {}) {
   const entry = cache.get(key);
   if (!entry) { return null; }
-  cache.delete(key);
-  cache.set(key, entry); // move to most-recently-used
+  if (touch) {
+    cache.delete(key);
+    cache.set(key, entry); // move to most-recently-used
+  }
   return entry;
 }
 
@@ -186,6 +188,86 @@ function cacheSet(key, entry) {
     cacheBytes -= cache.get(oldestKey).contentLength;
     cache.delete(oldestKey);
   }
+}
+
+// ── Bulk jobs ───────────────────────────────────────────────────────────────
+// A request flagged ?bulk=1 is one file of a long job — a library converted
+// onto a portable player's card, an export — not a listener. Two things
+// differ for it:
+//  - it never enters the cache above: a job converting a thousand files
+//    would push every listener's entry out of the 64-entry LRU for copies
+//    nobody plays twice. A cache hit is still served, without counting as
+//    recent use;
+//  - it waits for one of a few server-wide slots (transcode.bulkConcurrency,
+//    default 2): bulk work runs ffmpeg as fast as the client can take it,
+//    while a listener's transcode is paced by playback. A request over the
+//    cap queues, first come first served, for up to BULK_WAIT_MS and then
+//    gets a 503 with Retry-After; a full queue answers 503 at once; a client
+//    that hangs up while queued just leaves the queue.
+// Listeners — no flag, which is every client that predates it — are never
+// queued, capped or refused. The cap keeps bulk work from taking the CPU
+// and the cache from them; it does not ration playback, and a client doing
+// bulk work without the flag is served exactly as before.
+// Test overrides, same pattern as MSTREAM_TEST_FED_FLUSH_MS: production
+// installs should never set them.
+const BULK_WAIT_MS = Number(process.env.MSTREAM_TEST_TRANSCODE_BULK_WAIT_MS) || 60 * 1000;
+const BULK_QUEUE_MAX = Number(process.env.MSTREAM_TEST_TRANSCODE_BULK_QUEUE_MAX) || 32;
+const BULK_RETRY_AFTER_S = 10;
+let bulkActive = 0;
+const bulkQueue = []; // waiters, oldest first: { grant, timer }
+
+export function bulkConcurrency() {
+  const n = Number(config.program.transcode?.bulkConcurrency);
+  return Number.isInteger(n) && n >= 1 ? n : 2;
+}
+
+function grantBulkSlots() {
+  while (bulkActive < bulkConcurrency() && bulkQueue.length > 0) {
+    const waiter = bulkQueue.shift();
+    bulkActive++;
+    waiter.grant();
+  }
+}
+
+// A release that frees its slot once, however many exit paths call it.
+function bulkRelease() {
+  let held = true;
+  return () => {
+    if (!held) { return; }
+    held = false;
+    bulkActive--;
+    grantBulkSlots();
+  };
+}
+
+// Resolves to a release function once the caller holds a slot, or to
+// { refused: 'full' | 'timeout' | 'gone' } when it never will.
+function acquireBulkSlot(res) {
+  if (bulkActive < bulkConcurrency() && bulkQueue.length === 0) {
+    bulkActive++;
+    return Promise.resolve(bulkRelease());
+  }
+  if (bulkQueue.length >= BULK_QUEUE_MAX) { return Promise.resolve({ refused: 'full' }); }
+  return new Promise((resolve) => {
+    const waiter = {};
+    const leave = (why) => {
+      const i = bulkQueue.indexOf(waiter);
+      if (i !== -1) { bulkQueue.splice(i, 1); }
+      clearTimeout(waiter.timer);
+      res.off('close', onClose);
+      resolve({ refused: why });
+    };
+    const onClose = () => leave('gone');
+    // Called by grantBulkSlots with the slot already counted as taken.
+    waiter.grant = () => {
+      clearTimeout(waiter.timer);
+      res.off('close', onClose);
+      resolve(bulkRelease());
+    };
+    waiter.timer = setTimeout(() => leave('timeout'), BULK_WAIT_MS);
+    res.once('close', onClose);
+    bulkQueue.push(waiter);
+  });
 }
 
 // ── Spawn ffmpeg ────────────────────────────────────────────────────────────
@@ -256,6 +338,10 @@ export function setup(mstream) {
       sampleRate = rate;
     }
 
+    // ?bulk=1: one file of a long job, not a listener — kept out of the
+    // cache and queued behind the server-wide cap ("Bulk jobs" above).
+    const bulk = req.query.bulk === '1' || req.query.bulk === 'true';
+
     // Express 5 {*filepath} returns an array — join back to a path string
     const filepath = Array.isArray(req.params.filepath)
       ? req.params.filepath.join('/')
@@ -308,7 +394,8 @@ export function setup(mstream) {
     const cacheKey = `${pathInfo.fullPath}|${st.mtimeMs}|${st.size}|${bitrate}|${codec}${sampleRate ? `|${sampleRate}` : ''}`;
 
     // ── Cache hit (from-start streams only) ──────────────────
-    const cached = offsetSec === 0 ? cacheGet(cacheKey) : null;
+    // A bulk request may read a listener's entry but never keeps it warm.
+    const cached = offsetSec === 0 ? cacheGet(cacheKey, { touch: !bulk }) : null;
     if (cached) {
       // No Accept-Ranges: this route doesn't honor Range requests, so don't
       // advertise byte-range seeking we can't actually serve.
@@ -318,6 +405,25 @@ export function setup(mstream) {
       });
       Readable.from(cached.bufs).pipe(res);
       return;
+    }
+
+    // ── Bulk: wait for a slot ────────────────────────────────
+    // Nothing is sent while queued, so a refusal is still an honest status.
+    let releaseBulk = () => {};
+    if (bulk) {
+      const slot = await acquireBulkSlot(res);
+      if (typeof slot !== 'function') {
+        if (slot.refused === 'gone') { return; } // hung up while queued
+        winston.info(`[transcode] bulk request refused (${slot.refused}) for '${filepath}': ${bulkActive} running, ${bulkQueue.length} queued`);
+        res.set('Retry-After', String(BULK_RETRY_AFTER_S));
+        return res.status(503).json({
+          error: slot.refused === 'full'
+            ? 'too many bulk transcodes queued — retry later'
+            : 'no bulk transcode slot came free in time — retry later',
+        });
+      }
+      releaseBulk = slot;
+      if (req.socket?.destroyed) { releaseBulk(); return; }
     }
 
     // ── Set headers ──────────────────────────────────────────
@@ -331,9 +437,10 @@ export function setup(mstream) {
     res.header({ 'Content-Type': codecMap[codec].contentType });
 
     // ── Stream (+ collect for cache on from-start streams) ────
-    // A seeked stream is a one-off and isn't cached; a from-start stream only
-    // buffers when no other request is already buffering the same key.
-    const wantsCache = offsetSec === 0 && !inFlight.has(cacheKey);
+    // A seeked stream is a one-off and isn't cached, nor is a bulk one; a
+    // from-start stream only buffers when no other request is already
+    // buffering the same key.
+    const wantsCache = offsetSec === 0 && !bulk && !inFlight.has(cacheKey);
     if (wantsCache) { inFlight.add(cacheKey); }
     const releaseInFlight = () => { if (wantsCache) { inFlight.delete(cacheKey); } };
 
@@ -353,6 +460,7 @@ export function setup(mstream) {
     // instead of an empty 200. spawnTranscode's own handler logs the details.
     proc.once('error', () => {
       releaseInFlight();
+      releaseBulk();
       if (!res.headersSent) {
         res.status(500).json({ error: 'transcode failed' });
       } else {
@@ -379,6 +487,9 @@ export function setup(mstream) {
 
     proc.on('close', code => {
       releaseInFlight();
+      // A bulk slot is held for as long as its ffmpeg runs — the work the
+      // cap is there to bound — and freed however it ended.
+      releaseBulk();
       // Cache ONLY a clean, complete from-start transcode. A SIGTERM kill
       // reports code === null and an ffmpeg failure reports a non-zero code;
       // both mean the output is partial, so cache nothing.
