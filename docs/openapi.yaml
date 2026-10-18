@@ -4828,7 +4828,10 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500":
-          description: ffmpeg not available (`transcoding disabled`).
+          description: >
+            ffmpeg is not available (`transcoding disabled`) — also when it
+            went away while the request waited, as during the restart a
+            settings save makes — or could not be started (`transcode failed`).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

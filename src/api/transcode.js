@@ -243,6 +243,10 @@ function bulkRelease() {
 // Resolves to a release function once the caller holds a slot, or to
 // { refused: 'full' | 'timeout' | 'gone' } when it never will.
 function acquireBulkSlot(res) {
+  // A client that hung up earlier (during the stat, say) has had its
+  // 'close' already: queued, it would hold a place — one of the queue's
+  // BULK_QUEUE_MAX, turning live requests away — until its wait ran out.
+  if (res.destroyed) { return Promise.resolve({ refused: 'gone' }); }
   if (bulkActive < bulkConcurrency() && bulkQueue.length === 0) {
     bulkActive++;
     return Promise.resolve(bulkRelease());
@@ -305,6 +309,78 @@ function spawnTranscode(inputPath, codec, bitrate, offsetSec = 0, sampleRate = n
 
   return proc;
 }
+
+// ── Start a live transcode ──────────────────────────────────────────────────
+// Everything between a cache miss and a running ffmpeg: a bulk request's
+// slot, the in-flight mark that lets one from-start stream buffer for the
+// cache, and the spawn. Resolves to { proc, release, wantsCache } — release
+// frees the slot and the mark, once, and is the caller's to call when
+// ffmpeg ends — or to null when it has answered the request itself.
+//
+// Transcoding can be gone by the time the request gets here: a soft
+// reboot's reset() (server.js reboot) can land while it waited — for its
+// stat, or up to BULK_WAIT_MS for a bulk slot — and leaves no ffmpeg until
+// init() resolves one again. Spawned anyway, spawn(null) throws before any
+// exit handler is wired, and the slot and the mark were held for the life
+// of the process: two such and every bulk request was a 503.
+async function startTranscode(req, res, { fullPath, filepath, codec, bitrate, sampleRate, offsetSec, cacheKey, bulk }) {
+  // Nothing is sent while queued, so a refusal is still an honest status.
+  let releaseBulk = () => {};
+  if (bulk) {
+    const slot = await acquireBulkSlot(res);
+    if (typeof slot !== 'function') {
+      if (slot.refused === 'gone') { return null; } // hung up before or while queued
+      winston.info(`[transcode] bulk request refused (${slot.refused}) for '${filepath}': ${bulkActive} running, ${bulkQueue.length} queued`);
+      res.set('Retry-After', String(BULK_RETRY_AFTER_S));
+      res.status(503).json({
+        error: slot.refused === 'full'
+          ? 'too many bulk transcodes queued — retry later'
+          : 'no bulk transcode slot came free in time — retry later',
+      });
+      return null;
+    }
+    releaseBulk = slot;
+    if (req.socket?.destroyed) { releaseBulk(); return null; }
+  }
+
+  if (lockInit !== true) {
+    releaseBulk();
+    res.status(500).json({ error: 'transcoding disabled' });
+    return null;
+  }
+
+  // A seeked stream is a one-off and isn't cached, nor is a bulk one; a
+  // from-start stream only buffers when no other request is already
+  // buffering the same key.
+  const wantsCache = offsetSec === 0 && !bulk && !inFlight.has(cacheKey);
+  if (wantsCache) { inFlight.add(cacheKey); }
+  // Once: 'error' and 'close' can both fire, and a second delete could
+  // take the mark of a later request for the same key.
+  let held = true;
+  const release = () => {
+    if (!held) { return; }
+    held = false;
+    if (wantsCache) { inFlight.delete(cacheKey); }
+    releaseBulk();
+  };
+
+  try {
+    return { proc: spawnTranscode(fullPath, codec, bitrate, offsetSec, sampleRate), release, wantsCache };
+  } catch (err) {
+    release();
+    winston.error('Transcoding spawn error', { stack: err });
+    res.status(500).json({ error: 'transcode failed' });
+    return null;
+  }
+}
+
+// For the unit tests (test/unit/transcode-bulk.test.mjs): the bulk gate and
+// the start of a live transcode, without a library or an ffmpeg.
+export const _internal = {
+  acquireBulkSlot,
+  startTranscode,
+  bulkState: () => ({ active: bulkActive, queued: bulkQueue.length }),
+};
 
 // ── Route ───────────────────────────────────────────────────────────────────
 
@@ -407,24 +483,12 @@ export function setup(mstream) {
       return;
     }
 
-    // ── Bulk: wait for a slot ────────────────────────────────
-    // Nothing is sent while queued, so a refusal is still an honest status.
-    let releaseBulk = () => {};
-    if (bulk) {
-      const slot = await acquireBulkSlot(res);
-      if (typeof slot !== 'function') {
-        if (slot.refused === 'gone') { return; } // hung up while queued
-        winston.info(`[transcode] bulk request refused (${slot.refused}) for '${filepath}': ${bulkActive} running, ${bulkQueue.length} queued`);
-        res.set('Retry-After', String(BULK_RETRY_AFTER_S));
-        return res.status(503).json({
-          error: slot.refused === 'full'
-            ? 'too many bulk transcodes queued — retry later'
-            : 'no bulk transcode slot came free in time — retry later',
-        });
-      }
-      releaseBulk = slot;
-      if (req.socket?.destroyed) { releaseBulk(); return; }
-    }
+    // ── Start ffmpeg (a bulk request waits for its slot first) ──
+    const started = await startTranscode(req, res, {
+      fullPath: pathInfo.fullPath, filepath, codec, bitrate, sampleRate, offsetSec, cacheKey, bulk,
+    });
+    if (!started) { return; } // answered already: refused, gone, or failed
+    const { proc, release, wantsCache } = started;
 
     // ── Set headers ──────────────────────────────────────────
     // No Content-Length and no Accept-Ranges on the live path: the true size
@@ -437,13 +501,6 @@ export function setup(mstream) {
     res.header({ 'Content-Type': codecMap[codec].contentType });
 
     // ── Stream (+ collect for cache on from-start streams) ────
-    // A seeked stream is a one-off and isn't cached, nor is a bulk one; a
-    // from-start stream only buffers when no other request is already
-    // buffering the same key.
-    const wantsCache = offsetSec === 0 && !bulk && !inFlight.has(cacheKey);
-    if (wantsCache) { inFlight.add(cacheKey); }
-    const releaseInFlight = () => { if (wantsCache) { inFlight.delete(cacheKey); } };
-
     let cacheable = wantsCache; // flips false if the output outgrows the per-entry cap
     let bufs = [];
     let contentLength = 0;
@@ -453,14 +510,11 @@ export function setup(mstream) {
     // the short version. Skipping a track mid-play is the common trigger.
     let aborted = false;
 
-    const proc = spawnTranscode(pathInfo.fullPath, codec, bitrate, offsetSec, sampleRate);
-
     // Headers are only staged until the first body write, so a spawn-level
     // failure (binary vanished, EPERM) can still produce an honest 500 here
     // instead of an empty 200. spawnTranscode's own handler logs the details.
     proc.once('error', () => {
-      releaseInFlight();
-      releaseBulk();
+      release();
       if (!res.headersSent) {
         res.status(500).json({ error: 'transcode failed' });
       } else {
@@ -486,10 +540,9 @@ export function setup(mstream) {
     proc.stdout.pipe(res);
 
     proc.on('close', code => {
-      releaseInFlight();
-      // A bulk slot is held for as long as its ffmpeg runs — the work the
-      // cap is there to bound — and freed however it ended.
-      releaseBulk();
+      // The in-flight mark, and a bulk slot — held for as long as its ffmpeg
+      // runs, the work the cap is there to bound — freed however it ended.
+      release();
       // Cache ONLY a clean, complete from-start transcode. A SIGTERM kill
       // reports code === null and an ffmpeg failure reports a non-zero code;
       // both mean the output is partial, so cache nothing.
