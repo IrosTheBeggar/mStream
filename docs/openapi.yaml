@@ -1356,6 +1356,26 @@ paths:
                             properties:
                               defaultCodec: { type: string }
                               defaultBitrate: { type: string }
+                              codecs:
+                                type: object
+                                description: >
+                                  What `/transcode` takes, per codec: the
+                                  bitrates (`mp3` reaches 320k) and the
+                                  output sample rates `?sampleRate=` accepts.
+                                  Absent on older servers, which take
+                                  64k-192k and no sample rate — gate on the
+                                  key, never on the version.
+                                additionalProperties:
+                                  type: object
+                                  properties:
+                                    bitrates:
+                                      type: array
+                                      items: { type: string }
+                                      example: ["64k", "96k", "128k", "192k", "256k", "320k"]
+                                    sampleRates:
+                                      type: array
+                                      items: { type: integer }
+                                      example: [32000, 44100, 48000]
                       supportedAudioFiles:
                         type: object
                         description: Per-format booleans from config.
@@ -1486,6 +1506,9 @@ paths:
                         properties:
                           defaultCodec: { type: string }
                           defaultBitrate: { type: string }
+                          codecs:
+                            type: object
+                            description: The same object `GET /api` carries as `features.transcode.codecs`.
                   noMkdir: { type: boolean }
                   noUpload: { type: boolean }
                   noFileModify: { type: boolean }
@@ -4726,14 +4749,39 @@ paths:
           schema: { type: string }
         - name: codec
           in: query
+          description: An unknown value quietly becomes the server's default codec — check the response's Content-Type.
           schema:
             type: string
             enum: [mp3, opus, aac]
         - name: bitrate
           in: query
+          description: >
+            Every codec takes 64k-192k; `mp3` also takes 256k and 320k.
+            `GET /api` lists each codec's bitrates under
+            `features.transcode.codecs`. A value the codec does not take
+            quietly becomes the server's default bitrate (opus at 320k
+            included).
           schema:
             type: string
-            enum: ["64k", "96k", "128k", "192k"]
+            enum: ["64k", "96k", "128k", "192k", "256k", "320k"]
+        - name: sampleRate
+          in: query
+          description: >
+            Output sample rate in Hz; ffmpeg resamples to it. Omitted, the
+            encoder negotiates a rate from the source, as before. Each
+            codec takes its encoder's rates only — mp3 8000-48000 (below
+            32000 is MPEG-2, where LAME clamps the bitrate to at most 160k),
+            opus 8000/12000/16000/24000/48000, aac 7350-96000; the lists are
+            under `features.transcode.codecs` in `GET /api`. Any other value
+            is a 400 (strict, unlike codec and bitrate). Absent on older
+            servers, which ignore it.
+          schema:
+            type: integer
+            enum: [7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000]
+        - name: offset
+          in: query
+          description: Start this many seconds in (a re-encode from there, never cached).
+          schema: { type: number }
       responses:
         "200":
           description: Transcoded audio stream.
@@ -4744,6 +4792,11 @@ paths:
           content:
             audio/*:
               schema: { type: string, format: binary }
+        "400":
+          description: A `sampleRate` the codec's encoder does not take.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "503":
           description: ffmpeg not available.

@@ -20,10 +20,41 @@ const codecMap = {
   'aac':  { codec: 'aac',        format: 'adts', contentType: 'audio/aac' }
 };
 
+// The bitrates every codec takes. Also the admin's choice of DEFAULT
+// bitrate (config.js, admin.js): the default applies to whatever codec a
+// request names, so it has to suit them all.
 const bitrateSet = new Set(['64k', '96k', '128k', '192k']);
+// Higher rates a codec takes on top. MP3 goes to 320k, MPEG-1 Layer III's
+// ceiling — the rates a library copy is wanted at. Opus and AAC stay at the
+// shared set: libopus refuses more than 256k per channel, so a 320k request
+// would fail on a mono source after the 200's headers were already out.
+const extraBitrates = { mp3: ['256k', '320k'] };
+const bitratesByCodec = Object.fromEntries(Object.keys(codecMap).map((c) =>
+  [c, new Set([...bitrateSet, ...(extraBitrates[c] || [])])]));
+
+// Output sample rates each encoder opens at (ffmpeg's supported rates for
+// libmp3lame, libopus and its native aac). Anything else would make ffmpeg
+// refuse to open the encoder — again after the 200 — so a request is
+// screened against these instead. MP3 below 32 kHz is MPEG-2/2.5, whose
+// ceiling is 160k: LAME clamps a higher bitrate there, as it always has
+// for low-rate sources.
+const sampleRatesByCodec = {
+  mp3: [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000],
+  opus: [8000, 12000, 16000, 24000, 48000],
+  aac: [7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000],
+};
 
 export function getTransBitrates() { return Array.from(bitrateSet); }
 export function getTransCodecs() { return Object.keys(codecMap); }
+// What a request may ask of each codec — the bitrates it takes and the
+// output sample rates it opens at. /api/ advertises it (server-info.js), so
+// a client offers 320k only where the server has it.
+export function getTransCodecOptions() {
+  return Object.fromEntries(Object.keys(codecMap).map((c) => [c, {
+    bitrates: Array.from(bitratesByCodec[c]),
+    sampleRates: [...sampleRatesByCodec[c]],
+  }]));
+}
 
 let lockInit = false;
 let ffmpegPath = null;
@@ -159,7 +190,7 @@ function cacheSet(key, entry) {
 
 // ── Spawn ffmpeg ────────────────────────────────────────────────────────────
 
-function spawnTranscode(inputPath, codec, bitrate, offsetSec = 0) {
+function spawnTranscode(inputPath, codec, bitrate, offsetSec = 0, sampleRate = null) {
   const entry = codecMap[codec];
   const args = [];
   // Input seek (`-ss` before `-i`): fast, keyframe-aligned — good enough for
@@ -172,8 +203,11 @@ function spawnTranscode(inputPath, codec, bitrate, offsetSec = 0) {
     '-f', entry.format,             // output container format
     '-acodec', entry.codec,         // audio codec
     '-ab', bitrate,                 // audio bitrate
-    'pipe:1'                        // output to stdout
   );
+  // Output sample rate, when asked (ffmpeg resamples to it); otherwise the
+  // encoder negotiates one from the source, as it always has.
+  if (sampleRate) { args.push('-ar', String(sampleRate)); }
+  args.push('pipe:1');              // output to stdout
 
   const proc = spawn(ffmpegPath, args, {
     stdio: ['ignore', 'pipe', 'pipe']
@@ -204,8 +238,23 @@ export function setup(mstream) {
       return res.status(500).json({ error: 'transcoding disabled' });
     }
 
+    // An unknown codec or bitrate quietly becomes the server default — the
+    // route's contract since long before the options below existed.
     const codec = codecMap[req.query.codec] ? req.query.codec : config.program.transcode.defaultCodec;
-    const bitrate = bitrateSet.has(req.query.bitrate) ? req.query.bitrate : config.program.transcode.defaultBitrate;
+    const bitrate = bitratesByCodec[codec].has(req.query.bitrate) ? req.query.bitrate : config.program.transcode.defaultBitrate;
+
+    // ?sampleRate= (Hz) is newer and strict: a rate the codec's encoder
+    // cannot open is a 400 now, not a broken stream after the 200.
+    let sampleRate = null;
+    if (req.query.sampleRate !== undefined) {
+      const rate = Number(req.query.sampleRate);
+      if (!sampleRatesByCodec[codec].includes(rate)) {
+        return res.status(400).json({
+          error: `sampleRate must be one of ${sampleRatesByCodec[codec].join(', ')} for ${codec}`,
+        });
+      }
+      sampleRate = rate;
+    }
 
     // Express 5 {*filepath} returns an array — join back to a path string
     const filepath = Array.isArray(req.params.filepath)
@@ -256,7 +305,7 @@ export function setup(mstream) {
     const offset = parseFloat(req.query.offset);
     const offsetSec = Number.isFinite(offset) && offset > 0 ? offset : 0;
 
-    const cacheKey = `${pathInfo.fullPath}|${st.mtimeMs}|${st.size}|${bitrate}|${codec}`;
+    const cacheKey = `${pathInfo.fullPath}|${st.mtimeMs}|${st.size}|${bitrate}|${codec}${sampleRate ? `|${sampleRate}` : ''}`;
 
     // ── Cache hit (from-start streams only) ──────────────────
     const cached = offsetSec === 0 ? cacheGet(cacheKey) : null;
@@ -297,7 +346,7 @@ export function setup(mstream) {
     // the short version. Skipping a track mid-play is the common trigger.
     let aborted = false;
 
-    const proc = spawnTranscode(pathInfo.fullPath, codec, bitrate, offsetSec);
+    const proc = spawnTranscode(pathInfo.fullPath, codec, bitrate, offsetSec, sampleRate);
 
     // Headers are only staged until the first body write, so a spawn-level
     // failure (binary vanished, EPERM) can still produce an honest 500 here

@@ -83,7 +83,11 @@ export function buildFeatures() {
   if (transcode.isDownloaded() && config.program.transcode) {
     transcodeInfo = {
       defaultCodec: config.program.transcode.defaultCodec,
-      defaultBitrate: config.program.transcode.defaultBitrate
+      defaultBitrate: config.program.transcode.defaultBitrate,
+      // What a request may ask of each codec: its bitrates (MP3 reaches
+      // 320k) and the output sample rates `?sampleRate=` takes. Absent on
+      // older servers, which take only 64k-192k and no sample rate.
+      codecs: transcode.getTransCodecOptions(),
     };
   }
 
