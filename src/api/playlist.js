@@ -1,6 +1,6 @@
 import Joi from 'joi';
 import * as db from '../db/manager.js';
-import { buildClientBootPayload, buildFeatures } from './server-info.js';
+import { buildClientBootPayload, buildFeatures, serverInstanceId } from './server-info.js';
 import { joiValidate, resolveId } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 
@@ -37,6 +37,9 @@ export function setup(mstream) {
       stats: features.stats,
       // Library sync manifest route — same fact, same place on /api/.
       sync: features.sync,
+      // The server's stable id — the same value /api/ carries at its top
+      // level, beside the version.
+      instanceId: serverInstanceId(),
       // A resource (the playlist routes), not a server capability.
       playlists: getPlaylists(req.user.id),
       // Historical version-gate ("this server has the sonic-path route") —

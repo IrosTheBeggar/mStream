@@ -10,13 +10,15 @@
  *  - users-server, no credentials  → 401 (the login-detection signal —
  *    NEVER an anonymous 200; #932 briefly broke this);
  *  - present-but-invalid token     → 401;
- *  - plain user                    → base (`server`, `apiVersions`, the
- *    capability `features` — no `subsonic`, removed) + `user` (the
- *    caller-scoped half of the ping payload), no `admin`;
+ *  - plain user                    → base (`server`, the persisted
+ *    `instanceId`, `apiVersions`, the capability `features` — no
+ *    `subsonic`, removed) + `user` (the caller-scoped half of the ping
+ *    payload), no `admin`;
  *  - admin user                    → base + `user` + `admin`;
  *  - ping parity                   → /api/'s `user` object equals
  *    /api/v1/ping's body (minus playlists / identity fields) — the
- *    drift-lock on the shared payload builder;
+ *    drift-lock on the shared payload builder — and ping carries the same
+ *    `instanceId`;
  *  - share token                   → 401 (shares fetch a playlist, they
  *    are not a session — the wall's path gating covers /api/ like ping);
  *  - federation key                → base + `user` scoped to the key's
@@ -131,6 +133,11 @@ describe('layered /api/ server info', () => {
     const j = await r.json();
     assert.equal(typeof j.server, 'string', 'every authenticated response carries the version');
     assert.match(j.server, /^\d+\.\d+\.\d+/);
+    // The server's own stable id: the UUID config.js persisted on first
+    // boot, the same value mDNS advertises as `id=`.
+    const persisted = JSON.parse(await fs.readFile(path.join(srv.tmpDir, 'config.json'), 'utf8'));
+    assert.match(j.instanceId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    assert.equal(j.instanceId, persisted.discovery.mdns.instanceId);
     assert.deepEqual(j.apiVersions, ['1']);
     assert.ok(!('subsonic' in j.features), 'no subsonic flag (the Subsonic API is gone)');
     assert.equal(j.features.discoveryReady, false, 'discovery off in this config');
@@ -230,8 +237,10 @@ describe('layered /api/ server info', () => {
     // minus the /api/-only discoveryReady) + two legacy fields.
     const { username: _u, admin: _a, federation: _f, federationGuest: _g, ...userHalf } = apiJ.user;
     const { discoveryReady: _dr, ...capsHalf } = apiJ.features;
-    const { playlists, discoveryPath, ...pingRest } = ping;
+    const { playlists, discoveryPath, instanceId, ...pingRest } = ping;
     assert.ok(Array.isArray(playlists), 'ping still carries playlists');
+    assert.equal(instanceId, apiJ.instanceId, 'ping carries /api/\'s server id, flat');
+    assert.ok(instanceId, 'and it is set');
     assert.ok(!('allowYoutubeDownload' in ping),
       'the velvet-only allowYoutubeDownload field left with the velvet UI');
     assert.equal(discoveryPath, ping.discovery,
@@ -272,6 +281,8 @@ describe('layered /api/ server info', () => {
     assert.equal(r.status, 200);
     const j = await r.json();
     assert.equal(typeof j.server, 'string', 'version visible over federation');
+    const local = await (await api({ 'x-access-token': userToken })).json();
+    assert.equal(j.instanceId, local.instanceId, 'a peer reads the same server id a local user does');
     assert.ok(j.features, 'capabilities visible over federation');
     assert.equal(typeof j.features.discovery, 'boolean');
     assert.equal(j.user.federation, true);

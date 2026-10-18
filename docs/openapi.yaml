@@ -1238,9 +1238,9 @@ paths:
         The authenticated server-info endpoint, layered by who is asking:
 
         * **Base** (every authenticated response): `server` (the
-          version), `apiVersions`, and `features` — server-wide
-          capability facts (transcode, supportedAudioFiles, discovery,
-          discoveryP2p, discoveryReady).
+          version), `instanceId` (the server's stable id), `apiVersions`,
+          and `features` — server-wide capability facts (transcode,
+          supportedAudioFiles, discovery, discoveryP2p, discoveryReady).
         * **`user`** — identity plus the CALLER-SCOPED half of the ping
           boot payload (vpaths, permission flags, federationDiscovery,
           federationBrowse, vpathMetaData). Unlike ping, no `playlists` (fetch those from
@@ -1276,6 +1276,20 @@ paths:
                   server:
                     type: string
                     description: Server version (from package.json).
+                  instanceId:
+                    type: string
+                    nullable: true
+                    example: 3f2b8c1e-6a4d-4e0f-9b7a-2c5d8e1f0a93
+                    description: >
+                      The server's stable id: a random UUID generated on first
+                      boot and kept in its config (`discovery.mdns.instanceId`,
+                      the same value mDNS advertises as `id=`). It survives
+                      restarts and address, port and name changes, so a client
+                      that keeps something per server can tell the same server
+                      under another URL from another server without storing a
+                      URL or a token. Visible to every authenticated caller,
+                      federation keys included. An operator may set it by hand,
+                      so treat it as an opaque string. Absent on older servers.
                   apiVersions:
                     type: array
                     items: { type: string }
@@ -1406,6 +1420,7 @@ paths:
                         description: The live database's PRAGMA user_version.
               example:
                 server: "6.22.0"
+                instanceId: 3f2b8c1e-6a4d-4e0f-9b7a-2c5d8e1f0a93
                 apiVersions: ["1"]
                 features:
                   discoveryReady: true
@@ -1453,6 +1468,10 @@ paths:
                   vpaths:
                     type: array
                     items: { type: string }
+                  instanceId:
+                    type: string
+                    nullable: true
+                    description: The server's stable id — the same value `GET /api` carries as `instanceId`.
                   playlists:
                     type: array
                     items:

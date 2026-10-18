@@ -16,11 +16,14 @@
 // filtering a full object down: an additive bug omits a field, a
 // filtering bug discloses everything.
 //
-//   Base: `server` (the version), `apiVersions`, and `features` —
-//     server-wide capability facts (see buildFeatures). Visible to every
-//     authenticated caller including federated peers; rule for what may
-//     appear: config/capability facts only — no counts, no library or
-//     content names, no identity.
+//   Base: `server` (the version), `instanceId`, `apiVersions`, and
+//     `features` — server-wide capability facts (see buildFeatures).
+//     Visible to every authenticated caller including federated peers;
+//     rule for what may appear: config/capability facts only — no counts,
+//     no library or content names, no identity of the caller or of anyone
+//     else. The one identity here is the SERVER's own: `instanceId`, the
+//     random id mDNS already advertises to the whole LAN (see
+//     serverInstanceId).
 //
 //   `user`: identity plus the CALLER-SCOPED boot payload (vpaths,
 //     permission flags, federationDiscovery, vpathMetaData), scoped
@@ -55,6 +58,21 @@ import * as sim from '../db/discovery-similarity.js';
 import * as discoveryPlugins from '../discovery-plugins/index.js';
 import * as transcode from './transcode.js';
 import { describeAllowance } from './federation-limits.js';
+
+// The server's stable id: the random UUID config.js generates on first boot
+// and persists (discovery.mdns.instanceId — the key's name predates this
+// use; mDNS has always advertised it as `id=`). It survives restarts,
+// address and port changes, and a rename, so a client that stores
+// something per server (a portable player's card, an offline index) can
+// tell "the same server under another URL" from "another server" without
+// keeping a URL or a token. null only on a config that never booted
+// through config.js. Generated whether or not mDNS advertises, and
+// identical to what it advertises, so a server found on the LAN and the
+// one reached by URL compare equal.
+export function serverInstanceId() {
+  const id = config.program.discovery?.mdns?.instanceId;
+  return typeof id === 'string' && id !== '' ? id : null;
+}
 
 // Server-wide capability facts — the `features` object. Everything here
 // is a config/capability fact (the rule above); nothing is caller-scoped.
@@ -192,6 +210,9 @@ export function setup(mstream) {
     // ── Base ───────────────────────────────────────────────────────────
     const info = {
       server: packageJson.version,
+      // The server's own stable id (serverInstanceId above) — not the
+      // caller's identity, which lives in `user`.
+      instanceId: serverInstanceId(),
       apiVersions: ["1"],
       features: buildFeatures(),
     };
