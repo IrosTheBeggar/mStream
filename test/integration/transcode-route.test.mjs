@@ -14,6 +14,8 @@
  *   - MP3 at 256k and 320k, and ?sampleRate= — read back from the encoded
  *     frames, strict per codec, part of the cache key, and advertised per
  *     codec in /api/
+ *   - a ?codec= named after an Object.prototype key (constructor,
+ *     __proto__, …) falls back to the default like any unknown codec
  *   - bulk jobs (?bulk=1), on a second server capped at one: a held slot
  *     queues the next bulk request (503 + Retry-After when the wait runs
  *     out or the queue is full; a client that hangs up leaves the queue)
@@ -186,6 +188,22 @@ describe('GET /transcode/{*filepath}', () => {
     assert.equal(opus.status, 200);
     assert.match(opus.headers.get('content-type') || '', /audio\/ogg/);
     assert.equal(opusHeadRate(Buffer.from(await opus.arrayBuffer())), 24000);
+  });
+
+  test('a codec named after an Object.prototype key is an unknown codec: the default, not a 500', async () => {
+    // The default codec is opus (config.js).
+    for (const name of ['constructor', '__proto__', 'hasOwnProperty', 'toString']) {
+      const head = await fetch(transcodeUrl(SONG_REL, `codec=${name}`), { method: 'HEAD' });
+      assert.equal(head.status, 200, name);
+      assert.match(head.headers.get('content-type') || '', /audio\/ogg/, name);
+    }
+    const r = await fetch(transcodeUrl(SONG_REL, 'codec=constructor&bitrate=64k'));
+    assert.equal(r.status, 200);
+    assert.ok(opusHeadRate(Buffer.from(await r.arrayBuffer())), 'an Ogg Opus stream');
+    // ...and a sample rate is checked against the default's rates.
+    const rate = await fetch(transcodeUrl(SONG_REL, 'codec=toString&sampleRate=44100'));
+    assert.equal(rate.status, 400);
+    assert.match((await rate.json()).error, /for opus$/);
   });
 
   test('a sampleRate the codec cannot open is a 400, before any transcode', async () => {

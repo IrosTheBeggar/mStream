@@ -397,8 +397,10 @@ export function setup(mstream) {
     }
 
     // An unknown codec or bitrate quietly becomes the server default — the
-    // route's contract since long before the options below existed.
-    const codec = codecMap[req.query.codec] ? req.query.codec : config.program.transcode.defaultCodec;
+    // route's contract since long before the options below existed. Own
+    // keys only: ?codec=constructor must not find Object.prototype's.
+    const codec = typeof req.query.codec === 'string' && Object.hasOwn(codecMap, req.query.codec)
+      ? req.query.codec : config.program.transcode.defaultCodec;
     const bitrate = bitratesByCodec[codec].has(req.query.bitrate) ? req.query.bitrate : config.program.transcode.defaultBitrate;
 
     // ?sampleRate= (Hz) is newer and strict: a rate the codec's encoder
