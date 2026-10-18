@@ -37,7 +37,10 @@
 //
 // Federation keys reach this route via their allowlist ('GET /api' +
 // 'GET /api/' in federation-auth.js) and get the version plus their
-// granted-library view — the mobile app's "what can this peer do" call.
+// granted-library view — the mobile app's "what can this peer do" call —
+// and their key's allowance (`user.federationAllowance`: the caps and
+// today's use), so a holder paces itself instead of meeting the quota as a
+// 429.
 // Share tokens get the wall's path-gating and cannot call this (401),
 // same as ping. /api/v1/ping is deprecated in favor of this endpoint
 // but kept indefinitely; it composes its frozen flat payload from the
@@ -51,6 +54,7 @@ import * as fedRequestsDb from '../db/federation-requests.js';
 import * as sim from '../db/discovery-similarity.js';
 import * as discoveryPlugins from '../discovery-plugins/index.js';
 import * as transcode from './transcode.js';
+import { describeAllowance } from './federation-limits.js';
 
 // Server-wide capability facts — the `features` object. Everything here
 // is a config/capability fact (the rule above); nothing is caller-scoped.
@@ -200,6 +204,12 @@ export function setup(mstream) {
       // A device of a key holder, on a guest token rather than the key
       // itself (state/federation-guest.js). Same scope as the key.
       federationGuest: user.federationGuest === true,
+      // A federation caller's own allowance: its key's caps and today's use
+      // (api/federation-limits.js describeAllowance, built field by field —
+      // the synthetic user's internal federationLimits / federationKeyId
+      // never reach the response). Federation callers only: it describes
+      // the caller's key, and a local account has none.
+      ...(user.federation === true ? { federationAllowance: describeAllowance(user) } : {}),
       ...buildClientBootPayload(user),
     };
 

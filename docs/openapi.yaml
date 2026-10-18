@@ -1130,6 +1130,32 @@ components:
             daemon_error: generic redaction — the raw daemon RPC error is NOT
             forwarded to non-admin callers.
 
+    FederationAllowance:
+      type: object
+      description: |
+        A federation caller's own allowance: the caps its key runs under on
+        this server and where today stands against them. Shown to the key
+        and to its guests (a guest shares the key's pool, so it sees the
+        same figures), never to anyone else. Live figures — today's bytes
+        include usage not yet flushed to the database, exactly what the
+        quota gate compares. Every cap reads `0` for unlimited.
+      properties:
+        streamKbps: { type: integer, description: "Rate cap shared by the key's concurrent `/media` streams (0 = unlimited)." }
+        dailyMb: { type: integer, description: "Per-UTC-day transfer quota over everything the key pulls (0 = unlimited)." }
+        maxStreams: { type: integer, description: "Concurrent `/media` responses allowed (0 = unlimited)." }
+        allowCopies: { type: boolean, description: "Whether a request saying `X-mStream-Purpose: copy` is served; when false such a request for a file is a 403." }
+        day: { type: string, format: date, description: "The UTC day the usage figures cover.", example: "2026-10-18" }
+        usedTodayBytes: { type: integer, description: "Bytes the key (and its guests) pulled today: media, art and JSON." }
+        remainingTodayBytes:
+          type: integer
+          nullable: true
+          description: >
+            What is left of today's quota; `null` when there is none. Floors
+            at 0 (a day can overshoot by the one file in flight when the
+            quota was reached).
+        resetsInSeconds: { type: integer, description: "Seconds to the next UTC midnight, when the quota resets — the `Retry-After` a quota 429 carries." }
+        activeStreams: { type: integer, description: "The key's `/media` responses open right now, guests' included." }
+
   responses:
     EmptySuccess:
       description: Operation succeeded.
@@ -1235,7 +1261,8 @@ paths:
         `200` with all applicable layers. Share tokens cannot call this
         route (`401`). Federation keys reach it via their route
         allowlist and receive the version plus their granted-library
-        view (`403` on any route off that allowlist).
+        view (`403` on any route off that allowlist), and
+        `user.federationAllowance`: their key's caps and today's use.
 
         Supersedes `/api/v1/ping` for new clients.
       responses:
@@ -1337,6 +1364,15 @@ paths:
                       federationGuest:
                         type: boolean
                         description: True when authenticated by a federation guest token rather than the key itself.
+                      federationAllowance:
+                        description: >
+                          Present only when `federation` is true: the caller's
+                          key's caps and today's use on this server, so a
+                          holder can pace a long pull instead of learning its
+                          quota from a 429. Absent on servers older than this
+                          field — fall back to a budget of your own.
+                        allOf:
+                          - $ref: "#/components/schemas/FederationAllowance"
                       federationDirect:
                         type: boolean
                         description: >
@@ -7248,8 +7284,16 @@ paths:
       description: |
         The test-connection target a federated peer hits (with its
         `x-federation-key` header) to verify the pairing and learn its live
-        grant list. Regular authenticated users can also call it and see
+        grant list, and its key's allowance (`allowance`: the caps and
+        today's use). Regular authenticated users can also call it and see
         their own libraries.
+
+        A parent's users read their server's allowance on a peer through
+        the browse proxy, which forwards this route:
+        `GET /api/v1/federation/peers/{id}/api/api/v1/federation/health`.
+        A device on the direct path (a guest token) calls it on the peer
+        itself and sees the same figures, since guests share the key's
+        pool.
       responses:
         "200":
           description: Server identity + the caller's visible libraries.
@@ -7280,6 +7324,13 @@ paths:
                   guestAccess:
                     type: boolean
                     description: This build mints guest tokens (`POST /api/v1/federation/guest`).
+                  allowance:
+                    description: >
+                      Present only for a federation caller (a key or a guest
+                      of one): its key's caps and today's use. Absent for a
+                      local user, and on servers older than this field.
+                    allOf:
+                      - $ref: "#/components/schemas/FederationAllowance"
 
   /api/v1/federation/guest:
     post:

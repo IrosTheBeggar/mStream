@@ -18,7 +18,10 @@
  *    with WIDE margins — CI runners and Windows clocks are noisy);
  *  - revoking a key with unflushed usage neither errors forever nor leaves
  *    a usage row behind (mStream #940), and a guest of a key shares its
- *    caps — the concurrent-stream slot in particular.
+ *    caps — the concurrent-stream slot in particular;
+ *  - the key's holder reads its own allowance (caps, today's use, open
+ *    streams) in /api/ and federation/health — a guest reads the same
+ *    pool, an edit shows on the next read, a local user gets none.
  */
 
 import { describe, test, before, after } from 'node:test';
@@ -342,6 +345,84 @@ describe('federation bandwidth limits e2e', () => {
       await r.arrayBuffer();
     }
     assert.equal(status, 200, 'the guest gets the freed slot');
+  });
+
+  test('a key\'s holder reads its own caps and today\'s use in /api/ and health; a guest reads the same pool; a local user gets none', async () => {
+    const MiB = 1024 * 1024;
+    const k = await mintKey('holder', { streamKbps: 1234, dailyMb: 3, maxStreams: 2, allowCopies: false });
+    const allowanceOf = async (headers, route = '/api/') => {
+      const r = await fetch(`${srv.baseUrl}${route}`, { headers });
+      assert.equal(r.status, 200, route);
+      const j = await r.json();
+      return route === '/api/' ? j.user.federationAllowance : j.allowance;
+    };
+
+    const first = await allowanceOf(fedHeaders(k.key));
+    assert.deepEqual(Object.keys(first).sort(), ['activeStreams', 'allowCopies', 'dailyMb', 'day', 'maxStreams',
+      'remainingTodayBytes', 'resetsInSeconds', 'streamKbps', 'usedTodayBytes'], 'built field by field — nothing internal rides along');
+    assert.deepEqual(
+      { streamKbps: first.streamKbps, dailyMb: first.dailyMb, maxStreams: first.maxStreams, allowCopies: first.allowCopies },
+      { streamKbps: 1234, dailyMb: 3, maxStreams: 2, allowCopies: false });
+    assert.match(first.day, /^\d{4}-\d{2}-\d{2}$/);
+    assert.ok(Number.isInteger(first.usedTodayBytes) && first.usedTodayBytes >= 0);
+    assert.equal(first.remainingTodayBytes, 3 * MiB - first.usedTodayBytes);
+    assert.ok(first.resetsInSeconds >= 1 && first.resetsInSeconds <= 24 * 3600);
+    assert.equal(first.activeStreams, 0);
+
+    // A pull moves the figure, and health tells the same story as /api/.
+    const pull = await fetch(`${srv.baseUrl}/media/shared/c.bin`, { headers: fedHeaders(k.key) });
+    assert.equal(pull.status, 200);
+    await pull.arrayBuffer();
+    const later = await allowanceOf(fedHeaders(k.key), '/api/v1/federation/health');
+    assert.ok(later.usedTodayBytes >= first.usedTodayBytes + FILE_CONC.length,
+      `used ${later.usedTodayBytes} should cover the earlier ${first.usedTodayBytes} plus the ${FILE_CONC.length}B pull`);
+    assert.equal(later.remainingTodayBytes, 3 * MiB - later.usedTodayBytes);
+    assert.equal(later.dailyMb, 3);
+
+    // A guest of the key draws on the key's pool, so it reads the same one.
+    const secret = JSON.parse(await fs.readFile(path.join(srv.tmpDir, 'config.json'), 'utf8')).secret;
+    const guest = jwt.sign({ federationGuest: true, federationKeyId: k.id }, secret, { expiresIn: '1h' });
+    const viaGuest = await allowanceOf({ 'x-access-token': guest });
+    assert.equal(viaGuest.dailyMb, 3);
+    assert.ok(viaGuest.usedTodayBytes >= later.usedTodayBytes, 'the key\'s figure, not a pool of the guest\'s own');
+
+    // An edit shows on the next read; a field left out stays as it was.
+    const edit = await fetch(`${srv.baseUrl}/api/v1/admin/federation/keys/${k.id}/limits`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-access-token': adminToken },
+      body: JSON.stringify({ streamKbps: 0, dailyMb: 0, maxStreams: 0 }),
+    });
+    assert.equal(edit.status, 200);
+    const open = await allowanceOf(fedHeaders(k.key));
+    assert.deepEqual(
+      { streamKbps: open.streamKbps, dailyMb: open.dailyMb, maxStreams: open.maxStreams, allowCopies: open.allowCopies },
+      { streamKbps: 0, dailyMb: 0, maxStreams: 0, allowCopies: false });
+    assert.equal(open.remainingTodayBytes, null, 'no daily quota, nothing to count down');
+
+    // A local account has no key: neither route carries an allowance.
+    const mine = await (await fetch(`${srv.baseUrl}/api/`, { headers: { 'x-access-token': adminToken } })).json();
+    assert.equal(mine.user.federation, false);
+    assert.ok(!('federationAllowance' in mine.user));
+    const health = await (await fetch(`${srv.baseUrl}/api/v1/federation/health`, { headers: { 'x-access-token': adminToken } })).json();
+    assert.ok(!('allowance' in health));
+  });
+
+  test('the allowance counts the key\'s open streams while they run', async () => {
+    // Same recipe as the maxStreams test: 200 KiB at 800 kbps holds the
+    // stream open for about a second.
+    const k = await mintKey('holder-live', { streamKbps: 800, dailyMb: 0, maxStreams: 0 });
+    const streaming = await fetch(`${srv.baseUrl}/media/shared/c.bin`, { headers: fedHeaders(k.key) });
+    assert.equal(streaming.status, 200);
+    await sleep(150);
+    const during = await (await fetch(`${srv.baseUrl}/api/v1/federation/health`, { headers: fedHeaders(k.key) })).json();
+    assert.equal(during.allowance.activeStreams, 1);
+    assert.ok(Buffer.from(await streaming.arrayBuffer()).equals(FILE_CONC));
+    // The slot is released on 'close', a beat after the last byte.
+    let open = 1;
+    for (let i = 0; i < 20 && open !== 0; i++) {
+      await sleep(100);
+      open = (await (await fetch(`${srv.baseUrl}/api/`, { headers: fedHeaders(k.key) })).json()).user.federationAllowance.activeStreams;
+    }
+    assert.equal(open, 0);
   });
 
   test('revoking a key with unflushed usage drops it cleanly (no FK error loop, no orphan row)', async () => {

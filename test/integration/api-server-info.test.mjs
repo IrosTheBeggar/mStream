@@ -21,7 +21,9 @@
  *    are not a session — the wall's path gating covers /api/ like ping);
  *  - federation key                → base + `user` scoped to the key's
  *    grants, `federation: true`, never `admin` — the mobile-app
- *    "version and capabilities over federation" deliverable;
+ *    "version and capabilities over federation" deliverable — plus the
+ *    key's own allowance (`federationAllowance`), which no local account
+ *    gets;
  *  - federation allowlist          → /api/ allowed, but ping (and every
  *    other unlisted route) still 403s — adding /api loosened nothing;
  *  - bogus federation key          → 401;
@@ -151,6 +153,7 @@ describe('layered /api/ server info', () => {
     assert.equal(typeof j.user.federationDiscovery, 'boolean',
       'peer-relationship-derived flag stays caller-scoped');
     assert.ok('testlib' in j.user.vpathMetaData, 'library type metadata rides along');
+    assert.ok(!('federationAllowance' in j.user), 'a local account has no key, so no allowance');
     assert.ok(!('admin' in j), 'no admin layer for a non-admin');
 
     // The disclosure contract: `user` is built ADDITIVELY from explicit
@@ -278,6 +281,14 @@ describe('layered /api/ server info', () => {
     assert.ok(!('admin' in j), 'a federation key can never see the admin layer');
     assert.ok(!('federationLimits' in j.user) && !('federationKeyId' in j.user),
       'the synthetic fed user\'s internal fields stay internal');
+    // What the holder IS told about its key: the caps it was minted with
+    // (the config defaults here) and today's use — never the key's id.
+    const allowance = j.user.federationAllowance;
+    assert.deepEqual(
+      { streamKbps: allowance.streamKbps, dailyMb: allowance.dailyMb, maxStreams: allowance.maxStreams, allowCopies: allowance.allowCopies },
+      { streamKbps: 8000, dailyMb: 2048, maxStreams: 3, allowCopies: true });
+    assert.equal(typeof allowance.usedTodayBytes, 'number');
+    assert.ok(!('id' in allowance) && !('keyId' in allowance));
 
     // Adding /api to the allowlist loosened NOTHING else: ping (and every
     // other unlisted route) still refuses the key.
