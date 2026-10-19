@@ -99,7 +99,7 @@ const FNS = ['escapeHtml', 'peerAttr', 'artUrl', 'artImgAttr', 'renderAlbum', 's
   'localIgnoreVPaths', 'applyDiscoveryPing', 'discoverySetEntry',
   'discoveryWatchJobs', 'discoveryMergeJobs', 'discoveryPatchBadges', 'discoveryLeadTag',
   'discoveryMatchOpts', 'discoveryDropSeed', 'discoveryT', 'discoveryText', 'discoveryOnScreen', 'discoveryNowPlayingPath',
-  'discoveryLocalChoices', 'discoverySaveLocalChoice', 'discoveryPanel', 'redoDiscovery', 'discoveryOff',
+  'discoveryLocalChoices', 'discoverySaveLocalChoice', 'discoveryPanel', 'redoDiscovery', 'redoDiscoveryPeers', 'discoveryOff',
   'discoveryResponse', 'discoveryLoadBadges', 'discoveryHideHead', 'renderDiscovery', 'discoveryFocusedSelector', 'discoveryHeadHtml',
   'discoveryOptionsHtml', 'discoveryCheckHtml', 'discoveryCardHtml', 'discoverySeedsHtml', 'discoveryLabelHtml',
   'discoverySkelHtml', 'discoveryPlayHtml', 'discoveryStripHtml', 'discoveryPeerArtFailed', 'discoveryPeerAlbumHtml', 'discoveryArtHtml',
@@ -867,14 +867,86 @@ describe('Discover page: no connected servers', () => {
     assert.ok(S.page().includes('dpage-songs-solo'));
   });
 
-  test('a failed connected call: the column\'s one line with Try again', async () => {
-    const { S, calls, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? null : MAIN) });
-    await S.discoveryPanel();
-    assert.match(S.page(), /dpage-src-peers[\s\S]*dpage\.source\.failed[\s\S]*data-dp="retry"/);
-    const n = tasteCalls(calls).length;
-    click({ 'data-dp': 'retry' });
+});
+
+// The connected servers' call is the page's slow half (a peer may take its
+// whole 4 s deadline), asked after the library answer lands: it never dims
+// the library, and its column retries on its own.
+describe('Discover page: the connected servers\' call on its own', () => {
+  const libraryCol = (html) => /<section class="dpage-col dpage-src-library"[\s\S]*?<\/section>/.exec(html)[0];
+
+  test('while only that call is out, nothing dims: the library is drawn bright, their strip and column wait in skeletons', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const { S } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? gate.then(() => PEERS) : MAIN), playing: PLAYING });
+    const run = S.discoveryPanel();
     await flush(); await flush();
-    assert.equal(tasteCalls(calls).length, n + 2);
+    let html = S.page();
+    assert.match(html, /Title Seven/, 'the library answer has landed');
+    assert.ok(!S.head().includes('dpage-busy') && !S.html().includes('dpage-busy'), 'neither root dims');
+    assert.ok(!PAGE_BUSY.test(S.html()), 'not the loading state either');
+    assert.match(html, /<section class="dpage-strip dpage-src-peers" aria-busy="true">/, 'their strip says it is asking');
+    assert.match(html, /<section class="dpage-col dpage-src-peers" data-source="peers"><div class="dpage-rows" aria-busy="true">/, 'so does their column');
+    assert.ok(!/<section class="dpage-col dpage-src-library"[^>]*aria-busy/.test(html) && !/dpage-src-library[^"]*" aria-busy/.test(html), 'the library is not marked busy');
+    release();
+    await run;
+    html = S.page();
+    assert.match(html, /Peer Song/);
+    assert.ok(!html.includes('aria-busy'), 'settled');
+  });
+
+  test('a failed connected call: the column\'s Try again re-sends that call alone, as it was — the library batch on screen stays', async () => {
+    let peersFail = true;
+    const { S, calls, click } = makeSandbox({ taste: (b) => (b.sources.includes('peers') ? (peersFail ? null : PEERS) : MAIN), playing: PLAYING });
+    await S.discoveryPanel();
+    assert.match(S.page(), /dpage-src-peers[\s\S]*dpage\.source\.failed[\s\S]*data-dp="peersRetry"/, 'its own Try again');
+    const before = libraryCol(S.page());
+    const sent = tasteCalls(calls);
+    const firstPeers = sent[sent.length - 1];
+    assert.deepEqual(firstPeers.sources, ['peers']);
+    peersFail = false;
+    click({ 'data-dp': 'peersRetry' });
+    // asking: that column's skeleton, the page bright
+    let html = S.page();
+    assert.match(html, /<section class="dpage-col dpage-src-peers" data-source="peers"><div class="dpage-rows" aria-busy="true">/);
+    assert.ok(!S.html().includes('dpage-busy'), 'no dim');
+    assert.equal(libraryCol(html), before, 'the library column is untouched while it asks');
+    await flush(); await flush();
+    const after = tasteCalls(calls);
+    assert.equal(after.length, sent.length + 1, 'one call: the connected servers alone');
+    assert.deepEqual(after[after.length - 1], firstPeers, 'the same body: the same pins, window and limits');
+    html = S.page();
+    assert.equal(libraryCol(html), before, 'the library column is untouched after it lands');
+    assert.match(html, /Peer Song/, 'the column draws the answer');
+    assert.ok(!html.includes('data-dp="peersRetry"'));
+  });
+
+  test('New seeds while that Try again is out: the late retry answer is dropped, the new ask\'s column stands', async () => {
+    let mode = 'fail';
+    let releaseRetry;
+    const retryGate = new Promise((r) => { releaseRetry = r; });
+    const FRESH = { ...PEERS, peers: { ...PEERS.peers, peers: [{ ...PEERS.peers.peers[0], results: [{ ...PEER_ROW, title: 'Fresh Peer' }] }] } };
+    const { S, click } = makeSandbox({
+      taste: (b) => {
+        if (!b.sources.includes('peers')) { return MAIN; }
+        if (mode === 'fail') { return null; }
+        if (mode === 'retry') { return retryGate.then(() => PEERS); }
+        return FRESH;
+      },
+    });
+    await S.discoveryPanel();
+    mode = 'retry';
+    click({ 'data-dp': 'peersRetry' });
+    await flush();
+    mode = 'fresh';
+    click({ 'data-dp': 'refresh' });
+    await flush(); await flush(); await flush();
+    assert.match(S.page(), /Fresh Peer/, 'the new ask drew its own column');
+    releaseRetry();
+    await flush(); await flush();
+    const html = S.page();
+    assert.match(html, /Fresh Peer/, 'still the new ask\'s');
+    assert.ok(!html.includes('Peer Two'), 'the late retry answer never drew');
   });
 });
 

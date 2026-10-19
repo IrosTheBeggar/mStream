@@ -3888,6 +3888,8 @@ const discoveryView = {
   main: undefined,    // the library+network answer: undefined = none yet
   peers: undefined,   // the peers answer
   peersAsked: false,
+  peersBody: null,    // the last peers call's body (pinned to the main
+                      // answer's seeds): the column's Try again re-sends it
   pending: { main: false, peers: false },
   pendingGen: 0,      // the browseGeneration those requests belong to
   seq: 0,             // one per request; an answer for an older one is dropped
@@ -4087,7 +4089,7 @@ async function redoDiscovery() {
   v.pendingGen = gen;
   v.more = { library: D.PAGE_SIZE, peers: D.PAGE_SIZE };
   // peersAsked stays the drawn pair's until the new main lands.
-  if (!reqs.peers) { v.peers = undefined; v.peersAsked = false; }
+  if (!reqs.peers) { v.peers = undefined; v.peersAsked = false; v.peersBody = null; }
   // The old rows stay until the new ones land; the page says it is asking.
   if (discoveryOnScreen() && (v.main !== undefined || v.peers !== undefined)) { renderDiscovery(); }
 
@@ -4112,6 +4114,7 @@ async function redoDiscovery() {
   if (res && typeof res === 'object' && res.disabled !== true) { v.lastRandom = res.seedSource === 'random'; }
   if (res && res.disabled === true) { discoveryOff(); return; }
   const peersBody = D.peersRequest(reqs.peers, res);
+  v.peersBody = peersBody || null;
   v.peers = undefined;
   // No peers call (a random seed, a failed answer): no column — the
   // server would have answered peers: null.
@@ -4126,6 +4129,30 @@ async function redoDiscovery() {
     if (discoveryOnScreen()) { renderDiscovery(); }
   }
   await discoveryLoadBadges(seq);
+}
+
+// The connected-servers column's Try again: the last peers call again, as
+// it was sent (the same pins — the batch the picker shows — window and
+// limits), and nothing else. The library batch on screen, its "Show more"
+// and the visit's pins and drops stay as they are; only that column (and
+// its album strip) asks. While a whole ask is out it does nothing: that
+// ask calls the connected servers itself once its answer lands, and a
+// whole ask started meanwhile (seq) drops this answer.
+async function redoDiscoveryPeers() {
+  const v = discoveryView;
+  const body = v.peersBody;
+  if (!body || v.pending.main || v.pending.peers) { return; }
+  const gen = browseGeneration;
+  const seq = v.seq;
+  v.pending.peers = true;
+  v.peers = undefined;
+  v.more = Object.assign({}, v.more, { peers: DISCOVERYPAGE.PAGE_SIZE });
+  if (discoveryOnScreen()) { renderDiscovery(); }
+  const res = await MSTREAMAPI.discoveryTaste(body).catch(() => null);
+  if (gen !== browseGeneration || seq !== v.seq) { return; }
+  v.peers = res;
+  v.pending.peers = false;
+  if (discoveryOnScreen()) { renderDiscovery(); }
 }
 
 // A 403. The entry goes with it (the nav and the panel's link), as the
@@ -4278,7 +4305,12 @@ function renderDiscovery() {
     root.innerHTML = `<div class="dpage dpage-off"><div class="dpage-hint">${body}</div></div>`;
     return;
   }
-  const busy = v.pending.main || v.pending.peers;
+  // Dimmed while the library (main) call is out — the old answer held on
+  // screen. Never for the connected servers' call alone: that waits up to
+  // a peer's 4 s deadline after the library has landed, and the library it
+  // would dim is already the new one. Their column and strip draw their
+  // own skeletons (aria-busy) meanwhile.
+  const busy = v.pending.main;
   const refocus = discoveryFocusedSelector();
   const cls = `dpage-page-${page}${busy ? ' dpage-busy' : ''}`;
   // The bar sits in the column's chrome (#dpage-head), out of the scroller.
@@ -4641,7 +4673,8 @@ function discoveryPeerSongsHtml(s, pg, labels) {
   }
   const rows = s.status === 'ready' ? D.peerSongRows(pg) : [];
   if (s.status === 'failed') {
-    body = discoveryColHintHtml(discoveryT(s.reason), 'retry', 'dpage.verb.tryAgain');
+    // Its own Try again (redoDiscoveryPeers): only this column asks again.
+    body = discoveryColHintHtml(discoveryT(s.reason), 'peersRetry', 'dpage.verb.tryAgain');
   } else if (!rows.length) {
     body = discoveryColHintHtml(t('dpage.peers.quiet'));
   } else {
@@ -4830,6 +4863,8 @@ function discoveryAction(act, el) {
     redoDiscovery();
   } else if (act === 'retry') {
     redoDiscovery();
+  } else if (act === 'peersRetry') {
+    redoDiscoveryPeers();
   } else if (act === 'drop') {
     const chip = v.shown.chips[i];
     if (!chip || !chip.hash) { return; }
