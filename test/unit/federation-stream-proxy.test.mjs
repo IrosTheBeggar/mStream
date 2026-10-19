@@ -18,7 +18,9 @@
  *    the peer's cookies and server identity never reach our client;
  *  - a peer that cannot be dialed is a 502;
  *  - what GET /api/ advertises about the proxy (features.federationProxy,
- *    via describeProxy) is what it forwards.
+ *    via describeProxy) is what it forwards — and with the purpose header
+ *    off the forwarded list, it is neither forwarded nor claimed (null,
+ *    never `purpose: false`).
  *
  * No iroh, no database: a loopback HTTP server stands in for the peer's
  * /media, and the dial is injected (the route handler passes the real
@@ -31,7 +33,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import express from 'express';
 
-import { relayPeerMedia, describeProxy } from '../../src/api/federation-stream.js';
+import { relayPeerMedia, describeProxy, FORWARD_REQ } from '../../src/api/federation-stream.js';
 
 const FILE = crypto.randomBytes(64 * 1024);
 
@@ -221,5 +223,23 @@ describe('federation stream proxy: the headers that cross it', () => {
     assert.equal(r.status, 200);
     await r.arrayBuffer();
     assert.equal(seen.at(-1)['x-mstream-purpose'], 'copy', 'the header the flag promises reaches the peer');
+  });
+
+  test('a proxy that does not forward the purpose does not claim it: null, never purpose: false', async () => {
+    // The flag and the forwarding read one list. Take the header off it (put
+    // back below; this file runs in its own process) and both go together.
+    const at = FORWARD_REQ.indexOf('x-mstream-purpose');
+    assert.ok(at >= 0, 'this build forwards the purpose');
+    FORWARD_REQ.splice(at, 1);
+    try {
+      assert.equal(describeProxy(), null, 'nothing to say: the key is left out, as on older servers');
+      const r = await get('shared/no%20copies.bin', { 'X-mStream-Purpose': 'copy' });
+      assert.equal(r.status, 200, 'the peer never heard it was a copy');
+      await r.arrayBuffer();
+      assert.ok(!('x-mstream-purpose' in seen.at(-1)), 'and the header stayed here');
+    } finally {
+      FORWARD_REQ.splice(at, 0, 'x-mstream-purpose');
+    }
+    assert.deepEqual(describeProxy(), { purpose: true });
   });
 });

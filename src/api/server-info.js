@@ -96,6 +96,7 @@ export function buildFeatures() {
     };
   }
 
+  const proxy = describeProxy();
   return {
     // Whether a sonic-similarity query would find anything RIGHT NOW.
     // Distinct from `discovery`, which says the feature is switched on: a
@@ -141,9 +142,11 @@ export function buildFeatures() {
     // true }`, so a client copying a peer's files through this server knows
     // the peer is told they are copies. A version fact like `sync`, present
     // with federation on or off (whether there is a peer to reach is
-    // user.federationBrowse); older servers omit the key and drop the
-    // header. /api/-only, like discoveryReady: ping never carried it.
-    federationProxy: describeProxy(),
+    // user.federationBrowse), and like `sync` the key's presence is the
+    // signal: describeProxy() is null for a proxy that drops the header, and
+    // the key is left out, as older servers leave it out. /api/-only, like
+    // discoveryReady: ping never carried it.
+    ...(proxy ? { federationProxy: proxy } : {}),
   };
 }
 

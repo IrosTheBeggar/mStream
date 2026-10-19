@@ -1359,8 +1359,10 @@ paths:
                           enabled (whether there is a peer to reach is
                           `user.federationBrowse`). Absent on older servers,
                           whose proxy drops the header — a copy through them
-                          reaches the peer undeclared. Not on
-                          `/api/v1/ping`.
+                          reaches the peer undeclared. Like `sync`, the key's
+                          presence is the signal: a proxy that does not
+                          forward the header gets no key, never
+                          `purpose: false`. Not on `/api/v1/ping`.
                         properties:
                           purpose:
                             type: boolean

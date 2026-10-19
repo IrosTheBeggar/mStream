@@ -34,13 +34,16 @@ import WebError from '../util/web-error.js';
 export const FORWARD_REQ = ['range', 'if-range', 'if-none-match', 'if-modified-since', 'accept', 'x-mstream-purpose'];
 
 // What GET /api/ says about this proxy (features.federationProxy,
-// api/server-info.js): `purpose` — X-mStream-Purpose reaches the peer, so a
-// copy through the proxy is a declared copy. Read off FORWARD_REQ, so the
-// flag cannot claim a header the proxy does not forward. Older servers omit
-// the key: their proxy drops the header, and a copy through it reaches the
-// peer undeclared.
+// api/server-info.js), or null when it has nothing to say.
+// `{ purpose: true }`: X-mStream-Purpose reaches the peer, so a copy through
+// the proxy is a declared copy. Read off FORWARD_REQ, so the flag cannot
+// claim a header the proxy does not forward. The key's presence is the
+// signal, as for `sync`: a proxy that does not forward the header gets no
+// key at all — never `purpose: false` — which is what older servers, whose
+// proxy drops it, say too. A copy through such a proxy reaches the peer
+// undeclared.
 export function describeProxy() {
-  return { purpose: FORWARD_REQ.includes('x-mstream-purpose') };
+  return FORWARD_REQ.includes('x-mstream-purpose') ? { purpose: true } : null;
 }
 
 // Response headers the audio element + seek logic need, copied from the
