@@ -32,6 +32,17 @@ import WebError from '../util/web-error.js';
 // exactly as it would on the direct path, and a key whose copies are
 // switched off refuses it here as well.
 export const FORWARD_REQ = ['range', 'if-range', 'if-none-match', 'if-modified-since', 'accept', 'x-mstream-purpose'];
+
+// What GET /api/ says about this proxy (features.federationProxy,
+// api/server-info.js): `purpose` — X-mStream-Purpose reaches the peer, so a
+// copy through the proxy is a declared copy. Read off FORWARD_REQ, so the
+// flag cannot claim a header the proxy does not forward. Older servers omit
+// the key: their proxy drops the header, and a copy through it reaches the
+// peer undeclared.
+export function describeProxy() {
+  return { purpose: FORWARD_REQ.includes('x-mstream-purpose') };
+}
+
 // Response headers the audio element + seek logic need, copied from the
 // peer, plus Retry-After: the peer's 429s carry it (5 s past its stream
 // cap, the seconds to its UTC midnight past its daily quota), and without

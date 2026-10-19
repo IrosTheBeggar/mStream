@@ -16,7 +16,9 @@
  *    the peer's refusals come back as they are;
  *  - nothing else crosses: our cookies and tokens never reach the peer, and
  *    the peer's cookies and server identity never reach our client;
- *  - a peer that cannot be dialed is a 502.
+ *  - a peer that cannot be dialed is a 502;
+ *  - what GET /api/ advertises about the proxy (features.federationProxy,
+ *    via describeProxy) is what it forwards.
  *
  * No iroh, no database: a loopback HTTP server stands in for the peer's
  * /media, and the dial is injected (the route handler passes the real
@@ -29,7 +31,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import express from 'express';
 
-import { relayPeerMedia } from '../../src/api/federation-stream.js';
+import { relayPeerMedia, describeProxy } from '../../src/api/federation-stream.js';
 
 const FILE = crypto.randomBytes(64 * 1024);
 
@@ -210,5 +212,14 @@ describe('federation stream proxy: the headers that cross it', () => {
     const r = await get('shared/track.bin?dead=1');
     assert.equal(r.status, 502);
     assert.equal((await r.json()).error, 'Peer unreachable');
+  });
+
+  test('what GET /api/ advertises is what the proxy forwards: the purpose', async () => {
+    // features.federationProxy (api/server-info.js) is this, exactly.
+    assert.deepEqual(describeProxy(), { purpose: true });
+    const r = await get('shared/track.bin', { 'X-mStream-Purpose': 'copy' });
+    assert.equal(r.status, 200);
+    await r.arrayBuffer();
+    assert.equal(seen.at(-1)['x-mstream-purpose'], 'copy', 'the header the flag promises reaches the peer');
   });
 });

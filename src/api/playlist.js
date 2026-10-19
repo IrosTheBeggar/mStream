@@ -23,7 +23,8 @@ export function setup(mstream) {
     res.json({
       ...boot,
       // Server-wide capabilities: flat here, under `features` on /api/.
-      // (features.discoveryReady is /api/-only — ping never served it.)
+      // (features.discoveryReady and features.federationProxy are
+      // /api/-only — ping never served them.)
       transcode: features.transcode,
       supportedAudioFiles: features.supportedAudioFiles,
       discovery: features.discovery,

@@ -1240,7 +1240,8 @@ paths:
         * **Base** (every authenticated response): `server` (the
           version), `instanceId` (the server's stable id), `apiVersions`,
           and `features` — server-wide capability facts (transcode,
-          supportedAudioFiles, discovery, discoveryP2p, discoveryReady).
+          supportedAudioFiles, discovery, discoveryP2p, discoveryReady,
+          federationProxy).
         * **`user`** — identity plus the CALLER-SCOPED half of the ping
           boot payload (vpaths, permission flags, federationDiscovery,
           federationBrowse, vpathMetaData). Unlike ping, no `playlists` (fetch those from
@@ -1345,6 +1346,25 @@ paths:
                           library manifest behind client-side mirrors and
                           offline indexes). Absent on older servers — gate on
                           the key, never on a probe.
+                      federationProxy:
+                        type: object
+                        description: >
+                          What this server's peer stream proxy
+                          (`GET /api/v1/federation/peers/{id}/stream/{path}`)
+                          passes on to the peer. `purpose: true` — it forwards
+                          `X-mStream-Purpose`, so a copy made through it
+                          reaches the peer declared as one, and a key with
+                          copies switched off refuses it. A version fact like
+                          `sync`: present whether or not federation is
+                          enabled (whether there is a peer to reach is
+                          `user.federationBrowse`). Absent on older servers,
+                          whose proxy drops the header — a copy through them
+                          reaches the peer undeclared. Not on
+                          `/api/v1/ping`.
+                        properties:
+                          purpose:
+                            type: boolean
+                            enum: [true]
                       transcode:
                         description: >
                           false when unavailable; otherwise the server's
@@ -1460,6 +1480,7 @@ paths:
                   discoveryPlugins: true
                   discoveryOwned: true
                   sync: true
+                  federationProxy: { purpose: true }
                   transcode: false
                   supportedAudioFiles: { mp3: true, flac: true }
         "401":
@@ -7792,7 +7813,9 @@ paths:
         back: `Content-Type`, `Content-Length`, `Content-Range`,
         `Accept-Ranges`, `ETag`, `Last-Modified` and `Retry-After`, with
         the peer's status. Nothing else crosses either way — this server's
-        cookies and tokens never reach the peer.
+        cookies and tokens never reach the peer. `GET /api` advertises the
+        `X-mStream-Purpose` forwarding as
+        `features.federationProxy: { purpose: true }`.
 
         A `HEAD` asks the peer for the file's first byte (`Range: bytes=0-0`;
         a federation key may not `HEAD` a peer's `/media`) and answers `200`
@@ -7823,7 +7846,8 @@ paths:
             Forwarded to the peer verbatim. A client that is copying files
             (keeping them, not playing them) says `copy`, as it would on the
             direct path; a peer whose key for this server has copies switched
-            off then answers 403. Older servers do not forward it.
+            off then answers 403. Older servers do not forward it (their
+            `GET /api` has no `features.federationProxy`).
       responses:
         "200":
           description: Full-body audio stream from the peer.

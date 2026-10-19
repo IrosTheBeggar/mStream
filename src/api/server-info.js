@@ -58,6 +58,7 @@ import * as sim from '../db/discovery-similarity.js';
 import * as discoveryPlugins from '../discovery-plugins/index.js';
 import * as transcode from './transcode.js';
 import { describeAllowance } from './federation-limits.js';
+import { describeProxy } from './federation-stream.js';
 
 // The server's stable id: the random UUID config.js generates on first boot
 // and persists (discovery.mdns.instanceId — the key's name predates this
@@ -135,6 +136,14 @@ export function buildFeatures() {
     // contract as the discovery flags: the key's presence says this VERSION
     // has the route; clients never probe for it.
     sync: true,
+    // The peer stream proxy (/api/v1/federation/peers/:id/stream/*,
+    // api/federation-stream.js) forwards X-mStream-Purpose: `{ purpose:
+    // true }`, so a client copying a peer's files through this server knows
+    // the peer is told they are copies. A version fact like `sync`, present
+    // with federation on or off (whether there is a peer to reach is
+    // user.federationBrowse); older servers omit the key and drop the
+    // header. /api/-only, like discoveryReady: ping never carried it.
+    federationProxy: describeProxy(),
   };
 }
 
