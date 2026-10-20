@@ -425,11 +425,17 @@
   }
 
   // A job's one-line title in the strip: "Title — Artist" for a song,
-  // "Album — Artist" for an album, the artist's name for the artist scopes.
+  // "Album — Artist" for an album — the album's own credit when the
+  // recommendation carries one (a compilation's "Various Artists": the
+  // copy took it whole, every track artist on it), else the track artist —
+  // the artist's name for the artist scopes.
   function jobTitle(job) {
     const rec = (job && job.recommendation) || {};
     const scope = jobScope(job);
-    if (scope === 'album') { return [rec.album, rec.artist].filter(Boolean).join(' — ') || ''; }
+    if (scope === 'album') {
+      const credit = typeof rec.albumArtist === 'string' && rec.albumArtist.trim() ? rec.albumArtist : rec.artist;
+      return [rec.album, credit].filter(Boolean).join(' — ') || '';
+    }
     if (scope === 'artist' || scope === 'artist-missing') { return rec.artist || ''; }
     return [rec.title, rec.artist].filter(Boolean).join(' — ') || '';
   }

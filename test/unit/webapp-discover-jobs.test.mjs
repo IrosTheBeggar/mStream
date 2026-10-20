@@ -437,4 +437,13 @@ describe('album and artist jobs as rows', () => {
     assert.deepEqual([J.jobKind(job({})), J.jobKind(job({ params: { scope: 'album' } })), J.jobKind(job({ params: { scope: 'artist' } })), J.jobKind(job({ params: { scope: 'artist-missing' } }))],
       [null, 'discover.tray.kindAlbum', 'discover.tray.kindArtist', 'discover.tray.kindMissing']);
   });
+
+  test('an album job names the album\'s own credit when its recommendation carries one: a compilation copied whole is "Various Artists"', () => {
+    const rec = { title: 'Wind One', artist: 'Ana', album: 'Mixtape Vol 1', albumArtist: 'Various Artists' };
+    assert.equal(J.jobTitle(job({ recommendation: rec, params: { scope: 'album' } })), 'Mixtape Vol 1 — Various Artists');
+    assert.equal(J.jobTitle(job({ recommendation: rec })), 'Wind One — Ana', 'a song job keeps its artist');
+    assert.equal(J.jobTitle(job({ recommendation: rec, params: { scope: 'artist' } })), 'Ana', 'an artist job keeps its artist');
+    assert.equal(J.jobTitle(job({ recommendation: { ...rec, albumArtist: '  ' }, params: { scope: 'album' } })), 'Mixtape Vol 1 — Ana', 'a blank credit is none');
+    assert.equal(J.jobTitle(job({ recommendation: { album: 'Mixtape Vol 1', albumArtist: 'Various Artists' }, params: { scope: 'album' } })), 'Mixtape Vol 1 — Various Artists', 'a card\'s album job (no track artist)');
+  });
 });

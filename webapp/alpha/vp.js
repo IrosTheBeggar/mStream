@@ -783,13 +783,15 @@ const VUEPLAYERCORE = (() => {
         return tr.title || '(untitled)';
       },
       // The header's second line: artist · album · year · length; for the
-      // album, artist · year · how many songs (once the peer said).
+      // album, its credit · year · how many songs (once the peer said) —
+      // the album's own credit when the row carries one ('Various Artists'
+      // on a compilation, whose Album copies it whole), else the artist.
       dmSubtitle: function () {
         const m = this.discover.modal;
         const tr = m.track || {};
         if (this.dmAlbumFocus()) {
           const a = m.album;
-          return [tr.artist, tr.year, a && a.count !== null ? this.tt('discover.modal.songCount', { count: a.count }) : ''].filter(Boolean).join(' · ');
+          return [DISCOVERYPAGE.albumCreditOf(tr), tr.year, a && a.count !== null ? this.tt('discover.modal.songCount', { count: a.count }) : ''].filter(Boolean).join(' · ');
         }
         return [tr.artist, tr.album, tr.year, tr.duration ? this.dmDuration(tr.duration) : ''].filter(Boolean).join(' · ');
       },
@@ -943,7 +945,11 @@ const VUEPLAYERCORE = (() => {
       // listing, the file's own facts (format, size, art) from its metadata
       // route, album and artist facts through the read proxy, and what of
       // that artist this library already holds. Every call is optional —
-      // a missing answer leaves its line blank.
+      // a missing answer leaves its line blank. The album's songs are
+      // listed as the album copy lists them (DISCOVERYPAGE.peerAlbumQuery:
+      // by the album's own credit when the row carries one — a
+      // compilation whole — else by the track artist), so its count is
+      // what Album copies; the artist's facts stay the track artist's.
       dmLoadPeerFacts: async function (gen) {
         const track = this.discover.modal.track;
         const peerId = track.peer && track.peer.id;
@@ -952,7 +958,7 @@ const VUEPLAYERCORE = (() => {
         const [peers, meta, albumSongs, peerAlbums, localAlbums] = await Promise.all([
           settle(MSTREAMAPI.federationPeers()),
           settle(MSTREAMAPI.peer.metadata(peerId, track.filepath)),
-          track.album ? settle(MSTREAMAPI.peer.albumSongs(peerId, { album: track.album, artist: track.artist || null, year: track.year || null })) : Promise.resolve(null),
+          track.album ? settle(MSTREAMAPI.peer.albumSongs(peerId, this.dmAlbumQuery())) : Promise.resolve(null),
           track.artist ? settle(MSTREAMAPI.peer.artistAlbums(peerId, { artist: track.artist })) : Promise.resolve(null),
           track.artist ? settle(MSTREAMAPI.artistAlbums({ artist: track.artist })) : Promise.resolve(null),
         ]);
@@ -1046,15 +1052,24 @@ const VUEPLAYERCORE = (() => {
         mstreamModule.addFederationSongWizard(m.track.peer, m.track.filepath, this.dmSongMeta(), true);
         iziToast.success({ title: this.tt('discover.modal.queued'), position: 'topCenter', timeout: 1800 });
       },
+      // The peer's album-songs body for the row's album (dmLoadPeerFacts,
+      // Play / Add album): DISCOVERYPAGE.peerAlbumQuery, with the row's year.
+      dmAlbumQuery: function () {
+        const tr = this.discover.modal.track || {};
+        return Object.assign(DISCOVERYPAGE.peerAlbumQuery(tr), { year: tr.year || null });
+      },
       // View album / View artist open the peer's album or artist in the
       // browser panel, the way goToAlbum / goToArtist do for the playing
       // track: the element carries the peer so the panel resolves on that
-      // server (adoptPeer).
+      // server (adoptPeer). The album as dmAlbumQuery lists it: by its own
+      // credit (data-album-artist) when the row carries one.
       dmViewAlbum: function () {
         const m = this.discover.modal;
+        const q = this.dmAlbumQuery();
         const el = document.createElement('DIV');
         el.setAttribute('data-album', m.track.album);
-        if (m.track.artist) { el.setAttribute('data-artist', m.track.artist); }
+        if (q.artist) { el.setAttribute('data-artist', q.artist); }
+        if (q.album_artist) { el.setAttribute('data-album-artist', q.album_artist); }
         if (m.track.year) { el.setAttribute('data-year', String(m.track.year)); }
         el.setAttribute('data-peer', m.track.peer.id);
         this.closeDiscoverModal();
@@ -1075,7 +1090,7 @@ const VUEPLAYERCORE = (() => {
         let songs = m.album && m.album.songs;
         if (!songs) {
           try {
-            songs = await MSTREAMAPI.peer.albumSongs(m.track.peer.id, { album: m.track.album, artist: m.track.artist || null, year: m.track.year || null });
+            songs = await MSTREAMAPI.peer.albumSongs(m.track.peer.id, this.dmAlbumQuery());
           } catch (_) { songs = null; }
           if (!this.dmLive(gen)) { return; }
         }
@@ -1281,13 +1296,16 @@ const VUEPLAYERCORE = (() => {
       // The album and artist rows (the peer window's Federation view): the
       // copy plug-in when it runs the scope, with a destination and the fact
       // the scope needs — the same conditions as the song row. An album
-      // copy needs the artist too: the peer narrows the album's songs by
-      // it, and without one every album of that name comes back, whoever
-      // made it.
+      // copy needs a credit too — the album's own (albumArtist: a
+      // compilation is listed by it, whole) or the track artist: the peer
+      // narrows the album's songs by it, and without one every album of
+      // that name comes back, whoever made it (the jobs route's 400,
+      // recommendation.js scopeMissing). The artist copies need the artist.
       dmScopeRows: function (scope) {
         const m = this.discover.modal;
         if (m.source !== 'federation' || !this.dmHasDestination() || !m.track) { return []; }
-        if (!m.track.artist || (scope === 'album' && !m.track.album)) { return []; }
+        const has = scope === 'album' ? !!(m.track.album && DISCOVERYPAGE.albumCreditOf(m.track)) : !!m.track.artist;
+        if (!has) { return []; }
         return this.discoverAcquirePlugins()
           .filter((p) => p.name === DISCOVERJOBS.COPY_PLUGIN && Array.isArray(p.scopes) && p.scopes.indexOf(scope) !== -1)
           .map((plugin) => ({ plugin, slot: DISCOVERJOBS.jobSlot(plugin.name, scope), row: this.dmJobRow(plugin.name, scope) }));

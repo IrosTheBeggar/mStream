@@ -70,6 +70,8 @@ const SRC = fs.readFileSync(M_PATH, 'utf8');
 const require = createRequire(import.meta.url);
 const DISCOVERYPAGE = require('../../webapp/alpha/discovery-page.js');
 const DISCOVERJOBS = require('../../webapp/alpha/discover-jobs.js');
+// the registry's own job keys (the batch lookup's answer)
+const plugins = await import('../../src/discovery-plugins/index.js');
 
 function sliceFn(name) {
   const lines = SRC.split(/\r?\n/);
@@ -866,6 +868,84 @@ describe('Discover page: opening it', () => {
     html = S.page();
     assert.ok(html.includes('Peer Song'));
     assert.ok(!html.includes('dpage-skel'));
+  });
+});
+
+// A compilation on a connected server (2026-10-19: "for compilation
+// albums, copy the whole album"): two songs by two track artists, one
+// album credit. The rows carry it as `albumArtist`; the page draws one
+// card under it and asks the peer for the album by it, whole.
+describe('Discover page: a connected server\'s compilation', () => {
+  const VA_ROW = (title, artist, similarity, over) => ({
+    ...PEER_ROW, filepath: `tunes/VA/Mixtape/${title}.mp3`, title, artist, album: 'Mixtape Vol 1', albumArtist: 'Various Artists', year: 2020,
+    albumArt: 'mix.jpeg', similarity, ...over,
+  });
+  const ANA = VA_ROW('Wind One', 'Ana', 0.9);
+  const BEN = VA_ROW('Ben Song', 'Ben', 0.8);
+  const compAnswer = (b) => (b.sources.includes('peers')
+    ? { ...PEERS, peers: { ...PEERS.peers, peers: [{ ...PEERS.peers.peers[0], results: [BEN, ANA] }] } }
+    : { ...MAIN, library: null });
+  const strip = (html) => html.slice(html.indexOf('dpage-strip dpage-src-peers'), html.indexOf('<div class="dpage-songs'));
+  // the batch lookup as the server answers it: the registry's own keys
+  const keysOf = (rec) => plugins.jobKeysFor(plugins.recommendationSchema.validate(rec).value);
+  const realLookup = (jobs) => (recs) => ({ results: recs.map((r) => {
+    const keys = keysOf(r);
+    const own = new Set(Object.values(keys));
+    return { key: keys.song, keys, jobs: jobs.filter((j) => own.has(j.key)) };
+  }) });
+
+  test('two songs by Ana and Ben, one album credit: ONE card, its artist line "Various Artists", narrowed by the credit and never by a track artist', async () => {
+    const { S } = makeSandbox({ taste: compAnswer });
+    await S.discoveryPanel();
+    const html = S.page();
+    assert.equal(countDrawn(html, { 'data-dp': 'peerAlbumOpen' }), 1, 'one card, not one per track artist');
+    const card = findDrawn(html, { 'data-dp': 'peerAlbumOpen', 'data-i': 0 });
+    assert.equal(card.attrs['data-album'], 'Mixtape Vol 1');
+    assert.equal(card.attrs['data-album-artist'], 'Various Artists');
+    assert.equal('data-artist' in card.attrs, false, 'no track artist on the card');
+    assert.equal(card.attrs['aria-label'], 'Mixtape Vol 1 · Various Artists');
+    assert.match(strip(html), /<div class="album-grid-name">Mixtape Vol 1<\/div>\s*<div class="album-grid-artist">Various Artists<\/div>/);
+    // the song rows keep their own artists
+    assert.ok(html.includes('Ana · Mixtape Vol 1') && html.includes('Ben · Mixtape Vol 1'));
+  });
+
+  test('the card opens and queues the album whole: album_artist, no artist', async () => {
+    const songs = [ANA, BEN, VA_ROW('Third', 'Cy', 0.1)].map((r) => ({ filepath: r.filepath, metadata: { title: r.title, artist: r.artist } }));
+    const { S, click, albumsOpened, rowsQueued, calls } = makeSandbox({ taste: compAnswer, albumSongs: () => songs });
+    await S.discoveryPanel();
+    click({ 'data-dp': 'peerAlbumOpen', 'data-i': 0 });
+    assert.deepEqual(albumsOpened, [['Mixtape Vol 1', null, null, 'Various Artists']], 'getAlbumSongs(album, artist, year, albumArtist)');
+    click({ 'data-dp': 'peerAlbum', 'data-i': 0 });
+    await flush(); await flush();
+    assert.deepEqual(calls.filter((c) => c.name === 'peerAlbumSongs').map((c) => [c.id, c.body]), [[1, { album: 'Mixtape Vol 1', artist: null, album_artist: 'Various Artists' }]]);
+    assert.equal(rowsQueued.length, 3, 'every song of the compilation, Cy\'s too');
+  });
+
+  test('the card\'s ⋯ opens its best row (raws[0]) as the album; that row\'s album copy is the one Ben\'s row looks up', async () => {
+    const { S, click, opened } = makeSandbox({ taste: compAnswer });
+    await S.discoveryPanel();
+    click({ 'data-dp': 'peerAlbumMore', 'data-i': 0 });
+    assert.equal(opened.length, 1);
+    assert.equal(opened[0].raw, ANA, 'the best match, the route\'s row unchanged — its albumArtist included');
+    assert.deepEqual(opened[0].opts, { seedPlain: 'dpage.match.recent', focus: 'album', view: 'federation' });
+    assert.equal(keysOf(opened[0].raw).album, keysOf(BEN).album, 'one whole-album job, whichever song it starts from');
+    assert.notEqual(keysOf(ANA).artist, keysOf(BEN).artist);
+  });
+
+  test('a running copy of the compilation badges both rows and the one card (the server\'s own keys)', async () => {
+    const PLUG = { available: true, list: [{ name: 'federation-copy', title: 'Copy from a connected server', capabilities: ['acquire'], scopes: ['song', 'album', 'artist', 'artist-missing'] }], jobsAllowed: true };
+    const copying = { id: 5, plugin: 'federation-copy', state: 'running', progress: 0.25, statusText: 'song 1 of 4', key: keysOf(BEN).album,
+      params: { scope: 'album' }, recommendation: { ...BEN }, cancelRequested: false };
+    const { S, calls } = makeSandbox({ taste: compAnswer, flags: { ...FLAGS_ALL, discoveryPlugins: true }, plugins: PLUG, lookup: realLookup([copying]), jobs: [copying] });
+    await S.discoveryPanel();
+    const lookup = calls.find((c) => c.name === 'lookup');
+    assert.deepEqual(lookup.body.map((r) => [r.title, r.albumArtist]), [['Wind One', 'Various Artists'], ['Ben Song', 'Various Artists']], 'the rows go to the lookup raw, their credit with them');
+    const html = S.page();
+    for (const i of [0, 1]) {
+      assert.match(html, new RegExp(`data-bslot="p${i}"><span class="dpage-badge dpage-badge-src">discover\\.job\\.copying · discover\\.tray\\.kindAlbum<`), `row ${i}`);
+    }
+    assert.match(strip(html), /data-bslot="a0"><span class="dpage-badge dpage-badge-src">discover\.job\.copying<\/span>/);
+    assert.equal(countDrawn(html, { 'data-dp': 'peerAlbumOpen' }), 1);
   });
 });
 

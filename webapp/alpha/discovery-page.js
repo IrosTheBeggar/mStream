@@ -82,6 +82,7 @@
   // ── small helpers ──────────────────────────────────────────────────────
   const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
   const str = (v) => (typeof v === 'string' ? v : '');
+  const hasText = (v) => typeof v === 'string' && v.trim().length > 0;
   const arr = (v) => (Array.isArray(v) ? v : []);
   const lbl = (key, params) => ({ key, params: params || {} });
 
@@ -575,6 +576,10 @@
       title: str(raw.title),
       artist,
       album,
+      // The album's own credit ('Various Artists' on a compilation), apart
+      // from the track's artist: a connected server's row carries it since
+      // 2026-10-19 ('' from an older peer, and on every network lead).
+      albumArtist: str(raw.albumArtist),
       year,
       subtitle: joinParts([artist, album, year == null ? '' : String(year)]),
       length: fmtLength(raw.duration),
@@ -730,14 +735,45 @@
     return byMatch(peerRowsOf(groupsOf(groups).filter((g) => g.playable)).filter((r) => r.playable));
   }
 
-  // "Albums from …": the playable rows grouped by peer + album + artist
-  // (rows without an album tag are left out), best match first — an album
+  // The credit an album copy acts on (src/discovery-plugins/recommendation.js
+  // albumCredit, mirrored): the album's own (`albumArtist`) when the row —
+  // or a card — carries it, else the track artist; null when neither.
+  function albumCreditOf(rec) {
+    if (isObj(rec) && hasText(rec.albumArtist)) { return rec.albumArtist; }
+    return isObj(rec) && hasText(rec.artist) ? rec.artist : null;
+  }
+
+  // What a connected server's album-songs is asked for the album of a row
+  // (or of a peerAlbums card), as the album copy asks it (federation-copy
+  // albumListing, mirrored): by the album's own credit when there is one —
+  // the album whole, a compilation's every track artist, so the window's
+  // count, the card's queue and its browse are what Album copies — else
+  // narrowed by the track artist. `album_artist` only when there is a
+  // credit (m.js albumSongsBody's rule: a peer on an older server sees the
+  // request it always did). The caller adds `year` where it has one.
+  // → { album, artist, album_artist? }
+  function peerAlbumQuery(rec) {
+    const r = isObj(rec) ? rec : {};
+    const credit = hasText(r.albumArtist) ? r.albumArtist : null;
+    const out = { album: str(r.album), artist: credit ? null : (hasText(r.artist) ? r.artist : null) };
+    if (credit) { out.album_artist = credit; }
+    return out;
+  }
+
+  // "Albums from …": the playable rows grouped by peer + album + the
+  // album's credit (its albumArtist, else the track artist — so a
+  // compilation is ONE card, 'Various Artists', whoever performs each song;
+  // rows without an album tag are left out), best match first — an album
   // ranks by its best row — capped at opts.max (default ALBUM_STRIP_MAX).
-  // → [{ key, peerId, peerName, album, artist, art, similarity, paths, raws }]
+  // → [{ key, peerId, peerName, album, artist, albumArtist, art, similarity, paths, raws }]
+  //   artist        the card's artist line: the credit it is grouped by
+  //   albumArtist   the album's own credit (the first row that names one),
+  //                 else null (an older peer: the track artist groups it,
+  //                 and narrows its listing — peerAlbumQuery)
   //   paths / raws  the album's matched rows, best first: the card's play
   //                 button queues the raws through the federation stream
   //                 (VUEPLAYERCORE.queueDiscoverFed), paths = their
-  //                 peer-side filepaths
+  //                 peer-side filepaths; its ⋯ opens raws[0]
   //   art           the album's cover: the first row's albumArt (best
   //                 match first; a later row's when the first has none),
   //                 else null (the note tile)
@@ -750,12 +786,14 @@
     for (const r of peerSongRows(groups)) {
       const album = str(r.album).trim();
       if (!album) { continue; }
-      const key = JSON.stringify([r.peerId, fold(album), fold(r.artist)]);
+      const credit = hasText(r.albumArtist) ? r.albumArtist.trim() : null;
+      const key = JSON.stringify([r.peerId, fold(album), fold(credit || r.artist)]);
       let card = byKey.get(key);
       if (!card) {
-        card = { key, peerId: r.peerId, peerName: r.peerName, album, artist: str(r.artist), art: null, similarity: r.similarity, paths: [], raws: [] };
+        card = { key, peerId: r.peerId, peerName: r.peerName, album, artist: credit || str(r.artist), albumArtist: credit, art: null, similarity: r.similarity, paths: [], raws: [] };
         byKey.set(key, card);
       }
+      if (!card.albumArtist && credit) { card.albumArtist = credit; }
       if (!card.art && r.art) { card.art = r.art; }
       if (r.filepath) { card.paths.push(r.filepath); }
       card.raws.push(r.raw);
@@ -1169,7 +1207,7 @@
     fmtLength,
     seedChips, windowOptions, pluginChips,
     librarySections, networkRows,
-    peerGroups, peerRowsOf, peerSongRows, peerAlbums, fedQueueMeta, pageLabels, pageSlice, columnBlocks,
+    peerGroups, peerRowsOf, peerSongRows, peerAlbums, albumCreditOf, peerAlbumQuery, fedQueueMeta, pageLabels, pageSlice, columnBlocks,
     lookupChunks, jobBadges, peerAlbumBadges, anyLiveBadge, nameKey,
     stateOf,
   };

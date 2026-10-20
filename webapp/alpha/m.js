@@ -4629,7 +4629,12 @@ function discoveryPeerAlbumHtml(a, i) {
   // that appears fills it, never grows the card or the strip), its thin
   // bar along the cover's foot.
   const badge = discoveryView.cardBadges.get(a.key) || null;
-  return `<div class="dpage-album" title="${escapeHtml(a.peerName || '')}"><div class="album-grid-card dpage-peer-card" data-peer="${escapeHtml(a.peerId)}" data-album="${escapeHtml(a.album)}"${a.artist ? ` data-artist="${escapeHtml(a.artist)}"` : ''} data-dp="peerAlbumOpen" data-i="${i}" tabindex="0" role="link" aria-label="${escapeHtml([a.album, a.artist].filter(Boolean).join(' · '))}">
+  // The card's narrowing, as renderAlbum's: data-album-artist = the album's
+  // own credit when its rows carry one (the album whole: a compilation's
+  // card), else data-artist = the track artist. The artist line is the
+  // credit either way.
+  const q = DISCOVERYPAGE.peerAlbumQuery(a);
+  return `<div class="dpage-album" title="${escapeHtml(a.peerName || '')}"><div class="album-grid-card dpage-peer-card" data-peer="${escapeHtml(a.peerId)}" data-album="${escapeHtml(a.album)}"${q.artist ? ` data-artist="${escapeHtml(q.artist)}"` : ''}${q.album_artist ? ` data-album-artist="${escapeHtml(q.album_artist)}"` : ''} data-dp="peerAlbumOpen" data-i="${i}" tabindex="0" role="link" aria-label="${escapeHtml([a.album, a.artist].filter(Boolean).join(' · '))}">
     <div class="album-grid-art">
       ${src ? `<img loading="lazy" src="${escapeHtml(src)}" alt="" onerror="discoveryPeerArtFailed(this)">` : DPAGE_NOTE_CARD}
       <button type="button" class="album-grid-play" data-dp="peerAlbum" data-i="${i}" title="${escapeHtml(t('dpage.verb.queue'))}" aria-label="${escapeHtml(t('dpage.verb.queue'))}">
@@ -4938,8 +4943,10 @@ function discoveryAction(act, el) {
     VUEPLAYERCORE.openDiscoverModal(peerRow.raw, 'federation', Object.assign({}, discoveryMatchOpts(peerRow), { view: 'federation' }));
   } else if (act === 'peerAlbumMore' && peerAlbum && peerAlbum.raws.length) {
     // The card's ⋯: the same window, read as the album — its best row
-    // (raws[0]) carries the album, its artist and a file, so Album is the
-    // Keep card's choice. The card's own click still opens peer browse.
+    // (raws[0]) carries the album, its credit (albumArtist: a compilation's
+    // Album copies it whole, under the key every row of it shares), its
+    // artist and a file, so Album is the Keep card's choice. The card's
+    // own click still opens peer browse.
     VUEPLAYERCORE.openDiscoverModal(peerAlbum.raws[0], 'federation', Object.assign({}, discoveryMatchOpts(peerAlbum), { focus: 'album', view: 'federation' }));
   } else if (act === 'peerQueueAll') {
     if (!v.shown.allPeers.length) { return; }
@@ -5020,25 +5027,28 @@ function discoveryAction(act, el) {
 
 // A connected server's album card: opened in the peer-browse view (the
 // app follows the card onto that server, as a federated search hit does;
-// Back returns to this visit of the page).
+// Back returns to this visit of the page). Listed as the album copy lists
+// it (DISCOVERYPAGE.peerAlbumQuery): by the album's own credit when the
+// card has one — a compilation whole — else by the track artist.
 function discoveryOpenPeerAlbum(a) {
   if (a.peerId == null) { return; }
   const id = Number(a.peerId);
   if (!knownPeers.has(id)) { rememberPeer({ id, name: a.peerName }); }
   adoptPeer({ getAttribute: (n) => (n === 'data-peer' ? String(id) : null) });
-  getAlbumSongs(a.album, a.artist || null, null, null);
+  const q = DISCOVERYPAGE.peerAlbumQuery(a);
+  getAlbumSongs(a.album, q.artist, null, q.album_artist || null);
 }
 
 // Its play button: the album queued through the federation stream proxy —
-// the whole album as the server lists it, else the rows that matched. The
-// app stays on this server.
+// the whole album as the server lists it (peerAlbumQuery, as the card's
+// open), else the rows that matched. The app stays on this server.
 async function discoveryQueuePeerAlbum(a) {
   if (a.peerId == null) { return; }
   const id = Number(a.peerId);
   const peer = knownPeers.get(id) || rememberPeer({ id, name: a.peerName || 'peer' });
   let songs = null;
   try {
-    songs = await MSTREAMAPI.peer.albumSongs(id, { album: a.album, artist: a.artist || null });
+    songs = await MSTREAMAPI.peer.albumSongs(id, DISCOVERYPAGE.peerAlbumQuery(a));
   } catch (_) { /* the matched rows instead */ }
   if (Array.isArray(songs) && songs.length) {
     for (const s of songs) { if (s && s.filepath) { queueRow(peer, s.filepath, s.metadata || {}); } }

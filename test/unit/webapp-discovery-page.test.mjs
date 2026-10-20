@@ -25,6 +25,8 @@ import { readFileSync } from 'node:fs';
 import * as tasteQ from '../../src/discovery/taste-queries.js';
 import { stampNetworkRows, peersSection } from '../../src/api/discovery-taste.js';
 import * as plugins from '../../src/discovery-plugins/index.js';
+import { albumCredit as serverAlbumCredit } from '../../src/discovery-plugins/recommendation.js';
+import { albumListing as serverAlbumListing } from '../../src/discovery-plugins/plugins/federation-copy.js';
 import { nameKey as serverNameKey } from '../../src/db/name-key.js';
 
 const require = createRequire(import.meta.url);
@@ -721,11 +723,13 @@ const I18N = new Function('window', 'document', 'localStorage', 'navigator', 'fe
 await I18N.loadLanguage('en');
 const tEn = I18N.t;
 
-const WINDOW_METHODS = ['tt', 'dmLive', 'dmDuration', 'dmText', 'openDiscoverModal', 'openDiscoverModalForJob', 'dmLoadPeerFacts', 'dmArtistOwnership',
+const WINDOW_METHODS = ['tt', 'dmLive', 'dmDuration', 'dmText', 'openDiscoverModal', 'openDiscoverModalForJob', 'dmLoadPeerFacts', 'dmAlbumQuery', 'dmArtistOwnership',
+  'dmQueueAlbum', 'dmViewAlbum', 'closeDiscoverModal',
   'dmAlbumFocus', 'dmHeadTitle', 'dmSubtitle', 'dmAlbumFacts', 'dmArtistFacts', 'dmAlbumPlaySub', 'discoverAcquirePlugins', 'dmHasDestination',
   'dmCopyRows', 'dmJobRow', 'dmJobOtherPeer', 'dmScopeRows', 'dmMissingRows', 'dmAlbumIdleSub', 'dmArtistIdleSub', 'dmKeepChoices', 'dmKeepChoose',
   'dmKeepChosen', 'dmKeepMissingChoice', 'dmKeepMissingCount', 'dmKeepScope', 'dmKeepRow', 'dmKeepIdle', 'dmKeepStartLabel',
-  'dmMissingHeld', 'dmKeepMissingLabel', 'setDiscoverModalView', 'dmGetItRows', 'dmKeepTitle', 'dmKeepStart', 'toastDiscoverJob', 'discoverPluginTitle'];
+  'dmMissingHeld', 'dmKeepMissingLabel', 'setDiscoverModalView', 'dmGetItRows', 'dmKeepTitle', 'dmKeepStart', 'toastDiscoverJob', 'discoverPluginTitle',
+  'dmRecommendation'];
 const COPY = { name: 'federation-copy', title: 'Copy from a connected server', capabilities: ['acquire'], scopes: ['song', 'album', 'artist', 'artist-missing', 'folder'] };
 const DEST = { vpath: 'collection', base: 'From peers', layout: '{{ARTIST}}/{{ALBUM}}', source: 'saved' };
 const STAGE_B = { id: 1, name: 'Stage Peer B' };
@@ -765,23 +769,30 @@ function makeWindow({ reads = readsOf(), remembered = 'federation', plugins = [C
       blank: blankDiscoverModal,
       remembered: () => discoverModalView,
     };`;
-  const doc = { addEventListener() {}, removeEventListener() {} };
+  // View album's element (its attributes) and the app's browse hand-off;
+  // the album queue's federation rows
+  const doc = { addEventListener() {}, removeEventListener() {},
+    createElement: (tag) => { const attrs = {}; return { tag, attrs, setAttribute: (k, v) => { attrs[k] = String(v); } }; } };
+  const viewed = [];
+  const fedQueued = [];
+  const app = { addFederationSongWizard: (...args) => { fedQueued.push(args); }, clearQueue() {} };
   const toasts = [];
   const izi = Object.fromEntries(['error', 'success', 'warning', 'info'].map((kind) => [kind, (o) => toasts.push({ kind, ...o })]));
-  const mod = new Function('DISCOVERJOBS', 'DISCOVERYPAGE', 'MSTREAMAPI', 'document', 't', 'iziToast', body)(J, D, reads, doc, tEn, izi);
+  const mod = new Function('DISCOVERJOBS', 'DISCOVERYPAGE', 'MSTREAMAPI', 'document', 't', 'iziToast', 'getAlbumsOnClick', 'mstreamModule', 'MSTREAMPLAYER', body)(
+    J, D, reads, doc, tEn, izi, (el) => { viewed.push(el.attrs); }, app, { positionCache: { val: 0 } });
   const loads = [];
   const starts = [];
   const vm = {
     discover: { plugins: { available, list: plugins, jobsAllowed }, dest: { view: { destination }, loaded: true }, admin: false, seedTitle: '', modal: mod.blank() },
     $refs: {}, $nextTick() {}, $set(o, k, v) { o[k] = v; }, $delete(o, k) { delete o[k]; },
-    stopDiscoverPreview() {}, copyDiscoverP2p() { loads.push('copied'); },
+    stopDiscoverPreview() {}, scheduleDiscoverJobsPoll() {}, copyDiscoverP2p() { loads.push('copied'); },
     dmLoadLinks: async () => { loads.push('links'); },
     dmLoadJobs: async () => { loads.push('jobs'); },
     dmLoadFederate: async () => { loads.push('federate'); },
     dmJobStart: (plugin, choice, scope) => { starts.push({ plugin: plugin.name, choice, scope }); },
     ...mod.methods,
   };
-  return { vm, loads, starts, toasts, remembered: mod.remembered };
+  return { vm, loads, starts, toasts, viewed, fedQueued, remembered: mod.remembered };
 }
 const subText = (vm, row) => vm.dmText(row.sub);
 const copyJob = (over) => ({ id: 41, plugin: 'federation-copy', key: 'album:06676dc1', state: 'running', progress: 0.4, statusText: 'song 1 of 3 · Rooftop Cypher', params: { scope: 'album' }, recommendation: tapesRow(STAGE_B, '02 - Late Train Verse'), ...over });
@@ -1118,6 +1129,114 @@ describe('the recommendation window: what album focus and a reopened failure sho
   });
 });
 
+// A compilation on Stage Peer B (2026-10-19: the user's "for compilation
+// albums, copy the whole album"): 'Mixtape Vol 1', credited 'Various
+// Artists', with songs by Ana and Ben. The rows carry the album's credit
+// (`albumArtist`); the window lists, counts, plays, views and copies the
+// album by it, whole — and keeps the track artist's line and scopes.
+describe('the recommendation window on a compilation (vp.js)', () => {
+  const mix = (title, artist, over) => tapesRow(STAGE_B, title, {
+    artist, album: 'Mixtape Vol 1', albumArtist: 'Various Artists', year: 2020, filepath: `peerlib/VA/Mixtape Vol 1/${title}.mp3`, ...over,
+  });
+  const ANA = mix('Wind One', 'Ana');
+  const BEN = mix('Ben Song', 'Ben');
+  // the peer's and the library's reads, each call recorded
+  const compReads = (asked) => ({
+    federationPeers: () => Promise.resolve({ peers: [{ ...STAGE_B, lastSeen: null, lastStatus: 'ok' }] }),
+    peer: {
+      metadata: () => Promise.resolve({ metadata: { format: 'mp3' } }),
+      albumSongs: (id, body) => { asked.push(['albumSongs', id, body]); return Promise.resolve(songsOf(4)); },
+      artistAlbums: (id, body) => {
+        asked.push(['artistAlbums', id, body]);
+        return Promise.resolve({ albums: [peerAlbumItem(`${body.artist} Alone`, { album_artist: body.artist, artists: [body.artist] }),
+          peerAlbumItem('Mixtape Vol 1', { album_artist: 'Various Artists', artists: ['Various Artists', 'Ana', 'Ben'], compilation: true, track_count: 4 })] });
+      },
+    },
+    artistAlbums: (body) => { asked.push(['localArtistAlbums', body]); return Promise.resolve({ albums: [] }); },
+  });
+  const albumKey = (rec) => keysOfRec(rec).album;
+
+  test('a card\'s ⋯ (raws[0]): "Various Artists · 2020 · 4 songs", the count from the album listed by its credit — the artist\'s facts stay the track artist\'s', async () => {
+    const asked = [];
+    const { vm, starts } = makeWindow({ reads: compReads(asked) });
+    await vm.openDiscoverModal(ANA, 'federation', { seedPlain: 'x', focus: 'album', view: 'federation' });
+    assert.deepEqual(asked.filter((a) => a[0] === 'albumSongs'), [['albumSongs', 1, { album: 'Mixtape Vol 1', artist: null, album_artist: 'Various Artists', year: 2020 }]],
+      'by the album\'s credit, NOT narrowed by Ana — what the album copy lists (federation-copy albumListing)');
+    assert.deepEqual(asked.filter((a) => a[0] !== 'albumSongs'), [['artistAlbums', 1, { artist: 'Ana' }], ['localArtistAlbums', { artist: 'Ana' }]]);
+    assert.equal(vm.dmHeadTitle(), 'Mixtape Vol 1');
+    assert.equal(vm.dmSubtitle(), 'Various Artists · 2020 · 4 songs');
+    assert.deepEqual(vm.dmKeepChoices().map((c) => [c.scope, c.sub]), [['album', '4 songs'], ['artist', '2 albums']]);
+    assert.equal(vm.dmKeepChosen(), 'album');
+    assert.equal(vm.dmAlbumIdleSub(), 'Copies its 4 songs from Stage Peer B into your library');
+    assert.match(vm.dmArtistIdleSub('artist'), /^Every album by Ana on Stage Peer B/, 'Artist is still Ana\'s');
+    vm.dmKeepStart();
+    assert.deepEqual(starts, [{ plugin: 'federation-copy', choice: null, scope: 'album' }]);
+    // what the job is started with: the row, its credit included — so its
+    // key is the one Ben's row looks up (src/discovery-plugins jobKeysFor)
+    const rec = vm.dmRecommendation();
+    assert.equal(rec.albumArtist, 'Various Artists');
+    assert.equal(albumKey(rec), albumKey(BEN), 'one album copy for every song of the compilation');
+    assert.notEqual(albumKey(rec), albumKey({ ...ANA, albumArtist: null }), 'not the track artist\'s key any more');
+  });
+
+  test('a compilation song\'s own ⋯: This song | Album (the whole compilation) | Artist (the track artist)', async () => {
+    const asked = [];
+    const { vm } = makeWindow({ reads: compReads(asked) });
+    await vm.openDiscoverModal(BEN, 'federation', { seedPlain: 'x', view: 'federation' });
+    assert.equal(vm.discover.modal.focus, null);
+    assert.equal(vm.dmSubtitle(), 'Ben · Mixtape Vol 1 · 2020 · 3:41', 'the song\'s header names its own artist');
+    assert.deepEqual(vm.dmKeepChoices().map((c) => [c.scope, c.sub]), [['song', '3:41 · mp3'], ['album', '4 songs'], ['artist', '2 albums']]);
+    assert.equal(vm.dmAlbumFacts(), '2020 · 4 songs · 13:20 · none in your library', 'the album line: the whole compilation');
+    assert.deepEqual(asked.find((a) => a[0] === 'albumSongs')[2], { album: 'Mixtape Vol 1', artist: null, album_artist: 'Various Artists', year: 2020 });
+    assert.deepEqual(asked.find((a) => a[0] === 'artistAlbums')[2], { artist: 'Ben' });
+    vm.dmKeepChoose('album');
+    assert.equal(vm.dmKeepScope(), 'album');
+    assert.equal(vm.dmKeepStartLabel(), 'Add album');
+  });
+
+  test('Album needs the album and a credit — the album artist alone will do; Artist still needs the track artist', async () => {
+    const credited = makeWindow({ reads: compReads([]) });
+    await credited.vm.openDiscoverModal(mix('Untagged Performer', null), 'federation', { view: 'federation' });
+    assert.deepEqual(credited.vm.dmKeepChoices().map((c) => c.scope), ['song', 'album']);
+    assert.equal(credited.vm.dmScopeRows('album').length, 1);
+    assert.deepEqual(credited.vm.dmScopeRows('artist'), []);
+    assert.deepEqual(credited.vm.dmScopeRows('artist-missing'), []);
+    // a blank credit is none: back to the track artist, then to nothing
+    const blank = makeWindow({ reads: compReads([]) });
+    await blank.vm.openDiscoverModal(mix('Blank', '', { albumArtist: '  ' }), 'federation', { view: 'federation' });
+    assert.deepEqual(blank.vm.dmKeepChoices().map((c) => c.scope), ['song'], 'no credit at all: no Album (the jobs route\'s 400)');
+    // an album job reopened from the strip, started from a card's album
+    // (the album and its credit, no track artist): the album, Album offered
+    const reopened = makeWindow({ reads: compReads([]) });
+    const job = copyJob({ key: albumKey(ANA), recommendation: { source: 'federation', peer: { ...STAGE_B }, album: 'Mixtape Vol 1', albumArtist: 'Various Artists', filepath: 'peerlib/VA/Mixtape Vol 1/Wind One.mp3' } });
+    await reopened.vm.openDiscoverModalForJob(job);
+    assert.equal(reopened.vm.discover.modal.focus, 'album');
+    reopened.vm.discover.modal.jobs = { 'federation-copy@album': job };
+    assert.deepEqual(reopened.vm.dmKeepChoices().map((c) => c.scope), ['album']);
+    assert.equal(reopened.vm.dmKeepRow().row.state, 'running', 'the card is the job');
+    assert.equal(reopened.vm.dmSubtitle(), 'Various Artists · 4 songs');
+  });
+
+  test('Play / Add album and View album ask for the album as its credit holds it; an ordinary row keeps its artist', async () => {
+    const asked = [];
+    const { vm, viewed, fedQueued } = makeWindow({ reads: compReads(asked) });
+    await vm.openDiscoverModal(ANA, 'federation', { focus: 'album', view: 'federation' });
+    vm.discover.modal.album = { ...vm.discover.modal.album, songs: null };   // not listed yet: Add album asks
+    asked.length = 0;
+    await vm.dmQueueAlbum(false);
+    assert.deepEqual(asked, [['albumSongs', 1, { album: 'Mixtape Vol 1', artist: null, album_artist: 'Various Artists', year: 2020 }]]);
+    assert.equal(fedQueued.length, 4, 'the whole compilation queued');
+    await vm.openDiscoverModal(ANA, 'federation', { focus: 'album', view: 'federation' });
+    vm.dmViewAlbum();
+    assert.deepEqual(viewed, [{ 'data-album': 'Mixtape Vol 1', 'data-album-artist': 'Various Artists', 'data-year': '2020', 'data-peer': '1' }],
+      'getAlbumsOnClick lists it by album_artist, never by Ana');
+    viewed.length = 0;
+    await vm.openDiscoverModal(tapesRow(STAGE_B, '02 - Late Train Verse'), 'federation', { view: 'federation' });
+    vm.dmViewAlbum();
+    assert.deepEqual(viewed, [{ 'data-album': 'Borrowed Tapes', 'data-artist': 'Boukmanflow', 'data-year': '2019', 'data-peer': '1' }], 'no credit (an older peer): the track artist, as before');
+  });
+});
+
 describe('index.html: the window\'s album focus', () => {
   const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8');
   const win = HTML.slice(HTML.indexOf('class="dmodal-shadow"'), HTML.indexOf('id="pop"'));
@@ -1194,7 +1313,7 @@ describe('peerSongRows', () => {
 });
 
 describe('peerAlbums', () => {
-  test('playable rows grouped by peer + album + artist, best first, with what the card needs', () => {
+  test('playable rows grouped by peer + album + artist (no album credit on these rows), best first, with what the card needs', () => {
     const cards = D.peerAlbums(manyGroups());
     assert.deepEqual(cards.map((c) => [c.peerName, c.album, c.artist]), [
       ['Sam’s server', 'Blue', 'Artist Q'],
@@ -1222,6 +1341,73 @@ describe('peerAlbums', () => {
     const untagged = { peers: [{ ...SAM, reachable: true, mismatched: false, results: [fedRow(SAM, 'U', { album: '' })] }], searched: {} };
     assert.deepEqual(D.peerAlbums(D.peerGroups({ peers: peersSection(untagged) })), []);
     assert.deepEqual(D.peerAlbums([]), []);
+  });
+
+  // 2026-10-19: the rows carry the album's own credit (albumArtist).
+  const CREDITED = { peers: [
+    { ...SAM, reachable: true, mismatched: false, results: [
+      // an ISRC as a raw tag spells it: the route keeps the row, ISRC nulled
+      fedRow(SAM, 'Wind One', { artist: 'Ana', album: 'Mixtape Vol 1', albumArtist: 'Various Artists', similarity: 0.9, isrc: 'US-RC1-76-07839', albumArt: 'mix.jpeg' }),
+      fedRow(SAM, 'Ben Song', { artist: 'Ben', album: 'Mixtape Vol 1', albumArtist: 'Various Artists', similarity: 0.8 }),
+      fedRow(SAM, 'Ferry One', { artist: 'Nova', album: 'Night Ferry', albumArtist: 'Nova', similarity: 0.7 }),
+      fedRow(SAM, 'Ferry Guest', { artist: 'Nova feat. Kai', album: 'Night Ferry', albumArtist: 'Nova', similarity: 0.6 }),
+      fedRow(SAM, 'Hits One', { artist: 'Other Band', album: 'Greatest Hits', albumArtist: 'Other Band', similarity: 0.5 }),
+      fedRow(SAM, 'Hits Two', { artist: 'Nova', album: 'Greatest Hits', albumArtist: 'Nova', similarity: 0.4 }),
+    ] },
+    // a peer on an older server: no albumArtist on its rows
+    { ...TOM, reachable: true, mismatched: false, results: [fedRow(TOM, 'Tom Wind', { artist: 'Ana', album: 'Mixtape Vol 1', similarity: 0.3 })] },
+  ], searched: { peers: 2 } };
+  const creditedGroups = () => D.peerGroups({ peers: peersSection(CREDITED) });
+
+  test('a compilation is ONE card under its album artist, whoever performs each song; a guest track joins its album; same-named albums by two credits stay two', () => {
+    const cards = D.peerAlbums(creditedGroups());
+    assert.deepEqual(cards.map((c) => [c.peerId, c.album, c.artist, c.albumArtist, c.raws.map((r) => r.title)]), [
+      [1, 'Mixtape Vol 1', 'Various Artists', 'Various Artists', ['Wind One', 'Ben Song']],
+      [1, 'Night Ferry', 'Nova', 'Nova', ['Ferry One', 'Ferry Guest']],
+      [1, 'Greatest Hits', 'Other Band', 'Other Band', ['Hits One']],
+      [1, 'Greatest Hits', 'Nova', 'Nova', ['Hits Two']],
+      [4, 'Mixtape Vol 1', 'Ana', null, ['Tom Wind']],
+    ], 'an older peer\'s rows group by the track artist, as before');
+    const [mixtape] = cards;
+    assert.equal(mixtape.raws[0].isrc, null, 'the malformed ISRC row is kept, the fact nulled, and still on its card');
+    assert.equal(mixtape.art, 'mix.jpeg');
+    assert.deepEqual(mixtape.paths, ['music/q/Wind One.mp3', 'music/q/Ben Song.mp3']);
+    // the server's own keys: the card's rows share one album copy, each keeps its own artist
+    const [a, b] = mixtape.raws.map(keysOfRec);
+    assert.equal(a.album, b.album, 'Album from either row is the same whole-album job');
+    assert.notEqual(a.artist, b.artist);
+    // what the card asks of the peer: the album whole, by its credit
+    assert.deepEqual(D.peerAlbumQuery(mixtape), { album: 'Mixtape Vol 1', artist: null, album_artist: 'Various Artists' });
+    assert.deepEqual(D.peerAlbumQuery(cards[4]), { album: 'Mixtape Vol 1', artist: 'Ana' }, 'no credit: the track artist narrows; no album_artist key at all');
+  });
+
+  test('the rows expose the credit (leadFields): the album artist, \'\' from an older peer', () => {
+    const rows = D.peerSongRows(creditedGroups());
+    assert.deepEqual(rows.map((r) => [r.title, r.artist, r.albumArtist]), [
+      ['Wind One', 'Ana', 'Various Artists'], ['Ben Song', 'Ben', 'Various Artists'], ['Ferry One', 'Nova', 'Nova'],
+      ['Ferry Guest', 'Nova feat. Kai', 'Nova'], ['Hits One', 'Other Band', 'Other Band'], ['Hits Two', 'Nova', 'Nova'], ['Tom Wind', 'Ana', ''],
+    ]);
+    assert.equal(rows[0].subtitle, 'Ana · Mixtape Vol 1', 'a song row still reads "Artist · Album"');
+    assert.equal(D.networkRows(historyResponse()).rows[0].albumArtist, '', 'a network lead has none');
+  });
+
+  test('albumCreditOf / peerAlbumQuery are the copy\'s own albumCredit / albumListing', () => {
+    const recs = [
+      { album: 'Mixtape Vol 1', artist: 'Ana', albumArtist: 'Various Artists', year: 2020 },
+      { album: 'Night Ferry', artist: 'Nova', albumArtist: null },
+      { album: 'Night Ferry', artist: 'Nova', albumArtist: '   ' },
+      { album: 'Mixtape Vol 1', artist: null, albumArtist: 'Various Artists' },
+      { album: 'Mixtape Vol 1', artist: '', albumArtist: '' },
+      { album: 'Loose', artist: 'Zed' },
+    ];
+    for (const rec of recs) {
+      assert.equal(D.albumCreditOf(rec), serverAlbumCredit(rec), JSON.stringify(rec));
+      const want = serverAlbumListing(rec);
+      const q = D.peerAlbumQuery(rec);
+      assert.deepEqual([q.album, q.artist, q.album_artist === undefined ? null : q.album_artist], [want.album, want.artist, want.albumArtist], JSON.stringify(rec));
+    }
+    assert.equal(D.albumCreditOf(null), null);
+    assert.deepEqual(D.peerAlbumQuery(undefined), { album: '', artist: null });
   });
 
   test('a card\'s art is its first row\'s albumArt (best match first); none = the note tile', () => {
@@ -1504,9 +1690,10 @@ describe('connected servers\' badges: per server, the album cards from their row
       songs: { total, copied: albums.flatMap((a) => a.songs.copied), skipped: albums.flatMap((a) => a.songs.skipped), failed: albums.flatMap((a) => a.songs.failed) },
       counts: { total, copied: sum('copied'), skipped: sum('skipped'), failed: sum('failed') }, stopped: null, peer: PB, ...over };
   };
-  // B also holds a song Boukmanflow only guests on, on a compilation: the
-  // card groups by the track's artist, so Discover draws 'Block Party
-  // Comp · Boukmanflow' — and the artist key is the same.
+  // B also holds a song Boukmanflow only guests on, on a compilation. Its
+  // rows carry no album credit (a peer before 2026-10-19), so the card
+  // groups by the track's artist and Discover draws 'Block Party Comp ·
+  // Boukmanflow' — and the artist key is the same.
   const COMP = {
     peers: [{ ...PB, reachable: true, mismatched: false, results: [
       tape(PB, 'Late Train Verse', 0.9), tape(PB, 'Corner Store Loop', 0.7),
@@ -1538,6 +1725,33 @@ describe('connected servers\' badges: per server, the album cards from their row
     // while it runs, every card of the artist reads "copying · every album"
     const live = D.peerAlbumBadges(cards, lookedUp(rows, [copy(91, late, 'artist', 'running')]), J);
     assert.deepEqual(live.map((b) => b && [b.state, b.kind]), [['running', 'discover.tray.kindArtist'], ['running', 'discover.tray.kindArtist']]);
+  });
+
+  // Since 2026-10-19 the rows carry the album's credit: B's compilation
+  // is one card, and one whole-album copy (the user's choice).
+  const VA = {
+    peers: [{ ...PB, reachable: true, mismatched: false, results: [
+      fedRow(PB, 'Party Verse', { artist: 'Boukmanflow', album: 'Block Party Comp', albumArtist: 'Various Artists', year: 2020, similarity: 0.65, filepath: 'peerlib/VA/Block Party Comp/07 - Party Verse.mp3' }),
+      fedRow(PB, 'Crowd Song', { artist: 'Color Out', album: 'Block Party Comp', albumArtist: 'Various Artists', year: 2020, similarity: 0.6, filepath: 'peerlib/VA/Block Party Comp/02 - Crowd Song.mp3' }),
+    ] }],
+    searched: { peers: 1, unreachable: 0, mismatched: 0 },
+  };
+  test('a compilation\'s album copy, started from any of its songs, badges its ONE card and every row of it', () => {
+    const g = D.peerGroups({ peers: peersSection(VA) });
+    const rows = D.peerSongRows(g);
+    const cards = D.peerAlbums(g);
+    assert.deepEqual(cards.map((c) => [c.album, c.artist, c.raws.length]), [['Block Party Comp', 'Various Artists', 2]]);
+    const crowd = rows[1];
+    // started from Color Out's song (the second row), not the card's raws[0]
+    const badged = lookedUp(rows, [copy(99, crowd, 'album', 'running', null, { recommendation: recOf(crowd, { albumArtist: 'Various Artists' }) })]);
+    assert.deepEqual(badged.map((r) => r.badge && [r.badge.state, r.badge.kind, r.badge.jobId]), [['running', 'discover.tray.kindAlbum', 99], ['running', 'discover.tray.kindAlbum', 99]]);
+    assert.deepEqual(D.peerAlbumBadges(cards, badged, J).map((b) => b && [b.state, b.jobId]), [['running', 99]]);
+    const done = lookedUp(rows, [copy(99, crowd, 'album', 'done', albumDone(2, { album: { name: 'Block Party Comp', artist: 'Color Out', albumArtist: 'Various Artists', year: 2020 } }))]);
+    assert.deepEqual(D.peerAlbumBadges(cards, done, J).map((b) => b && [b.state, b.tag]), [['copiedMany', 'discover.job.inCollection']]);
+    // an album job stored before the rows carried the credit keyed on the
+    // track artist: the lookup no longer hands it to these rows
+    const old = { ...copy(98, crowd, 'album', 'done', albumDone(1)), key: keysOfRec({ ...crowd.raw, albumArtist: null }).album };
+    assert.deepEqual(lookedUp(rows, [old]).map((r) => r.badge), [null, null]);
   });
 
   test('album by album: its own songs\' account, "already yours" when only-missing left it out, nothing where its listing failed or the walk never reached it', () => {
