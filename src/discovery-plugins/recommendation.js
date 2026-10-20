@@ -44,8 +44,10 @@ export const recommendationSchema = Joi.object({
   title: text(512),
   album: text(512),
   // The album's own credit, when the client knows it apart from the track's
-  // artist (an album card's album_artist): an album job narrows the peer's
-  // listing by it, so a compilation ("Various Artists") copies as itself.
+  // artist (an album card's album_artist; a connected server's Discover
+  // row, since 2026-10-19): an album job lists the peer's album by it and
+  // NOT by the track artist, so a compilation ("Various Artists") copies
+  // whole, and keys on it (albumCredit), so its every song asks for one job.
   albumArtist: text(512),
   year: Joi.number().integer().min(1000).max(9999).allow(null).default(null),
   isrc: Joi.string().trim().uppercase().pattern(/^[A-Z0-9]{12}$/).allow(null, '').empty('').default(null),
@@ -68,6 +70,37 @@ export function normalizeRecommendation(input) {
   const { error, value } = recommendationSchema.validate(input ?? {});
   if (error) { throw error; }
   return value;
+}
+
+// The catalogue facts a row can lose and still be the same song, in the
+// same place: optional and null when unknown (the rule above), and a
+// plug-in degrades without them. Not here, so never nulled: what a row IS
+// (artist, title — its identity), its handle (filepath) and its provenance
+// (source, peer, exportId).
+export const NULLABLE_FACTS = Object.freeze([
+  'album', 'albumArtist', 'year', 'isrc', 'releaseGroupMbid', 'recordingMbid', 'duration',
+]);
+const NULLABLE = new Set(NULLABLE_FACTS);
+
+// An untrusted row (a peer's) made one the schema takes, so a client can
+// forward it unchanged: `row` is the input itself when valid, a shallow copy
+// with every refused NULLABLE_FACTS field set to null (`nulled` names them:
+// an ISRC as a raw tag spells it, 'US-RC1-76-07839'; a year outside
+// 1000–9999), or null when anything else is refused (`error`, the Joi
+// message). The row is NOT normalised: its unknown keys (similarity,
+// genreTags, albumArt…) and its spelling ride along as sent — the routes
+// that take it normalise it themselves.
+export function repairRecommendation(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) { return { row: null, nulled: [], error: 'not an object' }; }
+  const { error } = recommendationSchema.validate(input, { abortEarly: false });
+  if (!error) { return { row: input, nulled: [], error: null }; }
+  const bad = [...new Set(error.details.map((d) => d.path[0]))];
+  if (bad.every((k) => NULLABLE.has(k))) {
+    const row = { ...input };
+    for (const k of bad) { row[k] = null; }
+    if (!recommendationSchema.validate(row).error) { return { row, nulled: bad, error: error.message }; }
+  }
+  return { row: null, nulled: [], error: error.message };
 }
 
 // Identity for persistence + dedupe. MBID-first: two rips of one recording
@@ -128,13 +161,27 @@ export const JOB_SCOPES = Object.freeze({
   FOLDER: 'folder',
 });
 
+// The credit an album job acts on and keys on: the album's own
+// (`albumArtist`) when the recommendation carries it — every song of a
+// compilation names "Various Artists" there, whoever performs it — else the
+// track artist. Null when neither is known.
+export function albumCredit(rec) {
+  if (rec && hasText(rec.albumArtist)) { return rec.albumArtist; }
+  return rec && hasText(rec.artist) ? rec.artist : null;
+}
+
 // What a scope needs from the recommendation: an album job the album's
-// name, the artist jobs the artist's, a folder job the folder's path on
-// the peer (`filepath`) and the peer itself — a path means nothing without
-// the server it is on. The missing field's name, or null when the scope
-// can run on this recommendation.
+// name and a credit to narrow it by (the album's own or the track's: an
+// album NAME alone is every album of that name on the peer, whoever made
+// it — refused since 2026-10-19), the artist jobs the artist's, a folder
+// job the folder's path on the peer (`filepath`) and the peer itself — a
+// path means nothing without the server it is on. The missing field's
+// name, or null when the scope can run on this recommendation.
 export function scopeMissing(rec, scope) {
-  if (scope === JOB_SCOPES.ALBUM) { return hasText(rec && rec.album) ? null : 'album'; }
+  if (scope === JOB_SCOPES.ALBUM) {
+    if (!hasText(rec && rec.album)) { return 'album'; }
+    return albumCredit(rec) ? null : 'artist';
+  }
   if (scope === JOB_SCOPES.ARTIST || scope === JOB_SCOPES.ARTIST_MISSING) { return hasText(rec && rec.artist) ? null : 'artist'; }
   if (scope === JOB_SCOPES.FOLDER) {
     if (!hasText(rec && rec.filepath)) { return 'filepath'; }
@@ -144,9 +191,11 @@ export function scopeMissing(rec, scope) {
 }
 
 // The identity a job dedupes on, per scope. A song job keys as the
-// recommendation does; an album job on artist + album (the album's own
-// credit when that is all the client knows), so two songs of one album
-// ask for the same album job; the artist scopes on the artist. A folder
+// recommendation does; an album job on the album's credit + album
+// (albumCredit: the album artist when the recommendation carries one, else
+// the track artist), so every song of one album asks for the same album
+// job — a compilation's songs by different artists included; the artist
+// scopes on the artist. A folder
 // job keys on the peer AND the folder's path, case kept: a path is a name
 // on one server, not a recording that two servers may both hold. The
 // scope names the key's prefix, so a song copy and an album copy of the
@@ -154,7 +203,11 @@ export function scopeMissing(rec, scope) {
 export function jobKey(rec, scope = JOB_SCOPES.SONG) {
   if (!scope || scope === JOB_SCOPES.SONG) { return recommendationKey(rec); }
   const digest = (parts) => sha(textKey(...parts));
-  if (scope === JOB_SCOPES.ALBUM) { return `album:${digest([hasText(rec.artist) ? rec.artist : rec.albumArtist, rec.album])}`; }
+  // Until 2026-10-19 the track artist won when both were known, so an album
+  // job stored then for a compilation's row keys under that track artist:
+  // the lookup no longer finds it from a row carrying the album artist, and
+  // a new album job is started rather than deduped against it.
+  if (scope === JOB_SCOPES.ALBUM) { return `album:${digest([albumCredit(rec), rec.album])}`; }
   if (scope === JOB_SCOPES.FOLDER) { return `folder:${sha(`${peerIdOf(rec)}|${normalizePeerPath(rec.filepath)}`)}`; }
   return `${scope}:${digest([rec.artist])}`;
 }

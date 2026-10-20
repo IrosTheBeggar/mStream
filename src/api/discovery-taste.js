@@ -37,7 +37,7 @@ import * as db from '../db/manager.js';
 import * as fedDb from '../db/federation.js';
 import * as sim from '../db/discovery-similarity.js';
 import { localIdentitySets } from '../db/discovery-novelty.js';
-import { recommendationKey, recommendationSchema, RECOMMENDATION_SOURCES } from '../discovery-plugins/index.js';
+import { recommendationKey, repairRecommendation, RECOMMENDATION_SOURCES } from '../discovery-plugins/index.js';
 import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 import { toIso, toSqlite } from '../stats/time.js';
@@ -415,16 +415,28 @@ async function networkSection(index, centroid, ctx) {
 // Peer rows are untrusted (a public-network snapshot, a federated server's
 // answer) and every stamped row is promised to be ready to send: clients
 // forward it unchanged to resolve / jobs / lookup, and the batch lookup
-// validates its array as one unit. A row the recommendation schema would
-// refuse — a 600-char title, a number for an artist — would turn the
-// client's whole lookup into a 400, so it never leaves here.
-function sendable(row) {
-  const { error } = recommendationSchema.validate(row);
-  if (error) {
-    winston.debug(`discovery taste: dropped a peer row that is not a valid recommendation: ${error.message}`);
-    return false;
+// validates its array as one unit, so one row the recommendation schema
+// would refuse turns the client's whole lookup into a 400.
+//
+// A bad CATALOGUE fact is nulled, not the row dropped (2026-10-19): an ISRC
+// as a raw tag spells it ('US-RC1-76-07839' — the scanner stores ISRCs
+// unnormalised), a year outside 1000–9999, an over-long MBID or album name
+// (recommendation.js repairRecommendation, NULLABLE_FACTS), so the song
+// still shows. A row the schema refuses in what it IS — a 600-char title,
+// a number for an artist, a path past 2048 — is dropped, as before.
+// genreTags, albumArt and similarity are no schema fields (stripped as
+// unknown, so they never fail it); albumArt is already a plain file name
+// or null (discovery-federation.js peerArtName).
+// The row ready to send (itself, or a copy with bad facts nulled), or null.
+// Exported for tests.
+export function sendableRow(row) {
+  const { row: out, nulled, error } = repairRecommendation(row);
+  if (!out) {
+    winston.debug(`discovery taste: dropped a peer row that is not a valid recommendation: ${error}`);
+  } else if (nulled.length) {
+    winston.debug(`discovery taste: nulled ${nulled.join(', ')} on a peer row: ${error}`);
   }
-  return true;
+  return out;
 }
 
 // Shelf rows → ready-to-send recommendations: `source` stamped, `seedHash`
@@ -437,12 +449,12 @@ export function stampNetworkRows(rows, seeds, limit) {
   const results = [];
   for (const { seedIndex, ...row } of rows) {
     if (results.length >= limit) { break; }
-    const rec = {
+    const rec = sendableRow({
       ...row,
       source: RECOMMENDATION_SOURCES.P2P,
       seedHash: seedIndex == null ? null : seeds[seedIndex]?.hash ?? null,
-    };
-    if (!sendable(rec)) { continue; }
+    });
+    if (!rec) { continue; }
     const key = recommendationKey(rec);
     if (seen.has(key)) { continue; }
     seen.add(key);
@@ -462,8 +474,8 @@ export function peersSection(fan) {
     peers: fan.peers.map((g) => ({
       ...g,
       results: g.results
-        .map((r) => ({ ...r, source: RECOMMENDATION_SOURCES.FEDERATION, seedHash: null }))
-        .filter(sendable),
+        .map((r) => sendableRow({ ...r, source: RECOMMENDATION_SOURCES.FEDERATION, seedHash: null }))
+        .filter(Boolean),
     })),
     searched: fan.searched,
   };

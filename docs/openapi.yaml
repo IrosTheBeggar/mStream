@@ -748,6 +748,18 @@ components:
         artist: { type: string, nullable: true }
         title: { type: string, nullable: true }
         album: { type: string, nullable: true }
+        albumArtist:
+          type: string
+          nullable: true
+          description: >
+            The album's own credit on the peer, apart from the track's artist
+            — "Various Artists" on a compilation; the album's primary artist
+            when it has no ALBUMARTIST tag (what the peer's `/db/albums`
+            lists as `album_artist`). Plain text of at most 512 characters,
+            else null; null without an album, from a peer before 2026-10-19,
+            and for an untagged file. An album job started from the row
+            copies the album as this credit holds it — a compilation whole —
+            and every row of the album keys that one job.
         year: { type: integer, nullable: true }
         isrc: { type: string, nullable: true }
         releaseGroupMbid: { type: string, nullable: true }
@@ -3024,8 +3036,15 @@ paths:
 
         Network and peer rows are complete recommendations: send them
         unchanged to the plug-in routes (unknown keys like `seedHash` are
-        stripped there). Network and peers are asked with ONE vector, the
-        centroid of the seeds.
+        stripped there). A row's optional catalogue fact the recommendation
+        schema would refuse — an ISRC as a raw tag spells it
+        (`US-RC1-76-07839`), a year outside 1000–9999, an over-long album,
+        album artist or MBID, a negative duration — comes as null, the row
+        kept (since 2026-10-19); a row whose artist, title, filepath, source,
+        peer or exportId the schema refuses is left out. Network and peers
+        are asked with ONE vector, the centroid of the seeds. A song the
+        caller just kept (a plug-in copy or download) is left out of the
+        very next answer.
 
         **Privacy**: the peers fan-out sends every paired server with
         discovery on the centroid of the seeds — a random batch of up to 12
@@ -3381,6 +3400,7 @@ paths:
                     artist: { type: string, nullable: true }
                     title: { type: string, nullable: true }
                     album: { type: string, nullable: true }
+                    albumArtist: { type: string, nullable: true, description: "The album's own credit, apart from the track's artist (a compilation's 'Various Artists'). An album job lists the peer's album by it, not by `artist`, and keys on it." }
                     year: { type: integer, nullable: true }
                     isrc: { type: string, nullable: true, description: "12 alphanumerics" }
                     releaseGroupMbid: { type: string, nullable: true }
@@ -3457,10 +3477,14 @@ paths:
         path — nothing is ever overwritten. It fails (state `failed`, `error`)
         when uploads are off for the account, the peer is unreachable, or the
         peer answers 429 for its transfer limit. With `scope: album` it asks the
-        peer for the album's songs (`album`, narrowed by `artist` and `year`
-        when the recommendation names them) and copies them one by one under
+        peer for the album's songs — by the album's own credit when the
+        recommendation carries `albumArtist` (the whole album as that credit
+        holds it, NOT narrowed by the track artist: a compilation comes
+        whole, every track artist on it, from any of its rows), else
+        narrowed by `artist`; and by `year`, matched against the album's
+        year range — and copies them one by one under
         the same rules; its `result` is then `{ scope: album, album: { name,
-        artist, year }, songs: { total, copied: [{ from, vpath, filepath,
+        artist, albumArtist, year }, songs: { total, copied: [{ from, vpath, filepath,
         trackId, bytes, title, artist, album, downloadId }], skipped: [{ from,
         why: owned | exists, at }], failed: [{ from, error }] }, bytes,
         stopped: null | cancelled | quota | busy | peer | refused, missingVars,
@@ -3539,7 +3563,7 @@ paths:
                 scope:
                   type: string
                   enum: [song, album, artist, artist-missing, folder]
-                  description: "What the job acts on: the song (default), the song's whole album, every album of its artist, only the artist's albums this library lacks, or a folder on the peer (`filepath` is then the folder's path there). Only a scope the plug-in declares (`scopes` in the listing) is accepted, and an album job needs the recommendation's `album`, the artist jobs its `artist`, a folder job its `filepath` and `peer`. A wider scope is kept in the job's `params.scope` and keys the job on the album / artist / peer + folder path rather than the song, so a song copy and an album copy of the same recommendation are two live jobs, and two songs of one album ask for the same album job."
+                  description: "What the job acts on: the song (default), the song's whole album, every album of its artist, only the artist's albums this library lacks, or a folder on the peer (`filepath` is then the folder's path there). Only a scope the plug-in declares (`scopes` in the listing) is accepted, and an album job needs the recommendation's `album` and a credit — `albumArtist` or `artist` (400 without one: an album name alone is every same-named album on the peer, whoever made it; since 2026-10-19) — the artist jobs its `artist`, a folder job its `filepath` and `peer`. A wider scope is kept in the job's `params.scope` and keys the job on the album (its credit — `albumArtist` when given, else `artist` — plus its name) / artist / peer + folder path rather than the song, so a song copy and an album copy of the same recommendation are two live jobs, and two songs of one album — two artists' songs of one compilation too, when the rows carry its `albumArtist` — ask for the same album job. An album job stored before 2026-10-19 from a row of a compilation keyed on that row's track artist: a row carrying the album artist no longer finds it."
                 landing:
                   type: object
                   description: "Folder jobs only: where the folder lands. `{ vpath?, path }` puts the pressed folder's files into that folder of that library (the destination's library when `vpath` is absent; `path` is relative to the library root and may be empty), its subfolders beneath; `{ tags: true }` files every song by the collection layout instead. Absent: the folder as it is on the peer, under the destination's base folder. A library the caller cannot write to, a path that climbs out, or a landing on a non-folder job is a 400."
@@ -3606,7 +3630,7 @@ paths:
                   key: { type: string, example: "text:3f9a…", description: The song's key (as before). }
                   keys:
                     type: object
-                    description: "Every scope's key for this recommendation: `song` always; `album` when it names an album; `artist` and `artist-missing` when it names an artist; `folder` when it carries a `filepath` and a `peer` (the key is the peer's plus that path)."
+                    description: "Every scope's key for this recommendation: `song` always; `album` when it names an album and a credit (`albumArtist`, else `artist`); `artist` and `artist-missing` when it names an artist; `folder` when it carries a `filepath` and a `peer` (the key is the peer's plus that path)."
                     additionalProperties: { type: string }
                     example: { song: "text:3f9a…", album: "album:7c1d…", artist: "artist:e0b2…", artist-missing: "artist-missing:e0b2…", folder: "folder:91ac…" }
                   jobs:
@@ -8108,6 +8132,7 @@ paths:
                         artist: { type: string, nullable: true }
                         title: { type: string, nullable: true }
                         album: { type: string, nullable: true, description: "Album name from the file's tags (discovery.db V3); null when untagged or from an older peer" }
+                        albumArtist: { type: string, nullable: true, description: "The album's own credit, as this server's /db/albums lists it (the ALBUMARTIST consensus, else the album's primary artist — 'Various Artists' for an untagged compilation); this server's album-songs `album_artist` matches it verbatim. Null without an album or a credit. Absent from servers before 2026-10-19." }
                         year: { type: integer, nullable: true, description: "Track year, falling back to the album year" }
                         isrc: { type: string, nullable: true, description: "ISRC from the file's tags — a direct-hit key on most catalogues" }
                         releaseGroupMbid: { type: string, nullable: true, description: "MusicBrainz release-group MBID of the album, when tagged" }

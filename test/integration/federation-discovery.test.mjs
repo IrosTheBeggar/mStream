@@ -220,6 +220,10 @@ describe('federation discovery similar (peer side)', () => {
     // set and the other three are explicit nulls, never undefined.
     assert.equal(body.results[0].album, 'Ana Album');
     assert.equal(body.results[1].album, 'Ben Album');
+    // The album's own credit (no ALBUMARTIST tag here: the album's primary
+    // artist, as /db/albums lists it).
+    assert.equal(body.results[0].albumArtist, 'Ana');
+    assert.equal(body.results[1].albumArtist, 'Ben');
     for (const r of body.results) {
       assert.equal(r.year, null);
       assert.equal(r.isrc, null);

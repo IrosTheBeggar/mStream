@@ -840,6 +840,31 @@ describe('discovery taste: public mode', () => {
       assert.equal(recommendationSchema.validate(rec).error, undefined, rec.title);
     }
   });
+
+  test('a peer row with a malformed OPTIONAL fact is kept with that fact nulled, network and peers alike (2026-10-19)', async () => {
+    const { stampNetworkRows, peersSection } = await import('../../src/api/discovery-taste.js');
+    const { recommendationSchema } = await import('../../src/discovery-plugins/index.js');
+    const ok = { artist: 'A', title: 'Fine', duration: 200, similarity: 0.9, exportId: 'anon:fine', peer: { endpointId: 'e1', name: 'P' }, seedIndex: 0 };
+    const rows = stampNetworkRows([
+      ok,
+      { ...ok, title: 'Hyphens', isrc: 'US-RC1-76-07839', exportId: 'anon:hyphens' },
+      { ...ok, title: 'Far Future', year: 99999, exportId: 'anon:future' },
+    ], [{ hash: 'h0' }], 10);
+    assert.deepEqual(rows.map((r) => [r.title, r.isrc ?? null, r.year ?? null, r.seedHash]),
+      [['Fine', null, null, 'h0'], ['Hyphens', null, null, 'h0'], ['Far Future', null, null, 'h0']]);
+    const fed = peersSection({
+      peers: [{ id: 1, name: 'S', lastSeen: null, reachable: true, mismatched: false, results: [
+        { title: 'Odd Year', artist: 'B', album: 'Comp', albumArtist: 'Various Artists', year: 99999, isrc: 'US-RC1-76-07839', filepath: 'm/o.mp3', peer: { id: 1, name: 'S' }, similarity: 0.8 },
+      ] }],
+      searched: { peers: 1, unreachable: 0, mismatched: 0 },
+    });
+    const [kept] = fed.peers[0].results;
+    assert.deepEqual([kept.title, kept.year, kept.isrc, kept.album, kept.albumArtist, kept.similarity, kept.source],
+      ['Odd Year', null, null, 'Comp', 'Various Artists', 0.8, 'federation'], 'only the bad facts go; the rest rides along');
+    for (const rec of [...rows, kept]) {
+      assert.equal(recommendationSchema.validate(rec).error, undefined, rec.title);
+    }
+  });
 });
 
 // ── capability flag ──────────────────────────────────────────────────────

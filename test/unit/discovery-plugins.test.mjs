@@ -15,7 +15,8 @@ import assert from 'node:assert/strict';
 
 import {
   CAPABILITIES, RESOLVING_CAPABILITIES, RUNNABLE_CAPABILITIES, SCOPES, getPlugin, isPluginEnabled, listPlugins, anyPluginEnabled, pluginNames,
-  normalizeRecommendation, recommendationKey, searchPhrase, JOB_SCOPES, scopeMissing, jobKey, jobKeysFor,
+  normalizeRecommendation, recommendationKey, searchPhrase, JOB_SCOPES, scopeMissing, jobKey, jobKeysFor, albumCredit,
+  NULLABLE_FACTS, repairRecommendation,
 } from '../../src/discovery-plugins/index.js';
 import { registerPlugin, unregisterPluginForTests } from '../../src/discovery-plugins/registry.js';
 import { buildLinks } from '../../src/discovery-plugins/plugins/links.js';
@@ -77,6 +78,103 @@ describe('recommendation contract', () => {
     assert.equal(searchPhrase({ artist: 'A', title: 'T' }), 'A T');
     assert.equal(searchPhrase({ artist: null, title: 'T' }), 'T');
     assert.equal(searchPhrase({ artist: null, title: null }), '');
+  });
+});
+
+// The taste route's peer rows (src/api/discovery-taste.js sendableRow, over
+// repairRecommendation): a bad optional catalogue fact is nulled, the row
+// kept; a bad identity, handle or provenance field still drops the row.
+// What comes out always passes the schema, so a client's batch lookup never
+// 400s on it.
+describe('a peer row made sendable: bad optional fields nulled, not the row dropped', () => {
+  const sendableRow = (row) => repairRecommendation(row).row;
+  const NULLABLE_ROW_FIELDS = NULLABLE_FACTS;
+  const fed = (over = {}) => ({
+    artist: 'Boukmanflow', title: 'Late Train Verse', album: 'Borrowed Tapes', albumArtist: 'Boukmanflow', year: 2026,
+    isrc: null, releaseGroupMbid: null, recordingMbid: null, duration: 8.046, similarity: 0.9324, genreTags: ['Hip-Hop'],
+    albumArt: '4f15f49add7102e1dadd216887ce32ac.jpeg', filepath: 'peerlib/Boukmanflow/Borrowed Tapes/02 - Late Train Verse.mp3',
+    peer: { id: 1, name: 'Stage Peer B' }, source: 'federation', seedHash: null, ...over,
+  });
+  // What the jobs, resolve and lookup routes do with it: no 400.
+  const valid = (row) => assert.doesNotThrow(() => normalizeRecommendation(row), JSON.stringify(row));
+
+  test('a valid row comes back as it is (the same object, every wire field kept)', () => {
+    const row = fed();
+    assert.deepEqual(repairRecommendation(row), { row, nulled: [], error: null });
+    assert.equal(sendableRow(row), row);
+  });
+
+  test('it says what it nulled, and why', () => {
+    const r = repairRecommendation(fed({ isrc: 'US-RC1-76-07839', year: 99999 }));
+    assert.deepEqual(r.nulled.sort(), ['isrc', 'year']);
+    assert.match(r.error, /isrc/);
+    assert.match(r.error, /year/);
+    const dropped = repairRecommendation(fed({ artist: 42 }));
+    assert.equal(dropped.row, null);
+    assert.deepEqual(dropped.nulled, []);
+    assert.match(dropped.error, /artist/);
+  });
+
+  test('the skeptic\'s rows: an ISRC with hyphens and a five-digit year are nulled, and the song stays', () => {
+    const hyphens = sendableRow(fed({ isrc: 'US-RC1-76-07839' }));
+    assert.ok(hyphens, 'kept');
+    assert.equal(hyphens.isrc, null);
+    assert.equal(hyphens.title, 'Late Train Verse');
+    assert.equal(hyphens.similarity, 0.9324, 'wire fields the schema does not know ride along');
+    assert.equal(hyphens.albumArt, '4f15f49add7102e1dadd216887ce32ac.jpeg');
+    valid(hyphens);
+    const year = sendableRow(fed({ year: 99999 }));
+    assert.equal(year.year, null);
+    assert.equal(year.isrc, null);
+    valid(year);
+    const both = sendableRow(fed({ isrc: 'US-RC1-76-07839', year: 99999 }));
+    assert.deepEqual([both.isrc, both.year], [null, null], 'every bad field at once (abortEarly off)');
+    assert.equal(both.album, 'Borrowed Tapes', 'the good ones untouched');
+    valid(both);
+  });
+
+  test('every optional field: a bad value nulls just that field', () => {
+    const bad = {
+      album: 'x'.repeat(513), albumArtist: 'y'.repeat(513), year: 12, isrc: 'not-an-isrc', releaseGroupMbid: 'r'.repeat(65),
+      recordingMbid: 'm'.repeat(65), duration: -3,
+    };
+    assert.deepEqual(Object.keys(bad).sort(), [...NULLABLE_ROW_FIELDS].sort(), 'the list this test walks is the list the route nulls');
+    for (const [k, v] of Object.entries(bad)) {
+      const out = sendableRow(fed({ [k]: v }));
+      assert.ok(out, `${k}: kept`);
+      assert.equal(out[k], null, `${k}: nulled`);
+      for (const other of NULLABLE_ROW_FIELDS.filter((f) => f !== k)) { assert.equal(out[other], fed()[other], `${k}: ${other} untouched`); }
+      valid(out);
+    }
+    const all = sendableRow(fed(bad));
+    for (const k of NULLABLE_ROW_FIELDS) { assert.equal(all[k], null, k); }
+    valid(all);
+    // A type the schema cannot convert is bad the same way.
+    assert.equal(sendableRow(fed({ year: 'soon' })).year, null);
+    assert.equal(sendableRow(fed({ duration: 'long' })).duration, null);
+  });
+
+  test('what a row IS is never nulled: a bad artist, title, filepath, source, peer or exportId drops it, alone or beside a nullable one', () => {
+    for (const over of [
+      { artist: 42 }, { title: 'x'.repeat(600) }, { filepath: 'p'.repeat(3000) }, { source: 'elsewhere' },
+      { peer: { id: 1, name: 'n'.repeat(200) } }, { exportId: 'e'.repeat(300) },
+      { title: 'x'.repeat(600), isrc: 'US-RC1-76-07839' },
+    ]) {
+      assert.equal(sendableRow(fed(over)), null, JSON.stringify(Object.keys(over)));
+    }
+    assert.equal(sendableRow('Artist - Title'), null, 'not an object');
+    assert.equal(sendableRow(null), null);
+    assert.equal(sendableRow(undefined), null);
+    assert.equal(sendableRow([fed()]), null);
+  });
+
+  test('a network row (p2p) is made sendable by the same rule', () => {
+    const row = { artist: 'A', title: 'Fine', isrc: 'gb-cmp-98-00001', duration: 200, similarity: 0.9, exportId: 'anon:fine', peer: { endpointId: 'e1', name: 'P' }, source: 'p2p', seedHash: 'h0' };
+    const out = sendableRow(row);
+    assert.equal(out.isrc, null, 'hyphens are not the 12 alphanumerics');
+    assert.equal(out.seedHash, 'h0');
+    valid(out);
+    assert.equal(sendableRow({ ...row, isrc: 'gbcmp9800001' }).isrc, 'gbcmp9800001', 'a valid ISRC is left as the peer spelled it (the plug-ins normalise it)');
   });
 });
 
@@ -239,6 +337,38 @@ describe('job scopes: what a job acts on, and the key it dedupes on', () => {
     assert.equal(card.albumArtist, 'Various Artists', 'albumArtist is part of the contract');
     assert.equal(scopeMissing(card, 'album'), null);
     assert.equal(jobKey(card, 'album'), jobKey(song, 'album'));
-    assert.notEqual(jobKey(normalizeRecommendation({ artist: 'Nova', albumArtist: 'Various Artists', album: 'Various Hits' }), 'album'), jobKey(card, 'album'), 'the track artist wins when both are known, as before');
+  });
+
+  test('a compilation: every row keys ONE album job on the album\'s credit, whoever performs the song (2026-10-19)', () => {
+    const kim = normalizeRecommendation({ artist: 'Peer Kim', title: 'Kim Song', album: 'Mixtape Vol 1', albumArtist: 'Various Artists' });
+    const lou = normalizeRecommendation({ artist: 'Peer Lou', title: 'Lou Song', album: 'Mixtape Vol 1', albumArtist: 'Various Artists' });
+    const card = normalizeRecommendation({ albumArtist: 'Various Artists', album: 'Mixtape Vol 1' });
+    assert.equal(albumCredit(kim), 'Various Artists', 'the album credit wins over the track artist');
+    assert.equal(jobKey(kim, 'album'), jobKey(lou, 'album'), 'two track artists, one album job');
+    assert.equal(jobKey(kim, 'album'), jobKey(card, 'album'), 'the card form asks for the same job');
+    assert.equal(jobKeysFor(lou).album, jobKey(kim, 'album'), 'the lookup finds it from either row');
+    // Each row keeps its own song and artist keys: only the album is shared.
+    assert.notEqual(jobKey(kim), jobKey(lou));
+    assert.notEqual(jobKey(kim, 'artist'), jobKey(lou, 'artist'));
+    // An album whose credit IS the track artist keys exactly as before (the
+    // track artist alone) — a peer row naming it changes no stored job.
+    const own = normalizeRecommendation({ artist: 'Nova', title: 'x', album: 'Night Ferry', albumArtist: 'Nova' });
+    assert.equal(jobKey(own, 'album'), jobKey(normalizeRecommendation({ artist: 'Nova', title: 'x', album: 'Night Ferry' }), 'album'));
+    assert.equal(jobKey(normalizeRecommendation({ artist: 'NOVA', album: 'night ferry', albumArtist: 'nova ' }), 'album'), jobKey(own, 'album'), 'normalised like every key');
+    // A blank credit is no credit: the track artist stands in.
+    assert.equal(albumCredit(normalizeRecommendation({ artist: 'Nova', albumArtist: '   ' })), 'Nova');
+    assert.equal(albumCredit(normalizeRecommendation({ title: 'x' })), null);
+  });
+
+  test('an album job needs a credit as well as the name: an album NAME alone is every same-named album on the peer', () => {
+    const nameOnly = normalizeRecommendation({ title: 'Untagged Hit', album: 'Greatest Hits' });
+    assert.equal(scopeMissing(nameOnly, 'album'), 'artist');
+    assert.equal(scopeMissing(normalizeRecommendation({ title: 'x' }), 'album'), 'album', 'the album name is asked for first');
+    assert.equal(scopeMissing(normalizeRecommendation({ album: 'Greatest Hits', artist: 'Other Band' }), 'album'), null);
+    assert.equal(scopeMissing(normalizeRecommendation({ album: 'Greatest Hits', albumArtist: 'Various Artists' }), 'album'), null);
+    assert.equal(scopeMissing(normalizeRecommendation({ album: 'Greatest Hits', albumArtist: '' }), 'album'), 'artist', 'an empty credit is none');
+    assert.deepEqual(Object.keys(jobKeysFor(nameOnly)), ['song'], 'no album key for a row that cannot start one');
+    const peerRow = normalizeRecommendation({ source: 'federation', peer: { id: 3 }, filepath: 'ceelib/Unknown/Greatest Hits/01.mp3', album: 'Greatest Hits' });
+    assert.deepEqual(Object.keys(jobKeysFor(peerRow)), ['song', 'folder']);
   });
 });

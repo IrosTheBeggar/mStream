@@ -23,7 +23,10 @@
 // Cancel is polled between chunks; the .part file is removed.
 //
 // The album scope (a job started with scope: 'album'): the peer's own
-// album-songs listing, then that copy song by song — the same owned skip,
+// album-songs listing — by the album's own credit when the recommendation
+// carries one (`albumArtist`), so a compilation comes whole, every track
+// artist on it; else narrowed by the track artist — then that copy song by
+// song — the same owned skip,
 // never-overwrite and per-song layout for each, in disc / track order — with
 // the account of what happened to every song as the result. One song's own
 // failure does not stop the album; the peer's transfer limit (a 429) or the
@@ -63,7 +66,7 @@ import * as downloadsDb from '../../db/plugin-downloads.js';
 import { ownedTrack, ownedAlbumKeys, libraryIdsFor } from '../owned.js';
 import { nameKey } from '../../db/name-key.js';
 import { CAPABILITIES, SCOPES } from '../registry.js';
-import { JOB_SCOPES, RECOMMENDATION_SOURCES, normalizePeerPath } from '../recommendation.js';
+import { JOB_SCOPES, RECOMMENDATION_SOURCES, normalizePeerPath, scopeMissing } from '../recommendation.js';
 import * as pathTemplate from '../../torrent/path-template.js';
 import { isIgnoredRelPath } from '../../db/scan-ignore.js';
 
@@ -264,10 +267,14 @@ async function run(ctx) {
   const has = (v) => typeof v === 'string' && v.trim().length > 0;
   const artistScope = scope === JOB_SCOPES.ARTIST || scope === JOB_SCOPES.ARTIST_MISSING;
   if (rec.source !== RECOMMENDATION_SOURCES.FEDERATION || !rec.peer || rec.peer.id == null
-    || ((scope === JOB_SCOPES.SONG || scope === JOB_SCOPES.FOLDER) && !has(rec.filepath))
-    || (scope === JOB_SCOPES.ALBUM && !has(rec.album)) || (artistScope && !has(rec.artist))) {
+    || ((scope === JOB_SCOPES.SONG || scope === JOB_SCOPES.FOLDER) && !has(rec.filepath))) {
     throw new Error('only a paired peer\'s recommendation can be copied');
   }
+  // The jobs route refuses these up front (recommendation.js scopeMissing);
+  // a job stored before a rule tightened (an album job with no credit, from
+  // before 2026-10-19) fails here instead of copying every same-named album.
+  const missing = scopeMissing(rec, scope);
+  if (missing) { throw new Error(`a ${scope} copy needs the recommendation's ${missing}`); }
   if (!(config.program && config.program.federation && config.program.federation.enabled === true)) {
     throw new Error('federation is disabled on this server');
   }
@@ -331,19 +338,32 @@ async function listAlbumSongs(env, { album, artist = null, albumArtist = null, y
     });
 }
 
-// The album: the peer's own listing of its songs, then copyOne for each
-// (copySongs keeps the account). `rec` names the album (and the artist,
-// which narrows the listing the way the modal's album view narrows it).
+// What an album job asks the peer's album-songs for (pure; unit-tested).
+// With the album's own credit (`albumArtist`: an album card, a connected
+// server's Discover row) the listing is the album as that credit holds it,
+// NOT narrowed by the track artist — a compilation is copied whole, every
+// track artist on it, whichever of its songs the job was started from (the
+// user's choice, 2026-10-19). Without one, the track artist narrows it (the
+// modal's album view's narrowing), as before. `year` is matched against the
+// album's year range on the peer. `fallbackArtist` stands in for a listed
+// song with no artist tag: the credit the listing was asked by.
+export function albumListing(rec) {
+  const credit = typeof rec.albumArtist === 'string' && rec.albumArtist.trim() ? rec.albumArtist : null;
+  return {
+    album: rec.album,
+    artist: credit ? null : (rec.artist || null),
+    albumArtist: credit,
+    year: rec.year || null,
+    fallbackArtist: credit || rec.artist || null,
+  };
+}
+
+// The album: the peer's own listing of its songs (albumListing), then
+// copyOne for each (copySongs keeps the account).
 async function copyAlbum(ctx, env, rec) {
   const { peer, destination } = env;
   ctx.progress(0, `asking ${peer.name} for “${rec.album}”`);
-  // The album's own credit narrows the listing when the client sent one
-  // (an album card): a compilation is then copied as itself, not looked
-  // for under a track artist it has none of.
-  const songs = await listAlbumSongs(env, {
-    album: rec.album, artist: rec.artist || null, albumArtist: rec.albumArtist || null, year: rec.year || null,
-    fallbackArtist: rec.artist || rec.albumArtist || null,
-  });
+  const songs = await listAlbumSongs(env, albumListing(rec));
   if (songs.length === 0) { throw new Error(`${peer.name} has no songs for “${rec.album}”`); }
 
   const outcome = await copySongs(songs, {
@@ -355,7 +375,9 @@ async function copyAlbum(ctx, env, rec) {
   winston.info(`federation-copy: album “${rec.album}” from peer '${peer.name}': ${copied.length} copied, ${skipped.length} skipped, ${failed.length} failed${outcome.stopped ? ` — stopped: ${outcome.stopped}` : ''}`);
   return {
     scope: JOB_SCOPES.ALBUM,
-    album: { name: rec.album, artist: rec.artist || null, year: rec.year || null },
+    // `albumArtist`: the credit the listing was asked by (the whole album);
+    // null when the track artist narrowed it.
+    album: { name: rec.album, artist: rec.artist || null, albumArtist: albumListing(rec).albumArtist, year: rec.year || null },
     ...accountFor(outcome.songs),
     bytes: outcome.bytes,
     stopped: outcome.stopped,

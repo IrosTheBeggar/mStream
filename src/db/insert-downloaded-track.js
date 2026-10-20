@@ -23,6 +23,7 @@ import * as config from '../state/config.js';
 import * as db from './manager.js';
 import { refreshDirtyAlbums } from './album-aggregate.js';
 import { refreshDirtyArtists } from './artist-aggregate.js';
+import { invalidateIdentityCache } from './discovery-novelty.js';
 import { generateThumbnails } from '../util/image-thumbs.js';
 
 const EMPTY_TAGS = { track: { no: null, of: null }, disk: { no: null, of: null } };
@@ -187,6 +188,12 @@ export async function insertDownloadedTrack({ filePath, vpath, basePath, source,
     refreshDirtyArtists(d);
     const row = d.prepare('SELECT id FROM tracks WHERE filepath = ? AND library_id = ?').get(data.filepath, lib.id);
     trackId = row ? row.id : null;
+    // "Music you don't have" must know at once: this write is on the
+    // server's own connection, which PRAGMA data_version ignores, so the
+    // novelty sets (db/discovery-novelty.js) would only see the song when
+    // their 60 s TTL ran out — a song just kept from Discover would still
+    // be recommended on the next answer.
+    invalidateIdentityCache();
   }
   winston.info(`${log}: added ${relativePath} to database`);
   // `hash` = the file hash the row carries, for the plugin_downloads record
@@ -211,6 +218,9 @@ export function removeDownloadedTrack({ vpath, relativePath, log = 'download' })
   if (changes > 0) {
     refreshDirtyAlbums(d);
     refreshDirtyArtists(d);
+    // The song is no longer "yours" for the novelty filter either (see the
+    // insert above).
+    invalidateIdentityCache();
     winston.info(`${log}: removed ${vpath}/${rel} from database`);
   }
   return changes;

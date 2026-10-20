@@ -13,22 +13,29 @@
  *   job badges       POST /api/v1/discovery/plugin-jobs/lookup[/batch]
  *
  * What it proves: the plug-in system serves Discover's recommended
- * federated songs and albums with no server change. And, pinned as
- * documented server behaviour, the three things every client (webapp,
- * phone, terminal) must handle itself:
- *   - an artist-less row's album job copies every album of that NAME on the
- *     peer, across artists — so a client offers Album only with an artist;
+ * federated songs and albums. Since 2026-10-19 (the user's decisions) also:
+ *   - every row carries the album's own credit (`albumArtist`, from the
+ *     peer's responder), so an album job from ANY row of a compilation
+ *     copies the whole album — every track artist on it — and every row of
+ *     it keys that one job (recommendation.js albumCredit);
+ *   - an album job with neither an artist nor an album artist is a 400: an
+ *     album NAME alone was every same-named album on the peer, across
+ *     artists (recommendation.js scopeMissing);
+ *   - a row with a malformed optional fact (here an ISRC as the raw tag
+ *     spells it, 'US-RC1-76-07839') is kept with that fact nulled, not
+ *     dropped (discovery-taste.js sendableRow);
+ *   - a kept song is gone from the very next answer: the copy's insert
+ *     refreshes the novelty sets (insert-downloaded-track.js).
+ * And, pinned as documented server behaviour, what every client (webapp,
+ * phone, terminal) must still handle itself:
  *   - album and artist job keys carry no peer: rows of one album on two
  *     peers share keys.album, and one peer's job comes back on the other
  *     peer's rows — so a client filters badges by job.recommendation.peer;
  *   - "done" is not "kept": with copies switched off on the peer, an album
  *     job ends done with result.stopped 'refused' and nothing copied — so a
  *     client reads result.stopped and result.counts, never the state alone.
- * Every call sends a row as the taste route answered it. The one exception
- * is the compilation case, which pins what a row as-is does for an album
- * whose album artist is not the track artist, and that the existing
- * album-card contract ({ album, albumArtist } with no artist) copies the
- * whole compilation when a client knows the album artist.
+ * Every call sends a row as the taste route answered it, except the one
+ * 400 case, which blanks a row's credits on purpose.
  *
  * It never touches a real library or a running mStream. Every server is a
  * throwaway startServer (temp config, db and caches; a free 127.0.0.1 port);
@@ -43,18 +50,15 @@
  *     to it before any job). 'lena' finished two songs (axes x and y), so
  *     every taste call sends the peers the same centroid.
  *   Server B (the peer): public mode, 'Bee Peer', a 'peerlib' built with
- *     ffmpeg: Nova's "Night Ferry" (3 songs) and "Second Wind" (2), and a
- *     compilation "Mixtape Vol 1" (album artist Various Artists) with one
- *     song each by Peer Kim and Peer Lou.
+ *     ffmpeg: Nova's "Night Ferry" (3 songs) and "Second Wind" (2 — "Wind
+ *     Two" tagged with a hyphenated ISRC), and a compilation "Mixtape Vol 1"
+ *     (album artist Various Artists) with one song each by Peer Kim and
+ *     Peer Lou.
  *   Server C (a second peer): public mode, 'Cee Peer', a 'ceelib' for the
  *     client-handling cases, kept off B so B's rows stay exactly the ones
  *     the proof ran on: "Greatest Hits" three times (no artist tag, Other
  *     Band, Third Band); Nova's "Wind Three", a song of "Second Wind" that
  *     B lacks; and Cee Solo's "Solo One", which nothing copies.
- *
- * One case is slow and opt-in: a kept song leaves the next answer only once
- * the 60 s novelty TTL runs out (db/discovery-novelty.js), so that wait
- * runs only with MSTREAM_TEST_SLOW=1.
  *
  * Skips when @number0/iroh has no prebuilt binary here (every side needs it).
  */
@@ -84,8 +88,9 @@ const COPY = 'federation-copy';
 const JOBS = `/api/v1/discovery/plugins/${COPY}/jobs`;
 const PEER_NAME = 'Bee Peer';
 const PEER_C_NAME = 'Cee Peer';
-// Opt-in for the one case that waits out the 60 s novelty TTL.
-const SLOW = process.env.MSTREAM_TEST_SLOW === '1';
+// An ISRC as a raw tag may spell it — the scanner stores it unnormalised;
+// the recommendation schema takes only 12 alphanumerics.
+const HYPHENATED_ISRC = 'US-RC1-76-07839';
 
 // ── vectors (4-d) ────────────────────────────────────────────────────────────
 const unit = (xs) => {
@@ -107,7 +112,7 @@ const A_SONGS = {
 // lena finished these two: the centroid is (x + y) / √2 on every call.
 const PLAYED = ['testlib/Icarus/Be Somebody/01 - Be Somebody.mp3', 'testlib/Vosto/Night Drive/01 - Highway.mp3'];
 
-// B's peerlib: { rel, title, artist, album, year, track, albumArtist?, vec }.
+// B's peerlib: { rel, title, artist, album, year, track, albumArtist?, isrc?, vec }.
 // Every cosine against the centroid sits in 0.66–0.91: none is a near
 // duplicate (NEAR_DUP 0.99), so all seven reach A's answer.
 const B_SONGS = [
@@ -115,7 +120,7 @@ const B_SONGS = [
   { rel: 'Nova/Night Ferry/02 - Ferry Two.mp3', title: 'Ferry Two', artist: 'Nova', album: 'Night Ferry', year: 2019, track: 2, vec: [0.85, 0.3, 0.3, 0.1] },
   { rel: 'Nova/Night Ferry/03 - Ferry Three.mp3', title: 'Ferry Three', artist: 'Nova', album: 'Night Ferry', year: 2019, track: 3, vec: [0.7, 0.2, 0.4, 0.3] },
   { rel: 'Nova/Second Wind/01 - Wind One.mp3', title: 'Wind One', artist: 'Nova', album: 'Second Wind', year: 2021, track: 1, vec: [0.3, 0.85, 0.2, 0.2] },
-  { rel: 'Nova/Second Wind/02 - Wind Two.mp3', title: 'Wind Two', artist: 'Nova', album: 'Second Wind', year: 2021, track: 2, vec: [0.2, 0.75, 0.3, 0.4] },
+  { rel: 'Nova/Second Wind/02 - Wind Two.mp3', title: 'Wind Two', artist: 'Nova', album: 'Second Wind', year: 2021, track: 2, isrc: HYPHENATED_ISRC, vec: [0.2, 0.75, 0.3, 0.4] },
   { rel: 'Various Artists/Mixtape Vol 1/01 - Kim Song.mp3', title: 'Kim Song', artist: 'Peer Kim', album: 'Mixtape Vol 1', year: 2020, track: 1, albumArtist: 'Various Artists', vec: [0.6, 0.6, 0.4, 0.2] },
   { rel: 'Various Artists/Mixtape Vol 1/02 - Lou Song.mp3', title: 'Lou Song', artist: 'Peer Lou', album: 'Mixtape Vol 1', year: 2020, track: 2, albumArtist: 'Various Artists', vec: [0.5, 0.4, 0.5, 0.5] },
 ];
@@ -141,7 +146,7 @@ const mockSeen = [];
 let firstRows = null;
 let firstCRows = null;
 const jobsMade = {};
-// When the song test's copy finished (the slow case times the TTL from it).
+// When the song test's copy finished (the kept case runs right after it).
 let songKeptAt = null;
 
 function runFfmpeg(args) {
@@ -192,10 +197,11 @@ function seedVectors(srv, rows) {
   }
 }
 
-function aRow(sql, ...args) {
-  const mdb = new DatabaseSync(path.join(srvA.tmpDir, 'db', 'mstream.db'), { readOnly: true, timeout: 5000 });
+function dbRow(srv, sql, ...args) {
+  const mdb = new DatabaseSync(path.join(srv.tmpDir, 'db', 'mstream.db'), { readOnly: true, timeout: 5000 });
   try { return mdb.prepare(sql).get(...args); } finally { mdb.close(); }
 }
+const aRow = (sql, ...args) => dbRow(srvA, sql, ...args);
 
 // Every file under a folder, relative, sorted — the fixture-untouched check.
 function tree(dir) {
@@ -320,6 +326,8 @@ describe('Discover\'s connected-server rows through the discovery plug-ins, unch
           '-metadata', `date=${s.year}`, '-metadata', `track=${s.track}`];
         if (s.artist) { meta.unshift('-metadata', `artist=${s.artist}`); }
         if (s.albumArtist) { meta.push('-metadata', `album_artist=${s.albumArtist}`); }
+        // ID3v2's ISRC frame, written verbatim.
+        if (s.isrc) { meta.push('-metadata', `TSRC=${s.isrc}`); }
         await runFfmpeg(['-nostdin', '-y', '-loglevel', 'error', '-f', 'lavfi', '-i', `sine=frequency=${freq += 45}:duration=2`,
           ...meta, '-ac', '1', file]);
       }
@@ -438,6 +446,7 @@ describe('Discover\'s connected-server rows through the discovery plug-ins, unch
       assert.equal(r.peer.id, cPeerId);
       assert.equal(r.filepath, `ceelib/${s.rel}`);
       assert.equal(r.artist, s.artist, 'the track artist; null for the untagged file');
+      assert.equal(r.albumArtist, s.artist, 'no ALBUMARTIST tag on C: the album\'s credit is its primary artist; none for the untagged file');
     }
     for (const r of rows) {
       const s = bByTitle.get(r.title);
@@ -447,8 +456,16 @@ describe('Discover\'s connected-server rows through the discovery plug-ins, unch
       assert.equal(r.artist, s.artist, 'the TRACK artist');
       assert.equal(r.album, s.album);
       assert.equal(r.year, s.year);
-      assert.equal(r.albumArtist, undefined, 'the row carries no album artist (the responder sends none)');
+      assert.equal(r.albumArtist, s.albumArtist || s.artist, 'the ALBUM\'s own credit: Various Artists on the compilation, Nova on Nova\'s albums');
+      assert.equal(r.isrc, null, `${r.title}: no valid ISRC`);
     }
+    // The hyphenated ISRC: stored on B as the tag spells it, sent by B's
+    // responder as is, and nulled on A — the song still shows (it is among
+    // the seven above), with every other fact it has.
+    assert.equal(dbRow(srvB, 'SELECT isrc FROM tracks WHERE title = ?', 'Wind Two').isrc, HYPHENATED_ISRC, 'the fixture tag landed');
+    const windTwo = rows.find((r) => r.title === 'Wind Two');
+    assert.equal(windTwo.isrc, null, 'nulled, not dropped');
+    assert.deepEqual([windTwo.album, windTwo.year, windTwo.albumArtist], ['Second Wind', 2021, 'Nova']);
     // The single lookup validates each row on its own: 200 for all, no jobs yet.
     for (const r of rows) {
       const look = await lena('POST', '/api/v1/discovery/plugin-jobs/lookup', { recommendation: r });
@@ -537,41 +554,33 @@ describe('Discover\'s connected-server rows through the discovery plug-ins, unch
     t.diagnostic(`song job: ${ms} ms`);
   });
 
-  test('kept: a later answer no longer recommends the copied song, once the 60 s novelty TTL runs out',
-    { skip: SLOW ? false : 'waits ~60 s for the novelty TTL: set MSTREAM_TEST_SLOW=1 to run it' }, async (t) => {
-      assert.ok(songKeptAt, 'the song test kept Ferry One');
-      // Not at once: the copy's row is written on the server's own
-      // connection, which PRAGMA data_version ignores, so the novelty sets
-      // (db/discovery-novelty.js localIdentitySets) only see it when their
-      // 60 s TTL runs out.
-      let stillThere = 0;
-      for (;;) {
-        const now = await peerRows();
-        if (!now.some((r) => r.title === 'Ferry One')) { break; }
-        stillThere++;
-        assert.ok(Date.now() - songKeptAt < 75_000, 'a kept song leaves the peers section within the novelty TTL');
-        await sleep(2000);
-      }
-      t.diagnostic(`the kept song left the peers section ${Date.now() - songKeptAt} ms after its copy (${stillThere} answers still listed it)`);
-    });
+  test('kept: the very next answer no longer recommends the copied song — no wait for the novelty TTL', async (t) => {
+    assert.ok(songKeptAt, 'the song test kept Ferry One');
+    // The copy's row is written on the server's own connection, which
+    // PRAGMA data_version ignores; the insert itself refreshes the novelty
+    // sets (insert-downloaded-track.js → invalidateIdentityCache), so the
+    // 60 s TTL (db/discovery-novelty.js) is not what lets it go. The earlier
+    // cases asked for answers moments ago, so the sets were warm.
+    const now = await peerRows();
+    assert.ok(!now.some((r) => r.title === 'Ferry One'), 'the kept song is gone at once');
+    assert.ok(now.some((r) => r.title === 'Ferry Two') && now.some((r) => r.title === 'Ferry Three'), 'the rest of its album is still recommended');
+    t.diagnostic(`the kept song left the peers section ${Date.now() - songKeptAt} ms after its copy, on the first answer asked`);
+  });
 
   test('album copy: an album card\'s best row as-is copies the peer\'s album, skipping the song already kept', async (t) => {
     const cards = albumCards(await peerRows());
     const card = cards.find((c) => c.album === 'Night Ferry');
     assert.ok(card, 'a Night Ferry card');
-    // Ferry One, kept by the song test, stays listed until the novelty TTL
-    // runs out (only the slow case waits for that). Either way the card's
-    // best row asks for the same album.
-    const titles = card.raws.map((r) => r.title);
-    assert.deepEqual(titles.filter((x) => x !== 'Ferry One'), ['Ferry Two', 'Ferry Three'], 'the card\'s rows, best first');
-    if (SLOW) { assert.ok(!titles.includes('Ferry One'), 'the slow case saw Ferry One leave'); }
+    // Ferry One, kept by the song test, has left the answer.
+    assert.deepEqual(card.raws.map((r) => r.title), ['Ferry Two', 'Ferry Three'], 'the card\'s rows, best first');
     const { job, ms } = await copyJob(card.raws[0], 'album');
     jobsMade.album = job;
     assert.equal(job.state, 'done', `job error: ${job.error}`);
     assert.deepEqual(job.params, { scope: 'album' });
     const res = job.result;
     assert.equal(res.scope, 'album');
-    assert.deepEqual(res.album, { name: 'Night Ferry', artist: 'Nova', year: 2019 });
+    assert.deepEqual(res.album, { name: 'Night Ferry', artist: 'Nova', albumArtist: 'Nova', year: 2019 },
+      'listed by the album\'s credit (Nova\'s own album: the same songs the track artist would list)');
     assert.deepEqual(res.counts, { total: 3, copied: 2, skipped: 1, failed: 0 }, JSON.stringify(res.songs));
     assert.equal(res.songs.skipped[0].why, 'owned');
     for (const s of res.songs.copied) {
@@ -579,8 +588,10 @@ describe('Discover\'s connected-server rows through the discovery plug-ins, unch
       assert.ok(fs.existsSync(path.join(collectionDir, rel)), `${rel} on disk`);
       assert.equal((await mediaBytes(s.filepath)).status, 200, `${s.filepath} plays from A`);
     }
-    // Every row of the card shares the album key (the kept song's row too:
-    // the last test asks with the rows as first drawn).
+    // Every row of the card shares the album key (the kept song's row too —
+    // its credit is the same album's, and the key is the one Nova's album
+    // had before rows carried a credit: the badges test asks with the rows
+    // as first drawn).
     const look = await lena('POST', '/api/v1/discovery/plugin-jobs/lookup/batch', { recommendations: card.raws });
     for (const [k, r] of look.body.results.entries()) {
       assert.equal(r.keys.album, job.key, `${card.raws[k].title}: the album key`);
@@ -618,34 +629,59 @@ describe('Discover\'s connected-server rows through the discovery plug-ins, unch
     t.diagnostic(`artist job: ${ms} ms`);
   });
 
-  test('compilation: a row as-is copies only its track artist\'s songs; the { album, albumArtist } card form copies the whole album', async () => {
-    const cards = albumCards(await peerRows());
+  test('compilation: an album job from ONE row copies the whole album, both track artists, and every row of it finds that one job', async (t) => {
+    const rows = await peerRows();
+    const cards = albumCards(rows);
     const kim = cards.find((c) => c.album === 'Mixtape Vol 1' && c.artist === 'Peer Kim');
     const lou = cards.find((c) => c.album === 'Mixtape Vol 1' && c.artist === 'Peer Lou');
-    assert.ok(kim && lou, 'one card per track artist: the client groups by peer + album + artist');
+    assert.ok(kim && lou, 'a client grouping by peer + album + TRACK artist draws one card per track artist');
+    const [kimRow, louRow] = [kim.raws[0], lou.raws[0]];
+    assert.equal(kimRow.albumArtist, 'Various Artists');
+    assert.equal(louRow.albumArtist, 'Various Artists');
 
-    // As-is: the peer's album-songs listing is narrowed by the TRACK artist.
-    const asIs = await copyJob(kim.raws[0], 'album');
-    jobsMade.compAsIs = asIs.job;
-    assert.equal(asIs.job.state, 'done', `job error: ${asIs.job.error}`);
-    assert.deepEqual(asIs.job.result.counts, { total: 1, copied: 1, skipped: 0, failed: 0 },
-      'only Peer Kim\'s song of the two-song compilation');
-    assert.ok(!fs.existsSync(path.join(collectionDir, 'From peers', 'Peer Lou')), 'Lou\'s song did not come along');
+    // Either card asks for ONE album job: the key is the album's credit's.
+    const before = await lena('POST', '/api/v1/discovery/plugin-jobs/lookup/batch', { recommendations: [kimRow, louRow] });
+    assert.equal(before.status, 200, JSON.stringify(before.body));
+    assert.equal(before.body.results[0].keys.album, before.body.results[1].keys.album, 'one album key for both rows');
+    assert.notEqual(before.body.results[0].keys.artist, before.body.results[1].keys.artist, 'each keeps its own artist key');
 
-    // The album-card contract (recommendation.js albumArtist): no track
-    // artist, the album's own credit. Needs the album artist, which no
-    // taste row carries — the client would have to learn it elsewhere.
-    const cardRec = { ...lou.raws[0], artist: null, albumArtist: 'Various Artists' };
-    const whole = await copyJob(cardRec, 'album');
-    jobsMade.compCard = whole.job;
-    assert.equal(whole.job.state, 'done', `job error: ${whole.job.error}`);
-    assert.deepEqual(whole.job.result.counts, { total: 2, copied: 1, skipped: 1, failed: 0 },
-      'the whole compilation: Lou\'s song copied, Kim\'s already kept');
-    // …but its key is the album credit's, not what the rows' lookups ask for.
-    const look = await lena('POST', '/api/v1/discovery/plugin-jobs/lookup/batch', { recommendations: [lou.raws[0], kim.raws[0]] });
-    assert.notEqual(look.body.results[0].keys.album, whole.job.key, 'Lou\'s row keys the album by its track artist');
-    assert.ok(!look.body.results[0].jobs.some((j) => j.id === whole.job.id), 'the card-form job does not badge the row as-is');
-    assert.ok(look.body.results[1].jobs.some((j) => j.id === asIs.job.id), 'the as-is job badges Kim\'s row');
+    // A row as-is: the peer lists the album by its credit, not by the
+    // track artist — the whole compilation comes.
+    const { job, ms } = await copyJob(kimRow, 'album');
+    jobsMade.comp = job;
+    assert.equal(job.state, 'done', `job error: ${job.error}`);
+    assert.equal(job.key, before.body.results[0].keys.album);
+    assert.deepEqual(job.result.album, { name: 'Mixtape Vol 1', artist: 'Peer Kim', albumArtist: 'Various Artists', year: 2020 });
+    assert.deepEqual(job.result.counts, { total: 2, copied: 2, skipped: 0, failed: 0 }, JSON.stringify(job.result.songs));
+    assert.deepEqual(job.result.songs.copied.map((x) => x.from), [
+      'peerlib/Various Artists/Mixtape Vol 1/01 - Kim Song.mp3',
+      'peerlib/Various Artists/Mixtape Vol 1/02 - Lou Song.mp3',
+    ], 'both artists\' songs, in track order, from one row');
+    for (const x of job.result.songs.copied) {
+      assert.equal((await mediaBytes(x.filepath)).status, 200, `${x.filepath} plays from A`);
+      assert.ok(fs.readFileSync(path.join(collectionDir, x.filepath.slice('collection/'.length)))
+        .equals(fs.readFileSync(path.join(peerDir, x.from.slice('peerlib/'.length)))), `${x.from} byte for byte`);
+    }
+
+    // Both rows' badges find it, under their (shared) album key.
+    const look = await lena('POST', '/api/v1/discovery/plugin-jobs/lookup/batch', { recommendations: [kimRow, louRow] });
+    assert.equal(look.status, 200, JSON.stringify(look.body));
+    for (const [k, r] of look.body.results.entries()) {
+      const j = r.jobs.find((x) => x.id === job.id);
+      assert.ok(j, `${[kimRow, louRow][k].title}: carries the album job`);
+      assert.equal(j.key, r.keys.album);
+    }
+    // And both songs are kept: the next answer recommends neither.
+    const after = await peerRows();
+    assert.ok(!after.some((r) => r.album === 'Mixtape Vol 1'), 'the whole compilation left the answer at once');
+
+    // An album job with no credit at all — neither the track's artist nor
+    // the album's — is refused: an album NAME alone was every same-named
+    // album on the peer, whoever made it.
+    const blank = await lena('POST', JOBS, { recommendation: { ...louRow, artist: null, albumArtist: null }, scope: 'album' });
+    assert.equal(blank.status, 400, JSON.stringify(blank.body));
+    assert.match(blank.body.error, /album job needs the recommendation's artist/);
+    t.diagnostic(`compilation album job: ${ms} ms`);
   });
 
   test('badges for the page as first drawn: one batch lookup over the original rows finds every job by its scope', async () => {
@@ -660,51 +696,52 @@ describe('Discover\'s connected-server rows through the discovery plug-ins, unch
       assert.ok(has(title, jobsMade.artist), `artist job on ${title}`);
     }
     assert.ok(!has('Kim Song', jobsMade.artist) && !has('Lou Song', jobsMade.artist), 'not on another artist\'s rows');
-    assert.ok(has('Kim Song', jobsMade.compAsIs));
-    assert.ok(!has('Lou Song', jobsMade.compCard), 'the card-form compilation job badges no row as-is');
+    assert.ok(has('Kim Song', jobsMade.comp) && has('Lou Song', jobsMade.comp), 'the compilation\'s one album job on both its rows');
+    assert.ok(!has('Ferry One', jobsMade.comp), 'and on no other album\'s row');
   });
 
   // ── What a client must handle itself (server behaviour, on C's rows) ──
 
-  test('an artist-less row: no artist keys, the artist scopes refuse it, and its album job copies EVERY album of that name on the peer, across artists — why a client offers Album only with an artist', async (t) => {
+  test('an artist-less row: no artist or album keys, and every artist and album job on it is refused; a tagged row of a same-named album copies only its own credit\'s album', async (t) => {
     const [untagged, other, third] = ['Untagged Hit', 'Other Hit', 'Third Hit'].map((title) => firstCRows.find((r) => r.title === title));
     assert.ok(untagged && other && third, 'the three "Greatest Hits" rows');
     assert.equal(untagged.artist, null, 'the responder sends no artist for an untagged file');
+    assert.equal(untagged.albumArtist, null, '…and no album credit: its album has none');
     assert.equal(untagged.album, 'Greatest Hits');
     const look = await lena('POST', '/api/v1/discovery/plugin-jobs/lookup', { recommendation: untagged });
     assert.equal(look.status, 200, JSON.stringify(look.body));
-    assert.deepEqual(Object.keys(look.body.keys).sort(), ['album', 'folder', 'song'], 'no artist, no artist keys');
-    for (const scope of ['artist', 'artist-missing']) {
+    assert.deepEqual(Object.keys(look.body.keys).sort(), ['folder', 'song'], 'no credit, no artist or album keys');
+    // An album NAME alone was every album of that name on the peer, across
+    // artists (until 2026-10-19 this row's album job copied all three):
+    // refused, like the artist scopes.
+    for (const scope of ['album', 'artist', 'artist-missing']) {
       const r = await lena('POST', JOBS, { recommendation: untagged, scope });
       assert.equal(r.status, 400, `${scope}: ${JSON.stringify(r.body)}`);
+      assert.match(r.body.error, /needs the recommendation's artist/);
     }
 
-    // The album job is taken: an album scope needs only the album's name
-    // (recommendation.js scopeMissing), and the peer's album-songs adds no
-    // artist condition when none is sent.
-    const { job, ms } = await copyJob(untagged, 'album');
-    jobsMade.untaggedAlbum = job;
+    // A tagged row of a same-named album: the peer lists the album by that
+    // row's credit, so the other two artists' "Greatest Hits" stay put.
+    assert.equal(other.albumArtist, 'Other Band');
+    const { job, ms } = await copyJob(other, 'album');
+    jobsMade.otherAlbum = job;
     assert.equal(job.state, 'done', `job error: ${job.error}`);
-    assert.deepEqual(job.result.album, { name: 'Greatest Hits', artist: null, year: 2000 });
-    assert.deepEqual(job.result.counts, { total: 3, copied: 3, skipped: 0, failed: 0 }, JSON.stringify(job.result.songs));
-    assert.deepEqual(job.result.songs.copied.map((s) => s.from).sort(), [
-      'ceelib/Other Band/Greatest Hits/01 - Other Hit.mp3',
-      'ceelib/Third Band/Greatest Hits/01 - Third Hit.mp3',
-      'ceelib/Unknown/Greatest Hits/01 - Untagged Hit.mp3',
-    ], 'three artists\' songs from one artist-less row');
+    assert.deepEqual(job.result.album, { name: 'Greatest Hits', artist: 'Other Band', albumArtist: 'Other Band', year: 2000 });
+    assert.deepEqual(job.result.counts, { total: 1, copied: 1, skipped: 0, failed: 0 }, JSON.stringify(job.result.songs));
+    assert.deepEqual(job.result.songs.copied.map((x) => x.from), ['ceelib/Other Band/Greatest Hits/01 - Other Hit.mp3']);
 
-    // Its key is the album NAME alone: it badges the artist-less row, never
-    // the tagged rows whose songs it took.
+    // Its key is Other Band's album: it badges that row, and neither the
+    // artist-less row (no album key at all) nor Third Band's.
     const batch = await lena('POST', '/api/v1/discovery/plugin-jobs/lookup/batch', { recommendations: [untagged, other, third] });
     assert.equal(batch.status, 200, JSON.stringify(batch.body));
-    assert.equal(batch.body.results[0].keys.album, job.key);
-    assert.ok(batch.body.results[0].jobs.some((j) => j.id === job.id), 'the artist-less row carries it');
-    for (const [k, r] of batch.body.results.slice(1).entries()) {
-      const title = [other, third][k].title;
-      assert.notEqual(r.keys.album, job.key, `${title}: an album key of its own`);
-      assert.ok(!r.jobs.some((j) => j.id === job.id), `${title}: does not carry the job that copied its song`);
-    }
-    t.diagnostic(`artist-less album job: ${ms} ms`);
+    const [u, o, th] = batch.body.results;
+    assert.equal(u.keys.album, undefined);
+    assert.ok(!u.jobs.some((j) => j.id === job.id), 'the artist-less row does not carry it');
+    assert.equal(o.keys.album, job.key);
+    assert.ok(o.jobs.some((j) => j.id === job.id), 'Other Hit\'s row carries it');
+    assert.notEqual(th.keys.album, job.key, 'Third Band\'s album has a key of its own');
+    assert.ok(!th.jobs.some((j) => j.id === job.id));
+    t.diagnostic(`same-named album job: ${ms} ms`);
   });
 
   test('two peers, one album: B\'s and C\'s "Second Wind" rows share keys.album and the artist keys, so one peer\'s job comes back on the other peer\'s rows — why a client filters badges by peer', async (t) => {
@@ -805,8 +842,6 @@ describe('Discover\'s connected-server rows through the discovery plug-ins, unch
     assert.deepEqual(tree(srvA.musicDir), fixtureBefore, 'no file added to testlib');
     const landed = tree(collectionDir).map((p) => p.split(path.sep).join('/'));
     assert.deepEqual(landed, [
-      // The artist-less song: no artist folder.
-      'From peers/Greatest Hits/01 - Untagged Hit.mp3',
       'From peers/Nova/Night Ferry/01 - Ferry One.mp3',
       'From peers/Nova/Night Ferry/02 - Ferry Two.mp3',
       'From peers/Nova/Night Ferry/03 - Ferry Three.mp3',
@@ -816,7 +851,6 @@ describe('Discover\'s connected-server rows through the discovery plug-ins, unch
       'From peers/Other Band/Greatest Hits/01 - Other Hit.mp3',
       'From peers/Peer Kim/Mixtape Vol 1/01 - Kim Song.mp3',
       'From peers/Peer Lou/Mixtape Vol 1/02 - Lou Song.mp3',
-      'From peers/Third Band/Greatest Hits/01 - Third Hit.mp3',
-    ]);
+    ], 'neither the artist-less song nor Third Band\'s same-named album came along');
   });
 });

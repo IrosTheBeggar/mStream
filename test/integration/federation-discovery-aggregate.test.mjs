@@ -152,8 +152,10 @@ describe('discovery federation — merging peer answers (no iroh)', () => {
         if (!isNovel(exclude, { artist: r.artist, title: r.title, recordingMbid: r.recordingMbid, similarityVsSeed: r.similarity },
           { newArtistsOnly })) { continue; }
         merged.push({
-          artist: r.artist, title: r.title, album: r.album ?? null, year: r.year ?? null, isrc: r.isrc ?? null,
-          // albumArt joined the row later (2026-10-16); the walk is unchanged.
+          artist: r.artist, title: r.title, album: r.album ?? null,
+          // albumArt and albumArtist joined the row later (2026-10-16,
+          // 2026-10-19); the walk is unchanged.
+          albumArtist: r.albumArtist ?? null, year: r.year ?? null, isrc: r.isrc ?? null,
           releaseGroupMbid: r.releaseGroupMbid ?? null, albumArt: r.albumArt ?? null, duration: r.duration, similarity: r.similarity,
           genreTags: r.genreTags, recordingMbid: r.recordingMbid, filepath: r.filepath, peer: { id: peer.id, name: peer.name },
         });
@@ -302,6 +304,26 @@ describe('discovery federation — merging peer answers (no iroh)', () => {
       'No Extension': null, 'Long Stem': null, 'Real Hash': 'd41d8cd98f00b204e9800998ecf8427e.jpeg',
     });
     assert.ok(out.results.every((r) => 'albumArt' in r), 'every row carries the key, so clients read one shape');
+  });
+
+  test('albumArtist: the album\'s own credit passes through as plain text; absent (an older peer), not a string, blank or past 512 → null', () => {
+    const out = mergePeerAnswers([peerRow(1, 'A')], [ok([
+      song('Peer Kim', 'Compiled', 0.9, { album: 'Mixtape Vol 1', albumArtist: 'Various Artists' }),
+      song('Nova', 'Own Album', 0.85, { album: 'Night Ferry', albumArtist: 'Nova' }),
+      song('Nova', 'Older Peer', 0.8, { album: 'Night Ferry' }),
+      song('Iko', 'Padded', 0.7, { albumArtist: '  Iko & Friends  ' }),
+      song('Iko', 'Blank', 0.6, { albumArtist: '   ' }),
+      song('Iko', 'Number', 0.5, { albumArtist: 7 }),
+      song('Iko', 'Object', 0.45, { albumArtist: { name: 'x' } }),
+      song('Vosto', 'At Cap', 0.4, { albumArtist: 'v'.repeat(512) }),
+      song('Vosto', 'Past Cap', 0.3, { albumArtist: 'v'.repeat(513) }),
+    ])], { excludeSets: none(), limit: 30 });
+    const credit = Object.fromEntries(out.peers[0].results.map((r) => [r.title, r.albumArtist]));
+    assert.deepEqual(credit, {
+      Compiled: 'Various Artists', 'Own Album': 'Nova', 'Older Peer': null, Padded: 'Iko & Friends', Blank: null,
+      Number: null, Object: null, 'At Cap': 'v'.repeat(512), 'Past Cap': null,
+    });
+    assert.ok(out.results.every((r) => 'albumArtist' in r), 'every row carries the key');
   });
 });
 

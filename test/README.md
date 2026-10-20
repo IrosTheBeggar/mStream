@@ -37,11 +37,6 @@ node --test "test/db/**/*.test.mjs"   # ad-hoc glob
 node --test --watch "test/unit/**/*.test.mjs"
 ```
 
-A test case that only waits out a real timer is skipped unless
-`MSTREAM_TEST_SLOW=1` is set; the skip reason in the output names it. For
-example, `MSTREAM_TEST_SLOW=1 node --test test/integration/discovery-taste-plugins.test.mjs`
-also waits about 60 s for the novelty TTL.
-
 `npm test` first runs a `pretest` check ([helpers/ensure-prereqs.mjs](helpers/ensure-prereqs.mjs))
 that pre-builds the fixture library once and fails fast with a clear message when
 a prerequisite is missing — rather than a cryptic error deep into the run.

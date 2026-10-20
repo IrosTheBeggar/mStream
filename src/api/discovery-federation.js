@@ -224,6 +224,15 @@ export function peerArtName(v) {
   return typeof v === 'string' && ART_NAME.test(v) ? v : null;
 }
 
+// A peer's plain text field (albumArtist): a string of at most `max`
+// characters once trimmed — the recommendation schema's own text(512)
+// bound — else null. A peer is untrusted, and a client forwards the row.
+export function peerText(v, max = 512) {
+  if (typeof v !== 'string') { return null; }
+  const t = v.trim();
+  return t && t.length <= max ? t : null;
+}
+
 /**
  * Pure merge of the peers' answers — no I/O, so it is unit-tested with
  * handcrafted answers. `answers[i]` is peers[i]'s Promise.allSettled outcome,
@@ -282,6 +291,10 @@ export function mergePeerAnswers(peers, answers, { excludeSets, newArtistsOnly =
           // Catalogue fields — absent (null) from peers older than the
           // discovery.db V3 responder; every field here is optional.
           album: r.album ?? null,
+          // The album's own credit (a compilation's "Various Artists"),
+          // apart from the track's artist: an album copy lists the album by
+          // it, whole. Null from peers before 2026-10-19 (peerText).
+          albumArtist: peerText(r.albumArtist),
           year: r.year ?? null,
           isrc: r.isrc ?? null,
           releaseGroupMbid: r.releaseGroupMbid ?? null,

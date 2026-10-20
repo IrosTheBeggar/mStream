@@ -277,7 +277,7 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     assert.equal(job.state, 'done', `job error: ${job.error}`);
     const { result } = job;
     assert.equal(result.scope, 'album');
-    assert.deepEqual(result.album, { name: 'Night Ferry', artist: 'Nova', year: null });
+    assert.deepEqual(result.album, { name: 'Night Ferry', artist: 'Nova', albumArtist: null, year: null }, 'no album credit sent: narrowed by the track artist');
     assert.equal(result.songs.total, 2);
     assert.equal(result.stopped, null);
     assert.deepEqual(result.songs.failed, []);

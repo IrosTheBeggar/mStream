@@ -16,6 +16,7 @@ import * as pathTemplate from '../../src/torrent/path-template.js';
 import { registerPlugin, unregisterPluginForTests, listPlugins } from '../../src/discovery-plugins/registry.js';
 import plugin, {
   copySongs, copyAlbums, planArtistAlbums, copyBody, MAX_COPY_BYTES, fetchMedia, planFolder, landingFor, accountFor, RESULT_LIST_CAP,
+  albumListing,
 } from '../../src/discovery-plugins/plugins/federation-copy.js';
 import {
   NAMESPACE, KEY, DEFAULT_LAYOUT, LAYOUT_VARS, destinationSchema, uploadsAllowed, writableLibraries,
@@ -232,6 +233,27 @@ describe('federation-copy · the folder (planFolder, landingFor, accountFor)', (
     assert.equal(r.songs.total, RESULT_LIST_CAP + 7);
     assert.deepEqual(r.counts, { total: RESULT_LIST_CAP + 7, copied: RESULT_LIST_CAP + 7, skipped: 0, failed: 0 });
     assert.equal(r.truncated, true);
+  });
+});
+
+describe('federation-copy · what an album job asks the peer for (albumListing)', () => {
+  test('with the album\'s own credit: the album as that credit holds it, NOT narrowed by the track artist — a compilation comes whole', () => {
+    assert.deepEqual(albumListing({ artist: 'Peer Kim', title: 'Kim Song', album: 'Mixtape Vol 1', albumArtist: 'Various Artists', year: 2020 }), {
+      album: 'Mixtape Vol 1', artist: null, albumArtist: 'Various Artists', year: 2020, fallbackArtist: 'Various Artists',
+    });
+    // The card form (no track artist) asks the same.
+    assert.deepEqual(albumListing({ album: 'Mixtape Vol 1', albumArtist: 'Various Artists' }), {
+      album: 'Mixtape Vol 1', artist: null, albumArtist: 'Various Artists', year: null, fallbackArtist: 'Various Artists',
+    });
+  });
+
+  test('without one: the track artist narrows it, as before', () => {
+    assert.deepEqual(albumListing({ artist: 'Nova', title: 'Remote Hit', album: 'Night Ferry', albumArtist: null, year: 2019 }), {
+      album: 'Night Ferry', artist: 'Nova', albumArtist: null, year: 2019, fallbackArtist: 'Nova',
+    });
+    assert.deepEqual(albumListing({ artist: 'Nova', album: 'Night Ferry', albumArtist: '  ' }), {
+      album: 'Night Ferry', artist: 'Nova', albumArtist: null, year: null, fallbackArtist: 'Nova',
+    }, 'a blank credit is none');
   });
 });
 
