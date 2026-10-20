@@ -121,24 +121,40 @@
   "discover.modal.queuedNext": "Queued next",
   "discover.modal.queued": "Added to the queue",
   "discover.modal.album": "Album",
-  "discover.modal.songCount": "{{count}} songs",
+  "discover.modal.songCount": {
+    "one": "1 song",
+    "other": "{{count}} songs"
+  },
   "discover.modal.inLibrary": "in your library",
   "discover.modal.noneInLibrary": "none in your library",
   "discover.modal.viewAlbum": "View album",
   "discover.modal.playAlbum": "Play album",
   "discover.modal.queueAlbum": "Add album to queue",
-  "discover.modal.albumQueued": "{{count}} songs added to the queue",
+  "discover.modal.albumQueued": {
+    "one": "1 song added to the queue",
+    "other": "{{count}} songs added to the queue"
+  },
   "discover.modal.albumEmpty": "Couldn’t fetch that album from the peer",
   "discover.modal.artist": "Artist",
-  "discover.modal.albumCount": "{{count}} albums",
+  "discover.modal.albumCount": {
+    "one": "1 album",
+    "other": "{{count}} albums"
+  },
   "discover.modal.youHave": "you have {{count}}",
   "discover.modal.viewArtist": "View artist",
   "discover.modal.view": "View",
   "discover.modal.keep": "Keep a copy",
   "discover.modal.keepHint": "Copies from {{peer}} into your library, as a job",
   "discover.modal.keepAddSong": "Add this song",
-  "discover.modal.keepAddMissing": "Add {{count}} albums",
-  "discover.modal.onlyMissing": "Only the {{count}} albums you don’t have",
+  "discover.modal.keepAddMissing": {
+    "one": "Add 1 album",
+    "other": "Add {{count}} albums"
+  },
+  "discover.modal.onlyMissing": {
+    "one": "Only the 1 album you don’t have",
+    "other": "Only the {{count}} albums you don’t have"
+  },
+  "discover.modal.onlyMissingNoCount": "Only the albums you don’t have",
   "discover.modal.preview": "30 second preview",
   "discover.modal.previewIdle": "Press to play",
   "discover.modal.play": "Play",
@@ -157,7 +173,7 @@
   "discover.modal.inviteSent": "Invite sent · waiting for {{peer}}",
   "discover.modal.inviteSentSub": "They’ll see it under Admin → Federation → Requests",
   "discover.modal.paired": "Paired as {{name}}",
-  "discover.modal.pairedSub": "Their songs show under From your peers",
+  "discover.modal.pairedSub": "Their songs play here and show on Discover",
   "discover.modal.inviteFailed": "Couldn’t send the invite",
   "discover.modal.retry": "Retry",
   "discover.modal.findElsewhere": "Find elsewhere",
@@ -172,7 +188,10 @@
   "discover.modal.addToCollectionSub": "Copies the file from {{peer}} into your library",
   "discover.modal.addAlbum": "Add album to your collection",
   "discover.modal.addAlbumStart": "Add album",
-  "discover.modal.addAlbumSub": "Copies its {{count}} songs from {{peer}} into your library",
+  "discover.modal.addAlbumSub": {
+    "one": "Copies its 1 song from {{peer}} into your library",
+    "other": "Copies its {{count}} songs from {{peer}} into your library"
+  },
   "discover.modal.addAlbumSubNoCount": "Copies every song of it from {{peer}} into your library",
   "discover.modal.addAlbumSubOwned": "You have this album · copies only the songs you lack",
   "discover.modal.addArtist": "Add artist to your collection",
@@ -243,6 +262,7 @@
   "discover.job.toastFailed": "{{plugin}} failed",
   "discover.job.toastCopiedMany": "Added to your collection",
   "discover.job.toastStopped": "Stopped early",
+  "discover.job.toastNothing": "Nothing to copy",
   "discover.job.albumsCount": {
     "one": "1 album",
     "other": "{{count}} albums"
@@ -263,12 +283,22 @@
     "one": "1 album left out",
     "other": "{{count}} albums left out"
   },
-  "discover.job.nothingToCopy": "Nothing to copy · you have it all",
+  "discover.job.albumsFailed": {
+    "one": "1 album could not be listed",
+    "other": "{{count}} albums could not be listed"
+  },
+  "discover.job.nothing": "nothing to copy",
+  "discover.job.nothingToCopy": "No songs came back to copy",
+  "discover.job.onlyAppearances": {
+    "one": "Nothing of theirs to copy · they only appear on 1 album there",
+    "other": "Nothing of theirs to copy · they only appear on {{count}} albums there"
+  },
   "discover.job.stopped": "stopped",
   "discover.job.stoppedQuota": "{{peer}} has reached its transfer limit for today · try again later",
   "discover.job.stoppedBusy": "{{peer}} is serving too many streams right now · try again in a moment",
   "discover.job.stoppedPeer": "{{peer}} went away",
   "discover.job.stoppedRefused": "{{peer}} does not allow copies with your server’s key",
+  "discover.job.fromPeer": "from {{peer}}",
   "discover.job.cancelledMany": "Stopped",
   "discover.tray.kindAlbum": "album",
   "discover.tray.kindArtist": "every album",
@@ -1285,6 +1315,7 @@
   "dpage.verb.playNow": "Play now",
   "dpage.verb.queue": "Add to queue",
   "dpage.verb.more": "More",
+  "dpage.verb.albumMore": "More for this album",
   "dpage.verb.addToPlaylist": "Add to playlist",
   "dpage.verb.openLead": "Open its window",
   "dpage.verb.newSeeds": "New seeds",

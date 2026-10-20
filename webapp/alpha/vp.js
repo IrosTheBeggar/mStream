@@ -236,6 +236,11 @@ const VUEPLAYERCORE = (() => {
       // plain phrase, from the Discover page; null = the panel's own seed
       matchSeed: null,
       matchPlain: null,
+      // 'album' = the window reads as the row's album (a Discover album
+      // card's ⋯, or an album job reopened from the strip): the album is
+      // the title, Listen plays the album, Keep offers Album and Artist
+      // with Album chosen. null = the song.
+      focus: null,
       view: 'federation',     // 'federation' | 'plugins'
       loading: false,
       links: [],
@@ -262,6 +267,17 @@ const VUEPLAYERCORE = (() => {
       // albums the library lacks.
       keep: { scope: 'song', onlyMissing: true },
     }, over || {});
+  }
+  // An artist or album name as the server compares them (src/db/name-key.js
+  // nameKey): whitespace runs collapsed, quote and dash variants folded,
+  // lowercased — so the window's "albums you don't have" is the copy's.
+  function dmNameKey(raw) {
+    if (raw == null) { return ''; }
+    return String(raw).replace(/\s+/g, ' ').trim()
+      .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'")
+      .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')
+      .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-')
+      .toLowerCase();
   }
   let discoverDebounce = null;
   let discoverReqId = 0;
@@ -756,9 +772,25 @@ const VUEPLAYERCORE = (() => {
         if (m.matchPlain) { return m.matchPlain; }
         return '\u201C' + (m.matchSeed || this.discover.seedTitle || '') + '\u201D';
       },
-      // The header's second line: artist · album · year · length.
-      dmSubtitle: function () {
+      // Album focus: the window reads as the row's album.
+      dmAlbumFocus: function () {
+        return this.discover.modal.focus === 'album';
+      },
+      // The header's first line: the song's title, or the album's name.
+      dmHeadTitle: function () {
         const tr = this.discover.modal.track || {};
+        if (this.dmAlbumFocus()) { return tr.album || ''; }
+        return tr.title || '(untitled)';
+      },
+      // The header's second line: artist · album · year · length; for the
+      // album, artist · year · how many songs (once the peer said).
+      dmSubtitle: function () {
+        const m = this.discover.modal;
+        const tr = m.track || {};
+        if (this.dmAlbumFocus()) {
+          const a = m.album;
+          return [tr.artist, tr.year, a && a.count !== null ? this.tt('discover.modal.songCount', { count: a.count }) : ''].filter(Boolean).join(' · ');
+        }
         return [tr.artist, tr.album, tr.year, tr.duration ? this.dmDuration(tr.duration) : ''].filter(Boolean).join(' · ');
       },
       dmDuration: function (seconds) {
@@ -833,17 +865,32 @@ const VUEPLAYERCORE = (() => {
       // Open the window for one row. A network row with neither plug-ins
       // nor an admin's invite row keeps the old behaviour: copy the title.
       // opts (the Discover page's rows): { seedTitle } the seed the row was
-      // matched against, or { seedPlain } a phrase for the seeds' centroid.
+      // matched against, or { seedPlain } a phrase for the seeds' centroid;
+      // { view } the peer window's view to open on ('federation' |
+      // 'plugins') instead of the one last chosen this session — it does not
+      // become that choice; { focus: 'album' } the row's album (a peer row
+      // with an album): the Federation view, Keep on Album; { scope } the
+      // Keep card's choice to start on (song · album · artist ·
+      // artist-missing — a reopened job's own).
       openDiscoverModal: async function (track, source, opts) {
         if (source === 'p2p' && !this.discover.plugins.available && !this.discover.admin) { return this.copyDiscoverP2p(track); }
         this.stopDiscoverPreview();
         const gen = ++discoverModalGen;
         const o = opts || {};
+        const peerRow = source === 'federation';
+        const focus = peerRow && o.focus === 'album' && track && track.album ? 'album' : null;
+        const asked = o.view === 'federation' || o.view === 'plugins' ? o.view : null;
+        const view = !peerRow ? 'plugins'
+          : (!this.discover.plugins.available || focus) ? 'federation'
+            : (asked || discoverModalView);
+        const scope = focus ? 'album' : (['album', 'artist', 'artist-missing'].indexOf(o.scope) !== -1 ? o.scope : 'song');
         this.discover.modal = blankDiscoverModal({
-          open: true, gen, source, track,
+          open: true, gen, source, track, focus, view,
           matchSeed: typeof o.seedTitle === 'string' && o.seedTitle ? o.seedTitle : null,
           matchPlain: typeof o.seedPlain === 'string' && o.seedPlain ? o.seedPlain : null,
-          view: (source === 'federation' && this.discover.plugins.available) ? discoverModalView : (source === 'federation' ? 'federation' : 'plugins'),
+          // artist-missing is the Artist choice with "only the albums you
+          // don't have" ticked; a plain artist job leaves it unticked
+          keep: { scope: scope === 'artist-missing' ? 'artist' : scope, onlyMissing: scope !== 'artist' },
         });
         document.addEventListener('keydown', onDiscoverModalKey);
         this.$nextTick(() => { const el = this.$refs.dmodalClose; if (el && el.focus) { el.focus(); } });
@@ -861,8 +908,11 @@ const VUEPLAYERCORE = (() => {
         this.scheduleDiscoverJobsPoll();   // back to the strip's slower beat
       },
       // Peer rows: Federation | Plug-Ins. The choice is remembered for the
-      // session; switching to Federation stops a preview clip.
+      // session; switching to Federation stops a preview clip. Album focus
+      // has the Federation view only: the Plug-Ins view's rows act on one
+      // song, and that window reads as the album.
       setDiscoverModalView: function (view) {
+        if (view === 'plugins' && this.dmAlbumFocus()) { return; }
         this.discover.modal.view = view;
         discoverModalView = view;
         this.discover.modal.picker = null;   // the form belongs to the view it was opened in
@@ -919,24 +969,52 @@ const VUEPLAYERCORE = (() => {
         this.discover.modal.file = md && typeof md === 'object' && !md.error
           ? { format: md.format || null, art: md['album-art'] || null, metadata: md }
           : null;
-        const norm = (s) => String(s || '').trim().toLowerCase();
-        const localList = localAlbums && Array.isArray(localAlbums.albums) ? localAlbums.albums : [];
+        const localList = localAlbums && Array.isArray(localAlbums.albums) ? localAlbums.albums : null;
         const songs = Array.isArray(albumSongs) ? albumSongs : null;
         this.discover.modal.album = track.album ? {
           songs,
           count: songs ? songs.length : null,
           seconds: songs ? songs.reduce((sum, s) => sum + ((s.metadata && Number(s.metadata.duration)) || 0), 0) : null,
-          owned: localList.some((a) => norm(a.name) === norm(track.album)),
+          owned: (localList || []).some((a) => dmNameKey(a.name) === dmNameKey(track.album)),
         } : null;
         const remote = peerAlbums && Array.isArray(peerAlbums.albums) ? peerAlbums.albums : null;
         const years = remote ? remote.map((a) => Number(a.year_min || a.year)).filter((y) => y > 0) : [];
+        const mine = this.dmArtistOwnership(track.artist, remote, localList);
         this.discover.modal.artist = track.artist ? {
           albums: remote ? remote.length : null,
           songs: remote ? remote.reduce((sum, a) => sum + (Number(a.track_count) || 0), 0) : null,
           yearMin: years.length ? Math.min(...years) : null,
           yearMax: remote ? Math.max(...remote.map((a) => Number(a.year_max || a.year) || 0), 0) || null : null,
-          owned: localList.length,
+          // the peer's albums the library has (by name), the artist's own
+          // albums there it lacks, and how many albums of the artist's the
+          // library holds at all — null while a listing did not answer
+          owned: mine.owned,
+          missing: mine.missing,
+          local: localList ? localList.length : null,
         } : null;
+      },
+      // "What you're missing" by NAME, as the copy itself reckons it
+      // (federation-copy's planArtistAlbums over owned.js ownedAlbumKeys),
+      // not by comparing counts — a library with three of an artist's
+      // albums still lacks the peer's fourth. `remote` is the peer's
+      // artists-albums listing for the artist, `local` this library's.
+      //   owned    the peer's albums whose name the library has
+      //   missing  the peer's albums that are the artist's own (album
+      //            artist, or a credit outside a compilation — an album they
+      //            only appear on is never copied) and whose name the
+      //            library lacks: what "Only the albums you don't have" copies
+      // Both null when either listing is unknown.
+      dmArtistOwnership: function (artist, remote, local) {
+        if (!Array.isArray(remote) || !Array.isArray(local)) { return { owned: null, missing: null }; }
+        const who = dmNameKey(artist);
+        const here = new Set(local.map((al) => dmNameKey(al && al.name)).filter(Boolean));
+        const named = remote.filter((al) => al && typeof al.name === 'string' && al.name.trim());
+        const theirs = (al) => dmNameKey(al.album_artist) === who
+          || (al.compilation !== true && Array.isArray(al.artists) && al.artists.some((n) => dmNameKey(n) === who));
+        return {
+          owned: named.filter((al) => here.has(dmNameKey(al.name))).length,
+          missing: named.filter((al) => theirs(al) && !here.has(dmNameKey(al.name))).length,
+        };
       },
       // ── Federation view actions ────────────────────────────────────────
       // The song the window queues: the row's own lite metadata — its
@@ -1148,9 +1226,10 @@ const VUEPLAYERCORE = (() => {
       },
       // "Get it": every acquire plug-in but the peer copy, which belongs to
       // the Federation view. One { plugin, row } per plug-in; none without
-      // a destination to land in.
+      // a destination to land in, and none in album focus (a download is
+      // one song's; the album's window never starts a song job).
       dmGetItRows: function () {
-        if (!this.dmHasDestination()) { return []; }
+        if (!this.dmHasDestination() || this.dmAlbumFocus()) { return []; }
         return this.discoverAcquirePlugins()
           .filter((p) => p.name !== DISCOVERJOBS.COPY_PLUGIN)
           .map((plugin) => ({ plugin, row: this.dmJobRow(plugin.name) }));
@@ -1169,30 +1248,68 @@ const VUEPLAYERCORE = (() => {
           .map((plugin) => ({ plugin, row: this.dmJobRow(plugin.name) }));
       },
       // A row's job: the plug-in's for the song, or the one for a scope.
+      // Album and artist jobs are keyed without the peer, so the lookup can
+      // hand back another connected server's copy of the same album: while
+      // it runs it shows here as "from <that server>" (a second Add would
+      // only return it); once it ended it is not this server's copy, and
+      // the card is idle again. A song job is the recording, wherever it
+      // came from — it stays, named by its server.
       dmJobRow: function (name, scope) {
         const m = this.discover.modal;
         const slot = DISCOVERJOBS.jobSlot(name, scope);
-        const row = DISCOVERJOBS.jobRowState(m.jobs[slot] || null, { plugin: name });
+        let job = m.jobs[slot] || null;
+        const other = this.dmJobOtherPeer(job);
+        if (other && scope && scope !== 'song' && !DISCOVERJOBS.isLive(job)) { job = null; }
+        let row = DISCOVERJOBS.jobRowState(job, { plugin: name });
+        if (job && other) {
+          const rest = !row.sub ? [] : (Array.isArray(row.sub.parts) ? row.sub.parts : [row.sub]);
+          row = Object.assign({}, row, { sub: { parts: [{ key: 'discover.job.fromPeer', params: { peer: other.name } }, ...rest] } });
+        }
         const err = m.jobErrors[slot];
         return err ? Object.assign({}, row, { sub: { text: err }, errored: true }) : row;
       },
+      // The server a job copied from when it is not this peer row's own
+      // ({ id, name }), else null.
+      dmJobOtherPeer: function (job) {
+        const m = this.discover.modal;
+        const mine = m.source === 'federation' && m.track && m.track.peer ? m.track.peer.id : null;
+        const theirs = job && job.recommendation && job.recommendation.peer;
+        if (mine == null || !theirs || theirs.id == null || String(theirs.id) === String(mine)) { return null; }
+        const name = theirs.name || (job.result && job.result.peer && job.result.peer.name) || 'peer';
+        return { id: theirs.id, name };
+      },
       // The album and artist rows (the peer window's Federation view): the
       // copy plug-in when it runs the scope, with a destination and the fact
-      // the scope needs — the same conditions as the song row.
+      // the scope needs — the same conditions as the song row. An album
+      // copy needs the artist too: the peer narrows the album's songs by
+      // it, and without one every album of that name comes back, whoever
+      // made it.
       dmScopeRows: function (scope) {
         const m = this.discover.modal;
         if (m.source !== 'federation' || !this.dmHasDestination() || !m.track) { return []; }
-        if (scope === 'album' ? !m.track.album : !m.track.artist) { return []; }
+        if (!m.track.artist || (scope === 'album' && !m.track.album)) { return []; }
         return this.discoverAcquirePlugins()
           .filter((p) => p.name === DISCOVERJOBS.COPY_PLUGIN && Array.isArray(p.scopes) && p.scopes.indexOf(scope) !== -1)
           .map((plugin) => ({ plugin, slot: DISCOVERJOBS.jobSlot(plugin.name, scope), row: this.dmJobRow(plugin.name, scope) }));
       },
-      // "Add what you're missing" has nothing to add when the counts say
-      // the library has as many of the artist's albums as the peer.
+      // "Only the albums you don't have" has nothing to add when, by name,
+      // the library has every album of the artist's the peer lists — unless
+      // such a copy still wants the user (dmMissingHeld: a job reopened
+      // from the strip shows itself, its failure and its Retry).
       dmMissingRows: function () {
         const a = this.discover.modal.artist;
-        if (a && a.albums !== null && a.owned != null && a.owned >= a.albums) { return []; }
-        return this.dmScopeRows('artist-missing');
+        const rows = this.dmScopeRows('artist-missing');
+        if (a && a.missing === 0 && !this.dmMissingHeld(rows)) { return []; }
+        return rows;
+      },
+      // An only-missing copy that still wants the user — running or
+      // queued, failed, stopped early, or a start the server refused —
+      // keeps its choice offered whatever the facts say now: the strip
+      // holds the live and failed ones, and a failure (the peer gone, its
+      // listing unanswered; nothing left missing by name) is what most
+      // often defeats the facts.
+      dmMissingHeld: function (rows) {
+        return rows.some((r) => r.row.live || r.row.state === 'failed' || r.row.state === 'stopped' || r.row.errored === true);
       },
       dmAlbumIdleSub: function () {
         const m = this.discover.modal;
@@ -1208,8 +1325,8 @@ const VUEPLAYERCORE = (() => {
         const a = m.artist;
         const known = !!(a && a.albums !== null);
         if (scope === 'artist-missing') {
-          return known
-            ? this.tt('discover.modal.addMissingSub', { count: Math.max(0, a.albums - (a.owned || 0)), artist })
+          return known && a.missing != null
+            ? this.tt('discover.modal.addMissingSub', { count: a.missing, artist })
             : this.tt('discover.modal.addMissingSubNoCount', { artist });
         }
         if (!known) { return this.tt('discover.modal.addArtistSubNoCount', { artist, peer }); }
@@ -1233,21 +1350,34 @@ const VUEPLAYERCORE = (() => {
         const a = this.discover.modal.artist;
         if (!a || a.albums === null) { return ''; }
         const years = a.yearMin ? (a.yearMax && a.yearMax !== a.yearMin ? `${a.yearMin} – ${a.yearMax}` : String(a.yearMin)) : '';
+        // of THESE albums, by name: "you have 1", or none of them
+        const have = a.owned == null ? '' : (a.owned > 0 ? this.tt('discover.modal.youHave', { count: a.owned }) : this.tt('discover.modal.noneInLibrary'));
         return [
           this.tt('discover.modal.albumCount', { count: a.albums }),
           a.songs !== null ? this.tt('discover.modal.songCount', { count: a.songs }) : '',
           years,
-          a.owned != null ? this.tt('discover.modal.youHave', { count: a.owned }) : '',
+          have,
+        ].filter(Boolean).join(' · ');
+      },
+      // Album focus: the play line's second line — how long the album runs
+      // and whether the library has it (the header names the rest).
+      dmAlbumPlaySub: function () {
+        const a = this.discover.modal.album;
+        if (!a) { return ''; }
+        return [
+          a.count !== null && a.seconds ? this.dmDuration(a.seconds) : '',
+          this.tt(a.owned ? 'discover.modal.inLibrary' : 'discover.modal.noneInLibrary'),
         ].filter(Boolean).join(' · ');
       },
       // The Keep card's choices: one per scope the copy plug-in runs for
       // this row (the same conditions as the rows they replace), with the
-      // size of what it would copy under each.
+      // size of what it would copy under each. The album's window has no
+      // "This song": it reads as the album, and one of its songs is not.
       dmKeepChoices: function () {
         const m = this.discover.modal;
         if (!m.track) { return []; }
         const out = [];
-        if (this.dmCopyRows().length) {
+        if (!this.dmAlbumFocus() && this.dmCopyRows().length) {
           const bits = [m.track.duration ? this.dmDuration(m.track.duration) : '', m.file && m.file.format ? m.file.format : ''];
           out.push({ scope: 'song', label: this.tt('discover.modal.song'), sub: bits.filter(Boolean).join(' · ') });
         }
@@ -1272,16 +1402,27 @@ const VUEPLAYERCORE = (() => {
         return choices.some((c) => c.scope === want) ? want : (choices.length ? choices[0].scope : null);
       },
       // "Only the albums you don't have": offered with the artist choice
-      // when the library has some of them already and the plug-in runs
-      // that scope. With none of them, every album is missing anyway.
+      // when the library already holds some of the artist's albums, the
+      // peer has one of theirs it lacks (by name), and the plug-in runs
+      // that scope. With none of theirs here, every album is missing
+      // anyway. A copy of that scope that still wants the user
+      // (dmMissingHeld) keeps it offered.
       dmKeepMissingChoice: function () {
         if (this.dmKeepChosen() !== 'artist') { return false; }
         const a = this.discover.modal.artist;
-        return !!(a && a.albums !== null && a.owned > 0 && this.dmMissingRows().length);
+        const rows = this.dmMissingRows();
+        if (this.dmMissingHeld(rows)) { return true; }
+        return !!(a && a.albums !== null && a.local > 0 && a.missing > 0 && rows.length);
       },
       dmKeepMissingCount: function () {
         const a = this.discover.modal.artist;
-        return a && a.albums !== null ? Math.max(0, a.albums - (a.owned || 0)) : 0;
+        return a && a.missing != null ? a.missing : 0;
+      },
+      // The checkbox's words: "Only the 2 albums you don't have", or with
+      // no count when it is unknown or none (a held job keeps the choice).
+      dmKeepMissingLabel: function () {
+        const n = this.dmKeepMissingCount();
+        return n > 0 ? this.tt('discover.modal.onlyMissing', { count: n }) : this.tt('discover.modal.onlyMissingNoCount');
       },
       // The job scope the card acts on.
       dmKeepScope: function () {
@@ -1719,7 +1860,9 @@ const VUEPLAYERCORE = (() => {
         const row = DISCOVERJOBS.jobRowState(job);
         const message = DISCOVERJOBS.jobTitle(job);
         if (row.state === 'failed') {
-          iziToast.error({ title: this.tt('discover.job.toastFailed', { plugin: this.discoverPluginTitle(job.plugin) }), message: job.error || message, position: 'topCenter', timeout: 5000 });
+          // a song's failure carries the server's words; an album's or an
+          // artist's ends 'done' with no error: its title and its counts
+          iziToast.error({ title: this.tt('discover.job.toastFailed', { plugin: this.discoverPluginTitle(job.plugin) }), message: job.error || [message, this.dmText(row.sub)].filter(Boolean).join(' · '), position: 'topCenter', timeout: 5000 });
         } else if (row.state === 'copied') {
           iziToast.success({ title: this.tt('discover.job.toastCopied'), message, position: 'topCenter', timeout: 3000 });
         } else if (row.state === 'copiedMany') {
@@ -1731,6 +1874,10 @@ const VUEPLAYERCORE = (() => {
           iziToast.success({ title: this.tt('discover.job.toastDownloaded'), message: [message, where].filter(Boolean).join(' · '), position: 'topCenter', timeout: 4000 });
         } else if (row.state === 'owned') {
           iziToast.info({ title: this.tt('discover.job.toastOwned'), message, position: 'topCenter', timeout: 3000 });
+        } else if (row.state === 'nothing') {
+          // an album or artist copy that found nothing to take (an artist
+          // who only guests on that server's albums, an empty listing)
+          iziToast.info({ title: this.tt('discover.job.toastNothing'), message: [message, this.dmText(row.sub)].filter(Boolean).join(' · '), position: 'topCenter', timeout: 3500 });
         }
       },
       scheduleDiscoverJobsPoll: function () {
@@ -1793,14 +1940,21 @@ const VUEPLAYERCORE = (() => {
         try { await MSTREAMAPI.discoveryJobsClear(); } catch (_) { /* the refresh shows what is left */ }
         await this.refreshDiscoverJobs();
       },
-      // A strip row opens the window its job came from.
+      // A strip row opens the window its job came from, on that job: a
+      // copy on the Federation view's Keep card at the job's own scope (an
+      // album's as the album; artist-missing = Artist, only the missing
+      // ticked), another plug-in's on the Plug-Ins view.
       openDiscoverModalForJob: async function (job) {
         const rec = job.recommendation || {};
         const source = rec.source === 'federation' ? 'federation' : 'p2p';
-        await this.openDiscoverModal(Object.assign({}, rec, { peer: rec.peer || {} }), source);
-        const m = this.discover.modal;
-        if (!m.open) { return; }
-        if (source === 'federation' && job.plugin !== DISCOVERJOBS.COPY_PLUGIN && this.discover.plugins.available) { m.view = 'plugins'; }
+        const scope = DISCOVERJOBS.jobScope(job);
+        const opts = { scope };
+        if (source === 'federation') {
+          const copy = job.plugin === DISCOVERJOBS.COPY_PLUGIN;
+          opts.view = copy ? 'federation' : 'plugins';
+          if (copy && scope === 'album') { opts.focus = 'album'; }
+        }
+        await this.openDiscoverModal(Object.assign({}, rec, { peer: rec.peer || {} }), source, opts);
       },
 
       // ── "From the network" rows ────────────────────────────────────

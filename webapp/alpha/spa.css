@@ -2832,6 +2832,13 @@ body.on-federated-server .side-nav-note {
 .dpage .album-grid-play:focus-visible, .dpage-peer-card:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
 .dpage-peer-card:focus { outline: none; }
 .dpage-peer-card:focus-visible { border-radius: 8px; }
+/* a connected album's ⋯ (its recommendation window): the art's top-right
+   corner, shown as the play button is — on hover, on keyboard focus inside
+   the card, and always where there is no hover */
+.dpage-album-more { position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: rgba(15, 18, 22, .72); color: #dfe3ea; font-size: 16px; line-height: 1; display: flex; align-items: center; justify-content: center; cursor: pointer; opacity: 0; transition: opacity .2s, background .15s; }
+.dpage .album-grid-card:hover .dpage-album-more, .dpage .album-grid-card:focus-within .dpage-album-more { opacity: 1; }
+.dpage-album-more:hover, .dpage-album-more:focus { background: rgba(15, 18, 22, .9); color: #f0f2f5; outline: none; }
+.dpage-album-more:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
 .dpage-skel-card i { display: block; aspect-ratio: 1; border-radius: 8px; background: #262b33; }
 .dpage-skel-card b { display: block; height: 10px; width: 70%; margin-top: 8px; border-radius: 3px; background: #262b33; }
 .dpage-skel-card b + b { width: 45%; }
@@ -2897,8 +2904,27 @@ body.on-federated-server .side-nav-note {
 .dpage-badge-src { color: #4fb8a8; }
 .dpage-badge-ok { color: #4fc27a; }
 .dpage-badge-err { color: #e0616a; }
+.dpage-badge-dim { color: #8a919e; }
 .dpage-prog { height: 3px; background: #262b33; border-radius: 2px; margin-top: 4px; overflow: hidden; }
 .dpage-prog i { display: block; height: 100%; background: #4fb8a8; border-radius: 2px; }
+/* the play page's copies (connected-server rows and album cards): the word
+   and what it acts on, never a number; the bar is drawn by a scale */
+.dpage-prog-thin i { width: 100%; transform-origin: left center; }
+/* a connected row's badge shares the subtitle line ("Artist · Album" gives
+   way first) and its bar is pinned to the row's bottom edge: neither adds a
+   line, so a badge arriving on the poll never changes the row's height */
+.dpage-songs .dpage-row { position: relative; }
+.dpage-subline { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.dpage-subtext { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dpage-subline .dpage-badge { flex-shrink: 0; max-width: 60%; }
+.dpage-songs .dpage-row .dpage-prog-thin { position: absolute; left: 8px; right: 6px; bottom: 1px; margin: 0; height: 2px; }
+/* a connected album card's state line: kept on every card, a fixed line
+   box the badge fills — a badge that appears on the poll's beat never
+   grows the card, so the strip never changes height under the user */
+.dpage-strip .dpage-cstate { display: block; height: 16px; margin-top: 2px; overflow: hidden; }
+.dpage-strip .dpage-cstate .dpage-badge { display: block; max-width: 100%; margin: 0; line-height: 16px; }
+.dpage-src-peers .album-grid-art .dpage-prog { position: absolute; left: 0; right: 0; bottom: 0; margin: 0; border-radius: 0; background: rgba(15, 18, 22, .6); }
+.dpage-src-peers .album-grid-art .dpage-prog i { border-radius: 0; }
 /* the columns' footers: dim links */
 .dpage-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 6px 16px 4px 16px; font-size: 12px; }
 /* the whole-list verbs, under a column's header and ahead of its rows */
@@ -2936,6 +2962,7 @@ body.on-federated-server .discover-page-footer { display: none; }
   .dpage-verbs { opacity: 1; }
   .dpage .album-grid-play { opacity: 1; transform: translateY(0); }
   .dpage-vb { min-width: 40px; height: 40px; }
+  .dpage .dpage-album-more { opacity: 1; width: 36px; height: 36px; }
 }
 
 @media (max-width: 600px) {

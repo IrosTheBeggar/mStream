@@ -344,29 +344,88 @@ describe('album and artist jobs as rows', () => {
     assert.deepEqual([done.state, done.tag, done.tagCls, done.icon, done.actions], ['copiedMany', 'discover.job.inCollection', 'ok', 'check', ['start']], 'done, and startable again for the gaps');
     assert.deepEqual(done.sub, { parts: [{ key: 'discover.job.copiedCount', params: { count: 2 } }, { key: 'discover.job.ownedCount', params: { count: 1 } }] });
     const owned = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many({ songs: { total: 2, copied: [], skipped: [{}, {}], failed: [] } }) }));
-    assert.deepEqual([owned.state, owned.tag, owned.sub], ['copiedMany', 'discover.job.owned', { parts: [{ key: 'discover.job.ownedCount', params: { count: 2 } }] }]);
+    assert.deepEqual([owned.state, owned.tag, owned.tagCls, owned.sub], ['owned', 'discover.job.owned', 'ok', { parts: [{ key: 'discover.job.ownedCount', params: { count: 2 } }] }]);
     const artist = J.jobRowState(copyJob({ state: 'done', params: { scope: 'artist' }, result: many({ scope: 'artist', albums: [{ name: 'A' }, { name: 'B' }], skippedAlbums: [{ name: 'C', why: 'appearance' }], songs: { total: 3, copied: [{}, {}, {}], skipped: [], failed: [{ from: 'x', error: 'gone' }] } }) }));
     assert.deepEqual(artist.sub.parts.map((p) => [p.key, p.params.count]), [['discover.job.albumsCount', 2], ['discover.job.copiedCount', 3], ['discover.job.failedCount', 1], ['discover.job.albumsLeftOut', 1]]);
-    const nothing = J.jobRowState(copyJob({ state: 'done', params: { scope: 'artist-missing' }, result: many({ scope: 'artist-missing', albums: [], skippedAlbums: [], songs: { total: 0, copied: [], skipped: [], failed: [] } }) }));
-    assert.deepEqual([nothing.tag, nothing.sub], ['discover.job.owned', { parts: [{ key: 'discover.job.nothingToCopy' }] }]);
     const single = J.jobRowState(copyJob({ state: 'done', result: { copied: { vpath: 'music', filepath: 'music/x/y.flac' } } }));
     assert.equal(single.state, 'copied', 'a single copy reads as before');
   });
 
-  test('stopped by the peer\'s limit or the peer going away: a warning with the counts and Retry; a cancel keeps its counts', () => {
+  // "done" is not "kept": a many-song job ends done however it went.
+  test('done with nothing copied and a song failed is a failure (Retry), never "already yours"', () => {
+    const failed = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many({ songs: { total: 1, copied: [], skipped: [], failed: [{ from: 'a', error: 'gone' }] }, counts: { total: 1, copied: 0, skipped: 0, failed: 1 }, stopped: null }) }));
+    assert.deepEqual([failed.state, failed.tag, failed.tagCls, failed.icon, failed.iconCls, failed.actions], ['failed', 'discover.job.failed', 'err', 'warn', 'err', ['retry']]);
+    assert.deepEqual(failed.sub, { parts: [{ key: 'discover.job.failedCount', params: { count: 1 } }] });
+    // one song already here, one failed: still a failure — nothing landed
+    const mixed = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many({ songs: { total: 2, copied: [], skipped: [{}], failed: [{}] } }) }));
+    assert.equal(mixed.state, 'failed');
+    // an artist job whose album listings failed copied nothing either
+    const listings = J.jobRowState(copyJob({ state: 'done', params: { scope: 'artist' }, result: many({ scope: 'artist', albums: [{ name: 'A', error: 'peer said 500' }], skippedAlbums: [], songs: { total: 0, copied: [], skipped: [], failed: [] } }) }));
+    assert.deepEqual([listings.state, listings.sub.parts.map((p) => p.key)], ['failed', ['discover.job.albumsFailed']]);
+    // a failure is a failure toast and counts in the strip's line, as a failed job does
+    assert.equal(J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many({ songs: { total: 1, copied: [], skipped: [], failed: [{}] } }) })).live, false);
+  });
+
+  test('the counts come from result.counts — the lists stop at 500 entries', () => {
+    const capped = Array.from({ length: 500 }, () => ({}));
+    const big = J.jobRowState(copyJob({ state: 'done', params: { scope: 'artist' }, result: many({ scope: 'artist', songs: { total: 1200, copied: capped, skipped: [], failed: capped }, counts: { total: 1200, copied: 700, skipped: 0, failed: 500 }, truncated: true }) }));
+    assert.deepEqual(big.sub.parts.map((p) => [p.key, p.params.count]), [['discover.job.copiedCount', 700], ['discover.job.failedCount', 500]]);
+    // counts says nothing was copied though a list (an old shape) is not empty: counts wins
+    const zero = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many({ counts: { total: 3, copied: 0, skipped: 3, failed: 0 } }) }));
+    assert.equal(zero.state, 'owned');
+    // a result with counts alone (no lists) is still a many-song result
+    const bare = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: { scope: 'album', counts: { total: 2, copied: 2, skipped: 0, failed: 0 }, stopped: null, peer: { id: 1, name: 'S' } } }));
+    assert.deepEqual([bare.state, bare.sub.parts], ['copiedMany', [{ key: 'discover.job.copiedCount', params: { count: 2 } }]]);
+  });
+
+  test('nothing at all: "nothing to copy" — an artist who only appears on the peer\'s albums says so; all their albums already here is "already yours"', () => {
+    const guest = J.jobRowState(copyJob({ state: 'done', params: { scope: 'artist' }, result: many({ scope: 'artist', albums: [], skippedAlbums: [{ name: 'Comp', why: 'appearance' }, { name: 'Feat', why: 'appearance' }], songs: { total: 0, copied: [], skipped: [], failed: [] }, counts: { total: 0, copied: 0, skipped: 0, failed: 0 } }) }));
+    assert.deepEqual([guest.state, guest.tag, guest.tagCls, guest.muted, guest.actions], ['nothing', 'discover.job.nothing', '', true, ['start']]);
+    assert.deepEqual(guest.sub, { parts: [{ key: 'discover.job.onlyAppearances', params: { count: 2 } }] });
+    const none = J.jobRowState(copyJob({ state: 'done', params: { scope: 'artist-missing' }, result: many({ scope: 'artist-missing', albums: [], skippedAlbums: [], songs: { total: 0, copied: [], skipped: [], failed: [] } }) }));
+    assert.deepEqual([none.state, none.tag, none.sub], ['nothing', 'discover.job.nothing', { parts: [{ key: 'discover.job.nothingToCopy' }] }]);
+    const have = J.jobRowState(copyJob({ state: 'done', params: { scope: 'artist-missing' }, result: many({ scope: 'artist-missing', albums: [], skippedAlbums: [{ name: 'A', why: 'owned' }, { name: 'B', why: 'owned' }], songs: { total: 0, copied: [], skipped: [], failed: [] } }) }));
+    assert.deepEqual([have.state, have.tag, have.sub.parts.map((p) => p.key)], ['owned', 'discover.job.owned', ['discover.job.albumsLeftOut']]);
+  });
+
+  test('stopped by the peer\'s limit or the peer going away: a warning with the counts and Retry; refused has no Retry; a cancel keeps its counts', () => {
     const quota = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many({ stopped: 'quota', songs: { total: 4, copied: [{}], skipped: [], failed: [{ from: 'b', error: 'limit' }] } }) }));
     assert.deepEqual([quota.state, quota.tag, quota.tagCls, quota.icon, quota.iconCls, quota.actions], ['stopped', 'discover.job.stopped', 'err', 'warn', 'err', ['retry']]);
     assert.deepEqual(quota.sub.parts[0], { key: 'discover.job.stoppedQuota', params: { peer: "Sam's server" } });
     assert.deepEqual(quota.sub.parts.slice(1).map((p) => p.key), ['discover.job.copiedCount', 'discover.job.failedCount']);
     const peer = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many({ stopped: 'peer' }) }));
-    assert.equal(peer.sub.parts[0].key, 'discover.job.stoppedPeer');
-    const refused = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many({ stopped: 'refused' }) }));
-    assert.deepEqual([refused.state, refused.sub.parts[0], refused.actions], ['stopped', { key: 'discover.job.stoppedRefused', params: { peer: "Sam's server" } }, ['retry']]);
+    assert.deepEqual([peer.sub.parts[0].key, peer.actions], ['discover.job.stoppedPeer', ['retry']]);
+    const busy = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many({ stopped: 'busy', songs: { total: 3, copied: [{}, {}, {}], skipped: [], failed: [] } }) }));
+    assert.equal(busy.state, 'stopped', 'stopped early wins over what landed: never "in your collection"');
+    // A peer with copies off refuses again: Retry would meet the same refusal.
+    const refused = J.jobRowState(copyJob({ state: 'done', params: { scope: 'album' }, result: many({ stopped: 'refused', songs: { total: 1, copied: [], skipped: [], failed: [{}] }, counts: { total: 1, copied: 0, skipped: 0, failed: 1 } }) }));
+    assert.deepEqual([refused.state, refused.tag, refused.sub.parts[0], refused.actions], ['stopped', 'discover.job.stopped', { key: 'discover.job.stoppedRefused', params: { peer: "Sam's server" } }, []]);
     const cancelled = J.jobRowState(copyJob({ state: 'cancelled', params: { scope: 'album' }, result: many({ stopped: 'cancelled', songs: { total: 4, copied: [{}], skipped: [], failed: [] } }) }));
     assert.deepEqual([cancelled.state, cancelled.muted, cancelled.actions], ['cancelled', true, ['start']]);
     assert.deepEqual(cancelled.sub.parts.map((p) => p.key), ['discover.job.cancelledMany', 'discover.job.copiedCount']);
+    const early = J.jobRowState(copyJob({ state: 'cancelled', params: { scope: 'album' }, result: many({ stopped: 'cancelled', songs: { total: 4, copied: [], skipped: [], failed: [] } }) }));
+    assert.deepEqual(early.sub, { parts: [{ key: 'discover.job.cancelledMany' }] }, 'cancelled before anything landed: just "Stopped"');
     const plain = J.jobRowState(copyJob({ state: 'cancelled' }));
     assert.equal(plain.sub.key, 'discover.job.cancelledCopySub', 'a single copy reads as before');
+  });
+
+  test('every key a many-song row emits has an English value, plural where counted', () => {
+    const EN = require('../../webapp/locales/en.json');
+    const results = [
+      many(), many({ stopped: 'refused' }), many({ songs: { total: 1, copied: [], skipped: [], failed: [{}] } }),
+      many({ albums: [{ name: 'A', error: 'x' }, { name: 'B' }], skippedAlbums: [{ why: 'owned' }], songs: { total: 0, copied: [], skipped: [], failed: [] } }),
+      many({ albums: [], skippedAlbums: [{ why: 'appearance' }], songs: { total: 0, copied: [], skipped: [], failed: [] } }),
+      many({ albums: [], skippedAlbums: [], songs: { total: 0, copied: [], skipped: [], failed: [] } }),
+    ];
+    for (const result of results) {
+      const row = J.jobRowState(copyJob({ state: 'done', params: { scope: 'artist' }, result }));
+      for (const p of [{ key: row.tag }, ...row.sub.parts]) {
+        const val = EN[p.key];
+        assert.ok(val !== undefined, `${p.key} missing from en.json`);
+        if (typeof val === 'object') { assert.equal(typeof (p.params && p.params.count), 'number', `${p.key} is plural`); }
+      }
+    }
+    assert.ok(!/you have it all/i.test(EN['discover.job.nothingToCopy']), 'nothing came back is not "you have it all"');
   });
 
   test('the strip names an album job by its album and an artist job by its artist, with the kind beside it', () => {

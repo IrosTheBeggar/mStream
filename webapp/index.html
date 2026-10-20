@@ -1135,18 +1135,20 @@
                   <svg v-if="!dmArt()" xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24"><path fill="currentColor" d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
                 </div>
                 <div class="dmodal-head-text">
-                  <div class="dmodal-title" id="dmodal-title">{{ discover.modal.track.title || '(untitled)' }}</div>
+                  <div class="dmodal-title" id="dmodal-title">{{ dmHeadTitle() }}</div>
                   <div class="dmodal-artist">{{ dmSubtitle() }}</div>
-                  <div v-if="(discover.modal.file && discover.modal.file.format) || discover.modal.track.isrc || discover.modal.track.similarity != null" class="dmodal-meta">
+                  <div v-if="(discover.modal.file && discover.modal.file.format) || (discover.modal.track.isrc && !dmAlbumFocus()) || discover.modal.track.similarity != null" class="dmodal-meta">
                     <span v-if="discover.modal.file && discover.modal.file.format">{{ discover.modal.file.format }}</span>
-                    <span v-if="discover.modal.track.isrc" class="dmodal-isrc">{{ discover.modal.track.isrc }}</span>
+                    <span v-if="discover.modal.track.isrc && !dmAlbumFocus()" class="dmodal-isrc">{{ discover.modal.track.isrc }}</span>
                     <span v-if="discover.modal.track.similarity != null" class="dmodal-matchbar"><i :style="{ '--pct': dmPct(discover.modal.track) + '%' }"></i>{{ dmPct(discover.modal.track) }}% {{ tt('discover.modal.matchTo') }} {{ dmMatchSeed() }}</span>
                   </div>
                   <div v-if="discover.modal.peer" class="dmodal-status"><i v-bind:class="{ 'dmodal-status-off': discover.modal.peer.lastStatus !== 'ok' }"></i>{{ dmPeerStatus() }}</div>
                 </div>
               </div>
 
-              <div v-if="discover.modal.source === 'federation' && discover.plugins.available" class="dmodal-tabs" role="tablist">
+              <!-- No tabs in album focus: the Plug-Ins view acts on one song
+                   (a download, its links), and this window reads as the album. -->
+              <div v-if="discover.modal.source === 'federation' && discover.plugins.available && !dmAlbumFocus()" class="dmodal-tabs" role="tablist">
                 <a class="dmodal-tab" href="javascript:void(0)" role="tab" v-bind:class="{ 'dmodal-tab-on': discover.modal.view === 'federation' }" v-on:click="setDiscoverModalView('federation')">{{ tt('discover.modal.tabFederation') }}</a>
                 <a class="dmodal-tab" href="javascript:void(0)" role="tab" v-bind:class="{ 'dmodal-tab-on': discover.modal.view === 'plugins' }" v-on:click="setDiscoverModalView('plugins')">{{ tt('discover.modal.tabPlugins') }}</a>
               </div>
@@ -1161,11 +1163,25 @@
                    album and the artist as a line of facts and links each.
                    KEEP A COPY: one card for the federation-copy plug-in's
                    jobs — a choice of scope (song · album · artist), where
-                   the copy lands, one Add; the card is the job. -->
+                   the copy lands, one Add; the card is the job.
+                   Album focus (a Discover album card's ⋯): the play line
+                   plays the album and takes the album line's place; Keep
+                   offers Album and Artist, Album chosen. -->
               <template v-if="discover.modal.source === 'federation' && discover.modal.view === 'federation'">
                 <section class="dmodal-section">
                   <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.listen') }}</span><span class="dmodal-hint">{{ tt('discover.modal.songHint') }}</span></div>
-                  <div class="dm-play">
+                  <div v-if="dmAlbumFocus()" class="dm-play">
+                    <a class="dm-play-btn" href="javascript:void(0)" v-on:click="dmQueueAlbum(true)" :title="tt('discover.modal.playAlbum')"><dm-icon name="play" :size="22"></dm-icon></a>
+                    <div class="dm-play-body">
+                      <div class="dm-play-title">{{ tt('discover.modal.playAlbum') }}</div>
+                      <div class="dm-play-sub">{{ dmAlbumPlaySub() || '&nbsp;' }}</div>
+                    </div>
+                    <div class="dm-play-act">
+                      <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmQueueAlbum(false)" :title="tt('discover.modal.queueAlbum')"><dm-icon name="plus" :size="14"></dm-icon>{{ tt('discover.modal.addToQueue') }}</a>
+                      <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmViewAlbum">{{ tt('discover.modal.viewAlbum') }}</a>
+                    </div>
+                  </div>
+                  <div v-else class="dm-play">
                     <a class="dm-play-btn" href="javascript:void(0)" v-on:click="dmPlayNow" :title="tt('discover.modal.playNow')"><dm-icon name="play" :size="22"></dm-icon></a>
                     <div class="dm-play-body">
                       <div class="dm-play-title">{{ tt('discover.modal.playNow') }}</div>
@@ -1176,8 +1192,8 @@
                       <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmAddToQueue"><dm-icon name="plus" :size="14"></dm-icon>{{ tt('discover.modal.addToQueue') }}</a>
                     </div>
                   </div>
-                  <div v-if="discover.modal.track.album || discover.modal.track.artist" class="dm-links">
-                    <div v-if="discover.modal.track.album">
+                  <div v-if="(discover.modal.track.album && !dmAlbumFocus()) || discover.modal.track.artist" class="dm-links">
+                    <div v-if="discover.modal.track.album && !dmAlbumFocus()">
                       <b>{{ tt('discover.modal.album') }}</b><span>{{ discover.modal.track.album }}</span><small v-if="dmAlbumFacts()">{{ dmAlbumFacts() }}</small>
                       <a href="javascript:void(0)" v-on:click="dmQueueAlbum(true)" :title="tt('discover.modal.playAlbum')">{{ tt('discover.modal.play') }}</a>
                       <a href="javascript:void(0)" v-on:click="dmQueueAlbum(false)" :title="tt('discover.modal.queueAlbum')">{{ tt('discover.modal.queue') }}</a>
@@ -1195,7 +1211,7 @@
                     <div v-if="dmKeepChoices().length > 1" class="dm-choice" role="tablist">
                       <a v-for="c in dmKeepChoices()" :key="c.scope" href="javascript:void(0)" role="tab" :aria-selected="dmKeepChosen() === c.scope ? 'true' : 'false'" v-bind:class="{ 'dm-on': dmKeepChosen() === c.scope }" v-on:click="dmKeepChoose(c.scope)">{{ c.label }}<small>{{ c.sub || '&nbsp;' }}</small></a>
                     </div>
-                    <label v-if="dmKeepMissingChoice()" class="dm-check"><input type="checkbox" class="browser-default" v-model="discover.modal.keep.onlyMissing"><i><dm-icon name="check" :size="10"></dm-icon></i>{{ tt('discover.modal.onlyMissing', { count: dmKeepMissingCount() }) }}</label>
+                    <label v-if="dmKeepMissingChoice()" class="dm-check"><input type="checkbox" class="browser-default" v-model="discover.modal.keep.onlyMissing"><i><dm-icon name="check" :size="10"></dm-icon></i>{{ dmKeepMissingLabel() }}</label>
                     <!-- Idle: where the copy lands, and the one button. Once
                          pressed (or when the start failed) the job row takes
                          the line: queued, copying, done, stopped. -->
@@ -1215,8 +1231,9 @@
               <template v-else>
                 <!-- 30-second previews: one tile per provider, the whole tile
                      the play / stop button. A provider is asked only when its
-                     tile is pressed. -->
-                <section v-if="discoverPreviewPlugins().length" class="dmodal-section">
+                     tile is pressed. Never for a connected server's row: the
+                     whole song already plays (Listen). -->
+                <section v-if="discover.modal.source !== 'federation' && discoverPreviewPlugins().length" class="dmodal-section">
                   <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.preview') }}</span></div>
                   <div class="dm-tiles">
                     <div v-for="pp in discoverPreviewPlugins()" :key="pp.name" class="dm-opt dm-opt-btn" role="button" tabindex="0"

@@ -105,7 +105,7 @@ const FNS = ['escapeHtml', 'peerAttr', 'artUrl', 'artImgAttr', 'renderAlbum', 's
   'discoverySkelHtml', 'discoveryPlayHtml', 'discoveryStripHtml', 'discoveryPeerArtFailed', 'discoveryPeerAlbumHtml', 'discoveryArtHtml',
   'discoverySongRowHtml', 'discoveryShowMoreHtml', 'discoveryColHintHtml', 'discoveryLibrarySongsHtml',
   'discoveryPeerSongsHtml', 'discoveryExploreHtml', 'discoverySectionHtml', 'discoveryEmptyHtml',
-  'discoveryBadgeHtml', 'discoveryProgressHtml', 'discoveryNetworkHtml', 'onDiscoveryChange', 'onDiscoveryClick',
+  'discoveryBadgeHtml', 'discoveryCardBadgeHtml', 'discoveryProgressHtml', 'discoveryThinBarHtml', 'discoveryIndexBadges', 'discoveryNetworkHtml', 'onDiscoveryChange', 'onDiscoveryClick',
   'discoveryAction', 'discoveryOpenPeerAlbum', 'discoveryQueuePeerAlbum',
   'discoveryRestoreSeed', 'discoveryQueueAll', 'discoveryPick', 'discoveryRefocus', 'onDiscoveryKey',
   'discoveryFocusFallbacks'];
@@ -583,7 +583,8 @@ describe('Discover page: opening it', () => {
     click({ 'data-dp': 'peerMore', 'data-i': 0 });
     assert.equal(opened[0].source, 'federation');
     assert.equal(opened[0].raw, PEER_ROW);
-    assert.deepEqual(opened[0].opts, { seedPlain: 'dpage.match.recent' }, 'a connected row was matched against the centroid');
+    assert.deepEqual(opened[0].opts, { seedPlain: 'dpage.match.recent', view: 'federation' },
+      'a connected row was matched against the centroid; the window opens on Listen + Keep a copy, whichever view it last showed');
   });
 
   test('a click on a connected server\'s row queues it, exactly as a library row does', async () => {
@@ -632,6 +633,64 @@ describe('Discover page: opening it', () => {
     assert.deepEqual(rowsQueued.map((r) => [r[0].id, r[1]]), [[1, 'tunes/P/One.mp3'], [1, 'tunes/P/Three.mp3']], 'the whole album, through the federation stream');
     assert.equal(adopted.length, 1, 'queueing leaves the app on this server');
     assert.equal(fedQueued.length, 0);
+  });
+
+  // The album card's ⋯: the recommendation window, read as the album.
+  const BEST = { ...PEER_ROW, filepath: 'tunes/P/Three.mp3', title: 'Peer Three', similarity: 0.95, albumArt: null };
+  const twoRowAlbum = (b) => (b.sources.includes('peers')
+    ? { ...PEERS, peers: { ...PEERS.peers, peers: [{ ...PEERS.peers.peers[0], results: [PEER_ROW, BEST] }] } }
+    : MAIN);
+
+  test('a connected album card\'s ⋯ opens the window on the album\'s best row, as the album, on the Federation view — no copy starts', async () => {
+    const { S, click, opened, adopted, albumsOpened, fedQueued, rowsQueued, calls } = makeSandbox({ taste: twoRowAlbum });
+    await S.discoveryPanel();
+    const asked = calls.length;
+    click({ 'data-dp': 'peerAlbumMore', 'data-i': 0 });
+    assert.equal(opened.length, 1);
+    assert.equal(opened[0].source, 'federation');
+    assert.equal(opened[0].raw, BEST, 'raws[0]: the best match, the route\'s own row unchanged');
+    assert.deepEqual(opened[0].opts, { seedPlain: 'dpage.match.recent', focus: 'album', view: 'federation' });
+    assert.deepEqual([adopted, albumsOpened, fedQueued, rowsQueued], [[], [], [], []], 'the ⋯ neither browses nor queues');
+    assert.equal(calls.length, asked, 'nothing is asked of the server — the window does its own reads');
+  });
+
+  test('the card\'s own click and Enter still open the album in peer browse — never the window', async () => {
+    const { S, click, keydown, opened, adopted, albumsOpened } = makeSandbox({ taste: twoRowAlbum });
+    await S.discoveryPanel();
+    click({ 'data-dp': 'peerAlbumOpen', 'data-i': 0 }, 'div');
+    assert.equal(keydown({ 'data-dp': 'peerAlbumOpen', 'data-i': 0 }, 'Enter'), true);
+    assert.deepEqual(adopted, ['1', '1']);
+    assert.deepEqual(albumsOpened, [['Peer Album', 'Quinn', null, null], ['Peer Album', 'Quinn', null, null]]);
+    assert.equal(opened.length, 0);
+  });
+
+  test('the card\'s ⋯ is a labelled, focusable button on the card\'s art, beside its play button', async () => {
+    const { S, keyClick, opened } = makeSandbox({ taste: twoRowAlbum });
+    await S.discoveryPanel();
+    const html = S.page();
+    const strip = html.slice(html.indexOf('dpage-strip dpage-src-peers'), html.indexOf('<div class="dpage-songs'));
+    const more = findDrawn(strip, { 'data-dp': 'peerAlbumMore', 'data-i': 0 });
+    assert.ok(more, 'drawn on the connected server\'s card');
+    assert.equal(more.tag, 'button', 'a real button: Tab reaches it, Enter and Space press it');
+    assert.equal(more.attrs.type, 'button');
+    assert.equal(more.attrs.title, 'dpage.verb.albumMore');
+    assert.equal(more.attrs['aria-label'], 'dpage.verb.albumMore');
+    assert.equal(more.attrs.class, 'dpage-album-more');
+    assert.equal(countDrawn(html, { 'data-dp': 'peerAlbumMore' }), 1, 'one per card');
+    const art = strip.slice(strip.indexOf('<div class="album-grid-art">'), strip.indexOf('<div class="album-grid-info">'));
+    assert.ok(art.indexOf('data-dp="peerAlbum"') >= 0 && art.indexOf('data-dp="peerAlbum"') < art.indexOf('data-dp="peerAlbumMore"'), 'on the art, after the play button');
+    const lib = html.slice(html.indexOf('dpage-strip dpage-src-library'), html.indexOf('dpage-strip dpage-src-peers'));
+    assert.ok(!lib.includes('peerAlbumMore'), 'the library\'s cards have none');
+    keyClick({ 'data-dp': 'peerAlbumMore', 'data-i': 0 });
+    assert.equal(opened.length, 1);
+    assert.match(html, /aria-label="dpage\.verb\.albumMore">⋯<\/button>/);
+    // shown as the play button is: on hover, on focus inside the card, always on touch
+    const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8');
+    assert.match(css, /\.dpage \.album-grid-card:hover \.dpage-album-more, \.dpage \.album-grid-card:focus-within \.dpage-album-more \{ opacity: 1; \}/);
+    assert.match(css, /\.dpage-album-more:focus-visible \{ outline: 2px solid #fa832b;/);
+    const touch = css.slice(css.indexOf('@media (hover: none) {', css.indexOf('/* ── The Discover page')));
+    assert.match(touch.slice(0, touch.indexOf('\n}')), /\.dpage \.dpage-album-more \{ opacity: 1;/);
+    assert.ok(fs.readFileSync(path.join(ROOT, 'webapp', 'locales', 'en.json'), 'utf8').includes('"dpage.verb.albumMore": "More for this album"'));
   });
 
   test('connected servers\' covers: the row\'s albumArt through the art proxy, on the album card and the song row', async () => {
@@ -1983,11 +2042,13 @@ describe('Discover page: job badges (the explore page)', () => {
     assert.match(html, /dpage\.plugins\.getIt/);
   });
 
-  test('the play page looks nothing up (its rows carry no badge)', async () => {
+  test('the play page looks up its connected-server rows only — never the network\'s leads, never the library', async () => {
     const { S, calls } = badgeBox();
     await S.discoveryPanel();
-    assert.equal(calls.filter((c) => c.name === 'lookup').length, 0);
-    assert.ok(!S.page().includes('dpage-badge'));
+    const lookups = calls.filter((c) => c.name === 'lookup');
+    assert.equal(lookups.length, 1);
+    assert.deepEqual(lookups[0].body.map((r) => r.title), ['Peer Song', 'Peer Two'], 'the playable connected rows, best match first');
+    assert.ok(!lookups[0].body.includes(MAIN.network.results[0]));
   });
 
   test('a poll tick redraws only a badge that changed, in place; an unchanged tick draws nothing', async () => {
@@ -2020,6 +2081,180 @@ describe('Discover page: job badges (the explore page)', () => {
     assert.equal(calls.filter((c) => c.name === 'lookup').length, lookups + 1, 'the new rows looked up');
     assert.equal(liveWatches(), 1, 'listening again (one watch)');
     assert.match(S.page(), /width:90%/, 'the badge caught up');
+  });
+});
+
+// The play page's connected-server rows and album cards carry their copy's
+// badge: a word and what it acts on, at most a thin bar — no percentage
+// and no count on the page (the numbers stay in the window).
+describe('Discover page: job badges (the play page\'s connected servers)', () => {
+  const PLUG = { available: true, list: [{ name: 'federation-copy', title: 'Copy from a connected server', capabilities: ['acquire'], scopes: ['song', 'album', 'artist', 'artist-missing'] }], jobsAllowed: true };
+  // Sam's album copy of 'Peer Album' (PEER_ROW's), keyed as the server keys it
+  const COPY = {
+    id: 9, plugin: 'federation-copy', state: 'running', progress: 0.5, statusText: 'album 1 of 1 · 1 of 2 songs', key: 'album:pa',
+    params: { scope: 'album' }, recommendation: { ...PEER_ROW }, cancelRequested: false,
+  };
+  const KEYS = {
+    'Peer Song': { key: 'text:ps', keys: { song: 'text:ps', album: 'album:pa', artist: 'artist:q', folder: 'folder:1' } },
+    'Peer Two': { key: 'text:p2', keys: { song: 'text:p2', artist: 'artist:q', folder: 'folder:2' } },
+  };
+  const answerFor = (jobs) => (recs) => ({ results: recs.map((r) => {
+    const k = KEYS[r.title] || { key: 'text:' + r.title, keys: { song: 'text:' + r.title } };
+    const own = new Set(Object.values(k.keys));
+    return { ...k, jobs: jobs.filter((j) => own.has(j.key)) };
+  }) });
+  const box = (extra = {}) => makeSandbox({ taste: answer, flags: { ...FLAGS_ALL, discoveryPlugins: true }, plugins: PLUG, lookup: answerFor([COPY]), jobs: [COPY], ...extra });
+  const lookupsOf = (calls) => calls.filter((c) => c.name === 'lookup');
+  const peerCol = (html) => html.slice(html.indexOf('<section class="dpage-col dpage-src-peers"'));
+  const libCol = (html) => html.slice(html.indexOf('<section class="dpage-col dpage-src-library"'), html.indexOf('<section class="dpage-col dpage-src-peers"'));
+  const strip = (html) => html.slice(html.indexOf('dpage-strip dpage-src-peers'), html.indexOf('<div class="dpage-songs'));
+
+  test('one batch for the connected rows (the library\'s never); the album copy badges its row and its card — the word and the kind, a thin bar, no number', async () => {
+    const { S, calls } = box();
+    await S.discoveryPanel();
+    const lookups = lookupsOf(calls);
+    assert.equal(lookups.length, 1, 'one batch');
+    assert.deepEqual(lookups[0].body, [PEER_ROW, PEERS.peers.peers[0].results[1]], 'the playable connected rows as the route sent them — the offline server\'s row and the library rows never');
+    const html = S.page();
+    const col = peerCol(html);
+    // the word rides the subtitle line after "Artist · Album" (which gives way
+    // first) and the bar is pinned to the row's edge: neither adds a line, so
+    // a badge arriving on the poll never changes the row's height
+    assert.match(col, /<div class="discover-row-sub dpage-subline"><span class="dpage-subtext">Quinn · Peer Album<\/span><div class="dpage-slot" data-bslot="p0"><span class="dpage-badge dpage-badge-src">discover\.job\.copying · discover\.tray\.kindAlbum<\/span><\/div><\/div>/);
+    assert.match(col, /<\/div><div class="dpage-slot" data-pslot="p0"><div class="dpage-prog dpage-prog-thin" aria-hidden="true"><i style="transform:scaleX\(0\.5\)"><\/i><\/div><\/div><\/div>/, 'the bar sits outside the subtitle line');
+    assert.match(col, /data-bslot="p1"><\/div>/, 'Peer Two (no album, no job of its own): an empty slot');
+    const card = strip(html);
+    assert.match(card, /data-bslot="a0"><span class="dpage-badge dpage-badge-src">discover\.job\.copying<\/span>/, 'the card: the same copy, under its artist line — no "album" on an album');
+    assert.match(card, /data-pslot="a0"><div class="dpage-prog dpage-prog-thin"/, 'its bar along the cover');
+    assert.ok(!/data-[bp]slot/.test(libCol(html)), 'library rows carry no slot');
+    const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8');
+    assert.match(css, /\.dpage-songs \.dpage-row \.dpage-prog-thin \{ position: absolute;/, 'the row bar is pinned, never a line of its own');
+    assert.ok(!/\.discover-row-info \.dpage-badge \{ display: block/.test(css), 'the row badge is never a block line under the subtitle');
+    assert.ok(!html.includes('discover.job.copiedCount') && !html.includes('1 of 2 songs'), 'no count');
+    assertTrimmed(html, 'with a live copy');
+  });
+
+  test('a poll tick patches p0 and a0 in place — no page draw, the keyboard stays where it was; an unchanged tick draws nothing', async () => {
+    const { S, tick, patches, renders, keyClick, activeAttrs } = box();
+    await S.discoveryPanel();
+    keyClick({ 'data-dp': 'peerMore', 'data-i': 1 });
+    const focusedOn = activeAttrs();
+    assert.ok(focusedOn, 'focus on the second row\'s ⋯');
+    const drawn = renders();
+    const html = S.page();
+    tick([COPY]);
+    assert.equal(patches.length, 0, 'nothing changed: nothing drawn');
+    tick([{ ...COPY, progress: 0.8, statusText: 'album 1 of 1 · 2 of 2 songs' }]);
+    assert.equal(renders(), drawn, 'no whole-page draw on the poll');
+    assert.equal(S.page(), html, 'the page markup is untouched (slots are written in place)');
+    assert.equal(activeAttrs(), focusedOn, 'the keyboard stays on its control');
+    const bar = (id) => patches.filter((pt) => pt.slot === 'data-pslot' && pt.id === id).pop();
+    assert.match(bar('p0').html, /scaleX\(0\.8\)/);
+    assert.match(bar('a0').html, /scaleX\(0\.8\)/);
+    assert.ok(!patches.some((pt) => pt.id === 'p1'), 'the other row is left alone');
+    patches.length = 0;
+    tick([{ ...COPY, state: 'done', progress: 1, result: { scope: 'album', songs: { total: 2, copied: [{}, {}], skipped: [], failed: [] }, counts: { total: 2, copied: 2, skipped: 0, failed: 0 }, stopped: null, peer: { id: 1, name: 'Sam\'s server' } } }]);
+    const word = (id) => patches.filter((pt) => pt.slot === 'data-bslot' && pt.id === id).pop();
+    assert.equal(word('p0').html, '<span class="dpage-badge dpage-badge-ok">discover.job.inCollection · discover.tray.kindAlbum</span>');
+    assert.equal(word('a0').html, '<span class="dpage-badge dpage-badge-ok">discover.job.inCollection</span>');
+    assert.equal(bar('p0').html, '', 'finished: no bar');
+    for (const pt of patches) { assert.ok(!/\d\s*%|count/.test(pt.html), `no number in ${pt.id}`); }
+    assert.equal(renders(), drawn);
+  });
+
+  test('"done" is not "kept": an album copy stopped by the quota reads stopped on the row and the card', async () => {
+    const stopped = { ...COPY, state: 'done', progress: 1, result: { scope: 'album', songs: { total: 2, copied: [{}], skipped: [], failed: [{}] }, counts: { total: 2, copied: 1, skipped: 0, failed: 1 }, stopped: 'quota', peer: { id: 1, name: 'Sam\'s server' } } };
+    const { S } = box({ lookup: answerFor([stopped]), jobs: [stopped] });
+    await S.discoveryPanel();
+    const html = S.page();
+    assert.match(peerCol(html), /data-bslot="p0"><span class="dpage-badge dpage-badge-err">discover\.job\.stopped · discover\.tray\.kindAlbum</);
+    assert.match(strip(html), /data-bslot="a0"><span class="dpage-badge dpage-badge-err">discover\.job\.stopped</);
+    assert.ok(!html.includes('discover.job.inCollection'));
+  });
+
+  test('an artist copy: every row by the artist says "every album", and so does the card', async () => {
+    const artist = { ...COPY, id: 11, state: 'queued', progress: null, statusText: null, key: 'artist:q', params: { scope: 'artist' } };
+    const { S } = box({ lookup: answerFor([artist]), jobs: [artist] });
+    await S.discoveryPanel();
+    const html = S.page();
+    for (const i of [0, 1]) {
+      assert.match(peerCol(html), new RegExp(`data-bslot="p${i}"><span class="dpage-badge dpage-badge-src">discover\\.job\\.queued · discover\\.tray\\.kindArtist<`), `row ${i}`);
+    }
+    assert.match(strip(html), /data-bslot="a0"><span class="dpage-badge dpage-badge-src">discover\.job\.queued · discover\.tray\.kindArtist</);
+  });
+
+  test('every connected album card keeps its state line, badge or not — the slot the poll fills, so the strip never changes height', async () => {
+    const { S, tick, patches } = box({ lookup: answerFor([]), jobs: [] });
+    await S.discoveryPanel();
+    const html = strip(S.page());
+    const cards = html.match(/<div class="dpage-album"/g) || [];
+    assert.ok(cards.length >= 1, 'a card drawn');
+    const lines = html.match(/<div class="dpage-cstate" data-bslot="a\d+">/g) || [];
+    assert.equal(lines.length, cards.length, 'one state line per card');
+    assert.match(html, /<div class="album-grid-artist">[^<]*<\/div>\s*<div class="dpage-cstate" data-bslot="a0"><\/div>/, 'drawn empty under the artist line');
+    assert.ok(!/class="dpage-slot" data-bslot="a/.test(html), 'not a display:contents slot (that one reserves nothing)');
+    tick([COPY]);
+    const word = patches.filter((pt) => pt.slot === 'data-bslot' && pt.id === 'a0').pop();
+    assert.equal(word.html, '<span class="dpage-badge dpage-badge-src">discover.job.copying</span>', 'the poll fills the kept line in place');
+  });
+
+  test('another connected server\'s copy of the same album badges neither the row nor the card', async () => {
+    const fromTom = { ...COPY, recommendation: { ...PEER_ROW, peer: { id: 4, name: 'Tom' } } };
+    const { S, tick, patches } = box({ lookup: answerFor([fromTom]), jobs: [fromTom] });
+    await S.discoveryPanel();
+    const html = S.page();
+    assert.match(peerCol(html), /data-bslot="p0"><\/div>/);
+    assert.match(strip(html), /data-bslot="a0"><\/div>/);
+    assert.ok(!html.includes('dpage-badge'));
+    tick([{ ...fromTom, progress: 0.9 }]);
+    assert.equal(patches.length, 0, 'its progress is not this server\'s');
+  });
+
+  test('the connected column\'s Try again looks its new rows up', async () => {
+    let peersFail = true;
+    const { S, calls, click } = box({ taste: (b) => (b.sources.includes('peers') ? (peersFail ? null : PEERS) : MAIN) });
+    await S.discoveryPanel();
+    assert.equal(lookupsOf(calls).length, 0, 'a failed column: nothing to look up');
+    peersFail = false;
+    click({ 'data-dp': 'peersRetry' });
+    await flush(); await flush(); await flush(); await flush();
+    const lookups = lookupsOf(calls);
+    assert.equal(lookups.length, 1, 'its new rows, looked up');
+    assert.deepEqual(lookups[0].body.map((r) => r.title), ['Peer Song', 'Peer Two']);
+    assert.match(peerCol(S.page()), /data-bslot="p0"><span class="dpage-badge dpage-badge-src">discover\.job\.copying/);
+  });
+
+  test('101 connected rows: two batch calls (100, then 1) — "Show more"\'s rows are badged without asking again', async () => {
+    const rows = Array.from({ length: 101 }, (_, i) => ({ ...PEER_ROW, filepath: `tunes/P/${i}.mp3`, title: `Many ${i}`, similarity: 0.9 - i / 1000 }));
+    const big = (b) => (b.sources.includes('peers') ? { ...PEERS, peers: { ...PEERS.peers, peers: [{ ...PEERS.peers.peers[0], results: rows }] } } : MAIN);
+    const { S, calls, click } = box({ taste: big, lookup: answerFor([]) });
+    await S.discoveryPanel();
+    assert.deepEqual(lookupsOf(calls).map((c) => c.body.length), [100, 1]);
+    assert.equal(S.view.badgeRows.length, 101, 'every row, not only the 16 drawn');
+    click({ 'data-dp': 'showMore', 'data-v': 'peers' });
+    assert.equal(lookupsOf(calls).length, 2, 'Show more asks nothing');
+    assert.match(S.page(), /data-bslot="p31"/);
+  });
+
+  test('no lookup, no slot content when the discoveryPlugins flag is off', async () => {
+    const { S, calls } = box({ flags: { ...FLAGS_ALL, discoveryPlugins: false } });
+    await S.discoveryPanel();
+    assert.equal(lookupsOf(calls).length, 0);
+    assert.ok(!S.page().includes('dpage-badge'));
+  });
+
+  test('spa.css: the play page\'s badge and thin bar use the house badge colours', () => {
+    const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8');
+    assert.match(css, /\.dpage-prog-thin i \{ width: 100%; transform-origin: left center; \}/);
+    // the row's badge shares the subtitle line, and its bar is pinned to the row's edge
+    assert.match(css, /\.dpage-subline \{ display: flex; align-items: baseline; gap: 8px; min-width: 0; \}/);
+    assert.match(css, /\.dpage-subtext \{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; \}/);
+    // the card's state line: a fixed line box, so a badge never grows the strip
+    assert.match(css, /\.dpage-strip \.dpage-cstate \{ display: block; height: 16px; margin-top: 2px; overflow: hidden; \}/);
+    assert.match(css, /\.dpage-strip \.dpage-cstate \.dpage-badge \{ display: block; max-width: 100%; margin: 0; line-height: 16px; \}/);
+    assert.ok(!/\.album-grid-info \.dpage-badge/.test(css), 'no rule left that makes the card\'s badge its own growing line');
+    assert.match(css, /\.dpage-src-peers \.album-grid-art \.dpage-prog \{ position: absolute;/);
+    assert.match(css, /\.dpage-badge-dim \{ color: #8a919e; \}/);
   });
 });
 

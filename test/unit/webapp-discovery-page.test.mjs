@@ -25,6 +25,7 @@ import { readFileSync } from 'node:fs';
 import * as tasteQ from '../../src/discovery/taste-queries.js';
 import { stampNetworkRows, peersSection } from '../../src/api/discovery-taste.js';
 import * as plugins from '../../src/discovery-plugins/index.js';
+import { nameKey as serverNameKey } from '../../src/db/name-key.js';
 
 const require = createRequire(import.meta.url);
 const D = require('../../webapp/alpha/discovery-page.js');
@@ -694,6 +695,453 @@ describe('the peer window\'s queued metadata (vp.js dmSongMeta)', () => {
   });
 });
 
+// ── vp.js: the recommendation window as Discover opens it ────────────────
+// The window's methods sliced out of the component and run over a stub
+// `this`, beside the module's own blankDiscoverModal / dmNameKey and its
+// session memory (discoverModalView); DISCOVERJOBS and DISCOVERYPAGE are
+// the real modules, t() the app's own i18n.js over en.json (plural forms
+// included), MSTREAMAPI a stub of the peer's and the library's reads.
+function vpMethodSrc(name) {
+  const m = new RegExp(`\\n {6}${name}: (?:async )?function \\(`).exec(VP_SRC);
+  assert.ok(m, `vp.js no longer defines ${name} — update this test`);
+  const start = m.index + 1 + `      ${name}: `.length;
+  const end = VP_SRC.indexOf('\n      },\n', start);
+  return VP_SRC.slice(start, end + '\n      }'.length);
+}
+function vpModuleFn(name) {
+  const start = VP_SRC.indexOf(`\n  function ${name}(`);
+  assert.ok(start >= 0, `vp.js no longer defines ${name}() — update this test`);
+  const end = VP_SRC.indexOf('\n  }\n', start);
+  return VP_SRC.slice(start + 1, end + '\n  }'.length);
+}
+const I18N_SRC = readFileSync(new URL('../../webapp/assets/js/i18n.js', import.meta.url), 'utf8');
+const I18N = new Function('window', 'document', 'localStorage', 'navigator', 'fetch', `${I18N_SRC}\nreturn I18N;`)(
+  {}, { querySelector: () => null, querySelectorAll: () => [] }, { getItem: () => null, setItem: () => {} }, { language: 'en' },
+  async () => ({ json: async () => EN }));
+await I18N.loadLanguage('en');
+const tEn = I18N.t;
+
+const WINDOW_METHODS = ['tt', 'dmLive', 'dmDuration', 'dmText', 'openDiscoverModal', 'openDiscoverModalForJob', 'dmLoadPeerFacts', 'dmArtistOwnership',
+  'dmAlbumFocus', 'dmHeadTitle', 'dmSubtitle', 'dmAlbumFacts', 'dmArtistFacts', 'dmAlbumPlaySub', 'discoverAcquirePlugins', 'dmHasDestination',
+  'dmCopyRows', 'dmJobRow', 'dmJobOtherPeer', 'dmScopeRows', 'dmMissingRows', 'dmAlbumIdleSub', 'dmArtistIdleSub', 'dmKeepChoices', 'dmKeepChoose',
+  'dmKeepChosen', 'dmKeepMissingChoice', 'dmKeepMissingCount', 'dmKeepScope', 'dmKeepRow', 'dmKeepIdle', 'dmKeepStartLabel',
+  'dmMissingHeld', 'dmKeepMissingLabel', 'setDiscoverModalView', 'dmGetItRows', 'dmKeepTitle', 'dmKeepStart', 'toastDiscoverJob', 'discoverPluginTitle'];
+const COPY = { name: 'federation-copy', title: 'Copy from a connected server', capabilities: ['acquire'], scopes: ['song', 'album', 'artist', 'artist-missing', 'folder'] };
+const DEST = { vpath: 'collection', base: 'From peers', layout: '{{ARTIST}}/{{ALBUM}}', source: 'saved' };
+const STAGE_B = { id: 1, name: 'Stage Peer B' };
+const STAGE_C = { id: 4, name: 'Stage Peer C' };
+// A taste peers row as the route sends it (stage A's 'Borrowed Tapes').
+const tapesRow = (peer, title, over) => ({
+  source: 'federation', seedHash: null, artist: 'Boukmanflow', title, album: 'Borrowed Tapes', year: 2019, duration: 221,
+  similarity: 0.83, filepath: `peerlib/Boukmanflow/Borrowed Tapes/${title}.mp3`, peer: { ...peer }, albumArt: 'bt.jpg', ...over,
+});
+const peerAlbumItem = (name, over) => ({ name, year: 2019, album_art_file: null, album_artist: 'Boukmanflow', artists: ['Boukmanflow'], compilation: false, year_min: 2019, year_max: 2019, track_count: 3, ...over });
+const songsOf = (n) => Array.from({ length: n }, (_, i) => ({ filepath: `peerlib/x/${i}.mp3`, metadata: { title: `S${i}`, duration: 200 } }));
+// The library's reads and the peer's, as dmLoadPeerFacts asks them.
+const readsOf = ({ albumSongs = null, peerAlbums = null, localAlbums = null } = {}) => ({
+  federationPeers: async () => ({ peers: [{ ...STAGE_B, lastSeen: null, lastStatus: 'ok' }, { ...STAGE_C, lastSeen: null, lastStatus: 'ok' }] }),
+  peer: {
+    metadata: async () => ({ metadata: { format: 'mp3' } }),
+    albumSongs: async () => albumSongs,
+    artistAlbums: async () => peerAlbums,
+  },
+  artistAlbums: async () => localAlbums,
+});
+const STAGE_READS = () => readsOf({
+  albumSongs: songsOf(3),
+  peerAlbums: { albums: [peerAlbumItem('Borrowed Tapes')] },
+  localAlbums: { albums: ['Night Market', 'Ferry Lines', 'Cold Open'].map((n) => peerAlbumItem(n)) },
+});
+
+function makeWindow({ reads = readsOf(), remembered = 'federation', plugins = [COPY], jobsAllowed = true, destination = DEST, available = true } = {}) {
+  const body = `
+    let discoverModalGen = 0;
+    let discoverModalView = ${JSON.stringify(remembered)};
+    function onDiscoverModalKey() {}
+    ${vpModuleFn('blankDiscoverModal')}
+    ${vpModuleFn('dmNameKey')}
+    return {
+      methods: { ${WINDOW_METHODS.map((n) => `${n}: ${vpMethodSrc(n)}`).join(',\n')} },
+      blank: blankDiscoverModal,
+      remembered: () => discoverModalView,
+    };`;
+  const doc = { addEventListener() {}, removeEventListener() {} };
+  const toasts = [];
+  const izi = Object.fromEntries(['error', 'success', 'warning', 'info'].map((kind) => [kind, (o) => toasts.push({ kind, ...o })]));
+  const mod = new Function('DISCOVERJOBS', 'DISCOVERYPAGE', 'MSTREAMAPI', 'document', 't', 'iziToast', body)(J, D, reads, doc, tEn, izi);
+  const loads = [];
+  const starts = [];
+  const vm = {
+    discover: { plugins: { available, list: plugins, jobsAllowed }, dest: { view: { destination }, loaded: true }, admin: false, seedTitle: '', modal: mod.blank() },
+    $refs: {}, $nextTick() {}, $set(o, k, v) { o[k] = v; }, $delete(o, k) { delete o[k]; },
+    stopDiscoverPreview() {}, copyDiscoverP2p() { loads.push('copied'); },
+    dmLoadLinks: async () => { loads.push('links'); },
+    dmLoadJobs: async () => { loads.push('jobs'); },
+    dmLoadFederate: async () => { loads.push('federate'); },
+    dmJobStart: (plugin, choice, scope) => { starts.push({ plugin: plugin.name, choice, scope }); },
+    ...mod.methods,
+  };
+  return { vm, loads, starts, toasts, remembered: mod.remembered };
+}
+const subText = (vm, row) => vm.dmText(row.sub);
+const copyJob = (over) => ({ id: 41, plugin: 'federation-copy', key: 'album:06676dc1', state: 'running', progress: 0.4, statusText: 'song 1 of 3 · Rooftop Cypher', params: { scope: 'album' }, recommendation: tapesRow(STAGE_B, '02 - Late Train Verse'), ...over });
+
+describe('the recommendation window: album focus (vp.js)', () => {
+  test('a card\'s opening reads as the album: Federation view and Album chosen — the session\'s remembered view neither used nor changed', async () => {
+    const { vm, remembered } = makeWindow({ reads: STAGE_READS(), remembered: 'plugins' });
+    const row = tapesRow(STAGE_B, '02 - Late Train Verse');
+    await vm.openDiscoverModal(row, 'federation', { seedPlain: 'your recent listening', focus: 'album', view: 'federation' });
+    const m = vm.discover.modal;
+    assert.equal(m.track, row, 'the best row itself, as received');
+    assert.equal(m.focus, 'album');
+    assert.equal(m.view, 'federation');
+    assert.deepEqual(m.keep, { scope: 'album', onlyMissing: true });
+    assert.equal(remembered(), 'plugins', 'the session\'s choice is the tabs\', not the opener\'s');
+    assert.equal(vm.dmKeepChosen(), 'album');
+    assert.equal(vm.dmKeepScope(), 'album');
+    assert.equal(vm.dmKeepStartLabel(), 'Add album');
+    assert.deepEqual(vm.dmKeepChoices().map((c) => [c.scope, c.sub]), [['album', '3 songs'], ['artist', '1 album']], 'no "This song" in the album\'s window');
+  });
+
+  test('a song row\'s ⋯ (view: federation) opens on the Federation view whatever was last chosen; the panel\'s rows keep the remembered view', async () => {
+    const page = makeWindow({ remembered: 'plugins' });
+    await page.vm.openDiscoverModal(tapesRow(STAGE_B, 'A'), 'federation', { seedPlain: 'x', view: 'federation' });
+    assert.equal(page.vm.discover.modal.view, 'federation');
+    assert.equal(page.vm.discover.modal.focus, null);
+    assert.deepEqual(page.vm.discover.modal.keep, { scope: 'song', onlyMissing: true });
+    assert.equal(page.remembered(), 'plugins');
+    const panel = makeWindow({ remembered: 'plugins' });
+    await panel.vm.openDiscoverModal(tapesRow(STAGE_B, 'A'), 'federation');
+    assert.equal(panel.vm.discover.modal.view, 'plugins', 'no opts: the session\'s choice, as before');
+    const off = makeWindow({ remembered: 'plugins', available: false });
+    await off.vm.openDiscoverModal(tapesRow(STAGE_B, 'A'), 'federation', { view: 'plugins' });
+    assert.equal(off.vm.discover.modal.view, 'federation', 'no plug-ins: there is only the Federation view');
+  });
+
+  test('album focus needs an album; a network row never takes it', async () => {
+    const { vm } = makeWindow();
+    await vm.openDiscoverModal(tapesRow(STAGE_B, 'Loose', { album: null }), 'federation', { focus: 'album', view: 'federation' });
+    assert.equal(vm.discover.modal.focus, null);
+    assert.equal(vm.discover.modal.keep.scope, 'song');
+    await vm.openDiscoverModal({ title: 'Lead', artist: 'Mo', album: 'Lead Album', peer: { endpointId: 'e1' } }, 'p2p', { focus: 'album' });
+    assert.equal(vm.discover.modal.focus, null);
+    assert.equal(vm.discover.modal.view, 'plugins');
+  });
+
+  test('the header: the album\'s name, then "artist · year · N songs" once the peer said how many', async () => {
+    const { vm } = makeWindow({ reads: readsOf() });
+    await vm.openDiscoverModal(tapesRow(STAGE_B, '02 - Late Train Verse'), 'federation', { focus: 'album', view: 'federation' });
+    assert.equal(vm.dmHeadTitle(), 'Borrowed Tapes');
+    assert.equal(vm.dmSubtitle(), 'Boukmanflow · 2019', 'count unknown (the peer did not answer): no count');
+    vm.discover.modal.album = { songs: songsOf(1), count: 1, seconds: 200, owned: false };
+    assert.equal(vm.dmSubtitle(), 'Boukmanflow · 2019 · 1 song');
+    vm.discover.modal.album = { songs: songsOf(3), count: 3, seconds: 662, owned: false };
+    assert.equal(vm.dmSubtitle(), 'Boukmanflow · 2019 · 3 songs');
+    assert.equal(vm.dmAlbumPlaySub(), '11:02 · none in your library', 'the play line: how long, and whether the library has it');
+    // the song's own window is unchanged
+    const song = makeWindow();
+    await song.vm.openDiscoverModal(tapesRow(STAGE_B, '02 - Late Train Verse'), 'federation', { view: 'federation' });
+    assert.equal(song.vm.dmHeadTitle(), '02 - Late Train Verse');
+    assert.equal(song.vm.dmSubtitle(), 'Boukmanflow · Borrowed Tapes · 2019 · 3:41');
+    song.vm.discover.modal.track = { ...song.vm.discover.modal.track, title: '' };
+    assert.equal(song.vm.dmHeadTitle(), '(untitled)');
+  });
+});
+
+describe('the recommendation window on Discover rows: what Keep offers (vp.js)', () => {
+  test('a row without an artist offers no Album (the peer would hand back every album of that name) and no Artist', async () => {
+    const { vm } = makeWindow({ reads: readsOf({ albumSongs: songsOf(3) }) });
+    await vm.openDiscoverModal(tapesRow(STAGE_B, 'Untagged Hit', { artist: null, album: 'Greatest Hits' }), 'federation', { view: 'federation' });
+    assert.deepEqual(vm.dmKeepChoices().map((c) => c.scope), ['song']);
+    assert.deepEqual(vm.dmScopeRows('album'), []);
+    assert.deepEqual(vm.dmScopeRows('artist'), []);
+    assert.deepEqual(vm.dmMissingRows(), []);
+    // its album card's ⋯: no choice at all, so no Keep card
+    const card = makeWindow({ reads: readsOf({ albumSongs: songsOf(3) }) });
+    await card.vm.openDiscoverModal(tapesRow(STAGE_B, 'Untagged Hit', { artist: '', album: 'Greatest Hits' }), 'federation', { focus: 'album', view: 'federation' });
+    assert.equal(card.vm.discover.modal.focus, 'album');
+    assert.deepEqual(card.vm.dmKeepChoices(), []);
+    assert.equal(card.vm.dmKeepRow(), null);
+  });
+
+  test('"Only the 1 album you don\'t have": 3 of the artist\'s albums here, the peer\'s one by name not — counts said "you have 3" and hid it', async () => {
+    const { vm } = makeWindow({ reads: STAGE_READS() });
+    await vm.openDiscoverModal(tapesRow(STAGE_B, '02 - Late Train Verse'), 'federation', { view: 'federation' });
+    const a = vm.discover.modal.artist;
+    assert.deepEqual([a.albums, a.owned, a.missing, a.local], [1, 0, 1, 3]);
+    assert.deepEqual(vm.dmKeepChoices().map((c) => [c.scope, c.sub]), [['song', '3:41 · mp3'], ['album', '3 songs'], ['artist', '1 album']]);
+    assert.equal(vm.dmArtistFacts(), '1 album · 3 songs · 2019 · none in your library');
+    vm.dmKeepChoose('artist');
+    assert.equal(vm.dmKeepMissingChoice(), true);
+    assert.equal(tEn('discover.modal.onlyMissing', { count: vm.dmKeepMissingCount() }), 'Only the 1 album you don’t have');
+    assert.equal(vm.dmKeepScope(), 'artist-missing', 'ticked by default');
+    assert.equal(vm.dmKeepStartLabel(), 'Add 1 album');
+    assert.equal(vm.dmArtistIdleSub('artist-missing'), '1 album by Boukmanflow you don’t have');
+    vm.discover.modal.keep.onlyMissing = false;
+    assert.equal(vm.dmKeepScope(), 'artist');
+    assert.equal(vm.dmKeepStartLabel(), 'Add artist');
+  });
+
+  test('by name, as the copy reckons it: a spelling variant is the same album; an album they only appear on is never "missing"', async () => {
+    const peerAlbums = { albums: [
+      peerAlbumItem('Borrowed Tapes'),
+      peerAlbumItem('Cold  Open’s B-Sides', { year: 2021, year_min: 2021, year_max: 2021 }),
+      peerAlbumItem('Block Party Comp', { album_artist: 'Various Artists', artists: ['Various Artists', 'Boukmanflow'], compilation: true }),
+      peerAlbumItem('', { album_artist: null }),
+    ] };
+    const localAlbums = { albums: [peerAlbumItem('borrowed tapes '), peerAlbumItem('Cold Open\'s B‐Sides')] };
+    const { vm } = makeWindow({ reads: readsOf({ albumSongs: songsOf(3), peerAlbums, localAlbums }) });
+    await vm.openDiscoverModal(tapesRow(STAGE_B, '02 - Late Train Verse'), 'federation', { view: 'federation' });
+    const a = vm.discover.modal.artist;
+    assert.equal(a.owned, 2, 'case, spaces, a curly apostrophe and a Unicode hyphen fold as name-key.js folds them');
+    assert.equal(a.missing, 0, 'the compilation is an appearance (the copy skips it), the blank name the singles bucket');
+    assert.equal(vm.discover.modal.album.owned, true, 'the album line: in your library');
+    assert.equal(vm.dmArtistFacts(), '4 albums · 12 songs · 2019 – 2021 · you have 2');
+    vm.dmKeepChoose('artist');
+    assert.deepEqual(vm.dmMissingRows(), [], 'nothing missing by name: no choice');
+    assert.equal(vm.dmKeepMissingChoice(), false);
+    assert.equal(vm.dmKeepScope(), 'artist');
+  });
+
+  test('no album of the artist\'s here: the plain artist copy takes them all, no checkbox; a listing that did not answer is unknown', async () => {
+    const none = makeWindow({ reads: readsOf({ albumSongs: songsOf(3), peerAlbums: { albums: [peerAlbumItem('Borrowed Tapes')] }, localAlbums: { albums: [] } }) });
+    await none.vm.openDiscoverModal(tapesRow(STAGE_B, '02 - Late Train Verse'), 'federation', { view: 'federation' });
+    none.vm.dmKeepChoose('artist');
+    assert.deepEqual([none.vm.discover.modal.artist.missing, none.vm.discover.modal.artist.local], [1, 0]);
+    assert.equal(none.vm.dmKeepMissingChoice(), false);
+    assert.equal(none.vm.dmKeepScope(), 'artist');
+    const failed = makeWindow({ reads: readsOf({ albumSongs: songsOf(3), peerAlbums: { albums: [peerAlbumItem('Borrowed Tapes')] }, localAlbums: null }) });
+    await failed.vm.openDiscoverModal(tapesRow(STAGE_B, '02 - Late Train Verse'), 'federation', { view: 'federation' });
+    const a = failed.vm.discover.modal.artist;
+    assert.deepEqual([a.owned, a.missing, a.local], [null, null, null]);
+    assert.equal(failed.vm.dmArtistFacts(), '1 album · 3 songs · 2019', 'no "you have" it cannot know');
+    assert.equal(failed.vm.dmArtistIdleSub('artist-missing'), 'Only the albums by Boukmanflow you don’t have');
+  });
+
+  test('one album, one song: singular', async () => {
+    const { vm } = makeWindow({ reads: readsOf({ albumSongs: songsOf(1), peerAlbums: { albums: [peerAlbumItem('Borrowed Tapes', { track_count: 1 })] }, localAlbums: { albums: [] } }) });
+    await vm.openDiscoverModal(tapesRow(STAGE_C, '01 - Rooftop Cypher'), 'federation', { view: 'federation' });
+    assert.equal(vm.dmArtistFacts(), '1 album · 1 song · 2019 · none in your library');
+    assert.equal(vm.dmAlbumFacts(), '2019 · 1 song · 3:20 · none in your library');
+    assert.deepEqual(vm.dmKeepChoices().map((c) => c.sub), ['3:41 · mp3', '1 song', '1 album']);
+    vm.dmKeepChoose('album');
+    assert.equal(vm.dmAlbumIdleSub(), 'Copies its 1 song from Stage Peer C into your library');
+    assert.equal(vm.dmArtistIdleSub('artist'), 'Every album by Boukmanflow on Stage Peer C · 1 album, 1 song');
+    for (const key of ['discover.modal.songCount', 'discover.modal.albumCount', 'discover.modal.onlyMissing', 'discover.modal.keepAddMissing', 'discover.modal.albumQueued', 'discover.modal.addAlbumSub']) {
+      assert.ok(EN[key] && typeof EN[key].one === 'string' && typeof EN[key].other === 'string', `${key}: one and other`);
+      assert.ok(!/\b1 (songs|albums)\b/.test(tEn(key, { count: 1, peer: 'P' })), `${key}: "${tEn(key, { count: 1, peer: 'P' })}"`);
+    }
+  });
+});
+
+describe('the recommendation window: another server\'s copy, and a job reopened from the strip (vp.js)', () => {
+  test('another server\'s album copy, running: shown as "from <that server>" (Add would only return it); once it ended the card is this server\'s again', async () => {
+    const { vm } = makeWindow({ reads: STAGE_READS() });
+    await vm.openDiscoverModal(tapesRow(STAGE_B, '02 - Late Train Verse'), 'federation', { focus: 'album', view: 'federation' });
+    const fromC = copyJob({ recommendation: tapesRow(STAGE_C, '01 - Rooftop Cypher') });
+    vm.discover.modal.jobs = { 'federation-copy@album': fromC };
+    const live = vm.dmKeepRow().row;
+    assert.equal(live.state, 'running');
+    assert.equal(vm.dmKeepIdle(), false);
+    assert.equal(subText(vm, live), 'from Stage Peer C · song 1 of 3 · Rooftop Cypher · 40%');
+    vm.discover.modal.jobs = { 'federation-copy@album': { ...fromC, state: 'done', progress: 1, result: { songs: { total: 1, copied: [{}], skipped: [], failed: [] }, stopped: null, peer: STAGE_C } } };
+    assert.equal(vm.dmKeepRow().row.state, 'idle', 'C\'s finished copy is not B\'s album');
+    assert.equal(vm.dmKeepIdle(), true, 'Add album is offered again');
+    // this server's own job reads as before, with no "from"
+    vm.discover.modal.jobs = { 'federation-copy@album': copyJob() };
+    assert.equal(subText(vm, vm.dmKeepRow().row), 'song 1 of 3 · Rooftop Cypher · 40%');
+  });
+
+  test('a song copied from another server is the same recording: it stays, named by its server', async () => {
+    const { vm } = makeWindow({ reads: STAGE_READS() });
+    await vm.openDiscoverModal(tapesRow(STAGE_B, '01 - Rooftop Cypher'), 'federation', { view: 'federation' });
+    vm.discover.modal.jobs = { 'federation-copy': copyJob({ params: {}, state: 'done', recommendation: tapesRow(STAGE_C, '01 - Rooftop Cypher'),
+      result: { copied: { filepath: 'collection/From peers/Boukmanflow/Borrowed Tapes/01 - Rooftop Cypher.mp3' } } }) };
+    const row = vm.dmKeepRow().row;
+    assert.equal(row.state, 'copied');
+    assert.equal(subText(vm, row), 'from Stage Peer C · collection / From peers / Boukmanflow / Borrowed Tapes / 01 - Rooftop Cypher.mp3');
+    assert.ok(row.actions.includes('play'));
+    // a refused start keeps the server's own words, alone
+    vm.discover.modal.jobErrors = { 'federation-copy': 'Uploading Disabled' };
+    assert.equal(subText(vm, vm.dmKeepRow().row), 'Uploading Disabled');
+  });
+
+  test('a strip row reopens its job: an album copy as the album on Album, artist-missing as Artist with only-missing ticked, another plug-in on Plug-Ins', async () => {
+    const album = makeWindow({ reads: STAGE_READS(), remembered: 'plugins' });
+    const job = copyJob({ recommendation: { ...tapesRow(STAGE_B, '02 - Late Train Verse'), albumArt: undefined, similarity: undefined } });
+    await album.vm.openDiscoverModalForJob(job);
+    let m = album.vm.discover.modal;
+    assert.equal(m.focus, 'album');
+    assert.equal(m.view, 'federation', 'never the remembered Plug-Ins view, where Keep is absent');
+    assert.equal(album.vm.dmKeepChosen(), 'album');
+    m.jobs = { 'federation-copy@album': job };
+    assert.equal(album.vm.dmKeepRow().row.state, 'running', 'the card IS the job');
+    assert.equal(album.remembered(), 'plugins');
+
+    const missing = makeWindow({ reads: STAGE_READS() });
+    const mJob = copyJob({ params: { scope: 'artist-missing' }, key: 'artist-missing:x' });
+    await missing.vm.openDiscoverModalForJob(mJob);
+    m = missing.vm.discover.modal;
+    assert.equal(m.focus, null);
+    assert.deepEqual(m.keep, { scope: 'artist', onlyMissing: true });
+    m.jobs = { 'federation-copy@artist-missing': mJob };
+    assert.equal(missing.vm.dmKeepScope(), 'artist-missing');
+    assert.equal(missing.vm.dmKeepRow().row.state, 'running');
+
+    const artist = makeWindow({ reads: STAGE_READS() });
+    await artist.vm.openDiscoverModalForJob(copyJob({ params: { scope: 'artist' } }));
+    assert.deepEqual(artist.vm.discover.modal.keep, { scope: 'artist', onlyMissing: false });
+    assert.equal(artist.vm.dmKeepScope(), 'artist', 'the plain artist copy, not the missing one');
+
+    const song = makeWindow({ reads: STAGE_READS(), remembered: 'plugins' });
+    await song.vm.openDiscoverModalForJob(copyJob({ params: {} }));
+    assert.deepEqual([song.vm.discover.modal.focus, song.vm.discover.modal.view, song.vm.dmKeepChosen()], [null, 'federation', 'song']);
+
+    const other = makeWindow({ reads: STAGE_READS(), remembered: 'federation' });
+    await other.vm.openDiscoverModalForJob({ id: 9, plugin: 'youtube', state: 'running', params: {}, recommendation: tapesRow(STAGE_B, 'A') });
+    assert.equal(other.vm.discover.modal.view, 'plugins', 'a download lives on the Plug-Ins view');
+  });
+
+  test('a running only-missing copy keeps its choice even once the library has every album by name', async () => {
+    const reads = readsOf({ albumSongs: songsOf(3), peerAlbums: { albums: [peerAlbumItem('Borrowed Tapes')] }, localAlbums: { albums: [peerAlbumItem('Borrowed Tapes')] } });
+    const { vm } = makeWindow({ reads });
+    const mJob = copyJob({ params: { scope: 'artist-missing' } });
+    await vm.openDiscoverModalForJob(mJob);
+    vm.discover.modal.jobs = { 'federation-copy@artist-missing': mJob };
+    assert.equal(vm.discover.modal.artist.missing, 0);
+    assert.equal(vm.dmKeepMissingChoice(), true);
+    assert.equal(vm.dmKeepRow().row.state, 'running');
+    vm.discover.modal.jobs = {};
+    assert.equal(vm.dmKeepMissingChoice(), false, 'once it is gone, nothing missing hides it');
+  });
+});
+
+describe('the recommendation window: what album focus and a reopened failure show (vp.js)', () => {
+  const YT = { name: 'youtube', title: 'YouTube download', capabilities: ['acquire'] };
+
+  test('album focus has no Plug-Ins view: no tab to switch to, and no "Get it" row that would run a song job on the card\'s best row', async () => {
+    const song = makeWindow({ reads: STAGE_READS(), remembered: 'plugins', plugins: [COPY, YT] });
+    await song.vm.openDiscoverModal(tapesRow(STAGE_B, '02 - Late Train Verse'), 'federation', { view: 'federation' });
+    assert.deepEqual(song.vm.dmGetItRows().map((r) => r.plugin.name), ['youtube'], 'a song\'s window: the download is offered on its Plug-Ins view');
+    song.vm.setDiscoverModalView('plugins');
+    assert.equal(song.vm.discover.modal.view, 'plugins');
+
+    const { vm, remembered } = makeWindow({ reads: STAGE_READS(), remembered: 'federation', plugins: [COPY, YT] });
+    await vm.openDiscoverModal(tapesRow(STAGE_B, '02 - Late Train Verse'), 'federation', { focus: 'album', view: 'federation', seedPlain: 'x' });
+    assert.equal(vm.discover.modal.view, 'federation');
+    vm.setDiscoverModalView('plugins');
+    assert.equal(vm.discover.modal.view, 'federation', 'the album\'s window stays on Federation');
+    assert.equal(remembered(), 'federation', 'and the session\'s choice is untouched');
+    assert.deepEqual(vm.dmGetItRows(), [], 'no download row for raws[0] under the album\'s header');
+    vm.setDiscoverModalView('federation');
+    assert.equal(vm.discover.modal.view, 'federation');
+  });
+
+  // A failed only-missing copy, reopened from the strip: the peer went
+  // away, so its listing answered nothing (the facts are unknown).
+  const failedMissing = (over) => copyJob({ id: 77, key: 'artist-missing:x', params: { scope: 'artist-missing' }, state: 'failed', progress: null, statusText: null,
+    error: 'Stage Peer B is unreachable', ...over });
+  const goneReads = () => readsOf({ albumSongs: null, peerAlbums: null, localAlbums: { albums: [peerAlbumItem('Night Market')] } });
+
+  test('a FAILED only-missing copy reopened from the strip lands on that job — its error and its Retry — not on an idle "Add artist"', async () => {
+    const { vm, starts } = makeWindow({ reads: goneReads() });
+    const job = failedMissing();
+    await vm.openDiscoverModalForJob(job);
+    vm.discover.modal.jobs = { 'federation-copy@artist-missing': job };
+    const a = vm.discover.modal.artist;
+    assert.deepEqual([a.albums, a.missing, a.local], [null, null, 1], 'the facts: unknown');
+    assert.equal(vm.dmKeepChosen(), 'artist');
+    assert.equal(vm.dmKeepMissingChoice(), true, 'the failed job holds the choice');
+    assert.equal(vm.dmKeepMissingLabel(), 'Only the albums you don’t have', 'no "0 albums" it cannot count');
+    assert.equal(vm.dmKeepScope(), 'artist-missing');
+    const k = vm.dmKeepRow();
+    assert.deepEqual([k.row.state, k.row.sub.text, k.row.actions], ['failed', 'Stage Peer B is unreachable', ['retry']]);
+    assert.equal(vm.dmKeepIdle(), false);
+    assert.equal(vm.dmKeepTitle(), 'Add what you’re missing');
+    vm.dmKeepStart();   // the job row's Retry emits start
+    assert.deepEqual(starts, [{ plugin: 'federation-copy', choice: null, scope: 'artist-missing' }], 'Retry runs the same only-missing copy, never the broader artist copy');
+    // once the job is gone, unknown facts offer no checkbox: the plain artist copy
+    vm.discover.modal.jobs = {};
+    assert.equal(vm.dmKeepMissingChoice(), false);
+    assert.equal(vm.dmKeepScope(), 'artist');
+  });
+
+  test('the same with nothing missing by name now, with a copy stopped early, and with a refused start; another server\'s failed copy never holds it', async () => {
+    const allHere = readsOf({ albumSongs: songsOf(3), peerAlbums: { albums: [peerAlbumItem('Borrowed Tapes')] }, localAlbums: { albums: [peerAlbumItem('Borrowed Tapes')] } });
+    const { vm } = makeWindow({ reads: allHere });
+    await vm.openDiscoverModalForJob(failedMissing());
+    assert.equal(vm.discover.modal.artist.missing, 0);
+    vm.discover.modal.jobs = { 'federation-copy@artist-missing': failedMissing() };
+    assert.equal(vm.dmMissingRows().length, 1, 'the slot is kept for its job');
+    assert.deepEqual([vm.dmKeepScope(), vm.dmKeepRow().row.state], ['artist-missing', 'failed']);
+    assert.equal(vm.dmKeepMissingLabel(), 'Only the albums you don’t have');
+    // stopped by the transfer limit (a many-song job ends 'done')
+    const stopped = failedMissing({ state: 'done', error: null, result: { scope: 'artist-missing', albums: [], skippedAlbums: [], songs: { total: 2, copied: [{}], skipped: [], failed: [{}] }, counts: { total: 2, copied: 1, skipped: 0, failed: 1 }, stopped: 'quota', peer: STAGE_B } });
+    vm.discover.modal.jobs = { 'federation-copy@artist-missing': stopped };
+    assert.deepEqual([vm.dmKeepScope(), vm.dmKeepRow().row.state], ['artist-missing', 'stopped']);
+    // a start the server refused: its words stay on the card
+    vm.discover.modal.jobs = {};
+    vm.discover.modal.jobErrors = { 'federation-copy@artist-missing': 'Uploading Disabled' };
+    vm.discover.modal.keep.onlyMissing = true;
+    assert.equal(vm.dmKeepScope(), 'artist-missing');
+    assert.equal(vm.dmText(vm.dmKeepRow().row.sub), 'Uploading Disabled');
+    // a finished copy that went well does not keep a choice with nothing left to add
+    vm.discover.modal.jobErrors = {};
+    vm.discover.modal.jobs = { 'federation-copy@artist-missing': failedMissing({ state: 'done', error: null, result: { scope: 'artist-missing', albums: [], skippedAlbums: [], songs: { total: 1, copied: [{}], skipped: [], failed: [] }, counts: { total: 1, copied: 1, skipped: 0, failed: 0 }, stopped: null, peer: STAGE_B } }) };
+    assert.equal(vm.dmKeepMissingChoice(), false);
+    // C's failed copy is not B's: the card is B's own, idle
+    vm.discover.modal.jobs = { 'federation-copy@artist-missing': failedMissing({ recommendation: tapesRow(STAGE_C, '01 - Rooftop Cypher') }) };
+    assert.equal(vm.dmKeepMissingChoice(), false);
+    assert.equal(vm.dmKeepScope(), 'artist');
+  });
+
+  test('a copy that found nothing to take says so when its window is closed — and a many-song failure toasts its counts', async () => {
+    const { vm, toasts } = makeWindow({ reads: STAGE_READS() });
+    const guest = { id: 80, plugin: 'federation-copy', key: 'artist:x', state: 'done', params: { scope: 'artist' }, error: null,
+      recommendation: tapesRow(STAGE_B, 'Party Verse', { album: 'Block Party Comp' }),
+      result: { scope: 'artist', albums: [], skippedAlbums: [{ name: 'Block Party Comp', year: 2020, trackCount: 12, why: 'appearance' }],
+        songs: { total: 0, copied: [], skipped: [], failed: [] }, counts: { total: 0, copied: 0, skipped: 0, failed: 0 }, stopped: null, peer: STAGE_B } };
+    assert.equal(J.jobRowState(guest).state, 'nothing');
+    vm.toastDiscoverJob(guest);
+    assert.equal(toasts.length, 1, 'never silent');
+    assert.deepEqual([toasts[0].kind, toasts[0].title, toasts[0].message], ['info', 'Nothing to copy', 'Boukmanflow · Nothing of theirs to copy · they only appear on 1 album there']);
+    toasts.length = 0;
+    const allFailed = { ...guest, id: 81, params: { scope: 'album' }, key: 'album:x',
+      result: { scope: 'album', songs: { total: 2, copied: [], skipped: [], failed: [{}, {}] }, counts: { total: 2, copied: 0, skipped: 0, failed: 2 }, stopped: null, peer: STAGE_B } };
+    vm.toastDiscoverJob(allFailed);
+    assert.deepEqual([toasts[0].kind, toasts[0].title], ['error', 'Copy from a connected server failed']);
+    assert.match(toasts[0].message, /2 failed/, 'a done job has no error: its counts say what happened');
+    toasts.length = 0;
+    vm.toastDiscoverJob({ ...guest, id: 82, params: {}, key: 'text:x', state: 'failed', error: 'does not allow copies', result: null });
+    assert.equal(toasts[0].message, 'does not allow copies', 'a song\'s failure: the server\'s own words, as before');
+    assert.equal(EN['discover.job.toastNothing'], 'Nothing to copy');
+  });
+});
+
+describe('index.html: the window\'s album focus', () => {
+  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8');
+  const win = HTML.slice(HTML.indexOf('class="dmodal-shadow"'), HTML.indexOf('id="pop"'));
+  test('the header names the album; Listen plays the album in its place; no ISRC (a recording\'s) on the album', () => {
+    assert.match(win, /id="dmodal-title">\{\{ dmHeadTitle\(\) \}\}</);
+    assert.match(win, /<div v-if="dmAlbumFocus\(\)" class="dm-play">[\s\S]*?v-on:click="dmQueueAlbum\(true\)"[\s\S]*?dmAlbumPlaySub\(\)[\s\S]*?v-on:click="dmQueueAlbum\(false\)"[\s\S]*?v-on:click="dmViewAlbum"/);
+    assert.match(win, /<div v-else class="dm-play">[\s\S]*?v-on:click="dmPlayNow"/);
+    assert.match(win, /<div v-if="discover\.modal\.track\.album && !dmAlbumFocus\(\)">/, 'the album line is the play line\'s in album focus');
+    assert.match(win, /v-if="discover\.modal\.track\.isrc && !dmAlbumFocus\(\)" class="dmodal-isrc"/);
+  });
+  test('album focus draws no Federation | Plug-Ins tabs; the checkbox names its count only when it has one', () => {
+    assert.match(win, /<div v-if="discover\.modal\.source === 'federation' && discover\.plugins\.available && !dmAlbumFocus\(\)" class="dmodal-tabs" role="tablist">/);
+    assert.match(win, /<label v-if="dmKeepMissingChoice\(\)" class="dm-check">[\s\S]*?\{\{ dmKeepMissingLabel\(\) \}\}<\/label>/);
+    assert.equal(EN['discover.modal.onlyMissingNoCount'], 'Only the albums you don’t have');
+  });
+  test('no 30 second previews on a connected server\'s row — the whole song plays', () => {
+    assert.match(win, /<section v-if="discover\.modal\.source !== 'federation' && discoverPreviewPlugins\(\)\.length" class="dmodal-section">/);
+  });
+  test('en.json: the paired row no longer names the removed "From your peers"', () => {
+    assert.ok(!/From your peers/i.test(EN['discover.modal.pairedSub']));
+    assert.equal(EN['discover.job.fromPeer'], 'from {{peer}}');
+  });
+});
+
 describe('fedQueueMeta (a peers row\'s lite metadata for the queue)', () => {
   test('title, artist, album, length and the row\'s cover as the song\'s album-art', () => {
     const raw = fedRow(SAM, 'Q1', { albumArt: 'aa11.jpeg' });
@@ -926,6 +1374,239 @@ describe('jobBadges', () => {
     const many = Array.from({ length: 230 }, (_, i) => ({ raw: { title: `t${i}`, source: 'p2p' } }));
     assert.deepEqual(D.lookupChunks(many).map((c) => c.length), [100, 100, 30]);
     assert.deepEqual(D.lookupChunks([{ raw: null }, {}]), []);
+  });
+});
+
+// The play page's connected-server rows and album cards: one badge per
+// server. Album and artist job keys carry no server (the registry's own
+// jobKeysFor), so the lookup hands Stage Peer B's rows Stage Peer C's copy
+// of the same album — the stage's 'Borrowed Tapes' (B holds two of its
+// songs here, C one).
+describe('connected servers\' badges: per server, the album cards from their rows', () => {
+  const PB = { id: 1, name: 'Stage Peer B' };
+  const PC = { id: 4, name: 'Stage Peer C' };
+  const tape = (peer, title, similarity) => fedRow(peer, title, {
+    artist: 'Boukmanflow', album: 'Borrowed Tapes', year: 2021, similarity, filepath: `peerlib/Boukmanflow/Borrowed Tapes/${title}.mp3`,
+  });
+  const TAPES = {
+    peers: [
+      { ...PB, reachable: true, mismatched: false, results: [tape(PB, 'Late Train Verse', 0.9), tape(PB, 'Corner Store Loop', 0.7), fedRow(PB, 'Glass One', { artist: 'Color Out', album: 'Glass', similarity: 0.6 })] },
+      { ...PC, reachable: true, mismatched: false, results: [tape(PC, 'Rooftop Cypher', 0.8)] },
+    ],
+    searched: { peers: 2, unreachable: 0, mismatched: 0 },
+  };
+  const groups = () => D.peerGroups({ peers: peersSection(TAPES) });
+  // best match first: B Late Train, C Rooftop, B Corner Store, B Glass One
+  // one answer: a card finds its rows by raw row, as the page's do
+  const page = () => {
+    const g = groups();
+    const rows = D.peerSongRows(g);
+    const cards = D.peerAlbums(g);
+    return { rows, cards, byTitle: (t) => rows.findIndex((r) => r.title === t) };
+  };
+  const recOf = (row, over) => ({ source: 'federation', peer: row.raw.peer, title: row.raw.title, artist: row.raw.artist, album: row.raw.album, year: row.raw.year, filepath: row.raw.filepath, ...over });
+  const copy = (id, row, scope, state, result, over) => ({
+    id, plugin: 'federation-copy', key: keysOfRec(row.raw)[scope], state, params: scope === 'song' ? {} : { scope },
+    recommendation: recOf(row), result: result || null, progress: state === 'running' ? 0.4 : null, statusText: state === 'running' ? 'album 1 of 1 · 2 of 3 songs' : null, ...over,
+  });
+  const albumDone = (copied, over) => ({ scope: 'album', songs: { total: 3, copied: Array.from({ length: copied }, () => ({})), skipped: [], failed: [] }, counts: { total: 3, copied, skipped: 0, failed: 0 }, stopped: null, peer: PB, ...over });
+  const lookedUp = (rows, jobs) => collect(D.jobBadges(rows, batchAnswer(rows.map((r) => r.raw), jobs), J));
+
+  test('the fixture: one album key across both servers, the cards apart', () => {
+    const { rows, cards, byTitle } = page();
+    assert.deepEqual(rows.map((r) => [r.peerId, r.title]), [[1, 'Late Train Verse'], [4, 'Rooftop Cypher'], [1, 'Corner Store Loop'], [1, 'Glass One']]);
+    assert.equal(keysOfRec(rows[byTitle('Late Train Verse')].raw).album, keysOfRec(rows[byTitle('Rooftop Cypher')].raw).album, 'the album key ignores the server');
+    assert.deepEqual(cards.map((c) => [c.peerId, c.album, c.raws.length]), [[1, 'Borrowed Tapes', 2], [4, 'Borrowed Tapes', 1], [1, 'Glass', 1]]);
+  });
+
+  test('an album job badges every row of its card and the card; a song job only its row, never a card', () => {
+    const { rows, cards, byTitle } = page();
+    const late = rows[byTitle('Late Train Verse')];
+    let badged = lookedUp(rows, [copy(30, late, 'album', 'running')]);
+    for (const t of ['Late Train Verse', 'Corner Store Loop']) {
+      const b = badged[byTitle(t)].badge;
+      assert.deepEqual([b.state, b.tag, b.kind, b.slot, b.progress], ['running', 'discover.job.copying', 'discover.tray.kindAlbum', 'federation-copy@album', 40], t);
+    }
+    assert.equal(badged[byTitle('Glass One')].badge, null, 'another album: nothing');
+    let cardBadges = D.peerAlbumBadges(cards, badged, J);
+    assert.deepEqual([cardBadges[0].state, cardBadges[0].kind, cardBadges[0].jobId], ['running', 'discover.tray.kindAlbum', 30]);
+    assert.deepEqual([cardBadges[1], cardBadges[2]], [null, null], 'C\'s card and the other album stay bare');
+    assert.equal(D.anyLiveBadge(badged), true);
+
+    badged = lookedUp(rows, [copy(31, late, 'song', 'done', { copied: { vpath: 'collection', filepath: 'collection/From peers/Boukmanflow/Borrowed Tapes/Late Train Verse.mp3' } })]);
+    assert.deepEqual([badged[byTitle('Late Train Verse')].badge.state, badged[byTitle('Late Train Verse')].badge.tag], ['copied', 'discover.job.inCollection']);
+    assert.equal(badged[byTitle('Corner Store Loop')].badge, null, 'one song of the album is not the album');
+    cardBadges = D.peerAlbumBadges(cards, badged, J);
+    assert.deepEqual(cardBadges, [null, null, null], 'a song job never badges a card');
+  });
+
+  test('another server\'s album copy never badges this server\'s rows or card — running or done — and stays in their jobs, marked', () => {
+    const { rows, cards, byTitle } = page();
+    const roof = rows[byTitle('Rooftop Cypher')];
+    for (const job of [copy(40, roof, 'album', 'running'), copy(41, roof, 'album', 'done', albumDone(1, { peer: PC }))]) {
+      const badged = lookedUp(rows, [job]);
+      for (const t of ['Late Train Verse', 'Corner Store Loop']) {
+        const r = badged[byTitle(t)];
+        assert.equal(r.badge, null, `${t} (${job.state}): C's copy is not B's`);
+        assert.equal(r.jobs['federation-copy@album'].id, job.id, 'kept in the row\'s jobs (the window says "from Stage Peer C")');
+        assert.deepEqual(r.otherPeer, ['federation-copy@album']);
+      }
+      const own = badged[byTitle('Rooftop Cypher')];
+      assert.equal(own.badge.jobId, job.id, 'C\'s own row shows it');
+      assert.deepEqual(own.otherPeer, []);
+      const cardBadges = D.peerAlbumBadges(cards, badged, J);
+      assert.equal(cardBadges[0], null, 'B\'s Borrowed Tapes card: no badge');
+      assert.equal(cardBadges[1].jobId, job.id, 'C\'s card: its own copy');
+    }
+    const done = D.peerAlbumBadges(cards, lookedUp(rows, [copy(41, roof, 'album', 'done', albumDone(1, { peer: PC }))]), J)[1];
+    assert.deepEqual([done.state, done.tag, done.kind], ['copiedMany', 'discover.job.inCollection', 'discover.tray.kindAlbum']);
+    // the poll's flat list merges the same way (no new lookup)
+    const first = lookedUp(rows, []);
+    const polled = D.jobBadges(first, { jobs: [copy(42, roof, 'album', 'running')] }, J);
+    assert.equal(polled[byTitle('Late Train Verse')].badge, null);
+    assert.deepEqual(polled[byTitle('Late Train Verse')].otherPeer, ['federation-copy@album']);
+    assert.equal(polled[byTitle('Rooftop Cypher')].badge.jobId, 42);
+  });
+
+  test('a song copied from another server is the same recording: it badges the row wherever it came from', () => {
+    const { rows, byTitle } = page();
+    const late = rows[byTitle('Late Train Verse')];
+    const fromC = copy(50, late, 'song', 'done', { copied: { vpath: 'collection', filepath: 'collection/x.mp3' } }, { recommendation: recOf(late, { peer: PC }) });
+    const badged = lookedUp(rows, [fromC]);
+    assert.equal(badged[byTitle('Late Train Verse')].badge.jobId, 50);
+    assert.deepEqual(badged[byTitle('Late Train Verse')].otherPeer, []);
+  });
+
+  test('an artist job badges that server\'s rows and cards of the artist — never another server\'s, never another artist\'s', () => {
+    const { rows, cards, byTitle } = page();
+    const late = rows[byTitle('Late Train Verse')];
+    for (const [scope, kind] of [['artist', 'discover.tray.kindArtist'], ['artist-missing', 'discover.tray.kindMissing']]) {
+      const badged = lookedUp(rows, [copy(60, late, scope, 'queued')]);
+      assert.deepEqual([badged[byTitle('Late Train Verse')].badge.kind, badged[byTitle('Corner Store Loop')].badge.kind], [kind, kind], scope);
+      assert.equal(badged[byTitle('Rooftop Cypher')].badge, null, `${scope}: C's row`);
+      assert.equal(badged[byTitle('Glass One')].badge, null, `${scope}: Color Out`);
+      const cardBadges = D.peerAlbumBadges(cards, badged, J);
+      assert.deepEqual(cardBadges.map((b) => (b ? [b.state, b.kind] : null)), [['queued', kind], null, null], scope);
+    }
+  });
+
+  // An artist walk as federation-copy reports it (copyAlbums over
+  // planArtistAlbums): each album walked with its own songs, or the error
+  // its listing met; the albums left out, with why.
+  const walked = (name, { copied = 0, skipped = 0, failed = 0, stopped = null, error = null } = {}) => (error
+    ? { name, year: null, error, songs: { total: 0, copied: [], skipped: [], failed: [] }, bytes: 0, stopped: null }
+    : { name, year: 2021, bytes: 0, stopped, songs: { total: copied + skipped + failed,
+      copied: Array.from({ length: copied }, () => ({})), skipped: Array.from({ length: skipped }, () => ({ why: 'owned' })), failed: Array.from({ length: failed }, () => ({ error: 'x' })) } });
+  const artistDone = (albums, skippedAlbums, over) => {
+    const sum = (k) => albums.reduce((n, a) => n + a.songs[k].length, 0);
+    const total = albums.reduce((n, a) => n + a.songs.total, 0);
+    return { scope: 'artist', artist: { name: 'Boukmanflow' }, albums, skippedAlbums,
+      songs: { total, copied: albums.flatMap((a) => a.songs.copied), skipped: albums.flatMap((a) => a.songs.skipped), failed: albums.flatMap((a) => a.songs.failed) },
+      counts: { total, copied: sum('copied'), skipped: sum('skipped'), failed: sum('failed') }, stopped: null, peer: PB, ...over };
+  };
+  // B also holds a song Boukmanflow only guests on, on a compilation: the
+  // card groups by the track's artist, so Discover draws 'Block Party
+  // Comp · Boukmanflow' — and the artist key is the same.
+  const COMP = {
+    peers: [{ ...PB, reachable: true, mismatched: false, results: [
+      tape(PB, 'Late Train Verse', 0.9), tape(PB, 'Corner Store Loop', 0.7),
+      fedRow(PB, 'Party Verse', { artist: 'Boukmanflow', album: 'Block Party Comp', year: 2020, similarity: 0.65, filepath: 'peerlib/VA/Block Party Comp/07 - Party Verse.mp3' }),
+    ] }],
+    searched: { peers: 1, unreachable: 0, mismatched: 0 },
+  };
+  const compPage = () => {
+    const g = D.peerGroups({ peers: peersSection(COMP) });
+    const rows = D.peerSongRows(g);
+    return { rows, cards: D.peerAlbums(g), byTitle: (t) => rows.findIndex((r) => r.title === t) };
+  };
+
+  test('a finished artist copy speaks for each card as its walk did: a compilation they only guest on is never "in your collection"', () => {
+    const { rows, cards, byTitle } = compPage();
+    const late = rows[byTitle('Late Train Verse')];
+    assert.deepEqual(cards.map((c) => [c.album, c.artist]), [['Borrowed Tapes', 'Boukmanflow'], ['Block Party Comp', 'Boukmanflow']]);
+    assert.equal(keysOfRec(late.raw).artist, keysOfRec(rows[byTitle('Party Verse')].raw).artist, 'one artist key for both albums');
+    const result = artistDone([walked('Borrowed Tapes', { copied: 2 })], [{ name: 'Block Party Comp', year: 2020, trackCount: 12, why: 'appearance' }]);
+    const badged = lookedUp(rows, [copy(90, late, 'artist', 'done', result)]);
+    for (const t of ['Late Train Verse', 'Corner Store Loop']) {
+      const b = badged[byTitle(t)].badge;
+      assert.deepEqual([b.state, b.tag, b.kind, b.jobId], ['copiedMany', 'discover.job.inCollection', 'discover.tray.kindArtist', 90], t);
+    }
+    assert.equal(badged[byTitle('Party Verse')].badge, null, 'the walk left the compilation out: nothing of it is in the library');
+    assert.equal(badged[byTitle('Party Verse')].jobs['federation-copy@artist'].id, 90, 'still the row\'s job (the window shows it)');
+    const cardBadges = D.peerAlbumBadges(cards, badged, J);
+    assert.deepEqual(cardBadges.map((b) => (b ? [b.state, b.tag, b.kind] : null)), [['copiedMany', 'discover.job.inCollection', 'discover.tray.kindArtist'], null]);
+    // while it runs, every card of the artist reads "copying · every album"
+    const live = D.peerAlbumBadges(cards, lookedUp(rows, [copy(91, late, 'artist', 'running')]), J);
+    assert.deepEqual(live.map((b) => b && [b.state, b.kind]), [['running', 'discover.tray.kindArtist'], ['running', 'discover.tray.kindArtist']]);
+  });
+
+  test('album by album: its own songs\' account, "already yours" when only-missing left it out, nothing where its listing failed or the walk never reached it', () => {
+    const { rows, cards, byTitle } = page();
+    const late = rows[byTitle('Late Train Verse')];
+    const card = (result, scope = 'artist') => {
+      const badged = lookedUp(rows, [copy(95, late, scope, 'done', result)]);
+      return [D.peerAlbumBadges(cards, badged, J)[0], badged[byTitle('Late Train Verse')].badge];
+    };
+    const states = (pair) => pair.map((b) => (b ? [b.state, b.tag] : null));
+    // the job copied 3 elsewhere, but every song of THIS album failed
+    const mixed = artistDone([walked('Borrowed Tapes', { failed: 2 }), walked('Second Wind', { copied: 3 })], []);
+    assert.equal(J.jobRowState(copy(95, late, 'artist', 'done', mixed)).state, 'copiedMany', 'the job as a whole');
+    assert.deepEqual(states(card(mixed)), [['failed', 'discover.job.failed'], ['failed', 'discover.job.failed']]);
+    // the walk names albums as the peer's listing spells them: folded as name-key.js folds them
+    assert.deepEqual(states(card(artistDone([walked('borrowed  TAPES', { copied: 2 })], []))), [['copiedMany', 'discover.job.inCollection'], ['copiedMany', 'discover.job.inCollection']]);
+    assert.deepEqual(states(card(artistDone([walked('Borrowed Tapes', { skipped: 2 })], []))), [['owned', 'discover.job.owned'], ['owned', 'discover.job.owned']]);
+    // only-missing left it out: the library has it
+    const owned = artistDone([walked('Second Wind', { copied: 3 })], [{ name: 'Borrowed Tapes', year: 2021, trackCount: 2, why: 'owned' }], { scope: 'artist-missing' });
+    const ownedPair = card(owned, 'artist-missing');
+    assert.deepEqual(states(ownedPair), [['owned', 'discover.job.owned'], ['owned', 'discover.job.owned']]);
+    assert.equal(ownedPair[0].kind, 'discover.tray.kindMissing');
+    // its listing failed, the walk went on: nothing claimed for it
+    assert.deepEqual(card(artistDone([walked('Borrowed Tapes', { error: 'Stage Peer B answered 500' }), walked('Second Wind', { copied: 3 })], [])), [null, null]);
+    // the run stopped there (the transfer limit): stopped
+    const quota = card(artistDone([walked('Second Wind', { copied: 3 }), walked('Borrowed Tapes', { error: 'transfer limit' })], [], { stopped: 'quota' }));
+    assert.deepEqual(states(quota), [['stopped', 'discover.job.stopped'], ['stopped', 'discover.job.stopped']]);
+    // stopped mid-album: that album stopped; one the walk never reached says nothing
+    assert.deepEqual(states(card(artistDone([walked('Borrowed Tapes', { copied: 1, stopped: 'busy' })], [], { stopped: 'busy' }))), [['stopped', 'discover.job.stopped'], ['stopped', 'discover.job.stopped']]);
+    assert.deepEqual(card(artistDone([walked('Second Wind', { copied: 1, stopped: 'quota' })], [], { stopped: 'quota' })), [null, null]);
+    // a done artist job with no walk at all to read: nothing claimed
+    assert.deepEqual(card({ counts: { total: 2, copied: 2, skipped: 0, failed: 0 }, songs: { total: 2, copied: [{}, {}], skipped: [], failed: [] }, stopped: null }), [null, null]);
+    // a failed artist job (it never walked) still says so on every card of the artist
+    const failed = lookedUp(rows, [copy(96, late, 'artist', 'failed', null, { error: 'Stage Peer B is unreachable' })]);
+    assert.deepEqual([D.peerAlbumBadges(cards, failed, J)[0].state, failed[byTitle('Corner Store Loop')].badge.state], ['failed', 'failed']);
+    // an album job is the album's: unchanged
+    assert.equal(D.peerAlbumBadges(cards, lookedUp(rows, [copy(97, late, 'album', 'done', albumDone(3))]), J)[0].state, 'copiedMany');
+  });
+
+  test('nameKey is src/db/name-key.js\'s, byte for byte', () => {
+    for (const s of ['Borrowed Tapes', '  borrowed\tTAPES ', 'Cold Open’s B‐Sides', '“Quoted” — Dash', 'Beyoncé', 'R.E.M.', '', null, undefined, 42]) {
+      assert.equal(D.nameKey(s), serverNameKey(s), JSON.stringify(s));
+    }
+  });
+
+  test('"done" is not "kept": a copy stopped by the quota reads stopped, one whose songs all failed reads failed — on rows and cards', () => {
+    const { rows, cards, byTitle } = page();
+    const late = rows[byTitle('Late Train Verse')];
+    const quota = lookedUp(rows, [copy(70, late, 'album', 'done', albumDone(1, { stopped: 'quota' }))]);
+    for (const b of [quota[byTitle('Late Train Verse')].badge, D.peerAlbumBadges(cards, quota, J)[0]]) {
+      assert.deepEqual([b.state, b.tag, b.tagCls], ['stopped', 'discover.job.stopped', 'err']);
+    }
+    const failed = lookedUp(rows, [copy(71, late, 'album', 'done', albumDone(0, { songs: { total: 3, copied: [], skipped: [], failed: [{}, {}, {}] }, counts: { total: 3, copied: 0, skipped: 0, failed: 3 } }))]);
+    const fb = D.peerAlbumBadges(cards, failed, J)[0];
+    assert.deepEqual([fb.state, fb.tag, fb.tagCls], ['failed', 'discover.job.failed', 'err'], 'never "already yours"');
+  });
+
+  test('the card ranks as a row does: a live copy over a finished one; a folder job never badges', () => {
+    const { rows, cards, byTitle } = page();
+    const late = rows[byTitle('Late Train Verse')];
+    const badged = lookedUp(rows, [copy(80, late, 'album', 'done', albumDone(3)), copy(81, late, 'artist', 'running')]);
+    assert.deepEqual([D.peerAlbumBadges(cards, badged, J)[0].jobId, badged[byTitle('Late Train Verse')].badge.jobId], [81, 81]);
+    const folder = { ...copy(82, late, 'song', 'running'), key: keysOfRec(late.raw).folder, params: { scope: 'folder' } };
+    const withFolder = lookedUp(rows, [folder]);
+    assert.equal(withFolder[byTitle('Late Train Verse')].badge, null, 'Discover never offers a folder copy');
+    // no DISCOVERJOBS, no rows, a card with no raws: no badge, never a throw
+    assert.deepEqual(D.peerAlbumBadges(cards, [], J), [null, null, null]);
+    assert.deepEqual(D.peerAlbumBadges([{ peerId: 1 }], badged, J), [null]);
+    assert.deepEqual(D.peerAlbumBadges(null, badged, J), []);
   });
 });
 

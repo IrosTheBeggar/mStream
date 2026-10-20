@@ -203,8 +203,10 @@
       return { ...row, state: 'failed', tag: 'discover.job.failed', tagCls: 'err', icon: 'warn', iconCls: 'err',
         sub: job.error ? { text: String(job.error) } : { key: 'discover.job.failedSub' }, actions: ['retry'] };
     }
-    // An album's or an artist's copy: every song accounted for (songs.total).
-    const many = (job.result && job.result.songs && typeof job.result.songs.total === 'number') ? job.result : null;
+    // An album's or an artist's copy: every song accounted for (songs.total,
+    // or the whole numbers in counts).
+    const res = job.result;
+    const many = (res && ((res.songs && typeof res.songs.total === 'number') || (res.counts && typeof res.counts.total === 'number'))) ? res : null;
     if (job.state === 'cancelled') {
       if (many) {
         return { ...row, state: 'cancelled', tag: 'discover.job.cancelled', icon: 'close', muted: true,
@@ -215,20 +217,46 @@
     }
     if (job.state !== 'done') { return row; }
 
+    // A many-song job ends 'done' however it went — "done" is not "kept".
+    // What it says comes from result.stopped and result.counts:
+    //   stopped (quota · busy · peer · refused)  stopped, with the reason
+    //   copied > 0                               in your collection
+    //   nothing copied, something failed         failed (Retry)
+    //   nothing copied, all already here         already yours
+    //   nothing at all                           nothing to copy (an artist
+    //                                            who only appears on the
+    //                                            peer's albums says so)
     if (many) {
       const peer = (many.peer && many.peer.name) || '';
+      const n = manyCounts(many);
+      const why = STOPPED_WHY[many.stopped];
       // The peer's transfer limit or the peer going away ended it: what
-      // landed is in, and starting again takes only the gaps.
-      if (many.stopped === 'quota' || many.stopped === 'busy' || many.stopped === 'peer' || many.stopped === 'refused') {
-        const why = { quota: 'discover.job.stoppedQuota', busy: 'discover.job.stoppedBusy', peer: 'discover.job.stoppedPeer', refused: 'discover.job.stoppedRefused' }[many.stopped];
+      // landed is in, and starting again takes only the gaps. A peer that
+      // refuses copies refuses them again — no Retry.
+      if (why) {
         return { ...row, state: 'stopped', tag: 'discover.job.stopped', tagCls: 'err', icon: 'warn', iconCls: 'err',
           sub: { parts: [{ key: why, params: { peer } }, ...manyParts(many)] },
-          actions: ['retry'] };
+          actions: many.stopped === 'refused' ? [] : ['retry'] };
       }
       // Startable again: the copy is idempotent, so a second run takes only
       // what the library lacks by then (a song removed, one the peer added).
-      return { ...row, state: 'copiedMany', tag: many.songs.copied.length ? 'discover.job.inCollection' : 'discover.job.owned', tagCls: 'ok', icon: 'check', iconCls: 'ok',
-        sub: { parts: manyParts(many) }, actions: ['start'] };
+      if (n.copied > 0) {
+        return { ...row, state: 'copiedMany', tag: 'discover.job.inCollection', tagCls: 'ok', icon: 'check', iconCls: 'ok',
+          sub: { parts: manyParts(many) }, actions: ['start'] };
+      }
+      if (n.failed > 0 || n.albumsFailed > 0) {
+        return { ...row, state: 'failed', tag: 'discover.job.failed', tagCls: 'err', icon: 'warn', iconCls: 'err',
+          sub: { parts: manyParts(many) }, actions: ['retry'] };
+      }
+      if (n.skipped > 0 || n.albumsOwned > 0) {
+        return { ...row, state: 'owned', tag: 'discover.job.owned', tagCls: 'ok', icon: 'check', iconCls: 'ok',
+          sub: { parts: manyParts(many) }, actions: ['start'] };
+      }
+      const parts = n.albumsAppearance > 0
+        ? [{ key: 'discover.job.onlyAppearances', params: { count: n.albumsAppearance } }]
+        : [{ key: 'discover.job.nothingToCopy' }, ...manyParts(many)];
+      return { ...row, state: 'nothing', tag: 'discover.job.nothing', icon: 'folder', muted: true,
+        sub: { parts }, actions: ['start'] };
     }
 
     const r = job.result || {};
@@ -255,19 +283,49 @@
     return { ...row, state: 'done', tag: 'discover.job.done', tagCls: 'ok', icon: 'check', iconCls: 'ok', sub: null, actions: [] };
   }
 
+  // Why a many-song job stopped early, as its sub-line's first part.
+  const STOPPED_WHY = { quota: 'discover.job.stoppedQuota', busy: 'discover.job.stoppedBusy', peer: 'discover.job.stoppedPeer', refused: 'discover.job.stoppedRefused' };
+
+  // A many-song result's numbers. Songs from result.counts — the whole
+  // numbers: its per-song lists stop at 500 entries (federation-copy's
+  // RESULT_LIST_CAP) — else the lists (an older server sends no counts).
+  // Albums from an artist job's walk: copied from (no error), whose
+  // listing failed, and left out — already here ('owned', artist-missing)
+  // or only a guest spot ('appearance').
+  function manyCounts(many) {
+    const s = many.songs || {};
+    const c = many.counts && typeof many.counts === 'object' ? many.counts : null;
+    const num = (k) => {
+      const v = c ? Number(c[k]) : NaN;
+      return Number.isFinite(v) && v >= 0 ? v : (Array.isArray(s[k]) ? s[k].length : 0);
+    };
+    const albums = (Array.isArray(many.albums) ? many.albums : []).filter((a) => a && typeof a === 'object');
+    const left = (Array.isArray(many.skippedAlbums) ? many.skippedAlbums : []).filter((a) => a && typeof a === 'object');
+    return {
+      copied: num('copied'), skipped: num('skipped'), failed: num('failed'),
+      albums: albums.filter((a) => !a.error).length,
+      albumsFailed: albums.filter((a) => a.error).length,
+      albumsLeftOut: left.length,
+      albumsOwned: left.filter((a) => a.why === 'owned').length,
+      albumsAppearance: left.filter((a) => a.why === 'appearance').length,
+    };
+  }
+
   // The counts of a many-song result as the parts of a sub-line (the
   // caller translates each and joins them): the albums an artist job
-  // walked, songs copied, already yours, failed, albums left out — zeroes
-  // left out; "nothing to copy" when nothing happened at all.
+  // walked, songs copied, already yours, failed, albums whose listing
+  // failed, albums left out — zeroes left out (empty when nothing happened
+  // at all: the caller says why).
   function manyParts(many) {
-    const s = many.songs;
+    const n = manyCounts(many);
     const parts = [];
-    if (Array.isArray(many.albums) && many.albums.length) { parts.push({ key: 'discover.job.albumsCount', params: { count: many.albums.length } }); }
-    if (s.copied.length) { parts.push({ key: 'discover.job.copiedCount', params: { count: s.copied.length } }); }
-    if (s.skipped.length) { parts.push({ key: 'discover.job.ownedCount', params: { count: s.skipped.length } }); }
-    if (s.failed.length) { parts.push({ key: 'discover.job.failedCount', params: { count: s.failed.length } }); }
-    if (Array.isArray(many.skippedAlbums) && many.skippedAlbums.length) { parts.push({ key: 'discover.job.albumsLeftOut', params: { count: many.skippedAlbums.length } }); }
-    if (parts.length === 0) { parts.push({ key: 'discover.job.nothingToCopy' }); }
+    const add = (key, count) => { if (count) { parts.push({ key, params: { count } }); } };
+    add('discover.job.albumsCount', n.albums);
+    add('discover.job.copiedCount', n.copied);
+    add('discover.job.ownedCount', n.skipped);
+    add('discover.job.failedCount', n.failed);
+    add('discover.job.albumsFailed', n.albumsFailed);
+    add('discover.job.albumsLeftOut', n.albumsLeftOut);
     return parts;
   }
 

@@ -3898,8 +3898,12 @@ const discoveryView = {
   allSeeds: false,    // "Show all" opened (the dropped seeds show too)
   optionsOpen: false, // the bar's "More options" opened (the seed picker shows)
   plugins: null,      // VUEPLAYERCORE.ensureDiscoverPlugins' answer
-  badgeRows: [],      // the explore page's network rows with their job badges
+  badgeRows: [],      // the rows looked up, with their job badges: the
+                      // explore page's network leads, the play page's
+                      // connected-server songs (never library rows)
   badges: new Map(),  // raw row → badge
+  cardBadges: new Map(), // a connected album card's key → its badge
+  badgeAsk: 0,        // one per lookup; an older lookup's answer is dropped
   unwatch: null,      // the job-list watch, while the page is up
   shown: { chips: [], excluded: [], tracks: [], allTracks: [], network: [], peers: [], allPeers: [], peerAlbums: [] },
 };
@@ -4045,6 +4049,7 @@ function discoveryPanel(opts) {
     v.peers = undefined;
     v.badgeRows = [];
     v.badges = new Map();
+    v.cardBadges = new Map();
     v.more = { library: DISCOVERYPAGE.PAGE_SIZE, peers: DISCOVERYPAGE.PAGE_SIZE };
   }
   // No answer yet: the page's own loading state (title row, skeletons).
@@ -4153,6 +4158,8 @@ async function redoDiscoveryPeers() {
   v.peers = res;
   v.pending.peers = false;
   if (discoveryOnScreen()) { renderDiscovery(); }
+  // the column's new rows: their copies, looked up as a whole ask's are
+  await discoveryLoadBadges(seq);
 }
 
 // A 403. The entry goes with it (the nav and the panel's link), as the
@@ -4189,22 +4196,34 @@ function discoveryResponse() {
   return excluded.length === res.excluded.length ? res : Object.assign({}, res, { excluded });
 }
 
-// What the user already did with a network lead ("getting it · 64%"): one
-// batch lookup per 100 rows, then the strip's job poll keeps the badges
-// current while the page is up. Only where plug-ins exist, and only on the
-// explore page (the play page's rows carry no badge).
+// What the user already did with a row: a network lead's download
+// ("getting it · 64%") on the explore page; on the play page a connected
+// server's copy — of the song, its album or its artist — on that server's
+// song rows and album cards (a copy started from the window leaves its
+// trace on the page). Library rows are never looked up: they are already
+// yours. One batch lookup per 100 rows (every connected-server row, not
+// only the ones "Show more" has drawn so far), then the strip's job poll
+// keeps the badges current while the page is up. Only where plug-ins
+// exist. Called once an answer's rows are drawn: a whole ask's, and the
+// connected column's own Try again.
 async function discoveryLoadBadges(seq) {
   const D = DISCOVERYPAGE;
   const v = discoveryView;
-  if (v.flags.discoveryPlugins !== true || seq !== v.seq || v.page !== 'explore') { return; }
+  if (v.flags.discoveryPlugins !== true || seq !== v.seq) { return; }
   const gen = browseGeneration;
-  const live = () => gen === browseGeneration && seq === v.seq;
+  const ask = ++v.badgeAsk;
+  const live = () => gen === browseGeneration && seq === v.seq && ask === v.badgeAsk;
+  const res = discoveryResponse();
+  const rows = v.page === 'explore' ? D.networkRows(res).rows : D.peerSongRows(D.peerGroups(res));
+  if (!rows.length) {
+    v.badgeRows = [];
+    discoveryIndexBadges();
+    return;
+  }
   if (!v.plugins) {
     v.plugins = await VUEPLAYERCORE.ensureDiscoverPlugins();
     if (!live()) { return; }
   }
-  const res = discoveryResponse();
-  const rows = D.networkRows(res).rows;
   const results = [];
   for (const chunk of D.lookupChunks(rows)) {
     let got = [];
@@ -4216,9 +4235,23 @@ async function discoveryLoadBadges(seq) {
     for (let i = 0; i < chunk.length; i++) { results.push(got[i] || null); }
   }
   v.badgeRows = D.jobBadges(rows, { results }, DISCOVERJOBS);
-  v.badges = new Map(v.badgeRows.map((r) => [r.raw, r.badge]));
+  discoveryIndexBadges();
   discoveryWatchJobs();
   if (discoveryOnScreen()) { renderDiscovery(); }
+}
+
+// The badges by what draws them: a row's by its raw row, a connected
+// album card's by its key — from the rows' own jobs (an album or artist
+// copy of that server's; DISCOVERYPAGE.peerAlbumBadges), no request of
+// their own.
+function discoveryIndexBadges() {
+  const D = DISCOVERYPAGE;
+  const v = discoveryView;
+  v.badges = new Map(v.badgeRows.map((r) => [r.raw, r.badge]));
+  const cards = v.page === 'explore' ? [] : D.peerAlbums(D.peerGroups(discoveryResponse()));
+  const badges = D.peerAlbumBadges(cards, v.badgeRows, DISCOVERJOBS);
+  v.cardBadges = new Map();
+  cards.forEach((c, i) => { if (badges[i]) { v.cardBadges.set(c.key, badges[i]); } });
 }
 
 // Keep the badges current while the page is up: merge the strip's latest
@@ -4238,39 +4271,60 @@ function discoveryWatchJobs() {
         return;
       }
       const changed = discoveryMergeJobs(jobs);
-      if (changed.length && discoveryOnScreen()) { discoveryPatchBadges(changed); }
+      if ((changed.rows.length || changed.cards.length) && discoveryOnScreen()) { discoveryPatchBadges(changed); }
     });
   }
   // A job still moving: wake the strip's poll so the badge moves too.
   if (DISCOVERYPAGE.anyLiveBadge(v.badgeRows)) { VUEPLAYERCORE.refreshDiscoverJobs(); }
 }
 
-// Merge a job list onto the rows → the raw rows whose badge changed.
+// Merge a job list onto the rows → what changed: the raw rows whose badge
+// did, and the connected album cards' keys whose badge did (a badge that
+// appeared or went away included).
 function discoveryMergeJobs(jobs) {
   const v = discoveryView;
   const before = v.badges;
-  const sig = (b) => (b ? JSON.stringify([b.tag || '', b.tagCls || '', b.sub || null, typeof b.progress === 'number' ? b.progress : null]) : '');
+  const beforeCards = v.cardBadges;
+  const sig = (b) => (b ? JSON.stringify([b.tag || '', b.tagCls || '', b.kind || '', b.sub || null, typeof b.progress === 'number' ? b.progress : null]) : '');
   v.badgeRows = DISCOVERYPAGE.jobBadges(v.badgeRows, { jobs }, DISCOVERJOBS);
-  v.badges = new Map(v.badgeRows.map((r) => [r.raw, r.badge]));
-  return v.badgeRows.filter((r) => sig(before.get(r.raw)) !== sig(r.badge)).map((r) => r.raw);
+  discoveryIndexBadges();
+  const rows = v.badgeRows.filter((r) => sig(before.get(r.raw)) !== sig(r.badge)).map((r) => r.raw);
+  const keys = new Set([...beforeCards.keys(), ...v.cardBadges.keys()]);
+  const cards = [...keys].filter((k) => sig(beforeCards.get(k)) !== sig(v.cardBadges.get(k)));
+  return { rows, cards };
 }
 
-// Redraw those rows' badge and bar slots (data-bslot / data-pslot = 'n' +
-// the row's index); a row not drawn is skipped, a slot not found falls back
+// Redraw what changed in place — never the page (focus, the album strip's
+// scroll and an open ⋯ popper survive the poll's beat): a row's badge and
+// bar slots (data-bslot / data-pslot = 'n' + a network lead's index, 'p' +
+// a connected-server song row's) and a connected album card's ('a' + its
+// index). A row or card not drawn is skipped; a slot not found falls back
 // to a whole-page draw.
-function discoveryPatchBadges(raws) {
+function discoveryPatchBadges(changed) {
   const v = discoveryView;
   const root = document.getElementById('filelist');
-  for (const raw of raws) {
-    const i = v.shown.network.findIndex((r) => r.raw === raw);
-    if (i === -1) { continue; }
-    const id = 'n' + i;
-    const tag = discoveryLeadTag(v.shown.network[i]);
+  const writes = [];
+  for (const raw of changed.rows || []) {
+    const n = v.shown.network.findIndex((r) => r.raw === raw);
+    if (n !== -1) { writes.push(['n' + n, discoveryLeadTag(v.shown.network[n]), discoveryProgressHtml(v.badges.get(raw) || null)]); }
+    const p = v.shown.peers.findIndex((r) => r.raw === raw);
+    if (p !== -1) {
+      const b = v.badges.get(raw) || null;
+      writes.push(['p' + p, discoveryBadgeHtml(b, true), discoveryThinBarHtml(b)]);
+    }
+  }
+  for (const key of changed.cards || []) {
+    const a = v.shown.peerAlbums.findIndex((c) => c.key === key);
+    if (a === -1) { continue; }
+    const b = v.cardBadges.get(key) || null;
+    writes.push(['a' + a, discoveryCardBadgeHtml(b), discoveryThinBarHtml(b)]);
+  }
+  for (const [id, tag, bar] of writes) {
     const slot = root.querySelector(`[data-bslot="${id}"]`);
-    const bar = root.querySelector(`[data-pslot="${id}"]`);
-    if (!slot || !bar) { renderDiscovery(); return; }
+    const barSlot = root.querySelector(`[data-pslot="${id}"]`);
+    if (!slot || !barSlot) { renderDiscovery(); return; }
     slot.innerHTML = tag;
-    bar.innerHTML = discoveryProgressHtml(v.badges.get(raw) || null);
+    barSlot.innerHTML = bar;
   }
 }
 
@@ -4554,7 +4608,10 @@ function discoveryPeerArtFailed(img) {
 // A connected server's album card: renderAlbum's face (art, title,
 // artist) with the server's art through the proxy. data-peer names the
 // server; the card opens the album in the peer-browse view, its play
-// button queues the album through the federation stream. The cover always
+// button queues the album through the federation stream, its ⋯ opens the
+// recommendation window as the album (Listen, Keep a copy with Album
+// chosen; no Plug-Ins tab — its rows are one song's) — never a one-click
+// copy. The cover always
 // asks for the peer's 'l' variant (its zl- file, at most 256 px a side:
 // the size the library's cards use in compressed-art mode), whatever the
 // layout setting — it crosses the proxy from the peer, and a full-size
@@ -4566,16 +4623,25 @@ function discoveryPeerAlbumHtml(a, i) {
   const src = a.art && a.peerId != null
     ? MSTREAMAPI.peerArtUrl(a.peerId, a.art, 'l')
     : null;
+  // An album or artist copy of THIS server's (slots 'a' + i, patched in
+  // place on the job poll): its word on a line kept under the artist line
+  // on every card, badge or not (.dpage-cstate, a fixed height: a badge
+  // that appears fills it, never grows the card or the strip), its thin
+  // bar along the cover's foot.
+  const badge = discoveryView.cardBadges.get(a.key) || null;
   return `<div class="dpage-album" title="${escapeHtml(a.peerName || '')}"><div class="album-grid-card dpage-peer-card" data-peer="${escapeHtml(a.peerId)}" data-album="${escapeHtml(a.album)}"${a.artist ? ` data-artist="${escapeHtml(a.artist)}"` : ''} data-dp="peerAlbumOpen" data-i="${i}" tabindex="0" role="link" aria-label="${escapeHtml([a.album, a.artist].filter(Boolean).join(' · '))}">
     <div class="album-grid-art">
       ${src ? `<img loading="lazy" src="${escapeHtml(src)}" alt="" onerror="discoveryPeerArtFailed(this)">` : DPAGE_NOTE_CARD}
       <button type="button" class="album-grid-play" data-dp="peerAlbum" data-i="${i}" title="${escapeHtml(t('dpage.verb.queue'))}" aria-label="${escapeHtml(t('dpage.verb.queue'))}">
         <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
+      <button type="button" class="dpage-album-more" data-dp="peerAlbumMore" data-i="${i}" title="${escapeHtml(t('dpage.verb.albumMore'))}" aria-label="${escapeHtml(t('dpage.verb.albumMore'))}">⋯</button>
+      <div class="dpage-slot" data-pslot="a${i}">${discoveryThinBarHtml(badge)}</div>
     </div>
     <div class="album-grid-info">
       <div class="album-grid-name">${escapeHtml(a.album)}</div>
       ${a.artist ? `<div class="album-grid-artist">${escapeHtml(a.artist)}</div>` : ''}
+      <div class="dpage-cstate" data-bslot="a${i}">${discoveryCardBadgeHtml(badge)}</div>
     </div>
   </div></div>`;
 }
@@ -4608,9 +4674,19 @@ function discoverySongRowHtml(r, i, kind) {
     ? verb('peerPlay', 'dpage.verb.playNow', DPAGE_ICONS.play) + verb('fedQueue', 'dpage.verb.queue', DPAGE_ICONS.add) + verb('peerMore', 'dpage.verb.more', '⋯')
     : verb('play', 'dpage.verb.playNow', DPAGE_ICONS.play) + verb('queue', 'dpage.verb.queue', DPAGE_ICONS.add) +
       verb('more', 'dpage.verb.addToPlaylist', '⋯', ` data-file_location="${escapeHtml(r.filepath)}"`);
+  // A connected server's row carries its copy's badge ON its subtitle line,
+  // after "Artist · Album" (which truncates first), and its thin bar pinned to
+  // the row's bottom edge — slots 'p' + i, patched in place on the job poll.
+  // Neither takes a line of its own, so a badge arriving on the poll's beat
+  // never changes the row's height (the rows below never move). A library
+  // row has neither.
+  const badge = peer ? (discoveryView.badges.get(r.raw) || null) : null;
+  const sub = peer
+    ? `<div class="discover-row-sub dpage-subline"><span class="dpage-subtext">${escapeHtml(r.subtitle || '')}</span><div class="dpage-slot" data-bslot="p${i}">${discoveryBadgeHtml(badge, true)}</div></div><div class="dpage-slot" data-pslot="p${i}">${discoveryThinBarHtml(badge)}</div>`
+    : `<div class="discover-row-sub">${escapeHtml(r.subtitle || '')}</div>`;
   return `<div class="discover-row dpage-row pointer" data-dp="${peer ? 'fedQueue' : 'queue'}" data-i="${i}"${tip ? ` title="${escapeHtml(tip)}"` : ''}>
     ${discoveryArtHtml(src, peer)}
-    <div class="discover-row-info"><div class="discover-row-title">${escapeHtml(r.title)}</div><div class="discover-row-sub">${escapeHtml(r.subtitle || '')}</div></div>
+    <div class="discover-row-info"><div class="discover-row-title">${escapeHtml(r.title)}</div>${sub}</div>
     <span class="dpage-verbs">${verbs}</span>
   </div>`;
 }
@@ -4714,17 +4790,39 @@ function discoveryEmptyHtml(s) {
   return `<div class="dpage-hint">${escapeHtml(discoveryT(s.reason))}${retry}</div>`;
 }
 
-// A job badge ("getting it · 64%"), and its bar while it moves.
-function discoveryBadgeHtml(b) {
+// A job badge: its word, what it acts on beyond the song ("album", "every
+// album", "what you're missing") and — on the explore page — its sub-line
+// ("getting it · 64%"); its bar while it moves. `plain` (the play page:
+// connected-server rows and album cards) draws the word and the kind
+// alone — "copying · album", "in your collection" — no percentage and no
+// count: the numbers stay in the recommendation window.
+function discoveryBadgeHtml(b, plain) {
   if (!b) { return ''; }
-  const text = [b.tag ? t(b.tag) : '', discoveryText(b.sub)].filter(Boolean).join(' · ');
-  const cls = b.tagCls === 'ok' ? 'ok' : (b.tagCls === 'err' ? 'err' : 'src');
+  const text = [b.tag ? t(b.tag) : '', b.kind ? t(b.kind) : '', plain ? '' : discoveryText(b.sub)].filter(Boolean).join(' · ');
+  if (!text) { return ''; }
+  const cls = b.tagCls === 'ok' ? 'ok' : (b.tagCls === 'err' ? 'err' : (b.muted ? 'dim' : 'src'));
   return `<span class="dpage-badge dpage-badge-${cls}">${escapeHtml(text)}</span>`;
 }
 
 function discoveryProgressHtml(b) {
   if (!b || typeof b.progress !== 'number') { return ''; }
   return `<div class="dpage-prog"><i style="width:${Math.max(0, Math.min(100, b.progress))}%"></i></div>`;
+}
+
+// A connected album card's badge: the row's word, without "album" — the
+// card is the album (an artist copy still says "every album").
+function discoveryCardBadgeHtml(b) {
+  const own = b && b.kind === 'discover.tray.kindAlbum' ? Object.assign({}, b, { kind: null }) : b;
+  return discoveryBadgeHtml(own, true);
+}
+
+// The play page's bar: the same thin line, drawn by a scale so no number
+// reads as a percentage anywhere on the page; hidden from screen readers
+// (the badge's word says it).
+function discoveryThinBarHtml(b) {
+  if (!b || typeof b.progress !== 'number') { return ''; }
+  const f = Math.max(0, Math.min(100, b.progress)) / 100;
+  return `<div class="dpage-prog dpage-prog-thin" aria-hidden="true"><i style="transform:scaleX(${Number(f.toFixed(3))})"></i></div>`;
 }
 
 // A lead's tag slot: its job badge, else the network's "new artist".
@@ -4835,8 +4933,14 @@ function discoveryAction(act, el) {
     VUEPLAYERCORE.queueDiscoverFed(peerRow.raw);
     queued();
   } else if (act === 'peerMore' && peerRow) {
-    // ⋯ opens the peer window (Keep a copy, Add to playlist live there).
-    VUEPLAYERCORE.openDiscoverModal(peerRow.raw, 'federation', discoveryMatchOpts(peerRow));
+    // ⋯ opens the peer window on its Federation view (Listen, Keep a
+    // copy), whichever view the window last showed.
+    VUEPLAYERCORE.openDiscoverModal(peerRow.raw, 'federation', Object.assign({}, discoveryMatchOpts(peerRow), { view: 'federation' }));
+  } else if (act === 'peerAlbumMore' && peerAlbum && peerAlbum.raws.length) {
+    // The card's ⋯: the same window, read as the album — its best row
+    // (raws[0]) carries the album, its artist and a file, so Album is the
+    // Keep card's choice. The card's own click still opens peer browse.
+    VUEPLAYERCORE.openDiscoverModal(peerAlbum.raws[0], 'federation', Object.assign({}, discoveryMatchOpts(peerAlbum), { focus: 'album', view: 'federation' }));
   } else if (act === 'peerQueueAll') {
     if (!v.shown.allPeers.length) { return; }
     for (const r of v.shown.allPeers) { VUEPLAYERCORE.queueDiscoverFed(r.raw); }

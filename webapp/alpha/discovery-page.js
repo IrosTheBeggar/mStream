@@ -844,14 +844,23 @@
 
   // Which job a row shows: a live one first (running, then queued), then a
   // failure (it wants the user), then a finished one; the newest on a tie.
-  // A cancelled job is over — the row is back to its verbs.
+  // A cancelled job is over — the row is back to its verbs. A folder job
+  // never badges a Discover row (a row's folder key is its own file's, so
+  // none should come back; Discover offers no folder copy), and the slots
+  // in `skip` (another server's album and artist jobs) never do either.
   const BADGE_RANK = { running: 0, queued: 1, failed: 2, done: 3 };
-  function badgeOf(held, DJ) {
+  const BADGE_SCOPES = ['song', 'album', 'artist', 'artist-missing'];
+  function scopeOfJob(job, DJ) {
+    return DJ && typeof DJ.jobScope === 'function' ? DJ.jobScope(job) : ((isObj(job.params) && job.params.scope) || 'song');
+  }
+  function badgeOf(held, DJ, skip) {
     let best = null;
     let bestSlot = null;
     for (const slot of Object.keys(held)) {
       const job = held[slot];
       if (!isObj(job) || !Object.prototype.hasOwnProperty.call(BADGE_RANK, job.state)) { continue; }
+      if (BADGE_SCOPES.indexOf(scopeOfJob(job, DJ)) === -1) { continue; }
+      if (Array.isArray(skip) && skip.indexOf(slot) !== -1) { continue; }
       const r = BADGE_RANK[job.state];
       const br = best ? BADGE_RANK[best.state] : Infinity;
       if (r < br || (r === br && Number(job.id) > Number(best.id))) { best = job; bestSlot = slot; }
@@ -867,6 +876,79 @@
     });
   }
 
+  // src/db/name-key.js, mirrored: how the copy matches album names (the
+  // artist walk's planArtistAlbums and owned.js fold names this way).
+  function nameKey(raw) {
+    if (raw == null) { return ''; }
+    return String(raw).replace(/\s+/g, ' ').trim()
+      .replace(/[‘’‚‛′]/g, "'")
+      .replace(/[“”„‟″]/g, '"')
+      .replace(/[‐‑‒–—―−]/g, '-')
+      .toLowerCase();
+  }
+
+  // "Done" is not "kept", album by album. An artist job's key sits on
+  // every row and card of the artist on that server, but its walk copies
+  // only the artist's own albums (result.albums) and leaves out the ones
+  // they only appear on and — only-missing — the ones the library had
+  // (result.skippedAlbums). So a FINISHED artist or artist-missing job
+  // speaks for one album (`album`, the card's or the row's) only as that
+  // album came out of the walk:
+  //   walked, no error            that album's own account (its songs
+  //                               copied, already yours, failed, or
+  //                               where the run stopped)
+  //   its listing failed          nothing — unless the run stopped there
+  //                               (the transfer limit, the peer gone):
+  //                               stopped
+  //   left out as 'owned'         already yours
+  //   left out as 'appearance',
+  //   never walked, no album      nothing (null)
+  // A live or failed artist job, and every other scope, is the job itself.
+  function jobForAlbum(job, album, DJ) {
+    const scope = scopeOfJob(job, DJ);
+    if ((scope !== 'artist' && scope !== 'artist-missing') || job.state !== 'done') { return job; }
+    const res = isObj(job.result) ? job.result : {};
+    const walked = arr(res.albums).filter(isObj);
+    const left = arr(res.skippedAlbums).filter(isObj);
+    const want = nameKey(album);
+    if (!want || (!Array.isArray(res.albums) && !Array.isArray(res.skippedAlbums))) { return null; }
+    const at = walked.findIndex((a) => nameKey(a.name) === want);
+    const view = (songs, stopped, extra) => {
+      const n = (k) => arr(songs[k]).length;
+      const total = Number.isFinite(Number(songs.total)) ? Number(songs.total) : n('copied') + n('skipped') + n('failed');
+      return Object.assign({}, job, {
+        result: Object.assign({
+          scope: res.scope || scope,
+          songs: { total, copied: arr(songs.copied), skipped: arr(songs.skipped), failed: arr(songs.failed) },
+          counts: { total, copied: n('copied'), skipped: n('skipped'), failed: n('failed') },
+          stopped: stopped || null,
+          peer: res.peer || null,
+        }, extra || {}),
+      });
+    };
+    if (at !== -1) {
+      const one = walked[at];
+      const last = at === walked.length - 1;
+      if (one.error) { return res.stopped && last ? view({}, res.stopped) : null; }
+      if (!isObj(one.songs)) { return job; }   // no per-album account: the walk's
+      return view(one.songs, one.stopped);
+    }
+    const skipped = left.find((a) => nameKey(a.name) === want);
+    if (skipped && skipped.why === 'owned') { return view({}, null, { skippedAlbums: [skipped] }); }
+    return null;
+  }
+
+  // `held` (slot → job) as it speaks for one album (jobForAlbum); the
+  // slots that say nothing about it are left out.
+  function heldForAlbum(held, album, DJ) {
+    const out = {};
+    for (const slot of Object.keys(held)) {
+      const job = isObj(held[slot]) ? jobForAlbum(held[slot], album, DJ) : null;
+      if (job) { out[slot] = job; }
+    }
+    return out;
+  }
+
   function keysOf(found) {
     const out = [];
     if (found.key) { out.push(found.key); }
@@ -876,9 +958,39 @@
     return out;
   }
 
-  // Merge jobs onto rows → new rows with recKey, recKeys, jobs (by slot) and
-  // badge (DJ.jobRowState of the job shown, plus slot / plugin / scope /
-  // kind / jobId; null for none).
+  // Album and artist job keys carry no server (the same album on two
+  // connected servers is one key, and a live job dedupes across them), so
+  // the lookup can hand a connected server's row another server's album or
+  // artist copy. Such a job is not this server's: true when `job` is an
+  // album / artist / artist-missing job whose recommendation names a
+  // server other than `peerId`. A song job is the recording wherever it
+  // came from; a job that names no server, or a row with none (a network
+  // lead), is never another's.
+  function otherPeerJob(job, peerId, DJ) {
+    if (peerId == null || !isObj(job) || scopeOfJob(job, DJ) === 'song') { return false; }
+    const rec = isObj(job.recommendation) ? job.recommendation : null;
+    const peer = rec && isObj(rec.peer) ? rec.peer : null;
+    if (!peer || peer.id == null) { return false; }
+    return String(peer.id) !== String(peerId);
+  }
+
+  // A row's album tag: its raw recommendation's, else the row's own.
+  function rowAlbum(row) {
+    if (isObj(row.raw) && row.raw.album != null) { return row.raw.album; }
+    return row.album;
+  }
+
+  // The slots of `held` whose job is another server's (otherPeerJob).
+  function otherPeerSlots(held, peerId, DJ) {
+    return Object.keys(held).filter((slot) => otherPeerJob(held[slot], peerId, DJ));
+  }
+
+  // Merge jobs onto rows → new rows with recKey, recKeys, jobs (by slot),
+  // otherPeer (the slots holding another connected server's album or
+  // artist job: kept in jobs, never the badge) and badge (DJ.jobRowState
+  // of the job shown, plus slot / plugin / scope / kind / jobId; null for
+  // none). A row with a peerId is a connected server's; the others (the
+  // network's leads) take any job under their keys.
   //   answer.results  the batch lookup's `results`, aligned with `rows`
   //                   (concatenated across lookupChunks): sets each row's
   //                   keys, and its jobs from scratch
@@ -911,8 +1023,43 @@
         }
       }
       next.jobs = held;
-      next.badge = dj ? badgeOf(held, dj) : null;
+      next.otherPeer = otherPeerSlots(held, row.peerId, dj);
+      // an artist copy speaks for the row as the walk did for its album
+      next.badge = dj ? badgeOf(heldForAlbum(held, rowAlbum(row), dj), dj, next.otherPeer) : null;
       return next;
+    });
+  }
+
+  // A connected server's album cards' badges, from their rows' jobs (the
+  // rows jobBadges answered, matched to a card by raw row): the album and
+  // artist copies of THAT server — an album job sits on every row of the
+  // card (they share its key), an artist job on every row by the artist,
+  // and a finished one speaks for the card's album only as its walk did
+  // (jobForAlbum: a compilation they only guest on is not copied). Never a
+  // song job (one song of the album is not the album), never another
+  // server's copy of the same album. Ranked as a row's badge is.
+  //   cards  peerAlbums' cards ({ peerId, album, raws })
+  //   rows   jobBadges' rows ({ raw, jobs })
+  //   DJ     DISCOVERJOBS (injected; the browser's global when omitted)
+  // → [badge | null], aligned with cards
+  function peerAlbumBadges(cards, rows, DJ) {
+    const dj = DJ || ((typeof globalThis !== 'undefined' && globalThis.DISCOVERJOBS) || null);
+    const byRaw = new Map();
+    for (const r of arr(rows)) { if (isObj(r) && isObj(r.raw) && !byRaw.has(r.raw)) { byRaw.set(r.raw, r); } }
+    return arr(cards).map((card) => {
+      if (!dj || !isObj(card)) { return null; }
+      const held = {};
+      for (const raw of arr(card.raws)) {
+        const row = byRaw.get(raw);
+        if (!row || !isObj(row.jobs)) { continue; }
+        for (const slot of Object.keys(row.jobs)) {
+          const job = row.jobs[slot];
+          if (!isObj(job) || scopeOfJob(job, dj) === 'song' || otherPeerJob(job, card.peerId, dj)) { continue; }
+          const have = held[slot];
+          if (!have || Number(job.id) > Number(have.id)) { held[slot] = job; }
+        }
+      }
+      return badgeOf(heldForAlbum(held, card.album, dj), dj);
     });
   }
 
@@ -1023,7 +1170,7 @@
     seedChips, windowOptions, pluginChips,
     librarySections, networkRows,
     peerGroups, peerRowsOf, peerSongRows, peerAlbums, fedQueueMeta, pageLabels, pageSlice, columnBlocks,
-    lookupChunks, jobBadges, anyLiveBadge,
+    lookupChunks, jobBadges, peerAlbumBadges, anyLiveBadge, nameKey,
     stateOf,
   };
 }));
