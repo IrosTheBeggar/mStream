@@ -729,7 +729,7 @@ const WINDOW_METHODS = ['tt', 'dmLive', 'dmDuration', 'dmText', 'openDiscoverMod
   'dmCopyRows', 'dmJobRow', 'dmJobOtherPeer', 'dmScopeRows', 'dmMissingRows', 'dmAlbumIdleSub', 'dmArtistIdleSub', 'dmKeepChoices', 'dmKeepChoose',
   'dmKeepChosen', 'dmKeepMissingChoice', 'dmKeepMissingCount', 'dmKeepScope', 'dmKeepRow', 'dmKeepIdle', 'dmKeepStartLabel',
   'dmMissingHeld', 'dmKeepMissingLabel', 'setDiscoverModalView', 'dmGetItRows', 'dmKeepTitle', 'dmKeepStart', 'toastDiscoverJob', 'discoverPluginTitle',
-  'dmRecommendation'];
+  'dmRecommendation', 'dmLayoutTags', 'dmLayoutFile', 'dmLayoutPeer', 'dmDestCrumbs'];
 const COPY = { name: 'federation-copy', title: 'Copy from a connected server', capabilities: ['acquire'], scopes: ['song', 'album', 'artist', 'artist-missing', 'folder'] };
 const DEST = { vpath: 'collection', base: 'From peers', layout: '{{ARTIST}}/{{ALBUM}}', source: 'saved' };
 const STAGE_B = { id: 1, name: 'Stage Peer B' };
@@ -1177,6 +1177,16 @@ describe('the recommendation window on a compilation (vp.js)', () => {
     assert.equal(rec.albumArtist, 'Various Artists');
     assert.equal(albumKey(rec), albumKey(BEN), 'one album copy for every song of the compilation');
     assert.notEqual(albumKey(rec), albumKey({ ...ANA, albumArtist: null }), 'not the track artist\'s key any more');
+  });
+
+  test('the destination line previews a compilation where it lands: its credit, not the song\'s artist', async () => {
+    const { vm } = makeWindow({ reads: compReads([]), destination: { vpath: 'copies', base: '', layout: '{{ALBUMARTIST}}/{{ALBUM}}', source: 'user' } });
+    await vm.openDiscoverModal(ANA, 'federation', { seedPlain: 'x', focus: 'album', view: 'federation' });
+    assert.equal(vm.dmLayoutTags().albumartist, 'Various Artists');
+    assert.deepEqual(vm.dmDestCrumbs(), ['Various Artists', 'Mixtape Vol 1']);
+    const own = makeWindow({ reads: compReads([]), destination: { vpath: 'copies', base: '', layout: '{{ALBUMARTIST}}/{{ALBUM}}', source: 'user' } });
+    await own.vm.openDiscoverModal(tapesRow(STAGE_B, 'Late Train Verse'), 'federation', { seedPlain: 'x', view: 'federation' });
+    assert.deepEqual(own.vm.dmDestCrumbs().slice(0, 1), ['Boukmanflow'], 'no credit on the row: the song\'s artist, as before');
   });
 
   test('a compilation song\'s own ⋯: This song | Album (the whole compilation) | Artist (the track artist)', async () => {

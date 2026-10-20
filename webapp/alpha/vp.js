@@ -1639,7 +1639,10 @@ const VUEPLAYERCORE = (() => {
           album: (md && md.album) || t.album || null,
           year: (md && md.year) || t.year || null,
           genre: g || null,
-          albumartist: null,
+          // the album's credit (a connected server's row names it): the
+          // server renders {{ALBUMARTIST}} from the file's own tag, so a
+          // compilation previews "Various Artists/…", where it lands
+          albumartist: (md && (md['album-artist'] || md.albumartist)) || t.albumArtist || null,
         };
       },
       dmLayoutFile: function () {
