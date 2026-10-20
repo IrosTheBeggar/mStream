@@ -222,7 +222,7 @@ components:
       properties:
         vpath: { type: string, description: "A library the caller may upload to.", example: Music }
         base: { type: string, description: 'A relative folder inside the library; "" = its root.', example: From peers }
-        layout: { type: string, description: 'Torrent path-template syntax; see `variables` in the view.', example: "{{ARTIST}}/{{ALBUM}}" }
+        layout: { type: string, description: 'Torrent path-template syntax; see `variables` in the view.', example: "{{ALBUMARTIST}}/{{ALBUM}}" }
     DiscoveryCollectionDestinationView:
       type: object
       properties:
@@ -248,7 +248,7 @@ components:
             properties:
               vpath: { type: string }
               template: { type: string, nullable: true }
-        defaultLayout: { type: string, example: "{{ARTIST}}/{{ALBUM}}" }
+        defaultLayout: { type: string, example: "{{ALBUMARTIST}}/{{ALBUM}}" }
         variables:
           type: array
           items: { type: string }
@@ -3314,13 +3314,15 @@ paths:
         The collection destination: a library the caller may upload to, a
         base folder inside it (`""` = the root) and a layout rendered from
         each song's tags with the torrent path-template syntax
-        (`{{ARTIST}}/{{ALBUM}}`; variables as listed, `{{PEER}}` being the
+        (`{{ALBUMARTIST}}/{{ALBUM}}`; variables as listed, `{{PEER}}` being the
         paired server a copy came from — empty, so dropped, for anything
         else). One per user, shared by every acquire plug-in: the
         `federation-copy` job copies into it, and the `youtube` job files its
         download in it. Nothing saved means the library default: the first
         writable library's admin Path Template when it has one, else
-        `{{ARTIST}}/{{ALBUM}}` at its root. In public mode the anonymous
+        `{{ALBUMARTIST}}/{{ALBUM}}` at its root — the album's credit, which
+        falls back to the song's artist, so a compilation lands in one
+        folder. In public mode the anonymous
         account keeps the one shared setting.
       responses:
         "200":

@@ -6,10 +6,13 @@
 //
 // A destination is a LIBRARY the user may upload to, a BASE FOLDER inside it
 // ('' = the root) and a LAYOUT rendered from the song's tags by the torrent
-// path-template engine ({{ARTIST}}/{{ALBUM}}, plus {{PEER}} for the server a
+// path-template engine ({{ALBUMARTIST}}/{{ALBUM}}, plus {{PEER}} for the server a
 // copy came from — empty, so dropped, for anything else). Unset means the
 // library default: the library's admin Path Template when one exists, else
-// {{ARTIST}}/{{ALBUM}} at the root. The file keeps its name.
+// {{ALBUMARTIST}}/{{ALBUM}} at the root — the album's credit, which falls back
+// to the song's artist, so a compilation lands in ONE folder ("Various
+// Artists/…") and every other album exactly where {{ARTIST}}/{{ALBUM}} put it
+// (2026-10-19). The file keeps its name.
 //
 // Stored per user in user_settings (namespace below). In public mode the
 // anonymous account keeps the one shared setting.
@@ -23,7 +26,7 @@ import WebError from '../util/web-error.js';
 
 export const NAMESPACE = 'discovery:collection';
 export const KEY = 'destination';
-export const DEFAULT_LAYOUT = '{{ARTIST}}/{{ALBUM}}';
+export const DEFAULT_LAYOUT = '{{ALBUMARTIST}}/{{ALBUM}}';
 export const LAYOUT_VARS = Object.freeze([...pathTemplate.SUPPORTED_VARS, pathTemplate.EXTRA_VARS.PEER]);
 const EXTRA_VARS = [pathTemplate.EXTRA_VARS.PEER];
 const SAMPLE = Object.freeze({ ...pathTemplate.SAMPLE_METADATA, peer: "Sam's server" });

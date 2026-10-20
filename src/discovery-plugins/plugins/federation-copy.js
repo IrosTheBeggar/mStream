@@ -4,7 +4,8 @@
 // Where it lands is the user's collection destination
 // (src/discovery-plugins/destination.js): a library
 // the user may upload to, a base folder, and a layout rendered from the
-// song's tags ({{ARTIST}}/{{ALBUM}} by default, {{PEER}} = the server it
+// song's tags ({{ALBUMARTIST}}/{{ALBUM}} by default — a compilation lands in
+// one folder — {{PEER}} = the server it
 // came from). The file keeps the peer's name.
 //
 // How a copy runs (run(ctx), one at a time per server):

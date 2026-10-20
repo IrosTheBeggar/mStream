@@ -165,14 +165,14 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     assert.equal((await api(srvB, 'GET', `/api/v1/discovery/plugins/${PLUGIN}/settings`)).status, 400, 'no plug-in settings of its own');
   });
 
-  test('the default destination: the first library, {{ARTIST}}/{{ALBUM}} at its root', async () => {
+  test('the default destination: the first library, {{ALBUMARTIST}}/{{ALBUM}} at its root', async () => {
     const r = await api(srvB, 'GET', DEST);
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.saved, null);
     assert.deepEqual([...r.body.libraries].sort((a, b) => a.vpath.localeCompare(b.vpath)),
       [{ vpath: 'collection', template: null }, { vpath: 'testlib', template: null }]);
-    assert.deepEqual(r.body.destination, { vpath: r.body.libraries[0].vpath, base: '', layout: '{{ARTIST}}/{{ALBUM}}', source: 'default' });
-    assert.equal(r.body.defaultLayout, '{{ARTIST}}/{{ALBUM}}');
+    assert.deepEqual(r.body.destination, { vpath: r.body.libraries[0].vpath, base: '', layout: '{{ALBUMARTIST}}/{{ALBUM}}', source: 'default' });
+    assert.equal(r.body.defaultLayout, '{{ALBUMARTIST}}/{{ALBUM}}');
     assert.ok(r.body.variables.includes('PEER'));
   });
 

@@ -437,7 +437,15 @@ describe('collection destination · file name and target', () => {
     const bare = renderTarget({ destination: { vpath: 'music', base: '', layout: DEFAULT_LAYOUT }, peerName: 'Sam', fileName: 'x.mp3', tags: {} });
     assert.equal(bare.relDir, '');
     assert.equal(bare.relPath, 'x.mp3');
-    assert.deepEqual(bare.missingVars, ['ARTIST', 'ALBUM']);
+    assert.deepEqual(bare.missingVars, ['ALBUMARTIST', 'ALBUM']);
+
+    // The default is the album's credit (2026-10-19): a compilation's songs
+    // land in one folder, an ordinary album where {{ARTIST}} put it.
+    assert.equal(DEFAULT_LAYOUT, '{{ALBUMARTIST}}/{{ALBUM}}');
+    const comp = renderTarget({ destination: { vpath: 'music', base: '', layout: DEFAULT_LAYOUT }, peerName: 'Sam', fileName: 'x.mp3', tags: { artist: 'Ondine', album: 'Low Tide Sessions', albumartist: 'Various Artists' } });
+    assert.equal(comp.relDir, 'Various Artists/Low Tide Sessions');
+    const own = renderTarget({ destination: { vpath: 'music', base: '', layout: DEFAULT_LAYOUT }, peerName: 'Sam', fileName: 'x.mp3', tags: { artist: 'Nova', album: 'Night Ferry' } });
+    assert.equal(own.relDir, 'Nova/Night Ferry');
   });
 
   test('ALBUMARTIST keeps a compilation together and falls back to ARTIST', () => {

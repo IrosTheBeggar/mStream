@@ -23,7 +23,9 @@
   // change to the rules there has to be made here too — the unit test fails
   // when the two disagree.
   const LAYOUT_VARS = ['ARTIST', 'ALBUM', 'YEAR', 'GENRE', 'ALBUMARTIST', 'PEER'];
-  const DEFAULT_LAYOUT = '{{ARTIST}}/{{ALBUM}}';
+  // The server's default (src/discovery-plugins/destination.js): the album's
+  // credit, falling back to the song's artist — a compilation stays together.
+  const DEFAULT_LAYOUT = '{{ALBUMARTIST}}/{{ALBUM}}';
   const MAX_TEMPLATE_LEN = 500;
   const MAX_RESOLVED_LEN = 500;
   const MAX_SEGMENT_LEN = 200;
