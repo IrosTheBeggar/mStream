@@ -987,6 +987,104 @@
     return out;
   }
 
+  // ── Keep a copy: a wider copy that already settled the album or the song ──
+  // A peer's file path as the copy compares them (src/discovery-plugins/
+  // recommendation.js normalizePeerPath, mirrored).
+  function normalizePeerPath(p) {
+    return String(p == null ? '' : p).replace(/\\/g, '/').split('/').map((s) => s.trim()).filter((s) => s && s !== '.').join('/');
+  }
+
+  // When a job last moved: its finish, else its last update, else its
+  // creation (the jobs table's epoch milliseconds; a date string reads
+  // too). NaN when it carries none.
+  function jobStamp(job) {
+    for (const k of ['finishedAt', 'updatedAt', 'createdAt']) {
+      const v = job[k];
+      if (v == null || v === '') { continue; }
+      const n = typeof v === 'number' ? v : (/^\d+$/.test(String(v)) ? Number(v) : Date.parse(String(v)));
+      if (Number.isFinite(n)) { return n; }
+    }
+    return NaN;
+  }
+
+  // Is job `a` newer than job `b`: by those stamps, else (none, or a tie)
+  // by id — the order the jobs were made in.
+  function newerJob(a, b) {
+    const sa = jobStamp(a);
+    const sb = jobStamp(b);
+    if (Number.isFinite(sa) && Number.isFinite(sb) && sa !== sb) { return sa > sb; }
+    return Number(a.id) > Number(b.id);
+  }
+
+  // A finished album copy — or an artist copy's view of one album
+  // (jobForAlbum) — as it speaks for ONE of its songs: only where its
+  // lists name the song's file on the peer (each entry's `from`: the path
+  // the copy fetched, the peer's own rendering of it, as the row carries
+  // it). Copied → in your collection, where it landed; left out as
+  // already here → already yours ('owned': where the library has it;
+  // 'exists': a file already sits at its place — nothing to play from
+  // here). Failed, not listed (a list stops at 500), no path: nothing
+  // (null). The view is a song's result on the wider job.
+  function songView(job, filepath) {
+    const want = normalizePeerPath(filepath);
+    const res = isObj(job.result) ? job.result : null;
+    const songs = res && isObj(res.songs) ? res.songs : null;
+    if (!want || !songs) { return null; }
+    const hit = (list) => arr(list).find((e) => isObj(e) && normalizePeerPath(e.from) === want) || null;
+    const as = (result) => Object.assign({}, job, { result: Object.assign({ peer: res.peer || null }, result) });
+    const copied = hit(songs.copied);
+    if (copied) {
+      const landed = Object.assign({}, copied);
+      delete landed.from;
+      return as({ copied: landed });
+    }
+    const kept = hit(songs.skipped);
+    if (kept && kept.why === 'owned') { return as({ skipped: 'owned', existing: kept.at ? { filepath: kept.at } : null }); }
+    if (kept && kept.why === 'exists') { return as({ skipped: 'owned', existing: null }); }
+    return null;
+  }
+
+  // What a connected server's Keep a copy choice shows — the Album choice
+  // and This song, each its own scope's job, unless a FINISHED wider copy
+  // of the same server settled it since: the user ran "Only the albums you
+  // don't have", the album came in, and the Album choice still offered
+  // "Add album" (2026-10-20). The rows' markers already read such a copy
+  // album by album (jobForAlbum); the choices read it the same way.
+  //   scope  'album' | 'song' (any other: `own`, as it is)
+  //   own    the choice's own job, or null; a live one is always the
+  //          choice's
+  //   wider  that server's jobs of the wider scopes (the caller leaves
+  //          another server's out): for the album its artist and
+  //          only-missing copies, for the song those and its album copy.
+  //          Only a 'done' one speaks — a live one is its own choice's, a
+  //          failed or cancelled one recorded nothing for this album —
+  //          and only as it saw THIS album (jobForAlbum: walked, or left
+  //          out as already here) and, for the song, only where its lists
+  //          name the song (songView)
+  //   at     { album, filepath }: the row's album tag and its file on the peer
+  // → the newest wider job that speaks, as that view — unless the own job
+  //   is newer (newerJob): then the own job; null for neither.
+  const WIDER_SCOPES = { album: ['artist', 'artist-missing'], song: ['album', 'artist', 'artist-missing'] };
+  function keepJobFor(scope, own, wider, at, DJ) {
+    const mine = isObj(own) ? own : null;
+    const live = mine && (DJ && typeof DJ.isLive === 'function' ? DJ.isLive(mine) : (mine.state === 'queued' || mine.state === 'running'));
+    const scopes = WIDER_SCOPES[scope];
+    if (!scopes || live) { return mine; }
+    const where = isObj(at) ? at : {};
+    let best = null;
+    let bestJob = null;
+    for (const job of arr(wider)) {
+      if (!isObj(job) || job.state !== 'done') { continue; }
+      const s = scopeOfJob(job, DJ);
+      if (scopes.indexOf(s) === -1) { continue; }
+      const forAlbum = s === 'album' ? job : jobForAlbum(job, where.album, DJ);
+      const view = !forAlbum ? null : (scope === 'album' ? forAlbum : songView(forAlbum, where.filepath));
+      if (view && (!bestJob || newerJob(job, bestJob))) { best = view; bestJob = job; }
+    }
+    if (!best || (mine && !newerJob(bestJob, mine))) { return mine; }
+    return best;
+  }
+
   function keysOf(found) {
     const out = [];
     if (found.key) { out.push(found.key); }
@@ -1208,7 +1306,7 @@
     seedChips, windowOptions, pluginChips,
     librarySections, networkRows,
     peerGroups, peerRowsOf, peerSongRows, peerAlbums, albumCreditOf, peerAlbumQuery, fedQueueMeta, pageLabels, pageSlice, columnBlocks,
-    lookupChunks, jobBadges, peerAlbumBadges, anyLiveBadge, nameKey,
+    lookupChunks, jobBadges, peerAlbumBadges, anyLiveBadge, nameKey, normalizePeerPath, keepJobFor,
     stateOf,
   };
 }));

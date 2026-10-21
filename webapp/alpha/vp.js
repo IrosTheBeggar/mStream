@@ -1268,13 +1268,17 @@ const VUEPLAYERCORE = (() => {
       // it runs it shows here as "from <that server>" (a second Add would
       // only return it); once it ended it is not this server's copy, and
       // the card is idle again. A song job is the recording, wherever it
-      // came from — it stays, named by its server.
+      // came from — it stays, named by its server. The album's and the
+      // song's row may instead read a wider copy of this server's that
+      // settled them since (dmWiderJob).
       dmJobRow: function (name, scope) {
         const m = this.discover.modal;
         const slot = DISCOVERJOBS.jobSlot(name, scope);
         let job = m.jobs[slot] || null;
-        const other = this.dmJobOtherPeer(job);
+        let other = this.dmJobOtherPeer(job);
         if (other && scope && scope !== 'song' && !DISCOVERJOBS.isLive(job)) { job = null; }
+        const shown = this.dmWiderJob(name, scope, job);
+        if (shown !== job) { job = shown; other = null; }   // this server's own copy, by construction
         let row = DISCOVERJOBS.jobRowState(job, { plugin: name });
         if (job && other) {
           const rest = !row.sub ? [] : (Array.isArray(row.sub.parts) ? row.sub.parts : [row.sub]);
@@ -1292,6 +1296,24 @@ const VUEPLAYERCORE = (() => {
         if (mine == null || !theirs || theirs.id == null || String(theirs.id) === String(mine)) { return null; }
         const name = theirs.name || (job.result && job.result.peer && job.result.peer.name) || 'peer';
         return { id: theirs.id, name };
+      },
+      // The Album choice and This song (the copy plug-in's album and song
+      // rows on a connected server's row) read their own job — unless a
+      // FINISHED wider copy of THIS server's settled them since: an artist
+      // or only-missing copy, as its walk saw the row's album; for the
+      // song, those or the album copy, only where their lists name the
+      // song's file on the peer. The newest such wins over an older own
+      // job; a live own job, or one newer than all of them, is the
+      // choice's (DISCOVERYPAGE.keepJobFor). Another server's wider copy
+      // never speaks here, nor does a live one (its own choice shows it).
+      dmWiderJob: function (name, scope, own) {
+        const m = this.discover.modal;
+        const s = scope || 'song';
+        if (name !== DISCOVERJOBS.COPY_PLUGIN || m.source !== 'federation' || !m.track || (s !== 'song' && s !== 'album')) { return own; }
+        const wider = (s === 'album' ? ['artist', 'artist-missing'] : ['album', 'artist', 'artist-missing'])
+          .map((w) => m.jobs[DISCOVERJOBS.jobSlot(name, w)])
+          .filter((j) => j && !this.dmJobOtherPeer(j));
+        return DISCOVERYPAGE.keepJobFor(s, own, wider, { album: m.track.album, filepath: m.track.filepath }, DISCOVERJOBS);
       },
       // The album and artist rows (the peer window's Federation view): the
       // copy plug-in when it runs the scope, with a destination and the fact
