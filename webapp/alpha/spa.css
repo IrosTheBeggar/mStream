@@ -2421,7 +2421,13 @@ select {
   background: #1a1e25; border-radius: 6px; font-size: 11.5px; color: #b8bcc6;
 }
 .dm-dest > svg { color: var(--src); flex-shrink: 0; }
-.dm-dest-path { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* two lines: where the files go, in full (it wraps, never cut short), then
+   the destination's tag and the buttons — the path never shares its line
+   with Change and the action button */
+.dm-dest { flex-wrap: wrap; row-gap: 8px; }
+.dm-dest-path { flex: 1 1 calc(100% - 24px); min-width: 0; white-space: normal; overflow-wrap: anywhere; line-height: 1.45; }
+.dm-dest > .dm-tag { margin-left: 24px; }
+.dm-dest .dm-opt-act { margin-left: auto; }
 .dm-dest-path b { color: #f0f2f5; font-weight: 600; }
 .dm-dest-path i { font-style: normal; color: #6f7683; margin: 0 4px; }
 .dm-dest .dm-opt-act { gap: 4px; }
@@ -2478,8 +2484,6 @@ select {
   .dmodal-section-h { flex-direction: column; align-items: flex-start; gap: 2px; }
   .dmodal-hint { text-align: left; }
   .dmodal-tabs { margin: 2px 16px 10px; }
-  .dm-dest { flex-wrap: wrap; }
-  .dm-dest-path { flex-basis: 100%; white-space: normal; }
   .dm-field { grid-template-columns: minmax(0, 1fr); }
   .dm-toks, .dm-field-hint, .dm-field-err, .dm-tree { grid-column: 1; }
 }

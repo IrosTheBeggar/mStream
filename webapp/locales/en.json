@@ -113,9 +113,7 @@
   "discover.modal.tabPlugins": "Plug-Ins",
   "discover.modal.listen": "Listen",
   "discover.modal.song": "This song",
-  "discover.modal.songHint": "Streams through your server",
   "discover.modal.playNow": "Play now",
-  "discover.modal.playNowSub": "Full track · counted on your stats, not the peer’s",
   "discover.modal.queueNext": "Queue next",
   "discover.modal.addToQueue": "Add to queue",
   "discover.modal.queuedNext": "Queued next",
@@ -144,7 +142,6 @@
   "discover.modal.viewArtist": "View artist",
   "discover.modal.view": "View",
   "discover.modal.keep": "Keep a copy",
-  "discover.modal.keepHint": "Copies from {{peer}} into your library, as a job",
   "discover.modal.keepAddSong": "Add this song",
   "discover.modal.keepAddMissing": {
     "one": "Add 1 album",

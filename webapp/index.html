@@ -1169,7 +1169,7 @@
                    offers Album and Artist, Album chosen. -->
               <template v-if="discover.modal.source === 'federation' && discover.modal.view === 'federation'">
                 <section class="dmodal-section">
-                  <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.listen') }}</span><span class="dmodal-hint">{{ tt('discover.modal.songHint') }}</span></div>
+                  <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.listen') }}</span></div>
                   <div v-if="dmAlbumFocus()" class="dm-play">
                     <a class="dm-play-btn" href="javascript:void(0)" v-on:click="dmQueueAlbum(true)" :title="tt('discover.modal.playAlbum')"><dm-icon name="play" :size="22"></dm-icon></a>
                     <div class="dm-play-body">
@@ -1185,7 +1185,6 @@
                     <a class="dm-play-btn" href="javascript:void(0)" v-on:click="dmPlayNow" :title="tt('discover.modal.playNow')"><dm-icon name="play" :size="22"></dm-icon></a>
                     <div class="dm-play-body">
                       <div class="dm-play-title">{{ tt('discover.modal.playNow') }}</div>
-                      <div class="dm-play-sub">{{ tt('discover.modal.playNowSub') }}</div>
                     </div>
                     <div class="dm-play-act">
                       <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="dmQueueNext">{{ tt('discover.modal.queueNext') }}</a>
@@ -1206,7 +1205,7 @@
                   </div>
                 </section>
                 <section v-if="dmKeepChoices().length" class="dmodal-section">
-                  <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.keep') }}</span><span class="dmodal-hint">{{ tt('discover.modal.keepHint', { peer: discover.modal.track.peer.name || 'peer' }) }}</span></div>
+                  <div class="dmodal-section-h"><span class="dmodal-label">{{ tt('discover.modal.keep') }}</span></div>
                   <div class="dm-keep">
                     <div v-if="dmKeepChoices().length > 1" class="dm-choice" role="tablist">
                       <a v-for="c in dmKeepChoices()" :key="c.scope" href="javascript:void(0)" role="tab" :aria-selected="dmKeepChosen() === c.scope ? 'true' : 'false'" v-bind:class="{ 'dm-on': dmKeepChosen() === c.scope }" v-on:click="dmKeepChoose(c.scope)">{{ c.label }}<small>{{ c.sub || '&nbsp;' }}</small></a>
