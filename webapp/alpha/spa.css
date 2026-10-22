@@ -2277,10 +2277,11 @@ select {
 }
 /* ── Recommendation modal (docs/designs/discover-modal) ────────────────
    One window for a network or peer row. Same palette as the panel; the
-   source colour (--src) follows the row: teal = network, amber = peer.
-   Fixed overlay above the player and the nav bar (their z-indexes are
-   1000 / 2500); hystmodal windows sit at 5000+, and this never coexists
-   with one. */
+   source colour (--src) follows the row: teal = network, gold = a
+   connected server. Fixed overlay above the player and the nav bar (their
+   z-indexes are 1000 / 2500); hystmodal windows sit at 5000+, and this
+   never coexists with one. Top-anchored: a section that grows or a late
+   answer moves only the window's bottom edge. */
 .dmodal-shadow {
   position: fixed;
   inset: 0;
@@ -2294,90 +2295,118 @@ select {
   justify-content: center;
   padding: 40px 12px;
 }
+/* The window's tokens: every colour inside it is one of these. --t4 is
+   the one muted text colour (4.5:1 on every surface it sits on). */
 .dmodal {
+  --win: #2d333b; --card: #23282f; --well: #1a1e25; --btn: #363d47; --btn-h: #414957; --hover: #2c323c;
+  --div: #3a4149; --bord: #444c56; --field: #6b7482;
+  --t1: #f0f2f5; --t2: #dfe3ea; --t3: #b8bcc6; --t4: #a0a7b3;
+  --ink: #0f1216; --ok: #4fc27a; --warn: #f5a05b; --err: #e0616a; --errt: #ec8a90; --other: #b8bcc6;
+  --canon: #657ee4; --canon-t: #8ea0f0;
   --src: #4fb8a8; --src-2: #5ec9b9;
   position: relative;
   width: 520px;
   max-width: 100%;
-  margin: auto 0;
-  background: #2d333b;
+  margin: 0;
+  background: var(--win);
   border-radius: 6px;
   box-shadow: 0 16px 48px rgba(0, 0, 0, .6), 0 0 0 1px rgba(255, 255, 255, .04);
-  color: #dfe3ea;
+  color: var(--t2);
   font-size: 13px;
   line-height: 1.4;
   text-align: left;
 }
 .dmodal-peer { --src: #d9a441; --src-2: #e6b85c; }
+/* The window itself takes focus only from a click on its body (so a key
+   there is still the window's); it is not a control. */
+.dmodal:focus { outline: none; }
+/* One focus ring for every control in the window. */
+.dmodal-shadow .dmodal :focus-visible { outline: 2px solid var(--t1); outline-offset: 2px; }
+/* Materialize styles bare <button>s (and paints a focused one teal). */
+.dmodal button { -webkit-appearance: none; appearance: none; margin: 0; font-family: inherit; }
 .dmodal-close {
-  position: absolute; top: 10px; right: 10px; width: 28px; height: 28px; border-radius: 4px; z-index: 2;
-  display: flex; align-items: center; justify-content: center; color: #8a919e;
+  position: absolute; top: 8px; right: 8px; width: 32px; height: 32px; border-radius: 4px; z-index: 2; padding: 0; border: 0;
+  display: flex; align-items: center; justify-content: center; background: transparent; color: var(--t4); cursor: pointer;
 }
-.dmodal-close:hover, .dmodal-close:focus { background: #363d47; color: #f0f2f5; outline: none; }
-.dmodal-head { display: flex; gap: 14px; padding: 18px 48px 12px 20px; }
+.dmodal-close:focus { background: transparent; color: var(--t4); }
+.dmodal-close:hover { background: var(--btn); color: var(--t1); }
+.dmodal-head { display: flex; gap: 14px; padding: 18px 52px 14px 20px; }
 .dmodal-art {
   width: 72px; height: 72px; border-radius: 4px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, #2a3140, #1a1e25); color: rgba(255, 255, 255, .3); border: 1px solid #3a4149;
-  background-size: cover; background-position: center;
+  background: linear-gradient(135deg, #2a3140, #1a1e25); color: rgba(255, 255, 255, .3); border: 1px solid var(--div);
+  background-size: cover; background-position: center; box-sizing: border-box;
 }
-.dmodal-head-text { min-width: 0; flex: 1; }
-.dmodal-title { font-size: 16px; font-weight: 600; color: #f0f2f5; line-height: 1.25; }
-.dmodal-artist { font-size: 13px; color: #b8bcc6; margin-top: 2px; }
-.dmodal-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 6px; font-size: 11.5px; color: #8a919e; }
-.dmodal-isrc { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; background: #1a1e25; padding: 1px 5px; border-radius: 3px; }
-.dmodal-status { display: flex; align-items: center; gap: 6px; margin-top: 5px; font-size: 11px; color: #8a919e; }
-.dmodal-status i { width: 6px; height: 6px; border-radius: 50%; background: #4fc27a; flex-shrink: 0; }
-.dmodal-status i.dmodal-status-off { background: #e0616a; }
-.dmodal-matchbar { display: inline-flex; align-items: center; gap: 6px; }
-.dmodal-matchbar i { display: block; width: 4px; height: 14px; border-radius: 2px; background: #1a1e25; position: relative; overflow: hidden; }
-.dmodal-matchbar i::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: var(--pct, 50%); background: var(--src); border-radius: 2px; }
-/* Peer rows: Federation | Plug-Ins */
-.dmodal-tabs { display: flex; gap: 3px; margin: 2px 20px 12px; padding: 3px; background: #1a1e25; border-radius: 6px; }
-.dmodal-tab { flex: 1; text-align: center; padding: 6px 10px; border-radius: 4px; font-size: 12px; font-weight: 600; color: #b8bcc6; }
-.dmodal-tab:hover { color: #f0f2f5; }
-.dmodal-tab-on, .dmodal-tab-on:hover { background: var(--src); color: #0f1216; }
+.dmodal-head-text { min-width: 0; flex: 1; padding-top: 1px; }
+.dmodal .dmodal-title { margin: 0; font-size: 16px; font-weight: 600; color: var(--t1); line-height: 1.25; overflow-wrap: anywhere; }
+.dmodal-artist { font-size: 13px; color: var(--t3); margin-top: 3px; overflow-wrap: anywhere; }
+/* One meta line: the server's status, the format, the match — "·" between */
+.dmodal-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; margin-top: 6px; font-size: 11.5px; line-height: 1.45; color: var(--t4); font-variant-numeric: tabular-nums; }
+/* each part after the first carries its "·": a wrap takes it to the new line */
+.dmodal-meta-part { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.dmodal-meta-part > span { min-width: 0; overflow-wrap: anywhere; }
+.dmodal-isrc { font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; background: var(--well); padding: 1px 5px; border-radius: 3px; }
+.dmodal-status { display: inline-flex; align-items: center; gap: 6px; }
+.dmodal-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--t4); flex-shrink: 0; }
+.dmodal-status i.dmodal-dot-ok { background: var(--ok); }
+.dmodal-status i.dmodal-dot-off { background: var(--err); }
 /* Sections */
-.dmodal-section { border-top: 1px solid #3a4149; padding: 11px 20px 13px; }
+.dmodal-section { border-top: 1px solid var(--div); padding: 12px 20px 14px; }
 .dmodal-section-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
-.dmodal-label { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #8a919e; white-space: nowrap; }
-.dmodal-hint { font-size: 11px; color: #6f7683; font-style: italic; text-align: right; }
-.dmodal-note { font-size: 11px; font-style: italic; color: #6f7683; }
+.dmodal .dmodal-label { margin: 0; font-size: 10.5px; line-height: 1.4; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--t4); white-space: nowrap; }
+.dmodal-hint { font-size: 11px; line-height: 1.4; color: var(--t4); font-style: italic; text-align: right; }
+.dmodal-note { font-size: 11.5px; font-style: italic; color: var(--t4); margin-right: 4px; }
+.dmodal-note-plain { font-style: normal; }
 /* Option rows */
-.dm-opt { display: flex; align-items: center; gap: 10px; padding: 7px 10px; background: #23282f; border-radius: 4px; }
+.dm-opt { display: flex; align-items: center; gap: 10px; padding: 7px 10px; background: var(--card); border-radius: 4px; }
 .dm-opt + .dm-opt { margin-top: 6px; }
-.dm-opt-ic { width: 28px; height: 28px; border-radius: 6px; background: #1a1e25; display: flex; align-items: center; justify-content: center; color: #b8bcc6; flex-shrink: 0; }
-.dm-opt-ic-on { background: var(--src); color: #0f1216; }
-.dm-opt-ic-ok { color: #4fc27a; }
-.dm-opt-ic-err { color: #e0616a; }
+.dm-opt-ic { width: 28px; height: 28px; border-radius: 6px; background: var(--well); display: flex; align-items: center; justify-content: center; color: var(--t3); flex-shrink: 0; }
+.dm-opt-ic-on { background: var(--src); color: var(--ink); }
+.dm-opt-ic-ok { color: var(--ok); }
+.dm-opt-ic-err { color: var(--errt); }
 .dm-opt-body { flex: 1; min-width: 0; }
-.dm-opt-title { font-size: 12.5px; color: #dfe3ea; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.dm-opt-sub { font-size: 11px; color: #8a919e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-opt-title { font-size: 12.5px; color: var(--t2); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dm-opt-sub { font-size: 11px; color: var(--t4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dm-opt-act { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
-.dm-opt-muted .dm-opt-title, .dm-opt-muted .dm-opt-sub { color: #6f7683; }
+.dm-opt-muted .dm-opt-title, .dm-opt-muted .dm-opt-sub { color: var(--t4); }
 /* A row whose buttons sit on their own line under the text (three never fit beside it). */
 .dm-opt-wrap { flex-wrap: wrap; }
 .dm-opt-wrap > .dm-opt-act, .dm-opt-wrap > .dm-form { flex-basis: 100%; padding-left: 38px; justify-content: flex-start; margin-top: 2px; flex-wrap: wrap; }
-.dm-attrib { font-size: 10.5px; color: #6f7683; margin-top: 3px; }
+.dm-attrib { font-size: 10.5px; color: var(--t4); margin-top: 3px; }
 /* Preview tiles: two up; the whole tile is the play / stop button */
 .dm-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
 .dm-tiles > .dm-opt { margin-top: 0; }
 .dm-opt-btn { cursor: pointer; user-select: none; transition: background .12s; }
-.dm-opt-btn:hover, .dm-opt-btn:focus-visible { background: #2c323c; outline: none; }
+.dm-opt-btn:hover, .dm-opt-btn:focus-visible { background: var(--hover); outline: none; }
 .dm-opt-btn:focus-visible, .dm-opt-playing, .dm-opt-playing:hover { box-shadow: inset 0 0 0 1px var(--src); }
-/* Buttons (anchors, so Materialize's button styling stays out of it) */
+/* Buttons: real <button>s (an <a href> for a URL), one height. Kinds:
+   .dm-btn (secondary) · -primary (one gold fill per state) · -ghost ·
+   -quiet · -icon (square); .dm-link is a Listen link. The kind rules name
+   :focus too: Materialize paints a focused <button> teal. Disabled =
+   aria-disabled="true" (still focusable, the handler a no-op — never
+   pointer-events: none); in flight adds .is-busy. */
 .dm-btn {
-  display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 4px; cursor: pointer;
-  font-size: 12.5px; font-weight: 600; line-height: 1.2; background: #363d47; color: #dfe3ea; white-space: nowrap;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 12px; margin: 0;
+  box-sizing: border-box; border: 0; border-radius: 4px; cursor: pointer; text-decoration: none;
+  font-size: 12.5px; font-weight: 600; line-height: 1; background: var(--btn); color: var(--t2); white-space: nowrap;
 }
-.dm-btn:hover, .dm-btn:focus { background: #414957; color: #f0f2f5; outline: none; }
-.dm-btn-primary, .dm-btn-primary:hover, .dm-btn-primary:focus { background: var(--src); color: #0f1216; }
-.dm-btn-primary:hover { background: var(--src-2); }
-.dm-btn-ghost { background: transparent; border: 1px solid #444c56; color: #b8bcc6; }
-.dm-btn-ghost:hover, .dm-btn-ghost:focus { background: transparent; border-color: var(--src); color: #f0f2f5; }
-.dm-btn-sm { padding: 4px 9px; font-size: 11.5px; }
-.dm-btn-icon { padding: 4px 6px; }
-.dm-btn.is-disabled { opacity: .45; pointer-events: none; }
+.dm-btn:focus { background: var(--btn); color: var(--t2); }
+.dm-btn:hover { background: var(--btn-h); color: var(--t1); }
+.dm-btn.dm-btn-primary, .dm-btn.dm-btn-primary:focus { background: var(--src); color: var(--ink); }
+.dm-btn.dm-btn-primary:hover { background: var(--src-2); color: var(--ink); }
+.dm-btn.dm-btn-ghost, .dm-btn.dm-btn-ghost:focus { background: transparent; border: 1px solid var(--bord); color: var(--t2); }
+.dm-btn.dm-btn-ghost:hover { background: transparent; border-color: var(--src); color: var(--t1); }
+.dm-btn.dm-btn-quiet, .dm-btn.dm-btn-quiet:focus { background: transparent; padding: 0 8px; color: var(--t3); }
+.dm-btn.dm-btn-quiet:hover { background: var(--hover); color: var(--t1); }
+.dm-btn.dm-btn-icon { width: 32px; padding: 0; }
+.dm-btn[aria-disabled="true"] { opacity: .45; cursor: default; }
+.dm-btn[aria-disabled="true"].is-busy { opacity: .6; cursor: progress; }
 .dm-btn svg { flex-shrink: 0; }
+/* A Listen link: a button that reads as a gold word */
+.dm-link, .dm-link:focus {
+  display: inline-flex; align-items: center; height: 32px; padding: 0 8px; margin: 0; box-sizing: border-box; border: 0; border-radius: 4px;
+  background: transparent; color: var(--src); font-size: 12px; font-weight: 600; line-height: 1; white-space: nowrap; cursor: pointer;
+}
+.dm-link:hover { background: transparent; color: var(--src-2); text-decoration: underline; }
 /* Invite form (inline, one line) */
 .dm-form { display: flex; gap: 6px; align-items: center; }
 .dm-input, .dm-input[type="text"] {
@@ -2385,107 +2414,156 @@ select {
   font-size: 12px; color: #dfe3ea; background: #1a1e25; border: 1px solid #444c56; border-radius: 4px; box-shadow: none;
 }
 .dm-input[type="text"]:focus { border-color: var(--src); box-shadow: none; }
-/* Chips (find elsewhere) and tags */
-.dm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.dm-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: #dfe3ea; background: #363d47; border-radius: 4px; padding: 4px 9px; }
-.dm-chip:hover { background: #414957; color: #f0f2f5; }
-.dm-chip-canon { background: transparent; border: 1px solid #657ee4; color: #8ea0f0; }
-.dm-chip-canon:hover { background: rgba(101, 126, 228, .12); color: #8ea0f0; }
-.dmodal-note + .dm-chips { margin-top: 8px; }
+/* Find elsewhere: "Search", then ghost chips (links out, and Copy title);
+   a canonical page leads, in the blue outline */
+.dm-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.dm-chips-lead { font-size: 12px; color: var(--t4); margin-right: 2px; }
+.dm-chip, .dm-chip:focus {
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; margin: 0; box-sizing: border-box;
+  border: 1px solid var(--bord); border-radius: 4px; background: transparent; color: var(--t2);
+  font-size: 12px; line-height: 1; text-decoration: none; white-space: nowrap; cursor: pointer;
+}
+.dm-chip:hover { background: transparent; border-color: var(--t4); color: var(--t1); }
+.dm-chip.dm-chip-canon, .dm-chip.dm-chip-canon:focus { border-color: var(--canon); color: var(--canon-t); }
+.dm-chip.dm-chip-canon:hover { background: rgba(101, 126, 228, .12); color: var(--canon-t); }
 .dm-tag {
   display: inline-flex; align-items: center; font-size: 9.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
-  padding: 1px 6px; border-radius: 8px; background: #1a1e25; color: #8a919e; white-space: nowrap; vertical-align: middle;
+  padding: 1px 6px; border-radius: 8px; background: var(--well); color: var(--t4); white-space: nowrap; vertical-align: middle;
 }
-.dm-tag-ok { color: #4fc27a; }
+.dm-tag-ok { color: var(--ok); }
 .dm-tag-src { color: var(--src); }
-.dm-tag-err { color: #e0616a; }
-/* Job rows (Get it · Add to your collection): the row is its job */
-.dm-opt-sub-err { color: #e0616a; }
+/* error text is --errt: --err (#e0616a) is never text (4.29:1 on a row) */
+.dm-tag-err { color: var(--errt); }
+/* Get it's job rows: the row is its job */
+.dm-opt-sub-err { color: var(--errt); }
 /* The lookup card: the upload "Get it" would fetch, and the others to pick from */
-.dm-thumb { width: 52px; height: 29px; border-radius: 4px; background: #1a1e25 center / cover no-repeat; flex-shrink: 0; }
+.dm-thumb { width: 52px; height: 29px; border-radius: 4px; background: var(--well) center / cover no-repeat; flex-shrink: 0; }
 .dm-thumb-sm { width: 40px; height: 23px; }
 .dm-others { flex-basis: 100%; padding-left: 38px; margin-top: 4px; display: grid; gap: 2px; }
 .dm-other { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
-.dm-other:hover, .dm-other:focus-visible { background: #2c323c; outline: none; }
+.dm-other:hover, .dm-other:focus-visible { background: var(--hover); outline: none; }
 .dm-other-t { min-width: 0; line-height: 1.3; }
-.dm-other-t b { display: block; font-size: 12px; font-weight: 400; color: #dfe3ea; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dm-other-t small { display: block; font-size: 10.5px; color: #8a919e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-other-t b { display: block; font-size: 12px; font-weight: 400; color: var(--t2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-other-t small { display: block; font-size: 10.5px; color: var(--t4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dm-progress { height: 4px; background: #1a1e25; border-radius: 2px; overflow: hidden; margin-top: 6px; }
 .dm-progress i { display: block; height: 100%; background: var(--src); border-radius: 2px; transition: width .4s ease; }
 .dm-progress-indet i { width: 35%; animation: dm-indet 1.4s ease-in-out infinite; }
 @keyframes dm-indet { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
-/* Collection destination (dm-dest): the bar in the section whose rows use
-   it, and the form (library · base folder · layout) that replaces it */
-.dm-dest {
-  display: flex; align-items: center; gap: 10px; margin: 0; padding: 7px 10px;
-  background: #1a1e25; border-radius: 6px; font-size: 11.5px; color: #b8bcc6;
+/* Where files land (dm-dest): the path bar in the section whose copy or
+   download uses it — where a copy of the chosen scope lands, a song's
+   file, whose choice it is, Change… — and the editor that replaces it in
+   place. A path is never cut short: it wraps, each "›" travelling with the
+   folder after it, so it breaks between folders first, then inside one. */
+.dm-dest { display: grid; gap: 2px; margin: 0; padding: 9px 10px 4px 12px; background: var(--well); border-radius: 6px; }
+.dm-dest-line { display: flex; gap: 8px; align-items: flex-start; min-width: 0; }
+.dm-dest-line > svg { color: var(--src); flex-shrink: 0; margin-top: 1px; }
+.dm-dest-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; min-height: 32px; padding-left: 22px; }
+.dm-dest-source { font-size: 11.5px; line-height: 1.4; color: var(--t4); }
+.dm-dest-acts { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+.dm-opt + .dm-dest, .dm-opt + .dm-dest-ed, .dm-dest + .dm-opt, .dm-dest-ed + .dm-opt { margin-top: 6px; }
+/* A path (dm-dest-path): the bar's, a copy's Into / In line, the preview */
+.dm-dest-path { flex: 1 1 auto; min-width: 0; }
+.dm-dest-crumbs { font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.dm-dest-crumbs b { font-weight: 600; }
+.dm-dest-crumb { display: inline-block; max-width: 100%; }
+.dm-dest-crumb > i { font-style: normal; margin: 0 5px; color: var(--t4); }
+.dm-dest-crumb-note { color: var(--t3); }
+.dm-dest-file { margin-top: 2px; font: 11.5px/1.45 ui-monospace, Consolas, monospace; color: var(--t3); overflow-wrap: anywhere; }
+.dm-dest-path-bar .dm-dest-crumbs, .dm-dest-path-preview .dm-dest-crumbs { color: var(--t2); }
+.dm-dest-path-bar .dm-dest-pre { color: var(--t3); }
+.dm-dest-path-bar b, .dm-dest-path-preview b { color: var(--t1); }
+.dm-dest-path-preview .dm-dest-crumb-rendered { color: var(--src); font-weight: 600; }
+.dm-dest-path-state { margin-top: 8px; }
+.dm-dest-path-state + .dm-dest-path-state { margin-top: 2px; }
+.dm-dest-path-state .dm-dest-crumbs { font-size: 11.5px; color: var(--t3); }
+.dm-dest-path-state .dm-dest-pre { color: var(--t4); }
+.dm-dest-path-state b { color: var(--t2); }
+/* The editor ("Where files land"): labels above their fields */
+.dm-dest-ed { display: grid; gap: 14px; margin: 0; padding: 12px; border: 1px solid var(--bord); border-radius: 6px; }
+.dm-dest-ed-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; }
+.dm-dest-ed-title { font-size: 12.5px; line-height: 1.3; font-weight: 600; color: var(--t1); }
+.dm-dest-field { display: grid; gap: 6px; min-width: 0; }
+.dm-dest-field > label, .dm-dest-label { font-size: 12px; line-height: 1.4; font-weight: 600; color: var(--t2); }
+.dm-dest-row { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.dm-dest-ed .dm-input, .dm-dest-ed .dm-input[type="text"] {
+  height: 32px; padding: 0 10px; font-size: 12.5px; color: var(--t1); background: var(--well); border-color: var(--field);
 }
-.dm-dest > svg { color: var(--src); flex-shrink: 0; }
-/* two lines: where the files go, in full (it wraps, never cut short), then
-   the destination's tag and the buttons — the path never shares its line
-   with Change and the action button */
-.dm-dest { flex-wrap: wrap; row-gap: 8px; }
-.dm-dest-path { flex: 1 1 calc(100% - 24px); min-width: 0; white-space: normal; overflow-wrap: anywhere; line-height: 1.45; }
-.dm-dest > .dm-tag { margin-left: 24px; }
-.dm-dest .dm-opt-act { margin-left: auto; }
-.dm-dest-path b { color: #f0f2f5; font-weight: 600; }
-.dm-dest-path i { font-style: normal; color: #6f7683; margin: 0 4px; }
-.dm-dest .dm-opt-act { gap: 4px; }
-.dm-opt + .dm-dest, .dm-opt + .dm-dest-form, .dm-dest + .dm-opt, .dm-dest-form + .dm-opt { margin-top: 6px; }
-.dm-dest-form { margin: 0; padding: 12px 12px 10px; background: #23282f; border-radius: 6px; display: grid; gap: 9px; }
-.dm-field { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 5px 12px; align-items: center; font-size: 11.5px; }
-.dm-field > label { color: #8a919e; font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
-.dm-field-body { display: flex; gap: 6px; align-items: center; min-width: 0; flex-wrap: wrap; }
-.dm-static { color: #dfe3ea; }
-.dm-input-mono, .dm-input-mono[type="text"] { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
-.dm-input.is-err, .dm-input[type="text"].is-err { border-color: #e0616a; }
-.dm-select {
-  height: 28px; min-width: 140px; max-width: 100%; margin: 0; padding: 0 8px; font-size: 12px; color: #f0f2f5;
-  background: #1a1e25; border: 1px solid #444c56; border-radius: 4px;
+.dm-dest-ed .dm-input::placeholder { color: var(--t4); }
+.dm-dest-ed .dm-input[type="text"]:focus, .dm-dest-select select:focus { border-color: var(--src); }
+.dm-dest-ed .dm-input.is-err, .dm-dest-ed .dm-input[type="text"].is-err { border-color: var(--err); }
+.dm-dest-ed .dm-dest-mono[type="text"] { flex: none; width: 100%; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.dm-dest-select { position: relative; justify-self: start; min-width: 180px; max-width: 100%; }
+.dm-dest-select select {
+  display: block; width: 100%; height: 32px; margin: 0; padding: 0 30px 0 10px; box-sizing: border-box; -webkit-appearance: none; appearance: none;
+  font-family: inherit; font-size: 12.5px; color: var(--t1); background: var(--well); border: 1px solid var(--field); border-radius: 4px; cursor: pointer;
 }
-.dm-select:focus { border-color: var(--src); outline: none; }
-.dm-toks { display: flex; flex-wrap: wrap; gap: 4px; grid-column: 2; }
-.dm-tok {
-  font: 500 10.5px/1 ui-monospace, Consolas, monospace; color: #b8bcc6; background: #363d47;
-  border-radius: 3px; padding: 3px 6px; cursor: pointer; user-select: none;
+.dm-dest-select > svg { position: absolute; right: 9px; top: 50%; margin-top: -7px; color: var(--t3); pointer-events: none; }
+.dm-dest-static { font-size: 12.5px; color: var(--t1); }
+.dm-dest-hint { font-size: 11px; line-height: 1.4; color: var(--t4); }
+.dm-dest-err, .dm-dest-warn { display: flex; gap: 6px; align-items: flex-start; font-size: 11.5px; line-height: 1.4; color: var(--errt); }
+.dm-dest-warn { color: var(--warn); }
+.dm-dest-err > svg, .dm-dest-warn > svg { flex-shrink: 0; margin-top: 2px; }
+.dm-dest-missing { font-size: 11.5px; line-height: 1.4; color: var(--t3); }
+/* The layout's variables: real buttons, all alike; then the template */
+.dm-dest-vars { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.dm-dest-var, .dm-dest-var:focus {
+  display: inline-flex; align-items: center; height: 32px; padding: 0 9px; margin: 0; box-sizing: border-box; border: 0; border-radius: 4px;
+  background: var(--btn); color: var(--t2); font: 500 11.5px/1 ui-monospace, Consolas, monospace; white-space: nowrap; cursor: pointer;
 }
-.dm-tok:hover { background: #414957; color: #f0f2f5; }
-.dm-tok-new { background: transparent; border: 1px solid #657ee4; color: #8ea0f0; }
-.dm-tok-preset { background: transparent; border: 1px solid #444c56; color: #8a919e; font-family: inherit; }
-.dm-field-hint { grid-column: 2; font-size: 10.5px; color: #6f7683; line-height: 1.4; }
-.dm-field-hint-inline { grid-column: auto; }
-.dm-field-err { grid-column: 2; font-size: 10.5px; color: #e0616a; line-height: 1.4; }
-.dm-field-err-wide { grid-column: 1 / -1; }
-.dm-dest-preview {
-  font: 11px/1.4 ui-monospace, Consolas, monospace; color: #b8bcc6; background: #1a1e25; border-radius: 4px;
-  padding: 6px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.dm-dest-var:hover { background: var(--btn-h); color: var(--t1); }
+.dm-dest-vars-rule { flex: none; width: 1px; height: 20px; margin: 0 4px; background: var(--div); }
+/* Browse…: one level of folders, each row a button, the base folder pressed */
+.dm-dest-tree { background: var(--well); border: 1px solid var(--bord); border-radius: 4px; max-height: 224px; overflow-y: auto; }
+.dm-dest-tree-h {
+  display: flex; flex-wrap: wrap; align-items: center; min-height: 32px; padding: 0 10px; box-sizing: border-box;
+  font-size: 11.5px; line-height: 1.4; color: var(--t3); border-bottom: 1px solid var(--div); overflow-wrap: anywhere;
 }
-.dm-dest-preview b { color: var(--src); font-weight: 600; }
-.dm-tree { grid-column: 2; background: #1a1e25; border: 1px solid #444c56; border-radius: 4px; overflow: hidden; font-size: 11.5px; max-height: 190px; overflow-y: auto; }
-.dm-tree-crumb { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px 8px; color: #8a919e; border-bottom: 1px solid #3a4149; font-size: 11px; }
-.dm-tree-crumb b { color: #dfe3ea; font-weight: 600; }
-.dm-tree-row { display: flex; align-items: center; gap: 7px; padding: 4px 8px; color: #b8bcc6; cursor: pointer; }
-.dm-tree-row svg { color: #6f7683; flex-shrink: 0; }
-.dm-tree-row:hover { background: #363d47; color: #f0f2f5; }
-.dm-tree-row:hover svg { color: var(--src); }
-.dm-tree-note, .dm-tree-note:hover { font-style: italic; color: #6f7683; background: transparent; cursor: default; }
-.dm-tree-new, .dm-tree-new:hover { background: transparent; cursor: default; }
-.dm-dest-act { display: flex; gap: 6px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
-.dm-spacer { flex: 1; min-width: 0; font-size: 10.5px; color: #6f7683; }
-/* Materialize hides every native checkbox and draws its own from a sibling
-   span; this one is small and plain, so bring the real box back. */
-/* Phones: a bottom sheet */
+.dm-dest-tree-h b { color: var(--t2); font-weight: 600; }
+.dm-dest-tree-h > i { font-style: normal; margin: 0 5px; color: var(--t4); }
+.dm-dest-node, .dm-dest-node:focus {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 6px 10px; margin: 0; box-sizing: border-box;
+  border: 0; border-radius: 0; background: transparent; color: var(--t2); font-family: inherit; font-size: 12px; line-height: 1.3;
+  text-align: left; overflow-wrap: anywhere; cursor: pointer;
+}
+.dm-dest-node > svg { flex-shrink: 0; color: var(--t3); }
+.dm-dest-node:hover, .dm-dest-node[aria-pressed="true"] { background: var(--btn); }
+.dm-dest-node[aria-pressed="true"] > svg { color: var(--src); }
+.dm-dest-node.dm-dest-node-new { border-top: 1px solid var(--div); color: var(--src); }
+.dm-dest-node-new > svg { color: var(--src); }
+.dmodal-shadow .dmodal .dm-dest-node:focus-visible { outline-offset: -2px; }
+.dm-dest-naming { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 10px; border-top: 1px solid var(--div); color: var(--src); }
+.dm-dest-naming > svg { flex-shrink: 0; }
+.dm-dest-tree-note { padding: 8px 10px; font-size: 11.5px; font-style: italic; color: var(--t4); }
+.dm-dest-preview { padding: 8px 10px; background: var(--well); border-radius: 4px; }
+.dm-dest-ed-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--div); }
+.dm-dest-applies { flex: 1 1 200px; font-size: 11.5px; line-height: 1.4; color: var(--t4); }
+/* Phones: every target 44 px tall; Cancel and Save share their row */
 @media (max-width: 600px) {
-  .dmodal-shadow { padding: 0; align-items: flex-end; }
-  .dmodal { width: 100%; margin: 24px 0 0; border-radius: 14px 14px 0 0; }
-  .dmodal-head { padding: 12px 48px 10px 16px; }
+  .dm-dest { padding: 8px 10px 4px 10px; }
+  .dm-dest-foot, .dm-dest-ed-h { min-height: 44px; }
+  .dm-dest-var, .dm-dest-var:focus { height: 44px; }
+  .dm-dest-node, .dm-dest-node:focus { min-height: 44px; }
+  .dm-dest-tree { max-height: 308px; }
+  .dm-dest-ed .dm-input, .dm-dest-ed .dm-input[type="text"], .dm-dest-select select { height: 44px; }
+  .dm-dest-applies { flex-basis: 100%; }
+  .dm-dest-ed-foot > .dm-btn { flex: 1 1 0; }
+}
+/* Phones: a bottom sheet, every target 44 px tall. The sheet sits on the
+   bottom edge by its auto top margin, not by flex-end: a window taller than
+   the screen would overflow above the overlay's top, where no scroll can
+   reach its title and Close. The auto margin is 0 then, and the overlay
+   scrolls from the top. */
+@media (max-width: 600px) {
+  .dmodal-shadow { padding: 24px 0 0; align-items: flex-start; }
+  .dmodal { width: 100%; margin: auto 0 0; border-radius: 14px 14px 0 0; }
+  .dmodal-close { top: 6px; right: 6px; width: 44px; height: 44px; }
+  .dmodal-head { padding: 12px 52px 10px 16px; }
   .dmodal-art { width: 56px; height: 56px; }
   .dmodal-section { padding: 10px 16px 12px; }
   .dmodal-section-h { flex-direction: column; align-items: flex-start; gap: 2px; }
   .dmodal-hint { text-align: left; }
-  .dmodal-tabs { margin: 2px 16px 10px; }
-  .dm-field { grid-template-columns: minmax(0, 1fr); }
-  .dm-toks, .dm-field-hint, .dm-field-err, .dm-tree { grid-column: 1; }
+  .dm-btn, .dm-link, .dm-link:focus, .dm-chip, .dm-chip:focus { height: 44px; }
+  .dm-btn.dm-btn-icon { width: 44px; }
 }
 @media (max-width: 480px) {
   .dm-tiles { grid-template-columns: minmax(0, 1fr); }
@@ -2694,41 +2772,124 @@ body.on-federated-server .side-nav-note {
   color: #999;
   font-weight: 400;
 }
-/* The Federation view: Listen (one play line, the album and artist as a
-   line of facts and links each), then Keep a copy (one card: a choice of
-   scope, where the copy lands, one Add — the card is the job) */
+/* A connected server's window: Listen (the play row, then the album and
+   the artist as fact rows: a label column, the name and its facts, the
+   links), then Keep a copy (one card: a choice of scope, where the copy
+   lands, one Add — the card is the job) */
 .dm-play { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.dm-play-btn { width: 40px; height: 40px; border-radius: 50%; background: var(--src); color: #0f1216; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.dm-play-btn:hover, .dm-play-btn:focus { background: var(--src-2); color: #0f1216; outline: none; }
-.dm-play-btn:focus-visible { box-shadow: 0 0 0 2px rgba(255, 255, 255, .35); }
+/* The play disc, in every window: a gold glyph on a grey disc (teal in a
+   network window) — never a second gold fill beside Keep's primary */
+.dm-play-btn, .dm-play-btn:focus {
+  width: 40px; height: 40px; padding: 0; border: 0; border-radius: 50%; background: var(--btn); color: var(--src);
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0; cursor: pointer;
+}
+.dm-play-btn:hover { background: var(--btn-h); color: var(--src); }
 .dm-play-body { flex: 1 1 160px; min-width: 0; }
-.dm-play-title { font-size: 13px; font-weight: 600; color: #f0f2f5; }
-.dm-play-sub { font-size: 11px; color: #8a919e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-play-title { font-size: 13px; font-weight: 600; color: var(--t1); }
+.dm-play-sub { font-size: 11.5px; color: var(--t4); overflow-wrap: anywhere; }
 .dm-play-act { display: flex; gap: 6px; flex-shrink: 0; }
-.dm-links { display: grid; gap: 4px; margin-top: 10px; font-size: 11.5px; color: #b8bcc6; }
-.dm-links > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
-.dm-links b { color: #6f7683; font-weight: 400; min-width: 42px; }
-.dm-links span { color: #dfe3ea; }
-.dm-links small { color: #6f7683; font-size: 11px; }
-.dm-links a { color: var(--src); }
-.dm-links a:hover, .dm-links a:focus { color: var(--src-2); text-decoration: underline; outline: none; }
-.dm-keep { background: #23282f; border-radius: 6px; padding: 10px 12px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 9px; }
-.dm-keep > * { min-width: 0; }
-.dm-keep > .dm-opt, .dm-keep > .dm-dest, .dm-keep > .dm-dest-form { margin: 0; }
-.dm-keep > .dm-opt { background: #1a1e25; }
-.dm-choice { display: flex; gap: 4px; padding: 3px; background: #1a1e25; border-radius: 6px; }
-.dm-choice > a { flex: 1; text-align: center; padding: 5px 8px; border-radius: 4px; font-size: 11.5px; color: #b8bcc6; line-height: 1.3; }
-.dm-choice > a small { display: block; font-size: 10px; color: #6f7683; }
-.dm-choice > a:hover, .dm-choice > a:focus { color: #f0f2f5; outline: none; }
-.dm-choice > a.dm-on { background: #363d47; color: #f0f2f5; box-shadow: inset 0 0 0 1px var(--src); }
-.dm-choice > a.dm-on small { color: #8a919e; }
-.dm-check { position: relative; display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: #b8bcc6; cursor: pointer; }
-.dm-check input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
-.dm-check i { width: 13px; height: 13px; border: 1px solid #444c56; border-radius: 3px; background: #1a1e25; display: inline-flex; align-items: center; justify-content: center; color: transparent; flex-shrink: 0; }
-.dm-check input:checked + i { background: var(--src); border-color: var(--src); color: #0f1216; }
-.dm-check input:focus-visible + i { box-shadow: 0 0 0 2px rgba(255, 255, 255, .25); }
+.dm-facts { margin-top: 8px; }
+.dm-fact { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; column-gap: 10px; align-items: center; min-height: 36px; }
+.dm-fact-label { font-size: 11.5px; color: var(--t4); }
+.dm-fact-body { min-width: 0; line-height: 1.45; overflow-wrap: anywhere; }
+.dm-fact-name { font-size: 12px; font-weight: 600; color: var(--t2); margin-right: 8px; }
+.dm-fact-more { font-size: 11.5px; color: var(--t4); }
+.dm-fact-links { display: flex; flex-wrap: nowrap; margin-right: -8px; }
+/* Keep a copy: one card — the choice strip, under Artist the only-missing
+   checkbox, then the path bar or the copy's state (dm-keep-body), then its
+   actions, the primary last */
+.dm-keep { background: var(--card); border-radius: 6px; padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.dm-keep > *, .dm-keep-body > * { min-width: 0; }
+.dm-keep-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+/* What to copy: a radio group drawn as segments, equal columns, every one
+   as tall as the tallest; the radio itself out of sight but focusable, its
+   ring drawn on the segment. A segment with a state of its own (not the
+   chosen one) leads with a marker, its state word in the sub's place. */
+.dm-segs { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); align-items: stretch; gap: 3px; padding: 3px; background: var(--well); border-radius: 6px; }
+.dm-seg {
+  position: relative; display: flex; flex-direction: column; justify-content: center; min-width: 0; min-height: 40px; margin: 0;
+  padding: 5px 9px; box-sizing: border-box; border-radius: 4px; background: transparent; cursor: pointer; font-size: 13px; color: var(--t3);
+}
+.dm-seg:hover { background: var(--hover); }
+.dm-seg.dm-on { background: var(--btn); box-shadow: inset 0 0 0 1px var(--src); }
+.dm-seg-text { display: flex; flex-direction: column; min-width: 0; }
+.dm-seg-label { display: flex; align-items: center; gap: 5px; font-size: 12.5px; line-height: 1.3; font-weight: 600; color: var(--t3); }
+.dm-seg.dm-on .dm-seg-label { color: var(--t1); }
+.dm-seg-sub { font-size: 11px; line-height: 1.3; color: var(--t4); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.dm-seg.dm-on .dm-seg-sub { color: var(--t3); }
+.dm-seg-mark { display: flex; flex: none; }
+.dm-seg-mark > i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+/* Materialize hides radios with (0,2,0) and draws its own from a "+ span" */
+.dmodal .dm-seg .dm-seg-input { position: absolute; left: 0; top: 0; width: 1px; height: 1px; margin: 0; padding: 0; opacity: 0; pointer-events: none; }
+.dmodal-shadow .dmodal .dm-seg:has(.dm-seg-input:focus-visible) { outline: 2px solid var(--t1); outline-offset: 1px; }
+.dm-c-t3 { color: var(--t3); }
+.dm-c-src { color: var(--src); }
+.dm-c-other { color: var(--other); }
+.dm-c-ok { color: var(--ok); }
+.dm-c-warn { color: var(--warn); }
+.dm-c-errt { color: var(--errt); }
+/* "Only the albums you don't have": the native box, back from under
+   Materialize's own drawing ((0,2,0) hides it) */
+.dm-check { display: flex; align-items: center; gap: 8px; min-height: 32px; margin: 0; font-size: 12.5px; line-height: 1.35; color: var(--t2); cursor: pointer; }
+.dmodal .dm-check input[type="checkbox"] { position: static; flex: none; width: 16px; height: 16px; margin: 0; opacity: 1; pointer-events: auto; accent-color: var(--src); }
+/* The outcome block, on the card itself: a tile tinted by what happened,
+   the headline in its colour with the % beside it, the server's line, at
+   most one muted line, the bar, where the files go or went */
+.dm-out { display: flex; gap: 12px; align-items: flex-start; }
+.dm-out-tile { width: 32px; height: 32px; flex: none; border-radius: 6px; display: flex; align-items: center; justify-content: center; }
+.dm-out-tile-gold { background: rgba(217, 164, 65, .16); color: #d9a441; }
+.dm-out-tile-ok { background: rgba(79, 194, 122, .14); color: var(--ok); }
+.dm-out-tile-warn { background: rgba(245, 160, 91, .14); color: var(--warn); }
+.dm-out-tile-err { background: rgba(224, 97, 106, .16); color: var(--errt); }
+.dm-out-tile-grey { background: rgba(184, 188, 198, .12); color: var(--t3); }
+.dm-out-text { flex: 1 1 auto; min-width: 0; }
+.dm-out-head { display: flex; align-items: baseline; gap: 8px; }
+.dm-out-headline { flex: 1 1 auto; min-width: 0; font-size: 14px; line-height: 1.3; font-weight: 600; color: var(--t1); overflow-wrap: anywhere; }
+.dm-out-headline.dm-tone-ok { color: var(--ok); }
+.dm-out-headline.dm-tone-warn { color: var(--warn); }
+.dm-out-headline.dm-tone-err { color: var(--errt); }
+.dm-out-pct { flex: none; font-size: 13px; line-height: 1.3; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--src); }
+.dm-out-pct.dm-out-pct-other { color: var(--other); }
+.dm-out-sub, .dm-out-muted { margin-top: 2px; font-size: 12px; line-height: 1.45; color: var(--t3); overflow-wrap: anywhere; }
+.dm-out-muted { color: var(--t4); }
+.dm-out .dm-progress { margin-top: 8px; background: var(--btn); }
+.dm-out .dm-progress-other i { background: var(--other); }
+@media (prefers-reduced-motion: reduce) {
+  .dm-out .dm-progress-indet i { width: 100%; margin: 0; opacity: .35; animation: none; }
+}
+/* What only a screen reader hears: the finished headline's sub */
+.dm-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+/* A start the server did not take: why, above the actions */
+.dm-keep-line { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; line-height: 1.45; color: var(--t2); }
+.dm-keep-line > svg { flex: none; margin-top: 2px; color: var(--warn); }
+/* A right lost while the window was open: the card holds this line alone */
+.dm-keep-plain { display: flex; gap: 10px; align-items: center; min-height: 32px; font-size: 12.5px; line-height: 1.45; color: var(--t3); }
+.dm-keep-plain > svg { flex: none; color: var(--t4); }
+.dm-keep-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+@media (max-width: 600px) {
+  .dm-play-btn, .dm-play-btn:focus { width: 44px; height: 44px; }
+  /* every target 44 px tall; the actions share their row, a lone one the
+     card's width, the primary still last */
+  .dm-keep { padding: 10px; }
+  .dm-seg { min-height: 44px; }
+  .dm-check { min-height: 44px; }
+  .dm-keep-acts > .dm-btn { flex: 1 1 0; }
+}
+/* Phones: the queue buttons under the play row's title; a fact row's
+   links under its facts, never alone on a line of their own; the choice
+   strip as stacked rows, each with its radio in sight */
 @media (max-width: 480px) {
-  .dm-play-act { flex-basis: 100%; padding-left: 52px; }
+  .dm-play { row-gap: 6px; }
+  .dm-play-act { flex-basis: 100%; padding-left: 56px; flex-wrap: wrap; }
+  .dm-fact { grid-template-columns: 44px minmax(0, 1fr); align-items: baseline; padding-top: 6px; }
+  .dm-fact-links { grid-column: 2; flex-wrap: wrap; margin: 0 0 0 -8px; }
+  .dm-segs { grid-auto-flow: row; grid-template-columns: minmax(0, 1fr); }
+  .dm-seg { display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 10px; align-items: center; min-height: 44px; padding: 8px 10px; }
+  .dmodal .dm-seg .dm-seg-input { position: static; grid-column: 1; grid-row: 1; width: 16px; height: 16px; opacity: 1; pointer-events: auto; accent-color: var(--src); }
+  .dmodal-shadow .dmodal .dm-seg .dm-seg-input:focus-visible { outline: none; }   /* the row draws the ring */
+  .dm-seg-text { grid-column: 2; grid-row: 1; }
+  .dm-seg-label { font-size: 13px; }
+  .dm-seg-sub { font-size: 11.5px; line-height: 1.35; }
 }
 
 /* ── The Discover page (m.js discoveryPanel) ─────────────────────────────

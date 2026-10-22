@@ -585,8 +585,9 @@ describe('Discover page: opening it', () => {
     click({ 'data-dp': 'peerMore', 'data-i': 0 });
     assert.equal(opened[0].source, 'federation');
     assert.equal(opened[0].raw, PEER_ROW);
-    assert.deepEqual(opened[0].opts, { seedPlain: 'dpage.match.recent', view: 'federation' },
-      'a connected row was matched against the centroid; the window opens on Listen + Keep a copy, whichever view it last showed');
+    const { opener, ...opts } = opened[0].opts;
+    assert.deepEqual(opts, { seedPlain: 'dpage.match.recent' }, 'a connected row was matched against the centroid');
+    assert.equal(opener.getAttribute('data-dp'), 'peerMore', 'the window gives the keyboard back to the ⋯ on close');
   });
 
   test('a click on a connected server\'s row queues it, exactly as a library row does', async () => {
@@ -643,7 +644,7 @@ describe('Discover page: opening it', () => {
     ? { ...PEERS, peers: { ...PEERS.peers, peers: [{ ...PEERS.peers.peers[0], results: [PEER_ROW, BEST] }] } }
     : MAIN);
 
-  test('a connected album card\'s ⋯ opens the window on the album\'s best row, as the album, on the Federation view — no copy starts', async () => {
+  test('a connected album card\'s ⋯ opens the window on the album\'s best row, as the album — no copy starts', async () => {
     const { S, click, opened, adopted, albumsOpened, fedQueued, rowsQueued, calls } = makeSandbox({ taste: twoRowAlbum });
     await S.discoveryPanel();
     const asked = calls.length;
@@ -651,7 +652,9 @@ describe('Discover page: opening it', () => {
     assert.equal(opened.length, 1);
     assert.equal(opened[0].source, 'federation');
     assert.equal(opened[0].raw, BEST, 'raws[0]: the best match, the route\'s own row unchanged');
-    assert.deepEqual(opened[0].opts, { seedPlain: 'dpage.match.recent', focus: 'album', view: 'federation' });
+    const { opener, ...opts } = opened[0].opts;
+    assert.deepEqual(opts, { seedPlain: 'dpage.match.recent', focus: 'album' });
+    assert.equal(opener.getAttribute('data-dp'), 'peerAlbumMore', 'the keyboard goes back to the card\'s ⋯');
     assert.deepEqual([adopted, albumsOpened, fedQueued, rowsQueued], [[], [], [], []], 'the ⋯ neither browses nor queues');
     assert.equal(calls.length, asked, 'nothing is asked of the server — the window does its own reads');
   });
@@ -927,7 +930,7 @@ describe('Discover page: a connected server\'s compilation', () => {
     click({ 'data-dp': 'peerAlbumMore', 'data-i': 0 });
     assert.equal(opened.length, 1);
     assert.equal(opened[0].raw, ANA, 'the best match, the route\'s row unchanged — its albumArtist included');
-    assert.deepEqual(opened[0].opts, { seedPlain: 'dpage.match.recent', focus: 'album', view: 'federation' });
+    assert.deepEqual({ ...opened[0].opts, opener: undefined }, { seedPlain: 'dpage.match.recent', focus: 'album', opener: undefined });
     assert.equal(keysOf(opened[0].raw).album, keysOf(BEN).album, 'one whole-album job, whichever song it starts from');
     assert.notEqual(keysOf(ANA).artist, keysOf(BEN).artist);
   });
@@ -2007,7 +2010,9 @@ describe('Discover page: the explore page (no nav row yet)', () => {
     click({ 'data-dp': 'lead', 'data-i': 0 });
     assert.equal(opened[0].source, 'p2p');
     assert.equal(opened[0].raw, MAIN.network.results[0], 'the route\'s own row, unchanged');
-    assert.deepEqual(opened[0].opts, { seedTitle: 'Seed <One>' }, 'h1, the seed the lead was matched against (escaped by Vue)');
+    const { opener, ...opts } = opened[0].opts;
+    assert.deepEqual(opts, { seedTitle: 'Seed <One>' }, 'h1, the seed the lead was matched against (escaped by Vue)');
+    assert.equal(opener.getAttribute('data-dp'), 'lead', 'the keyboard goes back to the lead on close');
   });
 
   test('"new artists only" sits in its More options, re-asks and is remembered in the panel\'s shared key', async () => {

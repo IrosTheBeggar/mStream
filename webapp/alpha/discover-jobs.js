@@ -1,5 +1,5 @@
 // The Discover job rows' pure half: what a plug-in job looks like as a row
-// ("Get it", "Add to your collection", the downloads strip), where a
+// ("Get it", Keep a copy, the downloads strip), where a
 // download or a collection copy will land for the layout being typed, what
 // a download record looks like as a row (the Downloads view, the admin's
 // Downloads tab), and what has to leave the queue when a download is
@@ -152,6 +152,112 @@
     return String(filepath || '').split('/').filter(Boolean);
   }
 
+  // ── where a copy of one scope lands ────────────────────────────────────
+  // The path bar, the editor's preview and the "Into" line of a running
+  // copy render the base folder and the layout with the tags of what the
+  // scope copies — never the seed song's own folder for a wider scope. The
+  // caller hands in the scope's tags (vp.js dmScopeTags):
+  //   song            the song's own; the file on a line of its own
+  //   album           the album's: its credit as ALBUMARTIST, so a
+  //                   compilation stays in one folder
+  //   artist          the artist as ARTIST and ALBUMARTIST, no album: the
+  //                   first folder that names an album ({{ALBUM}}, or
+  //                   {{YEAR}} — each album has its own) and every folder
+  //                   after it become one "one folder per album" note; a
+  //                   layout that names no album adds nothing (every album
+  //                   shares that folder)
+  //   artist-missing  the same — or, when exactly one album is missing
+  //                   (`oneAlbum`: its { name, year }), that album's folder
+  // The answer is previewTarget's (valid, error, field, variable,
+  // missingVars: the editor's checks) plus `crumbs` — the base folder's
+  // segments ({ text, kind: 'base' }), what the layout rendered
+  // ({ text, kind: 'rendered' }) and the note ({ key, kind: 'note' }: the
+  // caller translates it) — `file` for a song alone, and `title`, the plain
+  // path for a tooltip.
+  const ALBUM_FOLDER_RE = /\{\{\s*(album|year)\s*\}\}/i;
+
+  function scopeTarget({ vpath, base, layout, scope, tags, peerName, fileName, oneAlbum }) {
+    const s = JOB_SCOPES.indexOf(scope) !== -1 ? scope : 'song';
+    const t = Object.assign({}, tags || {});
+    const one = s === 'artist-missing' && oneAlbum && oneAlbum.name ? oneAlbum : null;
+    if (one) { t.album = one.name; t.year = one.year || null; }
+    const wide = (s === 'artist' || s === 'artist-missing') && !one;
+    const target = previewTarget({ vpath, base, layout, tags: t, peerName, fileName });
+    const out = Object.assign({}, target, { scope: s, perAlbum: false, crumbs: [], file: s === 'song' ? target.file : null, title: target.library });
+    if (!target.valid) { return out; }
+    if (wide) {
+      const folders = String(layout).split(/[/\\]+/);
+      const at = folders.findIndex((f) => ALBUM_FOLDER_RE.test(f));
+      if (at !== -1) {
+        const head = resolveLayout(folders.slice(0, at).join('/'), { artist: t.artist, genre: t.genre, albumartist: t.albumartist, peer: peerName });
+        out.rendered = head.path;
+        out.missingVars = head.missingVars;
+        out.perAlbum = true;
+        out.relDir = [out.base, out.rendered].filter(Boolean).join('/');
+        out.relPath = out.relDir;
+      }
+    }
+    out.crumbs = pathCrumbs(out.base).map((text) => ({ text, kind: 'base' }))
+      .concat(pathCrumbs(out.rendered).map((text) => ({ text, kind: 'rendered' })));
+    if (out.perAlbum) { out.crumbs.push({ key: 'discover.modal.dest.perAlbum', kind: 'note' }); }
+    out.title = [out.library, out.base, out.rendered].filter(Boolean).join('/');
+    return out;
+  }
+
+  // Whether two destinations put files in the same place — the jobs route's
+  // own test for a start's "destination_changed" (destination.js
+  // sameDestination): the library, the base folder as normalizeBase reads
+  // it, the layout character for character. `source` is not compared; null
+  // matches only null.
+  function sameDestination(a, b) {
+    if (!a || !b) { return !a && !b; }
+    const x = normalizeBase(a.base);
+    const y = normalizeBase(b.base);
+    return a.vpath === b.vpath && x.valid && y.valid && x.base === y.base && a.layout === b.layout;
+  }
+
+  // Where a finished copy's files are (the "In" line of its states): the
+  // folder they share — the copied ones; when nothing was copied and
+  // nothing failed or stopped it, the ones it found already in the library
+  // (already yours, or a file at the target) — as { vpath, dirs, file },
+  // `file` for one song's. null when nothing landed (failed, cancelled
+  // before a song, refused, nothing to copy) or the files share no library.
+  // { vpath: null } when songs were copied but the result lists none (the
+  // counts say so — an older server): the caller renders the destination
+  // the job ran with instead.
+  function landedPath(result) {
+    const r = result && typeof result === 'object' ? result : null;
+    if (!r) { return null; }
+    const oneFile = (fp) => {
+      const c = pathCrumbs(fp);
+      return c.length >= 2 ? { vpath: c[0], dirs: c.slice(1, -1), file: c[c.length - 1] } : null;
+    };
+    if (r.copied && r.copied.filepath) { return oneFile(r.copied.filepath); }
+    if (r.skipped === 'owned') { return r.existing && r.existing.filepath ? oneFile(r.existing.filepath) : null; }
+    if (r.skipped === 'exists') { return r.filepath ? oneFile(r.filepath) : null; }
+    const many = (r.songs && typeof r.songs.total === 'number') || (r.counts && typeof r.counts.total === 'number');
+    if (!many) { return null; }
+    const n = manyCounts(r);
+    const s = r.songs || {};
+    let found;
+    if (n.copied > 0) {
+      found = (Array.isArray(s.copied) ? s.copied : []).map((x) => x && x.filepath);
+    } else if (!r.stopped && n.failed === 0 && n.albumsFailed === 0 && n.skipped > 0) {
+      found = (Array.isArray(s.skipped) ? s.skipped : []).map((x) => x && x.at);
+    } else {
+      return null;
+    }
+    const lists = found.filter((p) => typeof p === 'string').map(pathCrumbs).filter((c) => c.length >= 2);
+    if (!lists.length) { return n.copied > 0 ? { vpath: null, dirs: [], file: null } : null; }
+    // the folders every file sits under (its file name left out)
+    let shared = lists[0].length - 1;
+    for (const c of lists) {
+      shared = Math.min(shared, c.length - 1);
+      for (let i = 0; i < shared; i++) { if (c[i] !== lists[0][i]) { shared = i; break; } }
+    }
+    return shared >= 1 ? { vpath: lists[0][0], dirs: lists[0].slice(1, shared), file: null } : null;
+  }
+
   // ── a job as a row ─────────────────────────────────────────────────────
   // The copy plug-in's rows read differently from a download's ("copying" /
   // "in your collection" against "downloading" / "done · saved to …");
@@ -282,6 +388,12 @@
       return { ...row, state: 'exists', tag: 'discover.job.skipped', icon: 'warn',
         sub: { key: 'discover.job.existsSub', params: { path: pathCrumbs(r.filepath).join(' / ') } }, actions: ['retry'] };
     }
+    // A song the peer would not hand over (it refuses this server's key):
+    // stopped as a many-song copy is, with no Retry — it would refuse again.
+    if (r.stopped === 'refused') {
+      return { ...row, state: 'stopped', tag: 'discover.job.stopped', tagCls: 'err', icon: 'warn', iconCls: 'err',
+        sub: { key: STOPPED_WHY.refused, params: { peer: (r.peer && r.peer.name) || '' } }, actions: [] };
+    }
     return { ...row, state: 'done', tag: 'discover.job.done', tagCls: 'ok', icon: 'check', iconCls: 'ok', sub: null, actions: [] };
   }
 
@@ -317,7 +429,8 @@
   // caller translates each and joins them): the albums an artist job
   // walked, songs copied, already yours, failed, albums whose listing
   // failed, albums left out — zeroes left out (empty when nothing happened
-  // at all: the caller says why).
+  // at all: the caller says why). The Keep card puts its states in its own
+  // words from these and manyCounts (vp.js dmKeepView).
   function manyParts(many) {
     const n = manyCounts(many);
     const parts = [];
@@ -545,7 +658,8 @@
   return {
     LAYOUT_VARS, DEFAULT_LAYOUT, SAMPLE_TAGS, SAMPLE_PEER, COPY_PLUGIN, LOOKUP_CAPABILITY,
     sanitizeSegment, resolveLayout, validateLayout, validateResolvedPath, normalizeBase, safeFileName, previewTarget, pathCrumbs,
-    isLive, fmtBytes, jobRowState, jobsByPlugin,
+    scopeTarget, sameDestination, landedPath,
+    isLive, fmtBytes, jobRowState, manyCounts, manyParts, jobsByPlugin,
     JOB_SCOPES, jobScope, jobSlot, jobsBySlot, jobKind,
     inTray, trayRows, traySummary, jobTitle, finishedSince,
     downloadRow, downloadsTotals, queueIndexesFor,

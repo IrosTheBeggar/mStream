@@ -153,6 +153,14 @@ describe('a job as a row', () => {
     assert.deepEqual([exists.state, exists.actions, exists.sub], ['exists', ['retry'], { key: 'discover.job.existsSub', params: { path: 'music / x / y.flac' } }]);
   });
 
+  test('a song the peer refused (its key may not copy): stopped and said so, like an album\'s — no Retry, it would refuse again', () => {
+    const refused = J.jobRowState(job({ plugin: 'federation-copy', state: 'done', result: { stopped: 'refused', peer: { id: 1, name: 'Stage Peer B' }, destination: null } }));
+    assert.deepEqual([refused.state, refused.tag, refused.tagCls, refused.icon, refused.iconCls, refused.actions, refused.filepath],
+      ['stopped', 'discover.job.stopped', 'err', 'warn', 'err', [], null]);
+    assert.deepEqual(refused.sub, { key: 'discover.job.stoppedRefused', params: { peer: 'Stage Peer B' } });
+    assert.equal(J.trayRows([job({ plugin: 'federation-copy', state: 'done', result: { stopped: 'refused', peer: { name: 'P' } } })]).length, 0, 'over: not the strip\'s, as an album\'s refusal is not');
+  });
+
   test('failed carries the server\'s reason; cancelled offers the download again; an unknown result is just done', () => {
     const failed = J.jobRowState(job({ state: 'failed', error: 'Nothing matched closely enough (best score 0.41, needs 0.62)' }));
     assert.deepEqual([failed.state, failed.tagCls, failed.actions, failed.sub], ['failed', 'err', ['retry'], { text: 'Nothing matched closely enough (best score 0.41, needs 0.62)' }]);
@@ -445,5 +453,136 @@ describe('album and artist jobs as rows', () => {
     assert.equal(J.jobTitle(job({ recommendation: rec, params: { scope: 'artist' } })), 'Ana', 'an artist job keeps its artist');
     assert.equal(J.jobTitle(job({ recommendation: { ...rec, albumArtist: '  ' }, params: { scope: 'album' } })), 'Mixtape Vol 1 — Ana', 'a blank credit is none');
     assert.equal(J.jobTitle(job({ recommendation: { album: 'Mixtape Vol 1', albumArtist: 'Various Artists' }, params: { scope: 'album' } })), 'Mixtape Vol 1 — Various Artists', 'a card\'s album job (no track artist)');
+  });
+});
+
+// ── where a copy of one scope lands (the path bar, the editor's preview,
+// a running copy's "Into") and where a finished one's files are ("In") ──
+describe('scopeTarget: the destination drawn for what the scope copies', () => {
+  const DEST = { vpath: 'copies', base: '', layout: '{{ALBUMARTIST}}/{{ALBUM}}' };
+  const SONG = { artist: 'Boukmanflow', album: 'Borrowed Tapes', year: 2019, genre: 'Hip-Hop', albumartist: null };
+  const ARTIST = { artist: 'Boukmanflow', albumartist: 'Boukmanflow', album: null, year: null, genre: 'Hip-Hop' };
+  const FILE = 'peerlib/Boukmanflow/Borrowed Tapes/02 - Late Train Verse.mp3';
+  const at = (over) => J.scopeTarget({ ...DEST, tags: SONG, peerName: 'Stage Peer B', fileName: FILE, ...over });
+  const crumbs = (p) => p.crumbs.map((c) => c.text || c.key);
+  const kinds = (p) => p.crumbs.map((c) => c.kind);
+
+  test('the song: its own folder and its file on a line of its own; the album: the same folder, no file', () => {
+    const song = at({ scope: 'song' });
+    assert.deepEqual([song.valid, song.library, crumbs(song), kinds(song), song.file, song.title],
+      [true, 'copies', ['Boukmanflow', 'Borrowed Tapes'], ['rendered', 'rendered'], '02 - Late Train Verse.mp3', 'copies/Boukmanflow/Borrowed Tapes']);
+    const album = at({ scope: 'album' });
+    assert.deepEqual([crumbs(album), album.file], [['Boukmanflow', 'Borrowed Tapes'], null]);
+    assert.equal(at({ scope: undefined }).file, '02 - Late Train Verse.mp3', 'no scope is the song');
+    // the album's credit is the caller's ALBUMARTIST: a compilation stays together
+    const comp = at({ scope: 'album', tags: { ...SONG, artist: 'Ana', album: 'Night Market Sampler', albumartist: 'Various Artists' } });
+    assert.deepEqual(crumbs(comp), ['Various Artists', 'Night Market Sampler']);
+  });
+
+  test('the artist: the folder that names an album, and every one after it, is "one folder per album"; a layout without one adds nothing', () => {
+    const artist = at({ scope: 'artist', tags: ARTIST });
+    assert.deepEqual([crumbs(artist), kinds(artist), artist.perAlbum, artist.file, artist.title],
+      [['Boukmanflow', 'discover.modal.dest.perAlbum'], ['rendered', 'note'], true, null, 'copies/Boukmanflow']);
+    assert.equal(artist.relDir, 'Boukmanflow');
+    const shared = at({ scope: 'artist', tags: ARTIST, layout: '{{ALBUMARTIST}}' });
+    assert.deepEqual([crumbs(shared), shared.perAlbum], [['Boukmanflow'], false], 'every album shares the artist\'s folder');
+    // {{YEAR}} is each album's own too; what follows it is cut with it
+    const byYear = at({ scope: 'artist', tags: ARTIST, layout: '{{ARTIST}}/Year {{YEAR}}/{{ALBUM}}' });
+    assert.deepEqual(crumbs(byYear), ['Boukmanflow', 'discover.modal.dest.perAlbum']);
+    assert.deepEqual(byYear.missingVars, [], 'what each album fills in is not "missing"');
+    const onlyAlbum = at({ scope: 'artist', tags: ARTIST, layout: '{{ALBUM}}' });
+    assert.deepEqual([onlyAlbum.valid, crumbs(onlyAlbum)], [true, ['discover.modal.dest.perAlbum']]);
+    const genre = at({ scope: 'artist', tags: { ...ARTIST, genre: null }, layout: '{{GENRE}}/{{ARTIST}}/{{ALBUM}}' });
+    assert.deepEqual([crumbs(genre), genre.missingVars], [['Boukmanflow', 'discover.modal.dest.perAlbum'], ['GENRE']]);
+  });
+
+  test('only the missing: the one album named when it is the one, else one folder per album', () => {
+    const one = at({ scope: 'artist-missing', tags: ARTIST, oneAlbum: { name: 'Second Shift', year: 2021 } });
+    assert.deepEqual([crumbs(one), one.perAlbum], [['Boukmanflow', 'Second Shift'], false]);
+    const dated = at({ scope: 'artist-missing', tags: ARTIST, oneAlbum: { name: 'Second Shift', year: 2021 }, layout: '{{ARTIST}}/{{ALBUM}} ({{YEAR}})' });
+    assert.deepEqual(crumbs(dated), ['Boukmanflow', 'Second Shift (2021)']);
+    const several = at({ scope: 'artist-missing', tags: ARTIST, oneAlbum: null });
+    assert.deepEqual(crumbs(several), ['Boukmanflow', 'discover.modal.dest.perAlbum']);
+  });
+
+  test('a base folder follows the library, {{PEER}} renders the server\'s name; the engine\'s refusals come through', () => {
+    const peer = at({ scope: 'song', base: ' from-peers/ ', layout: '{{PEER}}/{{ALBUMARTIST}}/{{ALBUM}}' });
+    assert.deepEqual([crumbs(peer), kinds(peer), peer.title],
+      [['from-peers', 'Stage Peer B', 'Boukmanflow', 'Borrowed Tapes'], ['base', 'rendered', 'rendered', 'rendered'], 'copies/from-peers/Stage Peer B/Boukmanflow/Borrowed Tapes']);
+    const artist = at({ scope: 'artist', tags: ARTIST, base: 'from-peers', layout: '{{PEER}}/{{ALBUMARTIST}}/{{ALBUM}}' });
+    assert.deepEqual(crumbs(artist), ['from-peers', 'Stage Peer B', 'Boukmanflow', 'discover.modal.dest.perAlbum']);
+    const badLayout = at({ scope: 'artist', tags: ARTIST, layout: '{{ARTST}}/{{ALBUM}}' });
+    assert.deepEqual([badLayout.valid, badLayout.field, badLayout.error, badLayout.variable, badLayout.crumbs], [false, 'layout', 'unknown_variable', 'ARTST', []]);
+    const badBase = at({ scope: 'album', base: '~/x' });
+    assert.deepEqual([badBase.valid, badBase.field, badBase.error], [false, 'base', 'home_string']);
+    // the long names wrap whole: one crumb per folder, never cut
+    const long = at({ scope: 'song', base: 'from-peers', tags: { artist: 'The Boukmanflow Collective & Friends', album: 'Free Instrumentals Vol. 9 (Deluxe Remastered Edition)' },
+      fileName: 'x/07 - A Very Long Track Title That Keeps Going (Live at the Harbour).flac' });
+    assert.deepEqual([crumbs(long), long.file], [['from-peers', 'The Boukmanflow Collective & Friends', 'Free Instrumentals Vol. 9 (Deluxe Remastered Edition)'],
+      '07 - A Very Long Track Title That Keeps Going (Live at the Harbour).flac']);
+  });
+
+  test('the song\'s and the album\'s folder is the server\'s renderTarget folder', () => {
+    for (const layout of LAYOUTS) {
+      for (const tags of TAGS) {
+        const theirs = destination.renderTarget({ destination: { vpath: 'music', base: 'From peers', layout }, tags, peerName: "Sam's server", fileName: 'a.mp3' });
+        for (const scope of ['song', 'album']) {
+          const mine = J.scopeTarget({ vpath: 'music', base: 'From peers', layout, scope, tags, peerName: "Sam's server", fileName: 'x/a.mp3' });
+          assert.equal(mine.relDir, theirs.relDir, `${scope}: ${layout}`);
+          assert.equal(mine.title, ['music', theirs.relDir].filter(Boolean).join('/'));
+        }
+      }
+    }
+  });
+});
+
+describe('sameDestination: the jobs route\'s "destination_changed" test', () => {
+  test('the library, the base folder as normalised, the layout as typed — never the source — as destination.js has it', () => {
+    const d = { vpath: 'copies', base: 'from-peers', layout: '{{ALBUMARTIST}}/{{ALBUM}}' };
+    const cases = [
+      [d, { ...d, source: 'user' }],
+      [d, { ...d, base: ' from-peers/ ' }],
+      [d, { ...d, base: 'from-peers\\' }],
+      [d, { ...d, vpath: 'music' }],
+      [d, { ...d, base: 'From-peers' }],
+      [d, { ...d, layout: '{{ ALBUMARTIST }}/{{ALBUM}}' }],
+      [{ ...d, base: '..' }, { ...d, base: '..' }],
+      [{ ...d, base: '' }, { ...d, base: null }],
+      [null, null], [d, null], [null, d], [undefined, null],
+    ];
+    for (const [a, b] of cases) {
+      assert.equal(J.sameDestination(a, b), destination.sameDestination(a, b), `${JSON.stringify(a)} vs ${JSON.stringify(b)}`);
+    }
+    assert.deepEqual(cases.slice(0, 6).map(([a, b]) => J.sameDestination(a, b)), [true, true, true, false, false, false]);
+  });
+});
+
+describe('landedPath: where a finished copy\'s files are', () => {
+  const many = (songs, over) => ({ songs: { total: 3, copied: [], skipped: [], failed: [], ...songs }, stopped: null, destination: { vpath: 'copies', base: '', layout: '{{ALBUMARTIST}}/{{ALBUM}}' }, ...over });
+  test('a song: its file, where it was copied, found already here, or found at the target', () => {
+    assert.deepEqual(J.landedPath({ copied: { vpath: 'copies', filepath: 'copies/Boukmanflow/Borrowed Tapes/02 - Late Train Verse.mp3' } }),
+      { vpath: 'copies', dirs: ['Boukmanflow', 'Borrowed Tapes'], file: '02 - Late Train Verse.mp3' });
+    assert.deepEqual(J.landedPath({ skipped: 'owned', existing: { filepath: 'music/Old Rip/Late Train.flac' } }), { vpath: 'music', dirs: ['Old Rip'], file: 'Late Train.flac' });
+    assert.equal(J.landedPath({ skipped: 'owned', existing: null }), null, 'already yours, no location: no path');
+    assert.deepEqual(J.landedPath({ skipped: 'exists', filepath: 'copies/a.mp3' }), { vpath: 'copies', dirs: [], file: 'a.mp3' });
+    assert.equal(J.landedPath(null), null);
+    assert.equal(J.landedPath({}), null);
+  });
+  test('an album or an artist: the folder the copied files share; already yours: the folder of what was found; failed, refused or cancelled before a song: nothing', () => {
+    const tapes = (n) => ({ filepath: `copies/Boukmanflow/Borrowed Tapes/0${n}.mp3` });
+    assert.deepEqual(J.landedPath(many({ copied: [tapes(1), tapes(2)], failed: [{}] })), { vpath: 'copies', dirs: ['Boukmanflow', 'Borrowed Tapes'], file: null });
+    assert.deepEqual(J.landedPath(many({ copied: [tapes(1), { filepath: 'copies/Boukmanflow/Second Shift/01.mp3' }] })), { vpath: 'copies', dirs: ['Boukmanflow'], file: null });
+    assert.deepEqual(J.landedPath(many({ copied: [tapes(1)] }, { stopped: 'quota' })), { vpath: 'copies', dirs: ['Boukmanflow', 'Borrowed Tapes'], file: null }, 'stopped after one: where that one is');
+    assert.deepEqual(J.landedPath(many({ skipped: [{ why: 'owned', at: 'music/Boukmanflow/Borrowed Tapes/1.mp3' }, { why: 'owned', at: 'music/Boukmanflow/Borrowed Tapes/2.mp3' }] })),
+      { vpath: 'music', dirs: ['Boukmanflow', 'Borrowed Tapes'], file: null });
+    assert.equal(J.landedPath(many({ skipped: [{ why: 'owned', at: 'music/a/1.mp3' }], failed: [{}, {}] })), null, 'copied nothing, some failed: a failure, no path');
+    assert.equal(J.landedPath(many({ failed: [{}] }, { stopped: 'refused' })), null);
+    assert.equal(J.landedPath(many({}, { stopped: 'cancelled' })), null);
+    assert.equal(J.landedPath(many({ skipped: [{ why: 'owned', at: 'music/a/1.mp3' }, { why: 'owned', at: 'copies/b/2.mp3' }] })), null, 'no library in common');
+    assert.equal(J.landedPath(many({}, { skippedAlbums: [{ why: 'owned' }] })), null, 'albums left out whole: nothing to point at');
+  });
+  test('copied songs the result does not list (an older server: counts alone) → the caller draws the destination it ran with', () => {
+    assert.deepEqual(J.landedPath({ counts: { total: 3, copied: 2, skipped: 1, failed: 0 } }), { vpath: null, dirs: [], file: null });
+    assert.equal(J.landedPath({ counts: { total: 3, copied: 0, skipped: 3, failed: 0 } }), null);
   });
 });

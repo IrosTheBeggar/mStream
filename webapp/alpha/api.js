@@ -187,10 +187,15 @@ const MSTREAMAPI = (() => {
   const jobsRoute = (tail) => mstreamModule.currentServer.host + 'api/v1/discovery/plugin-jobs' + (tail || '');
   // `choice` = { url }: an upload picked from the plug-in's lookup. `scope`
   // = album | artist | artist-missing for a job that acts on more than the song.
-  mstreamModule.discoveryJobStart = (name, recommendation, choice, scope) => {
+  // `destination` = { vpath, base, layout }: the collection destination the
+  // window showed — the job is pinned to it, or refused with 409
+  // { error: 'destination_changed', destination } when it is no longer the
+  // saved one. Absent = no check (the strip's Retry shows none).
+  mstreamModule.discoveryJobStart = (name, recommendation, choice, scope, destination) => {
     const body = { recommendation };
     if (choice) { body.choice = choice; }
     if (scope && scope !== 'song') { body.scope = scope; }
+    if (destination) { body.destination = { vpath: destination.vpath, base: destination.base || '', layout: destination.layout }; }
     return req('POST', mstreamModule.currentServer.host + 'api/v1/discovery/plugins/' + encodeURIComponent(name) + '/jobs', body);
   };
   mstreamModule.discoveryJobs = () => req('GET', jobsRoute());

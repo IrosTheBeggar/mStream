@@ -1021,10 +1021,11 @@
   // lists name the song's file on the peer (each entry's `from`: the path
   // the copy fetched, the peer's own rendering of it, as the row carries
   // it). Copied → in your collection, where it landed; left out as
-  // already here → already yours ('owned': where the library has it;
-  // 'exists': a file already sits at its place — nothing to play from
-  // here). Failed, not listed (a list stops at 500), no path: nothing
-  // (null). The view is a song's result on the wider job.
+  // already here ('owned': where the library has it) → already yours; a
+  // file already at its place ('exists': not known to be this song) →
+  // skipped, as the song's own copy says it, where that file is. Failed,
+  // not listed (a list stops at 500), no path: nothing (null). The view is
+  // a song's result on the wider job.
   function songView(job, filepath) {
     const want = normalizePeerPath(filepath);
     const res = isObj(job.result) ? job.result : null;
@@ -1040,7 +1041,7 @@
     }
     const kept = hit(songs.skipped);
     if (kept && kept.why === 'owned') { return as({ skipped: 'owned', existing: kept.at ? { filepath: kept.at } : null }); }
-    if (kept && kept.why === 'exists') { return as({ skipped: 'owned', existing: null }); }
+    if (kept && kept.why === 'exists') { return as({ skipped: 'exists', filepath: kept.at || null }); }
     return null;
   }
 

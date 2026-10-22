@@ -190,13 +190,14 @@ const VUEPLAYERCORE = (() => {
       list: null,             // null = not fetched yet
       jobsAllowed: false,     // the listing's jobs.allowed — may this account start jobs
     },
-    // The collection destination — where "Add to your collection" copies and
-    // "Get it" downloads land (GET /api/v1/discovery/collection/destination).
-    // Fetched with the first window that could use it. `view.destination`
-    // null = nowhere to put a file (uploads off, no library): the acquire
-    // rows and the bar stay hidden rather than fail.
+    // The collection destination — where Keep a copy copies and "Get it"
+    // downloads land (GET /api/v1/discovery/collection/destination).
+    // Read again with every window that could use it — another tab or client
+    // may have saved one since — the last one known drawn meanwhile
+    // (dmLoadDestination). `view.destination` null = nowhere to put a file
+    // (uploads off, no library): the acquire rows and the bar stay hidden
+    // rather than fail.
     dest: {
-      loaded: false,
       view: null,
     },
     // The downloads strip under the panel: the caller's plug-in jobs that
@@ -217,9 +218,8 @@ const VUEPLAYERCORE = (() => {
     seedPath: '',
     // The one open recommendation modal (a network or peer row). `gen`
     // fences async answers: a reply for a closed or replaced window is
-    // dropped. `view` is the peer rows' Federation | Plug-Ins selector.
-    // links / previews / playing = the plug-in sections; peer / file /
-    // album / artist = the facts a peer row's Federation view fetches;
+    // dropped. links / previews / playing = the plug-in sections; peer /
+    // file / album / artist = the facts a peer row's window fetches;
     // federate = the admin's invite row on a network row; recKey / jobs /
     // jobBusy / jobErrors = the acquire rows (plug-in name → the caller's
     // newest job for this recommendation); picker = the collection
@@ -241,7 +241,6 @@ const VUEPLAYERCORE = (() => {
       // the title, Listen plays the album, Keep offers Album and Artist
       // with Album chosen. null = the song.
       focus: null,
-      view: 'federation',     // 'federation' | 'plugins'
       loading: false,
       links: [],
       error: false,
@@ -259,12 +258,22 @@ const VUEPLAYERCORE = (() => {
       jobs: {},
       jobBusy: {},
       jobErrors: {},
+      // slot → a start the server refused, as it put it: { status (0 = no
+      // answer), error } — what the Keep card's lines tell apart
+      jobRefusals: {},
       // plug-in name → its lookup (what "Get it" would fetch): see dmLookup.
       lookups: {},
+      // The destination editor, open in place of the path bar:
+      // { vpath, base, layout, browse, saving, error, reset }.
       picker: null,
-      // The Federation view's Keep card: which scope the one Add acts on
-      // (song · album · artist), and whether an artist copy takes only the
-      // albums the library lacks.
+      // Whether this window's own read of the destination answered (the
+      // bar draws the last one known until it does), and whether a read
+      // since found none — a right lost while the window was open.
+      destRead: false,
+      destLost: false,
+      // Keep a copy's card in a connected server's window: which scope the
+      // one Add acts on (song · album · artist), and whether an artist copy
+      // takes only the albums the library lacks.
       keep: { scope: 'song', onlyMissing: true },
     }, over || {});
   }
@@ -279,6 +288,12 @@ const VUEPLAYERCORE = (() => {
       .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-')
       .toLowerCase();
   }
+  // A line that opens a sentence (a server's "asking Stage Peer B about
+  // the file" under a headline): its first letter capitalised.
+  function dmCapital(text) {
+    const s = String(text || '');
+    return s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
+  }
   let discoverDebounce = null;
   let discoverReqId = 0;
   let discoverDirty = false;   // song changed while collapsed → refetch on expand
@@ -287,18 +302,111 @@ const VUEPLAYERCORE = (() => {
   let discoverPreviewAudio = null;
   let discoverPreviewPausedMain = false;
   // Recommendation modal bookkeeping: a generation counter that fences
-  // async answers, the peer rows' last selector choice (remembered for the
-  // session), and the Esc handler installed only while a window is open.
+  // async answers, the control the keyboard goes back to on close
+  // (dmOpenerOf), and the key handler installed only while a window is open.
   let discoverModalGen = 0;
-  let discoverModalView = 'federation';
+  let discoverModalOpener = null;
+  // Keep a copy presses still waiting on the server (Add, Retry, Cancel…):
+  // a poll that lands meanwhile leaves the keyboard to the press, which
+  // hands it to the button now in the pressed one's place (dmKeepHold).
+  let discoverKeepPresses = 0;
   function onDiscoverModalKey(e) {
+    if (e.key === 'Tab') {
+      // aria-modal holds the keyboard: Tab from the window's last control
+      // wraps to Close, Shift+Tab from Close to the last
+      const to = dmTrapTarget(dmTabbables(playlistVue.$refs.dmodal), document.activeElement, e.shiftKey);
+      if (to) { e.preventDefault(); to.focus(); }
+      return;
+    }
     if (e.key !== 'Escape') { return; }
     // Esc closes the innermost thing first: the folder tree, the
-    // destination form, then the window.
+    // destination form, then the window. Through their own methods, which
+    // say where the keyboard goes next; if it fell out, Close takes it.
     const picker = discoverState.modal.picker;
-    if (picker && picker.browse) { picker.browse = null; return; }
-    if (picker) { discoverState.modal.picker = null; return; }
+    if (picker && picker.browse) { playlistVue.dmBrowseToggle(); playlistVue.dmHoldFocus(); return; }
+    if (picker) { playlistVue.dmClosePicker(); playlistVue.dmHoldFocus(); return; }
     playlistVue.closeDiscoverModal();
+  }
+  // The window's controls in tab order (nothing in it sets a positive
+  // tabindex, so that is DOM order): what a rendered control a Tab can
+  // reach. A radio group is one stop — its checked radio, else its first.
+  function dmTabbables(root) {
+    if (!root || typeof root.querySelectorAll !== 'function') { return []; }
+    const all = Array.from(root.querySelectorAll('button, [href], input, select, textarea, [tabindex]'));
+    return all.filter((el) => {
+      if (el.disabled || el.type === 'hidden' || el.getAttribute('tabindex') === '-1') { return false; }
+      if (typeof el.getClientRects === 'function' && el.getClientRects().length === 0) { return false; }   // not rendered
+      if (el.type === 'radio' && el.name) {
+        const group = all.filter((r) => r.type === 'radio' && r.name === el.name);
+        const on = group.find((r) => r.checked);
+        return el === (on || group[0]);
+      }
+      return true;
+    });
+  }
+  // Where a Tab goes when the browser's own move would leave the window:
+  // past either end it wraps; from outside it (focus fell to <body> when a
+  // control went away) it lands on the first control, or Shift+Tab on the
+  // last. null = the browser's own move, inside the window.
+  function dmTrapTarget(list, active, back) {
+    if (!list.length) { return null; }
+    const at = list.indexOf(active);
+    if (at === -1) { return back ? list[list.length - 1] : list[0]; }
+    if (back && at === 0) { return list[list.length - 1]; }
+    if (!back && at === list.length - 1) { return list[0]; }
+    return null;
+  }
+  // The control a window was opened from — a Discover row's ⋯, an album
+  // card's ⋯, a now-playing peer row, a Downloads strip row — where the
+  // keyboard goes back on close. For one of the Discover page's data-dp
+  // controls also a selector that finds it again after the page redrew.
+  // Nothing for <body> (nothing had focus) or a control inside the window.
+  function dmOpenerOf(el) {
+    if (!el || typeof el.focus !== 'function' || typeof el.getAttribute !== 'function') { return null; }
+    if (/^(body|html)$/i.test(el.tagName || '')) { return null; }
+    if (typeof el.closest === 'function' && el.closest('.dmodal-shadow')) { return null; }
+    const act = el.getAttribute('data-dp');
+    let sel = null;
+    if (act) {
+      sel = `[data-dp="${act}"]`;
+      for (const a of ['data-v', 'data-i']) {
+        const val = el.getAttribute(a);
+        if (val != null) { sel += `[${a}="${val}"]`; }
+      }
+    }
+    return { el, sel };
+  }
+  // Focus back on the opener; on the control in its place when the page
+  // redrew it (a button first: a lead's row and its ⋯ carry the same
+  // data-dp, the row first in the page); when it is gone, on the Discover
+  // page's first heading. A row or a heading is no control: it takes focus
+  // as tabindex -1, out of the tab order. → the element focused, or null.
+  function dmFocusBack(opener, doc) {
+    let el = opener && opener.el && opener.el.isConnected !== false ? opener.el : null;
+    if (!el && opener && opener.sel) {
+      for (const at of ['#dpage-head .dpage', '#filelist .dpage']) {
+        el = doc.querySelector(`${at} button${opener.sel}`) || doc.querySelector(`${at} ${opener.sel}`);
+        if (el) { break; }
+      }
+    }
+    if (!el) { el = doc.querySelector('#filelist .dpage h3'); }
+    if (!el || typeof el.focus !== 'function') { return null; }
+    if (!/^(a|button|input|select|textarea)$/i.test(el.tagName || '') && !el.hasAttribute('tabindex')) { el.setAttribute('tabindex', '-1'); }
+    el.focus({ preventScroll: true });
+    return el;
+  }
+  // Whether the links plug-in heard an album phrase as the album: its
+  // release searches name the album. A server whose plug-in only takes a
+  // song searched the credit alone, and has nothing for the album.
+  function dmLinksNameAlbum(links, album) {
+    const want = String(album || '').trim().toLowerCase();
+    if (!want || !Array.isArray(links)) { return false; }
+    return links.some((l) => {
+      const url = String((l && l.url) || '');
+      let text = url;
+      try { text = decodeURIComponent(url); } catch (_) { /* a stray %: as written */ }
+      return text.toLowerCase().indexOf(want) !== -1;
+    });
   }
   // Plug-in jobs: the one in-flight fetch of the plug-in list (the window's
   // sections and the strip all wait on the same answer), the poll timer, and
@@ -319,6 +427,8 @@ const VUEPLAYERCORE = (() => {
     close: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
     play: 'M8 5v14l11-7z',
     plus: 'M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z',
+    copy: 'M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z',
+    info: 'M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z',
     retry: 'M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z',
     up: 'M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z',
     down: 'M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z',
@@ -331,9 +441,9 @@ const VUEPLAYERCORE = (() => {
     template: '<svg xmlns="http://www.w3.org/2000/svg" :width="size" :height="size" viewBox="0 0 24 24"><path fill="currentColor" :d="path"/></svg>',
   });
 
-  // One plug-in's row in the recommendation window — "Get it" and "Add to
-  // your collection" are the same thing: the row IS its job. `row` comes
-  // from DISCOVERJOBS.jobRowState; the buttons only say what was pressed.
+  // One plug-in's row under "Get it" in the recommendation window: the row
+  // IS its job. `row` comes from DISCOVERJOBS.jobRowState; the buttons only
+  // say what was pressed.
   Vue.component('dm-job-row', {
     props: { title: String, idleSub: String, startLabel: String, startIcon: { type: String, default: 'download' }, hint: String, row: Object, busy: Boolean },
     methods: {
@@ -352,14 +462,14 @@ const VUEPLAYERCORE = (() => {
         <div class="dm-opt-body">
           <div class="dm-opt-title" :title="hint">{{ title }}<span v-if="row.tag" class="dm-tag" :class="{ 'dm-tag-ok': row.tagCls === 'ok', 'dm-tag-src': row.tagCls === 'src', 'dm-tag-err': row.tagCls === 'err' }">{{ tt(row.tag) }}</span></div>
           <div class="dm-opt-sub" :class="{ 'dm-opt-sub-err': row.errored }" :title="sub()">{{ sub() }}</div>
-          <div v-if="row.progress !== null" class="dm-progress" :class="{ 'dm-progress-indet': row.progress === 'indeterminate' }" role="progressbar" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="row.progress === 'indeterminate' ? null : row.progress"><i :style="row.progress === 'indeterminate' ? null : { width: row.progress + '%' }"></i></div>
+          <div v-if="row.progress !== null" class="dm-progress" :class="{ 'dm-progress-indet': row.progress === 'indeterminate' }" role="progressbar" :aria-label="title" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="row.progress === 'indeterminate' ? null : row.progress"><i :style="row.progress === 'indeterminate' ? null : { width: row.progress + '%' }"></i></div>
         </div>
         <div class="dm-opt-act">
-          <a v-if="has('play')" class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="$emit('play')"><dm-icon name="play" :size="14"></dm-icon>{{ tt('discover.modal.play') }}</a>
-          <a v-if="has('queue')" class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="$emit('queue')"><dm-icon name="plus" :size="14"></dm-icon>{{ tt('discover.modal.queue') }}</a>
-          <a v-if="has('start')" class="dm-btn dm-btn-sm dm-btn-primary" :class="{ 'is-disabled': busy }" href="javascript:void(0)" v-on:click="$emit('start')"><dm-icon :name="startIcon" :size="14"></dm-icon>{{ startLabel }}</a>
-          <a v-if="has('retry')" class="dm-btn dm-btn-sm" :class="{ 'is-disabled': busy }" href="javascript:void(0)" v-on:click="$emit('start')"><dm-icon name="retry" :size="14"></dm-icon>{{ tt('discover.job.retry') }}</a>
-          <a v-if="has('cancel')" class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="$emit('cancel')">{{ tt('discover.modal.cancel') }}</a>
+          <button v-if="has('play')" type="button" class="dm-btn dm-btn-primary" v-on:click="$emit('play')"><dm-icon name="play" :size="14"></dm-icon>{{ tt('discover.modal.play') }}</button>
+          <button v-if="has('queue')" type="button" class="dm-btn" v-on:click="$emit('queue')"><dm-icon name="plus" :size="14"></dm-icon>{{ tt('discover.modal.queue') }}</button>
+          <button v-if="has('start')" type="button" class="dm-btn dm-btn-primary" :class="{ 'is-busy': busy }" :aria-disabled="busy ? 'true' : null" v-on:click="$emit('start')"><dm-icon :name="startIcon" :size="14"></dm-icon>{{ startLabel }}</button>
+          <button v-if="has('retry')" type="button" class="dm-btn" :class="{ 'is-busy': busy }" :aria-disabled="busy ? 'true' : null" v-on:click="$emit('start')"><dm-icon name="retry" :size="14"></dm-icon>{{ tt('discover.job.retry') }}</button>
+          <button v-if="has('cancel')" type="button" class="dm-btn dm-btn-ghost" v-on:click="$emit('cancel')">{{ tt('discover.modal.cancel') }}</button>
         </div>
       </div>`,
   });
@@ -396,7 +506,7 @@ const VUEPLAYERCORE = (() => {
           <template v-else-if="state === 'loading'">
             <div class="dm-opt-title">{{ plugin.title }}<span class="dm-tag dm-tag-src">{{ tt('discover.lookup.searching') }}</span></div>
             <div class="dm-opt-sub">{{ tt('discover.lookup.searchingSub', { plugin: plugin.title, query: query }) }}</div>
-            <div class="dm-progress dm-progress-indet" role="progressbar"><i></i></div>
+            <div class="dm-progress dm-progress-indet" role="progressbar" :aria-label="plugin.title"><i></i></div>
           </template>
           <template v-else-if="state === 'owned'">
             <div class="dm-opt-title">{{ plugin.title }}<span class="dm-tag dm-tag-ok">{{ tt('discover.job.owned') }}</span></div>
@@ -417,24 +527,24 @@ const VUEPLAYERCORE = (() => {
         </div>
         <div class="dm-opt-act">
           <template v-if="state === 'ready'">
-            <a class="dm-btn dm-btn-sm dm-btn-ghost dm-btn-icon" :href="card.card.url" target="_blank" rel="noopener" :title="tt('discover.lookup.open', { plugin: plugin.title })"><dm-icon name="open" :size="14"></dm-icon></a>
-            <a v-if="card.others.length" class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="othersOpen = !othersOpen">{{ tt('discover.lookup.others', { count: card.others.length }) }}<dm-icon :name="othersOpen ? 'up' : 'down'" :size="14"></dm-icon></a>
-            <a class="dm-btn dm-btn-sm dm-btn-primary" :class="{ 'is-disabled': busy }" href="javascript:void(0)" v-on:click="$emit('download', card.card.url)"><dm-icon name="download" :size="14"></dm-icon>{{ tt('discover.lookup.downloadThis') }}</a>
+            <a class="dm-btn dm-btn-ghost dm-btn-icon" :href="card.card.url" target="_blank" rel="noopener" :title="tt('discover.lookup.open', { plugin: plugin.title })" :aria-label="tt('discover.lookup.open', { plugin: plugin.title })"><dm-icon name="open" :size="14"></dm-icon></a>
+            <button v-if="card.others.length" type="button" class="dm-btn dm-btn-ghost" :aria-expanded="othersOpen ? 'true' : 'false'" v-on:click="othersOpen = !othersOpen">{{ tt('discover.lookup.others', { count: card.others.length }) }}<dm-icon :name="othersOpen ? 'up' : 'down'" :size="14"></dm-icon></button>
+            <button type="button" class="dm-btn dm-btn-primary" :class="{ 'is-busy': busy }" :aria-disabled="busy ? 'true' : null" v-on:click="$emit('download', card.card.url)"><dm-icon name="download" :size="14"></dm-icon>{{ tt('discover.lookup.downloadThis') }}</button>
           </template>
           <template v-else-if="state === 'owned'">
-            <a v-if="card.owned && card.owned.filepath" class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="$emit('play', card.owned.filepath)"><dm-icon name="play" :size="14"></dm-icon>{{ tt('discover.modal.play') }}</a>
-            <a v-if="card.owned && card.owned.filepath" class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="$emit('queue', card.owned.filepath)"><dm-icon name="plus" :size="14"></dm-icon>{{ tt('discover.modal.queue') }}</a>
+            <button v-if="card.owned && card.owned.filepath" type="button" class="dm-btn dm-btn-primary" v-on:click="$emit('play', card.owned.filepath)"><dm-icon name="play" :size="14"></dm-icon>{{ tt('discover.modal.play') }}</button>
+            <button v-if="card.owned && card.owned.filepath" type="button" class="dm-btn" v-on:click="$emit('queue', card.owned.filepath)"><dm-icon name="plus" :size="14"></dm-icon>{{ tt('discover.modal.queue') }}</button>
           </template>
           <template v-else-if="state === 'none' || state === 'error'">
-            <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="$emit('lookup')"><dm-icon name="retry" :size="14"></dm-icon>{{ tt('discover.lookup.again') }}</a>
+            <button type="button" class="dm-btn" v-on:click="$emit('lookup')"><dm-icon name="retry" :size="14"></dm-icon>{{ tt('discover.lookup.again') }}</button>
           </template>
           <template v-else-if="state !== 'loading'">
-            <a class="dm-btn dm-btn-sm dm-btn-primary" href="javascript:void(0)" v-on:click="$emit('lookup')"><dm-icon name="search" :size="14"></dm-icon>{{ tt('discover.lookup.find') }}</a>
-            <a class="dm-btn dm-btn-sm" :class="{ 'is-disabled': busy }" href="javascript:void(0)" v-on:click="$emit('download', null)"><dm-icon name="download" :size="14"></dm-icon>{{ tt('discover.modal.download') }}</a>
+            <button type="button" class="dm-btn dm-btn-primary" v-on:click="$emit('lookup')"><dm-icon name="search" :size="14"></dm-icon>{{ tt('discover.lookup.find') }}</button>
+            <button type="button" class="dm-btn" :class="{ 'is-busy': busy }" :aria-disabled="busy ? 'true' : null" v-on:click="$emit('download', null)"><dm-icon name="download" :size="14"></dm-icon>{{ tt('discover.modal.download') }}</button>
           </template>
         </div>
         <div v-if="state === 'ready' && othersOpen" class="dm-others">
-          <div v-for="o in card.others" :key="o.url" class="dm-other" role="button" tabindex="0" v-on:click="choose(o.url)" v-on:keydown.enter.prevent="choose(o.url)">
+          <div v-for="o in card.others" :key="o.url" class="dm-other" role="button" tabindex="0" v-on:click="choose(o.url)" v-on:keydown.enter.prevent="choose(o.url)" v-on:keydown.space.prevent="choose(o.url)">
             <div class="dm-thumb dm-thumb-sm" :style="o.thumbnail ? { backgroundImage: 'url(' + o.thumbnail + ')' } : null"></div>
             <div class="dm-other-t"><b :title="o.title">{{ o.title }}</b><small>{{ [o.channel, o.length].filter(Boolean).join(' · ') }} · {{ tag(o) }}</small></div>
           </div>
@@ -442,103 +552,200 @@ const VUEPLAYERCORE = (() => {
       </div>`,
   });
 
-  // The collection destination — where "Get it" downloads and "Add to your
-  // collection" copies land — rendered in the section whose rows use it, in
-  // either view: the bar (the path resolved for THIS song · yours / default
-  // · Change…), or the form that replaces it in place. State and behaviour
-  // stay on the playlist Vue (discover.dest, discover.modal.picker and the
-  // dm* methods); this only puts them where the rows are. The parent shows
-  // it only when a row could put a file somewhere — never locked.
+  // A path as the window draws it — the bar's "Files go to", a copy's
+  // "Into" and "In" lines, the editor's preview: the library in bold, its
+  // folders after it with "›" between them (each separator travels with
+  // the folder after it, so a long path breaks between folders first, then
+  // inside one), and a song's file on a line of its own. Never cut short.
+  // `path` is dmDestPath's answer (or a dmJobPath's `path`); `prefix` the
+  // words before it, `suffix` any after; `variant` the look: 'bar' (the
+  // idle path bar), 'state' (inside a copy's states), 'preview' (the
+  // editor's: what the layout renders in the source colour); `file` false
+  // leaves the file line out. The "›" is drawn, not read: a screen reader
+  // hears a "/" between the folders instead.
+  Vue.component('dm-dest-path', {
+    props: { path: Object, prefix: String, suffix: String, variant: { type: String, default: 'state' }, file: { type: Boolean, default: true } },
+    template: `
+      <div class="dm-dest-path" :class="'dm-dest-path-' + variant">
+        <div class="dm-dest-crumbs" :title="path.title"><span v-if="prefix" class="dm-dest-pre">{{ prefix }} </span><b>{{ path.library }}</b><span v-for="(c, i) in path.crumbs" :key="i" class="dm-dest-crumb" :class="'dm-dest-crumb-' + c.kind"><i aria-hidden="true">&rsaquo;</i><span class="dm-sr">/</span>{{ c.text }}</span><template v-if="suffix">{{ suffix }}</template></div>
+        <div v-if="file && path.file" class="dm-dest-file">{{ path.file }}</div>
+      </div>`,
+  });
+
+  // The collection destination — where "Keep a copy" copies and "Get it"
+  // downloads land ("Where files land"). Idle it is the path bar: where a
+  // copy of the chosen scope would land under the saved destination
+  // (dmDestPath), a song's file, whose choice it is — saved for the
+  // account or the library's default — and Change…. Change… turns it into
+  // the editor in place, which takes the card's action row's place too
+  // (one primary at a time) and saves nothing until Save. `scope` = the
+  // scope the path is drawn for; by default the Keep card's choice, else
+  // the song (Get it). A file line only where the window copies the song
+  // (its file keeps its name). State and behaviour stay on the playlist
+  // Vue (discover.dest, discover.modal.picker and the dm* methods); this
+  // only puts them where the rows are. The parent shows it only when a
+  // row could put a file somewhere — never locked.
   Vue.component('dm-dest', {
+    props: { scope: String },
     computed: {
       picker: function () { return this.$root.discover.modal.picker; },
       dest: function () { const v = this.$root.discover.dest.view; return (v && v.destination) || null; },
-      preview: function () { return this.$root.dmPickerPreview(); },
+      shown: function () { return this.scope || this.$root.dmKeepScope() || 'song'; },
+      path: function () { return this.$root.dmDestPath(this.shown); },
+      fileLine: function () { return this.shown === 'song' && this.$root.dmKeepChoices().length > 0; },
+      preview: function () { return this.$root.dmPickerPreview(this.shown); },
+      nested: function () { return this.$root.dmDestNested(this.preview); },
+      libraries: function () { return this.$root.dmPickerLibraries(); },
+      folders: function () { return this.picker && this.picker.browse ? this.$root.dmBrowseCrumbs() : []; },
       naming: function () { const k = this.picker; return !!(k && k.browse && k.browse.naming); },
     },
     watch: {
-      // The form opens in the bar's place; make sure it is in view.
-      picker: function (k) {
-        if (!k) { return; }
-        this.$nextTick(() => { const el = this.$refs.form; if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'nearest' }); } });
-      },
+      picker: function (k, was) { if (k && !was) { this.opened(); } },
       // "New folder…" turns into a name field: put the caret in it.
       naming: function (on) {
         if (!on) { return; }
         this.$nextTick(() => { const el = this.$refs.newFolder; if (el && el.focus) { el.focus(); } });
       },
     },
+    // A state's own Change… (Skipped) shows the editor where the state was:
+    // this mounts with it open.
+    mounted: function () { if (this.picker) { this.opened(); } },
     methods: {
       tt: function (key, params) { return (typeof t === 'function') ? t(key, params) : key; },
+      // The editor opens in view, the keyboard on its first field: the
+      // library, or the base folder when there is only the one library.
+      opened: function () {
+        this.$nextTick(() => {
+          const el = this.$refs.form;
+          if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'nearest' }); }
+          const first = this.$refs.library || this.$refs.base;
+          if (first && first.focus) { first.focus(); }
+        });
+      },
     },
     template: `
-      <div v-if="picker" class="dm-dest-form" ref="form">
-        <div class="dm-field">
-          <label>{{ tt('discover.modal.dest.library') }}</label>
-          <div class="dm-field-body">
-            <select v-if="$root.dmPickerLibraries().length > 1" class="dm-select browser-default" v-model="picker.vpath" v-on:change="$root.dmPickerLibraryChanged()">
-              <option v-for="lib in $root.dmPickerLibraries()" :key="lib.vpath" :value="lib.vpath">{{ lib.vpath }}</option>
-            </select>
-            <span v-else class="dm-static">{{ picker.vpath }}</span>
-            <span class="dm-field-hint dm-field-hint-inline">{{ tt($root.dmPickerLibraries().length > 1 ? 'discover.modal.dest.libraryHint' : 'discover.modal.dest.onlyLibrary') }}</span>
-          </div>
+      <div v-if="picker" class="dm-dest-ed" ref="form" role="group" aria-labelledby="dm-dest-h">
+        <div class="dm-dest-ed-h">
+          <div id="dm-dest-h" class="dm-dest-ed-title">{{ tt('discover.modal.dest.heading') }}</div>
+          <button v-if="!$root.dmPickerIsDefault()" type="button" class="dm-btn dm-btn-quiet" v-on:click="$root.dmPickerUseDefault()">{{ tt('discover.modal.dest.useDefault') }}</button>
         </div>
-        <div class="dm-field">
-          <label>{{ tt('discover.modal.dest.base') }}</label>
-          <div class="dm-field-body">
-            <input class="dm-input browser-default" type="text" maxlength="500" v-model="picker.base" v-on:change="$root.dmPickerLibraryChanged()" :placeholder="tt('discover.modal.dest.root')" :class="{ 'is-err': preview.field === 'base' }">
-            <a class="dm-btn dm-btn-sm" :class="{ 'dm-btn-ghost': picker.browse }" href="javascript:void(0)" v-on:click="$root.dmBrowseToggle()"><dm-icon name="folder" :size="14"></dm-icon>{{ tt(picker.browse ? 'discover.modal.close' : 'discover.modal.dest.browse') }}</a>
+        <div class="dm-dest-field">
+          <label :for="libraries.length > 1 ? 'dm-dest-lib' : null">{{ tt('discover.modal.dest.library') }}</label>
+          <div v-if="libraries.length > 1" class="dm-dest-select">
+            <select id="dm-dest-lib" ref="library" class="browser-default" aria-describedby="dm-dest-lib-h" v-model="picker.vpath" v-on:change="$root.dmPickerLibraryChanged()">
+              <option v-for="lib in libraries" :key="lib.vpath" :value="lib.vpath">{{ lib.vpath }}</option>
+            </select>
+            <dm-icon name="down" :size="14"></dm-icon>
           </div>
-          <div v-if="picker.browse" class="dm-tree">
-            <div class="dm-tree-crumb"><template v-for="(c, i) in $root.dmBrowseCrumbs()"><span v-if="i > 0">&rsaquo;</span><b>{{ c }}</b></template></div>
-            <div v-if="$root.dmBrowseCrumbs().length > 1" class="dm-tree-row" v-on:click="$root.dmBrowseUp()"><dm-icon name="up" :size="12"></dm-icon>{{ tt('discover.modal.dest.up', { name: $root.dmBrowseCrumbs()[$root.dmBrowseCrumbs().length - 2] }) }}</div>
-            <div v-if="picker.browse.loading" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.lookingUp') }}</div>
+          <div v-else class="dm-dest-static">{{ picker.vpath }}</div>
+          <div id="dm-dest-lib-h" class="dm-dest-hint">{{ tt(libraries.length > 1 ? 'discover.modal.dest.libraryHint' : 'discover.modal.dest.onlyLibrary') }}</div>
+        </div>
+        <div class="dm-dest-field">
+          <label for="dm-dest-base">{{ tt('discover.modal.dest.base') }}</label>
+          <div class="dm-dest-row">
+            <input id="dm-dest-base" ref="base" class="dm-input browser-default" type="text" maxlength="500" v-model="picker.base" v-on:change="$root.dmPickerLibraryChanged()" :placeholder="tt('discover.modal.dest.root')" :class="{ 'is-err': preview.field === 'base' }" :aria-invalid="preview.field === 'base' ? 'true' : null" aria-describedby="dm-dest-base-h">
+            <button type="button" class="dm-btn dm-btn-ghost" data-dm-browse :aria-expanded="picker.browse ? 'true' : 'false'" v-on:click="$root.dmBrowseToggle()"><dm-icon name="folder" :size="14"></dm-icon>{{ tt(picker.browse ? 'discover.modal.dest.hideFolders' : 'discover.modal.dest.browse') }}</button>
+          </div>
+          <div v-if="preview.field === 'base'" id="dm-dest-base-h" class="dm-dest-err"><dm-icon name="warn" :size="12"></dm-icon><span>{{ $root.dmPickerProblem(preview) }}</span></div>
+          <div v-else-if="nested" id="dm-dest-base-h" class="dm-dest-warn"><dm-icon name="warn" :size="12"></dm-icon><span>{{ tt('discover.modal.dest.nested', { name: nested }) }}</span></div>
+          <div v-else id="dm-dest-base-h" class="dm-dest-hint">{{ tt('discover.modal.dest.baseHint', { library: picker.vpath }) }}</div>
+        </div>
+        <div v-if="picker.browse" class="dm-dest-field">
+          <div class="dm-dest-tree" role="group" :aria-label="tt('discover.modal.dest.foldersIn', { library: picker.vpath })">
+            <div class="dm-dest-tree-h"><b>{{ folders[0] }}</b><span v-for="(c, i) in folders.slice(1)" :key="i" class="dm-dest-crumb"><i aria-hidden="true">&rsaquo;</i>{{ c }}</span><template v-if="!picker.browse.loading && !picker.browse.failed && picker.browse.dirs.length > 0"><i aria-hidden="true">&middot;</i><span>{{ tt('discover.modal.dest.folderCount', { count: picker.browse.dirs.length }) }}</span></template></div>
+            <button v-if="folders.length > 1" type="button" class="dm-dest-node" v-on:click="$root.dmBrowseUp()"><dm-icon name="up" :size="14"></dm-icon>{{ tt('discover.modal.dest.up', { name: folders[folders.length - 2] }) }}</button>
+            <div v-if="picker.browse.loading" class="dm-dest-tree-note">{{ tt('discover.modal.lookingUp') }}</div>
             <template v-else>
-              <div v-if="picker.browse.missing" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.dest.willCreate') }}</div>
-              <div v-else-if="picker.browse.dirs.length === 0" class="dm-tree-row dm-tree-note">{{ tt('discover.modal.dest.noFolders') }}</div>
-              <div v-for="d in picker.browse.dirs" :key="d" class="dm-tree-row" v-on:click="$root.dmBrowseInto(d)"><dm-icon name="folder" :size="12"></dm-icon>{{ d }}</div>
+              <div v-if="!picker.browse.failed && picker.browse.dirs.length === 0" class="dm-dest-tree-note">{{ tt('discover.modal.dest.noFolders') }}</div>
+              <button v-for="d in picker.browse.dirs" :key="d" type="button" class="dm-dest-node" :aria-pressed="$root.dmBrowseIsBase(d) ? 'true' : 'false'" v-on:click="$root.dmBrowseInto(d)"><dm-icon name="folder" :size="14"></dm-icon>{{ d }}</button>
             </template>
-            <div v-if="!picker.browse.naming" class="dm-tree-row" v-on:click="$root.dmBrowseNewFolder()"><dm-icon name="plus" :size="12"></dm-icon>{{ tt('discover.modal.dest.newFolder') }}</div>
-            <div v-else class="dm-tree-row dm-tree-new">
-              <dm-icon name="plus" :size="12"></dm-icon>
-              <input class="dm-input browser-default" type="text" maxlength="200" ref="newFolder" v-model="picker.browse.newName" v-on:keydown.enter.prevent="$root.dmBrowseNewFolder()" :placeholder="tt('discover.modal.dest.newFolderName')">
-              <a class="dm-btn dm-btn-sm" href="javascript:void(0)" v-on:click="$root.dmBrowseNewFolder()">{{ tt('discover.modal.dest.newFolderAdd') }}</a>
+            <button v-if="!picker.browse.naming" type="button" class="dm-dest-node dm-dest-node-new" v-on:click="$root.dmBrowseNewFolder()"><dm-icon name="plus" :size="14"></dm-icon>{{ tt('discover.modal.dest.newFolder') }}</button>
+            <div v-else class="dm-dest-naming">
+              <dm-icon name="plus" :size="14"></dm-icon>
+              <input class="dm-input browser-default" type="text" maxlength="200" ref="newFolder" v-model="picker.browse.newName" v-on:keydown.enter.prevent="$root.dmBrowseNewFolder()" :placeholder="tt('discover.modal.dest.newFolderName')" :aria-label="tt('discover.modal.dest.newFolderName')">
+              <button type="button" class="dm-btn" v-on:click="$root.dmBrowseNewFolder()">{{ tt('discover.modal.dest.newFolderAdd') }}</button>
             </div>
           </div>
-          <div v-if="preview.field === 'base'" class="dm-field-err">{{ $root.dmPickerProblem(preview) }}</div>
-          <div v-else class="dm-field-hint">{{ tt('discover.modal.dest.baseHint', { library: picker.vpath }) }}</div>
+          <div v-if="$root.dmBrowseMissing()" class="dm-dest-missing">{{ tt('discover.modal.dest.willCreate') }}</div>
         </div>
-        <div class="dm-field">
-          <label>{{ tt('discover.modal.dest.layout') }}</label>
-          <div class="dm-field-body">
-            <input class="dm-input dm-input-mono browser-default" type="text" maxlength="500" spellcheck="false" ref="layout" v-model="picker.layout" :class="{ 'is-err': preview.field === 'layout' }">
+        <div class="dm-dest-field">
+          <label for="dm-dest-layout">{{ tt('discover.modal.dest.layout') }}</label>
+          <input id="dm-dest-layout" ref="layout" class="dm-input dm-dest-mono browser-default" type="text" maxlength="500" spellcheck="false" v-model="picker.layout" :class="{ 'is-err': preview.field === 'layout' }" :aria-invalid="preview.field === 'layout' ? 'true' : null" aria-describedby="dm-dest-layout-h">
+          <div class="dm-dest-vars">
+            <button v-for="v in $root.dmPickerVars()" :key="v" type="button" class="dm-dest-var" :aria-label="$root.dmPickerVarLabel(v)" v-on:click="$root.dmInsertVar(v, $refs.layout)">{{ $root.dmVarToken(v) }}</button>
+            <span class="dm-dest-vars-rule" aria-hidden="true"></span>
+            <button type="button" class="dm-btn dm-btn-quiet" v-on:click="$root.dmUseLibraryTemplate()">{{ tt('discover.modal.dest.useTemplate') }}</button>
           </div>
-          <div class="dm-toks">
-            <span v-for="v in $root.dmPickerVars()" :key="v" class="dm-tok" :class="{ 'dm-tok-new': v === 'PEER' }" v-on:click="$root.dmInsertVar(v, $refs.layout)">{{ $root.dmVarToken(v) }}</span>
-            <span class="dm-tok dm-tok-preset" v-on:click="$root.dmUseLibraryTemplate()">{{ tt('discover.modal.dest.libraryTemplate') }}</span>
-          </div>
-          <div v-if="preview.field === 'layout'" class="dm-field-err">{{ $root.dmPickerProblem(preview) }}</div>
-          <div v-else-if="preview.missingVars.length" class="dm-field-hint">{{ tt('discover.modal.dest.missing', { vars: preview.missingVars.join(', ') }) }}</div>
-          <div v-else class="dm-field-hint">{{ tt('discover.modal.dest.layoutHint') }}</div>
+          <div v-if="preview.field === 'layout'" id="dm-dest-layout-h" class="dm-dest-err"><dm-icon name="warn" :size="12"></dm-icon><span>{{ $root.dmPickerProblem(preview) }}</span></div>
+          <div v-else-if="preview.missingVars.length" id="dm-dest-layout-h" class="dm-dest-hint">{{ tt('discover.modal.dest.missing', { vars: preview.missingVars.join(', ') }) }}</div>
+          <div v-else id="dm-dest-layout-h" class="dm-dest-hint">{{ tt('discover.modal.dest.layoutHint') }}</div>
         </div>
-        <div v-if="preview.valid" class="dm-dest-preview" :title="picker.vpath + '/' + preview.relPath">{{ picker.vpath }}/<template v-if="preview.base">{{ preview.base }}/</template><b v-if="preview.rendered">{{ preview.rendered }}</b><template v-if="preview.rendered">/</template>{{ preview.file }}</div>
-        <div v-if="picker.error" class="dm-field-err dm-field-err-wide">{{ picker.error }}</div>
-        <div class="dm-dest-act">
-          <span class="dm-spacer">{{ tt('discover.modal.dest.remembered') }}</span>
-          <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="$root.dmClosePicker()">{{ tt('discover.modal.cancel') }}</a>
-          <a class="dm-btn dm-btn-sm dm-btn-primary" :class="{ 'is-disabled': !preview.valid || picker.saving }" href="javascript:void(0)" v-on:click="$root.dmPickerSubmit()">
-            <dm-icon name="check" :size="14"></dm-icon>{{ tt('discover.modal.dest.use') }}
-          </a>
+        <div v-if="preview.valid" class="dm-dest-field">
+          <div class="dm-dest-label">{{ tt('discover.modal.dest.preview') }}</div>
+          <div class="dm-dest-preview"><dm-dest-path :path="preview" variant="preview"></dm-dest-path></div>
+        </div>
+        <div v-if="picker.error" id="dm-dest-save-err" class="dm-dest-err" role="alert">{{ picker.error }}</div>
+        <div class="dm-dest-ed-foot">
+          <span class="dm-dest-applies">{{ tt('discover.modal.dest.applies') }}</span>
+          <button type="button" class="dm-btn dm-btn-ghost" v-on:click="$root.dmClosePicker()">{{ tt('discover.modal.cancel') }}</button>
+          <button type="button" class="dm-btn dm-btn-primary" :class="{ 'is-busy': picker.saving }" :aria-disabled="!preview.valid || picker.saving ? 'true' : null" :aria-describedby="picker.error ? 'dm-dest-save-err' : null" v-on:click="$root.dmPickerSubmit(shown)"><dm-icon name="check" :size="14"></dm-icon>{{ tt('discover.modal.dest.save') }}</button>
         </div>
       </div>
-      <div v-else-if="dest" class="dm-dest">
-        <dm-icon name="folder" :size="14"></dm-icon>
-        <span class="dm-dest-path" :title="[dest.vpath].concat($root.dmDestCrumbs()).join(' / ')">{{ tt('discover.modal.dest.goTo') }} <b>{{ dest.vpath }}</b><template v-for="c in $root.dmDestCrumbs()"><i>&rsaquo;</i>{{ c }}</template></span>
-        <span class="dm-tag" :class="{ 'dm-tag-src': dest.source === 'user' }">{{ tt(dest.source === 'user' ? 'discover.modal.dest.yours' : 'discover.modal.dest.default') }}</span>
-        <div class="dm-opt-act">
-          <a class="dm-btn dm-btn-sm dm-btn-ghost" href="javascript:void(0)" v-on:click="$root.dmOpenPicker()">{{ tt('discover.modal.dest.change') }}</a>
-          <a v-if="dest.source === 'user'" class="dm-btn dm-btn-sm dm-btn-ghost dm-btn-icon" href="javascript:void(0)" v-on:click="$root.dmResetDestination()" :title="tt('discover.modal.dest.reset')"><dm-icon name="retry" :size="14"></dm-icon></a>
-          <slot name="act"></slot>
+      <div v-else-if="dest && path" class="dm-dest">
+        <div class="dm-dest-line">
+          <dm-icon name="folder" :size="14"></dm-icon>
+          <dm-dest-path :path="path" :prefix="tt('discover.modal.dest.goTo')" variant="bar" :file="fileLine"></dm-dest-path>
+        </div>
+        <div class="dm-dest-foot">
+          <span class="dm-dest-source">{{ tt(dest.source === 'user' ? 'discover.modal.dest.savedFor' : 'discover.modal.dest.libraryDefault') }}</span>
+          <span class="dm-dest-acts">
+            <button type="button" class="dm-btn dm-btn-ghost" data-dm-change v-on:click="$root.dmOpenPicker()">{{ tt('discover.modal.dest.change') }}</button>
+          </span>
+        </div>
+      </div>`,
+  });
+
+  // Keep a copy's card under its choices (SPEC §6.6–§6.7, §8.1): the
+  // body — the path bar (idle, or a refused start: Change… there), the
+  // editor in its place while it is open, else the outcome block (a 14 px
+  // headline coloured by what happened, the % beside it, the sub and
+  // muted lines, the bar, where the files go or went) — then a refused
+  // start's line, then the action row, the primary last (none while the
+  // editor is open: one primary at a time; a refused start's line goes
+  // with it). `view` is the playlist Vue's dmKeepView; a button only names
+  // its action (dmKeepAct, data-dm-act). What changed is said by the
+  // section's one live region, there before the card first changes
+  // (index.html, dmKeepAnnounce) — nothing in here is a live region. The
+  // bar is named by the headline.
+  Vue.component('dm-keep-body', {
+    props: { view: Object },
+    methods: {
+      tt: function (key, params) { return (typeof t === 'function') ? t(key, params) : key; },
+      btnClass: function (a) {
+        return { 'dm-btn-primary': a.kind === 'primary', 'dm-btn-ghost': a.kind === 'ghost', 'is-busy': a.busy };
+      },
+    },
+    template: `
+      <div class="dm-keep-body">
+        <dm-dest v-if="view.kind !== 'state' || $root.dmDestEditing()" :scope="view.scope"></dm-dest>
+        <div v-else class="dm-out">
+          <div class="dm-out-tile" :class="'dm-out-tile-' + view.tile.tint" aria-hidden="true"><dm-icon :name="view.tile.icon" :size="16"></dm-icon></div>
+          <div class="dm-out-text">
+            <div class="dm-out-head">
+              <div id="dm-out-h" class="dm-out-headline" :class="'dm-tone-' + view.tone">{{ view.headline }}</div>
+              <span v-if="view.pct !== null" class="dm-out-pct" :class="{ 'dm-out-pct-other': !!view.other }">{{ view.pct }}%</span>
+            </div>
+            <div v-if="view.sub" class="dm-out-sub">{{ view.sub }}</div>
+            <div v-if="view.muted" class="dm-out-muted">{{ view.muted }}</div>
+            <div v-if="view.progress !== null" class="dm-progress" :class="{ 'dm-progress-indet': view.progress === 'indeterminate', 'dm-progress-other': !!view.other }"
+                 role="progressbar" aria-labelledby="dm-out-h" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="view.progress === 'indeterminate' ? null : view.progress" :aria-valuetext="view.progressText || null"><i :style="view.progress === 'indeterminate' ? null : { width: view.progress + '%' }"></i></div>
+            <dm-dest-path v-if="view.path" variant="state" :prefix="view.path.prefix" :path="view.path.path"></dm-dest-path>
+            <dm-dest-path v-if="view.retryPath" variant="state" :prefix="view.retryPath.prefix" :suffix="tt('discover.modal.dest.savedNow')" :path="view.retryPath.path" :file="false"></dm-dest-path>
+          </div>
+        </div>
+        <div v-if="view.line && !$root.dmDestEditing()" class="dm-keep-line"><dm-icon name="info" :size="14"></dm-icon><span>{{ view.line }}</span></div>
+        <div v-if="view.actions.length && !$root.dmDestEditing()" class="dm-keep-acts">
+          <button v-for="a in view.actions" :key="a.id" type="button" class="dm-btn" :class="btnClass(a)" :aria-disabled="a.busy ? 'true' : null" :data-dm-act="a.id" :data-dm-change="a.id === 'change' ? '' : null" v-on:click="$root.dmKeepAct(a.id)"><dm-icon v-if="a.icon" :name="a.icon" :size="14"></dm-icon>{{ a.label }}</button>
         </div>
       </div>`,
   });
@@ -765,8 +972,8 @@ const VUEPLAYERCORE = (() => {
       tt: function (key, params) {
         return (typeof t === 'function') ? t(key, params) : key;
       },
-      // The match bar's "to …": the seed the opener named, else the panel's
-      // own now-playing seed.
+      // The match's "to …": the seed the opener named (in curly quotes), a
+      // phrase it named, else the panel's own now-playing seed.
       dmMatchSeed: function () {
         const m = this.discover.modal;
         if (m.matchPlain) { return m.matchPlain; }
@@ -822,18 +1029,49 @@ const VUEPLAYERCORE = (() => {
         }
         return null;
       },
-      // "<peer> online" when it answered this window's own reads; otherwise
-      // the peers listing's word, "<peer> offline · last seen 2 days ago" —
-      // as of the admin's last health check, which is all the server knows.
+      // The header's one meta line, its parts joined by "·": a connected
+      // server's status, the song's format (an album has many: none), and
+      // how close the match is — "93% match to your recent listening".
+      // A network row has no server of its own to ask: its ISRC, the match.
+      // { kind: 'status', dot, text } | { kind: 'isrc' | 'text', text }. A
+      // server not answering has its last seen as a part of its own, so the
+      // template's hidden "·" goes between them.
+      dmMetaParts: function () {
+        const m = this.discover.modal;
+        const tr = m.track || {};
+        const parts = [];
+        if (m.source === 'federation') {
+          const status = this.dmPeerStatus();
+          if (status) { parts.push({ kind: 'status', dot: status.dot, text: status.text }); }
+          if (status && status.seen) { parts.push({ kind: 'text', text: status.seen }); }
+          if (!this.dmAlbumFocus() && m.file && m.file.format) { parts.push({ kind: 'text', text: m.file.format }); }
+        } else if (tr.isrc) {
+          parts.push({ kind: 'isrc', text: tr.isrc });
+        }
+        if (tr.similarity != null) {
+          parts.push({ kind: 'text', text: this.tt('discover.modal.matchLine', { pct: this.dmPct(tr), seed: this.dmMatchSeed() }) });
+        }
+        return parts;
+      },
+      // The connected server's status, its dot and its words from the same
+      // answer: "<peer> online" (ok) when one of this window's own reads
+      // came back; "<peer> not answering" (off) when none did, with `seen`
+      // "last seen 4 min ago" — the admin's last health check, all the
+      // server knows — when the peers listing names it. Before the reads
+      // answer: the name alone and a grey dot (wait), so the line holds its
+      // height. → { dot, text, seen } or null.
       dmPeerStatus: function () {
-        const p = this.discover.modal.peer;
-        if (!p) { return ''; }
-        if (p.answered === true) { return `${p.name} ${this.tt('discover.modal.online')}`; }
-        // None of this window's reads came back: it is not answering now,
-        // whatever the last health check said.
-        const online = p.answered === false ? false : p.lastStatus === 'ok';
+        const m = this.discover.modal;
+        const p = m.peer;
+        if (!p) {
+          const name = m.source === 'federation' && m.track && m.track.peer ? m.track.peer.name : '';
+          return name ? { dot: 'wait', text: name } : null;
+        }
+        if (p.answered === true) { return { dot: 'ok', text: `${p.name} ${this.tt('discover.modal.online')}` }; }
+        const words = `${p.name} ${this.tt('discover.modal.offline')}`;
+        if (!p.listed) { return { dot: 'off', text: words }; }
         const seen = p.lastSeen ? this.dmAgo(p.lastSeen) : this.tt('discover.modal.never');
-        return `${p.name} ${this.tt(online ? 'discover.modal.online' : 'discover.modal.offline')} · ${this.tt('discover.modal.lastSeen')} ${seen}`;
+        return { dot: 'off', text: words, seen: `${this.tt('discover.modal.lastSeen')} ${seen}` };
       },
       dmAgo: function (stamp) {
         // SQLite's datetime('now') is UTC without a zone marker.
@@ -868,12 +1106,11 @@ const VUEPLAYERCORE = (() => {
       // nor an admin's invite row keeps the old behaviour: copy the title.
       // opts (the Discover page's rows): { seedTitle } the seed the row was
       // matched against, or { seedPlain } a phrase for the seeds' centroid;
-      // { view } the peer window's view to open on ('federation' |
-      // 'plugins') instead of the one last chosen this session — it does not
-      // become that choice; { focus: 'album' } the row's album (a peer row
-      // with an album): the Federation view, Keep on Album; { scope } the
-      // Keep card's choice to start on (song · album · artist ·
-      // artist-missing — a reopened job's own).
+      // { focus: 'album' } the row's album (a peer row with an album): Keep
+      // on Album; { scope } the Keep card's choice to start on (song · album
+      // · artist · artist-missing — a reopened job's own); { opener } the
+      // control it was opened from, where the keyboard goes back on close
+      // (else whatever had focus).
       openDiscoverModal: async function (track, source, opts) {
         if (source === 'p2p' && !this.discover.plugins.available && !this.discover.admin) { return this.copyDiscoverP2p(track); }
         this.stopDiscoverPreview();
@@ -881,13 +1118,11 @@ const VUEPLAYERCORE = (() => {
         const o = opts || {};
         const peerRow = source === 'federation';
         const focus = peerRow && o.focus === 'album' && track && track.album ? 'album' : null;
-        const asked = o.view === 'federation' || o.view === 'plugins' ? o.view : null;
-        const view = !peerRow ? 'plugins'
-          : (!this.discover.plugins.available || focus) ? 'federation'
-            : (asked || discoverModalView);
         const scope = focus ? 'album' : (['album', 'artist', 'artist-missing'].indexOf(o.scope) !== -1 ? o.scope : 'song');
+        // a window that replaces an open one goes back where that came from
+        if (!this.discover.modal.open || !discoverModalOpener) { discoverModalOpener = dmOpenerOf(o.opener || document.activeElement); }
         this.discover.modal = blankDiscoverModal({
-          open: true, gen, source, track, focus, view,
+          open: true, gen, source, track, focus,
           matchSeed: typeof o.seedTitle === 'string' && o.seedTitle ? o.seedTitle : null,
           matchPlain: typeof o.seedPlain === 'string' && o.seedPlain ? o.seedPlain : null,
           // artist-missing is the Artist choice with "only the albums you
@@ -908,17 +1143,38 @@ const VUEPLAYERCORE = (() => {
         discoverModalGen++;
         this.discover.modal = blankDiscoverModal({ gen: discoverModalGen });
         this.scheduleDiscoverJobsPoll();   // back to the strip's slower beat
+        // the keyboard back on the control that opened the window, once
+        // the window is gone from the page
+        const opener = discoverModalOpener;
+        discoverModalOpener = null;
+        if (opener) { this.$nextTick(() => { dmFocusBack(opener, document); }); }
       },
-      // Peer rows: Federation | Plug-Ins. The choice is remembered for the
-      // session; switching to Federation stops a preview clip. Album focus
-      // has the Federation view only: the Plug-Ins view's rows act on one
-      // song, and that window reads as the album.
-      setDiscoverModalView: function (view) {
-        if (view === 'plugins' && this.dmAlbumFocus()) { return; }
-        this.discover.modal.view = view;
-        discoverModalView = view;
-        this.discover.modal.picker = null;   // the form belongs to the view it was opened in
-        if (view === 'federation') { this.stopDiscoverPreview(); }
+      // After a control the keyboard was on went away (the folder tree or
+      // the editor closed, a section redrew): if focus fell out of the
+      // window, Close takes it — never <body>. A move the change made
+      // itself (in its own $nextTick, queued first) stands.
+      dmHoldFocus: function () {
+        this.$nextTick(() => {
+          const root = this.$refs.dmodal;
+          const at = document.activeElement;
+          if (!root || (at && at !== document.body && root.contains(at))) { return; }
+          const close = this.$refs.dmodalClose;
+          if (close && close.focus) { close.focus(); }
+        });
+      },
+      // What Find elsewhere asks the links plug-in about: the row — or, in
+      // album focus, the album itself: its credit and its name, no title
+      // (the plug-in answers with the release's searches, "Boukmanflow
+      // Borrowed Tapes"; a compilation's under "Various Artists"). Nothing
+      // that names one song rides along: no title, file, ISRC or recording.
+      dmLinksRecommendation: function () {
+        const m = this.discover.modal;
+        if (!this.dmAlbumFocus()) { return this.dmRecommendation(); }
+        const tr = m.track || {};
+        const rec = { source: m.source, peer: tr.peer || null, album: tr.album, artist: DISCOVERYPAGE.albumCreditOf(tr) };
+        if (tr.albumArtist) { rec.albumArtist = tr.albumArtist; }
+        if (tr.releaseGroupMbid) { rec.releaseGroupMbid = tr.releaseGroupMbid; }
+        return rec;
       },
       dmLoadLinks: async function (gen) {
         this.discover.modal.loading = true;
@@ -928,11 +1184,14 @@ const VUEPLAYERCORE = (() => {
           const linksPlugin = this.discoverLinksPlugin();
           let links = [];
           if (linksPlugin) {
-            const res = await MSTREAMAPI.discoveryPluginResolve(linksPlugin.name, this.dmRecommendation());
+            const res = await MSTREAMAPI.discoveryPluginResolve(linksPlugin.name, this.dmLinksRecommendation());
             if (!res || res.disabled) { throw new Error('resolve failed'); }
             links = (res.result && res.result.links) || [];
           }
           if (!this.dmLive(gen)) { return; }
+          // a server whose plug-in only searches songs heard the credit
+          // alone: nothing it found is the album's
+          if (this.dmAlbumFocus() && !dmLinksNameAlbum(links, this.discover.modal.track.album)) { links = []; }
           this.discover.modal.links = links;
           this.discover.modal.loading = false;
         } catch (_) {
@@ -940,8 +1199,37 @@ const VUEPLAYERCORE = (() => {
           this.discover.modal.loading = false;
           this.discover.modal.error = true;
         }
+        // album focus: Find elsewhere goes when the answer names no album —
+        // with Copy title, which the keyboard may have been on
+        this.dmHoldFocus();
       },
-      // A peer row's Federation view: the peer's status from the peers
+      // Find elsewhere closes every window. In album focus it needs the
+      // links plug-in's answer for the album itself: while it is asked, when
+      // it failed (Copy title still works), or with links that name it —
+      // absent where the server has no links plug-in, or one that only
+      // searches songs (dmLoadLinks).
+      dmFindVisible: function () {
+        const m = this.discover.modal;
+        return !this.dmAlbumFocus() || m.loading || m.error || m.links.length > 0;
+      },
+      // The links of one tier: 'canonical' (the exact page: recording,
+      // release group, ISRC — they lead) or 'search' (every other).
+      dmLinks: function (tier) {
+        return (this.discover.modal.links || []).filter((l) => (l.kind === 'canonical') === (tier === 'canonical'));
+      },
+      // A search chip names the catalogue alone — "MusicBrainz" after the
+      // row's "Search" — and keeps the plug-in's full label as its name.
+      dmChipLabel: function (link) {
+        const label = String((link && link.label) || '');
+        return /^search\s+/i.test(label) ? label.replace(/^search\s+/i, '') : label;
+      },
+      // Copy title: "Artist - Title" — or, in album focus, "Credit - Album".
+      dmCopyTitle: function () {
+        const tr = this.discover.modal.track || {};
+        if (this.dmAlbumFocus()) { return this.copyDiscoverP2p({ artist: DISCOVERYPAGE.albumCreditOf(tr) || '', title: tr.album || '' }); }
+        return this.copyDiscoverP2p(tr);
+      },
+      // A peer row's window: the peer's status from the peers
       // listing, the file's own facts (format, size, art) from its metadata
       // route, album and artist facts through the read proxy, and what of
       // that artist this library already holds. Every call is optional —
@@ -968,9 +1256,13 @@ const VUEPLAYERCORE = (() => {
         // proxied reads above are this very minute. One that answered means
         // the peer is up now, whatever the listing remembers.
         const answered = [meta, albumSongs, peerAlbums].some((v) => v !== null && !(v && v.error));
-        this.discover.modal.peer = peer
-          ? { name: peer.name || track.peer.name || 'peer', lastSeen: peer.lastSeen || null, lastStatus: peer.lastStatus || null, answered }
-          : null;
+        // `listed`: the peers listing named it, so its last seen is known
+        this.discover.modal.peer = {
+          name: (peer && peer.name) || track.peer.name || 'peer',
+          lastSeen: (peer && peer.lastSeen) || null,
+          listed: !!peer,
+          answered,
+        };
         const md = meta && typeof meta === 'object' ? (meta.metadata || meta) : null;
         this.discover.modal.file = md && typeof md === 'object' && !md.error
           ? { format: md.format || null, art: md['album-art'] || null, metadata: md }
@@ -984,18 +1276,21 @@ const VUEPLAYERCORE = (() => {
           owned: (localList || []).some((a) => dmNameKey(a.name) === dmNameKey(track.album)),
         } : null;
         const remote = peerAlbums && Array.isArray(peerAlbums.albums) ? peerAlbums.albums : null;
-        const years = remote ? remote.map((a) => Number(a.year_min || a.year)).filter((y) => y > 0) : [];
+        // the listing names the albums they only appear on too (V17): the
+        // counts are of the albums an artist copy takes
         const mine = this.dmArtistOwnership(track.artist, remote, localList);
         this.discover.modal.artist = track.artist ? {
-          albums: remote ? remote.length : null,
-          songs: remote ? remote.reduce((sum, a) => sum + (Number(a.track_count) || 0), 0) : null,
-          yearMin: years.length ? Math.min(...years) : null,
-          yearMax: remote ? Math.max(...remote.map((a) => Number(a.year_max || a.year) || 0), 0) || null : null,
-          // the peer's albums the library has (by name), the artist's own
-          // albums there it lacks, and how many albums of the artist's the
-          // library holds at all — null while a listing did not answer
+          // the albums that are the artist's own and their songs — what
+          // every album copies, and what Listen and the counts say (never
+          // an album they only appear on) — the peer's albums the library
+          // has (by name), the artist's own albums there it lacks, and how
+          // many albums of the artist's the library holds at all — null
+          // while a listing did not answer
+          theirs: mine.theirs,
+          theirSongs: mine.theirSongs,
           owned: mine.owned,
           missing: mine.missing,
+          missingOne: mine.missingOne,
           local: localList ? localList.length : null,
         } : null;
       },
@@ -1004,25 +1299,36 @@ const VUEPLAYERCORE = (() => {
       // not by comparing counts — a library with three of an artist's
       // albums still lacks the peer's fourth. `remote` is the peer's
       // artists-albums listing for the artist, `local` this library's.
-      //   owned    the peer's albums whose name the library has
-      //   missing  the peer's albums that are the artist's own (album
+      //   theirs   the peer's albums that are the artist's own (album
       //            artist, or a credit outside a compilation — an album they
-      //            only appear on is never copied) and whose name the
-      //            library lacks: what "Only the albums you don't have" copies
-      // Both null when either listing is unknown.
+      //            only appear on is never copied): what "every album"
+      //            copies; theirSongs their songs. From the peer's listing
+      //            alone — known when this library's did not answer
+      //   owned    the peer's albums whose name the library has
+      //   missing  the artist's own albums whose name the library lacks:
+      //            what "Only the albums you don't have" copies
+      //   missingOne  that album when it is the one ({ name, year }: the
+      //            destination's path names it), else null
+      // All null when the peer's listing is unknown; all but theirs and
+      // theirSongs when this library's is.
       dmArtistOwnership: function (artist, remote, local) {
-        if (!Array.isArray(remote) || !Array.isArray(local)) { return { owned: null, missing: null }; }
+        if (!Array.isArray(remote)) { return { theirs: null, theirSongs: null, owned: null, missing: null, missingOne: null }; }
         const who = dmNameKey(artist);
-        const here = new Set(local.map((al) => dmNameKey(al && al.name)).filter(Boolean));
         const named = remote.filter((al) => al && typeof al.name === 'string' && al.name.trim());
-        const theirs = (al) => dmNameKey(al.album_artist) === who
+        const isTheirs = (al) => dmNameKey(al.album_artist) === who
           || (al.compilation !== true && Array.isArray(al.artists) && al.artists.some((n) => dmNameKey(n) === who));
-        return {
+        const own = named.filter(isTheirs);
+        const theirs = { theirs: own.length, theirSongs: own.reduce((sum, al) => sum + (Number(al.track_count) || 0), 0) };
+        if (!Array.isArray(local)) { return Object.assign(theirs, { owned: null, missing: null, missingOne: null }); }
+        const here = new Set(local.map((al) => dmNameKey(al && al.name)).filter(Boolean));
+        const lacking = own.filter((al) => !here.has(dmNameKey(al.name)));
+        return Object.assign(theirs, {
           owned: named.filter((al) => here.has(dmNameKey(al.name))).length,
-          missing: named.filter((al) => theirs(al) && !here.has(dmNameKey(al.name))).length,
-        };
+          missing: lacking.length,
+          missingOne: lacking.length === 1 ? { name: lacking[0].name, year: Number(lacking[0].year || lacking[0].year_min) || null } : null,
+        });
       },
-      // ── Federation view actions ────────────────────────────────────────
+      // ── Listen's actions ───────────────────────────────────────────────
       // The song the window queues: the row's own lite metadata — its
       // cover (albumArt) included, as dmArt draws it — under the peer
       // metadata read's once that answers (its own cover first). Without the row's cover a Play
@@ -1083,7 +1389,9 @@ const VUEPLAYERCORE = (() => {
         this.closeDiscoverModal();
         getArtistz(el);
       },
-      // Play album replaces the queue with the album; Add album appends it.
+      // Play album replaces the queue with the album and closes the window;
+      // Add to queue appends it and says so — the window stays, the keyboard
+      // where it was (SPEC §5).
       dmQueueAlbum: async function (play) {
         const m = this.discover.modal;
         const gen = m.gen;
@@ -1102,8 +1410,8 @@ const VUEPLAYERCORE = (() => {
         songs.forEach((s, i) => {
           mstreamModule.addFederationSongWizard(m.track.peer, s.filepath, s.metadata || {}, !(play && i === 0));
         });
-        this.closeDiscoverModal();
-        if (!play) { iziToast.success({ title: this.tt('discover.modal.albumQueued', { count: songs.length }), position: 'topCenter', timeout: 2000 }); }
+        if (play) { this.closeDiscoverModal(); return; }
+        iziToast.success({ title: this.tt('discover.modal.albumQueued', { count: songs.length }), position: 'topCenter', timeout: 2000 });
       },
       // ── Federate row (network rows, admins) ────────────────────────────
       // Paired already (the peers listing exposes each peer's endpoint id)
@@ -1206,7 +1514,7 @@ const VUEPLAYERCORE = (() => {
         }
       },
 
-      // ── Plug-in jobs: Get it · Add to your collection · the strip ──────
+      // ── Plug-in jobs: Get it · Keep a copy · the strip ─────────────────
       // A row IS its job (alpha/discover-jobs.js turns one into what the row
       // shows). Rows exist only for what would work: the plug-in listed (on,
       // and its probe passing), this account allowed to start jobs, and
@@ -1239,15 +1547,31 @@ const VUEPLAYERCORE = (() => {
         const v = this.discover.dest.view;
         return !!(v && v.destination);
       },
-      // "Get it": every acquire plug-in but the peer copy, which belongs to
-      // the Federation view. One { plugin, row } per plug-in; none without
-      // a destination to land in, and none in album focus (a download is
-      // one song's; the album's window never starts a song job).
+      // "Get it": every acquire plug-in but the peer copy, which is Keep a
+      // copy's. One { plugin, row } per plug-in; none without a destination
+      // to land in, and none in album focus (a download is one song's; the
+      // album's window never starts a song job). A connected server's window
+      // offers them only in Keep a copy's place — the copy's gate failed:
+      // while Keep shows, the exact file is one press away. A download this
+      // song already has a job for still shows there, in whatever state (a
+      // strip row reopens the window on it): only the offers go.
       dmGetItRows: function () {
         if (!this.dmHasDestination() || this.dmAlbumFocus()) { return []; }
+        const keep = this.discover.modal.source === 'federation' && this.dmKeepChoices().length > 0;
         return this.discoverAcquirePlugins()
-          .filter((p) => p.name !== DISCOVERJOBS.COPY_PLUGIN)
+          .filter((p) => p.name !== DISCOVERJOBS.COPY_PLUGIN && (!keep || !!this.discover.modal.jobs[p.name]))
           .map((plugin) => ({ plugin, row: this.dmJobRow(plugin.name) }));
+      },
+      // Get it's own path bar: where a download lands — not while Keep a
+      // copy shows its bar (the same destination, and one editor at a time).
+      dmGetItBar: function () {
+        if (!this.dmGetItRows().length) { return false; }
+        return !(this.discover.modal.source === 'federation' && this.dmKeepChoices().length > 0);
+      },
+      // "You can close this window — it keeps going" under Get it: while one
+      // of its own downloads is live (Keep a copy says it of its copies).
+      dmGetItLive: function () {
+        return this.dmGetItRows().some((gr) => gr.row.live);
       },
       // The admin's invite row — the first option under "Get it" on a
       // network row (dmLoadFederate decides whether there is one).
@@ -1255,7 +1579,7 @@ const VUEPLAYERCORE = (() => {
         const f = this.discover.modal.federate;
         return !!(f && f.visible);
       },
-      // "Add to your collection": none or one.
+      // Keep a copy's song: the copy plug-in's row, none or one.
       dmCopyRows: function () {
         if (this.discover.modal.source !== 'federation' || !this.dmHasDestination()) { return []; }
         return this.discoverAcquirePlugins()
@@ -1273,19 +1597,28 @@ const VUEPLAYERCORE = (() => {
       // settled them since (dmWiderJob).
       dmJobRow: function (name, scope) {
         const m = this.discover.modal;
-        const slot = DISCOVERJOBS.jobSlot(name, scope);
-        let job = m.jobs[slot] || null;
-        let other = this.dmJobOtherPeer(job);
-        if (other && scope && scope !== 'song' && !DISCOVERJOBS.isLive(job)) { job = null; }
-        const shown = this.dmWiderJob(name, scope, job);
-        if (shown !== job) { job = shown; other = null; }   // this server's own copy, by construction
+        const { job, other } = this.dmShownJob(name, scope);
         let row = DISCOVERJOBS.jobRowState(job, { plugin: name });
         if (job && other) {
           const rest = !row.sub ? [] : (Array.isArray(row.sub.parts) ? row.sub.parts : [row.sub]);
           row = Object.assign({}, row, { sub: { parts: [{ key: 'discover.job.fromPeer', params: { peer: other.name } }, ...rest] } });
         }
-        const err = m.jobErrors[slot];
+        const err = m.jobErrors[DISCOVERJOBS.jobSlot(name, scope)];
         return err ? Object.assign({}, row, { sub: { text: err }, errored: true }) : row;
+      },
+      // The job a row shows, by those rules: { job, other, borrowed } —
+      // `other` the server it copied from when that is not this row's
+      // ({ id, name }), `borrowed` the scope of the wider copy whose view
+      // of the album or the song it is (dmWiderJob), else null.
+      dmShownJob: function (name, scope) {
+        const m = this.discover.modal;
+        let job = m.jobs[DISCOVERJOBS.jobSlot(name, scope)] || null;
+        let other = this.dmJobOtherPeer(job);
+        if (other && scope && scope !== 'song' && !DISCOVERJOBS.isLive(job)) { job = null; other = null; }
+        const shown = this.dmWiderJob(name, scope, job);
+        // a wider copy's view is this server's own copy, by construction
+        if (shown !== job) { return { job: shown, other: null, borrowed: DISCOVERJOBS.jobScope(shown) }; }
+        return { job, other, borrowed: null };
       },
       // The server a job copied from when it is not this peer row's own
       // ({ id, name }), else null.
@@ -1315,8 +1648,8 @@ const VUEPLAYERCORE = (() => {
           .filter((j) => j && !this.dmJobOtherPeer(j));
         return DISCOVERYPAGE.keepJobFor(s, own, wider, { album: m.track.album, filepath: m.track.filepath }, DISCOVERJOBS);
       },
-      // The album and artist rows (the peer window's Federation view): the
-      // copy plug-in when it runs the scope, with a destination and the fact
+      // Keep a copy's Album and Artist choices in a connected server's
+      // window: the copy plug-in when it runs the scope, with a destination and the fact
       // the scope needs — the same conditions as the song row. An album
       // copy needs a credit too — the album's own (albumArtist: a
       // compilation is listed by it, whole) or the track artist: the peer
@@ -1351,31 +1684,12 @@ const VUEPLAYERCORE = (() => {
       dmMissingHeld: function (rows) {
         return rows.some((r) => r.row.live || r.row.state === 'failed' || r.row.state === 'stopped' || r.row.errored === true);
       },
-      dmAlbumIdleSub: function () {
-        const m = this.discover.modal;
-        const peer = (m.track.peer && m.track.peer.name) || 'peer';
-        if (m.album && m.album.owned) { return this.tt('discover.modal.addAlbumSubOwned'); }
-        if (m.album && m.album.count !== null) { return this.tt('discover.modal.addAlbumSub', { count: m.album.count, peer }); }
-        return this.tt('discover.modal.addAlbumSubNoCount', { peer });
-      },
-      dmArtistIdleSub: function (scope) {
-        const m = this.discover.modal;
-        const peer = (m.track.peer && m.track.peer.name) || 'peer';
-        const artist = m.track.artist;
-        const a = m.artist;
-        const known = !!(a && a.albums !== null);
-        if (scope === 'artist-missing') {
-          return known && a.missing != null
-            ? this.tt('discover.modal.addMissingSub', { count: a.missing, artist })
-            : this.tt('discover.modal.addMissingSubNoCount', { artist });
-        }
-        if (!known) { return this.tt('discover.modal.addArtistSubNoCount', { artist, peer }); }
-        const summary = [this.tt('discover.job.albumsCount', { count: a.albums }), a.songs !== null ? this.tt('discover.modal.songCount', { count: a.songs }) : ''].filter(Boolean).join(', ');
-        return this.tt('discover.modal.addArtistSub', { artist, peer, summary });
-      },
-      // ── The Federation view: Listen, then Keep a copy ─────────────────
-      // The album's and the artist's facts, one line each under the play
-      // line: what the peer reported, and what the library has of it.
+      // ── A connected server's window: Listen, then Keep a copy ─────────
+      // The album's and the artist's fact rows under the play row: what the
+      // peer reported — "2019 · 3 songs · 0:29", "3 albums · 9 songs" (the
+      // artist's own albums, what every album copies; never one they only
+      // appear on). Whether the library has any of it is said once, in
+      // Keep a copy.
       dmAlbumFacts: function () {
         const m = this.discover.modal;
         const a = m.album;
@@ -1383,54 +1697,66 @@ const VUEPLAYERCORE = (() => {
           m.track.year || '',
           a && a.count !== null ? this.tt('discover.modal.songCount', { count: a.count }) : '',
           a && a.count !== null && a.seconds ? this.dmDuration(a.seconds) : '',
-          a ? this.tt(a.owned ? 'discover.modal.inLibrary' : 'discover.modal.noneInLibrary') : '',
         ].filter(Boolean).join(' · ');
       },
       dmArtistFacts: function () {
         const a = this.discover.modal.artist;
-        if (!a || a.albums === null) { return ''; }
-        const years = a.yearMin ? (a.yearMax && a.yearMax !== a.yearMin ? `${a.yearMin} – ${a.yearMax}` : String(a.yearMin)) : '';
-        // of THESE albums, by name: "you have 1", or none of them
-        const have = a.owned == null ? '' : (a.owned > 0 ? this.tt('discover.modal.youHave', { count: a.owned }) : this.tt('discover.modal.noneInLibrary'));
+        if (!a || a.theirs === null) { return ''; }
         return [
-          this.tt('discover.modal.albumCount', { count: a.albums }),
-          a.songs !== null ? this.tt('discover.modal.songCount', { count: a.songs }) : '',
-          years,
-          have,
+          this.tt('discover.modal.albumCount', { count: a.theirs }),
+          a.theirSongs !== null ? this.tt('discover.modal.songCount', { count: a.theirSongs }) : '',
         ].filter(Boolean).join(' · ');
       },
-      // Album focus: the play line's second line — how long the album runs
-      // and whether the library has it (the header names the rest).
+      // Album focus: the play row's second line — "3 songs · 0:29" (the
+      // header names the rest). Blank until the peer listed the album.
       dmAlbumPlaySub: function () {
         const a = this.discover.modal.album;
-        if (!a) { return ''; }
+        if (!a || a.count === null) { return ''; }
         return [
-          a.count !== null && a.seconds ? this.dmDuration(a.seconds) : '',
-          this.tt(a.owned ? 'discover.modal.inLibrary' : 'discover.modal.noneInLibrary'),
+          this.tt('discover.modal.songCount', { count: a.count }),
+          a.seconds ? this.dmDuration(a.seconds) : '',
         ].filter(Boolean).join(' · ');
       },
       // The Keep card's choices: one per scope the copy plug-in runs for
-      // this row (the same conditions as the rows they replace), with the
-      // size of what it would copy under each. The album's window has no
-      // "This song": it reads as the album, and one of its songs is not.
+      // this row (the same conditions as the rows they replace), each with
+      // the size of what it would copy — "0:08 · mp3", "3 songs" ("Whole
+      // compilation · 3 songs": a compilation copies whole, under its
+      // credit), "Boukmanflow · 3 albums" (the song's own artist, on a
+      // compilation too) — blank until the peer said. `aria` is the radio's
+      // name: what the choice copies ("Every album by Boukmanflow, 3
+      // albums"). The album's window has no "This song": it reads as the
+      // album, and one of its songs is not. The section's gate.
       dmKeepChoices: function () {
         const m = this.discover.modal;
-        if (!m.track) { return []; }
+        const tr = m.track;
+        if (!tr) { return []; }
         const out = [];
         if (!this.dmAlbumFocus() && this.dmCopyRows().length) {
-          const bits = [m.track.duration ? this.dmDuration(m.track.duration) : '', m.file && m.file.format ? m.file.format : ''];
-          out.push({ scope: 'song', label: this.tt('discover.modal.song'), sub: bits.filter(Boolean).join(' · ') });
+          const bits = [tr.duration ? this.dmDuration(tr.duration) : '', m.file && m.file.format ? m.file.format : ''];
+          out.push({ scope: 'song', label: this.tt('discover.modal.song'), sub: bits.filter(Boolean).join(' · '),
+            aria: this.tt('discover.keep.songAria', { title: tr.title || '' }) });
         }
         if (this.dmScopeRows('album').length) {
           const a = m.album;
-          out.push({ scope: 'album', label: this.tt('discover.modal.album'), sub: a && a.count !== null ? this.tt('discover.modal.songCount', { count: a.count }) : '' });
+          const count = a && a.count !== null ? this.tt('discover.modal.songCount', { count: a.count }) : '';
+          const whole = this.dmKeepCompilation();
+          const what = whole ? this.tt('discover.keep.compilationAria', { album: tr.album, credit: tr.albumArtist }) : this.tt('discover.keep.albumAria', { album: tr.album });
+          out.push({ scope: 'album', label: this.tt('discover.modal.album'), sub: count && whole ? `${this.tt('discover.keep.wholeCompilation')} · ${count}` : count,
+            aria: [what, count].filter(Boolean).join(', ') });
         }
         if (this.dmScopeRows('artist').length) {
           const a = m.artist;
-          const bits = a && a.albums !== null ? [this.tt('discover.modal.albumCount', { count: a.albums }), a.owned ? this.tt('discover.modal.youHave', { count: a.owned }) : ''] : [];
-          out.push({ scope: 'artist', label: this.tt('discover.modal.artist'), sub: bits.filter(Boolean).join(' · ') });
+          const count = a && a.theirs !== null ? this.tt('discover.modal.albumCount', { count: a.theirs }) : '';
+          out.push({ scope: 'artist', label: this.tt('discover.modal.artist'), sub: count ? `${tr.artist} · ${count}` : '',
+            aria: [this.tt('discover.keep.artistAria', { artist: tr.artist }), count].filter(Boolean).join(', ') });
         }
         return out;
+      },
+      // A compilation: the row's album has a credit of its own that is not
+      // the song's artist ("Various Artists") — Album copies it whole.
+      dmKeepCompilation: function () {
+        const tr = this.discover.modal.track || {};
+        return typeof tr.albumArtist === 'string' && tr.albumArtist.trim() !== '' && dmNameKey(tr.albumArtist) !== dmNameKey(tr.artist);
       },
       dmKeepChoose: function (scope) {
         this.discover.modal.keep.scope = scope;
@@ -1452,7 +1778,7 @@ const VUEPLAYERCORE = (() => {
         const a = this.discover.modal.artist;
         const rows = this.dmMissingRows();
         if (this.dmMissingHeld(rows)) { return true; }
-        return !!(a && a.albums !== null && a.local > 0 && a.missing > 0 && rows.length);
+        return !!(a && a.theirs !== null && a.local > 0 && a.missing > 0 && rows.length);
       },
       dmKeepMissingCount: function () {
         const a = this.discover.modal.artist;
@@ -1464,55 +1790,478 @@ const VUEPLAYERCORE = (() => {
         const n = this.dmKeepMissingCount();
         return n > 0 ? this.tt('discover.modal.onlyMissing', { count: n }) : this.tt('discover.modal.onlyMissingNoCount');
       },
-      // The job scope the card acts on.
+      // The job scope the card acts on: the choice — under Artist, the
+      // checkbox's: only the albums the library lacks when ticked, every
+      // album when not. With no checkbox because nothing is missing by name
+      // now, an only-missing copy newer than any plain artist copy is still
+      // the Artist choice's record: the card shows it, it is not forgotten.
+      // A checkbox hidden for another reason (the listings not answered,
+      // none of the artist's albums here) leaves the Artist choice every
+      // album's, its Add with it.
       dmKeepScope: function () {
         const chosen = this.dmKeepChosen();
-        if (chosen === 'artist' && this.dmKeepMissingChoice() && this.discover.modal.keep.onlyMissing) { return 'artist-missing'; }
-        return chosen;
+        if (chosen !== 'artist') { return chosen; }
+        if (this.dmKeepMissingChoice()) { return this.discover.modal.keep.onlyMissing ? 'artist-missing' : 'artist'; }
+        const a = this.discover.modal.artist;
+        const none = !!(a && a.missing === 0);
+        return none && this.dmKeepArtistNewest() === 'artist-missing' && this.dmScopeRows('artist-missing').length ? 'artist-missing' : 'artist';
       },
-      // The card's job: { plugin, scope, slot, row } for the scope, or null.
-      dmKeepRow: function () {
-        const scope = this.dmKeepScope();
-        if (!scope) { return null; }
-        const rows = scope === 'song' ? this.dmCopyRows() : this.dmScopeRows(scope);
+      // The newer of THIS server's artist copies — 'artist' (every album)
+      // or 'artist-missing', the one made later — null for neither.
+      // Another server's is not this server's record.
+      dmKeepArtistNewest: function () {
+        const m = this.discover.modal;
+        let best = null;
+        for (const scope of ['artist', 'artist-missing']) {
+          const job = m.jobs[DISCOVERJOBS.jobSlot(DISCOVERJOBS.COPY_PLUGIN, scope)];
+          if (job && !this.dmJobOtherPeer(job) && (!best || Number(job.id) > Number(best.job.id))) { best = { scope, job }; }
+        }
+        return best ? best.scope : null;
+      },
+      // The scope the Artist segment speaks for: that newer copy, else
+      // another server's live only-missing one, else every album's.
+      dmKeepArtistSays: function () {
+        const theirs = this.discover.modal.jobs[DISCOVERJOBS.jobSlot(DISCOVERJOBS.COPY_PLUGIN, 'artist-missing')];
+        return this.dmKeepArtistNewest() || (DISCOVERJOBS.isLive(theirs) ? 'artist-missing' : 'artist');
+      },
+      // The card's job for a scope (the card's own unless given): { plugin,
+      // scope (none for the song), slot, row, job, other, borrowed } — the
+      // row DISCOVERJOBS.jobRowState makes of it and the job it reads
+      // (dmShownJob). null when the scope is not offered.
+      dmKeepRow: function (scope) {
+        const s = scope || this.dmKeepScope();
+        if (!s) { return null; }
+        const rows = s === 'song' ? this.dmCopyRows() : this.dmScopeRows(s);
         if (!rows.length) { return null; }
         const r = rows[0];
-        return { plugin: r.plugin, scope: scope === 'song' ? undefined : scope, slot: r.slot || r.plugin.name, row: r.row };
+        const shown = this.dmShownJob(r.plugin.name, s === 'song' ? undefined : s);
+        return { plugin: r.plugin, scope: s === 'song' ? undefined : s, slot: r.slot || r.plugin.name, row: r.row, job: shown.job, other: shown.other, borrowed: shown.borrowed };
       },
-      // Idle = nothing pressed yet and no refused start: the card shows
-      // where the copy lands and the one button.
-      dmKeepIdle: function () {
-        const k = this.dmKeepRow();
-        return !!(k && k.row.state === 'idle' && !k.row.errored);
-      },
-      dmKeepTitle: function () {
-        const scope = this.dmKeepScope();
-        if (scope === 'album') { return this.tt('discover.modal.addAlbum'); }
-        if (scope === 'artist') { return this.tt('discover.modal.addArtist'); }
-        if (scope === 'artist-missing') { return this.tt('discover.modal.addMissing'); }
-        return this.tt('discover.modal.addToCollection');
-      },
-      dmKeepIdleSub: function () {
+      // The primary's words, idle, by scope — a count only where it is
+      // known, and no promise the copy may not keep: "Add this song"; "Add
+      // album · 3 songs" ("Add the songs you lack" when the library has the
+      // album by name — the copy decides by file — "Add album" before the
+      // peer said); "Add 3 albums" ("Add every album"); only the missing
+      // ones, "Add 1 album" ("Add the missing albums").
+      dmKeepStartLabel: function (scope) {
+        const s = scope || this.dmKeepScope();
         const m = this.discover.modal;
-        const scope = this.dmKeepScope();
-        if (scope === 'album') { return this.dmAlbumIdleSub(); }
-        if (scope === 'artist' || scope === 'artist-missing') { return this.dmArtistIdleSub(scope); }
-        return this.tt('discover.modal.addToCollectionSub', { peer: (m.track.peer && m.track.peer.name) || 'peer' });
-      },
-      dmKeepStartLabel: function () {
-        const scope = this.dmKeepScope();
-        if (scope === 'album') { return this.tt('discover.modal.addAlbumStart'); }
-        if (scope === 'artist') { return this.tt('discover.modal.addArtistStart'); }
-        if (scope === 'artist-missing') {
-          const n = this.dmKeepMissingCount();
-          return n ? this.tt('discover.modal.keepAddMissing', { count: n }) : this.tt('discover.modal.addMissingStart');
+        if (s === 'album') {
+          const a = m.album;
+          if (a && a.owned) { return this.tt('discover.keep.addLacking'); }
+          return a && a.count ? this.tt('discover.keep.addAlbum', { count: a.count }) : this.tt('discover.keep.addAlbumUncounted');
         }
-        return this.tt('discover.modal.keepAddSong');
+        if (s === 'artist') {
+          const a = m.artist;
+          return a && a.theirs ? this.tt('discover.keep.addAlbums', { count: a.theirs }) : this.tt('discover.keep.addEvery');
+        }
+        if (s === 'artist-missing') {
+          const n = this.dmKeepMissingCount();
+          return n ? this.tt('discover.keep.addAlbums', { count: n }) : this.tt('discover.keep.addMissing');
+        }
+        return this.tt('discover.keep.addSong');
       },
-      dmKeepStart: function () {
-        const k = this.dmKeepRow();
+      // Add — and Retry, Add again, Try again: a copy of `scope` (the
+      // card's own unless given), sent with the destination the window
+      // shows (dmJobStart). Once the server answered, the keyboard goes to
+      // the button now in the pressed one's place (dmKeepHold).
+      dmKeepStart: async function (scope) {
+        const k = this.dmKeepRow(scope);
         if (!k) { return; }
-        if (k.scope) { this.dmJobStart(k.plugin, null, k.scope); } else { this.dmJobStart(k.plugin); }
+        discoverKeepPresses += 1;
+        try {
+          if (k.scope) { await this.dmJobStart(k.plugin, null, k.scope); } else { await this.dmJobStart(k.plugin); }
+        } finally { discoverKeepPresses -= 1; }
+        this.dmKeepHold();
+      },
+      // ── Keep a copy: what the card says (SPEC §6–§8) ───────────────────
+      // One scope's state in the window's words — the card's own scope
+      // unless given (a segment's marker reads the others). What became of
+      // the job is DISCOVERJOBS.jobRowState's to say (the strip and the
+      // admin's Downloads read it too); this is how the card puts it:
+      //   kind      'idle' (the path bar and Add) · 'state' (a job: the
+      //             outcome block) · 'refused' (a start the server did not
+      //             take: the bar, `line`, Try again) · 'lost' (a right gone
+      //             while the window was open: `line`, alone in the card)
+      //   state     idle · queued · copying · stopping · kept · yours ·
+      //             skipped · stopped · refused · failed · cancelled ·
+      //             nothing · done · refusedStart · lost
+      //   tile      { icon, tint: gold · ok · warn · err · grey }
+      //   headline  with its tone (n · ok · warn · err) and the % beside it
+      //   sub, muted, progress (a %, 'indeterminate' or null) and
+      //   progressText (what the bar says aloud), path (dmJobPath: Into
+      //   while it runs, In once it landed), retryPath ({ prefix, path }:
+      //   where Retry or Add again adds now the saved place moved), files
+      //   (what Play your copy plays), folder (where Show in your library
+      //   opens: [library, folder…])
+      //   actions   [{ id, kind: primary · secondary · ghost, label, icon,
+      //             busy }], left to right — the primary last
+      //   status    what the headline says as a live region: the headline
+      //             while it runs (the % is the bar's), headline and sub
+      //             once it is over
+      // `other` = another server's copy ({ id, name }): drawn grey, never
+      // this window's done; `borrowed` = the scope of a wider copy of this
+      // server's that speaks for the album or the song. null when the scope
+      // is not offered.
+      dmKeepView: function (scope) {
+        const m = this.discover.modal;
+        const tt = (key, params) => this.tt(key, params);
+        const v = {
+          scope: null, slot: null, kind: 'state', state: 'idle', job: null, other: null, borrowed: null, live: false,
+          tile: null, headline: '', tone: 'n', pct: null, sub: '', muted: '', progress: null, progressText: '',
+          path: null, retryPath: null, line: '', files: [], folder: null, actions: [], status: '',
+        };
+        const lost = this.dmKeepLost();
+        if (lost) { return Object.assign(v, { kind: 'lost', state: 'lost', line: tt('discover.keep.lost.' + lost) }); }
+        const k = this.dmKeepRow(scope);
+        if (!k) { return null; }
+        const s = k.scope || 'song';
+        const job = k.job;
+        const other = k.other;
+        const busy = m.jobBusy[k.slot] === true;
+        const here = (m.track && m.track.peer && m.track.peer.name) || 'peer';
+        // a start in flight dims the button that asked for it ("Adding…")
+        const act = (id, kind, label, icon) => ({ id, kind, label, icon: icon || null, busy: busy && ['add', 'retry', 'addAgain', 'tryAgain'].indexOf(id) !== -1 });
+        const add = () => act('add', 'primary', busy ? tt('discover.keep.adding') : this.dmKeepStartLabel(s), 'folder');
+        Object.assign(v, { scope: s, slot: k.slot, job, other, borrowed: k.borrowed, live: !!k.row.live });
+
+        // A start the server refused (SPEC §8.1): the choices and the bar
+        // stay; the line says why, and Try again takes Add's place — Add
+        // itself when the destination moved (the bar already shows where).
+        const refusal = m.jobRefusals[k.slot];
+        if (refusal && !v.live) {
+          const moved = refusal.error === 'destination_changed';
+          const why = moved ? 'discover.modal.dest.changed'
+            : (refusal.status === 429 ? 'discover.keep.tooMany' : (refusal.status === 409 ? 'discover.keep.someoneElse' : 'discover.job.requestFailed'));
+          return Object.assign(v, { kind: 'refused', state: 'refusedStart', line: tt(why),
+            actions: [moved ? add() : act('tryAgain', 'ghost', tt('discover.keep.tryAgain'), 'retry')] });
+        }
+        if (!job) { return Object.assign(v, { kind: 'idle', actions: [add()] }); }
+
+        // Queued, copying, stopping: where it is going (Into), Cancel. The
+        // server's line under the headline, its % beside it; another
+        // server's copy grey, and its own Cancel.
+        if (DISCOVERJOBS.isLive(job)) {
+          // 0 is no figure yet: the copy's first word is its "asking … about
+          // the file", before a byte moved (S4: no %, the bar sweeps)
+          const pct = Number.isFinite(job.progress) && job.progress > 0 ? Math.round(job.progress * 100) : null;
+          const line = this.dmKeepLine(job.statusText);
+          const queued = job.state === 'queued';
+          const stopping = !queued && job.cancelRequested === true;
+          Object.assign(v, {
+            state: queued ? 'queued' : (stopping ? 'stopping' : 'copying'),
+            tile: { icon: queued ? 'clock' : 'download', tint: queued || other ? 'grey' : 'gold' },
+            path: this.dmJobPath(job),
+          });
+          if (queued) {
+            v.headline = other ? tt('discover.keep.queuedFrom', { peer: other.name }) : tt('discover.keep.queued');
+            v.sub = tt('discover.job.queuedSub');
+          } else if (stopping) {
+            v.headline = tt('discover.keep.stopping');
+            v.sub = other ? [tt('discover.keep.theirCopy', { peer: other.name }), line].filter(Boolean).join(' · ') : dmCapital(line);
+            v.progress = pct;   // frozen where the cancel found it
+          } else {
+            v.headline = other ? tt('discover.keep.copyingFrom', { peer: other.name }) : tt('discover.keep.copying');
+            v.pct = pct;
+            v.sub = line ? dmCapital(line) : (pct === null ? tt('discover.job.starting') : '');
+            v.progress = pct === null ? 'indeterminate' : pct;
+          }
+          if (pct !== null && v.progress !== null) { v.progressText = [`${pct}%`, line].filter(Boolean).join(', '); }
+          // another server's album or artist copy holds this server's Add
+          // until it ends (a song's is the recording: it stays once it did)
+          if (other && s !== 'song' && !stopping) { v.muted = tt('discover.keep.addReturns', { peer: here }); }
+          if (!stopping) { v.actions = [other ? act('cancelOther', 'ghost', tt('discover.keep.cancelOther')) : act('cancel', 'ghost', tt('discover.modal.cancel'))]; }
+          v.status = v.headline;
+          return v;
+        }
+
+        // Over: what landed (In), and what can be done with it — never Add
+        // again beside a result; Retry only with something left to take.
+        const res = (job.result && typeof job.result === 'object') ? job.result : {};
+        const many = (res.songs && typeof res.songs.total === 'number') || (res.counts && typeof res.counts.total === 'number');
+        const n = many ? DISCOVERJOBS.manyCounts(res) : null;
+        const peer = (res.peer && res.peer.name) || (other && other.name) || here;
+        const words = (list) => list.filter(Boolean).join(' · ');
+        const parts = (leave) => DISCOVERJOBS.manyParts(res).filter((p) => (leave || []).indexOf(p.key) === -1).map((p) => tt(p.key, p.params));
+        const landed = DISCOVERJOBS.landedPath(res);
+        // whose copy this is when it is not the choice's own: the wider
+        // copy that settled it — or, said only of what it copied, the
+        // only-missing copy the Artist choice keeps once the checkbox went
+        // (R9)
+        const whose = k.borrowed ? this.dmKeepWhose(k.borrowed, job) : '';
+        const record = !k.borrowed && s === 'artist-missing' && this.dmKeepChosen() === 'artist' && !this.dmKeepMissingChoice() ? tt('discover.keep.missingRecord') : '';
+        Object.assign(v, { path: this.dmJobPath(job), folder: landed && landed.vpath ? [landed.vpath].concat(landed.dirs) : null, files: this.dmKeepFiles(res, n) });
+        const play = (kind) => (v.files.length ? act('play', kind, tt('discover.keep.play'), 'play') : null);
+        const queue = () => (v.files.length ? act('queue', 'secondary', tt('discover.modal.queue'), 'plus') : null);
+        const show = () => (v.folder ? act('show', 'ghost', tt('discover.keep.show'), 'folder') : null);
+        const retry = () => act('retry', 'primary', tt('discover.job.retry'), 'retry');
+        const wide = s === 'artist' || s === 'artist-missing';
+        // A file already sits where this one would go (S11): nothing was
+        // overwritten, and nothing here is known to be the song — no Play. A
+        // Retry would skip it again, until the saved place is somewhere else.
+        const skipped = () => {
+          const moved = this.dmDestMoved(job);
+          Object.assign(v, { state: 'skipped', tile: { icon: 'warn', tint: 'warn' }, headline: tt('discover.keep.skipped'), tone: 'warn',
+            sub: words([tt('discover.keep.exists'), whose]), muted: moved ? tt('discover.modal.dest.movedSince') : '', files: [] });
+          v.actions = [act('change', 'ghost', tt('discover.modal.dest.change')), moved ? retry() : null];
+        };
+        switch (k.row.state) {
+          case 'copied':
+          case 'copiedMany': {
+            const gaps = !!n && (n.failed > 0 || n.albumsFailed > 0);
+            Object.assign(v, { state: 'kept', tile: { icon: 'check', tint: 'ok' }, headline: tt('discover.keep.kept'), tone: 'ok' });
+            v.sub = n ? words(parts().concat(whose || record)) : dmCapital(words([other ? tt('discover.keep.copiedFrom', { peer: other.name }) : '', whose]));
+            if (gaps) { v.muted = tt('discover.keep.gaps'); }
+            // an artist's copy is many albums: no Play, its folder to show
+            if (s === 'song') { v.actions = [queue(), play('primary')]; } else if (wide) { v.actions = [show(), gaps ? retry() : null]; } else { v.actions = gaps ? [play('secondary'), retry()] : [show(), play('primary')]; }
+            break;
+          }
+          case 'owned': {
+            // "Already yours" only when every skip was a song the library
+            // has (rule 4): an album or a walk whose skips include a file
+            // that merely sat at its place reads as Skipped, as one song does
+            const at = n && res.songs && Array.isArray(res.songs.skipped) ? res.songs.skipped : [];
+            if (at.some((x) => x && x.why === 'exists')) { skipped(); break; }
+            Object.assign(v, { state: 'yours', tile: { icon: 'check', tint: 'grey' }, headline: tt('discover.keep.yours') });
+            v.sub = n ? words([tt('discover.keep.haveItAll')].concat(parts(), whose)) : words([tt('discover.keep.ownedSong'), whose]);
+            // an artist's (R7): nothing copied, so no path and nothing to do
+            if (s === 'song') { v.actions = [queue(), play('primary')]; } else if (wide) { v.path = null; } else { v.actions = [show(), play('primary')]; }
+            break;
+          }
+          case 'exists':
+            skipped();
+            break;
+          case 'stopped':
+            Object.assign(v, { tile: { icon: 'warn', tint: 'warn' }, tone: 'warn' });
+            if (res.stopped === 'refused') {
+              // the peer refuses this server's key: it would again — no
+              // Retry, no Add (a song's result has no counts: nothing came)
+              Object.assign(v, { state: 'refused', headline: tt('discover.keep.refused', { peer }), sub: tt('discover.job.stoppedRefused', { peer }),
+                muted: n && n.copied ? tt('discover.keep.refusedSome', { count: n.copied, peer }) : tt('discover.keep.refusedNone', { peer }) });
+            } else {
+              // what an album's copy left behind ("2 not copied": its
+              // failures with the songs it never reached); a walk of many
+              // albums knows only what it reached
+              const total = res.counts && typeof res.counts.total === 'number' ? res.counts.total : (Number(res.songs && res.songs.total) || 0);
+              const left = s === 'album' ? Math.max(0, total - n.copied - n.skipped) : 0;
+              const tail = { quota: 'discover.keep.tryLater', busy: 'discover.keep.tryMoment' }[res.stopped];
+              Object.assign(v, { state: 'stopped', headline: tt('discover.keep.stopped.' + res.stopped, { peer }), muted: tt('discover.keep.gaps'),
+                sub: words(parts(['discover.job.failedCount']).concat(left ? tt('discover.keep.notCopied', { count: left }) : '', tail ? tt(tail) : '')) });
+              v.actions = [retry()];
+            }
+            break;
+          case 'failed':
+            Object.assign(v, { state: 'failed', tile: { icon: 'warn', tint: 'err' }, headline: tt('discover.keep.failed'), tone: 'err' });
+            // the server's words when the job threw — or a many-song copy's
+            // counts: copied 0 with failures is a failure, whatever else it
+            // found
+            if (job.state === 'failed' || !n) {
+              v.sub = job.error ? String(job.error) : tt('discover.job.failedSub');
+            } else {
+              v.sub = words([tt('discover.keep.nothingCopied')].concat(parts(['discover.job.copiedCount'])));
+            }
+            v.actions = [retry()];
+            break;
+          case 'cancelled':
+            Object.assign(v, { state: 'cancelled', tile: { icon: 'close', tint: 'grey' }, headline: tt('discover.keep.cancelled') });
+            v.sub = n && n.copied
+              ? words(parts(['discover.job.failedCount', 'discover.job.albumsFailed', 'discover.job.albumsLeftOut']).concat(tt('discover.keep.restStay', { peer })))
+              : tt('discover.keep.nothingCopied');
+            v.actions = [act('addAgain', 'primary', tt('discover.keep.addAgain'), 'folder')];
+            break;
+          case 'nothing':
+            Object.assign(v, { state: 'nothing', tile: { icon: 'folder', tint: 'grey' }, headline: tt('discover.keep.nothing'), sub: this.dmText(k.row.sub) });
+            break;
+          default:
+            // a finished job whose result the window cannot read
+            Object.assign(v, { state: 'done', tile: { icon: 'check', tint: 'grey' }, headline: tt('discover.keep.done') });
+        }
+        v.actions = v.actions.filter(Boolean);
+        // Another server's song is the recording, shown in any state (rule
+        // 3): every state names where it came from, as "Copied from" does —
+        // a Retry or an Add again here asks this window's server. A refusal
+        // names it in its headline.
+        if (other && s === 'song' && v.state !== 'kept' && v.state !== 'refused') { v.sub = words([tt('discover.keep.fromPeer', { peer: other.name }), v.sub]); }
+        // Retry and Add again land at the saved place now: when that is not
+        // where this copy went, the card says where — Skipped says it in its
+        // muted line already (S11b)
+        const again = v.actions.find((a) => a.id === 'retry' || a.id === 'addAgain');
+        const now = again && v.state !== 'skipped' && this.dmDestMoved(job) ? this.dmDestPath(s) : null;
+        if (now) { v.retryPath = { prefix: tt(again.id === 'retry' ? 'discover.modal.dest.retryAddsTo' : 'discover.modal.dest.addAgainAddsTo'), path: now }; }
+        v.status = v.sub ? `${v.headline}, ${v.sub}` : v.headline;
+        return v;
+      },
+      // A running copy's line from the server, as the card's sub: its
+      // percentage left out (the figure sits beside the headline, and on
+      // the bar).
+      dmKeepLine: function (text) {
+        return String(text || '').split(' · ').filter((p) => !/^\s*\d+(?:\.\d+)?\s*%\s*$/.test(p)).join(' · ').trim();
+      },
+      // What Play your copy plays, in the library: the song's file, or an
+      // album's as its lists name them — the copied ones; with none copied,
+      // what the copy found already here. The lists stop at 500 entries:
+      // what is listed plays.
+      dmKeepFiles: function (res, n) {
+        if (res.copied && res.copied.filepath) { return [res.copied.filepath]; }
+        if (res.skipped === 'owned') { return res.existing && res.existing.filepath ? [res.existing.filepath] : []; }
+        if (!n) { return []; }
+        const songs = res.songs || {};
+        const list = n.copied > 0 ? songs.copied : songs.skipped;
+        return (Array.isArray(list) ? list : []).map((x) => x && (n.copied > 0 ? x.filepath : x.at)).filter((p) => typeof p === 'string' && p !== '');
+      },
+      // The wider copy of this server's that settled the album or the song,
+      // in the sub: "with your album copy", "with your copy of every album
+      // by Boukmanflow", "with your copy of Boukmanflow's missing albums".
+      dmKeepWhose: function (scope, job) {
+        const tr = this.discover.modal.track || {};
+        const artist = (job && job.recommendation && job.recommendation.artist) || tr.artist || '';
+        if (scope === 'album') { return this.tt('discover.keep.withAlbum'); }
+        return this.tt(scope === 'artist-missing' ? 'discover.keep.withMissing' : 'discover.keep.withArtist', { artist });
+      },
+      // A segment's marker (SPEC §6.3), for a scope with a state that is not
+      // the one chosen: { glyph: clock · dot · check · warn, tone, word,
+      // wordTone } — the tones the window's colour tokens (t3 · src · other
+      // · ok · warn · errt). null for none: idle, cancelled, nothing to copy,
+      // done, a refused start. Another server's live copy reads "Copying
+      // from <peer>" queued or not — only the block's headline tells them
+      // apart.
+      dmKeepMarker: function (view) {
+        const v = view;
+        if (!v) { return null; }
+        const mark = (glyph, tone, word, wordTone) => ({ glyph, tone, word, wordTone: wordTone || tone });
+        switch (v.state) {
+          case 'queued': return v.other ? mark('dot', 'other', this.tt('discover.keep.copyingFrom', { peer: v.other.name }), 't3') : mark('clock', 't3', v.headline);
+          case 'copying': return v.other ? mark('dot', 'other', v.headline, 't3') : mark('dot', 'src', v.pct === null ? v.headline : `${v.headline} · ${v.pct}%`);
+          case 'stopping': return mark('dot', v.other ? 'other' : 'src', v.headline, 't3');
+          case 'kept': return mark('check', 'ok', v.headline);
+          case 'yours': return mark('check', 't3', v.headline);
+          case 'skipped': return mark('warn', 'warn', v.headline);
+          case 'stopped': return mark('warn', 'warn', this.tt('discover.keep.markStopped'));
+          case 'refused': return mark('warn', 'warn', this.tt('discover.keep.markRefused'));
+          case 'failed': return mark('warn', 'errt', v.headline);
+          default: return null;
+        }
+      },
+      // The choice strip: each choice with what its segment says now. The
+      // chosen one keeps its plain sub (the card below says its state,
+      // once); another with a state shows its marker and the state's word
+      // in the sub's place, and its radio's name says it too ("Album:
+      // Borrowed Tapes, 3 songs, in your collection"). The Artist segment
+      // speaks for the newer of this server's artist copies.
+      dmKeepSegments: function () {
+        const chosen = this.dmKeepChosen();
+        return this.dmKeepChoices().map((c) => {
+          const on = c.scope === chosen;
+          const view = on ? null : this.dmKeepView(c.scope === 'artist' ? this.dmKeepArtistSays() : c.scope);
+          const marker = this.dmKeepMarker(view);
+          const said = marker ? (marker.word.charAt(0).toLowerCase() + marker.word.slice(1)).replace(' · ', ', ').replace('…', '') : '';
+          return Object.assign({}, c, { on, marker, live: !!(view && view.live), sub: marker ? marker.word : c.sub, aria: said ? `${c.aria}, ${said}` : c.aria });
+        });
+      },
+      // Keep a copy shows when the copy's gate passed (dmKeepChoices) — and
+      // keeps its place, as one plain line, when a right went while open.
+      dmKeepShown: function () {
+        return this.dmKeepChoices().length > 0 || this.dmKeepLost() !== '';
+      },
+      // What Keep a copy's one live region says (SPEC §7.5). The region is
+      // in the section from the moment it shows, before anything happened,
+      // so the first change is heard too (a region that comes in with its
+      // words is not read): a state's status — its headline while it runs
+      // (never the %: that is the bar's), headline and sub once it is over
+      // — a refused start's line, a lost right's line; nothing idle.
+      dmKeepAnnounce: function () {
+        const v = this.dmKeepView();
+        if (!v) { return ''; }
+        return v.kind === 'state' ? v.status : (v.line || '');
+      },
+      // "You can close this window — it keeps going": while a copy the card
+      // or one of its segments shows is queued, copying or stopping.
+      dmKeepHint: function () {
+        const v = this.dmKeepView();
+        return !!(v && v.live) || this.dmKeepSegments().some((seg) => seg.live);
+      },
+      // A right lost while the window was open (SPEC §8.2) — at open the
+      // section is not there at all: 'upload' (the account may no longer
+      // add files: the jobs route's 403 "Uploading Disabled", or the
+      // destination read again found none), 'jobs' (another 403: it may
+      // not start jobs), 'off' (404: the copy plug-in is gone); '' for none.
+      dmKeepLost: function () {
+        const m = this.discover.modal;
+        if (m.source !== 'federation') { return ''; }
+        const copy = DISCOVERJOBS.COPY_PLUGIN;
+        for (const slot of Object.keys(m.jobRefusals || {})) {
+          const r = m.jobRefusals[slot];
+          if (!r || (slot !== copy && slot.indexOf(copy + '@') !== 0)) { continue; }
+          if (r.status === 404) { return 'off'; }
+          if (r.status === 403) { return r.error === 'Uploading Disabled' ? 'upload' : 'jobs'; }
+        }
+        return m.destLost && this.discoverAcquirePlugins().some((p) => p.name === copy) ? 'upload' : '';
+      },
+      // A Keep card's button, by its action's id (dmKeepView). A dimmed one
+      // (a start in flight) does nothing.
+      dmKeepAct: function (id) {
+        const v = this.dmKeepView();
+        const a = v && v.actions.find((x) => x.id === id);
+        if (!a || a.busy) { return; }
+        if (id === 'add' || id === 'retry' || id === 'addAgain' || id === 'tryAgain') { return this.dmKeepStart(v.scope); }
+        if (id === 'cancel' || id === 'cancelOther') { return this.dmKeepCancel(v.job); }
+        if (id === 'play') { return this.dmKeepPlay(v); }
+        if (id === 'queue') { return this.queueDiscoverFile(v.files[0]); }
+        if (id === 'show') { return this.dmKeepShow(v); }
+        if (id === 'change') { this.dmOpenPicker(); }
+      },
+      // Cancel — this server's copy, or another's ("Cancel that copy").
+      dmKeepCancel: async function (job) {
+        if (!job) { return; }
+        discoverKeepPresses += 1;
+        try { await this.cancelDiscoverJob(job); } finally { discoverKeepPresses -= 1; }
+        this.dmKeepHold();
+      },
+      // Play your copy: the song next, now (as Play now does); an album's
+      // files in place of the queue, the first one playing (as Play album
+      // does). The window closes, as theirs do.
+      dmKeepPlay: function (v) {
+        if (!v.files.length) { return; }
+        if (v.scope === 'song') {
+          this.playDiscoverFile(v.files[0]);
+        } else {
+          mstreamModule.clearQueue();
+          v.files.forEach((filepath, i) => { mstreamModule.addSongWizard(filepath, {}, true, undefined, false, i > 0); });
+        }
+        this.closeDiscoverModal();
+      },
+      // Show in your library: the file explorer (m.js), open on the folder
+      // the copy's files share. The window closes, as View album's does.
+      dmKeepShow: function (v) {
+        if (!v.folder || typeof openFileExplorerAt !== 'function') { return; }
+        this.closeDiscoverModal();
+        openFileExplorerAt(v.folder);
+      },
+      // After a Keep action or a poll changed the card under the keyboard:
+      // if focus fell out of the window (the button pressed went with its
+      // state — Add → Cancel, Cancel → Add again), it goes to the button now
+      // in its place — the card's rightmost action, else its Change…, else
+      // the chosen segment — else to Close. Never <body>. `polled`: no one
+      // pressed anything (a poll moved the card — another server's copy
+      // started, a copy ended): the keyboard goes somewhere harmless, never
+      // to a button that cancels a copy or plays and closes the window —
+      // Change…, the chosen segment, the card's first other action, Close.
+      dmKeepHold: function (polled) {
+        this.$nextTick(() => {
+          const root = this.$refs.dmodal;
+          if (!root || typeof root.querySelector !== 'function') { return; }
+          const at = document.activeElement;
+          if (at && at !== document.body && root.contains(at)) { return; }
+          const order = polled
+            ? ['.dm-keep [data-dm-change]', '.dm-seg-input:checked', '.dm-keep-acts .dm-btn:not([data-dm-act="cancel"]):not([data-dm-act="cancelOther"]):not([data-dm-act="play"])']
+            : ['.dm-keep-acts .dm-btn:last-child', '.dm-keep [data-dm-change]', '.dm-seg-input:checked'];
+          for (const sel of order) {
+            const el = root.querySelector(sel);
+            if (el && typeof el.focus === 'function') { el.focus(); return; }
+          }
+          const close = this.$refs.dmodalClose;
+          if (close && close.focus) { close.focus(); }
+        });
       },
       dmAnyJobLive: function () {
         const jobs = this.discover.modal.jobs;
@@ -1530,16 +2279,16 @@ const VUEPLAYERCORE = (() => {
         return (body && typeof body.error === 'string' && body.error) || this.tt('discover.job.requestFailed');
       },
       // What this account already did with the recommendation, and where
-      // files go — both only when a row could use them.
+      // files go — both only when a row could use them; the destination
+      // read again with every window (dmLoadDestination).
       dmLoadJobs: async function (gen) {
         await this.ensureDiscoverPlugins();
         if (!this.dmLive(gen) || this.discoverAcquirePlugins().length === 0) { return; }
         const settle = (p) => Promise.resolve(p).then((v) => v, () => null);
-        const [found, dest] = await Promise.all([
+        const [found] = await Promise.all([
           settle(MSTREAMAPI.discoveryJobLookup(this.dmRecommendation())),
-          this.discover.dest.loaded ? Promise.resolve(null) : settle(MSTREAMAPI.discoveryDestination()),
+          this.dmLoadDestination(gen),
         ]);
-        if (dest) { this.discover.dest.view = dest; this.discover.dest.loaded = true; }
         if (!this.dmLive(gen)) { return; }
         if (found) {
           this.discover.modal.recKey = found.key || null;
@@ -1551,7 +2300,14 @@ const VUEPLAYERCORE = (() => {
       // `choice` = { url } picked from the plug-in's lookup; null = the plain
       // download (the plug-in searches); undefined (a Retry) = whatever the
       // lookup chose, if it did. `scope` = album | artist | artist-missing
-      // for the rows that act on more than the song.
+      // for the rows that act on more than the song. The start sends the
+      // destination the window shows (dmDestShown): the job is pinned to
+      // it, or — when it is no longer the saved one — refused with nothing
+      // started, and the window reads the destination again and says so
+      // (dmDestRefused) — under Get it, in words for its Download, not
+      // Keep's Add. A refusal is kept as the server put it (jobRefusals: its
+      // status, 0 = no answer, and its error) beside the line the window
+      // shows (jobErrors).
       dmJobStart: async function (plugin, choice, scope) {
         const name = plugin.name;
         const slot = DISCOVERJOBS.jobSlot(name, scope);
@@ -1563,8 +2319,9 @@ const VUEPLAYERCORE = (() => {
         }
         this.$set(this.discover.modal.jobBusy, slot, true);
         this.$delete(this.discover.modal.jobErrors, slot);
+        this.$delete(this.discover.modal.jobRefusals, slot);
         try {
-          const res = await MSTREAMAPI.discoveryJobStart(name, this.dmRecommendation(), choice || undefined, scope);
+          const res = await MSTREAMAPI.discoveryJobStart(name, this.dmRecommendation(), choice || undefined, scope, this.dmDestShown());
           if (res && res.job) {
             this.noteDiscoverJob(res.job);
             if (this.dmLive(gen)) {
@@ -1574,7 +2331,12 @@ const VUEPLAYERCORE = (() => {
             }
           }
         } catch (err) {
-          if (this.dmLive(gen)) { this.$set(this.discover.modal.jobErrors, slot, this.dmErrorText(err)); }
+          if (this.dmLive(gen)) {
+            const body = err && err.body;
+            this.$set(this.discover.modal.jobRefusals, slot, { status: Number(err && err.status) || 0, error: (body && typeof body.error === 'string') ? body.error : '' });
+            const moved = this.dmDestRefused(err, gen) ? (name === DISCOVERJOBS.COPY_PLUGIN ? 'discover.modal.dest.changed' : 'discover.modal.dest.changedTryAgain') : '';
+            this.$set(this.discover.modal.jobErrors, slot, moved ? this.tt(moved) : this.dmErrorText(err));
+          }
         }
         if (this.dmLive(gen)) { this.$set(this.discover.modal.jobBusy, slot, false); }
         this.scheduleDiscoverJobsPoll();
@@ -1646,11 +2408,13 @@ const VUEPLAYERCORE = (() => {
         await this.refreshDiscoverJobs();
       },
 
-      // ── Collection destination: the bar and the picker ─────────────────
-      // Where a copy or a download lands for THIS song under the saved
-      // destination (the bar), and under the one being typed (the picker's
-      // preview). The server renders the real path from the file's own
-      // tags; this is the same engine on what the window knows.
+      // ── Collection destination: the bar, the paths and the editor ──────
+      // Where a copy or a download lands under the saved destination (the
+      // bar, and a running copy's "Into" line), under the one being typed
+      // (the editor's preview), and where a finished copy's files are (its
+      // "In" line). The server renders the real path from each file's own
+      // tags; this is the same engine (DISCOVERJOBS.scopeTarget) on what the
+      // window knows, by the scope's rules.
       dmLayoutTags: function () {
         const m = this.discover.modal;
         const t = m.track || {};
@@ -1667,6 +2431,25 @@ const VUEPLAYERCORE = (() => {
           albumartist: (md && (md['album-artist'] || md.albumartist)) || t.albumArtist || null,
         };
       },
+      // The tags a scope's copy renders the layout with: the song's own for
+      // the song and for its album (the album's credit is the song's
+      // ALBUMARTIST — a compilation's "Various Artists" — and its year the
+      // song's); for the artist scopes the track artist as ARTIST and
+      // ALBUMARTIST — never a compilation's credit — and no album or year:
+      // each album has its own (scopeTarget's "one folder per album").
+      dmScopeTags: function (scope) {
+        const tags = this.dmLayoutTags();
+        if (scope !== 'artist' && scope !== 'artist-missing') { return tags; }
+        const artist = (this.discover.modal.track && this.discover.modal.track.artist) || tags.artist;
+        return { artist, albumartist: artist, album: null, year: null, genre: tags.genre };
+      },
+      // The album "Only the albums you don't have" copies when it is the one
+      // ({ name, year }, from dmArtistOwnership): the path names it. null
+      // for none, several, or a listing that did not answer.
+      dmMissingAlbum: function () {
+        const a = this.discover.modal.artist;
+        return a && a.missing === 1 && a.missingOne ? a.missingOne : null;
+      },
       dmLayoutFile: function () {
         const m = this.discover.modal;
         return (m.track && m.track.filepath) || 'track';
@@ -1676,28 +2459,156 @@ const VUEPLAYERCORE = (() => {
         const m = this.discover.modal;
         return (m.source === 'federation' && m.track && m.track.peer && m.track.peer.name) || null;
       },
-      dmDestCrumbs: function () {
-        const d = this.discover.dest.view && this.discover.dest.view.destination;
-        if (!d) { return []; }
-        const p = DISCOVERJOBS.previewTarget({ vpath: d.vpath, base: d.base, layout: d.layout, tags: this.dmLayoutTags(), peerName: this.dmLayoutPeer(), fileName: this.dmLayoutFile() });
-        return DISCOVERJOBS.pathCrumbs(p.valid ? p.relDir : d.base);
+      // Where a copy of `scope` lands — the path bar's "Files go to", a
+      // running copy's "Into": `destination` = the saved one unless given
+      // (the one pinned on a job, the one it ran with); `peerName` = the
+      // {{PEER}} it renders, this row's server unless given. null without
+      // a destination. → { library, crumbs: [{ text, kind }], file, title }
+      // for dm-dest-path (kind 'base' · 'rendered' · 'note', the note in
+      // words; `file` a song's alone), with the engine's checks besides
+      // (valid, error, field, variable, missingVars; `base`, the base folder
+      // as normalised). A layout the engine refuses draws the base folder.
+      dmDestPath: function (scope, destination, peerName) {
+        const v = this.discover.dest.view;
+        const d = destination || (v && v.destination) || null;
+        return d ? this.dmDestPathOf(d, scope, peerName) : null;
       },
+      dmDestPathOf: function (d, scope, peerName) {
+        const s = scope || 'song';
+        const p = DISCOVERJOBS.scopeTarget({
+          vpath: d.vpath, base: d.base, layout: d.layout, scope: s, tags: this.dmScopeTags(s),
+          peerName: peerName || this.dmLayoutPeer(), fileName: this.dmLayoutFile(), oneAlbum: s === 'artist-missing' ? this.dmMissingAlbum() : null,
+        });
+        const crumbs = p.valid ? p.crumbs : DISCOVERJOBS.pathCrumbs(DISCOVERJOBS.normalizeBase(d.base).base).map((text) => ({ text, kind: 'base' }));
+        return Object.assign({}, p, {
+          library: d.vpath,
+          crumbs: crumbs.map((c) => (c.key ? { text: this.tt(c.key), kind: c.kind } : c)),
+          title: p.valid ? p.title : [d.vpath].concat(crumbs.map((c) => c.text)).join('/'),
+        });
+      },
+      // The path line inside a copy's states, or null: "Into" while the job
+      // is queued or running — the destination pinned on it at start
+      // (params.destination; a job from before the pin: the saved one now;
+      // one pinned to nowhere — null, there was nowhere to put a file —
+      // goes nowhere, and says nothing), by the job's scope — and "In"
+      // once it ended: where its files are
+      // (DISCOVERJOBS.landedPath), else, when its result lists none, the
+      // destination it ran with, drawn the same way. Nothing landed (failed,
+      // cancelled before a song, refused, nothing to copy): null.
+      // → { kind: 'into' | 'in', prefix: the words, path: as dmDestPath's }.
+      dmJobPath: function (job) {
+        if (!job) { return null; }
+        const scope = DISCOVERJOBS.jobScope(job);
+        const peer = (job.recommendation && job.recommendation.peer && job.recommendation.peer.name) || null;
+        const line = (kind, path) => (path ? { kind, prefix: this.tt('discover.modal.dest.' + kind), path } : null);
+        if (DISCOVERJOBS.isLive(job)) {
+          const pinned = job.params && typeof job.params === 'object' && 'destination' in job.params;
+          if (pinned && !job.params.destination) { return null; }
+          return line('into', this.dmDestPath(scope, pinned ? job.params.destination : null, peer));
+        }
+        const landed = DISCOVERJOBS.landedPath(job.result);
+        if (!landed) { return null; }
+        if (!landed.vpath) { return line('in', job.result.destination ? this.dmDestPath(scope, job.result.destination, peer) : null); }
+        return line('in', {
+          library: landed.vpath, crumbs: landed.dirs.map((text) => ({ text, kind: 'landed' })), file: landed.file,
+          title: [landed.vpath].concat(landed.dirs).join('/'),
+        });
+      },
+      // Whether the saved destination is no longer the one a job ran with
+      // (its result's, else the one pinned on it): a Skipped copy's Retry
+      // would land somewhere new, and a Retry or Add again says where.
+      dmDestMoved: function (job) {
+        const ran = (job && job.result && job.result.destination) || (job && job.params && job.params.destination) || null;
+        const now = this.discover.dest.view && this.discover.dest.view.destination;
+        return !!(ran && now) && !DISCOVERJOBS.sameDestination(ran, now);
+      },
+      // The destination the window shows, as a start sends it (the jobs
+      // route refuses one that is no longer in force); undefined = none
+      // shown, nothing to check.
+      dmDestShown: function () {
+        const d = this.discover.dest.view && this.discover.dest.view.destination;
+        return d ? { vpath: d.vpath, base: d.base || '', layout: d.layout } : undefined;
+      },
+      // The destination view, read again with every window that could use
+      // it, and after a start refused for a changed one: the bar draws the
+      // last one known meanwhile and takes the answer when it comes — no
+      // spinner; a failed read keeps what is drawn. A read that finds no
+      // destination any more after this window had one is a right lost
+      // while it was open (destLost: the Keep card's plain line), not one
+      // it opened without.
+      dmLoadDestination: async function (gen) {
+        const host = MSTREAMAPI.currentServer.host;
+        let view = null;
+        try { view = await MSTREAMAPI.discoveryDestination(); } catch (_) { view = null; }
+        if (!view || host !== MSTREAMAPI.currentServer.host) { return; }   // nothing new, or the app moved to another server meanwhile
+        const had = this.dmHasDestination();
+        this.discover.dest.view = view;
+        if (!this.dmLive(gen)) { return; }
+        const m = this.discover.modal;
+        if (m.destRead && had && !view.destination) { m.destLost = true; this.dmHoldFocus(); }
+        m.destRead = true;
+      },
+      // A start the jobs route refused with 409 "destination_changed": the
+      // saved destination is no longer the one the window showed (another
+      // tab or client saved one since). Nothing was started; the bar
+      // redraws at once from the answer's own destination and the whole view
+      // is read again. One that says there is nowhere now, after the user
+      // pressed Add on the place the bar showed, is a right lost while the
+      // window was open — even before the window's own read answered (the
+      // bar draws the last one known until then). → whether it was that
+      // refusal.
+      dmDestRefused: function (err, gen) {
+        const body = err && err.status === 409 ? err.body : null;
+        if (!body || body.error !== 'destination_changed') { return false; }
+        const v = this.discover.dest.view;
+        if (v && 'destination' in body) {
+          if (!body.destination && v.destination) { this.discover.modal.destLost = true; this.dmHoldFocus(); }
+          this.discover.dest.view = Object.assign({}, v, { destination: body.destination || null });
+        }
+        this.dmLoadDestination(gen);
+        return true;
+      },
+      // Change…: the editor, on the saved destination. `reset` = "Use the
+      // library default" was pressed (Save then goes back to the default).
       dmOpenPicker: function () {
         const d = this.discover.dest.view && this.discover.dest.view.destination;
         if (!d) { return; }
         this.discover.modal.picker = {
           vpath: d.vpath, base: d.base || '', layout: d.layout,
-          browse: null, saving: false, error: '',
+          browse: null, saving: false, error: '', reset: false,
         };
-        // The form opens in the bar's place; dm-dest scrolls it into view.
+        // The editor opens in the bar's place; dm-dest scrolls it into view
+        // and puts the keyboard on its first field.
+      },
+      // Whether the editor is open — it takes the place of the card's
+      // action row while it is.
+      dmDestEditing: function () {
+        return !!this.discover.modal.picker;
       },
       // What an acquire plug-in searches for, as the idle row says it.
       dmSearchWords: function () {
         const t = this.discover.modal.track || {};
         return [t.artist, t.title].filter(Boolean).join(' ');
       },
+      // Cancel (and Esc): nothing saved; the keyboard back on Change….
       dmClosePicker: function () {
         this.discover.modal.picker = null;
+        this.dmDestFocus('change');
+      },
+      // Where the keyboard goes when the editor changed under it, so focus
+      // never drops to <body>: 'change' — Change…, the bar's or a state's
+      // own (any control carrying data-dm-change); 'browse' — the folders
+      // toggle; 'first' — the editor's first field; 'tree' — the folder
+      // list's first row, only when the row pressed went away.
+      dmDestFocus: function (what) {
+        this.$nextTick(() => {
+          const win = this.$refs.dmodal || (typeof document.querySelector === 'function' ? document.querySelector('.dmodal') : null);
+          if (!win) { return; }
+          const now = document.activeElement;
+          if (what === 'tree' && now && now !== document.body && win.contains(now)) { return; }
+          const el = win.querySelector({ change: '[data-dm-change]', browse: '[data-dm-browse]', first: '#dm-dest-lib, #dm-dest-base', tree: '.dm-dest-tree button' }[what] || null);
+          if (el && el.focus) { el.focus(); }
+        });
       },
       dmPickerLibraries: function () {
         const v = this.discover.dest.view;
@@ -1707,25 +2618,46 @@ const VUEPLAYERCORE = (() => {
         const v = this.discover.dest.view;
         return (v && v.variables) || DISCOVERJOBS.LAYOUT_VARS;
       },
-      dmPickerPreview: function () {
+      // A variable button's name for a screen reader ("Insert the album
+      // artist variable"); one the server adds later reads by its own name.
+      dmPickerVarLabel: function (name) {
+        const known = ['ARTIST', 'ALBUM', 'YEAR', 'GENRE', 'ALBUMARTIST', 'PEER'];
+        return known.indexOf(name) !== -1
+          ? this.tt('discover.modal.dest.insert.' + name.toLowerCase())
+          : this.tt('discover.modal.dest.insertVar', { name });
+      },
+      // The editor's preview: the fields as typed, by the scope the window
+      // has chosen (dmDestPath's answer).
+      dmPickerPreview: function (scope) {
         const k = this.discover.modal.picker;
         if (!k) { return null; }
-        return DISCOVERJOBS.previewTarget({ vpath: k.vpath, base: k.base, layout: k.layout, tags: this.dmLayoutTags(), peerName: this.dmLayoutPeer(), fileName: this.dmLayoutFile() });
+        return this.dmDestPathOf({ vpath: k.vpath, base: k.base, layout: k.layout }, scope);
       },
-      // The engine's refusal in words (the server's codes, one table).
+      // The engine's refusal in words (the server's codes, one table); an
+      // unknown variable named as it was typed, in its braces.
       dmPickerProblem: function (preview) {
         if (!preview || preview.valid) { return ''; }
         if (preview.error === 'unknown_variable') {
-          return this.tt('discover.modal.dest.errUnknownVar', { name: preview.variable || '', vars: this.dmPickerVars().join(', ') });
+          return this.tt('discover.modal.dest.errUnknownVar', { name: preview.variable ? this.dmVarToken(preview.variable) : '', vars: this.dmPickerVars().join(', ') });
         }
         const known = ['empty_template', 'unbalanced_braces', 'absolute_template', 'traversal', 'empty_path'];
         return this.tt(known.indexOf(preview.error) !== -1 ? 'discover.modal.dest.err.' + preview.error : 'discover.modal.dest.errGeneric');
       },
+      // "Your layout also starts with Boukmanflow": the base folder ends
+      // with the folder the layout renders first for this item (case
+      // folded), so files would land in Boukmanflow › Boukmanflow — a
+      // warning, not an error. The folder's name, else ''.
+      dmDestNested: function (preview) {
+        if (!preview || !preview.valid) { return ''; }
+        const last = DISCOVERJOBS.pathCrumbs(preview.base).pop();
+        const first = preview.crumbs.find((c) => c.kind === 'rendered');
+        return last && first && last.toLowerCase() === first.text.toLowerCase() ? first.text : '';
+      },
       dmVarToken: function (name) {
         return '{' + '{' + name + '}' + '}';
       },
-      // A variable chip drops {{VAR}} where the caret is (`input` is the
-      // layout field, handed over by the dm-dest form).
+      // A variable button drops {{VAR}} where the caret is (`input` is the
+      // layout field, handed over by the dm-dest editor).
       dmInsertVar: function (name, input) {
         const k = this.discover.modal.picker;
         if (!k) { return; }
@@ -1740,8 +2672,8 @@ const VUEPLAYERCORE = (() => {
           try { el.setSelectionRange(at + token.length, at + token.length); } catch (_) { /* not a text input */ }
         });
       },
-      // The "library template" chip: the chosen library's admin Path
-      // Template, else the plain default.
+      // "Use the library template": the layout only — the chosen library's
+      // admin Path Template, else the plain default.
       dmUseLibraryTemplate: function () {
         const k = this.discover.modal.picker;
         if (!k) { return; }
@@ -1749,63 +2681,127 @@ const VUEPLAYERCORE = (() => {
         const v = this.discover.dest.view;
         k.layout = (lib && lib.template) || (v && v.defaultLayout) || DISCOVERJOBS.DEFAULT_LAYOUT;
       },
+      // The library default — what the account has with nothing saved
+      // (destination.js destinationFor): the first library it may write
+      // to, at its root, under that library's Path Template or the server's
+      // default layout. null without a library.
+      dmDestDefault: function () {
+        const v = this.discover.dest.view;
+        const lib = v && Array.isArray(v.libraries) ? v.libraries[0] : null;
+        return lib ? { vpath: lib.vpath, base: '', layout: lib.template || v.defaultLayout || DISCOVERJOBS.DEFAULT_LAYOUT } : null;
+      },
+      // Whether the fields say the library default ("Use the library
+      // default" is offered only while they do not).
+      dmPickerIsDefault: function () {
+        const k = this.discover.modal.picker;
+        const d = this.dmDestDefault();
+        return !!(k && d) && DISCOVERJOBS.sameDestination(k, d);
+      },
+      // "Use the library default": refills the fields, nothing more —
+      // nothing is saved until Save. The button goes with the difference,
+      // so the keyboard moves to the first field.
+      dmPickerUseDefault: function () {
+        const k = this.discover.modal.picker;
+        const d = this.dmDestDefault();
+        if (!k || !d) { return; }
+        k.vpath = d.vpath;
+        k.base = d.base;
+        k.layout = d.layout;
+        k.reset = true;
+        if (k.browse) { this.dmBrowseAnchor(); }
+        this.dmDestFocus('first');
+      },
       dmPickerLibraryChanged: function () {
         const k = this.discover.modal.picker;
-        if (k && k.browse) { this.dmBrowseLoad(); }
+        if (k && k.browse) { this.dmBrowseAnchor(); }
+      },
+      // The base folder as typed, normalised ('' for the library root, or
+      // when it would be refused).
+      dmPickerBase: function () {
+        const k = this.discover.modal.picker;
+        const norm = DISCOVERJOBS.normalizeBase(k ? k.base : '');
+        return norm.valid ? norm.base : '';
       },
       // Browse…: the file explorer's own listing, folders only, one level at
-      // a time. A folder that does not exist yet is fine — the first copy
-      // creates it.
+      // a time. `dir` is the folder listed: the base folder's parent when
+      // the list opens, so the chosen folder shows pressed among its
+      // neighbours; a row chooses its folder and lists what is in it; Up
+      // chooses the folder above. A base folder that does not exist yet is
+      // fine — the first copy creates it — and the list says so.
       dmBrowseToggle: function () {
         const k = this.discover.modal.picker;
         if (!k) { return; }
-        if (k.browse) { k.browse = null; return; }
-        k.browse = { loading: false, dirs: [], missing: false, naming: false, newName: '' };
+        if (k.browse) { k.browse = null; this.dmDestFocus('browse'); return; }
+        k.browse = { dir: '', loading: false, dirs: [], failed: false, naming: false, newName: '' };
+        this.dmBrowseAnchor();
+      },
+      // List the base folder's parent (the library root for an empty base).
+      dmBrowseAnchor: function () {
+        const k = this.discover.modal.picker;
+        if (!k || !k.browse) { return; }
+        k.browse.dir = DISCOVERJOBS.pathCrumbs(this.dmPickerBase()).slice(0, -1).join('/');
         this.dmBrowseLoad();
       },
       dmBrowseLoad: async function () {
         const k = this.discover.modal.picker;
-        if (!k || !k.browse) { return; }
-        const norm = DISCOVERJOBS.normalizeBase(k.base);
-        const base = norm.valid ? norm.base : '';
-        const asked = k.vpath + '/' + base;
-        k.browse.loading = true;
+        const b = k && k.browse;
+        if (!b) { return; }
+        const asked = k.vpath + '/' + b.dir;
+        b.loading = true;
         let dirs = [];
-        let missing = false;
+        let failed = false;
         try {
-          const res = await MSTREAMAPI.dirparser('/' + k.vpath + (base ? '/' + base : ''));
+          const res = await MSTREAMAPI.dirparser('/' + k.vpath + (b.dir ? '/' + b.dir : ''));
           dirs = ((res && res.directories) || []).map((d) => d.name).filter(Boolean);
-        } catch (_) { missing = true; }
-        const now = this.discover.modal.picker;
-        if (now !== k || !k.browse) { return; }
-        const current = DISCOVERJOBS.normalizeBase(k.base);
-        if (k.vpath + '/' + (current.valid ? current.base : '') !== asked) { return; }   // moved on meanwhile
-        k.browse.loading = false;
-        k.browse.dirs = dirs;
-        k.browse.missing = missing;
+        } catch (_) { failed = true; }
+        if (this.discover.modal.picker !== k || k.browse !== b || k.vpath + '/' + b.dir !== asked) { return; }   // moved on meanwhile
+        b.loading = false;
+        b.dirs = dirs;
+        b.failed = failed;
       },
+      // The listed folder as crumbs, the library first.
       dmBrowseCrumbs: function () {
         const k = this.discover.modal.picker;
         if (!k) { return []; }
-        const norm = DISCOVERJOBS.normalizeBase(k.base);
-        return [k.vpath].concat(DISCOVERJOBS.pathCrumbs(norm.valid ? norm.base : ''));
+        return [k.vpath].concat(DISCOVERJOBS.pathCrumbs(k.browse ? k.browse.dir : this.dmPickerBase()));
+      },
+      // A listed folder that is the base folder (pressed).
+      dmBrowseIsBase: function (name) {
+        const k = this.discover.modal.picker;
+        if (!k || !k.browse) { return false; }
+        return [k.browse.dir, name].filter(Boolean).join('/') === this.dmPickerBase();
+      },
+      // The base folder does not exist yet: the listed folder is not there
+      // itself, or it is the base's parent and holds no folder of its name.
+      dmBrowseMissing: function () {
+        const k = this.discover.modal.picker;
+        const b = k && k.browse;
+        if (!b || b.loading) { return false; }
+        if (b.failed) { return true; }
+        const segs = DISCOVERJOBS.pathCrumbs(this.dmPickerBase());
+        return segs.length > 0 && segs.slice(0, -1).join('/') === b.dir && b.dirs.indexOf(segs[segs.length - 1]) === -1;
       },
       dmBrowseInto: function (name, fresh) {
         const k = this.discover.modal.picker;
-        if (!k) { return; }
-        const norm = DISCOVERJOBS.normalizeBase(k.base);
-        k.base = [norm.valid ? norm.base : '', DISCOVERJOBS.sanitizeSegment(name)].filter(Boolean).join('/');
-        if (k.browse) { k.browse.naming = false; k.browse.newName = ''; }
+        if (!k || !k.browse) { return; }
+        const into = [k.browse.dir, DISCOVERJOBS.sanitizeSegment(name)].filter(Boolean).join('/');
+        k.base = into;
+        k.browse.dir = into;
+        k.browse.naming = false;
+        k.browse.newName = '';
+        this.dmDestFocus('tree');
         // A folder the user just named is known not to exist: nothing to list.
-        if (fresh && k.browse) { k.browse.loading = false; k.browse.dirs = []; k.browse.missing = true; return; }
+        if (fresh) { k.browse.loading = false; k.browse.dirs = []; k.browse.failed = true; return; }
         this.dmBrowseLoad();
       },
       dmBrowseUp: function () {
         const k = this.discover.modal.picker;
-        if (!k) { return; }
-        const parts = this.dmBrowseCrumbs().slice(1);
+        if (!k || !k.browse) { return; }
+        const parts = DISCOVERJOBS.pathCrumbs(k.browse.dir);
         parts.pop();
-        k.base = parts.join('/');
+        k.browse.dir = parts.join('/');
+        k.base = k.browse.dir;
+        this.dmDestFocus('tree');
         this.dmBrowseLoad();
       },
       dmBrowseNewFolder: function () {
@@ -1818,33 +2814,32 @@ const VUEPLAYERCORE = (() => {
         const name = DISCOVERJOBS.sanitizeSegment(k.browse.newName);
         if (name) { this.dmBrowseInto(name, k.browse.dirs.indexOf(name) === -1); }
       },
-      // Use this folder: saved for the account, so every copy and download
-      // from now on lands under it.
-      dmPickerSubmit: async function () {
+      // Save: kept for the account, so every copy and download from now on
+      // lands under it — or, after "Use the library default", back to the
+      // default itself (the account then follows the library's template).
+      // The editor closes on the new path, the keyboard on Change…; a
+      // refusal keeps it open with the server's words. `scope` = the one
+      // the preview is drawn for.
+      dmPickerSubmit: async function (scope) {
         const m = this.discover.modal;
         const k = m.picker;
         const gen = m.gen;
-        const preview = this.dmPickerPreview();
+        const preview = this.dmPickerPreview(scope);
         if (!k || k.saving || !preview || !preview.valid) { return; }
-        const destination = { vpath: k.vpath, base: preview.base, layout: k.layout };
+        const destination = k.reset && this.dmPickerIsDefault() ? null : { vpath: k.vpath, base: preview.base, layout: k.layout };
         k.saving = true;
         k.error = '';
         try {
           this.discover.dest.view = await MSTREAMAPI.discoverySaveDestination(destination);
-          this.discover.dest.loaded = true;
-          if (this.dmLive(gen)) { this.discover.modal.picker = null; }
+          if (this.dmLive(gen) && m.picker === k) {
+            m.picker = null;
+            this.dmDestFocus('change');
+          }
         } catch (err) {
-          if (this.dmLive(gen) && this.discover.modal.picker === k) {
+          if (this.dmLive(gen) && m.picker === k) {
             k.saving = false;
             k.error = this.dmErrorText(err);
           }
-        }
-      },
-      dmResetDestination: async function () {
-        try {
-          this.discover.dest.view = await MSTREAMAPI.discoverySaveDestination(null);
-        } catch (err) {
-          iziToast.error({ title: this.dmErrorText(err), position: 'topCenter', timeout: 3500 });
         }
       },
 
@@ -1893,6 +2888,10 @@ const VUEPLAYERCORE = (() => {
               if (one && one.job && this.discover.modal === m) { this.$set(m.jobs, name, one.job); }
             } catch (_) { this.$delete(m.jobs, name); }
           }
+          // a state that ended took its button with it (Cancel, once the
+          // copy is in): the keyboard stays in the card, on nothing it
+          // did not choose — unless a press is still out: its own hand-off
+          if (this.discover.modal === m) { this.dmKeepHold(discoverKeepPresses === 0); }
         }
         for (const job of finished) {
           if (!(m.open && keys.indexOf(job.key) !== -1)) { this.toastDiscoverJob(job); }
@@ -1984,19 +2983,18 @@ const VUEPLAYERCORE = (() => {
         await this.refreshDiscoverJobs();
       },
       // A strip row opens the window its job came from, on that job: a
-      // copy on the Federation view's Keep card at the job's own scope (an
-      // album's as the album; artist-missing = Artist, only the missing
-      // ticked), another plug-in's on the Plug-Ins view.
-      openDiscoverModalForJob: async function (job) {
+      // copy on the Keep card at the job's own scope (an album's as the
+      // album; artist-missing = Artist, only the missing ticked); another
+      // plug-in's download on the song, its row under Get it — in a
+      // connected server's window too, where Get it shows only the jobs it
+      // has (dmGetItRows). `opener` = the row, where the keyboard goes back
+      // on close.
+      openDiscoverModalForJob: async function (job, opener) {
         const rec = job.recommendation || {};
         const source = rec.source === 'federation' ? 'federation' : 'p2p';
         const scope = DISCOVERJOBS.jobScope(job);
-        const opts = { scope };
-        if (source === 'federation') {
-          const copy = job.plugin === DISCOVERJOBS.COPY_PLUGIN;
-          opts.view = copy ? 'federation' : 'plugins';
-          if (copy && scope === 'album') { opts.focus = 'album'; }
-        }
+        const opts = { scope, opener: opener || null };
+        if (source === 'federation' && job.plugin === DISCOVERJOBS.COPY_PLUGIN && scope === 'album') { opts.focus = 'album'; }
         await this.openDiscoverModal(Object.assign({}, rec, { peer: rec.peer || {} }), source, opts);
       },
 
@@ -2545,12 +3543,24 @@ const VUEPLAYERCORE = (() => {
     MSTREAMPLAYER.changePlaybackRate(newRate);
   }
 
+  // Keys the player's hotkeys leave alone: one typed into a form or an
+  // editable element, and any key in the recommendation window — there
+  // Space and Enter press its buttons, the arrows move through a radio
+  // group, and nothing should seek, skip or pause behind it.
+  function hotkeysSkip(target) {
+    // the recommendation window holds the keyboard while it is open, even
+    // when focus fell out of it for a moment (a control it was on went away)
+    if (typeof document !== 'undefined' && document.querySelector('.dmodal-shadow')) { return true; }
+    if (!target || typeof target.tagName !== 'string') { return false; }
+    const element = target.tagName.toLowerCase();
+    if (element === 'input' || element === 'textarea' || element === 'select' || target.isContentEditable) { return true; }
+    return typeof target.closest === 'function' && target.closest('.dmodal-shadow') !== null;
+  }
+
   window.addEventListener("keydown", (event) => {
-    // Use default behavior if user is in a form or editable element
-    const element = event.target.tagName.toLowerCase();
-    if (element === 'input' || element === 'textarea' || element === 'select' || event.target.isContentEditable) {
-      return;
-    }
+    // Use default behavior if user is in a form, an editable element or the
+    // recommendation window
+    if (hotkeysSkip(event.target)) { return; }
 
     const action = MSTREAMPLAYER.hotkeys.resolve(event);
     if (!action) { return; }
@@ -3113,7 +4123,7 @@ const VUEPLAYERCORE = (() => {
     discoverState.plugins.list = null;
     discoverState.plugins.jobsAllowed = false;
     discoverPluginsPromise = null;
-    discoverState.dest = { loaded: false, view: null };
+    discoverState.dest = { view: null };
     discoverState.tray.jobs = [];
     if (discoverJobsTimer) { clearTimeout(discoverJobsTimer); discoverJobsTimer = null; }
     // The strip's one up-front request: this account's jobs (one may still

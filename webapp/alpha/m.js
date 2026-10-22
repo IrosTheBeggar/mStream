@@ -3784,7 +3784,14 @@ function toggleDiscoverDownloadsRemoved(el) {
 function showDiscoverDownloadInLibrary(el) {
   const parts = DISCOVERJOBS.pathCrumbs(el.getAttribute('data-file_location'));
   parts.pop();
-  if (parts.length === 0) { return; }
+  openFileExplorerAt(parts);
+}
+
+// The file explorer, opened on one of the library's folders ([library,
+// folder, …]): a download's, or where a Discover copy landed (vp.js
+// dmKeepShow, "Show in your library").
+function openFileExplorerAt(parts) {
+  if (!Array.isArray(parts) || parts.length === 0) { return; }
   document.querySelectorAll('.side-nav-item').forEach((item) => item.classList.remove('select'));
   const nav = document.querySelector('.side-nav-item[data-panel="fileExplorer"]');
   if (nav) { nav.classList.add('select'); }
@@ -4610,7 +4617,7 @@ function discoveryPeerArtFailed(img) {
 // server; the card opens the album in the peer-browse view, its play
 // button queues the album through the federation stream, its ⋯ opens the
 // recommendation window as the album (Listen, Keep a copy with Album
-// chosen; no Plug-Ins tab — its rows are one song's) — never a one-click
+// chosen, Find elsewhere for the album) — never a one-click
 // copy. The cover always
 // asks for the peer's 'l' variant (its zl- file, at most 256 px a side:
 // the size the library's cards use in compressed-art mode), whatever the
@@ -4927,7 +4934,8 @@ function discoveryAction(act, el) {
     if (!v.shown.allTracks.length) { return; }
     openSavePlaylistModal(() => v.shown.allTracks.map((r) => r.filepath));
   } else if (act === 'lead' && lead) {
-    VUEPLAYERCORE.openDiscoverModal(lead.raw, 'p2p', discoveryMatchOpts(lead));
+    // the window gives the keyboard back to this control when it closes
+    VUEPLAYERCORE.openDiscoverModal(lead.raw, 'p2p', Object.assign({}, discoveryMatchOpts(lead), { opener: el }));
   } else if (act === 'peerPlay' && peerRow && peerRow.playable) {
     // Play now, through this server's federation stream proxy.
     const raw = peerRow.raw;
@@ -4938,16 +4946,16 @@ function discoveryAction(act, el) {
     VUEPLAYERCORE.queueDiscoverFed(peerRow.raw);
     queued();
   } else if (act === 'peerMore' && peerRow) {
-    // ⋯ opens the peer window on its Federation view (Listen, Keep a
-    // copy), whichever view the window last showed.
-    VUEPLAYERCORE.openDiscoverModal(peerRow.raw, 'federation', Object.assign({}, discoveryMatchOpts(peerRow), { view: 'federation' }));
+    // ⋯ opens the connected server's window (Listen, Keep a copy, Find
+    // elsewhere), which gives the keyboard back to the ⋯ when it closes.
+    VUEPLAYERCORE.openDiscoverModal(peerRow.raw, 'federation', Object.assign({}, discoveryMatchOpts(peerRow), { opener: el }));
   } else if (act === 'peerAlbumMore' && peerAlbum && peerAlbum.raws.length) {
     // The card's ⋯: the same window, read as the album — its best row
     // (raws[0]) carries the album, its credit (albumArtist: a compilation's
     // Album copies it whole, under the key every row of it shares), its
     // artist and a file, so Album is the Keep card's choice. The card's
     // own click still opens peer browse.
-    VUEPLAYERCORE.openDiscoverModal(peerAlbum.raws[0], 'federation', Object.assign({}, discoveryMatchOpts(peerAlbum), { focus: 'album', view: 'federation' }));
+    VUEPLAYERCORE.openDiscoverModal(peerAlbum.raws[0], 'federation', Object.assign({}, discoveryMatchOpts(peerAlbum), { focus: 'album', opener: el }));
   } else if (act === 'peerQueueAll') {
     if (!v.shown.allPeers.length) { return; }
     for (const r of v.shown.allPeers) { VUEPLAYERCORE.queueDiscoverFed(r.raw); }
