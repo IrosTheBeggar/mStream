@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 
 import {
   CAPABILITIES, RESOLVING_CAPABILITIES, RUNNABLE_CAPABILITIES, SCOPES, getPlugin, isPluginEnabled, listPlugins, anyPluginEnabled, pluginNames,
-  normalizeRecommendation, recommendationKey, searchPhrase, JOB_SCOPES, scopeMissing, jobKey, jobKeysFor, albumCredit,
+  normalizeRecommendation, recommendationKey, searchPhrase, albumPhrase, JOB_SCOPES, scopeMissing, jobKey, jobKeysFor, albumCredit,
   NULLABLE_FACTS, repairRecommendation,
 } from '../../src/discovery-plugins/index.js';
 import { registerPlugin, unregisterPluginForTests } from '../../src/discovery-plugins/registry.js';
@@ -78,6 +78,16 @@ describe('recommendation contract', () => {
     assert.equal(searchPhrase({ artist: 'A', title: 'T' }), 'A T');
     assert.equal(searchPhrase({ artist: null, title: 'T' }), 'T');
     assert.equal(searchPhrase({ artist: null, title: null }), '');
+  });
+
+  test('albumPhrase: the album\'s credit and its name for an album asked for by itself, empty for a song', () => {
+    assert.equal(albumPhrase({ artist: 'Nova', album: 'Night Ferry', title: null }), 'Nova Night Ferry');
+    assert.equal(albumPhrase({ artist: 'Nova', albumArtist: 'Various Artists', album: 'Now 42', title: null }), 'Various Artists Now 42', 'the album\'s own credit first');
+    assert.equal(albumPhrase({ artist: null, albumArtist: 'Various Artists', album: 'Now 42', title: null }), 'Various Artists Now 42');
+    assert.equal(albumPhrase({ artist: 'Nova', album: 'Night Ferry', title: 'Remote Hit' }), '', 'a title makes it a song');
+    assert.equal(albumPhrase({ artist: 'Nova', album: null, title: null }), '', 'no album');
+    assert.equal(albumPhrase({ artist: null, album: 'Night Ferry', title: null }), '', 'no credit: an album name alone is every album of that name');
+    assert.equal(albumPhrase(null), '');
   });
 });
 
@@ -254,6 +264,44 @@ describe('links plug-in', () => {
 
   test('an empty recommendation yields no links at all', () => {
     assert.deepEqual(buildLinks(normalizeRecommendation({})), []);
+  });
+
+  test('an album asked for by itself: the release group when known, each catalogue\'s album search — never a song\'s links', () => {
+    const album = normalizeRecommendation({
+      artist: 'Nova', album: 'Night Ferry', releaseGroupMbid: 'rg-ferry',
+      // What a row may carry for one of its songs: not the album's.
+      recordingMbid: 'rec-one', isrc: 'GBCMP9800001',
+    });
+    const links = buildLinks(album);
+    const byId = Object.fromEntries(links.map((l) => [l.id, l]));
+    assert.deepEqual(links.map((l) => l.id), [
+      'musicbrainz-release-group', 'musicbrainz-search', 'deezer-search', 'apple-music-search', 'youtube-search', 'bandcamp-search', 'discogs-search',
+    ], 'no recording or ISRC page for an album');
+    assert.equal(byId['musicbrainz-release-group'].url, 'https://musicbrainz.org/release-group/rg-ferry');
+    assert.equal(byId['musicbrainz-release-group'].kind, 'canonical');
+    assert.equal(byId['musicbrainz-search'].url, 'https://musicbrainz.org/search?type=release&method=indexed&query=Nova%20Night%20Ferry');
+    assert.equal(byId['deezer-search'].url, 'https://www.deezer.com/search/Nova%20Night%20Ferry/album');
+    assert.equal(byId['apple-music-search'].url, 'https://music.apple.com/search?term=Nova%20Night%20Ferry');
+    assert.equal(byId['youtube-search'].url, 'https://www.youtube.com/results?search_query=Nova%20Night%20Ferry');
+    assert.equal(byId['bandcamp-search'].url, 'https://bandcamp.com/search?q=Nova%20Night%20Ferry&item_type=a');
+    assert.equal(byId['discogs-search'].url, 'https://www.discogs.com/search/?q=Nova%20Night%20Ferry&type=release');
+    assert.equal(byId['bandcamp-search'].label, 'Search Bandcamp', 'the song\'s labels');
+    // No release-group MBID: search links only. A compilation searches by its own credit.
+    const comp = buildLinks(normalizeRecommendation({ artist: 'Nova', albumArtist: 'Various Artists', album: 'Now 42', recordingMbid: 'rec-two' }));
+    assert.ok(comp.every((l) => l.kind === 'search'), JSON.stringify(comp));
+    assert.equal(comp.find((l) => l.id === 'bandcamp-search').url, 'https://bandcamp.com/search?q=Various%20Artists%20Now%2042&item_type=a');
+  });
+
+  test('a song is unchanged by the album form: its recording search, even with its album and album credit known', () => {
+    const song = normalizeRecommendation({ artist: 'Nova', albumArtist: 'Various Artists', title: 'Remote Hit', album: 'Night Ferry', recordingMbid: 'rec-one', releaseGroupMbid: 'rg-ferry' });
+    const byId = Object.fromEntries(buildLinks(song).map((l) => [l.id, l]));
+    assert.deepEqual(Object.keys(byId), [
+      'musicbrainz-recording', 'musicbrainz-release-group', 'musicbrainz-search', 'deezer-search', 'apple-music-search', 'youtube-search', 'bandcamp-search', 'discogs-search',
+    ]);
+    assert.equal(byId['musicbrainz-search'].url, 'https://musicbrainz.org/search?type=recording&method=indexed&query=Nova%20Remote%20Hit');
+    assert.equal(byId['deezer-search'].url, 'https://www.deezer.com/search/Nova%20Remote%20Hit');
+    assert.equal(byId['bandcamp-search'].url, 'https://bandcamp.com/search?q=Nova%20Remote%20Hit&item_type=t');
+    assert.equal(byId['discogs-search'].url, 'https://www.discogs.com/search/?q=Nova%20Remote%20Hit&type=all');
   });
 
   test('resolve() wraps the links and encodes hostile input', async () => {

@@ -21,6 +21,7 @@ import plugin, {
 import {
   NAMESPACE, KEY, DEFAULT_LAYOUT, LAYOUT_VARS, destinationSchema, uploadsAllowed, writableLibraries,
   destinationFor, validateLayout, normalizeBase, safeFileName, tagsForLayout, renderTarget, isSupportedAudioFile,
+  sameDestination, destinationForJob,
 } from '../../src/discovery-plugins/destination.js';
 
 const LIBS = [
@@ -390,6 +391,38 @@ describe('collection destination · rules', () => {
     assert.equal(normalizeBase('a/../b').error, 'traversal');
     assert.equal(normalizeBase('C:/music').error, 'drive_letter');
     assert.equal(normalizeBase('~/music').error, 'home_string');
+  });
+
+  test('the destination a client showed is the one in force when library, base (normalised) and layout agree; source is not compared', () => {
+    const effective = { vpath: 'other', base: 'From peers', layout: '{{PEER}}/{{ARTIST}}', source: 'user' };
+    assert.equal(sameDestination({ vpath: 'other', base: 'From peers', layout: '{{PEER}}/{{ARTIST}}' }, effective), true);
+    assert.equal(sameDestination({ vpath: 'other', base: ' From peers/ ', layout: '{{PEER}}/{{ARTIST}}', source: 'default' }, effective), true, 'the base as normalizeBase reads it');
+    assert.equal(sameDestination({ vpath: 'music', base: 'From peers', layout: '{{PEER}}/{{ARTIST}}' }, effective), false, 'another library');
+    assert.equal(sameDestination({ vpath: 'other', base: '', layout: '{{PEER}}/{{ARTIST}}' }, effective), false, 'another base');
+    assert.equal(sameDestination({ vpath: 'other', base: 'From peers', layout: '{{ARTIST}}' }, effective), false, 'another layout');
+    assert.equal(sameDestination({ vpath: 'other', base: '../From peers', layout: '{{PEER}}/{{ARTIST}}' }, effective), false, 'a base that cannot be is no match');
+    assert.equal(sameDestination({ vpath: 'other', layout: '{{ALBUMARTIST}}/{{ALBUM}}' }, { vpath: 'other', base: '', layout: '{{ALBUMARTIST}}/{{ALBUM}}', source: 'default' }), true, 'no base is the root');
+    assert.equal(sameDestination(null, null), true, 'nowhere shown, nowhere in force');
+    assert.equal(sameDestination(null, effective), false);
+    assert.equal(sameDestination(effective, null), false);
+  });
+
+  test('a job lands where it was pinned while the account may still write there; a pin it lost fails, never moves', () => {
+    const pinned = { vpath: 'other', base: 'Pinned/', layout: '{{ARTIST}}/{{ALBUM}}', source: 'user' };
+    assert.deepEqual(destinationForJob(user(), { scope: 'album', destination: pinned }, opts),
+      { vpath: 'other', base: 'Pinned', layout: '{{ARTIST}}/{{ALBUM}}', source: 'user' });
+    assert.deepEqual(destinationForJob(user(), { destination: { vpath: 'music', base: '', layout: '{{ALBUMARTIST}}/{{ALBUM}}', source: 'default' } }, opts),
+      { vpath: 'music', base: '', layout: '{{ALBUMARTIST}}/{{ALBUM}}', source: 'default' }, 'a pinned default stays the default it was');
+    assert.throws(() => destinationForJob(user({ vpaths: ['music'] }), { destination: pinned }, opts), /no longer put files into library 'other'/);
+    assert.throws(() => destinationForJob(user(), { destination: pinned }, { ...opts, noUpload: true }), /no longer put files into library 'other'/);
+    assert.throws(() => destinationForJob(user(), { destination: { ...pinned, layout: '{{TRACK}}' } }, opts), /layout no longer validates/);
+    assert.throws(() => destinationForJob(user(), { destination: { ...pinned, base: '../up' } }, opts), /base folder no longer validates/);
+    // Pinned to nowhere: nowhere still, though the account may write now.
+    assert.equal(destinationForJob(user(), { scope: 'album', destination: null }, opts), null);
+    // Asked for before jobs were pinned: the destination in force when it runs.
+    const inForce = { vpath: 'music', base: '', layout: '{{ALBUMARTIST}}/{{ALBUM}}', source: 'default' };
+    assert.deepEqual(destinationForJob(user({ id: 0 }), { scope: 'album' }, opts), inForce);
+    assert.deepEqual(destinationForJob(user({ id: 0 }), null, opts), inForce);
   });
 });
 

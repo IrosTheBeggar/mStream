@@ -412,7 +412,8 @@ async function run(ctx) {
   const user = destinations.userForJob(ctx.userId);
   if (!user) { throw new Error('the account that asked for this download no longer exists'); }
   if (!destinations.uploadsAllowed(user)) { throw new Error('uploads are disabled for this account, and a download is an upload'); }
-  const destination = destinations.getDestination(user);
+  // The destination pinned when the job was asked for (destinationForJob).
+  const destination = destinations.destinationForJob(user, ctx.params);
   if (!destination) { throw new Error('no library to download into'); }
   const libraryIds = libraryIdsFor(user);
   const owned = ownedTrack({ artist: rec.artist, title: rec.title, album: rec.album, duration: rec.duration, libraryIds });

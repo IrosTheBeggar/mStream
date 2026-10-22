@@ -18,8 +18,9 @@
  * Proves: the default destination and its rules, the destination round
  * trip and its refusals, a copy landing at base + rendered layout + the
  * peer's file name with a playable row (source = federation-copy), the
- * owned skip, the never-overwrite skip, the p2p refusal, and the uploads-off
- * refusal. Skips when @number0/iroh has no prebuilt binary here.
+ * owned skip, the never-overwrite skip, the p2p refusal, the uploads-off
+ * refusal, and a queued copy landing where the destination was when it was
+ * asked for. Skips when @number0/iroh has no prebuilt binary here.
  */
 
 import { describe, test, before, after } from 'node:test';
@@ -62,6 +63,8 @@ const REMOTE = [
   ['Tree/.hidden/Hid.mp3', 'Hidden Take', 'Treeband', 'Live Tapes', '2015'],
   ['Tree2/U1.mp3', 'Tree2 One', 'Treeband', 'Live Tapes', '2015'],
   ['Tree3/V1.mp3', 'Tree3 One', 'Treeband', 'Live Tapes', '2015'],
+  // The pinned destination: a song of its own artist, copied once.
+  ['Pinned_Song.mp3', 'Pinned Song', 'Pinza', 'Holding Pattern', '2022'],
 ];
 
 let srvA, srvB, sharedDir, collectionDir, peerId;
@@ -84,6 +87,10 @@ async function api(srv, method, route, body) {
   });
   return { status: r.status, body: await r.json().catch(() => null) };
 }
+
+// What a job pins (params.destination) when the 'collection' library's
+// destination is in force with this base and layout.
+const pinnedTo = (base, layout = '{{ARTIST}}/{{ALBUM}}') => ({ vpath: 'collection', base, layout, source: 'user' });
 
 const rec = (file, over = {}) => {
   const row = REMOTE.find((r) => r[0] === file);
@@ -125,7 +132,13 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     collectionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-fedcopy-dest-'));
     [srvA, srvB] = await Promise.all([
       startServer({ dlnaMode: 'disabled', extraFolders: { shared: sharedDir }, extraConfig: { federation: { enabled: true } } }),
-      startServer({ dlnaMode: 'disabled', extraFolders: { collection: collectionDir }, extraConfig: { federation: { enabled: true } } }),
+      // The test-only noop-acquire plug-in fills the runner, so a copy can be
+      // held queued (the pinned destination case).
+      startServer({
+        dlnaMode: 'disabled', extraFolders: { collection: collectionDir },
+        env: { MSTREAM_TEST_DISCOVERY_NOOP_PLUGIN: '1' },
+        extraConfig: { federation: { enabled: true }, discoveryPlugins: { 'noop-acquire': { enabled: true } } },
+      }),
     ]);
 
     const mint = await api(srvA, 'POST', '/api/v1/admin/federation/keys', { name: 'copier', vpaths: ['shared'] });
@@ -271,7 +284,7 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     // Asked for through one of its songs; the job is the album's.
     const started = await api(srvB, 'POST', JOBS, { recommendation: rec('Second_Song.mp3'), scope: 'album' });
     assert.equal(started.status, 202, JSON.stringify(started.body));
-    assert.deepEqual(started.body.job.params, { scope: 'album' });
+    assert.deepEqual(started.body.job.params, { scope: 'album', destination: pinnedTo('Albums') });
     assert.match(started.body.job.key, /^album:/);
     const job = await untilFinished(started.body.job.id);
     assert.equal(job.state, 'done', `job error: ${job.error}`);
@@ -320,7 +333,7 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     // (Nova's) and Various Hits (a compilation Nova is on) besides it.
     const started = await api(srvB, 'POST', JOBS, { recommendation: rec('Remote_Hit.mp3'), scope: 'artist-missing' });
     assert.equal(started.status, 202, JSON.stringify(started.body));
-    assert.deepEqual(started.body.job.params, { scope: 'artist-missing' });
+    assert.deepEqual(started.body.job.params, { scope: 'artist-missing', destination: pinnedTo('Albums') });
     assert.match(started.body.job.key, /^artist-missing:/);
     const job = await untilFinished(started.body.job.id);
     assert.equal(job.state, 'done', `job error: ${job.error}`);
@@ -368,7 +381,7 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     const started = await api(srvB, 'POST', JOBS, { recommendation: folder, scope: 'folder' });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     assert.match(started.body.job.key, /^folder:/);
-    assert.deepEqual(started.body.job.params, { scope: 'folder' });
+    assert.deepEqual(started.body.job.params, { scope: 'folder', destination: pinnedTo('Mirror') });
     assert.equal(started.body.job.recommendation.filepath, '/shared/Tree/', 'kept as sent; the key and the copy read it the same');
     const job = await untilFinished(started.body.job.id);
     assert.equal(job.state, 'done', `job error: ${job.error}`);
@@ -411,7 +424,7 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     // A chosen folder: the pressed folder's own files go there.
     const chosen = await api(srvB, 'POST', JOBS, { recommendation: { source: 'federation', peer, filepath: 'shared/Tree2', title: 'Tree2' }, scope: 'folder', landing: { path: 'Chosen/Place/' } });
     assert.equal(chosen.status, 202, JSON.stringify(chosen.body));
-    assert.deepEqual(chosen.body.job.params, { scope: 'folder', landing: { vpath: null, path: 'Chosen/Place' } });
+    assert.deepEqual(chosen.body.job.params, { scope: 'folder', landing: { vpath: null, path: 'Chosen/Place' }, destination: pinnedTo('Mirror') });
     const c = await untilFinished(chosen.body.job.id);
     assert.equal(c.state, 'done', `job error: ${c.error}`);
     assert.equal(c.result.layout, 'folder');
@@ -421,7 +434,7 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     // By tags: filed by the destination's layout, no folder of its own.
     const byTags = await api(srvB, 'POST', JOBS, { recommendation: { source: 'federation', peer, filepath: 'shared/Tree3', title: 'Tree3' }, scope: 'folder', landing: { tags: true } });
     assert.equal(byTags.status, 202, JSON.stringify(byTags.body));
-    assert.deepEqual(byTags.body.job.params, { scope: 'folder', landing: { tags: true } });
+    assert.deepEqual(byTags.body.job.params, { scope: 'folder', landing: { tags: true }, destination: pinnedTo('Mirror') });
     const t = await untilFinished(byTags.body.job.id);
     assert.equal(t.state, 'done', `job error: ${t.error}`);
     assert.equal(t.result.layout, 'tags');
@@ -482,16 +495,18 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     assert.ok(fs.existsSync(path.join(collectionDir, 'Vosto', 'Solo ()', 'Third_Song.mp3')));
   });
 
-  test('the peer can switch copies off for this server\'s key: a copy fails with the reason, an album stops with refused, playback goes on', async () => {
+  test('the peer can switch copies off for this server\'s key: a song copy and an album stop with refused (nothing copied, no failure to retry), playback goes on', async () => {
     const keyId = (await api(srvA, 'GET', '/api/v1/admin/federation/keys')).body[0].id;
     const setCopies = (allowCopies) => api(srvA, 'POST', `/api/v1/admin/federation/keys/${keyId}/limits`, { streamKbps: 0, dailyMb: 0, maxStreams: 0, allowCopies });
     assert.equal((await setCopies(false)).status, 200);
     try {
       // A song B does not have (the compilation track the artist scopes left out).
       const song = await api(srvB, 'POST', JOBS, { recommendation: rec('Comp_Track.mp3') });
-      const failed = await untilFinished(song.body.job.id);
-      assert.equal(failed.state, 'failed', JSON.stringify(failed.result));
-      assert.match(failed.error, /does not allow copies/);
+      const refused = await untilFinished(song.body.job.id);
+      assert.equal(refused.state, 'done', `job error: ${refused.error}`);
+      assert.equal(refused.result.stopped, 'refused', JSON.stringify(refused.result));
+      assert.equal(refused.result.peer.id, peerId);
+      assert.equal(refused.result.copied, undefined, 'nothing copied');
       const album = await api(srvB, 'POST', JOBS, { recommendation: rec('Comp_Track.mp3'), scope: 'album' });
       const stopped = await untilFinished(album.body.job.id);
       assert.equal(stopped.state, 'done', `job error: ${stopped.error}`);
@@ -509,6 +524,44 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     const copied = await untilFinished(again.body.job.id);
     assert.equal(copied.state, 'done', `job error: ${copied.error}`);
     assert.ok(copied.result.copied && copied.result.copied.filepath, 'switched back on, the copy lands');
+  });
+
+  test('a copy lands where the destination was when it was asked for, though it changed while the copy waited its turn', async () => {
+    const pinned = { vpath: 'collection', base: 'Pinned', layout: '{{ARTIST}}/{{ALBUM}}' };
+    assert.equal((await api(srvB, 'PUT', DEST, { destination: pinned })).status, 200);
+    const shown = (await api(srvB, 'GET', DEST)).body.destination;
+    assert.deepEqual(shown, pinnedTo('Pinned'));
+    // Two slow test jobs fill the runner (discoveryJobs.maxConcurrent, 2),
+    // so the copy is held queued behind them.
+    const fillers = [];
+    try {
+      for (const title of ['slow filler one', 'slow filler two']) {
+        const r = await api(srvB, 'POST', '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: { artist: 'Filler', title } });
+        assert.equal(r.status, 202, JSON.stringify(r.body));
+        fillers.push(r.body.job.id);
+      }
+      const deadline = Date.now() + 10_000;
+      while ((await Promise.all(fillers.map((id) => api(srvB, 'GET', `/api/v1/discovery/plugin-jobs/${id}`)))).some((r) => r.body.job.state !== 'running')) {
+        if (Date.now() > deadline) { throw new Error('the filler jobs never ran'); }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const started = await api(srvB, 'POST', JOBS, { recommendation: rec('Pinned_Song.mp3'), destination: shown });
+      assert.equal(started.status, 202, JSON.stringify(started.body));
+      assert.deepEqual(started.body.job.params, { destination: shown });
+      assert.equal((await api(srvB, 'GET', `/api/v1/discovery/plugin-jobs/${started.body.job.id}`)).body.job.state, 'queued', 'held behind the fillers');
+
+      // The destination moves before the copy runs.
+      assert.equal((await api(srvB, 'PUT', DEST, { destination: { vpath: 'collection', base: 'Moved', layout: '{{ALBUM}}' } })).status, 200);
+      for (const id of fillers) { await api(srvB, 'POST', `/api/v1/discovery/plugin-jobs/${id}/cancel`); }
+      const job = await untilFinished(started.body.job.id);
+      assert.equal(job.state, 'done', `job error: ${job.error}`);
+      assert.equal(job.result.copied.filepath, 'collection/Pinned/Pinza/Holding Pattern/Pinned_Song.mp3', JSON.stringify(job.result));
+      assert.deepEqual(job.result.destination, shown);
+      assert.ok(fs.existsSync(path.join(collectionDir, 'Pinned', 'Pinza', 'Holding Pattern', 'Pinned_Song.mp3')));
+      assert.ok(!fs.existsSync(path.join(collectionDir, 'Moved')), 'nothing where the destination moved to');
+    } finally {
+      for (const id of fillers) { await api(srvB, 'POST', `/api/v1/discovery/plugin-jobs/${id}/cancel`); }
+    }
   });
 
   test('the shared fixture library never received a file', () => {

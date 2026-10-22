@@ -252,7 +252,7 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
 
       const started = await api(server, 'POST', JOBS, { recommendation: rec, choice: { url: yt('hd') } });
       assert.equal(started.status, 202, JSON.stringify(started.body));
-      assert.deepEqual(started.body.job.params, { choice: { url: yt('hd') } });
+      assert.deepEqual(started.body.job.params, { choice: { url: yt('hd') }, destination: (await api(server, 'GET', DEST)).body.destination });
       const job = await untilFinished(started.body.job.id);
       assert.equal(job.state, 'done', `job error: ${job.error}`);
       assert.equal(job.result.match.url, yt('hd'));

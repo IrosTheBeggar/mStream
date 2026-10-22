@@ -41,6 +41,7 @@ const post = (token, route, body) => fetch(`${server.baseUrl}${route}`, { method
 const get = (token, route) => fetch(`${server.baseUrl}${route}`, { headers: hdr(token) })
   .then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
 const rec = (title) => ({ artist: 'Compat Artist', title, album: 'First Album' });
+const DEST = '/api/v1/discovery/collection/destination';
 async function untilState(token, id, states, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -321,8 +322,9 @@ describe('discovery plug-in jobs API', () => {
     assert.equal(album.body.created, true, 'not deduped against the live song job');
     assert.notEqual(album.body.job.id, song.body.job.id);
     assert.match(album.body.job.key, /^album:/);
-    assert.deepEqual(album.body.job.params, { scope: 'album' });
-    assert.equal(song.body.job.params, null, 'the song scope is the default and leaves no params');
+    const { destination } = (await get(userToken, DEST)).body;
+    assert.deepEqual(album.body.job.params, { scope: 'album', destination });
+    assert.deepEqual(song.body.job.params, { destination }, 'the song scope is the default and leaves no scope; an acquire job takes its destination');
     // The lookup answers both, under their own keys.
     const look = await post(userToken, '/api/v1/discovery/plugin-jobs/lookup', { recommendation: r });
     assert.equal(look.status, 200, JSON.stringify(look.body));
@@ -346,6 +348,71 @@ describe('discovery plug-in jobs API', () => {
     const done = await untilState(userToken, album.body.job.id, ['done', 'failed']);
     assert.equal(done.result.scope, 'album');
     await untilState(userToken, song.body.job.id, ['done', 'failed']);
+  });
+
+  test('the collection destination: pinned when an acquire job is asked for, and checked against the one the client showed', async () => {
+    const JOBS = '/api/v1/discovery/plugins/noop-acquire/jobs';
+    const put = (token, value) => fetch(`${server.baseUrl}${DEST}`, { method: 'PUT', headers: hdr(token), body: JSON.stringify({ destination: value }) })
+      .then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+    const started = [];
+    try {
+      const shown = (await get(userToken, DEST)).body.destination;
+      assert.equal(shown.source, 'default', JSON.stringify(shown));
+      // None sent: the one in force is pinned.
+      const plain = await post(userToken, JOBS, { recommendation: rec('pinned plain') });
+      assert.equal(plain.status, 202, JSON.stringify(plain.body));
+      started.push(plain.body.job.id);
+      assert.deepEqual(plain.body.job.params, { destination: shown });
+      // Sent as the client holds it (`source` along, the base spelled
+      // another way) and still in force: started, pinned to the one in force.
+      const same = await post(userToken, JOBS, { recommendation: rec('pinned same'), scope: 'album', destination: { ...shown, base: '/' } });
+      assert.equal(same.status, 202, JSON.stringify(same.body));
+      started.push(same.body.job.id);
+      assert.deepEqual(same.body.job.params, { scope: 'album', destination: shown });
+
+      // The account's destination changes behind the client's back.
+      const moved = await put(userToken, { vpath: 'testlib', base: 'Elsewhere', layout: '{{ARTIST}}' });
+      assert.equal(moved.status, 200, JSON.stringify(moved.body));
+      const now = moved.body.destination;
+      assert.deepEqual(now, { vpath: 'testlib', base: 'Elsewhere', layout: '{{ARTIST}}', source: 'user' });
+      const before = (await get(userToken, '/api/v1/discovery/plugin-jobs')).body.jobs.length;
+      const stale = await post(userToken, JOBS, { recommendation: rec('slow pinned stale'), destination: shown });
+      assert.equal(stale.status, 409, JSON.stringify(stale.body));
+      assert.equal(stale.body.error, 'destination_changed');
+      assert.deepEqual(stale.body.destination, now, 'the one in force, as the destination route gives it');
+      assert.deepEqual(stale.body.destination, (await get(userToken, DEST)).body.destination);
+      assert.equal((await get(userToken, '/api/v1/discovery/plugin-jobs')).body.jobs.length, before, 'nothing started');
+      const look = (await post(userToken, '/api/v1/discovery/plugin-jobs/lookup', { recommendation: rec('slow pinned stale') })).body;
+      assert.deepEqual(look.jobs.filter((j) => j.key === look.key), [], 'no song job for it');
+      // Shown as it now is: started, pinned to it.
+      const fresh = await post(userToken, JOBS, { recommendation: rec('slow pinned stale'), destination: now });
+      assert.equal(fresh.status, 202, JSON.stringify(fresh.body));
+      started.push(fresh.body.job.id);
+      assert.deepEqual(fresh.body.job.params, { destination: now });
+      // A live job that covers it answers as before whatever was shown:
+      // 200, created: false, with its own pin.
+      const covered = await post(userToken, JOBS, { recommendation: rec('slow pinned stale'), destination: shown });
+      assert.equal(covered.status, 200, JSON.stringify(covered.body));
+      assert.equal(covered.body.created, false);
+      assert.equal(covered.body.job.id, fresh.body.job.id);
+      assert.deepEqual(covered.body.job.params, { destination: now });
+      // Another account's live job keeps its own 409, even for a destination
+      // that is not that account's.
+      const theirs = await post(otherToken, JOBS, { recommendation: rec('slow pinned stale'), destination: now });
+      assert.equal(theirs.status, 409, JSON.stringify(theirs.body));
+      assert.match(theirs.body.error, /someone else on this server is already getting this/);
+      // The jobs asked for before the change keep what they were pinned to.
+      assert.deepEqual((await get(userToken, `/api/v1/discovery/plugin-jobs/${plain.body.job.id}`)).body.job.params, { destination: shown });
+      // A malformed destination is a 400; none shown while one is in force is a change.
+      assert.equal((await post(userToken, JOBS, { recommendation: rec('pinned bad'), destination: { vpath: 'testlib' } })).status, 400);
+      const none = await post(userToken, JOBS, { recommendation: rec('pinned none'), destination: null });
+      assert.equal(none.status, 409, JSON.stringify(none.body));
+      assert.equal(none.body.error, 'destination_changed');
+    } finally {
+      assert.equal((await put(userToken, null)).status, 200);
+      for (const id of started) { await post(userToken, `/api/v1/discovery/plugin-jobs/${id}/cancel`); }
+      for (const id of started) { await untilState(userToken, id, ['cancelled', 'done', 'failed']); }
+    }
   });
 
   test('unknown plug-in, non-runnable plug-in and bad bodies', async () => {

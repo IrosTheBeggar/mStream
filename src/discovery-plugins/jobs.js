@@ -10,9 +10,13 @@
 //
 // Contract for a runnable plug-in (registry.js): `run(ctx)` returns a
 // result (stored as JSON) or throws (the message is the job's error).
-// ctx = { job, recommendation, userId, progress(fraction, text),
-// isCancelled() }. A plug-in that can take a while polls isCancelled()
-// between steps and returns early; the runner records the cancel.
+// ctx = { job, recommendation, params, userId, progress(fraction, text),
+// isCancelled() }. `params` is what the job was asked for with (scope,
+// choice, landing, and an acquire job's pinned destination — read it with
+// destination.js destinationForJob, never the account's current one, so a
+// re-queued job lands where it was asked to). A plug-in that can take a
+// while polls isCancelled() between steps and returns early; the runner
+// records the cancel.
 //
 // Lifecycle: start() at boot re-queues whatever the previous process left
 // running and arms a slow tick; kick() after an enqueue makes the next tick

@@ -15,7 +15,10 @@
 // (2026-10-19). The file keeps its name.
 //
 // Stored per user in user_settings (namespace below). In public mode the
-// anonymous account keeps the one shared setting.
+// anonymous account keeps the one shared setting. A job takes the effective
+// destination with it when it is asked for (the job route pins it in the
+// job's params; destinationForJob reads it back), so changing the setting
+// moves only the jobs asked for after.
 
 import Joi from 'joi';
 import * as config from '../state/config.js';
@@ -117,9 +120,21 @@ export function validateDestination(value, user) {
   return { vpath: value.vpath, base: base.base, layout: value.layout, source: 'request' };
 }
 
+// Whether a destination a client showed is the one in force (the job
+// route's check, so files never land somewhere the client did not show):
+// the same library, the same base folder as normalizeBase reads it ('From
+// peers/' is 'From peers') and the same layout, character for character.
+// `source` is not compared. null matches only null.
+export function sameDestination(shown, effective) {
+  if (!shown || !effective) { return !shown && !effective; }
+  const a = normalizeBase(shown.base);
+  const b = normalizeBase(effective.base);
+  return shown.vpath === effective.vpath && a.valid && b.valid && a.base === b.base && shown.layout === effective.layout;
+}
+
 // Where a FOLDER job lands, as the caller chose it (the job route's
 // `landing`, kept in the job's params): a library the caller may write to
-// (absent = the destination's, read when the job runs) and a folder inside
+// (absent = the destination's, pinned with the job) and a folder inside
 // it under the base folder's rules, or `tags: true` for the layout like any
 // other copy. Null when the choice is empty — the folder then lands as it
 // is on the peer (plugins/federation-copy.js landingFor). Throws a 400.
@@ -147,6 +162,30 @@ function savedFor(user) {
 
 export function getDestination(user) {
   return destinationFor(user, savedFor(user));
+}
+
+// Where a job's files go: the destination pinned in its params when it was
+// asked for (the job route pins the effective one), so a queued job never
+// moves when the account's destination changes before it runs. The pin is
+// held to the account's rights as they are now: a library the account can
+// no longer write to, or a base or layout that no longer validates, fails
+// the job (throws) rather than sending it somewhere else. A job asked for
+// when there was nowhere (pinned null) has nowhere still, whatever library
+// the account was given since. A job queued before jobs were pinned (no
+// params.destination) takes the account's effective destination, as it
+// always did — null when there is nowhere.
+export function destinationForJob(user, params, opts = {}) {
+  if (params && params.destination === null) { return null; }
+  const pinned = params && params.destination;
+  if (!pinned || typeof pinned !== 'object') { return destinationFor(user, savedFor(user), opts); }
+  if (!writableLibraries(user, opts).some((l) => l.vpath === pinned.vpath)) {
+    throw new Error(`the account may no longer put files into library '${pinned.vpath}', where this job was asked to land`);
+  }
+  const base = normalizeBase(pinned.base);
+  if (!base.valid) { throw new Error(`the destination's base folder no longer validates: ${base.message}`); }
+  const layout = validateLayout(pinned.layout);
+  if (!layout.valid) { throw new Error(`the destination's layout no longer validates: ${layout.message}`); }
+  return { vpath: pinned.vpath, base: base.base, layout: pinned.layout, source: pinned.source || 'user' };
 }
 
 // What a client needs to draw the destination bar and the picker.

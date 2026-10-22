@@ -527,7 +527,7 @@ describe('Discover\'s connected-server rows through the discovery plug-ins, unch
     jobsMade.song = job;
     songKeptAt = Date.now();
     assert.equal(job.state, 'done', `job error: ${job.error}`);
-    assert.equal(job.params, null, 'a song job');
+    assert.deepEqual(job.params, { destination: { vpath: 'collection', base: 'From peers', layout: '{{ARTIST}}/{{ALBUM}}', source: 'user' } }, 'a song job, pinned to lena\'s destination');
     const c = job.result.copied;
     assert.ok(c, JSON.stringify(job.result));
     assert.equal(c.filepath, 'collection/From peers/Nova/Night Ferry/01 - Ferry One.mp3');
@@ -576,7 +576,7 @@ describe('Discover\'s connected-server rows through the discovery plug-ins, unch
     const { job, ms } = await copyJob(card.raws[0], 'album');
     jobsMade.album = job;
     assert.equal(job.state, 'done', `job error: ${job.error}`);
-    assert.deepEqual(job.params, { scope: 'album' });
+    assert.deepEqual(job.params, { scope: 'album', destination: { vpath: 'collection', base: 'From peers', layout: '{{ARTIST}}/{{ALBUM}}', source: 'user' } });
     const res = job.result;
     assert.equal(res.scope, 'album');
     assert.deepEqual(res.album, { name: 'Night Ferry', artist: 'Nova', albumArtist: 'Nova', year: 2019 },
@@ -791,7 +791,7 @@ describe('Discover\'s connected-server rows through the discovery plug-ins, unch
     t.diagnostic(`C album job: ${ms} ms`);
   });
 
-  test('copies switched off on C for A\'s key: a song job fails, an album job ends "done" with stopped \'refused\' and nothing copied — done is not kept; the row still plays', async (t) => {
+  test('copies switched off on C for A\'s key: a song job and an album job end "done" with stopped \'refused\' and nothing copied — done is not kept, and no failure to retry; the row still plays', async (t) => {
     const row = firstCRows.find((r) => r.title === 'Solo One');
     assert.ok(row, 'C\'s Solo One row');
     // The live per-key edit (V77 allow_copies), every other limit as minted.
@@ -802,8 +802,8 @@ describe('Discover\'s connected-server rows through the discovery plug-ins, unch
     try {
       const song = await copyJob(row);
       jobsMade.refusedSong = song.job;
-      assert.equal(song.job.state, 'failed', JSON.stringify(song.job.result));
-      assert.match(song.job.error, /does not allow copies/);
+      assert.equal(song.job.state, 'done', `job error: ${song.job.error}`);
+      assert.deepEqual([song.job.result.stopped, song.job.result.peer.id, song.job.result.copied], ['refused', cPeerId, undefined], JSON.stringify(song.job.result));
 
       const album = await copyJob(row, 'album');
       jobsMade.refusedAlbum = album.job;
@@ -812,8 +812,8 @@ describe('Discover\'s connected-server rows through the discovery plug-ins, unch
       assert.deepEqual(album.job.result.counts, { total: 1, copied: 0, skipped: 0, failed: 1 }, JSON.stringify(album.job.result.songs));
       assert.match(album.job.result.songs.failed[0].error, /does not allow copies/);
 
-      // What a badge lookup hands a client: the failed song job, and a DONE
-      // album job that kept nothing.
+      // What a badge lookup hands a client: a DONE song job and a DONE
+      // album job, both refused, that kept nothing.
       const look = await lena('POST', '/api/v1/discovery/plugin-jobs/lookup', { recommendation: row });
       assert.equal(look.status, 200, JSON.stringify(look.body));
       const a = look.body.jobs.find((j) => j.id === album.job.id);
@@ -821,7 +821,7 @@ describe('Discover\'s connected-server rows through the discovery plug-ins, unch
       assert.equal(a.state, 'done');
       assert.equal(a.result.stopped, 'refused');
       assert.equal(a.result.counts.copied, 0);
-      assert.ok(look.body.jobs.some((j) => j.id === song.job.id && j.state === 'failed'), 'the song job, failed');
+      assert.ok(look.body.jobs.some((j) => j.id === song.job.id && j.state === 'done' && j.result.stopped === 'refused'), 'the song job, refused');
 
       // Only copies are refused: the stream proxy still plays the row.
       const t0 = Date.now();

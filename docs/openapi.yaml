@@ -316,7 +316,7 @@ components:
         userId: { type: integer, nullable: true, description: "Who asked; null in public mode or after the user was deleted." }
         key: { type: string, description: "The recommendation's persistence key (mbid:… or text:…)." }
         recommendation: { type: object, description: The normalised recommendation the job was started with. }
-        params: { type: object, nullable: true, description: "What the job was started with beyond the recommendation: `scope` (`album`, `artist`, `artist-missing` or `folder` — absent for a song job), `choice: { url }` when the caller picked an upload from the plug-in's lookup, and `landing` (`{ vpath, path }` or `{ tags: true }`) when a folder job was given a place of its own; null when none." }
+        params: { type: object, nullable: true, description: "What the job was started with beyond the recommendation: `scope` (`album`, `artist`, `artist-missing` or `folder` — absent for a song job), `choice: { url }` when the caller picked an upload from the plug-in's lookup, `landing` (`{ vpath, path }` or `{ tags: true }`) when a folder job was given a place of its own, and — for an acquire job — `destination` (`{ vpath, base, layout, source }`): the caller's collection destination as it was when the job was asked for, where the job lands whatever the destination says by the time it runs (absent on jobs asked for before 2026-10-21, which land in the destination in force when they run; `null` when the caller had nowhere to put a file — such a job fails rather than land in a library given since); null when none." }
         state: { type: string, enum: [queued, running, done, failed, cancelled] }
         progress: { type: number, nullable: true, minimum: 0, maximum: 1 }
         statusText: { type: string, nullable: true, description: "The plug-in's own progress line." }
@@ -3334,6 +3334,10 @@ paths:
     put:
       tags: [Discovery]
       summary: Save the collection destination, or go back to the default
+      description: |
+        Applies to the jobs asked for after it: a job already queued or
+        running keeps the destination it was pinned to when it was asked
+        for (its `params.destination`).
       requestBody:
         required: true
         content:
@@ -3438,7 +3442,17 @@ paths:
                     type: object
                     description: >
                       Shape depends on the capability. `links`:
-                      `{ links: [{ id, label, url, kind: canonical|search }] }`.
+                      `{ links: [{ id, label, url, kind: canonical|search }] }`
+                      — for a song, its MusicBrainz recording / release group /
+                      ISRC pages when the ids are known and the "artist title"
+                      phrase on each catalogue's search; for an album asked for
+                      by itself (`album` and `albumArtist` or `artist`, no
+                      `title`), the release group's page when
+                      `releaseGroupMbid` is known and the "credit album" phrase
+                      on each catalogue's album search where it has one
+                      (MusicBrainz releases, Deezer albums, Bandcamp albums,
+                      Discogs releases; Apple Music and YouTube plain) — the
+                      same ids and labels.
                       `preview`: `{ preview: { provider, url, seconds, title,
                       artist, album, link, artwork, attribution, match } | null }`
                       — null when the catalogue has no confident match; show
@@ -3468,6 +3482,20 @@ paths:
         when that live job belongs to another account (its row is theirs; an
         admin still gets it).
 
+        An `acquire` job lands in the caller's collection destination
+        (`/api/v1/discovery/collection/destination`) as it is when the job is
+        asked for: the effective destination is pinned in the job's
+        `params.destination`, and the job lands there even when the
+        destination is changed while it waits its turn (a library the
+        account can no longer write to, or a base folder or layout that no
+        longer validates, fails it instead). Send the
+        `destination` the client showed to have it checked: when it is no
+        longer the one in force the answer is `409 { error:
+        "destination_changed", message, destination }` — `destination` the
+        one in force (the destination route's `destination`, or `null`) —
+        and nothing is started. A live job that already covers the
+        recommendation answers as above whatever `destination` was sent.
+
         `federation-copy` ("Add to your collection") takes a federation
         recommendation (`source: federation`, the peer's `filepath`, `peer.id`)
         and copies the file into the caller's collection destination
@@ -3476,9 +3504,12 @@ paths:
         `{ skipped: owned, existing: { filepath, by } }` when the library
         already has the song (by hash or by artist + album + title), or
         `{ skipped: exists, filepath }` when a file already sits at the target
-        path — nothing is ever overwritten. It fails (state `failed`, `error`)
-        when uploads are off for the account, the peer is unreachable, or the
-        peer answers 429 for its transfer limit. With `scope: album` it asks the
+        path — nothing is ever overwritten — or `{ stopped: refused, peer,
+        destination }` when the peer refuses copies with this server's key
+        (its admin switched `allowCopies` off; the job ends `done` with
+        nothing copied — a retry would be refused again). It fails (state
+        `failed`, `error`) when uploads are off for the account, the peer is
+        unreachable, or the peer answers 429 for its transfer limit. With `scope: album` it asks the
         peer for the album's songs — by the album's own credit when the
         recommendation carries `albumArtist` (the whole album as that credit
         holds it, NOT narrowed by the track artist: a compilation comes
@@ -3573,6 +3604,16 @@ paths:
                     vpath: { type: string }
                     path: { type: string }
                     tags: { type: boolean }
+                destination:
+                  type: object
+                  nullable: true
+                  description: "Acquire plug-ins: the collection destination the client showed, as the destination route gave it (`source` may ride along and is not compared; `null` when it showed none). Compared with the one in force by library, base folder (normalised: `From peers/` is `From peers`) and layout; a difference is a `409` with `error: destination_changed`. Absent: no check, the job pins the one in force. Ignored by a plug-in that lands nothing."
+                  required: [vpath, layout]
+                  properties:
+                    vpath: { type: string }
+                    base: { type: string, default: "" }
+                    layout: { type: string }
+                    source: { type: string }
                 choice:
                   type: object
                   required: [url]
@@ -3594,7 +3635,23 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "The acquisition gate is in whitelist mode and the caller is not allowed; an acquire plug-in's job when uploads are off for the server or the caller (a download is an upload); or a jukebox session token." }
         "404": { description: "Unknown or disabled plug-in." }
-        "409": { description: "Another account's live job already covers this recommendation — try again when it has finished." }
+        "409":
+          description: "Another account's live job already covers this recommendation — try again when it has finished (`{ error }`, a sentence); or the `destination` sent is no longer the caller's collection destination — `{ error: destination_changed, message, destination }`, nothing started."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string, example: destination_changed }
+                  message: { type: string }
+                  destination:
+                    description: "The destination in force (`destination_changed` only); null when the caller may not put files anywhere."
+                    type: object
+                    nullable: true
+                    allOf:
+                      - { $ref: "#/components/schemas/DiscoveryCollectionDestination" }
+                    properties:
+                      source: { type: string, enum: [default, user] }
         "429": { description: "The caller already has `discoveryJobs.maxQueuedPerUser` jobs queued or running — wait for some to finish." }
 
   /api/v1/discovery/plugin-jobs/lookup:

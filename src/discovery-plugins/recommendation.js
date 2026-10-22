@@ -146,6 +146,16 @@ export function searchPhrase(rec) {
   return [rec.artist, rec.title].filter((s) => typeof s === 'string' && s.trim()).join(' ').trim();
 }
 
+// "Credit Album" — the phrase for an album asked for by itself: a
+// recommendation that names an album and a credit for it (albumCredit: the
+// album's own, else the artist) and NO title, as an album card sends one.
+// Empty for anything else, every song included.
+export function albumPhrase(rec) {
+  if (!rec || hasText(rec.title) || !hasText(rec.album)) { return ''; }
+  const credit = albumCredit(rec);
+  return credit ? `${credit.trim()} ${rec.album.trim()}` : '';
+}
+
 // ── Job scopes ───────────────────────────────────────────────────────────
 // What a job acts on: the one song (the default), the song's whole album,
 // every album of its artist, only the artist's albums the library lacks, or

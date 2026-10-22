@@ -6,7 +6,9 @@
 // the user may upload to, a base folder, and a layout rendered from the
 // song's tags ({{ALBUMARTIST}}/{{ALBUM}} by default — a compilation lands in
 // one folder — {{PEER}} = the server it
-// came from). The file keeps the peer's name.
+// came from). The file keeps the peer's name. It is the destination as it
+// was when the job was asked for (pinned in the job's params), so a job
+// queued behind others lands where the client showed it would.
 //
 // How a copy runs (run(ctx), one at a time per server):
 //   1. the peer's metadata for the file (its hash) — a song this library
@@ -52,7 +54,8 @@
 // The peer's side: every request this plug-in makes carries
 // X-mStream-Purpose: copy, so a peer whose key for this server has copies
 // switched off (V77 allow_copies; api/federation-limits.js) answers 403 on
-// the file — the job fails with "does not allow copies", an album or artist
+// the file — a song's job ends with `stopped: 'refused'` and nothing copied
+// (not a failure: a Retry would only be refused again), an album or artist
 // run stops with `stopped: 'refused'`. Playback is never affected.
 
 import path from 'node:path';
@@ -285,7 +288,9 @@ async function run(ctx) {
   const user = destinations.userForJob(ctx.userId);
   if (!user) { throw new Error('the account that asked for this copy no longer exists'); }
   if (!destinations.uploadsAllowed(user)) { throw new Error('uploads are disabled for this account, and a copy is an upload'); }
-  const destination = destinations.getDestination(user);
+  // The destination pinned when the job was asked for — not the account's
+  // current one, which may have changed while this job waited its turn.
+  const destination = destinations.destinationForJob(user, ctx.params);
   if (!destination) { throw new Error('no library to copy into'); }
 
   const { fedFetchWithDeadline } = await import('../../api/discovery-federation.js');
@@ -298,7 +303,15 @@ async function run(ctx) {
     if (artistScope) { return await copyArtist(ctx, env, rec, { onlyMissing: scope === JOB_SCOPES.ARTIST_MISSING }); }
     if (scope === JOB_SCOPES.FOLDER) { return await copyFolder(ctx, env, rec); }
 
-    const r = await copyOne(ctx, env, { filepath: rec.filepath, title: rec.title, artist: rec.artist, album: rec.album });
+    let r;
+    try {
+      r = await copyOne(ctx, env, { filepath: rec.filepath, title: rec.title, artist: rec.artist, album: rec.album });
+    } catch (err) {
+      // the peer refuses copies with this server's key: said as it is, and
+      // no failure to retry — it would refuse again until its admin says
+      if (err && err.copiesOff) { return { stopped: 'refused', peer: { id: peer.id, name: peer.name }, destination }; }
+      throw err;
+    }
     if (r === null) { return null; }   // the runner records the cancel
     if (r.skipped) { return { ...r, destination }; }
     return { copied: r.copied, missingVars: r.missingVars, peer: { id: peer.id, name: peer.name }, destination };
