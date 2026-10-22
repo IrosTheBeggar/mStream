@@ -32,10 +32,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const M_PATH = path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'm.js');
 const SRC = fs.readFileSync(M_PATH, 'utf8');
+// The peer-sync module (a UMD) the explorer's rows read on a peer for a
+// file's facts line; the rest of peer sync (m.js's own peerSync* helpers)
+// is not sliced here, and the renderers guard every call to it.
+const require = createRequire(import.meta.url);
+const PEERSYNC = require('../../webapp/alpha/peer-sync.js');
 
 // ── source slicing ──────────────────────────────────────────────────
 // Brace-match from a `function NAME(` / `async function NAME(` header to
@@ -111,6 +117,7 @@ function makeSandbox(api) {
     MSTREAMAPI: { currentServer: { host: 'http://host/', token: 'TOK' }, ...api },
     MSTREAMPLAYER: { ignoreVPaths: {} },
     VUEPLAYERCORE: { altLayout: { compressArt: false }, playlists: [] },
+    PEERSYNC,
     t: (k) => k,
     getLoadingSvg: () => '',
     boilerplateFailure: (err) => { throw err; },
@@ -209,6 +216,18 @@ const DIR_RESPONSE = {
   ],
 };
 
+// A peer's listing asked with pullMetadata: each file wraps the peer's
+// database row (null for a file its scanner never read).
+const PEER_DIR_RESPONSE = {
+  path: '/shared/Vosto/',
+  directories: [{ name: 'Night Drive' }],
+  files: [
+    { type: 'flac', name: 'Vosto - Sodium (single edit).flac', metadata: { filepath: 'shared/Vosto/Vosto - Sodium (single edit).flac', metadata: { title: 'Sodium', artist: 'Vosto', album: null, duration: 221 } } },
+    { type: 'mp3', name: 'bootleg_03.mp3', metadata: { filepath: 'shared/Vosto/bootleg_03.mp3', metadata: { title: null, artist: null, album: null, duration: 252 } } },
+    { type: 'mp3', name: 'unscanned.mp3', metadata: { filepath: 'shared/Vosto/unscanned.mp3', metadata: null } },
+  ],
+};
+
 // Every panel: load it, snapshot the rows, filter, and require each
 // surviving row to be byte-identical to the one the panel drew.
 const CASES = [
@@ -248,6 +267,13 @@ const CASES = [
     state: [{ state: 'fileExplorer' }],
     run: (S) => { S.setFileExplorerArray(['music', 'The Wall', 'CD1']); S.printdir(DIR_RESPONSE); },
     needle: 'thin', total: 2, kept: 1 },
+
+  { name: 'file explorer on a peer, with the tags its listing brought',
+    api: {},
+    state: [{ state: 'fileExplorer' }],
+    peer: { id: 3, name: "Sam's server" },
+    run: (S) => { S.setFileExplorerArray(['shared', 'Vosto']); S.printdir(PEER_DIR_RESPONSE); },
+    needle: 'bootleg', total: 3, kept: 1 },
 ];
 
 // ── tests ───────────────────────────────────────────────────────────
@@ -256,6 +282,7 @@ describe('runLocalSearch — filtering is lossless', () => {
     test(`${c.name}: surviving rows are byte-identical to the unfiltered ones`, async () => {
       const S = makeSandbox(c.api);
       if (c.state) S.setProgramState(c.state);
+      if (c.peer) S.setPeerContext(c.peer);
       await c.run(S);
 
       const before = rows(S.html());
@@ -271,6 +298,23 @@ describe('runLocalSearch — filtering is lossless', () => {
       }
     });
   }
+});
+
+describe('the file explorer on a peer', () => {
+  test('a file row carries the facts its listing brought, and the filter keeps them', () => {
+    const S = makeSandbox({});
+    S.setProgramState([{ state: 'fileExplorer' }]);
+    S.setPeerContext({ id: 3, name: "Sam's server" });
+    S.setFileExplorerArray(['shared', 'Vosto']);
+    S.printdir(PEER_DIR_RESPONSE);
+    const html = S.html();
+    assert.match(html, /Sodium · Vosto · 3:41/, 'title · artist · length from the peer\'s row');
+    assert.match(html, /peers\.sync\.noTags · 4:12 · peers\.sync\.landsByName/, 'a file the peer\'s scanner read no tags from');
+    const unscanned = rows(html).find((r) => r.includes('unscanned.mp3'));
+    assert.ok(unscanned && !/font-size:15px/.test(unscanned), 'a file the peer never scanned has no facts line');
+    assert.ok(rows(html).every((r) => /data-peer="3"/.test(r)), 'every row carries the peer');
+    assert.match(S.filter('sodium'), /Sodium · Vosto · 3:41/, 'the filter re-renders the facts from the browsing list');
+  });
 });
 
 describe('runLocalSearch — data-file_location', () => {
@@ -296,6 +340,7 @@ describe('runLocalSearch — data-file_location', () => {
     for (const c of CASES) {
       const S = makeSandbox(c.api);
       if (c.state) S.setProgramState(c.state);
+      if (c.peer) S.setPeerContext(c.peer);
       await c.run(S);
 
       const before = new Set(fileLocations(S.html()));

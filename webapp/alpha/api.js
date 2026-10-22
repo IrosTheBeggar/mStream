@@ -170,11 +170,15 @@ const MSTREAMAPI = (() => {
   // already getting this", "a file already exists at …" — not a shrug.
   const jobsRoute = (tail) => mstreamModule.currentServer.host + 'api/v1/discovery/plugin-jobs' + (tail || '');
   // `choice` = { url }: an upload picked from the plug-in's lookup. `scope`
-  // = album | artist | artist-missing for a job that acts on more than the song.
-  mstreamModule.discoveryJobStart = (name, recommendation, choice, scope) => {
+  // = album | artist | artist-missing | folder for a job that acts on more
+  // than the song. `landing` (a folder job's): { vpath?, path } for a folder
+  // of the user's choosing, { tags: true } for the layout; absent = the
+  // folder as it is on the peer, under the destination's base.
+  mstreamModule.discoveryJobStart = (name, recommendation, choice, scope, landing) => {
     const body = { recommendation };
     if (choice) { body.choice = choice; }
     if (scope && scope !== 'song') { body.scope = scope; }
+    if (landing && scope === 'folder') { body.landing = landing; }
     return req('POST', mstreamModule.currentServer.host + 'api/v1/discovery/plugins/' + encodeURIComponent(name) + '/jobs', body);
   };
   mstreamModule.discoveryJobs = () => req('GET', jobsRoute());
@@ -202,6 +206,11 @@ const MSTREAMAPI = (() => {
   mstreamModule.discoverySaveDestination = (destination) => {
     return req('PUT', mstreamModule.currentServer.host + 'api/v1/discovery/collection/destination', { destination });
   };
+  // What THIS library has of a list — songs (by hash or tags), albums (by
+  // name and credit), artists (with which of their albums) — one ask per
+  // list, at most 500 per arm; the marks a peer's rows show. Throws like
+  // the job calls: a row with no answer stays a row without a mark.
+  mstreamModule.discoveryOwned = (body) => req('POST', mstreamModule.currentServer.host + 'api/v1/discovery/owned', body);
 
   // POST /api/v1/db/genres → { genres: [{ name, track_count }] }.
   // Used by the Auto-DJ panel's genre filter dropdown. POST (not GET)
@@ -329,7 +338,9 @@ const MSTREAMAPI = (() => {
   };
 
   mstreamModule.peer = {
-    dirparser: (peerId, directory) => peerReq(peerId, 'POST', 'api/v1/file-explorer', { directory }),
+    // `opts.pullMetadata` asks the peer for each file's tags with the
+    // listing (the route's own option), which the peer-sync rows read.
+    dirparser: (peerId, directory, opts) => peerReq(peerId, 'POST', 'api/v1/file-explorer', opts && opts.pullMetadata ? { directory, pullMetadata: true } : { directory }),
     recursiveScan: (peerId, directory) => peerReq(peerId, 'POST', 'api/v1/file-explorer/recursive', { directory }),
     search: (peerId, postObject) => peerReq(peerId, 'POST', 'api/v1/db/search', postObject),
     artists: (peerId, postObject) => peerReq(peerId, 'POST', 'api/v1/db/artists', postObject || {}),

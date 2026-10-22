@@ -203,12 +203,15 @@
       return { ...row, state: 'failed', tag: 'discover.job.failed', tagCls: 'err', icon: 'warn', iconCls: 'err',
         sub: job.error ? { text: String(job.error) } : { key: 'discover.job.failedSub' }, actions: ['retry'] };
     }
-    // An album's or an artist's copy: every song accounted for (songs.total).
+    // An album's, an artist's or a folder's copy: every song accounted for
+    // (songs.total). A folder that landed as a folder says where
+    // (`landed`, this server's path), so a row can open it.
     const many = (job.result && job.result.songs && typeof job.result.songs.total === 'number') ? job.result : null;
+    const landed = (many && many.folder && typeof many.folder.landed === 'string' && many.folder.landed) || null;
     if (job.state === 'cancelled') {
       if (many) {
         return { ...row, state: 'cancelled', tag: 'discover.job.cancelled', icon: 'close', muted: true,
-          sub: { parts: [{ key: 'discover.job.cancelledMany' }, ...manyParts(many)] }, actions: ['start'] };
+          sub: { parts: [{ key: 'discover.job.cancelledMany' }, ...manyParts(many)] }, actions: ['start'], landed };
       }
       return { ...row, state: 'cancelled', tag: 'discover.job.cancelled', icon: 'close', muted: true,
         sub: { key: copy ? 'discover.job.cancelledCopySub' : 'discover.job.cancelledSub' }, actions: ['start'] };
@@ -223,12 +226,15 @@
         const why = { quota: 'discover.job.stoppedQuota', busy: 'discover.job.stoppedBusy', peer: 'discover.job.stoppedPeer', refused: 'discover.job.stoppedRefused' }[many.stopped];
         return { ...row, state: 'stopped', tag: 'discover.job.stopped', tagCls: 'err', icon: 'warn', iconCls: 'err',
           sub: { parts: [{ key: why, params: { peer } }, ...manyParts(many)] },
-          actions: ['retry'] };
+          actions: ['retry'], landed };
       }
       // Startable again: the copy is idempotent, so a second run takes only
       // what the library lacks by then (a song removed, one the peer added).
+      // A folder's row ends with where it landed.
+      const parts = manyParts(many);
+      if (landed) { parts.push({ text: pathCrumbs(landed).join(' / ') }); }
       return { ...row, state: 'copiedMany', tag: many.songs.copied.length ? 'discover.job.inCollection' : 'discover.job.owned', tagCls: 'ok', icon: 'check', iconCls: 'ok',
-        sub: { parts: manyParts(many) }, actions: ['start'] };
+        sub: { parts }, actions: ['start'], landed };
     }
 
     const r = job.result || {};
@@ -261,11 +267,14 @@
   // left out; "nothing to copy" when nothing happened at all.
   function manyParts(many) {
     const s = many.songs;
+    // The whole numbers ride in `counts` (the lists stop at the server's cap).
+    const c = (many.counts && typeof many.counts === 'object') ? many.counts : {};
+    const n = (k) => (Number.isFinite(c[k]) ? c[k] : s[k].length);
     const parts = [];
     if (Array.isArray(many.albums) && many.albums.length) { parts.push({ key: 'discover.job.albumsCount', params: { count: many.albums.length } }); }
-    if (s.copied.length) { parts.push({ key: 'discover.job.copiedCount', params: { count: s.copied.length } }); }
-    if (s.skipped.length) { parts.push({ key: 'discover.job.ownedCount', params: { count: s.skipped.length } }); }
-    if (s.failed.length) { parts.push({ key: 'discover.job.failedCount', params: { count: s.failed.length } }); }
+    if (n('copied')) { parts.push({ key: 'discover.job.copiedCount', params: { count: n('copied') } }); }
+    if (n('skipped')) { parts.push({ key: 'discover.job.ownedCount', params: { count: n('skipped') } }); }
+    if (n('failed')) { parts.push({ key: 'discover.job.failedCount', params: { count: n('failed') } }); }
     if (Array.isArray(many.skippedAlbums) && many.skippedAlbums.length) { parts.push({ key: 'discover.job.albumsLeftOut', params: { count: many.skippedAlbums.length } }); }
     if (parts.length === 0) { parts.push({ key: 'discover.job.nothingToCopy' }); }
     return parts;
@@ -276,7 +285,7 @@
   // artist's albums, or only the ones the library lacks. The window keeps
   // one job per plug-in AND scope, under a slot: the plug-in's name for a
   // song job (as it always was), "<plugin>@<scope>" for the others.
-  const JOB_SCOPES = ['song', 'album', 'artist', 'artist-missing'];
+  const JOB_SCOPES = ['song', 'album', 'artist', 'artist-missing', 'folder'];
 
   function jobScope(job) {
     return (job && job.params && job.params.scope) || 'song';
@@ -303,6 +312,7 @@
     if (scope === 'album') { return 'discover.tray.kindAlbum'; }
     if (scope === 'artist') { return 'discover.tray.kindArtist'; }
     if (scope === 'artist-missing') { return 'discover.tray.kindMissing'; }
+    if (scope === 'folder') { return 'discover.tray.kindFolder'; }
     return null;
   }
 
@@ -371,8 +381,11 @@
   function jobTitle(job) {
     const rec = (job && job.recommendation) || {};
     const scope = jobScope(job);
-    if (scope === 'album') { return [rec.album, rec.artist].filter(Boolean).join(' — ') || ''; }
+    if (scope === 'album') { return [rec.album, rec.albumArtist || rec.artist].filter(Boolean).join(' — ') || ''; }
     if (scope === 'artist' || scope === 'artist-missing') { return rec.artist || ''; }
+    // A folder: its name (the recommendation's title, else the path's last
+    // segment) — the peer's path is the job's identity, not its label.
+    if (scope === 'folder') { return rec.title || String(rec.filepath || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || ''; }
     return [rec.title, rec.artist].filter(Boolean).join(' — ') || '';
   }
 
@@ -401,6 +414,9 @@
     return {
       id: d.id, state: removed ? 'removed' : (present ? 'present' : 'missing'),
       title: d.title || crumbs[crumbs.length - 1] || '', artist: d.artist || '', album: d.album || '',
+      // Where it came from, as the plug-in recorded it: a peer's name for a
+      // copy, a URL for a download.
+      origin: typeof d.origin === 'string' && d.origin ? d.origin : null,
       plugin: d.plugin || '', filepath: d.filepath || '', crumbs, present, removed,
       bytes: Number(d.bytes) || 0, size: fmtBytes(d.bytes), at: d.downloadedAt == null ? null : Number(d.downloadedAt),
       removedAt: d.removedAt == null ? null : Number(d.removedAt), username: d.username || null,
