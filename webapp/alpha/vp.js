@@ -2968,13 +2968,23 @@ const VUEPLAYERCORE = (() => {
         try { localStorage.setItem('discoverTrayCollapsed', String(this.discover.tray.collapsed)); } catch (_) { /* private mode */ }
         this.scheduleDiscoverJobsPoll();
       },
-      // Again, as it was started: the same scope, the same chosen upload.
+      // Again, as it was started: the same scope, the same chosen upload,
+      // and the place it ran with — its pin, else where its result says it
+      // landed, else the place known now. The strip shows no place, so a
+      // Retry goes where the copy went, and the server refuses it (409
+      // destination_changed) once that is no longer where files land: the
+      // toast sends the user to the window, which shows the new place.
       dtRetry: async function (job) {
+        const params = job.params || {};
+        const view = this.discover.dest.view;
+        const ran = params.destination || (job.result && job.result.destination) || (view && view.destination) || undefined;
         try {
-          const res = await MSTREAMAPI.discoveryJobStart(job.plugin, job.recommendation, job.params && job.params.choice, DISCOVERJOBS.jobScope(job));
+          const res = await MSTREAMAPI.discoveryJobStart(job.plugin, job.recommendation, params.choice, DISCOVERJOBS.jobScope(job), ran);
           if (res && res.job) { this.noteDiscoverJob(res.job); }
         } catch (err) {
-          iziToast.error({ title: this.dmErrorText(err), position: 'topCenter', timeout: 3500 });
+          const moved = !!(err && err.status === 409 && err.body && err.body.error === 'destination_changed');
+          if (moved) { this.dmLoadDestination(); }
+          iziToast.error({ title: moved ? this.tt('discover.tray.destChanged') : this.dmErrorText(err), position: 'topCenter', timeout: 3500 });
         }
         this.scheduleDiscoverJobsPoll();
       },

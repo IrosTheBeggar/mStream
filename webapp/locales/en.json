@@ -379,6 +379,7 @@
   "discover.lookup.others": "{{count}} more",
   "discover.lookup.open": "Open on {{plugin}}",
   "discover.tray.title": "Downloads",
+  "discover.tray.destChanged": "Couldn’t start: where files land changed — retry it from Keep a copy",
   "discover.tray.running": "{{count}} running",
   "discover.tray.failed": "{{count}} failed",
   "discover.tray.clear": "Clear finished",

@@ -190,7 +190,8 @@ const MSTREAMAPI = (() => {
   // `destination` = { vpath, base, layout }: the collection destination the
   // window showed — the job is pinned to it, or refused with 409
   // { error: 'destination_changed', destination } when it is no longer the
-  // saved one. Absent = no check (the strip's Retry shows none).
+  // saved one (the strip's Retry sends the place the job ran with). Absent =
+  // no check.
   mstreamModule.discoveryJobStart = (name, recommendation, choice, scope, destination) => {
     const body = { recommendation };
     if (choice) { body.choice = choice; }

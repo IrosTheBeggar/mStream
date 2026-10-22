@@ -3898,3 +3898,55 @@ describe('the window\'s markup and styles after the 2026-10-21 review', () => {
     assert.ok(!/Federation view|Add to your collection/.test(VP_SRC));
   });
 });
+
+describe('the strip\'s Retry sends the place the copy ran with (vp.js dtRetry)', () => {
+  const dtRetry = (api, toasts) => new Function('MSTREAMAPI', 'DISCOVERJOBS', 'iziToast', `return ${vpMethodSrc('dtRetry')}`)(
+    api, J, { error: (o) => toasts.push(o) });
+  const harness = (view, answer) => {
+    const sent = [];
+    const toasts = [];
+    const reads = [];
+    const api = { discoveryJobStart: async (...args) => { sent.push(args); if (answer instanceof Error) { throw answer; } return answer; } };
+    const self = {
+      discover: { dest: { view } },
+      noteDiscoverJob: () => {},
+      scheduleDiscoverJobsPoll: () => {},
+      dmErrorText: (err) => `words: ${err.message}`,
+      dmLoadDestination: () => { reads.push('read'); },
+      tt: (k) => tEn(k),
+    };
+    return { run: (job) => dtRetry(api, toasts).call(self, job), sent, toasts, reads };
+  };
+  const PIN = { vpath: 'copies', base: '', layout: '{{ALBUMARTIST}}/{{ALBUM}}' };
+  const NOW = { vpath: 'copies', base: 'moved', layout: '{{ALBUMARTIST}}/{{ALBUM}}', source: 'user' };
+  const job = (over) => ({ plugin: 'federation-copy', recommendation: { title: 'x' }, params: { scope: 'album' }, ...over });
+
+  test('its pin first, else where its result landed, else the place known now, else no key', async () => {
+    let h = harness({ destination: NOW }, { job: { id: 9 } });
+    await h.run(job({ params: { scope: 'album', destination: PIN } }));
+    assert.deepEqual(h.sent[0][4], PIN);
+    assert.equal(h.sent[0][3], 'album');
+    h = harness({ destination: NOW }, { job: { id: 9 } });
+    await h.run(job({ params: { scope: 'album' }, result: { destination: PIN } }));
+    assert.deepEqual(h.sent[0][4], PIN, 'a job from before the pin: where its result says it landed');
+    h = harness({ destination: NOW }, { job: { id: 9 } });
+    await h.run(job({ params: null }));
+    assert.deepEqual(h.sent[0][4], NOW, 'nothing on the job: the place known now');
+    h = harness(null, { job: { id: 9 } });
+    await h.run(job({ params: null }));
+    assert.equal(h.sent[0][4], undefined, 'no place known at all: no key, no check');
+  });
+
+  test('a 409 destination_changed reads the destination again and toasts its own words; other refusals keep theirs', async () => {
+    const moved = Object.assign(new Error('moved'), { status: 409, body: { error: 'destination_changed', destination: NOW } });
+    let h = harness({ destination: NOW }, moved);
+    await h.run(job({ params: { scope: 'album', destination: PIN } }));
+    assert.deepEqual(h.reads, ['read']);
+    assert.equal(h.toasts[0].title, tEn('discover.tray.destChanged'));
+    const other = Object.assign(new Error('someone else on this server is already getting this'), { status: 409, body: { error: 'someone else on this server is already getting this' } });
+    h = harness({ destination: NOW }, other);
+    await h.run(job({ params: { scope: 'album', destination: PIN } }));
+    assert.deepEqual(h.reads, []);
+    assert.equal(h.toasts[0].title, 'words: someone else on this server is already getting this');
+  });
+});
