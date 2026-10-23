@@ -69,7 +69,9 @@ describe('the layout preview agrees with the server engine', () => {
       assert.equal(mine.valid, theirs.valid, `validity of ${JSON.stringify(layout.slice(0, 40))}`);
       if (!theirs.valid) { assert.equal(mine.error, theirs.error, `error code for ${JSON.stringify(layout.slice(0, 40))}`); }
     }
-    assert.deepEqual(J.validateLayout('{{ARTIST}}/{{TRACK}}'), { valid: false, error: 'unknown_variable', variable: 'TRACK' });
+    assert.deepEqual(J.validateLayout('{{ARTIST}}/{{TRACK}}'), { valid: false, error: 'unknown_variable', variable: 'TRACK', token: '{{TRACK}}' });
+    assert.deepEqual(J.validateLayout('From/{{ Artst }}/{{ALBUM}}'), { valid: false, error: 'unknown_variable', variable: 'ARTST', token: '{{ Artst }}' },
+      'the token as typed, for the editor to name (the phone\'s LayoutCheck.token)');
     assert.equal(J.validateLayout(null).valid, false);
     assert.deepEqual([...J.LAYOUT_VARS].sort(), [...destination.LAYOUT_VARS].sort(), 'the same variables are offered');
     assert.equal(J.DEFAULT_LAYOUT, destination.DEFAULT_LAYOUT);
@@ -748,6 +750,100 @@ describe('{{SERVERFOLDER}}: where the song sits on the server, as folders', () =
     assert.deepEqual(drawn(at('artist-missing', { tags: ARTIST }, '{{ARTIST}}/Copy of {{SERVERFOLDER}}')), ['Boukmanflow', 'discover.modal.dest.perAlbum']);
     const one = at('artist-missing', { tags: ARTIST }, '{{SERVERFOLDER}}', { oneAlbum: { name: 'Second Shift', year: 2021 } });
     assert.deepEqual([drawn(one), one.slots], [['‹SERVERFOLDER›'], ['SERVERFOLDER']], 'its folder on the server is not known here');
+  });
+});
+
+// The editor keeps no base folder (the phone's destination sheet): a saved
+// one opens as the start of Custom's layout, saved with base ''; the folder
+// list starts the layout at the folder it picks.
+describe('foldBase, bracedFolder, layoutLead, startLayoutAt: a base folder held as the start of the layout', () => {
+  const where = (d, tags) => {
+    try {
+      return destination.renderTarget({ destination: d, tags, peerName: "Sam's server", serverFolder: tags.serverfolder, fileName: '03 Paper Lanterns.flac' }).relPath;
+    } catch (err) { return `refused: ${err.message}`; }
+  };
+
+  test('foldBase: base folder + layout, saved with no base folder, files every song where the server filed it — the base as the server reads it', () => {
+    const bases = BASES.filter((b) => b.length < 100 && destination.normalizeBase(b).valid).concat(['Rock: Live', ' x \\ y ']);
+    for (const base of bases) {
+      for (const layout of LAYOUTS) {
+        const folded = J.foldBase(base, layout);
+        assert.equal(destination.validateLayout(folded).valid, true, `${JSON.stringify(base)} + ${layout} is a layout the server takes`);
+        for (const tags of TAGS) {
+          const kept = where({ vpath: 'music', base: destination.normalizeBase(base).base, layout }, tags);
+          assert.equal(where({ vpath: 'music', base: '', layout: folded }, tags), kept, `${JSON.stringify(base)} + ${layout}`);
+        }
+      }
+    }
+    assert.deepEqual([J.foldBase('', '{{ARTIST}}'), J.foldBase(null, '{{ARTIST}}'), J.foldBase(' / ', '{{ARTIST}}')], ['{{ARTIST}}', '{{ARTIST}}', '{{ARTIST}}'], 'no base folder: the layout as it is');
+    assert.equal(J.foldBase(' from-peers/ Sam \\', '{{PEER}}/{{ALBUM}}'), 'from-peers/Sam/{{PEER}}/{{ALBUM}}');
+  });
+
+  // The phone's gold rows (test/util/fixtures/discover_layout_gold.mjs
+  // FOLD_BASES): bases the server keeps, the long ones with one layout.
+  test('foldBase: a base folder that reads as layout syntax is refused or lands elsewhere, and so does one past 500 characters in all — every other one lands where it did', () => {
+    const foldBases = ['From peers', ' From peers / Sam ', '/lead/and/trail/', 'a\\b', 'My  Music', '.', '.hidden/v1.0', 'Été/日本語/🎵',
+      'Mix * ? < > | "', '$money', 'a$HOMEx', ' nel\u0085 /x', 'a{b', '}}', '{{FOO}}', '{{ARTIST}}', '{{ artist }}', '{{PEER}}', 'x'.repeat(300), 'x'.repeat(480)];
+    const refused = {};
+    const elsewhere = new Set();
+    for (const base of foldBases) {
+      const kept = destination.normalizeBase(base);
+      assert.equal(kept.valid, true, `${JSON.stringify(base.slice(0, 20))} is a base folder the server keeps`);
+      for (const layout of base.length >= 100 ? [LAYOUTS[0]] : LAYOUTS) {
+        const folded = J.foldBase(base, layout);
+        const check = J.validateLayout(folded);
+        const theirs = destination.validateLayout(folded);
+        assert.deepEqual([check.valid, check.error], [theirs.valid, theirs.error], `fold ${JSON.stringify(base.slice(0, 20))} + ${layout}`);
+        if (!check.valid) {
+          refused[base] = refused[base] || [];
+          if (!refused[base].includes(check.error)) { refused[base].push(check.error); }
+          continue;
+        }
+        for (const tags of TAGS) {
+          if (where({ vpath: 'music', base: '', layout: folded }, tags) !== where({ vpath: 'music', base: kept.base, layout }, tags)) { elsewhere.add(base); }
+        }
+      }
+    }
+    // a stray brace or an unknown variable in the base folder, or more than 500 characters in all: Custom says so and Save waits
+    assert.deepEqual(refused, { 'a{b': ['unbalanced_braces'], '}}': ['unbalanced_braces'], '{{FOO}}': ['unknown_variable'], ['x'.repeat(480)]: ['template_too_long'] });
+    // a known variable in the base folder's name renders as the variable; past 500 characters the render is refused, where a base folder in front was not
+    assert.deepEqual([...elsewhere].sort(), ['{{ARTIST}}', '{{ artist }}', '{{PEER}}', 'x'.repeat(300)].sort());
+    assert.deepEqual(['a{b', '}}', '{{FOO}}', '{{ARTIST}}', '{{ artist }}', '{{PEER}}'].map(J.bracedFolder), ['a{b', '}}', '{{FOO}}', '{{ARTIST}}', '{{ artist }}', '{{PEER}}'],
+      'every braced one is named: the editor holds it back (dmPickerHeldBraces)');
+    assert.equal(J.foldBase(' nel\u0085 / x ', '{{ARTIST}}'), 'nel\u0085/x/{{ARTIST}}', 'trimmed as JS trims, as the server does: U+0085 stays');
+  });
+
+  test('bracedFolder: the first folder a layout would read as a variable, or refuse', () => {
+    assert.deepEqual(['{{PEER}}', 'a/{b}/c', 'ok/x}', 'From peers', '', null].map(J.bracedFolder), ['{{PEER}}', '{b}', 'x}', null, null, null]);
+    assert.notEqual(where({ vpath: 'music', base: '{{PEER}}', layout: '{{ALBUM}}' }, TAGS[0]), where({ vpath: 'music', base: '', layout: J.foldBase('{{PEER}}', '{{ALBUM}}') }, TAGS[0]),
+      'why: folded, the folder becomes the server\'s name');
+  });
+
+  test('layoutLead: the leading folders every copy lands in whatever its tags, and the rest as typed', () => {
+    const cases = {
+      'From friends/{{ARTIST}}': ['From friends', '{{ARTIST}}'], ' a / b \\{{ALBUM}}/x': ['a/b', '{{ALBUM}}/x'], 'plain/only': ['plain/only', ''],
+      '{{ARTIST}}/{{ALBUM}}': ['', '{{ARTIST}}/{{ALBUM}}'], 'Copy of {{SERVERFOLDER}}': ['', 'Copy of {{SERVERFOLDER}}'], 'a}/b': ['', 'a}/b'], '': ['', ''],
+    };
+    for (const [layout, [folders, rest]] of Object.entries(cases)) { assert.deepEqual(J.layoutLead(layout), { folders, rest }, JSON.stringify(layout)); }
+    for (const layout of [...LAYOUTS, 'From friends/{{ARTIST}}', 'A/B/{{GENRE}}/C']) {
+      const lead = J.layoutLead(layout).folders;
+      for (const tags of TAGS) {
+        const at = where({ vpath: 'music', base: '', layout }, tags);
+        assert.ok(at.startsWith(lead ? `${lead}/` : ''), `${layout}: ${at}`);
+      }
+    }
+  });
+
+  test('startLayoutAt: the folder chosen in place of the folders the layout starts with', () => {
+    assert.deepEqual([
+      J.startLayoutAt('from-peers/Stage Peer C', 'From friends/{{ARTIST}}'), J.startLayoutAt('from-peers', '{{ALBUMARTIST}}/{{ALBUM}}'),
+      J.startLayoutAt('', 'From friends/{{ARTIST}}'), J.startLayoutAt('x', ''), J.startLayoutAt('x', 'plain/only'), J.startLayoutAt(' a\\b ', '{{ALBUM}}'),
+    ], ['from-peers/Stage Peer C/{{ARTIST}}', 'from-peers/{{ALBUMARTIST}}/{{ALBUM}}', '{{ARTIST}}', 'x', 'x', 'a/b/{{ALBUM}}']);
+  });
+
+  test('the editor\'s presets are the server\'s layouts', () => {
+    assert.deepEqual([J.validateLayout(J.PEER_LAYOUT).valid, J.validateLayout(J.SERVERFOLDER_LAYOUT).valid, J.MAX_TEMPLATE_LEN, J.MAX_RESOLVED_LEN], [true, true, 500, 500]);
+    assert.equal(J.PEER_LAYOUT, '{{PEER}}/{{ALBUMARTIST}}/{{ALBUM}}');
   });
 });
 

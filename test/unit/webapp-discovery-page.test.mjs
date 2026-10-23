@@ -803,7 +803,7 @@ function makeWindow({ reads = readsOf(), plugins = [COPY], jobsAllowed = true, d
   // $nextTick's callbacks, run by the test (ticks.splice(0).forEach(f => f()))
   const ticks = [];
   const vm = {
-    discover: { plugins: { available, list: plugins, jobsAllowed }, dest: { view: { destination }, loaded: true }, admin: false, seedTitle: '', modal: mod.blank() },
+    discover: { plugins: { available, list: plugins, jobsAllowed }, dest: { view: { destination }, saves: 0 }, admin: false, seedTitle: '', modal: mod.blank() },
     $refs: {}, $nextTick(cb) { if (cb) { ticks.push(cb); } }, $set(o, k, v) { o[k] = v; }, $delete(o, k) { delete o[k]; },
     stopDiscoverPreview() {}, scheduleDiscoverJobsPoll() {}, copyDiscoverP2p(track) { loads.push('copied'); copied.push(`${track.artist || ''} - ${track.title || ''}`); },
     dmLoadLinks: async () => { loads.push('links'); },
@@ -2534,10 +2534,12 @@ describe('every key the page emits has an English value', () => {
 // peer's reads; the window's controls the keyboard lands on are stand-ins
 // that record focus.
 const DEST_METHODS = ['dmLoadJobs', 'dmLoadDestination', 'dmDestRefused', 'dmDestShown', 'dmJobStart', 'dmErrorText', 'dmJobPath', 'dmDestMoved',
-  'dmOpenPicker', 'dmDestEditing', 'dmClosePicker', 'dmDestFocus', 'dmPickerLibraries', 'dmPickerVars', 'dmPickerVarLabel', 'dmPickerPreview',
-  'dmPickerProblem', 'dmPickerMissing', 'dmDestNested', 'dmVarToken', 'dmPickerOffersServerFolders', 'dmUseServerFolders', 'dmUseLibraryTemplate', 'dmDestDefault', 'dmPickerIsDefault', 'dmPickerUseDefault',
-  'dmPickerLibraryChanged', 'dmPickerBase', 'dmBrowseToggle', 'dmBrowseAnchor', 'dmBrowseLoad', 'dmBrowseCrumbs', 'dmBrowseIsBase', 'dmBrowseMissing',
-  'dmBrowseInto', 'dmBrowseUp', 'dmBrowseNewFolder', 'dmPickerSubmit'];
+  'dmOpenPicker', 'dmPickerFill', 'dmPickerSync', 'dmDestEditing', 'dmClosePicker', 'dmDestFocus', 'dmPickerLibraries', 'dmPickerChips', 'dmPickerVars', 'dmPickerVarLabel',
+  'dmPickerPresets', 'dmPickerIsPreset', 'dmPickerLayout', 'dmPickerAsOpened', 'dmPickerHeldBraces', 'dmPickerDirty', 'dmPickerCanSave', 'dmPickerCustomProblem',
+  'dmPickerChoose', 'dmPickerChooseCustom', 'dmPickerTyped', 'dmPickerLibrary', 'dmPickerPreview', 'dmPickerUnseen', 'dmPickerLandsAt', 'dmPickerMissing', 'dmPickerProblem',
+  'dmVarToken', 'dmPickerVarFits', 'dmInsertVar', 'dmDestDefault', 'dmPickerIsDefault', 'dmPickerUseDefault', 'dmPickerBase', 'dmPickerStartAt',
+  'dmBrowseToggle', 'dmBrowseAnchor', 'dmBrowseLoad', 'dmBrowseCrumbs', 'dmBrowseIsBase', 'dmBrowseMissing',
+  'dmBrowseInto', 'dmBrowseUp', 'dmBrowseNewFolder', 'dmPickerSubmit', 'dmDestLanding'];
 const LAYOUT = '{{ALBUMARTIST}}/{{ALBUM}}';
 const COPIES = { vpath: 'copies', base: '', layout: LAYOUT, source: 'user' };
 const MUSIC_DEFAULT = { vpath: 'music', base: '', layout: LAYOUT, source: 'default' };
@@ -2577,13 +2579,15 @@ function makeDestWindow({ reads = shiftReads(['Harbour Lights', 'Borrowed Tapes'
   });
   const w = makeWindow({ reads: api, destination: server.view.destination });
   const doc = { activeElement: null, body: { name: 'body' } };
+  // a saved place's toast lands with the window's own
+  const izi = { success: (o) => w.toasts.push({ kind: 'success', ...o }) };
   const methods = new Function('DISCOVERJOBS', 'MSTREAMAPI', 'document', 't', 'iziToast',
-    `return { ${DEST_METHODS.map((n) => `${n}: ${vpMethodSrc(n)}`).join(',\n')} };`)(J, api, doc, tEn, {});
+    `return { ${DEST_METHODS.map((n) => `${n}: ${vpMethodSrc(n)}`).join(',\n')} };`)(J, api, doc, tEn, izi);
   Object.assign(w.vm, methods, { ensureDiscoverPlugins: async () => w.vm.discover.plugins.list, noteDiscoverJob() {} });
-  w.vm.discover.dest = { view: server.view };
+  w.vm.discover.dest = { view: server.view, saves: 0 };
   const els = {};
   const el = (name) => (els[name] = els[name] || { name, focus() { doc.activeElement = this; } });
-  const targets = { '[data-dm-change]': 'change', '[data-dm-browse]': 'browse', '#dm-dest-lib, #dm-dest-base': 'library', '.dm-dest-tree button': 'firstRow' };
+  const targets = { '[data-dm-change]': 'change', '[data-dm-browse]': 'browse', '.dm-dest-chip[aria-pressed="true"]': 'library', '.dm-dest-tree button': 'firstRow' };
   w.vm.$refs.dmodal = { contains: (x) => Object.values(els).includes(x), querySelector: (sel) => (targets[sel] ? el(targets[sel]) : null) };
   const tick = () => w.ticks.splice(0).forEach((f) => f());
   return { ...w, api, server, calls, doc, tick, el, focused: () => doc.activeElement && doc.activeElement.name };
@@ -2768,13 +2772,10 @@ describe('where files land: a variable each song files by its own tags is a slot
     assert.deepEqual([jobLine(v.path), v.path.path.slotNote], ['In copies › Various Artists › Night Market Sampler', undefined], 'landed: real folders, no slot');
     assert.deepEqual([`${v.retryPath.prefix} ${pathLine(v.retryPath.path)}`, v.retryPath.path.slotNote], ['Retry adds to copies › From friends › ‹artist›', ARTIST_NOTE]);
     vm.dmOpenPicker();
-    vm.discover.modal.picker.layout = 'From friends/{{ARTIST}} ({{YEAR}})';
+    vm.discover.modal.picker.text = 'From friends/{{ARTIST}} ({{YEAR}})';
     const preview = vm.dmPickerPreview('album');
     assert.deepEqual([pathLine(preview), preview.missingVars, preview.slotNote], ['copies › From friends › ‹artist› (2020)', [], ARTIST_NOTE]);
-    vm.discover.modal.picker.base = 'Boukmanflow';
-    vm.discover.modal.picker.layout = '{{ARTIST}}/{{ALBUM}}';
-    assert.deepEqual([vm.dmDestNested(vm.dmPickerPreview('song')), vm.dmDestNested(vm.dmPickerPreview('album'))], ['Boukmanflow', ''],
-      'the song nests in Boukmanflow › Boukmanflow; the album\'s ‹artist› is no one folder');
+    assert.equal(pathLine(vm.dmPickerPreview('song')), 'copies › From friends › Boukmanflow (2020)', 'the song alone: its own folder');
   });
 
   // the 2026-10-22 review
@@ -2797,18 +2798,6 @@ describe('where files land: a variable each song files by its own tags is a slot
     const untagged = { filepath: 'peerlib/Boukmanflow/Night Market Sampler/09.mp3', metadata: { title: 'untagged', year: 2020, duration: 200, genres: [] } };
     const own = await open({ row: night({ albumArtist: null }), songs: [...sampler(['Boukmanflow']), untagged] });
     assert.deepEqual([pathLine(own.vm.dmDestPath('album')), own.vm.dmDestPath('album').slotNote], ['copies › From friends › Boukmanflow', '']);
-  });
-
-  test('the nested-folder warning looks past a first folder that is only a ‹genre› a song can leave out — never past an ‹artist›', async () => {
-    const { vm } = await open({ focus: null });
-    vm.dmOpenPicker();
-    const k = vm.discover.modal.picker;
-    k.base = 'Boukmanflow';
-    k.layout = '{{GENRE}}/{{ARTIST}}';
-    assert.deepEqual([pathLine(vm.dmPickerPreview('song')), vm.dmDestNested(vm.dmPickerPreview('song'))], ['copies › Boukmanflow › ‹genre› › Boukmanflow', 'Boukmanflow'],
-      'a song with no genre lands in Boukmanflow › Boukmanflow');
-    k.layout = '{{ARTIST}}/Boukmanflow';
-    assert.deepEqual([pathLine(vm.dmPickerPreview('album')), vm.dmDestNested(vm.dmPickerPreview('album'))], ['copies › Boukmanflow › ‹artist› › Boukmanflow', ''], 'every song has an artist');
   });
 
   test('one note on a card: an In line drawn from the place an older server\'s copy ran with says its slots with the Retry line\'s, under the last path', async () => {
@@ -2889,32 +2878,29 @@ describe('where files land: {{SERVERFOLDER}}, the folders a song sits in on its 
     assert.deepEqual([pathLine(one), one.slotNote], ['copies › From friends › ‹server folder›', SERVER_NOTE]);
   });
 
-  test('Into, Retry adds to and the preview follow the same rule; a ‹server folder› a song can leave out is looked past by the nested warning', async () => {
+  test('Into, Retry adds to and the preview follow the same rule', async () => {
     const { vm } = await open({ songs: listing(['VA/CD1', 'VA/CD2']) });
     const into = vm.dmJobPath(copyJob({ recommendation: night(), state: 'running', params: { scope: 'album', destination: SAME } }));
     assert.deepEqual([jobLine(into), into.path.slotNote], ['Into copies › ‹server folder›', SERVER_NOTE]);
     vm.dmOpenPicker();
-    const k = vm.discover.modal.picker;
-    k.layout = 'Copy of {{SERVERFOLDER}}/{{ALBUM}}';
+    vm.dmPickerChooseCustom();
+    vm.discover.modal.picker.text = 'Copy of {{SERVERFOLDER}}/{{ALBUM}}';
     assert.deepEqual([pathLine(vm.dmPickerPreview('album')), pathLine(vm.dmPickerPreview('song'))],
       ['copies › Copy of ‹server folder› › Night Market Sampler', 'copies › Copy of VA › Night Market Sampler › Night Market Sampler']);
-    k.base = 'Night Market Sampler';
-    k.layout = '{{SERVERFOLDER}}/{{ALBUM}}';
-    assert.equal(vm.dmDestNested(vm.dmPickerPreview('album')), 'Night Market Sampler', 'a song at its server\'s root lands in Night Market Sampler › Night Market Sampler');
   });
 
-  test('the editor: "Same folders as the server" sets the layout, offered where the server lists the variable; the variable is named for a screen reader', async () => {
+  test('the editor: "Same folders as the server" is a layout of its own, offered where the server lists the variable; the variable is named for a screen reader', async () => {
     const { vm } = await open({ layout: '{{ALBUMARTIST}}/{{ALBUM}}' });
     vm.dmOpenPicker();
-    assert.equal(vm.dmPickerOffersServerFolders(), true);
-    vm.dmUseServerFolders();
-    assert.equal(vm.discover.modal.picker.layout, '{{SERVERFOLDER}}');
+    assert.ok(vm.dmPickerPresets().some((p) => p.layout === '{{SERVERFOLDER}}'));
+    vm.dmPickerChoose('{{SERVERFOLDER}}');
+    assert.deepEqual([vm.dmPickerLayout(), vm.discover.modal.picker.custom, vm.dmPickerCanSave()], ['{{SERVERFOLDER}}', false, true]);
     assert.deepEqual([vm.dmPickerPreview('song').valid, pathLine(vm.dmPickerPreview('song'))], [true, 'copies › VA › Night Market Sampler']);
-    assert.equal(vm.dmPickerVarLabel('SERVERFOLDER'), 'Insert the connected server’s folder variable');
+    assert.equal(vm.dmPickerVarLabel('SERVERFOLDER'), 'Insert server folder, SERVERFOLDER', 'what the button shows, for Voice Control');
     vm.discover.dest.view = { ...vm.discover.dest.view, variables: VARS.slice(0, -1) };
-    assert.equal(vm.dmPickerOffersServerFolders(), false, 'an older server would refuse it');
+    assert.ok(!vm.dmPickerPresets().some((p) => p.layout === '{{SERVERFOLDER}}'), 'an older server would refuse it');
     vm.discover.modal.picker = null;
-    vm.dmUseServerFolders();
+    vm.dmPickerChoose('{{SERVERFOLDER}}');
     assert.equal(vm.discover.modal.picker, null, 'nothing open, nothing set');
   });
 
@@ -2965,19 +2951,20 @@ describe('where files land: {{SERVERFOLDER}}, the folders a song sits in on its 
       'Into copies › Stage Peer B › VA › Night Market Sampler');
   });
 
-  test('the editor\'s hint for a variable with no value: the server\'s variables say why, not the tags\' words', async () => {
+  test('the editor\'s preview note for a variable with no value: the server\'s variables say why, not the tags\' words', async () => {
     const { vm } = await open({ focus: null, row: night({ filepath: 'peerlib/02 - Borrowed Light.mp3', year: null }), layout: 'From friends/{{SERVERFOLDER}}' });
-    assert.match(DEST_SRC, /<div v-else-if="preview\.missingVars\.length" id="dm-dest-layout-h" class="dm-dest-hint">\{\{ \$root\.dmPickerMissing\(preview, from\) \}\}<\/div>/);
+    assert.match(DEST_SRC, /<dm-dest-path :path="preview" variant="preview"><\/dm-dest-path>\s*<div v-if="preview\.missingVars\.length" class="dm-dest-slots">\{\{ \$root\.dmPickerMissing\(preview, from\) \}\}<\/div>/);
     vm.dmOpenPicker();
     const hint = (from) => vm.dmPickerMissing(vm.dmPickerPreview('song', from), from);
-    assert.equal(hint(null), 'SERVERFOLDER has no value for this song, so it drops out of the path: the song sits at the top of its server’s library.');
+    // the phone's form: why, "so left out of the path:", then each variable in its braces
+    assert.equal(hint(null), 'The song sits at the top of its server’s library, so left out of the path: {{SERVERFOLDER}}');
     const download = fromOf(true);
-    assert.equal(hint(download), 'SERVERFOLDER has no value for a download, so it drops out of the path: a download comes from no connected server.');
-    vm.discover.modal.picker.layout = '{{PEER}}/{{SERVERFOLDER}}';
-    assert.equal(hint(download), 'PEER, SERVERFOLDER has no value for a download, so it drops out of the path: a download comes from no connected server.');
-    vm.discover.modal.picker.layout = '{{YEAR}}/{{SERVERFOLDER}}';
-    assert.equal(hint(null), 'YEAR, SERVERFOLDER has no value for this song, so it drops out of the path. Other songs render with their own tags.', 'a tag too: the tags\' words');
-    assert.equal(hint(download), 'YEAR, SERVERFOLDER has no value for this song, so it drops out of the path. Other songs render with their own tags.');
+    assert.equal(hint(download), 'A download comes from no connected server, so left out of the path: {{SERVERFOLDER}}');
+    vm.discover.modal.picker.text = '{{PEER}}/{{SERVERFOLDER}}';
+    assert.equal(hint(download), 'A download comes from no connected server, so left out of the path: {{PEER}}, {{SERVERFOLDER}}');
+    vm.discover.modal.picker.text = '{{YEAR}}/{{SERVERFOLDER}}';
+    assert.equal(hint(null), 'No value for this song, so left out of the path: {{YEAR}}, {{SERVERFOLDER}}', 'a tag too: the phone\'s words');
+    assert.equal(hint(download), 'No value for this song, so left out of the path: {{YEAR}}, {{SERVERFOLDER}}');
   });
 });
 
@@ -3066,136 +3053,236 @@ describe('where files land: read again on every open, sent with every start (vp.
   });
 });
 
+// The editor is the phone's destination sheet (2026-10-23, "I really like
+// the phone UI for choosing the copy file path"): where this item lands,
+// the library chips, the layouts as radios — Artist / Album, Server /
+// Artist / Album, Same folders as the server, the library's own, Custom —
+// no base folder field (a saved one folds into Custom), Use the library
+// default and Save.
 describe('where files land: the editor (vp.js)', () => {
-  test('Change… opens on the saved place; "Use the library default" only refills it; Save after it goes back to the default, and the keyboard returns to Change…', async () => {
+  const opened = async (over) => {
+    const w = makeDestWindow(over);
+    await w.vm.openDiscoverModal(lateTrain(), 'federation', { seedPlain: 'x' });
+    w.vm.dmOpenPicker();
+    return { ...w, k: w.vm.discover.modal.picker };
+  };
+
+  test('Change… opens on the saved place and reads it again; "Use the library default" only refills it; Save then goes back to the default, says where, and the keyboard returns to Change…', async () => {
     const w = makeDestWindow();
     const { vm } = w;
     await vm.openDiscoverModal(lateTrain(), 'federation', { seedPlain: 'x' });
+    const reads = w.calls.destination;
     vm.dmOpenPicker();
     const k = vm.discover.modal.picker;
-    assert.deepEqual([k.vpath, k.base, k.layout, k.reset, vm.dmDestEditing()], ['copies', '', LAYOUT, false, true]);
-    assert.equal(vm.dmPickerIsDefault(), false, 'copies is not the library default — music is');
+    assert.deepEqual([k.vpath, k.layout, k.custom, k.text, k.reset, vm.dmDestEditing()], ['copies', LAYOUT, false, '', false, true], 'the Artist / Album preset, Custom\'s field empty');
+    assert.equal(w.calls.destination, reads + 1, 'read again: another tab or device may have saved one');
+    await flush();
+    assert.deepEqual([vm.dmPickerCanSave(), vm.dmPickerIsDefault()], [false, false], 'nothing changed; copies is not the library default — music is');
     vm.dmPickerUseDefault();
-    assert.deepEqual([k.vpath, k.base, k.layout, vm.dmPickerIsDefault()], ['music', '', LAYOUT, true]);
+    assert.deepEqual([k.vpath, k.layout, k.custom, vm.dmPickerIsDefault(), vm.dmPickerCanSave()], ['music', LAYOUT, false, true, true]);
     assert.deepEqual(w.calls.saves, [], 'nothing saved until Save');
     w.tick();
-    assert.equal(w.focused(), 'library', 'the button went with the difference: the keyboard on the first field');
-    const saving = vm.dmPickerSubmit('song');
-    assert.equal(k.saving, true);
+    assert.equal(w.focused(), 'library', 'the button went with the difference: the keyboard on the chosen library');
+    const saving = vm.dmPickerSubmit();
+    assert.deepEqual([k.saving, vm.dmPickerCanSave()], [true, false], 'Saving…: Save off while it is out');
     await saving;
     assert.deepEqual(w.calls.saves, [null], 'the library default itself: the account follows it from now on');
     assert.deepEqual([vm.discover.modal.picker, vm.dmDestEditing(), vm.discover.dest.view.destination.source], [null, false, 'default']);
+    assert.deepEqual(w.toasts.map((x) => [x.kind, x.title]), [['success', 'Saved · copies land in music']]);
     w.tick();
     assert.equal(w.focused(), 'change');
   });
 
-  test('Save keeps what was typed (the base as normalised) — after a refill too, once a field moved off the default', async () => {
-    const w = makeDestWindow();
-    const { vm } = w;
-    await vm.openDiscoverModal(lateTrain(), 'federation', { seedPlain: 'x' });
-    vm.dmOpenPicker();
-    vm.dmPickerUseDefault();
-    vm.discover.modal.picker.base = ' from-peers/ ';
-    vm.discover.modal.picker.layout = '{{PEER}}/{{ALBUMARTIST}}/{{ALBUM}}';
-    await vm.dmPickerSubmit('song');
-    assert.deepEqual(w.calls.saves, [{ vpath: 'music', base: 'from-peers', layout: '{{PEER}}/{{ALBUMARTIST}}/{{ALBUM}}' }]);
-    assert.equal(vm.discover.dest.view.destination.source, 'user');
-    assert.equal(pathLine(vm.dmDestPath('song')), 'music › from-peers › Stage Peer B › Boukmanflow › Borrowed Tapes', 'the bar shows the new path');
+  test('the layouts in the phone\'s order — Artist / Album, Server / Artist / Album, Same folders as the server, the library\'s own — then Custom; a chip per library', async () => {
+    const view = { ...viewOf({ ...COPIES, layout: 'Rips/{{ARTIST}}' }), variables: [...J.LAYOUT_VARS],
+      libraries: [{ vpath: 'music', template: null }, { vpath: 'copies', template: 'Rips/{{ARTIST}}' }] };
+    const { vm, k } = await opened({ server: { view } });
+    const offered = (vpath) => vm.dmPickerPresets(vpath).map((p) => `${tEn(p.key)} ${p.layout}`);
+    assert.deepEqual(offered(), ['Artist / Album {{ALBUMARTIST}}/{{ALBUM}}', 'Server / Artist / Album {{PEER}}/{{ALBUMARTIST}}/{{ALBUM}}',
+      'Same folders as the server {{SERVERFOLDER}}', 'Library layout Rips/{{ARTIST}}']);
+    assert.deepEqual([k.custom, k.layout], [false, 'Rips/{{ARTIST}}'], 'the library\'s own layout opens as its preset');
+    assert.deepEqual(offered('music'), offered().slice(0, 3), 'a library with no template of its own');
+    // the server's own default leads, never twice; one without {{SERVERFOLDER}} has no Same folders
+    vm.discover.dest.view = { ...view, defaultLayout: J.PEER_LAYOUT, variables: view.variables.filter((v) => v !== 'SERVERFOLDER') };
+    assert.deepEqual(offered('music'), ['Artist / Album {{PEER}}/{{ALBUMARTIST}}/{{ALBUM}}']);
+    assert.deepEqual(vm.dmPickerChips(), ['music', 'copies']);
+    k.vpath = 'gone';
+    assert.deepEqual(vm.dmPickerChips(), ['music', 'copies', 'gone'], 'the chosen one, when the server no longer lists it');
   });
 
-  test('an invalid field holds Save; a refused save keeps the editor open with the server\'s words; Cancel saves nothing and returns the keyboard to Change…', async () => {
-    const w = makeDestWindow();
-    const { vm } = w;
-    await vm.openDiscoverModal(lateTrain(), 'federation', { seedPlain: 'x' });
-    vm.dmOpenPicker();
-    const k = vm.discover.modal.picker;
-    k.layout = '{{ARTST}}/{{ALBUM}}';
-    const bad = vm.dmPickerPreview('song');
-    assert.deepEqual([bad.valid, bad.field], [false, 'layout']);
-    assert.equal(vm.dmPickerProblem(bad), 'Unknown variable {{ARTST}}. Use ARTIST, ALBUM, YEAR, GENRE, ALBUMARTIST, PEER.');
-    await vm.dmPickerSubmit('song');
-    assert.deepEqual(w.calls.saves, []);
-    k.layout = '{{ARTIST}';
-    assert.equal(vm.dmPickerProblem(vm.dmPickerPreview('song')), 'Stray { or } — variables use double braces, like {{ARTIST}}.');
-    k.layout = LAYOUT;
-    k.base = '~/music';
-    assert.equal(vm.dmPickerProblem(vm.dmPickerPreview('song')), 'That path cannot be used.');
-    k.base = '';
-    w.api.discoverySaveDestination = async () => { throw httpError(400, { error: 'destination: you cannot put files into library \'copies\'' }); };
-    await vm.dmPickerSubmit('song');
-    assert.deepEqual([vm.discover.modal.picker === k, k.saving, k.error], [true, false, 'destination: you cannot put files into library \'copies\'']);
-    w.api.discoverySaveDestination = async () => { throw new TypeError('Failed to fetch'); };
-    await vm.dmPickerSubmit('song');
-    assert.equal(k.error, 'The server did not take that — try again');
-    vm.dmClosePicker();
-    assert.equal(vm.discover.modal.picker, null);
+  test('Custom: its field empty and Save off, the preview asks for a path; typed, the preview follows and Save sends the layout with no base folder', async () => {
+    const { vm, k, calls, toasts } = await opened();
+    vm.dmPickerChooseCustom();
+    assert.deepEqual([k.custom, k.text, vm.dmPickerCanSave(), vm.dmPickerCustomProblem()], [true, '', false, '']);
+    assert.deepEqual(vm.dmPickerUnseen(vm.dmPickerPreview('song')), { text: 'Type a path to see where files land', warn: false });
+    k.text = 'From friends/{{ARTIST}}';
+    const p = vm.dmPickerPreview('song');
+    assert.equal(vm.dmPickerUnseen(p), null);
+    assert.deepEqual([vm.dmPickerLandsAt('song'), pathLine(p), p.file], ['02 - Late Train Verse lands at', 'copies › From friends › Boukmanflow', '02 - Late Train Verse.mp3']);
+    assert.equal(vm.dmPickerCanSave(), true);
+    await vm.dmPickerSubmit();
+    assert.deepEqual(calls.saves, [{ vpath: 'copies', base: '', layout: 'From friends/{{ARTIST}}' }]);
+    assert.equal(pathLine(vm.dmDestPath('song')), 'copies › From friends › Boukmanflow', 'the bar shows the new path');
+    assert.equal(toasts.pop().title, 'Saved · copies land in copies › From friends', 'where every copy lands, whatever its tags');
+  });
+
+  test('a variable button drops {{NAME}} at the caret, over the selection, the caret after it — at the end without a field; off with no room left; named "Insert …"', async () => {
+    const w = await opened();
+    const { vm, k } = w;
+    vm.dmPickerChooseCustom();
+    k.text = 'From friends/';
+    const field = { selectionStart: 5, selectionEnd: 12, focus() { this.focused = true; }, setSelectionRange(a, b) { this.caret = [a, b]; } };
+    vm.dmInsertVar('ARTIST', field);
+    assert.equal(k.text, 'From {{ARTIST}}/');
     w.tick();
-    assert.equal(w.focused(), 'change');
+    assert.deepEqual([field.focused, field.caret], [true, [15, 15]]);
+    vm.dmInsertVar('ALBUM', null);
+    assert.equal(k.text, 'From {{ARTIST}}/{{ALBUM}}');
+    k.text = 'x'.repeat(490);
+    assert.deepEqual([vm.dmPickerVarFits('YEAR'), vm.dmPickerVarFits('ALBUMARTIST')], [true, false], 'the server\'s 500 characters');
+    vm.dmInsertVar('ALBUMARTIST', null);
+    assert.equal(k.text.length, 490, 'no room: nothing inserted');
+    assert.deepEqual(vm.dmPickerVars().map((v) => vm.dmPickerVarLabel(v)), ['Insert artist', 'Insert album', 'Insert year', 'Insert genre',
+      'Insert album artist, ALBUMARTIST', 'Insert server name, PEER'], 'what a button shows is in its name where the words do not say it');
+    assert.equal(vm.dmPickerVarLabel('MOOD'), 'Insert MOOD');
   });
 
-  test('the preview by the chosen scope; the nested-folder warning; every variable named for a screen reader', async () => {
-    const { vm } = makeDestWindow();
-    await vm.openDiscoverModal(lateTrain(), 'federation', { seedPlain: 'x' });
-    vm.dmOpenPicker();
-    const k = vm.discover.modal.picker;
-    assert.deepEqual([pathLine(vm.dmPickerPreview('song')), vm.dmPickerPreview('song').file], ['copies › Boukmanflow › Borrowed Tapes', '02 - Late Train Verse.mp3']);
+  test('an invalid Custom layout: the validator\'s words in the warning tone, the preview asks to fix it, Save off', async () => {
+    const { vm, k } = await opened();
+    vm.dmPickerChooseCustom();
+    const said = (text) => { k.text = text; return [vm.dmPickerCustomProblem(), vm.dmPickerCanSave()]; };
+    assert.deepEqual(said('{{ARTST}}/{{ALBUM}}'), ['Unknown variable {{ARTST}}. Use ARTIST, ALBUM, YEAR, GENRE, ALBUMARTIST, PEER.', false]);
+    assert.deepEqual(said('{{ artst }}/{{ALBUM}}'), ['Unknown variable {{ artst }}. Use ARTIST, ALBUM, YEAR, GENRE, ALBUMARTIST, PEER.', false], 'named as it was typed');
+    assert.deepEqual(vm.dmPickerUnseen(vm.dmPickerPreview('song')), { text: 'Fix the layout to see where files land', warn: true });
+    assert.deepEqual(said('{{ARTIST}'), ['A brace is out of place — variables are written like {{ARTIST}}.', false]);
+    assert.deepEqual(said('/{{ARTIST}}'), ['A layout can’t start with / — it begins inside the library.', false]);
+    assert.deepEqual(said('{{ARTIST}}/../x'), ['A path can’t contain .. folders.', false]);
+    assert.deepEqual(said(' / '), ['That makes no folder — add a name or a variable.', false]);
+    assert.deepEqual(said('~/{{ARTIST}}'), ['A path can’t contain ~ or $HOME.', false]);
+    assert.deepEqual(said('{{ARTIST}}/D:stuff'), ['A path can’t use a drive letter like C:.', false]);
+    assert.deepEqual(said('x'.repeat(501)), ['A layout can be at most 500 characters.', false]);
+    assert.deepEqual(said('a\u0001b'), ['A path can’t contain tabs or other control characters.', false]);
+    assert.deepEqual(said('From friends'), ['', true], 'a plain name: every copy in that folder');
+  });
+
+  test('a place saved with a base folder (the terminal keeps one) opens folded into Custom, drawn where the server files it, Save off until it is edited; Save sends no base folder', async () => {
+    const { vm, k, calls } = await opened({ server: { view: viewOf({ ...COPIES, base: ' from-peers/ ', layout: '{{PEER}}/{{ALBUMARTIST}}/{{ALBUM}}' }) } });
+    assert.deepEqual([k.custom, k.text, vm.dmPickerCanSave(), vm.dmPickerCustomProblem()], [true, 'from-peers/{{PEER}}/{{ALBUMARTIST}}/{{ALBUM}}', false, ''],
+      'never the Server preset, though the layout alone reads as one');
+    assert.equal(pathLine(vm.dmPickerPreview('song')), 'copies › from-peers › Stage Peer B › Boukmanflow › Borrowed Tapes');
+    assert.equal(pathLine(vm.dmPickerPreview('song')), pathLine(vm.dmDestPath('song')), 'as the bar draws it');
+    vm.dmPickerChoose(J.PEER_LAYOUT);
+    assert.equal(vm.dmPickerCanSave(), true, 'a preset chosen over it leaves the folder behind');
+    vm.dmPickerChooseCustom();
+    assert.equal(vm.dmPickerCanSave(), false, 'back as it opened');
+    k.text = 'from-peers/{{PEER}}/{{ALBUM}}';
+    await vm.dmPickerSubmit();
+    assert.deepEqual(calls.saves, [{ vpath: 'copies', base: '', layout: 'from-peers/{{PEER}}/{{ALBUM}}' }]);
+  });
+
+  test('a saved base folder whose name a layout reads as a variable: drawn as the server holds it, named under the field, Save waits until it is renamed or a preset is chosen', async () => {
+    const { vm, k, calls } = await opened({ server: { view: viewOf({ ...COPIES, base: '{{PEER}}', layout: LAYOUT }) } });
+    assert.deepEqual([k.custom, k.text], [true, '{{PEER}}/{{ALBUMARTIST}}/{{ALBUM}}']);
+    assert.equal(vm.dmPickerCustomProblem(), '“{{PEER}}” is a folder set on another device, but in a layout it reads as a variable. Rename it here, or choose a layout.');
+    assert.equal(pathLine(vm.dmPickerPreview('song')), 'copies › {{PEER}} › Boukmanflow › Borrowed Tapes', 'the folder, not the server\'s name');
+    assert.equal(vm.dmPickerCanSave(), false);
+    vm.dmPickerChoose(LAYOUT);
+    assert.equal(vm.dmPickerCanSave(), true, 'the same layout, without that folder: an edit');
+    vm.dmPickerChooseCustom();
+    k.text = 'From peers/{{ALBUMARTIST}}/{{ALBUM}}';
+    assert.deepEqual([vm.dmPickerCustomProblem(), vm.dmPickerCanSave()], ['', true]);
+    await vm.dmPickerSubmit();
+    assert.deepEqual(calls.saves, [{ vpath: 'copies', base: '', layout: 'From peers/{{ALBUMARTIST}}/{{ALBUM}}' }]);
+  });
+
+  test('a preset chosen after typing keeps what Custom\'s field holds; Custom again finds it', async () => {
+    const { vm, k } = await opened();
+    vm.dmPickerChooseCustom();
+    k.text = 'From friends/{{ARTIST}}';
+    vm.dmPickerChoose(J.PEER_LAYOUT);
+    assert.deepEqual([k.custom, vm.dmPickerLayout(), k.text], [false, J.PEER_LAYOUT, 'From friends/{{ARTIST}}']);
+    assert.equal(pathLine(vm.dmPickerPreview('song')), 'copies › Stage Peer B › Boukmanflow › Borrowed Tapes');
+    vm.dmPickerChooseCustom();
+    assert.equal(vm.dmPickerLayout(), 'From friends/{{ARTIST}}');
+  });
+
+  test('a library chip: a library\'s own layout leaves with it into Custom\'s field; back with it untouched, its preset again and Custom\'s field as it was', async () => {
+    const view = { ...viewOf({ ...COPIES, layout: 'Rips/{{ARTIST}}' }), libraries: [{ vpath: 'music', template: null }, { vpath: 'copies', template: 'Rips/{{ARTIST}}' }] };
+    const { vm, k } = await opened({ server: { view } });
+    vm.dmPickerChooseCustom();
+    k.text = 'typed';
+    vm.dmPickerChoose('Rips/{{ARTIST}}');
+    vm.dmPickerLibrary('music');
+    assert.deepEqual([k.vpath, k.custom, k.text], ['music', true, 'Rips/{{ARTIST}}']);
+    assert.equal(pathLine(vm.dmPickerPreview('song')), 'music › Rips › Boukmanflow');
+    vm.dmPickerLibrary('copies');
+    assert.deepEqual([k.vpath, k.custom, vm.dmPickerLayout(), k.text], ['copies', false, 'Rips/{{ARTIST}}', 'typed']);
+    vm.dmPickerChoose(LAYOUT);
+    vm.dmPickerLibrary('music');
+    assert.deepEqual([k.custom, vm.dmPickerLayout()], [false, LAYOUT], 'a preset every library has stays chosen');
+  });
+
+  test('the preview says what lands there — the song, the album, every album of the artist, the one missing album — and a path longer than the server takes, which Save still takes', async () => {
+    const { vm, k } = await opened();
+    assert.deepEqual(['song', 'album', 'artist', 'artist-missing'].map((s) => vm.dmPickerLandsAt(s)),
+      ['02 - Late Train Verse lands at', 'Borrowed Tapes lands at', 'Every album by Boukmanflow lands at', 'Second Shift lands at']);
     assert.deepEqual([pathLine(vm.dmPickerPreview('artist')), vm.dmPickerPreview('artist').file], ['copies › Boukmanflow › one folder per album', null]);
-    k.base = 'Boukmanflow';
-    assert.equal(vm.dmDestNested(vm.dmPickerPreview('song')), 'Boukmanflow');
-    assert.equal(tEn('discover.modal.dest.nested', { name: 'Boukmanflow' }), 'Your layout also starts with Boukmanflow, so files would land in Boukmanflow › Boukmanflow.');
-    k.base = 'stuff/BOUKMANFLOW';
-    assert.equal(vm.dmDestNested(vm.dmPickerPreview('album')), 'Boukmanflow', 'case-folded');
-    k.base = 'from-peers';
-    assert.equal(vm.dmDestNested(vm.dmPickerPreview('song')), '');
-    k.base = 'Boukmanflow';
-    k.layout = '{{GENRE}}/{{ALBUM}}';
-    assert.equal(vm.dmDestNested(vm.dmPickerPreview('song')), '', 'the song\'s ‹genre› (its metadata names none) can drop out: then the album is first, not Boukmanflow');
-    assert.deepEqual(vm.dmPickerVars().map((v) => vm.dmPickerVarLabel(v)), ['Insert the artist variable', 'Insert the album variable', 'Insert the year variable',
-      'Insert the genre variable', 'Insert the album artist variable', 'Insert the connected server’s name variable']);
-    assert.equal(vm.dmPickerVarLabel('MOOD'), 'Insert the MOOD variable');
+    vm.discover.modal.artist = { ...vm.discover.modal.artist, missing: 2, missingOne: null };
+    assert.equal(vm.dmPickerLandsAt('artist-missing'), 'The albums you don’t have land at');
+    vm.dmPickerChooseCustom();
+    k.text = Array.from({ length: 50 }, () => '{{ALBUM}}').join('/');
+    assert.deepEqual([vm.dmPickerUnseen(vm.dmPickerPreview('song'), 'song'), vm.dmPickerCanSave()],
+      [{ text: 'This song’s path would pass 500 characters, more than the server takes', warn: true }, true], 'the song: the phone\'s words');
+    assert.deepEqual(vm.dmPickerUnseen(vm.dmPickerPreview('album'), 'album'), { text: 'This path would pass 500 characters, more than the server takes', warn: true });
+    assert.match(VP_SRC, /\n {6}unseen: function \(\) \{ return this\.\$root\.dmPickerUnseen\(this\.preview, this\.shown\); \},/, 'the editor says it for the scope it draws');
   });
 
-  test('Browse…: the base folder\'s parent with the base pressed; a row chooses its folder and lists it; Up chooses the folder above; a folder not there yet says so', async () => {
-    const w = makeDestWindow();
-    const { vm } = w;
-    await vm.openDiscoverModal(lateTrain(), 'federation', { seedPlain: 'x' });
-    vm.dmOpenPicker();
-    const k = vm.discover.modal.picker;
-    k.base = 'from-peers/Stage Peer B';
+  test('"Start from an existing folder…": a folder chosen in the list starts Custom\'s layout — in front of a preset, in place of the folders Custom starts with; Up, New folder…, a folder not there yet; Esc closes the list first', async () => {
+    const w = await opened();
+    const { vm, k } = w;
     vm.dmBrowseToggle();
     assert.equal(k.browse.loading, true);
     await flush();
-    assert.deepEqual([vm.dmBrowseCrumbs(), k.browse.dirs, k.browse.dirs.map((d) => vm.dmBrowseIsBase(d)), vm.dmBrowseMissing()],
-      [['copies', 'from-peers'], ['Stage Peer B', 'Stage Peer C', '2025 archive'], [true, false, false], false]);
-    assert.equal(tEn('discover.modal.dest.folderCount', { count: k.browse.dirs.length }), '3 folders');
+    assert.deepEqual([vm.dmBrowseCrumbs(), k.browse.dirs, vm.dmBrowseMissing()], [['copies'], ['from-peers', 'Boukmanflow'], false]);
+    vm.dmBrowseInto('from-peers');
+    assert.deepEqual([k.custom, k.text], [true, 'from-peers/{{ALBUMARTIST}}/{{ALBUM}}'], 'in front of the preset: the folder and that layout');
+    await flush();
+    assert.deepEqual([vm.dmBrowseCrumbs(), k.browse.dirs], [['copies', 'from-peers'], ['Stage Peer B', 'Stage Peer C', '2025 archive']]);
     w.doc.activeElement = null;   // the row pressed goes with the list it was in
     vm.dmBrowseInto('Stage Peer C');
     w.tick();
     assert.equal(w.focused(), 'firstRow');
+    assert.equal(k.text, 'from-peers/Stage Peer C/{{ALBUMARTIST}}/{{ALBUM}}', 'in place of the folders it started with');
     await flush();
-    assert.deepEqual([k.base, vm.dmBrowseCrumbs(), k.browse.dirs, vm.dmBrowseMissing()], ['from-peers/Stage Peer C', ['copies', 'from-peers', 'Stage Peer C'], [], false]);
+    assert.deepEqual([k.browse.dirs, vm.dmBrowseMissing()], [[], false]);
     w.el('browse').focus();
     vm.dmBrowseUp();
     w.tick();
     assert.equal(w.focused(), 'browse', 'a control still there keeps the keyboard');
     await flush();
-    assert.deepEqual([k.base, vm.dmBrowseCrumbs()], ['from-peers', ['copies', 'from-peers']]);
-    vm.dmBrowseUp();
+    assert.deepEqual([k.text, vm.dmBrowseCrumbs()], ['from-peers/{{ALBUMARTIST}}/{{ALBUM}}', ['copies', 'from-peers']]);
+    // opened again: on the chosen folder's parent, the folder pressed
+    vm.dmBrowseToggle();
+    vm.dmBrowseToggle();
     await flush();
-    assert.deepEqual([k.base, vm.dmBrowseCrumbs(), k.browse.dirs], ['', ['copies'], ['from-peers', 'Boukmanflow']]);
-    // a typed folder that is not there yet
-    k.base = 'from-peers/2026';
-    vm.dmPickerLibraryChanged();
+    assert.deepEqual([vm.dmBrowseCrumbs(), k.browse.dirs.map((d) => vm.dmBrowseIsBase(d))], [['copies'], [true, false]]);
+    // a folder typed that is not there yet says so; the list stays where it is (a list that moved
+    // as the field lost focus would move Save from under a pointer on its way there)
+    vm.dmBrowseInto('from-peers');
     await flush();
-    assert.deepEqual([vm.dmBrowseCrumbs(), vm.dmBrowseMissing()], [['copies', 'from-peers'], true]);
+    const listed = w.calls.listed.length;
+    k.text = 'from-peers/2026/{{ALBUM}}';
+    await flush();
+    assert.deepEqual([vm.dmBrowseCrumbs(), vm.dmBrowseMissing(), w.calls.listed.length], [['copies', 'from-peers'], true, listed]);
+    assert.ok(!/id="dm-dest-custom"[^>]*v-on:change/.test(VP_SRC), 'the field never re-lists the folders');
     // New folder…: named, chosen, known not to exist — nothing to list
     const asked = w.calls.listed.length;
     vm.dmBrowseNewFolder();
     assert.equal(k.browse.naming, true);
     k.browse.newName = 'Fresh: Finds';
     vm.dmBrowseNewFolder();
-    assert.deepEqual([k.base, k.browse.naming, vm.dmBrowseMissing(), w.calls.listed.length], ['from-peers/Fresh- Finds', false, true, asked]);
-    // a listing that answers after the list moved on is dropped
+    assert.deepEqual([k.text, k.browse.naming, vm.dmBrowseMissing(), w.calls.listed.length], ['from-peers/Fresh- Finds/{{ALBUM}}', false, true, asked]);
+    // a listing that answers after the list moved on is dropped; at the library root the folders go, the rest stays
     let late = null;
     w.api.dirparser = (dir) => new Promise((resolve) => { late = () => resolve({ directories: [{ name: `stale ${dir}` }] }); });
     vm.dmBrowseUp();
@@ -3205,7 +3292,11 @@ describe('where files land: the editor (vp.js)', () => {
     await flush();
     held();
     await flush();
-    assert.deepEqual(k.browse.dirs, ['now']);
+    assert.deepEqual([k.browse.dirs, k.text], [['now'], '{{ALBUM}}']);
+    // from a preset the library root changes nothing
+    vm.dmPickerChoose(LAYOUT);
+    vm.dmPickerStartAt('');
+    assert.deepEqual([k.custom, vm.dmPickerLayout()], [false, LAYOUT]);
     // Esc closes the list first, the keyboard on its toggle; then the editor, on Change…
     vm.dmBrowseToggle();
     assert.equal(k.browse, null);
@@ -3214,50 +3305,368 @@ describe('where files land: the editor (vp.js)', () => {
     vm.dmClosePicker();
     w.tick();
     assert.equal(w.focused(), 'change');
+    assert.match(VP_SRC, /if \(picker && picker\.browse\) \{ playlistVue\.dmBrowseToggle\(\); playlistVue\.dmHoldFocus\(\); return; \}\n\s*if \(picker\) \{ playlistVue\.dmClosePicker\(\); playlistVue\.dmHoldFocus\(\); return; \}\n\s*playlistVue\.closeDiscoverModal\(\);/,
+      'Esc: the list, then the editor, then the window');
+  });
+
+  test('a refused save keeps the editor open with the server\'s words under the layout — gone once the layout is edited; no answer: "try again"; Cancel saves nothing, the keyboard back on Change…', async () => {
+    const w = await opened();
+    const { vm, k } = w;
+    vm.dmPickerChooseCustom();
+    k.text = 'From friends/{{ARTIST}}';
+    w.api.discoverySaveDestination = async () => { throw httpError(400, { error: 'destination: you cannot put files into library \'copies\'' }); };
+    await vm.dmPickerSubmit();
+    assert.deepEqual([vm.discover.modal.picker === k, k.saving, k.error, vm.dmPickerCanSave()], [true, false, 'destination: you cannot put files into library \'copies\'', true]);
+    vm.dmPickerTyped();
+    assert.equal(k.error, '', 'typed: gone');
+    w.api.discoverySaveDestination = async () => { throw new TypeError('Failed to fetch'); };
+    await vm.dmPickerSubmit();
+    assert.equal(k.error, 'The server did not take that — try again');
+    vm.dmPickerChoose(LAYOUT);
+    assert.equal(k.error, '', 'a preset chosen: gone too');
+    assert.deepEqual([w.toasts, w.calls.saves], [[], []], 'nothing saved, nothing said');
+    vm.dmClosePicker();
+    assert.equal(vm.discover.modal.picker, null);
+    w.tick();
+    assert.equal(w.focused(), 'change');
+  });
+
+  test('the place read again on open is taken while nothing was edited; an edit is kept; a place gone meanwhile leaves nothing to edit', async () => {
+    const w = makeDestWindow();
+    const { vm } = w;
+    await vm.openDiscoverModal(lateTrain(), 'federation', { seedPlain: 'x' });
+    w.server.view = viewOf({ vpath: 'music', base: '', layout: J.PEER_LAYOUT, source: 'user' });
+    vm.dmOpenPicker();
+    const k = vm.discover.modal.picker;
+    assert.deepEqual([k.vpath, k.layout], ['copies', LAYOUT], 'the last one known, at once');
+    await flush();
+    assert.deepEqual([k.vpath, k.layout, k.custom, vm.dmPickerCanSave()], ['music', J.PEER_LAYOUT, false, false]);
+    vm.dmClosePicker();
+    w.server.view = viewOf(COPIES);
+    vm.dmOpenPicker();
+    const edited = vm.discover.modal.picker;
+    vm.dmPickerChoose(LAYOUT);
+    await flush();
+    assert.deepEqual([edited.vpath, vm.dmPickerLayout(), vm.dmPickerCanSave()], ['music', LAYOUT, true], 'kept: Save or Cancel settles it');
+    vm.dmClosePicker();
+    w.server.view = viewOf(null);
+    vm.dmOpenPicker();
+    await flush();
+    assert.equal(vm.discover.modal.picker, null);
+  });
+
+  test('Custom chosen with a pointer puts the keyboard in its field; with the arrow keys it stays in the radio group', () => {
+    const chooseCustom = new Function(`return ${vpMethodSrc('chooseCustom')};`)();
+    const run = (pointer) => {
+      const ticks = [];
+      const field = { focus() { this.focused = true; } };
+      const c = { pointer, chosen: 0, $root: { dmPickerChooseCustom() { c.chosen += 1; } }, $refs: { custom: field }, $nextTick(cb) { ticks.push(cb); } };
+      chooseCustom.call(c);
+      ticks.forEach((f) => f());
+      return [c.chosen, !!field.focused, c.pointer];
+    };
+    assert.deepEqual(run(true), [1, true, false]);
+    assert.deepEqual(run(false), [1, false, false]);
+  });
+
+  test('Custom pressed again with a pointer while it is chosen puts the keyboard in its field (a chosen radio fires no change)', () => {
+    const pressCustom = new Function(`return ${vpMethodSrc('pressCustom')};`)();
+    const run = (pointer, custom) => {
+      const ticks = [];
+      const field = { focus() { this.focused = true; } };
+      const c = { pointer, picker: { custom }, $refs: { custom: field }, $nextTick(cb) { ticks.push(cb); } };
+      pressCustom.call(c);
+      ticks.forEach((f) => f());
+      return [!!field.focused, c.pointer];
+    };
+    assert.deepEqual(run(true, true), [true, false], 'chosen: its field');
+    assert.deepEqual(run(true, false), [false, true], 'not chosen yet: the change after the click does it (chooseCustom), the pointer kept for it');
+    assert.deepEqual(run(false, true), [false, false], 'Space: the keyboard stays on the radio');
+  });
+
+  test('the editor opens in view, the keyboard on the chosen library\'s chip', () => {
+    const openedFn = new Function(`return ${vpMethodSrc('opened')};`)();
+    const asked = [];
+    const chip = { focus() { this.focused = true; } };
+    const form = { scrollIntoView(o) { asked.push(o); }, querySelector(sel) { asked.push(sel); return chip; } };
+    openedFn.call({ $refs: { form }, $nextTick(cb) { cb(); } });
+    assert.deepEqual([asked, chip.focused], [[{ block: 'nearest' }, '.dm-dest-chip[aria-pressed="true"]'], true]);
+  });
+
+  test('Save is on for an edit alone and sends what the editor holds — another library alone too; with nothing it could save, it sends nothing', async () => {
+    const { vm, k, calls } = await opened();
+    await flush();
+    vm.dmPickerLibrary('music');
+    assert.deepEqual([k.vpath, k.custom, vm.dmPickerLayout(), vm.dmPickerCanSave()], ['music', false, LAYOUT, true], 'another library alone is an edit');
+    vm.dmPickerLibrary('copies');
+    assert.equal(vm.dmPickerCanSave(), false, 'back as it opened');
+    await vm.dmPickerSubmit();
+    vm.dmPickerChooseCustom();
+    await vm.dmPickerSubmit();
+    k.text = '{{ARTST}}';
+    await vm.dmPickerSubmit();
+    assert.deepEqual([calls.saves, vm.discover.modal.picker === k, k.saving], [[], true, false], 'unchanged, Custom empty, a layout the validator refuses: nothing sent');
+    vm.dmPickerChoose(LAYOUT);
+    vm.dmPickerLibrary('music');
+    await vm.dmPickerSubmit();
+    assert.deepEqual(calls.saves, [{ vpath: 'music', base: '', layout: LAYOUT }], 'the default\'s place, kept as the account\'s own: not "Use the library default"');
+  });
+
+  test('"Use the library default" from Custom: the default\'s own preset chosen, what was typed left in the field — Save goes back to the default', async () => {
+    const { vm, k, calls } = await opened();
+    await flush();
+    vm.dmPickerChooseCustom();
+    k.text = 'From friends/{{ARTIST}}';
+    vm.dmPickerUseDefault();
+    assert.deepEqual([k.vpath, k.custom, vm.dmPickerLayout(), vm.dmPickerIsDefault(), vm.dmPickerCanSave()], ['music', false, LAYOUT, true, true]);
+    await vm.dmPickerSubmit();
+    assert.deepEqual(calls.saves, [null]);
+  });
+
+  test('a place saved for the account that is the library default itself: "Use the library default" still goes back to following the library', async () => {
+    const { vm, calls } = await opened({ server: { view: viewOf({ vpath: 'music', base: '', layout: LAYOUT, source: 'user' }) } });
+    await flush();
+    assert.deepEqual([vm.dmPickerIsDefault(), vm.dmPickerCanSave()], [true, false], 'the button shows while it is the account\'s own (mine); Save off until it is pressed');
+    vm.dmPickerUseDefault();
+    assert.equal(vm.dmPickerCanSave(), true);
+    await vm.dmPickerSubmit();
+    assert.deepEqual(calls.saves, [null]);
+  });
+
+  test('while a save is out nothing in the editor moves: the layouts, the libraries, Custom, the variables, the folder list (it only closes), Use the library default, the place read again', async () => {
+    const w = await opened();
+    const { vm, k } = w;
+    await flush();
+    vm.dmBrowseToggle();
+    await flush();
+    vm.dmPickerChoose(J.PEER_LAYOUT);
+    let answer = null;
+    w.api.discoverySaveDestination = (d) => new Promise((resolve) => { answer = () => { w.calls.saves.push(d); resolve(viewOf({ ...d, source: 'user' })); }; });
+    const saving = vm.dmPickerSubmit();
+    assert.equal(k.saving, true);
+    const before = JSON.stringify(k);
+    vm.dmPickerChoose(LAYOUT);
+    vm.dmPickerLibrary('music');
+    vm.dmPickerChooseCustom();
+    vm.dmInsertVar('YEAR', null);
+    vm.dmPickerUseDefault();
+    vm.dmPickerStartAt('from-peers');
+    vm.dmBrowseInto('from-peers');
+    vm.dmBrowseUp();
+    vm.dmBrowseNewFolder();
+    vm.discover.dest.view = viewOf({ vpath: 'music', base: '', layout: LAYOUT, source: 'user' });
+    vm.dmPickerSync();
+    assert.equal(JSON.stringify(k), before, 'nothing changed');
+    vm.discover.dest.view = viewOf(null);
+    vm.dmPickerSync();
+    assert.equal(vm.discover.modal.picker, k, 'a read finding no place while the save is out leaves the editor to the save\'s answer');
+    vm.dmBrowseToggle();
+    assert.equal(k.browse, null, 'the list closes (Esc closes it first)');
+    vm.dmBrowseToggle();
+    assert.equal(k.browse, null, 'but does not open');
+    answer();
+    await saving;
+    assert.deepEqual(w.calls.saves, [{ vpath: 'copies', base: '', layout: J.PEER_LAYOUT }]);
+  });
+
+  test('a read of the place sent before a save answered is dropped: the bar keeps the saved place and the next Add sends it', async () => {
+    const w = makeDestWindow();
+    const { vm } = w;
+    await vm.openDiscoverModal(lateTrain(), 'federation', { seedPlain: 'x' });
+    const before = w.server.view;
+    const read = w.api.discoveryDestination;
+    let release = null;
+    w.api.discoveryDestination = () => { w.calls.destination += 1; return new Promise((resolve) => { release = () => resolve(before); }); };
+    vm.dmOpenPicker();
+    vm.dmPickerLibrary('music');
+    await vm.dmPickerSubmit();
+    assert.equal(vm.discover.dest.view.destination.vpath, 'music');
+    release();
+    await flush();
+    assert.equal(vm.discover.dest.view.destination.vpath, 'music', 'the place from before the save is not drawn again');
+    await vm.dmJobStart(COPY, null, 'album');
+    assert.deepEqual(w.calls.starts.pop().destination, { vpath: 'music', base: '', layout: LAYOUT }, 'no 409 of its own making');
+    w.api.discoveryDestination = read;
+    w.server.view = viewOf(COPIES);
+    await vm.dmLoadDestination(vm.discover.modal.gen);
+    assert.equal(vm.discover.dest.view.destination.vpath, 'copies', 'a read sent after it is taken');
+  });
+
+  test('Get it\'s editor: opened from its bar, it says files — its toast too', async () => {
+    const w = makeDestWindow();
+    const { vm } = w;
+    await vm.openDiscoverModal(lateTrain(), 'federation', { seedPlain: 'x' });
+    vm.dmOpenPicker(true);
+    const k = vm.discover.modal.picker;
+    assert.equal(k.download, true);
+    vm.dmPickerLibrary('music');
+    await vm.dmPickerSubmit();
+    assert.deepEqual(w.toasts.map((x) => x.title), ['Saved · files land in music']);
+    vm.dmOpenPicker();
+    assert.equal(vm.discover.modal.picker.download, false, 'Keep\'s Change…: copies');
+  });
+
+  test('the folder list moves with the library: a chip re-lists an open list on the new library', async () => {
+    const w = await opened();
+    const { vm } = w;
+    vm.dmBrowseToggle();
+    await flush();
+    vm.dmBrowseInto('from-peers');
+    await flush();
+    assert.deepEqual(vm.dmBrowseCrumbs(), ['copies', 'from-peers']);
+    const listed = w.calls.listed.length;
+    vm.dmPickerLibrary('music');
+    assert.deepEqual([vm.dmBrowseCrumbs(), w.calls.listed.slice(listed)], [['music'], ['/music']], 'the chosen folder\'s parent in that library');
+  });
+
+  test('a folder whose name has a brace cannot start a layout (a layout reads it as a variable): pressed, the list says why and nothing changes — New folder… the same', async () => {
+    const w = await opened();
+    const { vm, k } = w;
+    vm.dmBrowseToggle();
+    await flush();
+    const held = [k.custom, k.text, k.browse.dir];
+    const listed = w.calls.listed.length;
+    vm.dmBrowseInto('Mixes {2024}');
+    assert.deepEqual([k.custom, k.text, k.browse.dir, k.browse.braced, w.calls.listed.length], [...held, 'Mixes {2024}', listed]);
+    assert.equal(tEn('discover.modal.dest.folderBraces', { folder: k.browse.braced }),
+      '“Mixes {2024}” has a brace in its name, which a layout reads as a variable. Rename the folder to start from it.');
+    vm.dmBrowseInto('from-peers');
+    assert.deepEqual([k.browse.braced, k.text], ['', 'from-peers/{{ALBUMARTIST}}/{{ALBUM}}'], 'another folder: the note goes');
+    vm.dmBrowseNewFolder();
+    k.browse.newName = '{{PEER}}';
+    vm.dmBrowseNewFolder();
+    assert.deepEqual([k.browse.braced, k.text, k.browse.naming], ['{{PEER}}', 'from-peers/{{ALBUMARTIST}}/{{ALBUM}}', true], 'never the server\'s name; the name stays to fix');
+    vm.dmBrowseUp();
+    assert.equal(k.browse.braced, '', 'gone with the next move');
+    assert.match(VP_SRC, /<div v-if="picker\.browse\.braced" class="dm-dest-tree-note dm-dest-tree-warn" role="alert">\{\{ tt\('discover\.modal\.dest\.folderBraces', \{ folder: picker\.browse\.braced \}\) \}\}<\/div>/);
   });
 });
 
 describe('dm-dest (vp.js): the bar and the editor as they are drawn', () => {
   const SRC = VP_SRC.slice(VP_SRC.indexOf('Vue.component(\'dm-dest-path\''), VP_SRC.indexOf('const playlistVue = new Vue('));
-  test('every control a real button; labels above their fields, tied to them; no one-press reset', () => {
-    assert.match(SRC, /<button v-for="v in \$root\.dmPickerVars\(\)" :key="v" type="button" class="dm-dest-var" :aria-label="\$root\.dmPickerVarLabel\(v\)"/);
-    assert.match(SRC, /<button v-for="d in picker\.browse\.dirs" :key="d" type="button" class="dm-dest-node" :aria-pressed=/);
-    assert.match(SRC, /<label for="dm-dest-base">[\s\S]*?<input id="dm-dest-base"[^>]*aria-describedby="dm-dest-base-h"/);
-    assert.match(SRC, /<label for="dm-dest-layout">[\s\S]*?<input id="dm-dest-layout"[^>]*spellcheck="false"/);
-    assert.match(SRC, /<div v-if="picker" class="dm-dest-ed" ref="form" role="group" aria-labelledby="dm-dest-h">/);
-    assert.match(SRC, /tt\(picker\.browse \? 'discover\.modal\.dest\.hideFolders' : 'discover\.modal\.dest\.browse'\)/);
-    assert.match(SRC, /data-dm-change v-on:click="\$root\.dmOpenPicker\(\)"/);
-    assert.match(SRC, /:aria-disabled="!preview\.valid \|\| picker\.saving \? 'true' : null"/);
-    assert.match(SRC, /<button v-if="!\$root\.dmPickerIsDefault\(\)" type="button" class="dm-btn dm-btn-quiet" v-on:click="\$root\.dmPickerUseDefault\(\)">/);
-    // the presets after the variables: "Same folders as the server", then the library template
-    assert.match(SRC, /<span class="dm-dest-vars-rule" aria-hidden="true"><\/span>\s*<button v-if="\$root\.dmPickerOffersServerFolders\(\)" type="button" class="dm-btn dm-btn-quiet" v-on:click="\$root\.dmUseServerFolders\(\)">\{\{ tt\('discover\.modal\.dest\.sameAsServer'\) \}\}<\/button>\s*<button type="button" class="dm-btn dm-btn-quiet" v-on:click="\$root\.dmUseLibraryTemplate\(\)">/);
+  const ED = SRC.slice(SRC.indexOf('<div v-if="picker" class="dm-dest-ed"'), SRC.indexOf('<div v-else-if="dest && path" class="dm-dest">'));
+  const CSS = readFileSync(new URL('../../webapp/alpha/spa.css', import.meta.url), 'utf8');
+
+  test('the phone\'s order: the header, where it lands, the libraries, the layouts, then Use the library default and Save — no base folder field', () => {
+    const at = (s) => { const i = ED.indexOf(s); assert.ok(i >= 0, s); return i; };
+    // the folder list under the layouts, Custom's field after it: a folder chosen from a preset
+    // brings the field in under the list, never over the row just pressed (a second press, into
+    // a subfolder, would have inserted a variable)
+    const order = ['class="dm-dest-ed-h"', 'class="dm-dest-preview"', 'class="dm-dest-chips"', 'role="radiogroup"', 'id="dm-dest-save-err"',
+      'data-dm-browse', 'class="dm-dest-tree"', 'class="dm-dest-custom"', 'class="dm-dest-vars"', 'class="dm-dest-ed-foot"'].map(at);
+    assert.deepEqual(order, [...order].sort((a, b) => a - b));
+    assert.match(ED, /<div id="dm-dest-h" class="dm-dest-ed-title">\{\{ tt\(download \? 'discover\.modal\.dest\.headingFiles' : 'discover\.modal\.dest\.heading'\) \}\}<\/div><span class="dm-dest-tag"><dm-icon v-if="mine" name="person" :size="12"><\/dm-icon>\{\{ tt\(mine \? 'discover\.modal\.dest\.tagYours' : 'discover\.modal\.dest\.tagDefault'\) \}\}<\/span>/);
+    assert.match(ED, /<div class="dm-dest-ed-sub">\{\{ tt\(download \? 'discover\.modal\.dest\.subFiles' : 'discover\.modal\.dest\.sub'\) \}\}<\/div>/, 'Get it\'s editor says files: the one setting is its too');
+    assert.match(ED, /<button type="button" class="dm-btn dm-btn-quiet dm-btn-icon" :aria-label="tt\('discover\.modal\.cancel'\)"[^>]*v-on:click="\$root\.dmClosePicker\(\)">/);
+    assert.match(ED, /<div v-else class="dm-dest-preview-body">\s*<div class="dm-dest-lands">\{\{ \$root\.dmPickerLandsAt\(shown\) \}\}<\/div>\s*<dm-dest-path :path="preview" variant="preview"><\/dm-dest-path>/);
+    assert.ok(!/dm-dest-base|<select|discover\.modal\.dest\.(base|browse|applies|preview)'/.test(ED), 'no base folder field, no library select, no "Applies to…"');
+    assert.match(ED, /<button v-if="mine \|\| !\$root\.dmPickerIsDefault\(\)" type="button" class="dm-btn dm-btn-quiet"[^>]*v-on:click="\$root\.dmPickerUseDefault\(\)">/,
+      'while the account\'s own place is in force too, as the phone shows it');
+    assert.match(ED, /:aria-disabled="\$root\.dmPickerCanSave\(\) \? null : 'true'" :aria-describedby="picker\.error \? 'dm-dest-save-err' : null" v-on:click="\$root\.dmPickerSubmit\(\)">.*tt\(picker\.saving \? 'discover\.modal\.dest\.saving' : 'discover\.modal\.dest\.save'\)/);
+  });
+
+  test('keyboard reach: the chips real buttons, pressed; the layouts real radios in one radiogroup, Custom last; the variables real buttons; the field named; the error announced', () => {
+    assert.match(ED, /<button v-for="lib in libraries" :key="lib" type="button" class="dm-dest-chip" :class="\{ 'dm-on': lib === picker\.vpath \}" :aria-pressed="lib === picker\.vpath \? 'true' : 'false'" :aria-disabled="picker\.saving \? 'true' : null" :title="lib" v-on:click="\$root\.dmPickerLibrary\(lib\)">/,
+      'a chip chooses its own library; its whole name in its title');
+    const group = ED.slice(ED.indexOf('role="radiogroup"'), ED.indexOf('<div v-if="picker.custom" class="dm-dest-custom">'));
+    const radios = group.match(/<input type="radio" name="dm-dest-layout"[^>]*>/g);
+    assert.equal(radios.length, 2, 'the presets (one v-for), then Custom');
+    assert.match(radios[0], /:checked="!picker\.custom && picker\.layout === p\.layout" :disabled="picker\.saving" v-on:change="\$root\.dmPickerChoose\(p\.layout\)"/, 'a preset is chosen only while Custom is not');
+    assert.match(radios[1], /:checked="picker\.custom" :disabled="picker\.saving" aria-describedby="dm-dest-custom-sub" v-on:click="pressCustom\(\)" v-on:change="chooseCustom\(\)"/);
+    // each radio is named by its words alone, as the phone reads it: a preset's template is drawn, not read
+    // (braces and all); Custom's "Type your own path" is its description. Spans: a label holds phrasing content
+    assert.match(group, /<label v-for="p in presets" :key="p\.layout" class="dm-dest-opt"[\s\S]*?<span class="dm-dest-opt-text"><span class="dm-dest-opt-label">\{\{ tt\(p\.key\) \}\}<\/span><span class="dm-dest-opt-sub dm-dest-mono" aria-hidden="true">\{\{ p\.layout \}\}<\/span><\/span>/);
+    assert.match(group, /<span id="dm-dest-custom-sub" class="dm-dest-opt-sub" aria-hidden="true">\{\{ tt\('discover\.modal\.dest\.customSub'\) \}\}<\/span>/);
+    for (const label of group.match(/<label[\s\S]*?<\/label>/g)) {
+      assert.ok(!/<div/.test(label), 'no <div> inside a <label>');
+      // Materialize hides a radio and draws one of its own from a "+ span": the radio comes last
+      assert.match(label, /<input type="radio"[^>]*>\s*<\/label>$/, 'the radio last in its label');
+    }
+    assert.match(group, /<label class="dm-dest-opt" :class="\{ 'dm-on': picker\.custom \}" v-on:pointerdown="pointer = true">/);
+    assert.match(ED, /role="radiogroup" aria-labelledby="dm-dest-layout-l" v-on:keydown="pointer = false"/);
+    assert.match(ED, /<button v-for="v in \$root\.dmPickerVars\(\)" :key="v" type="button" class="dm-dest-var" :aria-label="\$root\.dmPickerVarLabel\(v\)"[^>]*v-on:click="\$root\.dmInsertVar\(v, \$refs\.custom\)">/);
+    assert.match(ED, /<input id="dm-dest-custom" ref="custom" class="dm-input dm-dest-mono browser-default" type="text" maxlength="500" spellcheck="false" autocomplete="off" v-model="picker\.text" v-on:input="\$root\.dmPickerTyped\(\)" :disabled="picker\.saving"[^>]*:aria-label="tt\('discover\.modal\.dest\.customField'\)"/,
+      'typed: a refusal under it goes; nothing typed while a save is out');
+    // a refusal while Custom is chosen goes right under its field, in place of the validator's words, its border the error's;
+    // with a preset chosen, under the layouts
+    const custom = ED.slice(ED.indexOf('<div v-if="picker.custom" class="dm-dest-custom">'), ED.indexOf('class="dm-dest-ed-foot"'));
+    assert.match(custom, /:class="\{ 'is-warn': !!problem && !picker\.error, 'is-err': !!picker\.error \}" :aria-invalid="problem \|\| picker\.error \? 'true' : null" :aria-describedby="picker\.error \? 'dm-dest-save-err dm-dest-custom-h' : problem \? 'dm-dest-custom-w dm-dest-custom-h' : 'dm-dest-custom-h'">\s*<div v-if="picker\.error" id="dm-dest-save-err" class="dm-dest-err" role="alert">[^\n]*\n\s*<div v-else-if="problem" id="dm-dest-custom-w" class="dm-dest-warn">/);
+    assert.match(group, /<\/div>\s*<div v-if="picker\.error && !picker\.custom" id="dm-dest-save-err" class="dm-dest-err" role="alert">/);
+    assert.match(CSS, /\n\.dm-dest-ed \.dm-input\.is-err, \.dm-dest-ed \.dm-input\[type="text"\]\.is-err \{ border-color: var\(--err\); \}/);
+    assert.match(ED, /data-dm-browse :aria-expanded="picker\.browse \? 'true' : 'false'" :aria-disabled="picker\.saving && !picker\.browse \? 'true' : null" v-on:click="\$root\.dmBrowseToggle\(\)">[^\n]*tt\(picker\.browse \? 'discover\.modal\.dest\.hideFolders' : 'discover\.modal\.dest\.startFrom'\)/,
+      'while a save is out the list only closes');
+    assert.match(ED, /<button v-for="d in picker\.browse\.dirs" :key="d" type="button" class="dm-dest-node" :aria-pressed="\$root\.dmBrowseIsBase\(d\) \? 'true' : 'false'" :aria-disabled="picker\.saving \? 'true' : null"/);
+    assert.match(SRC, /data-dm-change v-on:click="\$root\.dmOpenPicker\(download\)"/, 'Get it\'s bar opens it as Get it\'s (its toast says files)');
     assert.ok(!/dmResetDestination|dest\.reset|href="javascript|<(span|div)[^>]*v-on:click/.test(SRC), 'no anchors or clickable spans; no reset in the bar');
   });
 
-  test('a slot drawn quiet inside its folder\'s text, as the "one folder per album" note is; the one note under the path', () => {
+  test('a slot drawn quiet inside its folder\'s text, as the "one folder per album" note is — italic in the preview; the file the preview\'s last crumb; the one note under the path', () => {
     assert.match(SRC, /<template v-if="c\.parts"><span v-for="\(p, j\) in c\.parts" :key="j" :class="\{ 'dm-dest-slot': p\.slot \}">\{\{ p\.text \}\}<\/span><\/template>/);
-    assert.match(SRC, /<div v-if="file && path\.file" class="dm-dest-file">\{\{ path\.file \}\}<\/div>\s*<div v-if="path\.slotNote" class="dm-dest-slots">\{\{ path\.slotNote \}\}<\/div>/);
-    const CSS = readFileSync(new URL('../../webapp/alpha/spa.css', import.meta.url), 'utf8');
+    assert.match(SRC, /<span v-if="file && path\.file && variant === 'preview'" class="dm-dest-crumb dm-dest-crumb-file"><i aria-hidden="true">&rsaquo;<\/i><span class="dm-sr">\/<\/span>\{\{ path\.file \}\}<\/span>/);
+    assert.match(SRC, /<div v-if="file && path\.file && variant !== 'preview'" class="dm-dest-file">\{\{ path\.file \}\}<\/div>\s*<div v-if="path\.slotNote" class="dm-dest-slots">\{\{ path\.slotNote \}\}<\/div>/);
     const color = (sel) => (new RegExp(`\\n${sel.replace(/[.-]/g, '\\$&')} \\{[^}]*?color: (var\\(--t\\d\\))`).exec(CSS) || [])[1];
     assert.equal(color('.dm-dest-slot'), color('.dm-dest-crumb-note'), 'the note\'s colour');
     assert.match(CSS, /\n\.dm-dest-slot \{[^}]*font-weight: 400;/, 'quiet in the preview\'s bold source colour too');
+    assert.match(CSS, /\n\.dm-dest-path-preview \.dm-dest-slot \{ font-style: italic; \}/);
     assert.match(CSS, /\n\.dm-dest-slots \{[^}]*font-size: 11px;[^}]*color: var\(--t4\);/, 'the note under the path: the editor\'s hint size and colour');
+  });
+
+  test('spa.css: the radios drawn natively, the chosen chip as the chosen segment, 44 px targets on a phone; the old editor\'s rules gone', () => {
+    assert.match(CSS, /\n\.dmodal \.dm-dest-opt \.dm-dest-radio \{ order: -1; position: static;[^}]*opacity: 1; pointer-events: auto; accent-color: var\(--src\);/,
+      'last in its label, drawn first');
+    assert.match(CSS, /\n\.dm-dest-chip\.dm-on, [^{]*\{ background: var\(--btn\); border-color: var\(--src\);/);
+    const phone = CSS.slice(CSS.indexOf('/* Phones: every target 44 px tall; Use the library default and Save share'), CSS.indexOf('/* Phones: a bottom sheet'));
+    for (const rule of ['.dm-dest-chip, .dm-dest-chip:focus { height: 44px; }', '.dm-dest-opt { min-height: 44px; }', '.dm-dest-var, .dm-dest-var:focus { height: 44px; }',
+      '.dm-dest-node, .dm-dest-node:focus { min-height: 44px; }', '.dm-dest-ed .dm-input, .dm-dest-ed .dm-input[type="text"] { height: 44px; }']) {
+      assert.ok(phone.includes(rule), rule);
+    }
+    assert.ok(!/\.dm-dest-(select|static|row|applies|vars-rule)\b/.test(CSS), 'the old editor\'s rules are gone');
+  });
+
+  test('spa.css: a long library name ends in "…" inside the window; Custom\'s example is never cut on a phone; a label\'s spans are blocks', () => {
+    assert.match(CSS, /\n\.dm-dest-chip, \.dm-dest-chip:focus \{[^}]*max-width: 100%;[^}]*white-space: nowrap;/);
+    assert.match(CSS, /\n\.dm-dest-chips \{ display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; \}/, 'the row itself shrinks inside the editor\'s grid');
+    assert.match(CSS, /\n\.dm-dest-chip > svg \{ flex-shrink: 0; \}\n\.dm-dest-chip-name \{ min-width: 0; overflow: hidden; text-overflow: ellipsis; \}/);
+    assert.match(ED, /<span class="dm-dest-chip-name">\{\{ lib \}\}<\/span><\/button>/);
+    // empty, the field draws its example in the window's font (monospace would cut "{{ALBUM}}" at 375 px),
+    // and on a phone it gives back most of its indent
+    assert.match(CSS, /\n\.dm-dest-ed \.dm-dest-mono\[type="text"\]:placeholder-shown \{ font-family: inherit; \}/);
+    const phone = CSS.slice(CSS.indexOf('/* Phones: every target 44 px tall; Use the library default and Save share'), CSS.indexOf('/* Phones: a bottom sheet'));
+    assert.ok(phone.includes('.dm-dest-custom { padding-left: 8px; }'));
+    for (const sel of ['.dm-dest-opt-text', '.dm-dest-opt-label', '.dm-dest-opt-sub']) {
+      assert.match(CSS, new RegExp(`\\n${sel.replace(/[.-]/g, '\\$&')} \\{ display: block;`), sel);
+    }
+    assert.match(CSS, /\n\.dm-dest-node\[aria-disabled="true"\] \{ opacity: \.6; cursor: default; \}/, 'a folder row while a save is out');
   });
 });
 
 describe('en.json: where files land, in the design\'s words', () => {
-  test('the bar, the paths, the editor; the words it dropped are gone', () => {
+  test('the bar, the paths, the editor in the phone\'s words; the words it dropped are gone', () => {
     const want = {
       'discover.modal.dest.goTo': 'Files go to', 'discover.modal.dest.savedFor': 'Saved for your account', 'discover.modal.dest.libraryDefault': 'The library’s default',
       'discover.modal.dest.perAlbum': 'one folder per album', 'discover.modal.dest.change': 'Change…', 'discover.modal.dest.into': 'Into', 'discover.modal.dest.in': 'In',
       'discover.modal.dest.addAgainAddsTo': 'Add again adds to', 'discover.modal.dest.movedSince': 'Your saved place has changed since.',
-      'discover.modal.dest.heading': 'Where files land', 'discover.modal.dest.useDefault': 'Use the library default', 'discover.modal.dest.useTemplate': 'Use the library template',
-      'discover.modal.dest.libraryHint': 'Only libraries you may upload to', 'discover.modal.dest.onlyLibrary': 'Your only library', 'discover.modal.dest.hideFolders': 'Hide folders',
-      'discover.modal.dest.preview': 'Preview', 'discover.modal.dest.applies': 'Applies to every copy and download on your account', 'discover.modal.dest.save': 'Save',
+      'discover.modal.dest.heading': 'Where copies land', 'discover.modal.dest.tagYours': 'yours', 'discover.modal.dest.tagDefault': 'library default',
+      'discover.modal.dest.sub': 'One setting for your account · every copy uses it', 'discover.modal.dest.customEmpty': 'Type a path to see where files land',
+      'discover.modal.dest.fixLayout': 'Fix the layout to see where files land', 'discover.modal.dest.library': 'Library', 'discover.modal.dest.layout': 'Layout',
+      'discover.modal.dest.preset.artistAlbum': 'Artist / Album', 'discover.modal.dest.preset.server': 'Server / Artist / Album',
+      'discover.modal.dest.preset.serverFolders': 'Same folders as the server', 'discover.modal.dest.preset.library': 'Library layout', 'discover.modal.dest.preset.custom': 'Custom',
+      'discover.modal.dest.customSub': 'Type your own path', 'discover.modal.dest.customField': 'Custom layout',
+      'discover.modal.dest.customHelp': 'Use / between folders. Variables sort copies by artist, album…; a plain name puts every copy in the same folder.',
+      'discover.modal.dest.startFrom': 'Start from an existing folder…', 'discover.modal.dest.hideFolders': 'Hide folders',
+      'discover.modal.dest.useDefault': 'Use the library default', 'discover.modal.dest.save': 'Save', 'discover.modal.dest.saving': 'Saving…',
+      // Get it's editor: the one setting is its too
+      'discover.modal.dest.headingFiles': 'Where files land', 'discover.modal.dest.subFiles': 'One setting for your account · every copy and download uses it',
     };
     for (const [key, text] of Object.entries(want)) { assert.equal(EN[key], text, key); }
+    assert.equal(tEn('discover.modal.dest.landsAt', { title: 'Lantern Street' }), 'Lantern Street lands at');
+    assert.equal(tEn('discover.modal.dest.customHint', { example: '{{ARTIST}}/{{ALBUM}}' }), 'e.g. From friends or {{ARTIST}}/{{ALBUM}}');
+    assert.equal(tEn('discover.modal.dest.saved', { path: 'copies › From friends' }), 'Saved · copies land in copies › From friends');
+    assert.equal(tEn('discover.modal.dest.savedFiles', { path: 'copies › From friends' }), 'Saved · files land in copies › From friends');
+    assert.equal(tEn('discover.modal.dest.tooLongSong', { max: 500 }), 'This song’s path would pass 500 characters, more than the server takes');
+    assert.equal(tEn('discover.modal.dest.tooLong', { max: 500 }), 'This path would pass 500 characters, more than the server takes');
+    assert.equal(tEn('discover.modal.dest.missing', { vars: '{{YEAR}}, {{ALBUM}}' }), 'No value for this song, so left out of the path: {{YEAR}}, {{ALBUM}}', 'the phone\'s words');
     assert.deepEqual(['artist', 'year', 'genre', 'serverfolder'].map((v) => EN[`discover.modal.dest.slot.${v}`]), ['‹artist›', '‹year›', '‹genre›', '‹server folder›']);
-    assert.equal(EN['discover.modal.dest.sameAsServer'], 'Same folders as the server');
     assert.equal(tEn('discover.modal.dest.slotNoteServer', { slot: '‹server folder›' }), '‹server folder› comes from where each song sits on the server, so these songs can land in more than one folder.');
     assert.equal(tEn('discover.modal.dest.slotNote', { slots: '‹artist›', count: 1 }), '‹artist› comes from each song’s own tags, so these songs can land in more than one folder.');
     assert.equal(tEn('discover.modal.dest.slotNote', { slots: '‹artist›, ‹year›', count: 2 }), '‹artist›, ‹year› come from each song’s own tags, so these songs can land in more than one folder.');
@@ -3266,7 +3675,10 @@ describe('en.json: where files land, in the design\'s words', () => {
     assert.equal(tEn('discover.modal.dest.slotNoteSong', { slots: '‹genre›', count: 1 }), '‹genre› comes from the song’s own tags (a song with none leaves that folder out).');
     assert.equal(tEn('discover.modal.dest.foldersIn', { library: 'copies' }), 'Folders in copies');
     assert.equal(tEn('discover.modal.dest.folderCount', { count: 1 }), '1 folder');
-    for (const key of ['discover.modal.dest.yours', 'discover.modal.dest.default', 'discover.modal.dest.reset', 'discover.modal.dest.remembered', 'discover.modal.dest.use', 'discover.modal.dest.libraryTemplate']) {
+    for (const key of ['discover.modal.dest.yours', 'discover.modal.dest.default', 'discover.modal.dest.reset', 'discover.modal.dest.remembered', 'discover.modal.dest.use',
+      'discover.modal.dest.libraryTemplate', 'discover.modal.dest.base', 'discover.modal.dest.root', 'discover.modal.dest.baseHint', 'discover.modal.dest.nested',
+      'discover.modal.dest.browse', 'discover.modal.dest.libraryHint', 'discover.modal.dest.onlyLibrary', 'discover.modal.dest.useTemplate', 'discover.modal.dest.sameAsServer',
+      'discover.modal.dest.layoutHint', 'discover.modal.dest.preview', 'discover.modal.dest.applies', 'discover.modal.dest.err.empty_template']) {
       assert.equal(EN[key], undefined, `${key} is gone`);
     }
   });
@@ -4190,7 +4602,7 @@ describe('the window\'s markup and styles after the 2026-10-21 review', () => {
     assert.ok(bars.length >= 3);
     for (const bar of bars) { assert.match(bar, /aria-label(?:ledby)?=/, bar); }
     assert.match(VP_SRC, /<div v-if="picker\.error" id="dm-dest-save-err" class="dm-dest-err" role="alert">/);
-    assert.match(VP_SRC, /:aria-describedby="picker\.error \? 'dm-dest-save-err' : null" v-on:click="\$root\.dmPickerSubmit\(shown\)"/);
+    assert.match(VP_SRC, /:aria-describedby="picker\.error \? 'dm-dest-save-err' : null" v-on:click="\$root\.dmPickerSubmit\(\)"/);
   });
 
   test('the path\'s "›" is drawn, a "/" read; the empty folder\'s head names no count; the meta line\'s "·" travels with its part', () => {

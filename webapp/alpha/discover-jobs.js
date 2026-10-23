@@ -27,6 +27,9 @@
   // The server's default (src/discovery-plugins/destination.js): the album's
   // credit, falling back to the song's artist — a compilation stays together.
   const DEFAULT_LAYOUT = '{{ALBUMARTIST}}/{{ALBUM}}';
+  // The editor's "Server / Artist / Album": each server's copies apart, by
+  // the album's credit too.
+  const PEER_LAYOUT = '{{PEER}}/{{ALBUMARTIST}}/{{ALBUM}}';
   // The editor's "Same folders as the server": each song where it sits on
   // the server it came from.
   const SERVERFOLDER_LAYOUT = '{{SERVERFOLDER}}';
@@ -107,7 +110,7 @@
     return { path, missingVars: missing };
   }
 
-  // { valid: true } or { valid: false, error, variable? } — `error` is the
+  // { valid: true } or { valid: false, error, variable?, token? } — `error` is the
   // server's code, so one translation table serves both.
   function validateResolvedPath(path) {
     if (typeof path !== 'string') { return { valid: false, error: 'invalid_type' }; }
@@ -134,8 +137,9 @@
     layout.replace(TOKEN_RE, (raw, name) => { tokens.push({ raw, name: name.toUpperCase() }); return raw; });
     for (const tok of tokens) { stripped = stripped.replace(tok.raw, ''); }
     if (stripped.includes('{') || stripped.includes('}')) { return { valid: false, error: 'unbalanced_braces' }; }
+    // an unknown variable: its name, and the token as typed ("{{ Artst }}")
     for (const tok of tokens) {
-      if (LAYOUT_VARS.indexOf(tok.name) === -1) { return { valid: false, error: 'unknown_variable', variable: tok.name }; }
+      if (LAYOUT_VARS.indexOf(tok.name) === -1) { return { valid: false, error: 'unknown_variable', variable: tok.name, token: tok.raw }; }
     }
     // eslint-disable-next-line no-control-regex
     if (/[\x00-\x1f]/.test(layout)) { return { valid: false, error: 'invalid_chars' }; }
@@ -145,11 +149,65 @@
     return check.valid ? { valid: true } : check;
   }
 
+  // A base folder's folders as the server reads them, not yet checked:
+  // either separator, names trimmed, empty ones gone.
+  function baseFolders(base) {
+    return String(base == null ? '' : base).replace(/\\/g, '/').split('/').map((s) => s.trim()).filter(Boolean).join('/');
+  }
+
   function normalizeBase(base) {
-    const raw = String(base == null ? '' : base).replace(/\\/g, '/').split('/').map((s) => s.trim()).filter(Boolean).join('/');
+    const raw = baseFolders(base);
     if (raw === '') { return { valid: true, base: '' }; }
     const check = validateResolvedPath(raw);
     return check.valid ? { valid: true, base: raw } : { valid: false, error: check.error };
+  }
+
+  // `layout` with the base folder `base` in front of it. The editor keeps
+  // no base folder of its own (the terminal does, on the one setting the
+  // account has), so it holds a destination's as the start of the layout:
+  // the server files a song at base folder / rendered layout, and so files
+  // it at the same place from base '' and this layout — except where a
+  // folder's name has a brace (bracedFolder: a layout reads it as a
+  // variable, or refuses it), and past MAX_TEMPLATE_LEN, where the layout
+  // is refused. A base normalizeBase refuses comes in front as read, for
+  // validateLayout to name. No base folder: `layout` as it is. (The phone's
+  // foldBase, lib/util/discover_jobs.dart.)
+  function foldBase(base, layout) {
+    const folders = baseFolders(base);
+    return folders ? `${folders}/${layout}` : layout;
+  }
+
+  // The first of `base`'s folders a layout cannot hold as that folder: one
+  // whose name has a brace ("{{PEER}}" files under the server's name).
+  // null when there is none.
+  function bracedFolder(base) {
+    for (const folder of baseFolders(base).split('/')) {
+      if (folder.indexOf('{') !== -1 || folder.indexOf('}') !== -1) { return folder; }
+    }
+    return null;
+  }
+
+  // A layout's leading folders that name no variable — where every copy
+  // lands whatever its tags ("From friends/{{ARTIST}}" → "From friends",
+  // trimmed, joined with '/') — and the rest of it as typed ("{{ARTIST}}").
+  // → { folders, rest }
+  function layoutLead(layout) {
+    const parts = String(layout == null ? '' : layout).split(/([/\\]+)/);
+    const folders = [];
+    let i = 0;
+    for (; i < parts.length; i += 2) {
+      const seg = parts[i].trim();
+      if (seg.indexOf('{') !== -1 || seg.indexOf('}') !== -1) { break; }
+      if (seg) { folders.push(seg); }
+    }
+    return { folders: folders.join('/'), rest: parts.slice(i).join('') };
+  }
+
+  // `layout` starting in `folder` instead of its own leading folders (the
+  // editor's folder list: "Start from an existing folder…"); '' leaves the
+  // rest alone.
+  function startLayoutAt(folder, layout) {
+    return [baseFolders(folder), layoutLead(layout).rest].filter(Boolean).join('/');
   }
 
   function safeFileName(filePath) {
@@ -828,8 +886,9 @@
   }
 
   return {
-    LAYOUT_VARS, DEFAULT_LAYOUT, SERVERFOLDER_LAYOUT, SAMPLE_TAGS, SAMPLE_PEER, SAMPLE_SERVERFOLDER, COPY_PLUGIN, LOOKUP_CAPABILITY,
-    sanitizeSegment, sanitizeFolders, serverFolderOf, resolveLayout, validateLayout, validateResolvedPath, normalizeBase, safeFileName, previewTarget, pathCrumbs,
+    LAYOUT_VARS, DEFAULT_LAYOUT, PEER_LAYOUT, SERVERFOLDER_LAYOUT, MAX_TEMPLATE_LEN, MAX_RESOLVED_LEN, SAMPLE_TAGS, SAMPLE_PEER, SAMPLE_SERVERFOLDER, COPY_PLUGIN, LOOKUP_CAPABILITY,
+    sanitizeSegment, sanitizeFolders, serverFolderOf, resolveLayout, validateLayout, validateResolvedPath, normalizeBase, foldBase, bracedFolder, layoutLead, startLayoutAt,
+    safeFileName, previewTarget, pathCrumbs,
     SLOT_VARS, songGenre, listedSongTags, scopeTags, scopeTarget, sameDestination, landedPath,
     isLive, fmtBytes, jobRowState, manyCounts, manyParts, jobsByPlugin,
     JOB_SCOPES, jobScope, jobSlot, jobsBySlot, jobKind,

@@ -2483,41 +2483,91 @@ select {
 .dm-dest-path-state .dm-dest-crumbs { font-size: 11.5px; color: var(--t3); }
 .dm-dest-path-state .dm-dest-pre { color: var(--t4); }
 .dm-dest-path-state b { color: var(--t2); }
-/* The editor ("Where files land"): labels above their fields */
+/* The editor ("Where copies land": the phone's destination sheet in the
+   window's look): a header — the title, whose choice is in force, what it
+   is for, Cancel — then where this item would land, the library chips,
+   the layouts as one radio group (the folder list, then Custom's field and
+   its variables under it), Use the library default and Save */
 .dm-dest-ed { display: grid; gap: 14px; margin: 0; padding: 12px; border: 1px solid var(--bord); border-radius: 6px; }
-.dm-dest-ed-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; }
-.dm-dest-ed-title { font-size: 12.5px; line-height: 1.3; font-weight: 600; color: var(--t1); }
+.dm-dest-ed-h { display: flex; align-items: flex-start; gap: 8px; }
+.dm-dest-ed-titles { flex: 1 1 auto; min-width: 0; }
+.dm-dest-ed-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.dm-dest-ed-title { font-size: 13px; line-height: 1.3; font-weight: 600; color: var(--t1); }
+.dm-dest-tag { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border: 1px solid var(--bord); border-radius: 10px; font-size: 11px; line-height: 16px; color: var(--t3); white-space: nowrap; }
+.dm-dest-tag > svg { flex-shrink: 0; }
+.dm-dest-ed-sub { margin-top: 2px; font-size: 12px; line-height: 1.4; color: var(--t3); }
+.dm-dest-ed-h > .dm-btn { flex: none; margin: -6px -6px 0 0; }
+/* Where this item would land: the bar's well, its folder icon; the file
+   the path's last crumb */
+.dm-dest-preview { display: flex; gap: 8px; align-items: flex-start; padding: 9px 10px 9px 12px; background: var(--well); border-radius: 6px; }
+.dm-dest-preview > svg { flex-shrink: 0; margin-top: 1px; color: var(--src); }
+.dm-dest-preview > .dm-c-warn { color: var(--warn); }
+.dm-dest-preview-body { flex: 1 1 auto; min-width: 0; }
+.dm-dest-preview-note { flex: 1 1 auto; min-width: 0; font-size: 12px; line-height: 1.45; color: var(--t3); }
+.dm-dest-lands { margin-bottom: 1px; font-size: 11.5px; line-height: 1.4; color: var(--t3); overflow-wrap: anywhere; }
+.dm-dest-path-preview .dm-dest-slot { font-style: italic; }
+.dm-dest-crumb-file { color: var(--t2); }
 .dm-dest-field { display: grid; gap: 6px; min-width: 0; }
-.dm-dest-field > label, .dm-dest-label { font-size: 12px; line-height: 1.4; font-weight: 600; color: var(--t2); }
-.dm-dest-row { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.dm-dest-label { font-size: 10.5px; line-height: 1.4; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--t4); }
+/* The libraries: real buttons; the chosen one as the chosen segment is
+   (the source edge), with a check. A long name ends in "…" inside the
+   window, whole in its title */
+.dm-dest-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.dm-dest-chip, .dm-dest-chip:focus {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 88px; max-width: 100%; height: 32px; padding: 0 12px; margin: 0; box-sizing: border-box;
+  border: 1px solid var(--bord); border-radius: 6px; background: transparent; color: var(--t2); font-size: 12.5px; font-weight: 600; line-height: 1; white-space: nowrap; cursor: pointer;
+}
+.dm-dest-chip > svg { flex-shrink: 0; }
+.dm-dest-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dm-dest-chip:hover { background: transparent; border-color: var(--t4); color: var(--t1); }
+.dm-dest-chip.dm-on, .dm-dest-chip.dm-on:focus, .dm-dest-chip.dm-on:hover { background: var(--btn); border-color: var(--src); color: var(--t1); }
+.dm-dest-chip.dm-on > svg { color: var(--src); }
+.dm-dest-chip[aria-disabled="true"] { opacity: .6; cursor: default; }
+/* The layouts: one radio group, each row its native radio (back from
+   under Materialize's own drawing), its name and its template (spans: a
+   label holds phrasing content). The radio is last in its label, drawn
+   first: Materialize draws a radio of its own from a "+ span" */
+.dm-dest-opts { display: grid; gap: 2px; }
+.dm-dest-opt { display: flex; align-items: center; gap: 10px; min-height: 40px; margin: 0; padding: 4px 8px; box-sizing: border-box; border-radius: 4px; cursor: pointer; }
+.dm-dest-opt:hover { background: var(--hover); }
+.dmodal .dm-dest-opt .dm-dest-radio { order: -1; position: static; flex: none; width: 16px; height: 16px; margin: 0; opacity: 1; pointer-events: auto; accent-color: var(--src); cursor: pointer; }
+.dm-dest-opt-text { display: block; min-width: 0; }
+.dm-dest-opt-label { display: block; font-size: 12.5px; line-height: 1.35; color: var(--t2); }
+.dm-dest-opt.dm-on .dm-dest-opt-label { font-weight: 600; color: var(--t1); }
+.dm-dest-opt-sub { display: block; font-size: 11px; line-height: 1.4; color: var(--t4); overflow-wrap: anywhere; }
+.dm-dest-mono { font-family: ui-monospace, Consolas, monospace; }
+/* "Start from an existing folder…" and its list under the layouts, then
+   Custom's field under its row's name: the variables, how a layout reads */
+.dm-dest-custom { display: grid; gap: 6px; min-width: 0; padding-left: 34px; }
+.dm-dest-folders { display: grid; justify-items: start; gap: 6px; min-width: 0; padding-left: 26px; }
+.dm-dest-folders > .dm-dest-tree { justify-self: stretch; }
 .dm-dest-ed .dm-input, .dm-dest-ed .dm-input[type="text"] {
   height: 32px; padding: 0 10px; font-size: 12.5px; color: var(--t1); background: var(--well); border-color: var(--field);
 }
 .dm-dest-ed .dm-input::placeholder { color: var(--t4); }
-.dm-dest-ed .dm-input[type="text"]:focus, .dm-dest-select select:focus { border-color: var(--src); }
+.dm-dest-ed .dm-input[type="text"]:focus { border-color: var(--src); }
+.dm-dest-ed .dm-input.is-warn, .dm-dest-ed .dm-input[type="text"].is-warn { border-color: var(--warn); }
 .dm-dest-ed .dm-input.is-err, .dm-dest-ed .dm-input[type="text"].is-err { border-color: var(--err); }
-.dm-dest-ed .dm-dest-mono[type="text"] { flex: none; width: 100%; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
-.dm-dest-select { position: relative; justify-self: start; min-width: 180px; max-width: 100%; }
-.dm-dest-select select {
-  display: block; width: 100%; height: 32px; margin: 0; padding: 0 30px 0 10px; box-sizing: border-box; -webkit-appearance: none; appearance: none;
-  font-family: inherit; font-size: 12.5px; color: var(--t1); background: var(--well); border: 1px solid var(--field); border-radius: 4px; cursor: pointer;
-}
-.dm-dest-select > svg { position: absolute; right: 9px; top: 50%; margin-top: -7px; color: var(--t3); pointer-events: none; }
-.dm-dest-static { font-size: 12.5px; color: var(--t1); }
+.dm-dest-ed .dm-dest-mono[type="text"] { flex: none; width: 100%; font-size: 12px; }
+/* Empty, Custom's field and its example ("e.g. From friends or
+   {{ARTIST}}/{{ALBUM}}") take the window's font: narrower than monospace,
+   so the example is not cut on a phone */
+.dm-dest-ed .dm-dest-mono[type="text"]:placeholder-shown { font-family: inherit; }
 .dm-dest-hint { font-size: 11px; line-height: 1.4; color: var(--t4); }
 .dm-dest-err, .dm-dest-warn { display: flex; gap: 6px; align-items: flex-start; font-size: 11.5px; line-height: 1.4; color: var(--errt); }
 .dm-dest-warn { color: var(--warn); }
 .dm-dest-err > svg, .dm-dest-warn > svg { flex-shrink: 0; margin-top: 2px; }
 .dm-dest-missing { font-size: 11.5px; line-height: 1.4; color: var(--t3); }
-/* The layout's variables: real buttons, all alike; then the template */
+/* The layout's variables: real buttons, all alike */
 .dm-dest-vars { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .dm-dest-var, .dm-dest-var:focus {
   display: inline-flex; align-items: center; height: 32px; padding: 0 9px; margin: 0; box-sizing: border-box; border: 0; border-radius: 4px;
   background: var(--btn); color: var(--t2); font: 500 11.5px/1 ui-monospace, Consolas, monospace; white-space: nowrap; cursor: pointer;
 }
 .dm-dest-var:hover { background: var(--btn-h); color: var(--t1); }
-.dm-dest-vars-rule { flex: none; width: 1px; height: 20px; margin: 0 4px; background: var(--div); }
-/* Browse…: one level of folders, each row a button, the base folder pressed */
+.dm-dest-var[aria-disabled="true"] { opacity: .45; cursor: default; }
+/* "Start from an existing folder…": one level of folders, each row a
+   button, the folder the layout starts in pressed */
 .dm-dest-tree { background: var(--well); border: 1px solid var(--bord); border-radius: 4px; max-height: 224px; overflow-y: auto; }
 .dm-dest-tree-h {
   display: flex; flex-wrap: wrap; align-items: center; min-height: 32px; padding: 0 10px; box-sizing: border-box;
@@ -2533,25 +2583,31 @@ select {
 .dm-dest-node > svg { flex-shrink: 0; color: var(--t3); }
 .dm-dest-node:hover, .dm-dest-node[aria-pressed="true"] { background: var(--btn); }
 .dm-dest-node[aria-pressed="true"] > svg { color: var(--src); }
+.dm-dest-node[aria-disabled="true"] { opacity: .6; cursor: default; }
 .dm-dest-node.dm-dest-node-new { border-top: 1px solid var(--div); color: var(--src); }
 .dm-dest-node-new > svg { color: var(--src); }
 .dmodal-shadow .dmodal .dm-dest-node:focus-visible { outline-offset: -2px; }
 .dm-dest-naming { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 10px; border-top: 1px solid var(--div); color: var(--src); }
 .dm-dest-naming > svg { flex-shrink: 0; }
 .dm-dest-tree-note { padding: 8px 10px; font-size: 11.5px; font-style: italic; color: var(--t4); }
-.dm-dest-preview { padding: 8px 10px; background: var(--well); border-radius: 4px; }
-.dm-dest-ed-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--div); }
-.dm-dest-applies { flex: 1 1 200px; font-size: 11.5px; line-height: 1.4; color: var(--t4); }
-/* Phones: every target 44 px tall; Cancel and Save share their row */
+.dm-dest-tree-warn { border-top: 1px solid var(--div); font-style: normal; color: var(--warn); }
+/* Use the library default at the start, Save at the end */
+.dm-dest-ed-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; padding-top: 12px; border-top: 1px solid var(--div); }
+.dm-dest-ed-foot > .dm-btn-quiet { margin-right: auto; }
+/* Phones: every target 44 px tall; Use the library default and Save share
+   their row */
 @media (max-width: 600px) {
   .dm-dest { padding: 8px 10px 4px 10px; }
-  .dm-dest-foot, .dm-dest-ed-h { min-height: 44px; }
+  .dm-dest-foot { min-height: 44px; }
+  .dm-dest-chip, .dm-dest-chip:focus { height: 44px; }
+  .dm-dest-opt { min-height: 44px; }
+  .dm-dest-custom { padding-left: 8px; }
   .dm-dest-var, .dm-dest-var:focus { height: 44px; }
   .dm-dest-node, .dm-dest-node:focus { min-height: 44px; }
   .dm-dest-tree { max-height: 308px; }
-  .dm-dest-ed .dm-input, .dm-dest-ed .dm-input[type="text"], .dm-dest-select select { height: 44px; }
-  .dm-dest-applies { flex-basis: 100%; }
+  .dm-dest-ed .dm-input, .dm-dest-ed .dm-input[type="text"] { height: 44px; }
   .dm-dest-ed-foot > .dm-btn { flex: 1 1 0; }
+  .dm-dest-ed-foot > .dm-btn-quiet { margin-right: 0; }
 }
 /* Phones: a bottom sheet, every target 44 px tall. The sheet sits on the
    bottom edge by its auto top margin, not by flex-end: a window taller than

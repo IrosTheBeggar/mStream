@@ -196,9 +196,11 @@ const VUEPLAYERCORE = (() => {
     // may have saved one since — the last one known drawn meanwhile
     // (dmLoadDestination). `view.destination` null = nowhere to put a file
     // (uploads off, no library): the acquire rows and the bar stay hidden
-    // rather than fail.
+    // rather than fail. `saves` counts the editor's saves that answered: a
+    // read sent before one answers with the place from before it.
     dest: {
       view: null,
+      saves: 0,
     },
     // The downloads strip under the panel: the caller's plug-in jobs that
     // still want them (live, failed). Shows only while there are any; what
@@ -263,8 +265,9 @@ const VUEPLAYERCORE = (() => {
       jobRefusals: {},
       // plug-in name → its lookup (what "Get it" would fetch): see dmLookup.
       lookups: {},
-      // The destination editor, open in place of the path bar:
-      // { vpath, base, layout, browse, saving, error, reset }.
+      // The destination editor, open in place of the path bar: { vpath,
+      // layout, custom, text, before, from, browse, saving, error, reset,
+      // download } (dmOpenPicker).
       picker: null,
       // Whether this window's own read of the destination answered (the
       // bar draws the last one known until it does), and whether a read
@@ -434,6 +437,7 @@ const VUEPLAYERCORE = (() => {
     down: 'M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z',
     search: 'M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z',
     open: 'M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zM5 5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h12c1.1 0 2-.9 2-2v-7h-2v7H5V7h7V5H5z',
+    person: 'M12 5.9c1.16 0 2.1.94 2.1 2.1s-.94 2.1-2.1 2.1S9.9 9.16 9.9 8s.94-2.1 2.1-2.1m0 9c2.97 0 6.1 1.46 6.1 2.1v1.1H5.9V17c0-.64 3.13-2.1 6.1-2.1M12 4C9.79 4 8 5.79 8 8s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm0 9c-2.67 0-8 1.34-8 4v3h16v-3c0-2.66-5.33-4-8-4z',
   };
   Vue.component('dm-icon', {
     props: { name: String, size: { type: Number, default: 16 } },
@@ -560,18 +564,19 @@ const VUEPLAYERCORE = (() => {
   // `path` is dmDestPath's answer (or a dmJobPath's `path`); `prefix` the
   // words before it, `suffix` any after; `variant` the look: 'bar' (the
   // idle path bar), 'state' (inside a copy's states), 'preview' (the
-  // editor's: what the layout renders in the source colour); `file` false
-  // leaves the file line out. The "›" is drawn, not read: a screen reader
-  // hears a "/" between the folders instead. A folder with a slot in it (a
-  // variable each song files by its own tag: "‹artist›") draws the slot
-  // quiet, as the "one folder per album" note is, inside the folder's own
-  // text; the path's one note under it (`slotNote`) says why.
+  // editor's: what the layout renders in the source colour, the file the
+  // path's last crumb, as the phone draws it); `file` false leaves the
+  // file out. The "›" is drawn, not read: a screen reader hears a "/"
+  // between the folders instead. A folder with a slot in it (a variable
+  // each song files by its own tag: "‹artist›") draws the slot quiet, as
+  // the "one folder per album" note is, inside the folder's own text; the
+  // path's one note under it (`slotNote`) says why.
   Vue.component('dm-dest-path', {
     props: { path: Object, prefix: String, suffix: String, variant: { type: String, default: 'state' }, file: { type: Boolean, default: true } },
     template: `
       <div class="dm-dest-path" :class="'dm-dest-path-' + variant">
-        <div class="dm-dest-crumbs" :title="path.title"><span v-if="prefix" class="dm-dest-pre">{{ prefix }} </span><b>{{ path.library }}</b><span v-for="(c, i) in path.crumbs" :key="i" class="dm-dest-crumb" :class="'dm-dest-crumb-' + c.kind"><i aria-hidden="true">&rsaquo;</i><span class="dm-sr">/</span><template v-if="c.parts"><span v-for="(p, j) in c.parts" :key="j" :class="{ 'dm-dest-slot': p.slot }">{{ p.text }}</span></template><template v-else>{{ c.text }}</template></span><template v-if="suffix">{{ suffix }}</template></div>
-        <div v-if="file && path.file" class="dm-dest-file">{{ path.file }}</div>
+        <div class="dm-dest-crumbs" :title="path.title"><span v-if="prefix" class="dm-dest-pre">{{ prefix }} </span><b>{{ path.library }}</b><span v-for="(c, i) in path.crumbs" :key="i" class="dm-dest-crumb" :class="'dm-dest-crumb-' + c.kind"><i aria-hidden="true">&rsaquo;</i><span class="dm-sr">/</span><template v-if="c.parts"><span v-for="(p, j) in c.parts" :key="j" :class="{ 'dm-dest-slot': p.slot }">{{ p.text }}</span></template><template v-else>{{ c.text }}</template></span><span v-if="file && path.file && variant === 'preview'" class="dm-dest-crumb dm-dest-crumb-file"><i aria-hidden="true">&rsaquo;</i><span class="dm-sr">/</span>{{ path.file }}</span><template v-if="suffix">{{ suffix }}</template></div>
+        <div v-if="file && path.file && variant !== 'preview'" class="dm-dest-file">{{ path.file }}</div>
         <div v-if="path.slotNote" class="dm-dest-slots">{{ path.slotNote }}</div>
       </div>`,
   });
@@ -582,18 +587,32 @@ const VUEPLAYERCORE = (() => {
   // (dmDestPath), a song's file, whose choice it is — saved for the
   // account or the library's default — and Change…. Change… turns it into
   // the editor in place, which takes the card's action row's place too
-  // (one primary at a time) and saves nothing until Save. `scope` = the
-  // scope the path is drawn for; by default the Keep card's choice, else
-  // the song (Get it). `download` = the path is a download's (Get it's
-  // bar): it comes from no server, so {{PEER}} and {{SERVERFOLDER}} drop
-  // out of it, as youtube.js renders it — on a connected server's row too.
-  // A file line only where the window copies the song (its file keeps its
-  // name). State and behaviour stay on the playlist Vue (discover.dest,
+  // (one primary at a time) and saves nothing until Save. The editor is
+  // the phone's destination sheet in the window's look: a header (the
+  // title, whose choice is in force, what it is for, Cancel), where this
+  // item would land, the library chips, the layouts as one radio group —
+  // under it "Start from an existing folder…" (the library's folder list:
+  // a folder chosen there starts Custom's layout), then Custom's field,
+  // its variables and how a layout reads — then Use the library default
+  // and Save. The folder list sits above Custom's field, so a folder
+  // chosen from a preset brings the field in under the list, never over
+  // the row just pressed. No base folder field: a Custom layout's own
+  // folders do its work (dmPickerFill). `scope` = the scope the path is
+  // drawn for; by default the Keep card's choice, else the song (Get it).
+  // `download` = the path is a download's (Get it's bar): it comes from no
+  // server, so {{PEER}} and {{SERVERFOLDER}} drop out of it, as youtube.js
+  // renders it — on a connected server's row too — and the editor says
+  // files, not copies: the one setting is Get it's too. A file line only
+  // where the window copies the song (its file keeps its name). State and
+  // behaviour stay on the playlist Vue (discover.dest,
   // discover.modal.picker and the dm* methods); this only puts them where
   // the rows are. The parent shows it only when a row could put a file
   // somewhere — never locked.
   Vue.component('dm-dest', {
     props: { scope: String, download: Boolean },
+    // `pointer`: the Custom row was pressed with a pointer (chooseCustom,
+    // pressCustom)
+    data: function () { return { pointer: false }; },
     computed: {
       picker: function () { return this.$root.discover.modal.picker; },
       dest: function () { const v = this.$root.discover.dest.view; return (v && v.destination) || null; },
@@ -602,8 +621,13 @@ const VUEPLAYERCORE = (() => {
       path: function () { return this.$root.dmDestPath(this.shown, null, this.from); },
       fileLine: function () { return this.shown === 'song' && this.$root.dmKeepChoices().length > 0; },
       preview: function () { return this.$root.dmPickerPreview(this.shown, this.from); },
-      nested: function () { return this.$root.dmDestNested(this.preview); },
-      libraries: function () { return this.$root.dmPickerLibraries(); },
+      // the account's own place is in force ("yours"), else the library's default
+      mine: function () { return !!this.dest && this.dest.source === 'user'; },
+      libraries: function () { return this.$root.dmPickerChips(); },
+      presets: function () { return this.$root.dmPickerPresets(); },
+      problem: function () { return this.$root.dmPickerCustomProblem(); },
+      // why the preview draws no path ({ text, warn }), else null
+      unseen: function () { return this.$root.dmPickerUnseen(this.preview, this.shown); },
       folders: function () { return this.picker && this.picker.browse ? this.$root.dmBrowseCrumbs() : []; },
       naming: function () { const k = this.picker; return !!(k && k.browse && k.browse.naming); },
     },
@@ -621,83 +645,105 @@ const VUEPLAYERCORE = (() => {
     methods: {
       tt: function (key, params) { return (typeof t === 'function') ? t(key, params) : key; },
       // The editor opens in view, the keyboard on its first field: the
-      // library, or the base folder when there is only the one library.
+      // chosen library's chip.
       opened: function () {
         this.$nextTick(() => {
           const el = this.$refs.form;
           if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'nearest' }); }
-          const first = this.$refs.library || this.$refs.base;
+          const first = el && el.querySelector ? el.querySelector('.dm-dest-chip[aria-pressed="true"]') : null;
           if (first && first.focus) { first.focus(); }
         });
+      },
+      // Custom chosen with a pointer: its field takes the keyboard, as the
+      // phone's does. Chosen with the arrow keys, the keyboard stays in the
+      // radio group — the field comes after it in Tab order.
+      chooseCustom: function () {
+        const pointer = this.pointer;
+        this.pointer = false;
+        this.$root.dmPickerChooseCustom();
+        if (!pointer) { return; }
+        this.$nextTick(() => { const el = this.$refs.custom; if (el && el.focus) { el.focus(); } });
+      },
+      // Custom pressed again with a pointer while it is chosen: a chosen
+      // radio fires no change, so its field takes the keyboard here, as the
+      // phone's does. (The click comes before the change of a radio not yet
+      // chosen: Custom is not chosen then, and chooseCustom does it.)
+      pressCustom: function () {
+        if (!this.pointer || !this.picker || !this.picker.custom) { return; }
+        this.pointer = false;
+        this.$nextTick(() => { const el = this.$refs.custom; if (el && el.focus) { el.focus(); } });
       },
     },
     template: `
       <div v-if="picker" class="dm-dest-ed" ref="form" role="group" aria-labelledby="dm-dest-h">
         <div class="dm-dest-ed-h">
-          <div id="dm-dest-h" class="dm-dest-ed-title">{{ tt('discover.modal.dest.heading') }}</div>
-          <button v-if="!$root.dmPickerIsDefault()" type="button" class="dm-btn dm-btn-quiet" v-on:click="$root.dmPickerUseDefault()">{{ tt('discover.modal.dest.useDefault') }}</button>
+          <div class="dm-dest-ed-titles">
+            <div class="dm-dest-ed-line"><div id="dm-dest-h" class="dm-dest-ed-title">{{ tt(download ? 'discover.modal.dest.headingFiles' : 'discover.modal.dest.heading') }}</div><span class="dm-dest-tag"><dm-icon v-if="mine" name="person" :size="12"></dm-icon>{{ tt(mine ? 'discover.modal.dest.tagYours' : 'discover.modal.dest.tagDefault') }}</span></div>
+            <div class="dm-dest-ed-sub">{{ tt(download ? 'discover.modal.dest.subFiles' : 'discover.modal.dest.sub') }}</div>
+          </div>
+          <button type="button" class="dm-btn dm-btn-quiet dm-btn-icon" :aria-label="tt('discover.modal.cancel')" :title="tt('discover.modal.cancel')" v-on:click="$root.dmClosePicker()"><dm-icon name="close" :size="16"></dm-icon></button>
+        </div>
+        <div class="dm-dest-preview">
+          <dm-icon :name="unseen && unseen.warn ? 'warn' : 'folder'" :size="14" :class="{ 'dm-c-warn': unseen && unseen.warn }"></dm-icon>
+          <div v-if="unseen" class="dm-dest-preview-note">{{ unseen.text }}</div>
+          <div v-else class="dm-dest-preview-body">
+            <div class="dm-dest-lands">{{ $root.dmPickerLandsAt(shown) }}</div>
+            <dm-dest-path :path="preview" variant="preview"></dm-dest-path>
+            <div v-if="preview.missingVars.length" class="dm-dest-slots">{{ $root.dmPickerMissing(preview, from) }}</div>
+          </div>
         </div>
         <div class="dm-dest-field">
-          <label :for="libraries.length > 1 ? 'dm-dest-lib' : null">{{ tt('discover.modal.dest.library') }}</label>
-          <div v-if="libraries.length > 1" class="dm-dest-select">
-            <select id="dm-dest-lib" ref="library" class="browser-default" aria-describedby="dm-dest-lib-h" v-model="picker.vpath" v-on:change="$root.dmPickerLibraryChanged()">
-              <option v-for="lib in libraries" :key="lib.vpath" :value="lib.vpath">{{ lib.vpath }}</option>
-            </select>
-            <dm-icon name="down" :size="14"></dm-icon>
+          <div id="dm-dest-lib-l" class="dm-dest-label">{{ tt('discover.modal.dest.library') }}</div>
+          <div class="dm-dest-chips" role="group" aria-labelledby="dm-dest-lib-l">
+            <button v-for="lib in libraries" :key="lib" type="button" class="dm-dest-chip" :class="{ 'dm-on': lib === picker.vpath }" :aria-pressed="lib === picker.vpath ? 'true' : 'false'" :aria-disabled="picker.saving ? 'true' : null" :title="lib" v-on:click="$root.dmPickerLibrary(lib)"><dm-icon v-if="lib === picker.vpath" name="check" :size="14"></dm-icon><span class="dm-dest-chip-name">{{ lib }}</span></button>
           </div>
-          <div v-else class="dm-dest-static">{{ picker.vpath }}</div>
-          <div id="dm-dest-lib-h" class="dm-dest-hint">{{ tt(libraries.length > 1 ? 'discover.modal.dest.libraryHint' : 'discover.modal.dest.onlyLibrary') }}</div>
         </div>
         <div class="dm-dest-field">
-          <label for="dm-dest-base">{{ tt('discover.modal.dest.base') }}</label>
-          <div class="dm-dest-row">
-            <input id="dm-dest-base" ref="base" class="dm-input browser-default" type="text" maxlength="500" v-model="picker.base" v-on:change="$root.dmPickerLibraryChanged()" :placeholder="tt('discover.modal.dest.root')" :class="{ 'is-err': preview.field === 'base' }" :aria-invalid="preview.field === 'base' ? 'true' : null" aria-describedby="dm-dest-base-h">
-            <button type="button" class="dm-btn dm-btn-ghost" data-dm-browse :aria-expanded="picker.browse ? 'true' : 'false'" v-on:click="$root.dmBrowseToggle()"><dm-icon name="folder" :size="14"></dm-icon>{{ tt(picker.browse ? 'discover.modal.dest.hideFolders' : 'discover.modal.dest.browse') }}</button>
+          <div id="dm-dest-layout-l" class="dm-dest-label">{{ tt('discover.modal.dest.layout') }}</div>
+          <div class="dm-dest-opts" role="radiogroup" aria-labelledby="dm-dest-layout-l" v-on:keydown="pointer = false">
+            <label v-for="p in presets" :key="p.layout" class="dm-dest-opt" :class="{ 'dm-on': !picker.custom && picker.layout === p.layout }">
+              <span class="dm-dest-opt-text"><span class="dm-dest-opt-label">{{ tt(p.key) }}</span><span class="dm-dest-opt-sub dm-dest-mono" aria-hidden="true">{{ p.layout }}</span></span>
+              <input type="radio" name="dm-dest-layout" class="dm-dest-radio" :checked="!picker.custom && picker.layout === p.layout" :disabled="picker.saving" v-on:change="$root.dmPickerChoose(p.layout)">
+            </label>
+            <label class="dm-dest-opt" :class="{ 'dm-on': picker.custom }" v-on:pointerdown="pointer = true">
+              <span class="dm-dest-opt-text"><span class="dm-dest-opt-label">{{ tt('discover.modal.dest.preset.custom') }}</span><span id="dm-dest-custom-sub" class="dm-dest-opt-sub" aria-hidden="true">{{ tt('discover.modal.dest.customSub') }}</span></span>
+              <input type="radio" name="dm-dest-layout" class="dm-dest-radio" :checked="picker.custom" :disabled="picker.saving" aria-describedby="dm-dest-custom-sub" v-on:click="pressCustom()" v-on:change="chooseCustom()">
+            </label>
           </div>
-          <div v-if="preview.field === 'base'" id="dm-dest-base-h" class="dm-dest-err"><dm-icon name="warn" :size="12"></dm-icon><span>{{ $root.dmPickerProblem(preview) }}</span></div>
-          <div v-else-if="nested" id="dm-dest-base-h" class="dm-dest-warn"><dm-icon name="warn" :size="12"></dm-icon><span>{{ tt('discover.modal.dest.nested', { name: nested }) }}</span></div>
-          <div v-else id="dm-dest-base-h" class="dm-dest-hint">{{ tt('discover.modal.dest.baseHint', { library: picker.vpath }) }}</div>
-        </div>
-        <div v-if="picker.browse" class="dm-dest-field">
-          <div class="dm-dest-tree" role="group" :aria-label="tt('discover.modal.dest.foldersIn', { library: picker.vpath })">
-            <div class="dm-dest-tree-h"><b>{{ folders[0] }}</b><span v-for="(c, i) in folders.slice(1)" :key="i" class="dm-dest-crumb"><i aria-hidden="true">&rsaquo;</i>{{ c }}</span><template v-if="!picker.browse.loading && !picker.browse.failed && picker.browse.dirs.length > 0"><i aria-hidden="true">&middot;</i><span>{{ tt('discover.modal.dest.folderCount', { count: picker.browse.dirs.length }) }}</span></template></div>
-            <button v-if="folders.length > 1" type="button" class="dm-dest-node" v-on:click="$root.dmBrowseUp()"><dm-icon name="up" :size="14"></dm-icon>{{ tt('discover.modal.dest.up', { name: folders[folders.length - 2] }) }}</button>
-            <div v-if="picker.browse.loading" class="dm-dest-tree-note">{{ tt('discover.modal.lookingUp') }}</div>
-            <template v-else>
-              <div v-if="!picker.browse.failed && picker.browse.dirs.length === 0" class="dm-dest-tree-note">{{ tt('discover.modal.dest.noFolders') }}</div>
-              <button v-for="d in picker.browse.dirs" :key="d" type="button" class="dm-dest-node" :aria-pressed="$root.dmBrowseIsBase(d) ? 'true' : 'false'" v-on:click="$root.dmBrowseInto(d)"><dm-icon name="folder" :size="14"></dm-icon>{{ d }}</button>
-            </template>
-            <button v-if="!picker.browse.naming" type="button" class="dm-dest-node dm-dest-node-new" v-on:click="$root.dmBrowseNewFolder()"><dm-icon name="plus" :size="14"></dm-icon>{{ tt('discover.modal.dest.newFolder') }}</button>
-            <div v-else class="dm-dest-naming">
-              <dm-icon name="plus" :size="14"></dm-icon>
-              <input class="dm-input browser-default" type="text" maxlength="200" ref="newFolder" v-model="picker.browse.newName" v-on:keydown.enter.prevent="$root.dmBrowseNewFolder()" :placeholder="tt('discover.modal.dest.newFolderName')" :aria-label="tt('discover.modal.dest.newFolderName')">
-              <button type="button" class="dm-btn" v-on:click="$root.dmBrowseNewFolder()">{{ tt('discover.modal.dest.newFolderAdd') }}</button>
+          <div v-if="picker.error && !picker.custom" id="dm-dest-save-err" class="dm-dest-err" role="alert"><dm-icon name="warn" :size="12"></dm-icon><span>{{ picker.error }}</span></div>
+          <div class="dm-dest-folders">
+            <button type="button" class="dm-btn dm-btn-quiet" data-dm-browse :aria-expanded="picker.browse ? 'true' : 'false'" :aria-disabled="picker.saving && !picker.browse ? 'true' : null" v-on:click="$root.dmBrowseToggle()"><dm-icon name="folder" :size="14"></dm-icon>{{ tt(picker.browse ? 'discover.modal.dest.hideFolders' : 'discover.modal.dest.startFrom') }}</button>
+            <div v-if="picker.browse" class="dm-dest-tree" role="group" :aria-label="tt('discover.modal.dest.foldersIn', { library: picker.vpath })">
+              <div class="dm-dest-tree-h"><b>{{ folders[0] }}</b><span v-for="(c, i) in folders.slice(1)" :key="i" class="dm-dest-crumb"><i aria-hidden="true">&rsaquo;</i>{{ c }}</span><template v-if="!picker.browse.loading && !picker.browse.failed && picker.browse.dirs.length > 0"><i aria-hidden="true">&middot;</i><span>{{ tt('discover.modal.dest.folderCount', { count: picker.browse.dirs.length }) }}</span></template></div>
+              <button v-if="folders.length > 1" type="button" class="dm-dest-node" :aria-disabled="picker.saving ? 'true' : null" v-on:click="$root.dmBrowseUp()"><dm-icon name="up" :size="14"></dm-icon>{{ tt('discover.modal.dest.up', { name: folders[folders.length - 2] }) }}</button>
+              <div v-if="picker.browse.loading" class="dm-dest-tree-note">{{ tt('discover.modal.lookingUp') }}</div>
+              <template v-else>
+                <div v-if="!picker.browse.failed && picker.browse.dirs.length === 0" class="dm-dest-tree-note">{{ tt('discover.modal.dest.noFolders') }}</div>
+                <button v-for="d in picker.browse.dirs" :key="d" type="button" class="dm-dest-node" :aria-pressed="$root.dmBrowseIsBase(d) ? 'true' : 'false'" :aria-disabled="picker.saving ? 'true' : null" v-on:click="$root.dmBrowseInto(d)"><dm-icon name="folder" :size="14"></dm-icon>{{ d }}</button>
+              </template>
+              <button v-if="!picker.browse.naming" type="button" class="dm-dest-node dm-dest-node-new" :aria-disabled="picker.saving ? 'true' : null" v-on:click="$root.dmBrowseNewFolder()"><dm-icon name="plus" :size="14"></dm-icon>{{ tt('discover.modal.dest.newFolder') }}</button>
+              <div v-else class="dm-dest-naming">
+                <dm-icon name="plus" :size="14"></dm-icon>
+                <input class="dm-input browser-default" type="text" maxlength="200" ref="newFolder" v-model="picker.browse.newName" v-on:keydown.enter.prevent="$root.dmBrowseNewFolder()" :disabled="picker.saving" :placeholder="tt('discover.modal.dest.newFolderName')" :aria-label="tt('discover.modal.dest.newFolderName')">
+                <button type="button" class="dm-btn" :aria-disabled="picker.saving ? 'true' : null" v-on:click="$root.dmBrowseNewFolder()">{{ tt('discover.modal.dest.newFolderAdd') }}</button>
+              </div>
+              <div v-if="picker.browse.braced" class="dm-dest-tree-note dm-dest-tree-warn" role="alert">{{ tt('discover.modal.dest.folderBraces', { folder: picker.browse.braced }) }}</div>
             </div>
+            <div v-if="$root.dmBrowseMissing()" class="dm-dest-missing">{{ tt('discover.modal.dest.willCreate') }}</div>
           </div>
-          <div v-if="$root.dmBrowseMissing()" class="dm-dest-missing">{{ tt('discover.modal.dest.willCreate') }}</div>
-        </div>
-        <div class="dm-dest-field">
-          <label for="dm-dest-layout">{{ tt('discover.modal.dest.layout') }}</label>
-          <input id="dm-dest-layout" ref="layout" class="dm-input dm-dest-mono browser-default" type="text" maxlength="500" spellcheck="false" v-model="picker.layout" :class="{ 'is-err': preview.field === 'layout' }" :aria-invalid="preview.field === 'layout' ? 'true' : null" aria-describedby="dm-dest-layout-h">
-          <div class="dm-dest-vars">
-            <button v-for="v in $root.dmPickerVars()" :key="v" type="button" class="dm-dest-var" :aria-label="$root.dmPickerVarLabel(v)" v-on:click="$root.dmInsertVar(v, $refs.layout)">{{ $root.dmVarToken(v) }}</button>
-            <span class="dm-dest-vars-rule" aria-hidden="true"></span>
-            <button v-if="$root.dmPickerOffersServerFolders()" type="button" class="dm-btn dm-btn-quiet" v-on:click="$root.dmUseServerFolders()">{{ tt('discover.modal.dest.sameAsServer') }}</button>
-            <button type="button" class="dm-btn dm-btn-quiet" v-on:click="$root.dmUseLibraryTemplate()">{{ tt('discover.modal.dest.useTemplate') }}</button>
+          <div v-if="picker.custom" class="dm-dest-custom">
+            <input id="dm-dest-custom" ref="custom" class="dm-input dm-dest-mono browser-default" type="text" maxlength="500" spellcheck="false" autocomplete="off" v-model="picker.text" v-on:input="$root.dmPickerTyped()" :disabled="picker.saving" :placeholder="tt('discover.modal.dest.customHint', { example: $root.dmVarToken('ARTIST') + '/' + $root.dmVarToken('ALBUM') })" :aria-label="tt('discover.modal.dest.customField')" :class="{ 'is-warn': !!problem && !picker.error, 'is-err': !!picker.error }" :aria-invalid="problem || picker.error ? 'true' : null" :aria-describedby="picker.error ? 'dm-dest-save-err dm-dest-custom-h' : problem ? 'dm-dest-custom-w dm-dest-custom-h' : 'dm-dest-custom-h'">
+            <div v-if="picker.error" id="dm-dest-save-err" class="dm-dest-err" role="alert"><dm-icon name="warn" :size="12"></dm-icon><span>{{ picker.error }}</span></div>
+            <div v-else-if="problem" id="dm-dest-custom-w" class="dm-dest-warn"><dm-icon name="warn" :size="12"></dm-icon><span>{{ problem }}</span></div>
+            <div class="dm-dest-vars">
+              <button v-for="v in $root.dmPickerVars()" :key="v" type="button" class="dm-dest-var" :aria-label="$root.dmPickerVarLabel(v)" :aria-disabled="picker.saving || !$root.dmPickerVarFits(v) ? 'true' : null" v-on:click="$root.dmInsertVar(v, $refs.custom)">{{ $root.dmVarToken(v) }}</button>
+            </div>
+            <div id="dm-dest-custom-h" class="dm-dest-hint">{{ tt('discover.modal.dest.customHelp') }}</div>
           </div>
-          <div v-if="preview.field === 'layout'" id="dm-dest-layout-h" class="dm-dest-err"><dm-icon name="warn" :size="12"></dm-icon><span>{{ $root.dmPickerProblem(preview) }}</span></div>
-          <div v-else-if="preview.missingVars.length" id="dm-dest-layout-h" class="dm-dest-hint">{{ $root.dmPickerMissing(preview, from) }}</div>
-          <div v-else id="dm-dest-layout-h" class="dm-dest-hint">{{ tt('discover.modal.dest.layoutHint') }}</div>
         </div>
-        <div v-if="preview.valid" class="dm-dest-field">
-          <div class="dm-dest-label">{{ tt('discover.modal.dest.preview') }}</div>
-          <div class="dm-dest-preview"><dm-dest-path :path="preview" variant="preview"></dm-dest-path></div>
-        </div>
-        <div v-if="picker.error" id="dm-dest-save-err" class="dm-dest-err" role="alert">{{ picker.error }}</div>
         <div class="dm-dest-ed-foot">
-          <span class="dm-dest-applies">{{ tt('discover.modal.dest.applies') }}</span>
-          <button type="button" class="dm-btn dm-btn-ghost" v-on:click="$root.dmClosePicker()">{{ tt('discover.modal.cancel') }}</button>
-          <button type="button" class="dm-btn dm-btn-primary" :class="{ 'is-busy': picker.saving }" :aria-disabled="!preview.valid || picker.saving ? 'true' : null" :aria-describedby="picker.error ? 'dm-dest-save-err' : null" v-on:click="$root.dmPickerSubmit(shown)"><dm-icon name="check" :size="14"></dm-icon>{{ tt('discover.modal.dest.save') }}</button>
+          <button v-if="mine || !$root.dmPickerIsDefault()" type="button" class="dm-btn dm-btn-quiet" :aria-disabled="picker.saving ? 'true' : null" v-on:click="$root.dmPickerUseDefault()">{{ tt('discover.modal.dest.useDefault') }}</button>
+          <button type="button" class="dm-btn dm-btn-primary" :class="{ 'is-busy': picker.saving }" :aria-disabled="$root.dmPickerCanSave() ? null : 'true'" :aria-describedby="picker.error ? 'dm-dest-save-err' : null" v-on:click="$root.dmPickerSubmit()"><dm-icon v-if="!picker.saving" name="check" :size="14"></dm-icon>{{ tt(picker.saving ? 'discover.modal.dest.saving' : 'discover.modal.dest.save') }}</button>
         </div>
       </div>
       <div v-else-if="dest && path" class="dm-dest">
@@ -708,7 +754,7 @@ const VUEPLAYERCORE = (() => {
         <div class="dm-dest-foot">
           <span class="dm-dest-source">{{ tt(dest.source === 'user' ? 'discover.modal.dest.savedFor' : 'discover.modal.dest.libraryDefault') }}</span>
           <span class="dm-dest-acts">
-            <button type="button" class="dm-btn dm-btn-ghost" data-dm-change v-on:click="$root.dmOpenPicker()">{{ tt('discover.modal.dest.change') }}</button>
+            <button type="button" class="dm-btn dm-btn-ghost" data-dm-change v-on:click="$root.dmOpenPicker(download)">{{ tt('discover.modal.dest.change') }}</button>
           </span>
         </div>
       </div>`,
@@ -2556,11 +2602,7 @@ const VUEPLAYERCORE = (() => {
           if (c.key) { return { text: this.tt(c.key), kind: c.kind }; }
           if (!c.parts) { return c; }
           const parts = c.parts.map((x) => (x.slot ? { text: this.tt(x.key), slot: true } : { text: x.text, slot: false }));
-          // a folder of nothing but a ‹genre›, a ‹year› or a ‹server
-          // folder›: a song with none (one at its server's library root)
-          // leaves it out (dmDestNested)
-          const drops = c.parts.every((x) => x.slot === 'GENRE' || x.slot === 'YEAR' || x.slot === 'SERVERFOLDER');
-          return { text: parts.map((x) => x.text).join(''), kind: c.kind, parts, drops };
+          return { text: parts.map((x) => x.text).join(''), kind: c.kind, parts };
         });
         return Object.assign({}, p, {
           library: d.vpath,
@@ -2639,9 +2681,11 @@ const VUEPLAYERCORE = (() => {
       // it opened without.
       dmLoadDestination: async function (gen) {
         const host = MSTREAMAPI.currentServer.host;
+        const saves = this.discover.dest.saves;
         let view = null;
         try { view = await MSTREAMAPI.discoveryDestination(); } catch (_) { view = null; }
         if (!view || host !== MSTREAMAPI.currentServer.host) { return; }   // nothing new, or the app moved to another server meanwhile
+        if (this.discover.dest.saves !== saves) { return; }   // a save answered meanwhile: its view is newer than this one
         const had = this.dmHasDestination();
         this.discover.dest.view = view;
         if (!this.dmLive(gen)) { return; }
@@ -2669,17 +2713,56 @@ const VUEPLAYERCORE = (() => {
         this.dmLoadDestination(gen);
         return true;
       },
-      // Change…: the editor, on the saved destination. `reset` = "Use the
-      // library default" was pressed (Save then goes back to the default).
-      dmOpenPicker: function () {
+      // Change…: the editor, on the saved destination — and the
+      // destination read again (another tab or device may have saved one
+      // since): its answer is taken while nothing was edited
+      // (dmPickerSync). The editor's state: `vpath` the library chosen,
+      // `layout` the preset chosen, `custom` Custom chosen (its field's
+      // `text` is the layout then; what was typed stays there while a
+      // preset is chosen), `before` Custom's text before a library's own
+      // layout moved into it, `from` the destination it opened on; `reset`
+      // = "Use the library default" was pressed (Save then goes back to the
+      // default); `download` = opened from Get it's bar (the saved toast
+      // says files, not copies).
+      dmOpenPicker: function (download) {
+        const m = this.discover.modal;
         const d = this.discover.dest.view && this.discover.dest.view.destination;
         if (!d) { return; }
-        this.discover.modal.picker = {
-          vpath: d.vpath, base: d.base || '', layout: d.layout,
-          browse: null, saving: false, error: '', reset: false,
-        };
+        const k = { vpath: '', layout: '', custom: false, text: '', before: null, from: null, browse: null, saving: false, error: '', reset: false, download: !!download };
+        this.dmPickerFill(k, d);
+        m.picker = k;
         // The editor opens in the bar's place; dm-dest scrolls it into view
         // and puts the keyboard on its first field.
+        const gen = m.gen;
+        this.dmLoadDestination(gen).then(() => { if (this.dmLive(gen) && m.picker === k) { this.dmPickerSync(); } });
+      },
+      // The editor takes a destination. A base folder set elsewhere (the
+      // terminal keeps one) comes in front of the layout
+      // (DISCOVERJOBS.foldBase: the files land in the same place) and is
+      // saved as part of it; a layout that is none of the presets opens in
+      // Custom's field, and so does one with a base folder in front —
+      // never a preset, even when the whole of it reads as one.
+      dmPickerFill: function (k, d) {
+        const layout = DISCOVERJOBS.foldBase(d.base, d.layout);
+        k.from = { vpath: d.vpath, base: d.base || '', layout: d.layout };
+        k.vpath = d.vpath;
+        k.layout = layout;
+        k.custom = layout !== d.layout || !this.dmPickerIsPreset(d.vpath, layout);
+        if (k.custom) { k.text = layout; }
+      },
+      // The destination read again while the editor is open: taken when it
+      // moved and nothing was edited (an edit is kept: Save or Cancel
+      // settles it). None any more: nothing to edit.
+      dmPickerSync: function () {
+        const m = this.discover.modal;
+        const k = m.picker;
+        const d = this.discover.dest.view && this.discover.dest.view.destination;
+        if (!k || k.saving) { return; }
+        if (!d) { m.picker = null; this.dmHoldFocus(); return; }
+        const f = k.from;
+        if (f.vpath === d.vpath && f.base === (d.base || '') && f.layout === d.layout) { return; }
+        if (this.dmPickerDirty()) { return; }
+        this.dmPickerFill(k, d);
       },
       // Whether the editor is open — it takes the place of the card's
       // action row while it is.
@@ -2699,15 +2782,16 @@ const VUEPLAYERCORE = (() => {
       // Where the keyboard goes when the editor changed under it, so focus
       // never drops to <body>: 'change' — Change…, the bar's or a state's
       // own (any control carrying data-dm-change); 'browse' — the folders
-      // toggle; 'first' — the editor's first field; 'tree' — the folder
-      // list's first row, only when the row pressed went away.
+      // toggle; 'first' — the editor's first field, the chosen library's
+      // chip; 'tree' — the folder list's first row, only when the row
+      // pressed went away.
       dmDestFocus: function (what) {
         this.$nextTick(() => {
           const win = this.$refs.dmodal || (typeof document.querySelector === 'function' ? document.querySelector('.dmodal') : null);
           if (!win) { return; }
           const now = document.activeElement;
           if (what === 'tree' && now && now !== document.body && win.contains(now)) { return; }
-          const el = win.querySelector({ change: '[data-dm-change]', browse: '[data-dm-browse]', first: '#dm-dest-lib, #dm-dest-base', tree: '.dm-dest-tree button' }[what] || null);
+          const el = win.querySelector({ change: '[data-dm-change]', browse: '[data-dm-browse]', first: '.dm-dest-chip[aria-pressed="true"]', tree: '.dm-dest-tree button' }[what] || null);
           if (el && el.focus) { el.focus(); }
         });
       },
@@ -2715,100 +2799,242 @@ const VUEPLAYERCORE = (() => {
         const v = this.discover.dest.view;
         return (v && v.libraries) || [];
       },
+      // The library chips: every library the account may add files to, and
+      // the chosen one when the server no longer lists it.
+      dmPickerChips: function () {
+        const k = this.discover.modal.picker;
+        const names = this.dmPickerLibraries().map((l) => l.vpath);
+        return k && names.indexOf(k.vpath) === -1 ? names.concat(k.vpath) : names;
+      },
       dmPickerVars: function () {
         const v = this.discover.dest.view;
         return (v && v.variables) || DISCOVERJOBS.LAYOUT_VARS;
       },
-      // A variable button's name for a screen reader ("Insert the album
-      // artist variable"); one the server adds later reads by its own name.
+      // A variable button's name for a screen reader ("Insert artist"),
+      // with the name it shows when the words do not already say it
+      // ("Insert album artist, ALBUMARTIST"): Voice Control finds a button
+      // by what it shows. One the server adds later reads by its own name.
       dmPickerVarLabel: function (name) {
-        const known = ['ARTIST', 'ALBUM', 'YEAR', 'GENRE', 'ALBUMARTIST', 'PEER', 'SERVERFOLDER'];
-        return known.indexOf(name) !== -1
+        const words = DISCOVERJOBS.LAYOUT_VARS.indexOf(name) !== -1
           ? this.tt('discover.modal.dest.insert.' + name.toLowerCase())
           : this.tt('discover.modal.dest.insertVar', { name });
+        return words.toLowerCase().indexOf(name.toLowerCase()) !== -1 ? words : `${words}, ${name}`;
       },
-      // The editor's preview: the fields as typed, by the scope the window
-      // has chosen (dmDestPath's answer; `from` as there: Get it's editor
-      // draws a download).
+      // The layouts offered for `vpath`'s library (the chosen one by
+      // default), in order: Artist / Album (the server's default, by the
+      // album's credit), Server / Artist / Album, Same folders as the
+      // server (where the server lists {{SERVERFOLDER}}: an older one would
+      // refuse it), then the library's own Path Template when it has one
+      // that is none of them. Any other layout is Custom's.
+      // → [{ key, layout }]
+      dmPickerPresets: function (vpath) {
+        const v = this.discover.dest.view;
+        const k = this.discover.modal.picker;
+        const lib = vpath || (k && k.vpath);
+        const artistAlbum = v && typeof v.defaultLayout === 'string' && v.defaultLayout.trim() ? v.defaultLayout : DISCOVERJOBS.DEFAULT_LAYOUT;
+        const own = this.dmPickerLibraries().find((l) => l.vpath === lib);
+        const template = own && typeof own.template === 'string' && own.template.trim() ? own.template : null;
+        const fixed = [artistAlbum, DISCOVERJOBS.PEER_LAYOUT, DISCOVERJOBS.SERVERFOLDER_LAYOUT];
+        const out = [{ key: 'discover.modal.dest.preset.artistAlbum', layout: artistAlbum }];
+        if (artistAlbum !== DISCOVERJOBS.PEER_LAYOUT) { out.push({ key: 'discover.modal.dest.preset.server', layout: DISCOVERJOBS.PEER_LAYOUT }); }
+        if (artistAlbum !== DISCOVERJOBS.SERVERFOLDER_LAYOUT && this.dmPickerVars().indexOf('SERVERFOLDER') !== -1) {
+          out.push({ key: 'discover.modal.dest.preset.serverFolders', layout: DISCOVERJOBS.SERVERFOLDER_LAYOUT });
+        }
+        if (template && fixed.indexOf(template) === -1) { out.push({ key: 'discover.modal.dest.preset.library', layout: template }); }
+        return out;
+      },
+      dmPickerIsPreset: function (vpath, layout) {
+        return this.dmPickerPresets(vpath).some((p) => p.layout === layout);
+      },
+      // The layout the editor holds: Custom's text while Custom is chosen,
+      // else the chosen preset. It is saved with no base folder.
+      dmPickerLayout: function () {
+        const k = this.discover.modal.picker;
+        return !k ? '' : (k.custom ? k.text : k.layout);
+      },
+      // Custom's field holds the layout as the editor opened it.
+      dmPickerAsOpened: function () {
+        const k = this.discover.modal.picker;
+        return !!(k && k.from && k.custom) && k.text === DISCOVERJOBS.foldBase(k.from.base, k.from.layout);
+      },
+      // The folder of a base folder set elsewhere that Custom's field still
+      // holds as it opened, when its name has a brace: a layout reads it as
+      // a variable or refuses it, so saved as it is, the files would land
+      // elsewhere. null when there is none.
+      dmPickerHeldBraces: function () {
+        const k = this.discover.modal.picker;
+        return this.dmPickerAsOpened() ? DISCOVERJOBS.bracedFolder(k.from.base) : null;
+      },
+      // Whether the editor holds anything to save: another library or
+      // layout than the one it opened on (a base folder set elsewhere,
+      // folded into the layout as it opened, is no edit; a preset of the
+      // same text over one whose name a layout reads as a variable is — the
+      // server's name, not that folder), or "Use the library default"
+      // pressed over a place saved for the account.
+      dmPickerDirty: function () {
+        const k = this.discover.modal.picker;
+        if (!k || !k.from) { return false; }
+        const v = this.discover.dest.view;
+        const saved = !!(v && v.destination && v.destination.source === 'user');
+        return k.vpath !== k.from.vpath || this.dmPickerLayout() !== DISCOVERJOBS.foldBase(k.from.base, k.from.layout)
+          || (!k.custom && DISCOVERJOBS.bracedFolder(k.from.base) !== null)
+          || (k.reset && saved && this.dmPickerIsDefault());
+      },
+      // Save is on: something to save, a layout the server takes (Custom's
+      // text empty or refused, or still holding a folder a layout cannot,
+      // holds it), nothing out.
+      dmPickerCanSave: function () {
+        const k = this.discover.modal.picker;
+        if (!k || k.saving || !this.dmPickerDirty()) { return false; }
+        return DISCOVERJOBS.validateLayout(this.dmPickerLayout()).valid && !(k.custom && this.dmPickerHeldBraces());
+      },
+      // Custom's field: the validator's words as typed (none while it is
+      // empty: the preview asks for a path), or the folder it still holds
+      // as it opened that a layout reads as a variable. '' when it is fine.
+      dmPickerCustomProblem: function () {
+        const k = this.discover.modal.picker;
+        if (!k || !k.custom || !k.text) { return ''; }
+        const check = DISCOVERJOBS.validateLayout(k.text);
+        if (!check.valid) { return this.dmPickerProblem(check); }
+        const held = this.dmPickerHeldBraces();
+        return held ? this.tt('discover.modal.dest.errBaseBraces', { folder: held }) : '';
+      },
+      // A layout radio: a preset. What Custom's field holds stays in it.
+      dmPickerChoose: function (layout) {
+        const k = this.discover.modal.picker;
+        if (!k || k.saving) { return; }
+        k.layout = layout;
+        k.custom = false;
+        k.error = '';
+      },
+      // The Custom radio: its field, empty until something is typed (or
+      // what was typed before).
+      dmPickerChooseCustom: function () {
+        const k = this.discover.modal.picker;
+        if (!k || k.saving) { return; }
+        k.custom = true;
+        k.error = '';
+      },
+      // Custom's field typed in: a refusal under the layout goes.
+      dmPickerTyped: function () {
+        const k = this.discover.modal.picker;
+        if (k) { k.error = ''; }
+      },
+      // A library chip. A library's own layout (its Path Template) that
+      // leaves with it stays the layout, in Custom's field; back in that
+      // library with it untouched, its preset again and Custom's field as
+      // it was (never over a base folder a layout reads as a variable).
+      dmPickerLibrary: function (vpath) {
+        const k = this.discover.modal.picker;
+        if (!k || k.saving) { return; }
+        const layout = k.layout;
+        k.vpath = vpath;
+        if (!k.custom && !this.dmPickerIsPreset(vpath, layout)) {
+          k.before = k.text;
+          k.custom = true;
+          k.text = layout;
+        } else if (k.custom && k.text === layout && !this.dmPickerHeldBraces() && this.dmPickerIsPreset(vpath, layout)) {
+          k.custom = false;
+          k.text = k.before === null ? k.text : k.before;
+          k.before = null;
+        }
+        k.error = '';
+        if (k.browse) { this.dmBrowseAnchor(); }
+      },
+      // The editor's preview: the layout the editor holds, by the scope the
+      // window has chosen (dmDestPath's answer; `from` as there: Get it's
+      // editor draws a download), with no base folder — but the layout as
+      // it opened is drawn as the server holds it, its base folder and
+      // all, so a folder set elsewhere reads as the bar reads it, whatever
+      // a layout would make of its name.
       dmPickerPreview: function (scope, from) {
         const k = this.discover.modal.picker;
         if (!k) { return null; }
-        return this.dmDestPathOf({ vpath: k.vpath, base: k.base, layout: k.layout }, scope, from);
+        const opened = this.dmPickerAsOpened() ? k.from : null;
+        return this.dmDestPathOf({ vpath: k.vpath, base: opened ? opened.base : '', layout: opened ? opened.layout : this.dmPickerLayout() }, scope, from);
       },
-      // The layout's hint when a variable has no value for this item: it
-      // drops out of the path. {{PEER}} and {{SERVERFOLDER}} are not tags
-      // but the server a song comes from: a download (`from` with no path)
-      // comes from none, and a song at the top of its server's library
-      // sits in no folder there — the tags' words are for tags.
+      // Why the preview draws no path, or null: Custom's field is empty, the
+      // layout would be refused, or this item's path is longer than the
+      // server takes (no fault of the layout's: Save takes it) — the song's,
+      // in the phone's words, when the preview draws the song (`scope`).
+      // → { text, warn }
+      dmPickerUnseen: function (preview, scope) {
+        const k = this.discover.modal.picker;
+        if (k && k.custom && !k.text) { return { text: this.tt('discover.modal.dest.customEmpty'), warn: false }; }
+        if (!preview || preview.valid) { return null; }
+        if (preview.error !== 'path_too_long') { return { text: this.tt('discover.modal.dest.fixLayout'), warn: true }; }
+        const key = (scope || 'song') === 'song' ? 'discover.modal.dest.tooLongSong' : 'discover.modal.dest.tooLong';
+        return { text: this.tt(key, { max: DISCOVERJOBS.MAX_RESOLVED_LEN }), warn: true };
+      },
+      // The preview's first line, what lands there: the song by its title,
+      // the album, every album of the artist, or the albums the library
+      // lacks (the one it lacks by name).
+      dmPickerLandsAt: function (scope) {
+        const t = this.discover.modal.track || {};
+        if (scope === 'album') { return this.tt('discover.modal.dest.landsAt', { title: t.album || '' }); }
+        if (scope === 'artist') { return this.tt('discover.modal.dest.landsAtArtist', { artist: t.artist || '' }); }
+        if (scope === 'artist-missing') {
+          const one = this.dmMissingAlbum();
+          return one ? this.tt('discover.modal.dest.landsAt', { title: one.name }) : this.tt('discover.modal.dest.landsAtMissing');
+        }
+        return this.tt('discover.modal.dest.landsAt', { title: t.title || DISCOVERJOBS.safeFileName(this.dmLayoutFile()) });
+      },
+      // The preview's note for a variable with no value for this item: it
+      // is left out of the path, named in its braces as the phone names it
+      // ("No value for this song, so left out of the path: {{YEAR}}").
+      // {{PEER}} and {{SERVERFOLDER}} are not tags but the server a song
+      // comes from: a download (`from` with no path) comes from none, and a
+      // song at the top of its server's library sits in no folder there —
+      // the tags' words are for tags.
       dmPickerMissing: function (preview, from) {
         const vars = (preview && preview.missingVars) || [];
-        const words = { vars: vars.join(', ') };
+        const words = { vars: vars.map((v) => this.dmVarToken(v)).join(', ') };
         if (from && !from.filepath && vars.length && vars.every((v) => v === 'PEER' || v === 'SERVERFOLDER')) {
           return this.tt('discover.modal.dest.missingDownload', words);
         }
         if (vars.length === 1 && vars[0] === 'SERVERFOLDER') { return this.tt('discover.modal.dest.missingServer', words); }
         return this.tt('discover.modal.dest.missing', words);
       },
-      // The engine's refusal in words (the server's codes, one table); an
-      // unknown variable named as it was typed, in its braces.
-      dmPickerProblem: function (preview) {
-        if (!preview || preview.valid) { return ''; }
-        if (preview.error === 'unknown_variable') {
-          return this.tt('discover.modal.dest.errUnknownVar', { name: preview.variable ? this.dmVarToken(preview.variable) : '', vars: this.dmPickerVars().join(', ') });
+      // The validator's refusal in words (the server's codes, one table); an
+      // unknown variable named as it was typed ("{{ Artst }}"), in its braces.
+      dmPickerProblem: function (check) {
+        if (!check || check.valid) { return ''; }
+        if (check.error === 'unknown_variable') {
+          const name = check.token || (check.variable ? this.dmVarToken(check.variable) : '');
+          return this.tt('discover.modal.dest.errUnknownVar', { name, vars: this.dmPickerVars().join(', ') });
         }
-        const known = ['empty_template', 'unbalanced_braces', 'absolute_template', 'traversal', 'empty_path'];
-        return this.tt(known.indexOf(preview.error) !== -1 ? 'discover.modal.dest.err.' + preview.error : 'discover.modal.dest.errGeneric');
-      },
-      // "Your layout also starts with Boukmanflow": the base folder ends
-      // with the folder the layout renders first for this item (case
-      // folded), so files would land in Boukmanflow › Boukmanflow — a
-      // warning, not an error. A first folder that is only a ‹genre› or a
-      // ‹year› slot drops out for a song with none: the one after it is
-      // first for that song. The folder's name, else ''.
-      dmDestNested: function (preview) {
-        if (!preview || !preview.valid) { return ''; }
-        const last = DISCOVERJOBS.pathCrumbs(preview.base).pop();
-        const first = preview.crumbs.find((c) => c.kind === 'rendered' && !c.drops);
-        return last && first && last.toLowerCase() === first.text.toLowerCase() ? first.text : '';
+        const code = { absolute_path: 'absolute_template', drive_letter_segment: 'drive_letter' }[check.error] || check.error;
+        const known = ['unbalanced_braces', 'absolute_template', 'traversal', 'empty_path', 'home_string', 'drive_letter', 'template_too_long', 'invalid_chars'];
+        return known.indexOf(code) !== -1
+          ? this.tt('discover.modal.dest.err.' + code, { example: this.dmVarToken('ARTIST'), max: DISCOVERJOBS.MAX_TEMPLATE_LEN })
+          : this.tt('discover.modal.dest.errGeneric');
       },
       dmVarToken: function (name) {
         return '{' + '{' + name + '}' + '}';
       },
-      // A variable button drops {{VAR}} where the caret is (`input` is the
-      // layout field, handed over by the dm-dest editor).
+      // A variable button has room left for its token in Custom's field
+      // (the field's own limit sees only the keyboard).
+      dmPickerVarFits: function (name) {
+        const k = this.discover.modal.picker;
+        return !!k && k.text.length + this.dmVarToken(name).length <= DISCOVERJOBS.MAX_TEMPLATE_LEN;
+      },
+      // A variable button drops {{VAR}} where the caret is in Custom's
+      // field, over the selection (`input` is the field, handed over by
+      // the dm-dest editor), the caret after it.
       dmInsertVar: function (name, input) {
         const k = this.discover.modal.picker;
-        if (!k) { return; }
-        const token = '{{' + name + '}}';
+        if (!k || k.saving || !this.dmPickerVarFits(name)) { return; }
+        const token = this.dmVarToken(name);
         const el = input || null;
-        const at = el && typeof el.selectionStart === 'number' ? el.selectionStart : k.layout.length;
+        const at = el && typeof el.selectionStart === 'number' ? el.selectionStart : k.text.length;
         const end = el && typeof el.selectionEnd === 'number' ? el.selectionEnd : at;
-        k.layout = k.layout.slice(0, at) + token + k.layout.slice(end);
+        k.text = k.text.slice(0, at) + token + k.text.slice(end);
+        k.error = '';
         this.$nextTick(() => {
           if (!el || !el.focus) { return; }
           el.focus();
           try { el.setSelectionRange(at + token.length, at + token.length); } catch (_) { /* not a text input */ }
         });
-      },
-      // "Same folders as the server": the layout only — each song where it
-      // sits on the server it came from ({{SERVERFOLDER}}). Offered when
-      // the server lists the variable (an older one would refuse it).
-      dmPickerOffersServerFolders: function () {
-        return this.dmPickerVars().indexOf('SERVERFOLDER') !== -1;
-      },
-      dmUseServerFolders: function () {
-        const k = this.discover.modal.picker;
-        if (!k) { return; }
-        k.layout = DISCOVERJOBS.SERVERFOLDER_LAYOUT;
-      },
-      // "Use the library template": the layout only — the chosen library's
-      // admin Path Template, else the plain default.
-      dmUseLibraryTemplate: function () {
-        const k = this.discover.modal.picker;
-        if (!k) { return; }
-        const lib = this.dmPickerLibraries().find((l) => l.vpath === k.vpath);
-        const v = this.discover.dest.view;
-        k.layout = (lib && lib.template) || (v && v.defaultLayout) || DISCOVERJOBS.DEFAULT_LAYOUT;
       },
       // The library default — what the account has with nothing saved
       // (destination.js destinationFor): the first library it may write
@@ -2819,52 +3045,71 @@ const VUEPLAYERCORE = (() => {
         const lib = v && Array.isArray(v.libraries) ? v.libraries[0] : null;
         return lib ? { vpath: lib.vpath, base: '', layout: lib.template || v.defaultLayout || DISCOVERJOBS.DEFAULT_LAYOUT } : null;
       },
-      // Whether the fields say the library default ("Use the library
-      // default" is offered only while they do not).
+      // Whether the editor says the library default ("Use the library
+      // default" is offered while it does not, and while the account's own
+      // place is in force — one equal to the default included: Save then
+      // goes back to following the library).
       dmPickerIsDefault: function () {
         const k = this.discover.modal.picker;
         const d = this.dmDestDefault();
-        return !!(k && d) && DISCOVERJOBS.sameDestination(k, d);
+        return !!(k && d) && DISCOVERJOBS.sameDestination({ vpath: k.vpath, base: '', layout: this.dmPickerLayout() }, d);
       },
-      // "Use the library default": refills the fields, nothing more —
-      // nothing is saved until Save. The button goes with the difference,
+      // "Use the library default": refills the editor, nothing more —
+      // nothing is saved until Save. The button may go with the difference,
       // so the keyboard moves to the first field.
       dmPickerUseDefault: function () {
         const k = this.discover.modal.picker;
         const d = this.dmDestDefault();
-        if (!k || !d) { return; }
+        if (!k || !d || k.saving) { return; }
         k.vpath = d.vpath;
-        k.base = d.base;
         k.layout = d.layout;
+        k.custom = !this.dmPickerIsPreset(d.vpath, d.layout);
+        if (k.custom) { k.text = d.layout; }
         k.reset = true;
+        k.error = '';
         if (k.browse) { this.dmBrowseAnchor(); }
         this.dmDestFocus('first');
       },
-      dmPickerLibraryChanged: function () {
-        const k = this.discover.modal.picker;
-        if (k && k.browse) { this.dmBrowseAnchor(); }
-      },
-      // The base folder as typed, normalised ('' for the library root, or
-      // when it would be refused).
+      // The folder the layout starts in whatever the tags — Custom's
+      // leading folders that name no variable, normalised ('' for a
+      // preset, for none, or for one that would be refused): the folder
+      // list's chosen folder.
       dmPickerBase: function () {
         const k = this.discover.modal.picker;
-        const norm = DISCOVERJOBS.normalizeBase(k ? k.base : '');
+        const norm = DISCOVERJOBS.normalizeBase(k && k.custom ? DISCOVERJOBS.layoutLead(k.text).folders : '');
         return norm.valid ? norm.base : '';
       },
-      // Browse…: the file explorer's own listing, folders only, one level at
-      // a time. `dir` is the folder listed: the base folder's parent when
-      // the list opens, so the chosen folder shows pressed among its
-      // neighbours; a row chooses its folder and lists what is in it; Up
-      // chooses the folder above. A base folder that does not exist yet is
-      // fine — the first copy creates it — and the list says so.
+      // A folder chosen in the list starts Custom's layout: in place of the
+      // folders it starts with — or, from a preset, in front of it (the
+      // folder and that layout, as foldBase holds a base folder). Custom
+      // is chosen. The library root from a preset changes nothing; nothing
+      // changes while a save is out.
+      dmPickerStartAt: function (folder) {
+        const k = this.discover.modal.picker;
+        if (!k || k.saving || (!k.custom && !folder)) { return; }
+        k.text = k.custom ? DISCOVERJOBS.startLayoutAt(folder, k.text) : DISCOVERJOBS.foldBase(folder, k.layout);
+        k.custom = true;
+        k.error = '';
+      },
+      // "Start from an existing folder…": the file explorer's own listing,
+      // folders only, one level at a time. `dir` is the folder listed: the
+      // chosen folder's parent when the list opens, so it shows pressed
+      // among its neighbours; a row chooses its folder (dmPickerStartAt)
+      // and lists what is in it; Up chooses the folder above. A folder that
+      // does not exist yet is fine — the first copy creates it — and the
+      // list says so. One whose name has a brace cannot start a layout (a
+      // layout reads it as a variable, or refuses it): pressed, the list
+      // says so (`braced`) and nothing changes. While a save is out the
+      // list only closes.
       dmBrowseToggle: function () {
         const k = this.discover.modal.picker;
         if (!k) { return; }
         if (k.browse) { k.browse = null; this.dmDestFocus('browse'); return; }
-        k.browse = { dir: '', loading: false, dirs: [], failed: false, naming: false, newName: '' };
+        if (k.saving) { return; }
+        k.browse = { dir: '', loading: false, dirs: [], failed: false, naming: false, newName: '', braced: '' };
         this.dmBrowseAnchor();
       },
-      // List the base folder's parent (the library root for an empty base).
+      // List the chosen folder's parent (the library root for none).
       dmBrowseAnchor: function () {
         const k = this.discover.modal.picker;
         if (!k || !k.browse) { return; }
@@ -2894,14 +3139,15 @@ const VUEPLAYERCORE = (() => {
         if (!k) { return []; }
         return [k.vpath].concat(DISCOVERJOBS.pathCrumbs(k.browse ? k.browse.dir : this.dmPickerBase()));
       },
-      // A listed folder that is the base folder (pressed).
+      // A listed folder that is the one the layout starts in (pressed).
       dmBrowseIsBase: function (name) {
         const k = this.discover.modal.picker;
         if (!k || !k.browse) { return false; }
         return [k.browse.dir, name].filter(Boolean).join('/') === this.dmPickerBase();
       },
-      // The base folder does not exist yet: the listed folder is not there
-      // itself, or it is the base's parent and holds no folder of its name.
+      // The folder the layout starts in does not exist yet: the listed
+      // folder is not there itself, or it is that folder's parent and holds
+      // no folder of its name.
       dmBrowseMissing: function () {
         const k = this.discover.modal.picker;
         const b = k && k.browse;
@@ -2912,9 +3158,12 @@ const VUEPLAYERCORE = (() => {
       },
       dmBrowseInto: function (name, fresh) {
         const k = this.discover.modal.picker;
-        if (!k || !k.browse) { return; }
-        const into = [k.browse.dir, DISCOVERJOBS.sanitizeSegment(name)].filter(Boolean).join('/');
-        k.base = into;
+        if (!k || !k.browse || k.saving) { return; }
+        const folder = DISCOVERJOBS.sanitizeSegment(name);
+        if (DISCOVERJOBS.bracedFolder(folder) !== null) { k.browse.braced = folder; return; }
+        k.browse.braced = '';
+        const into = [k.browse.dir, folder].filter(Boolean).join('/');
+        this.dmPickerStartAt(into);
         k.browse.dir = into;
         k.browse.naming = false;
         k.browse.newName = '';
@@ -2925,17 +3174,18 @@ const VUEPLAYERCORE = (() => {
       },
       dmBrowseUp: function () {
         const k = this.discover.modal.picker;
-        if (!k || !k.browse) { return; }
+        if (!k || !k.browse || k.saving) { return; }
+        k.browse.braced = '';
         const parts = DISCOVERJOBS.pathCrumbs(k.browse.dir);
         parts.pop();
         k.browse.dir = parts.join('/');
-        k.base = k.browse.dir;
+        this.dmPickerStartAt(k.browse.dir);
         this.dmDestFocus('tree');
         this.dmBrowseLoad();
       },
       dmBrowseNewFolder: function () {
         const k = this.discover.modal.picker;
-        if (!k || !k.browse) { return; }
+        if (!k || !k.browse || k.saving) { return; }
         if (!k.browse.naming) {
           k.browse.naming = true;   // dm-dest puts the caret in the name field
           return;
@@ -2944,25 +3194,32 @@ const VUEPLAYERCORE = (() => {
         if (name) { this.dmBrowseInto(name, k.browse.dirs.indexOf(name) === -1); }
       },
       // Save: kept for the account, so every copy and download from now on
-      // lands under it — or, after "Use the library default", back to the
-      // default itself (the account then follows the library's template).
-      // The editor closes on the new path, the keyboard on Change…; a
-      // refusal keeps it open with the server's words. `scope` = the one
-      // the preview is drawn for.
-      dmPickerSubmit: async function (scope) {
+      // lands under it — the layout with no base folder (one set elsewhere
+      // went into the layout; a preset chosen over it leaves it behind) —
+      // or, after "Use the library default", back to the default itself
+      // (the account then follows the library's template). The editor
+      // closes on the new path, a toast says where copies (Get it's: files)
+      // land and the keyboard goes back to Change…; a refusal keeps it open
+      // with the server's words under the layout. A read of the place sent
+      // before the answer is dropped (dmLoadDestination): it would draw the
+      // place from before the save.
+      dmPickerSubmit: async function () {
         const m = this.discover.modal;
         const k = m.picker;
         const gen = m.gen;
-        const preview = this.dmPickerPreview(scope);
-        if (!k || k.saving || !preview || !preview.valid) { return; }
-        const destination = k.reset && this.dmPickerIsDefault() ? null : { vpath: k.vpath, base: preview.base, layout: k.layout };
+        if (!k || !this.dmPickerCanSave()) { return; }
+        const destination = k.reset && this.dmPickerIsDefault() ? null : { vpath: k.vpath, base: '', layout: this.dmPickerLayout() };
         k.saving = true;
         k.error = '';
         try {
-          this.discover.dest.view = await MSTREAMAPI.discoverySaveDestination(destination);
+          const view = await MSTREAMAPI.discoverySaveDestination(destination);
+          this.discover.dest.view = view;
+          this.discover.dest.saves += 1;
           if (this.dmLive(gen) && m.picker === k) {
             m.picker = null;
             this.dmDestFocus('change');
+            const d = view && view.destination;
+            if (d) { iziToast.success({ title: this.tt(k.download ? 'discover.modal.dest.savedFiles' : 'discover.modal.dest.saved', { path: this.dmDestLanding(d) }), position: 'topCenter', timeout: 3000 }); }
           }
         } catch (err) {
           if (this.dmLive(gen) && m.picker === k) {
@@ -2970,6 +3227,12 @@ const VUEPLAYERCORE = (() => {
             k.error = this.dmErrorText(err);
           }
         }
+      },
+      // Where every copy lands whatever its tags, for the saved toast: the
+      // library, a base folder, and the layout's own leading folders that
+      // name no variable ("copies › From friends").
+      dmDestLanding: function (d) {
+        return [d.vpath].concat(DISCOVERJOBS.pathCrumbs(DISCOVERJOBS.normalizeBase(d.base).base), DISCOVERJOBS.pathCrumbs(DISCOVERJOBS.layoutLead(d.layout).folders)).join(' › ');
       },
 
       // ── The downloads strip ────────────────────────────────────────────
