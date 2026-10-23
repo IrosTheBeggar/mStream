@@ -23,6 +23,8 @@ const TAGS = [
   { artist: null, album: null, year: null, genre: null, albumartist: null },
   { artist: 'x'.repeat(260), album: 'tab\there', year: 0, genre: 'a\\b', albumartist: 'Various' },
   { artist: 'Björk', album: '音楽 / ロック', year: 1997, genre: 'Électro', albumartist: null },
+  // a "~" or a "$HOME" in a tag is a name: folded, never a refused path
+  { artist: '~Ana', album: '$HOME Sessions', year: null, genre: '${HOME}', albumartist: 'Tilde~Town' },
 ];
 const LAYOUTS = [
   '{{ARTIST}}/{{ALBUM}}', '{{ALBUMARTIST}}/{{ALBUM}} ({{YEAR}})', '{{PEER}}/{{ARTIST}}/{{ALBUM}}', '{{ artist }}\\{{Album}}',
@@ -36,9 +38,11 @@ const BASES = ['', 'From peers', ' From peers / Sam ', 'a\\b\\c', '/lead/and/tra
 
 describe('the layout preview agrees with the server engine', () => {
   test('sanitizeSegment and resolveLayout, value for value', () => {
-    for (const raw of [null, undefined, '', 'AC/DC', ' . dots . ', 'a:b*c?d<e>f|g"h', 'multi   space', 'x'.repeat(300), 42, 'new\nline']) {
+    for (const raw of [null, undefined, '', 'AC/DC', ' . dots . ', 'a:b*c?d<e>f|g"h', 'multi   space', 'x'.repeat(300), 42, 'new\nline',
+      '~', '~/music', '~Ana~', '$HOME', '${HOME}', '$HOME/x', 'a $HOME b', '$HOMEx', '$ {HOME}']) {
       assert.equal(J.sanitizeSegment(raw), pathTemplate.sanitizeSegment(raw), `sanitize ${JSON.stringify(raw)}`);
     }
+    assert.deepEqual(['~Ana', '$HOME Sessions', '${HOME}'].map(J.sanitizeSegment), ['-Ana', '- Sessions', '-'], 'folded as the server folds them');
     for (const layout of [...LAYOUTS, ...BAD_LAYOUTS]) {
       for (const tags of TAGS) {
         for (const peer of ["Sam's server", null, 'a/b']) {
@@ -533,6 +537,114 @@ describe('scopeTarget: the destination drawn for what the scope copies', () => {
         }
       }
     }
+  });
+});
+
+// ── what varies per song: the server files each song of a copy by ITS OWN
+// tags (destination.js tagsForLayout + renderTarget, per song) — {{ARTIST}},
+// {{YEAR}}, {{GENRE}} are each song's; where the client cannot promise the
+// one value, a slot (found live 2026-10-22: "From friends/{{ARTIST}}" on a
+// compilation promised one folder, and the songs landed in three) ──────
+describe('slots: a variable each song files by its own tag is never one folder the client cannot promise', () => {
+  const ROW = { artist: 'Boukmanflow', album: 'Night Market Sampler', year: 2020, genre: null, albumartist: 'Various Artists' };
+  const listed = (artists, over) => artists.map((artist) => ({ artist, year: 2020, genre: null, ...over }));
+  const SAMPLER = listed(['Color Out', 'Boukmanflow', 'ALM']);
+  const at = (scope, rule, layout, over) => {
+    const st = J.scopeTags({ scope, ...rule });
+    return J.scopeTarget({ vpath: 'copies', base: '', layout, scope, tags: st.tags, slots: st.slots, peerName: 'Stage Peer B', fileName: 'x/02 - a.mp3', ...over });
+  };
+  // a folder as drawn: a slot as ‹NAME›, the note by its key
+  const drawn = (p) => p.crumbs.map((c) => (c.parts ? c.parts.map((x) => (x.slot ? `‹${x.slot}›` : x.text)).join('') : c.text || c.key));
+
+  test('the bug: an album copy of a compilation under "From friends/{{ARTIST}}" draws ‹artist›, never the row\'s artist', () => {
+    const p = at('album', { tags: ROW, songs: SAMPLER, compilation: true }, 'From friends/{{ARTIST}}');
+    assert.deepEqual([p.valid, drawn(p), p.slots, p.missingVars], [true, ['From friends', '‹ARTIST›'], ['ARTIST'], []]);
+    assert.deepEqual(p.crumbs[1], { text: '{{ARTIST}}', kind: 'rendered', parts: [{ slot: 'ARTIST', key: 'discover.modal.dest.slot.artist' }] });
+    assert.deepEqual([p.rendered, p.relDir, p.title], ['From friends/{{ARTIST}}', 'From friends/{{ARTIST}}', 'copies/From friends/{{ARTIST}}'], 'the plain path writes a slot as its variable');
+    // before the listing answers: a compilation is a slot, an album of one artist its own
+    assert.deepEqual(drawn(at('album', { tags: ROW, songs: null, compilation: true }, 'From friends/{{ARTIST}}')), ['From friends', '‹ARTIST›']);
+    assert.deepEqual(drawn(at('album', { tags: { ...ROW, albumartist: null }, songs: null, compilation: false }, 'From friends/{{ARTIST}}')), ['From friends', 'Boukmanflow']);
+    assert.deepEqual(drawn(at('album', { tags: ROW, songs: [], compilation: true }, 'From friends/{{ARTIST}}')), ['From friends', '‹ARTIST›'], 'an empty listing is no answer');
+  });
+
+  test('album: {{ARTIST}} and {{YEAR}} the value every song agrees on — the folder name the server writes — else a slot', () => {
+    const agree = at('album', { tags: { ...ROW, albumartist: null }, songs: listed(['Boukmanflow', 'Boukmanflow ']), compilation: false }, '{{ARTIST}}/{{ALBUM}} ({{YEAR}})');
+    assert.deepEqual([drawn(agree), agree.slots], [['Boukmanflow', 'Night Market Sampler (2020)'], []]);
+    // a compilation whose every song is one artist's lands in one folder
+    assert.deepEqual(drawn(at('album', { tags: ROW, songs: listed(['Ana', 'Ana']), compilation: true }, '{{ARTIST}}')), ['Ana']);
+    // a feature on an artist's own album files apart
+    const feature = at('album', { tags: { ...ROW, albumartist: null }, songs: listed(['Boukmanflow', 'Boukmanflow feat. ALM']), compilation: false }, '{{ARTIST}}/{{ALBUM}}');
+    assert.deepEqual(drawn(feature), ['‹ARTIST›', 'Night Market Sampler']);
+    const years = at('album', { tags: ROW, songs: [...listed(['Ana'], { year: 2019 }), ...listed(['Ben'])], compilation: true }, '{{ALBUMARTIST}}/{{ALBUM}} ({{YEAR}})');
+    assert.deepEqual([drawn(years), years.slots], [['Various Artists', 'Night Market Sampler (‹YEAR›)'], ['YEAR']]);
+    assert.deepEqual(years.crumbs[1].parts, [{ text: 'Night Market Sampler (' }, { slot: 'YEAR', key: 'discover.modal.dest.slot.year' }, { text: ')' }], 'the folder keeps its own text');
+    // no song has a year: none is the value they share — the folder's year drops out for every one
+    const none = at('album', { tags: ROW, songs: listed(['Ana', 'Ben'], { year: null }), compilation: true }, '{{ALBUMARTIST}}/{{ALBUM}} ({{YEAR}})');
+    assert.deepEqual([drawn(none), none.missingVars], [['Various Artists', 'Night Market Sampler ()'], ['YEAR']]);
+  });
+
+  test('album: {{ALBUMARTIST}} is the album\'s credit — its own, else the row\'s artist — never a slot; {{GENRE}} a slot unless every song\'s is known and agrees', () => {
+    const comp = at('album', { tags: ROW, songs: SAMPLER, compilation: true }, '{{ALBUMARTIST}}/{{ARTIST}}');
+    assert.deepEqual(drawn(comp), ['Various Artists', '‹ARTIST›']);
+    const plain = at('album', { tags: { ...ROW, albumartist: null }, songs: listed(['Boukmanflow', 'Boukmanflow feat. ALM']), compilation: false }, '{{ALBUMARTIST}}/{{ARTIST}}');
+    assert.deepEqual(drawn(plain), ['Boukmanflow', '‹ARTIST›'], 'the credit falls back to the row\'s artist, not to the slot');
+    assert.deepEqual(drawn(at('album', { tags: { ...ROW, genre: 'Hip-Hop' }, songs: SAMPLER, compilation: true }, '{{GENRE}}/{{ALBUM}}')), ['‹GENRE›', 'Night Market Sampler'], 'the listing names each song\'s genres — these name none: the row\'s is not the album\'s');
+    assert.deepEqual(drawn(at('album', { tags: ROW, songs: null, compilation: false }, '{{GENRE}}/{{ALBUM}}')), ['‹GENRE›', 'Night Market Sampler']);
+    assert.deepEqual(drawn(at('album', { tags: ROW, songs: listed(['Ana', 'Ben'], { genre: 'Funk' }), compilation: true }, '{{GENRE}}/{{ALBUM}}')), ['Funk', 'Night Market Sampler']);
+    assert.deepEqual(drawn(at('album', { tags: ROW, songs: [...listed(['Ana'], { genre: 'Funk' }), ...listed(['Ben'])], compilation: true }, '{{GENRE}}/{{ALBUM}}')), ['‹GENRE›', 'Night Market Sampler']);
+  });
+
+  test('song: its own values; {{GENRE}} only when the caller has the song\'s — a slot keeps its folder and its place', () => {
+    const SONG = { artist: 'Boukmanflow', album: 'Borrowed Tapes', year: 2019, genre: 'Hip-Hop', albumartist: null };
+    assert.deepEqual(J.scopeTags({ scope: 'song', tags: SONG }).slots, []);
+    assert.deepEqual(J.scopeTags({ scope: 'song', tags: { ...SONG, genre: ' ' } }).slots, ['GENRE']);
+    const known = at('song', { tags: SONG }, '{{GENRE}}/{{ARTIST}} - {{YEAR}}');
+    assert.deepEqual([drawn(known), known.file], [['Hip-Hop', 'Boukmanflow - 2019'], '02 - a.mp3']);
+    const unknown = at('song', { tags: { ...SONG, genre: null } }, '{{GENRE}}/{{ARTIST}} - {{YEAR}}');
+    assert.deepEqual([drawn(unknown), unknown.slots, unknown.missingVars, unknown.relPath], [['‹GENRE›', 'Boukmanflow - 2019'], ['GENRE'], [], '{{GENRE}}/Boukmanflow - 2019/02 - a.mp3']);
+    // the slots in the path's order; a name that is not each song's is not a slot
+    const order = J.scopeTarget({ vpath: 'copies', base: 'in', layout: '{{GENRE}}/{{ARTIST}} - {{YEAR}}/{{ALBUM}}', scope: 'album', tags: SONG, slots: ['YEAR', 'ARTIST', 'GENRE', 'ALBUM', 'PEER'], fileName: 'a.mp3' });
+    assert.deepEqual([drawn(order), order.slots], [['in', '‹GENRE›', '‹ARTIST› - ‹YEAR›', 'Borrowed Tapes'], ['GENRE', 'ARTIST', 'YEAR']]);
+    // {{ALBUMARTIST}} falls back to the artist's VALUE, never to its slot
+    const credit = J.scopeTarget({ vpath: 'copies', base: '', layout: '{{ALBUMARTIST}}/{{ARTIST}}', scope: 'album', tags: SONG, slots: ['ARTIST'], fileName: 'a.mp3' });
+    assert.deepEqual(drawn(credit), ['Boukmanflow', '‹ARTIST›']);
+  });
+
+  test('the artist scopes: today\'s path — the artist, "one folder per album" — with {{GENRE}} before the cut a slot', () => {
+    const ARTIST = { artist: 'Boukmanflow', albumartist: 'Boukmanflow', album: null, year: null, genre: 'Hip-Hop' };
+    const walk = at('artist', { tags: ARTIST }, '{{GENRE}}/{{ARTIST}}/{{ALBUM}}');
+    assert.deepEqual([drawn(walk), walk.slots, walk.perAlbum, walk.missingVars], [['‹GENRE›', 'Boukmanflow', 'discover.modal.dest.perAlbum'], ['GENRE'], true, []]);
+    const after = at('artist-missing', { tags: ARTIST }, '{{ARTIST}}/{{ALBUM}}/{{GENRE}}');
+    assert.deepEqual([drawn(after), after.slots], [['Boukmanflow', 'discover.modal.dest.perAlbum'], []], 'cut with the album\'s folder: no slot to show');
+    const one = at('artist-missing', { tags: ARTIST }, '{{ARTIST}}/{{GENRE}}/{{ALBUM}} ({{YEAR}})', { oneAlbum: { name: 'Second Shift', year: 2021 } });
+    assert.deepEqual(drawn(one), ['Boukmanflow', '‹GENRE›', 'Second Shift (2021)']);
+  });
+
+  test('listedSongTags: a listed song as the album copy files it', () => {
+    const song = (metadata) => ({ filepath: 'p/a.mp3', metadata });
+    assert.deepEqual(J.listedSongTags(song({ artist: 'Ana', 'artist-display': 'Ana feat. Ben', year: 2019, genres: ['Funk'] }), 'Various Artists'),
+      { artist: 'Ana feat. Ben', year: 2019, genre: 'Funk' }, 'the tag as written');
+    assert.equal(J.listedSongTags(song({ artist: 'Ana', genres: ['Funk', 'Soul'] }), null).genre, null, 'two genres: a tag the library split, unknown');
+    assert.deepEqual(J.listedSongTags(song({ artist: 'Ana', year: null, genres: [] }), 'Various Artists'), { artist: 'Ana', year: null, genre: null });
+    assert.deepEqual(J.listedSongTags(song({ title: 'untagged' }), 'Various Artists'), { artist: 'Various Artists', year: null, genre: null }, 'no artist tag: the credit the listing was asked by');
+    assert.deepEqual(J.listedSongTags(null, null), { artist: null, year: null, genre: null });
+  });
+
+  // the 2026-10-22 review: a genre tag the library split is not the folder
+  // the copy writes; a compilation's year before the listing answers; a
+  // listing where only some songs have a year
+  test('songGenre: the one genre a song\'s metadata names — a tag the library split ("Hip-Hop/Rap" lists as two, lands in "Hip-Hop-Rap") is unknown', () => {
+    assert.deepEqual([{ genres: ['Hip-Hop'] }, { genres: [' ', 'Funk'] }, { genres: ['Hip-Hop', 'Rap'] }, { genres: [] }, {}, null].map(J.songGenre),
+      ['Hip-Hop', 'Funk', null, null, null, null]);
+    const split = ['Color Out', 'ALM'].map((artist) => J.listedSongTags({ metadata: { artist, year: 2020, genres: ['Hip-Hop', 'Rap'] } }, 'Various Artists'));
+    assert.deepEqual(drawn(at('album', { tags: ROW, songs: split, compilation: true }, '{{GENRE}}/{{ALBUM}}')), ['‹GENRE›', 'Night Market Sampler'], 'every song agrees on a split tag: still no one folder');
+  });
+
+  test('album: before the listing answers a compilation\'s {{YEAR}} is a slot too; a listing where only some songs have a year draws ‹year›', () => {
+    const before = at('album', { tags: ROW, songs: null, compilation: true }, '{{ALBUMARTIST}}/{{ALBUM}} ({{YEAR}})');
+    assert.deepEqual([drawn(before), before.slots], [['Various Artists', 'Night Market Sampler (‹YEAR›)'], ['YEAR']]);
+    const some = at('album', { tags: ROW, songs: [...listed(['Ana'], { year: 2019 }), ...listed(['Ben'], { year: null })], compilation: true }, '{{ALBUMARTIST}}/{{ALBUM}} ({{YEAR}})');
+    assert.deepEqual([drawn(some), some.slots, some.missingVars], [['Various Artists', 'Night Market Sampler (‹YEAR›)'], ['YEAR'], []], 'the song with none files without it');
   });
 });
 

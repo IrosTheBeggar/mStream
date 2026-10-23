@@ -2468,7 +2468,12 @@ select {
 .dm-dest-crumb { display: inline-block; max-width: 100%; }
 .dm-dest-crumb > i { font-style: normal; margin: 0 5px; color: var(--t4); }
 .dm-dest-crumb-note { color: var(--t3); }
+/* A slot ("‹artist›": each song's own tag) drawn as the note is, inside its
+   folder's text — in the preview's bold source colour too — and the one
+   line under the path that says why */
+.dm-dest-slot { color: var(--t3); font-weight: 400; }
 .dm-dest-file { margin-top: 2px; font: 11.5px/1.45 ui-monospace, Consolas, monospace; color: var(--t3); overflow-wrap: anywhere; }
+.dm-dest-slots { margin-top: 2px; font-size: 11px; line-height: 1.4; color: var(--t4); }
 .dm-dest-path-bar .dm-dest-crumbs, .dm-dest-path-preview .dm-dest-crumbs { color: var(--t2); }
 .dm-dest-path-bar .dm-dest-pre { color: var(--t3); }
 .dm-dest-path-bar b, .dm-dest-path-preview b { color: var(--t1); }

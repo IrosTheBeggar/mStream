@@ -247,6 +247,18 @@
   "discover.modal.dest.savedFor": "Saved for your account",
   "discover.modal.dest.libraryDefault": "The library’s default",
   "discover.modal.dest.perAlbum": "one folder per album",
+  "discover.modal.dest.slot.artist": "‹artist›",
+  "discover.modal.dest.slot.year": "‹year›",
+  "discover.modal.dest.slot.genre": "‹genre›",
+  "discover.modal.dest.slotNote": {
+    "one": "{{slots}} comes from each song’s own tags, so these songs can land in more than one folder.",
+    "other": "{{slots}} come from each song’s own tags, so these songs can land in more than one folder."
+  },
+  "discover.modal.dest.slotNoteGenre": {
+    "one": "{{slots}} comes from each song’s own tags, so these songs can land in more than one folder (a song with none leaves that folder out).",
+    "other": "{{slots}} come from each song’s own tags, so these songs can land in more than one folder (a song with none leaves that folder out)."
+  },
+  "discover.modal.dest.slotNoteSong": "{{slots}} comes from the song’s own tags (a song with none leaves that folder out).",
   "discover.modal.dest.change": "Change…",
   "discover.modal.dest.into": "Into",
   "discover.modal.dest.in": "In",

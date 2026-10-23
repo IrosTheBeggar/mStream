@@ -1,6 +1,7 @@
 // The Discover job rows' pure half: what a plug-in job looks like as a row
 // ("Get it", Keep a copy, the downloads strip), where a
-// download or a collection copy will land for the layout being typed, what
+// download or a collection copy will land for the layout being typed (a
+// variable each song files by its own tag drawn as a slot), what
 // a download record looks like as a row (the Downloads view, the admin's
 // Downloads tab), and what has to leave the queue when a download is
 // removed. No DOM, no Vue, no fetch — vp.js and m.js wire it to the app;
@@ -39,6 +40,9 @@
     let s = String(raw);
     // eslint-disable-next-line no-control-regex
     s = s.replace(/[/\\:*?<>|"\x00-\x1f]+/g, '-');
+    // a "~" or a "$HOME" in a tag is a name, not a shell string: folded, as
+    // the server folds it (validateResolvedPath refuses both in a path)
+    s = s.replace(/\$\{HOME\}|\$HOME\b|~/g, '-');
     s = s.replace(/\s+/g, ' ');
     s = s.replace(/^[.\s]+|[.\s]+$/g, '');
     if (s.length > MAX_SEGMENT_LEN) { s = s.slice(0, MAX_SEGMENT_LEN); }
@@ -152,11 +156,95 @@
     return String(filepath || '').split('/').filter(Boolean);
   }
 
+  // ── what a copy of one scope files by ──────────────────────────────────
+  // The server files every song of a copy by ITS OWN tags (destination.js
+  // tagsForLayout + renderTarget, per song): {{ARTIST}}, {{YEAR}} and
+  // {{GENRE}} are each song's, so the songs of one album can land in more
+  // than one folder — a compilation's under each track artist. {{ALBUM}},
+  // {{ALBUMARTIST}} (the album's credit) and {{PEER}} are the same for every
+  // song of an album. Where this client cannot promise the one value every
+  // song files under, the path draws a SLOT in its place ("‹artist›", inside
+  // its folder's own text), never one folder that will not exist.
+  const SLOT_VARS = ['ARTIST', 'YEAR', 'GENRE'];
+
+  // A value every song shares: { agree, value } — the same folder name for
+  // each (as sanitizeSegment writes it; none is a value too: the folder
+  // drops out for all of them).
+  function sharedTag(values) {
+    const names = values.map((v) => sanitizeSegment(v));
+    return names.every((n) => n === names[0]) ? { agree: true, value: values[0] == null ? null : values[0] } : { agree: false, value: null };
+  }
+
+  // The genre a song's copy files under, where a song's metadata (a
+  // connected server's, its `genres`) tells it for certain: its one genre.
+  // The library splits a genre tag on "," ";" and "/" into its genres
+  // (src/db/scanner.mjs), the copy files by the tag as the file has it
+  // (destination.js tagsForLayout: the first) — a "Hip-Hop/Rap" lists as
+  // two and lands in "Hip-Hop-Rap" — so a song that lists more than one, or
+  // none, is unknown. → the genre, or null
+  function songGenre(md) {
+    const genres = md && Array.isArray(md.genres) ? md.genres.filter((g) => typeof g === 'string' && g.trim()) : [];
+    return genres.length === 1 ? genres[0] : null;
+  }
+
+  // One song of an album's listing (a connected server's album-songs, asked
+  // as the album copy asks it) as the copy files it (federation-copy
+  // listAlbumSongs + destination.js tagsForLayout): its artist tag as
+  // written, else the listed artist, else the credit the listing was asked
+  // by (`credit`); its own year — the copy has nothing to fall back to — and
+  // its genre as songGenre reads the genres the listing names for it.
+  // → { artist, year, genre }
+  function listedSongTags(song, credit) {
+    const md = song && song.metadata && typeof song.metadata === 'object' ? song.metadata : {};
+    return { artist: md['artist-display'] || md.artist || credit || null, year: md.year || null, genre: songGenre(md) };
+  }
+
+  // The tags a copy of `scope` renders the layout with, and the variables it
+  // draws as slots (scopeTarget's `slots`). `tags` are the caller's (vp.js
+  // dmScopeTags):
+  //   song            the song's own; {{GENRE}} a slot unless the caller has
+  //                   the song's genre (songGenre)
+  //   album           {{ARTIST}} and {{YEAR}} the value every song of the
+  //                   album agrees on (`songs`: the album's listing, each
+  //                   song's tags as listedSongTags reads them), else a
+  //                   slot; before the listing answers, the row's own —
+  //                   unless the album is a compilation (`compilation`: its
+  //                   credit is not the row's artist), then slots.
+  //                   {{GENRE}} a slot unless every song's genre is known
+  //                   and agrees (the listing names each song's genres —
+  //                   listedSongTags). {{ALBUMARTIST}} the album's credit: its
+  //                   albumartist, else the row's artist — never a slot
+  //   artist,         the caller's (the artist as ARTIST and ALBUMARTIST,
+  //   artist-missing  no album: scopeTarget cuts at the album's folder);
+  //                   {{GENRE}} a slot
+  // → { tags, slots }
+  function scopeTags({ scope, tags, songs, compilation }) {
+    const t = Object.assign({}, tags || {});
+    const slots = [];
+    if (scope === 'album') {
+      t.albumartist = t.albumartist || t.artist || null;
+      const listed = Array.isArray(songs) && songs.length > 0 ? songs.map((x) => x || {}) : null;
+      for (const key of ['artist', 'year']) {
+        const shared = listed ? sharedTag(listed.map((x) => x[key])) : { agree: !compilation, value: t[key] };
+        if (shared.agree) { t[key] = shared.value; } else { slots.push(key.toUpperCase()); }
+      }
+      const genres = listed ? listed.map((x) => x.genre) : [];
+      const genre = listed && genres.every((g) => sanitizeSegment(g) !== '') ? sharedTag(genres) : { agree: false };
+      if (genre.agree) { t.genre = genre.value; } else { slots.push('GENRE'); }
+    } else if (scope === 'artist' || scope === 'artist-missing') {
+      t.genre = null;
+      slots.push('GENRE');
+    } else if (sanitizeSegment(t.genre) === '') {
+      slots.push('GENRE');
+    }
+    return { tags: t, slots };
+  }
+
   // ── where a copy of one scope lands ────────────────────────────────────
   // The path bar, the editor's preview and the "Into" line of a running
   // copy render the base folder and the layout with the tags of what the
   // scope copies — never the seed song's own folder for a wider scope. The
-  // caller hands in the scope's tags (vp.js dmScopeTags):
+  // caller hands in the scope's tags and slots (scopeTags):
   //   song            the song's own; the file on a line of its own
   //   album           the album's: its credit as ALBUMARTIST, so a
   //                   compilation stays in one folder
@@ -168,37 +256,77 @@
   //                   shares that folder)
   //   artist-missing  the same — or, when exactly one album is missing
   //                   (`oneAlbum`: its { name, year }), that album's folder
-  // The answer is previewTarget's (valid, error, field, variable,
-  // missingVars: the editor's checks) plus `crumbs` — the base folder's
-  // segments ({ text, kind: 'base' }), what the layout rendered
-  // ({ text, kind: 'rendered' }) and the note ({ key, kind: 'note' }: the
-  // caller translates it) — `file` for a song alone, and `title`, the plain
-  // path for a tooltip.
+  // `slots` names the variables drawn as slots (SLOT_VARS; any other is
+  // ignored): a folder that names one keeps its own text around it, and
+  // never drops out. The answer is previewTarget's (valid, error, field,
+  // variable, missingVars: the editor's checks — a slot is never "missing")
+  // plus `crumbs` — the base folder's segments ({ text, kind: 'base' }),
+  // what the layout rendered ({ text, kind: 'rendered' }; one with a slot
+  // in it adds `parts`: [{ text } | { slot, key }], the caller translates
+  // the key, and its `text` writes the slot as its {{VAR}}) and the note
+  // ({ key, kind: 'note' }) — `slots`, the ones the path shows, in its
+  // order; `file` for a song alone, and `title`, the plain path for a
+  // tooltip.
   const ALBUM_FOLDER_RE = /\{\{\s*(album|year)\s*\}\}/i;
+  // A slot rides through the engine as a mark no tag or layout carries (two
+  // private-use characters, U+E000 and U+E001, around the variable's name):
+  // sanitizeSegment and the path checks pass it untouched, and each folder
+  // is read back into its text and its slots.
+  const SLOT_OPEN = '\uE000';
+  const SLOT_CLOSE = '\uE001';
+  const SLOT_RE = /\uE000([A-Z]+)\uE001/g;
+  const slotMark = (name) => SLOT_OPEN + name + SLOT_CLOSE;
+  const slotToken = (path) => path.replace(SLOT_RE, (m, name) => '{{' + name + '}}');
 
-  function scopeTarget({ vpath, base, layout, scope, tags, peerName, fileName, oneAlbum }) {
+  function renderedCrumb(folder) {
+    if (folder.search(SLOT_RE) === -1) { return { text: folder, kind: 'rendered' }; }
+    const parts = [];
+    const literal = (text) => { const s = text.replace(/[\uE000\uE001]/g, ''); if (s) { parts.push({ text: s }); } };
+    let at = 0;
+    folder.replace(SLOT_RE, (m, name, i) => {
+      literal(folder.slice(at, i));
+      parts.push({ slot: name, key: 'discover.modal.dest.slot.' + name.toLowerCase() });
+      at = i + m.length;
+      return m;
+    });
+    literal(folder.slice(at));
+    return { text: slotToken(folder), kind: 'rendered', parts };
+  }
+
+  function scopeTarget({ vpath, base, layout, scope, tags, peerName, fileName, oneAlbum, slots }) {
     const s = JOB_SCOPES.indexOf(scope) !== -1 ? scope : 'song';
     const t = Object.assign({}, tags || {});
     const one = s === 'artist-missing' && oneAlbum && oneAlbum.name ? oneAlbum : null;
     if (one) { t.album = one.name; t.year = one.year || null; }
     const wide = (s === 'artist' || s === 'artist-missing') && !one;
+    const per = SLOT_VARS.filter((v) => Array.isArray(slots) && slots.indexOf(v) !== -1);
     const target = previewTarget({ vpath, base, layout, tags: t, peerName, fileName });
-    const out = Object.assign({}, target, { scope: s, perAlbum: false, crumbs: [], file: s === 'song' ? target.file : null, title: target.library });
+    const out = Object.assign({}, target, { scope: s, perAlbum: false, slots: [], crumbs: [], file: s === 'song' ? target.file : null, title: target.library });
     if (!target.valid) { return out; }
+    let shown = String(layout);
     if (wide) {
-      const folders = String(layout).split(/[/\\]+/);
+      const folders = shown.split(/[/\\]+/);
       const at = folders.findIndex((f) => ALBUM_FOLDER_RE.test(f));
-      if (at !== -1) {
-        const head = resolveLayout(folders.slice(0, at).join('/'), { artist: t.artist, genre: t.genre, albumartist: t.albumartist, peer: peerName });
-        out.rendered = head.path;
-        out.missingVars = head.missingVars;
-        out.perAlbum = true;
-        out.relDir = [out.base, out.rendered].filter(Boolean).join('/');
-        out.relPath = out.relDir;
-      }
+      if (at !== -1) { shown = folders.slice(0, at).join('/'); out.perAlbum = true; }
+    }
+    let marked = out.rendered;
+    if (out.perAlbum || per.length) {
+      // the album's credit stays the album's when its artist is a slot
+      const meta = { artist: t.artist, genre: t.genre, albumartist: t.albumartist || t.artist, peer: peerName };
+      if (!out.perAlbum) { meta.album = t.album; meta.year = t.year; }
+      for (const v of per) { meta[v.toLowerCase()] = slotMark(v); }
+      const head = resolveLayout(shown, meta);
+      marked = head.path;
+      out.rendered = slotToken(marked);
+      out.missingVars = head.missingVars;
+      out.relDir = [out.base, out.rendered].filter(Boolean).join('/');
+      out.relPath = out.perAlbum ? out.relDir : (out.relDir ? `${out.relDir}/${target.file}` : target.file);
     }
     out.crumbs = pathCrumbs(out.base).map((text) => ({ text, kind: 'base' }))
-      .concat(pathCrumbs(out.rendered).map((text) => ({ text, kind: 'rendered' })));
+      .concat(pathCrumbs(marked).map(renderedCrumb));
+    for (const c of out.crumbs) {
+      for (const p of c.parts || []) { if (p.slot && out.slots.indexOf(p.slot) === -1) { out.slots.push(p.slot); } }
+    }
     if (out.perAlbum) { out.crumbs.push({ key: 'discover.modal.dest.perAlbum', kind: 'note' }); }
     out.title = [out.library, out.base, out.rendered].filter(Boolean).join('/');
     return out;
@@ -658,7 +786,7 @@
   return {
     LAYOUT_VARS, DEFAULT_LAYOUT, SAMPLE_TAGS, SAMPLE_PEER, COPY_PLUGIN, LOOKUP_CAPABILITY,
     sanitizeSegment, resolveLayout, validateLayout, validateResolvedPath, normalizeBase, safeFileName, previewTarget, pathCrumbs,
-    scopeTarget, sameDestination, landedPath,
+    SLOT_VARS, songGenre, listedSongTags, scopeTags, scopeTarget, sameDestination, landedPath,
     isLive, fmtBytes, jobRowState, manyCounts, manyParts, jobsByPlugin,
     JOB_SCOPES, jobScope, jobSlot, jobsBySlot, jobKind,
     inTray, trayRows, traySummary, jobTitle, finishedSince,

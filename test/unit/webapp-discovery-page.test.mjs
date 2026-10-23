@@ -732,7 +732,7 @@ const WINDOW_METHODS = ['tt', 'dmLive', 'dmDuration', 'dmText', 'openDiscoverMod
   'dmMissingHeld', 'dmKeepMissingLabel', 'dmGetItRows', 'dmGetItBar', 'dmGetItLive', 'dmKeepStart', 'toastDiscoverJob', 'discoverPluginTitle',
   'dmKeepView', 'dmKeepLine', 'dmKeepFiles', 'dmKeepWhose', 'dmKeepMarker', 'dmKeepSegments', 'dmKeepShown', 'dmKeepAnnounce', 'dmKeepHint', 'dmKeepLost',
   'dmKeepAct', 'dmKeepCancel', 'dmKeepPlay', 'dmKeepShow', 'dmKeepHold', 'dmJobPath', 'dmDestMoved', 'dmJobCancel', 'playDiscoverFile', 'queueDiscoverFile',
-  'dmRecommendation', 'dmLayoutTags', 'dmLayoutFile', 'dmLayoutPeer', 'dmScopeTags', 'dmMissingAlbum', 'dmDestPath', 'dmDestPathOf',
+  'dmRecommendation', 'dmLayoutTags', 'dmLayoutFile', 'dmLayoutPeer', 'dmScopeTags', 'dmMissingAlbum', 'dmDestPath', 'dmDestPathOf', 'dmSlotNote',
   'dmMetaParts', 'dmPeerStatus', 'dmMatchSeed', 'dmPct', 'dmAgo', 'dmLinksRecommendation', 'dmFindVisible', 'dmLinks', 'dmChipLabel', 'dmCopyTitle'];
 // Find elsewhere's own load (stubbed in every other window: it asks the
 // links plug-in, and the harness's `realLinks` lets it)
@@ -2670,6 +2670,162 @@ describe('where files land: the path inside a copy\'s states (vp.js)', () => {
   });
 });
 
+// Found live 2026-10-22: under "From friends/{{ARTIST}}" an album copy of the
+// compilation Night Market Sampler (Various Artists; songs by Color Out,
+// Boukmanflow, ALM) promised "From friends › Boukmanflow" — the server files
+// each song by its own tags, so they land in three folders. A variable each
+// song files by its own tag is a slot wherever the window draws a path not
+// yet landed, with one quiet note under it.
+describe('where files land: a variable each song files by its own tags is a slot, not one folder (vp.js)', () => {
+  const FRIENDS = { vpath: 'copies', base: '', layout: 'From friends/{{ARTIST}}', source: 'user' };
+  const night = (over) => tapesRow(STAGE_B, '02 - Borrowed Light', { album: 'Night Market Sampler', albumArtist: 'Various Artists', year: 2020,
+    filepath: 'peerlib/VA/Night Market Sampler/02 - Borrowed Light.mp3', ...over });
+  // the peer's listing of the album, each song with its own tags
+  const sampler = (artists, over) => artists.map((artist, i) => ({ filepath: `peerlib/VA/Night Market Sampler/0${i + 1}.mp3`,
+    metadata: { title: `S${i}`, artist, 'artist-display': artist, year: 2020, duration: 200, genres: [], ...over } }));
+  const nightReads = (songs, genres = []) => {
+    const reads = shiftReads(['Harbour Lights']);
+    reads.peer.albumSongs = () => Promise.resolve(songs);
+    reads.peer.metadata = () => Promise.resolve({ metadata: { format: 'mp3', genres } });
+    return reads;
+  };
+  const open = async ({ songs = sampler(['Color Out', 'Boukmanflow', 'ALM']), genres, layout = FRIENDS.layout, row = night(), focus = 'album' } = {}) => {
+    const w = makeDestWindow({ reads: nightReads(songs, genres), server: { view: viewOf({ ...FRIENDS, layout }) } });
+    await w.vm.openDiscoverModal(row, 'federation', { seedPlain: 'x', focus });
+    return w;
+  };
+  const slotsOf = (p) => p.crumbs.flatMap((c) => (c.parts || []).filter((x) => x.slot).map((x) => x.text));
+  const ARTIST_NOTE = '‹artist› comes from each song’s own tags, so these songs can land in more than one folder.';
+
+  test('the bug: the album of a compilation draws "From friends › ‹artist›" and says why; the song its own folder, no note', async () => {
+    const { vm } = await open();
+    const album = vm.dmDestPath('album');
+    assert.deepEqual([pathLine(album), album.crumbs[1].parts, album.slotNote, album.title],
+      ['copies › From friends › ‹artist›', [{ text: '‹artist›', slot: true }], ARTIST_NOTE, 'copies/From friends/‹artist›']);
+    const song = vm.dmDestPath('song');
+    assert.deepEqual([pathLine(song), song.slotNote], ['copies › From friends › Boukmanflow', '']);
+    // before the listing answers (or when it failed): a compilation is a slot already
+    vm.discover.modal.album = { ...vm.discover.modal.album, songs: null };
+    assert.equal(pathLine(vm.dmDestPath('album')), 'copies › From friends › ‹artist›');
+  });
+
+  test('an album of one artist: the artist while the listing agrees (or has not answered); a feature on it files apart — a slot', async () => {
+    const own = await open({ row: night({ albumArtist: null }), songs: sampler(['Boukmanflow', 'Boukmanflow']) });
+    assert.deepEqual([pathLine(own.vm.dmDestPath('album')), own.vm.dmDestPath('album').slotNote], ['copies › From friends › Boukmanflow', '']);
+    own.vm.discover.modal.album = { ...own.vm.discover.modal.album, songs: null };
+    assert.equal(pathLine(own.vm.dmDestPath('album')), 'copies › From friends › Boukmanflow', 'no listing yet: not a compilation, its own artist');
+    const feat = await open({ row: night({ albumArtist: null }), songs: sampler(['Boukmanflow', 'Boukmanflow feat. ALM']) });
+    assert.equal(pathLine(feat.vm.dmDestPath('album')), 'copies › From friends › ‹artist›');
+    // the compilation whose songs are all one artist's lands in one folder
+    const solo = await open({ songs: sampler(['Boukmanflow', 'Boukmanflow', 'Boukmanflow']) });
+    assert.equal(pathLine(solo.vm.dmDestPath('album')), 'copies › From friends › Boukmanflow');
+  });
+
+  test('{{YEAR}} keeps its folder\'s text; {{GENRE}} adds "a song with none…"; two slots are listed together; the credit is never a slot', async () => {
+    const years = await open({ songs: sampler(['Color Out', 'ALM']).map((s, i) => ({ ...s, metadata: { ...s.metadata, year: 2019 + i } })),
+      layout: '{{ALBUMARTIST}}/{{ALBUM}} ({{YEAR}})' });
+    const y = years.vm.dmDestPath('album');
+    assert.deepEqual([pathLine(y), y.crumbs[1].parts.map((x) => [x.text, x.slot])],
+      ['copies › Various Artists › Night Market Sampler (‹year›)', [['Night Market Sampler (', false], ['‹year›', true], [')', false]]]);
+    assert.equal(y.slotNote, '‹year› comes from each song’s own tags, so these songs can land in more than one folder.');
+    const both = await open({ layout: '{{GENRE}}/{{ARTIST}}' });
+    const b = both.vm.dmDestPath('album');
+    assert.deepEqual([pathLine(b), slotsOf(b)], ['copies › ‹genre› › ‹artist›', ['‹genre›', '‹artist›']]);
+    assert.equal(b.slotNote, '‹genre›, ‹artist› come from each song’s own tags, so these songs can land in more than one folder (a song with none leaves that folder out).');
+  });
+
+  test('the song: {{GENRE}} its own when the peer\'s metadata names one, else a slot with the song\'s note', async () => {
+    const known = await open({ focus: null, genres: ['Hip-Hop'], layout: '{{GENRE}}/{{ALBUM}}' });
+    assert.deepEqual([pathLine(known.vm.dmDestPath('song')), known.vm.dmDestPath('song').slotNote], ['copies › Hip-Hop › Night Market Sampler', '']);
+    const unknown = await open({ focus: null, layout: '{{GENRE}}/{{ALBUM}}' });
+    const p = unknown.vm.dmDestPath('song');
+    assert.deepEqual([pathLine(p), p.file, p.slotNote], ['copies › ‹genre› › Night Market Sampler', '02 - Borrowed Light.mp3',
+      '‹genre› comes from the song’s own tags (a song with none leaves that folder out).']);
+    assert.equal(pathLine(known.vm.dmDestPath('album')), 'copies › ‹genre› › Night Market Sampler', 'the song\'s genre is not the album\'s');
+  });
+
+  test('the artist scopes: the artist and "one folder per album", {{GENRE}} before the cut a slot', async () => {
+    const { vm } = await open({ focus: null, genres: ['Hip-Hop'], layout: '{{GENRE}}/{{ARTIST}}/{{ALBUM}}' });
+    const p = vm.dmDestPath('artist');
+    assert.deepEqual([pathLine(p), p.title], ['copies › ‹genre› › Boukmanflow › one folder per album', 'copies/‹genre›/Boukmanflow']);
+    assert.equal(p.slotNote, '‹genre› comes from each song’s own tags, so these songs can land in more than one folder (a song with none leaves that folder out).');
+    vm.discover.dest.view = viewOf({ ...FRIENDS, layout: '{{ARTIST}}/{{ALBUM}}/{{GENRE}}' });
+    assert.deepEqual([pathLine(vm.dmDestPath('artist')), vm.dmDestPath('artist').slotNote], ['copies › Boukmanflow › one folder per album', ''], 'cut with the album: nothing to say');
+  });
+
+  test('everywhere a path has not landed yet: Into (the pinned place), Retry adds to, the editor\'s preview — an ended copy\'s In is where its files are', async () => {
+    const { vm } = await open();
+    const job = (over) => copyJob({ recommendation: night(), ...over });
+    const into = vm.dmJobPath(job({ state: 'running', params: { scope: 'album', destination: FRIENDS } }));
+    assert.deepEqual([jobLine(into), into.path.slotNote], ['Into copies › From friends › ‹artist›', ARTIST_NOTE]);
+    assert.equal(jobLine(vm.dmJobPath(job({ state: 'queued', params: { scope: 'album', destination: COPIES } }))), 'Into copies › Various Artists › Night Market Sampler', 'pinned elsewhere: that layout');
+    // a copy that ran with the album credit's layout; the saved place is From friends now
+    const ran = job({ state: 'done', params: { scope: 'album', destination: COPIES },
+      result: { songs: { total: 3, copied: [{ filepath: 'copies/Various Artists/Night Market Sampler/1.mp3' }], skipped: [], failed: [] }, stopped: 'quota', destination: COPIES } });
+    vm.dmKeepChoose('album');
+    vm.discover.modal.jobs = { 'federation-copy@album': ran };
+    const v = vm.dmKeepView();
+    assert.deepEqual([jobLine(v.path), v.path.path.slotNote], ['In copies › Various Artists › Night Market Sampler', undefined], 'landed: real folders, no slot');
+    assert.deepEqual([`${v.retryPath.prefix} ${pathLine(v.retryPath.path)}`, v.retryPath.path.slotNote], ['Retry adds to copies › From friends › ‹artist›', ARTIST_NOTE]);
+    vm.dmOpenPicker();
+    vm.discover.modal.picker.layout = 'From friends/{{ARTIST}} ({{YEAR}})';
+    const preview = vm.dmPickerPreview('album');
+    assert.deepEqual([pathLine(preview), preview.missingVars, preview.slotNote], ['copies › From friends › ‹artist› (2020)', [], ARTIST_NOTE]);
+    vm.discover.modal.picker.base = 'Boukmanflow';
+    vm.discover.modal.picker.layout = '{{ARTIST}}/{{ALBUM}}';
+    assert.deepEqual([vm.dmDestNested(vm.dmPickerPreview('song')), vm.dmDestNested(vm.dmPickerPreview('album'))], ['Boukmanflow', ''],
+      'the song nests in Boukmanflow › Boukmanflow; the album\'s ‹artist› is no one folder');
+  });
+
+  // the 2026-10-22 review
+  test('a genre tag the library split (two genres listed) is no one folder; an album whose songs each name the same one genre draws it', async () => {
+    const split = await open({ focus: null, genres: ['Hip-Hop', 'Rap'], layout: '{{GENRE}}/{{ALBUM}}' });
+    assert.deepEqual([pathLine(split.vm.dmDestPath('song')), split.vm.dmLayoutTags().genre], ['copies › ‹genre› › Night Market Sampler', null], '"Hip-Hop/Rap" lands in Hip-Hop-Rap');
+    const each = await open({ songs: sampler(['Color Out', 'ALM'], { genres: ['Hip-Hop', 'Rap'] }), layout: '{{GENRE}}/{{ALBUM}}' });
+    assert.equal(pathLine(each.vm.dmDestPath('album')), 'copies › ‹genre› › Night Market Sampler');
+    const one = await open({ songs: sampler(['Color Out', 'ALM'], { genres: ['Hip-Hop'] }), layout: '{{GENRE}}/{{ALBUM}}' });
+    assert.deepEqual([pathLine(one.vm.dmDestPath('album')), one.vm.dmDestPath('album').slotNote], ['copies › Hip-Hop › Night Market Sampler', ''], 'the listing names each song\'s genres');
+  });
+
+  test('the album\'s {{ALBUMARTIST}} is its credit — not a featured seed\'s own artist; a listed song with no artist tag files under the credit', async () => {
+    const reads = nightReads(sampler(['Boukmanflow', 'Boukmanflow']));
+    reads.peer.metadata = () => Promise.resolve({ metadata: { format: 'mp3', artist: 'Boukmanflow', 'artist-display': 'Boukmanflow feat. ALM', genres: [] } });
+    const w = makeDestWindow({ reads, server: { view: viewOf(COPIES) } });
+    await w.vm.openDiscoverModal(night({ albumArtist: null }), 'federation', { seedPlain: 'x', focus: 'album' });
+    assert.equal(pathLine(w.vm.dmDestPath('album')), 'copies › Boukmanflow › Night Market Sampler');
+    assert.equal(pathLine(w.vm.dmDestPath('song')), 'copies › Boukmanflow feat. ALM › Night Market Sampler', 'the song alone: its own tags');
+    const untagged = { filepath: 'peerlib/Boukmanflow/Night Market Sampler/09.mp3', metadata: { title: 'untagged', year: 2020, duration: 200, genres: [] } };
+    const own = await open({ row: night({ albumArtist: null }), songs: [...sampler(['Boukmanflow']), untagged] });
+    assert.deepEqual([pathLine(own.vm.dmDestPath('album')), own.vm.dmDestPath('album').slotNote], ['copies › From friends › Boukmanflow', '']);
+  });
+
+  test('the nested-folder warning looks past a first folder that is only a ‹genre› a song can leave out — never past an ‹artist›', async () => {
+    const { vm } = await open({ focus: null });
+    vm.dmOpenPicker();
+    const k = vm.discover.modal.picker;
+    k.base = 'Boukmanflow';
+    k.layout = '{{GENRE}}/{{ARTIST}}';
+    assert.deepEqual([pathLine(vm.dmPickerPreview('song')), vm.dmDestNested(vm.dmPickerPreview('song'))], ['copies › Boukmanflow › ‹genre› › Boukmanflow', 'Boukmanflow'],
+      'a song with no genre lands in Boukmanflow › Boukmanflow');
+    k.layout = '{{ARTIST}}/Boukmanflow';
+    assert.deepEqual([pathLine(vm.dmPickerPreview('album')), vm.dmDestNested(vm.dmPickerPreview('album'))], ['copies › Boukmanflow › ‹artist› › Boukmanflow', ''], 'every song has an artist');
+  });
+
+  test('one note on a card: an In line drawn from the place an older server\'s copy ran with says its slots with the Retry line\'s, under the last path', async () => {
+    const { vm } = await open({ layout: '{{GENRE}}/{{ARTIST}}' });
+    // counts alone (an older server): the In line is the destination it ran with
+    const ran = copyJob({ recommendation: night(), state: 'done', params: { scope: 'album', destination: FRIENDS },
+      result: { counts: { total: 3, copied: 2, skipped: 0, failed: 1 }, destination: FRIENDS } });
+    vm.dmKeepChoose('album');
+    vm.discover.modal.jobs = { 'federation-copy@album': ran };
+    const v = vm.dmKeepView();
+    assert.deepEqual([jobLine(v.path), v.path.path.slotNote], ['In copies › From friends › ‹artist›', '']);
+    assert.deepEqual([`${v.retryPath.prefix} ${pathLine(v.retryPath.path)}`, v.retryPath.path.slotNote], ['Retry adds to copies › ‹genre› › ‹artist›',
+      '‹artist›, ‹genre› come from each song’s own tags, so these songs can land in more than one folder (a song with none leaves that folder out).']);
+    assert.equal(vm.dmSlotNote('album', []), '');
+  });
+});
+
 describe('where files land: read again on every open, sent with every start (vp.js)', () => {
   test('every open reads the destination again; the last one known is drawn until the answer comes; a failed read keeps it', async () => {
     const w = makeDestWindow();
@@ -2838,7 +2994,7 @@ describe('where files land: the editor (vp.js)', () => {
     assert.equal(vm.dmDestNested(vm.dmPickerPreview('song')), '');
     k.base = 'Boukmanflow';
     k.layout = '{{GENRE}}/{{ALBUM}}';
-    assert.equal(vm.dmDestNested(vm.dmPickerPreview('song')), '', 'the first folder the layout renders is the album');
+    assert.equal(vm.dmDestNested(vm.dmPickerPreview('song')), '', 'the song\'s ‹genre› (its metadata names none) can drop out: then the album is first, not Boukmanflow');
     assert.deepEqual(vm.dmPickerVars().map((v) => vm.dmPickerVarLabel(v)), ['Insert the artist variable', 'Insert the album variable', 'Insert the year variable',
       'Insert the genre variable', 'Insert the album artist variable', 'Insert the connected server’s name variable']);
     assert.equal(vm.dmPickerVarLabel('MOOD'), 'Insert the MOOD variable');
@@ -2920,6 +3076,16 @@ describe('dm-dest (vp.js): the bar and the editor as they are drawn', () => {
     assert.match(SRC, /<button v-if="!\$root\.dmPickerIsDefault\(\)" type="button" class="dm-btn dm-btn-quiet" v-on:click="\$root\.dmPickerUseDefault\(\)">/);
     assert.ok(!/dmResetDestination|dest\.reset|href="javascript|<(span|div)[^>]*v-on:click/.test(SRC), 'no anchors or clickable spans; no reset in the bar');
   });
+
+  test('a slot drawn quiet inside its folder\'s text, as the "one folder per album" note is; the one note under the path', () => {
+    assert.match(SRC, /<template v-if="c\.parts"><span v-for="\(p, j\) in c\.parts" :key="j" :class="\{ 'dm-dest-slot': p\.slot \}">\{\{ p\.text \}\}<\/span><\/template>/);
+    assert.match(SRC, /<div v-if="file && path\.file" class="dm-dest-file">\{\{ path\.file \}\}<\/div>\s*<div v-if="path\.slotNote" class="dm-dest-slots">\{\{ path\.slotNote \}\}<\/div>/);
+    const CSS = readFileSync(new URL('../../webapp/alpha/spa.css', import.meta.url), 'utf8');
+    const color = (sel) => (new RegExp(`\\n${sel.replace(/[.-]/g, '\\$&')} \\{[^}]*?color: (var\\(--t\\d\\))`).exec(CSS) || [])[1];
+    assert.equal(color('.dm-dest-slot'), color('.dm-dest-crumb-note'), 'the note\'s colour');
+    assert.match(CSS, /\n\.dm-dest-slot \{[^}]*font-weight: 400;/, 'quiet in the preview\'s bold source colour too');
+    assert.match(CSS, /\n\.dm-dest-slots \{[^}]*font-size: 11px;[^}]*color: var\(--t4\);/, 'the note under the path: the editor\'s hint size and colour');
+  });
 });
 
 describe('en.json: where files land, in the design\'s words', () => {
@@ -2933,6 +3099,12 @@ describe('en.json: where files land, in the design\'s words', () => {
       'discover.modal.dest.preview': 'Preview', 'discover.modal.dest.applies': 'Applies to every copy and download on your account', 'discover.modal.dest.save': 'Save',
     };
     for (const [key, text] of Object.entries(want)) { assert.equal(EN[key], text, key); }
+    assert.deepEqual(['artist', 'year', 'genre'].map((v) => EN[`discover.modal.dest.slot.${v}`]), ['‹artist›', '‹year›', '‹genre›']);
+    assert.equal(tEn('discover.modal.dest.slotNote', { slots: '‹artist›', count: 1 }), '‹artist› comes from each song’s own tags, so these songs can land in more than one folder.');
+    assert.equal(tEn('discover.modal.dest.slotNote', { slots: '‹artist›, ‹year›', count: 2 }), '‹artist›, ‹year› come from each song’s own tags, so these songs can land in more than one folder.');
+    assert.equal(tEn('discover.modal.dest.slotNoteGenre', { slots: '‹genre›', count: 1 }),
+      '‹genre› comes from each song’s own tags, so these songs can land in more than one folder (a song with none leaves that folder out).');
+    assert.equal(tEn('discover.modal.dest.slotNoteSong', { slots: '‹genre›', count: 1 }), '‹genre› comes from the song’s own tags (a song with none leaves that folder out).');
     assert.equal(tEn('discover.modal.dest.foldersIn', { library: 'copies' }), 'Folders in copies');
     assert.equal(tEn('discover.modal.dest.folderCount', { count: 1 }), '1 folder');
     for (const key of ['discover.modal.dest.yours', 'discover.modal.dest.default', 'discover.modal.dest.reset', 'discover.modal.dest.remembered', 'discover.modal.dest.use', 'discover.modal.dest.libraryTemplate']) {
@@ -3863,7 +4035,7 @@ describe('the window\'s markup and styles after the 2026-10-21 review', () => {
   });
 
   test('the path\'s "›" is drawn, a "/" read; the empty folder\'s head names no count; the meta line\'s "·" travels with its part', () => {
-    assert.match(VP_SRC, /<i aria-hidden="true">&rsaquo;<\/i><span class="dm-sr">\/<\/span>\{\{ c\.text \}\}/);
+    assert.match(VP_SRC, /<i aria-hidden="true">&rsaquo;<\/i><span class="dm-sr">\/<\/span><template v-if="c\.parts">[\s\S]*?<template v-else>\{\{ c\.text \}\}<\/template>/);
     assert.match(VP_SRC, /!picker\.browse\.failed && picker\.browse\.dirs\.length > 0"><i aria-hidden="true">&middot;<\/i>/);
     assert.match(win, /<span v-for="\(p, i\) in dmMetaParts\(\)" :key="i" class="dmodal-meta-part"><span v-if="i > 0" aria-hidden="true">&middot;<\/span>/);
     assert.match(bodyOf('.dmodal-meta-part')[0], /display: inline-flex/);
