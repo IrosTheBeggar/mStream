@@ -2535,7 +2535,7 @@ describe('every key the page emits has an English value', () => {
 // that record focus.
 const DEST_METHODS = ['dmLoadJobs', 'dmLoadDestination', 'dmDestRefused', 'dmDestShown', 'dmJobStart', 'dmErrorText', 'dmJobPath', 'dmDestMoved',
   'dmOpenPicker', 'dmDestEditing', 'dmClosePicker', 'dmDestFocus', 'dmPickerLibraries', 'dmPickerVars', 'dmPickerVarLabel', 'dmPickerPreview',
-  'dmPickerProblem', 'dmDestNested', 'dmVarToken', 'dmUseLibraryTemplate', 'dmDestDefault', 'dmPickerIsDefault', 'dmPickerUseDefault',
+  'dmPickerProblem', 'dmPickerMissing', 'dmDestNested', 'dmVarToken', 'dmPickerOffersServerFolders', 'dmUseServerFolders', 'dmUseLibraryTemplate', 'dmDestDefault', 'dmPickerIsDefault', 'dmPickerUseDefault',
   'dmPickerLibraryChanged', 'dmPickerBase', 'dmBrowseToggle', 'dmBrowseAnchor', 'dmBrowseLoad', 'dmBrowseCrumbs', 'dmBrowseIsBase', 'dmBrowseMissing',
   'dmBrowseInto', 'dmBrowseUp', 'dmBrowseNewFolder', 'dmPickerSubmit'];
 const LAYOUT = '{{ALBUMARTIST}}/{{ALBUM}}';
@@ -2826,6 +2826,161 @@ describe('where files land: a variable each song files by its own tags is a slot
   });
 });
 
+// Asked for 2026-10-22 ("copy the server's filepath"): {{SERVERFOLDER}}, the
+// folders a song sits in on its server — a preset in the editor, and the
+// same per-song slot rule: the song its own folder, the album the one every
+// listed song shares (else ‹server folder›), the artist scopes cut there.
+describe('where files land: {{SERVERFOLDER}}, the folders a song sits in on its server (vp.js)', () => {
+  const SAME = { vpath: 'copies', base: '', layout: '{{SERVERFOLDER}}', source: 'user' };
+  const VARS = ['ARTIST', 'ALBUM', 'YEAR', 'GENRE', 'ALBUMARTIST', 'PEER', 'SERVERFOLDER'];
+  const night = (over) => tapesRow(STAGE_B, '02 - Borrowed Light', { album: 'Night Market Sampler', albumArtist: 'Various Artists', year: 2020,
+    filepath: 'peerlib/VA/Night Market Sampler/02 - Borrowed Light.mp3', ...over });
+  // the peer's listing of the album: each song where it sits there
+  const listing = (folders, artists = []) => folders.map((f, i) => ({ filepath: `peerlib/${f}/0${i + 1}.mp3`,
+    metadata: { title: `S${i}`, artist: artists[i] || 'Color Out', year: 2020, duration: 200, genres: [] } }));
+  const open = async ({ songs = listing(['VA/Night Market Sampler', 'VA/Night Market Sampler']), layout = SAME.layout, row = night(), focus = 'album', local = ['Harbour Lights'] } = {}) => {
+    const reads = shiftReads(local);
+    reads.peer.albumSongs = () => Promise.resolve(songs);
+    const view = { ...viewOf({ ...SAME, layout }), variables: VARS };
+    const w = makeDestWindow({ reads, server: { view } });
+    await w.vm.openDiscoverModal(row, 'federation', { seedPlain: 'x', focus });
+    return w;
+  };
+  const SERVER_NOTE = '‹server folder› comes from where each song sits on the server, so these songs can land in more than one folder.';
+
+  test('the song: where it sits on its server, its library\'s name dropped; at the root its folder drops out', async () => {
+    const { vm } = await open();
+    const song = vm.dmDestPath('song');
+    assert.deepEqual([pathLine(song), song.file, song.slotNote], ['copies › VA › Night Market Sampler', '02 - Borrowed Light.mp3', '']);
+    assert.equal(vm.dmLayoutTags().serverfolder, 'VA/Night Market Sampler');
+    vm.discover.dest.view = { ...vm.discover.dest.view, destination: { ...SAME, layout: 'From friends/Copy of {{SERVERFOLDER}}' } };
+    assert.equal(pathLine(vm.dmDestPath('song')), 'copies › From friends › Copy of VA › Night Market Sampler', 'the literal joins the first folder');
+    const root = await open({ row: night({ filepath: 'peerlib/02 - Borrowed Light.mp3' }), layout: 'From friends/{{SERVERFOLDER}}' });
+    assert.deepEqual([pathLine(root.vm.dmDestPath('song')), root.vm.dmDestPath('song').missingVars], ['copies › From friends', ['SERVERFOLDER']]);
+    // a row that is not a connected server's (Get it) has no folder there
+    vm.discover.modal.source = 'p2p';
+    assert.equal(vm.dmLayoutTags().serverfolder, null);
+  });
+
+  test('the album: the folder every listed song shares; songs in more than one draw ‹server folder› and say why; before the listing, the row\'s', async () => {
+    const { vm } = await open();
+    assert.deepEqual([pathLine(vm.dmDestPath('album')), vm.dmDestPath('album').slotNote], ['copies › VA › Night Market Sampler', '']);
+    const discs = await open({ songs: listing(['VA/Night Market Sampler/CD1', 'VA/Night Market Sampler/CD2']) });
+    const p = discs.vm.dmDestPath('album');
+    assert.deepEqual([pathLine(p), p.crumbs[0].parts, p.slotNote, p.title],
+      ['copies › ‹server folder›', [{ text: '‹server folder›', slot: true }], SERVER_NOTE, 'copies/‹server folder›']);
+    discs.vm.discover.modal.album = { ...discs.vm.discover.modal.album, songs: null };
+    assert.equal(pathLine(discs.vm.dmDestPath('album')), 'copies › VA › Night Market Sampler', 'no listing yet: the row\'s folder');
+    // with a tag slot: one note, the tags' words first
+    const both = await open({ songs: listing(['VA/CD1', 'VA/CD2'], ['Color Out', 'ALM']), layout: 'From friends/{{ARTIST}}/{{SERVERFOLDER}}' });
+    const b = both.vm.dmDestPath('album');
+    assert.deepEqual([pathLine(b), b.slotNote], ['copies › From friends › ‹artist› › ‹server folder›',
+      '‹artist› comes from each song’s own tags and ‹server folder› from where it sits on the server, so these songs can land in more than one folder.']);
+    assert.equal(both.vm.dmSlotNote('album', ['GENRE', 'SERVERFOLDER', 'YEAR']),
+      '‹genre›, ‹year› come from each song’s own tags and ‹server folder› from where it sits on the server, so these songs can land in more than one folder (a song with none leaves that folder out).');
+    assert.equal(both.vm.dmSlotNote('song', ['GENRE']), '‹genre› comes from the song’s own tags (a song with none leaves that folder out).', 'a song\'s own words, as before');
+  });
+
+  test('the artist scopes: the folder naming {{SERVERFOLDER}} and all after it are "one folder per album"; the one missing album its slot', async () => {
+    const { vm } = await open({ focus: null, row: night({ albumArtist: null }), layout: 'From friends/{{SERVERFOLDER}}', local: ['Harbour Lights', 'Borrowed Tapes'] });
+    assert.deepEqual([pathLine(vm.dmDestPath('artist')), vm.dmDestPath('artist').slotNote], ['copies › From friends › one folder per album', '']);
+    assert.equal(vm.dmMissingAlbum().name, 'Second Shift');
+    const one = vm.dmDestPath('artist-missing');
+    assert.deepEqual([pathLine(one), one.slotNote], ['copies › From friends › ‹server folder›', SERVER_NOTE]);
+  });
+
+  test('Into, Retry adds to and the preview follow the same rule; a ‹server folder› a song can leave out is looked past by the nested warning', async () => {
+    const { vm } = await open({ songs: listing(['VA/CD1', 'VA/CD2']) });
+    const into = vm.dmJobPath(copyJob({ recommendation: night(), state: 'running', params: { scope: 'album', destination: SAME } }));
+    assert.deepEqual([jobLine(into), into.path.slotNote], ['Into copies › ‹server folder›', SERVER_NOTE]);
+    vm.dmOpenPicker();
+    const k = vm.discover.modal.picker;
+    k.layout = 'Copy of {{SERVERFOLDER}}/{{ALBUM}}';
+    assert.deepEqual([pathLine(vm.dmPickerPreview('album')), pathLine(vm.dmPickerPreview('song'))],
+      ['copies › Copy of ‹server folder› › Night Market Sampler', 'copies › Copy of VA › Night Market Sampler › Night Market Sampler']);
+    k.base = 'Night Market Sampler';
+    k.layout = '{{SERVERFOLDER}}/{{ALBUM}}';
+    assert.equal(vm.dmDestNested(vm.dmPickerPreview('album')), 'Night Market Sampler', 'a song at its server\'s root lands in Night Market Sampler › Night Market Sampler');
+  });
+
+  test('the editor: "Same folders as the server" sets the layout, offered where the server lists the variable; the variable is named for a screen reader', async () => {
+    const { vm } = await open({ layout: '{{ALBUMARTIST}}/{{ALBUM}}' });
+    vm.dmOpenPicker();
+    assert.equal(vm.dmPickerOffersServerFolders(), true);
+    vm.dmUseServerFolders();
+    assert.equal(vm.discover.modal.picker.layout, '{{SERVERFOLDER}}');
+    assert.deepEqual([vm.dmPickerPreview('song').valid, pathLine(vm.dmPickerPreview('song'))], [true, 'copies › VA › Night Market Sampler']);
+    assert.equal(vm.dmPickerVarLabel('SERVERFOLDER'), 'Insert the connected server’s folder variable');
+    vm.discover.dest.view = { ...vm.discover.dest.view, variables: VARS.slice(0, -1) };
+    assert.equal(vm.dmPickerOffersServerFolders(), false, 'an older server would refuse it');
+    vm.discover.modal.picker = null;
+    vm.dmUseServerFolders();
+    assert.equal(vm.discover.modal.picker, null, 'nothing open, nothing set');
+  });
+
+  // Review 2026-10-22: Get it's own bar shows on a connected server's row
+  // when the copy's gate fails, and drew that row's server and folder —
+  // but a download comes from no server (youtube.js renders neither).
+  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8');
+  const DEST_SRC = VP_SRC.slice(VP_SRC.indexOf('Vue.component(\'dm-dest\''), VP_SRC.indexOf('Vue.component(\'dm-keep-body\''));
+  const fromOf = (download) => {
+    const src = /\n {6}from: (function \(\) \{ [^\n]*? \}),\n/.exec(DEST_SRC);
+    assert.ok(src, 'dm-dest no longer computes `from` — update this test');
+    return new Function(`return ${src[1]};`)().call({ download });
+  };
+  const YT = { name: 'youtube', title: 'YouTube', capabilities: ['acquire'], scopes: ['song'] };
+
+  test('Get it\'s bar draws a download, from no server: {{PEER}} and {{SERVERFOLDER}} drop out of it — on a connected server\'s row too', async () => {
+    const { vm } = await open({ focus: null, layout: 'From/{{PEER}}/{{SERVERFOLDER}}' });
+    vm.discover.plugins.list = [YT];
+    assert.deepEqual([vm.dmKeepChoices(), vm.dmGetItBar()], [[], true], 'the copy\'s gate failed: Get it takes Keep\'s place, its bar too');
+    assert.match(HTML, /<dm-dest v-if="dmGetItBar\(\)" scope="song" download><\/dm-dest>/);
+    assert.match(DEST_SRC, /path: function \(\) \{ return this\.\$root\.dmDestPath\(this\.shown, null, this\.from\); \}/);
+    assert.match(DEST_SRC, /preview: function \(\) \{ return this\.\$root\.dmPickerPreview\(this\.shown, this\.from\); \}/);
+    const from = fromOf(true);
+    assert.deepEqual([from, fromOf(false)], [{ peer: null, filepath: null }, null], 'Keep\'s bar: this row\'s server');
+    const bar = vm.dmDestPath('song', null, from);
+    assert.deepEqual([pathLine(bar), bar.missingVars, bar.slotNote], ['copies › From', ['PEER', 'SERVERFOLDER'], '']);
+    assert.equal(pathLine(vm.dmDestPath('song')), 'copies › From › Stage Peer B › VA › Night Market Sampler', 'a copy from this row\'s server names both');
+    vm.dmOpenPicker();
+    assert.equal(pathLine(vm.dmPickerPreview('song', from)), 'copies › From', 'the editor\'s preview the same');
+  });
+
+  test('another server\'s copy shown here draws {{SERVERFOLDER}} from its own song there: a song its folder and file, an album its slot', async () => {
+    const D = { ...SAME, layout: '{{PEER}}/{{SERVERFOLDER}}' };
+    const { vm } = await open({ focus: null, layout: D.layout });
+    const theirs = tapesRow(STAGE_C, '02 - Late Train Verse', { filepath: 'otherlib/Mixes/2019/02 - Late Train Verse.mp3' });
+    const song = vm.dmJobPath(copyJob({ recommendation: theirs, state: 'running', params: { destination: D } }));
+    assert.deepEqual([jobLine(song), song.path.file, song.path.slotNote], ['Into copies › Stage Peer C › Mixes › 2019', '02 - Late Train Verse.mp3', '']);
+    const ran = copyJob({ recommendation: theirs, state: 'done', params: { destination: D }, result: { counts: { total: 1, copied: 1, skipped: 0, failed: 0 }, destination: D } });
+    assert.equal(jobLine(vm.dmJobPath(ran)), 'In copies › Stage Peer C › Mixes › 2019', 'the In line from the place it ran with, its result naming no file');
+    const album = vm.dmJobPath(copyJob({ recommendation: theirs, state: 'running', params: { scope: 'album', destination: D } }));
+    assert.deepEqual([jobLine(album), album.path.slotNote], ['Into copies › Stage Peer C › ‹server folder›', SERVER_NOTE], 'this window lists only this server\'s songs');
+    assert.equal(jobLine(vm.dmJobPath(copyJob({ recommendation: theirs, state: 'running', params: { scope: 'artist', destination: D } }))),
+      'Into copies › Stage Peer C › one folder per album');
+    // this server's own copies: the row's folder, the album's listing
+    const mine = vm.dmJobPath(copyJob({ recommendation: night(), state: 'running', params: { destination: D } }));
+    assert.deepEqual([jobLine(mine), mine.path.file], ['Into copies › Stage Peer B › VA › Night Market Sampler', '02 - Borrowed Light.mp3']);
+    assert.equal(jobLine(vm.dmJobPath(copyJob({ recommendation: night(), state: 'running', params: { scope: 'album', destination: D } }))),
+      'Into copies › Stage Peer B › VA › Night Market Sampler');
+  });
+
+  test('the editor\'s hint for a variable with no value: the server\'s variables say why, not the tags\' words', async () => {
+    const { vm } = await open({ focus: null, row: night({ filepath: 'peerlib/02 - Borrowed Light.mp3', year: null }), layout: 'From friends/{{SERVERFOLDER}}' });
+    assert.match(DEST_SRC, /<div v-else-if="preview\.missingVars\.length" id="dm-dest-layout-h" class="dm-dest-hint">\{\{ \$root\.dmPickerMissing\(preview, from\) \}\}<\/div>/);
+    vm.dmOpenPicker();
+    const hint = (from) => vm.dmPickerMissing(vm.dmPickerPreview('song', from), from);
+    assert.equal(hint(null), 'SERVERFOLDER has no value for this song, so it drops out of the path: the song sits at the top of its server’s library.');
+    const download = fromOf(true);
+    assert.equal(hint(download), 'SERVERFOLDER has no value for a download, so it drops out of the path: a download comes from no connected server.');
+    vm.discover.modal.picker.layout = '{{PEER}}/{{SERVERFOLDER}}';
+    assert.equal(hint(download), 'PEER, SERVERFOLDER has no value for a download, so it drops out of the path: a download comes from no connected server.');
+    vm.discover.modal.picker.layout = '{{YEAR}}/{{SERVERFOLDER}}';
+    assert.equal(hint(null), 'YEAR, SERVERFOLDER has no value for this song, so it drops out of the path. Other songs render with their own tags.', 'a tag too: the tags\' words');
+    assert.equal(hint(download), 'YEAR, SERVERFOLDER has no value for this song, so it drops out of the path. Other songs render with their own tags.');
+  });
+});
+
 describe('where files land: read again on every open, sent with every start (vp.js)', () => {
   test('every open reads the destination again; the last one known is drawn until the answer comes; a failed read keeps it', async () => {
     const w = makeDestWindow();
@@ -3074,6 +3229,8 @@ describe('dm-dest (vp.js): the bar and the editor as they are drawn', () => {
     assert.match(SRC, /data-dm-change v-on:click="\$root\.dmOpenPicker\(\)"/);
     assert.match(SRC, /:aria-disabled="!preview\.valid \|\| picker\.saving \? 'true' : null"/);
     assert.match(SRC, /<button v-if="!\$root\.dmPickerIsDefault\(\)" type="button" class="dm-btn dm-btn-quiet" v-on:click="\$root\.dmPickerUseDefault\(\)">/);
+    // the presets after the variables: "Same folders as the server", then the library template
+    assert.match(SRC, /<span class="dm-dest-vars-rule" aria-hidden="true"><\/span>\s*<button v-if="\$root\.dmPickerOffersServerFolders\(\)" type="button" class="dm-btn dm-btn-quiet" v-on:click="\$root\.dmUseServerFolders\(\)">\{\{ tt\('discover\.modal\.dest\.sameAsServer'\) \}\}<\/button>\s*<button type="button" class="dm-btn dm-btn-quiet" v-on:click="\$root\.dmUseLibraryTemplate\(\)">/);
     assert.ok(!/dmResetDestination|dest\.reset|href="javascript|<(span|div)[^>]*v-on:click/.test(SRC), 'no anchors or clickable spans; no reset in the bar');
   });
 
@@ -3099,7 +3256,9 @@ describe('en.json: where files land, in the design\'s words', () => {
       'discover.modal.dest.preview': 'Preview', 'discover.modal.dest.applies': 'Applies to every copy and download on your account', 'discover.modal.dest.save': 'Save',
     };
     for (const [key, text] of Object.entries(want)) { assert.equal(EN[key], text, key); }
-    assert.deepEqual(['artist', 'year', 'genre'].map((v) => EN[`discover.modal.dest.slot.${v}`]), ['‹artist›', '‹year›', '‹genre›']);
+    assert.deepEqual(['artist', 'year', 'genre', 'serverfolder'].map((v) => EN[`discover.modal.dest.slot.${v}`]), ['‹artist›', '‹year›', '‹genre›', '‹server folder›']);
+    assert.equal(EN['discover.modal.dest.sameAsServer'], 'Same folders as the server');
+    assert.equal(tEn('discover.modal.dest.slotNoteServer', { slot: '‹server folder›' }), '‹server folder› comes from where each song sits on the server, so these songs can land in more than one folder.');
     assert.equal(tEn('discover.modal.dest.slotNote', { slots: '‹artist›', count: 1 }), '‹artist› comes from each song’s own tags, so these songs can land in more than one folder.');
     assert.equal(tEn('discover.modal.dest.slotNote', { slots: '‹artist›, ‹year›', count: 2 }), '‹artist›, ‹year› come from each song’s own tags, so these songs can land in more than one folder.');
     assert.equal(tEn('discover.modal.dest.slotNoteGenre', { slots: '‹genre›', count: 1 }),
@@ -4042,7 +4201,7 @@ describe('the window\'s markup and styles after the 2026-10-21 review', () => {
   });
 
   test('Get it\'s path bar is its own (the song\'s), its hint its own rows\' — Keep\'s says it once; Esc reaches the window from the preview tile\'s link', () => {
-    assert.match(win, /<dm-dest v-if="dmGetItBar\(\)" scope="song"><\/dm-dest>/);
+    assert.match(win, /<dm-dest v-if="dmGetItBar\(\)" scope="song" download><\/dm-dest>/);
     assert.match(win, /<h3 class="dmodal-label">\{\{ tt\('discover\.modal\.getIt'\) \}\}<\/h3><span v-if="dmGetItLive\(\)" class="dmodal-hint">/);
     assert.ok(!/v-on:keydown\.stop(?![.\w])/.test(win), 'no link swallows every key');
     assert.match(win, /v-on:click\.stop v-on:keydown\.enter\.stop v-on:keydown\.space\.stop>/);

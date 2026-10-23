@@ -37,12 +37,16 @@ const _SUPPORTED_SET = new Set(SUPPORTED_VARS);
 
 // Variables only SOME callers accept, passed as `extraVars` to the
 // validators. PEER is the paired server a discovery collection copy came
-// from (src/discovery-plugins/plugins/federation-copy.js); torrent
-// templates never see it — the admin validator runs with the base set, so
-// an operator cannot save a torrent template that renders an empty
-// segment for every torrent.
+// from (src/discovery-plugins/plugins/federation-copy.js); SERVERFOLDER the
+// folder the copied song sits in on that server, inside its library — the
+// one variable whose value may be several folders ("Artist/Album"), each
+// made safe on its own (sanitizeFolders). Torrent templates never see
+// either — the admin validator runs with the base set, so an operator
+// cannot save a torrent template that renders an empty segment for every
+// torrent.
 export const EXTRA_VARS = Object.freeze({
   PEER: 'PEER',
+  SERVERFOLDER: 'SERVERFOLDER',
 });
 
 // Suggested template the admin UI offers as a "use suggested" preset
@@ -88,6 +92,15 @@ export function sanitizeSegment(raw) {
   s = s.replace(/^[.\s]+|[.\s]+$/g, '');
   if (s.length > _MAX_SEGMENT_LEN) { s = s.slice(0, _MAX_SEGMENT_LEN); }
   return s;
+}
+
+// A value that is a path of folders ({{SERVERFOLDER}}): split on either
+// separator, each segment made safe as sanitizeSegment makes a value, the
+// ones that come out empty dropped ('', '.', '..'), re-joined with '/'. So
+// it may add folders to the rendered path, never climb out of it.
+export function sanitizeFolders(raw) {
+  if (raw == null) { return ''; }
+  return String(raw).split(/[/\\]+/).map((s) => sanitizeSegment(s)).filter(Boolean).join('/');
 }
 
 // Pull the {{VAR}} tokens out of a template string. Returns an
@@ -186,8 +199,16 @@ export function validateTemplate(template, { extraVars = [] } = {}) {
  * {{YEAR}} collapses `Artist - {{YEAR}}` to `Artist -` (which then
  * trims trailing whitespace) rather than producing `Artist - /Album`
  * with an awkward dangling separator.
+ *
+ * A path longer than _MAX_RESOLVED_LEN is cut to it, as the torrent
+ * pipeline has always had it. `truncate: false` returns it whole instead,
+ * for a caller that refuses an over-long path (validateResolvedPath:
+ * path_too_long) rather than file under a name cut mid-folder — the
+ * discovery collection layout, whose {{SERVERFOLDER}} alone can pass the
+ * cap, and two songs whose paths differ only past it would share the cut
+ * one.
  */
-export function resolveTemplate(template, metadata) {
+export function resolveTemplate(template, metadata, { truncate = true } = {}) {
   if (!template || typeof template !== 'string') {
     return { path: '', missingVars: [] };
   }
@@ -202,6 +223,9 @@ export function resolveTemplate(template, metadata) {
     ALBUMARTIST: sanitizeSegment(meta.albumartist || meta.artist),
     // EXTRA_VARS: empty (dropped) unless the caller's metadata carries it.
     PEER:        sanitizeSegment(meta.peer),
+    // Several folders, each sanitised: inside literal text ("Copy of
+    // {{SERVERFOLDER}}") the value's own folders follow the literal's.
+    SERVERFOLDER: sanitizeFolders(meta.serverfolder),
   };
   const missing = new Set();
   const substituted = template.replace(
@@ -222,7 +246,7 @@ export function resolveTemplate(template, metadata) {
   // the downstream daemon path is built with '/' too).
   const segments = substituted.split(/[/\\]+/).map(s => s.trim()).filter(s => s.length > 0);
   let path = segments.join('/');
-  if (path.length > _MAX_RESOLVED_LEN) { path = path.slice(0, _MAX_RESOLVED_LEN); }
+  if (truncate && path.length > _MAX_RESOLVED_LEN) { path = path.slice(0, _MAX_RESOLVED_LEN); }
   return { path, missingVars: Array.from(missing) };
 }
 

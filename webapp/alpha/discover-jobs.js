@@ -23,17 +23,23 @@
   // same thing as the user types so the picker's preview never lies. Any
   // change to the rules there has to be made here too — the unit test fails
   // when the two disagree.
-  const LAYOUT_VARS = ['ARTIST', 'ALBUM', 'YEAR', 'GENRE', 'ALBUMARTIST', 'PEER'];
+  const LAYOUT_VARS = ['ARTIST', 'ALBUM', 'YEAR', 'GENRE', 'ALBUMARTIST', 'PEER', 'SERVERFOLDER'];
   // The server's default (src/discovery-plugins/destination.js): the album's
   // credit, falling back to the song's artist — a compilation stays together.
   const DEFAULT_LAYOUT = '{{ALBUMARTIST}}/{{ALBUM}}';
+  // The editor's "Same folders as the server": each song where it sits on
+  // the server it came from.
+  const SERVERFOLDER_LAYOUT = '{{SERVERFOLDER}}';
   const MAX_TEMPLATE_LEN = 500;
   const MAX_RESOLVED_LEN = 500;
   const MAX_SEGMENT_LEN = 200;
   const TOKEN_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
-  // The sample the server validates a layout against (SAMPLE_METADATA + peer).
+  // The sample the server validates a layout against (SAMPLE_METADATA +
+  // peer + server folder: two folders, so a layout of just
+  // {{SERVERFOLDER}} validates).
   const SAMPLE_TAGS = { artist: 'Pink Floyd', album: 'The Dark Side of the Moon', year: '1973', genre: 'Progressive Rock', albumartist: 'Pink Floyd' };
   const SAMPLE_PEER = "Sam's server";
+  const SAMPLE_SERVERFOLDER = 'Pink Floyd/The Dark Side of the Moon';
 
   function sanitizeSegment(raw) {
     if (raw == null) { return ''; }
@@ -49,7 +55,29 @@
     return s;
   }
 
-  function resolveLayout(layout, meta) {
+  // A value that is folders ({{SERVERFOLDER}}: "Boukmanflow/Borrowed
+  // Tapes"): split on either separator, each made safe as sanitizeSegment
+  // makes a tag, the ones that come out empty ('', '.', '..') dropped,
+  // joined with '/' — it may add folders to the path, never climb out.
+  function sanitizeFolders(raw) {
+    if (raw == null) { return ''; }
+    return String(raw).split(/[/\\]+/).map((s) => sanitizeSegment(s)).filter(Boolean).join('/');
+  }
+
+  // {{SERVERFOLDER}} of a song on a connected server (federation-copy
+  // serverFolderOf): the folder its file sits in there (`filepath`, the
+  // peer's path, its library first), the library's own name dropped —
+  // where a folder copy mirrors it. Several folders, or '' for a song at
+  // the library's root (and for no path: a download), which drops out.
+  function serverFolderOf(filepath) {
+    const segs = String(filepath == null ? '' : filepath).replace(/\\/g, '/').split('/').map((s) => s.trim()).filter((s) => s && s !== '.');
+    return sanitizeFolders(segs.slice(1, -1).join('/'));
+  }
+
+  // `truncate: false` is resolveTemplate's: the path whole, never cut at
+  // MAX_RESOLVED_LEN — what renderTarget files by, so previewTarget refuses
+  // (path_too_long) the path the server refuses.
+  function resolveLayout(layout, meta, { truncate = true } = {}) {
     if (!layout || typeof layout !== 'string') { return { path: '', missingVars: [] }; }
     const m = meta || {};
     const lookup = {
@@ -59,6 +87,9 @@
       GENRE: sanitizeSegment(m.genre),
       ALBUMARTIST: sanitizeSegment(m.albumartist || m.artist),
       PEER: sanitizeSegment(m.peer),
+      // several folders: inside literal text ("Copy of {{SERVERFOLDER}}")
+      // the value's own folders follow the literal's
+      SERVERFOLDER: sanitizeFolders(m.serverfolder),
     };
     const missing = [];
     const substituted = layout.replace(TOKEN_RE, (raw, name) => {
@@ -72,7 +103,7 @@
     });
     const segments = substituted.split(/[/\\]+/).map((s) => s.trim()).filter((s) => s.length > 0);
     let path = segments.join('/');
-    if (path.length > MAX_RESOLVED_LEN) { path = path.slice(0, MAX_RESOLVED_LEN); }
+    if (truncate && path.length > MAX_RESOLVED_LEN) { path = path.slice(0, MAX_RESOLVED_LEN); }
     return { path, missingVars: missing };
   }
 
@@ -109,7 +140,7 @@
     // eslint-disable-next-line no-control-regex
     if (/[\x00-\x1f]/.test(layout)) { return { valid: false, error: 'invalid_chars' }; }
     if (layout.startsWith('/') || layout.startsWith('\\')) { return { valid: false, error: 'absolute_template' }; }
-    const sample = resolveLayout(layout, { ...SAMPLE_TAGS, peer: SAMPLE_PEER }).path;
+    const sample = resolveLayout(layout, { ...SAMPLE_TAGS, peer: SAMPLE_PEER, serverfolder: SAMPLE_SERVERFOLDER }).path;
     const check = validateResolvedPath(sample);
     return check.valid ? { valid: true } : check;
   }
@@ -130,9 +161,11 @@
   }
 
   // Where one song lands: the library, the base folder, what the layout
-  // rendered from the tags, the file. `error` is set (and `rendered` empty)
-  // when the layout or the base folder would be refused; `missingVars` names
-  // the variables this song has no value for — their segments drop out.
+  // rendered from the tags (`tags.serverfolder`: {{SERVERFOLDER}}, the
+  // folders it sits in on the server — destination.js renderTarget's
+  // serverFolder), the file. `error` is set (and `rendered` empty) when the
+  // layout or the base folder would be refused; `missingVars` names the
+  // variables this song has no value for — their segments drop out.
   function previewTarget({ vpath, base, layout, tags, peerName, fileName }) {
     const t = tags || {};
     const b = normalizeBase(base);
@@ -141,8 +174,8 @@
     if (!b.valid) { return { valid: false, error: b.error, field: 'base', library: vpath || '', base: '', rendered: '', file, relPath: '', missingVars: [] }; }
     if (!l.valid) { return { valid: false, error: l.error, variable: l.variable || null, field: 'layout', library: vpath || '', base: b.base, rendered: '', file, relPath: '', missingVars: [] }; }
     const { path: rendered, missingVars } = resolveLayout(layout, {
-      artist: t.artist, album: t.album, year: t.year, genre: t.genre, albumartist: t.albumartist, peer: peerName,
-    });
+      artist: t.artist, album: t.album, year: t.year, genre: t.genre, albumartist: t.albumartist, peer: peerName, serverfolder: t.serverfolder,
+    }, { truncate: false });
     if (rendered) {
       const check = validateResolvedPath(rendered);
       if (!check.valid) { return { valid: false, error: check.error, field: 'layout', library: vpath || '', base: b.base, rendered: '', file, relPath: '', missingVars }; }
@@ -162,10 +195,12 @@
   // {{GENRE}} are each song's, so the songs of one album can land in more
   // than one folder — a compilation's under each track artist. {{ALBUM}},
   // {{ALBUMARTIST}} (the album's credit) and {{PEER}} are the same for every
-  // song of an album. Where this client cannot promise the one value every
-  // song files under, the path draws a SLOT in its place ("‹artist›", inside
-  // its folder's own text), never one folder that will not exist.
-  const SLOT_VARS = ['ARTIST', 'YEAR', 'GENRE'];
+  // song of an album. {{SERVERFOLDER}} is each song's too: where its file
+  // sits on the server (federation-copy serverFolderOf). Where this client
+  // cannot promise the one value every song files under, the path draws a
+  // SLOT in its place ("‹artist›", inside its folder's own text), never one
+  // folder that will not exist.
+  const SLOT_VARS = ['ARTIST', 'YEAR', 'GENRE', 'SERVERFOLDER'];
 
   // A value every song shares: { agree, value } — the same folder name for
   // each (as sanitizeSegment writes it; none is a value too: the folder
@@ -191,17 +226,18 @@
   // as the album copy asks it) as the copy files it (federation-copy
   // listAlbumSongs + destination.js tagsForLayout): its artist tag as
   // written, else the listed artist, else the credit the listing was asked
-  // by (`credit`); its own year — the copy has nothing to fall back to — and
-  // its genre as songGenre reads the genres the listing names for it.
-  // → { artist, year, genre }
+  // by (`credit`); its own year — the copy has nothing to fall back to —
+  // its genre as songGenre reads the genres the listing names for it, and
+  // the folder its file sits in on the server (serverFolderOf).
+  // → { artist, year, genre, serverfolder }
   function listedSongTags(song, credit) {
     const md = song && song.metadata && typeof song.metadata === 'object' ? song.metadata : {};
-    return { artist: md['artist-display'] || md.artist || credit || null, year: md.year || null, genre: songGenre(md) };
+    return { artist: md['artist-display'] || md.artist || credit || null, year: md.year || null, genre: songGenre(md), serverfolder: serverFolderOf(song && song.filepath) };
   }
 
   // The tags a copy of `scope` renders the layout with, and the variables it
   // draws as slots (scopeTarget's `slots`). `tags` are the caller's (vp.js
-  // dmScopeTags):
+  // dmScopeTags; `serverfolder` the row's own, serverFolderOf its path):
   //   song            the song's own; {{GENRE}} a slot unless the caller has
   //                   the song's genre (songGenre)
   //   album           {{ARTIST}} and {{YEAR}} the value every song of the
@@ -212,11 +248,15 @@
   //                   credit is not the row's artist), then slots.
   //                   {{GENRE}} a slot unless every song's genre is known
   //                   and agrees (the listing names each song's genres —
-  //                   listedSongTags). {{ALBUMARTIST}} the album's credit: its
-  //                   albumartist, else the row's artist — never a slot
+  //                   listedSongTags). {{SERVERFOLDER}} the folder every
+  //                   listed song sits in on the server, else a slot; before
+  //                   the listing answers, the row's. {{ALBUMARTIST}} the
+  //                   album's credit: its albumartist, else the row's
+  //                   artist — never a slot
   //   artist,         the caller's (the artist as ARTIST and ALBUMARTIST,
   //   artist-missing  no album: scopeTarget cuts at the album's folder);
-  //                   {{GENRE}} a slot
+  //                   {{GENRE}} and {{SERVERFOLDER}} slots (the one missing
+  //                   album scopeTarget names has a folder of its own there)
   // → { tags, slots }
   function scopeTags({ scope, tags, songs, compilation }) {
     const t = Object.assign({}, tags || {});
@@ -231,9 +271,13 @@
       const genres = listed ? listed.map((x) => x.genre) : [];
       const genre = listed && genres.every((g) => sanitizeSegment(g) !== '') ? sharedTag(genres) : { agree: false };
       if (genre.agree) { t.genre = genre.value; } else { slots.push('GENRE'); }
+      // folders compared whole: "AC/DC" (two) is not "AC-DC" (one)
+      const folders = (listed || [t]).map((x) => sanitizeFolders(x.serverfolder));
+      if (folders.every((f) => f === folders[0])) { t.serverfolder = folders[0]; } else { slots.push('SERVERFOLDER'); }
     } else if (scope === 'artist' || scope === 'artist-missing') {
       t.genre = null;
-      slots.push('GENRE');
+      t.serverfolder = null;
+      slots.push('GENRE', 'SERVERFOLDER');
     } else if (sanitizeSegment(t.genre) === '') {
       slots.push('GENRE');
     }
@@ -250,10 +294,10 @@
   //                   compilation stays in one folder
   //   artist          the artist as ARTIST and ALBUMARTIST, no album: the
   //                   first folder that names an album ({{ALBUM}}, or
-  //                   {{YEAR}} — each album has its own) and every folder
-  //                   after it become one "one folder per album" note; a
-  //                   layout that names no album adds nothing (every album
-  //                   shares that folder)
+  //                   {{YEAR}} or {{SERVERFOLDER}} — each album has its
+  //                   own) and every folder after it become one "one folder
+  //                   per album" note; a layout that names no album adds
+  //                   nothing (every album shares that folder)
   //   artist-missing  the same — or, when exactly one album is missing
   //                   (`oneAlbum`: its { name, year }), that album's folder
   // `slots` names the variables drawn as slots (SLOT_VARS; any other is
@@ -267,7 +311,7 @@
   // ({ key, kind: 'note' }) — `slots`, the ones the path shows, in its
   // order; `file` for a song alone, and `title`, the plain path for a
   // tooltip.
-  const ALBUM_FOLDER_RE = /\{\{\s*(album|year)\s*\}\}/i;
+  const ALBUM_FOLDER_RE = /\{\{\s*(album|year|serverfolder)\s*\}\}/i;
   // A slot rides through the engine as a mark no tag or layout carries (two
   // private-use characters, U+E000 and U+E001, around the variable's name):
   // sanitizeSegment and the path checks pass it untouched, and each folder
@@ -313,7 +357,7 @@
     if (out.perAlbum || per.length) {
       // the album's credit stays the album's when its artist is a slot
       const meta = { artist: t.artist, genre: t.genre, albumartist: t.albumartist || t.artist, peer: peerName };
-      if (!out.perAlbum) { meta.album = t.album; meta.year = t.year; }
+      if (!out.perAlbum) { meta.album = t.album; meta.year = t.year; meta.serverfolder = t.serverfolder; }
       for (const v of per) { meta[v.toLowerCase()] = slotMark(v); }
       const head = resolveLayout(shown, meta);
       marked = head.path;
@@ -784,8 +828,8 @@
   }
 
   return {
-    LAYOUT_VARS, DEFAULT_LAYOUT, SAMPLE_TAGS, SAMPLE_PEER, COPY_PLUGIN, LOOKUP_CAPABILITY,
-    sanitizeSegment, resolveLayout, validateLayout, validateResolvedPath, normalizeBase, safeFileName, previewTarget, pathCrumbs,
+    LAYOUT_VARS, DEFAULT_LAYOUT, SERVERFOLDER_LAYOUT, SAMPLE_TAGS, SAMPLE_PEER, SAMPLE_SERVERFOLDER, COPY_PLUGIN, LOOKUP_CAPABILITY,
+    sanitizeSegment, sanitizeFolders, serverFolderOf, resolveLayout, validateLayout, validateResolvedPath, normalizeBase, safeFileName, previewTarget, pathCrumbs,
     SLOT_VARS, songGenre, listedSongTags, scopeTags, scopeTarget, sameDestination, landedPath,
     isLive, fmtBytes, jobRowState, manyCounts, manyParts, jobsByPlugin,
     JOB_SCOPES, jobScope, jobSlot, jobsBySlot, jobKind,

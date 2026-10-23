@@ -584,20 +584,24 @@ const VUEPLAYERCORE = (() => {
   // the editor in place, which takes the card's action row's place too
   // (one primary at a time) and saves nothing until Save. `scope` = the
   // scope the path is drawn for; by default the Keep card's choice, else
-  // the song (Get it). A file line only where the window copies the song
-  // (its file keeps its name). State and behaviour stay on the playlist
-  // Vue (discover.dest, discover.modal.picker and the dm* methods); this
-  // only puts them where the rows are. The parent shows it only when a
-  // row could put a file somewhere — never locked.
+  // the song (Get it). `download` = the path is a download's (Get it's
+  // bar): it comes from no server, so {{PEER}} and {{SERVERFOLDER}} drop
+  // out of it, as youtube.js renders it — on a connected server's row too.
+  // A file line only where the window copies the song (its file keeps its
+  // name). State and behaviour stay on the playlist Vue (discover.dest,
+  // discover.modal.picker and the dm* methods); this only puts them where
+  // the rows are. The parent shows it only when a row could put a file
+  // somewhere — never locked.
   Vue.component('dm-dest', {
-    props: { scope: String },
+    props: { scope: String, download: Boolean },
     computed: {
       picker: function () { return this.$root.discover.modal.picker; },
       dest: function () { const v = this.$root.discover.dest.view; return (v && v.destination) || null; },
       shown: function () { return this.scope || this.$root.dmKeepScope() || 'song'; },
-      path: function () { return this.$root.dmDestPath(this.shown); },
+      from: function () { return this.download ? { peer: null, filepath: null } : null; },
+      path: function () { return this.$root.dmDestPath(this.shown, null, this.from); },
       fileLine: function () { return this.shown === 'song' && this.$root.dmKeepChoices().length > 0; },
-      preview: function () { return this.$root.dmPickerPreview(this.shown); },
+      preview: function () { return this.$root.dmPickerPreview(this.shown, this.from); },
       nested: function () { return this.$root.dmDestNested(this.preview); },
       libraries: function () { return this.$root.dmPickerLibraries(); },
       folders: function () { return this.picker && this.picker.browse ? this.$root.dmBrowseCrumbs() : []; },
@@ -678,10 +682,11 @@ const VUEPLAYERCORE = (() => {
           <div class="dm-dest-vars">
             <button v-for="v in $root.dmPickerVars()" :key="v" type="button" class="dm-dest-var" :aria-label="$root.dmPickerVarLabel(v)" v-on:click="$root.dmInsertVar(v, $refs.layout)">{{ $root.dmVarToken(v) }}</button>
             <span class="dm-dest-vars-rule" aria-hidden="true"></span>
+            <button v-if="$root.dmPickerOffersServerFolders()" type="button" class="dm-btn dm-btn-quiet" v-on:click="$root.dmUseServerFolders()">{{ tt('discover.modal.dest.sameAsServer') }}</button>
             <button type="button" class="dm-btn dm-btn-quiet" v-on:click="$root.dmUseLibraryTemplate()">{{ tt('discover.modal.dest.useTemplate') }}</button>
           </div>
           <div v-if="preview.field === 'layout'" id="dm-dest-layout-h" class="dm-dest-err"><dm-icon name="warn" :size="12"></dm-icon><span>{{ $root.dmPickerProblem(preview) }}</span></div>
-          <div v-else-if="preview.missingVars.length" id="dm-dest-layout-h" class="dm-dest-hint">{{ tt('discover.modal.dest.missing', { vars: preview.missingVars.join(', ') }) }}</div>
+          <div v-else-if="preview.missingVars.length" id="dm-dest-layout-h" class="dm-dest-hint">{{ $root.dmPickerMissing(preview, from) }}</div>
           <div v-else id="dm-dest-layout-h" class="dm-dest-hint">{{ tt('discover.modal.dest.layoutHint') }}</div>
         </div>
         <div v-if="preview.valid" class="dm-dest-field">
@@ -2451,6 +2456,11 @@ const VUEPLAYERCORE = (() => {
           // album's credit the job knows (destination.js tagsForLayout), so
           // a compilation previews "Various Artists/…", where it lands
           albumartist: (md && (md['album-artist'] || md.albumartist)) || t.albumArtist || null,
+          // {{SERVERFOLDER}}: the folder the song sits in on its server, its
+          // library's name dropped (federation-copy serverFolderOf); a row
+          // that is not a connected server's has none, so it drops out (a
+          // download's path drops it on any row: dmScopeTags' `from`)
+          serverfolder: m.source === 'federation' ? DISCOVERJOBS.serverFolderOf(t.filepath) : null,
         };
       },
       // The tags a scope's copy renders the layout with, and the variables
@@ -2459,31 +2469,43 @@ const VUEPLAYERCORE = (() => {
       // genre); for its album the song's, the album's credit as ALBUMARTIST
       // (DISCOVERYPAGE.albumCreditOf: a compilation's "Various Artists",
       // else the row's artist — never a featured song's "feat." credit), and
-      // {{ARTIST}}, {{YEAR}} and {{GENRE}} what every song of the album's
-      // listing agrees on (dmLoadPeerFacts: each song's own artist, year
-      // and genres), else slots — before the listing answers, {{ARTIST}}
-      // and {{YEAR}} slots for a compilation only, {{GENRE}} a slot. For
-      // the artist scopes the track artist as ARTIST and ALBUMARTIST —
-      // never a compilation's credit — no album or year: each album has its
-      // own (scopeTarget's "one folder per album"), and {{GENRE}} a slot.
+      // {{ARTIST}}, {{YEAR}}, {{GENRE}} and {{SERVERFOLDER}} what every
+      // song of the album's listing agrees on (dmLoadPeerFacts: each song's
+      // own artist, year, genres and path), else slots — before the listing
+      // answers, {{ARTIST}} and {{YEAR}} slots for a compilation only,
+      // {{GENRE}} a slot, {{SERVERFOLDER}} the row's own folder. For the
+      // artist scopes the track artist as ARTIST and ALBUMARTIST — never a
+      // compilation's credit — no album, year or server folder: each album
+      // has its own (scopeTarget's "one folder per album"), and {{GENRE}} a
+      // slot.
       // (The server files a song without the tag under its album's credit
       // as the peer spells it, else this artist: only another spelling or
       // a joint credit, "Nova & Vosto", lands apart from this preview.)
+      // `from` = where the files come from when it is not this row's
+      // server (dmDestPath's): {{SERVERFOLDER}} then comes from the song's
+      // path there, `from.filepath` — none for a download, which drops it.
+      // This window lists only this row's server's songs, so another
+      // server's album draws its ‹server folder› slot.
       // → { tags, slots }
-      dmScopeTags: function (scope) {
+      dmScopeTags: function (scope, from) {
         const m = this.discover.modal;
         const tags = this.dmLayoutTags();
         if (scope === 'artist' || scope === 'artist-missing') {
           const artist = (m.track && m.track.artist) || tags.artist;
-          return DISCOVERJOBS.scopeTags({ scope, tags: { artist, albumartist: artist, album: null, year: null, genre: null } });
+          return DISCOVERJOBS.scopeTags({ scope, tags: { artist, albumartist: artist, album: null, year: null, genre: null, serverfolder: null } });
         }
-        if (scope !== 'album') { return DISCOVERJOBS.scopeTags({ scope: 'song', tags }); }
+        if (scope !== 'album') {
+          const own = from ? Object.assign({}, tags, { serverfolder: DISCOVERJOBS.serverFolderOf(from.filepath) }) : tags;
+          return DISCOVERJOBS.scopeTags({ scope: 'song', tags: own });
+        }
         const listed = m.album && Array.isArray(m.album.songs) ? m.album.songs : null;
         const credit = DISCOVERYPAGE.albumCreditOf(m.track);
-        return DISCOVERJOBS.scopeTags({
+        const st = DISCOVERJOBS.scopeTags({
           scope, tags: Object.assign({}, tags, { albumartist: tags.albumartist || credit }), compilation: this.dmKeepCompilation(),
           songs: listed ? listed.map((song) => DISCOVERJOBS.listedSongTags(song, credit)) : null,
         });
+        if (from && st.slots.indexOf('SERVERFOLDER') === -1) { st.slots.push('SERVERFOLDER'); }
+        return st;
       },
       // The album "Only the albums you don't have" copies when it is the one
       // ({ name, year }, from dmArtistOwnership): the path names it. null
@@ -2503,9 +2525,13 @@ const VUEPLAYERCORE = (() => {
       },
       // Where a copy of `scope` lands — the path bar's "Files go to", a
       // running copy's "Into": `destination` = the saved one unless given
-      // (the one pinned on a job, the one it ran with); `peerName` = the
-      // {{PEER}} it renders, this row's server unless given. null without
-      // a destination. → { library, crumbs: [{ text, kind, parts? }], file,
+      // (the one pinned on a job, the one it ran with); `from` = where the
+      // files come from when it is not this row's server: { peer, filepath }
+      // — the {{PEER}} it renders and the song's path there, its
+      // {{SERVERFOLDER}} and its file (another server's copy: dmJobPath),
+      // or both null for a download (Get it's bar), from no server: both
+      // variables drop out. null without a destination.
+      // → { library, crumbs: [{ text, kind, parts? }], file,
       // title, slotNote } for dm-dest-path (kind 'base' · 'rendered' ·
       // 'note', the note in words; `parts` a folder's text and its slots,
       // each { text, slot }, in words; `file` a song's alone; `slotNote` the
@@ -2513,25 +2539,27 @@ const VUEPLAYERCORE = (() => {
       // engine's checks besides (valid, error, field, variable, missingVars;
       // `base`, the base folder as normalised; `slots`). A layout the engine
       // refuses draws the base folder.
-      dmDestPath: function (scope, destination, peerName) {
+      dmDestPath: function (scope, destination, from) {
         const v = this.discover.dest.view;
         const d = destination || (v && v.destination) || null;
-        return d ? this.dmDestPathOf(d, scope, peerName) : null;
+        return d ? this.dmDestPathOf(d, scope, from) : null;
       },
-      dmDestPathOf: function (d, scope, peerName) {
+      dmDestPathOf: function (d, scope, from) {
         const s = scope || 'song';
-        const { tags, slots } = this.dmScopeTags(s);
+        const { tags, slots } = this.dmScopeTags(s, from);
         const p = DISCOVERJOBS.scopeTarget({
           vpath: d.vpath, base: d.base, layout: d.layout, scope: s, tags, slots,
-          peerName: peerName || this.dmLayoutPeer(), fileName: this.dmLayoutFile(), oneAlbum: s === 'artist-missing' ? this.dmMissingAlbum() : null,
+          peerName: from ? from.peer : this.dmLayoutPeer(), fileName: (from && from.filepath) || this.dmLayoutFile(),
+          oneAlbum: s === 'artist-missing' ? this.dmMissingAlbum() : null,
         });
         const crumbs = (p.valid ? p.crumbs : DISCOVERJOBS.pathCrumbs(DISCOVERJOBS.normalizeBase(d.base).base).map((text) => ({ text, kind: 'base' }))).map((c) => {
           if (c.key) { return { text: this.tt(c.key), kind: c.kind }; }
           if (!c.parts) { return c; }
           const parts = c.parts.map((x) => (x.slot ? { text: this.tt(x.key), slot: true } : { text: x.text, slot: false }));
-          // a folder of nothing but a ‹genre› or a ‹year›: a song with none
+          // a folder of nothing but a ‹genre›, a ‹year› or a ‹server
+          // folder›: a song with none (one at its server's library root)
           // leaves it out (dmDestNested)
-          const drops = c.parts.every((x) => x.slot === 'GENRE' || x.slot === 'YEAR');
+          const drops = c.parts.every((x) => x.slot === 'GENRE' || x.slot === 'YEAR' || x.slot === 'SERVERFOLDER');
           return { text: parts.map((x) => x.text).join(''), kind: c.kind, parts, drops };
         });
         return Object.assign({}, p, {
@@ -2543,12 +2571,18 @@ const VUEPLAYERCORE = (() => {
       },
       // "‹artist›, ‹genre› come from each song's own tags…": the one note
       // under a path with slots in it (`slots`: the ones it shows, in its
-      // order) — a song's own words for a song. '' with none.
+      // order) — a song's own words for a song. A ‹server folder› comes
+      // from where each song sits on the server, said after the tags' words
+      // ("‹artist› comes from each song's own tags and ‹server folder› from
+      // where it sits on the server, …"). '' with none.
       dmSlotNote: function (scope, slots) {
-        const words = (slots || []).map((v) => this.tt('discover.modal.dest.slot.' + v.toLowerCase()));
-        if (!words.length) { return ''; }
-        const note = scope === 'song' ? 'discover.modal.dest.slotNoteSong' : (slots.indexOf('GENRE') !== -1 ? 'discover.modal.dest.slotNoteGenre' : 'discover.modal.dest.slotNote');
-        return this.tt(note, { slots: words.join(', '), count: words.length });
+        const say = (vars) => vars.map((v) => this.tt('discover.modal.dest.slot.' + v.toLowerCase())).join(', ');
+        const tags = (slots || []).filter((v) => v !== 'SERVERFOLDER');
+        const server = (slots || []).indexOf('SERVERFOLDER') !== -1 ? say(['SERVERFOLDER']) : '';
+        if (!tags.length) { return server ? this.tt('discover.modal.dest.slotNoteServer', { slot: server }) : ''; }
+        const note = scope === 'song' && !server ? 'discover.modal.dest.slotNoteSong'
+          : 'discover.modal.dest.slotNote' + (tags.indexOf('GENRE') !== -1 ? 'Genre' : '') + (server ? 'AndServer' : '');
+        return this.tt(note, { slots: say(tags), slot: server, count: tags.length });
       },
       // The path line inside a copy's states, or null: "Into" while the job
       // is queued or running — the destination pinned on it at start
@@ -2558,21 +2592,24 @@ const VUEPLAYERCORE = (() => {
       // once it ended: where its files are
       // (DISCOVERJOBS.landedPath), else, when its result lists none, the
       // destination it ran with, drawn the same way. Nothing landed (failed,
-      // cancelled before a song, refused, nothing to copy): null.
+      // cancelled before a song, refused, nothing to copy): null. Another
+      // server's copy (dmJobOtherPeer) is drawn from its own recommendation:
+      // that server's name, and its song's folder and file there.
       // → { kind: 'into' | 'in', prefix: the words, path: as dmDestPath's }.
       dmJobPath: function (job) {
         if (!job) { return null; }
         const scope = DISCOVERJOBS.jobScope(job);
-        const peer = (job.recommendation && job.recommendation.peer && job.recommendation.peer.name) || null;
+        const rec = job.recommendation || {};
+        const from = this.dmJobOtherPeer(job) ? { peer: (rec.peer && rec.peer.name) || null, filepath: rec.filepath || null } : null;
         const line = (kind, path) => (path ? { kind, prefix: this.tt('discover.modal.dest.' + kind), path } : null);
         if (DISCOVERJOBS.isLive(job)) {
           const pinned = job.params && typeof job.params === 'object' && 'destination' in job.params;
           if (pinned && !job.params.destination) { return null; }
-          return line('into', this.dmDestPath(scope, pinned ? job.params.destination : null, peer));
+          return line('into', this.dmDestPath(scope, pinned ? job.params.destination : null, from));
         }
         const landed = DISCOVERJOBS.landedPath(job.result);
         if (!landed) { return null; }
-        if (!landed.vpath) { return line('in', job.result.destination ? this.dmDestPath(scope, job.result.destination, peer) : null); }
+        if (!landed.vpath) { return line('in', job.result.destination ? this.dmDestPath(scope, job.result.destination, from) : null); }
         return line('in', {
           library: landed.vpath, crumbs: landed.dirs.map((text) => ({ text, kind: 'landed' })), file: landed.file,
           title: [landed.vpath].concat(landed.dirs).join('/'),
@@ -2685,17 +2722,32 @@ const VUEPLAYERCORE = (() => {
       // A variable button's name for a screen reader ("Insert the album
       // artist variable"); one the server adds later reads by its own name.
       dmPickerVarLabel: function (name) {
-        const known = ['ARTIST', 'ALBUM', 'YEAR', 'GENRE', 'ALBUMARTIST', 'PEER'];
+        const known = ['ARTIST', 'ALBUM', 'YEAR', 'GENRE', 'ALBUMARTIST', 'PEER', 'SERVERFOLDER'];
         return known.indexOf(name) !== -1
           ? this.tt('discover.modal.dest.insert.' + name.toLowerCase())
           : this.tt('discover.modal.dest.insertVar', { name });
       },
       // The editor's preview: the fields as typed, by the scope the window
-      // has chosen (dmDestPath's answer).
-      dmPickerPreview: function (scope) {
+      // has chosen (dmDestPath's answer; `from` as there: Get it's editor
+      // draws a download).
+      dmPickerPreview: function (scope, from) {
         const k = this.discover.modal.picker;
         if (!k) { return null; }
-        return this.dmDestPathOf({ vpath: k.vpath, base: k.base, layout: k.layout }, scope);
+        return this.dmDestPathOf({ vpath: k.vpath, base: k.base, layout: k.layout }, scope, from);
+      },
+      // The layout's hint when a variable has no value for this item: it
+      // drops out of the path. {{PEER}} and {{SERVERFOLDER}} are not tags
+      // but the server a song comes from: a download (`from` with no path)
+      // comes from none, and a song at the top of its server's library
+      // sits in no folder there — the tags' words are for tags.
+      dmPickerMissing: function (preview, from) {
+        const vars = (preview && preview.missingVars) || [];
+        const words = { vars: vars.join(', ') };
+        if (from && !from.filepath && vars.length && vars.every((v) => v === 'PEER' || v === 'SERVERFOLDER')) {
+          return this.tt('discover.modal.dest.missingDownload', words);
+        }
+        if (vars.length === 1 && vars[0] === 'SERVERFOLDER') { return this.tt('discover.modal.dest.missingServer', words); }
+        return this.tt('discover.modal.dest.missing', words);
       },
       // The engine's refusal in words (the server's codes, one table); an
       // unknown variable named as it was typed, in its braces.
@@ -2737,6 +2789,17 @@ const VUEPLAYERCORE = (() => {
           el.focus();
           try { el.setSelectionRange(at + token.length, at + token.length); } catch (_) { /* not a text input */ }
         });
+      },
+      // "Same folders as the server": the layout only — each song where it
+      // sits on the server it came from ({{SERVERFOLDER}}). Offered when
+      // the server lists the variable (an older one would refuse it).
+      dmPickerOffersServerFolders: function () {
+        return this.dmPickerVars().indexOf('SERVERFOLDER') !== -1;
+      },
+      dmUseServerFolders: function () {
+        const k = this.discover.modal.picker;
+        if (!k) { return; }
+        k.layout = DISCOVERJOBS.SERVERFOLDER_LAYOUT;
       },
       // "Use the library template": the layout only — the chosen library's
       // admin Path Template, else the plain default.

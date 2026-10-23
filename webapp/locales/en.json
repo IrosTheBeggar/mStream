@@ -250,6 +250,7 @@
   "discover.modal.dest.slot.artist": "‹artist›",
   "discover.modal.dest.slot.year": "‹year›",
   "discover.modal.dest.slot.genre": "‹genre›",
+  "discover.modal.dest.slot.serverfolder": "‹server folder›",
   "discover.modal.dest.slotNote": {
     "one": "{{slots}} comes from each song’s own tags, so these songs can land in more than one folder.",
     "other": "{{slots}} come from each song’s own tags, so these songs can land in more than one folder."
@@ -259,6 +260,15 @@
     "other": "{{slots}} come from each song’s own tags, so these songs can land in more than one folder (a song with none leaves that folder out)."
   },
   "discover.modal.dest.slotNoteSong": "{{slots}} comes from the song’s own tags (a song with none leaves that folder out).",
+  "discover.modal.dest.slotNoteServer": "{{slot}} comes from where each song sits on the server, so these songs can land in more than one folder.",
+  "discover.modal.dest.slotNoteAndServer": {
+    "one": "{{slots}} comes from each song’s own tags and {{slot}} from where it sits on the server, so these songs can land in more than one folder.",
+    "other": "{{slots}} come from each song’s own tags and {{slot}} from where it sits on the server, so these songs can land in more than one folder."
+  },
+  "discover.modal.dest.slotNoteGenreAndServer": {
+    "one": "{{slots}} comes from each song’s own tags and {{slot}} from where it sits on the server, so these songs can land in more than one folder (a song with none leaves that folder out).",
+    "other": "{{slots}} come from each song’s own tags and {{slot}} from where it sits on the server, so these songs can land in more than one folder (a song with none leaves that folder out)."
+  },
   "discover.modal.dest.change": "Change…",
   "discover.modal.dest.into": "Into",
   "discover.modal.dest.in": "In",
@@ -297,10 +307,14 @@
   "discover.modal.dest.insert.genre": "Insert the genre variable",
   "discover.modal.dest.insert.albumartist": "Insert the album artist variable",
   "discover.modal.dest.insert.peer": "Insert the connected server’s name variable",
+  "discover.modal.dest.insert.serverfolder": "Insert the connected server’s folder variable",
   "discover.modal.dest.insertVar": "Insert the {{name}} variable",
   "discover.modal.dest.useTemplate": "Use the library template",
+  "discover.modal.dest.sameAsServer": "Same folders as the server",
   "discover.modal.dest.layoutHint": "Click a variable to insert it. Separators make folders; anything else is literal. Empty tags drop out of the path.",
   "discover.modal.dest.missing": "{{vars}} has no value for this song, so it drops out of the path. Other songs render with their own tags.",
+  "discover.modal.dest.missingServer": "{{vars}} has no value for this song, so it drops out of the path: the song sits at the top of its server’s library.",
+  "discover.modal.dest.missingDownload": "{{vars}} has no value for a download, so it drops out of the path: a download comes from no connected server.",
   "discover.modal.dest.preview": "Preview",
   "discover.modal.dest.applies": "Applies to every copy and download on your account",
   "discover.modal.dest.save": "Save",

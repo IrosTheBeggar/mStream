@@ -297,6 +297,28 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
     }
   });
 
+  test('{{SERVERFOLDER}} of a download is empty, so dropped — even for a row from a connected server, whose path is the peer\'s, not the download\'s', async () => {
+    const keepFixture = fs.readFileSync(fixturePath);
+    writeScript({ details: { deep: { id: 'deep', url: yt('deep'), title: 'Deep Cut', duration: 2, channel: 'Nova - Topic', uploader: 'Nova - Topic' } } });
+    await makeFixture({ frequency: 1210, duration: 2 });   // other audio: the hash check must not call it owned
+    try {
+      assert.equal((await api(server, 'PUT', DEST, { destination: { vpath: 'collection', base: '', layout: 'Got it/{{SERVERFOLDER}}' } })).status, 200);
+      const rec = { ...REC, title: 'Deep Cut', filepath: 'shared/Nova/Night Ferry/Deep Cut.mp3' };
+      const started = await api(server, 'POST', JOBS, { recommendation: rec, choice: { url: yt('deep') } });
+      assert.equal(started.status, 202, JSON.stringify(started.body));
+      const job = await untilFinished(started.body.job.id);
+      assert.equal(job.state, 'done', `job error: ${job.error}`);
+      assert.equal(job.result.downloaded.filepath, 'collection/Got it/Deep_Cut.mp3', JSON.stringify(job.result));
+      assert.deepEqual(job.result.missingVars, ['SERVERFOLDER']);
+      assert.ok(fs.existsSync(inCollection('Got it', 'Deep_Cut.mp3')));
+      assert.deepEqual(fs.readdirSync(inCollection('Got it')), ['Deep_Cut.mp3'], 'no folder of the peer\'s');
+    } finally {
+      fs.writeFileSync(fixturePath, keepFixture);
+      writeScript();
+      assert.equal((await api(server, 'PUT', DEST, { destination: { vpath: 'collection', base: '', layout: '{{PEER}}/{{ARTIST}}/{{ALBUM}}' } })).status, 200);
+    }
+  });
+
   test('an upload YouTube will not serve is not offered, and a job takes the next one', async () => {
     const rec = { ...REC, title: 'Vanished' };
     const r = await api(server, 'POST', RESOLVE, { recommendation: rec });

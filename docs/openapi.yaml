@@ -252,7 +252,7 @@ components:
         variables:
           type: array
           items: { type: string }
-          example: [ARTIST, ALBUM, YEAR, GENRE, ALBUMARTIST, PEER]
+          example: [ARTIST, ALBUM, YEAR, GENRE, ALBUMARTIST, PEER, SERVERFOLDER]
     DiscoveryPluginAdminRow:
       type: object
       description: A registered discovery plug-in as the admin panel sees it (on or off).
@@ -3315,8 +3315,20 @@ paths:
         base folder inside it (`""` = the root) and a layout rendered from
         each song's tags with the torrent path-template syntax
         (`{{ALBUMARTIST}}/{{ALBUM}}`; variables as listed, `{{PEER}}` being the
-        paired server a copy came from — empty, so dropped, for anything
-        else). One per user, shared by every acquire plug-in: the
+        paired server a copy came from and `{{SERVERFOLDER}}` the folder the
+        copied song sits in there — its path on the peer without the file
+        name and without the peer's library name, so it may be several
+        folders (`Boukmanflow/Borrowed Tapes`), each made safe for a path
+        here; a layout of just `{{SERVERFOLDER}}` files every song as the
+        peer has it, and literal text around it joins its first folder
+        (`Copy of {{SERVERFOLDER}}` → `Copy of Boukmanflow/Borrowed Tapes`).
+        Both are empty, so dropped, for anything else — `{{SERVERFOLDER}}`
+        also for a song at the root of the peer's library, and for a
+        download). A song whose layout renders a folder path longer than
+        500 characters is refused (`Resolved path exceeds 500
+        characters`), never filed under a cut one — as a folder copy's
+        mirror of the same folders is. One per user, shared by every
+        acquire plug-in: the
         `federation-copy` job copies into it, and the `youtube` job files its
         download in it. Nothing saved means the library default: the first
         writable library's admin Path Template when it has one, else
@@ -3560,7 +3572,8 @@ paths:
         given a `landing`: a library and folder of the caller's choosing
         (`layout: folder`; the pressed folder's files go there, its
         subfolders beneath) or `tags: true` (`layout: tags`; every song by
-        the collection layout like any other copy). The result is
+        the collection layout like any other copy, `{{SERVERFOLDER}}`
+        included). The result is
         `{ scope: folder, folder: { path, name, landed }, layout, songs,
         counts, skippedFiles, bytes, stopped, missingVars, peer,
         destination }`. Every many-song result (album, artist, folder) also

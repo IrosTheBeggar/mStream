@@ -7,7 +7,8 @@
 // A destination is a LIBRARY the user may upload to, a BASE FOLDER inside it
 // ('' = the root) and a LAYOUT rendered from the song's tags by the torrent
 // path-template engine ({{ALBUMARTIST}}/{{ALBUM}}, plus {{PEER}} for the server a
-// copy came from — empty, so dropped, for anything else). Unset means the
+// copy came from and {{SERVERFOLDER}} for the folders the song sits in there
+// — empty, so dropped, for anything else). Unset means the
 // library default: the library's admin Path Template when one exists, else
 // {{ALBUMARTIST}}/{{ALBUM}} at the root — the album's credit, which falls back
 // to the song's artist, so a compilation lands in ONE folder ("Various
@@ -32,9 +33,11 @@ import WebError from '../util/web-error.js';
 export const NAMESPACE = 'discovery:collection';
 export const KEY = 'destination';
 export const DEFAULT_LAYOUT = '{{ALBUMARTIST}}/{{ALBUM}}';
-export const LAYOUT_VARS = Object.freeze([...pathTemplate.SUPPORTED_VARS, pathTemplate.EXTRA_VARS.PEER]);
-const EXTRA_VARS = [pathTemplate.EXTRA_VARS.PEER];
-const SAMPLE = Object.freeze({ ...pathTemplate.SAMPLE_METADATA, peer: "Sam's server" });
+const EXTRA_VARS = [pathTemplate.EXTRA_VARS.PEER, pathTemplate.EXTRA_VARS.SERVERFOLDER];
+export const LAYOUT_VARS = Object.freeze([...pathTemplate.SUPPORTED_VARS, ...EXTRA_VARS]);
+// SERVERFOLDER's sample is two folders, as a song in a peer's library
+// usually sits, so a layout of just {{SERVERFOLDER}} validates.
+const SAMPLE = Object.freeze({ ...pathTemplate.SAMPLE_METADATA, peer: "Sam's server", serverfolder: 'Pink Floyd/The Dark Side of the Moon' });
 
 export const destinationSchema = Joi.object({
   vpath: Joi.string().min(1).max(200).required(),
@@ -256,12 +259,17 @@ export function tagsForLayout(common, rec = {}) {
 }
 
 // Where one song goes: base folder + rendered layout + file name, relative
-// to the library root, forward slashes.
-export function renderTarget({ destination, tags, peerName, fileName }) {
+// to the library root, forward slashes. `serverFolder` is {{SERVERFOLDER}}:
+// the folders the song sits in on the server it came from (a copy's
+// federation-copy.js serverFolderOf; none for a download). Rendered whole,
+// never cut: a path past the engine's cap is refused (path_too_long), as a
+// folder copy's mirror of the same folders is, rather than filed under a
+// name cut mid-folder that a second song could share.
+export function renderTarget({ destination, tags, peerName, serverFolder = null, fileName }) {
   const { path: rendered, missingVars } = pathTemplate.resolveTemplate(destination.layout, {
     artist: tags.artist, album: tags.album, year: tags.year, genre: tags.genre,
-    albumartist: tags.albumartist, peer: peerName,
-  });
+    albumartist: tags.albumartist, peer: peerName, serverfolder: serverFolder,
+  }, { truncate: false });
   if (rendered) {
     const check = pathTemplate.validateResolvedPath(rendered);
     if (!check.valid) { throw new Error(`the layout rendered an unusable path: ${check.message}`); }

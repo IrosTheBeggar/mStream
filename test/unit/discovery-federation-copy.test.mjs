@@ -1,8 +1,9 @@
 /**
  * The pure parts behind "Add to your collection": the collection destination
  * rules (src/discovery-plugins/destination.js — shared by the federation-copy
- * and youtube plug-ins), the PEER variable they add to the torrent path template
- * engine, the registry's per-user settings contract, and the plug-in's shape.
+ * and youtube plug-ins), the PEER and SERVERFOLDER variables they add to the
+ * torrent path template engine, the registry's per-user settings contract,
+ * and the plug-in's shape.
  * No server, no disk.
  */
 
@@ -16,7 +17,7 @@ import * as pathTemplate from '../../src/torrent/path-template.js';
 import { registerPlugin, unregisterPluginForTests, listPlugins } from '../../src/discovery-plugins/registry.js';
 import plugin, {
   copySongs, copyAlbums, planArtistAlbums, copyBody, MAX_COPY_BYTES, fetchMedia, planFolder, landingFor, accountFor, RESULT_LIST_CAP,
-  albumListing,
+  albumListing, serverFolderOf,
 } from '../../src/discovery-plugins/plugins/federation-copy.js';
 import {
   NAMESPACE, KEY, DEFAULT_LAYOUT, LAYOUT_VARS, destinationSchema, uploadsAllowed, writableLibraries,
@@ -301,9 +302,10 @@ describe('registry · the per-user settings contract', () => {
 });
 
 describe('collection destination · the PEER variable', () => {
-  test('LAYOUT_VARS is the torrent set plus PEER, in that order', () => {
-    assert.deepEqual([...LAYOUT_VARS], [...pathTemplate.SUPPORTED_VARS, 'PEER']);
+  test('LAYOUT_VARS is the torrent set plus PEER and SERVERFOLDER, in that order', () => {
+    assert.deepEqual([...LAYOUT_VARS], [...pathTemplate.SUPPORTED_VARS, 'PEER', 'SERVERFOLDER']);
     assert.equal(pathTemplate.EXTRA_VARS.PEER, 'PEER');
+    assert.equal(pathTemplate.EXTRA_VARS.SERVERFOLDER, 'SERVERFOLDER');
   });
 
   test('the layout accepts PEER; the torrent validator still refuses it', () => {
@@ -331,6 +333,144 @@ describe('collection destination · the PEER variable', () => {
     assert.deepEqual(without.missingVars, ['PEER']);
     // Sanitised like every other segment.
     assert.equal(pathTemplate.resolveTemplate('{{PEER}}', { peer: 'a/b:c' }).path, 'a-b-c');
+  });
+});
+
+describe('collection destination · the SERVERFOLDER variable', () => {
+  test('serverFolderOf: the folder the song sits in on the peer, the peer\'s library name dropped — several folders, one, or none at the root', () => {
+    assert.equal(serverFolderOf('shared/Boukmanflow/Borrowed Tapes/01 Open Reel.mp3'), 'Boukmanflow/Borrowed Tapes');
+    assert.equal(serverFolderOf('shared/Rock/Boukmanflow/Borrowed Tapes/Disc 2/07.flac'), 'Rock/Boukmanflow/Borrowed Tapes/Disc 2');
+    assert.equal(serverFolderOf('shared/Singles/x.mp3'), 'Singles');
+    assert.equal(serverFolderOf('shared/x.mp3'), '', 'a song at the library root has no server folder');
+    assert.equal(serverFolderOf('x.mp3'), '', 'a bare file name has none either');
+    assert.equal(serverFolderOf(''), '');
+    assert.equal(serverFolderOf(null), '');
+  });
+
+  test('serverFolderOf: the peer\'s path is its word — each folder made safe for a path here, empty, "." and ".." segments dropped', () => {
+    assert.equal(serverFolderOf('shared/Live: 2015/AC/DC?/x.mp3'), 'Live- 2015/AC/DC-', 'odd characters fold per folder, as sanitizeSegment folds a tag');
+    assert.equal(serverFolderOf('shared/~/Nothing ~ Everything/x.mp3'), '-/Nothing - Everything', 'a "~" is a name, not a home');
+    assert.equal(serverFolderOf('shared/../../etc/x.mp3'), 'etc', 'a climbing segment is no folder');
+    assert.equal(serverFolderOf('shared/A/../B/x.mp3'), 'A/B');
+    assert.equal(serverFolderOf('shared/./A/.../x.mp3'), 'A', 'a segment of dots alone is dropped');
+    assert.equal(serverFolderOf('/shared//A///B/ x.mp3'), 'A/B', 'empty segments and a leading slash');
+    assert.equal(serverFolderOf('shared\\A\\B\\x.mp3'), 'A/B', 'a backslashed path reads as the peer path it is');
+    assert.equal(serverFolderOf('shared/  Spaced   Out  /x.mp3'), 'Spaced Out');
+    for (const p of ['shared/../../etc/x.mp3', 'shared/Live: 2015/AC/DC?/x.mp3', '/shared//A///B/ x.mp3']) {
+      assert.equal(pathTemplate.validateResolvedPath(serverFolderOf(p)).valid, true, p);
+    }
+  });
+
+  test('serverFolderOf files a song where a folder copy\'s mirror lands it', () => {
+    const destination = { vpath: 'music', base: 'Mirror', layout: '{{SERVERFOLDER}}' };
+    const song = 'shared/Vosto/Underpass Remixes/Disc 2/03 Late Frost.mp3';
+    const { songs } = planFolder([song], 'shared/Vosto', { isSupported: () => true });
+    const mirror = landingFor({ folder: 'shared/Vosto', landing: null, destination });
+    const mirrored = [mirror.dir, songs[0].relDir].filter(Boolean).join('/');
+    const t = renderTarget({ destination, tags: {}, peerName: 'Sam', serverFolder: serverFolderOf(song), fileName: '03 Late Frost.mp3' });
+    assert.equal(t.relDir, mirrored);
+    assert.equal(t.relDir, 'Mirror/Vosto/Underpass Remixes/Disc 2');
+  });
+
+  test('sanitizeFolders: several folders, each sanitised on its own, never a climb', () => {
+    assert.equal(pathTemplate.sanitizeFolders('Boukmanflow/Borrowed Tapes'), 'Boukmanflow/Borrowed Tapes');
+    assert.equal(pathTemplate.sanitizeFolders('A\\B'), 'A/B');
+    assert.equal(pathTemplate.sanitizeFolders('../a/./b/..'), 'a/b');
+    assert.equal(pathTemplate.sanitizeFolders('a:b/c?'), 'a-b/c-');
+    assert.equal(pathTemplate.sanitizeFolders('//'), '');
+    assert.equal(pathTemplate.sanitizeFolders(''), '');
+    assert.equal(pathTemplate.sanitizeFolders(null), '');
+    assert.equal(pathTemplate.sanitizeFolders(undefined), '');
+  });
+
+  test('resolveTemplate: the value\'s folders stay folders — alone, beside others, and inside literal text', () => {
+    const r = (layout, meta) => pathTemplate.resolveTemplate(layout, meta);
+    assert.equal(r('{{SERVERFOLDER}}', { serverfolder: 'Boukmanflow/Borrowed Tapes' }).path, 'Boukmanflow/Borrowed Tapes');
+    assert.equal(r('From friends/{{SERVERFOLDER}}', { serverfolder: 'Boukmanflow/Borrowed Tapes' }).path, 'From friends/Boukmanflow/Borrowed Tapes');
+    assert.equal(r('{{PEER}}/{{SERVERFOLDER}}', { peer: 'Sam', serverfolder: 'A/B' }).path, 'Sam/A/B');
+    // Inside a folder with literal text: the literal joins the value's first
+    // and last folders, so a multi-folder value yields more folders.
+    assert.equal(r('Copy of {{SERVERFOLDER}}', { serverfolder: 'Boukmanflow/Borrowed Tapes' }).path, 'Copy of Boukmanflow/Borrowed Tapes');
+    assert.deepEqual(r('Copy of {{SERVERFOLDER}} (kept)', { serverfolder: 'A/B/C' }).path.split('/'), ['Copy of A', 'B', 'C (kept)']);
+    // Each folder sanitised like any value; the separator kept between them.
+    assert.equal(r('{{SERVERFOLDER}}', { serverfolder: 'Live: 2015/AC|DC' }).path, 'Live- 2015/AC-DC');
+    assert.equal(r('{{SERVERFOLDER}}', { serverfolder: '../../etc' }).path, 'etc');
+  });
+
+  test('resolveTemplate: an empty SERVERFOLDER drops its folder and is reported, like any empty variable', () => {
+    const root = pathTemplate.resolveTemplate('From friends/{{SERVERFOLDER}}', { serverfolder: '' });
+    assert.equal(root.path, 'From friends');
+    assert.deepEqual(root.missingVars, ['SERVERFOLDER']);
+    assert.equal(pathTemplate.resolveTemplate('{{SERVERFOLDER}}', {}).path, '');
+    assert.equal(pathTemplate.resolveTemplate('Copy of {{SERVERFOLDER}}', { serverfolder: '/./' }).path, 'Copy of');
+  });
+
+  test('the layout accepts SERVERFOLDER — alone, in literal text, beside the others; the torrent validator still refuses it', () => {
+    const alone = validateLayout('{{SERVERFOLDER}}');
+    assert.equal(alone.valid, true, JSON.stringify(alone));
+    assert.equal(alone.sample.split('/').length, 2, 'the sample is two folders');
+    assert.equal(validateLayout('Copy of {{SERVERFOLDER}}').valid, true);
+    assert.equal(validateLayout('From friends/{{serverfolder}}').valid, true, 'case-insensitive like every variable');
+    assert.equal(validateLayout('{{PEER}}/{{SERVERFOLDER}}/{{ALBUM}}').valid, true);
+    assert.match(validateLayout('{{TRACK}}').message, /\{\{SERVERFOLDER\}\}/, 'the refusal lists it');
+    const torrent = pathTemplate.validateForSave('{{SERVERFOLDER}}');
+    assert.equal(torrent.valid, false);
+    assert.equal(torrent.error, 'unknown_variable');
+    assert.doesNotMatch(torrent.message, /Supported:.*SERVERFOLDER/, 'the torrent set does not offer it');
+  });
+
+  test('renderTarget: SERVERFOLDER under the base; a song at the peer root and a download drop it; the path is still checked', () => {
+    const destination = { vpath: 'music', base: 'From friends', layout: '{{SERVERFOLDER}}' };
+    const nested = renderTarget({ destination, tags: { artist: 'X' }, peerName: 'Sam', serverFolder: 'Boukmanflow/Borrowed Tapes', fileName: '01.mp3' });
+    assert.equal(nested.relPath, 'From friends/Boukmanflow/Borrowed Tapes/01.mp3');
+    assert.deepEqual(nested.missingVars, []);
+    const root = renderTarget({ destination, tags: {}, peerName: 'Sam', serverFolder: serverFolderOf('shared/01.mp3'), fileName: '01.mp3' });
+    assert.equal(root.relPath, 'From friends/01.mp3');
+    assert.deepEqual(root.missingVars, ['SERVERFOLDER']);
+    const download = renderTarget({ destination, tags: {}, peerName: null, fileName: 'x.mp3' });
+    assert.equal(download.relPath, 'From friends/x.mp3', 'no server, no server folder');
+    // A layout that is only usable with a folder: validateResolvedPath still
+    // refuses what an empty value leaves (".." here), never writes it.
+    const dotted = { ...destination, base: '', layout: '..{{SERVERFOLDER}}' };
+    assert.equal(validateLayout(dotted.layout).valid, true, 'the sample has a folder');
+    assert.throws(() => renderTarget({ destination: dotted, tags: {}, peerName: 'Sam', serverFolder: '', fileName: 'x.mp3' }), /unusable path: .*\.\. segments/);
+  });
+
+  test('renderTarget: a path past the length cap is refused, not cut — two deep sibling folders never share one cut path, as the mirror refuses them', () => {
+    const deep = ['A', 'B', 'C'].map((c) => c.repeat(170)).join('/');
+    const destination = { vpath: 'music', base: '', layout: '{{SERVERFOLDER}}' };
+    for (const disc of ['Disc 1', 'Disc 2']) {
+      const song = `shared/${deep}/${disc}/01.mp3`;
+      assert.equal(serverFolderOf(song).length, 519);
+      assert.throws(() => renderTarget({ destination, tags: {}, peerName: 'Sam', serverFolder: serverFolderOf(song), fileName: '01.mp3' }),
+        /the layout rendered an unusable path: Resolved path exceeds 500 characters/, disc);
+      const mirror = landingFor({ folder: `shared/${deep}/${disc}`, landing: null, destination });
+      assert.equal(pathTemplate.validateResolvedPath(mirror.dir).error, 'path_too_long', `the mirror of ${disc} refuses the same folders`);
+    }
+    // At the cap it still files, whole.
+    const atCap = `${'x'.repeat(200)}/${'y'.repeat(200)}/${'z'.repeat(98)}`;
+    assert.equal(renderTarget({ destination, tags: {}, peerName: 'Sam', serverFolder: atCap, fileName: '01.mp3' }).relDir, atCap);
+    // Not SERVERFOLDER's alone: long literal text and a long tag are refused the same way.
+    const literal = { ...destination, layout: `${'L'.repeat(400)}/{{ALBUM}}` };
+    assert.equal(validateLayout(literal.layout).valid, true, 'the sample fits');
+    assert.throws(() => renderTarget({ destination: literal, tags: { album: 'a'.repeat(150) }, peerName: 'Sam', fileName: 'x.mp3' }), /exceeds 500 characters/);
+    // The torrent pipeline keeps its cut; the whole path is there for a caller that asks.
+    assert.equal(pathTemplate.resolveTemplate('{{SERVERFOLDER}}', { serverfolder: `${deep}/Disc 1` }).path.length, 500);
+    assert.equal(pathTemplate.resolveTemplate('{{SERVERFOLDER}}', { serverfolder: `${deep}/Disc 1` }, { truncate: false }).path, `${deep}/Disc 1`);
+  });
+
+  test('serverFolderOf and the mirror drop the first segment as the peer wrote it, even a leading ".." — never a climb, and the same place for both', () => {
+    // No peer's own listing starts by climbing; one that does keeps its
+    // library's name in the value (the fetch skips the ".."), which the
+    // clients' previews copy (webapp discover-jobs.js serverFolderOf).
+    assert.equal(serverFolderOf('../shared/A/x.mp3'), 'shared/A');
+    assert.equal(serverFolderOf('../../shared/A/x.mp3'), 'shared/A');
+    assert.equal(serverFolderOf('../x.mp3'), '');
+    const destination = { vpath: 'music', base: 'Mirror', layout: '{{SERVERFOLDER}}' };
+    assert.equal(landingFor({ folder: '../shared/A', landing: null, destination }).dir, 'Mirror/shared/A');
+    const t = renderTarget({ destination, tags: {}, peerName: 'Sam', serverFolder: serverFolderOf('../shared/A/x.mp3'), fileName: 'x.mp3' });
+    assert.equal(t.relDir, 'Mirror/shared/A', 'where the mirror lands it');
+    assert.equal(pathTemplate.validateResolvedPath(t.relDir).valid, true);
   });
 });
 

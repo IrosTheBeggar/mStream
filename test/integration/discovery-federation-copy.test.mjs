@@ -23,7 +23,10 @@
  * asked for, and {{ALBUMARTIST}} for a file with no albumartist tag: the
  * album's credit the copy knows (a featured song, an untagged compilation,
  * an artist's album, else the artist it was asked by), never over a tag the
- * file has. Skips when @number0/iroh has no prebuilt binary here.
+ * file has; and {{SERVERFOLDER}}: the folders a song sits in on the peer,
+ * per song, for an album, a song and a folder filed by tags, under literal
+ * text, and dropped for a song at the peer library's root. Skips when
+ * @number0/iroh has no prebuilt binary here.
  */
 
 import { describe, test, before, after } from 'node:test';
@@ -89,6 +92,16 @@ const REMOTE = [
   ['Split_1.mp3', 'Split One', 'Lio Brandt', 'Split Reel', '2012'],
   ['Split_2.mp3', 'Split Two', 'Lio Brandt feat. Ola', 'Split Reel', '2012'],
   ['Split_3.mp3', 'Split Three', 'Sefa Rowe', 'Split Reel', '2012'],
+  // {{SERVERFOLDER}}: an album across two disc folders, two songs of one
+  // album in two folders of another tree, a folder for a copy filed by tags,
+  // and a song at the library's root. Their own artist, so the cases above
+  // keep their counts.
+  ['Hollis Grey/Paper Coast/Disc 1/Coast_1.mp3', 'Coast One', 'Hollis Grey', 'Paper Coast', '2011'],
+  ['Hollis Grey/Paper Coast/Disc 2/Coast_2.mp3', 'Coast Two', 'Hollis Grey', 'Paper Coast', '2011'],
+  ['Odd Lot/Side A/Ebb.mp3', 'Ebb', 'Hollis Grey', 'Tidal Singles', '2010'],
+  ['Odd Lot/Side B/Drift.mp3', 'Drift', 'Hollis Grey', 'Tidal Singles', '2010'],
+  ['Tag Run/Inner/Tide.mp3', 'Tide', 'Hollis Grey', 'Tidal Singles', '2010'],
+  ['Root_Song.mp3', 'Root Song', 'Hollis Grey', 'Rootless', '2010'],
 ];
 
 let srvA, srvB, sharedDir, collectionDir, peerId;
@@ -602,6 +615,62 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     assert.equal(capped.state, 'failed');
     assert.match(capped.error, /holds 2 songs — add its folders one at a time \(the limit is 1;/);
     assert.equal((await api(srvB, 'POST', '/api/v1/admin/config/discovery-jobs', { maxFolderSongs: 1000 })).status, 200);
+  });
+
+  // {{SERVERFOLDER}}: the folder a song sits in on the peer, inside its
+  // library — the peer's own folders, per song, whatever the tags say.
+  const friends = (...segs) => path.join(collectionDir, 'From friends', ...segs);
+
+  test('a layout of {{SERVERFOLDER}} files an album copy and a song copy in the peer\'s own folders', async () => {
+    assert.ok((await api(srvB, 'GET', DEST)).body.variables.includes('SERVERFOLDER'), 'the destination lists it');
+    const put = await api(srvB, 'PUT', DEST, { destination: { vpath: 'collection', base: 'Server', layout: '{{SERVERFOLDER}}' } });
+    assert.equal(put.status, 200, JSON.stringify(put.body));
+    // The album: each song in its own disc folder, as the peer has it.
+    const album = await api(srvB, 'POST', JOBS, { recommendation: rec('Hollis Grey/Paper Coast/Disc 1/Coast_1.mp3'), scope: 'album' });
+    assert.equal(album.status, 202, JSON.stringify(album.body));
+    assert.deepEqual(album.body.job.params, { scope: 'album', destination: pinnedTo('Server', '{{SERVERFOLDER}}') });
+    const a = await untilFinished(album.body.job.id);
+    assert.equal(a.state, 'done', `job error: ${a.error}`);
+    assert.deepEqual([a.result.songs.total, a.result.songs.skipped.length, a.result.songs.failed.length], [2, 0, 0], JSON.stringify(a.result.songs));
+    assert.deepEqual(a.result.songs.copied.map((x) => [x.from, x.filepath]).sort(), [
+      ['shared/Hollis Grey/Paper Coast/Disc 1/Coast_1.mp3', 'collection/Server/Hollis Grey/Paper Coast/Disc 1/Coast_1.mp3'],
+      ['shared/Hollis Grey/Paper Coast/Disc 2/Coast_2.mp3', 'collection/Server/Hollis Grey/Paper Coast/Disc 2/Coast_2.mp3'],
+    ]);
+    assert.deepEqual(a.result.missingVars, []);
+    assert.ok(fs.existsSync(path.join(collectionDir, 'Server', 'Hollis Grey', 'Paper Coast', 'Disc 2', 'Coast_2.mp3')));
+    assert.equal(bRow('SELECT source FROM tracks WHERE filepath = ?', 'Server/Hollis Grey/Paper Coast/Disc 1/Coast_1.mp3').source, PLUGIN);
+    // A song: its own folders, not its album's name.
+    const s = await untilFinished((await api(srvB, 'POST', JOBS, { recommendation: rec('Odd Lot/Side B/Drift.mp3') })).body.job.id);
+    assert.equal(s.state, 'done', `job error: ${s.error}`);
+    assert.equal(s.result.copied.filepath, 'collection/Server/Odd Lot/Side B/Drift.mp3', JSON.stringify(s.result));
+    assert.equal(s.result.copied.album, 'Tidal Singles');
+    assert.deepEqual(s.result.missingVars, []);
+    assert.ok(fs.existsSync(path.join(collectionDir, 'Server', 'Odd Lot', 'Side B', 'Drift.mp3')));
+  });
+
+  test('"From friends/{{SERVERFOLDER}}": the peer\'s folders under a folder of the user\'s; a song at the peer\'s root lands in that folder alone; a folder copy by tags takes it too', async () => {
+    const put = await api(srvB, 'PUT', DEST, { destination: { vpath: 'collection', base: '', layout: 'From friends/{{SERVERFOLDER}}' } });
+    assert.equal(put.status, 200, JSON.stringify(put.body));
+    const ebb = await untilFinished((await api(srvB, 'POST', JOBS, { recommendation: rec('Odd Lot/Side A/Ebb.mp3') })).body.job.id);
+    assert.equal(ebb.state, 'done', `job error: ${ebb.error}`);
+    assert.equal(ebb.result.copied.filepath, 'collection/From friends/Odd Lot/Side A/Ebb.mp3', JSON.stringify(ebb.result));
+    assert.ok(fs.existsSync(friends('Odd Lot', 'Side A', 'Ebb.mp3')));
+    // At the peer library's root: no server folder, so its folder drops —
+    // reported like any empty variable.
+    const root = await untilFinished((await api(srvB, 'POST', JOBS, { recommendation: rec('Root_Song.mp3') })).body.job.id);
+    assert.equal(root.state, 'done', `job error: ${root.error}`);
+    assert.equal(root.result.copied.filepath, 'collection/From friends/Root_Song.mp3', JSON.stringify(root.result));
+    assert.deepEqual(root.result.missingVars, ['SERVERFOLDER']);
+    assert.ok(fs.existsSync(friends('Root_Song.mp3')));
+    // A folder copy filed by tags: the layout like any copy, each song's own server folder.
+    const peer = { id: peerId, name: 'copier' };
+    const byTags = await api(srvB, 'POST', JOBS, { recommendation: { source: 'federation', peer, filepath: 'shared/Tag Run', title: 'Tag Run' }, scope: 'folder', landing: { tags: true } });
+    assert.equal(byTags.status, 202, JSON.stringify(byTags.body));
+    const t = await untilFinished(byTags.body.job.id);
+    assert.equal(t.state, 'done', `job error: ${t.error}`);
+    assert.equal(t.result.layout, 'tags');
+    assert.deepEqual(t.result.songs.copied.map((x) => x.filepath), ['collection/From friends/Tag Run/Inner/Tide.mp3']);
+    assert.ok(fs.existsSync(friends('Tag Run', 'Inner', 'Tide.mp3')));
   });
 
   test('a network (p2p) recommendation cannot be copied', async () => {

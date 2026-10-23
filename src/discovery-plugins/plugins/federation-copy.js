@@ -6,7 +6,8 @@
 // the user may upload to, a base folder, and a layout rendered from the
 // song's tags ({{ALBUMARTIST}}/{{ALBUM}} by default — a compilation lands in
 // one folder — {{PEER}} = the server it
-// came from). The file keeps the peer's name. It is the destination as it
+// came from, {{SERVERFOLDER}} = the folders the song sits in there,
+// serverFolderOf). The file keeps the peer's name. It is the destination as it
 // was when the job was asked for (pinned in the job's params), so a job
 // queued behind others lands where the client showed it would.
 //
@@ -586,8 +587,30 @@ export function landingFor({ folder, landing, destination, writable = [] }) {
     }
     return { mode: 'folder', vpath: landing.vpath || destination.vpath, dir: normalizePeerPath(landing.path) };
   }
-  const inside = normalizePeerPath(folder).split('/').slice(1).map((s) => pathTemplate.sanitizeSegment(s)).filter(Boolean).join('/');
-  return { mode: 'mirror', vpath: destination.vpath, dir: [destination.base, inside].filter(Boolean).join('/') };
+  return { mode: 'mirror', vpath: destination.vpath, dir: [destination.base, insidePeerLibrary(folder)].filter(Boolean).join('/') };
+}
+
+// A peer folder's path inside the peer's library (pure): the library's own
+// name — the first segment — dropped, each segment made safe for a path
+// here, the empty ones ('..' among them: the path is the peer's word)
+// dropped. What a mirrored folder lands as. The first segment goes as the
+// peer wrote it, even a '..': a path that starts by climbing (no peer's own
+// listing does) keeps its library's name here, though the fetch skips the
+// '..' — still never outside the base, and the rule the clients' previews
+// copy (webapp discover-jobs.js serverFolderOf), so it stays as it is.
+function insidePeerLibrary(folder) {
+  return pathTemplate.sanitizeFolders(normalizePeerPath(folder).split('/').slice(1).join('/'));
+}
+
+// {{SERVERFOLDER}} of one song (pure): the folder its file sits in on the
+// peer, as the copy knows the path (the row's, the album listing's, the
+// folder listing's), inside the peer's library — the mirror's rule, so a
+// layout of just {{SERVERFOLDER}} files a song where a folder copy would
+// (and refuses one the mirror would: past the length cap, renderTarget).
+// May be several folders ("Boukmanflow/Borrowed Tapes"); '' for a song at
+// the library's root, which drops it like any empty variable.
+export function serverFolderOf(filepath) {
+  return insidePeerLibrary(normalizePeerPath(filepath).split('/').slice(0, -1).join('/'));
 }
 
 // discoveryJobs.maxFolderSongs (the admin's setting): the most songs one
@@ -691,14 +714,17 @@ export async function copyOne(ctx, env, song, target = null) {
   // folder, mirrored from the peer or chosen); otherwise the layout renders
   // it from what the listing says, and the file's own tags decide the
   // final folder, below — both with the song's album credit
-  // (`song.albumArtist`) where the tags have none.
+  // (`song.albumArtist`) where the tags have none, and both with the same
+  // {{PEER}} and {{SERVERFOLDER}} (where the song sits on the peer), which no
+  // tag changes.
   const into = target && target.vpath ? target.vpath : destination.vpath;
+  const byLayout = (tags) => destinations.renderTarget({ destination, tags, peerName: peer.name, serverFolder: serverFolderOf(song.filepath), fileName });
   if (target) {
     const check = target.relDir ? pathTemplate.validateResolvedPath(target.relDir) : { valid: true };
     if (!check.valid) { throw new Error(`the folder cannot be placed: ${check.message}`); }
   } else {
     try {
-      destinations.renderTarget({ destination, tags: destinations.tagsForLayout({}, song), peerName: peer.name, fileName });
+      byLayout(destinations.tagsForLayout({}, song));
     } catch (err) {
       throw new Error(`the collection layout cannot place this song: ${err.message}`, { cause: err });
     }
@@ -743,7 +769,7 @@ export async function copyOne(ctx, env, song, target = null) {
     const tags = destinations.tagsForLayout(common, song);
     const placed = target
       ? { relDir: target.relDir || '', relPath: target.relDir ? `${target.relDir}/${fileName}` : fileName, missingVars: [] }
-      : destinations.renderTarget({ destination, tags, peerName: peer.name, fileName });
+      : byLayout(tags);
     const targetInfo = vpathUtil.getVPathInfo(`${into}/${placed.relPath}`, user);
 
     const audioHashLib = await import('../../db/audio-hash.js');

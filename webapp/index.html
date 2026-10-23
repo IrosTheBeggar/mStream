@@ -1285,10 +1285,12 @@
                    window offers it only in Keep a copy's place
                    (dmGetItRows): with the copy on, the exact file is one
                    press away — a download it already has a job for still
-                   shows, under Keep's bar (dmGetItBar). -->
+                   shows, under Keep's bar (dmGetItBar). Its own bar draws
+                   a download (dm-dest download): from no server, so the
+                   server's name and folder variables drop out. -->
               <section v-if="dmGetItRows().length || dmFederateVisible()" class="dmodal-section">
                 <div class="dmodal-section-h"><h3 class="dmodal-label">{{ tt('discover.modal.getIt') }}</h3><span v-if="dmGetItLive()" class="dmodal-hint">{{ tt('discover.modal.getItLiveHint') }}</span></div>
-                <dm-dest v-if="dmGetItBar()" scope="song"></dm-dest>
+                <dm-dest v-if="dmGetItBar()" scope="song" download></dm-dest>
                 <!-- Federate: the admin's invite row (network rows only) -->
                 <div v-if="dmFederateVisible()" class="dm-opt" v-bind:class="{ 'dm-opt-wrap': discover.modal.federate.form && discover.modal.federate.state !== 'sent' }">
                   <div class="dm-opt-ic" v-bind:class="{ 'dm-opt-ic-ok': discover.modal.federate.state === 'paired' || discover.modal.federate.state === 'sent', 'dm-opt-ic-err': discover.modal.federate.state === 'failed' }">

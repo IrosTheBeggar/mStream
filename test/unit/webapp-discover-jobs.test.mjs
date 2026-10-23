@@ -12,27 +12,35 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import * as pathTemplate from '../../src/torrent/path-template.js';
 import * as destination from '../../src/discovery-plugins/destination.js';
+import * as federationCopy from '../../src/discovery-plugins/plugins/federation-copy.js';
 
 const require = createRequire(import.meta.url);
 const J = require('../../webapp/alpha/discover-jobs.js');
 
+// `serverfolder` is {{SERVERFOLDER}} (the server's renderTarget takes it as
+// its own `serverFolder`): folders, as federation-copy serverFolderOf
+// writes them, and raw values the engine must make safe itself
 const TAGS = [
-  { artist: 'Marlowe Vale', album: 'Night Ferry', year: 2019, genre: 'Dream Pop', albumartist: null },
-  { artist: 'AC/DC', album: 'Back in Black: Deluxe?', year: '1980', genre: null, albumartist: 'AC/DC' },
-  { artist: '  ...Trail of Dead. ', album: 'Source Tags & Codes', year: null, genre: '', albumartist: '' },
-  { artist: null, album: null, year: null, genre: null, albumartist: null },
-  { artist: 'x'.repeat(260), album: 'tab\there', year: 0, genre: 'a\\b', albumartist: 'Various' },
-  { artist: 'Björk', album: '音楽 / ロック', year: 1997, genre: 'Électro', albumartist: null },
+  { artist: 'Marlowe Vale', album: 'Night Ferry', year: 2019, genre: 'Dream Pop', albumartist: null, serverfolder: 'Marlowe Vale/Night Ferry' },
+  { artist: 'AC/DC', album: 'Back in Black: Deluxe?', year: '1980', genre: null, albumartist: 'AC/DC', serverfolder: 'AC-DC' },
+  { artist: '  ...Trail of Dead. ', album: 'Source Tags & Codes', year: null, genre: '', albumartist: '', serverfolder: '' },
+  { artist: null, album: null, year: null, genre: null, albumartist: null, serverfolder: null },
+  { artist: 'x'.repeat(260), album: 'tab\there', year: 0, genre: 'a\\b', albumartist: 'Various', serverfolder: `${'y'.repeat(260)}/z` },
+  { artist: 'Björk', album: '音楽 / ロック', year: 1997, genre: 'Électro', albumartist: null, serverfolder: '音楽\\ロック' },
   // a "~" or a "$HOME" in a tag is a name: folded, never a refused path
-  { artist: '~Ana', album: '$HOME Sessions', year: null, genre: '${HOME}', albumartist: 'Tilde~Town' },
+  { artist: '~Ana', album: '$HOME Sessions', year: null, genre: '${HOME}', albumartist: 'Tilde~Town', serverfolder: '~Ana/$HOME Sessions' },
+  // a peer's folder that tries to climb, or doubles its separators: the empty ones drop
+  { artist: 'Ana', album: 'Up', year: null, genre: null, albumartist: null, serverfolder: '../../etc//./ Ana : B /..' },
 ];
 const LAYOUTS = [
   '{{ARTIST}}/{{ALBUM}}', '{{ALBUMARTIST}}/{{ALBUM}} ({{YEAR}})', '{{PEER}}/{{ARTIST}}/{{ALBUM}}', '{{ artist }}\\{{Album}}',
   'From peers/{{GENRE}}/{{ARTIST}} - {{ALBUM}}', '{{YEAR}}', 'literal only', '{{ARTIST}}//{{ALBUM}}/', '{{GENRE}}/{{YEAR}}/{{PEER}}',
+  '{{SERVERFOLDER}}', 'From friends/{{SERVERFOLDER}}', 'Copy of {{SERVERFOLDER}} ({{YEAR}})', '{{PEER}}/{{serverfolder}}/{{ALBUM}}',
 ];
 const BAD_LAYOUTS = [
   '', '/{{ARTIST}}', '\\{{ARTIST}}', '{{ARTIST}}/{{TRACK}}', '{{ARTIST}/{{ALBUM}}', '{ARTIST}', '{{ARTIST}}/../{{ALBUM}}', '~/{{ARTIST}}',
   '$HOME/{{ARTIST}}', 'C:/{{ARTIST}}', '{{ARTIST}}/D:stuff', 'a\u0001b/{{ARTIST}}', 'x'.repeat(501), '{{YEAR}}{{GENRE}}',
+  '{{SERVERFOLDER}}/../x', '/{{SERVERFOLDER}}', '{{SERVER_FOLDER}}',
 ];
 const BASES = ['', 'From peers', ' From peers / Sam ', 'a\\b\\c', '/lead/and/trail/', '..', 'ok/../up', '~home', 'C:/x', 'x'.repeat(600), 'tab\tin'];
 
@@ -85,7 +93,7 @@ describe('the layout preview agrees with the server engine', () => {
         for (const base of ['', 'From peers', 'a\\b']) {
           const theirs = destination.renderTarget({
             destination: { vpath: 'music', base: destination.normalizeBase(base).base, layout },
-            tags, peerName: "Sam's server", fileName: destination.safeFileName('shared/03 Paper Lanterns.flac'),
+            tags, peerName: "Sam's server", serverFolder: tags.serverfolder, fileName: destination.safeFileName('shared/03 Paper Lanterns.flac'),
           });
           const mine = J.previewTarget({ vpath: 'music', base, layout, tags, peerName: "Sam's server", fileName: 'shared/03 Paper Lanterns.flac' });
           assert.equal(mine.valid, true);
@@ -529,7 +537,7 @@ describe('scopeTarget: the destination drawn for what the scope copies', () => {
   test('the song\'s and the album\'s folder is the server\'s renderTarget folder', () => {
     for (const layout of LAYOUTS) {
       for (const tags of TAGS) {
-        const theirs = destination.renderTarget({ destination: { vpath: 'music', base: 'From peers', layout }, tags, peerName: "Sam's server", fileName: 'a.mp3' });
+        const theirs = destination.renderTarget({ destination: { vpath: 'music', base: 'From peers', layout }, tags, peerName: "Sam's server", serverFolder: tags.serverfolder, fileName: 'a.mp3' });
         for (const scope of ['song', 'album']) {
           const mine = J.scopeTarget({ vpath: 'music', base: 'From peers', layout, scope, tags, peerName: "Sam's server", fileName: 'x/a.mp3' });
           assert.equal(mine.relDir, theirs.relDir, `${scope}: ${layout}`);
@@ -623,11 +631,12 @@ describe('slots: a variable each song files by its own tag is never one folder t
   test('listedSongTags: a listed song as the album copy files it', () => {
     const song = (metadata) => ({ filepath: 'p/a.mp3', metadata });
     assert.deepEqual(J.listedSongTags(song({ artist: 'Ana', 'artist-display': 'Ana feat. Ben', year: 2019, genres: ['Funk'] }), 'Various Artists'),
-      { artist: 'Ana feat. Ben', year: 2019, genre: 'Funk' }, 'the tag as written');
+      { artist: 'Ana feat. Ben', year: 2019, genre: 'Funk', serverfolder: '' }, 'the tag as written; a file at the peer library\'s root sits in no folder');
     assert.equal(J.listedSongTags(song({ artist: 'Ana', genres: ['Funk', 'Soul'] }), null).genre, null, 'two genres: a tag the library split, unknown');
-    assert.deepEqual(J.listedSongTags(song({ artist: 'Ana', year: null, genres: [] }), 'Various Artists'), { artist: 'Ana', year: null, genre: null });
-    assert.deepEqual(J.listedSongTags(song({ title: 'untagged' }), 'Various Artists'), { artist: 'Various Artists', year: null, genre: null }, 'no artist tag: the credit the listing was asked by');
-    assert.deepEqual(J.listedSongTags(null, null), { artist: null, year: null, genre: null });
+    assert.deepEqual(J.listedSongTags(song({ artist: 'Ana', year: null, genres: [] }), 'Various Artists'), { artist: 'Ana', year: null, genre: null, serverfolder: '' });
+    assert.deepEqual(J.listedSongTags(song({ title: 'untagged' }), 'Various Artists'), { artist: 'Various Artists', year: null, genre: null, serverfolder: '' }, 'no artist tag: the credit the listing was asked by');
+    assert.deepEqual(J.listedSongTags(null, null), { artist: null, year: null, genre: null, serverfolder: '' });
+    assert.equal(J.listedSongTags({ filepath: 'peerlib/VA/Night Market Sampler/01.mp3', metadata: {} }, null).serverfolder, 'VA/Night Market Sampler', 'where its file sits on the server');
   });
 
   // the 2026-10-22 review: a genre tag the library split is not the folder
@@ -645,6 +654,100 @@ describe('slots: a variable each song files by its own tag is never one folder t
     assert.deepEqual([drawn(before), before.slots], [['Various Artists', 'Night Market Sampler (‹YEAR›)'], ['YEAR']]);
     const some = at('album', { tags: ROW, songs: [...listed(['Ana'], { year: 2019 }), ...listed(['Ben'], { year: null })], compilation: true }, '{{ALBUMARTIST}}/{{ALBUM}} ({{YEAR}})');
     assert.deepEqual([drawn(some), some.slots, some.missingVars], [['Various Artists', 'Night Market Sampler (‹YEAR›)'], ['YEAR'], []], 'the song with none files without it');
+  });
+});
+
+// ── {{SERVERFOLDER}} (asked for 2026-10-22: "copy the server's filepath"):
+// the folder a copied song sits in on the connected server, its library's
+// name dropped — several folders, each made safe; '' at the library's
+// root, which drops it like any empty variable ─────────────────────────
+describe('{{SERVERFOLDER}}: where the song sits on the server, as folders', () => {
+  const FILE = 'peerlib/Boukmanflow/Borrowed Tapes/02 - Late Train Verse.mp3';
+  const PATHS = [FILE, 'peerlib/02.mp3', 'peerlib/AC:DC?/Back*In|Black/x.mp3', 'peerlib/../..//./etc/ ~Ana /x.mp3', 'peerlib\\Win\\Dir\\x.mp3',
+    ' / peerlib / A / x.mp3', 'peerlib//A//B/', 'x.mp3', '', null, undefined, 'peerlib/ .. /$HOME/x.mp3', `peerlib/${'d'.repeat(300)}/x.mp3`,
+    // a '.' before the library's name is no segment: the library is still the first
+    './peerlib/A/x.mp3', ' . /peerlib/A/x.mp3', '.\\peerlib\\A\\x.mp3'];
+
+  test('serverFolderOf: the directory, its library dropped, each folder made safe — the server\'s own value for every path', () => {
+    assert.deepEqual([FILE, 'peerlib/02.mp3', 'peerlib/AC:DC?/Back*In|Black/x.mp3', 'peerlib/../..//./etc/ ~Ana /x.mp3', 'peerlib\\Win\\Dir\\x.mp3', null].map(J.serverFolderOf),
+      ['Boukmanflow/Borrowed Tapes', '', 'AC-DC-/Back-In-Black', 'etc/-Ana', 'Win/Dir', '']);
+    assert.deepEqual(['./peerlib/A/x.mp3', ' . /peerlib/A/x.mp3'].map(J.serverFolderOf), ['A', 'A'], 'a leading "." is not the library');
+    assert.equal(typeof federationCopy.serverFolderOf, 'function', 'federation-copy fills {{SERVERFOLDER}} with serverFolderOf — update this test');
+    for (const p of PATHS) { assert.equal(J.serverFolderOf(p), federationCopy.serverFolderOf(p), `serverFolderOf ${JSON.stringify(p)}`); }
+    for (const raw of [null, '', 'A/B', 'a\\b\\c', '../x/./y//', ' . / ~ / $HOME', 'AC:DC/x', `${'z'.repeat(300)}/y`]) {
+      assert.equal(J.sanitizeFolders(raw), pathTemplate.sanitizeFolders(raw), `sanitizeFolders ${JSON.stringify(raw)}`);
+    }
+  });
+
+  test('rendered: one folder per folder of the value, inside literal text too; empty drops its folder; never out of the library', () => {
+    const at = (layout, serverfolder) => J.resolveLayout(layout, { artist: 'Boukmanflow', album: 'Borrowed Tapes', serverfolder });
+    assert.deepEqual(at('{{SERVERFOLDER}}', 'Boukmanflow/Borrowed Tapes'), { path: 'Boukmanflow/Borrowed Tapes', missingVars: [] });
+    assert.equal(at('From friends/{{SERVERFOLDER}}', 'Boukmanflow/Borrowed Tapes').path, 'From friends/Boukmanflow/Borrowed Tapes');
+    assert.equal(at('Copy of {{SERVERFOLDER}}', 'Boukmanflow/Borrowed Tapes').path, 'Copy of Boukmanflow/Borrowed Tapes', 'the literal joins the first folder, the rest follow');
+    assert.deepEqual(at('From friends/{{SERVERFOLDER}}/{{ALBUM}}', ''), { path: 'From friends/Borrowed Tapes', missingVars: ['SERVERFOLDER'] }, 'a song at the root: the folder drops out');
+    assert.equal(at('{{SERVERFOLDER}}', '../../etc/./x').path, 'etc/x', 'a ".." in the peer\'s word is dropped, not followed');
+    const p = J.previewTarget({ vpath: 'copies', base: 'Inbox', layout: '{{SERVERFOLDER}}', tags: { serverfolder: J.serverFolderOf(FILE) }, fileName: FILE });
+    assert.deepEqual([p.valid, p.relPath], [true, 'Inbox/Boukmanflow/Borrowed Tapes/02 - Late Train Verse.mp3']);
+    // Get it has no peer path: the file lands in the base folder itself
+    assert.equal(J.previewTarget({ vpath: 'copies', base: 'Inbox', layout: '{{SERVERFOLDER}}', tags: {}, fileName: 'a.mp3' }).relPath, 'Inbox/a.mp3');
+    // past the cap: refused whole, as renderTarget refuses it — never shown cut
+    const deep = `peerlib/${'a'.repeat(200)}/${'b'.repeat(200)}/${'c'.repeat(200)}/x.mp3`;
+    const tooLong = J.previewTarget({ vpath: 'copies', base: '', layout: '{{SERVERFOLDER}}', tags: { serverfolder: J.serverFolderOf(deep) }, fileName: deep });
+    assert.deepEqual([tooLong.valid, tooLong.error], [false, 'path_too_long']);
+    assert.throws(() => destination.renderTarget({ destination: { vpath: 'copies', base: '', layout: '{{SERVERFOLDER}}' }, tags: {}, serverFolder: federationCopy.serverFolderOf(deep), fileName: 'x.mp3' }),
+      /exceeds 500 characters/, 'the server refuses it too');
+  });
+
+  test('validateLayout: a known variable, two folders in the sample — a layout of just {{SERVERFOLDER}} validates', () => {
+    assert.ok(J.LAYOUT_VARS.includes('SERVERFOLDER'));
+    for (const layout of ['{{SERVERFOLDER}}', '{{ serverfolder }}', 'From friends/{{SERVERFOLDER}}', 'Copy of {{SERVERFOLDER}}']) {
+      assert.deepEqual(J.validateLayout(layout), { valid: true }, layout);
+      assert.equal(destination.validateLayout(layout).valid, true, `the server agrees: ${layout}`);
+    }
+    assert.equal(J.resolveLayout('{{SERVERFOLDER}}', { serverfolder: J.SAMPLE_SERVERFOLDER }).path.split('/').length, 2);
+    assert.deepEqual(J.validateLayout('{{SERVERFOLDER}}/../x'), { valid: false, error: 'traversal' });
+    assert.equal(J.SERVERFOLDER_LAYOUT, '{{SERVERFOLDER}}', '"Same folders as the server"');
+  });
+
+  // the per-song slot rule: the song its own folder; the album the one every
+  // listed song shares, else ‹server folder›; the artist scopes cut there
+  const SONG = { artist: 'Boukmanflow', album: 'Borrowed Tapes', year: 2019, genre: 'Hip-Hop', albumartist: null, serverfolder: 'Boukmanflow/Borrowed Tapes' };
+  const listed = (folders) => folders.map((f, i) => J.listedSongTags({ filepath: `peerlib/${f}/0${i}.mp3`, metadata: { artist: 'Boukmanflow', year: 2019, genres: ['Hip-Hop'] } }, null));
+  const at = (scope, rule, layout, over) => {
+    const st = J.scopeTags({ scope, ...rule });
+    return J.scopeTarget({ vpath: 'copies', base: '', layout, scope, tags: st.tags, slots: st.slots, peerName: 'Stage Peer B', fileName: FILE, ...over });
+  };
+  const drawn = (p) => p.crumbs.map((c) => (c.parts ? c.parts.map((x) => (x.slot ? `‹${x.slot}›` : x.text)).join('') : c.text || c.key));
+
+  test('the song: its own folder on the server, never a slot', () => {
+    const p = at('song', { tags: SONG }, '{{SERVERFOLDER}}');
+    assert.deepEqual([drawn(p), p.slots, p.file], [['Boukmanflow', 'Borrowed Tapes'], [], '02 - Late Train Verse.mp3']);
+    assert.deepEqual(drawn(at('song', { tags: SONG }, 'Copy of {{SERVERFOLDER}}')), ['Copy of Boukmanflow', 'Borrowed Tapes']);
+    const root = at('song', { tags: { ...SONG, serverfolder: '' } }, 'From friends/{{SERVERFOLDER}}');
+    assert.deepEqual([drawn(root), root.missingVars, root.slots], [['From friends'], ['SERVERFOLDER'], []], 'a song at the root: the folder drops out');
+  });
+
+  test('the album: the folder every listed song shares; songs in more than one folder draw ‹server folder›; before the listing, the row\'s', () => {
+    const one = at('album', { tags: SONG, songs: listed(['Boukmanflow/Borrowed Tapes', 'Boukmanflow/Borrowed Tapes']) }, 'From friends/{{SERVERFOLDER}}');
+    assert.deepEqual([drawn(one), one.slots], [['From friends', 'Boukmanflow', 'Borrowed Tapes'], []]);
+    const discs = at('album', { tags: SONG, songs: listed(['Boukmanflow/Borrowed Tapes/CD1', 'Boukmanflow/Borrowed Tapes/CD2']) }, 'From friends/{{SERVERFOLDER}}');
+    assert.deepEqual([drawn(discs), discs.slots, discs.rendered], [['From friends', '‹SERVERFOLDER›'], ['SERVERFOLDER'], 'From friends/{{SERVERFOLDER}}']);
+    assert.deepEqual(discs.crumbs[1].parts, [{ slot: 'SERVERFOLDER', key: 'discover.modal.dest.slot.serverfolder' }]);
+    assert.deepEqual(drawn(at('album', { tags: SONG, songs: listed(['A/B', 'A-B']) }, '{{SERVERFOLDER}}')), ['‹SERVERFOLDER›'], 'folders compared whole: "A/B" is not "A-B"');
+    assert.deepEqual(drawn(at('album', { tags: SONG, songs: listed(['CD1', 'CD2']) }, 'Copy of {{SERVERFOLDER}}')), ['Copy of ‹SERVERFOLDER›'], 'the slot keeps its folder\'s text');
+    assert.deepEqual(drawn(at('album', { tags: SONG, songs: null, compilation: true }, '{{SERVERFOLDER}}')), ['Boukmanflow', 'Borrowed Tapes'], 'no listing yet: the row\'s folder, a compilation too');
+    const both = at('album', { tags: { ...SONG, albumartist: 'Various Artists' }, songs: [...listed(['VA/Sampler']), { ...listed(['VA/Sampler'])[0], artist: 'ALM' }], compilation: true },
+      '{{ARTIST}}/{{SERVERFOLDER}}');
+    assert.deepEqual([drawn(both), both.slots], [['‹ARTIST›', 'VA', 'Sampler'], ['ARTIST']]);
+  });
+
+  test('the artist scopes: the folder naming {{SERVERFOLDER}} and every one after it is "one folder per album"; the one missing album its slot', () => {
+    const ARTIST = { artist: 'Boukmanflow', albumartist: 'Boukmanflow', album: null, year: null, genre: null, serverfolder: 'Boukmanflow/Borrowed Tapes' };
+    const walk = at('artist', { tags: ARTIST }, 'From friends/{{SERVERFOLDER}}/{{ALBUM}}');
+    assert.deepEqual([drawn(walk), walk.perAlbum, walk.slots, walk.missingVars], [['From friends', 'discover.modal.dest.perAlbum'], true, [], []], 'never the seed song\'s own folder');
+    assert.deepEqual(drawn(at('artist-missing', { tags: ARTIST }, '{{ARTIST}}/Copy of {{SERVERFOLDER}}')), ['Boukmanflow', 'discover.modal.dest.perAlbum']);
+    const one = at('artist-missing', { tags: ARTIST }, '{{SERVERFOLDER}}', { oneAlbum: { name: 'Second Shift', year: 2021 } });
+    assert.deepEqual([drawn(one), one.slots], [['‹SERVERFOLDER›'], ['SERVERFOLDER']], 'its folder on the server is not known here');
   });
 });
 
