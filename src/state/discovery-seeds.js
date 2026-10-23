@@ -34,6 +34,7 @@ import path from 'path';
 import winston from 'winston';
 import * as config from './config.js';
 import * as discoveryP2p from './discovery-p2p.js';
+import * as discoveryCatalog from './discovery-catalog.js';
 import { verifySeedList } from './discovery-seeds-verify.js';
 
 // Baked-in seed entries, same shape as the remote list: {name, endpointId,
@@ -92,15 +93,52 @@ const MAX_TICKET_LEN = 4096;
 // memory watchdog below. Env override mirrors MSTREAM_TEST_DISCOVERY_ROTATE_MS.
 const HEALTH_INTERVAL_MS =
   Number(process.env.MSTREAM_TEST_DISCOVERY_HEALTH_MS) || 5 * 60 * 1000;
+// Silence belt (needs a sidecar ≥ v1.4.0, which reports lastGossipAgeSecs):
+// a mesh that claims live neighbors but has delivered nothing for this
+// long is dead, not quiet — every announcer re-broadcasts every ~15s. The
+// 2026-10-22 wedge sat at "connected, 4 neighbors" for 22 hours with
+// nothing heard, and the neighbor-count check above it saw nothing wrong.
+const SILENCE_SECS =
+  Number(process.env.MSTREAM_TEST_DISCOVERY_SILENCE_SECS) || 15 * 60;
+// Only judge silence when there was someone to hear: a catalog peer heard
+// within this window proves announcers existed recently. A lone server on
+// an empty network is silent by nature and must never be restart-looped.
+const SILENCE_WITNESS_MS = 24 * 60 * 60 * 1000;
 
 // Sidecar memory watchdog state, surfaced for the p2p status route. The
-// counter is per-process (not persisted): it exists so a RECURRING breach
-// reads as a pattern in the admin panel instead of a mystery of repeating
-// one-off log lines.
+// counters are per-process (not persisted): they exist so a RECURRING
+// breach reads as a pattern in the admin panel instead of a mystery of
+// repeating one-off log lines. silenceRestarts counts the silence belt's
+// kills the same way.
 let watchdogRestarts = 0;
+let silenceRestarts = 0;
 let lastSidecarRssMb = null;
 export function getWatchdogState() {
-  return { restarts: watchdogRestarts, lastRssMb: lastSidecarRssMb };
+  return { restarts: watchdogRestarts, silenceRestarts, lastRssMb: lastSidecarRssMb };
+}
+
+// Pure verdict for the silence belt (exported for unit tests): null when
+// the mesh is healthy or can't be judged, else a one-line reason to restart
+// the sidecar. Judged only on a status reply that claims live neighbors;
+// older sidecars (no lastGossipAgeSecs) are never judged.
+export function silenceVerdict({ status, neighborIds = [], seedIds = [], catalogHeardAt = [], now = Date.now() }) {
+  if (!status || status.joined !== true || !(Number(status.neighbors) > 0)) { return null; }
+  const age = status.lastGossipAgeSecs;
+  if (typeof age !== 'number' || !Number.isFinite(age) || age < SILENCE_SECS) { return null; }
+  // Seeds relay but never announce: a node whose only links are seeds
+  // hears nothing by design.
+  const seeds = new Set(seedIds);
+  if (neighborIds.length > 0 && neighborIds.every((id) => seeds.has(id))) { return null; }
+  const witnessed = catalogHeardAt.some((t) => Number.isFinite(t) && now - t <= SILENCE_WITNESS_MS);
+  if (!witnessed) { return null; }
+  return `joined with ${status.neighbors} neighbor(s) but nothing heard for ${Math.round(age)}s`;
+}
+
+// Everyone the operator's bootstrap set treats as a seed: baked defaults
+// plus the disk-cached community list (no network — this runs on the watch).
+async function knownSeedIds() {
+  const remote = await remoteSeeds({ localOnly: true });
+  return [...bakedSeeds(), ...remote].map((s) => s.endpointId).filter((id) => typeof id === 'string');
 }
 
 function cachePath() {
@@ -254,7 +292,24 @@ export function startMeshHealthWatch() {
         }
       }
       const s = await discoveryP2p.status();
-      if (s.joined && s.neighbors > 0) { return; }
+      if (s.joined && s.neighbors > 0) {
+        // Connected on paper. The silence belt asks whether anything has
+        // actually arrived; a dead mesh is killed like an over-ceiling one,
+        // and crash recovery replays the stack.
+        const why = silenceVerdict({
+          status: s,
+          neighborIds: discoveryP2p.getNeighborIds(),
+          seedIds: await knownSeedIds(),
+          catalogHeardAt: discoveryCatalog.list().map((entry) => Date.parse(entry.updatedAt)),
+        });
+        if (why) {
+          silenceRestarts += 1;
+          winston.warn(`[discovery-seeds] mesh looks dead: ${why} — killing the sidecar so crash `
+            + `recovery replays the stack (silence restart #${silenceRestarts})`);
+          discoveryP2p.killSidecarForRestart();
+        }
+        return;
+      }
       const bootstrap = await resolveBootstrap({ forceRefresh: true });
       if (bootstrap.length === 0) { return; } // nothing to join with — nothing to do
       winston.info(`[discovery-seeds] ${s.joined ? 'no mesh neighbors' : 'sidecar is not on the catalog topic'} `
