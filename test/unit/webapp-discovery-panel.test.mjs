@@ -689,9 +689,10 @@ describe('Discover page: opening it', () => {
     keyClick({ 'data-dp': 'peerAlbumMore', 'data-i': 0 });
     assert.equal(opened.length, 1);
     assert.match(html, /aria-label="dpage\.verb\.albumMore">⋯<\/button>/);
-    // shown as the play button is: on hover, on focus inside the card, always on touch
+    // shown as the play button is: on hover, on keyboard focus inside the
+    // card (never a mouse click's focus), always on touch
     const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8');
-    assert.match(css, /\.dpage \.album-grid-card:hover \.dpage-album-more, \.dpage \.album-grid-card:focus-within \.dpage-album-more \{ opacity: 1; \}/);
+    assert.match(css, /\.dpage \.album-grid-card:hover \.dpage-album-more, \.dpage \.album-grid-card:has\(:focus-visible\) \.dpage-album-more \{ opacity: 1; \}/);
     assert.match(css, /\.dpage-album-more:focus-visible \{ outline: 2px solid #fa832b;/);
     const touch = css.slice(css.indexOf('@media (hover: none) {', css.indexOf('/* ── The Discover page')));
     assert.match(touch.slice(0, touch.indexOf('\n}')), /\.dpage \.dpage-album-more \{ opacity: 1;/);
@@ -2403,8 +2404,14 @@ describe('Discover page: wiring', () => {
     assert.match(narrow, /\.dpage-art, \.dpage-skel-row i \{ width: 36px; height: 36px; \}/);
     const touch = page.slice(page.indexOf('@media (hover: none)'));
     assert.match(touch, /^@media \(hover: none\) \{[^}]*\.dpage-verbs \{ opacity: 1; \}\s*\.dpage \.album-grid-play \{ opacity: 1;[^}]*\}\s*\.dpage-vb \{ min-width: 40px; height: 40px; \}/);
-    assert.match(page, /\.dpage-row:hover \.dpage-verbs, \.dpage-row:focus-within \.dpage-verbs \{ opacity: 1; \}/);
-    assert.match(page, /\.dpage \.album-grid-card:focus-within \.album-grid-play \{ opacity: 1;/);
+    // keyboard focus shows a row's verbs and a card's play button; a mouse
+    // click's focus (and focus handed back when a menu or window closes)
+    // does not keep them up — :focus-within only where :has() is missing
+    assert.match(page, /\.dpage-row:hover \.dpage-verbs, \.dpage-row:has\(:focus-visible\) \.dpage-verbs \{ opacity: 1; \}/);
+    assert.match(page, /\.dpage \.album-grid-card:has\(:focus-visible\) \.album-grid-play \{ opacity: 1;/);
+    const plain = page.slice(0, page.indexOf('@supports not selector(:has(*))'));
+    assert.ok(!/\.dpage-row:focus-within|\.album-grid-card:focus-within/.test(plain), 'no bare :focus-within outside the fallback');
+    assert.match(page, /@supports not selector\(:has\(\*\)\) \{[^}]*\.album-grid-card:focus-within \.album-grid-play \{ opacity: 1;[^}]*\}\s*[^}]*\.dpage-row:focus-within \.dpage-verbs \{ opacity: 1;/);
     assert.match(page, /\.dpage \.album-grid-play:focus-visible, \.dpage-peer-card:focus-visible \{ outline: 2px solid #fa832b;/);
     assert.match(page, /@media \(max-width: 600px\) \{[^}]*\.dpage-bar \{ padding: 6px 16px; \}/, '16 px gutters on a phone');
     assert.ok(!page.includes('.dpage-row-off'), 'no offline rows any more');

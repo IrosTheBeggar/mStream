@@ -3053,7 +3053,10 @@ body.on-federated-server .side-nav-note {
 .dpage-src-peers .album-grid-play { background: #d9a441; }
 .dpage-src-peers .album-grid-play:hover, .dpage-src-peers .album-grid-play:focus { background: #e6b85c; }
 .dpage .album-grid-play svg { fill: #0f1216; }
-.dpage .album-grid-card:focus-within .album-grid-play { opacity: 1; transform: translateY(0); }
+/* keyboard focus only (:focus-visible): a mouse click focuses the button
+   too, and focus comes back to it when the menu or window it opened
+   closes — :focus-within would keep the controls up until the next click */
+.dpage .album-grid-card:has(:focus-visible) .album-grid-play { opacity: 1; transform: translateY(0); }
 .dpage .album-grid-play:focus { outline: none; }
 .dpage .album-grid-play:focus-visible, .dpage-peer-card:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
 .dpage-peer-card:focus { outline: none; }
@@ -3062,7 +3065,7 @@ body.on-federated-server .side-nav-note {
    corner, shown as the play button is — on hover, on keyboard focus inside
    the card, and always where there is no hover */
 .dpage-album-more { position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: rgba(15, 18, 22, .72); color: #dfe3ea; font-size: 16px; line-height: 1; display: flex; align-items: center; justify-content: center; cursor: pointer; opacity: 0; transition: opacity .2s, background .15s; }
-.dpage .album-grid-card:hover .dpage-album-more, .dpage .album-grid-card:focus-within .dpage-album-more { opacity: 1; }
+.dpage .album-grid-card:hover .dpage-album-more, .dpage .album-grid-card:has(:focus-visible) .dpage-album-more { opacity: 1; }
 .dpage-album-more:hover, .dpage-album-more:focus { background: rgba(15, 18, 22, .9); color: #f0f2f5; outline: none; }
 .dpage-album-more:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
 .dpage-skel-card i { display: block; aspect-ratio: 1; border-radius: 8px; background: #262b33; }
@@ -3101,7 +3104,7 @@ body.on-federated-server .side-nav-note {
   @media (hover: hover) {
     .dpage-row { position: relative; }
     .dpage-verbs { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); padding-left: 10px; background: #1e222a; pointer-events: none; }
-    .dpage-row:hover .dpage-verbs, .dpage-row:focus-within .dpage-verbs { pointer-events: auto; }
+    .dpage-row:hover .dpage-verbs, .dpage-row:has(:focus-visible) .dpage-verbs { pointer-events: auto; }
   }
 }
 
@@ -3111,7 +3114,13 @@ body.on-federated-server .side-nav-note {
 /* a row's badge and bar slots (patched in place on a job poll): no box */
 .dpage-slot { display: contents; }
 .dpage-verbs { display: flex; align-items: center; gap: 6px; flex-shrink: 0; opacity: 0; transition: opacity .12s; }
-.dpage-row:hover .dpage-verbs, .dpage-row:focus-within .dpage-verbs { opacity: 1; }
+.dpage-row:hover .dpage-verbs, .dpage-row:has(:focus-visible) .dpage-verbs { opacity: 1; }
+/* a browser without :has() keeps the old rule, so the keyboard still
+   reaches the controls */
+@supports not selector(:has(*)) {
+  .dpage .album-grid-card:focus-within .album-grid-play { opacity: 1; transform: translateY(0); }
+  .dpage .album-grid-card:focus-within .dpage-album-more, .dpage-row:focus-within .dpage-verbs { opacity: 1; pointer-events: auto; }
+}
 .dpage-vb { height: 26px; min-width: 26px; padding: 0 8px; border-radius: 4px; border: 1px solid #444c56; background: #1a1e25; color: #dfe3ea; font-size: 11.5px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; cursor: pointer; white-space: nowrap; }
 .dpage-vb:hover { border-color: #8ea0f0; color: #f0f2f5; }
 /* keyboard focus: the house outline (a mouse click draws none) */
