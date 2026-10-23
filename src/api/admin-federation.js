@@ -25,6 +25,7 @@ import * as db from '../db/manager.js';
 import * as fedDb from '../db/federation.js';
 import * as fedLimits from './federation-limits.js';
 import { forgetPeerAccess } from './federation-browse.js';
+import { peerFailures } from './discovery-federation.js';
 
 // Per-key bandwidth caps (0 = unlimited). Optional at mint time — absent
 // fields fall back to config.federation.limits, which is also what the UI
@@ -452,6 +453,8 @@ export function register(mstream) {
 
     const client = await import('../state/federation-client.js');
     const result = await client.testPeer(peer);
+    // It answered: the next Discover open dials it, cool-down or not.
+    if (result.ok) { peerFailures.forget(peer.id); }
     res.json({ ...result, peer: fedDb.getFederationPeerById(peer.id) });
   });
 
@@ -483,6 +486,7 @@ export function register(mstream) {
       client.closePeerBridge(id);
     } catch (_err) { /* nothing live to close */ }
     forgetPeerAccess(id);
+    peerFailures.forget(id);
     winston.info(`[federation] ${req.user.username} removed peer id=${id}`);
     res.json({});
   });

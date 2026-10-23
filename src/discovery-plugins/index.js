@@ -31,6 +31,7 @@ export {
   refreshProbes, probeStatus, isPluginUnavailable, probePlugin, forgetProbe,
 } from './registry.js';
 export {
-  RECOMMENDATION_SOURCES, recommendationSchema, normalizeRecommendation, recommendationKey, searchPhrase,
-  JOB_SCOPES, scopeMissing, jobKey, jobKeysFor,
+  RECOMMENDATION_SOURCES, recommendationSchema, normalizeRecommendation, recommendationKey, searchPhrase, albumPhrase,
+  NULLABLE_FACTS, repairRecommendation,
+  JOB_SCOPES, scopeMissing, jobKey, jobKeysFor, albumCredit,
 } from './recommendation.js';

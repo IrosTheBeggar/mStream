@@ -4,8 +4,12 @@
 // Where it lands is the user's collection destination
 // (src/discovery-plugins/destination.js): a library
 // the user may upload to, a base folder, and a layout rendered from the
-// song's tags ({{ARTIST}}/{{ALBUM}} by default, {{PEER}} = the server it
-// came from). The file keeps the peer's name.
+// song's tags ({{ALBUMARTIST}}/{{ALBUM}} by default — a compilation lands in
+// one folder — {{PEER}} = the server it
+// came from, {{SERVERFOLDER}} = the folders the song sits in there,
+// serverFolderOf). The file keeps the peer's name. It is the destination as it
+// was when the job was asked for (pinned in the job's params), so a job
+// queued behind others lands where the client showed it would.
 //
 // How a copy runs (run(ctx), one at a time per server):
 //   1. the peer's metadata for the file (its hash) — a song this library
@@ -15,15 +19,21 @@
 //      the peer's key limits (bandwidth, daily quota, 429) apply exactly as
 //      they do to playback, into a .part file inside the destination;
 //   3. the file's own tags render the layout (per song — an album whose
-//      tags agree lands in one folder); a second owned check by audio
-//      hash, and an existing file at the target path is never overwritten;
+//      tags agree lands in one folder; {{ALBUMARTIST}} of a file without
+//      the tag is the album's credit the job knows: the row's, the one the
+//      album was listed by, an artist's album's own — destination.js
+//      tagsForLayout); a second owned check by audio hash, and an existing
+//      file at the target path is never overwritten;
 //   4. the row is inserted the way a Youtube DL download is
 //      (src/db/insert-downloaded-track.js, source = 'federation-copy'), so
 //      the song plays at once.
 // Cancel is polled between chunks; the .part file is removed.
 //
 // The album scope (a job started with scope: 'album'): the peer's own
-// album-songs listing, then that copy song by song — the same owned skip,
+// album-songs listing — by the album's own credit when the recommendation
+// carries one (`albumArtist`), so a compilation comes whole, every track
+// artist on it; else narrowed by the track artist — then that copy song by
+// song — the same owned skip,
 // never-overwrite and per-song layout for each, in disc / track order — with
 // the account of what happened to every song as the result. One song's own
 // failure does not stop the album; the peer's transfer limit (a 429) or the
@@ -48,7 +58,8 @@
 // The peer's side: every request this plug-in makes carries
 // X-mStream-Purpose: copy, so a peer whose key for this server has copies
 // switched off (V77 allow_copies; api/federation-limits.js) answers 403 on
-// the file — the job fails with "does not allow copies", an album or artist
+// the file — a song's job ends with `stopped: 'refused'` and nothing copied
+// (not a failure: a Retry would only be refused again), an album or artist
 // run stops with `stopped: 'refused'`. Playback is never affected.
 
 import path from 'node:path';
@@ -63,7 +74,7 @@ import * as downloadsDb from '../../db/plugin-downloads.js';
 import { ownedTrack, ownedAlbumKeys, libraryIdsFor } from '../owned.js';
 import { nameKey } from '../../db/name-key.js';
 import { CAPABILITIES, SCOPES } from '../registry.js';
-import { JOB_SCOPES, RECOMMENDATION_SOURCES, normalizePeerPath } from '../recommendation.js';
+import { JOB_SCOPES, RECOMMENDATION_SOURCES, albumCredit, normalizePeerPath, scopeMissing } from '../recommendation.js';
 import * as pathTemplate from '../../torrent/path-template.js';
 import { isIgnoredRelPath } from '../../db/scan-ignore.js';
 
@@ -264,10 +275,14 @@ async function run(ctx) {
   const has = (v) => typeof v === 'string' && v.trim().length > 0;
   const artistScope = scope === JOB_SCOPES.ARTIST || scope === JOB_SCOPES.ARTIST_MISSING;
   if (rec.source !== RECOMMENDATION_SOURCES.FEDERATION || !rec.peer || rec.peer.id == null
-    || ((scope === JOB_SCOPES.SONG || scope === JOB_SCOPES.FOLDER) && !has(rec.filepath))
-    || (scope === JOB_SCOPES.ALBUM && !has(rec.album)) || (artistScope && !has(rec.artist))) {
+    || ((scope === JOB_SCOPES.SONG || scope === JOB_SCOPES.FOLDER) && !has(rec.filepath))) {
     throw new Error('only a paired peer\'s recommendation can be copied');
   }
+  // The jobs route refuses these up front (recommendation.js scopeMissing);
+  // a job stored before a rule tightened (an album job with no credit, from
+  // before 2026-10-19) fails here instead of copying every same-named album.
+  const missing = scopeMissing(rec, scope);
+  if (missing) { throw new Error(`a ${scope} copy needs the recommendation's ${missing}`); }
   if (!(config.program && config.program.federation && config.program.federation.enabled === true)) {
     throw new Error('federation is disabled on this server');
   }
@@ -277,7 +292,9 @@ async function run(ctx) {
   const user = destinations.userForJob(ctx.userId);
   if (!user) { throw new Error('the account that asked for this copy no longer exists'); }
   if (!destinations.uploadsAllowed(user)) { throw new Error('uploads are disabled for this account, and a copy is an upload'); }
-  const destination = destinations.getDestination(user);
+  // The destination pinned when the job was asked for — not the account's
+  // current one, which may have changed while this job waited its turn.
+  const destination = destinations.destinationForJob(user, ctx.params);
   if (!destination) { throw new Error('no library to copy into'); }
 
   const { fedFetchWithDeadline } = await import('../../api/discovery-federation.js');
@@ -290,7 +307,15 @@ async function run(ctx) {
     if (artistScope) { return await copyArtist(ctx, env, rec, { onlyMissing: scope === JOB_SCOPES.ARTIST_MISSING }); }
     if (scope === JOB_SCOPES.FOLDER) { return await copyFolder(ctx, env, rec); }
 
-    const r = await copyOne(ctx, env, { filepath: rec.filepath, title: rec.title, artist: rec.artist, album: rec.album });
+    let r;
+    try {
+      r = await copyOne(ctx, env, { filepath: rec.filepath, title: rec.title, artist: rec.artist, album: rec.album, albumArtist: rec.albumArtist });
+    } catch (err) {
+      // the peer refuses copies with this server's key: said as it is, and
+      // no failure to retry — it would refuse again until its admin says
+      if (err && err.copiesOff) { return { stopped: 'refused', peer: { id: peer.id, name: peer.name }, destination }; }
+      throw err;
+    }
     if (r === null) { return null; }   // the runner records the cancel
     if (r.skipped) { return { ...r, destination }; }
     return { copied: r.copied, missingVars: r.missingVars, peer: { id: peer.id, name: peer.name }, destination };
@@ -318,8 +343,9 @@ async function peerJson(env, route, body) {
 // The peer's songs of one album, as copyOne takes them. `artist` narrows to
 // the track artist (the modal's album view's narrowing); `albumArtist` to
 // one album credit (the artist loop's, so a feature on the album still
-// comes along).
-async function listAlbumSongs(env, { album, artist = null, albumArtist = null, year = null, fallbackArtist = null }) {
+// comes along). `credit` is the album's credit every song carries for the
+// layout ({{ALBUMARTIST}} of a file without the tag: tagsForLayout).
+async function listAlbumSongs(env, { album, artist = null, albumArtist = null, year = null, fallbackArtist = null, credit = null }) {
   const body = { album, artist: artist || null, year: year || null };
   if (albumArtist) { body.album_artist = albumArtist; }
   const listing = await peerJson(env, '/api/v1/db/album-songs', body);
@@ -327,23 +353,38 @@ async function listAlbumSongs(env, { album, artist = null, albumArtist = null, y
     .filter((s) => s && typeof s.filepath === 'string' && s.filepath.trim())
     .map((s) => {
       const md = (s.metadata && typeof s.metadata === 'object') ? s.metadata : {};
-      return { filepath: s.filepath, title: md.title || null, artist: md.artist || fallbackArtist || null, album: md.album || album };
+      return { filepath: s.filepath, title: md.title || null, artist: md.artist || fallbackArtist || null, album: md.album || album, albumArtist: credit };
     });
 }
 
-// The album: the peer's own listing of its songs, then copyOne for each
-// (copySongs keeps the account). `rec` names the album (and the artist,
-// which narrows the listing the way the modal's album view narrows it).
+// What an album job asks the peer's album-songs for (pure; unit-tested).
+// With the album's own credit (`albumArtist`: an album card, a connected
+// server's Discover row) the listing is the album as that credit holds it,
+// NOT narrowed by the track artist — a compilation is copied whole, every
+// track artist on it, whichever of its songs the job was started from (the
+// user's choice, 2026-10-19). Without one, the track artist narrows it (the
+// modal's album view's narrowing), as before. `year` is matched against the
+// album's year range on the peer. `fallbackArtist` stands in for a listed
+// song with no artist tag: the credit the listing was asked by.
+export function albumListing(rec) {
+  const credit = typeof rec.albumArtist === 'string' && rec.albumArtist.trim() ? rec.albumArtist : null;
+  return {
+    album: rec.album,
+    artist: credit ? null : (rec.artist || null),
+    albumArtist: credit,
+    year: rec.year || null,
+    fallbackArtist: credit || rec.artist || null,
+  };
+}
+
+// The album: the peer's own listing of its songs (albumListing), then
+// copyOne for each (copySongs keeps the account). Every song files under
+// the credit the album was asked by (albumCredit) where its file has no
+// albumartist tag, so the album lands in one folder, as the clients show it.
 async function copyAlbum(ctx, env, rec) {
   const { peer, destination } = env;
   ctx.progress(0, `asking ${peer.name} for “${rec.album}”`);
-  // The album's own credit narrows the listing when the client sent one
-  // (an album card): a compilation is then copied as itself, not looked
-  // for under a track artist it has none of.
-  const songs = await listAlbumSongs(env, {
-    album: rec.album, artist: rec.artist || null, albumArtist: rec.albumArtist || null, year: rec.year || null,
-    fallbackArtist: rec.artist || rec.albumArtist || null,
-  });
+  const songs = await listAlbumSongs(env, { ...albumListing(rec), credit: albumCredit(rec) });
   if (songs.length === 0) { throw new Error(`${peer.name} has no songs for “${rec.album}”`); }
 
   const outcome = await copySongs(songs, {
@@ -355,7 +396,9 @@ async function copyAlbum(ctx, env, rec) {
   winston.info(`federation-copy: album “${rec.album}” from peer '${peer.name}': ${copied.length} copied, ${skipped.length} skipped, ${failed.length} failed${outcome.stopped ? ` — stopped: ${outcome.stopped}` : ''}`);
   return {
     scope: JOB_SCOPES.ALBUM,
-    album: { name: rec.album, artist: rec.artist || null, year: rec.year || null },
+    // `albumArtist`: the credit the listing was asked by (the whole album);
+    // null when the track artist narrowed it.
+    album: { name: rec.album, artist: rec.artist || null, albumArtist: albumListing(rec).albumArtist, year: rec.year || null },
     ...accountFor(outcome.songs),
     bytes: outcome.bytes,
     stopped: outcome.stopped,
@@ -371,7 +414,8 @@ async function copyAlbum(ctx, env, rec) {
 // outside a compilation). An album the artist merely appears on is listed
 // as skipped ('appearance'); with `onlyMissing`, so is one this library
 // already has (`localKeys`, ownedAlbumKeys). The singles bucket (no album
-// name) is not an album.
+// name) is not an album. A planned album carries its own credit
+// (`albumArtist`: the peer's album_artist, null when its rows disagree).
 export function planArtistAlbums(listing, artist, { localKeys = new Set(), onlyMissing = false } = {}) {
   const key = nameKey(artist);
   const rows = Array.isArray(listing && listing.albums) ? listing.albums : [];
@@ -385,7 +429,7 @@ export function planArtistAlbums(listing, artist, { localKeys = new Set(), onlyM
     const theirs = nameKey(al.album_artist) === key || (credited && al.compilation !== true);
     if (!theirs) { skipped.push({ ...entry, why: 'appearance' }); continue; }
     if (onlyMissing && localKeys.has(nameKey(al.name))) { skipped.push({ ...entry, why: 'owned' }); continue; }
-    plan.push(entry);
+    plan.push({ ...entry, albumArtist: typeof al.album_artist === 'string' && al.album_artist.trim() ? al.album_artist : null });
   }
   return { plan, skipped };
 }
@@ -437,7 +481,8 @@ export async function copyAlbums(albums, { copyAlbum, isCancelled = () => false,
 // The artist: the peer's listing of the artist's albums, the plan
 // (planArtistAlbums — the artist's own albums, minus what this library has
 // for 'artist-missing'), then the album copy for each (copyAlbums keeps
-// the account).
+// the account), its songs filed under the album's own credit, else the
+// artist's, where a file has no albumartist tag.
 async function copyArtist(ctx, env, rec, { onlyMissing }) {
   const { peer, destination } = env;
   ctx.progress(0, `asking ${peer.name} for ${rec.artist}'s albums`);
@@ -450,7 +495,7 @@ async function copyArtist(ctx, env, rec, { onlyMissing }) {
     isCancelled: ctx.isCancelled,
     progress: ctx.progress,
     copyAlbum: async (al, { progress }) => {
-      const songs = await listAlbumSongs(env, { album: al.name, albumArtist: rec.artist, year: al.year, fallbackArtist: rec.artist });
+      const songs = await listAlbumSongs(env, { album: al.name, albumArtist: rec.artist, year: al.year, fallbackArtist: rec.artist, credit: al.albumArtist || rec.artist });
       return copySongs(songs, {
         isCancelled: ctx.isCancelled,
         progress,
@@ -542,8 +587,30 @@ export function landingFor({ folder, landing, destination, writable = [] }) {
     }
     return { mode: 'folder', vpath: landing.vpath || destination.vpath, dir: normalizePeerPath(landing.path) };
   }
-  const inside = normalizePeerPath(folder).split('/').slice(1).map((s) => pathTemplate.sanitizeSegment(s)).filter(Boolean).join('/');
-  return { mode: 'mirror', vpath: destination.vpath, dir: [destination.base, inside].filter(Boolean).join('/') };
+  return { mode: 'mirror', vpath: destination.vpath, dir: [destination.base, insidePeerLibrary(folder)].filter(Boolean).join('/') };
+}
+
+// A peer folder's path inside the peer's library (pure): the library's own
+// name — the first segment — dropped, each segment made safe for a path
+// here, the empty ones ('..' among them: the path is the peer's word)
+// dropped. What a mirrored folder lands as. The first segment goes as the
+// peer wrote it, even a '..': a path that starts by climbing (no peer's own
+// listing does) keeps its library's name here, though the fetch skips the
+// '..' — still never outside the base, and the rule the clients' previews
+// copy (webapp discover-jobs.js serverFolderOf), so it stays as it is.
+function insidePeerLibrary(folder) {
+  return pathTemplate.sanitizeFolders(normalizePeerPath(folder).split('/').slice(1).join('/'));
+}
+
+// {{SERVERFOLDER}} of one song (pure): the folder its file sits in on the
+// peer, as the copy knows the path (the row's, the album listing's, the
+// folder listing's), inside the peer's library — the mirror's rule, so a
+// layout of just {{SERVERFOLDER}} files a song where a folder copy would
+// (and refuses one the mirror would: past the length cap, renderTarget).
+// May be several folders ("Boukmanflow/Borrowed Tapes"); '' for a song at
+// the library's root, which drops it like any empty variable.
+export function serverFolderOf(filepath) {
+  return insidePeerLibrary(normalizePeerPath(filepath).split('/').slice(0, -1).join('/'));
 }
 
 // discoveryJobs.maxFolderSongs (the admin's setting): the most songs one
@@ -646,14 +713,18 @@ export async function copyOne(ctx, env, song, target = null) {
   // quota. A folder copy hands the place in (`target`: the library and the
   // folder, mirrored from the peer or chosen); otherwise the layout renders
   // it from what the listing says, and the file's own tags decide the
-  // final folder, below.
+  // final folder, below — both with the song's album credit
+  // (`song.albumArtist`) where the tags have none, and both with the same
+  // {{PEER}} and {{SERVERFOLDER}} (where the song sits on the peer), which no
+  // tag changes.
   const into = target && target.vpath ? target.vpath : destination.vpath;
+  const byLayout = (tags) => destinations.renderTarget({ destination, tags, peerName: peer.name, serverFolder: serverFolderOf(song.filepath), fileName });
   if (target) {
     const check = target.relDir ? pathTemplate.validateResolvedPath(target.relDir) : { valid: true };
     if (!check.valid) { throw new Error(`the folder cannot be placed: ${check.message}`); }
   } else {
     try {
-      destinations.renderTarget({ destination, tags: destinations.tagsForLayout({}, song), peerName: peer.name, fileName });
+      byLayout(destinations.tagsForLayout({}, song));
     } catch (err) {
       throw new Error(`the collection layout cannot place this song: ${err.message}`, { cause: err });
     }
@@ -698,7 +769,7 @@ export async function copyOne(ctx, env, song, target = null) {
     const tags = destinations.tagsForLayout(common, song);
     const placed = target
       ? { relDir: target.relDir || '', relPath: target.relDir ? `${target.relDir}/${fileName}` : fileName, missingVars: [] }
-      : destinations.renderTarget({ destination, tags, peerName: peer.name, fileName });
+      : byLayout(tags);
     const targetInfo = vpathUtil.getVPathInfo(`${into}/${placed.relPath}`, user);
 
     const audioHashLib = await import('../../db/audio-hash.js');

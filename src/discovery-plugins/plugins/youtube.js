@@ -412,7 +412,8 @@ async function run(ctx) {
   const user = destinations.userForJob(ctx.userId);
   if (!user) { throw new Error('the account that asked for this download no longer exists'); }
   if (!destinations.uploadsAllowed(user)) { throw new Error('uploads are disabled for this account, and a download is an upload'); }
-  const destination = destinations.getDestination(user);
+  // The destination pinned when the job was asked for (destinationForJob).
+  const destination = destinations.destinationForJob(user, ctx.params);
   if (!destination) { throw new Error('no library to download into'); }
   const libraryIds = libraryIdsFor(user);
   const owned = ownedTrack({ artist: rec.artist, title: rec.title, album: rec.album, duration: rec.duration, libraryIds });
@@ -486,8 +487,10 @@ async function run(ctx) {
     await ytdlp.embedThumbnailIfMissing(filePath, { codec: settings.codec, thumbnailUrl: chosen.thumbnail, ffmpegPath: ffmpegBin(), log: 'youtube' });
     await ytdlp.writeTags(filePath, { codec: settings.codec, meta, source: SOURCE, ffmpegPath: ffmpegBin(), log: 'youtube' });
 
-    // 4. Where it goes: the destination's layout from those tags, a second
-    // owned check by hash, and never over an existing file.
+    // 4. Where it goes: the destination's layout from those tags — and the
+    // recommendation's album credit (`albumArtist`) for {{ALBUMARTIST}},
+    // which they do not carry — a second owned check by hash, and never
+    // over an existing file.
     const audioHashLib = await import('../../db/audio-hash.js');
     const hashes = await audioHashLib.computeHashes(filePath);
     const ownedNow = ownedTrack({ hash: hashes.fileHash, audioHash: hashes.audioHash, libraryIds });

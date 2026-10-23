@@ -33,6 +33,10 @@ export function setup(mstream) {
       // The batched owned lookup (POST /api/v1/discovery/owned) — same
       // flag on /api/; the peer browse gates its marks on it.
       discoveryOwned: features.discoveryOwned,
+      // The Discover page's generation (POST /api/v1/discovery/taste) — same
+      // fact /api/ carries under features; ping lists keys by hand, so a
+      // new capability must be added here too (the drift-lock test checks).
+      discoveryTaste: features.discoveryTaste,
       // Stats API v2 version — the same fact /api/ carries under features.
       stats: features.stats,
       // Library sync manifest route — same fact, same place on /api/.

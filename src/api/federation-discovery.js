@@ -64,11 +64,17 @@ export function setup(mstream) {
     // (MBID → artist+title → near-dup) wants it.
     const ddb = discoveryDb.openDiscoveryDbIfExists() ? discoveryDb.getDiscoveryDb() : null;
     const mbidStmt = ddb ? ddb.prepare('SELECT recording_mbid FROM discovery_tracks WHERE audio_hash = ?') : null;
-    // Same cheap-PK-lookup reasoning for the album's release-group MBID:
-    // trackQuery joins albums for the name but not this column, and only
-    // the rows that make the cut pay for it.
-    const rgStmt = db.getDB().prepare(
-      'SELECT al.mbz_release_group_id AS rg FROM tracks t JOIN albums al ON al.id = t.album_id WHERE t.id = ?');
+    // Same cheap-PK-lookup reasoning for the album's release-group MBID and
+    // its own credit: trackQuery joins albums for the name but not these,
+    // and only the rows that make the cut pay for them. The credit is the
+    // one /db/albums lists (ALBUM_ITEM_COLUMNS): the ALBUMARTIST consensus,
+    // else the album's primary artist ("Various Artists" for an untagged
+    // compilation) — a value this server's album-songs `album_artist`
+    // matches verbatim, so a caller's album copy asks for the album whole.
+    const albumStmt = db.getDB().prepare(`
+      SELECT al.mbz_release_group_id AS rg, COALESCE(al.album_artist, pa.name) AS credit
+        FROM tracks t JOIN albums al ON al.id = t.album_id LEFT JOIN artists pa ON pa.id = al.artist_id
+       WHERE t.id = ?`);
 
     const results = [];
     // Bounded like the local similarity routes (2026-07 review): a starved
@@ -85,20 +91,31 @@ export function setup(mstream) {
       if (++considered > maxConsidered) { capped = true; break; }
       const row = resolveVisible(uid, filter, entry.hash, { withGenres: false });
       if (!row) { continue; }   // no copy inside the caller's granted libraries
+      const rendered = renderMetadataObj(row);
+      const al = albumStmt.get(row.id);
       results.push({
-        filepath: renderMetadataObj(row).filepath,
+        filepath: rendered.filepath,
         artist: row.artist_name || null,
         title: row.title || null,
         // Catalogue fields (discovery.db V3): the library row already carries
         // album name (trackQuery joins albums), year and isrc (tracks.*).
         album: row.album_name || null,
+        // The album's own credit, apart from the track's artist (a
+        // compilation's "Various Artists"); null without an album or a
+        // credit. Absent from servers before 2026-10-19.
+        albumArtist: al?.credit || null,
         year: row.year || null,
         isrc: row.isrc || null,
-        releaseGroupMbid: rgStmt.get(row.id)?.rg || null,
+        releaseGroupMbid: al?.rg || null,
         duration: row.duration ?? null,
         similarity: Math.round(similarity * 10000) / 10000,
         genreTags: entry.genreTags,
         recordingMbid: mbidStmt ? (mbidStmt.get(entry.hash)?.recording_mbid || null) : null,
+        // The track's cover, named exactly as this server's browse rows
+        // carry it (metadata 'album-art') — the file /album-art/<name>
+        // serves, so a caller's art proxy (GET /api/v1/federation/peers/
+        // :id/art/<name>) fetches it as is. Null when the track has none.
+        albumArt: rendered.metadata['album-art'] || null,
       });
     }
 

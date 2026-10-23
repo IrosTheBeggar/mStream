@@ -1,8 +1,9 @@
 /**
  * The pure parts behind "Add to your collection": the collection destination
  * rules (src/discovery-plugins/destination.js — shared by the federation-copy
- * and youtube plug-ins), the PEER variable they add to the torrent path template
- * engine, the registry's per-user settings contract, and the plug-in's shape.
+ * and youtube plug-ins), the PEER and SERVERFOLDER variables they add to the
+ * torrent path template engine, the registry's per-user settings contract,
+ * and the plug-in's shape.
  * No server, no disk.
  */
 
@@ -16,10 +17,12 @@ import * as pathTemplate from '../../src/torrent/path-template.js';
 import { registerPlugin, unregisterPluginForTests, listPlugins } from '../../src/discovery-plugins/registry.js';
 import plugin, {
   copySongs, copyAlbums, planArtistAlbums, copyBody, MAX_COPY_BYTES, fetchMedia, planFolder, landingFor, accountFor, RESULT_LIST_CAP,
+  albumListing, serverFolderOf,
 } from '../../src/discovery-plugins/plugins/federation-copy.js';
 import {
   NAMESPACE, KEY, DEFAULT_LAYOUT, LAYOUT_VARS, destinationSchema, uploadsAllowed, writableLibraries,
   destinationFor, validateLayout, normalizeBase, safeFileName, tagsForLayout, renderTarget, isSupportedAudioFile,
+  sameDestination, destinationForJob,
 } from '../../src/discovery-plugins/destination.js';
 
 const LIBS = [
@@ -235,6 +238,27 @@ describe('federation-copy · the folder (planFolder, landingFor, accountFor)', (
   });
 });
 
+describe('federation-copy · what an album job asks the peer for (albumListing)', () => {
+  test('with the album\'s own credit: the album as that credit holds it, NOT narrowed by the track artist — a compilation comes whole', () => {
+    assert.deepEqual(albumListing({ artist: 'Peer Kim', title: 'Kim Song', album: 'Mixtape Vol 1', albumArtist: 'Various Artists', year: 2020 }), {
+      album: 'Mixtape Vol 1', artist: null, albumArtist: 'Various Artists', year: 2020, fallbackArtist: 'Various Artists',
+    });
+    // The card form (no track artist) asks the same.
+    assert.deepEqual(albumListing({ album: 'Mixtape Vol 1', albumArtist: 'Various Artists' }), {
+      album: 'Mixtape Vol 1', artist: null, albumArtist: 'Various Artists', year: null, fallbackArtist: 'Various Artists',
+    });
+  });
+
+  test('without one: the track artist narrows it, as before', () => {
+    assert.deepEqual(albumListing({ artist: 'Nova', title: 'Remote Hit', album: 'Night Ferry', albumArtist: null, year: 2019 }), {
+      album: 'Night Ferry', artist: 'Nova', albumArtist: null, year: 2019, fallbackArtist: 'Nova',
+    });
+    assert.deepEqual(albumListing({ artist: 'Nova', album: 'Night Ferry', albumArtist: '  ' }), {
+      album: 'Night Ferry', artist: 'Nova', albumArtist: null, year: null, fallbackArtist: 'Nova',
+    }, 'a blank credit is none');
+  });
+});
+
 describe('federation-copy · plug-in shape', () => {
   test('an acquire plug-in with run(), one at a time, and no settings of its own', () => {
     assert.equal(plugin.name, 'federation-copy');
@@ -278,9 +302,10 @@ describe('registry · the per-user settings contract', () => {
 });
 
 describe('collection destination · the PEER variable', () => {
-  test('LAYOUT_VARS is the torrent set plus PEER, in that order', () => {
-    assert.deepEqual([...LAYOUT_VARS], [...pathTemplate.SUPPORTED_VARS, 'PEER']);
+  test('LAYOUT_VARS is the torrent set plus PEER and SERVERFOLDER, in that order', () => {
+    assert.deepEqual([...LAYOUT_VARS], [...pathTemplate.SUPPORTED_VARS, 'PEER', 'SERVERFOLDER']);
     assert.equal(pathTemplate.EXTRA_VARS.PEER, 'PEER');
+    assert.equal(pathTemplate.EXTRA_VARS.SERVERFOLDER, 'SERVERFOLDER');
   });
 
   test('the layout accepts PEER; the torrent validator still refuses it', () => {
@@ -308,6 +333,151 @@ describe('collection destination · the PEER variable', () => {
     assert.deepEqual(without.missingVars, ['PEER']);
     // Sanitised like every other segment.
     assert.equal(pathTemplate.resolveTemplate('{{PEER}}', { peer: 'a/b:c' }).path, 'a-b-c');
+  });
+});
+
+describe('collection destination · the SERVERFOLDER variable', () => {
+  test('serverFolderOf: the folder the song sits in on the peer, the peer\'s library name dropped — several folders, one, or none at the root', () => {
+    assert.equal(serverFolderOf('shared/Boukmanflow/Borrowed Tapes/01 Open Reel.mp3'), 'Boukmanflow/Borrowed Tapes');
+    assert.equal(serverFolderOf('shared/Rock/Boukmanflow/Borrowed Tapes/Disc 2/07.flac'), 'Rock/Boukmanflow/Borrowed Tapes/Disc 2');
+    assert.equal(serverFolderOf('shared/Singles/x.mp3'), 'Singles');
+    assert.equal(serverFolderOf('shared/x.mp3'), '', 'a song at the library root has no server folder');
+    assert.equal(serverFolderOf('x.mp3'), '', 'a bare file name has none either');
+    assert.equal(serverFolderOf(''), '');
+    assert.equal(serverFolderOf(null), '');
+  });
+
+  test('serverFolderOf: the peer\'s path is its word — each folder made safe for a path here, empty, "." and ".." segments dropped', () => {
+    assert.equal(serverFolderOf('shared/Live: 2015/AC/DC?/x.mp3'), 'Live- 2015/AC/DC-', 'odd characters fold per folder, as sanitizeSegment folds a tag');
+    assert.equal(serverFolderOf('shared/~/Nothing ~ Everything/x.mp3'), '-/Nothing - Everything', 'a "~" is a name, not a home');
+    assert.equal(serverFolderOf('shared/../../etc/x.mp3'), 'etc', 'a climbing segment is no folder');
+    assert.equal(serverFolderOf('shared/A/../B/x.mp3'), 'A/B');
+    assert.equal(serverFolderOf('shared/./A/.../x.mp3'), 'A', 'a segment of dots alone is dropped');
+    assert.equal(serverFolderOf('/shared//A///B/ x.mp3'), 'A/B', 'empty segments and a leading slash');
+    assert.equal(serverFolderOf('shared\\A\\B\\x.mp3'), 'A/B', 'a backslashed path reads as the peer path it is');
+    assert.equal(serverFolderOf('shared/  Spaced   Out  /x.mp3'), 'Spaced Out');
+    for (const p of ['shared/../../etc/x.mp3', 'shared/Live: 2015/AC/DC?/x.mp3', '/shared//A///B/ x.mp3']) {
+      assert.equal(pathTemplate.validateResolvedPath(serverFolderOf(p)).valid, true, p);
+    }
+  });
+
+  test('serverFolderOf files a song where a folder copy\'s mirror lands it', () => {
+    const destination = { vpath: 'music', base: 'Mirror', layout: '{{SERVERFOLDER}}' };
+    const song = 'shared/Vosto/Underpass Remixes/Disc 2/03 Late Frost.mp3';
+    const { songs } = planFolder([song], 'shared/Vosto', { isSupported: () => true });
+    const mirror = landingFor({ folder: 'shared/Vosto', landing: null, destination });
+    const mirrored = [mirror.dir, songs[0].relDir].filter(Boolean).join('/');
+    const t = renderTarget({ destination, tags: {}, peerName: 'Sam', serverFolder: serverFolderOf(song), fileName: '03 Late Frost.mp3' });
+    assert.equal(t.relDir, mirrored);
+    assert.equal(t.relDir, 'Mirror/Vosto/Underpass Remixes/Disc 2');
+  });
+
+  test('sanitizeFolders: several folders, each sanitised on its own, never a climb', () => {
+    assert.equal(pathTemplate.sanitizeFolders('Boukmanflow/Borrowed Tapes'), 'Boukmanflow/Borrowed Tapes');
+    assert.equal(pathTemplate.sanitizeFolders('A\\B'), 'A/B');
+    assert.equal(pathTemplate.sanitizeFolders('../a/./b/..'), 'a/b');
+    assert.equal(pathTemplate.sanitizeFolders('a:b/c?'), 'a-b/c-');
+    assert.equal(pathTemplate.sanitizeFolders('//'), '');
+    assert.equal(pathTemplate.sanitizeFolders(''), '');
+    assert.equal(pathTemplate.sanitizeFolders(null), '');
+    assert.equal(pathTemplate.sanitizeFolders(undefined), '');
+  });
+
+  test('resolveTemplate: the value\'s folders stay folders — alone, beside others, and inside literal text', () => {
+    const r = (layout, meta) => pathTemplate.resolveTemplate(layout, meta);
+    assert.equal(r('{{SERVERFOLDER}}', { serverfolder: 'Boukmanflow/Borrowed Tapes' }).path, 'Boukmanflow/Borrowed Tapes');
+    assert.equal(r('From friends/{{SERVERFOLDER}}', { serverfolder: 'Boukmanflow/Borrowed Tapes' }).path, 'From friends/Boukmanflow/Borrowed Tapes');
+    assert.equal(r('{{PEER}}/{{SERVERFOLDER}}', { peer: 'Sam', serverfolder: 'A/B' }).path, 'Sam/A/B');
+    // Inside a folder with literal text: the literal joins the value's first
+    // and last folders, so a multi-folder value yields more folders.
+    assert.equal(r('Copy of {{SERVERFOLDER}}', { serverfolder: 'Boukmanflow/Borrowed Tapes' }).path, 'Copy of Boukmanflow/Borrowed Tapes');
+    assert.deepEqual(r('Copy of {{SERVERFOLDER}} (kept)', { serverfolder: 'A/B/C' }).path.split('/'), ['Copy of A', 'B', 'C (kept)']);
+    // Each folder sanitised like any value; the separator kept between them.
+    assert.equal(r('{{SERVERFOLDER}}', { serverfolder: 'Live: 2015/AC|DC' }).path, 'Live- 2015/AC-DC');
+    assert.equal(r('{{SERVERFOLDER}}', { serverfolder: '../../etc' }).path, 'etc');
+  });
+
+  test('resolveTemplate: an empty SERVERFOLDER drops its folder and is reported, like any empty variable', () => {
+    const root = pathTemplate.resolveTemplate('From friends/{{SERVERFOLDER}}', { serverfolder: '' });
+    assert.equal(root.path, 'From friends');
+    assert.deepEqual(root.missingVars, ['SERVERFOLDER']);
+    assert.equal(pathTemplate.resolveTemplate('{{SERVERFOLDER}}', {}).path, '');
+    assert.equal(pathTemplate.resolveTemplate('Copy of {{SERVERFOLDER}}', { serverfolder: '/./' }).path, 'Copy of');
+  });
+
+  test('the layout accepts SERVERFOLDER — alone, in literal text, beside the others; the torrent validator still refuses it', () => {
+    const alone = validateLayout('{{SERVERFOLDER}}');
+    assert.equal(alone.valid, true, JSON.stringify(alone));
+    assert.equal(alone.sample.split('/').length, 2, 'the sample is two folders');
+    assert.equal(validateLayout('Copy of {{SERVERFOLDER}}').valid, true);
+    assert.equal(validateLayout('From friends/{{serverfolder}}').valid, true, 'case-insensitive like every variable');
+    assert.equal(validateLayout('{{PEER}}/{{SERVERFOLDER}}/{{ALBUM}}').valid, true);
+    assert.match(validateLayout('{{TRACK}}').message, /\{\{SERVERFOLDER\}\}/, 'the refusal lists it');
+    const torrent = pathTemplate.validateForSave('{{SERVERFOLDER}}');
+    assert.equal(torrent.valid, false);
+    assert.equal(torrent.error, 'unknown_variable');
+    assert.doesNotMatch(torrent.message, /Supported:.*SERVERFOLDER/, 'the torrent set does not offer it');
+  });
+
+  test('renderTarget: SERVERFOLDER under the base; a song at the peer root and a download drop it; the path is still checked', () => {
+    const destination = { vpath: 'music', base: 'From friends', layout: '{{SERVERFOLDER}}' };
+    const nested = renderTarget({ destination, tags: { artist: 'X' }, peerName: 'Sam', serverFolder: 'Boukmanflow/Borrowed Tapes', fileName: '01.mp3' });
+    assert.equal(nested.relPath, 'From friends/Boukmanflow/Borrowed Tapes/01.mp3');
+    assert.deepEqual(nested.missingVars, []);
+    const root = renderTarget({ destination, tags: {}, peerName: 'Sam', serverFolder: serverFolderOf('shared/01.mp3'), fileName: '01.mp3' });
+    assert.equal(root.relPath, 'From friends/01.mp3');
+    assert.deepEqual(root.missingVars, ['SERVERFOLDER']);
+    const download = renderTarget({ destination, tags: {}, peerName: null, fileName: 'x.mp3' });
+    assert.equal(download.relPath, 'From friends/x.mp3', 'no server, no server folder');
+    // A layout that is only usable with a folder: validateResolvedPath still
+    // refuses what an empty value leaves (".." here), never writes it.
+    const dotted = { ...destination, base: '', layout: '..{{SERVERFOLDER}}' };
+    assert.equal(validateLayout(dotted.layout).valid, true, 'the sample has a folder');
+    assert.throws(() => renderTarget({ destination: dotted, tags: {}, peerName: 'Sam', serverFolder: '', fileName: 'x.mp3' }), /unusable path: .*\.\. segments/);
+  });
+
+  test('renderTarget: a path past the length cap is refused, not cut — two deep sibling folders never share one cut path, as the mirror refuses them', () => {
+    const deep = ['A', 'B', 'C'].map((c) => c.repeat(170)).join('/');
+    const destination = { vpath: 'music', base: '', layout: '{{SERVERFOLDER}}' };
+    for (const disc of ['Disc 1', 'Disc 2']) {
+      const song = `shared/${deep}/${disc}/01.mp3`;
+      assert.equal(serverFolderOf(song).length, 519);
+      assert.throws(() => renderTarget({ destination, tags: {}, peerName: 'Sam', serverFolder: serverFolderOf(song), fileName: '01.mp3' }),
+        /the layout rendered an unusable path: Resolved path exceeds 500 characters/, disc);
+      const mirror = landingFor({ folder: `shared/${deep}/${disc}`, landing: null, destination });
+      assert.equal(pathTemplate.validateResolvedPath(mirror.dir).error, 'path_too_long', `the mirror of ${disc} refuses the same folders`);
+    }
+    // At the cap it still files, whole.
+    const atCap = `${'x'.repeat(200)}/${'y'.repeat(200)}/${'z'.repeat(98)}`;
+    assert.equal(renderTarget({ destination, tags: {}, peerName: 'Sam', serverFolder: atCap, fileName: '01.mp3' }).relDir, atCap);
+    // Not SERVERFOLDER's alone: long literal text and a long tag are refused the same way.
+    const literal = { ...destination, layout: `${'L'.repeat(400)}/{{ALBUM}}` };
+    assert.equal(validateLayout(literal.layout).valid, true, 'the sample fits');
+    assert.throws(() => renderTarget({ destination: literal, tags: { album: 'a'.repeat(150) }, peerName: 'Sam', fileName: 'x.mp3' }), /exceeds 500 characters/);
+    // A layout whose sample alone passes the cap is refused when saved, not
+    // saved and then refused by every copy (the sample used to be cut first).
+    const pastCap = `${'L'.repeat(480)}/{{ALBUM}}`;
+    assert.equal(validateLayout(pastCap).valid, false);
+    assert.equal(validateLayout(pastCap).error, 'path_too_long');
+    // The torrent settings keep checking a cut sample, as before.
+    assert.equal(pathTemplate.validateForSave(`${'L'.repeat(480)}/{{ALBUM}}`).valid, true);
+    // The torrent pipeline keeps its cut; the whole path is there for a caller that asks.
+    assert.equal(pathTemplate.resolveTemplate('{{SERVERFOLDER}}', { serverfolder: `${deep}/Disc 1` }).path.length, 500);
+    assert.equal(pathTemplate.resolveTemplate('{{SERVERFOLDER}}', { serverfolder: `${deep}/Disc 1` }, { truncate: false }).path, `${deep}/Disc 1`);
+  });
+
+  test('serverFolderOf and the mirror drop the first segment as the peer wrote it, even a leading ".." — never a climb, and the same place for both', () => {
+    // No peer's own listing starts by climbing; one that does keeps its
+    // library's name in the value (the fetch skips the ".."), which the
+    // clients' previews copy (webapp discover-jobs.js serverFolderOf).
+    assert.equal(serverFolderOf('../shared/A/x.mp3'), 'shared/A');
+    assert.equal(serverFolderOf('../../shared/A/x.mp3'), 'shared/A');
+    assert.equal(serverFolderOf('../x.mp3'), '');
+    const destination = { vpath: 'music', base: 'Mirror', layout: '{{SERVERFOLDER}}' };
+    assert.equal(landingFor({ folder: '../shared/A', landing: null, destination }).dir, 'Mirror/shared/A');
+    const t = renderTarget({ destination, tags: {}, peerName: 'Sam', serverFolder: serverFolderOf('../shared/A/x.mp3'), fileName: 'x.mp3' });
+    assert.equal(t.relDir, 'Mirror/shared/A', 'where the mirror lands it');
+    assert.equal(pathTemplate.validateResolvedPath(t.relDir).valid, true);
   });
 });
 
@@ -369,6 +539,38 @@ describe('collection destination · rules', () => {
     assert.equal(normalizeBase('C:/music').error, 'drive_letter');
     assert.equal(normalizeBase('~/music').error, 'home_string');
   });
+
+  test('the destination a client showed is the one in force when library, base (normalised) and layout agree; source is not compared', () => {
+    const effective = { vpath: 'other', base: 'From peers', layout: '{{PEER}}/{{ARTIST}}', source: 'user' };
+    assert.equal(sameDestination({ vpath: 'other', base: 'From peers', layout: '{{PEER}}/{{ARTIST}}' }, effective), true);
+    assert.equal(sameDestination({ vpath: 'other', base: ' From peers/ ', layout: '{{PEER}}/{{ARTIST}}', source: 'default' }, effective), true, 'the base as normalizeBase reads it');
+    assert.equal(sameDestination({ vpath: 'music', base: 'From peers', layout: '{{PEER}}/{{ARTIST}}' }, effective), false, 'another library');
+    assert.equal(sameDestination({ vpath: 'other', base: '', layout: '{{PEER}}/{{ARTIST}}' }, effective), false, 'another base');
+    assert.equal(sameDestination({ vpath: 'other', base: 'From peers', layout: '{{ARTIST}}' }, effective), false, 'another layout');
+    assert.equal(sameDestination({ vpath: 'other', base: '../From peers', layout: '{{PEER}}/{{ARTIST}}' }, effective), false, 'a base that cannot be is no match');
+    assert.equal(sameDestination({ vpath: 'other', layout: '{{ALBUMARTIST}}/{{ALBUM}}' }, { vpath: 'other', base: '', layout: '{{ALBUMARTIST}}/{{ALBUM}}', source: 'default' }), true, 'no base is the root');
+    assert.equal(sameDestination(null, null), true, 'nowhere shown, nowhere in force');
+    assert.equal(sameDestination(null, effective), false);
+    assert.equal(sameDestination(effective, null), false);
+  });
+
+  test('a job lands where it was pinned while the account may still write there; a pin it lost fails, never moves', () => {
+    const pinned = { vpath: 'other', base: 'Pinned/', layout: '{{ARTIST}}/{{ALBUM}}', source: 'user' };
+    assert.deepEqual(destinationForJob(user(), { scope: 'album', destination: pinned }, opts),
+      { vpath: 'other', base: 'Pinned', layout: '{{ARTIST}}/{{ALBUM}}', source: 'user' });
+    assert.deepEqual(destinationForJob(user(), { destination: { vpath: 'music', base: '', layout: '{{ALBUMARTIST}}/{{ALBUM}}', source: 'default' } }, opts),
+      { vpath: 'music', base: '', layout: '{{ALBUMARTIST}}/{{ALBUM}}', source: 'default' }, 'a pinned default stays the default it was');
+    assert.throws(() => destinationForJob(user({ vpaths: ['music'] }), { destination: pinned }, opts), /no longer put files into library 'other'/);
+    assert.throws(() => destinationForJob(user(), { destination: pinned }, { ...opts, noUpload: true }), /no longer put files into library 'other'/);
+    assert.throws(() => destinationForJob(user(), { destination: { ...pinned, layout: '{{TRACK}}' } }, opts), /layout no longer validates/);
+    assert.throws(() => destinationForJob(user(), { destination: { ...pinned, base: '../up' } }, opts), /base folder no longer validates/);
+    // Pinned to nowhere: nowhere still, though the account may write now.
+    assert.equal(destinationForJob(user(), { scope: 'album', destination: null }, opts), null);
+    // Asked for before jobs were pinned: the destination in force when it runs.
+    const inForce = { vpath: 'music', base: '', layout: '{{ALBUMARTIST}}/{{ALBUM}}', source: 'default' };
+    assert.deepEqual(destinationForJob(user({ id: 0 }), { scope: 'album' }, opts), inForce);
+    assert.deepEqual(destinationForJob(user({ id: 0 }), null, opts), inForce);
+  });
 });
 
 describe('collection destination · file name and target', () => {
@@ -387,6 +589,28 @@ describe('collection destination · file name and target', () => {
     assert.deepEqual(tagsForLayout({}, { artist: 'X', album: 'Y', title: 'T', year: 2001 }),
       { artist: 'X', album: 'Y', title: 'T', year: 2001, genre: null, albumartist: null });
     assert.deepEqual(tagsForLayout(null), { artist: null, album: null, title: null, year: null, genre: null, albumartist: null });
+  });
+
+  test('tagsForLayout: {{ALBUMARTIST}} is the file\'s tag, else the album\'s credit the copy knows, else none — then the path template takes the artist', () => {
+    const destination = { vpath: 'music', base: '', layout: DEFAULT_LAYOUT };
+    const at = (common, rec) => renderTarget({ destination, peerName: 'Sam', fileName: 'x.mp3', tags: tagsForLayout(common, rec) }).relDir;
+    const featured = { artist: 'Boukmanflow feat. Ola', album: 'Borrowed Tapes' };
+    // the file's own tag wins over any credit
+    assert.equal(tagsForLayout({ ...featured, albumartist: 'Tape Club' }, { albumArtist: 'Boukmanflow' }).albumartist, 'Tape Club');
+    assert.equal(at({ ...featured, albumartist: 'Tape Club' }, { albumArtist: 'Boukmanflow' }), 'Tape Club/Borrowed Tapes');
+    // no tag: the album's credit — the featured song lands with its album
+    assert.equal(tagsForLayout(featured, { artist: 'Boukmanflow feat. Ola', albumArtist: 'Boukmanflow' }).albumartist, 'Boukmanflow');
+    assert.equal(at(featured, { albumArtist: 'Boukmanflow' }), 'Boukmanflow/Borrowed Tapes');
+    // an untagged compilation: every song under the one credit, whoever performs it
+    assert.deepEqual(['Ana Vey', 'Ben Lusk'].map((artist) => at({ artist, album: 'Tape Swap' }, { albumArtist: 'Various Artists' })), ['Various Artists/Tape Swap', 'Various Artists/Tape Swap']);
+    // neither: none, and the song's own artist names the folder, as before
+    assert.equal(tagsForLayout(featured, { artist: 'Boukmanflow feat. Ola' }).albumartist, null);
+    assert.equal(at(featured, {}), 'Boukmanflow feat. Ola/Borrowed Tapes');
+    assert.equal(tagsForLayout(featured, { albumArtist: null }).albumartist, null);
+    // the other fields are as they were
+    const { albumartist, ...rest } = tagsForLayout(featured, { albumArtist: 'Boukmanflow', title: 'T' });
+    assert.equal(albumartist, 'Boukmanflow');
+    assert.deepEqual(rest, { artist: 'Boukmanflow feat. Ola', album: 'Borrowed Tapes', title: 'T', year: null, genre: null });
   });
 
   test('renderTarget: base + layout per song + file name, forward slashes', () => {
@@ -415,7 +639,15 @@ describe('collection destination · file name and target', () => {
     const bare = renderTarget({ destination: { vpath: 'music', base: '', layout: DEFAULT_LAYOUT }, peerName: 'Sam', fileName: 'x.mp3', tags: {} });
     assert.equal(bare.relDir, '');
     assert.equal(bare.relPath, 'x.mp3');
-    assert.deepEqual(bare.missingVars, ['ARTIST', 'ALBUM']);
+    assert.deepEqual(bare.missingVars, ['ALBUMARTIST', 'ALBUM']);
+
+    // The default is the album's credit (2026-10-19): a compilation's songs
+    // land in one folder, an ordinary album where {{ARTIST}} put it.
+    assert.equal(DEFAULT_LAYOUT, '{{ALBUMARTIST}}/{{ALBUM}}');
+    const comp = renderTarget({ destination: { vpath: 'music', base: '', layout: DEFAULT_LAYOUT }, peerName: 'Sam', fileName: 'x.mp3', tags: { artist: 'Ondine', album: 'Low Tide Sessions', albumartist: 'Various Artists' } });
+    assert.equal(comp.relDir, 'Various Artists/Low Tide Sessions');
+    const own = renderTarget({ destination: { vpath: 'music', base: '', layout: DEFAULT_LAYOUT }, peerName: 'Sam', fileName: 'x.mp3', tags: { artist: 'Nova', album: 'Night Ferry' } });
+    assert.equal(own.relDir, 'Nova/Night Ferry');
   });
 
   test('ALBUMARTIST keeps a compilation together and falls back to ARTIST', () => {
@@ -496,6 +728,9 @@ describe('federation-copy · the artist\'s albums (planArtistAlbums) and the alb
     ] };
     const { plan, skipped } = planArtistAlbums(listing, 'Nova');
     assert.deepEqual(plan.map((a) => [a.name, a.year, a.trackCount]), [['Night Ferry', 2019, 4], ['Second Wind', 2021, 4], ['Split EP', 2019, 4]], 'the primary album artist by normalised name, and a credit outside a compilation');
+    assert.deepEqual(plan.map((a) => a.albumArtist), ['Nova', 'nova', 'Nova & Vosto'], 'each album carries its own credit, as the peer spells it — what its untagged files land under');
+    const split = planArtistAlbums({ albums: [album('Loose Ends', { album_artist: null }), album('Odd', { album_artist: 7 }), album('Blank', { album_artist: '  ' })] }, 'Nova');
+    assert.deepEqual(split.plan.map((a) => [a.name, a.albumArtist]), [['Loose Ends', null], ['Odd', null], ['Blank', null]], 'rows that disagree (null), or anything that is not a name: no credit of its own');
     assert.deepEqual(skipped.map((a) => [a.name, a.why]), [['Various Hits', 'appearance'], ['Hits Comp', 'appearance']]);
     assert.deepEqual(planArtistAlbums({ albums: [] }, 'Nova'), { plan: [], skipped: [] });
     assert.deepEqual(planArtistAlbums(null, 'Nova'), { plan: [], skipped: [] });

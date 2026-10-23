@@ -5,6 +5,7 @@
 //   GET  /api/v1/discovery/plugin-jobs/:id       one job
 //   POST /api/v1/discovery/plugin-jobs/:id/cancel
 //   POST /api/v1/discovery/plugin-jobs/lookup     the caller's newest job per plug-in for one recommendation
+//   POST /api/v1/discovery/plugin-jobs/lookup/batch   the same for up to 100 recommendations, one query
 //   POST /api/v1/discovery/plugin-jobs/clear      drop the caller's finished rows ("Clear finished")
 //
 // Starting a job is gated three times: the plug-in must be on and runnable,
@@ -29,6 +30,14 @@
 // it is live: the second ask answers 200 with the existing job instead of
 // 202 with a new one. When the live job is somebody else's the caller gets a
 // 409 rather than a row they could not read again.
+//
+// An acquire job lands where the account's collection destination says
+// (destination.js), and takes it along: the effective destination is pinned
+// in the job's params when it is asked for, so a queued job never moves
+// when the destination changes before it runs. A client may send the
+// destination it showed; one that is no longer in force answers 409
+// { error: 'destination_changed', destination } with the one that is, and
+// starts nothing — files never land somewhere the client did not show.
 
 import Joi from 'joi';
 import * as plugins from '../discovery-plugins/index.js';
@@ -104,7 +113,8 @@ export function setup(mstream) {
       throw new WebError(`plug-in ${name} does not run jobs — use resolve`, 400);
     }
     checkJobsAccess(req.user);
-    if (plugin.capabilities.includes(plugins.CAPABILITIES.ACQUIRE)) { checkUploadRight(req.user); }
+    const acquires = plugin.capabilities.includes(plugins.CAPABILITIES.ACQUIRE);
+    if (acquires) { checkUploadRight(req.user); }
     // One account's share of the queue (discoveryJobs.maxQueuedPerUser):
     // past it, come back when some have finished. The runner takes turns
     // between accounts besides, so a long queue never holds others' jobs.
@@ -134,8 +144,14 @@ export function setup(mstream) {
         path: Joi.string().allow('').max(500).optional(),
         tags: Joi.boolean().optional(),
       }).optional(),
+      // The collection destination the client showed (the destination
+      // route's `destination`, forwarded as it came — its `source` is not
+      // compared; null when it showed none). An acquire job is refused with
+      // 409 destination_changed when it is no longer the one in force.
+      // Absent = no check. A plug-in that lands nothing ignores it.
+      destination: destinations.destinationSchema.keys({ source: Joi.string().max(20).optional() }).allow(null).optional(),
     });
-    const { value: { recommendation, scope: askedScope, choice, landing: askedLanding } } = joiValidate(schema, req.body);
+    const { value: { recommendation, scope: askedScope, choice, landing: askedLanding, destination: shown } } = joiValidate(schema, req.body);
     const scope = askedScope || plugins.JOB_SCOPES.SONG;
     if (!plugin.scopes.includes(scope)) {
       throw new WebError(`plug-in ${name} has no "${scope}" scope (it has: ${plugin.scopes.join(', ')})`, 400);
@@ -155,14 +171,34 @@ export function setup(mstream) {
       if (scope !== plugins.JOB_SCOPES.FOLDER) { throw new WebError('a landing folder applies to a folder job only', 400); }
       landing = destinations.validateLanding(askedLanding, req.user);
     }
+    const key = plugins.jobKey(recommendation, scope);
     const params = {};
     if (scope !== plugins.JOB_SCOPES.SONG) { params.scope = scope; }
     if (choice) { params.choice = choice; }
     if (landing) { params.landing = landing; }
+    if (acquires) {
+      // Where the job lands, settled now and kept with it (the plug-in
+      // reads it back through destination.js destinationForJob). A client
+      // that showed another place is told the one in force instead — unless
+      // a live job already covers this recommendation: that one answers as
+      // before, with its own pinned destination in its params. A null pin
+      // (nowhere to put a file) is kept too: the job fails rather than land
+      // in a library the account is given while it waits.
+      const destination = destinations.getDestination(req.user);
+      if (shown !== undefined && !destinations.sameDestination(shown, destination) && !jobsDb.liveJob(name, key)) {
+        res.status(409).json({
+          error: 'destination_changed',
+          message: 'your collection destination has changed — check where this will land and ask again',
+          destination,
+        });
+        return;
+      }
+      params.destination = destination;
+    }
     const { job, created } = jobsDb.createJob({
       plugin: name,
       userId: req.user ? req.user.id : null,
-      key: plugins.jobKey(recommendation, scope),
+      key,
       recommendation,
       params: Object.keys(params).length ? params : null,
     });
@@ -187,6 +223,35 @@ export function setup(mstream) {
     const keys = plugins.jobKeysFor(recommendation);
     const jobs = jobsDb.latestForKeys({ userId: req.user ? req.user.id : null, keys: Object.values(keys) });
     res.json({ key: keys.song, keys, jobs });
+  });
+
+  // The same for a page of recommendations at once: the Discover page draws
+  // dozens of rows, and one SELECT beats a round trip per row. Each result
+  // is exactly the single form's answer for its recommendation, in input
+  // order — one latestForKeys over every row's keys, split back by key.
+  // The split is exact because what latestForKeys keeps for a key (the
+  // newest job per plug-in under it) does not depend on the other keys
+  // asked alongside, so a key two rows share (two songs of one album)
+  // answers both with the same job, and filtering the newest-first list
+  // keeps the single form's order. A path of its own rather than a new
+  // body key on the single form: that body is strict, so a client sending
+  // the new key to a server that predates it would get a 400 (clients ask
+  // here only when ping advertises discoveryTaste). The cap bounds the IN
+  // list: 100 rows × 5 scopes + the user id stays under SQLite's oldest
+  // 999-variable limit.
+  mstream.post('/api/v1/discovery/plugin-jobs/lookup/batch', (req, res) => {
+    const schema = Joi.object({
+      recommendations: Joi.array().items(plugins.recommendationSchema).min(1).max(100).required(),
+    });
+    const { value: { recommendations } } = joiValidate(schema, req.body);
+    const keysPer = recommendations.map((recommendation) => plugins.jobKeysFor(recommendation));
+    const allKeys = [...new Set(keysPer.flatMap((keys) => Object.values(keys)))];
+    const jobs = jobsDb.latestForKeys({ userId: req.user ? req.user.id : null, keys: allKeys });
+    const results = keysPer.map((keys) => {
+      const own = new Set(Object.values(keys));
+      return { key: keys.song, keys, jobs: jobs.filter((job) => own.has(job.key)) };
+    });
+    res.json({ results });
   });
 
   mstream.post('/api/v1/discovery/plugin-jobs/clear', (req, res) => {

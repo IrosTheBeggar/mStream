@@ -6,13 +6,22 @@
 //
 // A destination is a LIBRARY the user may upload to, a BASE FOLDER inside it
 // ('' = the root) and a LAYOUT rendered from the song's tags by the torrent
-// path-template engine ({{ARTIST}}/{{ALBUM}}, plus {{PEER}} for the server a
-// copy came from — empty, so dropped, for anything else). Unset means the
+// path-template engine ({{ALBUMARTIST}}/{{ALBUM}}, plus {{PEER}} for the server a
+// copy came from and {{SERVERFOLDER}} for the folders the song sits in there
+// — empty, so dropped, for anything else). Unset means the
 // library default: the library's admin Path Template when one exists, else
-// {{ARTIST}}/{{ALBUM}} at the root. The file keeps its name.
+// {{ALBUMARTIST}}/{{ALBUM}} at the root — the album's credit, which falls back
+// to the song's artist, so a compilation lands in ONE folder ("Various
+// Artists/…") and every other album exactly where {{ARTIST}}/{{ALBUM}} put it
+// (2026-10-19). The credit is the file's tag, else the one the copy or the
+// download knows for the album (tagsForLayout), so a song without the tag
+// lands with its album too (2026-10-22). The file keeps its name.
 //
 // Stored per user in user_settings (namespace below). In public mode the
-// anonymous account keeps the one shared setting.
+// anonymous account keeps the one shared setting. A job takes the effective
+// destination with it when it is asked for (the job route pins it in the
+// job's params; destinationForJob reads it back), so changing the setting
+// moves only the jobs asked for after.
 
 import Joi from 'joi';
 import * as config from '../state/config.js';
@@ -23,10 +32,12 @@ import WebError from '../util/web-error.js';
 
 export const NAMESPACE = 'discovery:collection';
 export const KEY = 'destination';
-export const DEFAULT_LAYOUT = '{{ARTIST}}/{{ALBUM}}';
-export const LAYOUT_VARS = Object.freeze([...pathTemplate.SUPPORTED_VARS, pathTemplate.EXTRA_VARS.PEER]);
-const EXTRA_VARS = [pathTemplate.EXTRA_VARS.PEER];
-const SAMPLE = Object.freeze({ ...pathTemplate.SAMPLE_METADATA, peer: "Sam's server" });
+export const DEFAULT_LAYOUT = '{{ALBUMARTIST}}/{{ALBUM}}';
+const EXTRA_VARS = [pathTemplate.EXTRA_VARS.PEER, pathTemplate.EXTRA_VARS.SERVERFOLDER];
+export const LAYOUT_VARS = Object.freeze([...pathTemplate.SUPPORTED_VARS, ...EXTRA_VARS]);
+// SERVERFOLDER's sample is two folders, as a song in a peer's library
+// usually sits, so a layout of just {{SERVERFOLDER}} validates.
+const SAMPLE = Object.freeze({ ...pathTemplate.SAMPLE_METADATA, peer: "Sam's server", serverfolder: 'Pink Floyd/The Dark Side of the Moon' });
 
 export const destinationSchema = Joi.object({
   vpath: Joi.string().min(1).max(200).required(),
@@ -69,8 +80,11 @@ export function writableLibraries(user, { libraries, noUpload } = {}) {
     .map((lib) => ({ vpath: lib.name, template: lib.torrent_path_template || null }));
 }
 
+// The sample is checked whole: renderTarget refuses a path past the cap,
+// so a layout whose sample alone passes it would save and then fail every
+// copy.
 export function validateLayout(layout) {
-  return pathTemplate.validateForSave(layout, { extraVars: EXTRA_VARS, sampleMetadata: SAMPLE });
+  return pathTemplate.validateForSave(layout, { extraVars: EXTRA_VARS, sampleMetadata: SAMPLE, truncate: false });
 }
 
 // A base folder is a relative path inside the library ('' = the root),
@@ -114,9 +128,21 @@ export function validateDestination(value, user) {
   return { vpath: value.vpath, base: base.base, layout: value.layout, source: 'request' };
 }
 
+// Whether a destination a client showed is the one in force (the job
+// route's check, so files never land somewhere the client did not show):
+// the same library, the same base folder as normalizeBase reads it ('From
+// peers/' is 'From peers') and the same layout, character for character.
+// `source` is not compared. null matches only null.
+export function sameDestination(shown, effective) {
+  if (!shown || !effective) { return !shown && !effective; }
+  const a = normalizeBase(shown.base);
+  const b = normalizeBase(effective.base);
+  return shown.vpath === effective.vpath && a.valid && b.valid && a.base === b.base && shown.layout === effective.layout;
+}
+
 // Where a FOLDER job lands, as the caller chose it (the job route's
 // `landing`, kept in the job's params): a library the caller may write to
-// (absent = the destination's, read when the job runs) and a folder inside
+// (absent = the destination's, pinned with the job) and a folder inside
 // it under the base folder's rules, or `tags: true` for the layout like any
 // other copy. Null when the choice is empty — the folder then lands as it
 // is on the peer (plugins/federation-copy.js landingFor). Throws a 400.
@@ -144,6 +170,30 @@ function savedFor(user) {
 
 export function getDestination(user) {
   return destinationFor(user, savedFor(user));
+}
+
+// Where a job's files go: the destination pinned in its params when it was
+// asked for (the job route pins the effective one), so a queued job never
+// moves when the account's destination changes before it runs. The pin is
+// held to the account's rights as they are now: a library the account can
+// no longer write to, or a base or layout that no longer validates, fails
+// the job (throws) rather than sending it somewhere else. A job asked for
+// when there was nowhere (pinned null) has nowhere still, whatever library
+// the account was given since. A job queued before jobs were pinned (no
+// params.destination) takes the account's effective destination, as it
+// always did — null when there is nowhere.
+export function destinationForJob(user, params, opts = {}) {
+  if (params && params.destination === null) { return null; }
+  const pinned = params && params.destination;
+  if (!pinned || typeof pinned !== 'object') { return destinationFor(user, savedFor(user), opts); }
+  if (!writableLibraries(user, opts).some((l) => l.vpath === pinned.vpath)) {
+    throw new Error(`the account may no longer put files into library '${pinned.vpath}', where this job was asked to land`);
+  }
+  const base = normalizeBase(pinned.base);
+  if (!base.valid) { throw new Error(`the destination's base folder no longer validates: ${base.message}`); }
+  const layout = validateLayout(pinned.layout);
+  if (!layout.valid) { throw new Error(`the destination's layout no longer validates: ${layout.message}`); }
+  return { vpath: pinned.vpath, base: base.base, layout: pinned.layout, source: pinned.source || 'user' };
 }
 
 // What a client needs to draw the destination bar and the picker.
@@ -191,7 +241,13 @@ export function safeFileName(filePath) {
 }
 
 // The tags a layout renders from: the file's own, the recommendation's
-// where the file has none.
+// where the file has none. {{ALBUMARTIST}} is the file's albumartist tag,
+// else the album's credit the caller knows (`rec.albumArtist`: a row's, the
+// credit an album copy listed the album by, an artist copy's album's own),
+// else none — and the path template then takes the file's artist. A file
+// without the tag (common on peers) so lands with its album: a featured
+// song ("X feat. Y") and an untagged compilation's songs, each by its own
+// artist, under the album's one credit (2026-10-22).
 export function tagsForLayout(common, rec = {}) {
   const c = common || {};
   const first = (v) => (Array.isArray(v) ? v[0] : v);
@@ -201,17 +257,22 @@ export function tagsForLayout(common, rec = {}) {
     title: (c.title && String(c.title)) || rec.title || null,
     year: c.year || rec.year || null,
     genre: first(c.genre) ? String(first(c.genre)) : null,
-    albumartist: c.albumartist ? String(c.albumartist) : null,
+    albumartist: (c.albumartist && String(c.albumartist)) || rec.albumArtist || null,
   };
 }
 
 // Where one song goes: base folder + rendered layout + file name, relative
-// to the library root, forward slashes.
-export function renderTarget({ destination, tags, peerName, fileName }) {
+// to the library root, forward slashes. `serverFolder` is {{SERVERFOLDER}}:
+// the folders the song sits in on the server it came from (a copy's
+// federation-copy.js serverFolderOf; none for a download). Rendered whole,
+// never cut: a path past the engine's cap is refused (path_too_long), as a
+// folder copy's mirror of the same folders is, rather than filed under a
+// name cut mid-folder that a second song could share.
+export function renderTarget({ destination, tags, peerName, serverFolder = null, fileName }) {
   const { path: rendered, missingVars } = pathTemplate.resolveTemplate(destination.layout, {
     artist: tags.artist, album: tags.album, year: tags.year, genre: tags.genre,
-    albumartist: tags.albumartist, peer: peerName,
-  });
+    albumartist: tags.albumartist, peer: peerName, serverfolder: serverFolder,
+  }, { truncate: false });
   if (rendered) {
     const check = pathTemplate.validateResolvedPath(rendered);
     if (!check.valid) { throw new Error(`the layout rendered an unusable path: ${check.message}`); }

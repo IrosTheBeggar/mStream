@@ -46,8 +46,13 @@ export function norm(s) {
 //     processes, so bulk library changes land here);
 //   * discovery index_epoch/row_seq — moves when the discovery dataset
 //     advanced (new MBIDs from the AcoustID pass);
-//   * a short TTL — catches writes made on THIS connection (ytdl inserts,
-//     admin library deletes), which data_version deliberately ignores.
+//   * invalidateIdentityCache() — called by the writes made on THIS
+//     connection that add or remove a song (db/insert-downloaded-track.js:
+//     ytdl downloads, the plug-ins' copies and downloads), which
+//     data_version deliberately ignores, so a song just kept from Discover
+//     leaves the very next answer;
+//   * a short TTL — catches the other writes on this connection (admin
+//     library deletes).
 // Staleness within the TTL only affects an exclusion filter: a result that
 // should be hidden shows (or vice versa) for under a minute — harmless
 // against 130 ms × every request.
@@ -96,7 +101,9 @@ export function localIdentitySets() {
   return sets;
 }
 
-// Test hook: force the next localIdentitySets() call to rebuild.
+// Force the next localIdentitySets() call to rebuild: a song was added to or
+// removed from the library on this connection (insert-downloaded-track.js),
+// and tests.
 export function invalidateIdentityCache() { identityCache = null; }
 
 // One candidate through the chain. `similarityVsSeed` is the candidate's

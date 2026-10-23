@@ -222,7 +222,7 @@ components:
       properties:
         vpath: { type: string, description: "A library the caller may upload to.", example: Music }
         base: { type: string, description: 'A relative folder inside the library; "" = its root.', example: From peers }
-        layout: { type: string, description: 'Torrent path-template syntax; see `variables` in the view.', example: "{{ARTIST}}/{{ALBUM}}" }
+        layout: { type: string, description: 'Torrent path-template syntax; see `variables` in the view.', example: "{{ALBUMARTIST}}/{{ALBUM}}" }
     DiscoveryCollectionDestinationView:
       type: object
       properties:
@@ -248,11 +248,11 @@ components:
             properties:
               vpath: { type: string }
               template: { type: string, nullable: true }
-        defaultLayout: { type: string, example: "{{ARTIST}}/{{ALBUM}}" }
+        defaultLayout: { type: string, example: "{{ALBUMARTIST}}/{{ALBUM}}" }
         variables:
           type: array
           items: { type: string }
-          example: [ARTIST, ALBUM, YEAR, GENRE, ALBUMARTIST, PEER]
+          example: [ARTIST, ALBUM, YEAR, GENRE, ALBUMARTIST, PEER, SERVERFOLDER]
     DiscoveryPluginAdminRow:
       type: object
       description: A registered discovery plug-in as the admin panel sees it (on or off).
@@ -316,7 +316,7 @@ components:
         userId: { type: integer, nullable: true, description: "Who asked; null in public mode or after the user was deleted." }
         key: { type: string, description: "The recommendation's persistence key (mbid:… or text:…)." }
         recommendation: { type: object, description: The normalised recommendation the job was started with. }
-        params: { type: object, nullable: true, description: "What the job was started with beyond the recommendation: `scope` (`album`, `artist`, `artist-missing` or `folder` — absent for a song job), `choice: { url }` when the caller picked an upload from the plug-in's lookup, and `landing` (`{ vpath, path }` or `{ tags: true }`) when a folder job was given a place of its own; null when none." }
+        params: { type: object, nullable: true, description: "What the job was started with beyond the recommendation: `scope` (`album`, `artist`, `artist-missing` or `folder` — absent for a song job), `choice: { url }` when the caller picked an upload from the plug-in's lookup, `landing` (`{ vpath, path }` or `{ tags: true }`) when a folder job was given a place of its own, and — for an acquire job — `destination` (`{ vpath, base, layout, source }`): the caller's collection destination as it was when the job was asked for, where the job lands whatever the destination says by the time it runs (absent on jobs asked for before 2026-10-21, which land in the destination in force when they run; `null` when the caller had nowhere to put a file — such a job fails rather than land in a library given since); null when none." }
         state: { type: string, enum: [queued, running, done, failed, cancelled] }
         progress: { type: number, nullable: true, minimum: 0, maximum: 1 }
         statusText: { type: string, nullable: true, description: "The plug-in's own progress line." }
@@ -699,6 +699,329 @@ components:
           nullable: true
           description: Total seconds, same aggregate basis as `track_count`.
 
+    DiscoverySimilarTrack:
+      type: object
+      description: >
+        One local similar-track row: the standard `{filepath, metadata}`
+        envelope (queues without translation) plus the match facts.
+      properties:
+        filepath: { type: string, description: "vpath-form path in one of the caller's own libraries." }
+        similarity: { type: number, description: "Cosine vs the seed, 4 decimals." }
+        metadata: { $ref: "#/components/schemas/MetadataLite" }
+        genreTags:
+          type: array
+          nullable: true
+          items: { type: string }
+          description: >
+            The embedding model's style predictions — not the file's genre
+            tags, which ride in `metadata.genres`.
+    DiscoveryP2pLead:
+      type: object
+      description: >
+        A song on a fetched discovery-network snapshot that this library
+        does not have: metadata only — the network shares knowledge about
+        music, never the music. Send it on (with `source: p2p`) to the
+        plug-in routes as a recommendation.
+      properties:
+        artist: { type: string, nullable: true }
+        title: { type: string, nullable: true }
+        album: { type: string, nullable: true, description: "Null from snapshots that predate the catalogue columns or untagged files." }
+        year: { type: integer, nullable: true }
+        isrc: { type: string, nullable: true }
+        releaseGroupMbid: { type: string, nullable: true }
+        duration: { type: number, nullable: true }
+        similarity: { type: number, description: "Cosine vs the query vector (unrounded)." }
+        recordingMbid: { type: string, nullable: true }
+        exportId: { type: string, description: "The row's id inside the peer's snapshot." }
+        peer:
+          type: object
+          properties:
+            endpointId: { type: string }
+            name: { type: string, nullable: true }
+    DiscoveryFederationLead:
+      type: object
+      description: >
+        A song on a paired (federated) server that this library does not
+        have — streamable through
+        `GET /api/v1/federation/peers/{id}/stream/{filepath}`.
+      properties:
+        artist: { type: string, nullable: true }
+        title: { type: string, nullable: true }
+        album: { type: string, nullable: true }
+        albumArtist:
+          type: string
+          nullable: true
+          description: >
+            The album's own credit on the peer, apart from the track's artist
+            — "Various Artists" on a compilation; the album's primary artist
+            when it has no ALBUMARTIST tag (what the peer's `/db/albums`
+            lists as `album_artist`). Plain text of at most 512 characters,
+            else null; null without an album, from a peer before 2026-10-19,
+            and for an untagged file. An album job started from the row
+            copies the album as this credit holds it — a compilation whole —
+            and every row of the album keys that one job.
+        year: { type: integer, nullable: true }
+        isrc: { type: string, nullable: true }
+        releaseGroupMbid: { type: string, nullable: true }
+        duration: { type: number, nullable: true }
+        similarity: { type: number, description: "The peer's cosine vs the query vector, 4 decimals, within [-1, 1]. A row the peer sent without a numeric one is left out." }
+        albumArt:
+          type: string
+          nullable: true
+          description: >
+            The track's cover on the PEER — the file name its own browse rows
+            carry as `metadata['album-art']` and its `/album-art/{file}` serves.
+            Fetch it through `GET /api/v1/federation/peers/{id}/art/{albumArt}`
+            with the name URL-encoded (`encodeURIComponent`) as that one path
+            segment (`?compress=s` for a thumbnail); an album of these rows
+            takes its first row's. Null when the track has no cover, the peer
+            runs an older server, or the peer sent a name its `/album-art/`
+            could not serve (only `^[a-zA-Z0-9_-]{1,100}\.[a-zA-Z0-9]{1,7}$`
+            passes).
+        genreTags:
+          type: array
+          nullable: true
+          maxItems: 10
+          items: { type: string, maxLength: 64 }
+          description: >
+            The peer model's style predictions (`Electronic---Techno`): at
+            most 10 trimmed strings of at most 64 characters, the rest of
+            what the peer sent left out; null when it sent none, or nothing
+            of that shape.
+        recordingMbid: { type: string, nullable: true }
+        filepath: { type: string, description: "The PEER's vpath-form path — what its stream proxy plays. Never a local path." }
+        peer:
+          type: object
+          properties:
+            id: { type: integer, description: "The federation_peers row id on THIS server." }
+            name: { type: string }
+    TasteRequest:
+      type: object
+      description: >
+        Every key optional. Nothing is stored between calls: each call is
+        answered from this body alone. Unknown keys answer 400.
+      properties:
+        window:
+          type: integer
+          enum: [7, 30, 90, 0]
+          default: 30
+          description: "Days of history the seeds are drawn from; 0 = all time."
+        pin:
+          type: array
+          maxItems: 12
+          items: { type: string, maxLength: 2048 }
+          description: >
+            vpath-form paths that seed this call first (now playing first,
+            then songs the user picked). Explicit choices: they seed whatever
+            the history says and override an exclusion. Count toward
+            `limit.seeds`. Unknown and forbidden paths are dropped silently
+            and counted in `dropped`. Never persisted.
+        exclude:
+          type: array
+          maxItems: 200
+          items: { type: string, maxLength: 128 }
+          default: []
+          description: >
+            Seed hashes (`seeds[].hash`) to leave out of THIS call — out of
+            the pool the seed batch is drawn from, and never recommended
+            back in `library`, like a seed; with nothing counted it keeps
+            these songs from being the random pick. A pin overrides it.
+            Never stored: the next call starts from the whole pool again.
+        sources:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [library, network, peers] }
+          default: [library, network, peers]
+          description: >
+            Clients SHOULD ask for `peers` in a separate call
+            (`[library, network]` + `[peers]`): the peers fan-out can take a
+            peer's whole 4 s deadline. Each call draws its own random seed
+            batch, so a client that shows the seeds sends the peers call
+            once the first answer lands, with `pin` = every seed path of
+            that answer (at most 12, the seed cap) and `limit.seeds` =
+            their count — the peers
+            centroid is then the batch on screen. A random-seed answer
+            (`seedSource: random`) gets no peers call (the server would
+            ask no peer).
+        limit:
+          type: object
+          properties:
+            seeds: { type: integer, minimum: 1, maximum: 12, default: 12 }
+            tracks: { type: integer, minimum: 0, maximum: 50, default: 24 }
+            albums: { type: integer, minimum: 0, maximum: 24, default: 8 }
+            network: { type: integer, minimum: 0, maximum: 50, default: 12 }
+            peers: { type: integer, minimum: 0, maximum: 25, default: 12, description: "Per peer." }
+        newArtistsOnly:
+          type: boolean
+          default: false
+          description: Network and peers also drop artists the library already has (a client-local pref, sent per call).
+        ignoreVPaths:
+          type: array
+          maxItems: 100
+          items: { type: string, maxLength: 256 }
+          description: Libraries (by name) to leave out of seeds and library results.
+    TasteSeed:
+      type: object
+      properties:
+        hash: { type: string, description: "The song's canonical content hash — what `exclude` takes." }
+        filepath: { type: string }
+        metadata: { $ref: "#/components/schemas/MetadataLite" }
+        outcome:
+          type: string
+          nullable: true
+          enum: [completed, stopped, null]
+          description: "History seeds: `completed` (finished) or `stopped` (listened to past half). Null for pins, counter and random seeds."
+        lastPlayed: { type: string, format: date-time, nullable: true, description: "History seeds: the newest seeding play in the window." }
+        plays:
+          type: integer
+          nullable: true
+          description: "History seeds: seeding plays in the window. Counter seeds and pins: the play count. Null for a random seed."
+        pinned: { type: boolean }
+        analyzed:
+          type: boolean
+          description: False when the analysis worker has no vector for the song yet (it is listed, not used).
+    TasteLibraryTrack:
+      allOf:
+        - { $ref: "#/components/schemas/DiscoverySimilarTrack" }
+        - type: object
+          properties:
+            similarity: { type: number, description: "Cosine vs the row's own seed (`seedHash`), 4 decimals." }
+            seedHash: { type: string, nullable: true, description: "The seed this row is \"because of\" (`seeds[].hash`)." }
+            playCount: { type: integer, description: "The caller's play count; 0 = never played." }
+            lastPlayed: { type: string, format: date-time, nullable: true }
+    TasteAlbum:
+      allOf:
+        - { $ref: "#/components/schemas/Album" }
+        - type: object
+          properties:
+            similarity: { type: number, description: "Its best matched track's similarity." }
+            seedHash: { type: string, nullable: true }
+            scopedTracks: { type: integer, description: "Tracks of the card in the caller's libraries (`track_count` keeps its all-libraries meaning)." }
+            playedTracks: { type: integer, description: "Of those, the ones the caller has played." }
+            lastPlayed: { type: string, format: date-time, nullable: true }
+            tracks:
+              type: array
+              items: { type: string }
+              description: "The card's matched songs (vpath-form paths), best first — left out of `library.tracks`."
+    TastePeerGroup:
+      type: object
+      description: One paired server's outcome for this call.
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        reachable: { type: boolean, description: "The peer answered within its 4 s deadline in THIS call (a model mismatch counts as an answer). A peer whose dial failed twice in a row (that deadline missed, or its handshake refused) is not dialed again for 60 s, doubling up to 10 min while it keeps failing, and is false at once meanwhile; an answer, or the admin's successful test-connection, resets it. A failure while this server's own federation endpoint is not running (not yet bound at boot, or stopped for a reboot) does not count. An answer that is not OK, not JSON, over 1 MB, or sent compressed (it is asked for uncompressed) answers nothing and reads false too, but it is no failed dial." }
+        mismatched: { type: boolean, description: "The peer's embeddings are another model's space; it answered nothing." }
+        lastSeen:
+          type: string
+          format: date-time
+          nullable: true
+          description: "When reachable, this answer's time; otherwise the stored last contact (may be stale), or null."
+        results:
+          type: array
+          items:
+            allOf:
+              - { $ref: "#/components/schemas/DiscoveryFederationLead" }
+              - type: object
+                properties:
+                  source: { type: string, enum: [federation] }
+                  seedHash: { type: string, nullable: true, description: "Always null: the fan-out asks with the centroid." }
+    TasteResponse:
+      type: object
+      properties:
+        window: { type: integer, description: "The window the seeds were drawn from (0 after widening)." }
+        widenedFrom:
+          type: integer
+          nullable: true
+          description: "The requested window, when it held nothing and the seeds widened to all time."
+        seedSource:
+          type: string
+          enum: [history, counters, random, pinned]
+          description: >
+            `history` = a random batch of play events' songs; `counters` =
+            per-track counters (an install whose log is empty for reasons
+            other than a history reset); `pinned` = only pins seed; `random`
+            = nothing counted at all — one analyzed track from the caller's
+            own libraries, drawn fresh on every call (a client's "another
+            pick" re-asks with the picks it showed in `exclude`).
+        fallback: { type: boolean, description: "True with a random seed." }
+        seeds:
+          type: array
+          description: Pins first, in the order sent, then the drawn seeds in draw order (random).
+          items: { $ref: "#/components/schemas/TasteSeed" }
+        excluded:
+          type: array
+          description: The hashes this call was asked to leave out (`exclude`) that resolve to a track the caller can see — so a client can offer them back within the visit.
+          items:
+            type: object
+            properties:
+              hash: { type: string }
+              filepath: { type: string }
+              metadata: { $ref: "#/components/schemas/MetadataLite" }
+        dropped: { type: integer, description: "Pins that did not resolve (unknown and forbidden alike)." }
+        notAnalyzed:
+          type: boolean
+          description: "The scan is pending: no seed has a vector yet. Seeds are listed; there are no results."
+        model:
+          type: object
+          properties:
+            id: { type: string }
+            version: { type: string, nullable: true }
+        library:
+          type: object
+          nullable: true
+          description: >
+            Null when not asked for. Songs and albums the caller has not
+            played lately: never played, or last played more than 90 days
+            ago — a fixed rule. Songs skipped and never finished and songs
+            rated 2 stars or less are left out too.
+          properties:
+            tracks:
+              type: array
+              items: { $ref: "#/components/schemas/TasteLibraryTrack" }
+            albums:
+              type: array
+              items: { $ref: "#/components/schemas/TasteAlbum" }
+            capped: { type: boolean, description: "The walk hit its consideration budget before filling `tracks`." }
+        network:
+          type: object
+          nullable: true
+          description: >
+            Null when not asked for, when `discoveryP2p` is off, or with a
+            random seed. Asked for and empty (`results: []`) otherwise —
+            including while no seed is analyzed yet (`notAnalyzed`).
+          properties:
+            results:
+              type: array
+              items:
+                allOf:
+                  - { $ref: "#/components/schemas/DiscoveryP2pLead" }
+                  - type: object
+                    properties:
+                      source: { type: string, enum: [p2p] }
+                      seedHash: { type: string, nullable: true, description: "The seed this lead sits closest to." }
+            searched:
+              type: object
+              properties:
+                peers: { type: integer }
+                tracks: { type: integer }
+        peers:
+          type: object
+          nullable: true
+          description: >
+            Null when not asked for, when the caller's `federationDiscovery`
+            is off, or with a random seed. Asked for and empty (`peers: []`)
+            otherwise — including while no seed is analyzed yet
+            (`notAnalyzed`).
+          properties:
+            peers:
+              type: array
+              items: { $ref: "#/components/schemas/TastePeerGroup" }
+            searched:
+              type: object
+              properties:
+                peers: { type: integer, description: "Peers that answered in the query's model space." }
+                unreachable: { type: integer }
+                mismatched: { type: integer }
     Library:
       type: object
       properties:
@@ -1290,6 +1613,16 @@ paths:
                           recommendation rows have actions to offer —
                           `GET /api/v1/discovery/plugins` lists them. A flag,
                           never a probe.
+                      discoveryTaste:
+                        type: integer
+                        description: >
+                          The Discover page generation: this server answers
+                          `POST /api/v1/discovery/taste` and
+                          `POST /api/v1/discovery/plugin-jobs/lookup/batch`.
+                          An integer like `stats` — a later body key ships as
+                          2. A version fact: show the page on `discovery ===
+                          true && discoveryTaste >= 1`; absent on older
+                          servers.
                       discoveryOwned:
                         type: boolean
                         description: >
@@ -1377,6 +1710,7 @@ paths:
                   discoveryP2p: false
                   discoveryPlugins: true
                   discoveryOwned: true
+                  discoveryTaste: 1
                   sync: true
                   transcode: false
                   supportedAudioFiles: { mp3: true, flac: true }
@@ -1434,6 +1768,12 @@ paths:
                   noMkdir: { type: boolean }
                   noUpload: { type: boolean }
                   noFileModify: { type: boolean }
+                  discoveryTaste:
+                    type: integer
+                    description: >
+                      The Discover page generation — the same fact as
+                      `features.discoveryTaste` on `GET /api`. Absent on
+                      older servers.
                   supportedAudioFiles:
                     type: object
                     additionalProperties: { type: boolean }
@@ -2366,6 +2706,390 @@ paths:
         "403": { description: "Discovery is disabled on this server (or nothing has been embedded yet)." }
         "404": { description: "A path does not resolve in the caller's libraries (uniform)." }
 
+  /api/v1/discovery/local/similar/tracks:
+    post:
+      tags: [Discovery]
+      summary: Songs in your library that sound like one song
+      description: |
+        Ranks the caller's own analyzed tracks by cosine similarity to the
+        seed's embedding (the in-memory index), one result per canonical
+        audio, each resolved to a file THIS caller can open. The seed itself
+        never comes back. `excludeSameArtist` / `excludeSameAlbum` /
+        `bpmRange` filter on the live library rows after ranking.
+
+        A seed that resolves but has no vector yet answers `notAnalyzed:
+        true` with no results — a transient state, not an error. The walk
+        is bounded (`max(limit × 50, 2000)` candidates); `capped: true` says
+        it stopped there short of `limit`, so a client can tell "the pool
+        ran dry" from "we stopped looking". Feature flag: `discovery`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filePath]
+              properties:
+                filePath: { type: string, description: "The seed (vpath form) in one of the caller's libraries." }
+                limit: { type: integer, minimum: 1, maximum: 100, default: 10 }
+                excludeSameArtist: { type: boolean, default: false }
+                excludeSameAlbum: { type: boolean, default: false }
+                bpmRange:
+                  type: array
+                  minItems: 2
+                  maxItems: 2
+                  items: { type: number, minimum: 0, maximum: 1000 }
+                  description: "[min, max] on the tracks' live BPM; rows without a BPM are dropped."
+      responses:
+        "200":
+          description: The ranking (or the notAnalyzed answer).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  seed:
+                    type: object
+                    properties:
+                      filepath: { type: string }
+                      metadata: { $ref: "#/components/schemas/MetadataLite" }
+                      genreTags: { type: array, nullable: true, items: { type: string } }
+                  model:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      version: { type: string, nullable: true }
+                  notAnalyzed: { type: boolean }
+                  capped: { type: boolean, description: "Absent on the notAnalyzed answer." }
+                  results:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscoverySimilarTrack" }
+        "400": { description: "Request validation failed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Discovery is disabled on this server (or its index is unavailable)." }
+        "404": { description: "The seed does not resolve in the caller's libraries (uniform: unknown and forbidden alike)." }
+
+  /api/v1/discovery/local/similar/artists:
+    post:
+      tags: [Discovery]
+      summary: Artists in your library that sound like one artist
+      description: |
+        Ranks artists by the cosine between their centroids (the mean of
+        their analyzed tracks' vectors), keyed by the artist's normalized
+        name — any spelling a client holds works. Each result carries up to
+        two `entryPoints`: that artist's visible tracks closest to the SEED
+        artist's sound, ready to queue. 404 when the caller can see no track
+        of the seed artist; `notAnalyzed: true` when none of them has a
+        vector yet. Same bounded walk and `capped` flag as the tracks route.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [artist]
+              properties:
+                artist: { type: string }
+                limit: { type: integer, minimum: 1, maximum: 100, default: 10 }
+      responses:
+        "200":
+          description: The ranking (or the notAnalyzed answer).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  seed:
+                    type: object
+                    properties:
+                      artist: { type: string, description: "The library's spelling." }
+                      trackCount: { type: integer, description: "The seed artist's tracks visible to the caller." }
+                      analyzedCount: { type: integer }
+                      genreTags: { type: array, nullable: true, items: { type: string } }
+                  model:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      version: { type: string, nullable: true }
+                  notAnalyzed: { type: boolean }
+                  capped: { type: boolean }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        artist: { type: string }
+                        similarity: { type: number, description: "Centroid cosine, 4 decimals." }
+                        analyzedCount: { type: integer }
+                        genreTags: { type: array, nullable: true, items: { type: string } }
+                        entryPoints:
+                          type: array
+                          maxItems: 2
+                          items:
+                            type: object
+                            properties:
+                              filepath: { type: string }
+                              metadata: { $ref: "#/components/schemas/MetadataLite" }
+        "400": { description: "Request validation failed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Discovery is disabled on this server." }
+        "404": { description: "No track of that artist is visible to the caller." }
+
+  /api/v1/discovery/local/path:
+    post:
+      tags: [Discovery]
+      summary: A smooth journey between two songs
+      description: |
+        `length − 2` waypoints evenly spaced along the great-circle arc
+        between the two seeds' embeddings, each snapped to the nearest track
+        the caller can see; `length` counts the TOTAL rows including both
+        seeds. May come back shorter on a small or mostly invisible library,
+        never an error. Rows carry `t` (the arc position, 0–1) and
+        `similarity` vs their own waypoint. `notAnalyzed` says which end has
+        no vector yet. Feature flag: `discoveryPath` (ping).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [startFilePath, endFilePath]
+              properties:
+                startFilePath: { type: string }
+                endFilePath: { type: string }
+                length: { type: integer, minimum: 4, maximum: 32, default: 14 }
+      responses:
+        "200":
+          description: The journey, start and end included.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  start: { type: object, description: "{ filepath, metadata (lite), genreTags }" }
+                  end: { type: object, description: "{ filepath, metadata (lite), genreTags }" }
+                  model:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      version: { type: string, nullable: true }
+                  notAnalyzed:
+                    type: object
+                    properties:
+                      start: { type: boolean }
+                      end: { type: boolean }
+                  results:
+                    type: array
+                    items:
+                      allOf:
+                        - { $ref: "#/components/schemas/DiscoverySimilarTrack" }
+                        - type: object
+                          properties:
+                            t: { type: number, description: "Arc position, 0 (start) to 1 (end), 4 decimals." }
+        "400": { description: "Request validation failed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Discovery is disabled on this server." }
+        "404": { description: "An end does not resolve in the caller's libraries (uniform)." }
+
+  /api/v1/discovery/p2p/similar:
+    post:
+      tags: [Discovery]
+      summary: Songs on the discovery network that sound like one of yours
+      description: |
+        Searches the LOCAL copies of fetched peer snapshots (the shelf) —
+        no query ever leaves this machine — for rows that sound like the
+        seed and that this library does not have: the novelty chain drops
+        near-duplicates of the seed (cosine ≥ 0.99), MBIDs and artist+title
+        pairs the library owns, and with `newArtistsOnly` every artist it
+        knows. One pass per held snapshot in the seed's model space. Rows
+        are metadata only. Feature flag: `discoveryP2p`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filePath]
+              properties:
+                filePath: { type: string, description: "The local seed (vpath form)." }
+                limit: { type: integer, minimum: 1, maximum: 100, default: 25 }
+                newArtistsOnly: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Leads, best first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  query:
+                    type: object
+                    properties:
+                      filePath: { type: string }
+                      modelId: { type: string }
+                      newArtistsOnly: { type: boolean }
+                  searched:
+                    type: object
+                    properties:
+                      peers: { type: integer, description: "Snapshots with rows in the seed's model space." }
+                      tracks: { type: integer }
+                  results:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscoveryP2pLead" }
+        "400": { description: "Request validation failed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The discovery network is disabled (`discoveryP2p.enabled`)." }
+        "404": { description: "The seed does not resolve, has no embedding yet, or discovery data was never collected." }
+
+  /api/v1/discovery/federation/similar:
+    post:
+      tags: [Discovery]
+      summary: Songs on your paired servers that sound like one of yours
+      description: |
+        Fans the seed's embedding out to every paired server with
+        `use_discovery` on (`POST /api/v1/federation/discovery/similar` over
+        the federation bridge, at most 4 s per peer, dial included), then
+        runs the same novelty chain as the p2p route on the answers and
+        dedupes across peers. Every result lives in a library the peer
+        granted, so it streams through
+        `GET /api/v1/federation/peers/{id}/stream/{filepath}`.
+
+        **Privacy**: the query VECTOR leaves this machine, to peers the
+        admin paired with — one track's embedding, never its name, path or
+        hash. An unreachable peer is counted in `searched.unreachable`,
+        never an error. A peer whose dial failed twice in a row (its 4 s
+        deadline missed, or its handshake refused) is not dialed again for
+        60 s, doubling up to 10 min while it keeps failing, and is counted
+        unreachable at once meanwhile; an answer, or the admin's successful
+        test-connection, resets it. A failure while this server's own
+        federation endpoint is not running (not yet bound at boot, or
+        stopped for a reboot) does not count. `peerId`
+        always dials the named peer. A peer's answer is asked for
+        uncompressed (`Accept-Encoding: identity`); one over 1 MB, or sent
+        compressed anyway, is refused unread: that peer adds nothing and
+        counts unreachable in this call, but it answered, so it is no failed
+        dial.
+
+        Every row is a complete recommendation, as on the Discover page
+        (`POST /api/v1/discovery/taste`): only a peer's first 100 rows are
+        looked at (more than it is ever asked for); a row without a numeric
+        `similarity`, or whose artist, title or filepath the recommendation
+        schema refuses, is left out; text comes trimmed, and an optional
+        catalogue fact the schema would refuse, or a `year` or `duration`
+        that is no number, comes as null. Feature flag:
+        `federationDiscovery`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filePath]
+              properties:
+                filePath: { type: string, description: "The local seed (vpath form)." }
+                limit: { type: integer, minimum: 1, maximum: 50, default: 10 }
+                newArtistsOnly: { type: boolean, default: false }
+                peerId: { type: integer, minimum: 1, description: "Ask this one paired server only." }
+      responses:
+        "200":
+          description: One ranked list across peers, capped at `limit` in total.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  query:
+                    type: object
+                    properties:
+                      filePath: { type: string }
+                      modelId: { type: string }
+                      newArtistsOnly: { type: boolean }
+                      peerId: { type: integer }
+                  searched:
+                    type: object
+                    properties:
+                      peers: { type: integer }
+                      unreachable: { type: integer }
+                      mismatched: { type: integer }
+                  results:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscoveryFederationLead" }
+        "400": { description: "Request validation failed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Federation is disabled (`federation.enabled`)." }
+        "404": { description: "The seed does not resolve or has no embedding yet; or `peerId` names no peer with discovery on." }
+
+  /api/v1/discovery/taste:
+    post:
+      tags: [Discovery]
+      summary: The Discover page — recommendations seeded by your play history
+      description: |
+        One call for the whole page, and a stateless one: nothing is stored
+        between calls. **Seeds** are a RANDOM batch (up to `limit.seeds`) of
+        the distinct songs the caller finished or mostly listened to in the
+        window: counted plays of this server's own tracks, `completed`, or
+        `stopped` past half the song, and never a song whose latest play in
+        the window was a skip — drawn uniformly, so every call (every page
+        open) seeds from another set. Pins (`pin`) seed first; `exclude`
+        leaves songs out of this call's pool. When the window holds nothing
+        the seeds widen to all time (`widenedFrom`), then to the per-track
+        counters, and only with nothing counted at all to one random
+        analyzed track of the caller's own libraries (`seedSource: random`,
+        `fallback: true`).
+
+        Three sources, each ready to render:
+
+        * **library** — the caller's own songs and albums that sound like
+          the seeds and that they have not played lately (never, or not in
+          90 days). Albums come
+          first (a card = the `/db/albums` identity), and their songs are
+          left out of `tracks`. Each row says which seed it is "because of"
+          (`seedHash`). At most 6 history seeds plus the pins are ranked.
+        * **network** — discovery-network leads (`source: p2p`), as
+          `POST /api/v1/discovery/p2p/similar` finds them.
+        * **peers** — songs on paired servers, grouped per server
+          (`source: federation`), as
+          `POST /api/v1/discovery/federation/similar` finds them; a peer
+          that answers refreshes its "last seen" (at most once per 5
+          minutes).
+
+        Network and peer rows are complete recommendations: send them
+        unchanged to the plug-in routes (unknown keys like `seedHash` are
+        stripped there). A row's optional catalogue fact the recommendation
+        schema would refuse — an ISRC as a raw tag spells it
+        (`US-RC1-76-07839`), a year outside 1000–9999, an over-long album,
+        album artist or MBID, a negative duration — comes as null, the row
+        kept (since 2026-10-19); a row whose artist, title, filepath, source,
+        peer or exportId the schema refuses is left out. Network and peers
+        are asked with ONE vector, the centroid of the seeds. A song the
+        caller just kept (a plug-in copy or download) is left out of the
+        very next answer.
+
+        **Privacy**: the peers fan-out sends every paired server with
+        discovery on the centroid of the seeds — a random batch of up to 12
+        songs the caller finished in the chosen window (all time with
+        `window: 0`), plus pins — one averaged vector, never names, paths or
+        hashes, but derived from what this user listens to.
+
+        Every call computes its answer (no result cache). Clients fetch on
+        open or on a tap and never poll. Feature flag: `discovery === true &&
+        discoveryTaste >= 1`. Refused to federation keys, guest tokens and
+        jukebox sessions; public-access mode works.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TasteRequest" }
+      responses:
+        "200":
+          description: Seeds and the asked-for sources.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TasteResponse" }
+        "400": { description: "Request validation failed (an unknown key, a value out of range, more than 12 pins or 200 exclusions)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "`Discovery is disabled` (collection off or the index unavailable); a federation key or guest token (`Forbidden`); a jukebox session." }
+
   /api/v1/discovery/plugins:
     get:
       tags: [Discovery]
@@ -2609,13 +3333,34 @@ paths:
         The collection destination: a library the caller may upload to, a
         base folder inside it (`""` = the root) and a layout rendered from
         each song's tags with the torrent path-template syntax
-        (`{{ARTIST}}/{{ALBUM}}`; variables as listed, `{{PEER}}` being the
-        paired server a copy came from — empty, so dropped, for anything
-        else). One per user, shared by every acquire plug-in: the
+        (`{{ALBUMARTIST}}/{{ALBUM}}`; variables as listed, `{{PEER}}` being the
+        paired server a copy came from and `{{SERVERFOLDER}}` the folder the
+        copied song sits in there — its path on the peer without the file
+        name and without the peer's library name, so it may be several
+        folders (`Boukmanflow/Borrowed Tapes`), each made safe for a path
+        here; a layout of just `{{SERVERFOLDER}}` files every song as the
+        peer has it, and literal text around it joins its first folder
+        (`Copy of {{SERVERFOLDER}}` → `Copy of Boukmanflow/Borrowed Tapes`).
+        Both are empty, so dropped, for anything else — `{{SERVERFOLDER}}`
+        also for a song at the root of the peer's library, and for a
+        download). A song whose layout renders a folder path longer than
+        500 characters is refused (`Resolved path exceeds 500
+        characters`), never filed under a cut one — as a folder copy's
+        mirror of the same folders is. One per user, shared by every
+        acquire plug-in: the
         `federation-copy` job copies into it, and the `youtube` job files its
         download in it. Nothing saved means the library default: the first
         writable library's admin Path Template when it has one, else
-        `{{ARTIST}}/{{ALBUM}}` at its root. In public mode the anonymous
+        `{{ALBUMARTIST}}/{{ALBUM}}` at its root — the album's credit, which
+        falls back to the song's artist, so a compilation lands in one
+        folder. `{{ALBUMARTIST}}` is the file's own albumartist tag; for a
+        file without one, the album's credit the job knows — the
+        recommendation's `albumArtist` for a song copy or a download, the
+        credit an album copy listed the album by (its `albumArtist`, else
+        its `artist`), each album's own `album_artist` on the peer for an
+        artist copy (else the artist) — and only then the song's artist, so a
+        featured song ("X feat. Y") or an untagged compilation lands with the
+        rest of its album. In public mode the anonymous
         account keeps the one shared setting.
       responses:
         "200":
@@ -2627,6 +3372,10 @@ paths:
     put:
       tags: [Discovery]
       summary: Save the collection destination, or go back to the default
+      description: |
+        Applies to the jobs asked for after it: a job already queued or
+        running keeps the destination it was pinned to when it was asked
+        for (its `params.destination`).
       requestBody:
         required: true
         content:
@@ -2695,6 +3444,7 @@ paths:
                     artist: { type: string, nullable: true }
                     title: { type: string, nullable: true }
                     album: { type: string, nullable: true }
+                    albumArtist: { type: string, nullable: true, description: "The album's own credit, apart from the track's artist (a compilation's 'Various Artists'). An album job lists the peer's album by it, not by `artist`, and keys on it." }
                     year: { type: integer, nullable: true }
                     isrc: { type: string, nullable: true, description: "12 alphanumerics" }
                     releaseGroupMbid: { type: string, nullable: true }
@@ -2730,7 +3480,17 @@ paths:
                     type: object
                     description: >
                       Shape depends on the capability. `links`:
-                      `{ links: [{ id, label, url, kind: canonical|search }] }`.
+                      `{ links: [{ id, label, url, kind: canonical|search }] }`
+                      — for a song, its MusicBrainz recording / release group /
+                      ISRC pages when the ids are known and the "artist title"
+                      phrase on each catalogue's search; for an album asked for
+                      by itself (`album` and `albumArtist` or `artist`, no
+                      `title`), the release group's page when
+                      `releaseGroupMbid` is known and the "credit album" phrase
+                      on each catalogue's album search where it has one
+                      (MusicBrainz releases, Deezer albums, Bandcamp albums,
+                      Discogs releases; Apple Music and YouTube plain) — the
+                      same ids and labels.
                       `preview`: `{ preview: { provider, url, seconds, title,
                       artist, album, link, artwork, attribution, match } | null }`
                       — null when the catalogue has no confident match; show
@@ -2760,6 +3520,20 @@ paths:
         when that live job belongs to another account (its row is theirs; an
         admin still gets it).
 
+        An `acquire` job lands in the caller's collection destination
+        (`/api/v1/discovery/collection/destination`) as it is when the job is
+        asked for: the effective destination is pinned in the job's
+        `params.destination`, and the job lands there even when the
+        destination is changed while it waits its turn (a library the
+        account can no longer write to, or a base folder or layout that no
+        longer validates, fails it instead). Send the
+        `destination` the client showed to have it checked: when it is no
+        longer the one in force the answer is `409 { error:
+        "destination_changed", message, destination }` — `destination` the
+        one in force (the destination route's `destination`, or `null`) —
+        and nothing is started. A live job that already covers the
+        recommendation answers as above whatever `destination` was sent.
+
         `federation-copy` ("Add to your collection") takes a federation
         recommendation (`source: federation`, the peer's `filepath`, `peer.id`)
         and copies the file into the caller's collection destination
@@ -2768,13 +3542,20 @@ paths:
         `{ skipped: owned, existing: { filepath, by } }` when the library
         already has the song (by hash or by artist + album + title), or
         `{ skipped: exists, filepath }` when a file already sits at the target
-        path — nothing is ever overwritten. It fails (state `failed`, `error`)
-        when uploads are off for the account, the peer is unreachable, or the
-        peer answers 429 for its transfer limit. With `scope: album` it asks the
-        peer for the album's songs (`album`, narrowed by `artist` and `year`
-        when the recommendation names them) and copies them one by one under
+        path — nothing is ever overwritten — or `{ stopped: refused, peer,
+        destination }` when the peer refuses copies with this server's key
+        (its admin switched `allowCopies` off; the job ends `done` with
+        nothing copied — a retry would be refused again). It fails (state
+        `failed`, `error`) when uploads are off for the account, the peer is
+        unreachable, or the peer answers 429 for its transfer limit. With `scope: album` it asks the
+        peer for the album's songs — by the album's own credit when the
+        recommendation carries `albumArtist` (the whole album as that credit
+        holds it, NOT narrowed by the track artist: a compilation comes
+        whole, every track artist on it, from any of its rows), else
+        narrowed by `artist`; and by `year`, matched against the album's
+        year range — and copies them one by one under
         the same rules; its `result` is then `{ scope: album, album: { name,
-        artist, year }, songs: { total, copied: [{ from, vpath, filepath,
+        artist, albumArtist, year }, songs: { total, copied: [{ from, vpath, filepath,
         trackId, bytes, title, artist, album, downloadId }], skipped: [{ from,
         why: owned | exists, at }], failed: [{ from, error }] }, bytes,
         stopped: null | cancelled | quota | busy | peer | refused, missingVars,
@@ -2810,7 +3591,8 @@ paths:
         given a `landing`: a library and folder of the caller's choosing
         (`layout: folder`; the pressed folder's files go there, its
         subfolders beneath) or `tags: true` (`layout: tags`; every song by
-        the collection layout like any other copy). The result is
+        the collection layout like any other copy, `{{SERVERFOLDER}}`
+        included). The result is
         `{ scope: folder, folder: { path, name, landed }, layout, songs,
         counts, skippedFiles, bytes, stopped, missingVars, peer,
         destination }`. Every many-song result (album, artist, folder) also
@@ -2853,7 +3635,7 @@ paths:
                 scope:
                   type: string
                   enum: [song, album, artist, artist-missing, folder]
-                  description: "What the job acts on: the song (default), the song's whole album, every album of its artist, only the artist's albums this library lacks, or a folder on the peer (`filepath` is then the folder's path there). Only a scope the plug-in declares (`scopes` in the listing) is accepted, and an album job needs the recommendation's `album`, the artist jobs its `artist`, a folder job its `filepath` and `peer`. A wider scope is kept in the job's `params.scope` and keys the job on the album / artist / peer + folder path rather than the song, so a song copy and an album copy of the same recommendation are two live jobs, and two songs of one album ask for the same album job."
+                  description: "What the job acts on: the song (default), the song's whole album, every album of its artist, only the artist's albums this library lacks, or a folder on the peer (`filepath` is then the folder's path there). Only a scope the plug-in declares (`scopes` in the listing) is accepted, and an album job needs the recommendation's `album` and a credit — `albumArtist` or `artist` (400 without one: an album name alone is every same-named album on the peer, whoever made it; since 2026-10-19) — the artist jobs its `artist`, a folder job its `filepath` and `peer`. A wider scope is kept in the job's `params.scope` and keys the job on the album (its credit — `albumArtist` when given, else `artist` — plus its name) / artist / peer + folder path rather than the song, so a song copy and an album copy of the same recommendation are two live jobs, and two songs of one album — two artists' songs of one compilation too, when the rows carry its `albumArtist` — ask for the same album job. An album job stored before 2026-10-19 from a row of a compilation keyed on that row's track artist: a row carrying the album artist no longer finds it."
                 landing:
                   type: object
                   description: "Folder jobs only: where the folder lands. `{ vpath?, path }` puts the pressed folder's files into that folder of that library (the destination's library when `vpath` is absent; `path` is relative to the library root and may be empty), its subfolders beneath; `{ tags: true }` files every song by the collection layout instead. Absent: the folder as it is on the peer, under the destination's base folder. A library the caller cannot write to, a path that climbs out, or a landing on a non-folder job is a 400."
@@ -2861,6 +3643,16 @@ paths:
                     vpath: { type: string }
                     path: { type: string }
                     tags: { type: boolean }
+                destination:
+                  type: object
+                  nullable: true
+                  description: "Acquire plug-ins: the collection destination the client showed, as the destination route gave it (`source` may ride along and is not compared; `null` when it showed none). Compared with the one in force by library, base folder (normalised: `From peers/` is `From peers`) and layout; a difference is a `409` with `error: destination_changed`. Absent: no check, the job pins the one in force. Ignored by a plug-in that lands nothing."
+                  required: [vpath, layout]
+                  properties:
+                    vpath: { type: string }
+                    base: { type: string, default: "" }
+                    layout: { type: string }
+                    source: { type: string }
                 choice:
                   type: object
                   required: [url]
@@ -2882,7 +3674,23 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "The acquisition gate is in whitelist mode and the caller is not allowed; an acquire plug-in's job when uploads are off for the server or the caller (a download is an upload); or a jukebox session token." }
         "404": { description: "Unknown or disabled plug-in." }
-        "409": { description: "Another account's live job already covers this recommendation — try again when it has finished." }
+        "409":
+          description: "Another account's live job already covers this recommendation — try again when it has finished (`{ error }`, a sentence); or the `destination` sent is no longer the caller's collection destination — `{ error: destination_changed, message, destination }`, nothing started."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string, example: destination_changed }
+                  message: { type: string }
+                  destination:
+                    description: "The destination in force (`destination_changed` only); null when the caller may not put files anywhere."
+                    type: object
+                    nullable: true
+                    allOf:
+                      - { $ref: "#/components/schemas/DiscoveryCollectionDestination" }
+                    properties:
+                      source: { type: string, enum: [default, user] }
         "429": { description: "The caller already has `discoveryJobs.maxQueuedPerUser` jobs queued or running — wait for some to finish." }
 
   /api/v1/discovery/plugin-jobs/lookup:
@@ -2920,7 +3728,7 @@ paths:
                   key: { type: string, example: "text:3f9a…", description: The song's key (as before). }
                   keys:
                     type: object
-                    description: "Every scope's key for this recommendation: `song` always; `album` when it names an album; `artist` and `artist-missing` when it names an artist; `folder` when it carries a `filepath` and a `peer` (the key is the peer's plus that path)."
+                    description: "Every scope's key for this recommendation: `song` always; `album` when it names an album and a credit (`albumArtist`, else `artist`); `artist` and `artist-missing` when it names an artist; `folder` when it carries a `filepath` and a `peer` (the key is the peer's plus that path)."
                     additionalProperties: { type: string }
                     example: { song: "text:3f9a…", album: "album:7c1d…", artist: "artist:e0b2…", artist-missing: "artist-missing:e0b2…", folder: "folder:91ac…" }
                   jobs:
@@ -2928,6 +3736,59 @@ paths:
                     items: { $ref: "#/components/schemas/DiscoveryPluginJob" }
         "400": { description: "Malformed body." }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/discovery/plugin-jobs/lookup/batch:
+    post:
+      tags: [Discovery]
+      summary: The caller's jobs for up to 100 recommendations
+      description: |
+        The single lookup for a page of recommendations in one request (one
+        query): each element of `results` is exactly what
+        `POST /api/v1/discovery/plugin-jobs/lookup` answers for the
+        recommendation at the same index, in input order. Two
+        recommendations that share a key (two songs of one album) both list
+        the job under it. Reads only the caller's own rows, like the single
+        form, and is refused to a jukebox session token. Clients call it
+        only when the server advertises `discoveryTaste >= 1` and fall back
+        to one single lookup per row otherwise.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recommendations]
+              properties:
+                recommendations:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: { type: object, description: "Same shape as the resolve body's `recommendation`." }
+      responses:
+        "200":
+          description: One result per recommendation, in input order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key: { type: string, example: "text:3f9a…", description: The song's key. }
+                        keys:
+                          type: object
+                          description: "Every scope's key for this recommendation, as the single lookup's `keys`."
+                          additionalProperties: { type: string }
+                        jobs:
+                          type: array
+                          description: At most one job per plug-in and scope, newest first; empty when the caller never acted on it.
+                          items: { $ref: "#/components/schemas/DiscoveryPluginJob" }
+        "400": { description: "Malformed body: `recommendations` missing, empty, longer than 100, or an element that is not a recommendation." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "A jukebox session token, or a federation key (the route is not on its allowlist)." }
 
   /api/v1/discovery/plugin-jobs/clear:
     post:
@@ -7369,6 +8230,7 @@ paths:
                         artist: { type: string, nullable: true }
                         title: { type: string, nullable: true }
                         album: { type: string, nullable: true, description: "Album name from the file's tags (discovery.db V3); null when untagged or from an older peer" }
+                        albumArtist: { type: string, nullable: true, description: "The album's own credit, as this server's /db/albums lists it (the ALBUMARTIST consensus, else the album's primary artist — 'Various Artists' for an untagged compilation); this server's album-songs `album_artist` matches it verbatim. Null without an album or a credit. Absent from servers before 2026-10-19." }
                         year: { type: integer, nullable: true, description: "Track year, falling back to the album year" }
                         isrc: { type: string, nullable: true, description: "ISRC from the file's tags — a direct-hit key on most catalogues" }
                         releaseGroupMbid: { type: string, nullable: true, description: "MusicBrainz release-group MBID of the album, when tagged" }
@@ -7379,6 +8241,7 @@ paths:
                           nullable: true
                           items: { type: string }
                         recordingMbid: { type: string, nullable: true }
+                        albumArt: { type: string, nullable: true, description: "The track's cover file name, as this server's browse rows carry it (metadata 'album-art') and /album-art/{file} serves it; null when the track has none. Absent from servers before 2026-10." }
         "400":
           description: Malformed vector (wrong length for the model space, non-finite values, zero vector, bad base64).
         "403":

@@ -40,7 +40,8 @@ export function rowToJob(row) {
     key: row.rec_key,
     recommendation: parse(row.recommendation),
     // What the job was started with beyond the recommendation (V76):
-    // { choice: { url } } when the caller picked a lookup candidate.
+    // { choice: { url } } when the caller picked a lookup candidate, and
+    // an acquire job's `destination`, pinned when it was asked for.
     params: parse(row.params),
     state: row.state,
     progress: row.progress,
@@ -69,12 +70,17 @@ export function createJob({ plugin, userId = null, key, recommendation, params =
   if (res.changes === 1) {
     return { job: getJob(Number(res.lastInsertRowid)), created: true };
   }
-  const live = d().prepare(`
+  return { job: liveJob(plugin, key), created: false };
+}
+
+// The live (queued or running) job that covers (plugin, key), whoever's it
+// is, or null — what createJob answers instead of a second row.
+export function liveJob(plugin, key) {
+  return rowToJob(d().prepare(`
     SELECT * FROM discovery_plugin_jobs
      WHERE plugin = ? AND rec_key = ? AND state IN ('queued', 'running')
      LIMIT 1
-  `).get(plugin, key);
-  return { job: rowToJob(live), created: false };
+  `).get(plugin, key));
 }
 
 export function getJob(id) {
