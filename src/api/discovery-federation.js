@@ -19,6 +19,12 @@
 // one peer always dials. A failure while THIS server's own federation
 // endpoint is down (booting, rebooting, just enabled) is no miss: the peer
 // was never asked.
+// A peer is untrusted, and the Discover page reads every peer's answer on
+// every open: it is asked for uncompressed, and an answer that comes
+// compressed or past PEER_ANSWER_MAX_BYTES is refused unread (readPeerAnswer
+// — the peer answered, so no miss either); the merge looks at no more rows
+// than the peer was asked for, and keeps only rows it can rank (a finite
+// similarity), each bounded the way a recommendation is (mergePeerAnswers).
 // The fan-out (fanOutFederation) is shared by the per-song route below,
 // whose query is one local track's embedding, and the history-seeded
 // Discover page (api/discovery-taste.js), whose query is a centroid of the
@@ -45,6 +51,7 @@ import * as fedDb from '../db/federation.js';
 import { getEndpointId } from '../state/federation.js';
 import { localIdentitySets, isNovel, norm } from '../db/discovery-novelty.js';
 import { resolveSeedTrack } from './discovery.js';
+import { repairRecommendation } from '../discovery-plugins/recommendation.js';
 import { joiValidate } from '../util/validation.js';
 import { toIso } from '../stats/time.js';
 import WebError from '../util/web-error.js';
@@ -56,6 +63,15 @@ const MAX_LIMIT = 50;
 // answer from coming up short. Capped at the peer endpoint's own MAX_LIMIT.
 const HEADROOM = 3;
 const PEER_LIMIT_CAP = 100;
+// The most a peer's answer may weigh. A full one, PEER_LIMIT_CAP rows of a
+// few hundred bytes each, is tens of KB: this leaves room for long names and
+// paths, and still keeps a peer (hostile, or a bug) from handing every
+// Discover open megabytes to parse, hold and send on. It counts the bytes
+// as sent, which is why the answer must come uncompressed: Bun's fetch
+// inflates a compressed body as it arrives, before the read sees a byte, so
+// a small gzip answer could still cost a burst of memory (measured on Bun
+// 1.4.3: about +125 MB of peak RSS for 500 KB that inflates to 500 MB).
+export const PEER_ANSWER_MAX_BYTES = 1024 * 1024;
 // A slow peer must not hold the Discover panel hostage; unreachable peers
 // surface in `searched.unreachable`, not as an error.
 const PEER_TIMEOUT_MS = 4000;
@@ -179,8 +195,8 @@ export const peerFailures = createPeerFailureMemory();
  * miss, unless it carries `notAMiss`: this server could not dial at all, so
  * the memory is left as it was), `read(peer, response)` turns its answer
  * into the outcome value (a throw — a non-OK status such as a peer's 403,
- * bad JSON — still rejects, but the peer answered, so it clears the peer's
- * misses). A peer in its
+ * bad JSON, an answer compressed or over the size cap — still rejects, but
+ * the peer answered, so it clears the peer's misses). A peer in its
  * cool-down is not dialed: its outcome rejects at once, with
  * `reason.coolingDown` set. `forced` dials every peer regardless (a call
  * that names one peer on purpose). A miss that parks the peer rejects with
@@ -213,6 +229,53 @@ export async function settlePeers(peers, { dial, read, failures = peerFailures, 
   return outcomes;
 }
 
+/**
+ * fanOutFederation's read step (settlePeers `read`): a peer's answer as
+ * { body, at }, its body read to at most `maxBytes`. An answer sent
+ * compressed (a Content-Encoding other than identity) is refused before a
+ * byte is read: the fan-out asks for it uncompressed, which every mStream
+ * honours (util/compression.js), and the cap counts bytes as handed over,
+ * which a runtime may have inflated far past it first (Bun's fetch does,
+ * unless told decompress: false). A content-length over the cap is refused
+ * before a byte is read too; an answer without one (chunked) is read until
+ * it crosses the cap, then cancelled. Each throws, like a non-OK status or
+ * bad JSON: the peer contributes nothing and counts unreachable in this
+ * call, and the fan-out logs it with the call's other failures. It is NO
+ * miss — the peer answered, so settlePeers clears its misses and never
+ * parks it: a peer that answers too much is up, and what it sends depends
+ * on the query, so a cool-down would only hide a server the next call may
+ * hear from.
+ */
+export async function readPeerAnswer(_peer, r, maxBytes = PEER_ANSWER_MAX_BYTES) {
+  if (!r.ok) { throw new Error(`http ${r.status}`); }
+  const encoding = (r.headers.get('content-encoding') || 'identity').trim().toLowerCase();
+  if (encoding !== 'identity') {
+    r.body?.cancel().catch(() => {});
+    throw new Error(`answer sent with content-encoding '${encoding}', asked for uncompressed`);
+  }
+  const declared = Number(r.headers.get('content-length'));
+  if (declared > maxBytes) {
+    r.body?.cancel().catch(() => {});
+    throw new Error(`answer of ${declared} bytes is over the ${maxBytes}-byte cap`);
+  }
+  const chunks = [];
+  let size = 0;
+  if (r.body) {
+    const reader = r.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) { break; }
+      size += value.byteLength;
+      if (size > maxBytes) {
+        reader.cancel().catch(() => {});
+        throw new Error(`answer over the ${maxBytes}-byte cap (stopped reading at ${size} bytes)`);
+      }
+      chunks.push(value);
+    }
+  }
+  return { body: JSON.parse(Buffer.concat(chunks).toString('utf8')), at: Date.now() };
+}
+
 // A peer's album-art name, kept only when it is what the peer's
 // /album-art/:file can serve: sanitizeFilename's own pattern
 // (src/util/validation.js), which every cached cover matches (an md5 hash
@@ -233,12 +296,65 @@ export function peerText(v, max = 512) {
   return t && t.length <= max ? t : null;
 }
 
+// A peer's other text fields (artist, title, album, the IDs, filepath),
+// trimmed, for the recommendation schema to judge: its text() trims before
+// it checks max(), and repairRecommendation hands on the row as given, so a
+// value padded with whitespace would pass at any length. Anything that is
+// no string as sent: the schema refuses it (a number for an artist drops
+// the row).
+const peerString = (v) => (typeof v === 'string' ? v.trim() : v);
+
+// A peer's number fields (year, duration): a number as sent, for the schema
+// to judge, else null. The responder sends numbers; a numeric string would
+// pass the schema's conversion and ride along as sent, padded or zero-filled
+// to any length.
+const peerNumber = (v) => (typeof v === 'number' ? v : null);
+
+// A peer's similarity: the merge sorts on it and the novelty chain's
+// near-duplicate check reads it, so it is a finite number, clamped to a
+// cosine's [-1, 1] (a rounding step past either end is still a score), else
+// null and the row is dropped. A string or NaN would sort in no consistent
+// order and slip past the near-duplicate check.
+export function peerSimilarity(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) { return null; }
+  return Math.min(1, Math.max(-1, v));
+}
+
+// A peer's genreTags: its model's style names (the top five, as
+// 'Electronic---Techno'; the longest Discogs name is 43 characters), kept as
+// at most PEER_TAGS_MAX plain strings of at most PEER_TAG_MAX characters
+// (peerText; anything else in the list is left out), else null. A value that
+// is no array (a string, an object) is null too: the documented shape.
+const PEER_TAGS_MAX = 10;
+const PEER_TAG_MAX = 64;
+export function peerTags(v) {
+  if (!Array.isArray(v)) { return null; }
+  const tags = [];
+  for (const t of v) {
+    if (tags.length >= PEER_TAGS_MAX) { break; }
+    const tag = peerText(t, PEER_TAG_MAX);
+    if (tag) { tags.push(tag); }
+  }
+  return tags.length ? tags : null;
+}
+
 /**
  * Pure merge of the peers' answers — no I/O, so it is unit-tested with
  * handcrafted answers. `answers[i]` is peers[i]'s Promise.allSettled outcome,
  * fulfilled with { body, at } (the peer's JSON and when it arrived).
  *
  * Every peer gets an entry, in `peers` order, whatever happened to it.
+ * A peer's rows are untrusted, and both routes hand them to clients that
+ * forward them to the plug-in routes: only its first PEER_LIMIT_CAP rows
+ * are looked at (more than it was ever asked for — a 1 MB answer holds
+ * some 20k minimal rows, each a schema check below, on every open), a row
+ * without a numeric similarity is dropped (peerSimilarity), genreTags is
+ * bounded (peerTags), its text trimmed (peerString) and its numbers kept
+ * numbers (peerNumber), and the row is made one the recommendation schema
+ * takes (repairRecommendation, as the Discover page's sendableRow does: a
+ * bad optional fact nulled, a row the schema refuses in what it is
+ * dropped) — before the dedupe, so a dropped row never claims a song
+ * another peer could show.
  * Novel rows from every answering peer are ranked together (similarity desc;
  * ties keep peer order, then the peer's own order), and the cross-peer
  * dedupe walks that ranking: two peers holding the same song surface it
@@ -275,44 +391,52 @@ export function mergePeerAnswers(peers, answers, { excludeSets, newArtistsOnly =
     const body = outcome.value?.body || {};
     if (body.modelMismatch) { group.mismatched = true; searched.mismatched += 1; continue; }
     searched.peers += 1;
-    for (const r of Array.isArray(body.results) ? body.results : []) {
+    for (const r of Array.isArray(body.results) ? body.results.slice(0, PEER_LIMIT_CAP) : []) {
       if (!r || typeof r !== 'object') { continue; }
+      const similarity = peerSimilarity(r.similarity);
+      if (similarity === null) { continue; }
+      const recordingMbid = peerString(r.recordingMbid);
       if (!isNovel(excludeSets, {
         artist: r.artist,
         title: r.title,
-        recordingMbid: r.recordingMbid,
-        similarityVsSeed: r.similarity,
+        recordingMbid,
+        similarityVsSeed: similarity,
       }, { newArtistsOnly })) { continue; }
-      merged.push({
-        group,
-        row: {
-          artist: r.artist,
-          title: r.title,
-          // Catalogue fields — absent (null) from peers older than the
-          // discovery.db V3 responder; every field here is optional.
-          album: r.album ?? null,
-          // The album's own credit (a compilation's "Various Artists"),
-          // apart from the track's artist: an album copy lists the album by
-          // it, whole. Null from peers before 2026-10-19 (peerText).
-          albumArtist: peerText(r.albumArtist),
-          year: r.year ?? null,
-          isrc: r.isrc ?? null,
-          releaseGroupMbid: r.releaseGroupMbid ?? null,
-          // The track's cover on the PEER (its /album-art/<name> file),
-          // fetched through this server's art proxy
-          // (/api/v1/federation/peers/:id/art/<name>). Null from older
-          // peers and for anything that is not one plain file name.
-          albumArt: peerArtName(r.albumArt),
-          duration: r.duration,
-          similarity: r.similarity,
-          genreTags: r.genreTags,
-          recordingMbid: r.recordingMbid,
-          // filepath is the PEER's vpath-form path — what the federation
-          // stream proxy plays, and provenance the panel can show.
-          filepath: r.filepath,
-          peer: { id: peer.id, name: peer.name },
-        },
+      const { row, nulled, error } = repairRecommendation({
+        artist: peerString(r.artist),
+        title: peerString(r.title),
+        // Catalogue fields — absent (null) from peers older than the
+        // discovery.db V3 responder; every field here is optional.
+        album: peerString(r.album) ?? null,
+        // The album's own credit (a compilation's "Various Artists"),
+        // apart from the track's artist: an album copy lists the album by
+        // it, whole. Null from peers before 2026-10-19 (peerText).
+        albumArtist: peerText(r.albumArtist),
+        year: peerNumber(r.year),
+        isrc: peerString(r.isrc) ?? null,
+        releaseGroupMbid: peerString(r.releaseGroupMbid) ?? null,
+        // The track's cover on the PEER (its /album-art/<name> file),
+        // fetched through this server's art proxy
+        // (/api/v1/federation/peers/:id/art/<name>). Null from older
+        // peers and for anything that is not one plain file name.
+        albumArt: peerArtName(r.albumArt),
+        duration: peerNumber(r.duration),
+        similarity,
+        genreTags: peerTags(r.genreTags),
+        recordingMbid,
+        // filepath is the PEER's vpath-form path — what the federation
+        // stream proxy plays, and provenance the panel can show.
+        filepath: peerString(r.filepath),
+        peer: { id: peer.id, name: peer.name },
       });
+      if (!row) {
+        winston.debug(`discovery federation: dropped a row from peer id=${peer.id} that is not a valid recommendation: ${error}`);
+        continue;
+      }
+      if (nulled.length) {
+        winston.debug(`discovery federation: nulled ${nulled.join(', ')} on a row from peer id=${peer.id}: ${error}`);
+      }
+      merged.push({ group, row });
     }
   }
 
@@ -362,18 +486,21 @@ export async function loadFederationClient() {
  *   onPeerStatus    optional (peer row, { reachable, mismatched }) callback,
  *                   once per peer after the fan-out settles; pass
  *                   recordPeerStatus to refresh last_seen (throttled)
- *   failures, now   the miss memory and clock (tests inject; default the
- *                   module's peerFailures and Date.now)
+ *   failures, now, fedClient
+ *                   the miss memory, clock and federation client (tests
+ *                   inject; default the module's peerFailures, Date.now and
+ *                   state/federation-client.js)
  *
  * Resolves to { peers: [{ id, name, lastSeen, reachable, mismatched,
  * results }], searched: { peers, unreachable, mismatched }, results } — see
  * mergePeerAnswers. Each peer costs at most PEER_TIMEOUT_MS, dial included,
- * and nothing while in its cool-down (settlePeers; with peerId it is dialed
- * anyway); an unreachable peer is an outcome, never an error.
+ * and PEER_ANSWER_MAX_BYTES read, uncompressed (readPeerAnswer), and nothing
+ * while in its cool-down (settlePeers; with peerId it is dialed anyway); an
+ * unreachable peer is an outcome, never an error.
  */
 export async function fanOutFederation(vec, modelId, {
   peerId, limit = DEFAULT_LIMIT, newArtistsOnly = false, headroom = HEADROOM, onPeerStatus,
-  failures = peerFailures, now = Date.now,
+  failures = peerFailures, now = Date.now, fedClient: givenClient,
 } = {}) {
   let peers = fedDb.getFederationPeers().filter((p) => p.use_discovery === 1);
   if (peerId !== undefined) {
@@ -397,13 +524,20 @@ export async function fanOutFederation(vec, modelId, {
   // later job, and the Discover page starts this fan-out BEFORE its
   // synchronous library pass precisely so the peer requests are already
   // on their way (it awaits them last).
-  const fedClient = fedClientModule || await loadFederationClient();
+  const fedClient = givenClient || fedClientModule || await loadFederationClient();
   const answers = await settlePeers(peers, {
     dial: async (peer) => {
       try {
         return await fedFetchWithDeadline(fedClient, peer, '/api/v1/federation/discovery/similar', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          // Uncompressed, so PEER_ANSWER_MAX_BYTES bounds what is inflated
+          // and not only what is parsed: every mStream answers identity
+          // when asked (util/compression.js), and decompress: false keeps
+          // Bun's fetch from inflating an answer that comes compressed
+          // anyway before readPeerAnswer refuses it (Node's fetch ignores
+          // the option, and inflates only what is read).
+          headers: { 'Content-Type': 'application/json', 'Accept-Encoding': 'identity' },
+          decompress: false,
           body: payload,
           // Still useful: bounds the response-body read once headers arrive.
           signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
@@ -422,10 +556,7 @@ export async function fanOutFederation(vec, modelId, {
         throw err;
       }
     },
-    read: async (_peer, r) => {
-      if (!r.ok) { throw new Error(`http ${r.status}`); }
-      return { body: await r.json(), at: Date.now() };
-    },
+    read: readPeerAnswer,
     failures,
     now,
     // "More like this on <peer>" names that peer on purpose: always dialed.

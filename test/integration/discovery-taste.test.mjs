@@ -72,7 +72,7 @@ const VECTORS = [
   // 'Sketch 1' deliberately has none.
 ];
 
-const USERS = ['admin', 'bob', 'carol', 'dave', 'erin', 'fay', 'gus', 'hal', 'ivy', 'kim', 'lou', 'max', 'nina', 'zoe'];
+const USERS = ['admin', 'bob', 'carol', 'dave', 'erin', 'fay', 'gus', 'hal', 'ivy', 'kim', 'lou', 'max', 'nina', 'pat', 'quin', 'ray', 'zoe'];
 const VPATHS = { admin: ['testlib', 'lib2'], zoe: ['lib2'] };
 
 let server;     // discovery on, users, federation on (for the key test)
@@ -879,5 +879,100 @@ describe('discovery taste: the capability flag', () => {
     const off = await call(offServer, 'GET', '/api/v1/ping');
     assert.equal(off.body.discoveryTaste, 1);
     assert.equal(off.body.discovery, false);
+  });
+});
+
+// ── a long-gone history (last: it grows the index) ──────────────────────
+
+// A user whose history is mostly songs since deleted or moved: finished
+// plays of ANALYZED songs that no longer resolve, many times more than one
+// step of the seed choice may probe and miss (VISIBLE_MISS_CAP, 96) — so a
+// pending step that probed analyzed songs too would usually run out before
+// it reached the one song it lists. Written straight into the server's
+// databases (the ingest route only takes paths it can resolve) as
+// finished, counted plays in testlib with a vector each, orthogonal to the
+// fixture's so no other answer ranks them. Last in the file, so no earlier
+// test sees the bigger index. `analyzed: false` writes the plays alone:
+// songs gone before the scan reached them, which only the pending steps
+// probe.
+const GONE = 600;
+function seedGoneHistory(username, { analyzed = true } = {}) {
+  const mdb = new DatabaseSync(path.join(server.tmpDir, 'db', 'mstream.db'), { timeout: 5000 });
+  const ddb = new DatabaseSync(path.join(server.tmpDir, 'db', 'discovery.db'), { timeout: 5000 });
+  try {
+    const userId = mdb.prepare('SELECT id FROM users WHERE username = ?').get(username).id;
+    const libraryId = mdb.prepare("SELECT id FROM libraries WHERE name = 'testlib'").get().id;
+    const playIns = mdb.prepare(`
+      INSERT INTO play_events
+        (event_id, user_id, track_hash, filepath, library_id, outcome, counted, played_ms, duration_ms, started_at)
+      VALUES (?, ?, ?, ?, ?, 'completed', 1, 200000, 200000, ?)`);
+    const vecIns = ddb.prepare(`
+      INSERT INTO discovery_tracks
+        (audio_hash, updated_at, export_id, artist, title, duration, model_id, model_version, embedding, genre_tags)
+      VALUES (?, ?, ?, 'Gone', ?, 200, 'test-fake', '1', ?, NULL)`);
+    for (let i = 0; i < GONE; i++) {
+      const hash = `gone-${username}-${i}`;
+      const at = new Date(Date.now() - (1 + (i % 20)) * DAY).toISOString().replace('T', ' ').replace('Z', '');
+      playIns.run(`taste-${hash}`, userId, hash, `testlib/Gone/${i}.mp3`, libraryId, at);
+      if (analyzed) { vecIns.run(hash, 1000 + i, `anon:${hash}`, `Gone ${username} ${i}`, blob(vec(0, 0, 1, 0))); }
+    }
+    if (!analyzed) { return; }
+    // A new index key, so the server's in-memory index rebuilds with them.
+    const seq = Number(ddb.prepare("SELECT value FROM discovery_meta WHERE key = 'row_seq'").get().value) + GONE;
+    ddb.prepare("UPDATE discovery_meta SET value = ? WHERE key IN ('row_seq', 'index_epoch')").run(String(seq));
+  } finally {
+    ddb.close();
+    mdb.close();
+  }
+}
+
+describe('discovery taste: a long-gone history does not starve the later seed steps', () => {
+  before(() => {
+    seedGoneHistory('pat');
+    seedGoneHistory('quin');
+    seedGoneHistory('ray', { analyzed: false });
+  });
+
+  test('its finished songs not analyzed yet are listed (notAnalyzed), not swapped for a random seed', async () => {
+    // pat also finished the one song the scan has not reached.
+    await postPlays(server, tokens.pat, [play(P.sketch, DAY, 'completed', 200000, 200000)]);
+    const r = await taste('pat', { sources: ['library'] });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.seedSource, 'history', 'not random: pat has counted plays');
+    assert.equal(r.body.fallback, false);
+    assert.equal(r.body.notAnalyzed, true);
+    assert.deepEqual(paths(r.body.seeds), [P.sketch]);
+    assert.equal(r.body.seeds[0].analyzed, false);
+    assert.equal(r.body.window, 30);
+    assert.equal(r.body.widenedFrom, null);
+  });
+
+  test('an analyzed song its counters hold still seeds (the counters step has a cap of its own)', async () => {
+    // quin's one visible song: 35 s of 6 minutes — counted, so a counter,
+    // but under half, so no history seed.
+    await postPlays(server, tokens.quin, [play(P.neon, DAY, 'stopped', 35000, 360000)]);
+    const r = await taste('quin', { sources: ['library'] });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.seedSource, 'counters');
+    assert.equal(r.body.fallback, false);
+    assert.equal(r.body.notAnalyzed, false);
+    assert.deepEqual(paths(r.body.seeds), [P.neon]);
+    assert.equal(r.body.seeds[0].analyzed, true);
+    assert.ok(r.body.library.tracks.length + r.body.library.albums.length > 0, 'and the page ranks from it');
+  });
+
+  test('a history gone before the scan reached it leaves the pending counters walk its own probes', async () => {
+    // ray's 600 gone songs were never analyzed, so the analyzed steps pass
+    // them by and the pending history draw spends its misses on them. ray's
+    // one visible song is not analyzed either, and only a counter: 35 s of
+    // 6 minutes, so no history seed.
+    await postPlays(server, tokens.ray, [play(P.sketch, DAY, 'stopped', 35000, 360000)]);
+    const r = await taste('ray', { sources: ['library'] });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.seedSource, 'counters', 'not random: ray has counted plays');
+    assert.equal(r.body.fallback, false);
+    assert.equal(r.body.notAnalyzed, true);
+    assert.deepEqual(paths(r.body.seeds), [P.sketch]);
+    assert.equal(r.body.seeds[0].analyzed, false);
   });
 });

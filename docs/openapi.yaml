@@ -764,7 +764,7 @@ components:
         isrc: { type: string, nullable: true }
         releaseGroupMbid: { type: string, nullable: true }
         duration: { type: number, nullable: true }
-        similarity: { type: number, description: "The peer's cosine vs the query vector, 4 decimals." }
+        similarity: { type: number, description: "The peer's cosine vs the query vector, 4 decimals, within [-1, 1]. A row the peer sent without a numeric one is left out." }
         albumArt:
           type: string
           nullable: true
@@ -781,7 +781,13 @@ components:
         genreTags:
           type: array
           nullable: true
-          items: { type: string }
+          maxItems: 10
+          items: { type: string, maxLength: 64 }
+          description: >
+            The peer model's style predictions (`Electronic---Techno`): at
+            most 10 trimmed strings of at most 64 characters, the rest of
+            what the peer sent left out; null when it sent none, or nothing
+            of that shape.
         recordingMbid: { type: string, nullable: true }
         filepath: { type: string, description: "The PEER's vpath-form path — what its stream proxy plays. Never a local path." }
         peer:
@@ -903,7 +909,7 @@ components:
       properties:
         id: { type: integer }
         name: { type: string }
-        reachable: { type: boolean, description: "The peer answered within its 4 s deadline in THIS call (a model mismatch counts as an answer). A peer whose dial failed twice in a row (that deadline missed, or its handshake refused) is not dialed again for 60 s, doubling up to 10 min while it keeps failing, and is false at once meanwhile; an answer, or the admin's successful test-connection, resets it. A failure while this server's own federation endpoint is not running (not yet bound at boot, or stopped for a reboot) does not count." }
+        reachable: { type: boolean, description: "The peer answered within its 4 s deadline in THIS call (a model mismatch counts as an answer). A peer whose dial failed twice in a row (that deadline missed, or its handshake refused) is not dialed again for 60 s, doubling up to 10 min while it keeps failing, and is false at once meanwhile; an answer, or the admin's successful test-connection, resets it. A failure while this server's own federation endpoint is not running (not yet bound at boot, or stopped for a reboot) does not count. An answer that is not OK, not JSON, over 1 MB, or sent compressed (it is asked for uncompressed) answers nothing and reads false too, but it is no failed dial." }
         mismatched: { type: boolean, description: "The peer's embeddings are another model's space; it answered nothing." }
         lastSeen:
           type: string
@@ -2958,7 +2964,20 @@ paths:
         test-connection, resets it. A failure while this server's own
         federation endpoint is not running (not yet bound at boot, or
         stopped for a reboot) does not count. `peerId`
-        always dials the named peer. Feature flag: `federationDiscovery`.
+        always dials the named peer. A peer's answer is asked for
+        uncompressed (`Accept-Encoding: identity`); one over 1 MB, or sent
+        compressed anyway, is refused unread: that peer adds nothing and
+        counts unreachable in this call, but it answered, so it is no failed
+        dial.
+
+        Every row is a complete recommendation, as on the Discover page
+        (`POST /api/v1/discovery/taste`): only a peer's first 100 rows are
+        looked at (more than it is ever asked for); a row without a numeric
+        `similarity`, or whose artist, title or filepath the recommendation
+        schema refuses, is left out; text comes trimmed, and an optional
+        catalogue fact the schema would refuse, or a `year` or `duration`
+        that is no number, comes as null. Feature flag:
+        `federationDiscovery`.
       requestBody:
         required: true
         content:

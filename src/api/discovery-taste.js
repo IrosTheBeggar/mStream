@@ -57,7 +57,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // p2p rows are fetched with headroom: the cross-peer recommendationKey
 // dedupe runs after the walk, and two peers often hold the same song.
 const NETWORK_HEADROOM = 2;
-// Failed visibility probes one call may spend choosing seeds (collectSeeds).
+// Failed visibility probes each step of choosing seeds may spend
+// (collectSeeds).
 const VISIBLE_MISS_CAP = 2 * taste.SEED_CAP * taste.SEED_OVERFETCH;
 
 // ── Gates ────────────────────────────────────────────────────────────────
@@ -154,22 +155,40 @@ function collectSeeds(req, index, body, ctx) {
   // resolveVisible rows met while accepting, so the winners render without
   // a second probe. Each probe is one synchronous query, and the random
   // draw reads every candidate in the window (no LIMIT), so the FAILED
-  // probes are capped per call: a history mostly of songs since deleted
-  // stops probing after VISIBLE_MISS_CAP misses (the bound the old
-  // newest-first pages had) instead of probing every song it ever played.
-  // A hit costs at most limit.seeds probes, so the cap bounds the call.
+  // probes are capped: a history mostly of songs since deleted stops
+  // probing after VISIBLE_MISS_CAP misses (the bound the old newest-first
+  // pages had) instead of probing every song it ever played. The cap is
+  // per step (probe()) — the history draw and the counters walk, analyzed
+  // then pending: one count for the whole call let a long-gone history
+  // spend it in the first draw, and every later step then answered "not
+  // visible" without asking, so a user with counted plays left got a random
+  // seed. A counters walk asks only about songs its own chunked probe found
+  // visible, so its cap goes unspent in practice. A call makes at most
+  // 4 × VISIBLE_MISS_CAP failed probes (2 × in its history draws), plus one
+  // per seed it takes.
   const rows = new Map();
-  let misses = 0;
-  const visible = (h) => {
-    if (!rows.has(h)) {
-      if (misses >= VISIBLE_MISS_CAP) { return false; }
-      const row = resolveVisible(uid, filter, h, { withGenres: false }) || null;
-      if (!row) { misses++; }
-      rows.set(h, row);
-    }
-    return rows.get(h) !== null;
+  const probe = () => {
+    let misses = 0;
+    return (h) => {
+      if (!rows.has(h)) {
+        if (misses >= VISIBLE_MISS_CAP) { return false; }
+        const row = resolveVisible(uid, filter, h, { withGenres: false }) || null;
+        if (!row) { misses++; }
+        rows.set(h, row);
+      }
+      return rows.get(h) !== null;
+    };
   };
-  const analyzedVisible = (h) => index.byHash.has(h) && visible(h);
+  const analyzedVisible = () => {
+    const visible = probe();
+    return (h) => index.byHash.has(h) && visible(h);
+  };
+  // The pending steps take only songs with no vector: every analyzed one
+  // was the analyzed steps' to take.
+  const pendingVisible = () => {
+    const visible = probe();
+    return (h) => !index.byHash.has(h) && visible(h);
+  };
   const skip = new Set([...exclusions, ...have]);
   const opts = { libIds, exclude: skip, limit: room };
   const take = (list, source) => {
@@ -182,19 +201,19 @@ function collectSeeds(req, index, body, ctx) {
     out.seedSource = source;
   };
 
-  const hist = taste.historySeeds(d(), req.user, { ...opts, windowDays, accept: analyzedVisible });
+  const hist = taste.historySeeds(d(), req.user, { ...opts, windowDays, accept: analyzedVisible() });
   out.window = hist.window;
   out.widenedFrom = hist.widenedFrom;
   if (hist.hashes.length) { take(hist.hashes, 'history'); return out; }
 
-  const counters = taste.counterSeeds(d(), req.user, { ...opts, accept: analyzedVisible });
+  const counters = taste.counterSeeds(d(), req.user, { ...opts, accept: analyzedVisible() });
   if (counters.hashes.length) { take(counters.hashes, 'counters'); return out; }
 
   // Pins alone still make a page: random only stands in for NO seeds.
   if (seeds.length) { return out; }
 
   // Counted plays exist, none analyzed yet: list them, flag the scan.
-  const pending = taste.historySeeds(d(), req.user, { ...opts, windowDays, accept: visible });
+  const pending = taste.historySeeds(d(), req.user, { ...opts, windowDays, accept: pendingVisible() });
   if (pending.hashes.length) {
     // The listed seeds came from THIS pass's window (often the requested
     // one: the analyzed pass above widened only because nothing in it was
@@ -203,7 +222,7 @@ function collectSeeds(req, index, body, ctx) {
     out.widenedFrom = pending.widenedFrom;
   }
   const pendingSeeds = pending.hashes.length ? pending.hashes
-    : taste.counterSeeds(d(), req.user, { ...opts, accept: visible }).hashes;
+    : taste.counterSeeds(d(), req.user, { ...opts, accept: pendingVisible() }).hashes;
   if (pendingSeeds.length) {
     take(pendingSeeds, pending.hashes.length ? 'history' : 'counters');
     out.notAnalyzed = true;
@@ -425,8 +444,9 @@ async function networkSection(index, centroid, ctx) {
 // still shows. A row the schema refuses in what it IS — a 600-char title,
 // a number for an artist, a path past 2048 — is dropped, as before.
 // genreTags, albumArt and similarity are no schema fields (stripped as
-// unknown, so they never fail it); albumArt is already a plain file name
-// or null (discovery-federation.js peerArtName).
+// unknown, so they never fail it); on a federation row the fan-out's merge
+// has bounded them already (discovery-federation.js peerSimilarity,
+// peerTags, peerArtName) and repaired the row the same way as here.
 // The row ready to send (itself, or a copy with bad facts nulled), or null.
 // Exported for tests.
 export function sendableRow(row) {
