@@ -312,15 +312,18 @@ export function validateResolvedPath(path) {
  * Returns `{ valid: true, sample: <resolved path> }` on success or
  * `{ valid: false, error, message }` otherwise. `extraVars` and
  * `sampleMetadata` let a caller with a wider variable set (EXTRA_VARS)
- * validate against its own sample.
+ * validate against its own sample. `truncate: false` checks the sample
+ * whole, for a caller whose render refuses a path past the cap rather
+ * than cutting it — a template whose sample alone passes the cap could
+ * otherwise be saved and then refused by every render.
  */
-export function validateForSave(template, { extraVars = [], sampleMetadata = SAMPLE_METADATA } = {}) {
+export function validateForSave(template, { extraVars = [], sampleMetadata = SAMPLE_METADATA, truncate = true } = {}) {
   const synt = validateTemplate(template, { extraVars });
   if (!synt.valid) { return synt; }
   if (synt.empty) {
     return { valid: false, error: 'empty_template', message: 'Template is required. Leave the field blank in the UI to remove the template.' };
   }
-  const { path: sample } = resolveTemplate(template, sampleMetadata);
+  const { path: sample } = resolveTemplate(template, sampleMetadata, { truncate });
   const pathCheck = validateResolvedPath(sample);
   if (!pathCheck.valid) { return pathCheck; }
   return { valid: true, sample };

@@ -80,8 +80,11 @@ export function writableLibraries(user, { libraries, noUpload } = {}) {
     .map((lib) => ({ vpath: lib.name, template: lib.torrent_path_template || null }));
 }
 
+// The sample is checked whole: renderTarget refuses a path past the cap,
+// so a layout whose sample alone passes it would save and then fail every
+// copy.
 export function validateLayout(layout) {
-  return pathTemplate.validateForSave(layout, { extraVars: EXTRA_VARS, sampleMetadata: SAMPLE });
+  return pathTemplate.validateForSave(layout, { extraVars: EXTRA_VARS, sampleMetadata: SAMPLE, truncate: false });
 }
 
 // A base folder is a relative path inside the library ('' = the root),

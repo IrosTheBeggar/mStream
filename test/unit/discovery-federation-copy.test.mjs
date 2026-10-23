@@ -454,6 +454,13 @@ describe('collection destination · the SERVERFOLDER variable', () => {
     const literal = { ...destination, layout: `${'L'.repeat(400)}/{{ALBUM}}` };
     assert.equal(validateLayout(literal.layout).valid, true, 'the sample fits');
     assert.throws(() => renderTarget({ destination: literal, tags: { album: 'a'.repeat(150) }, peerName: 'Sam', fileName: 'x.mp3' }), /exceeds 500 characters/);
+    // A layout whose sample alone passes the cap is refused when saved, not
+    // saved and then refused by every copy (the sample used to be cut first).
+    const pastCap = `${'L'.repeat(480)}/{{ALBUM}}`;
+    assert.equal(validateLayout(pastCap).valid, false);
+    assert.equal(validateLayout(pastCap).error, 'path_too_long');
+    // The torrent settings keep checking a cut sample, as before.
+    assert.equal(pathTemplate.validateForSave(`${'L'.repeat(480)}/{{ALBUM}}`).valid, true);
     // The torrent pipeline keeps its cut; the whole path is there for a caller that asks.
     assert.equal(pathTemplate.resolveTemplate('{{SERVERFOLDER}}', { serverfolder: `${deep}/Disc 1` }).path.length, 500);
     assert.equal(pathTemplate.resolveTemplate('{{SERVERFOLDER}}', { serverfolder: `${deep}/Disc 1` }, { truncate: false }).path, `${deep}/Disc 1`);
