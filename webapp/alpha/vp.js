@@ -2447,8 +2447,9 @@ const VUEPLAYERCORE = (() => {
           // the library split ("Hip-Hop/Rap"), filed as written: unknown
           genre: DISCOVERJOBS.songGenre(md),
           // the album's credit (a connected server's row names it): the
-          // server renders {{ALBUMARTIST}} from the file's own tag, so a
-          // compilation previews "Various Artists/…", where it lands
+          // server renders {{ALBUMARTIST}} from the file's own tag, else the
+          // album's credit the job knows (destination.js tagsForLayout), so
+          // a compilation previews "Various Artists/…", where it lands
           albumartist: (md && (md['album-artist'] || md.albumartist)) || t.albumArtist || null,
         };
       },
@@ -2465,6 +2466,9 @@ const VUEPLAYERCORE = (() => {
       // the artist scopes the track artist as ARTIST and ALBUMARTIST —
       // never a compilation's credit — no album or year: each album has its
       // own (scopeTarget's "one folder per album"), and {{GENRE}} a slot.
+      // (The server files a song without the tag under its album's credit
+      // as the peer spells it, else this artist: only another spelling or
+      // a joint credit, "Nova & Vosto", lands apart from this preview.)
       // → { tags, slots }
       dmScopeTags: function (scope) {
         const m = this.discover.modal;

@@ -444,6 +444,28 @@ describe('collection destination · file name and target', () => {
     assert.deepEqual(tagsForLayout(null), { artist: null, album: null, title: null, year: null, genre: null, albumartist: null });
   });
 
+  test('tagsForLayout: {{ALBUMARTIST}} is the file\'s tag, else the album\'s credit the copy knows, else none — then the path template takes the artist', () => {
+    const destination = { vpath: 'music', base: '', layout: DEFAULT_LAYOUT };
+    const at = (common, rec) => renderTarget({ destination, peerName: 'Sam', fileName: 'x.mp3', tags: tagsForLayout(common, rec) }).relDir;
+    const featured = { artist: 'Boukmanflow feat. Ola', album: 'Borrowed Tapes' };
+    // the file's own tag wins over any credit
+    assert.equal(tagsForLayout({ ...featured, albumartist: 'Tape Club' }, { albumArtist: 'Boukmanflow' }).albumartist, 'Tape Club');
+    assert.equal(at({ ...featured, albumartist: 'Tape Club' }, { albumArtist: 'Boukmanflow' }), 'Tape Club/Borrowed Tapes');
+    // no tag: the album's credit — the featured song lands with its album
+    assert.equal(tagsForLayout(featured, { artist: 'Boukmanflow feat. Ola', albumArtist: 'Boukmanflow' }).albumartist, 'Boukmanflow');
+    assert.equal(at(featured, { albumArtist: 'Boukmanflow' }), 'Boukmanflow/Borrowed Tapes');
+    // an untagged compilation: every song under the one credit, whoever performs it
+    assert.deepEqual(['Ana Vey', 'Ben Lusk'].map((artist) => at({ artist, album: 'Tape Swap' }, { albumArtist: 'Various Artists' })), ['Various Artists/Tape Swap', 'Various Artists/Tape Swap']);
+    // neither: none, and the song's own artist names the folder, as before
+    assert.equal(tagsForLayout(featured, { artist: 'Boukmanflow feat. Ola' }).albumartist, null);
+    assert.equal(at(featured, {}), 'Boukmanflow feat. Ola/Borrowed Tapes');
+    assert.equal(tagsForLayout(featured, { albumArtist: null }).albumartist, null);
+    // the other fields are as they were
+    const { albumartist, ...rest } = tagsForLayout(featured, { albumArtist: 'Boukmanflow', title: 'T' });
+    assert.equal(albumartist, 'Boukmanflow');
+    assert.deepEqual(rest, { artist: 'Boukmanflow feat. Ola', album: 'Borrowed Tapes', title: 'T', year: null, genre: null });
+  });
+
   test('renderTarget: base + layout per song + file name, forward slashes', () => {
     const destination = { vpath: 'music', base: 'From peers', layout: '{{PEER}}/{{ARTIST}}/{{ALBUM}} ({{YEAR}})' };
     const full = renderTarget({
@@ -559,6 +581,9 @@ describe('federation-copy · the artist\'s albums (planArtistAlbums) and the alb
     ] };
     const { plan, skipped } = planArtistAlbums(listing, 'Nova');
     assert.deepEqual(plan.map((a) => [a.name, a.year, a.trackCount]), [['Night Ferry', 2019, 4], ['Second Wind', 2021, 4], ['Split EP', 2019, 4]], 'the primary album artist by normalised name, and a credit outside a compilation');
+    assert.deepEqual(plan.map((a) => a.albumArtist), ['Nova', 'nova', 'Nova & Vosto'], 'each album carries its own credit, as the peer spells it — what its untagged files land under');
+    const split = planArtistAlbums({ albums: [album('Loose Ends', { album_artist: null }), album('Odd', { album_artist: 7 }), album('Blank', { album_artist: '  ' })] }, 'Nova');
+    assert.deepEqual(split.plan.map((a) => [a.name, a.albumArtist]), [['Loose Ends', null], ['Odd', null], ['Blank', null]], 'rows that disagree (null), or anything that is not a name: no credit of its own');
     assert.deepEqual(skipped.map((a) => [a.name, a.why]), [['Various Hits', 'appearance'], ['Hits Comp', 'appearance']]);
     assert.deepEqual(planArtistAlbums({ albums: [] }, 'Nova'), { plan: [], skipped: [] });
     assert.deepEqual(planArtistAlbums(null, 'Nova'), { plan: [], skipped: [] });

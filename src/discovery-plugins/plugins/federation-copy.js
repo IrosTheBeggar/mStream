@@ -18,8 +18,11 @@
 //      the peer's key limits (bandwidth, daily quota, 429) apply exactly as
 //      they do to playback, into a .part file inside the destination;
 //   3. the file's own tags render the layout (per song — an album whose
-//      tags agree lands in one folder); a second owned check by audio
-//      hash, and an existing file at the target path is never overwritten;
+//      tags agree lands in one folder; {{ALBUMARTIST}} of a file without
+//      the tag is the album's credit the job knows: the row's, the one the
+//      album was listed by, an artist's album's own — destination.js
+//      tagsForLayout); a second owned check by audio hash, and an existing
+//      file at the target path is never overwritten;
 //   4. the row is inserted the way a Youtube DL download is
 //      (src/db/insert-downloaded-track.js, source = 'federation-copy'), so
 //      the song plays at once.
@@ -70,7 +73,7 @@ import * as downloadsDb from '../../db/plugin-downloads.js';
 import { ownedTrack, ownedAlbumKeys, libraryIdsFor } from '../owned.js';
 import { nameKey } from '../../db/name-key.js';
 import { CAPABILITIES, SCOPES } from '../registry.js';
-import { JOB_SCOPES, RECOMMENDATION_SOURCES, normalizePeerPath, scopeMissing } from '../recommendation.js';
+import { JOB_SCOPES, RECOMMENDATION_SOURCES, albumCredit, normalizePeerPath, scopeMissing } from '../recommendation.js';
 import * as pathTemplate from '../../torrent/path-template.js';
 import { isIgnoredRelPath } from '../../db/scan-ignore.js';
 
@@ -305,7 +308,7 @@ async function run(ctx) {
 
     let r;
     try {
-      r = await copyOne(ctx, env, { filepath: rec.filepath, title: rec.title, artist: rec.artist, album: rec.album });
+      r = await copyOne(ctx, env, { filepath: rec.filepath, title: rec.title, artist: rec.artist, album: rec.album, albumArtist: rec.albumArtist });
     } catch (err) {
       // the peer refuses copies with this server's key: said as it is, and
       // no failure to retry — it would refuse again until its admin says
@@ -339,8 +342,9 @@ async function peerJson(env, route, body) {
 // The peer's songs of one album, as copyOne takes them. `artist` narrows to
 // the track artist (the modal's album view's narrowing); `albumArtist` to
 // one album credit (the artist loop's, so a feature on the album still
-// comes along).
-async function listAlbumSongs(env, { album, artist = null, albumArtist = null, year = null, fallbackArtist = null }) {
+// comes along). `credit` is the album's credit every song carries for the
+// layout ({{ALBUMARTIST}} of a file without the tag: tagsForLayout).
+async function listAlbumSongs(env, { album, artist = null, albumArtist = null, year = null, fallbackArtist = null, credit = null }) {
   const body = { album, artist: artist || null, year: year || null };
   if (albumArtist) { body.album_artist = albumArtist; }
   const listing = await peerJson(env, '/api/v1/db/album-songs', body);
@@ -348,7 +352,7 @@ async function listAlbumSongs(env, { album, artist = null, albumArtist = null, y
     .filter((s) => s && typeof s.filepath === 'string' && s.filepath.trim())
     .map((s) => {
       const md = (s.metadata && typeof s.metadata === 'object') ? s.metadata : {};
-      return { filepath: s.filepath, title: md.title || null, artist: md.artist || fallbackArtist || null, album: md.album || album };
+      return { filepath: s.filepath, title: md.title || null, artist: md.artist || fallbackArtist || null, album: md.album || album, albumArtist: credit };
     });
 }
 
@@ -373,11 +377,13 @@ export function albumListing(rec) {
 }
 
 // The album: the peer's own listing of its songs (albumListing), then
-// copyOne for each (copySongs keeps the account).
+// copyOne for each (copySongs keeps the account). Every song files under
+// the credit the album was asked by (albumCredit) where its file has no
+// albumartist tag, so the album lands in one folder, as the clients show it.
 async function copyAlbum(ctx, env, rec) {
   const { peer, destination } = env;
   ctx.progress(0, `asking ${peer.name} for “${rec.album}”`);
-  const songs = await listAlbumSongs(env, albumListing(rec));
+  const songs = await listAlbumSongs(env, { ...albumListing(rec), credit: albumCredit(rec) });
   if (songs.length === 0) { throw new Error(`${peer.name} has no songs for “${rec.album}”`); }
 
   const outcome = await copySongs(songs, {
@@ -407,7 +413,8 @@ async function copyAlbum(ctx, env, rec) {
 // outside a compilation). An album the artist merely appears on is listed
 // as skipped ('appearance'); with `onlyMissing`, so is one this library
 // already has (`localKeys`, ownedAlbumKeys). The singles bucket (no album
-// name) is not an album.
+// name) is not an album. A planned album carries its own credit
+// (`albumArtist`: the peer's album_artist, null when its rows disagree).
 export function planArtistAlbums(listing, artist, { localKeys = new Set(), onlyMissing = false } = {}) {
   const key = nameKey(artist);
   const rows = Array.isArray(listing && listing.albums) ? listing.albums : [];
@@ -421,7 +428,7 @@ export function planArtistAlbums(listing, artist, { localKeys = new Set(), onlyM
     const theirs = nameKey(al.album_artist) === key || (credited && al.compilation !== true);
     if (!theirs) { skipped.push({ ...entry, why: 'appearance' }); continue; }
     if (onlyMissing && localKeys.has(nameKey(al.name))) { skipped.push({ ...entry, why: 'owned' }); continue; }
-    plan.push(entry);
+    plan.push({ ...entry, albumArtist: typeof al.album_artist === 'string' && al.album_artist.trim() ? al.album_artist : null });
   }
   return { plan, skipped };
 }
@@ -473,7 +480,8 @@ export async function copyAlbums(albums, { copyAlbum, isCancelled = () => false,
 // The artist: the peer's listing of the artist's albums, the plan
 // (planArtistAlbums — the artist's own albums, minus what this library has
 // for 'artist-missing'), then the album copy for each (copyAlbums keeps
-// the account).
+// the account), its songs filed under the album's own credit, else the
+// artist's, where a file has no albumartist tag.
 async function copyArtist(ctx, env, rec, { onlyMissing }) {
   const { peer, destination } = env;
   ctx.progress(0, `asking ${peer.name} for ${rec.artist}'s albums`);
@@ -486,7 +494,7 @@ async function copyArtist(ctx, env, rec, { onlyMissing }) {
     isCancelled: ctx.isCancelled,
     progress: ctx.progress,
     copyAlbum: async (al, { progress }) => {
-      const songs = await listAlbumSongs(env, { album: al.name, albumArtist: rec.artist, year: al.year, fallbackArtist: rec.artist });
+      const songs = await listAlbumSongs(env, { album: al.name, albumArtist: rec.artist, year: al.year, fallbackArtist: rec.artist, credit: al.albumArtist || rec.artist });
       return copySongs(songs, {
         isCancelled: ctx.isCancelled,
         progress,
@@ -682,7 +690,8 @@ export async function copyOne(ctx, env, song, target = null) {
   // quota. A folder copy hands the place in (`target`: the library and the
   // folder, mirrored from the peer or chosen); otherwise the layout renders
   // it from what the listing says, and the file's own tags decide the
-  // final folder, below.
+  // final folder, below — both with the song's album credit
+  // (`song.albumArtist`) where the tags have none.
   const into = target && target.vpath ? target.vpath : destination.vpath;
   if (target) {
     const check = target.relDir ? pathTemplate.validateResolvedPath(target.relDir) : { valid: true };

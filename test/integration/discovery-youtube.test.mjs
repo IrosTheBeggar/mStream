@@ -2,8 +2,9 @@
  * "Get it" from YouTube end to end, against a fake yt-dlp
  * (test/helpers/fake-yt-dlp.mjs, selected by MSTREAM_YTDLP_BIN): the
  * youtube plug-in (src/discovery-plugins/plugins/youtube.js) filing a
- * download in the collection destination the way a peer copy is filed, the
- * owned and existing-file skips, the staging folder that keeps yt-dlp's
+ * download in the collection destination the way a peer copy is filed (the
+ * recommendation's album credit as {{ALBUMARTIST}}), the owned and
+ * existing-file skips, the staging folder that keeps yt-dlp's
  * by-products out of the library, the retention pass, the availability
  * probe, and the Youtube DL route that shares the helper.
  *
@@ -265,6 +266,34 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
     } finally {
       fs.writeFileSync(fixturePath, keepFixture);
       writeScript();
+    }
+  });
+
+  test('{{ALBUMARTIST}} of a download is the recommendation\'s album credit: a featured song and a compilation\'s each land with their album', async () => {
+    const keepFixture = fs.readFileSync(fixturePath);
+    const entry = (id, title) => ({ id, url: yt(id), title, duration: 2, channel: 'Nova - Topic', uploader: 'Nova - Topic' });
+    writeScript({ details: { feat: entry('feat', 'Tide Line'), comp: entry('comp', 'Swap Meet') } });
+    try {
+      assert.equal((await api(server, 'PUT', DEST, { destination: { vpath: 'collection', base: 'Credits', layout: '{{ALBUMARTIST}}/{{ALBUM}}' } })).status, 200);
+      const cases = [
+        [{ ...REC, title: 'Tide Line', artist: 'Nova feat. Ola', album: 'Tide Tables', albumArtist: 'Nova' }, 'feat', 990, 'collection/Credits/Nova/Tide Tables/Tide_Line.mp3'],
+        [{ ...REC, title: 'Swap Meet', artist: 'Ana Vey', album: 'Tape Swap', albumArtist: 'Various Artists' }, 'comp', 1100, 'collection/Credits/Various Artists/Tape Swap/Swap_Meet.mp3'],
+      ];
+      for (const [rec, id, frequency, at] of cases) {
+        await makeFixture({ frequency, duration: 2 });   // other audio each time: the hash check must not call it owned
+        const started = await api(server, 'POST', JOBS, { recommendation: rec, choice: { url: yt(id) } });
+        assert.equal(started.status, 202, JSON.stringify(started.body));
+        const job = await untilFinished(started.body.job.id);
+        assert.equal(job.state, 'done', `job error: ${job.error}`);
+        assert.equal(job.result.downloaded.filepath, at, JSON.stringify(job.result));
+        assert.equal(job.result.downloaded.artist, rec.artist, 'the song keeps its own artist');
+        assert.ok(fs.existsSync(inCollection(...at.split('/').slice(1))));
+      }
+      assert.deepEqual(fs.readdirSync(inCollection('Credits')).sort(), ['Nova', 'Various Artists'], 'no folder of a track artist');
+    } finally {
+      fs.writeFileSync(fixturePath, keepFixture);
+      writeScript();
+      assert.equal((await api(server, 'PUT', DEST, { destination: { vpath: 'collection', base: '', layout: '{{PEER}}/{{ARTIST}}/{{ALBUM}}' } })).status, 200);
     }
   });
 

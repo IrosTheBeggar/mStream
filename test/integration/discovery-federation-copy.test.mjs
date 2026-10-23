@@ -19,8 +19,11 @@
  * trip and its refusals, a copy landing at base + rendered layout + the
  * peer's file name with a playable row (source = federation-copy), the
  * owned skip, the never-overwrite skip, the p2p refusal, the uploads-off
- * refusal, and a queued copy landing where the destination was when it was
- * asked for. Skips when @number0/iroh has no prebuilt binary here.
+ * refusal, a queued copy landing where the destination was when it was
+ * asked for, and {{ALBUMARTIST}} for a file with no albumartist tag: the
+ * album's credit the copy knows (a featured song, an untagged compilation,
+ * an artist's album, else the artist it was asked by), never over a tag the
+ * file has. Skips when @number0/iroh has no prebuilt binary here.
  */
 
 import { describe, test, before, after } from 'node:test';
@@ -32,6 +35,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { startServer } from '../helpers/server.mjs';
+import { appendId3TextFrames } from '../helpers/id3.mjs';
 
 let available = true;
 try { await import('@number0/iroh'); } catch { available = false; }
@@ -46,7 +50,7 @@ const PLUGIN = 'federation-copy';
 const DEST = '/api/v1/discovery/collection/destination';
 const JOBS = `/api/v1/discovery/plugins/${PLUGIN}/jobs`;
 
-// [file, title, artist, album, year, albumArtist?]
+// [file, title, artist, album, year, albumArtist?, compilation?]
 const REMOTE = [
   ['Remote_Hit.mp3', 'Remote Hit', 'Nova', 'Night Ferry', '2019'],
   ['Second_Song.mp3', 'Second Song', 'Nova', 'Night Ferry', '2019'],
@@ -65,6 +69,26 @@ const REMOTE = [
   ['Tree3/V1.mp3', 'Tree3 One', 'Treeband', 'Live Tapes', '2015'],
   // The pinned destination: a song of its own artist, copied once.
   ['Pinned_Song.mp3', 'Pinned Song', 'Pinza', 'Holding Pattern', '2022'],
+  // The album's credit for a file with no albumartist tag: an album with
+  // two featured songs, a compilation flagged as one but with no
+  // albumartist, a file that names its own, and an artist's album with a
+  // featured song. Their own artists, so the cases above keep their counts.
+  ['Borrowed_1.mp3', 'Open Reel', 'Boukmanflow', 'Borrowed Tapes', '2018'],
+  ['Borrowed_2.mp3', 'Second Reel', 'Boukmanflow feat. Ola', 'Borrowed Tapes', '2018'],
+  ['Borrowed_3.mp3', 'Last Reel', 'Boukmanflow feat. Mika', 'Borrowed Tapes', '2018'],
+  ['Swap_1.mp3', 'Swap One', 'Ana Vey', 'Tape Swap', '2017', null, true],
+  ['Swap_2.mp3', 'Swap Two', 'Ben Lusk', 'Tape Swap', '2017', null, true],
+  ['Own_Words.mp3', 'Own Words', 'Rhea Lind', 'Own Words', '2016', 'The Tide Collective'],
+  ['Bus_1.mp3', 'First Stop', 'Mika Strand', 'Night Bus', '2014'],
+  ['Bus_2.mp3', 'Last Stop', 'Mika Strand feat. Ola', 'Night Bus', '2014'],
+  // An album asked for from a row with no credit (a peer on an older
+  // server), and an album two artists share untagged, which the peer
+  // credits to neither (album_artist null).
+  ['Older_1.mp3', 'Old One', 'Kaya Moss', 'Old Peer', '2013'],
+  ['Older_2.mp3', 'Old Two', 'Kaya Moss feat. Ola', 'Old Peer', '2013'],
+  ['Split_1.mp3', 'Split One', 'Lio Brandt', 'Split Reel', '2012'],
+  ['Split_2.mp3', 'Split Two', 'Lio Brandt feat. Ola', 'Split Reel', '2012'],
+  ['Split_3.mp3', 'Split Three', 'Sefa Rowe', 'Split Reel', '2012'],
 ];
 
 let srvA, srvB, sharedDir, collectionDir, peerId;
@@ -117,7 +141,7 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
   before(async () => {
     sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-fedcopy-'));
     let freq = 400;
-    for (const [file, title, artist, album, year, albumArtist] of REMOTE) {
+    for (const [file, title, artist, album, year, albumArtist, compilation] of REMOTE) {
       fs.mkdirSync(path.dirname(path.join(sharedDir, file)), { recursive: true });
       const meta = ['-metadata', `artist=${artist}`, '-metadata', `title=${title}`, '-metadata', `album=${album}`];
       if (year) { meta.push('-metadata', `date=${year}`); }
@@ -127,6 +151,9 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
         '-f', 'lavfi', '-i', `sine=frequency=${freq += 55}:duration=2`,
         ...meta, '-ac', '1', path.join(sharedDir, file),
       ]);
+      // ffmpeg writes "compilation" into a TXXX frame no scanner reads: the
+      // real TCMP frame goes in after.
+      if (compilation) { await appendId3TextFrames(path.join(sharedDir, file), { TCMP: '1' }); }
     }
 
     collectionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-fedcopy-dest-'));
@@ -373,6 +400,123 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     const failed = await untilFinished(none.body.job.id);
     assert.equal(failed.state, 'failed');
     assert.match(failed.error, /lists no albums/);
+  });
+
+  // {{ALBUMARTIST}} of a file with no albumartist tag — common on peers — is
+  // the album's credit the copy knows, never the file's own artist, so a
+  // featured song or an untagged compilation lands with its album (found
+  // 2026-10-22: "Boukmanflow feat. Ola/Borrowed Tapes").
+  const peerAlbum = async (artist, name) => {
+    const r = await api(srvB, 'POST', `/api/v1/federation/peers/${peerId}/api/api/v1/db/artists-albums`, { artist });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    return r.body.albums.find((a) => a.name === name);
+  };
+  const credits = (...segs) => path.join(collectionDir, 'Credits', ...segs);
+
+  test('a song copy of a featured track files under the row\'s album credit, with its album', async () => {
+    assert.equal((await api(srvB, 'PUT', DEST, { destination: { vpath: 'collection', base: 'Credits', layout: '{{ALBUMARTIST}}/{{ALBUM}}' } })).status, 200);
+    // The credit a connected server's row carries: the album's primary artist.
+    const credit = (await peerAlbum('Boukmanflow', 'Borrowed Tapes')).album_artist;
+    assert.equal(credit, 'Boukmanflow');
+    const started = await api(srvB, 'POST', JOBS, { recommendation: rec('Borrowed_3.mp3', { albumArtist: credit }) });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const job = await untilFinished(started.body.job.id);
+    assert.equal(job.state, 'done', `job error: ${job.error}`);
+    assert.equal(job.result.copied.filepath, 'collection/Credits/Boukmanflow/Borrowed Tapes/Borrowed_3.mp3', JSON.stringify(job.result));
+    assert.equal(job.result.copied.artist, 'Boukmanflow feat. Mika', 'the song keeps its own artist');
+    assert.deepEqual(job.result.missingVars, []);
+    assert.ok(fs.existsSync(credits('Boukmanflow', 'Borrowed Tapes', 'Borrowed_3.mp3')));
+    assert.deepEqual(fs.readdirSync(credits()), ['Boukmanflow'], 'no folder of the featured credit');
+  });
+
+  test('an album copy: a featured track whose file has no albumartist tag lands with the rest of the album, under the credit', async () => {
+    const started = await api(srvB, 'POST', JOBS, { recommendation: rec('Borrowed_2.mp3', { albumArtist: 'Boukmanflow' }), scope: 'album' });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const job = await untilFinished(started.body.job.id);
+    assert.equal(job.state, 'done', `job error: ${job.error}`);
+    const { result } = job;
+    assert.deepEqual(result.album, { name: 'Borrowed Tapes', artist: 'Boukmanflow feat. Ola', albumArtist: 'Boukmanflow', year: null });
+    assert.deepEqual([result.songs.total, result.songs.failed.length, result.stopped], [3, 0, null], JSON.stringify(result.songs.failed));
+    assert.deepEqual(result.songs.skipped, [{ from: 'shared/Borrowed_3.mp3', why: 'owned', at: 'collection/Credits/Boukmanflow/Borrowed Tapes/Borrowed_3.mp3' }]);
+    assert.deepEqual(result.songs.copied.map((s) => [s.from, s.filepath, s.artist]).sort(), [
+      ['shared/Borrowed_1.mp3', 'collection/Credits/Boukmanflow/Borrowed Tapes/Borrowed_1.mp3', 'Boukmanflow'],
+      ['shared/Borrowed_2.mp3', 'collection/Credits/Boukmanflow/Borrowed Tapes/Borrowed_2.mp3', 'Boukmanflow feat. Ola'],
+    ]);
+    assert.deepEqual(fs.readdirSync(credits()), ['Boukmanflow'], 'one folder for the album');
+    assert.deepEqual(fs.readdirSync(credits('Boukmanflow', 'Borrowed Tapes')).sort(), ['Borrowed_1.mp3', 'Borrowed_2.mp3', 'Borrowed_3.mp3']);
+  });
+
+  test('a compilation whose files have no albumartist tag lands in one folder, under its credit', async () => {
+    // Flagged as a compilation, no albumartist: the peer credits it to "Various Artists".
+    const listed = await peerAlbum('Ana Vey', 'Tape Swap');
+    assert.deepEqual([listed.album_artist, listed.compilation], ['Various Artists', true]);
+    const started = await api(srvB, 'POST', JOBS, { recommendation: rec('Swap_1.mp3', { albumArtist: listed.album_artist }), scope: 'album' });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const job = await untilFinished(started.body.job.id);
+    assert.equal(job.state, 'done', `job error: ${job.error}`);
+    const { result } = job;
+    assert.deepEqual([result.songs.total, result.songs.skipped.length, result.songs.failed.length], [2, 0, 0], JSON.stringify(result.songs));
+    assert.deepEqual(result.songs.copied.map((s) => [s.filepath, s.artist]).sort(), [
+      ['collection/Credits/Various Artists/Tape Swap/Swap_1.mp3', 'Ana Vey'],
+      ['collection/Credits/Various Artists/Tape Swap/Swap_2.mp3', 'Ben Lusk'],
+    ]);
+    assert.ok(!fs.existsSync(credits('Ana Vey')) && !fs.existsSync(credits('Ben Lusk')), 'not one folder per track artist');
+  });
+
+  test('an album copy from a row with no credit (a peer on an older server) files under the artist it was listed by', async () => {
+    const started = await api(srvB, 'POST', JOBS, { recommendation: rec('Older_1.mp3'), scope: 'album' });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const job = await untilFinished(started.body.job.id);
+    assert.equal(job.state, 'done', `job error: ${job.error}`);
+    const { result } = job;
+    assert.deepEqual(result.album, { name: 'Old Peer', artist: 'Kaya Moss', albumArtist: null, year: null }, 'narrowed by the track artist');
+    assert.deepEqual([result.songs.total, result.songs.skipped.length, result.songs.failed.length], [2, 0, 0], JSON.stringify(result.songs));
+    assert.deepEqual(result.songs.copied.map((s) => [s.filepath, s.artist]).sort(), [
+      ['collection/Credits/Kaya Moss/Old Peer/Older_1.mp3', 'Kaya Moss'],
+      ['collection/Credits/Kaya Moss/Old Peer/Older_2.mp3', 'Kaya Moss feat. Ola'],
+    ]);
+    assert.ok(!fs.existsSync(credits('Kaya Moss feat. Ola')), 'no folder of the featured credit');
+  });
+
+  test('a file that names its own album artist keeps it, whatever credit the row carries', async () => {
+    const started = await api(srvB, 'POST', JOBS, { recommendation: rec('Own_Words.mp3', { albumArtist: 'Rhea Lind' }) });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const job = await untilFinished(started.body.job.id);
+    assert.equal(job.state, 'done', `job error: ${job.error}`);
+    assert.equal(job.result.copied.filepath, 'collection/Credits/The Tide Collective/Own Words/Own_Words.mp3', JSON.stringify(job.result));
+    assert.ok(!fs.existsSync(credits('Rhea Lind')));
+  });
+
+  test('an artist copy files each album\'s untagged songs under the album\'s own credit, as the peer spells it', async () => {
+    // Asked by the artist as another spelling has it: the album is the
+    // peer's, and so is the folder its featured song lands in.
+    const started = await api(srvB, 'POST', JOBS, { recommendation: rec('Bus_1.mp3', { artist: 'MIKA STRAND' }), scope: 'artist' });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const job = await untilFinished(started.body.job.id);
+    assert.equal(job.state, 'done', `job error: ${job.error}`);
+    const { result } = job;
+    assert.deepEqual(result.albums.map((a) => [a.name, a.songs.total, a.songs.copied.length]), [['Night Bus', 2, 2]], JSON.stringify(result));
+    assert.deepEqual(result.songs.copied.map((s) => s.filepath).sort(), [
+      'collection/Credits/Mika Strand/Night Bus/Bus_1.mp3',
+      'collection/Credits/Mika Strand/Night Bus/Bus_2.mp3',
+    ]);
+  });
+
+  test('an artist copy files an album the peer credits to no one under the artist it was asked by', async () => {
+    // Two artists' songs, no albumartist tag: the peer's one card has no credit.
+    const listed = await peerAlbum('Lio Brandt', 'Split Reel');
+    assert.deepEqual([listed.album_artist, listed.compilation], [null, false]);
+    const started = await api(srvB, 'POST', JOBS, { recommendation: rec('Split_1.mp3'), scope: 'artist' });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const job = await untilFinished(started.body.job.id);
+    assert.equal(job.state, 'done', `job error: ${job.error}`);
+    const { result } = job;
+    assert.deepEqual(result.albums.map((a) => [a.name, a.songs.total, a.songs.copied.length]), [['Split Reel', 2, 2]], JSON.stringify(result));
+    assert.deepEqual(result.songs.copied.map((s) => [s.filepath, s.artist]).sort(), [
+      ['collection/Credits/Lio Brandt/Split Reel/Split_1.mp3', 'Lio Brandt'],
+      ['collection/Credits/Lio Brandt/Split Reel/Split_2.mp3', 'Lio Brandt feat. Ola'],
+    ]);
+    assert.ok(!fs.existsSync(credits('Lio Brandt feat. Ola')), 'no folder of the featured credit');
   });
 
   test('a folder copy: the peer\'s tree lands as it is there, under the base; recycle bins and dot entries stay out; a rerun skips it all', async () => {

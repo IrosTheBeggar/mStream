@@ -12,7 +12,9 @@
 // {{ALBUMARTIST}}/{{ALBUM}} at the root — the album's credit, which falls back
 // to the song's artist, so a compilation lands in ONE folder ("Various
 // Artists/…") and every other album exactly where {{ARTIST}}/{{ALBUM}} put it
-// (2026-10-19). The file keeps its name.
+// (2026-10-19). The credit is the file's tag, else the one the copy or the
+// download knows for the album (tagsForLayout), so a song without the tag
+// lands with its album too (2026-10-22). The file keeps its name.
 //
 // Stored per user in user_settings (namespace below). In public mode the
 // anonymous account keeps the one shared setting. A job takes the effective
@@ -233,7 +235,13 @@ export function safeFileName(filePath) {
 }
 
 // The tags a layout renders from: the file's own, the recommendation's
-// where the file has none.
+// where the file has none. {{ALBUMARTIST}} is the file's albumartist tag,
+// else the album's credit the caller knows (`rec.albumArtist`: a row's, the
+// credit an album copy listed the album by, an artist copy's album's own),
+// else none — and the path template then takes the file's artist. A file
+// without the tag (common on peers) so lands with its album: a featured
+// song ("X feat. Y") and an untagged compilation's songs, each by its own
+// artist, under the album's one credit (2026-10-22).
 export function tagsForLayout(common, rec = {}) {
   const c = common || {};
   const first = (v) => (Array.isArray(v) ? v[0] : v);
@@ -243,7 +251,7 @@ export function tagsForLayout(common, rec = {}) {
     title: (c.title && String(c.title)) || rec.title || null,
     year: c.year || rec.year || null,
     genre: first(c.genre) ? String(first(c.genre)) : null,
-    albumartist: c.albumartist ? String(c.albumartist) : null,
+    albumartist: (c.albumartist && String(c.albumartist)) || rec.albumArtist || null,
   };
 }
 
