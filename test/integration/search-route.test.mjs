@@ -541,3 +541,242 @@ describe('/api/v1/db/search algorithm dispatch', () => {
       'combo FTS5 should find Sigur Rós via diacritic folding');
   });
 });
+
+// ── Album hits are /db/albums cards ──────────────────────────────────────
+//
+// An album hit is the card the albums listing shows for it: album rows
+// sharing (name, year, album_art_file) are one hit, credited the way the
+// listing credits the card — the rows' ALBUMARTIST consensus, else their
+// primary artist, when every visible row that names one agrees, and null
+// when they disagree or none does. Before 2026-10-23 a hit was credited to
+// its row's primary artist, so a compilation could read one of its track
+// artists, and an untagged album split across its track artists came back
+// once per artist (LIKE: once per primary artist; FTS5: once per row).
+//
+// Own boot: two libraries, so the library filter (ignoreVPaths — the same
+// libraryFilter a vpath-restricted user gets) can hide one.
+
+// One album card per entry: [name, year, art, rows], each row
+// [primary artist | null, ALBUMARTIST | null, [library per track]].
+const STACK = Array.from({ length: 35 }, (_, i) =>
+  // Alternating case, so the NOCASE order is the number order.
+  [`${i % 2 ? 'stack' : 'Stack'} ${String(i + 1).padStart(2, '0')}`, 2000, null,
+    [['Boukmanflow', null, ['testlib']], ['ALM', null, ['testlib']]]]);
+const CARDS = [
+  ['Borrowed Tapes', 2019, null, [['Boukmanflow', null, ['testlib', 'testlib']]]],
+  // A compilation: its primary artist is one of its track artists (the
+  // credit the old hit carried), its ALBUMARTIST consensus Various Artists.
+  ['Night Market Sampler', 2024, null, [['Color Out', 'Various Artists', ['testlib', 'testlib']]]],
+  // Untagged, its tracks by two artists: two album rows, one card.
+  ['Joint Session', 2025, null, [['Color Out', null, ['testlib']], ['ALM', null, ['testlib']]]],
+  // One name, two albums: different years, then different art.
+  ['Homecoming', 2010, null, [['Boukmanflow', null, ['testlib']]]],
+  ['Homecoming', 2018, null, [['Lantern Choir', null, ['testlib']]]],
+  ['Daybreak', 2020, 'daybreak-a.jpg', [['ALM', null, ['testlib']]]],
+  ['Daybreak', 2020, 'daybreak-b.jpg', [['Color Out', null, ['testlib']]]],
+  ['Untitled Reel', 2001, null, [[null, null, ['testlib']]]],
+  ['Undated Demos', null, null, [['Color Out', null, ['testlib']]]],
+  // A tagged row and an artist-less one (a track with neither ARTIST nor
+  // ALBUMARTIST is its own album row): the parity test below holds the hit
+  // to whatever the listing credits.
+  ['Mixed Bag', 2002, null, [['ALM', null, ['testlib', 'testlib']], [null, null, ['testlib']]]],
+  // The library filter: one only in the vault, one with a track in each,
+  // and one whose two rows live one per library — its credit is whichever
+  // rows the caller can see.
+  ['Vault Sessions', 2015, null, [['ALM', null, ['vault']]]],
+  ['Split Shelf', 2016, null, [['Boukmanflow', null, ['testlib', 'vault']]]],
+  ['Shelf Divide', 2017, null, [['Boukmanflow', null, ['testlib']], ['ALM', null, ['vault']]]],
+  // Rank order differs from name order: bm25 favours the shorter name.
+  ['Echo Abbey Road Live Session', 2003, null, [['Boukmanflow', null, ['testlib']]]],
+  ['Mid Echo Tape', 2004, null, [['Color Out', null, ['testlib']]]],
+  ['Zebra Echo', 2005, null, [['ALM', null, ['testlib']], ['Lantern Choir', null, ['testlib']]]],
+  ...STACK,
+];
+
+function seedAlbumCards(dbPath) {
+  const db = new DatabaseSync(dbPath);
+  db.exec('PRAGMA foreign_keys = ON');
+  const lib = {};
+  for (const name of ['testlib', 'vault']) {
+    lib[name] = db.prepare('SELECT id FROM libraries WHERE name = ?').get(name).id;
+  }
+  const artist = {};
+  for (const name of ['Boukmanflow', 'Color Out', 'ALM', 'Lantern Choir']) {
+    artist[name] = Number(db.prepare('INSERT INTO artists (name) VALUES (?)').run(name).lastInsertRowid);
+  }
+  const insAlbum = db.prepare(`INSERT INTO albums (name, artist_id, year, album_art_file, album_artist, compilation)
+                               VALUES (?, ?, ?, ?, ?, ?)`);
+  const insT = db.prepare(`
+    INSERT INTO tracks (filepath, library_id, title, artist_id, album_id, year, format,
+                        file_hash, audio_hash, modified, scan_id)
+    VALUES (?, ?, ?, ?, ?, ?, 'flac', ?, ?, ?, 'seed')
+  `);
+  let n = 0;
+  for (const [name, year, art, rows] of CARDS) {
+    for (const [primary, albumArtist, libs] of rows) {
+      const albumId = Number(insAlbum.run(name, primary ? artist[primary] : null, year, art,
+        albumArtist, albumArtist === 'Various Artists' ? 1 : 0).lastInsertRowid);
+      for (const l of libs) {
+        n++;
+        insT.run(`cards/${n}.flac`, lib[l], `Card Track ${n}`, primary ? artist[primary] : null, albumId, year,
+          `ch${n}`, `ca${n}`, 1700000000000 + n);
+      }
+    }
+  }
+  db.close();
+}
+
+describe('/api/v1/db/search album hits are /db/albums cards', () => {
+  let tmpDir;
+  let server;
+  const ALGORITHMS = ['basic', 'fts5', 'combo'];
+
+  before(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-search-cards-'));
+    const musicDir = path.join(tmpDir, 'music');
+    const vaultDir = path.join(tmpDir, 'vault');
+    await fs.mkdir(musicDir, { recursive: true });
+    await fs.mkdir(vaultDir, { recursive: true });
+    const vault = { vault: { root: vaultDir } };
+    server = await bootMstream(tmpDir, musicDir, vault);
+    await killProc(server.proc);
+    await sleep(200);
+    seedAlbumCards(path.join(tmpDir, 'db', 'mstream.db'));
+    server = await bootMstream(tmpDir, musicDir, vault);
+  });
+
+  after(async () => {
+    if (server?.proc) await killProc(server.proc);
+    if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  const albumHits = async (search, algorithm, extra = {}) => {
+    const r = await searchReq(server.baseUrl, { search, algorithm, noArtists: true, noTitles: true, noFiles: true, noLyrics: true, ...extra });
+    assert.equal(r.status, 200, `search "${search}" (${algorithm})`);
+    return r.body.albums;
+  };
+  const named = (hits, name) => hits.filter((a) => a.name === name);
+  const listing = async (body = {}) => {
+    const r = await fetch(`${server.baseUrl}/api/v1/db/albums`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    assert.equal(r.status, 200);
+    return (await r.json()).albums;
+  };
+
+  test('an album credited to its artist names that artist', async () => {
+    for (const algorithm of ALGORITHMS) {
+      const hits = named(await albumHits('borrowed', algorithm), 'Borrowed Tapes');
+      assert.deepEqual(hits.map((a) => [a.album_artist, a.year]), [['Boukmanflow', 2019]], algorithm);
+    }
+  });
+
+  test('a compilation is one hit credited to Various Artists, not to a track artist', async () => {
+    for (const algorithm of ALGORITHMS) {
+      const hits = named(await albumHits('night market', algorithm), 'Night Market Sampler');
+      assert.deepEqual(hits.map((a) => a.album_artist), ['Various Artists'], algorithm);
+    }
+  });
+
+  test('an untagged album split across its track artists is ONE hit, credited to nobody', async () => {
+    for (const algorithm of ALGORITHMS) {
+      const hits = named(await albumHits('joint session', algorithm), 'Joint Session');
+      assert.equal(hits.length, 1, `one card, not one hit per artist (${algorithm}): ${JSON.stringify(hits)}`);
+      assert.equal(hits[0].album_artist, null, algorithm);
+      assert.equal(hits[0].year, 2025);
+    }
+  });
+
+  test("combo's LIKE fallback groups the same way", async () => {
+    // 'j' is too short for FTS (buildFtsExpression → null): combo falls back
+    // to likeAlbumsRows, strict fts5 returns nothing. Only Joint Session has a j.
+    assert.deepEqual((await albumHits('j', 'combo')).map((a) => [a.name, a.album_artist]), [['Joint Session', null]]);
+    assert.deepEqual(await albumHits('j', 'fts5'), []);
+  });
+
+  test('one name, two albums (by year, by art) is two hits, each with its own credit', async () => {
+    for (const algorithm of ALGORITHMS) {
+      // Same-name cards come back in the listing's order: newest first, then by art.
+      assert.deepEqual(named(await albumHits('homecoming', algorithm), 'Homecoming').map((a) => [a.year, a.album_artist]),
+        [[2018, 'Lantern Choir'], [2010, 'Boukmanflow']], algorithm);
+      assert.deepEqual(named(await albumHits('daybreak', algorithm), 'Daybreak').map((a) => [a.album_art_file, a.album_artist]),
+        [['daybreak-a.jpg', 'ALM'], ['daybreak-b.jpg', 'Color Out']], algorithm);
+    }
+  });
+
+  test('an album with no artist at all has a null credit', async () => {
+    for (const algorithm of ALGORITHMS) {
+      assert.deepEqual(named(await albumHits('untitled reel', algorithm), 'Untitled Reel').map((a) => a.album_artist), [null], algorithm);
+    }
+  });
+
+  test('an album with no year and no art is one hit, credited', async () => {
+    // FTS5 credits its cut cards by joining back to their rows, NULL to NULL.
+    for (const algorithm of ALGORITHMS) {
+      assert.deepEqual(named(await albumHits('undated', algorithm), 'Undated Demos').map((a) => [a.year, a.album_art_file, a.album_artist]),
+        [[null, null, 'Color Out']], algorithm);
+    }
+  });
+
+  test('the library filter: an album shows when any of its tracks is visible, and only visible rows vote on its credit', async () => {
+    for (const algorithm of ALGORITHMS) {
+      const all = await albumHits('vault', algorithm);
+      assert.deepEqual(named(all, 'Vault Sessions').map((a) => a.album_artist), ['ALM'], algorithm);
+      const scoped = await albumHits('vault', algorithm, { ignoreVPaths: ['vault'] });
+      assert.deepEqual(named(scoped, 'Vault Sessions'), [], `a vault-only album is hidden (${algorithm})`);
+
+      const shelves = async (extra) => (await albumHits('shelf', algorithm, extra))
+        .map((a) => [a.name, a.album_artist]).sort((x, y) => x[0].localeCompare(y[0]));
+      assert.deepEqual(await shelves({}), [['Shelf Divide', null], ['Split Shelf', 'Boukmanflow']], algorithm);
+      assert.deepEqual(await shelves({ ignoreVPaths: ['vault'] }), [['Shelf Divide', 'Boukmanflow'], ['Split Shelf', 'Boukmanflow']],
+        `Split Shelf keeps its testlib track; Shelf Divide is only its testlib row (${algorithm})`);
+    }
+  });
+
+  test('order: LIKE by name, FTS5 by the card\'s best rank', async () => {
+    const order = async (algorithm) => (await albumHits('echo', algorithm)).map((a) => a.name);
+    assert.deepEqual(await order('basic'), ['Echo Abbey Road Live Session', 'Mid Echo Tape', 'Zebra Echo']);
+    for (const algorithm of ['fts5', 'combo']) {
+      assert.deepEqual(await order(algorithm), ['Zebra Echo', 'Mid Echo Tape', 'Echo Abbey Road Live Session'], algorithm);
+    }
+  });
+
+  test('the 30-hit limit counts cards, not album rows', async () => {
+    // 35 cards of two rows each: the old LIKE query returned 15 cards twice.
+    const first30 = STACK.slice(0, 30).map(([name]) => name);
+    for (const algorithm of ALGORITHMS) {
+      const hits = await albumHits('stack', algorithm);
+      assert.deepEqual(hits.map((a) => a.name), first30, `NOCASE name order (FTS5: equal ranks, the same tiebreak) — ${algorithm}`);
+      assert.ok(hits.every((a) => a.album_artist === null), 'every stack card is split across two artists');
+    }
+  });
+
+  test('every hit keeps the envelope fields and their types', async () => {
+    for (const algorithm of ALGORITHMS) {
+      for (const hit of [...await albumHits('daybreak', algorithm), ...await albumHits('joint', algorithm)]) {
+        assert.deepEqual(Object.keys(hit).sort(), ['album_art_file', 'album_artist', 'filepath', 'name', 'year']);
+        assert.equal(typeof hit.name, 'string');
+        assert.ok(hit.album_art_file === null || typeof hit.album_art_file === 'string');
+        assert.ok(hit.album_artist === null || typeof hit.album_artist === 'string');
+        assert.equal(typeof hit.year, 'number');
+        assert.equal(hit.filepath, false);
+      }
+    }
+  });
+
+  test('parity: every /db/albums card is one hit with the same credit, on every algorithm and filter', async () => {
+    for (const extra of [{}, { ignoreVPaths: ['vault'] }]) {
+      const cards = await listing(extra);
+      assert.ok(cards.length >= CARDS.length - 1, 'the listing holds the fixture');
+      for (const card of cards) {
+        for (const algorithm of ALGORITHMS) {
+          const hits = (await albumHits(card.name, algorithm, extra)).filter((a) =>
+            a.name === card.name && a.year === card.year && a.album_art_file === card.album_art_file);
+          assert.equal(hits.length, 1, `${card.name} ${card.year} ${card.album_art_file} (${algorithm}, ${JSON.stringify(extra)})`);
+          assert.equal(hits[0].album_artist, card.album_artist,
+            `${card.name}: the hit's credit is the listing's (${algorithm}, ${JSON.stringify(extra)})`);
+        }
+      }
+    }
+  });
+});

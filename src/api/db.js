@@ -570,11 +570,23 @@ export function pullMetaDataBatch(filepaths, user) {
 // producers — the Discover page's album cards (src/discovery/taste-queries.js)
 // — build the exact /db/albums item and identity instead of a copy that
 // drifts from it.
+//
+// The credit rule is its own pair — the two aggregate columns and
+// albumCredit, which reads them — because /db/search's album hits name the
+// same card's credit without the rest of the item (src/api/search.js), and
+// a hit that opens a card must not name it differently. Each row's credit
+// is its ALBUMARTIST consensus, else its primary artist; COUNT(DISTINCT)
+// skips a row with neither, so a group of only those has no credit.
+export const ALBUM_CREDIT_COLUMNS = `
+           COUNT(DISTINCT COALESCE(al.album_artist, pa.name)) AS credit_variants,
+           MIN(COALESCE(al.album_artist, pa.name)) AS credit`;
+export function albumCredit(r) {
+  return r.credit_variants === 1 ? r.credit : null;
+}
+
 export const ALBUM_ITEM_COLUMNS = `
            al.name, al.year, al.album_art_file,
-           GROUP_CONCAT(al.id) AS ids,
-           COUNT(DISTINCT COALESCE(al.album_artist, pa.name)) AS credit_variants,
-           MIN(COALESCE(al.album_artist, pa.name)) AS credit,
+           GROUP_CONCAT(al.id) AS ids,${ALBUM_CREDIT_COLUMNS},
            MAX(al.compilation) AS compilation,
            MIN(COALESCE(al.year_min, al.year)) AS year_min,
            MAX(COALESCE(al.year_max, al.year)) AS year_max,
@@ -631,7 +643,7 @@ export function albumItems(d, rows) {
       name: r.name,
       year: r.year,
       album_art_file: r.album_art_file || null,
-      album_artist: r.credit_variants === 1 ? r.credit : null,
+      album_artist: albumCredit(r),
       artists: names,
       compilation: Number(r.compilation) > 0,
       year_min: r.year_min ?? null,

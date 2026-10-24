@@ -1097,7 +1097,8 @@ components:
     SearchArtistOrAlbumItem:
       type: object
       description: |
-        One artist or album hit from `/api/v1/db/search`. The
+        One artist hit from `/api/v1/db/search`, and the fields every
+        album hit (SearchAlbumItem) shares with it. The
         `filepath` field is always the literal boolean `false` on
         artist/album rows — used by clients as a sentinel that
         distinguishes "browseable group" results from individual
@@ -1112,6 +1113,41 @@ components:
           nullable: true
           description: Filename of associated cover art, or `null` if none.
             Resolve via `/album-art/<file>`.
+        filepath:
+          type: boolean
+          enum: [false]
+          description: Always `false`. Sentinel value distinguishing this
+            from a track-shaped result.
+
+    SearchAlbumItem:
+      type: object
+      description: |
+        One album hit from `/api/v1/db/search` (the `albums` array): one
+        `/db/albums` card (see `Album`) — album rows sharing (name, year,
+        album_art_file) are one hit. The SearchArtistOrAlbumItem fields plus
+        the card's `year` and `album_artist`, named as `/db/albums` names
+        them, so `name`, `year` and `album_artist` sent to `/db/album-songs`
+        open exactly this card.
+      required: [name, album_art_file, album_artist, year, filepath]
+      properties:
+        name:
+          type: string
+          description: Album name.
+        album_art_file:
+          type: string
+          nullable: true
+          description: Filename of the card's cover art, or `null` if none.
+            Resolve via `/album-art/<file>`.
+        album_artist:
+          type: string
+          nullable: true
+          description: The card's credit as `/db/albums` gives it — the ALBUMARTIST
+            display string, else the primary album artist — when the card's visible
+            rows that name one agree; null when they disagree or none names one.
+        year:
+          type: integer
+          nullable: true
+          description: The card's year; null for an album with no year tag.
         filepath:
           type: boolean
           enum: [false]
@@ -4065,7 +4101,8 @@ paths:
           description: |
             Search results — five parallel arrays, one per category.
             Group hits (artists, albums) share the minimal `name` /
-            `album_art_file` / `filepath:false` shape; track hits (title,
+            `album_art_file` / `filepath:false` shape, album hits adding the
+            card's `year` and `album_artist`; track hits (title,
             files, lyrics) additionally carry the full canonical `metadata`
             object (and lyrics a `snippet`). Across algorithms the per-item
             shapes are identical by construction — both the LIKE and FTS5
@@ -4082,8 +4119,10 @@ paths:
                     description: Matched artists. `filepath` is always `false`.
                   albums:
                     type: array
-                    items: { $ref: "#/components/schemas/SearchArtistOrAlbumItem" }
-                    description: Matched albums. `filepath` is always `false`.
+                    items: { $ref: "#/components/schemas/SearchAlbumItem" }
+                    description: Matched albums, one hit per `/db/albums` card (album
+                      rows sharing name, year and album_art_file) and at most 30 cards,
+                      each credited as `/db/albums` credits it. `filepath` is always `false`.
                   title:
                     type: array
                     items: { $ref: "#/components/schemas/SearchTrackItem" }
