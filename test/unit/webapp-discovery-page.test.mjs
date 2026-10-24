@@ -733,7 +733,16 @@ const WINDOW_METHODS = ['tt', 'dmLive', 'dmDuration', 'dmText', 'openDiscoverMod
   'dmKeepView', 'dmKeepLine', 'dmKeepFiles', 'dmKeepWhose', 'dmKeepMarker', 'dmKeepSegments', 'dmKeepShown', 'dmKeepAnnounce', 'dmKeepHint', 'dmKeepLost',
   'dmKeepAct', 'dmKeepCancel', 'dmKeepPlay', 'dmKeepShow', 'dmKeepHold', 'dmJobPath', 'dmDestMoved', 'dmJobCancel', 'playDiscoverFile', 'queueDiscoverFile',
   'dmRecommendation', 'dmLayoutTags', 'dmLayoutFile', 'dmLayoutPeer', 'dmScopeTags', 'dmMissingAlbum', 'dmDestPath', 'dmDestPathOf', 'dmSlotNote',
-  'dmMetaParts', 'dmPeerStatus', 'dmMatchSeed', 'dmPct', 'dmAgo', 'dmLinksRecommendation', 'dmFindVisible', 'dmLinks', 'dmChipLabel', 'dmCopyTitle'];
+  'dmMetaParts', 'dmPeerStatus', 'dmMatchSeed', 'dmPct', 'dmAgo', 'dmLinksRecommendation', 'dmFindVisible', 'dmLinks', 'dmChipLabel', 'dmCopyTitle',
+  // entered from a connected server's pages (SPEC-fed §6): artist and folder
+  // focus, a browsed song's tags and credit, the folder's count, landings
+  // and states
+  'dmArtistFocus', 'dmFolderFocus', 'dmHidden', 'dmListenShown', 'dmCount', 'dmFolderRecommendation', 'dmFolder', 'dmLoadBrowsedFacts', 'dmTakePeerFacts',
+  'dmMergeFileTags', 'dmCreditFrom', 'dmLoadFolderScan', 'dmLoadFolderTags', 'dmFolderReady', 'dmFolderCountParts', 'dmFolderPlaySub', 'dmQueueFolder',
+  'dmKeepLeftOut', 'dmLandShown', 'dmLandings', 'dmLandChoose', 'dmLandHold', 'dmFolderLandingSent', 'dmFolderInto', 'dmFolderPlaceOk', 'dmFolderCap',
+  'dmFolderCapFailed', 'dmJobLanded', 'dmIntoLoad', 'dmIntoCrumbs', 'dmIntoLibraries', 'dmIntoLibrary', 'dmIntoInto', 'dmIntoUp', 'dmIntoNewFolder',
+  'dmIntoNaming', 'dmIntoBraced', 'dmIntoMissing', 'dmMirrorFoot', 'dmIntoStraight', 'dmPickerLibraries', 'dmPickerLandsAt', 'dmDestFocus',
+  'dmKeepGateChanged'];
 // Find elsewhere's own load (stubbed in every other window: it asks the
 // links plug-in, and the harness's `realLinks` lets it)
 const LINKS_METHODS = ['dmLoadLinks', 'ensureDiscoverPlugins', 'discoverLinksPlugin'];
@@ -769,7 +778,10 @@ function makeWindow({ reads = readsOf(), plugins = [COPY], jobsAllowed = true, d
     let discoverModalGen = 0;
     let discoverModalOpener = null;
     let discoverKeepPresses = 0;
+    const discoverGateWatchers = [];
     function onDiscoverModalKey() {}
+    ${VP_SRC.match(/\n {2}const FOLDER_TAGS_MAX = \d+;/)[0]}
+    ${vpModuleFn('dmAttrValue')}
     ${vpModuleFn('blankDiscoverModal')}
     ${vpModuleFn('dmNameKey')}
     ${vpModuleFn('dmOpenerOf')}
@@ -780,6 +792,7 @@ function makeWindow({ reads = readsOf(), plugins = [COPY], jobsAllowed = true, d
       methods: { ${WINDOW_METHODS.map((n) => `${n}: ${vpMethodSrc(n)}`).join(',\n')} },
       links: { ${LINKS_METHODS.map((n) => `${n}: ${vpMethodSrc(n)}`).join(',\n')} },
       blank: blankDiscoverModal,
+      gateWatchers: discoverGateWatchers,
     };`;
   // View album's element (its attributes) and the app's browse hand-off;
   // the album queue's federation rows
@@ -816,7 +829,7 @@ function makeWindow({ reads = readsOf(), plugins = [COPY], jobsAllowed = true, d
     ...mod.methods,
     ...(realLinks ? mod.links : {}),
   };
-  return { vm, loads, starts, toasts, viewed, fedQueued, ticks, copied, queued, explored, cancels };
+  return { vm, loads, starts, toasts, viewed, fedQueued, ticks, copied, queued, explored, cancels, gateWatchers: mod.gateWatchers };
 }
 const subText = (vm, row) => vm.dmText(row.sub);
 const copyJob = (over) => ({ id: 41, plugin: 'federation-copy', key: 'album:06676dc1', state: 'running', progress: 0.4, statusText: 'song 1 of 3 · Rooftop Cypher', params: { scope: 'album' }, recommendation: tapesRow(STAGE_B, '02 - Late Train Verse'), ...over });
@@ -829,7 +842,7 @@ describe('the recommendation window: album focus (vp.js)', () => {
     const m = vm.discover.modal;
     assert.equal(m.track, row, 'the best row itself, as received');
     assert.equal(m.focus, 'album');
-    assert.deepEqual(m.keep, { scope: 'album', onlyMissing: true });
+    assert.deepEqual(m.keep, { scope: 'album', onlyMissing: true, landing: 'mirror', into: null, tree: null });
     assert.equal(vm.dmKeepChosen(), 'album');
     assert.equal(vm.dmKeepScope(), 'album');
     assert.equal(vm.dmKeepStartLabel(), 'Add album · 3 songs');
@@ -840,7 +853,7 @@ describe('the recommendation window: album focus (vp.js)', () => {
     const page = makeWindow();
     await page.vm.openDiscoverModal(tapesRow(STAGE_B, 'A'), 'federation', { seedPlain: 'x' });
     assert.equal(page.vm.discover.modal.focus, null);
-    assert.deepEqual(page.vm.discover.modal.keep, { scope: 'song', onlyMissing: true });
+    assert.deepEqual(page.vm.discover.modal.keep, { scope: 'song', onlyMissing: true, landing: 'mirror', into: null, tree: null });
     assert.equal('view' in page.vm.discover.modal, false, 'no Federation | Plug-Ins view to remember');
     const older = makeWindow({ available: false });
     await older.vm.openDiscoverModal(tapesRow(STAGE_B, 'A'), 'federation', { view: 'plugins' });
@@ -1012,14 +1025,14 @@ describe('the recommendation window: another server\'s copy, and a job reopened 
     await missing.vm.openDiscoverModalForJob(mJob);
     m = missing.vm.discover.modal;
     assert.equal(m.focus, null);
-    assert.deepEqual(m.keep, { scope: 'artist', onlyMissing: true });
+    assert.deepEqual(m.keep, { scope: 'artist', onlyMissing: true, landing: 'mirror', into: null, tree: null });
     m.jobs = { 'federation-copy@artist-missing': mJob };
     assert.equal(missing.vm.dmKeepScope(), 'artist-missing');
     assert.equal(missing.vm.dmKeepRow().row.state, 'running');
 
     const artist = makeWindow({ reads: STAGE_READS() });
     await artist.vm.openDiscoverModalForJob(copyJob({ params: { scope: 'artist' } }));
-    assert.deepEqual(artist.vm.discover.modal.keep, { scope: 'artist', onlyMissing: false });
+    assert.deepEqual(artist.vm.discover.modal.keep, { scope: 'artist', onlyMissing: false, landing: 'mirror', into: null, tree: null });
     assert.equal(artist.vm.dmKeepScope(), 'artist', 'the plain artist copy, not the missing one');
 
     const song = makeWindow({ reads: STAGE_READS() });
@@ -1652,9 +1665,9 @@ describe('the recommendation window: header, Find elsewhere and the keyboard (vp
       return el;
     };
     const more = node('BUTTON', { 'data-dp': 'peerMore', 'data-i': 3 });
-    assert.deepEqual(opener(more), { el: more, sel: '[data-dp="peerMore"][data-i="3"]' });
+    assert.deepEqual(opener(more), { el: more, sel: '[data-dp="peerMore"][data-i="3"]', key: null });
     const stripRow = node('DIV', { class: 'discover-job pointer' });
-    assert.deepEqual(opener(stripRow), { el: stripRow, sel: null });
+    assert.deepEqual(opener(stripRow), { el: stripRow, sel: null, key: null });
     assert.equal(opener(node('BODY')), null, 'nothing had focus');
     assert.equal(opener(node('BUTTON', {}, { closest: (sel) => (sel === '.dmodal-shadow' ? {} : null) })), null, 'a control inside the window');
     assert.equal(opener(undefined), null);
@@ -1728,10 +1741,16 @@ describe('the recommendation window: header, Find elsewhere and the keyboard (vp
     assert.deepEqual(tabbables(null), []);
   });
 
-  test('the player\'s hotkeys skip a field, and any key inside the window (Space presses its buttons, never Play/Pause)', () => {
+  test('the player\'s hotkeys skip a field, any key inside the window, and a page control that opens it (Space presses its buttons, never Play/Pause)', () => {
     const skip = new Function(`${vpModuleFn('hotkeysSkip')}\nreturn hotkeysSkip;`)();
-    const target = (tagName, { inWindow = false, editable = false } = {}) => ({ tagName, isContentEditable: editable, closest: (sel) => (sel === '.dmodal-shadow' && inWindow ? {} : null) });
+    // `inside`: the classes of the element and its ancestors, as closest() matches a selector list
+    const target = (tagName, { inWindow = false, editable = false, inside = [] } = {}) => ({ tagName, isContentEditable: editable,
+      closest: (sel) => (sel.split(/,\s*/).some((one) => (one === '.dmodal-shadow' && inWindow) || inside.indexOf(one.replace(/^\./, '')) !== -1) ? {} : null) });
     assert.equal(skip(target('BUTTON', { inWindow: true })), true, 'a button in the window');
+    for (const cls of ['browse-keep', 'browse-keep-tab', 'browse-keep-more']) {
+      assert.equal(skip(target('BUTTON', { inside: [cls] })), true, `a connected server's page ${cls}: Space opens the window, as Enter does`);
+    }
+    assert.equal(skip(target('svg', { inside: ['browse-keep-tab'] })), true, 'its glyph too');
     assert.equal(skip(target('DIV', { inWindow: true })), true, 'the window itself (a click on its body)');
     assert.equal(skip(target('INPUT')), true);
     assert.equal(skip(target('SELECT')), true);
@@ -1748,7 +1767,7 @@ describe('index.html: the window\'s album focus', () => {
   const win = HTML.slice(HTML.indexOf('class="dmodal-shadow"'), HTML.indexOf('id="pop"'));
   test('the header names the album; Listen plays the album in its place; one meta line', () => {
     assert.match(win, /<h2 class="dmodal-title" id="dmodal-title">\{\{ dmHeadTitle\(\) \}\}<\/h2>/);
-    assert.match(win, /<div v-if="dmAlbumFocus\(\)" class="dm-play">[\s\S]*?v-on:click="dmQueueAlbum\(true\)"[\s\S]*?dmAlbumPlaySub\(\)[\s\S]*?v-on:click="dmQueueAlbum\(false\)"[\s\S]*?v-on:click="dmViewAlbum"/);
+    assert.match(win, /<div v-(?:else-)?if="dmAlbumFocus\(\)" class="dm-play">[\s\S]*?v-on:click="dmQueueAlbum\(true\)"[\s\S]*?dmAlbumPlaySub\(\)[\s\S]*?v-on:click="dmQueueAlbum\(false\)"[\s\S]*?v-on:click="dmViewAlbum"/);
     assert.match(win, /<div v-else class="dm-play">[\s\S]*?v-on:click="dmPlayNow"/);
     assert.match(win, /<div v-if="discover\.modal\.track\.album && !dmAlbumFocus\(\)" class="dm-fact">/, 'the album row is the play row\'s in album focus');
     assert.match(win, /<div v-if="dmMetaParts\(\)\.length" class="dmodal-meta">/);
@@ -3305,8 +3324,8 @@ describe('where files land: the editor (vp.js)', () => {
     vm.dmClosePicker();
     w.tick();
     assert.equal(w.focused(), 'change');
-    assert.match(VP_SRC, /if \(picker && picker\.browse\) \{ playlistVue\.dmBrowseToggle\(\); playlistVue\.dmHoldFocus\(\); return; \}\n\s*if \(picker\) \{ playlistVue\.dmClosePicker\(\); playlistVue\.dmHoldFocus\(\); return; \}\n\s*playlistVue\.closeDiscoverModal\(\);/,
-      'Esc: the list, then the editor, then the window');
+    assert.match(VP_SRC, /if \(picker && picker\.browse\) \{ playlistVue\.dmBrowseToggle\(\); playlistVue\.dmHoldFocus\(\); return; \}\n\s*if \(picker\) \{ playlistVue\.dmClosePicker\(\); playlistVue\.dmHoldFocus\(\); return; \}\n[\s\S]{0,240}if \(tree && tree\.naming && discoverState\.modal\.keep\.landing === 'folder' && playlistVue\.dmLandShown\(\)\) \{ playlistVue\.dmIntoNaming\(false\); playlistVue\.dmHoldFocus\(\); return; \}\n\s*playlistVue\.closeDiscoverModal\(\);/,
+      'Esc: the list, then the editor, then a folder being named under "Into a folder…", then the window');
   });
 
   test('a refused save keeps the editor open with the server\'s words under the layout — gone once the layout is edited; no answer: "try again"; Cancel saves nothing, the keyboard back on Change…', async () => {
@@ -4242,14 +4261,14 @@ describe('Keep a copy: the markup (index.html, vp.js dm-keep-body) and its words
   });
 
   test('the body: the bar or the editor, else the outcome — no live region of its own, the bar named by the headline, real buttons, Change… found again by data-dm-change', () => {
-    assert.match(BODY, /<dm-dest v-if="view\.kind !== 'state' \|\| \$root\.dmDestEditing\(\)" :scope="view\.scope"><\/dm-dest>/);
+    assert.match(BODY, /<dm-dest v-if="view\.bar \|\| \$root\.dmDestEditing\(\)" :scope="view\.scope"><\/dm-dest>\s*<div v-else-if="view\.kind === 'cap'" class="dm-keep-cap">[\s\S]*?<div v-else-if="view\.kind === 'state'" class="dm-out">/);
     assert.match(BODY, /<div id="dm-out-h" class="dm-out-headline" :class="'dm-tone-' \+ view\.tone">\{\{ view\.headline \}\}<\/div>/);
     assert.equal((BODY.match(/role="status"/g) || []).length, 0, 'the section\'s one region speaks (it is mounted before the card first changes)');
     assert.match(BODY, /<span v-if="view\.pct !== null" class="dm-out-pct"/);
     assert.match(BODY, /role="progressbar" aria-labelledby="dm-out-h" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="view\.progress === 'indeterminate' \? null : view\.progress" :aria-valuetext="view\.progressText \|\| null"/);
-    assert.match(BODY, /<div v-if="view\.line && !\$root\.dmDestEditing\(\)" class="dm-keep-line">/, 'the editor takes the refused line\'s place with the bar\'s');
+    assert.match(BODY, /<div v-if="view\.line && view\.kind !== 'cap' && !\$root\.dmDestEditing\(\)" class="dm-keep-line">/, 'the editor takes the refused line\'s place with the bar\'s (a folder\'s cap line is its own block)');
     assert.match(BODY, /<div v-if="view\.actions\.length && !\$root\.dmDestEditing\(\)" class="dm-keep-acts">/);
-    assert.match(BODY, /<button v-for="a in view\.actions" :key="a\.id" type="button" class="dm-btn" :class="btnClass\(a\)" :aria-disabled="a\.busy \? 'true' : null" :data-dm-act="a\.id" :data-dm-change="a\.id === 'change' \? '' : null" v-on:click="\$root\.dmKeepAct\(a\.id\)">/);
+    assert.match(BODY, /<button v-for="a in view\.actions" :key="a\.id" type="button" class="dm-btn" :class="btnClass\(a\)" :aria-disabled="a\.busy \|\| a\.disabled \? 'true' : null" :data-dm-act="a\.id" :data-dm-change="a\.id === 'change' \? '' : null" v-on:click="\$root\.dmKeepAct\(a\.id\)">/);
     assert.ok(!/<slot name="act">/.test(VP_SRC), 'the bar carries no Add of its own any more');
     // the section's live region: outside every v-if, first in the card, so
     // it is in the page before the first change (§7.5)
@@ -4570,7 +4589,7 @@ describe('where files land: the 2026-10-21 review (vp.js)', () => {
     ticks.splice(0);
     vm.dmKeepHold(true);
     ticks.splice(0).forEach((f) => f());
-    assert.deepEqual(asked.splice(0), ['.dm-keep [data-dm-change]', '.dm-seg-input:checked',
+    assert.deepEqual(asked.splice(0), ['.dm-keep [data-dm-change]', '.dm-seg-input:checked', '.dm-land-radio:checked',
       '.dm-keep-acts .dm-btn:not([data-dm-act="cancel"]):not([data-dm-act="cancelOther"]):not([data-dm-act="play"])']);
     assert.equal(closed, 1);
     vm.dmKeepHold();
@@ -4691,5 +4710,826 @@ describe('the strip\'s Retry sends the place the copy ran with (vp.js dtRetry)',
     await h.run(job({ params: { scope: 'album', destination: PIN } }));
     assert.deepEqual(h.reads, []);
     assert.equal(h.toasts[0].title, 'words: someone else on this server is already getting this');
+  });
+});
+
+// ── vp.js: the window entered from a connected server's pages ─────────────
+// (SPEC-fed §6, with the user's decisions of 2026-10-23: the mirror keeps
+// the layout's leading folders; "Into a folder…" starts as a new folder
+// named as the pressed one; the queue row's ⋮ is a way in.) The spec's
+// sample: Stage Peer B, its one library "music"; Boukmanflow's own albums
+// Borrowed Tapes, Harbour Lights and Second Shift, an appearance on Night
+// Market Sampler, songs in no album; this library has Harbour Lights and
+// saves copies to "copies" under Artist / Album.
+const PEER_BOUK = { albums: [
+  peerAlbumItem('Borrowed Tapes'),
+  peerAlbumItem('Harbour Lights', { year: 2021, year_min: 2021, year_max: 2021 }),
+  peerAlbumItem('Second Shift', { year: 2023, year_min: 2023, year_max: 2023 }),
+  peerAlbumItem('Night Market Sampler', { year: 2024, year_min: 2024, year_max: 2024, album_artist: 'Various Artists', artists: ['Color Out', 'Boukmanflow', 'ALM'], compilation: true }),
+  { name: null, year: null, album_art_file: null, album_artist: 'Boukmanflow', artists: ['Boukmanflow'], compilation: false, year_min: null, year_max: null, track_count: null },
+] };
+const LOCAL_HARBOUR = { albums: [peerAlbumItem('Harbour Lights')] };
+const TAPES3 = ['01 - Rooftop Cypher', '02 - Late Train Verse', '03 - Corner Store Loop'];
+const tapePath = (t, folder = 'Boukmanflow/Borrowed Tapes') => `music/${folder}/${t}.mp3`;
+const TAPES_FOLDER = '/music/Boukmanflow/Borrowed Tapes';
+// a song's tags as the peer's metadata names them, from its path
+const tagsOf = (p, over) => ({ title: p.split('/').pop().replace(/^\d+ - /, '').replace(/\.mp3$/, ''), artist: 'Boukmanflow', 'artist-display': 'Boukmanflow',
+  album: p.split('/')[2], year: 2019, duration: 8, format: 'mp3', genres: ['Hip-Hop'], ...over });
+const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+// Stage Peer B as browsing reads it; `asked` records what the window asked
+function peerB({ listing = TAPES3.map((t) => tapePath(t)), meta = null, peerAlbums = PEER_BOUK, localAlbums = LOCAL_HARBOUR, albumSongs = songsOf(3), batch = null, scan = null } = {}) {
+  const asked = { scans: [], batches: [], metadata: [], albumSongs: [], artistAlbums: [] };
+  return { asked, reads: {
+    federationPeers: async () => ({ peers: [{ ...STAGE_B, lastSeen: '2026-10-23 09:58:00', lastStatus: 'ok' }] }),
+    peer: {
+      metadata: async (id, fp) => { asked.metadata.push(fp); return meta ? meta(fp) : { metadata: { format: 'mp3' } }; },
+      albumSongs: async (id, q) => { asked.albumSongs.push(q); return albumSongs; },
+      artistAlbums: async (id, q) => { asked.artistAlbums.push(q); return peerAlbums; },
+      recursiveScan: async (id, dir) => { asked.scans.push(dir); return scan ? scan(dir) : listing; },
+      metadataBatch: async (id, paths) => { asked.batches.push(paths); return batch ? batch(paths) : Object.fromEntries(paths.map((p) => [p, { filepath: p, metadata: tagsOf(p) }])); },
+    },
+    artistAlbums: async () => localAlbums,
+  } };
+}
+// The window over the destination harness, opened from browsing: this
+// server's starts and lookups recorded (a folder recommendation answers
+// with its own folder key)
+async function browseWindow(track, opts, { peer = peerB(), layout = LAYOUT, maxFolderSongs = 1000, wait = true } = {}) {
+  const w = makeDestWindow({ reads: peer.reads, server: { view: viewOf({ vpath: 'copies', base: '', layout, source: 'user' }) } });
+  w.vm.discover.plugins.maxFolderSongs = maxFolderSongs;
+  w.api.currentServer.supportedAudioFiles = { mp3: true, flac: true };
+  const starts = [];
+  const lookups = [];
+  w.api.discoveryJobLookup = async (rec) => { lookups.push(rec); return { key: 'song:k', keys: { song: 'song:k', folder: `folder:${rec.filepath}` }, jobs: [] }; };
+  w.api.discoveryJobStart = async (name, rec, choice, scope, destination, landing) => {
+    starts.push({ name, rec, scope, destination, landing });
+    return { job: { id: 70 + starts.length, plugin: name, key: `${scope}:k`, state: 'queued', params: { scope, landing, destination }, recommendation: rec } };
+  };
+  const opening = w.vm.openDiscoverModal(track, 'federation', opts);
+  if (wait) { await opening; await flush(); }
+  return { ...w, asked: peer.asked, starts, lookups, opening };
+}
+const folderTrack = (path = TAPES_FOLDER, title) => ({ peer: { ...STAGE_B }, filepath: path, title: title || path.split('/').pop() });
+const FOLDER_OPTS = { focus: 'folder', scope: 'folder', from: 'browse' };
+// a folder copy of this account's, as the jobs route sends it
+const folderJob = (over) => ({ id: 95, plugin: 'federation-copy', key: 'folder:bt', state: 'done', progress: null, statusText: null, cancelRequested: false, error: null,
+  params: { scope: 'folder', destination: COPIES }, recommendation: { source: 'federation', peer: { ...STAGE_B }, filepath: 'music/Boukmanflow/Borrowed Tapes', title: 'Borrowed Tapes' },
+  createdAt: 1000, updatedAt: 1000, finishedAt: 1000, ...over });
+const folderResult = ({ copied = [], owned = [], failed = [], landed = 'copies/Boukmanflow/Borrowed Tapes', skippedFiles = [], stopped = null, total } = {}) => {
+  const all = total == null ? copied.length + owned.length + failed.length : total;
+  return { scope: 'folder', folder: { path: 'music/Boukmanflow/Borrowed Tapes', name: 'Borrowed Tapes', landed }, layout: 'mirror',
+    songs: { total: all, copied: copied.map((t) => ({ from: tapePath(t), vpath: 'copies', filepath: `copies/Boukmanflow/Borrowed Tapes/${t}.mp3` })),
+      skipped: owned.map((t) => ({ from: tapePath(t), why: 'owned', at: `music/Boukmanflow/Harbour Lights/${t}.mp3` })), failed: failed.map((t) => ({ from: tapePath(t), error: 'x' })) },
+    counts: { total: all, copied: copied.length, skipped: owned.length, failed: failed.length }, skippedFiles, stopped, peer: STAGE_B, destination: COPIES };
+};
+const SLOT_FOLDER = 'federation-copy@folder';
+
+describe('from browsing: album focus — the album page\'s header, a card, a compilation card (SPEC-fed §6.2)', () => {
+  const header = { peer: { ...STAGE_B }, album: 'Borrowed Tapes', albumArtist: 'Boukmanflow', year: 2019, albumArt: 'bt.jpg', filepath: null };
+  test('the header\'s window: Album chosen, Artist the credit beside it, no View album, no match line', async () => {
+    const { vm, lookups } = await browseWindow(header, { focus: 'album', from: 'browse', hide: ['viewAlbum'] });
+    const m = vm.discover.modal;
+    assert.deepEqual([m.focus, m.from, m.track.artist, m.hide], ['album', 'browse', 'Boukmanflow', ['viewAlbum']], 'Artist is the album\'s credit');
+    assert.deepEqual(vm.dmKeepChoices().map((c) => [c.scope, c.sub]), [['album', '3 songs'], ['artist', 'Boukmanflow · 3 albums']]);
+    assert.deepEqual([vm.dmHidden('viewAlbum'), vm.dmHidden('viewArtist')], [true, false]);
+    assert.equal(vm.dmKeepStartLabel(), 'Add album · 3 songs');
+    assert.equal(pathLine(vm.dmDestPath('album')), 'copies › Boukmanflow › Borrowed Tapes');
+    assert.deepEqual(vm.dmMetaParts().map((p) => p.kind), ['status'], 'a browsed item has no similarity: no match line');
+    assert.equal(lookups[0].albumArtist, 'Boukmanflow', 'the start and the lookup send the page\'s credit');
+  });
+
+  test('a compilation card: Album alone (no strip), whole under its credit, no Listen artist; a card names its own artist; hide keeps only the two links', async () => {
+    const comp = { peer: { ...STAGE_B }, album: 'Night Market Sampler', albumArtist: 'Various Artists', artist: null, year: 2024, compilation: true };
+    const { vm } = await browseWindow(comp, { focus: 'album', from: 'browse', hide: ['viewArtist', 'viewSomethingElse'] });
+    assert.deepEqual(vm.dmKeepChoices().map((c) => [c.scope, c.sub]), [['album', 'Whole compilation · 3 songs']], 'one choice: no strip');
+    assert.equal(vm.discover.modal.track.artist, null, 'no artist fact row, no Artist choice');
+    assert.equal(pathLine(vm.dmDestPath('album')), 'copies › Various Artists › Night Market Sampler');
+    assert.deepEqual(vm.discover.modal.hide, ['viewArtist']);
+    // a card that leaves the artist out: its credit, unless a compilation
+    const plain = await browseWindow({ ...comp, artist: undefined, albumArtist: 'Boukmanflow', album: 'Borrowed Tapes', compilation: false }, { focus: 'album', from: 'browse' });
+    assert.equal(plain.vm.discover.modal.track.artist, undefined, 'a key it named (even undefined) is the card\'s own');
+    const { artist: _drop, ...noKey } = { ...comp };
+    const left = await browseWindow(noKey, { focus: 'album', from: 'browse' });
+    assert.equal(left.vm.discover.modal.track.artist, null, 'no artist key on a compilation: none');
+    const { artist: _drop2, ...noKey2 } = { ...header };
+    const own = await browseWindow(noKey2, { focus: 'album', from: 'browse' });
+    assert.equal(own.vm.discover.modal.track.artist, 'Boukmanflow');
+  });
+
+  test('Discover\'s album window keeps its own: no from, nothing hidden, the row as received', async () => {
+    const { vm } = await keepWindow({ focus: 'album' });
+    assert.deepEqual([vm.discover.modal.from, vm.discover.modal.hide, vm.discover.modal.folder], [null, [], null]);
+  });
+});
+
+describe('from browsing: a song names its album\'s credit, or Album waits for one (SPEC-fed §6.1, G8)', () => {
+  const genreRow = (over) => ({ peer: { ...STAGE_B }, filepath: tapePath(LATE), title: 'Late Train Verse', artist: 'Boukmanflow', album: 'Borrowed Tapes', year: 2019, duration: 8, ...over });
+  test('a genre row with no credit: found in the peer\'s album listing — the one album of that name whose years hold the song\'s — then the album listed by it', async () => {
+    const { vm, asked } = await browseWindow(genreRow(), { from: 'browse' });
+    assert.equal(vm.discover.modal.track.albumArtist, 'Boukmanflow');
+    assert.deepEqual(vm.dmKeepChoices().map((c) => c.scope), ['song', 'album', 'artist']);
+    assert.deepEqual(asked.albumSongs.pop(), { album: 'Borrowed Tapes', artist: null, album_artist: 'Boukmanflow', year: 2019 }, 'the album as its credit lists it');
+  });
+
+  test('credits that disagree, no match, two matches, the listing not answering: no Album — never the track artist in its place', async () => {
+    const split = { albums: [peerAlbumItem('Borrowed Tapes', { album_artist: null })] };
+    for (const [peerAlbums, why] of [[split, 'disagree'], [{ albums: [] }, 'no match'], [{ albums: [peerAlbumItem('Borrowed Tapes'), peerAlbumItem('Borrowed Tapes', { year_min: 2018, year_max: 2020 })] }, 'two'], [null, 'no answer']]) {
+      const { vm } = await browseWindow(genreRow(), { from: 'browse' }, { peer: peerB({ peerAlbums }) });
+      assert.deepEqual(vm.dmKeepChoices().map((c) => c.scope), ['song', 'artist'], why);
+    }
+    // a year outside the album's years is not that album
+    const { vm } = await browseWindow(genreRow({ year: 2023 }), { from: 'browse' });
+    assert.equal(vm.discover.modal.track.albumArtist, undefined);
+  });
+
+  test('the song\'s own album-artist (a server since S2) is the credit; an album page\'s credit wins over both', async () => {
+    const meta = (fp) => ({ metadata: tagsOf(fp, { album: 'Night Market Sampler', title: 'Night Market Cypher', 'album-artist': 'Various Artists' }) });
+    const { vm } = await browseWindow(genreRow({ album: undefined, title: 'Night Market Cypher' }), { from: 'browse' }, { peer: peerB({ meta, peerAlbums: null }) });
+    assert.deepEqual([vm.discover.modal.track.album, vm.discover.modal.track.albumArtist], ['Night Market Sampler', 'Various Artists']);
+    assert.ok(vm.dmKeepCompilation(), 'a compilation: Album copies it whole');
+    const page = await browseWindow(genreRow({ albumArtist: 'Boukmanflow' }), { from: 'browse', hide: ['viewAlbum'] }, { peer: peerB({ meta: (fp) => ({ metadata: tagsOf(fp, { 'album-artist': 'Somebody Else' }) }) }) });
+    assert.equal(page.vm.discover.modal.track.albumArtist, 'Boukmanflow');
+  });
+
+  test('the same row on Discover keeps today\'s rule: Album by the track artist when no credit is named', async () => {
+    const { vm } = await keepWindow({ row: { ...tapesRow(STAGE_B, LATE), albumArtist: undefined }, reads: readsOf({ albumSongs: songsOf(3), peerAlbums: { albums: [] } }) });
+    assert.deepEqual(vm.dmKeepChoices().map((c) => c.scope), ['song', 'album', 'artist']);
+  });
+});
+
+describe('from browsing: an explorer file row — its tags read into the song (G24), the Folder choice (SPEC-fed §6.3)', () => {
+  const fileRow = () => ({ peer: { ...STAGE_B }, filepath: `/${tapePath(LATE)}`, title: `${LATE}.mp3` });
+  const FILE_OPTS = { from: 'browse', folder: { path: TAPES_FOLDER, name: 'Borrowed Tapes' } };
+  test('before the tags: the file name, no subtitle, This song · Folder; after: the song, Album and Artist appear, Find elsewhere asks, the lookup asks again', async () => {
+    const read = deferred();
+    const peer = peerB({ meta: () => read.promise });
+    const w = await browseWindow(fileRow(), FILE_OPTS, { peer, wait: false });
+    await flush();
+    const { vm, loads, lookups } = w;
+    assert.deepEqual([vm.dmHeadTitle(), vm.dmSubtitle()], [`${LATE}.mp3`, '']);
+    assert.deepEqual(vm.dmKeepChoices().map((c) => [c.scope, c.sub, c.aria]), [['song', '', `This song: ${LATE}.mp3`], ['folder', 'Borrowed Tapes', 'Folder: Borrowed Tapes and everything in it']]);
+    assert.equal(loads.includes('links'), false, 'Find elsewhere waits for the tags');
+    assert.equal(vm.discover.modal.loading, true, '"Looking up…" meanwhile');
+    read.resolve({ metadata: tagsOf(tapePath(LATE)) });
+    await w.opening;
+    await flush();
+    assert.deepEqual([vm.dmHeadTitle(), vm.dmSubtitle()], ['Late Train Verse', 'Boukmanflow · Borrowed Tapes · 2019 · 0:08']);
+    assert.deepEqual(vm.dmKeepChoices().map((c) => c.scope), ['song', 'album', 'artist', 'folder'], 'This song · Album · Artist · Folder');
+    assert.ok(loads.includes('links'));
+    assert.deepEqual(lookups.map((r) => [r.title, r.filepath]), [[`${LATE}.mp3`, `/${tapePath(LATE)}`], ['Borrowed Tapes', 'music/Boukmanflow/Borrowed Tapes'],
+      ['Late Train Verse', `/${tapePath(LATE)}`], ['Borrowed Tapes', 'music/Boukmanflow/Borrowed Tapes']], 'the song and its folder, again once the song reads as itself');
+    assert.equal(vm.discover.modal.recKeys.folder, 'folder:music/Boukmanflow/Borrowed Tapes', 'the folder\'s own key, not the song\'s file (G27)');
+  });
+
+  test('Folder chosen: counted once — its sub "3 songs", its name what it copies — the header and Listen stay the song\'s', async () => {
+    const { vm, asked } = await browseWindow(fileRow(), FILE_OPTS, { peer: peerB({ meta: (fp) => ({ metadata: tagsOf(fp.slice(1)) }) }) });
+    assert.deepEqual(asked.scans, [], 'never on open');
+    vm.dmKeepChoose('folder');
+    await flush();
+    const seg = vm.dmKeepChoices().find((c) => c.scope === 'folder');
+    assert.deepEqual([seg.sub, seg.aria], ['3 songs', 'Folder: Borrowed Tapes, 3 songs']);
+    vm.dmKeepChoose('song');
+    vm.dmKeepChoose('folder');
+    await flush();
+    assert.deepEqual(asked.scans, [TAPES_FOLDER], 'one scan');
+    assert.deepEqual([vm.dmHeadTitle(), vm.dmListenShown(), vm.dmFolderFocus()], ['Late Train Verse', true, false]);
+    assert.equal(card(vm.dmKeepView()).acts[0], 'primary Add folder · 3 songs');
+    assert.equal(vm.dmLandShown(), true);
+  });
+
+  test('no Folder for a song at its library\'s root, nor on Discover — ever', async () => {
+    const root = await browseWindow(fileRow(), { from: 'browse', folder: { path: '/music', name: 'music' } });
+    assert.equal(root.vm.dmKeepChoices().some((c) => c.scope === 'folder'), false);
+    const discover = await keepWindow();
+    await discover.vm.openDiscoverModal(tapesRow(STAGE_B, LATE), 'federation', { folder: { path: TAPES_FOLDER, name: 'Borrowed Tapes' } });
+    assert.deepEqual(discover.vm.dmKeepChoices().map((c) => c.scope), ['song', 'album', 'artist'], 'a folder from no browse page is no choice');
+    assert.equal(discover.vm.discover.modal.folder, null);
+  });
+});
+
+describe('from browsing: artist focus (SPEC-fed §6.4)', () => {
+  const artistOpen = (peer) => browseWindow({ peer: { ...STAGE_B }, artist: 'Boukmanflow' }, { focus: 'artist', from: 'browse' }, { peer });
+  test('the header, no Listen, no Find elsewhere, no Get it; Artist alone with only the missing ticked; what it leaves out', async () => {
+    const { vm, loads, asked } = await artistOpen();
+    assert.deepEqual([vm.dmHeadTitle(), vm.dmSubtitle()], ['Boukmanflow', 'Artist · 4 albums on Stage Peer B']);
+    assert.deepEqual(vm.dmMetaParts().map((p) => [p.kind, p.text]), [['status', 'Stage Peer B online']]);
+    assert.deepEqual([vm.dmListenShown(), vm.dmFindVisible(), vm.dmGetItRows().length, loads.includes('links')], [false, false, 0, false]);
+    assert.deepEqual(asked.metadata, [], 'no file to read');
+    assert.deepEqual(vm.dmKeepChoices().map((c) => c.scope), ['artist'], 'one choice: no strip');
+    assert.deepEqual([vm.dmKeepMissingChoice(), vm.dmKeepMissingLabel(), vm.dmKeepScope()], [true, 'Only the 2 albums you don’t have', 'artist-missing']);
+    assert.equal(vm.dmKeepLeftOut(), 'Leaves out Night Market Sampler: Boukmanflow only appears on it. Songs outside an album stay out too.');
+    assert.equal(pathLine(vm.dmDestPath(vm.dmKeepScope())), 'copies › Boukmanflow › one folder per album');
+    assert.deepEqual(card(vm.dmKeepView()).acts, ['primary Add 2 albums']);
+    vm.discover.modal.keep.onlyMissing = false;
+    assert.deepEqual(card(vm.dmKeepView()).acts, ['primary Add 3 albums']);
+  });
+
+  test('several albums left out are counted; nothing left out says nothing', async () => {
+    const two = { albums: PEER_BOUK.albums.slice(0, 4).concat(peerAlbumItem('Block Party', { album_artist: 'Various Artists', artists: ['Boukmanflow'], compilation: true })) };
+    assert.equal((await artistOpen(peerB({ peerAlbums: two }))).vm.dmKeepLeftOut(), 'Leaves out 2 albums Boukmanflow only appears on.');
+    assert.equal((await artistOpen(peerB({ peerAlbums: { albums: PEER_BOUK.albums.slice(0, 3) } }))).vm.dmKeepLeftOut(), '');
+  });
+
+  test('the left-out line under Artist in a browsed album\'s window; never in Discover\'s', async () => {
+    const browsed = await browseWindow({ peer: { ...STAGE_B }, album: 'Borrowed Tapes', albumArtist: 'Boukmanflow', year: 2019 }, { focus: 'album', from: 'browse', hide: ['viewAlbum'] });
+    assert.equal(browsed.vm.dmKeepLeftOut(), '', 'Album chosen: nothing to say');
+    browsed.vm.dmKeepChoose('artist');
+    assert.match(browsed.vm.dmKeepLeftOut(), /^Leaves out Night Market Sampler/);
+    const discover = await keepWindow({ focus: 'album', reads: readsOf({ albumSongs: songsOf(3), peerAlbums: PEER_BOUK, localAlbums: LOCAL_HARBOUR }) });
+    discover.vm.dmKeepChoose('artist');
+    assert.equal(discover.vm.dmKeepLeftOut(), '');
+  });
+});
+
+describe('from browsing: folder focus — the header, the count, Listen (SPEC-fed §6.5.1–§6.5.3)', () => {
+  test('one recursive listing on open: "Counting…" with Listen dimmed and Add uncounted, then "3 songs · no subfolders"', async () => {
+    const answer = deferred();
+    const w = await browseWindow(folderTrack(), FOLDER_OPTS, { peer: peerB({ scan: () => answer.promise }), wait: false });
+    await flush();
+    const { vm, asked, fedQueued } = w;
+    assert.deepEqual([vm.dmHeadTitle(), vm.dmSubtitle()], ['Borrowed Tapes', 'Folder · music › Boukmanflow › Borrowed Tapes']);
+    assert.deepEqual(vm.dmMetaParts().map((p) => [p.kind, p.text]), [['status', 'Stage Peer B'], ['text', 'Counting…']], 'a grey dot while it counts');
+    assert.deepEqual([vm.dmFolderReady(), vm.dmFolderPlaySub(), vm.dmKeepStartLabel('folder')], [false, '', 'Add folder'], 'Add never waits on the count');
+    vm.dmQueueFolder(false);
+    assert.equal(fedQueued.length, 0);
+    answer.resolve(TAPES3.map((t) => tapePath(t)).concat(['music/Boukmanflow/Borrowed Tapes/cover.jpg', 'music/Boukmanflow/Borrowed Tapes/.hidden.mp3']));
+    await w.opening;
+    assert.deepEqual(vm.dmMetaParts().map((p) => p.text), ['Stage Peer B online', '3 songs', 'no subfolders'], 'what the copy takes: no picture, no dot file');
+    assert.deepEqual([vm.dmFolderReady(), vm.dmFolderPlaySub(), vm.dmKeepStartLabel('folder')], [true, '3 songs', 'Add folder · 3 songs']);
+    assert.deepEqual(asked.scans, [TAPES_FOLDER]);
+    assert.deepEqual(vm.dmRecommendation(), { source: 'federation', peer: { ...STAGE_B }, filepath: 'music/Boukmanflow/Borrowed Tapes', title: 'Borrowed Tapes' });
+    assert.deepEqual([vm.dmFindVisible(), vm.dmGetItRows().length, vm.dmKeepChoices().map((c) => c.scope)], [false, 0, ['folder']]);
+  });
+
+  test('Listen: Add to queue queues them all in path order and says so; Play folder plays the first, the rest after it, and closes', async () => {
+    const { vm, fedQueued, toasts, queued } = await browseWindow(folderTrack(), FOLDER_OPTS);
+    vm.dmQueueFolder(false);
+    assert.deepEqual(fedQueued.map((a) => [a[1], a[3]]), TAPES3.map((t) => [tapePath(t), true]));
+    assert.deepEqual([toasts.pop().title, vm.discover.modal.open], ['Added to the queue', true]);
+    vm.dmQueueFolder(true);
+    assert.deepEqual([queued.pop(), fedQueued.slice(3).map((a) => a[3]), vm.discover.modal.open], ['cleared', [false, true, true], false]);
+  });
+
+  test('subfolders, a big folder (locale numbers), a count that failed, a peer not answering', async () => {
+    const bouk = ['Borrowed Tapes', 'Harbour Lights', 'Second Shift'].flatMap((a) => TAPES3.map((t) => tapePath(t, `Boukmanflow/${a}`)));
+    const nine = await browseWindow(folderTrack('/music/Boukmanflow'), FOLDER_OPTS, { peer: peerB({ listing: bouk }) });
+    assert.deepEqual(nine.vm.dmMetaParts().slice(1).map((p) => p.text), ['9 songs', '3 subfolders']);
+    const archive = Array.from({ length: 1240 }, (_, i) => `music/Night Owl Radio Archive/Show ${i % 56}/Hour ${i}.mp3`);
+    const big = await browseWindow(folderTrack('/music/Night Owl Radio Archive'), FOLDER_OPTS, { peer: peerB({ listing: archive }) });
+    assert.deepEqual(big.vm.dmMetaParts().slice(1).map((p) => p.text), ['1,240 songs', '56 subfolders']);
+    assert.equal(big.vm.dmFolderPlaySub(), '1,240 songs');
+    const failed = await browseWindow(folderTrack(), FOLDER_OPTS, { peer: peerB({ scan: () => { throw httpError(502, { error: 'peer unreachable' }); } }) });
+    const parts = failed.vm.dmMetaParts();
+    assert.deepEqual([parts[0].dot, parts.pop().text], ['off', 'Couldn’t count its songs'], 'not answering: no read of the window\'s came back');
+    assert.match(parts[0].text, /^Stage Peer B not answering$/);
+    assert.match(parts[1].text, /^last seen /);
+    assert.deepEqual([failed.vm.dmFolderReady(), failed.vm.dmKeepStartLabel('folder'), failed.vm.dmLandShown()], [false, 'Add folder', true], 'landings stay; Add is never disabled for offline');
+    assert.equal(card(failed.vm.dmKeepView()).acts[0], 'primary Add folder');
+    assert.equal(failed.vm.dmKeepView().actions[0].disabled, false);
+  });
+});
+
+describe('from browsing: where a folder lands (SPEC-fed §6.5.4, user decisions 1–2)', () => {
+  test('As on Stage Peer B (the default): its own folders under the saved library, at most 3 files, its path inside "music" — no Change…', async () => {
+    const { vm } = await browseWindow(folderTrack(), FOLDER_OPTS);
+    assert.deepEqual(vm.dmLandings().map((l) => [l.mode, l.label, l.sub, l.on]), [
+      ['mirror', 'As on Stage Peer B', 'Its own folders, as they are there', true],
+      ['folder', 'Into a folder…', 'One you pick, for this copy only', false],
+      ['tags', 'By your layout', 'Each song by its tags, like any other copy', false]]);
+    const p = vm.dmDestPath('folder');
+    assert.deepEqual([pathLine(p), p.files, vm.dmMirrorFoot()], ['copies › Boukmanflow › Borrowed Tapes', { lines: TAPES3.map((t) => `${t}.mp3`), more: 0 }, 'Its path inside “music” on Stage Peer B']);
+    const v = vm.dmKeepView();
+    assert.deepEqual([v.kind, v.bar, v.landing, card(v).acts], ['idle', false, 'mirror', ['primary Add folder · 3 songs']], 'no path bar, no Change…: the layout does not apply');
+  });
+
+  test('user decision 1 (S3): the layout\'s leading folders lead the mirror too — "copies › From friends › Boukmanflow › Borrowed Tapes"; the G18 line is gone', async () => {
+    const { vm } = await browseWindow(folderTrack(), FOLDER_OPTS, { layout: 'From friends/{{ALBUMARTIST}}/{{ALBUM}}' });
+    const p = vm.dmDestPath('folder');
+    assert.equal(pathLine(p), 'copies › From friends › Boukmanflow › Borrowed Tapes');
+    assert.deepEqual(p.crumbs.map((c) => c.kind), ['base', 'rendered', 'rendered']);
+    assert.equal(EN['discover.keep.landing.leadUnused'], undefined);
+    assert.equal(VP_SRC.indexOf('leadUnused'), -1);
+  });
+
+  test('a folder of subfolders: each file under its folder, then "and 6 more songs" — never the whole folder', async () => {
+    const bouk = ['Borrowed Tapes', 'Harbour Lights', 'Second Shift'].flatMap((a) => TAPES3.map((t) => tapePath(t, `Boukmanflow/${a}`)));
+    const { vm } = await browseWindow(folderTrack('/music/Boukmanflow'), FOLDER_OPTS, { peer: peerB({ listing: bouk }) });
+    const p = vm.dmDestPath('folder');
+    assert.deepEqual([pathLine(p), p.files.lines, tEn('discover.keep.moreFiles', { count: p.files.more })],
+      ['copies › Boukmanflow', TAPES3.map((t) => `Borrowed Tapes/${t}.mp3`), 'and 6 more songs']);
+  });
+
+  test('Into a folder…: a new folder named as the pressed one in the saved library, its list always open, Up, a folder, New folder… (user decision 2)', async () => {
+    const w = await browseWindow(folderTrack(), FOLDER_OPTS);
+    const { vm, calls } = w;
+    vm.dmLandChoose('folder');
+    await flush();
+    const m = vm.discover.modal;
+    assert.deepEqual([m.keep.into, vm.dmIntoCrumbs(), calls.listed.pop()], [{ vpath: 'copies', path: 'Borrowed Tapes' }, ['copies', 'Borrowed Tapes'], '/copies/Borrowed Tapes']);
+    assert.deepEqual([m.keep.tree.dirs, vm.dmIntoMissing(), vm.dmIntoStraight()], [[], true, ''], 'not there yet — the first file makes it; named as the pressed one');
+    assert.deepEqual([pathLine(vm.dmDestPath('folder')), vm.dmDestPath('folder').files.lines.length], ['copies › Borrowed Tapes', 3]);
+    assert.deepEqual(vm.dmFolderLandingSent(), { vpath: 'copies', path: 'Borrowed Tapes' });
+    assert.deepEqual([vm.dmLandShown(), vm.dmKeepView().bar], [true, false]);
+    vm.dmIntoUp();
+    await flush();
+    assert.deepEqual([vm.dmIntoCrumbs(), m.keep.tree.dirs, vm.dmIntoMissing()], [['copies'], ['from-peers', 'Boukmanflow'], false]);
+    assert.equal(vm.dmIntoStraight(), 'Its files go straight into copies, with no “Borrowed Tapes” folder of their own.', 'the library root: the line names the library');
+    vm.dmIntoInto('from-peers');
+    await flush();
+    assert.deepEqual([vm.dmIntoCrumbs(), m.keep.tree.dirs], [['copies', 'from-peers'], ['Stage Peer B', 'Stage Peer C', '2025 archive']]);
+    assert.equal(vm.dmIntoStraight(), 'Its files go straight into from-peers, with no “Borrowed Tapes” folder of their own.');
+    // New folder…: the pressed folder's name in it; a brace dims its Add, the place stays
+    vm.dmIntoNewFolder();
+    assert.deepEqual([m.keep.tree.naming, m.keep.tree.newName], [true, 'Borrowed Tapes']);
+    m.keep.tree.newName = 'Tapes {2019}';
+    vm.dmIntoNewFolder();
+    assert.deepEqual([vm.dmIntoBraced(), m.keep.into.path, vm.dmFolderPlaceOk()], ['Tapes {2019}', 'from-peers', true], 'the name\'s Add does nothing; Add folder still works');
+    m.keep.tree.newName = 'From Sam';
+    vm.dmIntoNewFolder();
+    assert.deepEqual([m.keep.into, m.keep.tree.naming, vm.dmIntoMissing()], [{ vpath: 'copies', path: 'from-peers/From Sam' }, false, true], 'named, known not to exist: nothing listed');
+    // Esc while naming: the field goes, the place stays
+    vm.dmIntoNewFolder();
+    vm.dmIntoNaming(false);
+    assert.deepEqual([m.keep.tree.naming, m.keep.into.path], [false, 'from-peers/From Sam']);
+    // another library: the pressed folder's name at its root
+    vm.dmIntoLibrary('music');
+    await flush();
+    assert.deepEqual([m.keep.into, calls.listed.pop()], [{ vpath: 'music', path: 'Borrowed Tapes' }, '/music/Borrowed Tapes']);
+    assert.deepEqual(vm.dmIntoLibraries(), ['music', 'copies']);
+    assert.equal(pathLine(vm.dmDestPath('folder')), 'music › Borrowed Tapes', 'the chosen library, not the saved one');
+  });
+
+  test('a pressed folder whose name has a brace: the first place keeps it, the note says why, and Add folder waits', async () => {
+    const { vm, starts } = await browseWindow(folderTrack('/music/Boukmanflow/Tapes {2019}'), FOLDER_OPTS, { peer: peerB({ listing: TAPES3.map((t) => tapePath(t, 'Boukmanflow/Tapes {2019}')) }) });
+    vm.dmLandChoose('folder');
+    await flush();
+    assert.equal(vm.dmIntoBraced(), 'Tapes {2019}');
+    assert.equal(tEn('discover.modal.dest.folderBraces', { folder: vm.dmIntoBraced() }), '“Tapes {2019}” has a brace in its name, which a layout reads as a variable. Rename the folder to start from it.');
+    const add = vm.dmKeepView().actions[0];
+    assert.deepEqual([add.id, add.disabled], ['add', true]);
+    await vm.dmKeepAct('add');
+    assert.deepEqual(starts, [], 'a dimmed Add does nothing');
+    vm.dmLandChoose('mirror');
+    assert.equal(vm.dmKeepView().actions[0].disabled, false, 'as on the peer: its name is the peer\'s word, made safe');
+  });
+
+  test('By your layout: the tags read once (100 songs or fewer) — songs that agree draw the exact path and their files; Change… is the layout\'s', async () => {
+    const { vm, asked } = await browseWindow(folderTrack(), FOLDER_OPTS);
+    vm.dmLandChoose('tags');
+    await flush();
+    const p = vm.dmDestPath('folder');
+    assert.deepEqual([pathLine(p), p.files.lines], ['copies › Boukmanflow › Borrowed Tapes', TAPES3.map((t) => `${t}.mp3`)]);
+    assert.deepEqual([vm.dmKeepView().bar, vm.dmPickerLandsAt('folder')], [true, 'Borrowed Tapes lands at'], 'the path bar, its Saved line and Change…');
+    vm.discover.modal.picker = { vpath: 'copies' };
+    vm.dmLandChoose('mirror');
+    assert.equal(vm.discover.modal.picker, null, 'the editor is the layout\'s: it goes with it');
+    vm.dmLandChoose('tags');
+    await flush();
+    assert.equal(asked.batches.length, 1, 'read once');
+    assert.deepEqual(asked.batches[0], TAPES3.map((t) => tapePath(t)));
+  });
+
+  test('By your layout: three albums are "one folder per album" (no files); disagreeing artists a slot; the album credit (S2) files a compilation; past 100 songs no read', async () => {
+    const bouk = ['Borrowed Tapes', 'Harbour Lights', 'Second Shift'].flatMap((a) => TAPES3.map((t) => tapePath(t, `Boukmanflow/${a}`)));
+    const per = await browseWindow(folderTrack('/music/Boukmanflow'), FOLDER_OPTS, { peer: peerB({ listing: bouk }) });
+    per.vm.dmLandChoose('tags');
+    await flush();
+    assert.deepEqual([pathLine(per.vm.dmDestPath('folder')), per.vm.dmDestPath('folder').files, per.vm.dmKeepStartLabel('folder')], ['copies › Boukmanflow › one folder per album', null, 'Add folder · 9 songs']);
+    const sampler = ['Lantern Street', 'Night Market Cypher', 'Paper Lanterns'].map((t) => `music/Various Artists/Night Market Sampler/${t}.mp3`);
+    const artists = { 'Lantern Street': 'Color Out', 'Night Market Cypher': 'Boukmanflow', 'Paper Lanterns': 'ALM' };
+    const batchOf = (credit) => (paths) => Object.fromEntries(paths.map((p) => { const title = p.split('/').pop().replace('.mp3', ''); return [p, { filepath: p, metadata: { title, artist: artists[title], album: 'Night Market Sampler', year: 2024, 'album-artist': credit } }]; }));
+    const comp = await browseWindow(folderTrack('/music/Various Artists/Night Market Sampler'), FOLDER_OPTS, { peer: peerB({ listing: sampler, batch: batchOf(undefined) }) });
+    comp.vm.dmLandChoose('tags');
+    await flush();
+    const slotted = comp.vm.dmDestPath('folder');
+    assert.deepEqual([pathLine(slotted), slotted.files, slotted.slotNote], ['copies › ‹artist› › Night Market Sampler', null, '‹artist› comes from each song’s own tags, so these songs can land in more than one folder.']);
+    const credited = await browseWindow(folderTrack('/music/Various Artists/Night Market Sampler'), FOLDER_OPTS, { peer: peerB({ listing: sampler, batch: batchOf('Various Artists') }) });
+    credited.vm.dmLandChoose('tags');
+    await flush();
+    assert.equal(pathLine(credited.vm.dmDestPath('folder')), 'copies › Various Artists › Night Market Sampler');
+    const many = Array.from({ length: 101 }, (_, i) => `music/Mix/Song ${i}.mp3`);
+    const big = await browseWindow(folderTrack('/music/Mix'), FOLDER_OPTS, { peer: peerB({ listing: many }) });
+    big.vm.dmLandChoose('tags');
+    await flush();
+    assert.deepEqual([big.asked.batches.length, big.vm.discover.modal.folderTags.state, pathLine(big.vm.dmDestPath('folder'))], [0, 'skipped', 'copies › ‹artist› › one folder per album']);
+  });
+});
+
+describe('from browsing: a folder\'s start, its states on its own landing, the cap (SPEC-fed §6.5.4–§6.5.6)', () => {
+  test('Add sends the folder\'s recommendation, where it lands and the destination shown: none as on the peer, the place into a folder, { tags } by the layout', async () => {
+    const { vm, starts } = await browseWindow(folderTrack(), FOLDER_OPTS);
+    const rec = { source: 'federation', peer: { ...STAGE_B }, filepath: 'music/Boukmanflow/Borrowed Tapes', title: 'Borrowed Tapes' };
+    const shown = { vpath: 'copies', base: '', layout: LAYOUT };
+    await vm.dmKeepAct('add');
+    vm.discover.modal.jobs = {};
+    vm.dmLandChoose('folder');
+    await vm.dmKeepAct('add');
+    vm.discover.modal.jobs = {};
+    vm.dmLandChoose('tags');
+    await vm.dmKeepAct('add');
+    assert.deepEqual(starts, [
+      { name: 'federation-copy', rec, scope: 'folder', destination: shown, landing: null },
+      { name: 'federation-copy', rec, scope: 'folder', destination: shown, landing: { vpath: 'copies', path: 'Borrowed Tapes' } },
+      { name: 'federation-copy', rec, scope: 'folder', destination: shown, landing: { tags: true } }]);
+  });
+
+  test('from a file row\'s Folder choice the start is the folder\'s, never the song\'s', async () => {
+    const { vm, starts } = await browseWindow({ peer: { ...STAGE_B }, filepath: `/${tapePath(LATE)}`, title: `${LATE}.mp3` }, { from: 'browse', folder: { path: TAPES_FOLDER, name: 'Borrowed Tapes' } });
+    vm.dmKeepChoose('folder');
+    await flush();
+    await vm.dmKeepAct('add');
+    assert.deepEqual([starts[0].rec.filepath, starts[0].rec.title, starts[0].scope], ['music/Boukmanflow/Borrowed Tapes', 'Borrowed Tapes', 'folder']);
+  });
+
+  test('one folder, one job (G20): while it is live the landings go and its own landing is the path; Retry and Add again reuse it', async () => {
+    const { vm, starts } = await browseWindow(folderTrack(), FOLDER_OPTS);
+    const intoSam = { vpath: 'copies', path: 'From Sam' };
+    vm.discover.modal.jobs = { [SLOT_FOLDER]: folderJob({ state: 'running', progress: 0.43, statusText: '2 of 3 songs · 4.1 MB', params: { scope: 'folder', landing: intoSam, destination: COPIES } }) };
+    assert.deepEqual([card(vm.dmKeepView()).path, card(vm.dmKeepView()).acts, card(vm.dmKeepView()).sub, vm.dmLandShown(), vm.dmKeepHint()],
+      ['Into copies › From Sam', ['ghost Cancel'], '2 of 3 songs · 4.1 MB', false, true]);
+    vm.discover.modal.jobs = { [SLOT_FOLDER]: folderJob({ state: 'queued', params: { scope: 'folder', destination: COPIES } }) };
+    assert.equal(card(vm.dmKeepView()).path, 'Into copies › Boukmanflow › Borrowed Tapes', 'as on the peer');
+    // cancelled after one song, into From Sam: Add again adds there
+    vm.discover.modal.jobs = { [SLOT_FOLDER]: folderJob({ state: 'cancelled', params: { scope: 'folder', landing: intoSam, destination: COPIES }, result: folderResult({ copied: [TAPES3[0]], landed: 'copies/From Sam', total: 3 }) }) };
+    const c = card(vm.dmKeepView());
+    assert.deepEqual([c.sub, c.path, c.retry, c.acts], ['1 song copied · the rest stay on Stage Peer B', null, 'Add again adds to copies › From Sam', ['primary Add again']]);
+    assert.equal(vm.dmKeepView().retryPath.suffix, '', 'its own place, not "your saved place now"');
+    vm.dmLandChoose('tags');
+    await vm.dmKeepAct('addAgain');
+    assert.deepEqual(starts.pop().landing, intoSam, 'the job\'s own landing, whatever the landings say');
+  });
+
+  test('F7 / F8 / F9 / F10 / F12 / F15: counted in songs; files left out unless gaps say more; In where it landed; no Retry past the cap', async () => {
+    const { vm } = await browseWindow(folderTrack(), FOLDER_OPTS);
+    const at = (over) => { vm.discover.modal.jobs = { [SLOT_FOLDER]: folderJob(over) }; return card(vm.dmKeepView()); };
+    const left = [{ from: 'music/Boukmanflow/Borrowed Tapes/notes.txt', why: 'unsupported' }, { from: 'music/Boukmanflow/Borrowed Tapes/.cover', why: 'ignored' }];
+    const kept = at({ result: folderResult({ copied: TAPES3.slice(0, 2), owned: [TAPES3[2]], skippedFiles: left }) });
+    assert.deepEqual([kept.state, kept.sub, kept.muted, kept.path, kept.acts], ['kept', '2 songs copied · 1 already yours', '2 files left out: not music this server plays, or hidden',
+      'In copies › Boukmanflow › Borrowed Tapes', ['ghost Show in your library', 'primary Play your copy']]);
+    assert.deepEqual(vm.dmKeepView().folder, ['copies', 'Boukmanflow', 'Borrowed Tapes']);
+    const gaps = at({ result: folderResult({ copied: TAPES3.slice(0, 2), failed: [TAPES3[2]], skippedFiles: left }) });
+    assert.deepEqual([gaps.sub, gaps.muted, gaps.acts], ['2 songs copied · 1 failed', 'Retry takes only the gaps', ['secondary Play your copy', 'primary Retry']]);
+    const yours = at({ result: folderResult({ owned: TAPES3 }) });
+    assert.deepEqual([yours.headline, yours.sub], ['Already yours', 'You have it all · 3 already yours']);
+    const stopped = at({ result: folderResult({ copied: [TAPES3[0]], total: 3, stopped: 'quota' }) });
+    assert.deepEqual([stopped.headline, stopped.sub, stopped.acts], ['Stage Peer B’s transfer limit stopped it', '1 song copied · 2 not copied · try again later', ['primary Retry']]);
+    const failed = at({ result: folderResult({ failed: TAPES3, landed: 'copies/Boukmanflow/Borrowed Tapes' }) });
+    assert.deepEqual([failed.headline, failed.sub, failed.path, failed.acts], ['Copy failed', 'Nothing was copied · 3 failed', null, ['primary Retry']]);
+    const cap = at({ state: 'failed', error: '“Night Owl Radio Archive” on Stage Peer B holds 1240 songs — add its folders one at a time (the limit is 1000; an admin can raise it under Discovery › Jobs)' });
+    assert.deepEqual([cap.headline, cap.acts], ['Copy failed', []], 'Retry would fail again: the words name the limit');
+    const thrown = at({ state: 'failed', error: 'Stage Peer B has no songs under “Borrowed Tapes”' });
+    assert.deepEqual(thrown.acts, ['primary Retry']);
+  });
+
+  test('over the cap (S1): the card holds the cap line alone — no landings, no Add; a server that says no cap shows none', async () => {
+    const archive = Array.from({ length: 1240 }, (_, i) => `music/Night Owl Radio Archive/Show ${i % 56}/Hour ${i}.mp3`);
+    const { vm } = await browseWindow(folderTrack('/music/Night Owl Radio Archive'), FOLDER_OPTS, { peer: peerB({ listing: archive }) });
+    const v = vm.dmKeepView();
+    assert.deepEqual([v.kind, v.bar, v.actions, vm.dmLandShown()], ['cap', false, [], false]);
+    assert.equal(v.line, '“Night Owl Radio Archive” holds 1,240 songs, more than one copy takes here (1,000). Keep its folders one at a time.');
+    assert.equal(vm.dmKeepAnnounce(), v.line);
+    const older = await browseWindow(folderTrack('/music/Night Owl Radio Archive'), FOLDER_OPTS, { peer: peerB({ listing: archive }), maxFolderSongs: null });
+    assert.deepEqual([older.vm.dmKeepView().kind, older.vm.dmLandShown()], ['idle', true]);
+  });
+
+  test('a strip row reopens a folder job in folder focus, on its own landing (G17); an artist page\'s artist job as the artist', async () => {
+    const w = makeDestWindow({ reads: peerB().reads });
+    const job = folderJob({ state: 'running', params: { scope: 'folder', landing: { vpath: 'copies', path: 'From Sam' }, destination: COPIES } });
+    await w.vm.openDiscoverModalForJob(job);
+    const m = w.vm.discover.modal;
+    assert.deepEqual([m.focus, m.keep.scope, w.vm.dmKeepChosen(), w.vm.dmHeadTitle()], ['folder', 'folder', 'folder', 'Borrowed Tapes']);
+    m.jobs = { [SLOT_FOLDER]: job };
+    assert.equal(card(w.vm.dmKeepView()).path, 'Into copies › From Sam');
+    const artist = makeDestWindow({ reads: peerB().reads });
+    await artist.vm.openDiscoverModalForJob(keepJob({ params: { scope: 'artist-missing' }, recommendation: { source: 'federation', peer: { ...STAGE_B }, artist: 'Boukmanflow' } }));
+    assert.deepEqual([artist.vm.discover.modal.focus, artist.vm.dmKeepScope()], ['artist', 'artist-missing']);
+  });
+
+  test('the strip\'s Retry sends a folder job\'s own landing', async () => {
+    const sent = [];
+    const retry = new Function('MSTREAMAPI', 'DISCOVERJOBS', 'iziToast', `return ${vpMethodSrc('dtRetry')}`)({ discoveryJobStart: async (...args) => { sent.push(args); return {}; } }, J, { error() {} });
+    await retry.call({ discover: { dest: { view: null } }, noteDiscoverJob() {}, scheduleDiscoverJobsPoll() {}, dmLoadDestination() {}, tt: tEn },
+      folderJob({ state: 'failed', params: { scope: 'folder', landing: { tags: true }, destination: COPIES } }));
+    assert.deepEqual([sent[0][3], sent[0][5]], ['folder', { tags: true }]);
+  });
+});
+
+describe('from browsing: the keyboard goes back to the control it came from (G25)', () => {
+  const opener = new Function(`${vpModuleFn('dmOpenerOf')}\nreturn dmOpenerOf;`)();
+  const back = new Function(`${vpModuleFn('dmAttrValue')}\n${vpModuleFn('dmFocusBack')}\nreturn dmFocusBack;`)();
+  const node = (tagName, attrs = {}, over = {}) => {
+    const el = { tagName, isConnected: true, focused: 0, attrs, getAttribute: (n) => (n in attrs ? String(attrs[n]) : null), hasAttribute: (n) => n in attrs,
+      setAttribute: (n, v) => { attrs[n] = String(v); }, closest: () => null, getClientRects: () => [{}], focus() { el.focused += 1; }, ...over };
+    return el;
+  };
+  const docOf = (found, queries = []) => ({ querySelector: (sel) => { queries.push(sel); return found[sel] || null; } });
+  test('a browse control carries its key; redrawn, the control with that key in the header, the list or the queue', () => {
+    const keep = node('BUTTON', { 'data-keep-key': '1|album|Borrowed Tapes|Boukmanflow' });
+    const o = opener(keep);
+    assert.deepEqual(o, { el: keep, sel: null, key: '1|album|Borrowed Tapes|Boukmanflow' });
+    assert.equal(back(o, docOf({})), keep, 'still there: itself');
+    // the filter redrew the row: the old one is gone, the new one carries the key
+    const redrawn = node('BUTTON', { 'data-keep-key': '1|album|Borrowed Tapes|Boukmanflow' });
+    const queries = [];
+    assert.equal(back({ ...o, el: { ...keep, isConnected: false } }, docOf({ '#filelist [data-keep-key="1|album|Borrowed Tapes|Boukmanflow"]': redrawn }, queries)), redrawn);
+    assert.deepEqual(queries, ['#browse-head [data-keep-key="1|album|Borrowed Tapes|Boukmanflow"]', '#filelist [data-keep-key="1|album|Borrowed Tapes|Boukmanflow"]']);
+    // a row the list reused for another item carries another key
+    const reused = node('BUTTON', { 'data-keep-key': '1|song|other.mp3' });
+    assert.equal(back({ el: reused, sel: null, key: '1|song|late.mp3' }, docOf({ '#filelist [data-keep-key="1|song|late.mp3"]': redrawn })), redrawn);
+    // quotes in a key stay inside the selector
+    assert.equal(back({ el: null, sel: null, key: '1|folder|music/Say "hi"' }, docOf({ '#browse-head [data-keep-key="1|folder|music/Say \\"hi\\""]': redrawn })), redrawn);
+  });
+
+  test('gone: the header\'s Keep a copy…, else the panel\'s title (the phone tab where the title is hidden); a queue row\'s ⋮ (m.js keys it "{peer}|queue|{file}") hands over to the queue', () => {
+    const gone = { el: null, sel: null, key: '1|song|late.mp3' };
+    const keepBtn = node('BUTTON');
+    assert.equal(back(gone, docOf({ '#browse-head .browse-keep': keepBtn })), keepBtn);
+    const title = node('H5');
+    assert.equal(back(gone, docOf({ 'h5.panel_one_name': title })), title);
+    assert.deepEqual([title.attrs.tabindex, title.focused], ['-1', 1]);
+    const tab = node('DIV');
+    assert.equal(back(gone, docOf({ 'h5.panel_one_name': node('H5', {}, { getClientRects: () => [] }), '.m-tab.panel_one_name': tab })), tab, 'the hidden title gives way to the tab');
+    const queue = node('UL');
+    assert.equal(back({ el: null, sel: null, key: '1|queue|music/x.mp3' }, docOf({ '#playlist ul.collection': queue, '#browse-head .browse-keep': keepBtn })), queue);
+    const row = node('SPAN', { 'data-keep-key': '1|queue|music/x.mp3' });
+    assert.equal(back({ el: null, sel: null, key: '1|queue|music/x.mp3' }, docOf({ '#playlist [data-keep-key="1|queue|music/x.mp3"]': row })), row, 'the ⋮ that shows the song now');
+    // a queue row the list reused for another song: that song's ⋮ is not this one
+    const other = node('SPAN', { 'data-keep-key': '1|queue|music/y.mp3' });
+    assert.equal(back({ el: other, sel: null, key: '1|queue|music/x.mp3' }, docOf({ '#playlist ul.collection': queue })), queue);
+  });
+});
+
+describe('the pages read their gate again when the window learns it changed (SPEC-fed §3)', () => {
+  test('a start refused 403 or 404, and a saved destination, call the watchers; other refusals do not', async () => {
+    const w = await browseWindow(folderTrack(), FOLDER_OPTS);
+    let heard = 0;
+    w.gateWatchers.push(() => { heard += 1; });
+    for (const [status, want] of [[403, 1], [404, 2], [429, 2], [409, 2]]) {
+      w.api.discoveryJobStart = async () => { throw httpError(status, { error: status === 403 ? 'Uploading Disabled' : 'x' }); };
+      w.vm.discover.modal.jobRefusals = {};
+      await w.vm.dmJobStart(COPY, null, 'folder', null);
+      assert.equal(heard, want, String(status));
+    }
+    w.vm.dmOpenPicker();
+    w.vm.dmPickerChoose(w.vm.dmPickerPresets()[1].layout);
+    await w.vm.dmPickerSubmit();
+    assert.equal(heard, 3, 'a save');
+    assert.match(VP_SRC, /mstreamModule\.watchKeepGate = \(fn\) => \{\s*if \(typeof fn !== 'function'\) \{ return \(\) => \{\}; \}\s*discoverGateWatchers\.push\(fn\);/);
+  });
+});
+
+describe('the plug-in listing\'s folder cap is kept for the window and the page (S1)', () => {
+  test('ensureDiscoverPlugins keeps jobs.maxFolderSongs; an older server says none', async () => {
+    for (const [jobs, want] of [[{ allowed: true, maxFolderSongs: 1000 }, 1000], [{ allowed: true }, null]]) {
+      const self = { discover: { plugins: { list: null, jobsAllowed: false, maxFolderSongs: null } } };
+      const ensure = new Function('MSTREAMAPI', 'DISCOVERJOBS', `let discoverPluginsPromise = null; return ${vpMethodSrc('ensureDiscoverPlugins')}`)(
+        { currentServer: { host: '' }, discoveryPlugins: async () => ({ plugins: [COPY], jobs }) }, J);
+      await ensure.call(self);
+      assert.deepEqual([self.discover.plugins.jobsAllowed, self.discover.plugins.maxFolderSongs], [true, want]);
+    }
+    assert.match(VP_SRC, /jobsAllowed: discoverState\.plugins\.jobsAllowed === true, maxFolderSongs: discoverState\.plugins\.maxFolderSongs \}/);
+  });
+});
+
+describe('the window\'s markup for browsing (index.html, spa.css) and its words (en.json)', () => {
+  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8');
+  const win = HTML.slice(HTML.indexOf('class="dmodal-shadow"'), HTML.indexOf('id="pop"'));
+  const CSS = readFileSync(new URL('../../webapp/alpha/spa.css', import.meta.url), 'utf8');
+  test('the header\'s art by focus; no Listen for an artist; a folder\'s Listen dimmed until counted; View album / View artist hidden by the page', () => {
+    assert.match(win, /'dmodal-art-artist': dmArtistFocus\(\), 'dmodal-art-folder': dmFolderFocus\(\)/);
+    assert.match(win, /<section v-if="dmListenShown\(\)" class="dmodal-section">/);
+    assert.match(win, /<div v-if="dmFolderFocus\(\)" class="dm-play">\s*<button type="button" class="dm-play-btn" v-on:click="dmQueueFolder\(true\)" :aria-disabled="dmFolderReady\(\) \? null : 'true'" :aria-label="tt\('discover\.modal\.playFolder'\)">/);
+    assert.match(win, /v-on:click="dmQueueFolder\(false\)" :aria-disabled="dmFolderReady\(\) \? null : 'true'">/);
+    assert.equal((win.match(/<button v-if="!dmHidden\('viewAlbum'\)"/g) || []).length, 2);
+    assert.equal((win.match(/<button v-if="!dmHidden\('viewArtist'\)"/g) || []).length, 1);
+  });
+
+  test('the landings: one radio group labelled "Where it lands", the radio last in its label; Into a folder…: a group, chips, the list, New folder…; the left-out line', () => {
+    assert.match(win, /<div id="dm-land-l" class="dm-land-label">\{\{ tt\('discover\.keep\.landing'\) \}\}<\/div>\s*<div class="dm-land" role="radiogroup" aria-labelledby="dm-land-l">/);
+    assert.match(win, /<label v-for="l in dmLandings\(\)"[^>]*class="dm-land-opt"[\s\S]*?<\/span><\/span>\s*<input type="radio" name="dm-land" class="dm-land-radio"[^>]*v-on:change="dmLandChoose\(l\.mode\)">\s*<\/label>/);
+    assert.match(win, /class="dm-land-into" role="group" aria-labelledby="dm-land-l"/);
+    assert.match(win, /<div class="dm-dest-tree" role="group" :aria-label="tt\('discover\.modal\.dest\.foldersIn', \{ library: dmFolderInto\(\)\.vpath \}\)">/);
+    assert.match(win, /data-dm-newfolder v-on:click="dmIntoNewFolder\(\)"/);
+    assert.match(win, /ref="dmIntoName" v-model="discover\.modal\.keep\.tree\.newName" v-on:keydown\.enter\.prevent="dmIntoNewFolder\(\)"/);
+    assert.match(win, /<button type="button" class="dm-btn" :aria-disabled="dmIntoBraced\(\) \? 'true' : null" v-on:click="dmIntoNewFolder\(\)">/);
+    assert.match(win, /<div v-if="dmKeepLeftOut\(\)" class="dm-keep-out">/);
+    // the order inside the card: the strip, the checkbox, the left-out line, the landings, the body
+    const order = ['class="dm-segs"', 'class="dm-check"', 'class="dm-keep-out"', 'v-if="dmLandShown()"', '<dm-keep-body'].map((x) => win.indexOf(x));
+    assert.deepEqual(order.slice().sort((a, b) => a - b), order);
+    assert.ok(!/role="status"/.test(win.slice(win.indexOf('v-if="dmLandShown()"'), win.indexOf('<dm-keep-body'))), 'the section keeps its one live region');
+  });
+
+  test('spa.css: landing rows 40 px (44 on a phone), the native radio in sight, the cap line, the round artist art', () => {
+    assert.match(CSS, /\.dm-land-opt \{\s*display: grid; grid-template-columns: 16px minmax\(0, 1fr\);[^}]*min-height: 40px;/);
+    assert.match(CSS, /\.dmodal \.dm-land-opt \.dm-land-radio \{[^}]*opacity: 1; pointer-events: auto; accent-color: var\(--src\)/);
+    const phone = CSS.slice(CSS.indexOf('.dm-keep { padding: 10px; }'), CSS.indexOf('}', CSS.indexOf('.dm-land-into .dm-input, .dm-land-into .dm-input[type="text"] { height: 44px; }')));
+    assert.match(phone, /\.dm-land-opt \{ min-height: 44px; \}/);
+    assert.match(CSS, /\.dm-keep-cap > svg \{[^}]*color: var\(--warn\)/);
+    assert.match(CSS, /\.dmodal-art\.dmodal-art-artist \{ border-radius: 50%; \}/);
+    assert.match(CSS, /\.dm-play-btn\[aria-disabled="true"\] \{ opacity: \.45;/);
+  });
+
+  test('en.json: the window\'s new words, exactly', () => {
+    const want = {
+      'discover.keep.folder': 'Folder', 'discover.keep.folderAria': 'Folder: {{name}} and everything in it', 'discover.keep.landing': 'Where it lands',
+      'discover.keep.landing.mirror': 'As on {{peer}}', 'discover.keep.landing.mirrorSub': 'Its own folders, as they are there', 'discover.keep.landing.folder': 'Into a folder…',
+      'discover.keep.landing.folderSub': 'One you pick, for this copy only', 'discover.keep.landing.tags': 'By your layout', 'discover.keep.landing.tagsSub': 'Each song by its tags, like any other copy',
+      'discover.keep.landing.mirrorFoot': 'Its path inside “{{library}}” on {{peer}}', 'discover.keep.landing.thisCopyOnly': 'For this copy only · nothing is saved to your account',
+      'discover.keep.addFolderUncounted': 'Add folder', 'discover.keep.folderCap': '“{{name}}” holds {{count}} songs, more than one copy takes here ({{cap}}). Keep its folders one at a time.',
+      'discover.modal.folderSub': 'Folder · {{path}}', 'discover.modal.artistSub': 'Artist · {{albums}} on {{peer}}', 'discover.modal.counting': 'Counting…',
+      'discover.modal.countFailed': 'Couldn’t count its songs', 'discover.modal.noSubfolders': 'no subfolders', 'discover.modal.playFolder': 'Play folder',
+    };
+    for (const [key, text] of Object.entries(want)) { assert.equal(EN[key], text, key); }
+    for (const [key, one, other] of [['discover.keep.folderAriaCount', 'Folder: X, 1 song', 'Folder: X, 2 songs'], ['discover.keep.moreFiles', 'and 1 more song', 'and 2 more songs'],
+      ['discover.keep.addFolder', 'Add folder · 1 song', 'Add folder · 2 songs'], ['discover.keep.filesLeftOut', '1 file left out: not music this server plays, or hidden', '2 files left out: not music this server plays, or hidden'],
+      ['discover.modal.subfolders', '1 subfolder', '2 subfolders']]) {
+      assert.deepEqual([tEn(key, { count: 1, name: 'X' }), tEn(key, { count: 2, name: 'X' })], [one, other], key);
+    }
+    // every key the window asks for has its English
+    for (const [, key] of VP_SRC.matchAll(/tt\('((?:discover\.modal|discover\.keep)\.[\w.]*\w)'/g)) { assert.ok(EN[key] !== undefined, key); }
+  });
+});
+
+// ── the 2026-10-23 review of the window entered from browsing ────────────
+describe('from browsing: a song\'s album credit is one the peer\'s album list bears out (rule 1)', () => {
+  const SPLIT_FILE = 'music/ALM/Split Series/01 - Shared Wall.mp3';
+  const splitRow = (over) => ({ peer: { ...STAGE_B }, filepath: SPLIT_FILE, title: 'Shared Wall', artist: 'ALM', album: 'Split Series', year: 2022, duration: 10, ...over });
+  const splitMeta = (credit) => () => ({ metadata: { title: 'Shared Wall', artist: 'ALM', album: 'Split Series', year: 2022, format: 'mp3', ...(credit ? { 'album-artist': credit } : {}) } });
+  const listed = (albumArtist) => ({ albums: [peerAlbumItem('Split Series', { year: 2022, year_min: 2022, year_max: 2022, album_artist: albumArtist, artists: ['ALM', 'Night Owl Radio'] })] });
+
+  test('half of an album split between two artists names its own artist; the list says the album\'s songs disagree: no Album', async () => {
+    const { vm } = await browseWindow(splitRow(), { from: 'browse' }, { peer: peerB({ meta: splitMeta('ALM'), peerAlbums: listed(null) }) });
+    assert.equal(vm.discover.modal.track.albumArtist, undefined);
+    assert.deepEqual(vm.dmKeepChoices().map((c) => c.scope), ['song', 'artist']);
+  });
+
+  test('the list bears the song\'s credit out, or does not answer: the song\'s own stands; Album appears once known and never goes', async () => {
+    const borne = await browseWindow(splitRow(), { from: 'browse' }, { peer: peerB({ meta: splitMeta('ALM'), peerAlbums: listed('ALM') }) });
+    assert.equal(borne.vm.discover.modal.track.albumArtist, 'ALM');
+    const silent = await browseWindow(splitRow(), { from: 'browse' }, { peer: peerB({ meta: splitMeta('ALM'), peerAlbums: null }) });
+    assert.deepEqual(silent.vm.dmKeepChoices().map((c) => c.scope), ['song', 'album', 'artist']);
+    // the list still out: no Album yet — it is never drawn and then taken away
+    const later = deferred();
+    const peer = peerB({ meta: splitMeta('ALM') });
+    peer.reads.peer.artistAlbums = () => later.promise;
+    const w = await browseWindow(splitRow(), { from: 'browse' }, { peer, wait: false });
+    await flush();
+    assert.deepEqual(w.vm.dmKeepChoices().map((c) => c.scope).includes('album'), false);
+    later.resolve(listed(null));
+    await w.opening;
+    await flush();
+    assert.deepEqual(w.vm.dmKeepChoices().map((c) => c.scope), ['song', 'artist']);
+  });
+
+  test('a song of an album page that says its songs disagree: no Album, whatever the song or the list names', async () => {
+    const { vm } = await browseWindow(splitRow(), { from: 'browse', hide: ['viewAlbum'], creditsDisagree: true }, { peer: peerB({ meta: splitMeta('ALM'), peerAlbums: listed('ALM') }) });
+    assert.equal(vm.discover.modal.creditsDisagree, true);
+    assert.equal(vm.discover.modal.track.albumArtist, undefined);
+    assert.deepEqual(vm.dmKeepChoices().map((c) => c.scope), ['song', 'artist']);
+    const discover = await keepWindow();
+    await discover.vm.openDiscoverModal(tapesRow(STAGE_B, LATE), 'federation', { creditsDisagree: true });
+    assert.equal(discover.vm.discover.modal.creditsDisagree, false, 'only from a connected server\'s pages');
+  });
+
+  test('a compilation\'s album page header: one choice (Album), no Artist fact row, whole under its credit', async () => {
+    const head = { peer: { ...STAGE_B }, album: 'Night Market Sampler', albumArtist: 'Various Artists', artist: null, year: 2024, albumArt: null, compilation: true, filepath: null };
+    const { vm } = await browseWindow(head, { focus: 'album', from: 'browse', hide: ['viewAlbum'] });
+    assert.deepEqual(vm.dmKeepChoices().map((c) => c.scope), ['album']);
+    assert.equal(vm.discover.modal.track.artist, null);
+    assert.equal(pathLine(vm.dmDestPath('album')), 'copies › Various Artists › Night Market Sampler');
+  });
+
+  test('View album from a compilation card\'s window says the album is one', async () => {
+    const { vm, viewed } = makeWindow();
+    await vm.openDiscoverModal({ peer: { ...STAGE_B }, album: 'Night Market Sampler', albumArtist: 'Various Artists', artist: null, year: 2024, compilation: true }, 'federation', { focus: 'album', from: 'browse' });
+    vm.dmViewAlbum();
+    assert.equal(viewed[0]['data-compilation'], 'true');
+  });
+});
+
+describe('from browsing: the keyboard in a folder\'s window (the 2026-10-23 review)', () => {
+  test('a new folder being named goes with the landings that showed it: another landing, another choice, a copy started', async () => {
+    const { vm } = await browseWindow(folderTrack(), FOLDER_OPTS);
+    const tree = () => vm.discover.modal.keep.tree;
+    vm.dmLandChoose('folder');
+    await flush();
+    vm.dmIntoNewFolder();
+    assert.equal(tree().naming, true);
+    vm.dmLandChoose('mirror');
+    assert.deepEqual([tree().naming, tree().newName], [false, '']);
+    vm.dmLandChoose('folder');
+    vm.dmIntoNewFolder();
+    await vm.dmKeepAct('add');
+    assert.equal(tree().naming, false, 'the copy under way: the landings went');
+    const file = await browseWindow({ peer: { ...STAGE_B }, filepath: `/${tapePath(LATE)}`, title: `${LATE}.mp3` }, { from: 'browse', folder: { path: TAPES_FOLDER, name: 'Borrowed Tapes' } });
+    file.vm.dmKeepChoose('folder');
+    file.vm.dmLandChoose('folder');
+    await flush();
+    file.vm.dmIntoNewFolder();
+    file.vm.dmKeepChoose('song');
+    assert.equal(file.vm.discover.modal.keep.tree.naming, false);
+  });
+
+  test('a count past the cap takes the landings and Add away: the keyboard goes to Close, never to the page behind', async () => {
+    const archive = Array.from({ length: 1240 }, (_, i) => `music/Night Owl Radio Archive/Show ${i % 56}/Hour ${i}.mp3`);
+    const answer = deferred();
+    const w = await browseWindow(folderTrack('/music/Night Owl Radio Archive'), FOLDER_OPTS, { peer: peerB({ scan: () => answer.promise }), wait: false });
+    w.vm.$refs.dmodalClose = w.el('close');
+    await flush();
+    w.tick();
+    w.el('add').focus();
+    answer.resolve(archive);
+    await w.opening;
+    await flush();
+    assert.equal(w.vm.dmKeepView().kind, 'cap');
+    w.tick();
+    assert.equal(w.focused(), 'close');
+  });
+});
+
+describe('the strip\'s Retry refused for a right or the plug-in gone: the pages read their gate again', () => {
+  test('403 and 404 tell the watchers; a 409 does not', async () => {
+    for (const [status, want] of [[403, 1], [404, 1], [409, 0], [429, 0]]) {
+      const retry = new Function('MSTREAMAPI', 'DISCOVERJOBS', 'iziToast', `return ${vpMethodSrc('dtRetry')}`)(
+        { discoveryJobStart: () => Promise.reject(httpError(status, { error: 'x' })) }, J, { error() {} });
+      let heard = 0;
+      await retry.call({ discover: { dest: { view: null } }, noteDiscoverJob() {}, scheduleDiscoverJobsPoll() {}, dmLoadDestination() {}, dmErrorText: () => 'x', dmKeepGateChanged() { heard += 1; }, tt: tEn },
+        folderJob({ state: 'failed', params: { scope: 'folder', destination: COPIES } }));
+      assert.equal(heard, want, String(status));
+    }
+  });
+});
+
+describe('the window keeps no older plug-in listing than the page that offered the way in (SPEC-fed §3)', () => {
+  const take = VP_SRC.match(/mstreamModule\.takeDiscoverPlugins = (\(listing\) => \{[\s\S]*?\n {2}\});/)[1];
+  const harness = (api) => {
+    const state = { plugins: { available: true, list: null, jobsAllowed: false, maxFolderSongs: null } };
+    const h = new Function('MSTREAMAPI', 'DISCOVERJOBS', 'discoverState', `let discoverPluginsPromise = null;
+      return { ensure: ${vpMethodSrc('ensureDiscoverPlugins')}, take: ${take} };`)(api, J, state);
+    return { state, ...h, self: { discover: state } };
+  };
+  test('the page\'s read becomes the window\'s: the list, the right to start jobs, the folder cap', () => {
+    const { state, take: give } = harness({});
+    give({ plugins: [COPY], jobs: { allowed: true, maxFolderSongs: 500 } });
+    assert.deepEqual([state.plugins.list, state.plugins.jobsAllowed, state.plugins.maxFolderSongs], [[COPY], true, 500]);
+    give({ plugins: [], jobs: { allowed: false } });
+    assert.deepEqual([state.plugins.list, state.plugins.jobsAllowed, state.plugins.maxFolderSongs], [[], false, null], 'a right gone, the copy gone: the window says so too');
+    state.plugins.available = false;
+    give({ plugins: [COPY], jobs: { allowed: true } });
+    assert.deepEqual(state.plugins.list, [], 'no plug-ins on this server: nothing taken');
+  });
+  test('an older read of the window\'s own, answering after the page\'s, does not undo it', async () => {
+    const old = deferred();
+    const h = harness({ currentServer: { host: '' }, discoveryPlugins: () => old.promise });
+    const asking = h.ensure.call(h.self);
+    h.take({ plugins: [], jobs: { allowed: false } });
+    old.resolve({ plugins: [COPY], jobs: { allowed: true, maxFolderSongs: 1000 } });
+    await asking;
+    assert.deepEqual([h.state.plugins.list, h.state.plugins.jobsAllowed], [[], false]);
+  });
+});
+
+describe('the window\'s smaller markup rules (the 2026-10-23 review)', () => {
+  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8');
+  const CSS = readFileSync(new URL('../../webapp/alpha/spa.css', import.meta.url), 'utf8');
+  test('a landing radio is named by its label alone, described by its sub (read once each)', () => {
+    assert.match(HTML, /<span :id="'dm-land-name-' \+ l\.mode" class="dm-land-name">\{\{ l\.label \}\}<\/span>/);
+    assert.match(HTML, /class="dm-land-radio"[^>]*:aria-labelledby="'dm-land-name-' \+ l\.mode" :aria-describedby="'dm-land-sub-' \+ l\.mode"/);
+  });
+  test('the folder list\'s rows are plain buttons (the chosen folder is its head, never a row)', () => {
+    assert.match(HTML, /<button v-for="d in discover\.modal\.keep\.tree\.dirs" :key="d" type="button" class="dm-dest-node" v-on:click="dmIntoInto\(d\)">/);
+  });
+  test('the queue menu\'s "Keep a copy…" is a button that opens a dialog, drawn as the menu\'s other entries', () => {
+    assert.match(HTML, /<button type="button" id="pop-d-keep" class="pop-list-item pop-list-btn" style="display: none;" aria-haspopup="dialog" onclick="browseKeepQueue\(\);">/);
+    assert.match(CSS, /\.pop-list-btn \{[^}]*width: 100%;[^}]*background: transparent;/);
+    assert.match(CSS, /\.pop-list-btn:focus \{ background-color: rgba\(255,255,255,\.1\); outline: none; \}/);
+  });
+  test('a queue row\'s ⋮ carries the key of the song it shows now (the window\'s keyboard goes back to that song\'s, or to the queue)', () => {
+    assert.match(VP_SRC, /class="np-queue-action popperMenu pop-d" title="More" :data-keep-key="song\.federation \? song\.federation\.peerId \+ '\|queue\|' \+ song\.filepath : null"/);
+  });
+  test('a long name with no space breaks anywhere in the window\'s notes', () => {
+    for (const sel of ['dm-keep-out', 'dm-keep-cap', 'dm-land-note', 'dm-land-foot']) {
+      assert.match(CSS, new RegExp(`\\.${sel} \\{[^}]*overflow-wrap: anywhere;`), sel);
+    }
+    assert.match(CSS, /\.dm-keep-out > span, \.dm-keep-cap > span, \.dm-land-note > span \{ min-width: 0; \}/);
+  });
+});
+
+describe('the window\'s counts and a folder\'s credits that disagree (the 2026-10-23 review)', () => {
+  test('counts in the app\'s language (DISCOVERJOBS.fmtCount), the cap line\'s too', () => {
+    assert.match(vpMethodSrc('dmCount'), /text\.replace\(String\(n\), DISCOVERJOBS\.fmtCount\(n\)\)/);
+    assert.match(vpMethodSrc('dmFolderCap'), /count: DISCOVERJOBS\.fmtCount\(scan\.songs\), cap: DISCOVERJOBS\.fmtCount\(cap\)/);
+    assert.ok(!/toLocaleString\(\)/.test(VP_SRC), 'no count in the browser\'s own locale');
+  });
+
+  test('By your layout over a folder whose songs\' album credits disagree: "‹album artist›", and the note says why', async () => {
+    const paths = TAPES3.map((t) => tapePath(t));
+    const batch = (ps) => Object.fromEntries(ps.map((p, i) => [p, { filepath: p, metadata: tagsOf(p, { 'album-artist': i === 2 ? 'Various Artists' : 'Boukmanflow' }) }]));
+    const { vm } = await browseWindow(folderTrack(), FOLDER_OPTS, { peer: peerB({ listing: paths, batch }) });
+    vm.dmLandChoose('tags');
+    await flush();
+    const p = vm.dmDestPath('folder');
+    assert.deepEqual([pathLine(p), p.files], ['copies › ‹album artist› › Borrowed Tapes', null]);
+    assert.equal(p.slotNote, '‹album artist› comes from each song’s own tags, so these songs can land in more than one folder.');
   });
 });

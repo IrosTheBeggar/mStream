@@ -851,6 +851,22 @@ body.top-bar-hidden #content {
   background-color: rgba(255,255,255,.1);
 }
 
+/* a menu entry that is a button (the queue menu's "Keep a copy…"): drawn
+   as the others — not Materialize's teal when focused */
+.pop-list-btn {
+  display: block;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  line-height: inherit;
+}
+.pop-list-btn:focus { background-color: rgba(255,255,255,.1); outline: none; }
+.pop-list-btn:focus-visible { outline: 2px solid #fa832b; outline-offset: -2px; }
+
 .popperMenu:hover, .downloadDir:hover, .downloadFileplaylist:hover, .fileAddToPlaylist:hover {
   background-color: rgba(255,255,255,.15);
 }
@@ -2336,6 +2352,10 @@ select {
   background: linear-gradient(135deg, #2a3140, #1a1e25); color: rgba(255, 255, 255, .3); border: 1px solid var(--div);
   background-size: cover; background-position: center; box-sizing: border-box;
 }
+/* An artist's window: a person in a circle; a folder's: the file
+   explorer's own folder on the well */
+.dmodal-art.dmodal-art-artist { border-radius: 50%; }
+.dmodal-art.dmodal-art-folder { background: var(--well); }
 .dmodal-head-text { min-width: 0; flex: 1; padding-top: 1px; }
 .dmodal .dmodal-title { margin: 0; font-size: 16px; font-weight: 600; color: var(--t1); line-height: 1.25; overflow-wrap: anywhere; }
 .dmodal-artist { font-size: 13px; color: var(--t3); margin-top: 3px; overflow-wrap: anywhere; }
@@ -2821,6 +2841,116 @@ body.on-federated-server .side-nav-note {
   text-decoration: underline;
 }
 
+/* ── Keep a copy, from browsing a connected server (m.js browseKeep*) ────
+   The page header above the list (#browse-head: an album, an artist, a
+   folder below the library root), the row ⋯ in the ▾ / ↓ slot, the card ⋯
+   (Discover's .dpage-album-more), and the marks a copy's state leaves on
+   the page — in the window's words and colours. Focus outside the window
+   is the house ring, #fa832b. */
+/* the header: tile · title and sub · the action row under them; in a
+   column under 420 px the action row takes the column's full width */
+#browse-head { flex-shrink: 0; container-type: inline-size; }
+.browse-head { position: relative; display: grid; grid-template-columns: 72px minmax(0, 1fr); column-gap: 14px; align-items: start; padding: 12px 12px 12px 6px; }
+.browse-head-tile { grid-row: 1 / span 2; position: relative; width: 72px; height: 72px; box-sizing: border-box; border-radius: 4px; border: 1px solid #3a4149; background: #2d333b; color: #b8bcc6; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.browse-head-tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.browse-head-tile-artist { border-radius: 50%; }
+.browse-head-text { min-width: 0; }
+.browse-head-title { margin: 0; font-size: 20px; line-height: 1.2; font-weight: 600; color: #f0f2f5; overflow-wrap: anywhere; }
+.browse-head-sub { margin-top: 3px; font-size: 13px; line-height: 1.45; color: #b8bcc6; overflow-wrap: anywhere; }
+.browse-head-acts { grid-column: 2; min-width: 0; margin-top: 10px; }
+.browse-head-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-height: 32px; }
+.browse-head-line { flex: 1 1 200px; min-width: 0; font-size: 12.5px; line-height: 1.35; color: #a0a7b3; overflow-wrap: anywhere; }
+.browse-head-live { margin-top: 6px; font-size: 12px; line-height: 1.4; color: #a0a7b3; overflow-wrap: anywhere; }
+.browse-head-live:empty { display: none; }
+/* the bar's holder takes no cell of the grid (no row, no row gap): the bar
+   sits on the header's foot */
+.browse-head > [data-head="bar"] { display: contents; }
+.browse-head-bar { position: absolute; left: 6px; right: 12px; bottom: 0; height: 3px; border-radius: 2px; background: #363d47; overflow: hidden; }
+.browse-head-bar i { display: block; height: 100%; border-radius: 2px; background: #d9a441; }
+@container (max-width: 419px) {
+  .browse-head { grid-template-columns: 56px minmax(0, 1fr); row-gap: 10px; }
+  .browse-head-tile { grid-row: auto; width: 56px; height: 56px; }
+  .browse-head-title { font-size: 18px; }
+  .browse-head-acts { grid-column: 1 / -1; margin-top: 0; }
+}
+/* "Keep a copy…": gold-outlined; once a copy has a state the box stays
+   and the words change (the same states as the window's) */
+.browse-keep { position: relative; display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; margin: 0; box-sizing: border-box; border-radius: 4px; border: 1px solid rgba(217, 164, 65, .6); background: transparent; color: #e6b85c; font-family: inherit; font-size: 13px; font-weight: 600; line-height: 1; white-space: nowrap; cursor: pointer; flex: none; }
+.browse-keep .browse-keep-ic { flex: none; display: block; color: #d9a441; }
+.browse-keep:focus { background-color: transparent; outline: none; }
+.browse-keep:hover { background-color: rgba(217, 164, 65, .12); border-color: #d9a441; }
+.browse-keep:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
+.browse-keep-on { color: #dfe3ea; }
+.browse-keep-on.bk-other, .browse-keep-on.bk-kept, .browse-keep-on.bk-yours, .browse-keep-on.bk-skipped,
+.browse-keep-on.bk-stopped, .browse-keep-on.bk-refused, .browse-keep-on.bk-failed { border-color: #444c56; }
+.browse-keep-pct { flex: none; font-weight: 700; font-variant-numeric: tabular-nums; color: #e6b85c; }
+.browse-keep-plain { display: inline-flex; align-items: center; min-height: 32px; font-size: 13px; font-weight: 600; }
+/* never past the column (a long server's name in "Copying from …", at a
+   phone's width): the words shrink to an ellipsis — the full words are in
+   the name and the tooltip — the glyph and the figure keep their size */
+.browse-keep, .browse-keep-plain { max-width: 100%; min-width: 0; }
+.browse-keep-plain .browse-keep-st { max-width: 100%; min-width: 0; }
+.browse-keep .browse-keep-w, .browse-keep-plain .browse-keep-w { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* a state's words and glyph: a gold dot while it copies (grey for another
+   server's), a clock while it waits, a check once in, a warning otherwise */
+.browse-keep-st { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.browse-keep-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #d9a441; }
+.bk-other .browse-keep-dot { background: #b8bcc6; }
+.bk-queued, .bk-copying, .bk-stopping, .bk-other, .bk-yours { color: #dfe3ea; }
+.bk-kept { color: #4fc27a; }
+.bk-skipped, .bk-stopped, .bk-refused { color: #f5a05b; }
+.bk-failed { color: #ec8a90; }
+.bk-queued .browse-keep-ic, .bk-yours .browse-keep-ic { color: #b8bcc6; }
+/* the header button's glyph follows its state (gold is the idle one's) */
+.browse-keep.bk-kept .browse-keep-ic { color: #4fc27a; }
+.browse-keep.bk-queued .browse-keep-ic, .browse-keep.bk-yours .browse-keep-ic { color: #b8bcc6; }
+.browse-keep.bk-skipped .browse-keep-ic, .browse-keep.bk-stopped .browse-keep-ic, .browse-keep.bk-refused .browse-keep-ic { color: #f5a05b; }
+.browse-keep.bk-failed .browse-keep-ic { color: #ec8a90; }
+/* the marks: after an album page's song's artist, on an album card's line
+   (under the year, a fixed height: a state that arrives never grows the
+   card), after a folder row's name */
+.browse-keep-row { white-space: nowrap; font-size: 13px; }
+.browse-keep-row .browse-keep-st { gap: 4px; vertical-align: -1px; line-height: 1; }
+.browse-keep-sep { color: #a0a7b3; }
+.browse-keep-card { height: 16px; margin-top: 2px; font-size: 11px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.browse-keep-card .browse-keep-st { gap: 4px; max-width: 100%; vertical-align: top; }
+.browse-keep-card .browse-keep-w { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.browse-keep-card .browse-keep-dot, .browse-keep-folder .browse-keep-dot { width: 7px; height: 7px; margin: 0 1.5px; }
+.browse-keep-card .bk-copying { color: #d9a441; }
+.browse-keep-folder { margin-left: 10px; font-size: 13px; white-space: nowrap; vertical-align: top; }
+.browse-keep-folder:empty { display: none; }
+.browse-keep-folder .browse-keep-st { gap: 4px; }
+.browse-keep-folder .bk-copying { color: #d9a441; }
+/* the row ⋯: the tab it replaces (▾ Add To Playlist, ↓ Download Directory),
+   at the same metrics, so a connected server's rows look like this one's */
+.browse-keep-tab { float: right; min-width: 28px; height: 14px; padding: 0 3px; margin: 0; box-sizing: border-box; border: 0; border-right: 1px solid rgba(255, 255, 255, .1); border-bottom-left-radius: 3px; background-color: rgba(255, 255, 255, .08); color: #bbb; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.song-button-box .browse-keep-tab svg { display: block; padding-top: 0; }
+.browse-keep-tab:focus { background-color: rgba(255, 255, 255, .08); outline: none; }
+.browse-keep-tab:hover { background-color: rgba(255, 255, 255, .15); color: #fff; }
+.browse-keep-tab:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; position: relative; z-index: 101; }
+/* no hover (a touch screen, any width): every browse row's controls — this
+   server's rows too, so a mixed search stays one system — come into the
+   row's flow at 44 px, and the card ⋯ stays up with a 44 px target */
+@media (hover: none) {
+  #filelist .collection-item { align-items: center; min-height: 54px; box-sizing: border-box; }
+  #filelist .collection-item > .dirz, #filelist .collection-item > .filez, #filelist .collection-item > .playlistz,
+  #filelist .collection-item > .fileplaylistz { flex: 1 1 auto; min-width: 0; }
+  #filelist .collection-item > .song-button-box { position: static; display: flex; align-self: center; flex: none; gap: 0; padding-right: 4px; }
+  #filelist .song-button-box > .songDropdown, #filelist .song-button-box > .fileAddToPlaylist, #filelist .song-button-box > .downloadDir,
+  #filelist .song-button-box > .addFileplaylist, #filelist .song-button-box > .downloadFileplaylist, #filelist .song-button-box > .browse-keep-tab {
+    float: none; width: 44px; min-width: 44px !important; height: 44px; padding: 0 !important; display: flex; align-items: center; justify-content: center;
+    background-color: transparent; border: 0; border-radius: 0; color: #c9ccd1;
+  }
+  #filelist .song-button-box > * > svg { width: 18px; height: 18px; padding-top: 0; vertical-align: middle !important; fill: #c9ccd1; }
+  #filelist .song-button-box > .browse-keep-tab > svg { height: 6px; }
+  #filelist .song-button-box > .renamePlaylist, #filelist .song-button-box > .deletePlaylist, #filelist .song-button-box > .removePlaylistSong {
+    float: none; height: 44px; display: flex; align-items: center;
+  }
+  .browse-keep { height: 44px; }
+  .browse-head-row { min-height: 44px; }
+  .browse-keep-more::before { content: ''; position: absolute; inset: -4px; border-radius: 50%; }
+}
+
 /* Header above each server's block in a multi-server search result. */
 .search-server-header {
   padding: 12px 12px 2px;
@@ -2845,6 +2975,8 @@ body.on-federated-server .side-nav-note {
   display: flex; align-items: center; justify-content: center; flex-shrink: 0; cursor: pointer;
 }
 .dm-play-btn:hover { background: var(--btn-h); color: var(--src); }
+/* a folder's, until it is counted: dimmed, still focusable */
+.dm-play-btn[aria-disabled="true"] { opacity: .45; cursor: default; }
 .dm-play-body { flex: 1 1 160px; min-width: 0; }
 .dm-play-title { font-size: 13px; font-weight: 600; color: var(--t1); }
 .dm-play-sub { font-size: 11.5px; color: var(--t4); overflow-wrap: anywhere; }
@@ -2927,6 +3059,57 @@ body.on-federated-server .side-nav-note {
 .dm-keep-plain { display: flex; gap: 10px; align-items: center; min-height: 32px; font-size: 12.5px; line-height: 1.45; color: var(--t3); }
 .dm-keep-plain > svg { flex: none; color: var(--t4); }
 .dm-keep-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+/* Under Artist, what an artist copy leaves out */
+.dm-keep-out { display: flex; gap: 8px; align-items: flex-start; margin-top: -2px; font-size: 12px; line-height: 1.45; color: var(--t4); overflow-wrap: anywhere; }
+.dm-keep-out > svg { flex: none; margin-top: 2px; }
+/* A folder past the songs one copy takes here: the card holds this alone */
+.dm-keep-cap { display: flex; gap: 10px; align-items: flex-start; min-height: 32px; font-size: 12.5px; line-height: 1.45; color: var(--t2); overflow-wrap: anywhere; }
+.dm-keep-cap > svg { flex: none; margin-top: 1px; color: var(--warn); }
+/* a name with no space in it (a folder's, an album's) breaks anywhere,
+   never past the card */
+.dm-keep-out > span, .dm-keep-cap > span, .dm-land-note > span { min-width: 0; }
+/* Where a folder lands: one radio group, each row its native radio (back
+   from under Materialize's own drawing, last in its label, drawn first),
+   its name and what it means; the chosen row as the chosen segment is.
+   Under it the chosen landing's place: as on the peer in the bar's well
+   (its files under the path, the peer's path in the foot), into a folder
+   in its own box — the libraries, this server's folders, where the files
+   go, that nothing is saved */
+.dm-land-label { margin-bottom: 6px; font-size: 12px; line-height: 1.4; font-weight: 600; color: var(--t2); }
+.dm-land { display: grid; gap: 2px; }
+.dm-land-opt {
+  display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 10px; align-items: center; min-height: 40px; margin: 0;
+  padding: 6px 10px; box-sizing: border-box; border-radius: 4px; cursor: pointer;
+}
+.dm-land-opt:hover { background: var(--hover); }
+.dm-land-opt.dm-on { background: var(--btn); box-shadow: inset 0 0 0 1px var(--src); }
+.dmodal .dm-land-opt .dm-land-radio { grid-column: 1; grid-row: 1; position: static; width: 16px; height: 16px; margin: 0; opacity: 1; pointer-events: auto; accent-color: var(--src); cursor: pointer; }
+/* the row draws the keyboard's ring, as the stacked segments do */
+.dmodal-shadow .dmodal .dm-land-opt:has(.dm-land-radio:focus-visible) { outline: 2px solid var(--t1); outline-offset: 1px; }
+.dmodal-shadow .dmodal .dm-land-opt .dm-land-radio:focus-visible { outline: none; }
+.dm-land-text { grid-column: 2; grid-row: 1; display: block; min-width: 0; }
+.dm-land-name { display: block; font-size: 12.5px; line-height: 1.35; font-weight: 600; color: var(--t2); overflow-wrap: anywhere; }
+.dm-land-opt.dm-on .dm-land-name { color: var(--t1); }
+.dm-land-sub { display: block; font-size: 11px; line-height: 1.4; color: var(--t4); }
+.dm-land-files { display: grid; gap: 1px; margin-top: 4px; padding-left: 22px; min-width: 0; }
+.dm-land-file { font: 11.5px/1.45 ui-monospace, Consolas, monospace; color: var(--t3); overflow-wrap: anywhere; }
+.dm-land-more { font-size: 11.5px; line-height: 1.45; color: var(--t4); }
+.dm-land-into { display: grid; gap: 12px; padding: 12px; min-width: 0; border: 1px solid var(--bord); border-radius: 6px; }
+.dm-land-into > * { min-width: 0; }
+.dm-land-field { display: grid; gap: 6px; min-width: 0; }
+.dm-land-field > .dm-land-label { margin-bottom: 0; }
+.dm-land-into .dm-input, .dm-land-into .dm-input[type="text"] {
+  height: 32px; padding: 0 10px; font-size: 12.5px; color: var(--t1); background: var(--well); border-color: var(--field);
+}
+.dm-land-into .dm-input::placeholder { color: var(--t4); }
+.dm-land-into .dm-input[type="text"]:focus { border-color: var(--src); }
+.dm-land-preview { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; background: var(--well); border-radius: 4px; }
+.dm-land-preview > svg { flex-shrink: 0; margin-top: 1px; color: var(--src); }
+.dm-land-preview-body { flex: 1 1 auto; min-width: 0; }
+.dm-land-preview .dm-land-files { padding-left: 0; }
+.dm-land-note { display: flex; gap: 6px; align-items: flex-start; font-size: 11.5px; line-height: 1.4; color: var(--t4); overflow-wrap: anywhere; }
+.dm-land-note > svg { flex: none; margin-top: 2px; }
+.dm-land-foot { font-size: 11.5px; line-height: 1.4; color: var(--t4); overflow-wrap: anywhere; }
 @media (max-width: 600px) {
   .dm-play-btn, .dm-play-btn:focus { width: 44px; height: 44px; }
   /* every target 44 px tall; the actions share their row, a lone one the
@@ -2935,6 +3118,9 @@ body.on-federated-server .side-nav-note {
   .dm-seg { min-height: 44px; }
   .dm-check { min-height: 44px; }
   .dm-keep-acts > .dm-btn { flex: 1 1 0; }
+  .dm-land-opt { min-height: 44px; }
+  .dm-land-into { padding: 10px; }
+  .dm-land-into .dm-input, .dm-land-into .dm-input[type="text"] { height: 44px; }
 }
 /* Phones: the queue buttons under the play row's title; a fact row's
    links under its facts, never alone on a line of their own; the choice
@@ -3063,9 +3249,16 @@ body.on-federated-server .side-nav-note {
 .dpage-peer-card:focus-visible { border-radius: 8px; }
 /* a connected album's ⋯ (its recommendation window): the art's top-right
    corner, shown as the play button is — on hover, on keyboard focus inside
-   the card, and always where there is no hover */
+   the card, and always where there is no hover. The same ⋯ on a connected
+   server's browse cards (m.js browseKeepCard), so not under .dpage */
 .dpage-album-more { position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: rgba(15, 18, 22, .72); color: #dfe3ea; font-size: 16px; line-height: 1; display: flex; align-items: center; justify-content: center; cursor: pointer; opacity: 0; transition: opacity .2s, background .15s; }
-.dpage .album-grid-card:hover .dpage-album-more, .dpage .album-grid-card:has(:focus-visible) .dpage-album-more { opacity: 1; }
+.album-grid-card:hover .dpage-album-more, .album-grid-card:has(:focus-visible) .dpage-album-more { opacity: 1; }
+/* so is the card's play button, which Tab reaches first: keyboard focus
+   inside any card shows it, with the house ring — never a press on a
+   button no one can see */
+.album-grid-card:has(:focus-visible) .album-grid-play { opacity: 1; transform: translateY(0); }
+.album-grid-play:focus { outline: none; background-color: rgba(30, 215, 96, .9); }
+.album-grid-play:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
 .dpage-album-more:hover, .dpage-album-more:focus { background: rgba(15, 18, 22, .9); color: #f0f2f5; outline: none; }
 .dpage-album-more:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
 .dpage-skel-card i { display: block; aspect-ratio: 1; border-radius: 8px; background: #262b33; }
@@ -3118,8 +3311,8 @@ body.on-federated-server .side-nav-note {
 /* a browser without :has() keeps the old rule, so the keyboard still
    reaches the controls */
 @supports not selector(:has(*)) {
-  .dpage .album-grid-card:focus-within .album-grid-play { opacity: 1; transform: translateY(0); }
-  .dpage .album-grid-card:focus-within .dpage-album-more, .dpage-row:focus-within .dpage-verbs { opacity: 1; pointer-events: auto; }
+  .album-grid-card:focus-within .album-grid-play { opacity: 1; transform: translateY(0); }
+  .album-grid-card:focus-within .dpage-album-more, .dpage-row:focus-within .dpage-verbs { opacity: 1; pointer-events: auto; }
 }
 .dpage-vb { height: 26px; min-width: 26px; padding: 0 8px; border-radius: 4px; border: 1px solid #444c56; background: #1a1e25; color: #dfe3ea; font-size: 11.5px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; cursor: pointer; white-space: nowrap; }
 .dpage-vb:hover { border-color: #8ea0f0; color: #f0f2f5; }
@@ -3197,7 +3390,7 @@ body.on-federated-server .discover-page-footer { display: none; }
   .dpage-verbs { opacity: 1; }
   .dpage .album-grid-play { opacity: 1; transform: translateY(0); }
   .dpage-vb { min-width: 40px; height: 40px; }
-  .dpage .dpage-album-more { opacity: 1; width: 36px; height: 36px; }
+  .dpage-album-more { opacity: 1; width: 36px; height: 36px; }
 }
 
 @media (max-width: 600px) {
