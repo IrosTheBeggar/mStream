@@ -5022,10 +5022,12 @@ describe('from browsing: where a folder lands (SPEC-fed §6.5.4, user decisions 
   test('Into a folder…: a new folder named as the pressed one in the saved library, its list always open, Up, a folder, New folder… (user decision 2)', async () => {
     const w = await browseWindow(folderTrack(), FOLDER_OPTS);
     const { vm, calls } = w;
+    calls.listed.length = 0;
     vm.dmLandChoose('folder');
     await flush();
     const m = vm.discover.modal;
-    assert.deepEqual([m.keep.into, vm.dmIntoCrumbs(), calls.listed.pop()], [{ vpath: 'copies', path: 'Borrowed Tapes' }, ['copies', 'Borrowed Tapes'], '/copies/Borrowed Tapes']);
+    assert.deepEqual([m.keep.into, vm.dmIntoCrumbs(), calls.listed], [{ vpath: 'copies', path: 'Borrowed Tapes' }, ['copies', 'Borrowed Tapes'], ['/copies']],
+      'looked for in its library: a place not there yet is never asked for');
     assert.deepEqual([m.keep.tree.dirs, vm.dmIntoMissing(), vm.dmIntoStraight()], [[], true, ''], 'not there yet — the first file makes it; named as the pressed one');
     assert.deepEqual([pathLine(vm.dmDestPath('folder')), vm.dmDestPath('folder').files.lines.length], ['copies › Borrowed Tapes', 3]);
     assert.deepEqual(vm.dmFolderLandingSent(), { vpath: 'copies', path: 'Borrowed Tapes' });
@@ -5054,9 +5056,33 @@ describe('from browsing: where a folder lands (SPEC-fed §6.5.4, user decisions 
     // another library: the pressed folder's name at its root
     vm.dmIntoLibrary('music');
     await flush();
-    assert.deepEqual([m.keep.into, calls.listed.pop()], [{ vpath: 'music', path: 'Borrowed Tapes' }, '/music/Borrowed Tapes']);
+    assert.deepEqual([m.keep.into, calls.listed.pop(), vm.dmIntoMissing()], [{ vpath: 'music', path: 'Borrowed Tapes' }, '/music', true]);
     assert.deepEqual(vm.dmIntoLibraries(), ['music', 'copies']);
     assert.equal(pathLine(vm.dmDestPath('folder')), 'music › Borrowed Tapes', 'the chosen library, not the saved one');
+  });
+
+  // The 2026-10-23 live walk (D3): the first place, meant not to exist yet,
+  // was listed — a 404 the browser logs as an error on every open.
+  test('Into a folder…: a place not known to be there is looked for in the folder above first — never asked for while missing; one there (a row, the folder above one) is listed at once', async () => {
+    const w = await browseWindow(folderTrack(), FOLDER_OPTS);
+    const { vm, calls } = w;
+    const disk = { '/copies': ['Borrowed Tapes', 'from-peers'], '/copies/Borrowed Tapes': ['Bonus'], '/copies/Borrowed Tapes/Bonus': [], '/music': ['ALM'] };
+    w.api.dirparser = async (dir) => {
+      calls.listed.push(dir);
+      if (!(dir in disk)) { throw httpError(404, { error: `Cannot read directory "${dir}" (ENOENT)` }); }
+      return { directories: disk[dir].map((name) => ({ name })) };
+    };
+    const m = vm.discover.modal;
+    const step = async (fn) => { calls.listed.length = 0; fn(); await flush(); await flush(); return [calls.listed.slice(), m.keep.tree.dirs, vm.dmIntoMissing()]; };
+    assert.deepEqual(await step(() => vm.dmLandChoose('folder')), [['/copies', '/copies/Borrowed Tapes'], ['Bonus'], false], 'an earlier copy made it: found, then listed');
+    assert.deepEqual(await step(() => vm.dmIntoInto('Bonus')), [['/copies/Borrowed Tapes/Bonus'], [], false], 'a listed row is there');
+    assert.deepEqual(await step(() => vm.dmIntoUp()), [['/copies/Borrowed Tapes'], ['Bonus'], false], 'the folder above one that is there');
+    assert.deepEqual(await step(() => vm.dmIntoLibrary('music')), [['/music'], [], true], 'another library\'s first place: not there, not asked for');
+    vm.dmIntoNewFolder();
+    m.keep.tree.newName = 'Deep';
+    assert.deepEqual(await step(() => vm.dmIntoNewFolder()), [[], [], true], 'named: known not to exist');
+    assert.deepEqual(await step(() => vm.dmIntoUp()), [['/music'], [], true], 'the folder above one not there yet is looked for too');
+    assert.ok(!calls.listed.some((d) => !(d in disk)) && !w.toasts.length, 'nothing missing was ever asked for');
   });
 
   test('a pressed folder whose name has a brace: the first place keeps it, the note says why, and Add folder waits', async () => {

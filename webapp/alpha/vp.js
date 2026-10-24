@@ -2853,7 +2853,11 @@ const VUEPLAYERCORE = (() => {
       // above, "New folder…" names one under it (nothing is made on disk:
       // the first file makes it). A place not there yet lists nothing and
       // says so. A name with a brace is refused as the editor refuses it.
-      dmIntoLoad: async function () {
+      // A place not known to be there (`there`: a listed row, the folder
+      // above one that is) is looked for in the folder above first — the
+      // first place is meant not to exist yet, and listing it would only
+      // be refused (a 404 the browser logs as an error).
+      dmIntoLoad: async function (there) {
         const m = this.discover.modal;
         const tree = m.keep.tree;
         const into = this.dmFolderInto();
@@ -2862,9 +2866,14 @@ const VUEPLAYERCORE = (() => {
         tree.loading = true;
         let dirs = [];
         let failed = false;
+        const listing = async (path) => {
+          const res = await MSTREAMAPI.dirparser('/' + into.vpath + (path ? '/' + path : ''));
+          return ((res && res.directories) || []).map((d) => d.name).filter(Boolean);
+        };
         try {
-          const res = await MSTREAMAPI.dirparser('/' + into.vpath + (into.path ? '/' + into.path : ''));
-          dirs = ((res && res.directories) || []).map((d) => d.name).filter(Boolean);
+          const crumbs = DISCOVERJOBS.pathCrumbs(into.path);
+          const found = there === true || !crumbs.length || (await listing(crumbs.slice(0, -1).join('/'))).indexOf(crumbs[crumbs.length - 1]) !== -1;
+          if (found) { dirs = await listing(into.path); } else { failed = true; }
         } catch (_) { failed = true; }
         const now = this.dmFolderInto();
         if (this.discover.modal !== m || m.keep.tree !== tree || `${now.vpath}/${now.path}` !== asked) { return; }   // moved on meanwhile
@@ -2905,9 +2914,10 @@ const VUEPLAYERCORE = (() => {
         m.keep.into = { vpath: into.vpath, path: [into.path, folder].filter(Boolean).join('/') };
         Object.assign(tree, { naming: false, newName: '', braced: '' });
         this.dmDestFocus('tree');
-        // a folder the user just named is known not to exist: nothing to list
+        // a folder the user just named is known not to exist: nothing to
+        // list; one listed is there
         if (fresh) { Object.assign(tree, { loading: false, dirs: [], failed: true }); return; }
-        this.dmIntoLoad();
+        this.dmIntoLoad(true);
       },
       dmIntoUp: function () {
         const m = this.discover.modal;
@@ -2916,10 +2926,12 @@ const VUEPLAYERCORE = (() => {
         const into = this.dmFolderInto();
         const parts = DISCOVERJOBS.pathCrumbs(into.path);
         parts.pop();
+        // the folder above one that is there is there too
+        const there = !tree.loading && !tree.failed;
         m.keep.into = { vpath: into.vpath, path: parts.join('/') };
         tree.braced = '';
         this.dmDestFocus('tree');
-        this.dmIntoLoad();
+        this.dmIntoLoad(there);
       },
       // "New folder…": a name field, the pressed folder's name in it, all of
       // it selected; Add (or Enter) goes into it. A name with a brace keeps

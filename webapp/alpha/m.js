@@ -7678,6 +7678,9 @@ async function browseKeepAsk(keys) {
 
 // The albums grid's cards and the folder rows are looked up as they come
 // near (within 400 px of the list's view), 250 ms after the last one did.
+// Each is watched by what its slot sits in (the card's text, the folder
+// row), never the slot: a folder row's empty mark draws no box (spa.css),
+// and a target with no box never comes near.
 function browseKeepObserve() {
   const root = document.getElementById('filelist');
   if (!keepGate.marks || !root) { return; }
@@ -7696,7 +7699,7 @@ function browseKeepObserve() {
       if (visit !== browseKeep.visit) { return; }
       for (const e of entries) {
         if (!e.isIntersecting) { continue; }
-        browseKeep.pending.add(e.target.getAttribute('data-keep-mark'));
+        browseKeep.pending.add(e.target.keepMark);
         observer.unobserve(e.target);
       }
       if (!browseKeep.pending.size) { return; }
@@ -7709,7 +7712,11 @@ function browseKeepObserve() {
       }, 250);
     }, { root, rootMargin: '400px 0px' });
   }
-  slots.forEach((el) => browseKeep.observer.observe(el));
+  slots.forEach((el) => {
+    const at = el.parentElement || el;
+    at.keepMark = el.getAttribute('data-keep-mark');
+    browseKeep.observer.observe(at);
+  });
 }
 
 // Keep the marks current while the page is up: the strip's job list merged
@@ -8013,7 +8020,7 @@ function browseKeepCards(albums) {
     if (!credit) { continue; }
     const key = browseKeepKey(peerContext, 'album', a.name, credit);
     browseKeepAdd(key, { kind: 'album', album: a.name,
-      rec: browseKeepRec(peerContext, { album: a.name, albumArtist: credit, artist: a.compilation === true ? null : credit, year: a.year }) });
+      rec: browseKeepRec(peerContext, { album: a.name, albumArtist: credit, artist: a.compilation === true || browseKeepVarious(credit) ? null : credit, year: a.year }) });
     keys.push(key);
   }
   return keys;
@@ -8209,9 +8216,9 @@ function browseKeepIntoPath(h, job) {
 // one credit. Until that answers the action row is held, empty; the button
 // appears when the credit resolves and never goes. Credits that disagree
 // get the line instead; none found, nothing. A compilation — the card's or
-// the list's word, or a credit none of its songs' artists is ("Various
-// Artists") — copies whole and is nobody's artist copy: its window offers
-// Album alone. The lookups wait for it: the album's own (only with a
+// the list's word, a credit of Various Artists, or a credit none of its
+// songs' artists is — copies whole and is nobody's artist copy: its window
+// offers Album alone. The lookups wait for it: the album's own (only with a
 // credit) and its songs' (the first 99).
 async function browseAlbumHead(songs, opener) {
   const peer = peerContext;
@@ -8250,7 +8257,8 @@ async function browseAlbumHead(songs, opener) {
   }
   head.credit = found.state;
   head.albumArtist = found.state === 'known' ? found.name : null;
-  head.compilation = !!head.albumArtist && (opener.compilation === true || found.compilation === true || browseAlbumCompilation(head.albumArtist, head.artists));
+  head.compilation = !!head.albumArtist && (opener.compilation === true || found.compilation === true || browseKeepVarious(head.albumArtist)
+    || browseAlbumCompilation(head.albumArtist, head.artists));
   const keys = [];
   if (head.albumArtist) {
     head.key = browseKeepKey(peer, 'album', head.album, head.albumArtist);
@@ -8269,6 +8277,13 @@ async function browseAlbumHead(songs, opener) {
     keys.push(key);
   }
   browseKeepAsk(keys);
+}
+
+// "Various Artists" is nobody's artist copy (rule 1): an album credited to
+// it is a compilation whatever the peer's listing says — one whose files
+// carry no compilation flag lists it as compilation: false.
+function browseKeepVarious(credit) {
+  return DISCOVERJOBS.nameKey(credit) === 'various artists';
 }
 
 // A compilation by its songs: a credit that is none of their own artists
@@ -8315,7 +8330,7 @@ function browseArtistHead(artist, listing) {
   const named = albums.filter((a) => a && typeof a.name === 'string' && a.name.trim());
   const plan = DISCOVERJOBS.planArtistAlbums(listing, artist).plan;
   const compilations = new Set(named.filter((a) => a.compilation === true).map((a) => DISCOVERJOBS.nameKey(a.name)));
-  const nobody = DISCOVERJOBS.nameKey(artist) === 'various artists' || plan.every((a) => compilations.has(DISCOVERJOBS.nameKey(a.name)));
+  const nobody = browseKeepVarious(artist) || plan.every((a) => compilations.has(DISCOVERJOBS.nameKey(a.name)));
   const head = {
     kind: 'artist', peer, artist, title: artist, albums: named.length,
     takes: nobody ? 0 : plan.length, key: browseKeepKey(peer, 'artist', artist), gate: keepGateOpen('artist'),
@@ -8414,15 +8429,16 @@ function browseKeepHit(el) {
 }
 
 // An album card's ⋯: album focus, Album chosen; the card's credit as its
-// artist — none for a compilation (its Artist choice would be "Various
-// Artists"). "View artist" is hidden on that artist's own page only: a
-// card there credited to someone else (a guest's album) leads on.
+// artist — none for a compilation, the listing's or one credited to
+// Various Artists (its Artist choice would be "Various Artists"). "View
+// artist" is hidden on that artist's own page only: a card there credited
+// to someone else (a guest's album) leads on.
 function browseKeepAlbum(el) {
   const card = el.closest('.album-grid-card');
   const peer = (card && peerOf(card)) || peerContext;
   if (!card || !peer) { return; }
   const credit = card.getAttribute('data-album-artist');
-  const compilation = card.getAttribute('data-compilation') === 'true';
+  const compilation = card.getAttribute('data-compilation') === 'true' || browseKeepVarious(credit);
   const year = Number(card.getAttribute('data-year'));
   const top = programState[programState.length - 1];
   const here = !compilation && !!top && top.state === 'artist' && DISCOVERJOBS.nameKey(top.name) === DISCOVERJOBS.nameKey(credit);
