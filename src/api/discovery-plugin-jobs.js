@@ -37,7 +37,9 @@
 // when the destination changes before it runs. A client may send the
 // destination it showed; one that is no longer in force answers 409
 // { error: 'destination_changed', destination } with the one that is, and
-// starts nothing — files never land somewhere the client did not show.
+// starts nothing — files never land somewhere the client did not show. Only
+// what the job's place reads is compared: nothing for a folder job given its
+// own library and folder, the library for one given only a folder.
 
 import Joi from 'joi';
 import * as plugins from '../discovery-plugins/index.js';
@@ -138,7 +140,8 @@ export function setup(mstream) {
       // folder's own files go, its subfolders beneath), or `tags: true` to
       // file the songs by the collection layout like any other copy.
       // Absent = the folder as it is on the peer, under the destination's
-      // base folder (destination.js validateLanding).
+      // base folder and its layout's leading folders (destination.js
+      // validateLanding, federation-copy.js landingFor).
       landing: Joi.object({
         vpath: Joi.string().min(1).max(200).optional(),
         path: Joi.string().allow('').max(500).optional(),
@@ -179,13 +182,16 @@ export function setup(mstream) {
     if (acquires) {
       // Where the job lands, settled now and kept with it (the plug-in
       // reads it back through destination.js destinationForJob). A client
-      // that showed another place is told the one in force instead — unless
-      // a live job already covers this recommendation: that one answers as
-      // before, with its own pinned destination in its params. A null pin
-      // (nowhere to put a file) is kept too: the job fails rather than land
-      // in a library the account is given while it waits.
+      // that showed another place is told the one in force instead — as far
+      // as the job's place reads it: a folder given its own library and
+      // folder reads none of it, one given only a folder reads its library
+      // (sameDestinationFor) — unless a live job already covers this
+      // recommendation: that one answers as before, with its own pinned
+      // destination in its params. A null pin (nowhere to put a file) is
+      // kept too: the job fails rather than land in a library the account
+      // is given while it waits.
       const destination = destinations.getDestination(req.user);
-      if (shown !== undefined && !destinations.sameDestination(shown, destination) && !jobsDb.liveJob(name, key)) {
+      if (shown !== undefined && !destinations.sameDestinationFor(shown, destination, landing) && !jobsDb.liveJob(name, key)) {
         res.status(409).json({
           error: 'destination_changed',
           message: 'your collection destination has changed — check where this will land and ask again',

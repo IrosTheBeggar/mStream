@@ -383,6 +383,19 @@ components:
             album:
               type: string
               nullable: true
+            album-artist:
+              type: string
+              nullable: true
+              description: |
+                2026-10-23. The album's own credit: its ALBUMARTIST consensus
+                (`albums.album_artist`), else the album's primary artist —
+                "Various Artists" on every song of a compilation, where
+                `artist` is each song's own. The credit `/db/albums` lists as
+                `album_artist` and Discover rows carry as `albumArtist`, which
+                album-songs' `album_artist` matches, so a client keeps the album
+                whole from any of its songs. Null for a song with no album.
+                Absent from older servers (a client then looks the album up in
+                `/db/artists-albums`).
             track:
               type: integer
               nullable: true
@@ -556,6 +569,10 @@ components:
         album:
           type: string
           nullable: true
+        album-artist:
+          type: string
+          nullable: true
+          description: 2026-10-23. The album's own credit — "Various Artists" on a compilation's songs; null without an album (see `Metadata`).
         track:
           type: integer
           nullable: true
@@ -3146,6 +3163,15 @@ paths:
                           `allow_discovery_jobs` flag in whitelist mode). When false,
                           starting a job answers 403 — a client hides the `acquire` and
                           `handoff` rows instead of offering them.
+                      maxFolderSongs:
+                        type: integer
+                        example: 1000
+                        description: >
+                          The most songs one folder copy takes here
+                          (`config.discoveryJobs.maxFolderSongs`, default 1000) — a
+                          `scope: folder` job over it fails with the count, so a client
+                          says so before Add. Absent from servers before 2026-10-23
+                          (no cap known: the job's own failure says it).
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/v1/discovery/plugins/{name}/settings:
@@ -3358,7 +3384,9 @@ paths:
         recommendation's `albumArtist` for a song copy or a download, the
         credit an album copy listed the album by (its `albumArtist`, else
         its `artist`), each album's own `album_artist` on the peer for an
-        artist copy (else the artist) — and only then the song's artist, so a
+        artist copy (else the artist), the song's own `album-artist` on the
+        peer for a folder copy filed by tags (since 2026-10-23; none from an
+        older peer) — and only then the song's artist, so a
         featured song ("X feat. Y") or an untagged compilation lands with the
         rest of its album. In public mode the anonymous
         account keeps the one shared setting.
@@ -3533,6 +3561,13 @@ paths:
         one in force (the destination route's `destination`, or `null`) —
         and nothing is started. A live job that already covers the
         recommendation answers as above whatever `destination` was sent.
+        Only what the job's own place reads of the destination is compared
+        (since 2026-10-23): nothing for a folder job whose `landing` names its
+        library and folder (`{ vpath, path }`), the library alone for one that
+        names only a folder (`{ path }`); a folder as it is on the peer (no
+        `landing`: the base folder and the layout's leading folders), one
+        filed by tags and every song, album and artist job compare all of it.
+        The destination in force is pinned either way.
 
         `federation-copy` ("Add to your collection") takes a federation
         recommendation (`source: federation`, the peer's `filepath`, `peer.id`)
@@ -3585,9 +3620,14 @@ paths:
         under `skippedFiles` with `why: ignored | outside | unsupported`),
         refuses a folder holding more songs than the admin's
         `discoveryJobs.maxFolderSongs`, and copies song by song under the
-        same rules. Where it lands: as it is on the peer — the folder's path
-        inside the peer's library, the library's own name dropped, under the
-        destination's base folder (`layout: mirror`) — unless the job was
+        same rules. Where it lands: as it is on the peer (`layout: mirror`) —
+        the folder's path inside the peer's library, the library's own name
+        dropped, under the destination's base folder and the leading folders
+        of its layout (those before the first that names a variable, where
+        every other copy lands too: under `From friends/{{ALBUMARTIST}}/{{ALBUM}}`
+        the peer's `music/Boukmanflow/Borrowed Tapes` lands at
+        `From friends/Boukmanflow/Borrowed Tapes`; the base folder alone
+        before 2026-10-23), of the destination pinned with the job — unless the job was
         given a `landing`: a library and folder of the caller's choosing
         (`layout: folder`; the pressed folder's files go there, its
         subfolders beneath) or `tags: true` (`layout: tags`; every song by
@@ -3638,7 +3678,7 @@ paths:
                   description: "What the job acts on: the song (default), the song's whole album, every album of its artist, only the artist's albums this library lacks, or a folder on the peer (`filepath` is then the folder's path there). Only a scope the plug-in declares (`scopes` in the listing) is accepted, and an album job needs the recommendation's `album` and a credit — `albumArtist` or `artist` (400 without one: an album name alone is every same-named album on the peer, whoever made it; since 2026-10-19) — the artist jobs its `artist`, a folder job its `filepath` and `peer`. A wider scope is kept in the job's `params.scope` and keys the job on the album (its credit — `albumArtist` when given, else `artist` — plus its name) / artist / peer + folder path rather than the song, so a song copy and an album copy of the same recommendation are two live jobs, and two songs of one album — two artists' songs of one compilation too, when the rows carry its `albumArtist` — ask for the same album job. An album job stored before 2026-10-19 from a row of a compilation keyed on that row's track artist: a row carrying the album artist no longer finds it."
                 landing:
                   type: object
-                  description: "Folder jobs only: where the folder lands. `{ vpath?, path }` puts the pressed folder's files into that folder of that library (the destination's library when `vpath` is absent; `path` is relative to the library root and may be empty), its subfolders beneath; `{ tags: true }` files every song by the collection layout instead. Absent: the folder as it is on the peer, under the destination's base folder. A library the caller cannot write to, a path that climbs out, or a landing on a non-folder job is a 400."
+                  description: "Folder jobs only: where the folder lands. `{ vpath?, path }` puts the pressed folder's files into that folder of that library (the destination's library when `vpath` is absent; `path` is relative to the library root and may be empty), its subfolders beneath; `{ tags: true }` files every song by the collection layout instead. Absent: the folder as it is on the peer, under the destination's base folder and its layout's leading folders. A library the caller cannot write to, a path that climbs out, or a landing on a non-folder job is a 400."
                   properties:
                     vpath: { type: string }
                     path: { type: string }
@@ -3646,7 +3686,7 @@ paths:
                 destination:
                   type: object
                   nullable: true
-                  description: "Acquire plug-ins: the collection destination the client showed, as the destination route gave it (`source` may ride along and is not compared; `null` when it showed none). Compared with the one in force by library, base folder (normalised: `From peers/` is `From peers`) and layout; a difference is a `409` with `error: destination_changed`. Absent: no check, the job pins the one in force. Ignored by a plug-in that lands nothing."
+                  description: "Acquire plug-ins: the collection destination the client showed, as the destination route gave it (`source` may ride along and is not compared; `null` when it showed none). Compared with the one in force by library, base folder (normalised: `From peers/` is `From peers`) and layout; a difference is a `409` with `error: destination_changed`. A folder job's `landing` narrows it to what the landing reads: nothing for `{ vpath, path }`, the library for `{ path }`. Absent: no check, the job pins the one in force. Ignored by a plug-in that lands nothing."
                   required: [vpath, layout]
                   properties:
                     vpath: { type: string }

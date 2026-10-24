@@ -75,7 +75,18 @@ describe('discovery plug-in jobs API', () => {
     assert.deepEqual(p.capabilities, ['acquire']);
     const r = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/resolve', { recommendation: rec('X') });
     assert.equal(r.status, 400, 'acquire plug-ins do not resolve');
-    assert.deepEqual(body.jobs, { allowed: true }, 'the gate is open to everyone by default');
+    assert.deepEqual(body.jobs, { allowed: true, maxFolderSongs: 1000 }, 'the gate is open to everyone by default');
+  });
+
+  test('the listing names the most songs one folder copy takes, as the admin sets it, live', async () => {
+    try {
+      assert.equal((await post(adminToken, '/api/v1/admin/config/discovery-jobs', { maxFolderSongs: 5 })).status, 200);
+      assert.deepEqual((await get(userToken, '/api/v1/discovery/plugins')).body.jobs, { allowed: true, maxFolderSongs: 5 });
+      assert.equal((await get(otherToken, '/api/v1/discovery/plugins')).body.jobs.maxFolderSongs, 5, 'the server\'s, for every account');
+    } finally {
+      assert.equal((await post(adminToken, '/api/v1/admin/config/discovery-jobs', { maxFolderSongs: 1000 })).status, 200);
+    }
+    assert.equal((await get(userToken, '/api/v1/discovery/plugins')).body.jobs.maxFolderSongs, 1000);
   });
 
   test('a job runs to done with progress and a result; the same recommendation is not queued twice', async () => {
@@ -275,13 +286,13 @@ describe('discovery plug-in jobs API', () => {
     assert.equal(gate.body.discoveryJobs.enabledFor, 'whitelist');
     const blocked = await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('gated') });
     assert.equal(blocked.status, 403);
-    assert.deepEqual((await get(userToken, '/api/v1/discovery/plugins')).body.jobs, { allowed: false }, 'the listing says so up front');
+    assert.deepEqual((await get(userToken, '/api/v1/discovery/plugins')).body.jobs, { allowed: false, maxFolderSongs: 1000 }, 'the listing says so up front');
     const allow =await post(adminToken, '/api/v1/admin/users/discovery-jobs-access', { username: USER.username, allowDiscoveryJobs: true });
     assert.equal(allow.status, 200);
     // The user object on the request comes from the DB; a fresh login picks up the flag.
     userToken = await login(USER);
-    assert.deepEqual((await get(userToken, '/api/v1/discovery/plugins')).body.jobs, { allowed: true });
-    assert.deepEqual((await get(otherToken, '/api/v1/discovery/plugins')).body.jobs, { allowed: false }, 'per account');
+    assert.deepEqual((await get(userToken, '/api/v1/discovery/plugins')).body.jobs, { allowed: true, maxFolderSongs: 1000 });
+    assert.deepEqual((await get(otherToken, '/api/v1/discovery/plugins')).body.jobs, { allowed: false, maxFolderSongs: 1000 }, 'per account');
     const allowed =await post(userToken, '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: rec('gated') });
     assert.equal(allowed.status, 202, JSON.stringify(allowed.body));
     await untilState(userToken, allowed.body.job.id, ['done', 'failed']);
@@ -412,6 +423,73 @@ describe('discovery plug-in jobs API', () => {
       assert.equal((await put(userToken, null)).status, 200);
       for (const id of started) { await post(userToken, `/api/v1/discovery/plugin-jobs/${id}/cancel`); }
       for (const id of started) { await untilState(userToken, id, ['cancelled', 'done', 'failed']); }
+    }
+  });
+
+  test('a folder job is checked against what its own place reads of the destination; every other job against all of it', async () => {
+    // federation-copy, the plug-in with the folder scope, on a peer this
+    // server is not paired with: the check is the route's, before any peer
+    // is asked, and a job that does start fails at once with nothing copied.
+    const JOBS = '/api/v1/discovery/plugins/federation-copy/jobs';
+    const put = (token, value) => fetch(`${server.baseUrl}${DEST}`, { method: 'PUT', headers: hdr(token), body: JSON.stringify({ destination: value }) })
+      .then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+    const peer = { id: 987654, name: 'Unpaired Peer' };
+    const folder = (name) => ({ source: 'federation', peer, filepath: `peerlib/${name}`, title: name });
+    const ask = (body) => post(userToken, JOBS, body);
+    const refused = (r, what) => {
+      assert.equal(r.status, 409, `${what}: ${JSON.stringify(r.body)}`);
+      assert.equal(r.body.error, 'destination_changed', what);
+    };
+    const started = [];
+    const took = (r, what) => {
+      assert.equal(r.status, 202, `${what}: ${JSON.stringify(r.body)}`);
+      started.push(r.body.job.id);
+      return r.body.job;
+    };
+    try {
+      const shown = (await get(userToken, DEST)).body.destination;
+      // The base folder and the layout move behind the client's back; the library stays.
+      const moved = await put(userToken, { vpath: 'testlib', base: 'Elsewhere', layout: 'From friends/{{ALBUM}}' });
+      assert.equal(moved.status, 200, JSON.stringify(moved.body));
+      const now = moved.body.destination;
+      assert.equal(now.vpath, shown.vpath);
+
+      // Its own library and folder: none of the destination is read, so
+      // nothing shown is a change — the one in force is still pinned.
+      const own = took(await ask({ recommendation: folder('S5 Own'), scope: 'folder', landing: { vpath: 'testlib', path: 'Picked' }, destination: shown }), 'own library and folder');
+      assert.deepEqual(own.params, { scope: 'folder', landing: { vpath: 'testlib', path: 'Picked' }, destination: now });
+      took(await ask({ recommendation: folder('S5 Own Null'), scope: 'folder', landing: { vpath: 'testlib', path: '' }, destination: null }), 'own library and folder, none shown');
+
+      // A folder alone: the destination's library is read — and only it.
+      const pathOnly = took(await ask({ recommendation: folder('S5 Path'), scope: 'folder', landing: { path: 'Picked' }, destination: shown }), 'a folder alone, the library the same');
+      assert.deepEqual(pathOnly.params, { scope: 'folder', landing: { vpath: null, path: 'Picked' }, destination: now });
+      refused(await ask({ recommendation: folder('S5 Path Lib'), scope: 'folder', landing: { path: 'Picked' }, destination: { ...now, vpath: 'another' } }), 'a folder alone, another library shown');
+      refused(await ask({ recommendation: folder('S5 Path Null'), scope: 'folder', landing: { path: 'Picked' }, destination: null }), 'a folder alone, none shown');
+
+      // As on the peer: the base and the layout's leading folders place it,
+      // so all of it is compared — a layout change alone is a change.
+      refused(await ask({ recommendation: folder('S5 Mirror'), scope: 'folder', destination: shown }), 'mirror, the old destination');
+      refused(await ask({ recommendation: folder('S5 Mirror'), scope: 'folder', destination: { ...now, layout: 'From peers/{{ALBUM}}' } }), 'mirror, only the layout differs');
+      refused(await ask({ recommendation: folder('S5 Mirror'), scope: 'folder', destination: { ...now, base: '' } }), 'mirror, only the base differs');
+      took(await ask({ recommendation: folder('S5 Mirror'), scope: 'folder', destination: now }), 'mirror, the one in force');
+
+      // By tags: the layout files every song, so all of it too.
+      refused(await ask({ recommendation: folder('S5 Tags'), scope: 'folder', landing: { tags: true }, destination: { ...now, layout: '{{ALBUM}}' } }), 'tags, only the layout differs');
+      took(await ask({ recommendation: folder('S5 Tags'), scope: 'folder', landing: { tags: true }, destination: now }), 'tags, the one in force');
+
+      // A song, an album, an artist: unchanged — all of it.
+      const song = { source: 'federation', peer, filepath: 'peerlib/S5/Song.mp3', title: 'S5 Song', artist: 'S5 Artist', album: 'S5 Album' };
+      for (const scope of [undefined, 'album', 'artist', 'artist-missing']) {
+        refused(await ask({ recommendation: song, scope, destination: { ...now, layout: '{{ALBUM}}' } }), `${scope || 'song'}, only the layout differs`);
+        refused(await ask({ recommendation: song, scope, destination: { ...now, vpath: 'another' } }), `${scope || 'song'}, another library`);
+      }
+      took(await ask({ recommendation: song, scope: 'artist', destination: now }), 'artist, the one in force');
+    } finally {
+      assert.equal((await put(userToken, null)).status, 200);
+      for (const id of started) {
+        const job = await untilState(userToken, id, ['cancelled', 'done', 'failed']);
+        assert.equal(job.state, 'failed', `job ${id} copies nothing from a peer that is not paired`);
+      }
     }
   });
 

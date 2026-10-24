@@ -36,6 +36,13 @@ export function renderMetadataObj(row) {
       composer: creditDisplay(row.credit_composers || []) || null,
       hash: row.file_hash || null,
       album: row.album_name || null,
+      // The album's own credit (trackQuery's album_credit): its ALBUMARTIST
+      // consensus, else its primary artist — "Various Artists" on every song
+      // of a compilation, where `artist` is each song's own. The credit
+      // /db/albums lists and Discover rows carry as `albumArtist`, so a
+      // client keeps an album whole from any of its songs. Null for a song
+      // with no album. Absent from servers before 2026-10-23.
+      'album-artist': row.album_credit || null,
       track: row.track_number || null,
       disk: row.disc_number || null,
       title: row.title || null,
@@ -159,7 +166,7 @@ export function renderMetadataObj(row) {
 // under the same `metadata` key; the lite-vs-full distinction will be named
 // explicitly in the v2 API.
 export const LITE_METADATA_FIELDS = [
-  'title', 'artist', 'artist-display', 'artists', 'album', 'album-art', 'year', 'track', 'disk',
+  'title', 'artist', 'artist-display', 'artists', 'album', 'album-artist', 'album-art', 'year', 'track', 'disk',
   'duration', 'rating', 'bpm', 'musical-key', 'genres',
   'has-lyrics', 'has-synced-lyrics', 'replaygain-track',
 ];
@@ -236,6 +243,12 @@ export function libraryFilter(user, ignoreVPaths) {
 // (skipped, never finished) from "never heard" — the Discover page's fresh
 // filter needs it. renderMetadataObj picks its fields by name, so the
 // column never reaches the wire envelope unless a renderer asks for it.
+//
+// `album_credit` is the album's own credit (metadata 'album-artist'): its
+// ALBUMARTIST consensus, else its primary artist — `pa`, the alias every
+// album query here gives that artist, so a caller narrowing by the credit
+// (album-songs) reads it from this join. One primary-key probe per row,
+// like the artist and album joins beside it; NULL for a song with no album.
 export function trackQuery(userId, { includeGenres = false } = {}) {
   const aggJoin = includeGenres ? `
     LEFT JOIN (
@@ -247,11 +260,13 @@ export function trackQuery(userId, { includeGenres = false } = {}) {
   const aggCol = includeGenres ? ', tg_agg.genres_concat' : '';
   return `
     SELECT t.*, a.name AS artist_name, al.name AS album_name,
+           COALESCE(al.album_artist, pa.name) AS album_credit,
            l.name AS library_name,
            um.rating, um.play_count, um.last_played, um.skip_count${aggCol}
     FROM tracks t
     LEFT JOIN artists a ON t.artist_id = a.id
     LEFT JOIN albums al ON t.album_id = al.id
+    LEFT JOIN artists pa ON pa.id = al.artist_id
     LEFT JOIN libraries l ON t.library_id = l.id
     LEFT JOIN user_metadata um ON COALESCE(t.audio_hash, t.file_hash) = um.track_hash AND um.user_id = ${userId ? '?' : 'NULL'}${aggJoin}
   `;
@@ -1033,12 +1048,11 @@ export function setup(mstream) {
     // credit's key, or the display string verbatim (a joined "A & B" tag has
     // no artist row of its own). The singles bucket has no album to credit:
     // there the album artist IS the track artist, matched like `artist`.
+    // `pa`, the album's primary artist, is trackQuery's own join.
     const albumArtist = typeof req.body.album_artist === 'string' ? req.body.album_artist.trim() : '';
-    let albumArtistJoin = '';
     if (albumArtist) {
       const key = nameKey(albumArtist);
       if (req.body.album) {
-        albumArtistJoin = 'LEFT JOIN artists pa ON pa.id = al.artist_id';
         conditions.push(`(pa.name_key = ? OR COALESCE(al.album_artist, pa.name) = ? OR al.id IN (
           SELECT aa.album_id FROM album_artists aa
            WHERE aa.role = 'main'
@@ -1078,7 +1092,6 @@ export function setup(mstream) {
 
     const rows = d().prepare(`
       ${trackQuery(req.user?.id, { includeGenres: false })}
-      ${albumArtistJoin}
       WHERE ${conditions.join(' AND ')}
       ORDER BY ${ALBUM_TRACK_ORDER}, t.filepath
     `).all(...allParams);

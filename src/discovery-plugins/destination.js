@@ -87,14 +87,38 @@ export function validateLayout(layout) {
   return pathTemplate.validateForSave(layout, { extraVars: EXTRA_VARS, sampleMetadata: SAMPLE, truncate: false });
 }
 
+// A base folder's folders as written, not yet checked: either separator,
+// names trimmed, empty ones gone.
+function baseFolders(base) {
+  return String(base == null ? '' : base).replace(/\\/g, '/').split('/').map((s) => s.trim()).filter(Boolean).join('/');
+}
+
 // A base folder is a relative path inside the library ('' = the root),
 // under the same rules as a resolved template path, so nothing climbs out.
 export function normalizeBase(base) {
-  const raw = String(base == null ? '' : base).replace(/\\/g, '/').split('/').map((s) => s.trim()).filter(Boolean).join('/');
+  const raw = baseFolders(base);
   if (raw === '') { return { valid: true, base: '' }; }
   const check = pathTemplate.validateResolvedPath(raw);
   if (!check.valid) { return { valid: false, error: check.error, message: check.message }; }
   return { valid: true, base: raw };
+}
+
+// A layout's leading folders that name no variable — where every copy
+// filed by the layout lands whatever its tags ("From friends/{{ALBUMARTIST}}"
+// → "From friends"), trimmed as the layout renders them, '' when the layout
+// starts with a variable. A folder copy as it is on the peer lands under
+// them too (plugins/federation-copy.js landingFor), so a layout that keeps
+// copies in a folder of their own keeps that one there as well. Not checked
+// here: a validated layout's are a prefix of its sample path, and the
+// mirror checks the whole of its path. (The clients' previews copy it:
+// webapp discover-jobs.js layoutLead.)
+export function layoutLead(layout) {
+  const folders = [];
+  for (const seg of String(layout == null ? '' : layout).split(/[/\\]+/)) {
+    if (seg.includes('{') || seg.includes('}')) { break; }
+    folders.push(seg);
+  }
+  return baseFolders(folders.join('/'));
 }
 
 // The effective destination: the saved one while it still makes sense (the
@@ -138,6 +162,22 @@ export function sameDestination(shown, effective) {
   const a = normalizeBase(shown.base);
   const b = normalizeBase(effective.base);
   return shown.vpath === effective.vpath && a.valid && b.valid && a.base === b.base && shown.layout === effective.layout;
+}
+
+// The same check for what a job's own place reads of the destination
+// (`landing` is validateLanding's): a folder job given a library and a
+// folder of its own reads none of it, so whatever was shown passes (the
+// one in force is still pinned with the job); one given only a folder
+// reads the library, so only the library is compared; every other job —
+// a folder as it is on the peer (the base and the layout's leading
+// folders), one filed by tags, a song, an album, an artist — reads all of
+// it (sameDestination).
+export function sameDestinationFor(shown, effective, landing) {
+  if (landing && landing.tags !== true && typeof landing.path === 'string') {
+    if (landing.vpath) { return true; }
+    return (shown ? shown.vpath : null) === (effective ? effective.vpath : null);
+  }
+  return sameDestination(shown, effective);
 }
 
 // Where a FOLDER job lands, as the caller chose it (the job route's
@@ -243,7 +283,8 @@ export function safeFileName(filePath) {
 // The tags a layout renders from: the file's own, the recommendation's
 // where the file has none. {{ALBUMARTIST}} is the file's albumartist tag,
 // else the album's credit the caller knows (`rec.albumArtist`: a row's, the
-// credit an album copy listed the album by, an artist copy's album's own),
+// credit an album copy listed the album by, an artist copy's album's own,
+// the peer's for a folder's song filed by tags),
 // else none — and the path template then takes the file's artist. A file
 // without the tag (common on peers) so lands with its album: a featured
 // song ("X feat. Y") and an untagged compilation's songs, each by its own

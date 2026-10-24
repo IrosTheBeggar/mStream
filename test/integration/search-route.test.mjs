@@ -411,7 +411,7 @@ describe('/api/v1/db/search algorithm dispatch', () => {
     // metadata is the LITE subset — exactly these keys, no more. Hardcoded
     // here (rather than imported from src) as the wire contract; the unit test
     // (render-metadata-by-ids) locks this list against LITE_METADATA_FIELDS.
-    const EXPECTED_LITE_KEYS = ['album', 'album-art', 'artist', 'artist-display', 'artists', 'bpm', 'disk',
+    const EXPECTED_LITE_KEYS = ['album', 'album-art', 'album-artist', 'artist', 'artist-display', 'artists', 'bpm', 'disk',
       'duration', 'genres', 'has-lyrics', 'has-synced-lyrics', 'musical-key',
       'rating', 'replaygain-track', 'title', 'track', 'year'];
     assert.ok(hit.metadata && typeof hit.metadata === 'object', 'title hit has a metadata object');

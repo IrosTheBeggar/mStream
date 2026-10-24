@@ -21,7 +21,8 @@
 //   3. the file's own tags render the layout (per song — an album whose
 //      tags agree lands in one folder; {{ALBUMARTIST}} of a file without
 //      the tag is the album's credit the job knows: the row's, the one the
-//      album was listed by, an artist's album's own — destination.js
+//      album was listed by, an artist's album's own, the one the peer names
+//      for a folder's song filed by tags — destination.js
 //      tagsForLayout); a second owned check by audio hash, and an existing
 //      file at the target path is never overwritten;
 //   4. the row is inserted the way a Youtube DL download is
@@ -574,9 +575,13 @@ export function planFolder(listing, folderPath, { isSupported = destinations.isS
 // inside it — the pressed folder's files go there, its subfolders beneath
 // (`mode: 'folder'`) — or `tags: true`, every song by the layout like any
 // other copy (`mode: 'tags'`, no folder of its own). No choice means the
-// folder as it is on the peer: its path inside the peer's library, the
-// library's own name dropped, under the destination's base folder
-// (`mode: 'mirror'`). A chosen folder is used as chosen (it was checked
+// folder as it is on the peer (`mode: 'mirror'`): its path inside the
+// peer's library, the library's own name dropped, under the destination's
+// base folder and the leading folders of its layout, where every other
+// copy of the account lands too ("From friends/{{ALBUMARTIST}}/{{ALBUM}}"
+// → "From friends"; destination.js layoutLead, 2026-10-23). The
+// destination is the job's pinned one, so the lead is the layout's the job
+// was asked for under. A chosen folder is used as chosen (it was checked
 // when the job was asked for); a mirrored path is the peer's word, so its
 // segments are made safe here.
 export function landingFor({ folder, landing, destination, writable = [] }) {
@@ -587,7 +592,8 @@ export function landingFor({ folder, landing, destination, writable = [] }) {
     }
     return { mode: 'folder', vpath: landing.vpath || destination.vpath, dir: normalizePeerPath(landing.path) };
   }
-  return { mode: 'mirror', vpath: destination.vpath, dir: [destination.base, insidePeerLibrary(folder)].filter(Boolean).join('/') };
+  const dir = [destination.base, destinations.layoutLead(destination.layout), insidePeerLibrary(folder)];
+  return { mode: 'mirror', vpath: destination.vpath, dir: dir.filter(Boolean).join('/') };
 }
 
 // A peer folder's path inside the peer's library (pure): the library's own
@@ -614,8 +620,10 @@ export function serverFolderOf(filepath) {
 }
 
 // discoveryJobs.maxFolderSongs (the admin's setting): the most songs one
-// folder job may take.
-function folderSongCap() {
+// folder job may take. The plug-in listing names it too
+// (api/discovery-plugins.js `jobs.maxFolderSongs`), so a client can say so
+// before a press instead of after the peer's listing.
+export function folderSongCap() {
   const n = Number(config.program && config.program.discoveryJobs && config.program.discoveryJobs.maxFolderSongs);
   return Number.isFinite(n) && n > 0 ? n : 1000;
 }
@@ -646,8 +654,10 @@ async function copyFolder(ctx, env, rec) {
   const outcome = await copySongs(songs, {
     isCancelled: ctx.isCancelled,
     progress: ctx.progress,
+    // By tags, each song's album credit is the peer's word on it (copyOne).
     copyOne: (song, { progress }) => copyOne(
-      { job: ctx.job, userId: ctx.userId, isCancelled: ctx.isCancelled, progress }, env, song,
+      { job: ctx.job, userId: ctx.userId, isCancelled: ctx.isCancelled, progress }, env,
+      landing.mode === 'tags' ? { ...song, peerCredit: true } : song,
       landing.mode === 'tags' ? null : { vpath: landing.vpath, relDir: [landing.dir, song.relDir].filter(Boolean).join('/') },
     ),
   });
@@ -717,6 +727,14 @@ export async function copyOne(ctx, env, song, target = null) {
   // (`song.albumArtist`) where the tags have none, and both with the same
   // {{PEER}} and {{SERVERFOLDER}} (where the song sits on the peer), which no
   // tag changes.
+  // A folder filed by tags lists its songs by path alone, so it knows no
+  // album credit of its own (`song.peerCredit`): the peer's word on the
+  // song names its album's (metadata 'album-artist', 2026-10-23), and a
+  // featured song or an untagged compilation lands with its album as from
+  // an album copy — where the window drew it. A peer before then names
+  // none: the song's artist, as before.
+  const credit = peerMeta && typeof peerMeta['album-artist'] === 'string' ? peerMeta['album-artist'] : '';
+  const credited = song.peerCredit && !song.albumArtist && credit ? { ...song, albumArtist: credit } : song;
   const into = target && target.vpath ? target.vpath : destination.vpath;
   const byLayout = (tags) => destinations.renderTarget({ destination, tags, peerName: peer.name, serverFolder: serverFolderOf(song.filepath), fileName });
   if (target) {
@@ -724,7 +742,7 @@ export async function copyOne(ctx, env, song, target = null) {
     if (!check.valid) { throw new Error(`the folder cannot be placed: ${check.message}`); }
   } else {
     try {
-      byLayout(destinations.tagsForLayout({}, song));
+      byLayout(destinations.tagsForLayout({}, credited));
     } catch (err) {
       throw new Error(`the collection layout cannot place this song: ${err.message}`, { cause: err });
     }
@@ -766,7 +784,7 @@ export async function copyOne(ctx, env, song, target = null) {
     try { common = (await parseFile(tmpPath, { skipCovers: true })).common || {}; } catch (err) {
       winston.warn(`federation-copy: could not read tags from the copied file (${err.message}); using the recommendation's`);
     }
-    const tags = destinations.tagsForLayout(common, song);
+    const tags = destinations.tagsForLayout(common, credited);
     const placed = target
       ? { relDir: target.relDir || '', relPath: target.relDir ? `${target.relDir}/${fileName}` : fileName, missingVars: [] }
       : byLayout(tags);
