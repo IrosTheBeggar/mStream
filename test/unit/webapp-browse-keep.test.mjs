@@ -43,7 +43,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SRC = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'm.js'), 'utf8');
+const SRC = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'm.js'), 'utf8').replace(/\r\n/g, '\n');
 const require = createRequire(import.meta.url);
 const DISCOVERYPAGE = require('../../webapp/alpha/discovery-page.js');
 const DISCOVERJOBS = require('../../webapp/alpha/discover-jobs.js');
@@ -832,7 +832,7 @@ describe('the grid\'s cards and the folder rows are looked up as they come near 
   const debounce = () => new Promise((r) => setTimeout(r, 300));
 
   test('a folder row is watched by the row its mark sits in (an empty mark draws no box: spa.css), then looked up and marked', async () => {
-    const CSS = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'spa.css'), 'utf8');
+    const CSS = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'spa.css'), 'utf8').replace(/\r\n/g, '\n');
     assert.match(CSS, /\.browse-keep-folder:empty \{ display: none; \}/, 'why the mark itself cannot be watched');
     const key = '2|folder|/music/Color Out/Peer Sessions';
     const kept = job('folder', 'done', { filepath: '/music/Color Out/Peer Sessions', title: 'Peer Sessions' }, { result: manyResult(['a']) });
@@ -1496,7 +1496,7 @@ describe('marks keep to this server: the cases a regression would slip through',
 });
 
 describe('the page\'s styles (spa.css)', () => {
-  const CSS = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'spa.css'), 'utf8');
+  const CSS = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'spa.css'), 'utf8').replace(/\r\n/g, '\n');
   test('the header bar\'s holder takes no cell of the header\'s grid: no row gap under the action row at a narrow width', () => {
     assert.match(CSS, /\.browse-head > \[data-head="bar"\] \{ display: contents; \}/);
   });
