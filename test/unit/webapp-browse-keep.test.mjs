@@ -43,7 +43,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SRC = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'm.js'), 'utf8');
+const SRC = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'm.js'), 'utf8').replace(/\r\n/g, '\n');
 const require = createRequire(import.meta.url);
 const DISCOVERYPAGE = require('../../webapp/alpha/discovery-page.js');
 const DISCOVERJOBS = require('../../webapp/alpha/discover-jobs.js');
@@ -141,7 +141,9 @@ const lookupFrom = (jobs) => (recs) => ({
 // ── a just-enough DOM ───────────────────────────────────────────────
 // #filelist's mark slots and #browse-head's button are found in what was
 // last written; their stubs persist, so a patch in place is visible as a
-// write to the same stub (and a full redraw as a new innerHTML).
+// write to the same stub (and a full redraw as a new innerHTML). A slot
+// sits in its row (or card text), which always has a box; an empty folder
+// mark has none, as spa.css hides it (`box`, what the observer stub reads).
 function slotStubs(host, patches) {
   const cache = new Map();
   return () => [...host.inner.matchAll(/data-keep-mark="([^"]*)" data-keep-form="([^"]*)"/g)].map(([, k, form]) => {
@@ -151,7 +153,8 @@ function slotStubs(host, patches) {
       const label = host.inner.match(new RegExp(`data-keep-label="([^"]*)"[^>]*>(?:(?!album-grid-card)[\\s\\S])*data-keep-mark="${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
       if (label) { card.attrs['data-keep-label'] = decode(label[1]); }
       const slot = {
-        keepHtml: undefined, card,
+        keepHtml: undefined, card, parentElement: { row: key },
+        get box() { return form !== 'folder' || !!slot.html; },
         getAttribute: (n) => (n === 'data-keep-mark' ? key : (n === 'data-keep-form' ? form : null)),
         closest: () => (form === 'card' ? card : null),
         set innerHTML(h) { patches.push({ key, html: h }); slot.html = h; },
@@ -203,7 +206,25 @@ function headStub() {
   return { head, el };
 }
 
-function makeSandbox({ peer = PEER, flagOn = true, listing = LISTING(), view = VIEW, jobs = [], lookup, api = {}, playlist = [] } = {}) {
+// An IntersectionObserver as the browser runs one: what it watches, and a
+// scroll that brings every watched target near — one without a box never
+// intersects.
+function observerStub() {
+  const all = [];
+  class Observer {
+    constructor(fn, opts) { Object.assign(this, { fn, opts, targets: new Set() }); all.push(this); }
+    observe(t) { this.targets.add(t); }
+    unobserve(t) { this.targets.delete(t); }
+    disconnect() { this.targets.clear(); }
+  }
+  return {
+    Observer,
+    watched: () => all.flatMap((o) => [...o.targets]),
+    scrollIn: () => { for (const o of all) { o.fn([...o.targets].map((target) => ({ target, isIntersecting: target.box !== false })), o); } },
+  };
+}
+
+function makeSandbox({ peer = PEER, flagOn = true, listing = LISTING(), view = VIEW, jobs = [], lookup, api = {}, playlist = [], observer = null } = {}) {
   const els = new Map();
   const plain = (id) => {
     const e = { inner: '', value: id.endsWith('-limit') ? '100' : '', scrollTop: 0, style: {}, classList: { add() {}, remove() {}, contains: () => false }, dispatchEvent() {} };
@@ -273,6 +294,7 @@ function makeSandbox({ peer = PEER, flagOn = true, listing = LISTING(), view = V
     },
     DISCOVERYPAGE,
     DISCOVERJOBS,
+    IntersectionObserver: observer ? observer.Observer : undefined,
     t: tStub,
     getLoadingSvg: () => 'LOADING',
     boilerplateFailure: (err) => { toasts.push(err); },
@@ -803,6 +825,48 @@ describe('marks: each its own scope, this server\'s jobs only', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
+// The 2026-10-23 live walk (D1): no folder row was ever looked up — the
+// observer watched the mark itself, and an empty folder mark has no box.
+describe('the grid\'s cards and the folder rows are looked up as they come near (SPEC-fed §5)', () => {
+  const asked = (box) => box.calls.filter((c) => c.name === 'lookup').flatMap((c) => c.args[0].map((r) => r.filepath || r.album));
+  const debounce = () => new Promise((r) => setTimeout(r, 300));
+
+  test('a folder row is watched by the row its mark sits in (an empty mark draws no box: spa.css), then looked up and marked', async () => {
+    const CSS = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'spa.css'), 'utf8').replace(/\r\n/g, '\n');
+    assert.match(CSS, /\.browse-keep-folder:empty \{ display: none; \}/, 'why the mark itself cannot be watched');
+    const key = '2|folder|/music/Color Out/Peer Sessions';
+    const kept = job('folder', 'done', { filepath: '/music/Color Out/Peer Sessions', title: 'Peer Sessions' }, { result: manyResult(['a']) });
+    const io = observerStub();
+    const box = makeSandbox({ jobs: [kept], observer: io });
+    await box.openGate();
+    box.S.setDirs(['music', 'Color Out']);
+    box.S.printdir({ path: '/music/Color Out/', directories: [{ name: 'Peer Sessions' }], files: [] });
+    for (let i = 0; i < 6; i++) { await tick(); }
+    assert.deepEqual(asked(box), ['/music/Color Out'], 'the header at once; the row once it comes near');
+    assert.deepEqual(io.watched().map((t) => [t.row, t.keepMark]), [[key, key]], 'the row, carrying its mark\'s key — not the slot');
+    io.scrollIn();
+    await debounce();
+    for (let i = 0; i < 4; i++) { await tick(); }
+    assert.deepEqual(asked(box), ['/music/Color Out', '/music/Color Out/Peer Sessions']);
+    assert.ok(box.patches.some((p) => p.key === key && /discover\.keep\.kept/.test(p.html)), 'its mark drawn: In your collection');
+    assert.deepEqual(io.watched(), [], 'asked once a visit');
+  });
+
+  test('an album card is watched by its text, as before: looked up once near', async () => {
+    const io = observerStub();
+    const box = makeSandbox({ api: { albums: BOUK_ALBUMS.slice(0, 1) }, observer: io });
+    await box.openGate();
+    await box.S.getAllAlbums();
+    for (let i = 0; i < 4; i++) { await tick(); }
+    assert.deepEqual(asked(box), []);
+    assert.deepEqual(io.watched().map((t) => t.keepMark), ['2|album|Borrowed Tapes|Boukmanflow']);
+    io.scrollIn();
+    await debounce();
+    assert.deepEqual(asked(box), ['Borrowed Tapes']);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
 describe('the queue row\'s ⋮ menu', () => {
   const peerSong = { filepath: TAPES[1].filepath, metadata: { ...TAPES[1].metadata, 'album-artist': 'Boukmanflow' }, federation: { peerId: 2, peerName: 'Stage Peer B' } };
   const localSong = { filepath: 'music/a.mp3', metadata: { title: 'A' } };
@@ -1034,6 +1098,46 @@ describe('a compilation\'s album page: one choice, Album — never "Various Arti
     for (let i = 0; i < 5; i++) { await tick(); }
     assert.equal(own.S.browseKeep.head.compilation, false);
     assert.equal(openHead(own).track.artist, 'Boukmanflow');
+  });
+
+  // The 2026-10-23 live walk (D2): a peer whose files carry no
+  // compilation flag lists Night Market Sampler as compilation: false,
+  // its only credit Various Artists.
+  const SAMPLER_UNFLAGGED = { name: 'Night Market Sampler', year: 2024, album_art_file: null, album_artist: 'Various Artists', artists: ['Various Artists'], compilation: false };
+  const cardEl = (html) => {
+    const attrs = Object.fromEntries(['data-album', 'data-album-artist', 'data-year', 'data-peer', 'data-compilation']
+      .map((n) => [n, attrOf(html, n)]).filter(([, v]) => v !== undefined));
+    return { getAttribute: (n) => attrs[n] ?? null, hasAttribute: (n) => n in attrs };
+  };
+
+  test('a card credited to Various Artists that its listing does not flag: its ⋯ offers Album alone (no Artist "Various Artists"), and its lookup asks no artist copy', async () => {
+    const box = makeSandbox({ api: { albums: [SAMPLER_UNFLAGGED] } });
+    await box.openGate();
+    await box.S.getAllAlbums();
+    for (let i = 0; i < 4; i++) { await tick(); }
+    const [html] = cardsOf(box.S.html());
+    assert.ok(html.includes('browse-keep-more') && !html.includes('data-compilation'), 'its ⋯, and the listing\'s word that it is none');
+    const card = cardEl(html);
+    const more = { getAttribute: () => null, closest: () => card };
+    box.S.browseKeepAlbum(more);
+    assert.deepEqual(box.opened.at(-1).track, { peer: PEER, album: 'Night Market Sampler', albumArtist: 'Various Artists', artist: null, year: 2024, albumArt: null, compilation: true });
+    const rec = box.calls.find((c) => c.name === 'lookup').args[0][0];
+    assert.deepEqual([rec.albumArtist, 'artist' in rec], ['Various Artists', false]);
+    // the same card on the artist page of one of its artists
+    box.S.setState([{ state: 'allArtists' }, { state: 'artist', name: 'Boukmanflow' }]);
+    box.S.browseKeepAlbum(more);
+    assert.deepEqual([box.opened.at(-1).track.artist, box.opened.at(-1).track.compilation, box.opened.at(-1).opts.hide], [null, true, []]);
+  });
+
+  test('a page whose songs all name Various Artists, as their artist too: still a compilation — no artist copy of "Various Artists"', async () => {
+    const songs = SAMPLER.map((s) => ({ ...s, metadata: { ...s.metadata, artist: 'Various Artists', 'album-artist': 'Various Artists' } }));
+    const box = makeSandbox({ api: { albumSongs: () => songs } });
+    await box.openGate();
+    box.S.setState([{ state: 'allAlbums' }]);
+    await box.S.getAlbumSongs('Night Market Sampler', null, '2024', 'Various Artists');
+    for (let i = 0; i < 5; i++) { await tick(); }
+    assert.equal(box.S.browseKeep.head.compilation, true);
+    assert.deepEqual([openHead(box).track.artist, openHead(box).track.compilation], [null, true]);
   });
 
   test('the songs\' agreed credit wins over an opener that names the album\'s first artist (a search hit\'s): one job key for the album, wherever it is opened', async () => {
@@ -1392,7 +1496,7 @@ describe('marks keep to this server: the cases a regression would slip through',
 });
 
 describe('the page\'s styles (spa.css)', () => {
-  const CSS = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'spa.css'), 'utf8');
+  const CSS = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'spa.css'), 'utf8').replace(/\r\n/g, '\n');
   test('the header bar\'s holder takes no cell of the header\'s grid: no row gap under the action row at a narrow width', () => {
     assert.match(CSS, /\.browse-head > \[data-head="bar"\] \{ display: contents; \}/);
   });

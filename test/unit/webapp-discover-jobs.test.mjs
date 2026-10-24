@@ -1275,7 +1275,7 @@ describe('MSTREAMAPI: the folder copy\'s start and the peer\'s metadata batch', 
       calls.push({ url, method: opts.method, headers: opts.headers, body: opts.body === undefined ? undefined : JSON.parse(opts.body) });
       return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
     };
-    const api = new Function('fetch', `${fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'api.js'), 'utf8')}\nreturn MSTREAMAPI;`)(fetch);
+    const api = new Function('fetch', `${fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'api.js'), 'utf8').replace(/\r\n/g, '\n')}\nreturn MSTREAMAPI;`)(fetch);
     api.currentServer.host = 'http://here/';
     api.currentServer.token = 'tok';
     return { api, calls };
@@ -1328,7 +1328,7 @@ describe('MSTREAMAPI: the folder copy\'s start and the peer\'s metadata batch', 
     // the same route as the peer's other reads, and one a federation key may call
     await api.peer.metadata(7, 'x');
     assert.equal(calls[2].url.replace('/metadata', '/metadata/batch'), calls[0].url);
-    assert.match(fs.readFileSync(path.join(ROOT, 'src', 'api', 'federation-auth.js'), 'utf8'), /'POST \/api\/v1\/db\/metadata\/batch'/);
+    assert.match(fs.readFileSync(path.join(ROOT, 'src', 'api', 'federation-auth.js'), 'utf8').replace(/\r\n/g, '\n'), /'POST \/api\/v1\/db\/metadata\/batch'/);
   });
 });
 

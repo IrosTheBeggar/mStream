@@ -34,7 +34,7 @@ const require = createRequire(import.meta.url);
 const D = require('../../webapp/alpha/discovery-page.js');
 const J = require('../../webapp/alpha/discover-jobs.js');
 const EN = require('../../webapp/locales/en.json');
-const SOURCE = readFileSync(new URL('../../webapp/alpha/discovery-page.js', import.meta.url), 'utf8');
+const SOURCE = readFileSync(new URL('../../webapp/alpha/discovery-page.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.parse('2026-10-05T12:00:00.000Z');
@@ -672,7 +672,7 @@ describe('peerGroups', () => {
 
 // vp.js's peer window: dmSongMeta (what Play now / Queue next / Add
 // queue), sliced from the component's methods and run over a stub modal.
-const VP_SRC = readFileSync(new URL('../../webapp/alpha/vp.js', import.meta.url), 'utf8');
+const VP_SRC = readFileSync(new URL('../../webapp/alpha/vp.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 function vpDmSongMeta() {
   const start = VP_SRC.indexOf('      dmSongMeta: function () {');
   assert.ok(start >= 0, 'vp.js no longer defines dmSongMeta — update this test');
@@ -717,7 +717,7 @@ function vpModuleFn(name) {
   const end = VP_SRC.indexOf('\n  }\n', start);
   return VP_SRC.slice(start + 1, end + '\n  }'.length);
 }
-const I18N_SRC = readFileSync(new URL('../../webapp/assets/js/i18n.js', import.meta.url), 'utf8');
+const I18N_SRC = readFileSync(new URL('../../webapp/assets/js/i18n.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const I18N = new Function('window', 'document', 'localStorage', 'navigator', 'fetch', `${I18N_SRC}\nreturn I18N;`)(
   {}, { querySelector: () => null, querySelectorAll: () => [] }, { getItem: () => null, setItem: () => {} }, { language: 'en' },
   async () => ({ json: async () => EN }));
@@ -1763,7 +1763,7 @@ describe('the recommendation window: header, Find elsewhere and the keyboard (vp
 });
 
 describe('index.html: the window\'s album focus', () => {
-  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8');
+  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   const win = HTML.slice(HTML.indexOf('class="dmodal-shadow"'), HTML.indexOf('id="pop"'));
   test('the header names the album; Listen plays the album in its place; one meta line', () => {
     assert.match(win, /<h2 class="dmodal-title" id="dmodal-title">\{\{ dmHeadTitle\(\) \}\}<\/h2>/);
@@ -2926,7 +2926,7 @@ describe('where files land: {{SERVERFOLDER}}, the folders a song sits in on its 
   // Review 2026-10-22: Get it's own bar shows on a connected server's row
   // when the copy's gate fails, and drew that row's server and folder —
   // but a download comes from no server (youtube.js renders neither).
-  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8');
+  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   const DEST_SRC = VP_SRC.slice(VP_SRC.indexOf('Vue.component(\'dm-dest\''), VP_SRC.indexOf('Vue.component(\'dm-keep-body\''));
   const fromOf = (download) => {
     const src = /\n {6}from: (function \(\) \{ [^\n]*? \}),\n/.exec(DEST_SRC);
@@ -3564,7 +3564,7 @@ describe('where files land: the editor (vp.js)', () => {
 describe('dm-dest (vp.js): the bar and the editor as they are drawn', () => {
   const SRC = VP_SRC.slice(VP_SRC.indexOf('Vue.component(\'dm-dest-path\''), VP_SRC.indexOf('const playlistVue = new Vue('));
   const ED = SRC.slice(SRC.indexOf('<div v-if="picker" class="dm-dest-ed"'), SRC.indexOf('<div v-else-if="dest && path" class="dm-dest">'));
-  const CSS = readFileSync(new URL('../../webapp/alpha/spa.css', import.meta.url), 'utf8');
+  const CSS = readFileSync(new URL('../../webapp/alpha/spa.css', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
   test('the phone\'s order: the header, where it lands, the libraries, the layouts, then Use the library default and Save — no base folder field', () => {
     const at = (s) => { const i = ED.indexOf(s); assert.ok(i >= 0, s); return i; };
@@ -4246,7 +4246,7 @@ describe('Keep a copy: what its buttons do (vp.js dmKeepAct)', () => {
 });
 
 describe('Keep a copy: the markup (index.html, vp.js dm-keep-body) and its words (en.json)', () => {
-  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8');
+  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   const keepHtml = HTML.slice(HTML.indexOf('<section v-if="dmKeepShown()"'), HTML.indexOf('</section>', HTML.indexOf('<section v-if="dmKeepShown()"')));
   const BODY = VP_SRC.slice(VP_SRC.indexOf('Vue.component(\'dm-keep-body\''), VP_SRC.indexOf('const playlistVue = new Vue('));
 
@@ -4609,9 +4609,9 @@ describe('where files land: the 2026-10-21 review (vp.js)', () => {
 });
 
 describe('the window\'s markup and styles after the 2026-10-21 review', () => {
-  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8');
+  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   const win = HTML.slice(HTML.indexOf('class="dmodal-shadow"'), HTML.indexOf('id="pop"'));
-  const CSS = readFileSync(new URL('../../webapp/alpha/spa.css', import.meta.url), 'utf8');
+  const CSS = readFileSync(new URL('../../webapp/alpha/spa.css', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   // every one-line-selector rule of the window's (.dm-*, .dmodal*): selector → bodies
   const rules = [...CSS.matchAll(/(?:^|\n)[ \t]*(\.dm[^{\n]*?)\s*\{([^}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] }));
   const bodyOf = (sel) => rules.filter((r) => r.sel === sel).map((r) => r.body);
@@ -5022,10 +5022,12 @@ describe('from browsing: where a folder lands (SPEC-fed §6.5.4, user decisions 
   test('Into a folder…: a new folder named as the pressed one in the saved library, its list always open, Up, a folder, New folder… (user decision 2)', async () => {
     const w = await browseWindow(folderTrack(), FOLDER_OPTS);
     const { vm, calls } = w;
+    calls.listed.length = 0;
     vm.dmLandChoose('folder');
     await flush();
     const m = vm.discover.modal;
-    assert.deepEqual([m.keep.into, vm.dmIntoCrumbs(), calls.listed.pop()], [{ vpath: 'copies', path: 'Borrowed Tapes' }, ['copies', 'Borrowed Tapes'], '/copies/Borrowed Tapes']);
+    assert.deepEqual([m.keep.into, vm.dmIntoCrumbs(), calls.listed], [{ vpath: 'copies', path: 'Borrowed Tapes' }, ['copies', 'Borrowed Tapes'], ['/copies']],
+      'looked for in its library: a place not there yet is never asked for');
     assert.deepEqual([m.keep.tree.dirs, vm.dmIntoMissing(), vm.dmIntoStraight()], [[], true, ''], 'not there yet — the first file makes it; named as the pressed one');
     assert.deepEqual([pathLine(vm.dmDestPath('folder')), vm.dmDestPath('folder').files.lines.length], ['copies › Borrowed Tapes', 3]);
     assert.deepEqual(vm.dmFolderLandingSent(), { vpath: 'copies', path: 'Borrowed Tapes' });
@@ -5054,9 +5056,33 @@ describe('from browsing: where a folder lands (SPEC-fed §6.5.4, user decisions 
     // another library: the pressed folder's name at its root
     vm.dmIntoLibrary('music');
     await flush();
-    assert.deepEqual([m.keep.into, calls.listed.pop()], [{ vpath: 'music', path: 'Borrowed Tapes' }, '/music/Borrowed Tapes']);
+    assert.deepEqual([m.keep.into, calls.listed.pop(), vm.dmIntoMissing()], [{ vpath: 'music', path: 'Borrowed Tapes' }, '/music', true]);
     assert.deepEqual(vm.dmIntoLibraries(), ['music', 'copies']);
     assert.equal(pathLine(vm.dmDestPath('folder')), 'music › Borrowed Tapes', 'the chosen library, not the saved one');
+  });
+
+  // The 2026-10-23 live walk (D3): the first place, meant not to exist yet,
+  // was listed — a 404 the browser logs as an error on every open.
+  test('Into a folder…: a place not known to be there is looked for in the folder above first — never asked for while missing; one there (a row, the folder above one) is listed at once', async () => {
+    const w = await browseWindow(folderTrack(), FOLDER_OPTS);
+    const { vm, calls } = w;
+    const disk = { '/copies': ['Borrowed Tapes', 'from-peers'], '/copies/Borrowed Tapes': ['Bonus'], '/copies/Borrowed Tapes/Bonus': [], '/music': ['ALM'] };
+    w.api.dirparser = async (dir) => {
+      calls.listed.push(dir);
+      if (!(dir in disk)) { throw httpError(404, { error: `Cannot read directory "${dir}" (ENOENT)` }); }
+      return { directories: disk[dir].map((name) => ({ name })) };
+    };
+    const m = vm.discover.modal;
+    const step = async (fn) => { calls.listed.length = 0; fn(); await flush(); await flush(); return [calls.listed.slice(), m.keep.tree.dirs, vm.dmIntoMissing()]; };
+    assert.deepEqual(await step(() => vm.dmLandChoose('folder')), [['/copies', '/copies/Borrowed Tapes'], ['Bonus'], false], 'an earlier copy made it: found, then listed');
+    assert.deepEqual(await step(() => vm.dmIntoInto('Bonus')), [['/copies/Borrowed Tapes/Bonus'], [], false], 'a listed row is there');
+    assert.deepEqual(await step(() => vm.dmIntoUp()), [['/copies/Borrowed Tapes'], ['Bonus'], false], 'the folder above one that is there');
+    assert.deepEqual(await step(() => vm.dmIntoLibrary('music')), [['/music'], [], true], 'another library\'s first place: not there, not asked for');
+    vm.dmIntoNewFolder();
+    m.keep.tree.newName = 'Deep';
+    assert.deepEqual(await step(() => vm.dmIntoNewFolder()), [[], [], true], 'named: known not to exist');
+    assert.deepEqual(await step(() => vm.dmIntoUp()), [['/music'], [], true], 'the folder above one not there yet is looked for too');
+    assert.ok(!calls.listed.some((d) => !(d in disk)) && !w.toasts.length, 'nothing missing was ever asked for');
   });
 
   test('a pressed folder whose name has a brace: the first place keeps it, the note says why, and Add folder waits', async () => {
@@ -5292,9 +5318,9 @@ describe('the plug-in listing\'s folder cap is kept for the window and the page 
 });
 
 describe('the window\'s markup for browsing (index.html, spa.css) and its words (en.json)', () => {
-  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8');
+  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   const win = HTML.slice(HTML.indexOf('class="dmodal-shadow"'), HTML.indexOf('id="pop"'));
-  const CSS = readFileSync(new URL('../../webapp/alpha/spa.css', import.meta.url), 'utf8');
+  const CSS = readFileSync(new URL('../../webapp/alpha/spa.css', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   test('the header\'s art by focus; no Listen for an artist; a folder\'s Listen dimmed until counted; View album / View artist hidden by the page', () => {
     assert.match(win, /'dmodal-art-artist': dmArtistFocus\(\), 'dmodal-art-folder': dmFolderFocus\(\)/);
     assert.match(win, /<section v-if="dmListenShown\(\)" class="dmodal-section">/);
@@ -5490,8 +5516,8 @@ describe('the window keeps no older plug-in listing than the page that offered t
 });
 
 describe('the window\'s smaller markup rules (the 2026-10-23 review)', () => {
-  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8');
-  const CSS = readFileSync(new URL('../../webapp/alpha/spa.css', import.meta.url), 'utf8');
+  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const CSS = readFileSync(new URL('../../webapp/alpha/spa.css', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   test('a landing radio is named by its label alone, described by its sub (read once each)', () => {
     assert.match(HTML, /<span :id="'dm-land-name-' \+ l\.mode" class="dm-land-name">\{\{ l\.label \}\}<\/span>/);
     assert.match(HTML, /class="dm-land-radio"[^>]*:aria-labelledby="'dm-land-name-' \+ l\.mode" :aria-describedby="'dm-land-sub-' \+ l\.mode"/);

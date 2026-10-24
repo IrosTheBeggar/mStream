@@ -41,6 +41,19 @@ function suite(startOpts) {
     assert.equal(titlesMatching(body, /Highway/).length, 1);
   });
 
+  // The album statement is the one FTS query that ranks inside an aggregate
+  // (MIN(rank) over grouped cards): if a runtime refused it, strict fts5
+  // would quietly return no albums and combo would quietly fall back to LIKE.
+  test('control: strict fts5 finds the fixture album "Night Drive", credited as /db/albums credits it', async () => {
+    const r = await post(server, '/api/v1/db/albums', {});
+    assert.equal(r.status, 200);
+    const card = (await r.json()).albums.find((a) => a.name === 'Night Drive');
+    assert.equal(card.album_artist, 'Vosto');
+    const { status, body } = await search(server, 'night drive', 'fts5');
+    assert.equal(status, 200);
+    assert.deepEqual(body.albums.map((a) => [a.name, a.year, a.album_artist]), [[card.name, card.year, card.album_artist]]);
+  });
+
   test('combo falls back to LIKE when MATCH throws', async () => {
     const { status, body } = await search(server, 'Highway\u0000', 'combo');
     assert.equal(status, 200, JSON.stringify(body));
